@@ -1,0 +1,176 @@
+# OpenKey Project Specification
+metadata:
+  name: openkey
+  version: 1.0.0
+  description: Open-source authentication service combining WebAuthn with Ethereum key management
+  license: GPL-3.0
+  authors:
+    - TinyCloud Team
+
+goals:
+  primary: Build a self-hosted alternative to Privy with lower costs and simpler implementation
+  secondary:
+    - Enable secure key management for TinyCloud products
+    - Provide dual licensing model (GPL + commercial)
+    - Create reusable auth infrastructure
+
+components:
+  backend:
+    type: api
+    framework: express
+    language: typescript
+    features:
+      - WebAuthn credential management
+      - Ethereum key generation and storage
+      - Session management
+      - Recovery mechanisms
+    
+    endpoints:
+      - POST /auth/register
+      - POST /auth/login
+      - POST /auth/verify
+      - POST /keys/generate
+      - POST /keys/sign
+      - POST /recovery/initiate
+      - GET /user/devices
+    
+    dependencies:
+      - "@simplewebauthn/server"
+      - "ethers"
+      - "express"
+      - "@prisma/client"
+      - "ioredis"
+    
+    database:
+      type: postgresql
+      orm: prisma
+      schema:
+        - User (id, email, createdAt)
+        - Credential (id, userId, publicKey, counter)
+        - EthereumKey (id, userId, address, encryptedKey)
+        - RecoveryToken (id, userId, token, expiresAt)
+
+  frontend:
+    type: webapp
+    framework: nextjs
+    language: typescript
+    features:
+      - Passkey registration/login UI
+      - Ethereum wallet interface
+      - Device management
+      - Recovery flow
+    
+    pages:
+      - /auth/login
+      - /auth/register
+      - /dashboard
+      - /settings
+      - /recovery
+    
+    dependencies:
+      - "@simplewebauthn/browser"
+      - "wagmi"
+      - "viem"
+      - "tailwindcss"
+      - "@radix-ui/primitives"
+
+  demo:
+    type: example
+    description: Simple app demonstrating OpenKey integration
+    features:
+      - Login/logout flow
+      - Sign message with Ethereum key
+      - Transaction signing demo
+      - Recovery demonstration
+
+security:
+  encryption:
+    - AES-256 for keys at rest
+    - TLS 1.3 for transport
+  
+  authentication:
+    - WebAuthn Level 2
+    - Domain binding
+    - Rate limiting
+  
+  future:
+    - TEE integration for key isolation
+    - Hardware security module support
+
+testing:
+  unit:
+    backend: jest
+    frontend: vitest
+    coverage: 80%
+  
+  integration:
+    tool: playwright
+    environment: ngrok
+    scenarios:
+      - User registration with passkey
+      - Login flow
+      - Ethereum signing
+      - Device management
+      - Recovery process
+  
+  security:
+    - OWASP compliance scan
+    - Penetration testing checklist
+    - Key exposure detection
+
+deployment:
+  development:
+    backend: "http://localhost:3001"
+    frontend: "http://localhost:3000"
+    database: docker-compose
+  
+  testing:
+    tunnel: ngrok
+    ssl: required for WebAuthn
+  
+  production:
+    hosting: self-hosted
+    domains: configured by user
+    monitoring: opentelemetry
+
+success_criteria:
+  functional:
+    - All endpoints return correct responses
+    - WebAuthn works on Chrome, Safari, Firefox
+    - Ethereum signatures are valid
+    - Recovery mechanism functions
+  
+  performance:
+    - Authentication < 100ms
+    - Key generation < 500ms
+    - 99.9% uptime
+  
+  security:
+    - No private key exposure
+    - Pass security audit
+    - Rate limiting prevents abuse
+  
+  quality:
+    - Clean, documented code
+    - 80% test coverage
+    - Mobile responsive UI
+    - Clear error messages
+
+constraints:
+  technical:
+    - Must work without external auth services
+    - WebAuthn requires HTTPS
+    - Keys must never leave server unencrypted
+  
+  business:
+    - GPL license with domain binding
+    - Dual licensing option available
+    - No dependency on paid services
+    - Simple enough for small teams
+
+documentation:
+  - API documentation with examples
+  - Integration guide
+  - Security best practices
+  - Deployment instructions
+  - Recovery procedures
