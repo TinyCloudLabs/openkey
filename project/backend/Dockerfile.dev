@@ -1,0 +1,26 @@
+FROM oven/bun:1-alpine
+
+WORKDIR /app
+
+# Copy package files
+COPY backend/package*.json ./backend/
+COPY shared/package*.json ./shared/
+COPY backend/bun.lockb* ./backend/
+COPY shared/bun.lockb* ./shared/
+
+# Install dependencies
+RUN cd backend && bun install
+RUN cd shared && bun install
+
+# Copy source code
+COPY backend/ ./backend/
+COPY shared/ ./shared/
+
+# Build shared package
+RUN cd shared && bun run build
+
+# Expose port
+EXPOSE 3001
+
+# Start development server
+CMD ["sh", "-c", "cd backend && bun run dev"]

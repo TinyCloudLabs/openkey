@@ -1,0 +1,39 @@
+# Dockerfile.dev template for TypeScript/Node.js projects
+# Updated based on OpenKey implementation learnings
+
+FROM oven/bun:1-alpine
+
+WORKDIR /app
+
+# Copy package files for better Docker layer caching
+COPY {{SERVICE_NAME}}/package*.json ./{{SERVICE_NAME}}/
+{{#SHARED_PACKAGE}}
+COPY shared/package*.json ./shared/
+{{/SHARED_PACKAGE}}
+COPY {{SERVICE_NAME}}/bun.lockb* ./{{SERVICE_NAME}}/
+{{#SHARED_PACKAGE}}
+COPY shared/bun.lockb* ./shared/
+{{/SHARED_PACKAGE}}
+
+# Install dependencies using Bun for better performance
+RUN cd {{SERVICE_NAME}} && bun install
+{{#SHARED_PACKAGE}}
+RUN cd shared && bun install
+{{/SHARED_PACKAGE}}
+
+# Copy source code
+COPY {{SERVICE_NAME}}/ ./{{SERVICE_NAME}}/
+{{#SHARED_PACKAGE}}
+COPY shared/ ./shared/
+{{/SHARED_PACKAGE}}
+
+{{#SHARED_PACKAGE}}
+# Build shared package if exists
+RUN cd shared && bun run build
+{{/SHARED_PACKAGE}}
+
+# Expose port
+EXPOSE {{PORT}}
+
+# Start development server using Bun
+CMD ["sh", "-c", "cd {{SERVICE_NAME}} && bun run dev"]

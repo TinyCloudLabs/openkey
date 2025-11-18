@@ -1,0 +1,23 @@
+{
+  "name": "@openkey/tests",
+  "version": "1.0.0",
+  "description": "OpenKey test suite",
+  "private": true,
+  "scripts": {
+    "integration": "bunx playwright test",
+    "e2e": "bunx playwright test --config=playwright.e2e.config.ts",
+    "test:headed": "bunx playwright test --headed",
+    "test:ui": "bunx playwright test --ui",
+    "test:staging": "ENVIRONMENT=staging bunx playwright test",
+    "test:production": "ENVIRONMENT=production bunx playwright test --grep @smoke"
+  },
+  "dependencies": {
+    "@playwright/test": "^1.40.0",
+    "@simplewebauthn/browser": "^9.0.1",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.9.0",
+    "typescript": "^5.2.2"
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "name": "{{PACKAGE_NAME}}",
+  "version": "{{VERSION}}",
+  "description": "{{DESCRIPTION}}",
+  {{#PRIVATE}}
+  "private": true,
+  {{/PRIVATE}}
+  {{#MAIN}}
+  "main": "{{MAIN}}",
+  {{/MAIN}}
+  {{#TYPES}}
+  "types": "{{TYPES}}",
+  {{/TYPES}}
+  "scripts": {
+    {{#BACKEND_SCRIPTS}}
+    "dev": "bunx tsx watch src/server.ts",
+    "build": "bunx tsc",
+    "start": "node dist/server.js",
+    "test": "bunx jest",
+    "lint": "bunx eslint src/**/*.ts",
+    "typecheck": "bunx tsc --noEmit",
+    {{/BACKEND_SCRIPTS}}
+    {{#FRONTEND_SCRIPTS}}
+    "dev": "bunx next dev",
+    "build": "bunx next build",
+    "start": "bunx next start",
+    "lint": "bunx next lint",
+    "test": "bunx jest",
+    "typecheck": "bunx tsc --noEmit",
+    {{/FRONTEND_SCRIPTS}}
+    {{#SHARED_SCRIPTS}}
+    "build": "bunx tsc",
+    "dev": "bunx tsc --watch",
+    {{/SHARED_SCRIPTS}}
+    {{#TEST_SCRIPTS}}
+    "integration": "bunx playwright test",
+    "e2e": "bunx playwright test --config=playwright.e2e.config.ts",
+    "test:headed": "bunx playwright test --headed",
+    "test:ui": "bunx playwright test --ui",
+    {{/TEST_SCRIPTS}}
+    {{#CUSTOM_SCRIPTS}}
+    {{CUSTOM_SCRIPTS}}
+    {{/CUSTOM_SCRIPTS}}
+  },
+  {{#DEPENDENCIES}}
+  "dependencies": {
+    {{DEPENDENCIES}}
+  },
+  {{/DEPENDENCIES}}
+  {{#DEV_DEPENDENCIES}}
+  "devDependencies": {
+    {{DEV_DEPENDENCIES}}
+  }
+  {{/DEV_DEPENDENCIES}}
+}

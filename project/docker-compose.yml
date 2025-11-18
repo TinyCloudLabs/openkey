@@ -1,0 +1,90 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: openkey
+      POSTGRES_PASSWORD: localdev
+      POSTGRES_DB: openkey
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openkey"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Redis for sessions
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Backend API
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile.dev
+    ports:
+      - "3001:3001"
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://openkey:localdev@postgres:5432/openkey
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: local-dev-secret
+      ENCRYPTION_KEY: local-dev-encryption-key-32char
+    volumes:
+      - ./backend:/app/backend
+      - ./shared:/app/shared
+      - /app/backend/node_modules
+      - /app/shared/node_modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: sh -c "cd backend && bun run dev"
+
+  # Frontend
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile.dev
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:3001
+    volumes:
+      - ./frontend:/app/frontend
+      - ./shared:/app/shared
+      - /app/frontend/node_modules
+      - /app/shared/node_modules
+    depends_on:
+      - backend
+    command: sh -c "cd frontend && bun run dev"
+
+  # ngrok for HTTPS testing (WebAuthn requires HTTPS)
+  ngrok:
+    image: ngrok/ngrok:alpine
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:-}
+    command: http frontend:3000
+    ports:
+      - "4040:4040" # ngrok web interface
+    depends_on:
+      - frontend
+
+volumes:
+  postgres_data:
+  redis_data:

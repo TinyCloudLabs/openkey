@@ -1,0 +1,115 @@
+learnings_manifest:
+  version: 1.0.0
+  last_updated: '2025-11-07'
+pipeline_improvements:
+  implementation_patterns:
+    - pattern: bun_over_npm
+      description: Use Bun instead of npm for better performance and compatibility
+      learned_from: openkey_implementation
+      confidence: high
+      applies_to:
+        - typescript
+        - javascript
+        - node_projects
+    - pattern: docker_compose_dev_environment
+      description: Use Docker Compose for local development with services
+      learned_from: openkey_implementation
+      confidence: high
+      applies_to:
+        - web_applications
+        - microservices
+    - pattern: ngrok_https_testing
+      description: Use ngrok for HTTPS testing of WebAuthn/passkey implementations
+      learned_from: openkey_implementation
+      confidence: high
+      applies_to:
+        - webauthn
+        - passkey
+        - authentication
+    - pattern: validate_radix_ui_packages
+      description: Always validate that Radix UI packages exist before adding them to dependencies - @radix-ui/react-button and @radix-ui/react-input don't exist
+      learned_from: openkey_implementation_fix
+      confidence: high
+      applies_to:
+        - radix-ui
+        - react
+        - ui-components
+      timestamp: '2025-11-06T20:23:42.530Z'
+  error_resolutions:
+    - error: npm_ci_missing_lockfile
+      solution: Use 'npm install' or switch to bun for more flexible dependency resolution
+      context: Docker builds failing when package-lock.json missing
+      learned_from: openkey_implementation
+    - error: webauthn_requires_https
+      solution: Always include ngrok or HTTPS setup for WebAuthn testing
+      context: WebAuthn APIs only work over HTTPS in browsers
+      learned_from: openkey_implementation
+    - error: radix_ui_nonexistent_packages
+      solution: Remove @radix-ui/react-button and @radix-ui/react-input from package.json - these packages don't exist
+      context: Docker build fails with 404 errors for @radix-ui/react-button and @radix-ui/react-input
+      learned_from: openkey_implementation_fix
+      timestamp: '2025-11-06T20:23:33.011Z'
+    - error: missing_class_variance_authority
+      solution: Add class-variance-authority package to frontend dependencies
+      context: Frontend build fails with module not found error for class-variance-authority
+      learned_from: openkey_implementation_fix
+      timestamp: '2025-11-07T16:23:43.033Z'
+    - error: encryption_key_wrong_length
+      solution: Ensure ENCRYPTION_KEY environment variable is exactly 32 characters long in docker-compose.yml
+      context: Backend fails to start with ENCRYPTION_KEY length error
+      learned_from: openkey_implementation_fix
+      timestamp: '2025-11-07T16:23:48.646Z'
+  architectural_patterns:
+    - pattern: monorepo_with_shared_types
+      description: Use shared package for common types and utilities across frontend/backend
+      benefits:
+        - type_safety
+        - code_reuse
+        - consistency
+      learned_from: openkey_implementation
+    - pattern: express_typescript_backend
+      description: Express with TypeScript provides good balance of simplicity and type safety
+      learned_from: openkey_implementation
+      confidence: high
+    - pattern: nextjs_frontend_with_tailwind
+      description: Next.js + Tailwind CSS for rapid UI development
+      learned_from: openkey_implementation
+      confidence: high
+  security_practices:
+    - practice: encrypt_private_keys_at_rest
+      description: Always encrypt Ethereum private keys with AES-256 before storage
+      importance: critical
+      learned_from: openkey_implementation
+    - practice: webauthn_security_requirements
+      description: Proper WebAuthn implementation requires HTTPS, proper origin validation
+      importance: critical
+      learned_from: openkey_implementation
+  tooling_preferences:
+    - tool: prisma_orm
+      reason: Excellent TypeScript integration and migration management
+      learned_from: openkey_implementation
+    - tool: redis_sessions
+      reason: Fast session storage for authentication flows
+      learned_from: openkey_implementation
+    - tool: playwright_testing
+      reason: Reliable browser automation for WebAuthn testing
+      learned_from: openkey_implementation
+pipeline_templates:
+  dockerfile_template: templates/Dockerfile.dev.template
+  package_json_template: templates/package.json.template
+  docker_compose_template: templates/docker-compose.yml.template
+feedback_loop:
+  learning_triggers:
+    - implementation_error
+    - manual_correction
+    - performance_issue
+    - security_concern
+  improvement_process:
+    '1': Capture learning during implementation
+    '2': Add to learnings manifest
+    '3': Update relevant templates
+    '4': Apply to future implementations
+  template_updates:
+    auto_apply: true
+    review_required: false
+    backup_previous: true
