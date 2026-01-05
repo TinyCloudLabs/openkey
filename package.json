@@ -4,13 +4,31 @@
   "workspaces": ["apps/*", "packages/*"],
   "scripts": {
     "dev": "turbo dev",
+    "dev:api": "turbo dev --filter @openkey/api",
+    "dev:web": "turbo dev --filter @openkey/web",
     "build": "turbo build",
     "lint": "turbo lint",
-    "typecheck": "turbo typecheck"
+    "typecheck": "turbo typecheck",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f",
+    "db:push": "bunx prisma db push --schema=./packages/db/prisma/schema.prisma",
+    "db:generate": "bunx prisma generate --schema=./packages/db/prisma/schema.prisma",
+    "db:studio": "bunx prisma studio --schema=./packages/db/prisma/schema.prisma"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.1.18",
+    "tailwindcss": "^4.1.18",
     "turbo": "^2.3.0",
     "typescript": "^5.7.0"
   },
-  "packageManager": "bun@1.1.0"
+  "packageManager": "bun@1.1.0",
+  "dependencies": {
+    "@better-auth/cli": "^1.4.10",
+    "@better-auth/passkey": "^1.4.10",
+    "better-auth": "^1.4.10",
+    "hono": "^4.11.3",
+    "resend": "^6.6.0",
+    "viem": "^2.43.5"
+  }
 }

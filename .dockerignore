@@ -1,0 +1,34 @@
+# Dependencies
+node_modules
+.pnpm-store
+
+# Build outputs
+dist
+.next
+.svelte-kit
+build
+
+# Dev/IDE files
+.vscode
+.idea
+*.log
+
+# Git
+.git
+.gitignore
+
+# Environment
+.env
+.env.local
+.env*.local
+
+# Docker
+Dockerfile
+docker-compose*.yml
+.docker
+
+# Misc
+README.md
+*.md
+.claude
+note.md

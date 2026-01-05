@@ -9,9 +9,13 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@openkey/db": "workspace:*",
     "@openkey/tee": "workspace:*",
-    "@openkey/types": "workspace:*"
+    "@prisma/client": "^5.22.0",
+    "@better-auth/passkey": "^1.4.10",
+    "better-auth": "^1.4.10",
+    "hono": "^4.11.3",
+    "resend": "^6.6.0",
+    "viem": "^2.43.5"
   },
   "devDependencies": {
     "@types/bun": "latest",

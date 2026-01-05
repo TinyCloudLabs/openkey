@@ -1,0 +1,42 @@
+# OpenKey Local Development
+version: '3.8'
+
+services:
+  # PostgreSQL database (for local dev without Neon)
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: openkey
+      POSTGRES_PASSWORD: openkey
+      POSTGRES_DB: openkey
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openkey"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # OpenKey API
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      DATABASE_URL: postgresql://openkey:openkey@db:5432/openkey
+      TEE_MODE: development
+      DEV_SEALING_KEY: openkey-dev-sealing-key-32bytes!
+      WEBAUTHN_RP_ID: localhost
+      WEBAUTHN_ORIGIN: http://localhost:5173
+      CORS_ORIGIN: http://localhost:5173
+      API_PORT: "3001"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
