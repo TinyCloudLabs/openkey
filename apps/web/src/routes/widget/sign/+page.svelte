@@ -3,6 +3,8 @@
   import { onMount } from 'svelte';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
+  import Button from '$lib/components/ui/button.svelte';
+  import Card from '$lib/components/ui/card.svelte';
 
   const session = authClient.useSession();
 
@@ -93,172 +95,55 @@
   }
 </script>
 
-<div class="sign-widget">
-  <header>
-    <h1>Sign Message</h1>
-    <button class="close-btn" onclick={cancel}>×</button>
+<div class="flex-1 flex flex-col">
+  <header class="flex justify-between items-center mb-6">
+    <h1 class="text-xl font-semibold text-surface-50">Sign Message</h1>
+    <button
+      class="bg-transparent border-none text-surface-400 text-2xl cursor-pointer p-0 leading-none hover:text-surface-50 transition-colors"
+      onclick={cancel}
+    >
+      &times;
+    </button>
   </header>
 
   {#if !$session.data}
-    <div class="auth-needed">
-      <p>Sign in to sign messages</p>
-      <a href="/auth/login" class="button primary">Sign In</a>
+    <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
+      <p class="mb-4">Sign in to sign messages</p>
+      <Button href="/auth/login">Sign In</Button>
     </div>
   {:else if loading}
-    <div class="loading">Loading...</div>
+    <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
+      Loading...
+    </div>
   {:else if !key}
-    <div class="no-key">
+    <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
       <p>Please connect first to sign messages.</p>
     </div>
   {:else}
-    <div class="sign-form">
-      <div class="key-info">
-        <span class="label">Signing with:</span>
-        <span class="value">{key.label || `Key ${key.keyIndex}`}</span>
-        <code>{formatAddress(key.address)}</code>
-      </div>
+    <div class="flex flex-col gap-4 flex-1">
+      <Card class="p-4">
+        <span class="block text-surface-400 text-xs uppercase mb-2">Signing with:</span>
+        <span class="font-semibold mr-2">{key.label || `Key ${key.keyIndex}`}</span>
+        <code class="font-mono text-surface-400 text-sm">{formatAddress(key.address)}</code>
+      </Card>
 
-      <div class="message-preview">
-        <span class="label">Message:</span>
-        <pre>{message}</pre>
-      </div>
+      <Card class="p-4">
+        <span class="block text-surface-400 text-xs uppercase mb-2">Message:</span>
+        <pre class="m-0 whitespace-pre-wrap break-all font-mono text-sm max-h-[200px] overflow-y-auto">{message}</pre>
+      </Card>
 
       {#if error}
-        <div class="error">{error}</div>
+        <Card class="bg-red-500/10 border-red-500 text-red-500 p-4">
+          {error}
+        </Card>
       {/if}
 
-      <div class="actions">
-        <button class="button secondary" onclick={cancel}>Cancel</button>
-        <button class="button primary" onclick={signMessage} disabled={signing}>
+      <div class="flex gap-3 mt-auto">
+        <Button variant="secondary" class="flex-1" onclick={cancel}>Cancel</Button>
+        <Button class="flex-1" onclick={signMessage} disabled={signing}>
           {signing ? 'Signing...' : 'Sign Message'}
-        </button>
+        </Button>
       </div>
     </div>
   {/if}
 </div>
-
-<style>
-  .sign-widget {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-  }
-
-  header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 1.5rem;
-  }
-
-  h1 {
-    font-size: 1.25rem;
-    margin: 0;
-  }
-
-  .close-btn {
-    background: transparent;
-    border: none;
-    color: #888;
-    font-size: 1.5rem;
-    cursor: pointer;
-    padding: 0;
-    line-height: 1;
-  }
-
-  .auth-needed, .loading, .no-key {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    text-align: center;
-    color: #888;
-  }
-
-  .sign-form {
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
-    flex: 1;
-  }
-
-  .key-info, .message-preview {
-    background: #1a1a1a;
-    border: 1px solid #333;
-    border-radius: 8px;
-    padding: 1rem;
-  }
-
-  .label {
-    display: block;
-    color: #888;
-    font-size: 0.75rem;
-    text-transform: uppercase;
-    margin-bottom: 0.5rem;
-  }
-
-  .value {
-    font-weight: 600;
-    margin-right: 0.5rem;
-  }
-
-  code {
-    font-family: 'SF Mono', Monaco, monospace;
-    color: #888;
-    font-size: 0.875rem;
-  }
-
-  pre {
-    margin: 0;
-    white-space: pre-wrap;
-    word-break: break-all;
-    font-family: 'SF Mono', Monaco, monospace;
-    font-size: 0.875rem;
-    max-height: 200px;
-    overflow-y: auto;
-  }
-
-  .actions {
-    display: flex;
-    gap: 0.75rem;
-    margin-top: auto;
-  }
-
-  .button {
-    flex: 1;
-    padding: 0.75rem 1.5rem;
-    border: none;
-    border-radius: 8px;
-    font-size: 0.875rem;
-    font-weight: 600;
-    cursor: pointer;
-    text-decoration: none;
-    text-align: center;
-    transition: all 0.2s;
-  }
-
-  .button:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-
-  .button.primary {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    color: white;
-  }
-
-  .button.secondary {
-    background: transparent;
-    border: 1px solid #333;
-    color: #fafafa;
-  }
-
-  .error {
-    background: rgba(255, 68, 68, 0.1);
-    border: 1px solid #ff4444;
-    color: #ff4444;
-    padding: 1rem;
-    border-radius: 8px;
-  }
-</style>

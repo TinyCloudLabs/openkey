@@ -1,6 +1,9 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
   import { authClient } from '$lib/auth-client';
+  import Button from '$lib/components/ui/button.svelte';
+  import Card from '$lib/components/ui/card.svelte';
+  import Input from '$lib/components/ui/input.svelte';
 
   let email = $state('');
   let otp = $state('');
@@ -72,191 +75,102 @@
   }
 </script>
 
-<div class="auth-container">
-  <h1>Sign In</h1>
+<div class="min-h-screen bg-surface-950 flex items-center justify-center px-4">
+  <Card class="w-full max-w-md">
+    <h1 class="text-2xl font-bold text-surface-50 text-center mb-6">Sign In</h1>
 
-  {#if error}
-    <div class="error">{error}</div>
-  {/if}
-
-  {#if step === 'email'}
-    <div class="auth-form">
-      <button class="button passkey" onclick={tryPasskeyLogin} disabled={loading}>
-        Sign in with Passkey
-      </button>
-
-      <div class="divider">
-        <span>or</span>
+    {#if error}
+      <div class="bg-red-500/20 border border-red-500 text-red-400 px-4 py-3 rounded-lg mb-6" role="alert">
+        {error}
       </div>
+    {/if}
 
-      <form onsubmit={(e) => { e.preventDefault(); sendOTP(); }}>
-        <input
-          type="email"
-          bind:value={email}
-          placeholder="Email address"
-          required
-          disabled={loading}
-        />
-        <button type="submit" class="button primary" disabled={loading}>
-          {loading ? 'Sending...' : 'Continue with Email'}
-        </button>
-      </form>
+    {#if step === 'email'}
+      <div class="flex flex-col gap-4">
+        <Button variant="secondary" onclick={tryPasskeyLogin} disabled={loading} class="w-full">
+          Sign in with Passkey
+        </Button>
 
-      <div class="divider">
-        <span>or</span>
+        <div class="flex items-center gap-4 text-surface-500">
+          <div class="flex-1 h-px bg-surface-700"></div>
+          <span class="text-sm">or</span>
+          <div class="flex-1 h-px bg-surface-700"></div>
+        </div>
+
+        <form onsubmit={(e) => { e.preventDefault(); sendOTP(); }} class="flex flex-col gap-4">
+          <div>
+            <label for="email" class="sr-only">Email address</label>
+            <Input
+              id="email"
+              type="email"
+              bind:value={email}
+              placeholder="Email address"
+              required
+              disabled={loading}
+            />
+          </div>
+          <Button type="submit" disabled={loading} class="w-full">
+            {loading ? 'Sending...' : 'Continue with Email'}
+          </Button>
+        </form>
+
+        <div class="flex items-center gap-4 text-surface-500">
+          <div class="flex-1 h-px bg-surface-700"></div>
+          <span class="text-sm">or</span>
+          <div class="flex-1 h-px bg-surface-700"></div>
+        </div>
+
+        <Button variant="secondary" onclick={googleLogin} disabled={loading} class="w-full">
+          Continue with Google
+        </Button>
       </div>
+    {/if}
 
-      <button class="button google" onclick={googleLogin} disabled={loading}>
-        Continue with Google
-      </button>
-    </div>
-  {/if}
+    {#if step === 'otp'}
+      <div class="flex flex-col gap-4">
+        <p class="text-surface-300 text-center">
+          Enter the 6-digit code sent to <span class="text-surface-50 font-medium">{email}</span>
+        </p>
+        <form onsubmit={(e) => { e.preventDefault(); verifyOTP(); }} class="flex flex-col gap-4">
+          <div>
+            <label for="otp" class="sr-only">Verification code</label>
+            <Input
+              id="otp"
+              type="text"
+              bind:value={otp}
+              placeholder="000000"
+              maxlength={6}
+              pattern="[0-9]{6}"
+              required
+              disabled={loading}
+              class="text-center text-2xl tracking-widest font-mono"
+            />
+          </div>
+          <Button type="submit" disabled={loading} class="w-full">
+            {loading ? 'Verifying...' : 'Verify'}
+          </Button>
+        </form>
+        <Button variant="ghost" onclick={() => step = 'email'} class="w-full">
+          Back
+        </Button>
+      </div>
+    {/if}
 
-  {#if step === 'otp'}
-    <div class="auth-form">
-      <p>Enter the 6-digit code sent to {email}</p>
-      <form onsubmit={(e) => { e.preventDefault(); verifyOTP(); }}>
-        <input
-          type="text"
-          bind:value={otp}
-          placeholder="000000"
-          maxlength="6"
-          pattern="[0-9]{6}"
-          required
-          disabled={loading}
-          class="otp-input"
-        />
-        <button type="submit" class="button primary" disabled={loading}>
-          {loading ? 'Verifying...' : 'Verify'}
-        </button>
-      </form>
-      <button class="button link" onclick={() => step = 'email'}>
-        Back
-      </button>
-    </div>
-  {/if}
-
-  {#if step === 'passkey'}
-    <div class="auth-form">
-      <h2>Add a Passkey</h2>
-      <p>Secure your account with a passkey for faster, passwordless sign-in.</p>
-      <button class="button primary" onclick={registerPasskey} disabled={loading}>
-        {loading ? 'Registering...' : 'Register Passkey'}
-      </button>
-      <button class="button link" onclick={skipPasskey}>
-        Skip for now
-      </button>
-    </div>
-  {/if}
+    {#if step === 'passkey'}
+      <div class="flex flex-col gap-4 text-center">
+        <div class="space-y-2">
+          <h2 class="text-xl font-semibold text-surface-50">Add a Passkey</h2>
+          <p class="text-surface-400">
+            Secure your account with a passkey for faster, passwordless sign-in.
+          </p>
+        </div>
+        <Button onclick={registerPasskey} disabled={loading} class="w-full">
+          {loading ? 'Registering...' : 'Register Passkey'}
+        </Button>
+        <Button variant="ghost" onclick={skipPasskey} class="w-full">
+          Skip for now
+        </Button>
+      </div>
+    {/if}
+  </Card>
 </div>
-
-<style>
-  .auth-container {
-    max-width: 400px;
-    margin: 4rem auto;
-    padding: 2rem;
-  }
-
-  h1 {
-    text-align: center;
-    margin-bottom: 2rem;
-  }
-
-  .auth-form {
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
-  }
-
-  form {
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
-  }
-
-  input {
-    padding: 1rem;
-    border: 1px solid #333;
-    border-radius: 8px;
-    background: #1a1a1a;
-    color: #fafafa;
-    font-size: 1rem;
-  }
-
-  input:focus {
-    outline: none;
-    border-color: #667eea;
-  }
-
-  .otp-input {
-    text-align: center;
-    font-size: 2rem;
-    letter-spacing: 0.5rem;
-    font-family: monospace;
-  }
-
-  .button {
-    padding: 1rem;
-    border: none;
-    border-radius: 8px;
-    font-size: 1rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.2s;
-  }
-
-  .button:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-
-  .button.primary {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    color: white;
-  }
-
-  .button.passkey {
-    background: #1a1a1a;
-    border: 1px solid #333;
-    color: #fafafa;
-  }
-
-  .button.google {
-    background: #1a1a1a;
-    border: 1px solid #333;
-    color: #fafafa;
-  }
-
-  .button.link {
-    background: transparent;
-    color: #888;
-    padding: 0.5rem;
-  }
-
-  .button.link:hover {
-    color: #fafafa;
-  }
-
-  .divider {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    color: #666;
-  }
-
-  .divider::before,
-  .divider::after {
-    content: '';
-    flex: 1;
-    height: 1px;
-    background: #333;
-  }
-
-  .error {
-    background: #ff4444;
-    color: white;
-    padding: 1rem;
-    border-radius: 8px;
-    margin-bottom: 1rem;
-  }
-</style>

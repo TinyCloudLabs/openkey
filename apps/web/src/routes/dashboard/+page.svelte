@@ -3,6 +3,8 @@
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
   import { onMount } from 'svelte';
+  import Button from '$lib/components/ui/button.svelte';
+  import Card from '$lib/components/ui/card.svelte';
 
   const session = authClient.useSession();
 
@@ -62,189 +64,67 @@
   }
 </script>
 
-<div class="dashboard">
-  <div class="header">
+<div class="mx-auto max-w-3xl px-4 py-8">
+  <header class="mb-8 flex items-start justify-between">
     <div>
-      <h1>Dashboard</h1>
+      <h1 class="text-3xl font-bold text-surface-50">Dashboard</h1>
       {#if $session.data}
-        <p class="email">{$session.data.user.email}</p>
+        <p class="mt-1 text-sm text-surface-400">{$session.data.user.email}</p>
       {/if}
     </div>
-    <button class="button secondary" onclick={signOut}>Sign Out</button>
-  </div>
+    <Button variant="secondary" onclick={signOut}>Sign Out</Button>
+  </header>
 
   {#if error}
-    <div class="error">{error}</div>
+    <div class="mb-6 rounded-lg border border-red-500/50 bg-red-500/10 p-4 text-red-400">
+      {error}
+    </div>
   {/if}
 
-  <div class="section">
-    <div class="section-header">
-      <h2>Your Keys</h2>
-      <button class="button primary" onclick={generateKey} disabled={generating}>
+  <Card>
+    <div class="mb-6 flex items-center justify-between">
+      <h2 class="text-xl font-semibold text-surface-50">Your Keys</h2>
+      <Button onclick={generateKey} disabled={generating}>
         {generating ? 'Generating...' : '+ Generate Key'}
-      </button>
+      </Button>
     </div>
 
     {#if loading}
-      <div class="loading">Loading keys...</div>
+      <div class="py-12 text-center text-surface-400">
+        <p>Loading keys...</p>
+      </div>
     {:else if keys.length === 0}
-      <div class="empty">
+      <div class="py-12 text-center text-surface-400">
         <p>No keys yet. Generate your first Ethereum key.</p>
       </div>
     {:else}
-      <div class="keys-list">
+      <div class="flex flex-col gap-3">
         {#each keys as key}
-          <div class="key-card">
-            <div class="key-info">
-              <div class="key-label">{key.label || `Key ${key.keyIndex}`}</div>
-              <div class="key-address">
-                <code>{formatAddress(key.address)}</code>
-                <button class="copy-btn" onclick={() => copyAddress(key.address)} title="Copy address">
+          <div class="flex items-center justify-between rounded-lg border border-surface-800 bg-surface-950 p-4">
+            <div>
+              <div class="font-semibold text-surface-50">
+                {key.label || `Key ${key.keyIndex}`}
+              </div>
+              <div class="mt-1 flex items-center gap-2">
+                <code class="font-mono text-sm text-surface-400">{formatAddress(key.address)}</code>
+                <button
+                  class="rounded border border-surface-700 px-2 py-0.5 text-xs text-surface-400 transition-colors hover:border-surface-500 hover:text-surface-200"
+                  onclick={() => copyAddress(key.address)}
+                  title="Copy address"
+                >
                   Copy
                 </button>
               </div>
             </div>
-            <a href="/dashboard/keys/{key.id}" class="button secondary small">
+            <a
+              href="/dashboard/keys/{key.id}"
+              class="inline-flex h-9 items-center justify-center rounded-lg border border-surface-700 bg-surface-800 px-3 text-sm font-medium text-surface-50 transition-colors hover:bg-surface-700"
+            >
               Manage
             </a>
           </div>
         {/each}
       </div>
     {/if}
-  </div>
+  </Card>
 </div>
-
-<style>
-  .dashboard {
-    max-width: 800px;
-    margin: 0 auto;
-  }
-
-  .header {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    margin-bottom: 2rem;
-  }
-
-  h1 {
-    margin: 0 0 0.5rem 0;
-  }
-
-  .email {
-    color: #888;
-    margin: 0;
-  }
-
-  .section {
-    background: #1a1a1a;
-    border: 1px solid #333;
-    border-radius: 12px;
-    padding: 1.5rem;
-  }
-
-  .section-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 1.5rem;
-  }
-
-  .section-header h2 {
-    margin: 0;
-  }
-
-  .keys-list {
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
-  }
-
-  .key-card {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 1rem;
-    background: #0a0a0a;
-    border: 1px solid #333;
-    border-radius: 8px;
-  }
-
-  .key-label {
-    font-weight: 600;
-    margin-bottom: 0.25rem;
-  }
-
-  .key-address {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-  }
-
-  .key-address code {
-    font-family: 'SF Mono', Monaco, monospace;
-    color: #888;
-    font-size: 0.875rem;
-  }
-
-  .copy-btn {
-    background: transparent;
-    border: 1px solid #333;
-    color: #888;
-    padding: 0.25rem 0.5rem;
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 0.75rem;
-  }
-
-  .copy-btn:hover {
-    border-color: #666;
-    color: #fafafa;
-  }
-
-  .button {
-    padding: 0.75rem 1.5rem;
-    border: none;
-    border-radius: 8px;
-    font-size: 0.875rem;
-    font-weight: 600;
-    cursor: pointer;
-    text-decoration: none;
-    transition: all 0.2s;
-  }
-
-  .button.small {
-    padding: 0.5rem 1rem;
-  }
-
-  .button:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-
-  .button.primary {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    color: white;
-  }
-
-  .button.secondary {
-    background: transparent;
-    border: 1px solid #333;
-    color: #fafafa;
-  }
-
-  .loading, .empty {
-    text-align: center;
-    padding: 2rem;
-    color: #888;
-  }
-
-  .error {
-    background: rgba(255, 68, 68, 0.1);
-    border: 1px solid #ff4444;
-    color: #ff4444;
-    padding: 1rem;
-    border-radius: 8px;
-    margin-bottom: 1rem;
-  }
-</style>

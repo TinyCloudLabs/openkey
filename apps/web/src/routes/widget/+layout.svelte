@@ -16,22 +16,6 @@
   });
 </script>
 
-<div class="widget">
+<div class="min-h-screen flex flex-col p-6">
   {@render children()}
 </div>
-
-<style>
-  :global(body) {
-    margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    background: #0a0a0a;
-    color: #fafafa;
-  }
-
-  .widget {
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-    padding: 1.5rem;
-  }
-</style>

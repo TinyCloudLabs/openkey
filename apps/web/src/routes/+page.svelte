@@ -1,115 +1,61 @@
 <script lang="ts">
   import { authClient } from '$lib/auth-client';
+  import Card from '$lib/components/ui/card.svelte';
 
   const session = authClient.useSession();
 </script>
 
-<div class="hero">
-  <h1>OpenKey</h1>
-  <p class="tagline">Passkey-first authentication for Ethereum keys</p>
+<div class="min-h-screen bg-surface-950 text-surface-50">
+  <div class="mx-auto max-w-6xl px-6 py-24 text-center">
+    <!-- Hero Section -->
+    <h1 class="mb-4 text-6xl font-bold tracking-tight bg-gradient-to-br from-primary-600 to-primary-800 bg-clip-text text-transparent">
+      OpenKey
+    </h1>
+    <p class="mb-16 text-xl text-surface-400">
+      Passkey-first authentication for Ethereum keys
+    </p>
 
-  <div class="features">
-    <div class="feature">
-      <h3>Passkey Security</h3>
-      <p>No passwords to remember. Your biometrics are your key.</p>
-    </div>
-    <div class="feature">
-      <h3>TEE Protected</h3>
-      <p>Private keys secured in a Trusted Execution Environment.</p>
-    </div>
-    <div class="feature">
-      <h3>Easy Integration</h3>
-      <p>Simple SDK for any web application.</p>
-    </div>
-  </div>
+    <!-- Feature Cards -->
+    <div class="mb-16 grid gap-8 md:grid-cols-3">
+      <Card class="text-left">
+        <h3 class="mb-2 text-lg font-semibold text-surface-50">Passkey Security</h3>
+        <p class="text-surface-400">No passwords to remember. Your biometrics are your key.</p>
+      </Card>
 
-  <div class="cta">
-    {#if $session.data}
-      <a href="/dashboard" class="button primary">Go to Dashboard</a>
-    {:else}
-      <a href="/auth/login" class="button primary">Get Started</a>
-      <a href="/auth/login" class="button secondary">Sign In</a>
-    {/if}
+      <Card class="text-left">
+        <h3 class="mb-2 text-lg font-semibold text-surface-50">TEE Protected</h3>
+        <p class="text-surface-400">Private keys secured in a Trusted Execution Environment.</p>
+      </Card>
+
+      <Card class="text-left">
+        <h3 class="mb-2 text-lg font-semibold text-surface-50">Easy Integration</h3>
+        <p class="text-surface-400">Simple SDK for any web application.</p>
+      </Card>
+    </div>
+
+    <!-- CTA Buttons -->
+    <div class="flex justify-center gap-4">
+      {#if $session.data}
+        <a
+          href="/dashboard"
+          class="inline-flex items-center justify-center rounded-lg bg-gradient-to-r from-primary-600 to-primary-800 px-8 py-3 text-lg font-semibold text-white shadow-lg transition-all hover:-translate-y-0.5 hover:shadow-primary-600/40"
+        >
+          Go to Dashboard
+        </a>
+      {:else}
+        <a
+          href="/auth/login"
+          class="inline-flex items-center justify-center rounded-lg bg-gradient-to-r from-primary-600 to-primary-800 px-8 py-3 text-lg font-semibold text-white shadow-lg transition-all hover:-translate-y-0.5 hover:shadow-primary-600/40"
+        >
+          Get Started
+        </a>
+        <a
+          href="/auth/login"
+          class="inline-flex items-center justify-center rounded-lg border border-surface-700 bg-transparent px-8 py-3 text-lg font-semibold text-surface-50 transition-colors hover:border-surface-500"
+        >
+          Sign In
+        </a>
+      {/if}
+    </div>
   </div>
 </div>
-
-<style>
-  .hero {
-    text-align: center;
-    padding: 4rem 0;
-  }
-
-  h1 {
-    font-size: 4rem;
-    margin-bottom: 0.5rem;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
-  }
-
-  .tagline {
-    font-size: 1.5rem;
-    color: #888;
-    margin-bottom: 4rem;
-  }
-
-  .features {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-    gap: 2rem;
-    margin-bottom: 4rem;
-  }
-
-  .feature {
-    padding: 2rem;
-    border: 1px solid #333;
-    border-radius: 12px;
-    text-align: left;
-  }
-
-  .feature h3 {
-    margin-top: 0;
-    color: #fafafa;
-  }
-
-  .feature p {
-    color: #888;
-    margin-bottom: 0;
-  }
-
-  .cta {
-    display: flex;
-    gap: 1rem;
-    justify-content: center;
-  }
-
-  .button {
-    padding: 1rem 2rem;
-    border-radius: 8px;
-    font-size: 1rem;
-    font-weight: 600;
-    text-decoration: none;
-    transition: all 0.2s;
-  }
-
-  .button.primary {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    color: white;
-  }
-
-  .button.primary:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
-  }
-
-  .button.secondary {
-    background: transparent;
-    border: 1px solid #333;
-    color: #fafafa;
-  }
-
-  .button.secondary:hover {
-    border-color: #666;
-  }
-</style>
