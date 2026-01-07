@@ -1,0 +1,3 @@
+# Local state file (not shared)
+state.local.log
+*.local.log
