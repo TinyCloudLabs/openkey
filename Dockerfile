@@ -1,15 +1,20 @@
 # OpenKey API Dockerfile
-FROM oven/bun:1.1-alpine AS base
+FROM oven/bun:1.2-alpine AS base
 WORKDIR /app
 
 # Install dependencies
 FROM base AS deps
-COPY package.json bun.lockb ./
+# Install build tools for native modules (better-sqlite3)
+RUN apk add --no-cache python3 make g++
+COPY package.json bun.lock ./
 COPY apps/api/package.json ./apps/api/
 COPY packages/tee/package.json ./packages/tee/
 COPY packages/db/package.json ./packages/db/
+COPY packages/db/prisma ./packages/db/prisma
 COPY packages/types/package.json ./packages/types/
-RUN bun install --frozen-lockfile
+RUN bun install --ignore-scripts
+# Generate Prisma client (skipped by --ignore-scripts)
+RUN bunx prisma generate --schema=./packages/db/prisma/schema.prisma
 
 # Build packages
 FROM deps AS builder
