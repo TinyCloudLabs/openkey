@@ -20,9 +20,8 @@ app.use('*', cors({
 app.get('/health', (c) => c.json({ status: 'ok', tee: process.env.TEE_MODE || 'development' }));
 
 // better-auth routes - mount at /api/auth
-app.on(['POST', 'GET'], '/api/auth/**', async (c) => {
-  const response = await auth.handler(c.req.raw);
-  return response;
+app.on(['POST', 'GET'], '/api/auth/*', (c) => {
+  return auth.handler(c.req.raw);
 });
 
 // Key management routes

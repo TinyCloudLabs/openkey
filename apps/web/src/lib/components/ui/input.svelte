@@ -4,9 +4,10 @@
 
   interface Props extends HTMLInputAttributes {
     class?: string;
+    value?: string;
   }
 
-  let { class: className, ...restProps }: Props = $props();
+  let { class: className, value = $bindable(''), ...restProps }: Props = $props();
 </script>
 
 <input
@@ -17,5 +18,6 @@
     'disabled:cursor-not-allowed disabled:opacity-50',
     className
   )}
+  bind:value
   {...restProps}
 />
