@@ -20,6 +20,8 @@ const rpID = process.env.WEBAUTHN_RP_ID || (isDev ? 'localhost' : 'openkey.so');
 const origin = process.env.WEBAUTHN_ORIGIN || (isDev ? 'http://localhost:5173' : 'https://openkey.so');
 
 export const auth = betterAuth({
+  basePath: '/api/auth',
+
   database: prismaAdapter(prisma, {
     provider: 'postgresql',
   }),

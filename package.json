@@ -11,6 +11,7 @@
     "typecheck": "turbo typecheck",
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",
+    "docker:restart": "bun docker:down && bun docker:up",
     "docker:logs": "docker compose logs -f",
     "db:push": "bunx prisma db push --schema=./packages/db/prisma/schema.prisma",
     "db:generate": "bunx prisma generate --schema=./packages/db/prisma/schema.prisma",
