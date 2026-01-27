@@ -2,7 +2,6 @@
   import { goto } from '$app/navigation';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
-  import { onMount } from 'svelte';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
 
@@ -13,15 +12,15 @@
   let generating = $state(false);
   let error = $state('');
 
-  // Redirect if not logged in
+  // Redirect if not logged in, load keys when session is ready
   $effect(() => {
-    if (!$session.isPending && !$session.data) {
-      goto('/auth/login');
+    if (!$session.isPending) {
+      if (!$session.data) {
+        goto('/auth/login');
+      } else if (keys.length === 0 && loading) {
+        loadKeys();
+      }
     }
-  });
-
-  onMount(async () => {
-    await loadKeys();
   });
 
   async function loadKeys() {
@@ -72,7 +71,15 @@
         <p class="mt-1 text-sm text-surface-400">{$session.data.user.email}</p>
       {/if}
     </div>
-    <Button variant="secondary" onclick={signOut}>Sign Out</Button>
+    <div class="flex items-center gap-3">
+      <a
+        href="/dashboard/settings"
+        class="inline-flex h-9 items-center justify-center rounded-lg border border-surface-700 bg-surface-800 px-3 text-sm font-medium text-surface-50 transition-colors hover:bg-surface-700"
+      >
+        Settings
+      </a>
+      <Button variant="secondary" onclick={signOut}>Sign Out</Button>
+    </div>
   </header>
 
   {#if error}
