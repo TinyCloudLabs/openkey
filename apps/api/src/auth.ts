@@ -3,7 +3,8 @@
 import { betterAuth } from 'better-auth';
 import { prismaAdapter } from 'better-auth/adapters/prisma';
 import { passkey } from '@better-auth/passkey';
-import { emailOTP } from 'better-auth/plugins';
+import { emailOTP, jwt } from 'better-auth/plugins';
+import { oauthProvider } from '@better-auth/oauth-provider';
 import { Resend } from 'resend';
 import { PrismaClient } from '@prisma/client';
 
@@ -70,6 +71,24 @@ export const auth = betterAuth({
       otpLength: 6,
       expiresIn: 300, // 5 minutes
     }),
+
+    // JWT plugin (required for OAuth provider)
+    jwt(),
+
+    // OAuth 2.1 Provider - enables third-party apps to authenticate users
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    oauthProvider({
+      loginPage: '/auth/login',
+      consentPage: '/oauth/consent',
+      allowDynamicClientRegistration: false, // Pre-registered clients only
+      scopes: ['openid'], // Minimal identity verification
+      cachedTrustedClients: new Set(), // All apps require consent
+      accessTokenExpiresIn: 60 * 60, // 1 hour in seconds
+      refreshTokenExpiresIn: 60 * 60 * 24 * 7, // 7 days in seconds
+      idTokenExpiresIn: 60 * 60, // 1 hour in seconds
+      storeClientSecret: 'hashed',
+      storeTokens: 'hashed',
+    }) as any,
   ],
 
   // Social providers (Google as alternative to email OTP for registration)

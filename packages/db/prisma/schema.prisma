@@ -18,11 +18,16 @@ model User {
   updatedAt     DateTime  @updatedAt
 
   // Relations
-  passkeys     Passkey[]
-  ethereumKeys EthereumKey[]
-  sessions     Session[]
-  accounts     Account[]
-  verification Verification[]
+  passkeys           Passkey[]
+  ethereumKeys       EthereumKey[]
+  sessions           Session[]
+  accounts           Account[]
+  verification       Verification[]
+  // OAuth provider relations
+  oauthClients       OAuthClient[]
+  oauthAccessTokens  OAuthAccessToken[]
+  oauthRefreshTokens OAuthRefreshToken[]
+  oauthConsents      OAuthConsent[]
 
   @@map("user")
 }
@@ -114,4 +119,97 @@ model EthereumKey {
 
   @@index([userId])
   @@map("ethereum_keys")
+}
+
+// ======= OAuth 2.1 Provider tables =======
+
+// Registered OAuth clients (third-party applications)
+model OAuthClient {
+  id                      String   @id
+  clientId                String   @unique
+  clientSecret            String? // Hashed, null for public clients
+  name                    String
+  uri                     String? // Application website
+  icon                    String? // Logo URL
+  redirectUris            String[] // Array of allowed redirect URIs
+  scopes                  String[] // Allowed scopes for this client
+  disabled                Boolean  @default(false)
+  skipConsent             Boolean  @default(false) // Always false for OpenKey
+  enableEndSession        Boolean  @default(false)
+  tokenEndpointAuthMethod String? // "client_secret_basic", "client_secret_post", "none"
+  grantTypes              String[] @default(["authorization_code", "refresh_token"])
+  responseTypes           String[] @default(["code"])
+  type                    String? // "web", "native", "spa"
+  public                  Boolean  @default(false)
+  contacts                String[]
+  tos                     String? // Terms of service URL
+  policy                  String? // Privacy policy URL
+  softwareId              String?
+  softwareVersion         String?
+  softwareStatement       String?
+  metadata                Json?
+  userId                  String? // Owner of the client (admin who registered it)
+  referenceId             String?
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@map("oauth_client")
+}
+
+// OAuth access tokens
+model OAuthAccessToken {
+  id          String   @id
+  token       String   @unique
+  clientId    String
+  userId      String
+  sessionId   String?
+  refreshId   String? // Associated refresh token
+  referenceId String?
+  scopes      String[]
+  createdAt   DateTime @default(now())
+  expiresAt   DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@index([userId])
+  @@map("oauth_access_token")
+}
+
+// OAuth refresh tokens
+model OAuthRefreshToken {
+  id          String   @id
+  token       String   @unique
+  clientId    String
+  userId      String
+  sessionId   String?
+  referenceId String?
+  scopes      String[]
+  revoked     Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  expiresAt   DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@index([userId])
+  @@map("oauth_refresh_token")
+}
+
+// User consent records
+model OAuthConsent {
+  id          String   @id
+  userId      String
+  clientId    String
+  referenceId String?
+  scopes      String // Comma-separated scopes
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, clientId])
+  @@map("oauth_consent")
 }

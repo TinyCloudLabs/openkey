@@ -39,8 +39,38 @@ export interface AuthResult {
 }
 
 export interface OpenKeyError {
-  code: 'USER_CANCELLED' | 'POPUP_BLOCKED' | 'TIMEOUT' | 'NO_KEY' | 'UNAUTHORIZED' | 'UNKNOWN';
+  code: 'USER_CANCELLED' | 'POPUP_BLOCKED' | 'TIMEOUT' | 'NO_KEY' | 'UNAUTHORIZED' | 'UNKNOWN' | 'STATE_MISMATCH';
   message: string;
+}
+
+// ======= OAuth 2.1 Types =======
+
+/** OAuth configuration for third-party apps */
+export interface OAuthConfig {
+  /** OAuth client_id (registered with OpenKey) */
+  clientId: string;
+  /** Redirect URI (must match registered URI) */
+  redirectUri: string;
+  /** State parameter for CSRF protection (auto-generated if not provided) */
+  state?: string;
+}
+
+/** Result from OAuth authorization */
+export interface OAuthResult {
+  /** Authorization code (exchange for tokens) */
+  code: string;
+  /** State parameter (verify matches request) */
+  state: string;
+}
+
+/** Response from token exchange */
+export interface OAuthTokenResponse {
+  access_token: string;
+  token_type: 'Bearer';
+  expires_in: number;
+  id_token: string;
+  scope: string;
+  refresh_token?: string;
 }
 
 type MessageType =
@@ -60,6 +90,33 @@ const DEFAULT_HOST = 'https://openkey.so';
 const POPUP_WIDTH = 400;
 const POPUP_HEIGHT = 600;
 const DEFAULT_TIMEOUT = 5 * 60 * 1000; // 5 minutes
+const OAUTH_STORAGE_KEY = 'openkey_oauth';
+
+// ======= PKCE Utilities =======
+
+function base64UrlEncode(buffer: Uint8Array): string {
+  const base64 = btoa(String.fromCharCode(...buffer));
+  return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+
+async function generateCodeVerifier(): Promise<string> {
+  const array = new Uint8Array(32);
+  crypto.getRandomValues(array);
+  return base64UrlEncode(array);
+}
+
+async function generateCodeChallenge(verifier: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(verifier);
+  const digest = await crypto.subtle.digest('SHA-256', data);
+  return base64UrlEncode(new Uint8Array(digest));
+}
+
+function generateState(): string {
+  const array = new Uint8Array(16);
+  crypto.getRandomValues(array);
+  return base64UrlEncode(array);
+}
 
 export class OpenKey {
   private host: string;
@@ -121,6 +178,236 @@ export class OpenKey {
     } catch {
       return false;
     }
+  }
+
+  // ======= OAuth 2.1 Provider Methods =======
+
+  /**
+   * OAuth 2.1 methods for third-party app authentication
+   * Use this when your app has registered OAuth client credentials with OpenKey
+   */
+  oauth = {
+    /**
+     * Start OAuth authorization flow
+     * Opens popup/redirect to OpenKey authorization endpoint
+     * @returns Promise that resolves with authorization code after user consent
+     */
+    connect: async (config: OAuthConfig): Promise<OAuthResult> => {
+      // Generate PKCE values
+      const verifier = await generateCodeVerifier();
+      const challenge = await generateCodeChallenge(verifier);
+      const state = config.state || generateState();
+
+      // Store for later token exchange
+      sessionStorage.setItem(
+        OAUTH_STORAGE_KEY,
+        JSON.stringify({ verifier, state })
+      );
+
+      // Build authorization URL
+      const authUrl = new URL(`${this.host}/api/auth/oauth2/authorize`);
+      authUrl.searchParams.set('client_id', config.clientId);
+      authUrl.searchParams.set('redirect_uri', config.redirectUri);
+      authUrl.searchParams.set('response_type', 'code');
+      authUrl.searchParams.set('scope', 'openid');
+      authUrl.searchParams.set('state', state);
+      authUrl.searchParams.set('code_challenge', challenge);
+      authUrl.searchParams.set('code_challenge_method', 'S256');
+
+      return this.openOAuthFlow(authUrl.toString(), state, config.redirectUri);
+    },
+
+    /**
+     * Exchange authorization code for tokens
+     * Call this after receiving the callback with authorization code
+     * @param code - Authorization code from callback URL
+     * @param config - Same config used for connect()
+     * @returns Promise that resolves with access_token, id_token, etc.
+     */
+    exchangeCode: async (
+      code: string,
+      config: OAuthConfig
+    ): Promise<OAuthTokenResponse> => {
+      const stored = sessionStorage.getItem(OAUTH_STORAGE_KEY);
+      if (!stored) {
+        throw new Error('No PKCE verifier found. Start a new OAuth flow.');
+      }
+
+      const { verifier } = JSON.parse(stored);
+
+      const response = await fetch(`${this.host}/api/auth/oauth2/token`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code,
+          redirect_uri: config.redirectUri,
+          client_id: config.clientId,
+          code_verifier: verifier,
+        }),
+      });
+
+      // Clear stored verifier
+      sessionStorage.removeItem(OAUTH_STORAGE_KEY);
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error_description || 'Token exchange failed');
+      }
+
+      return response.json();
+    },
+
+    /**
+     * Verify state parameter from callback
+     * Call this before exchangeCode to prevent CSRF attacks
+     * @param receivedState - State parameter from callback URL
+     * @returns true if state matches, false otherwise
+     */
+    verifyState: (receivedState: string): boolean => {
+      const stored = sessionStorage.getItem(OAUTH_STORAGE_KEY);
+      if (!stored) return false;
+      const { state } = JSON.parse(stored);
+      return state === receivedState;
+    },
+
+    /**
+     * Parse authorization response from callback URL
+     * @param url - Callback URL (defaults to current window.location.href)
+     * @returns Parsed code and state, or error
+     */
+    parseCallback: (
+      url?: string
+    ): { code: string; state: string } | { error: string; errorDescription?: string } => {
+      const urlObj = new URL(url || window.location.href);
+      const error = urlObj.searchParams.get('error');
+
+      if (error) {
+        return {
+          error,
+          errorDescription: urlObj.searchParams.get('error_description') || undefined,
+        };
+      }
+
+      const code = urlObj.searchParams.get('code');
+      const state = urlObj.searchParams.get('state');
+
+      if (!code || !state) {
+        return { error: 'missing_params', errorDescription: 'Missing code or state parameter' };
+      }
+
+      return { code, state };
+    },
+  };
+
+  private openOAuthFlow(
+    url: string,
+    state: string,
+    redirectUri: string
+  ): Promise<OAuthResult> {
+    return new Promise((resolve, reject) => {
+      if (this.usePopup) {
+        this.openOAuthPopup(url, state, redirectUri, resolve, reject);
+      } else {
+        // Full page redirect - won't resolve, page navigates away
+        window.location.href = url;
+      }
+    });
+  }
+
+  private openOAuthPopup(
+    url: string,
+    state: string,
+    redirectUri: string,
+    resolve: (value: OAuthResult) => void,
+    reject: (error: OpenKeyError) => void
+  ) {
+    const left = window.screenX + (window.outerWidth - POPUP_WIDTH) / 2;
+    const top = window.screenY + (window.outerHeight - POPUP_HEIGHT) / 2;
+
+    this.popup = window.open(
+      url,
+      'openkey-oauth',
+      `width=${POPUP_WIDTH},height=${POPUP_HEIGHT},left=${left},top=${top},popup=true`
+    );
+
+    if (!this.popup) {
+      reject({
+        code: 'POPUP_BLOCKED',
+        message: 'Popup was blocked. Please allow popups or use redirect mode.',
+      });
+      return;
+    }
+
+    const redirectHost = new URL(redirectUri).origin;
+
+    // Poll for redirect back with code
+    const pollInterval = setInterval(() => {
+      try {
+        if (this.popup?.closed) {
+          clearInterval(pollInterval);
+          clearTimeout(timeout);
+          reject({
+            code: 'USER_CANCELLED',
+            message: 'User closed the popup',
+          });
+          return;
+        }
+
+        // Check if redirected to callback URL
+        const popupUrl = this.popup?.location?.href;
+        if (popupUrl && popupUrl.startsWith(redirectHost)) {
+          clearInterval(pollInterval);
+          clearTimeout(timeout);
+
+          const urlObj = new URL(popupUrl);
+          const code = urlObj.searchParams.get('code');
+          const returnedState = urlObj.searchParams.get('state');
+          const error = urlObj.searchParams.get('error');
+
+          this.popup?.close();
+
+          if (error) {
+            reject({
+              code: 'UNAUTHORIZED',
+              message: urlObj.searchParams.get('error_description') || error,
+            });
+            return;
+          }
+
+          if (returnedState !== state) {
+            reject({
+              code: 'STATE_MISMATCH',
+              message: 'State mismatch - possible CSRF attack',
+            });
+            return;
+          }
+
+          if (code) {
+            resolve({ code, state: returnedState });
+          } else {
+            reject({
+              code: 'UNAUTHORIZED',
+              message: 'Authorization failed - no code returned',
+            });
+          }
+        }
+      } catch {
+        // Cross-origin - popup still on OpenKey domain, continue polling
+      }
+    }, 100);
+
+    // Timeout
+    const timeout = setTimeout(() => {
+      clearInterval(pollInterval);
+      this.popup?.close();
+      reject({
+        code: 'TIMEOUT',
+        message: 'OAuth flow timed out',
+      });
+    }, DEFAULT_TIMEOUT);
   }
 
   private async openFlow<T>(action: string, message: object): Promise<T> {
