@@ -1,6 +1,6 @@
 services:
   api:
-    image: skgbafa/openkey-api:v1.0.1
+    image: skgbafa/openkey-api:v1.0.3
     ports:
       - "3001:3001"
     environment:
