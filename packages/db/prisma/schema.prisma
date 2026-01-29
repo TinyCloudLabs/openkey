@@ -24,10 +24,10 @@ model User {
   accounts           Account[]
   verification       Verification[]
   // OAuth provider relations
-  oauthClients       OAuthClient[]
-  oauthAccessTokens  OAuthAccessToken[]
-  oauthRefreshTokens OAuthRefreshToken[]
-  oauthConsents      OAuthConsent[]
+  oauthClients       OauthClient[]
+  oauthAccessTokens  OauthAccessToken[]
+  oauthRefreshTokens OauthRefreshToken[]
+  oauthConsents      OauthConsent[]
 
   @@map("user")
 }
@@ -124,7 +124,7 @@ model EthereumKey {
 // ======= OAuth 2.1 Provider tables =======
 
 // Registered OAuth clients (third-party applications)
-model OAuthClient {
+model OauthClient {
   id                      String   @id
   clientId                String   @unique
   clientSecret            String? // Hashed, null for public clients
@@ -159,7 +159,7 @@ model OAuthClient {
 }
 
 // OAuth access tokens
-model OAuthAccessToken {
+model OauthAccessToken {
   id          String   @id
   token       String   @unique
   clientId    String
@@ -179,7 +179,7 @@ model OAuthAccessToken {
 }
 
 // OAuth refresh tokens
-model OAuthRefreshToken {
+model OauthRefreshToken {
   id          String   @id
   token       String   @unique
   clientId    String
@@ -199,7 +199,7 @@ model OAuthRefreshToken {
 }
 
 // User consent records
-model OAuthConsent {
+model OauthConsent {
   id          String   @id
   userId      String
   clientId    String

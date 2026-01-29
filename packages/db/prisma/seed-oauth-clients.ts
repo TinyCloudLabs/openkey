@@ -131,16 +131,14 @@ async function main() {
   }
 
   if (command === 'register') {
-    // Example: Register Remember app
-    // Modify this section to register your own clients
+    // Register OpenKey Demo app
     await registerClient({
-      name: 'Remember',
+      name: 'OpenKey Demo',
       redirectUris: [
-        'https://remember.app/callback',
-        'http://localhost:3000/callback', // Local development
+        'http://localhost:5174/callback', // Local development
       ],
       type: 'web',
-      uri: 'https://remember.app',
+      uri: 'http://localhost:5174',
     });
     return;
   }

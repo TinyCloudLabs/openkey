@@ -22,6 +22,7 @@ const origin = process.env.WEBAUTHN_ORIGIN || (isDev ? 'http://localhost:5173' :
 
 export const auth = betterAuth({
   basePath: '/api/auth',
+  disabledPaths: ['/token'], // Avoid conflicts with OAuth token endpoint
 
   database: prismaAdapter(prisma, {
     provider: 'postgresql',
@@ -36,6 +37,7 @@ export const auth = betterAuth({
   session: {
     expiresIn: 60 * 60 * 24 * 7, // 7 days
     updateAge: 60 * 60 * 24, // Update session every 24 hours
+    storeSessionInDatabase: true, // Required for OAuth provider
   },
 
   plugins: [
@@ -78,16 +80,14 @@ export const auth = betterAuth({
     // OAuth 2.1 Provider - enables third-party apps to authenticate users
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     oauthProvider({
-      loginPage: '/auth/login',
-      consentPage: '/oauth/consent',
+      loginPage: isDev ? 'http://localhost:5173/auth/login' : 'https://openkey.so/auth/login',
+      consentPage: isDev ? 'http://localhost:5173/oauth/consent' : 'https://openkey.so/oauth/consent',
       allowDynamicClientRegistration: false, // Pre-registered clients only
       scopes: ['openid'], // Minimal identity verification
-      cachedTrustedClients: new Set(), // All apps require consent
       accessTokenExpiresIn: 60 * 60, // 1 hour in seconds
       refreshTokenExpiresIn: 60 * 60 * 24 * 7, // 7 days in seconds
       idTokenExpiresIn: 60 * 60, // 1 hour in seconds
-      storeClientSecret: 'hashed',
-      storeTokens: 'hashed',
+      disableJwtPlugin: true, // Workaround for ctx.getPlugin issue
     }) as any,
   ],
 

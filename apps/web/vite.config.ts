@@ -13,4 +13,11 @@ export default defineConfig({
       },
     },
   },
+  optimizeDeps: {
+    include: ['@better-auth/oauth-provider', '@better-auth/passkey', 'better-auth'],
+  },
+  ssr: {
+    // Don't externalize better-auth packages in SSR - let Vite handle resolution
+    noExternal: ['@better-auth/oauth-provider', '@better-auth/passkey', '@better-auth/core', 'better-auth'],
+  },
 });
