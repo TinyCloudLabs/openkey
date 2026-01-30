@@ -87,7 +87,7 @@ openkey/
 
 ### How Keys Are Secured
 
-OpenKey uses Phala's dstack to run inside a TEE (Trusted Execution Environment):
+OpenKey uses [dstack](https://dstack.org/) to run inside a TEE (Trusted Execution Environment):
 
 1. **Key generation**: Random private key created inside TEE
 2. **Sealing**: Key encrypted with TEE-derived sealing key (AES-256-GCM)
