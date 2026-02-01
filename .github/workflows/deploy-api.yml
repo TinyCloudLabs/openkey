@@ -49,4 +49,4 @@ jobs:
       - name: Deploy to Phala Cloud
         env:
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
-        run: phala deploy -c docker-compose.prod.yml -n openkey-api
+        run: phala deploy --cvm-id openkey-api -c docker-compose.prod.yml --wait
