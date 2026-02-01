@@ -62,4 +62,21 @@ jobs:
       - name: Deploy to Phala Cloud
         env:
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
-        run: phala deploy --cvm-id ${{ steps.cvm.outputs.app_id }} -c docker-compose.prod.yml --wait
+        run: phala deploy --cvm-id ${{ steps.cvm.outputs.app_id }} -c docker-compose.prod.yml
+
+      - name: Wait for deployment
+        env:
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+        run: |
+          echo "Waiting for CVM to be ready..."
+          for i in {1..30}; do
+            STATUS=$(phala cvms list --json | jq -r '.items[] | select(.cvmName == "openkey-api") | .status')
+            echo "Attempt $i: Status = $STATUS"
+            if [ "$STATUS" = "running" ]; then
+              echo "CVM is running!"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Timeout waiting for CVM"
+          exit 1
