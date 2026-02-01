@@ -46,7 +46,20 @@ jobs:
       - name: Install Phala CLI
         run: npm install -g phala
 
+      - name: Get CVM ID by name
+        id: cvm
+        env:
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+        run: |
+          CVM_APP_ID=$(phala cvms list --json | jq -r '.items[] | select(.cvmName == "openkey-api") | .appId')
+          if [ -z "$CVM_APP_ID" ]; then
+            echo "Error: CVM 'openkey-api' not found"
+            exit 1
+          fi
+          echo "app_id=app_${CVM_APP_ID}" >> $GITHUB_OUTPUT
+          echo "Found CVM: app_${CVM_APP_ID}"
+
       - name: Deploy to Phala Cloud
         env:
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
-        run: phala deploy --cvm-id openkey-api -c docker-compose.prod.yml --wait
+        run: phala deploy --cvm-id ${{ steps.cvm.outputs.app_id }} -c docker-compose.prod.yml --wait
