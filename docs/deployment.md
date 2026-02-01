@@ -8,30 +8,65 @@ OpenKey is deployed as two services:
 
 The API must run inside a TEE to secure private keys. Phala dstack provides AMD SEV-SNP enclaves with the `@phala/dstack-sdk`.
 
-### Prerequisites
+### CI/CD (Recommended)
 
-- Docker image of the API
-- Phala dstack account
+The API deploys automatically via GitHub Actions when changes are pushed to `main`.
 
-### Environment Variables
+#### Required GitHub Secrets
 
-```env
-DATABASE_URL="postgresql://..."
-BETTER_AUTH_SECRET="..."
-TEE_MODE="production"
-WEBAUTHN_RP_ID="openkey.so"
-```
+Set these in your repo's **Settings > Secrets and variables > Actions**:
 
-### Deploy
+| Secret | Description |
+|--------|-------------|
+| `DOCKER_REGISTRY_USERNAME` | Docker Hub username (e.g., `skgbafa`) |
+| `DOCKER_REGISTRY_PASSWORD` | Docker Hub [access token](https://docs.docker.com/docker-hub/access-tokens/) |
+| `PHALA_CLOUD_API_KEY` | From [Phala Cloud Dashboard](https://cloud.phala.network/dashboard) > Avatar > API Tokens |
+
+#### Required Phala Environment Variables
+
+Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
+
+| Variable | Description |
+|----------|-------------|
+| `DATABASE_URL` | PostgreSQL connection string |
+| `BETTER_AUTH_SECRET` | 32+ character random secret for session encryption |
+| `BETTER_AUTH_URL` | `https://api.openkey.so` |
+| `WEBAUTHN_RP_ID` | `openkey.so` |
+| `WEBAUTHN_ORIGIN` | `https://openkey.so` |
+| `GOOGLE_CLIENT_ID` | Google OAuth client ID |
+| `GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
+| `TEE_MODE` | `production` |
+| `RESEND_API_KEY` | Resend API key for emails |
+| `API_PORT` | `3001` |
+| `CORS_ORIGIN` | `https://openkey.so` |
+| `CLOUDFLARE_API_TOKEN` | For SSL certificate management |
+| `DSTACK_GATEWAY_DOMAIN` | Phala gateway domain |
+| `CERTBOT_EMAIL` | Email for Let's Encrypt |
+
+#### Trigger Conditions
+
+Deployments trigger on pushes to `main` that modify:
+- `apps/api/**`
+- `packages/**`
+- `Dockerfile`
+- `docker-compose.prod.yml`
+
+Or manually via **Actions > Deploy API to Phala Cloud > Run workflow**.
+
+### Manual Deploy
 
 1. Build the Docker image:
    ```bash
-   docker build -t openkey-api .
+   docker build -t skgbafa/openkey-api:v1.0.x .
+   docker push skgbafa/openkey-api:v1.0.x
    ```
 
-2. Push to a container registry accessible by Phala
+2. Update `docker-compose.prod.yml` with the image tag
 
-3. Deploy via Phala dstack dashboard or CLI
+3. Deploy via Phala CLI:
+   ```bash
+   phala deploy -c docker-compose.prod.yml -n openkey-api
+   ```
 
 4. Verify TEE attestation is working:
    ```bash

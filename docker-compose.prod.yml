@@ -1,6 +1,6 @@
 services:
   api:
-    image: skgbafa/openkey-api:v1.0.4
+    image: ${DOCKER_IMAGE}
     ports:
       - "3001:3001"
     environment:
