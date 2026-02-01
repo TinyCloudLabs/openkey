@@ -11,8 +11,14 @@ const app = new Hono();
 
 // Middleware
 app.use('*', logger());
+
+// Parse CORS_ORIGIN - supports comma-separated list or single origin
+const corsOrigins = (process.env.CORS_ORIGIN || 'http://localhost:5173')
+  .split(',')
+  .map(o => o.trim());
+
 app.use('*', cors({
-  origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
+  origin: corsOrigins.length === 1 ? corsOrigins[0] : corsOrigins,
   credentials: true,
 }));
 
