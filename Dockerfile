@@ -27,9 +27,9 @@ FROM base AS runner
 ENV NODE_ENV=production
 ENV TEE_MODE=production
 
-# Copy built files and package.json for module resolution
+# Copy source files - no bundling to preserve AsyncLocalStorage
 COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/apps/api/dist ./apps/api/dist
+COPY --from=builder /app/apps/api/src ./apps/api/src
 COPY --from=builder /app/apps/api/package.json ./apps/api/
 COPY --from=builder /app/packages/tee/dist ./packages/tee/dist
 COPY --from=builder /app/packages/tee/package.json ./packages/tee/
@@ -42,4 +42,4 @@ RUN bunx prisma generate --schema=./packages/db/prisma/schema.prisma
 
 EXPOSE 3001
 
-CMD ["bun", "run", "apps/api/dist/index.js"]
+CMD ["bun", "run", "apps/api/src/index.ts"]

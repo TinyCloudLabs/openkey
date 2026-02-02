@@ -4,8 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "bun run --watch src/index.ts",
-    "build": "bun build src/index.ts --outdir dist --target bun --packages external",
-    "start": "bun run dist/index.js",
+    "build": "echo 'No build needed - running TypeScript directly'",
+    "start": "bun run src/index.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
