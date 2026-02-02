@@ -2,7 +2,7 @@
 /**
  * OAuth Client Registration CLI
  *
- * Register OAuth clients for third-party applications to use OpenKey as an identity provider.
+ * Register OAuth clients via the OpenKey API.
  *
  * Usage:
  *   bun run scripts/register-oauth-client.ts --name "App Name" --redirect-uri "https://app.com/callback"
@@ -14,42 +14,54 @@
  *   --icon, -i          Application icon URL
  *   --type, -t          Application type: web, native, spa (default: web)
  *   --list, -l          List all registered clients
+ *   --delete, -d        Delete a client by client ID
  *   --help, -h          Show help
  *
  * Environment:
- *   DATABASE_URL        PostgreSQL connection string (required)
+ *   OPENKEY_API_URL     OpenKey API URL (default: http://localhost:3001)
+ *   ADMIN_API_KEY       Admin API key (required)
  *
  * Examples:
  *   # Register a web app
- *   bun run scripts/register-oauth-client.ts \
+ *   ADMIN_API_KEY=secret bun run scripts/register-oauth-client.ts \
  *     --name "My App" \
  *     --redirect-uri "https://myapp.com/callback" \
  *     --redirect-uri "http://localhost:3000/callback"
  *
  *   # List all clients
- *   bun run scripts/register-oauth-client.ts --list
+ *   ADMIN_API_KEY=secret bun run scripts/register-oauth-client.ts --list
+ *
+ *   # Delete a client
+ *   ADMIN_API_KEY=secret bun run scripts/register-oauth-client.ts --delete ok_abc123
  */
 
-import { PrismaClient } from '@prisma/client';
-import { createHash, randomBytes } from 'crypto';
 import { parseArgs } from 'util';
 
-const prisma = new PrismaClient();
+const API_URL = process.env.OPENKEY_API_URL || 'http://localhost:3001';
+const ADMIN_KEY = process.env.ADMIN_API_KEY;
 
-function generateId(): string {
-  return randomBytes(16).toString('hex');
-}
+async function apiRequest(method: string, path: string, body?: object) {
+  if (!ADMIN_KEY) {
+    console.error('Error: ADMIN_API_KEY environment variable is required');
+    process.exit(1);
+  }
 
-function generateClientId(): string {
-  return `ok_${randomBytes(16).toString('hex')}`;
-}
+  const response = await fetch(`${API_URL}${path}`, {
+    method,
+    headers: {
+      'Authorization': `Bearer ${ADMIN_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
 
-function generateClientSecret(): string {
-  return `oks_${randomBytes(32).toString('hex')}`;
-}
+  const data = await response.json();
 
-function hashSecret(secret: string): string {
-  return createHash('sha256').update(secret).digest('hex');
+  if (!response.ok) {
+    throw new Error(data.error || `API error: ${response.status}`);
+  }
+
+  return data;
 }
 
 async function registerClient(options: {
@@ -57,80 +69,56 @@ async function registerClient(options: {
   redirectUris: string[];
   uri?: string;
   icon?: string;
-  type?: 'web' | 'native' | 'spa';
+  type?: string;
 }) {
-  const clientId = generateClientId();
-  const clientSecret = generateClientSecret();
-  const hashedSecret = hashSecret(clientSecret);
-
-  await prisma.oAuthClient.create({
-    data: {
-      id: generateId(),
-      clientId,
-      clientSecret: hashedSecret,
-      name: options.name,
-      uri: options.uri || null,
-      icon: options.icon || null,
-      redirectUris: options.redirectUris,
-      scopes: ['openid'],
-      disabled: false,
-      skipConsent: false,
-      enableEndSession: false,
-      tokenEndpointAuthMethod: 'client_secret_basic',
-      grantTypes: ['authorization_code', 'refresh_token'],
-      responseTypes: ['code'],
-      type: options.type || 'web',
-      public: false,
-      contacts: [],
-    },
+  const data = await apiRequest('POST', '/api/admin/oauth/clients', {
+    name: options.name,
+    redirectUris: options.redirectUris,
+    uri: options.uri,
+    icon: options.icon,
+    type: options.type || 'web',
   });
 
+  const { client } = data;
+
   console.log('\n========================================');
-  console.log(`OAuth Client Registered: ${options.name}`);
+  console.log(`OAuth Client Registered: ${client.name}`);
   console.log('========================================');
-  console.log(`Client ID:     ${clientId}`);
-  console.log(`Client Secret: ${clientSecret}`);
-  console.log(`Redirect URIs: ${options.redirectUris.join(', ')}`);
+  console.log(`Client ID:     ${client.clientId}`);
+  console.log(`Client Secret: ${client.clientSecret}`);
+  console.log(`Redirect URIs: ${client.redirectUris.join(', ')}`);
   console.log('----------------------------------------');
   console.log('IMPORTANT: Store the client secret securely!');
   console.log('It is hashed in the database and cannot be retrieved.');
   console.log('========================================\n');
-
-  return { clientId, clientSecret };
 }
 
 async function listClients() {
-  const clients = await prisma.oAuthClient.findMany({
-    select: {
-      id: true,
-      clientId: true,
-      name: true,
-      uri: true,
-      redirectUris: true,
-      disabled: true,
-      createdAt: true,
-    },
-    orderBy: { createdAt: 'desc' },
-  });
+  const data = await apiRequest('GET', '/api/admin/oauth/clients');
 
   console.log('\n========================================');
   console.log('Registered OAuth Clients');
   console.log('========================================');
 
-  if (clients.length === 0) {
+  if (data.clients.length === 0) {
     console.log('No clients registered yet.');
   } else {
-    for (const client of clients) {
+    for (const client of data.clients) {
       console.log(`\nName: ${client.name}`);
       console.log(`  Client ID: ${client.clientId}`);
       console.log(`  URI: ${client.uri || '(none)'}`);
       console.log(`  Redirect URIs: ${client.redirectUris.join(', ')}`);
       console.log(`  Status: ${client.disabled ? 'DISABLED' : 'Active'}`);
-      console.log(`  Created: ${client.createdAt.toISOString()}`);
+      console.log(`  Created: ${client.createdAt}`);
     }
   }
 
   console.log('\n========================================\n');
+}
+
+async function deleteClient(clientId: string) {
+  await apiRequest('DELETE', `/api/admin/oauth/clients/${clientId}`);
+  console.log(`\nClient ${clientId} deleted successfully.\n`);
 }
 
 function showHelp() {
@@ -147,26 +135,34 @@ Options:
   --icon, -i          Application icon URL
   --type, -t          Application type: web, native, spa (default: web)
   --list, -l          List all registered clients
+  --delete, -d        Delete a client by client ID
   --help, -h          Show this help
 
 Environment:
-  DATABASE_URL        PostgreSQL connection string (required)
+  OPENKEY_API_URL     OpenKey API URL (default: http://localhost:3001)
+  ADMIN_API_KEY       Admin API key (required)
 
 Examples:
   # Register a new OAuth client
-  bun run scripts/register-oauth-client.ts \\
+  ADMIN_API_KEY=secret bun run scripts/register-oauth-client.ts \\
     --name "Remember" \\
     --redirect-uri "https://remember.app/callback" \\
     --redirect-uri "http://localhost:3000/callback" \\
     --uri "https://remember.app"
 
   # List all registered clients
-  bun run scripts/register-oauth-client.ts --list
+  ADMIN_API_KEY=secret bun run scripts/register-oauth-client.ts --list
+
+  # Delete a client
+  ADMIN_API_KEY=secret bun run scripts/register-oauth-client.ts --delete ok_abc123
+
+  # Use production API
+  OPENKEY_API_URL=https://api.openkey.so ADMIN_API_KEY=secret bun run scripts/register-oauth-client.ts --list
 `);
 }
 
 async function main() {
-  const { values } = parseArgs({
+  const { values, positionals } = parseArgs({
     options: {
       name: { type: 'string', short: 'n' },
       'redirect-uri': { type: 'string', short: 'r', multiple: true },
@@ -174,9 +170,10 @@ async function main() {
       icon: { type: 'string', short: 'i' },
       type: { type: 'string', short: 't' },
       list: { type: 'boolean', short: 'l' },
+      delete: { type: 'string', short: 'd' },
       help: { type: 'boolean', short: 'h' },
     },
-    allowPositionals: false,
+    allowPositionals: true,
   });
 
   if (values.help) {
@@ -186,6 +183,11 @@ async function main() {
 
   if (values.list) {
     await listClients();
+    return;
+  }
+
+  if (values.delete) {
+    await deleteClient(values.delete);
     return;
   }
 
@@ -204,7 +206,6 @@ async function main() {
   }
 
   const validTypes = ['web', 'native', 'spa'];
-  const type = (values.type as 'web' | 'native' | 'spa') || 'web';
   if (values.type && !validTypes.includes(values.type)) {
     console.error(`Error: --type must be one of: ${validTypes.join(', ')}`);
     process.exit(1);
@@ -215,13 +216,11 @@ async function main() {
     redirectUris,
     uri: values.uri,
     icon: values.icon,
-    type,
+    type: values.type,
   });
 }
 
-main()
-  .catch((e) => {
-    console.error('Error:', e.message);
-    process.exit(1);
-  })
-  .finally(() => prisma.$disconnect());
+main().catch((e) => {
+  console.error('Error:', e.message);
+  process.exit(1);
+});

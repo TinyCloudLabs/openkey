@@ -5,6 +5,7 @@ import { logger } from 'hono/logger';
 import { auth } from './auth';
 import { keysRouter } from './routes/keys';
 import { accountRouter } from './routes/account';
+import { oauthAdminRouter } from './routes/oauth-admin';
 
 // Create Hono app
 const app = new Hono();
@@ -35,6 +36,9 @@ app.route('/api/keys', keysRouter);
 
 // Account management routes
 app.route('/api/account', accountRouter);
+
+// OAuth admin routes (protected by ADMIN_API_KEY)
+app.route('/api/admin/oauth', oauthAdminRouter);
 
 // 404 handler
 app.notFound((c) => c.json({ error: 'Not found' }, 404));
