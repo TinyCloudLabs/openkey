@@ -16,7 +16,7 @@ const resend = process.env.RESEND_API_KEY
   : null;
 
 // Environment-based configuration
-const isDev = process.env.NODE_ENV !== 'production';
+const isDev = process.env.NODE_ENV !== 'production' && process.env.TEE_MODE !== 'production';
 const rpID = process.env.WEBAUTHN_RP_ID || (isDev ? 'localhost' : 'openkey.so');
 const origin = process.env.WEBAUTHN_ORIGIN || (isDev ? 'http://localhost:5173' : 'https://openkey.so');
 
