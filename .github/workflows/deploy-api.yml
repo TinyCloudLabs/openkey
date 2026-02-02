@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
 
 env:
-  DOCKER_IMAGE: skgbafa/dstack-app-m1982
+  DOCKER_IMAGE: skgbafa/openkey-api
 
 jobs:
   deploy:
