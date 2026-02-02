@@ -13,6 +13,9 @@ services:
       - RESEND_API_KEY=${RESEND_API_KEY}
       - API_PORT=${API_PORT}
       - CORS_ORIGIN=${CORS_ORIGIN}
+      - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET}
+      - BETTER_AUTH_URL=${BETTER_AUTH_URL}
+      - ADMIN_API_KEY=${ADMIN_API_KEY}
     restart: unless-stopped
 
   dstack-ingress:
