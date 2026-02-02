@@ -34,6 +34,7 @@
     "better-auth": "1.5.0-beta.10",
     "bits-ui": "^2.15.2",
     "clsx": "^2.1.1",
+    "dotenv": "^17.2.3",
     "hono": "^4.11.3",
     "resend": "^6.6.0",
     "tailwind-merge": "^3.4.0",

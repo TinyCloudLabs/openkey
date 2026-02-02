@@ -15,27 +15,52 @@
  *   --type, -t          Application type: web, native, spa (default: web)
  *   --list, -l          List all registered clients
  *   --delete, -d        Delete a client by client ID
+ *   --env, -e           Path to .env file (default: .env.prod)
  *   --help, -h          Show help
  *
- * Environment:
+ * Environment (from .env file or shell):
  *   OPENKEY_API_URL     OpenKey API URL (default: http://localhost:3001)
  *   ADMIN_API_KEY       Admin API key (required)
  *
  * Examples:
- *   # Register a web app
- *   ADMIN_API_KEY=secret bun run scripts/register-oauth-client.ts \
+ *   # Register a web app (uses .env.prod by default)
+ *   bun run scripts/register-oauth-client.ts \
  *     --name "My App" \
- *     --redirect-uri "https://myapp.com/callback" \
- *     --redirect-uri "http://localhost:3000/callback"
+ *     --redirect-uri "https://myapp.com/callback"
+ *
+ *   # Use a custom .env file
+ *   bun run scripts/register-oauth-client.ts --env .env.local --list
  *
  *   # List all clients
- *   ADMIN_API_KEY=secret bun run scripts/register-oauth-client.ts --list
+ *   bun run scripts/register-oauth-client.ts --list
  *
  *   # Delete a client
- *   ADMIN_API_KEY=secret bun run scripts/register-oauth-client.ts --delete ok_abc123
+ *   bun run scripts/register-oauth-client.ts --delete ok_abc123
  */
 
 import { parseArgs } from 'util';
+import { config } from 'dotenv';
+import { existsSync } from 'fs';
+import { resolve } from 'path';
+
+// Parse args first to get env file path
+const { values: preValues } = parseArgs({
+  options: {
+    env: { type: 'string', short: 'e' },
+  },
+  strict: false,
+});
+
+// Load .env file
+const envPath = preValues.env || '.env.prod';
+const resolvedEnvPath = resolve(process.cwd(), envPath);
+if (existsSync(resolvedEnvPath)) {
+  config({ path: resolvedEnvPath });
+  console.log(`Loaded environment from ${envPath}`);
+} else if (preValues.env) {
+  console.error(`Error: Env file not found: ${envPath}`);
+  process.exit(1);
+}
 
 const API_URL = process.env.OPENKEY_API_URL || 'http://localhost:3001';
 const ADMIN_KEY = process.env.ADMIN_API_KEY;
@@ -126,7 +151,7 @@ function showHelp() {
 OAuth Client Registration CLI
 
 Usage:
-  bun run scripts/register-oauth-client.ts [options]
+  bun run oauth:register [options]
 
 Options:
   --name, -n          Application name (required for registration)
@@ -136,33 +161,34 @@ Options:
   --type, -t          Application type: web, native, spa (default: web)
   --list, -l          List all registered clients
   --delete, -d        Delete a client by client ID
+  --env, -e           Path to .env file (default: .env.prod)
   --help, -h          Show this help
 
-Environment:
+Environment (loaded from .env file):
   OPENKEY_API_URL     OpenKey API URL (default: http://localhost:3001)
   ADMIN_API_KEY       Admin API key (required)
 
 Examples:
-  # Register a new OAuth client
-  ADMIN_API_KEY=secret bun run scripts/register-oauth-client.ts \\
+  # Register a new OAuth client (uses .env.prod)
+  bun run oauth:register \\
     --name "Remember" \\
     --redirect-uri "https://remember.app/callback" \\
     --redirect-uri "http://localhost:3000/callback" \\
     --uri "https://remember.app"
 
   # List all registered clients
-  ADMIN_API_KEY=secret bun run scripts/register-oauth-client.ts --list
+  bun run oauth:list
+
+  # Use a different env file
+  bun run oauth:register --env .env.local --list
 
   # Delete a client
-  ADMIN_API_KEY=secret bun run scripts/register-oauth-client.ts --delete ok_abc123
-
-  # Use production API
-  OPENKEY_API_URL=https://api.openkey.so ADMIN_API_KEY=secret bun run scripts/register-oauth-client.ts --list
+  bun run oauth:register --delete ok_abc123
 `);
 }
 
 async function main() {
-  const { values, positionals } = parseArgs({
+  const { values } = parseArgs({
     options: {
       name: { type: 'string', short: 'n' },
       'redirect-uri': { type: 'string', short: 'r', multiple: true },
@@ -171,9 +197,10 @@ async function main() {
       type: { type: 'string', short: 't' },
       list: { type: 'boolean', short: 'l' },
       delete: { type: 'string', short: 'd' },
+      env: { type: 'string', short: 'e' },
       help: { type: 'boolean', short: 'h' },
     },
-    allowPositionals: true,
+    allowPositionals: false,
   });
 
   if (values.help) {
