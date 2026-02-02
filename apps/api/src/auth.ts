@@ -8,7 +8,9 @@ import { oauthProvider } from '@better-auth/oauth-provider';
 import { Resend } from 'resend';
 import { PrismaClient } from '@prisma/client';
 
-const prisma = new PrismaClient();
+const prisma = new PrismaClient({
+  log: ['error', 'warn'],
+});
 
 // Initialize Resend for email OTP
 const resend = process.env.RESEND_API_KEY
@@ -27,6 +29,12 @@ export const auth = betterAuth({
   baseURL,
   basePath: '/api/auth',
   disabledPaths: ['/token'], // Avoid conflicts with OAuth token endpoint
+  logger: {
+    level: 'debug',
+    log: (level, message, ...args) => {
+      console.log(`[Better Auth] [${level}]`, message, ...args);
+    },
+  },
 
   database: prismaAdapter(prisma, {
     provider: 'postgresql',
