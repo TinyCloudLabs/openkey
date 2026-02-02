@@ -51,9 +51,9 @@ jobs:
         env:
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
         run: |
-          CVM_APP_ID=$(phala cvms list --json | jq -r '.items[] | select(.cvmName == "dstack-app-m1982") | .appId')
+          CVM_APP_ID=$(phala cvms list --json | jq -r '.items[] | select(.cvmName == "openkey-api") | .appId')
           if [ -z "$CVM_APP_ID" ]; then
-            echo "Error: CVM 'dstack-app-m1982' not found"
+            echo "Error: CVM 'openkey-api' not found"
             exit 1
           fi
           echo "app_id=app_${CVM_APP_ID}" >> $GITHUB_OUTPUT
@@ -70,7 +70,7 @@ jobs:
         run: |
           echo "Waiting for CVM to be ready..."
           for i in {1..30}; do
-            STATUS=$(phala cvms list --json | jq -r '.items[] | select(.cvmName == "dstack-app-m1982") | .status')
+            STATUS=$(phala cvms list --json | jq -r '.items[] | select(.cvmName == "openkey-api") | .status')
             echo "Attempt $i: Status = $STATUS"
             if [ "$STATUS" = "running" ]; then
               echo "CVM is running!"
