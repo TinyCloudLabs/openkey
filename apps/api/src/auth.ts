@@ -20,7 +20,11 @@ const isDev = process.env.NODE_ENV !== 'production';
 const rpID = process.env.WEBAUTHN_RP_ID || (isDev ? 'localhost' : 'openkey.so');
 const origin = process.env.WEBAUTHN_ORIGIN || (isDev ? 'http://localhost:5173' : 'https://openkey.so');
 
+// Base URL for proper request context
+const baseURL = process.env.BETTER_AUTH_URL || (isDev ? 'http://localhost:3001' : 'https://api.openkey.so');
+
 export const auth = betterAuth({
+  baseURL,
   basePath: '/api/auth',
   disabledPaths: ['/token'], // Avoid conflicts with OAuth token endpoint
 
