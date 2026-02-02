@@ -27,11 +27,14 @@ FROM base AS runner
 ENV NODE_ENV=production
 ENV TEE_MODE=production
 
-# Copy built files
+# Copy built files and package.json for module resolution
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/apps/api/dist ./apps/api/dist
+COPY --from=builder /app/apps/api/package.json ./apps/api/
 COPY --from=builder /app/packages/tee/dist ./packages/tee/dist
+COPY --from=builder /app/packages/tee/package.json ./packages/tee/
 COPY --from=builder /app/packages/db/prisma ./packages/db/prisma
+COPY --from=builder /app/packages/db/package.json ./packages/db/
 COPY --from=builder /app/package.json ./
 
 # Generate Prisma client

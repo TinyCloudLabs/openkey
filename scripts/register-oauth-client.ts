@@ -52,7 +52,7 @@ const { values: preValues } = parseArgs({
 });
 
 // Load .env file
-const envPath = preValues.env || '.env.prod';
+const envPath = (preValues.env || '.env.prod') as string;
 const resolvedEnvPath = resolve(process.cwd(), envPath);
 if (existsSync(resolvedEnvPath)) {
   config({ path: resolvedEnvPath });
