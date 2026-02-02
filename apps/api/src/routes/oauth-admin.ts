@@ -82,7 +82,7 @@ oauthAdminRouter.post('/clients', async (c) => {
   const hashedSecret = hashSecret(clientSecret);
 
   try {
-    const client = await prisma.oAuthClient.create({
+    const client = await prisma.oauthClient.create({
       data: {
         id: generateId(),
         clientId,
@@ -128,7 +128,7 @@ oauthAdminRouter.post('/clients', async (c) => {
 
 // GET /api/admin/oauth/clients - List all OAuth clients
 oauthAdminRouter.get('/clients', async (c) => {
-  const clients = await prisma.oAuthClient.findMany({
+  const clients = await prisma.oauthClient.findMany({
     select: {
       id: true,
       clientId: true,
@@ -150,7 +150,7 @@ oauthAdminRouter.get('/clients', async (c) => {
 oauthAdminRouter.get('/clients/:clientId', async (c) => {
   const clientId = c.req.param('clientId');
 
-  const client = await prisma.oAuthClient.findFirst({
+  const client = await prisma.oauthClient.findFirst({
     where: { clientId },
     select: {
       id: true,
@@ -177,7 +177,7 @@ oauthAdminRouter.delete('/clients/:clientId', async (c) => {
   const clientId = c.req.param('clientId');
 
   try {
-    await prisma.oAuthClient.delete({
+    await prisma.oauthClient.delete({
       where: { clientId },
     });
 
@@ -217,7 +217,7 @@ oauthAdminRouter.patch('/clients/:clientId', async (c) => {
   }
 
   try {
-    const client = await prisma.oAuthClient.update({
+    const client = await prisma.oauthClient.update({
       where: { clientId },
       data: {
         ...(body.name && { name: body.name }),
