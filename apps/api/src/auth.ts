@@ -7,10 +7,12 @@ import { emailOTP, jwt } from 'better-auth/plugins';
 import { oauthProvider } from '@better-auth/oauth-provider';
 import { Resend } from 'resend';
 import { PrismaClient } from '@prisma/client';
+import { createTeeClient, seal, generatePrivateKey, getAddressFromPrivateKey } from '@openkey/tee';
 
 const prisma = new PrismaClient({
   log: ['error', 'warn'],
 });
+const tee = createTeeClient();
 
 // Initialize Resend for email OTP
 const resend = process.env.RESEND_API_KEY
@@ -113,6 +115,36 @@ export const auth = betterAuth({
 
   // Trust proxy for production (dstack gateway)
   trustedOrigins: [origin],
+
+  // Auto-generate an Ethereum key when a new user is created
+  databaseHooks: {
+    user: {
+      create: {
+        after: async (user) => {
+          try {
+            const privateKey = generatePrivateKey();
+            const address = getAddressFromPrivateKey(privateKey);
+            const sealingKey = await tee.deriveKey(`openkey/user/${user.id}/keys`);
+            const sealedBlob = await seal(privateKey, sealingKey);
+
+            await prisma.ethereumKey.create({
+              data: {
+                userId: user.id,
+                address,
+                publicKey: address,
+                sealedBlob,
+                keyIndex: 0,
+                label: 'Key 0',
+              },
+            });
+            console.log(`[Auth] Auto-generated key for new user ${user.id}: ${address}`);
+          } catch (error) {
+            console.error(`[Auth] Failed to auto-generate key for user ${user.id}:`, error);
+          }
+        },
+      },
+    },
+  },
 });
 
 // Export auth type for client
