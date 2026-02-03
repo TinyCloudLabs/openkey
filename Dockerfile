@@ -14,7 +14,7 @@ COPY packages/db/prisma ./packages/db/prisma
 COPY packages/types/package.json ./packages/types/
 RUN bun install --ignore-scripts
 # Generate Prisma client (skipped by --ignore-scripts)
-RUN bunx prisma generate --schema=./packages/db/prisma/schema.prisma
+RUN bun node_modules/.bin/prisma generate --schema=./packages/db/prisma/schema.prisma
 
 # Build packages
 FROM deps AS builder
@@ -38,7 +38,7 @@ COPY --from=builder /app/packages/db/package.json ./packages/db/
 COPY --from=builder /app/package.json ./
 
 # Generate Prisma client
-RUN bunx prisma generate --schema=./packages/db/prisma/schema.prisma
+RUN bun node_modules/.bin/prisma generate --schema=./packages/db/prisma/schema.prisma
 
 EXPOSE 3001
 
