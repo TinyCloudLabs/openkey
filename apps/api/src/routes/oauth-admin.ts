@@ -78,8 +78,9 @@ oauthAdminRouter.post('/clients', async (c) => {
 
   // Generate credentials
   const clientId = generateClientId();
-  const clientSecret = generateClientSecret();
-  const hashedSecret = hashSecret(clientSecret);
+  const isPublic = body.type === 'spa' || body.type === 'native';
+  const clientSecret = isPublic ? null : generateClientSecret();
+  const hashedSecret = clientSecret ? hashSecret(clientSecret) : null;
 
   try {
     const client = await prisma.oauthClient.create({
@@ -95,11 +96,11 @@ oauthAdminRouter.post('/clients', async (c) => {
         disabled: false,
         skipConsent: false,
         enableEndSession: false,
-        tokenEndpointAuthMethod: 'client_secret_basic',
+        tokenEndpointAuthMethod: isPublic ? 'none' : 'client_secret_basic',
         grantTypes: ['authorization_code', 'refresh_token'],
         responseTypes: ['code'],
         type: body.type || 'web',
-        public: false,
+        public: isPublic,
         contacts: [],
       },
     });
@@ -109,11 +110,12 @@ oauthAdminRouter.post('/clients', async (c) => {
       client: {
         id: client.id,
         clientId,
-        clientSecret, // Only returned on creation
+        clientSecret: clientSecret || undefined, // Only returned on creation, not for public clients
         name: client.name,
         redirectUris: client.redirectUris,
         uri: client.uri,
         type: client.type,
+        public: isPublic,
         createdAt: client.createdAt,
       },
     }, 201);

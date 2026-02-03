@@ -84,6 +84,12 @@ export const auth = betterAuth({
           `,
         });
       },
+      generateOTP({ email }: { email: string }) {
+        if (process.env.TEE_MODE === 'development' && email === 'test@openkey.dev') {
+          return '000000';
+        }
+        return undefined;
+      },
       otpLength: 6,
       expiresIn: 300, // 5 minutes
     }),
@@ -101,7 +107,7 @@ export const auth = betterAuth({
       accessTokenExpiresIn: 60 * 60, // 1 hour in seconds
       refreshTokenExpiresIn: 60 * 60 * 24 * 7, // 7 days in seconds
       idTokenExpiresIn: 60 * 60, // 1 hour in seconds
-      disableJwtPlugin: true, // Workaround for ctx.getPlugin issue
+      storeClientSecret: 'hashed',
     }) as any,
   ],
 

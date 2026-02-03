@@ -1,8 +1,7 @@
 <script lang="ts">
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
-  import { onMount } from 'svelte';
-  import { authClient } from '$lib/auth-client';
+  import { authClient, API_BASE } from '$lib/auth-client';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
 
@@ -16,49 +15,65 @@
   let loading = $state(true);
   let submitting = $state(false);
   let error = $state('');
+  let fetched = $state(false);
 
   // Get OAuth parameters from URL
   const clientId = $page.url.searchParams.get('client_id');
   const scope = $page.url.searchParams.get('scope') || 'openid';
 
-  onMount(async () => {
-    // Redirect to login if not authenticated
-    if (!$session.isPending && !$session.data) {
+  // Extract signed query params (up to and including sig) for consent endpoint
+  function getOAuthQuery(): string | undefined {
+    const params = new URLSearchParams(window.location.search);
+    if (!params.has('sig')) return undefined;
+    const signed = new URLSearchParams();
+    for (const [key, value] of params.entries()) {
+      signed.append(key, value);
+      if (key === 'sig') break;
+    }
+    return signed.toString();
+  }
+
+  async function fetchClientInfo() {
+    if (!clientId) {
+      error = 'Missing client_id';
+      loading = false;
+      return;
+    }
+    try {
+      const res = await fetch(
+        `${API_BASE}/api/auth/oauth2/public-client?client_id=${encodeURIComponent(clientId)}`,
+        { credentials: 'include' }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        clientInfo = {
+          name: data.client_name || data.name || 'Unknown',
+          uri: data.client_uri || data.uri,
+          icon: data.logo_uri || data.icon,
+        };
+      } else {
+        const data = await res.json().catch(() => null);
+        error = data?.message || `Failed to load application (${res.status})`;
+      }
+    } catch (e: unknown) {
+      error = 'Failed to load application info';
+    }
+    loading = false;
+  }
+
+  // Wait for session to resolve, then either redirect or fetch client info
+  $effect(() => {
+    if ($session.isPending || fetched) return;
+
+    if (!$session.data) {
       const returnUrl = encodeURIComponent($page.url.pathname + $page.url.search);
       goto(`/auth/login?redirect=${returnUrl}`);
       return;
     }
 
-    // Fetch client info
-    if (clientId) {
-      try {
-        // @ts-ignore - method generated from oauthProviderClient plugin
-        const result = await authClient.oauth2.publicClient({ query: { client_id: clientId } });
-        if (result?.data) {
-          clientInfo = {
-            name: result.data.name,
-            uri: result.data.uri,
-            icon: result.data.icon,
-          };
-        } else {
-          error = result?.error?.message || 'Unknown application';
-        }
-      } catch (e: unknown) {
-        error = 'Failed to load application info';
-      }
-    } else {
-      error = 'Missing client_id';
-    }
-
-    loading = false;
-  });
-
-  // Re-check auth when session changes
-  $effect(() => {
-    if (!$session.isPending && !$session.data && !loading) {
-      const returnUrl = encodeURIComponent($page.url.pathname + $page.url.search);
-      goto(`/auth/login?redirect=${returnUrl}`);
-    }
+    // Session is resolved and user is authenticated - fetch client info
+    fetched = true;
+    fetchClientInfo();
   });
 
   async function handleConsent(accept: boolean) {
@@ -66,20 +81,26 @@
     error = '';
 
     try {
-      // @ts-ignore - method generated from oauthProviderClient plugin
-      const result = await authClient.oauth2.consent({ accept });
+      const res = await fetch(`${API_BASE}/api/auth/oauth2/consent`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accept, oauth_query: getOAuthQuery() }),
+      });
 
-      if (result?.error) {
-        error = result.error.message || 'Consent failed';
+      const result = await res.json();
+
+      if (!res.ok) {
+        error = result?.message || 'Consent failed';
         submitting = false;
         return;
       }
 
       // Redirect to the URI returned by the consent endpoint
-      if (result?.data?.uri) {
-        window.location.href = result.data.uri;
-      } else if (result?.data?.url) {
-        window.location.href = result.data.url;
+      if (result?.uri) {
+        window.location.href = result.uri;
+      } else if (result?.redirect) {
+        window.location.href = result.redirect;
       }
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'An error occurred';
@@ -98,7 +119,7 @@
 
 <div class="min-h-screen bg-surface-950 flex items-center justify-center px-4">
   <Card class="w-full max-w-md">
-    {#if loading || $session.isPending}
+    {#if loading}
       <div class="py-12 text-center text-surface-400">
         Loading...
       </div>

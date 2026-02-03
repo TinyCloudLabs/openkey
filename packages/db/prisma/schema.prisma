@@ -214,7 +214,7 @@ model OauthConsent {
   userId      String
   clientId    String
   referenceId String?
-  scopes      String // Comma-separated scopes
+  scopes      String[]
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 

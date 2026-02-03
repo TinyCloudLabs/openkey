@@ -34,7 +34,7 @@ services:
       DEV_SEALING_KEY: openkey-dev-sealing-key-32bytes!
       WEBAUTHN_RP_ID: localhost
       WEBAUTHN_ORIGIN: http://localhost:5173
-      CORS_ORIGIN: http://localhost:5173
+      CORS_ORIGIN: http://localhost:5173,http://localhost:5174
       API_PORT: "3001"
     depends_on:
       db:
