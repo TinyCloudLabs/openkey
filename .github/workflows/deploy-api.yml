@@ -8,6 +8,7 @@ on:
       - 'packages/**'
       - 'Dockerfile'
       - 'docker-compose.prod.yml'
+      - '.github/workflows/deploy-api.yml'
   workflow_dispatch:
 
 env:
