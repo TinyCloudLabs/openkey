@@ -15,7 +15,7 @@
  *   --type, -t          Application type: web, native, spa (default: web)
  *   --list, -l          List all registered clients
  *   --delete, -d        Delete a client by client ID
- *   --env, -e           Path to .env file (default: .env.prod)
+ *   --env, -e           Path to .env file (default: .env)
  *   --help, -h          Show help
  *
  * Environment (from .env file or shell):
@@ -23,7 +23,7 @@
  *   ADMIN_API_KEY       Admin API key (required)
  *
  * Examples:
- *   # Register a web app (uses .env.prod by default)
+ *   # Register a web app (uses .env by default)
  *   bun run scripts/register-oauth-client.ts \
  *     --name "My App" \
  *     --redirect-uri "https://myapp.com/callback"
@@ -52,7 +52,7 @@ const { values: preValues } = parseArgs({
 });
 
 // Load .env file
-const envPath = (preValues.env || '.env.prod') as string;
+const envPath = (preValues.env || '.env') as string;
 const resolvedEnvPath = resolve(process.cwd(), envPath);
 if (existsSync(resolvedEnvPath)) {
   config({ path: resolvedEnvPath });
@@ -161,7 +161,7 @@ Options:
   --type, -t          Application type: web, native, spa (default: web)
   --list, -l          List all registered clients
   --delete, -d        Delete a client by client ID
-  --env, -e           Path to .env file (default: .env.prod)
+  --env, -e           Path to .env file (default: .env)
   --help, -h          Show this help
 
 Environment (loaded from .env file):
@@ -169,7 +169,7 @@ Environment (loaded from .env file):
   ADMIN_API_KEY       Admin API key (required)
 
 Examples:
-  # Register a new OAuth client (uses .env.prod)
+  # Register a new OAuth client (uses .env)
   bun run oauth:register \\
     --name "Remember" \\
     --redirect-uri "https://remember.app/callback" \\
