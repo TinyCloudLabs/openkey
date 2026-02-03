@@ -2,7 +2,7 @@
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
   import { onMount } from 'svelte';
-  import { authClient } from '$lib/auth-client';
+  import { authClient, API_BASE } from '$lib/auth-client';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
 
@@ -29,16 +29,18 @@
       return;
     }
 
-    // Fetch client info
+    // Fetch client info via direct API call
     if (clientId) {
       try {
-        // @ts-expect-error - oauth2 methods added by oauthProviderClient plugin
-        const client = await authClient.oauth2.getPublicClient({ clientId });
-        if (client.data) {
+        const res = await fetch(`${API_BASE}/api/auth/oauth2/public-client?client_id=${encodeURIComponent(clientId)}`, {
+          credentials: 'include',
+        });
+        if (res.ok) {
+          const data = await res.json();
           clientInfo = {
-            name: client.data.name,
-            uri: client.data.uri,
-            icon: client.data.icon,
+            name: data.name,
+            uri: data.uri,
+            icon: data.icon,
           };
         } else {
           error = 'Unknown application';
@@ -66,19 +68,31 @@
     error = '';
 
     try {
-      // @ts-expect-error - oauth2 methods added by oauthProviderClient plugin
-      const result = await authClient.oauth2.consent({
-        accept,
-        scope,
+      const res = await fetch(`${API_BASE}/api/auth/oauth2/consent`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          accept,
+          oauth_query: window.location.search.substring(1),
+        }),
       });
 
-      if (result.error) {
-        error = result.error.message || 'Consent failed';
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        error = data.message || data.error || 'Consent failed';
         submitting = false;
         return;
       }
 
-      // Redirect happens automatically via better-auth
+      const data = await res.json();
+
+      // Redirect to the URI returned by the consent endpoint
+      if (data.uri) {
+        window.location.href = data.uri;
+      } else if (data.redirect && data.url) {
+        window.location.href = data.url;
+      }
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'An error occurred';
       submitting = false;

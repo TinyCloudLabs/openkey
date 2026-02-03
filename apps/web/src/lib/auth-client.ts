@@ -4,8 +4,10 @@ import { passkeyClient } from '@better-auth/passkey/client';
 import { emailOTPClient } from 'better-auth/client/plugins';
 import { oauthProviderClient } from '@better-auth/oauth-provider/client';
 
+export const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+
 export const authClient = createAuthClient({
-  baseURL: import.meta.env.VITE_API_URL || 'http://localhost:3001',
+  baseURL: API_BASE,
   fetchOptions: {
     credentials: 'include',
   },
