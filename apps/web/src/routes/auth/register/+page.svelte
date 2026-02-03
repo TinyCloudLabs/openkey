@@ -63,7 +63,7 @@
   }
 
   async function googleSignIn() {
-    await authClient.signIn.social({ provider: 'google', callbackURL: '/auth/register?step=passkey' });
+    await authClient.signIn.social({ provider: 'google', callbackURL: `${window.location.origin}/auth/register?step=passkey` });
   }
 
   // Handle callback from Google OAuth
