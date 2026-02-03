@@ -27,25 +27,26 @@ export function createTeeClient(): TeeClient {
 }
 
 /**
- * Production client using @phala/dstack-sdk
+ * Production client using @phala/dstack-sdk (DstackClient for dstack OS 0.5.x)
  */
 function createProductionClient(): TeeClient {
-  // Dynamic import to avoid bundling in dev
-  const getTappdClient = async () => {
-    const { TappdClient } = await import('@phala/dstack-sdk');
-    return new TappdClient();
+  const getDstackClient = async () => {
+    const { DstackClient } = await import('@phala/dstack-sdk');
+    return new DstackClient();
   };
 
   return {
     async deriveKey(path: string): Promise<Uint8Array> {
-      const client = await getTappdClient();
-      const result = await client.deriveKey(path);
-      return result.asUint8Array();
+      const client = await getDstackClient();
+      const result = await client.getKey(path);
+      // getKey returns raw key bytes; hash to 32 bytes for AES-256-GCM
+      const hash = createHash('sha256').update(result.key).digest();
+      return new Uint8Array(hash);
     },
 
     async getQuote(data: string): Promise<string> {
-      const client = await getTappdClient();
-      const result = await client.tdxQuote(data);
+      const client = await getDstackClient();
+      const result = await client.getQuote(data);
       return result.quote;
     },
 
