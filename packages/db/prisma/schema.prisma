@@ -121,6 +121,16 @@ model EthereumKey {
   @@map("ethereum_keys")
 }
 
+// better-auth JWKS (required by JWT plugin)
+model Jwks {
+  id         String   @id
+  publicKey  String
+  privateKey String
+  createdAt  DateTime @default(now())
+
+  @@map("jwks")
+}
+
 // ======= OAuth 2.1 Provider tables =======
 
 // Registered OAuth clients (third-party applications)
