@@ -2,7 +2,7 @@
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
   import { onMount } from 'svelte';
-  import { authClient, API_BASE } from '$lib/auth-client';
+  import { authClient } from '$lib/auth-client';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
 
@@ -29,21 +29,19 @@
       return;
     }
 
-    // Fetch client info via direct API call
+    // Fetch client info
     if (clientId) {
       try {
-        const res = await fetch(`${API_BASE}/api/auth/oauth2/public-client?client_id=${encodeURIComponent(clientId)}`, {
-          credentials: 'include',
-        });
-        if (res.ok) {
-          const data = await res.json();
+        // @ts-ignore - method generated from oauthProviderClient plugin
+        const result = await authClient.oauth2.publicClient({ query: { client_id: clientId } });
+        if (result?.data) {
           clientInfo = {
-            name: data.name,
-            uri: data.uri,
-            icon: data.icon,
+            name: result.data.name,
+            uri: result.data.uri,
+            icon: result.data.icon,
           };
         } else {
-          error = 'Unknown application';
+          error = result?.error?.message || 'Unknown application';
         }
       } catch (e: unknown) {
         error = 'Failed to load application info';
@@ -68,30 +66,20 @@
     error = '';
 
     try {
-      const res = await fetch(`${API_BASE}/api/auth/oauth2/consent`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          accept,
-          oauth_query: window.location.search.substring(1),
-        }),
-      });
+      // @ts-ignore - method generated from oauthProviderClient plugin
+      const result = await authClient.oauth2.consent({ accept });
 
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        error = data.message || data.error || 'Consent failed';
+      if (result?.error) {
+        error = result.error.message || 'Consent failed';
         submitting = false;
         return;
       }
 
-      const data = await res.json();
-
       // Redirect to the URI returned by the consent endpoint
-      if (data.uri) {
-        window.location.href = data.uri;
-      } else if (data.redirect && data.url) {
-        window.location.href = data.url;
+      if (result?.data?.uri) {
+        window.location.href = result.data.uri;
+      } else if (result?.data?.url) {
+        window.location.href = result.data.url;
       }
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'An error occurred';
