@@ -12,6 +12,7 @@
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",
     "docker:restart": "bun docker:down && bun docker:up",
+    "docker:rebuild": "docker compose up -d --build api",
     "docker:logs": "docker compose logs -f",
     "db:push": "bun node_modules/.bin/prisma db push --schema=./packages/db/prisma/schema.prisma",
     "db:push:prod": "env $(grep -v '^#' .env.prod | xargs) bun node_modules/.bin/prisma db push --schema=./packages/db/prisma/schema.prisma",

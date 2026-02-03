@@ -43,7 +43,7 @@ bun docker:restart   # Rebuild and restart
 To rebuild the API image after code changes:
 
 ```bash
-docker compose up -d --build api
+bun docker:rebuild
 ```
 
 ### Option 2: Local (without Docker API)
@@ -121,7 +121,7 @@ Optional (features degrade gracefully without these):
 | `bun docker:down` | Stop containers |
 | `bun docker:restart` | Restart containers |
 | `bun docker:logs` | Tail container logs |
-| `docker compose up -d --build api` | Rebuild API image after code changes |
+| `bun docker:rebuild` | Rebuild and restart API image after code changes |
 
 ### OAuth Client Management
 
@@ -191,7 +191,11 @@ bun db:push
 # Terminal 2: OpenKey web frontend
 bun dev:web
 
-# Terminal 3: Demo app
+# Terminal 3: Register OAuth client + start demo app
+bun oauth:register --name "Demo App" --redirect-uri "http://localhost:5174/callback" --env .env
+# Copy the outputted clientId into demo/.env:
+#   VITE_OPENKEY_HOST=http://localhost:3001
+#   VITE_CLIENT_ID=ok_your_client_id_here
 cd demo && bun install && bun dev
 ```
 
@@ -199,21 +203,6 @@ Services:
 - **API**: http://localhost:3001 (Docker)
 - **Web**: http://localhost:5173 (OpenKey frontend)
 - **Demo**: http://localhost:5174 (sample third-party app)
-
-### 2. Register an OAuth client
-
-The demo app needs a registered OAuth client. Set `ADMIN_API_KEY` in `.env`, then:
-
-```bash
-bun oauth:register
-```
-
-This creates a client with a `redirect_uri` pointing to the demo app's callback. You'll get a `clientId` and `clientSecret`. Add the `clientId` to `demo/.env`:
-
-```env
-VITE_OPENKEY_HOST=http://localhost:3001
-VITE_CLIENT_ID=ok_your_client_id_here
-```
 
 ### 3. Create an OpenKey account
 

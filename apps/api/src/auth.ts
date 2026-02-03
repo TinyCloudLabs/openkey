@@ -94,8 +94,8 @@ export const auth = betterAuth({
     // OAuth 2.1 Provider - enables third-party apps to authenticate users
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     oauthProvider({
-      loginPage: isDev ? 'http://localhost:5173/auth/login' : 'https://openkey.so/auth/login',
-      consentPage: isDev ? 'http://localhost:5173/oauth/consent' : 'https://openkey.so/oauth/consent',
+      loginPage: `${origin}/auth/login`,
+      consentPage: `${origin}/oauth/consent`,
       allowDynamicClientRegistration: false, // Pre-registered clients only
       scopes: ['openid'], // Minimal identity verification
       accessTokenExpiresIn: 60 * 60, // 1 hour in seconds
