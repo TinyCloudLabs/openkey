@@ -4,9 +4,10 @@ services:
     ports:
       - "3001:3001"
     volumes:
-      - /var/run/tappd.sock:/var/run/tappd.sock
+      - /var/run/dstack.sock:/var/run/dstack.sock
     environment:
       - NODE_ENV=production
+      - DSTACK_SIMULATOR_ENDPOINT=/var/run/dstack.sock
       - DATABASE_URL=${DATABASE_URL}
       - WEBAUTHN_RP_ID=${WEBAUTHN_RP_ID}
       - WEBAUTHN_ORIGIN=${WEBAUTHN_ORIGIN}
