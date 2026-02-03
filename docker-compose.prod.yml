@@ -3,6 +3,8 @@ services:
     image: ${DOCKER_IMAGE}
     ports:
       - "3001:3001"
+    volumes:
+      - /var/run/dstack.sock:/var/run/dstack.sock
     environment:
       - NODE_ENV=production
       - DATABASE_URL=${DATABASE_URL}
