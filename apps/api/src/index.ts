@@ -27,13 +27,9 @@ app.use('*', cors({
 app.get('/health', (c) => c.json({ status: 'ok', tee: process.env.TEE_MODE || 'development' }));
 
 // better-auth routes - mount at /api/auth
-app.on(['POST', 'GET'], '/api/auth/*', async (c) => {
-  try {
-    return await auth.handler(c.req.raw);
-  } catch (error) {
-    console.error('[Auth Handler Error]', error);
-    throw error;
-  }
+// Avoid async/await wrapper to preserve AsyncLocalStorage context in Bun
+app.on(['POST', 'GET'], '/api/auth/*', (c) => {
+  return auth.handler(c.req.raw);
 });
 
 // Key management routes

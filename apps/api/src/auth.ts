@@ -30,6 +30,7 @@ const baseURL = process.env.BETTER_AUTH_URL || (isDev ? 'http://localhost:3001' 
 export const auth = betterAuth({
   baseURL,
   basePath: '/api/auth',
+  secret: process.env.BETTER_AUTH_SECRET,
   disabledPaths: ['/token'], // Avoid conflicts with OAuth token endpoint
   logger: {
     level: 'debug',
