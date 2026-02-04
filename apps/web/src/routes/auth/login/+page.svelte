@@ -20,6 +20,7 @@
       const cleanParams = new URLSearchParams($page.url.searchParams);
       cleanParams.delete('sig');
       cleanParams.delete('exp');
+      cleanParams.delete('prompt');
       window.location.href = API_BASE + '/api/auth/oauth2/authorize?' + cleanParams.toString();
     } else {
       goto('/dashboard');
