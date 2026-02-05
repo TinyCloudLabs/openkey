@@ -6,13 +6,16 @@
   "linked": [
     [
       "@openkey/sdk",
-      "@openkey/types",
-      "@openkey/db",
-      "@openkey/tee"
+      "@openkey/types"
     ]
   ],
   "access": "public",
   "baseBranch": "main",
   "updateInternalDependencies": "patch",
-  "ignore": ["@openkey/api", "@openkey/web"]
+  "ignore": [
+    "@openkey/api",
+    "@openkey/web",
+    "@openkey/db",
+    "@openkey/tee"
+  ]
 }

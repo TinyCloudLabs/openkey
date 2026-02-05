@@ -64,14 +64,6 @@ jobs:
           cd "$ROOT_DIR/packages/types"
           npm publish --access public
 
-          # Publish db
-          cd "$ROOT_DIR/packages/db"
-          npm publish --access public
-
-          # Publish tee
-          cd "$ROOT_DIR/packages/tee"
-          npm publish --access public
-
           cd "$ROOT_DIR"
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -89,14 +81,6 @@ jobs:
           cd "$ROOT_DIR/packages/types"
           TYPES_VERSION=$(cat package.json | grep '"version"' | head -1 | awk -F: '{ print $2 }' | sed 's/[",]//g' | tr -d '[[:space:]]')
           git tag "types-v$TYPES_VERSION"
-
-          cd "$ROOT_DIR/packages/db"
-          DB_VERSION=$(cat package.json | grep '"version"' | head -1 | awk -F: '{ print $2 }' | sed 's/[",]//g' | tr -d '[[:space:]]')
-          git tag "db-v$DB_VERSION"
-
-          cd "$ROOT_DIR/packages/tee"
-          TEE_VERSION=$(cat package.json | grep '"version"' | head -1 | awk -F: '{ print $2 }' | sed 's/[",]//g' | tr -d '[[:space:]]')
-          git tag "tee-v$TEE_VERSION"
 
           cd "$ROOT_DIR"
 
@@ -121,20 +105,6 @@ jobs:
           gh release create "types-v$TYPES_VERSION" \
             --title "Types v$TYPES_VERSION" \
             --notes "Release notes for @openkey/types v$TYPES_VERSION" \
-            --draft
-
-          # Create draft release for db
-          echo "Creating draft release for db v$DB_VERSION..."
-          gh release create "db-v$DB_VERSION" \
-            --title "DB v$DB_VERSION" \
-            --notes "Release notes for @openkey/db v$DB_VERSION" \
-            --draft
-
-          # Create draft release for tee
-          echo "Creating draft release for tee v$TEE_VERSION..."
-          gh release create "tee-v$TEE_VERSION" \
-            --title "TEE v$TEE_VERSION" \
-            --notes "Release notes for @openkey/tee v$TEE_VERSION" \
             --draft
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}

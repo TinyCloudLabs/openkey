@@ -98,14 +98,6 @@ cd "$ROOT_DIR/packages/types"
 TYPES_VERSION=$(cat package.json | grep '"version"' | head -1 | awk -F: '{ print $2 }' | sed 's/[",]//g' | tr -d '[[:space:]]')
 git tag "types-v$TYPES_VERSION" || echo "Tag types-v$TYPES_VERSION already exists"
 
-cd "$ROOT_DIR/packages/db"
-DB_VERSION=$(cat package.json | grep '"version"' | head -1 | awk -F: '{ print $2 }' | sed 's/[",]//g' | tr -d '[[:space:]]')
-git tag "db-v$DB_VERSION" || echo "Tag db-v$DB_VERSION already exists"
-
-cd "$ROOT_DIR/packages/tee"
-TEE_VERSION=$(cat package.json | grep '"version"' | head -1 | awk -F: '{ print $2 }' | sed 's/[",]//g' | tr -d '[[:space:]]')
-git tag "tee-v$TEE_VERSION" || echo "Tag tee-v$TEE_VERSION already exists"
-
 cd "$ROOT_DIR"
 
 # Push all tags to remote
@@ -148,25 +140,9 @@ else
     --title "Types v$TYPES_VERSION" \
     --notes "Release notes for @openkey/types v$TYPES_VERSION" \
     --draft
-
-  # Create draft release for db
-  echo "Creating draft release for db v$DB_VERSION..."
-  gh release create "db-v$DB_VERSION" \
-    --title "DB v$DB_VERSION" \
-    --notes "Release notes for @openkey/db v$DB_VERSION" \
-    --draft
-
-  # Create draft release for tee
-  echo "Creating draft release for tee v$TEE_VERSION..."
-  gh release create "tee-v$TEE_VERSION" \
-    --title "TEE v$TEE_VERSION" \
-    --notes "Release notes for @openkey/tee v$TEE_VERSION" \
-    --draft
 fi
 
 echo "Publish completed successfully!"
 echo "The following packages were released:"
 echo "- @openkey/sdk@$SDK_VERSION"
 echo "- @openkey/types@$TYPES_VERSION"
-echo "- @openkey/db@$DB_VERSION"
-echo "- @openkey/tee@$TEE_VERSION"
