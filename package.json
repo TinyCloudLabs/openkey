@@ -22,7 +22,7 @@
     "db:generate": "bun node_modules/.bin/prisma generate --schema=./packages/db/prisma/schema.prisma",
     "db:studio": "bun node_modules/.bin/prisma studio --schema=./packages/db/prisma/schema.prisma",
     "db:studio:prod": "env $(grep -v '^#' .env.prod | xargs) bun node_modules/.bin/prisma studio --schema=./packages/db/prisma/schema.prisma",
-    "phala:env": "phala deploy --cvm-id $(phala cvms list --json | jq -r '.items[] | select(.cvmName == \"openkey-api\") | .appId' | sed 's/^/app_/') -c docker-compose.prod.yml -e .env.prod",
+    "phala:env": "phala deploy --cvm-id openkey-api -c \"$(pwd)/docker-compose.prod.yml\" -e \"$(pwd)/.env.prod\"",
     "oauth:register": "bun run scripts/register-oauth-client.ts",
     "oauth:list": "bun run scripts/register-oauth-client.ts --list"
   },

@@ -12,7 +12,7 @@
  *   --redirect-uri, -r  Redirect URI (required, can be specified multiple times)
  *   --uri, -u           Application website URL
  *   --icon, -i          Application icon URL
- *   --type, -t          Application type: web, native, spa (default: web)
+ *   --type, -t          Application type: spa, web, native (default: spa)
  *   --list, -l          List all registered clients
  *   --delete, -d        Delete a client by client ID
  *   --env, -e           Path to .env file (default: .env)
@@ -101,7 +101,7 @@ async function registerClient(options: {
     redirectUris: options.redirectUris,
     uri: options.uri,
     icon: options.icon,
-    type: options.type || 'web',
+    type: options.type || 'spa',
   });
 
   const { client } = data;
@@ -110,11 +110,17 @@ async function registerClient(options: {
   console.log(`OAuth Client Registered: ${client.name}`);
   console.log('========================================');
   console.log(`Client ID:     ${client.clientId}`);
-  console.log(`Client Secret: ${client.clientSecret}`);
+  console.log(`Type:          ${client.type || 'spa'}`);
+  console.log(`Public:        ${client.public ? 'Yes (no secret required)' : 'No'}`);
+  if (client.clientSecret) {
+    console.log(`Client Secret: ${client.clientSecret}`);
+  }
   console.log(`Redirect URIs: ${client.redirectUris.join(', ')}`);
-  console.log('----------------------------------------');
-  console.log('IMPORTANT: Store the client secret securely!');
-  console.log('It is hashed in the database and cannot be retrieved.');
+  if (client.clientSecret) {
+    console.log('----------------------------------------');
+    console.log('IMPORTANT: Store the client secret securely!');
+    console.log('It is hashed in the database and cannot be retrieved.');
+  }
   console.log('========================================\n');
 }
 
@@ -131,6 +137,7 @@ async function listClients() {
     for (const client of data.clients) {
       console.log(`\nName: ${client.name}`);
       console.log(`  Client ID: ${client.clientId}`);
+      console.log(`  Type: ${client.type || 'spa'}`);
       console.log(`  URI: ${client.uri || '(none)'}`);
       console.log(`  Redirect URIs: ${client.redirectUris.join(', ')}`);
       console.log(`  Status: ${client.disabled ? 'DISABLED' : 'Active'}`);
@@ -158,7 +165,7 @@ Options:
   --redirect-uri, -r  Redirect URI (required, can specify multiple)
   --uri, -u           Application website URL
   --icon, -i          Application icon URL
-  --type, -t          Application type: web, native, spa (default: web)
+  --type, -t          Application type: spa, web, native (default: spa)
   --list, -l          List all registered clients
   --delete, -d        Delete a client by client ID
   --env, -e           Path to .env file (default: .env)
@@ -232,7 +239,7 @@ async function main() {
     process.exit(1);
   }
 
-  const validTypes = ['web', 'native', 'spa'];
+  const validTypes = ['spa', 'web', 'native'];
   if (values.type && !validTypes.includes(values.type)) {
     console.error(`Error: --type must be one of: ${validTypes.join(', ')}`);
     process.exit(1);
