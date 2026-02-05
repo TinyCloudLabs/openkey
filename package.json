@@ -9,6 +9,8 @@
     "build": "turbo build",
     "lint": "turbo lint",
     "typecheck": "turbo typecheck",
+    "changeset": "changeset",
+    "version": "changeset version",
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",
     "docker:restart": "bun docker:down && bun docker:up",
@@ -24,9 +26,12 @@
     "db:studio:prod": "env $(grep -v '^#' .env.prod | xargs) bun node_modules/.bin/prisma studio --schema=./packages/db/prisma/schema.prisma",
     "phala:env": "phala deploy --cvm-id openkey-api -c \"$(pwd)/docker-compose.prod.yml\" -e \"$(pwd)/.env.prod\"",
     "oauth:register": "bun run scripts/register-oauth-client.ts",
-    "oauth:list": "bun run scripts/register-oauth-client.ts --list"
+    "oauth:list": "bun run scripts/register-oauth-client.ts --list",
+    "publish": "./scripts/publish.sh",
+    "npm-pub": "npm config set registry https://registry.npmjs.org/"
   },
   "devDependencies": {
+    "@changesets/cli": "^2.27.1",
     "@rollup/rollup-darwin-x64": "^4.57.1",
     "@tailwindcss/vite": "^4.1.18",
     "tailwindcss": "^4.1.18",
