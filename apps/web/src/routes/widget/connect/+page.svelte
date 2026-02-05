@@ -13,16 +13,30 @@
   let appName = $state('');
   let selectedKey = $state<EthereumKey | null>(null);
   let error = $state('');
+  let keysLoaded = $state(false);
 
   const origin = $page.url.searchParams.get('origin') || '*';
 
-  onMount(async () => {
+  onMount(() => {
     // Listen for incoming messages
     window.addEventListener('message', handleMessage);
 
-    // Load keys if already authenticated
-    if ($session.data) {
-      await loadKeys();
+    // Notify parent that widget is ready (AFTER listener is set up)
+    // Use window.location directly for reliability
+    const targetOrigin = new URL(window.location.href).searchParams.get('origin') || '*';
+    console.log('[connect widget] onMount firing, sending ready to:', targetOrigin);
+    if (window.opener) {
+      window.opener.postMessage({ type: 'openkey:ready' }, targetOrigin);
+    } else if (window.parent !== window) {
+      window.parent.postMessage({ type: 'openkey:ready' }, targetOrigin);
+    }
+  });
+
+  // Reactively load keys when session becomes available
+  $effect(() => {
+    if ($session.data && !keysLoaded) {
+      keysLoaded = true;
+      loadKeys();
     }
   });
 

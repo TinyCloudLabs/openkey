@@ -14,26 +14,60 @@
   let loading = $state(true);
   let signing = $state(false);
   let error = $state('');
+  let sessionChecked = $state(false);
 
   const origin = $page.url.searchParams.get('origin') || '*';
 
-  onMount(async () => {
+  onMount(() => {
+    // Listen for incoming messages
     window.addEventListener('message', handleMessage);
 
-    if ($session.data) {
+    // Notify parent that widget is ready (AFTER listener is set up)
+    // Use window.location directly for reliability
+    const targetOrigin = new URL(window.location.href).searchParams.get('origin') || '*';
+    console.log('[sign widget] onMount firing, sending ready to:', targetOrigin);
+    if (window.opener) {
+      window.opener.postMessage({ type: 'openkey:ready' }, targetOrigin);
+    } else if (window.parent !== window) {
+      window.parent.postMessage({ type: 'openkey:ready' }, targetOrigin);
+    }
+  });
+
+  // Reactively update loading state when session becomes available
+  $effect(() => {
+    if ($session.data && !sessionChecked) {
+      sessionChecked = true;
       loading = false;
     }
   });
 
+  // Reactively fetch key when session becomes available and we have a keyId
+  let keyFetched = $state(false);
+  $effect(() => {
+    if ($session.data && keyId && !keyFetched && !key) {
+      keyFetched = true;
+      api.getKey(keyId).then(result => {
+        key = result.key;
+      }).catch(() => {
+        // Key not found
+      });
+    }
+  });
+
   async function handleMessage(event: MessageEvent) {
+    console.log('[sign widget] received message:', event.data?.type, event.data);
     if (event.data?.type === 'openkey:sign:request') {
+      console.log('[sign widget] sign request received, message:', event.data.message?.substring(0, 100), 'keyId:', event.data.keyId);
       message = event.data.message;
       keyId = event.data.keyId || null;
+      keyFetched = false; // Reset so effect can run
 
+      // Try immediately if session is already available
       if (keyId && $session.data) {
         try {
           const result = await api.getKey(keyId);
           key = result.key;
+          keyFetched = true;
         } catch {
           // Key not found, will prompt user to select
         }

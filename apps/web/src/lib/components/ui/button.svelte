@@ -1,15 +1,16 @@
 <script lang="ts">
   import { cn } from '$lib/utils';
   import type { Snippet } from 'svelte';
-  import type { HTMLButtonAttributes } from 'svelte/elements';
+  import type { HTMLButtonAttributes, HTMLAnchorAttributes } from 'svelte/elements';
 
   type Variant = 'default' | 'secondary' | 'ghost' | 'link';
   type Size = 'default' | 'sm' | 'lg' | 'icon';
 
-  interface Props extends HTMLButtonAttributes {
+  interface Props extends Omit<HTMLButtonAttributes & HTMLAnchorAttributes, 'children'> {
     variant?: Variant;
     size?: Size;
     class?: string;
+    href?: string;
     children: Snippet;
   }
 
@@ -17,6 +18,7 @@
     variant = 'default',
     size = 'default',
     class: className,
+    href,
     children,
     ...restProps
   }: Props = $props();
@@ -34,18 +36,23 @@
     lg: 'h-11 px-8 text-lg',
     icon: 'h-10 w-10',
   };
-</script>
 
-<button
-  class={cn(
+  const baseClasses = cn(
     'inline-flex items-center justify-center whitespace-nowrap rounded-lg font-medium transition-colors',
     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-950',
     'disabled:pointer-events-none disabled:opacity-50',
     variants[variant],
     sizes[size],
     className
-  )}
-  {...restProps}
->
-  {@render children()}
-</button>
+  );
+</script>
+
+{#if href}
+  <a {href} class={baseClasses} {...restProps}>
+    {@render children()}
+  </a>
+{:else}
+  <button class={baseClasses} {...restProps}>
+    {@render children()}
+  </button>
+{/if}
