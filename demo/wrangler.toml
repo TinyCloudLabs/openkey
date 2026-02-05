@@ -7,4 +7,4 @@ pages_build_output_dir = ".svelte-kit/cloudflare"
 # These can be overridden in Cloudflare dashboard
 # VITE_OPENKEY_HOST = "http://localhost:3001"
 VITE_OPENKEY_HOST = "https://api.openkey.so"
-VITE_CLIENT_ID = "ok_f6ec8d0d976aaa62ab9689b009c1ad31"
+VITE_CLIENT_ID = "ok_ecee4fd7667c1370c44eae3922558f3b"
