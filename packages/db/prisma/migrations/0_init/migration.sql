@@ -170,7 +170,7 @@ CREATE TABLE "oauth_consent" (
     "userId" TEXT NOT NULL,
     "clientId" TEXT NOT NULL,
     "referenceId" TEXT,
-    "scopes" TEXT NOT NULL,
+    "scopes" TEXT[],
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
