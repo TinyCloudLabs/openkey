@@ -18,6 +18,13 @@ const corsOrigins = (process.env.CORS_ORIGIN || 'http://localhost:5173')
   .split(',')
   .map(o => o.trim());
 
+// OAuth token endpoint: allow any origin (PKCE provides security for public clients)
+app.use('/api/auth/oauth2/token', cors({
+  origin: '*',
+  credentials: false, // credentials not needed for token exchange
+}));
+
+// All other routes: restricted to whitelisted origins
 app.use('*', cors({
   origin: corsOrigins.length === 1 ? corsOrigins[0] : corsOrigins,
   credentials: true,
