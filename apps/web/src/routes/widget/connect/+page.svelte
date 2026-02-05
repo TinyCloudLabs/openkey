@@ -1,6 +1,5 @@
 <script lang="ts">
   import { page } from '$app/stores';
-  import { onMount } from 'svelte';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
   import Button from '$lib/components/ui/button.svelte';
@@ -14,21 +13,26 @@
   let selectedKey = $state<EthereumKey | null>(null);
   let error = $state('');
   let keysLoaded = $state(false);
+  let initialized = $state(false);
 
   const origin = $page.url.searchParams.get('origin') || '*';
 
-  onMount(() => {
-    // Listen for incoming messages
-    window.addEventListener('message', handleMessage);
+  // Use $effect instead of onMount for Svelte 5 compatibility with SSR disabled
+  // onMount doesn't fire when ssr=false in SvelteKit, but $effect does
+  $effect(() => {
+    if (typeof window !== 'undefined' && !initialized) {
+      initialized = true;
 
-    // Notify parent that widget is ready (AFTER listener is set up)
-    // Use window.location directly for reliability
-    const targetOrigin = new URL(window.location.href).searchParams.get('origin') || '*';
-    console.log('[connect widget] onMount firing, sending ready to:', targetOrigin);
-    if (window.opener) {
-      window.opener.postMessage({ type: 'openkey:ready' }, targetOrigin);
-    } else if (window.parent !== window) {
-      window.parent.postMessage({ type: 'openkey:ready' }, targetOrigin);
+      // Listen for incoming messages
+      window.addEventListener('message', handleMessage);
+
+      // Notify parent that widget is ready (AFTER listener is set up)
+      const targetOrigin = new URL(window.location.href).searchParams.get('origin') || '*';
+      if (window.opener) {
+        window.opener.postMessage({ type: 'openkey:ready' }, targetOrigin);
+      } else if (window.parent !== window) {
+        window.parent.postMessage({ type: 'openkey:ready' }, targetOrigin);
+      }
     }
   });
 
