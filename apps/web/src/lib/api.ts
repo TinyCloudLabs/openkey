@@ -25,6 +25,7 @@ export interface EthereumKey {
   publicKey: string;
   keyIndex: number;
   label: string | null;
+  keyType: 'MANAGED' | 'EXTERNAL';
   createdAt: string;
 }
 
@@ -71,5 +72,18 @@ export const api = {
 
   async getQuote(keyId: string): Promise<{ quote: string; address: string; inTee: boolean }> {
     return fetchAPI(`/api/keys/${keyId}/quote`);
+  },
+
+  async getLinkChallenge(): Promise<{ message: string; nonce: string }> {
+    return fetchAPI('/api/keys/link/challenge', {
+      method: 'POST',
+    });
+  },
+
+  async linkWallet(data: { address: string; signature: string; message: string; label?: string }): Promise<{ key: EthereumKey }> {
+    return fetchAPI('/api/keys/link', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
   },
 };

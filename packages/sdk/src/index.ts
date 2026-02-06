@@ -1,6 +1,22 @@
 // OpenKey SDK - Browser client for third-party apps
 // Provides "Sign with OpenKey" functionality via popup or iframe
 
+export interface EIP1193Provider {
+  request(args: { method: string; params?: any[] }): Promise<any>;
+}
+
+interface EIP6963ProviderInfo {
+  uuid: string;
+  name: string;
+  icon: string;
+  rdns: string;
+}
+
+interface EIP6963ProviderDetail {
+  info: EIP6963ProviderInfo;
+  provider: EIP1193Provider;
+}
+
 export interface OpenKeyConfig {
   /** OpenKey host URL (default: https://openkey.so) */
   host?: string;
@@ -8,6 +24,8 @@ export interface OpenKeyConfig {
   appName?: string;
   /** Use popup instead of iframe (default: true) */
   usePopup?: boolean;
+  /** App-provided wallet provider for external key signing */
+  externalProvider?: EIP1193Provider;
 }
 
 export interface SignMessageRequest {
@@ -36,6 +54,7 @@ export interface SignResult {
 export interface AuthResult {
   address: string;
   keyId: string;
+  keyType: 'MANAGED' | 'EXTERNAL';
 }
 
 export interface OpenKeyError {
@@ -75,7 +94,7 @@ export interface OAuthTokenResponse {
 
 type MessageType =
   | { type: 'openkey:auth:request'; appName: string }
-  | { type: 'openkey:auth:response'; success: true; address: string; keyId: string }
+  | { type: 'openkey:auth:response'; success: true; address: string; keyId: string; keyType?: 'MANAGED' | 'EXTERNAL' }
   | { type: 'openkey:auth:response'; success: false; error: OpenKeyError }
   | { type: 'openkey:sign:request'; message: string; keyId?: string }
   | { type: 'openkey:sign:response'; success: true; signature: string; address: string }
@@ -83,6 +102,9 @@ type MessageType =
   | { type: 'openkey:signTypedData:request'; data: SignTypedDataRequest }
   | { type: 'openkey:signTypedData:response'; success: true; signature: string; address: string }
   | { type: 'openkey:signTypedData:response'; success: false; error: OpenKeyError }
+  | { type: 'openkey:link-wallet:request' }
+  | { type: 'openkey:link-wallet:response'; success: true; address: string; keyId: string }
+  | { type: 'openkey:link-wallet:response'; success: false; error: OpenKeyError }
   | { type: 'openkey:ready' }
   | { type: 'openkey:close' };
 
@@ -122,13 +144,26 @@ export class OpenKey {
   private host: string;
   private appName: string;
   private usePopup: boolean;
+  private config: OpenKeyConfig;
   private popup: Window | null = null;
   private iframe: HTMLIFrameElement | null = null;
+  private lastAuth: AuthResult | null = null;
+  private discoveredProviders: EIP6963ProviderDetail[] = [];
 
   constructor(config: OpenKeyConfig = {}) {
+    this.config = config;
     this.host = config.host || DEFAULT_HOST;
     this.appName = config.appName || window.location.hostname;
     this.usePopup = config.usePopup ?? true;
+
+    // Listen for EIP-6963 wallet announcements
+    if (typeof window !== 'undefined') {
+      this.discoveredProviders = [];
+      window.addEventListener('eip6963:announceProvider', (event: any) => {
+        this.discoveredProviders.push(event.detail);
+      });
+      window.dispatchEvent(new Event('eip6963:requestProvider'));
+    }
   }
 
   /**
@@ -136,16 +171,94 @@ export class OpenKey {
    * Opens auth flow for user to select/create a key
    */
   async connect(): Promise<AuthResult> {
-    return this.openFlow<AuthResult>('connect', {
+    const result = await this.openFlow<AuthResult>('connect', {
       type: 'openkey:auth:request',
       appName: this.appName,
+    });
+    this.lastAuth = result;
+    return result;
+  }
+
+  /**
+   * Link an external wallet to the user's OpenKey account
+   * Opens link-wallet widget flow
+   */
+  async linkWallet(): Promise<{ address: string; keyId: string }> {
+    return this.openFlow<{ address: string; keyId: string }>('link-wallet', {
+      type: 'openkey:link-wallet:request',
     });
   }
 
   /**
    * Sign a message with the user's OpenKey wallet
+   * For external keys, routes directly to the user's wallet provider
    */
   async signMessage(request: SignMessageRequest): Promise<SignResult> {
+    if (this.lastAuth?.keyType === 'EXTERNAL') {
+      return this.signWithExternalWallet(request);
+    }
+    return this.signWithPopup(request);
+  }
+
+  /**
+   * Sign typed data (EIP-712) with the user's OpenKey wallet
+   * For external keys, routes directly to the user's wallet provider
+   */
+  async signTypedData(request: SignTypedDataRequest): Promise<SignResult> {
+    if (this.lastAuth?.keyType === 'EXTERNAL') {
+      return this.signTypedDataWithExternalWallet(request);
+    }
+    return this.signTypedDataWithPopup(request);
+  }
+
+  /**
+   * Find a wallet provider that controls the given address.
+   * Checks: 1) app-provided externalProvider, 2) EIP-6963 discovered wallets, 3) window.ethereum
+   */
+  async findWalletProvider(targetAddress: string): Promise<EIP1193Provider> {
+    // 1. Try app-provided externalProvider first
+    if (this.config.externalProvider) {
+      return this.config.externalProvider;
+    }
+
+    // 2. Use EIP-6963 to discover wallets
+    for (const { provider } of this.discoveredProviders) {
+      try {
+        const accounts = await provider.request({ method: 'eth_accounts' }) as string[];
+        if (accounts.some(a => a.toLowerCase() === targetAddress.toLowerCase())) {
+          return provider;
+        }
+      } catch {}
+    }
+
+    // 3. Fall back to window.ethereum
+    if (typeof window !== 'undefined' && (window as any).ethereum) {
+      return (window as any).ethereum;
+    }
+
+    throw new Error('No wallet provider found for external key. Connect your wallet.');
+  }
+
+  private async signWithExternalWallet(request: SignMessageRequest): Promise<SignResult> {
+    const provider = await this.findWalletProvider(this.lastAuth!.address);
+    const hexMessage = this.toHex(request.message);
+    const signature = await provider.request({
+      method: 'personal_sign',
+      params: [hexMessage, this.lastAuth!.address],
+    });
+    return { signature: signature as string, address: this.lastAuth!.address };
+  }
+
+  private async signTypedDataWithExternalWallet(request: SignTypedDataRequest): Promise<SignResult> {
+    const provider = await this.findWalletProvider(this.lastAuth!.address);
+    const signature = await provider.request({
+      method: 'eth_signTypedData_v4',
+      params: [this.lastAuth!.address, JSON.stringify(request)],
+    });
+    return { signature: signature as string, address: this.lastAuth!.address };
+  }
+
+  private signWithPopup(request: SignMessageRequest): Promise<SignResult> {
     return this.openFlow<SignResult>('sign', {
       type: 'openkey:sign:request',
       message: request.message,
@@ -153,14 +266,15 @@ export class OpenKey {
     });
   }
 
-  /**
-   * Sign typed data (EIP-712) with the user's OpenKey wallet
-   */
-  async signTypedData(request: SignTypedDataRequest): Promise<SignResult> {
+  private signTypedDataWithPopup(request: SignTypedDataRequest): Promise<SignResult> {
     return this.openFlow<SignResult>('sign-typed-data', {
       type: 'openkey:signTypedData:request',
       data: request,
     });
+  }
+
+  private toHex(str: string): string {
+    return '0x' + Array.from(new TextEncoder().encode(str)).map(b => b.toString(16).padStart(2, '0')).join('');
   }
 
   /**
@@ -499,13 +613,16 @@ export class OpenKey {
       if (
         data.type === 'openkey:auth:response' ||
         data.type === 'openkey:sign:response' ||
-        data.type === 'openkey:signTypedData:response'
+        data.type === 'openkey:signTypedData:response' ||
+        data.type === 'openkey:link-wallet:response'
       ) {
         cleanup();
         this.popup?.close();
 
         if (data.success) {
           if (data.type === 'openkey:auth:response') {
+            resolve({ address: data.address, keyId: data.keyId, keyType: data.keyType || 'MANAGED' } as T);
+          } else if (data.type === 'openkey:link-wallet:response') {
             resolve({ address: data.address, keyId: data.keyId } as T);
           } else {
             resolve({ signature: data.signature, address: data.address } as T);
@@ -612,12 +729,15 @@ export class OpenKey {
       if (
         data.type === 'openkey:auth:response' ||
         data.type === 'openkey:sign:response' ||
-        data.type === 'openkey:signTypedData:response'
+        data.type === 'openkey:signTypedData:response' ||
+        data.type === 'openkey:link-wallet:response'
       ) {
         cleanup();
 
         if (data.success) {
           if (data.type === 'openkey:auth:response') {
+            resolve({ address: data.address, keyId: data.keyId, keyType: data.keyType || 'MANAGED' } as T);
+          } else if (data.type === 'openkey:link-wallet:response') {
             resolve({ address: data.address, keyId: data.keyId } as T);
           } else {
             resolve({ signature: data.signature, address: data.address } as T);
@@ -639,6 +759,67 @@ export class OpenKey {
     this.popup = null;
     this.iframe?.parentElement?.parentElement?.remove();
     this.iframe = null;
+  }
+}
+
+/**
+ * Unified EIP-1193 provider that wraps an OpenKey instance.
+ * Transparently routes signing to either OpenKey (managed keys) or the user's
+ * wallet (external keys).
+ */
+export class OpenKeyEIP1193Provider implements EIP1193Provider {
+  private openkey: OpenKey;
+  private address: string;
+  private keyId: string;
+  private keyType: 'MANAGED' | 'EXTERNAL';
+
+  constructor(openkey: OpenKey, authResult: AuthResult) {
+    this.openkey = openkey;
+    this.address = authResult.address;
+    this.keyId = authResult.keyId;
+    this.keyType = authResult.keyType;
+  }
+
+  async request({ method, params }: { method: string; params?: any[] }): Promise<any> {
+    switch (method) {
+      case 'eth_accounts':
+      case 'eth_requestAccounts':
+        return [this.address];
+
+      case 'eth_chainId':
+        return '0x1'; // mainnet
+
+      case 'personal_sign': {
+        if (this.keyType === 'EXTERNAL') {
+          const provider = await this.openkey.findWalletProvider(this.address);
+          return provider.request({ method, params });
+        }
+        // Managed key: route through OpenKey
+        const message = this.hexToString(params![0] as string);
+        const result = await this.openkey.signMessage({ message, keyId: this.keyId });
+        return result.signature;
+      }
+
+      case 'eth_signTypedData_v4': {
+        if (this.keyType === 'EXTERNAL') {
+          const provider = await this.openkey.findWalletProvider(this.address);
+          return provider.request({ method, params });
+        }
+        const data = JSON.parse(params![1] as string);
+        const result = await this.openkey.signTypedData(data);
+        return result.signature;
+      }
+
+      default:
+        throw new Error(`Unsupported method: ${method}`);
+    }
+  }
+
+  private hexToString(hex: string): string {
+    const bytes = new Uint8Array(
+      (hex.startsWith('0x') ? hex.slice(2) : hex).match(/.{1,2}/g)!.map(b => parseInt(b, 16))
+    );
+    return new TextDecoder().decode(bytes);
   }
 }
 

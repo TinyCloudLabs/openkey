@@ -81,7 +81,12 @@
       success: true,
       address: key.address,
       keyId: key.id,
+      keyType: key.keyType,
     });
+  }
+
+  function linkWallet() {
+    window.location.href = '/widget/link-wallet?origin=' + encodeURIComponent(origin);
   }
 
   function cancel() {
@@ -157,12 +162,20 @@
           class="flex justify-between items-center p-4 bg-surface-900 border border-surface-700 rounded-lg text-surface-50 cursor-pointer transition-all hover:border-primary-500"
           onclick={() => selectKey(key)}
         >
-          <span class="font-semibold">{key.label || `Key ${key.keyIndex}`}</span>
+          <span class="font-semibold flex items-center gap-2">
+            {key.label || `Key ${key.keyIndex}`}
+            {#if key.keyType === 'EXTERNAL'}
+              <span class="text-xs font-medium px-1.5 py-0.5 rounded bg-surface-700 text-surface-300">(External)</span>
+            {/if}
+          </span>
           <code class="font-mono text-surface-400 text-sm">{formatAddress(key.address)}</code>
         </button>
       {/each}
       <Button variant="secondary" onclick={generateAndSelect}>
         + Generate New Key
+      </Button>
+      <Button variant="secondary" onclick={linkWallet}>
+        Link New Wallet
       </Button>
     </div>
   {/if}

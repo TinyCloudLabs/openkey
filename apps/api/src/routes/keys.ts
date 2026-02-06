@@ -3,15 +3,133 @@ import { Hono } from 'hono';
 import { PrismaClient } from '@prisma/client';
 import { createTeeClient, seal, unseal, generatePrivateKey, getAddressFromPrivateKey } from '@openkey/tee';
 import { requireSession, type SessionContext } from '../middleware/session';
+import { verifyMessage } from 'viem';
 import type { Hex } from 'viem';
 
 const prisma = new PrismaClient();
 const tee = createTeeClient();
 
+// In-memory challenge nonce store with 5-minute TTL
+const challengeStore = new Map<string, { message: string; expiresAt: number }>();
+
+const CHALLENGE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+function cleanExpiredChallenges() {
+  const now = Date.now();
+  for (const [nonce, entry] of challengeStore) {
+    if (entry.expiresAt <= now) {
+      challengeStore.delete(nonce);
+    }
+  }
+}
+
 export const keysRouter = new Hono<SessionContext>();
 
 // All routes require authentication
 keysRouter.use('*', requireSession);
+
+// Generate a verification challenge for wallet linking
+keysRouter.post('/link/challenge', async (c) => {
+  cleanExpiredChallenges();
+
+  const nonce = crypto.randomUUID();
+  const timestamp = new Date().toISOString();
+  const message = `OpenKey Wallet Verification\nNonce: ${nonce}\nTimestamp: ${timestamp}`;
+
+  challengeStore.set(nonce, {
+    message,
+    expiresAt: Date.now() + CHALLENGE_TTL_MS,
+  });
+
+  return c.json({ message, nonce });
+});
+
+// Link an external wallet address to the user's account
+keysRouter.post('/link', async (c) => {
+  const user = c.get('user');
+  const body = await c.req.json<{
+    address: string;
+    signature: string;
+    message: string;
+    label?: string;
+  }>();
+
+  if (!body.address || !body.signature || !body.message) {
+    return c.json({ error: 'address, signature, and message are required' }, 400);
+  }
+
+  // Verify the signature matches the address
+  const isValid = await verifyMessage({
+    address: body.address as `0x${string}`,
+    message: body.message,
+    signature: body.signature as `0x${string}`,
+  });
+
+  if (!isValid) {
+    return c.json({ error: 'Invalid signature' }, 400);
+  }
+
+  // Extract nonce from message and validate against challenge store
+  const nonceMatch = body.message.match(/Nonce: ([0-9a-f-]+)/);
+  if (!nonceMatch) {
+    return c.json({ error: 'Invalid message format: missing nonce' }, 400);
+  }
+
+  const nonce = nonceMatch[1]!;
+  const challenge = challengeStore.get(nonce);
+
+  if (!challenge) {
+    return c.json({ error: 'Challenge not found or expired' }, 400);
+  }
+
+  if (challenge.expiresAt <= Date.now()) {
+    challengeStore.delete(nonce);
+    return c.json({ error: 'Challenge expired' }, 400);
+  }
+
+  // Delete the nonce after use (one-time use)
+  challengeStore.delete(nonce);
+
+  // Check if address is already linked to any user
+  const existingKey = await prisma.ethereumKey.findUnique({
+    where: { address: body.address },
+  });
+
+  if (existingKey) {
+    return c.json({ error: 'Address already linked to an account' }, 409);
+  }
+
+  // Get next key index for this user
+  const lastKey = await prisma.ethereumKey.findFirst({
+    where: { userId: user.id },
+    orderBy: { keyIndex: 'desc' },
+  });
+  const keyIndex = (lastKey?.keyIndex ?? -1) + 1;
+
+  // Create external key record
+  const key = await prisma.ethereumKey.create({
+    data: {
+      userId: user.id,
+      address: body.address,
+      publicKey: body.address,
+      keyType: 'EXTERNAL',
+      sealedBlob: null,
+      keyIndex,
+      label: body.label || `External Key ${keyIndex}`,
+    },
+    select: {
+      id: true,
+      address: true,
+      publicKey: true,
+      keyType: true,
+      keyIndex: true,
+      label: true,
+      createdAt: true,
+    },
+  });
+
+  return c.json({ key }, 201);
+});
 
 // List user's keys (excludes archived by default)
 keysRouter.get('/', async (c) => {
@@ -27,6 +145,7 @@ keysRouter.get('/', async (c) => {
       id: true,
       address: true,
       publicKey: true,
+      keyType: true,
       keyIndex: true,
       label: true,
       archivedAt: true,
@@ -94,6 +213,7 @@ keysRouter.get('/:keyId', async (c) => {
       id: true,
       address: true,
       publicKey: true,
+      keyType: true,
       keyIndex: true,
       label: true,
       createdAt: true,
@@ -143,8 +263,12 @@ keysRouter.post('/:keyId/sign', async (c) => {
     return c.json({ error: 'Key not found' }, 404);
   }
 
+  if (key.keyType === 'EXTERNAL') {
+    return c.json({ error: 'External keys must be signed client-side' }, 400);
+  }
+
   const sealingKey = await tee.deriveKey(`openkey/user/${user.id}/keys`);
-  const privateKey = await unseal(key.sealedBlob, sealingKey) as Hex;
+  const privateKey = await unseal(key.sealedBlob!, sealingKey) as Hex;
 
   const { createWalletFromPrivateKey } = await import('@openkey/tee');
   const account = createWalletFromPrivateKey(privateKey);
@@ -181,9 +305,13 @@ keysRouter.post('/:keyId/sign-typed-data', async (c) => {
     return c.json({ error: 'Key not found' }, 404);
   }
 
+  if (key.keyType === 'EXTERNAL') {
+    return c.json({ error: 'External keys must be signed client-side' }, 400);
+  }
+
   // Unseal and sign
   const sealingKey = await tee.deriveKey(`openkey/user/${user.id}/keys`);
-  const privateKey = await unseal(key.sealedBlob, sealingKey) as Hex;
+  const privateKey = await unseal(key.sealedBlob!, sealingKey) as Hex;
 
   const { createWalletFromPrivateKey } = await import('@openkey/tee');
   const account = createWalletFromPrivateKey(privateKey);

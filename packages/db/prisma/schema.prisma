@@ -103,13 +103,19 @@ model Passkey {
   @@map("passkey")
 }
 
-// Ethereum keys - private keys sealed with TEE
+enum KeyType {
+  MANAGED
+  EXTERNAL
+}
+
+// Ethereum keys - managed (sealed with TEE) or external (user-provided address)
 model EthereumKey {
   id         String    @id @default(cuid())
   userId     String
   address    String    @unique
   publicKey  String
-  sealedBlob String    // Encrypted with dstack KMS
+  sealedBlob String?   // Encrypted with dstack KMS; null for external keys
+  keyType    KeyType   @default(MANAGED)
   keyIndex   Int       @default(0)
   label      String?
   archivedAt DateTime? // Soft delete - archived keys are hidden but not deleted

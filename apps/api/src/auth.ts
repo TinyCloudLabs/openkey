@@ -104,11 +104,35 @@ export const auth = betterAuth({
       loginPage: `${origin}/auth/login`,
       consentPage: `${origin}/oauth/consent`,
       allowDynamicClientRegistration: false, // Pre-registered clients only
-      scopes: ['openid'], // Minimal identity verification
+      scopes: ['openid', 'keys'], // openid for identity, keys for user key addresses
       accessTokenExpiresIn: 60 * 60, // 1 hour in seconds
       refreshTokenExpiresIn: 60 * 60 * 24 * 7, // 7 days in seconds
       idTokenExpiresIn: 60 * 60, // 1 hour in seconds
       storeClientSecret: 'hashed',
+      async customIdTokenClaims({ user, scopes }) {
+        if (!scopes.includes('keys')) {
+          return {};
+        }
+        const keys = await prisma.ethereumKey.findMany({
+          where: {
+            userId: user.id,
+            archivedAt: null,
+          },
+          select: {
+            id: true,
+            address: true,
+            keyType: true,
+          },
+          orderBy: { keyIndex: 'asc' },
+        });
+        return {
+          keys: keys.map((k) => ({
+            address: k.address,
+            keyType: k.keyType,
+            keyId: k.id,
+          })),
+        };
+      },
     }) as any,
   ],
 
