@@ -16,12 +16,15 @@
 
   function handlePostSignIn() {
     const clientId = $page.url.searchParams.get('client_id');
+    const redirect = $page.url.searchParams.get('redirect');
     if (clientId) {
       const cleanParams = new URLSearchParams($page.url.searchParams);
       cleanParams.delete('sig');
       cleanParams.delete('exp');
       cleanParams.delete('prompt');
       window.location.href = API_BASE + '/api/auth/oauth2/authorize?' + cleanParams.toString();
+    } else if (redirect) {
+      goto(redirect);
     } else {
       goto('/dashboard');
     }
