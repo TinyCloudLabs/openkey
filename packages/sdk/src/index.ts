@@ -353,6 +353,13 @@ function generateState(): string {
   return base64UrlEncode(array);
 }
 
+class ExternalWalletError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ExternalWalletError';
+  }
+}
+
 export class OpenKey {
   private host: string;
   private appName: string;
@@ -454,27 +461,54 @@ export class OpenKey {
       } catch {}
     }
 
-    showToast('External wallet not found. Connect the wallet that owns this key and try again.', 'error');
-    throw new Error('No wallet provider found for external key. Connect your wallet.');
+    throw new ExternalWalletError('External wallet not found. Connect the wallet that owns this key and try again.');
   }
 
   private async signWithExternalWallet(request: SignMessageRequest): Promise<SignResult> {
-    const provider = await this.findWalletProvider(this.lastAuth!.address);
-    const hexMessage = this.toHex(request.message);
-    const signature = await provider.request({
-      method: 'personal_sign',
-      params: [hexMessage, this.lastAuth!.address],
-    });
-    return { signature: signature as string, address: this.lastAuth!.address };
+    let provider: EIP1193Provider;
+    try {
+      provider = await this.findWalletProvider(this.lastAuth!.address);
+    } catch (e) {
+      showToast((e as Error).message, 'error');
+      throw e;
+    }
+    try {
+      const hexMessage = this.toHex(request.message);
+      const signature = await provider.request({
+        method: 'personal_sign',
+        params: [hexMessage, this.lastAuth!.address],
+      });
+      return { signature: signature as string, address: this.lastAuth!.address };
+    } catch (e: any) {
+      const msg = e?.message?.includes('not been authorized')
+        ? 'Wallet rejected the request. Approve the connection in your wallet and try again.'
+        : e?.message || 'Signing failed';
+      showToast(msg, 'error');
+      throw new Error(msg);
+    }
   }
 
   private async signTypedDataWithExternalWallet(request: SignTypedDataRequest): Promise<SignResult> {
-    const provider = await this.findWalletProvider(this.lastAuth!.address);
-    const signature = await provider.request({
-      method: 'eth_signTypedData_v4',
-      params: [this.lastAuth!.address, JSON.stringify(request)],
-    });
-    return { signature: signature as string, address: this.lastAuth!.address };
+    let provider: EIP1193Provider;
+    try {
+      provider = await this.findWalletProvider(this.lastAuth!.address);
+    } catch (e) {
+      showToast((e as Error).message, 'error');
+      throw e;
+    }
+    try {
+      const signature = await provider.request({
+        method: 'eth_signTypedData_v4',
+        params: [this.lastAuth!.address, JSON.stringify(request)],
+      });
+      return { signature: signature as string, address: this.lastAuth!.address };
+    } catch (e: any) {
+      const msg = e?.message?.includes('not been authorized')
+        ? 'Wallet rejected the request. Approve the connection in your wallet and try again.'
+        : e?.message || 'Signing failed';
+      showToast(msg, 'error');
+      throw new Error(msg);
+    }
   }
 
   private signWithOpenKey(request: SignMessageRequest, mode?: OpenKeyMode): Promise<SignResult> {
@@ -1049,8 +1083,13 @@ export class OpenKeyEIP1193Provider implements EIP1193Provider {
 
       case 'personal_sign': {
         if (this.keyType === 'EXTERNAL') {
-          const provider = await this.openkey.findWalletProvider(this.address);
-          return provider.request({ method, params });
+          try {
+            const provider = await this.openkey.findWalletProvider(this.address);
+            return await provider.request({ method, params });
+          } catch (e: any) {
+            showToast(e?.message || 'External wallet signing failed', 'error');
+            throw e;
+          }
         }
         // Managed key: route through OpenKey
         const message = this.hexToString(params![0] as string);
@@ -1060,8 +1099,13 @@ export class OpenKeyEIP1193Provider implements EIP1193Provider {
 
       case 'eth_signTypedData_v4': {
         if (this.keyType === 'EXTERNAL') {
-          const provider = await this.openkey.findWalletProvider(this.address);
-          return provider.request({ method, params });
+          try {
+            const provider = await this.openkey.findWalletProvider(this.address);
+            return await provider.request({ method, params });
+          } catch (e: any) {
+            showToast(e?.message || 'External wallet signing failed', 'error');
+            throw e;
+          }
         }
         const data = JSON.parse(params![1] as string);
         const result = await this.openkey.signTypedData(data);
