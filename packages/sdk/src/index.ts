@@ -432,26 +432,25 @@ export class OpenKey {
       return this.config.externalProvider;
     }
 
-    // 2. Use EIP-6963 to discover wallets, requesting authorization
+    // 2. Check EIP-6963 discovered wallets silently (no popup)
     for (const { provider } of this.discoveredProviders) {
       try {
-        const accounts = await provider.request({ method: 'eth_requestAccounts' }) as string[];
+        const accounts = await provider.request({ method: 'eth_accounts' }) as string[];
         if (accounts.some(a => a.toLowerCase() === targetAddress.toLowerCase())) {
           return provider;
         }
       } catch {}
     }
 
-    // 3. Fall back to window.ethereum, requesting authorization
+    // 3. Fall back to window.ethereum silently
     if (typeof window !== 'undefined' && (window as any).ethereum) {
       const provider = (window as any).ethereum as EIP1193Provider;
       try {
-        const accounts = await provider.request({ method: 'eth_requestAccounts' }) as string[];
+        const accounts = await provider.request({ method: 'eth_accounts' }) as string[];
         if (accounts.some(a => a.toLowerCase() === targetAddress.toLowerCase())) {
           return provider;
         }
       } catch {}
-      return provider;
     }
 
     throw new Error('No wallet provider found for external key. Connect your wallet.');
