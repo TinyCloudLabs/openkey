@@ -9,7 +9,8 @@ OpenKey provides secure cryptographic key management using passkeys (WebAuthn). 
 **Key features:**
 - **Passkey-secured keys** - Keys are protected by WebAuthn, not passwords
 - **No seed phrases** - Never worry about losing or exposing recovery phrases
-- **Popup-based signing** - Clean UX with authorization popups
+- **Iframe modal signing** - Clean inline UX with auto-fallback to popup
+- **External wallet support** - Link and sign with MetaMask, Rainbow, etc.
 - **EIP-1193 compatible** - Works with ethers.js, viem, and other web3 libraries
 
 ## Installation
@@ -25,164 +26,151 @@ bun add @openkey/sdk
 ## Quick Start
 
 ```typescript
-import { OpenKey } from '@openkey/sdk';
+import { OpenKey, OpenKeyEIP1193Provider } from '@openkey/sdk';
 
-// Initialize the SDK
+// Initialize the SDK (iframe modal by default)
 const openkey = new OpenKey({
-  host: 'https://openkey.so', // Production
-  // host: 'http://localhost:5173', // Development
+  host: 'https://openkey.so',
 });
 
-// Connect to OpenKey (opens popup for user to select/create a key)
-const { address, keyId } = await openkey.connect();
-console.log('Connected:', address);
+// Connect (opens iframe modal for passkey auth + key selection)
+const authResult = await openkey.connect();
+console.log('Connected:', authResult.address, authResult.keyType);
 
-// Sign a message (opens popup for user approval)
-const signature = await openkey.signMessage({
+// Sign a message (opens iframe modal for user approval)
+const { signature } = await openkey.signMessage({
   message: 'Hello, OpenKey!',
-  keyId,
+  keyId: authResult.keyId,
 });
-console.log('Signature:', signature);
+```
+
+## UI Modes
+
+The SDK supports three UI modes for auth and signing flows:
+
+| Mode | Description |
+|------|-------------|
+| `'iframe'` (default) | Inline modal overlay. No popup blockers. Responsive (card on desktop, bottom sheet on mobile). |
+| `'popup'` | Separate browser window. Classic approach. May be blocked by browsers. |
+| `'redirect'` | Full page navigation to OpenKey. User returns after completion. |
+
+```typescript
+// Set default mode in constructor
+const openkey = new OpenKey({ mode: 'iframe' });
+
+// Override per operation
+await openkey.connect({ mode: 'popup' });
+```
+
+### Auto-fallback
+
+When using `'iframe'` mode, the SDK automatically falls back to `'popup'` if the iframe is blocked by the app's CSP. A brief toast notification ("Opening in new window...") is shown. To avoid the fallback, add to your CSP:
+
+```
+frame-src https://openkey.so;
 ```
 
 ## API Reference
 
 ### `new OpenKey(options)`
 
-Create a new OpenKey instance.
-
 ```typescript
 const openkey = new OpenKey({
-  host: 'https://openkey.so', // OpenKey server URL
+  host: 'https://openkey.so',  // OpenKey server URL
+  appName: 'My App',           // Display name in auth UI
+  mode: 'iframe',              // 'iframe' | 'popup' | 'redirect'
+  externalProvider: provider,  // Optional: app-provided wallet for external key signing
 });
 ```
 
-**Options:**
-- `host` (string): The OpenKey server URL. Use `https://openkey.so` for production.
+### `openkey.connect(opts?)`
 
-### `openkey.connect()`
-
-Opens the OpenKey popup for the user to authenticate and select a key.
+Authenticate and select a key.
 
 ```typescript
-const { address, keyId } = await openkey.connect();
+const { address, keyId, keyType } = await openkey.connect();
+// keyType: 'MANAGED' (TEE-secured) or 'EXTERNAL' (linked wallet)
 ```
 
-**Returns:**
-- `address` (string): The Ethereum address of the selected key
-- `keyId` (string): The unique identifier for the key (used in signing operations)
+### `openkey.signMessage(request, opts?)`
 
-### `openkey.signMessage(params)`
-
-Sign a message with the user's key. Opens a popup for user approval.
+Sign a message. External keys route directly to the user's wallet.
 
 ```typescript
-const signature = await openkey.signMessage({
+const { signature, address } = await openkey.signMessage({
   message: 'Hello, World!',
   keyId: 'key-id-from-connect',
 });
 ```
 
-**Parameters:**
-- `message` (string): The message to sign
-- `keyId` (string): The key ID from `connect()`
+### `openkey.signTypedData(request, opts?)`
 
-**Returns:**
-- `signature` (string): The hex-encoded signature
-
-### `openkey.signTypedData(params)`
-
-Sign EIP-712 typed data with the user's key.
+Sign EIP-712 typed data.
 
 ```typescript
-const signature = await openkey.signTypedData({
-  domain: {
-    name: 'My App',
-    version: '1',
-    chainId: 1,
-  },
-  types: {
-    Message: [{ name: 'content', type: 'string' }],
-  },
+const { signature } = await openkey.signTypedData({
+  domain: { name: 'My App', version: '1', chainId: 1 },
+  types: { Message: [{ name: 'content', type: 'string' }] },
   primaryType: 'Message',
-  message: {
-    content: 'Hello!',
-  },
+  message: { content: 'Hello!' },
   keyId: 'key-id-from-connect',
 });
 ```
 
-## Integration with ethers.js
+### `openkey.linkWallet(opts?)`
 
-OpenKey can be used as an EIP-1193 provider with ethers.js:
+Link an external wallet to the user's OpenKey account.
 
 ```typescript
-import { OpenKey } from '@openkey/sdk';
+const { address, keyId } = await openkey.linkWallet();
+```
+
+### `OpenKeyEIP1193Provider`
+
+A drop-in EIP-1193 provider that routes signing through OpenKey. Handles both managed and external keys transparently.
+
+```typescript
+import { OpenKey, OpenKeyEIP1193Provider } from '@openkey/sdk';
+
+const openkey = new OpenKey({ host: 'https://openkey.so' });
+const authResult = await openkey.connect();
+
+// Create provider that works with ethers.js, viem, etc.
+const provider = new OpenKeyEIP1193Provider(openkey, authResult);
+```
+
+## Integration with ethers.js
+
+```typescript
+import { OpenKey, OpenKeyEIP1193Provider } from '@openkey/sdk';
 import { BrowserProvider } from 'ethers';
 
-// Create OpenKey instance
 const openkey = new OpenKey({ host: 'https://openkey.so' });
+const authResult = await openkey.connect();
+const provider = new OpenKeyEIP1193Provider(openkey, authResult);
 
-// Connect and get the address
-const { address, keyId } = await openkey.connect();
-
-// Create an EIP-1193 compatible provider
-const eip1193Provider = {
-  async request({ method, params }: { method: string; params?: any[] }) {
-    switch (method) {
-      case 'eth_accounts':
-      case 'eth_requestAccounts':
-        return [address];
-      case 'eth_chainId':
-        return '0x1'; // Mainnet
-      case 'personal_sign': {
-        const message = hexToString(params![0]);
-        const result = await openkey.signMessage({ message, keyId });
-        return result.signature;
-      }
-      default:
-        throw new Error(`Unsupported method: ${method}`);
-    }
-  },
-};
-
-// Use with ethers
-const provider = new BrowserProvider(eip1193Provider);
-const signer = await provider.getSigner();
+const ethersProvider = new BrowserProvider(provider);
+const signer = await ethersProvider.getSigner();
 ```
 
 ## Integration with TinyCloud
 
-OpenKey works seamlessly with [TinyCloud](https://tinycloud.xyz) for decentralized storage:
-
 ```typescript
-import { OpenKey } from '@openkey/sdk';
+import { OpenKey, OpenKeyEIP1193Provider } from '@openkey/sdk';
 import { TinyCloudWeb } from '@tinycloud/web-sdk';
-import { BrowserProvider } from 'ethers';
+import { providers } from 'ethers';
 
-// Setup OpenKey
 const openkey = new OpenKey({ host: 'https://openkey.so' });
-const { address, keyId } = await openkey.connect();
+const authResult = await openkey.connect();
+const eip1193Provider = new OpenKeyEIP1193Provider(openkey, authResult);
+const web3Provider = new providers.Web3Provider(eip1193Provider);
 
-// Create EIP-1193 provider (see above)
-const eip1193Provider = createOpenKeyProvider(openkey, address, keyId);
-const ethersProvider = new BrowserProvider(eip1193Provider);
-
-// Initialize TinyCloud with OpenKey as the signer
 const tcw = new TinyCloudWeb({
-  providers: {
-    web3: {
-      driver: ethersProvider,
-    },
-  },
+  providers: { web3: { driver: web3Provider } },
 });
 
-// Sign in to TinyCloud (uses OpenKey for SIWE signature)
 await tcw.signIn();
-
-// Now you can use TinyCloud storage
 await tcw.kv.put('hello', 'world');
-const result = await tcw.kv.get('hello');
 ```
 
 ## Development
@@ -195,12 +183,6 @@ const openkey = new OpenKey({
 });
 ```
 
-You can also enable dev mode in your app to use local OpenKey:
-
-```javascript
-localStorage.setItem('__DEV_MODE__', 'true');
-```
-
 ## Browser Support
 
 OpenKey requires WebAuthn support:
@@ -209,17 +191,23 @@ OpenKey requires WebAuthn support:
 - Safari 13+
 - Edge 79+
 
+Iframe mode requires cross-origin WebAuthn support:
+- Chrome 84+
+- Firefox 84+
+- Safari 14.5+
+
 ## Security
 
 - Keys never leave the OpenKey TEE (Trusted Execution Environment)
 - All signing operations require explicit user approval via passkey
 - No seed phrases or private keys to manage or lose
+- Iframe communicates via `postMessage` with origin validation
+- Auto-fallback to popup ensures signing always works
 
 ## Links
 
 - [OpenKey Website](https://openkey.so)
-- [Documentation](https://docs.openkey.so)
-- [GitHub](https://github.com/AstroX11/openkey)
+- [GitHub](https://github.com/TinyCloudLabs/openkey)
 - [TinyCloud Integration](https://tinycloud.xyz)
 
 ## License
