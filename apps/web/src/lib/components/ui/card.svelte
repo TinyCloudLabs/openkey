@@ -13,7 +13,7 @@
 
 <div
   class={cn(
-    'rounded-xl border border-surface-800 bg-surface-900 p-6',
+    'rounded-2xl border border-surface-200 bg-white p-6 shadow-sm',
     className
   )}
   {...restProps}

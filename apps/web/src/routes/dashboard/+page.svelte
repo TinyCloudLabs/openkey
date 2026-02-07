@@ -11,6 +11,7 @@
   let loading = $state(true);
   let generating = $state(false);
   let error = $state('');
+  let copiedId = $state<string | null>(null);
 
   // Redirect if not logged in, load keys when session is ready
   $effect(() => {
@@ -58,77 +59,96 @@
     return `${address.slice(0, 6)}...${address.slice(-4)}`;
   }
 
-  function copyAddress(address: string) {
+  function copyAddress(address: string, keyId: string) {
     navigator.clipboard.writeText(address);
+    copiedId = keyId;
+    setTimeout(() => {
+      if (copiedId === keyId) copiedId = null;
+    }, 2000);
   }
 </script>
 
-<div class="mx-auto max-w-3xl px-4 py-8">
-  <header class="mb-8 flex items-start justify-between">
-    <div>
-      <h1 class="text-3xl font-bold text-surface-50">Dashboard</h1>
-      {#if $session.data}
-        <p class="mt-1 text-sm text-surface-400">{$session.data.user.email}</p>
-      {/if}
-    </div>
-    <div class="flex items-center gap-3">
-      <a
-        href="/dashboard/settings"
-        class="inline-flex h-9 items-center justify-center rounded-lg border border-surface-700 bg-surface-800 px-3 text-sm font-medium text-surface-50 transition-colors hover:bg-surface-700"
-      >
-        Settings
-      </a>
-      <Button variant="secondary" onclick={signOut}>Sign Out</Button>
-    </div>
-  </header>
+<div class="mx-auto max-w-3xl px-4 py-10">
+  <!-- Header -->
+  <div class="mb-8">
+    {#if $session.data}
+      <h1 class="text-2xl font-semibold text-surface-900">
+        Welcome back, {$session.data.user.name || $session.data.user.email}
+      </h1>
+      <p class="mt-1 text-sm text-surface-500">{$session.data.user.email}</p>
+    {:else}
+      <h1 class="text-2xl font-semibold text-surface-900">Dashboard</h1>
+    {/if}
+  </div>
 
+  <!-- Actions row -->
+  <div class="mb-8 flex items-center gap-3">
+    <Button variant="secondary" size="sm" href="/dashboard/settings">Settings</Button>
+    <Button variant="secondary" size="sm" onclick={signOut}>Sign Out</Button>
+  </div>
+
+  <!-- Error -->
   {#if error}
-    <div class="mb-6 rounded-lg border border-red-500/50 bg-red-500/10 p-4 text-red-400">
+    <div class="mb-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-600">
       {error}
     </div>
   {/if}
 
+  <!-- Key Management Card -->
   <Card>
     <div class="mb-6 flex items-center justify-between">
-      <h2 class="text-xl font-semibold text-surface-50">Your Keys</h2>
+      <h2 class="text-2xl font-semibold text-surface-900">Your Keys</h2>
       <Button onclick={generateKey} disabled={generating}>
         {generating ? 'Generating...' : '+ Generate Key'}
       </Button>
     </div>
 
     {#if loading}
-      <div class="py-12 text-center text-surface-400">
+      <div class="py-12 text-center text-surface-500">
         <p>Loading keys...</p>
       </div>
     {:else if keys.length === 0}
-      <div class="py-12 text-center text-surface-400">
-        <p>No keys yet. Generate your first Ethereum key.</p>
+      <div class="py-12 text-center">
+        <p class="text-surface-500">No keys yet. Generate your first Ethereum key.</p>
       </div>
     {:else}
       <div class="flex flex-col gap-3">
-        {#each keys as key}
-          <div class="flex items-center justify-between rounded-lg border border-surface-800 bg-surface-950 p-4">
-            <div>
-              <div class="font-semibold text-surface-50">
-                {key.label || `Key ${key.keyIndex}`}
+        {#each keys as key, i}
+          <div class="flex items-center justify-between rounded-xl border border-surface-200 bg-white p-4">
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-2">
+                <span class="font-medium text-surface-900">
+                  {key.label || `Key ${key.keyIndex}`}
+                </span>
+                {#if i === 0}
+                  <span class="rounded-full bg-surface-100 px-2 py-0.5 text-xs font-medium text-surface-500">
+                    Primary
+                  </span>
+                {/if}
               </div>
-              <div class="mt-1 flex items-center gap-2">
+              <div class="mt-1.5 flex items-center gap-2">
                 <code class="font-mono text-sm text-surface-400">{formatAddress(key.address)}</code>
                 <button
-                  class="rounded border border-surface-700 px-2 py-0.5 text-xs text-surface-400 transition-colors hover:border-surface-500 hover:text-surface-200"
-                  onclick={() => copyAddress(key.address)}
-                  title="Copy address"
+                  class="text-surface-400 transition-colors hover:text-surface-900"
+                  onclick={() => copyAddress(key.address, key.id)}
+                  title="Copy full address"
                 >
-                  Copy
+                  {#if copiedId === key.id}
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                      <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
+                    </svg>
+                  {:else}
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                      <path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" />
+                      <path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z" />
+                    </svg>
+                  {/if}
                 </button>
               </div>
             </div>
-            <a
-              href="/dashboard/keys/{key.id}"
-              class="inline-flex h-9 items-center justify-center rounded-lg border border-surface-700 bg-surface-800 px-3 text-sm font-medium text-surface-50 transition-colors hover:bg-surface-700"
-            >
+            <Button variant="secondary" size="sm" href="/dashboard/keys/{key.id}">
               Manage
-            </a>
+            </Button>
           </div>
         {/each}
       </div>

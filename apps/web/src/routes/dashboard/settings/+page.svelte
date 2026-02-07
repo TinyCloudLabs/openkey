@@ -146,28 +146,28 @@
 
 <div class="mx-auto max-w-3xl px-4 py-8">
   <div class="mb-6">
-    <a href="/dashboard" class="text-sm text-surface-400 hover:text-surface-200">
+    <a href="/dashboard" class="text-sm text-surface-500 hover:text-surface-700 transition-colors">
       &larr; Back to Dashboard
     </a>
   </div>
 
   <header class="mb-8">
-    <h1 class="text-3xl font-bold text-surface-50">Settings</h1>
-    <p class="mt-1 text-surface-400">Manage your account and security</p>
+    <h1 class="text-3xl font-bold text-surface-900">Settings</h1>
+    <p class="mt-1 text-surface-500">Manage your account and security</p>
   </header>
 
   {#if error}
-    <div class="mb-6 rounded-lg border border-red-500/50 bg-red-500/10 p-4 text-red-400">
+    <div class="mb-6 rounded-xl border border-red-200 bg-red-50 p-4 text-red-600 text-sm">
       {error}
-      <button onclick={() => error = ''} class="ml-2 text-red-300 hover:text-red-200">×</button>
+      <button onclick={() => error = ''} class="ml-2 text-red-400 hover:text-red-600">×</button>
     </div>
   {/if}
 
   <Card>
     <div class="mb-6 flex items-center justify-between">
       <div>
-        <h2 class="text-xl font-semibold text-surface-50">Passkeys</h2>
-        <p class="text-sm text-surface-400 mt-1">
+        <h2 class="text-xl font-semibold text-surface-900">Passkeys</h2>
+        <p class="text-sm text-surface-500 mt-1">
           Passkeys let you sign in securely without a password
         </p>
       </div>
@@ -187,7 +187,7 @@
     {:else}
       <div class="flex flex-col gap-3">
         {#each passkeys as passkey}
-          <div class="flex items-center justify-between rounded-lg border border-surface-800 bg-surface-950 p-4">
+          <div class="flex items-center justify-between rounded-xl border border-surface-200 bg-surface-50 p-4">
             <div class="flex-1">
               {#if editingId === passkey.id}
                 <div class="flex items-center gap-2">
@@ -209,10 +209,10 @@
                     {getDeviceIcon(passkey.deviceType)}
                   </span>
                   <div>
-                    <div class="font-semibold text-surface-50">
+                    <div class="font-semibold text-surface-900">
                       {passkey.name || 'Unnamed Passkey'}
                     </div>
-                    <div class="text-sm text-surface-400">
+                    <div class="text-sm text-surface-500">
                       Added {formatDate(passkey.createdAt)} · {getDeviceLabel(passkey.deviceType)}
                     </div>
                   </div>
@@ -224,14 +224,14 @@
               <div class="flex items-center gap-2">
                 <button
                   onclick={() => startEdit(passkey)}
-                  class="rounded border border-surface-700 px-3 py-1.5 text-sm text-surface-400 transition-colors hover:border-surface-500 hover:text-surface-200"
+                  class="rounded-lg border border-surface-200 bg-white px-3 py-1.5 text-sm text-surface-500 transition-colors hover:border-surface-300 hover:text-surface-700"
                 >
                   Rename
                 </button>
                 <button
                   onclick={() => deletePasskey(passkey.id)}
                   disabled={deletingId === passkey.id}
-                  class="rounded border border-red-500/50 px-3 py-1.5 text-sm text-red-400 transition-colors hover:border-red-500 hover:bg-red-500/10 disabled:opacity-50"
+                  class="rounded-lg border border-red-200 px-3 py-1.5 text-sm text-red-500 transition-colors hover:border-red-300 hover:bg-red-50 disabled:opacity-50"
                 >
                   {deletingId === passkey.id ? 'Deleting...' : 'Delete'}
                 </button>
@@ -250,11 +250,11 @@
   </Card>
 
   <Card class="mt-6">
-    <h2 class="text-xl font-semibold text-surface-50 mb-4">Account</h2>
+    <h2 class="text-xl font-semibold text-surface-900 mb-4">Account</h2>
     <div class="flex items-center justify-between">
       <div>
-        <div class="text-surface-200">{$session.data?.user.email}</div>
-        <div class="text-sm text-surface-400">Email address</div>
+        <div class="text-surface-900">{$session.data?.user.email}</div>
+        <div class="text-sm text-surface-500">Email address</div>
       </div>
     </div>
   </Card>

@@ -63,96 +63,107 @@
   }
 </script>
 
-<div class="min-h-screen bg-surface-950 flex items-center justify-center px-4">
-  <Card class="w-full max-w-md">
-    {#if step === 'email'}
-      <h1 class="text-2xl font-bold text-surface-50 text-center mb-2">Recover your account</h1>
-      <p class="text-surface-400 text-center mb-6">
-        We'll send a code to verify your identity and set up a new passkey
-      </p>
-
-      {#if error}
-        <div class="bg-red-500/20 border border-red-500 text-red-400 px-4 py-3 rounded-lg mb-6" role="alert">
-          {error}
-        </div>
-      {/if}
-
-      <form onsubmit={(e) => { e.preventDefault(); sendOTP(); }} class="flex flex-col gap-4">
-        <div>
-          <label for="email" class="sr-only">Email address</label>
-          <Input
-            id="email"
-            type="email"
-            bind:value={email}
-            placeholder="Email address"
-            required
-            disabled={loading}
-          />
-        </div>
-        <Button type="submit" disabled={loading} class="w-full">
-          {loading ? 'Sending...' : 'Send recovery code'}
-        </Button>
-      </form>
-
-      <p class="text-center text-sm text-surface-400 mt-4">
-        <a href="/auth/login" class="text-primary-400 hover:text-primary-300">Back to sign in</a>
-      </p>
-    {/if}
-
-    {#if step === 'otp'}
-      <h1 class="text-2xl font-bold text-surface-50 text-center mb-2">Check your email</h1>
-      <p class="text-surface-400 text-center mb-6">
-        Enter the 6-digit code sent to <span class="text-surface-200">{email}</span>
-      </p>
-
-      {#if error}
-        <div class="bg-red-500/20 border border-red-500 text-red-400 px-4 py-3 rounded-lg mb-6" role="alert">
-          {error}
-        </div>
-      {/if}
-
-      <form onsubmit={(e) => { e.preventDefault(); verifyOTP(); }} class="flex flex-col gap-4">
-        <div>
-          <label for="otp" class="sr-only">Verification code</label>
-          <Input
-            id="otp"
-            type="text"
-            bind:value={otp}
-            placeholder="000000"
-            maxlength={6}
-            inputmode="numeric"
-            autocomplete="one-time-code"
-            required
-            disabled={loading}
-            class="text-center text-2xl tracking-widest font-mono"
-          />
-        </div>
-        <Button type="submit" disabled={loading} class="w-full">
-          {loading ? 'Verifying...' : 'Verify'}
-        </Button>
-      </form>
-      <Button variant="ghost" onclick={() => { step = 'email'; error = ''; }} class="w-full mt-2">
-        Back
-      </Button>
-    {/if}
-
-    {#if step === 'passkey'}
-      <h1 class="text-2xl font-bold text-surface-50 text-center mb-2">Set up a new passkey</h1>
-      <p class="text-surface-400 text-center mb-6">
-        Your identity has been verified. Register a new passkey to regain access to your account.
-      </p>
-
-      {#if error}
-        <div class="bg-red-500/20 border border-red-500 text-red-400 px-4 py-3 rounded-lg mb-6" role="alert">
-          {error}
-        </div>
-      {/if}
-
-      <div class="flex flex-col gap-4">
-        <Button onclick={registerPasskey} disabled={loading} class="w-full">
-          {loading ? 'Registering...' : 'Register New Passkey'}
-        </Button>
+<div class="flex min-h-screen items-center justify-center bg-surface-50 px-4 py-12">
+  <div class="w-full max-w-md">
+    <!-- Logo mark -->
+    <div class="mb-8 flex justify-center">
+      <div class="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-surface-900">
+        <svg class="h-6 w-6 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
+        </svg>
       </div>
-    {/if}
-  </Card>
+    </div>
+
+    <Card class="w-full">
+      {#if step === 'email'}
+        <h1 class="text-2xl font-bold text-surface-900 text-center mb-2">Recover your account</h1>
+        <p class="text-surface-500 text-center mb-6">
+          We'll send a code to verify your identity and set up a new passkey
+        </p>
+
+        {#if error}
+          <div class="bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl mb-6 text-sm" role="alert">
+            {error}
+          </div>
+        {/if}
+
+        <form onsubmit={(e) => { e.preventDefault(); sendOTP(); }} class="flex flex-col gap-4">
+          <div>
+            <label for="email" class="sr-only">Email address</label>
+            <Input
+              id="email"
+              type="email"
+              bind:value={email}
+              placeholder="Email address"
+              required
+              disabled={loading}
+            />
+          </div>
+          <Button type="submit" disabled={loading} class="w-full">
+            {loading ? 'Sending...' : 'Send recovery code'}
+          </Button>
+        </form>
+
+        <p class="text-center text-sm text-surface-500 mt-4">
+          <a href="/auth/login" class="text-surface-900 font-medium hover:underline">Back to sign in</a>
+        </p>
+      {/if}
+
+      {#if step === 'otp'}
+        <h1 class="text-2xl font-bold text-surface-900 text-center mb-2">Check your email</h1>
+        <p class="text-surface-500 text-center mb-6">
+          Enter the 6-digit code sent to <span class="text-surface-900 font-medium">{email}</span>
+        </p>
+
+        {#if error}
+          <div class="bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl mb-6 text-sm" role="alert">
+            {error}
+          </div>
+        {/if}
+
+        <form onsubmit={(e) => { e.preventDefault(); verifyOTP(); }} class="flex flex-col gap-4">
+          <div>
+            <label for="otp" class="sr-only">Verification code</label>
+            <Input
+              id="otp"
+              type="text"
+              bind:value={otp}
+              placeholder="000000"
+              maxlength={6}
+              inputmode="numeric"
+              autocomplete="one-time-code"
+              required
+              disabled={loading}
+              class="text-center text-2xl tracking-widest font-mono"
+            />
+          </div>
+          <Button type="submit" disabled={loading} class="w-full">
+            {loading ? 'Verifying...' : 'Verify'}
+          </Button>
+        </form>
+        <Button variant="ghost" onclick={() => { step = 'email'; error = ''; }} class="w-full mt-2">
+          Back
+        </Button>
+      {/if}
+
+      {#if step === 'passkey'}
+        <h1 class="text-2xl font-bold text-surface-900 text-center mb-2">Set up a new passkey</h1>
+        <p class="text-surface-500 text-center mb-6">
+          Your identity has been verified. Register a new passkey to regain access to your account.
+        </p>
+
+        {#if error}
+          <div class="bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl mb-6 text-sm" role="alert">
+            {error}
+          </div>
+        {/if}
+
+        <div class="flex flex-col gap-4">
+          <Button onclick={registerPasskey} disabled={loading} class="w-full">
+            {loading ? 'Registering...' : 'Register New Passkey'}
+          </Button>
+        </div>
+      {/if}
+    </Card>
+  </div>
 </div>

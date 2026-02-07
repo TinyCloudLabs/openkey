@@ -24,10 +24,10 @@
   }: Props = $props();
 
   const variants: Record<Variant, string> = {
-    default: 'bg-primary-600 text-white hover:bg-primary-700 shadow-sm',
-    secondary: 'bg-surface-800 text-surface-50 hover:bg-surface-700 border border-surface-700',
-    ghost: 'hover:bg-surface-800 text-surface-300 hover:text-surface-50',
-    link: 'text-primary-400 underline-offset-4 hover:underline',
+    default: 'bg-surface-900 text-white hover:bg-surface-800 shadow-sm',
+    secondary: 'bg-white text-surface-600 hover:bg-surface-100 border border-surface-200',
+    ghost: 'hover:bg-surface-100 text-surface-500 hover:text-surface-900',
+    link: 'text-surface-600 underline-offset-4 hover:underline hover:text-surface-900',
   };
 
   const sizes: Record<Size, string> = {
@@ -38,8 +38,8 @@
   };
 
   const baseClasses = cn(
-    'inline-flex items-center justify-center whitespace-nowrap rounded-lg font-medium transition-colors',
-    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-950',
+    'inline-flex items-center justify-center whitespace-nowrap rounded-xl font-medium transition-colors',
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-surface-400 focus-visible:ring-offset-2 focus-visible:ring-offset-white',
     'disabled:pointer-events-none disabled:opacity-50',
     variants[variant],
     sizes[size],

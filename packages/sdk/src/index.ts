@@ -144,10 +144,10 @@ class IframeModal {
     style.textContent = `
       :host{all:initial}
       .ok-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.4);backdrop-filter:blur(4px);z-index:999999;display:flex;align-items:${isMobile ? 'flex-end' : 'center'};justify-content:center;animation:ok-fade-in 150ms ease-out}
-      .ok-card{position:relative;background:#fff;width:${isMobile ? '100%' : '400px'};border-radius:${isMobile ? '16px 16px 0 0' : '16px'};box-shadow:0 25px 50px -12px rgba(0,0,0,0.25);overflow:hidden;animation:${isMobile ? 'ok-slide-up 250ms ease-out' : 'ok-scale-in 200ms ease-out'};${isMobile ? 'max-height:85vh;' : ''}}
+      .ok-card{position:relative;background:#fafafa;width:${isMobile ? '100%' : '400px'};border-radius:${isMobile ? '16px 16px 0 0' : '16px'};box-shadow:0 25px 50px -12px rgba(0,0,0,0.25);overflow:hidden;overflow-y:auto;animation:${isMobile ? 'ok-slide-up 250ms ease-out' : 'ok-scale-in 200ms ease-out'};max-height:90vh}
       .ok-close{position:absolute;top:8px;right:8px;width:24px;height:24px;border:none;background:transparent;color:#6b7280;font-size:18px;cursor:pointer;z-index:1;display:flex;align-items:center;justify-content:center;border-radius:4px}
       .ok-close:hover{color:#111827}
-      .ok-handle{width:40px;height:4px;background:#d1d5db;border-radius:2px;margin:8px auto 0}
+      .ok-handle{width:40px;height:4px;background:#d4d4d4;border-radius:2px;margin:8px auto 0}
       iframe{border:none;width:100%;height:400px;display:block;transition:height 200ms ease}
       .ok-backdrop.ok-exit{animation:ok-fade-out 150ms ease-in}
       .ok-backdrop.ok-exit .ok-card{animation:${isMobile ? 'ok-slide-down 200ms ease-in' : 'ok-scale-out 150ms ease-in'}}
@@ -157,12 +157,6 @@ class IframeModal {
       @keyframes ok-scale-out{from{opacity:1;transform:scale(1)}to{opacity:0;transform:scale(0.95)}}
       @keyframes ok-slide-up{from{transform:translateY(100%)}to{transform:translateY(0)}}
       @keyframes ok-slide-down{from{transform:translateY(0)}to{transform:translateY(100%)}}
-      @media(prefers-color-scheme:dark){
-        .ok-card{background:#1a1a1a;box-shadow:0 25px 50px -12px rgba(0,0,0,0.5)}
-        .ok-close{color:#9ca3af}
-        .ok-close:hover{color:#f3f4f6}
-        .ok-handle{background:#4b5563}
-      }
     `;
 
     const backdrop = document.createElement('div');
@@ -200,7 +194,7 @@ class IframeModal {
       if (event.origin !== this.host) return;
       const data = event.data as MessageType;
       if (data.type === 'openkey:resize') {
-        const h = Math.min(data.height, Math.floor(window.innerHeight * 0.9), 700);
+        const h = Math.min(data.height, Math.floor(window.innerHeight * 0.85));
         this.iframe.style.height = `${h}px`;
         return;
       }

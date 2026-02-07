@@ -85,13 +85,13 @@
 
 <div class="mx-auto max-w-3xl px-4 py-8">
   <div class="mb-6">
-    <a href="/dashboard" class="text-sm text-surface-400 hover:text-surface-200">
+    <a href="/dashboard" class="text-sm text-surface-500 hover:text-surface-700 transition-colors">
       &larr; Back to Dashboard
     </a>
   </div>
 
   {#if error}
-    <div class="mb-6 rounded-lg border border-red-500/50 bg-red-500/10 p-4 text-red-400">
+    <div class="mb-6 rounded-xl border border-red-200 bg-red-50 p-4 text-red-600 text-sm">
       {error}
     </div>
   {/if}
@@ -121,7 +121,7 @@
           </div>
         {:else}
           <div class="flex items-center justify-between">
-            <h1 class="text-2xl font-bold text-surface-50">
+            <h1 class="text-2xl font-bold text-surface-900">
               {key.label || `Key ${key.keyIndex}`}
             </h1>
             <Button variant="secondary" onclick={() => editingLabel = true}>
@@ -133,9 +133,9 @@
 
       <div class="space-y-4">
         <div>
-          <label class="mb-1 block text-sm text-surface-400">Address</label>
+          <label class="mb-1 block text-sm text-surface-500">Address</label>
           <div class="flex items-center gap-2">
-            <code class="flex-1 rounded-lg bg-surface-950 p-3 font-mono text-sm text-surface-200">
+            <code class="flex-1 rounded-xl bg-surface-50 border border-surface-200 p-3 font-mono text-sm text-surface-900">
               {key.address}
             </code>
             <Button variant="secondary" onclick={() => copyToClipboard(key!.address)}>
@@ -145,9 +145,9 @@
         </div>
 
         <div>
-          <label class="mb-1 block text-sm text-surface-400">Public Key</label>
+          <label class="mb-1 block text-sm text-surface-500">Public Key</label>
           <div class="flex items-center gap-2">
-            <code class="flex-1 truncate rounded-lg bg-surface-950 p-3 font-mono text-sm text-surface-200">
+            <code class="flex-1 truncate rounded-xl bg-surface-50 border border-surface-200 p-3 font-mono text-sm text-surface-900">
               {key.publicKey}
             </code>
             <Button variant="secondary" onclick={() => copyToClipboard(key!.publicKey)}>
@@ -157,8 +157,8 @@
         </div>
 
         <div>
-          <label class="mb-1 block text-sm text-surface-400">Created</label>
-          <p class="text-surface-200">
+          <label class="mb-1 block text-sm text-surface-500">Created</label>
+          <p class="text-surface-900">
             {new Date(key.createdAt).toLocaleDateString(undefined, {
               year: 'numeric',
               month: 'long',
@@ -172,17 +172,17 @@
     </Card>
 
     <Card>
-      <h2 class="mb-4 text-xl font-semibold text-surface-50">Sign Message</h2>
+      <h2 class="mb-4 text-xl font-semibold text-surface-900">Sign Message</h2>
 
       <div class="space-y-4">
         <div>
-          <label for="message" class="mb-1 block text-sm text-surface-400">Message</label>
+          <label for="message" class="mb-1 block text-sm text-surface-500">Message</label>
           <textarea
             id="message"
             bind:value={message}
             placeholder="Enter message to sign..."
             rows={3}
-            class="w-full rounded-lg border border-surface-700 bg-surface-900 px-3 py-2 text-sm text-surface-50 placeholder:text-surface-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+            class="w-full rounded-xl border border-surface-200 bg-white px-3 py-2 text-sm text-surface-900 placeholder:text-surface-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-surface-300 focus-visible:border-surface-400"
           ></textarea>
         </div>
 
@@ -192,9 +192,9 @@
 
         {#if signature}
           <div>
-            <label class="mb-1 block text-sm text-surface-400">Signature</label>
+            <label class="mb-1 block text-sm text-surface-500">Signature</label>
             <div class="flex items-start gap-2">
-              <code class="flex-1 break-all rounded-lg bg-surface-950 p-3 font-mono text-xs text-surface-200">
+              <code class="flex-1 break-all rounded-xl bg-surface-50 border border-surface-200 p-3 font-mono text-xs text-surface-900">
                 {signature}
               </code>
               <Button variant="secondary" onclick={() => copyToClipboard(signature)}>
