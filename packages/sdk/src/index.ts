@@ -318,12 +318,13 @@ class WalletPicker {
   }
 }
 
-function showToast() {
+function showToast(message = 'Opening in new window\u2026', variant: 'info' | 'error' = 'info') {
+  const bg = variant === 'error' ? '#dc2626' : '#1f2937';
   const root = document.createElement('div');
   const shadow = root.attachShadow({ mode: 'closed' });
-  shadow.innerHTML = `<style>:host{all:initial}.ok-toast{position:fixed;top:16px;right:16px;z-index:1000000;background:#1f2937;color:#f9fafb;padding:10px 16px;border-radius:8px;font:14px/1.4 system-ui,sans-serif;box-shadow:0 4px 12px rgba(0,0,0,0.15);animation:ok-t-in 200ms ease-out}@keyframes ok-t-in{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}</style><div class="ok-toast">Opening in new window\u2026</div>`;
+  shadow.innerHTML = `<style>:host{all:initial}.ok-toast{position:fixed;top:16px;right:16px;z-index:1000000;background:${bg};color:#f9fafb;padding:10px 16px;border-radius:8px;font:14px/1.4 system-ui,sans-serif;box-shadow:0 4px 12px rgba(0,0,0,0.15);animation:ok-t-in 200ms ease-out;max-width:360px}@keyframes ok-t-in{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}</style><div class="ok-toast">${message}</div>`;
   document.body.appendChild(root);
-  setTimeout(() => root.remove(), 3000);
+  setTimeout(() => root.remove(), 4000);
 }
 
 // ======= PKCE Utilities =======
@@ -453,6 +454,7 @@ export class OpenKey {
       } catch {}
     }
 
+    showToast('External wallet not found. Connect the wallet that owns this key and try again.', 'error');
     throw new Error('No wallet provider found for external key. Connect your wallet.');
   }
 
