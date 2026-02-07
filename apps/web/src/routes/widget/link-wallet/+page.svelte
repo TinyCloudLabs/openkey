@@ -5,6 +5,18 @@
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
 
+  interface EIP6963ProviderInfo {
+    uuid: string;
+    name: string;
+    icon: string;
+    rdns: string;
+  }
+
+  interface EIP6963ProviderDetail {
+    info: EIP6963ProviderInfo;
+    provider: any;
+  }
+
   const session = authClient.useSession();
 
   let loading = $state(false);
@@ -13,6 +25,8 @@
   let connectedAddress = $state('');
   let initialized = $state(false);
   let requestReceived = $state(false);
+  let wallets = $state<EIP6963ProviderDetail[]>([]);
+  let selectedWallet = $state<EIP6963ProviderDetail | null>(null);
 
   const origin = $page.url.searchParams.get('origin') || '*';
 
@@ -24,6 +38,15 @@
 
       // Listen for incoming messages
       window.addEventListener('message', handleMessage);
+
+      // Discover wallets via EIP-6963
+      window.addEventListener('eip6963:announceProvider', ((event: CustomEvent<EIP6963ProviderDetail>) => {
+        const detail = event.detail;
+        if (!wallets.find(w => w.info.uuid === detail.info.uuid)) {
+          wallets = [...wallets, detail];
+        }
+      }) as EventListener);
+      window.dispatchEvent(new Event('eip6963:requestProvider'));
 
       // Notify parent that widget is ready (AFTER listener is set up)
       const targetOrigin = new URL(window.location.href).searchParams.get('origin') || '*';
@@ -41,9 +64,20 @@
     }
   }
 
+  function selectWallet(wallet: EIP6963ProviderDetail) {
+    selectedWallet = wallet;
+    error = '';
+  }
+
+  function getProvider(): any {
+    if (selectedWallet) return selectedWallet.provider;
+    return window.ethereum;
+  }
+
   async function connectAndLink() {
-    if (!window.ethereum) {
-      error = 'MetaMask or compatible wallet not detected. Please install MetaMask and try again.';
+    const provider = getProvider();
+    if (!provider) {
+      error = 'No wallet detected. Please install a browser wallet and try again.';
       return;
     }
 
@@ -51,8 +85,8 @@
     error = '';
 
     try {
-      // Step 1: Connect to MetaMask
-      const accounts: string[] = await window.ethereum.request({ method: 'eth_requestAccounts' });
+      // Step 1: Connect to selected wallet
+      const accounts: string[] = await provider.request({ method: 'eth_requestAccounts' });
       if (!accounts || accounts.length === 0) {
         throw new Error('No accounts returned from wallet');
       }
@@ -62,8 +96,8 @@
       // Step 2: Get challenge from server
       const challenge = await api.getLinkChallenge();
 
-      // Step 3: Sign challenge with MetaMask
-      const signature: string = await window.ethereum.request({
+      // Step 3: Sign challenge with selected wallet
+      const signature: string = await provider.request({
         method: 'personal_sign',
         params: [challenge.message, account],
       });
@@ -75,16 +109,10 @@
         message: challenge.message,
       });
 
-      // Step 5: Send success response to parent
-      sendResponse({
-        type: 'openkey:link-wallet:response',
-        success: true,
-        address: account,
-        keyId: result.key.id,
-      });
-      sendClose();
+      // Step 5: Navigate back to connect page so user selects the newly linked key.
+      // This ensures the connect flow resolves with keyType: 'EXTERNAL' via auth:response.
+      window.location.href = '/widget/connect?origin=' + encodeURIComponent(origin);
     } catch (e: any) {
-      // MetaMask user rejection
       if (e.code === 4001) {
         error = 'Wallet connection was rejected.';
       } else {
@@ -153,7 +181,7 @@
   {:else}
     <div class="flex flex-col gap-4 flex-1">
       <p class="text-surface-400">
-        Connect an external wallet (e.g. MetaMask) to link it to your OpenKey account. You'll be asked to sign a verification message.
+        Select a wallet to link to your OpenKey account. You'll be asked to sign a verification message.
       </p>
 
       {#if error}
@@ -162,9 +190,32 @@
         </Card>
       {/if}
 
+      {#if wallets.length > 0}
+        <div class="flex flex-col gap-2">
+          {#each wallets as wallet}
+            <button
+              class="flex items-center gap-3 p-3 rounded-lg border transition-colors w-full text-left cursor-pointer
+                {selectedWallet?.info.uuid === wallet.info.uuid
+                  ? 'border-primary-500 bg-primary-500/10'
+                  : 'border-surface-700 bg-surface-800 hover:border-surface-500'}"
+              onclick={() => selectWallet(wallet)}
+            >
+              <img src={wallet.info.icon} alt={wallet.info.name} class="w-8 h-8 rounded" />
+              <span class="text-surface-50 font-medium">{wallet.info.name}</span>
+            </button>
+          {/each}
+        </div>
+      {:else if window.ethereum}
+        <p class="text-surface-500 text-sm">Using default browser wallet.</p>
+      {:else}
+        <Card class="bg-yellow-500/10 border-yellow-500 text-yellow-500 p-4">
+          No wallet detected. Please install a browser wallet.
+        </Card>
+      {/if}
+
       <div class="flex gap-3 mt-auto">
         <Button variant="secondary" class="flex-1" onclick={cancel}>Cancel</Button>
-        <Button class="flex-1" onclick={connectAndLink} disabled={linking}>
+        <Button class="flex-1" onclick={connectAndLink} disabled={linking || (wallets.length > 0 && !selectedWallet)}>
           {linking ? 'Linking...' : 'Connect Wallet'}
         </Button>
       </div>
