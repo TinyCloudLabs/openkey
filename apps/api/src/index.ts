@@ -6,6 +6,7 @@ import { auth } from './auth';
 import { keysRouter } from './routes/keys';
 import { accountRouter } from './routes/account';
 import { oauthAdminRouter } from './routes/oauth-admin';
+import { passkeyProxyRouter } from './routes/passkey-proxy';
 
 // Create Hono app
 const app = new Hono();
@@ -44,6 +45,9 @@ app.route('/api/keys', keysRouter);
 
 // Account management routes
 app.route('/api/account', accountRouter);
+
+// Passkey proxy routes (for iframe embed mode)
+app.route('/api/passkey', passkeyProxyRouter);
 
 // OAuth admin routes (protected by ADMIN_API_KEY)
 app.route('/api/admin/oauth', oauthAdminRouter);

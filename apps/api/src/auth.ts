@@ -3,7 +3,7 @@
 import { betterAuth } from 'better-auth';
 import { prismaAdapter } from 'better-auth/adapters/prisma';
 import { passkey } from '@better-auth/passkey';
-import { emailOTP, jwt } from 'better-auth/plugins';
+import { bearer, emailOTP, jwt } from 'better-auth/plugins';
 import { oauthProvider } from '@better-auth/oauth-provider';
 import { Resend } from 'resend';
 import { PrismaClient } from '@prisma/client';
@@ -94,6 +94,9 @@ export const auth = betterAuth({
       otpLength: 6,
       expiresIn: 300, // 5 minutes
     }),
+
+    // Bearer plugin - returns session token in set-auth-token header
+    bearer(),
 
     // JWT plugin (required for OAuth provider)
     jwt(),

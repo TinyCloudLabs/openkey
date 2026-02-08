@@ -2,9 +2,11 @@
   import { page } from '$app/stores';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
+  import { isEmbedContext, embedSignInPasskey, clearSessionToken, getSessionToken } from '$lib/embed-passkey';
   import Button from '$lib/components/ui/button.svelte';
 
   const session = authClient.useSession();
+  const inIframe = typeof window !== 'undefined' && isEmbedContext();
 
   let keys = $state<EthereumKey[]>([]);
   let loading = $state(true);
@@ -15,6 +17,11 @@
   let initialized = $state(false);
   let contentEl = $state<HTMLDivElement | undefined>(undefined);
   let signingIn = $state(false);
+  // Track embed auth separately since better-auth session store won't update
+  let embedAuthenticated = $state(false);
+
+  // Derived: whether user is authenticated (either via cookies or embed token)
+  const isAuthenticated = $derived(inIframe ? embedAuthenticated : !!$session.data);
 
   const origin = $page.url.searchParams.get('origin') || '*';
 
@@ -42,7 +49,7 @@
 
   // Reactively load keys when session becomes available
   $effect(() => {
-    if ($session.data && !keysLoaded) {
+    if (isAuthenticated && !keysLoaded) {
       keysLoaded = true;
       loadKeys();
     }
@@ -87,13 +94,17 @@
 
   function selectKey(key: EthereumKey) {
     selectedKey = key;
-    sendResponse({
+    const response: Record<string, any> = {
       type: 'openkey:auth:response',
       success: true,
       address: key.address,
       keyId: key.id,
       keyType: key.keyType,
-    });
+    };
+    // Pass session token so SDK can relay it to subsequent iframes
+    const token = getSessionToken();
+    if (token) response.sessionToken = token;
+    sendResponse(response);
   }
 
   function linkWallet() {
@@ -126,9 +137,14 @@
     signingIn = true;
     error = '';
     try {
-      const result = await authClient.signIn.passkey();
-      if (result.error) {
-        error = result.error.message || 'Passkey sign-in failed';
+      if (inIframe) {
+        await embedSignInPasskey();
+        embedAuthenticated = true;
+      } else {
+        const result = await authClient.signIn.passkey();
+        if (result.error) {
+          error = result.error.message || 'Passkey sign-in failed';
+        }
       }
     } catch (e: any) {
       error = e.message || 'Passkey sign-in failed';
@@ -151,7 +167,7 @@
 
   <!-- Card body -->
   <div class="bg-white border border-surface-200 rounded-2xl shadow-sm p-5">
-    {#if !$session.data}
+    {#if !isAuthenticated}
       <div class="flex flex-col items-center justify-center text-center py-2">
         <p class="text-surface-500 text-sm mb-4">Sign in with your passkey to continue</p>
 
@@ -220,9 +236,18 @@
     {/if}
   </div>
 
-  {#if $session.data}
+  {#if isAuthenticated}
     <button
-      onclick={() => authClient.signOut()}
+      onclick={() => {
+        if (inIframe) {
+          clearSessionToken();
+          embedAuthenticated = false;
+          keysLoaded = false;
+          keys = [];
+        } else {
+          authClient.signOut();
+        }
+      }}
       class="text-xs text-surface-400 hover:text-surface-600 transition-colors bg-transparent border-none cursor-pointer mx-auto block"
     >
       Sign out
