@@ -2,7 +2,7 @@
   import { page } from '$app/stores';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
-  import { isEmbedContext, embedSignInPasskey, clearSessionToken } from '$lib/embed-passkey';
+  import { isEmbedContext, embedSignInPasskey, clearSessionToken, getSessionToken } from '$lib/embed-passkey';
   import Button from '$lib/components/ui/button.svelte';
 
   const session = authClient.useSession();
@@ -94,13 +94,17 @@
 
   function selectKey(key: EthereumKey) {
     selectedKey = key;
-    sendResponse({
+    const response: Record<string, any> = {
       type: 'openkey:auth:response',
       success: true,
       address: key.address,
       keyId: key.id,
       keyType: key.keyType,
-    });
+    };
+    // Pass session token so SDK can relay it to subsequent iframes
+    const token = getSessionToken();
+    if (token) response.sessionToken = token;
+    sendResponse(response);
   }
 
   function linkWallet() {

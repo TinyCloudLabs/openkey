@@ -2,7 +2,7 @@
   import { page } from '$app/stores';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
-  import { isEmbedContext, embedSignInPasskey } from '$lib/embed-passkey';
+  import { isEmbedContext, embedSignInPasskey, setSessionToken } from '$lib/embed-passkey';
   import Button from '$lib/components/ui/button.svelte';
 
   const session = authClient.useSession();
@@ -72,6 +72,12 @@
       message = event.data.message;
       keyId = event.data.keyId || null;
       keyFetched = false;
+
+      // Receive session token from SDK (relayed from connect flow)
+      if (event.data.sessionToken && inIframe) {
+        setSessionToken(event.data.sessionToken);
+        embedAuthenticated = true;
+      }
 
       if (keyId && isAuthenticated) {
         try {

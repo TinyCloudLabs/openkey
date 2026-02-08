@@ -96,12 +96,12 @@ export interface OAuthTokenResponse {
 
 type MessageType =
   | { type: 'openkey:auth:request'; appName: string }
-  | { type: 'openkey:auth:response'; success: true; address: string; keyId: string; keyType?: 'MANAGED' | 'EXTERNAL' }
+  | { type: 'openkey:auth:response'; success: true; address: string; keyId: string; keyType?: 'MANAGED' | 'EXTERNAL'; sessionToken?: string }
   | { type: 'openkey:auth:response'; success: false; error: OpenKeyError }
-  | { type: 'openkey:sign:request'; message: string; keyId?: string }
+  | { type: 'openkey:sign:request'; message: string; keyId?: string; sessionToken?: string }
   | { type: 'openkey:sign:response'; success: true; signature: string; address: string }
   | { type: 'openkey:sign:response'; success: false; error: OpenKeyError }
-  | { type: 'openkey:signTypedData:request'; data: SignTypedDataRequest }
+  | { type: 'openkey:signTypedData:request'; data: SignTypedDataRequest; sessionToken?: string }
   | { type: 'openkey:signTypedData:response'; success: true; signature: string; address: string }
   | { type: 'openkey:signTypedData:response'; success: false; error: OpenKeyError }
   | { type: 'openkey:link-wallet:request' }
@@ -368,6 +368,7 @@ export class OpenKey {
   private popup: Window | null = null;
   private lastAuth: AuthResult | null = null;
   private discoveredProviders: EIP6963ProviderDetail[] = [];
+  private sessionToken: string | null = null;
 
   constructor(config: OpenKeyConfig = {}) {
     this.config = config;
@@ -516,6 +517,7 @@ export class OpenKey {
       type: 'openkey:sign:request',
       message: request.message,
       keyId: request.keyId,
+      sessionToken: this.sessionToken || undefined,
     }, mode);
   }
 
@@ -523,6 +525,7 @@ export class OpenKey {
     return this.openFlow<SignResult>('sign-typed-data', {
       type: 'openkey:signTypedData:request',
       data: request,
+      sessionToken: this.sessionToken || undefined,
     }, mode);
   }
 
@@ -861,6 +864,7 @@ export class OpenKey {
               cleanup();
               if (data.success) {
                 if (data.type === 'openkey:auth:response') {
+                  if (data.sessionToken) this.sessionToken = data.sessionToken;
                   resolve({ address: data.address, keyId: data.keyId, keyType: data.keyType || 'MANAGED' } as T);
                 } else if (data.type === 'openkey:link-wallet:response') {
                   resolve({ address: data.address, keyId: data.keyId } as T);
@@ -1030,6 +1034,7 @@ export class OpenKey {
 
         if (data.success) {
           if (data.type === 'openkey:auth:response') {
+            if (data.sessionToken) this.sessionToken = data.sessionToken;
             resolve({ address: data.address, keyId: data.keyId, keyType: data.keyType || 'MANAGED' } as T);
           } else if (data.type === 'openkey:link-wallet:response') {
             resolve({ address: data.address, keyId: data.keyId } as T);
