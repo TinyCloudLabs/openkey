@@ -1,14 +1,24 @@
 // API client for key management
+import { getSessionToken } from '$lib/embed-passkey';
+
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
 async function fetchAPI<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(options.headers as Record<string, string>),
+  };
+
+  // In embed context, use bearer token instead of cookies
+  const sessionToken = getSessionToken();
+  if (sessionToken) {
+    headers['Authorization'] = `Bearer ${sessionToken}`;
+  }
+
   const res = await fetch(`${API_URL}${path}`, {
     ...options,
-    credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers,
-    },
+    credentials: sessionToken ? 'omit' : 'include',
+    headers,
   });
 
   if (!res.ok) {

@@ -2,9 +2,11 @@
   import { page } from '$app/stores';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
+  import { isEmbedContext, embedSignInPasskey } from '$lib/embed-passkey';
   import Button from '$lib/components/ui/button.svelte';
 
   const session = authClient.useSession();
+  const inIframe = typeof window !== 'undefined' && isEmbedContext();
 
   let typedData = $state<{
     domain: any;
@@ -22,6 +24,9 @@
   let initialized = $state(false);
   let contentEl = $state<HTMLDivElement | undefined>(undefined);
   let signingIn = $state(false);
+  let embedAuthenticated = $state(false);
+
+  const isAuthenticated = $derived(inIframe ? embedAuthenticated : !!$session.data);
 
   const origin = $page.url.searchParams.get('origin') || '*';
 
@@ -49,7 +54,7 @@
 
   // Reactively update loading state when session becomes available
   $effect(() => {
-    if ($session.data && !sessionChecked) {
+    if (isAuthenticated && !sessionChecked) {
       sessionChecked = true;
       loading = false;
     }
@@ -57,7 +62,7 @@
 
   // Reactively fetch key when session becomes available and we have a keyId
   $effect(() => {
-    if ($session.data && keyId && !keyFetched && !key) {
+    if (isAuthenticated && keyId && !keyFetched && !key) {
       keyFetched = true;
       api.getKey(keyId).then(result => {
         key = result.key;
@@ -73,7 +78,7 @@
       keyId = event.data.data?.keyId || null;
       keyFetched = false;
 
-      if (keyId && $session.data) {
+      if (keyId && isAuthenticated) {
         try {
           const result = await api.getKey(keyId);
           key = result.key;
@@ -132,9 +137,14 @@
     signingIn = true;
     error = '';
     try {
-      const result = await authClient.signIn.passkey();
-      if (result.error) {
-        error = result.error.message || 'Passkey sign-in failed';
+      if (inIframe) {
+        await embedSignInPasskey();
+        embedAuthenticated = true;
+      } else {
+        const result = await authClient.signIn.passkey();
+        if (result.error) {
+          error = result.error.message || 'Passkey sign-in failed';
+        }
       }
     } catch (e: any) {
       error = e.message || 'Passkey sign-in failed';
@@ -157,7 +167,7 @@
 
   <!-- Card body -->
   <div class="bg-white border border-surface-200 rounded-2xl shadow-sm p-5">
-    {#if !$session.data}
+    {#if !isAuthenticated}
       <div class="flex flex-col items-center justify-center text-center py-2">
         <p class="text-surface-500 text-sm mb-4">Sign in with your passkey to sign data</p>
 
