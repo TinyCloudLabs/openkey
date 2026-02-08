@@ -1,5 +1,11 @@
 # @openkey/sdk
 
+## 0.3.0
+
+### Minor Changes
+
+- 2b5a9d6: Add cookieless passkey authentication for iframe embed mode. Proxy endpoints replace cookie-based challenge storage with token-based flow, and bearer plugin enables session persistence without third-party cookies.
+
 ## 0.2.1
 
 ### Patch Changes
