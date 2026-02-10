@@ -72,7 +72,7 @@ describe('OpenKeyRN', () => {
       expect(url.searchParams.get('client_id')).toBe(TEST_CLIENT_ID);
       expect(url.searchParams.get('redirect_uri')).toBe(TEST_REDIRECT_URI);
       expect(url.searchParams.get('response_type')).toBe('code');
-      expect(url.searchParams.get('scope')).toBe('openid');
+      expect(url.searchParams.get('scope')).toBe('openid email keys offline_access');
       expect(url.searchParams.get('code_challenge_method')).toBe('S256');
       expect(url.searchParams.get('state')).toBeTruthy();
       expect(url.searchParams.get('code_challenge')).toBeTruthy();

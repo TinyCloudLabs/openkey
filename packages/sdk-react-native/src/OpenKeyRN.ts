@@ -20,6 +20,8 @@ export interface OpenKeyRNFullConfig extends OpenKeyRNConfig {
   sha256?: SHA256Fn;
   /** Timeout in ms for the sign-in flow (default: 300_000 = 5 minutes) */
   timeoutMs?: number;
+  /** RFC 9700 resource indicator. When set, access tokens are JWTs with this audience. Defaults to host URL. */
+  resource?: string;
 }
 
 interface PendingFlow {
@@ -41,6 +43,7 @@ export class OpenKeyRN {
   private host: string;
   private clientId: string;
   private redirectUri: string;
+  private resource: string;
   private openBrowser: BrowserOpener;
   private sha256?: SHA256Fn;
   private timeoutMs: number;
@@ -51,6 +54,7 @@ export class OpenKeyRN {
     this.host = config.host;
     this.clientId = config.clientId;
     this.redirectUri = config.redirectUri;
+    this.resource = config.resource ?? config.host;
     this.openBrowser = config.openBrowser;
     this.sha256 = config.sha256;
     this.timeoutMs = config.timeoutMs ?? 300_000;
@@ -72,7 +76,7 @@ export class OpenKeyRN {
       client_id: this.clientId,
       redirect_uri: this.redirectUri,
       response_type: 'code',
-      scope: 'openid',
+      scope: 'openid email keys offline_access',
       state,
       code_challenge: challenge,
       code_challenge_method: 'S256',
@@ -165,6 +169,7 @@ export class OpenKeyRN {
       redirect_uri: this.redirectUri,
       client_id: this.clientId,
       code_verifier: verifier,
+      resource: this.resource,
     });
 
     let response: Response;
@@ -206,6 +211,7 @@ export class OpenKeyRN {
       grant_type: 'refresh_token',
       refresh_token: refreshToken,
       client_id: this.clientId,
+      resource: this.resource,
     });
 
     let response: Response;

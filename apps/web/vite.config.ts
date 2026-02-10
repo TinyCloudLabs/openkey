@@ -6,6 +6,7 @@ export default defineConfig({
   plugins: [tailwindcss(), sveltekit()],
   server: {
     port: 5173,
+    allowedHosts: ['openkey-web.ngrok.app'],
     proxy: {
       '/api': {
         target: 'http://localhost:3001',

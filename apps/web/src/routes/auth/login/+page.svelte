@@ -8,7 +8,7 @@
 
   let loading = $state(false);
   let error = $state('');
-  let showDevMode = $state(false);
+  let showDevMode = $state(import.meta.env.DEV);
 
   // Dev-only email OTP state
   let devEmail = $state('');
