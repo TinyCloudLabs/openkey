@@ -2,7 +2,7 @@
 // Used for admin dashboard database access on Cloudflare Pages
 import { Pool, neonConfig } from '@neondatabase/serverless';
 import { PrismaClient } from '@prisma/client';
-import { getPrismaClient } from '@prisma/adapter-neon';
+import { PrismaNeon } from '@prisma/adapter-neon';
 import ws from 'ws';
 
 // Configure Neon for serverless environments
@@ -18,7 +18,7 @@ function getPrisma() {
     }
 
     const pool = new Pool({ connectionString: databaseUrl });
-    const adapter = getPrismaClient(pool);
+    const adapter = new PrismaNeon(pool);
     prisma = new PrismaClient({ adapter });
   }
   return prisma;
