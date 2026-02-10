@@ -13,6 +13,7 @@
     "@neondatabase/serverless": "^0.10.0",
     "@prisma/adapter-neon": "^6.0.0",
     "@openkey/db": "workspace:*",
+    "better-auth": "1.5.0-beta.10",
     "stripe": "^17.0.0"
   },
   "devDependencies": {

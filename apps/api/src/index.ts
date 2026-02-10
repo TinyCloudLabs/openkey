@@ -7,6 +7,7 @@ import { keysRouter } from './routes/keys';
 import { accountRouter } from './routes/account';
 import { oauthAdminRouter } from './routes/oauth-admin';
 import { passkeyProxyRouter } from './routes/passkey-proxy';
+import { trackAuthorization, trackTokenExchange, trackUniqueUser } from './analytics';
 
 // Create Hono app
 const app = new Hono();
@@ -33,6 +34,56 @@ app.use('*', cors({
 
 // Health check
 app.get('/health', (c) => c.json({ status: 'ok', tee: process.env.TEE_MODE || 'development' }));
+
+// Analytics middleware - runs BEFORE auth handler, uses next() to capture response
+// POST /api/auth/oauth2/token → track token exchange + unique user
+app.use('/api/auth/oauth2/token', async (c, next) => {
+  // Clone the request body before auth handler consumes it
+  const clonedReq = c.req.raw.clone();
+
+  await next();
+
+  // Only track successful token exchanges
+  if (c.res.status !== 200) return;
+
+  try {
+    const body = await clonedReq.formData().catch(() => null);
+    const clientId = body?.get('client_id') as string | null;
+
+    if (clientId) {
+      // Fire-and-forget: don't block the response
+      trackTokenExchange(clientId).catch((err) =>
+        console.error('[Analytics] Failed to track token exchange:', err)
+      );
+      trackUniqueUser(clientId).catch((err) =>
+        console.error('[Analytics] Failed to track unique user:', err)
+      );
+    }
+  } catch (err) {
+    console.error('[Analytics] Error in token tracking middleware:', err);
+  }
+});
+
+// GET /api/auth/oauth2/authorize → track authorization on successful redirect
+app.use('/api/auth/oauth2/authorize', async (c, next) => {
+  await next();
+
+  // Successful authorizations result in a 302 redirect with a code
+  if (c.res.status !== 302) return;
+
+  try {
+    const url = new URL(c.req.url);
+    const clientId = url.searchParams.get('client_id');
+
+    if (clientId) {
+      trackAuthorization(clientId).catch((err) =>
+        console.error('[Analytics] Failed to track authorization:', err)
+      );
+    }
+  } catch (err) {
+    console.error('[Analytics] Error in authorization tracking middleware:', err);
+  }
+});
 
 // better-auth routes - mount at /api/auth
 // Avoid async/await wrapper to preserve AsyncLocalStorage context in Bun
