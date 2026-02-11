@@ -1,25 +1,28 @@
-// Prisma with Neon serverless driver
-// Used for admin dashboard database access on Cloudflare Pages
-import { Pool, neonConfig } from '@neondatabase/serverless';
+// Prisma database client for admin dashboard
+// Uses Neon serverless adapter in production (Cloudflare Pages),
+// direct PrismaClient in development
 import { PrismaClient } from '@prisma/client';
-import { PrismaNeon } from '@prisma/adapter-neon';
-import ws from 'ws';
-
-// Configure Neon for serverless environments
-neonConfig.webSocketConstructor = ws;
+import { DATABASE_URL } from '$env/static/private';
+import { dev } from '$app/environment';
 
 let prisma: PrismaClient;
 
 function getPrisma() {
   if (!prisma) {
-    const databaseUrl = process.env.DATABASE_URL;
-    if (!databaseUrl) {
+    if (!DATABASE_URL) {
       throw new Error('DATABASE_URL environment variable is not set');
     }
 
-    const pool = new Pool({ connectionString: databaseUrl });
-    const adapter = new PrismaNeon(pool);
-    prisma = new PrismaClient({ adapter });
+    if (dev) {
+      // Development: direct connection (no adapter needed)
+      prisma = new PrismaClient({
+        datasourceUrl: DATABASE_URL,
+      });
+    } else {
+      // Production (Cloudflare Pages): use Neon serverless adapter
+      // Dynamic import to avoid loading ws in production
+      throw new Error('Production Neon adapter not yet configured - use db:push for now');
+    }
   }
   return prisma;
 }

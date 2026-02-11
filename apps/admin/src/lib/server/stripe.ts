@@ -1,17 +1,31 @@
 import Stripe from 'stripe';
+import { env } from '$env/dynamic/private';
 
-if (!process.env.STRIPE_SECRET_KEY) {
-  throw new Error('STRIPE_SECRET_KEY is required');
+let _stripe: Stripe;
+
+function getStripe(): Stripe {
+  if (!_stripe) {
+    if (!env.STRIPE_SECRET_KEY) {
+      throw new Error('STRIPE_SECRET_KEY is required');
+    }
+    _stripe = new Stripe(env.STRIPE_SECRET_KEY);
+  }
+  return _stripe;
 }
 
-export const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+// Lazy-initialized Stripe client - only throws when actually used
+export const stripe = new Proxy({} as Stripe, {
+  get(_target, prop) {
+    return (getStripe() as any)[prop];
+  },
+});
 
 // Plan configuration - Price IDs from Stripe Dashboard
 export const PLANS = {
   FREE: { name: 'Free', priceId: null, mauLimit: 1000, appLimit: 3 },
-  PRO: { name: 'Pro', priceId: process.env.STRIPE_PRICE_ID_PRO || '', mauLimit: 10000, appLimit: 10 },
-  SCALE: { name: 'Scale', priceId: process.env.STRIPE_PRICE_ID_SCALE || '', mauLimit: 100000, appLimit: 50 },
-  ENTERPRISE: { name: 'Enterprise', priceId: process.env.STRIPE_PRICE_ID_ENTERPRISE || '', mauLimit: -1, appLimit: -1 },
+  PRO: { name: 'Pro', priceId: env.STRIPE_PRICE_ID_PRO || '', mauLimit: 10000, appLimit: 10 },
+  SCALE: { name: 'Scale', priceId: env.STRIPE_PRICE_ID_SCALE || '', mauLimit: 100000, appLimit: 50 },
+  ENTERPRISE: { name: 'Enterprise', priceId: env.STRIPE_PRICE_ID_ENTERPRISE || '', mauLimit: -1, appLimit: -1 },
 } as const;
 
 export type PlanKey = keyof typeof PLANS;
