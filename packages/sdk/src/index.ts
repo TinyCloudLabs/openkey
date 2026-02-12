@@ -112,9 +112,6 @@ type MessageType =
   | { type: 'openkey:link-wallet:delegate' }
   | { type: 'openkey:link-wallet:result'; success: true; address: string; keyId: string }
   | { type: 'openkey:link-wallet:result'; success: false; error: OpenKeyError }
-  | { type: 'openkey:register:delegate' }
-  | { type: 'openkey:register:result'; success: true; sessionToken: string }
-  | { type: 'openkey:register:result'; success: false; error: OpenKeyError }
   | { type: 'openkey:resize'; height: number }
   | { type: 'openkey:ready' }
   | { type: 'openkey:close' };
@@ -876,11 +873,6 @@ export class OpenKey {
             return;
           }
 
-          if (data.type === 'openkey:register:delegate') {
-            this.handleRegisterDelegation(modal!);
-            return;
-          }
-
           if (
             data.type === 'openkey:auth:response' ||
             data.type === 'openkey:sign:response' ||
@@ -974,69 +966,6 @@ export class OpenKey {
         }
       },
     });
-  }
-
-  /**
-   * Opens a popup window for registration (email/Google OAuth + passkey).
-   * Google OAuth cannot run inside an iframe (X-Frame-Options: DENY), so
-   * the embed widget delegates registration to the parent SDK which opens
-   * it in a popup. After registration completes, the popup posts the
-   * session token back, which we relay to the embed iframe.
-   */
-  private handleRegisterDelegation(modal: IframeModal) {
-    const sendResult = (result: MessageType) => modal.postMessage(result);
-
-    const left = window.screenX + (window.outerWidth - POPUP_WIDTH) / 2;
-    const top = window.screenY + (window.outerHeight - POPUP_HEIGHT) / 2;
-
-    const registerUrl = `${this.host}/auth/register?embed=true`;
-    const popup = window.open(
-      registerUrl,
-      'openkey-register',
-      `width=${POPUP_WIDTH},height=${POPUP_HEIGHT},left=${left},top=${top},popup=true`
-    );
-
-    if (!popup) {
-      sendResult({
-        type: 'openkey:register:result',
-        success: false,
-        error: { code: 'POPUP_BLOCKED', message: 'Popup was blocked. Please allow popups for this site.' },
-      });
-      return;
-    }
-
-    const handleMessage = (event: MessageEvent) => {
-      if (event.origin !== this.host) return;
-      const data = event.data;
-      if (data?.type === 'openkey:register:complete') {
-        window.removeEventListener('message', handleMessage);
-        clearInterval(pollClosed);
-        popup.close();
-        if (data.sessionToken) {
-          sendResult({ type: 'openkey:register:result', success: true, sessionToken: data.sessionToken });
-        } else {
-          sendResult({
-            type: 'openkey:register:result',
-            success: false,
-            error: { code: 'UNKNOWN', message: 'Registration completed but no session token received' },
-          });
-        }
-      }
-    };
-
-    window.addEventListener('message', handleMessage);
-
-    const pollClosed = setInterval(() => {
-      if (popup.closed) {
-        window.removeEventListener('message', handleMessage);
-        clearInterval(pollClosed);
-        sendResult({
-          type: 'openkey:register:result',
-          success: false,
-          error: { code: 'USER_CANCELLED', message: 'Registration cancelled' },
-        });
-      }
-    }, 500);
   }
 
   private openPopup<T>(
