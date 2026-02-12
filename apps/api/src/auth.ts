@@ -8,6 +8,7 @@ import { oauthProvider } from '@better-auth/oauth-provider';
 import { Resend } from 'resend';
 import { PrismaClient } from '@prisma/client';
 import { createTeeClient, seal, generatePrivateKey, getAddressFromPrivateKey } from '@openkey/tee';
+import { buildEmailClaims } from './claims';
 
 const prisma = new PrismaClient({
   log: ['error', 'warn'],
@@ -114,28 +115,34 @@ export const auth = betterAuth({
       idTokenExpiresIn: 60 * 60, // 1 hour in seconds
       storeClientSecret: 'hashed',
       async customIdTokenClaims({ user, scopes }) {
-        if (!scopes.includes('keys')) {
-          return {};
-        }
-        const keys = await prisma.ethereumKey.findMany({
-          where: {
-            userId: user.id,
-            archivedAt: null,
-          },
-          select: {
-            id: true,
-            address: true,
-            keyType: true,
-          },
-          orderBy: { keyIndex: 'asc' },
-        });
-        return {
-          keys: keys.map((k) => ({
+        const claims: Record<string, unknown> = {};
+
+        // Email claims
+        const emailClaims = buildEmailClaims(user, scopes);
+        Object.assign(claims, emailClaims);
+
+        // Keys claims (requires prisma)
+        if (scopes.includes('keys')) {
+          const keys = await prisma.ethereumKey.findMany({
+            where: {
+              userId: user.id,
+              archivedAt: null,
+            },
+            select: {
+              id: true,
+              address: true,
+              keyType: true,
+            },
+            orderBy: { keyIndex: 'asc' },
+          });
+          claims.keys = keys.map((k) => ({
             address: k.address,
             keyType: k.keyType,
             keyId: k.id,
-          })),
-        };
+          }));
+        }
+
+        return claims;
       },
       async customUserInfoClaims({ user, scopes }) {
         const claims: Record<string, unknown> = {};
