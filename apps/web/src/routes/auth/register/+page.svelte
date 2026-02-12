@@ -11,6 +11,9 @@
   let loading = $state(false);
   let error = $state('');
 
+  // Detect if opened as a popup from the embed SDK flow
+  const isEmbedPopup = typeof window !== 'undefined' && !!window.opener && new URLSearchParams(window.location.search).has('embed');
+
   async function sendOTP() {
     loading = true;
     error = '';
@@ -52,6 +55,17 @@
       const result = await authClient.passkey.addPasskey();
       if (result?.error) {
         error = result.error.message || 'Failed to register passkey';
+      } else if (isEmbedPopup) {
+        // Opened from embed SDK — get a bearer token from the session and
+        // post it back to the parent SDK so the embed iframe can authenticate.
+        // The bearer() plugin returns the token via the set-auth-token header.
+        const sessionRes = await fetch('/api/auth/get-session', {
+          method: 'GET',
+          credentials: 'include',
+          headers: { 'Accept': 'application/json' },
+        });
+        const sessionToken = sessionRes.headers.get('set-auth-token');
+        window.opener.postMessage({ type: 'openkey:register:complete', sessionToken }, '*');
       } else {
         goto('/dashboard');
       }
@@ -63,7 +77,8 @@
   }
 
   async function googleSignIn() {
-    await authClient.signIn.social({ provider: 'google', callbackURL: `${window.location.origin}/auth/register?step=passkey` });
+    const callbackParams = isEmbedPopup ? 'step=passkey&embed=true' : 'step=passkey';
+    await authClient.signIn.social({ provider: 'google', callbackURL: `${window.location.origin}/auth/register?${callbackParams}` });
   }
 
   // Handle callback from Google OAuth
