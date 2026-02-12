@@ -10,8 +10,7 @@ declare global {
 				name?: string | null;
 			} | null;
 			session: {
-				id: string;
-				token: string;
+				accessToken: string;
 			} | null;
 			developerAccount: {
 				id: string;

@@ -1,6 +1,6 @@
 import type { Handle } from '@sveltejs/kit';
 import { redirect } from '@sveltejs/kit';
-import { validateSession } from '$lib/server/auth';
+import { validateToken } from '$lib/server/auth';
 import { db } from '$lib/server/db';
 
 export const handle: Handle = async ({ event, resolve }) => {
@@ -9,24 +9,30 @@ export const handle: Handle = async ({ event, resolve }) => {
   event.locals.session = null;
   event.locals.developerAccount = null;
 
-  // Skip auth for login page, static assets, and Stripe webhook (called by Stripe directly)
+  // Skip auth for login page, auth callback, static assets, and Stripe webhook
   const { pathname } = event.url;
-  if (pathname === '/login' || pathname.startsWith('/_app/') || pathname.startsWith('/favicon') || pathname === '/api/stripe/webhook') {
+  if (
+    pathname === '/login' ||
+    pathname.startsWith('/auth/') ||
+    pathname.startsWith('/_app/') ||
+    pathname.startsWith('/favicon') ||
+    pathname === '/api/stripe/webhook'
+  ) {
     return resolve(event);
   }
 
-  // Validate session by forwarding cookies to the main API
-  const cookieHeader = event.request.headers.get('cookie');
-  const authResult = await validateSession(cookieHeader);
+  // Validate session using OAuth access token from cookie
+  const accessToken = event.cookies.get('admin_session');
+  const authResult = await validateToken(accessToken);
 
   if (!authResult) {
     // Not authenticated - redirect to login
     throw redirect(302, '/login');
   }
 
-  // Store user and session in locals
+  // Store user in locals
   event.locals.user = authResult.user;
-  event.locals.session = authResult.session;
+  event.locals.session = { accessToken: accessToken! };
 
   // Ensure DeveloperAccount exists (upsert on first authenticated request)
   try {

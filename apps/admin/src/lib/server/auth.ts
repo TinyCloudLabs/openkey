@@ -1,4 +1,4 @@
-// Server-side auth helper - validates sessions by calling the main API
+// Server-side auth helper - validates OAuth access tokens
 const API_URL = process.env.API_URL || 'http://localhost:3001';
 
 interface AuthUser {
@@ -7,30 +7,24 @@ interface AuthUser {
   name?: string | null;
 }
 
-interface AuthSession {
-  id: string;
-  token: string;
-}
-
-interface GetSessionResponse {
+interface ValidateTokenResponse {
   user: AuthUser;
-  session: AuthSession;
 }
 
 /**
- * Validate a session by forwarding cookies to the main API's get-session endpoint.
- * Returns the user and session if valid, null otherwise.
+ * Validate an OAuth access token by calling the API's userinfo endpoint.
+ * Returns the user if valid, null otherwise.
  */
-export async function validateSession(
-  cookieHeader: string | null
-): Promise<GetSessionResponse | null> {
-  if (!cookieHeader) {
+export async function validateToken(
+  accessToken: string | undefined
+): Promise<ValidateTokenResponse | null> {
+  if (!accessToken) {
     return null;
   }
 
-  const response = await fetch(`${API_URL}/api/auth/get-session`, {
+  const response = await fetch(`${API_URL}/api/auth/oauth2/userinfo`, {
     headers: {
-      cookie: cookieHeader,
+      Authorization: `Bearer ${accessToken}`,
     },
   });
 
@@ -40,20 +34,15 @@ export async function validateSession(
 
   const data = await response.json();
 
-  // better-auth returns null/empty if no valid session
-  if (!data || !data.user) {
+  if (!data || !data.sub) {
     return null;
   }
 
   return {
     user: {
-      id: data.user.id,
-      email: data.user.email,
-      name: data.user.name ?? null,
-    },
-    session: {
-      id: data.session.id,
-      token: data.session.token,
+      id: data.sub,
+      email: data.email,
+      name: data.name ?? null,
     },
   };
 }

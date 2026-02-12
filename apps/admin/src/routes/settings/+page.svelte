@@ -1,21 +1,6 @@
 <script lang="ts">
-  import { authClient } from '$lib/auth-client';
-  import { goto } from '$app/navigation';
-
   let { data } = $props();
   let signingOut = $state(false);
-
-  async function handleSignOut() {
-    signingOut = true;
-    try {
-      await authClient.signOut();
-      goto('/login');
-    } catch (e) {
-      console.error('Sign out failed:', e);
-      // Force redirect even if signOut call fails
-      goto('/login');
-    }
-  }
 
   let planLabel = $derived(
     data.developerAccount?.plan === 'FREE'
@@ -138,13 +123,16 @@
         <h2 class="text-lg font-semibold text-surface-900">Sign Out</h2>
         <p class="text-sm text-surface-500">End your current session.</p>
       </div>
-      <button
-        onclick={handleSignOut}
-        disabled={signingOut}
-        class="px-4 py-2 bg-red-50 text-red-700 text-sm rounded-md font-medium hover:bg-red-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-      >
-        {signingOut ? 'Signing out...' : 'Sign Out'}
-      </button>
+      <form method="POST" action="/auth/signout">
+        <button
+          type="submit"
+          disabled={signingOut}
+          onclick={() => { signingOut = true; }}
+          class="px-4 py-2 bg-red-50 text-red-700 text-sm rounded-md font-medium hover:bg-red-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {signingOut ? 'Signing out...' : 'Sign Out'}
+        </button>
+      </form>
     </div>
   </div>
 </div>
