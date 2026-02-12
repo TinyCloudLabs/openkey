@@ -12,8 +12,10 @@
       "require": "./dist/index.cjs"
     }
   },
+  "license": "EGPL",
   "files": [
-    "dist"
+    "dist",
+    "LICENSE.md"
   ],
   "publishConfig": {
     "access": "public",
