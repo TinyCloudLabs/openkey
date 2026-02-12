@@ -22,6 +22,8 @@ export type OpenKeyMode = 'iframe' | 'popup' | 'redirect';
 export interface OpenKeyConfig {
   /** OpenKey host URL (default: https://openkey.so) */
   host?: string;
+  /** OAuth API host URL (default: derived from host by prefixing 'api.') */
+  oauthHost?: string;
   /** App identifier for display */
   appName?: string;
   /** UI mode: 'iframe' (default), 'popup', or 'redirect' */
@@ -362,6 +364,7 @@ class ExternalWalletError extends Error {
 
 export class OpenKey {
   private host: string;
+  private oauthHost: string;
   private appName: string;
   private mode: OpenKeyMode;
   private config: OpenKeyConfig;
@@ -373,6 +376,7 @@ export class OpenKey {
   constructor(config: OpenKeyConfig = {}) {
     this.config = config;
     this.host = config.host || DEFAULT_HOST;
+    this.oauthHost = config.oauthHost || this.deriveOAuthHost(this.host);
     this.appName = config.appName || window.location.hostname;
     this.mode = config.mode ?? 'iframe';
 
@@ -383,6 +387,21 @@ export class OpenKey {
         this.discoveredProviders.push(event.detail);
       });
       window.dispatchEvent(new Event('eip6963:requestProvider'));
+    }
+  }
+
+  /**
+   * Derive the OAuth API host from the main host by prefixing 'api.'
+   * @param host - The main host URL
+   * @returns The derived OAuth API host URL
+   */
+  private deriveOAuthHost(host: string): string {
+    try {
+      const url = new URL(host);
+      url.hostname = 'api.' + url.hostname;
+      return url.toString().replace(/\/$/, '');
+    } catch {
+      return 'https://api.openkey.so';
     }
   }
 
@@ -575,7 +594,7 @@ export class OpenKey {
       );
 
       // Build authorization URL
-      const authUrl = new URL(`${this.host}/api/auth/oauth2/authorize`);
+      const authUrl = new URL(`${this.oauthHost}/api/auth/oauth2/authorize`);
       authUrl.searchParams.set('client_id', config.clientId);
       authUrl.searchParams.set('redirect_uri', config.redirectUri);
       authUrl.searchParams.set('response_type', 'code');
@@ -605,7 +624,7 @@ export class OpenKey {
 
       const { verifier } = JSON.parse(stored);
 
-      const response = await fetch(`${this.host}/api/auth/oauth2/token`, {
+      const response = await fetch(`${this.oauthHost}/api/auth/oauth2/token`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
