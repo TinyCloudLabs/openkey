@@ -107,7 +107,8 @@ export const auth = betterAuth({
       loginPage: `${origin}/auth/login`,
       consentPage: `${origin}/oauth/consent`,
       allowDynamicClientRegistration: false, // Pre-registered clients only
-      scopes: ['openid', 'keys'], // openid for identity, keys for user key addresses
+      validAudiences: [baseURL], // Accept baseURL as valid resource/audience for JWT access tokens
+      scopes: ['openid', 'email', 'keys', 'offline_access'], // openid for identity, email for userinfo, keys for user key addresses, offline_access for refresh tokens
       accessTokenExpiresIn: 60 * 60, // 1 hour in seconds
       refreshTokenExpiresIn: 60 * 60 * 24 * 7, // 7 days in seconds
       idTokenExpiresIn: 60 * 60, // 1 hour in seconds
@@ -135,6 +136,26 @@ export const auth = betterAuth({
             keyId: k.id,
           })),
         };
+      },
+      async customUserInfoClaims({ user, scopes }) {
+        const claims: Record<string, unknown> = {};
+        if (scopes.includes('email')) {
+          claims.email = user.email;
+          claims.emailVerified = user.emailVerified;
+        }
+        if (scopes.includes('keys')) {
+          const keys = await prisma.ethereumKey.findMany({
+            where: { userId: user.id, archivedAt: null },
+            select: { id: true, address: true, keyType: true },
+            orderBy: { keyIndex: 'asc' },
+          });
+          claims.keys = keys.map((k) => ({
+            address: k.address,
+            keyType: k.keyType,
+            keyId: k.id,
+          }));
+        }
+        return claims;
       },
     }) as any,
   ],
