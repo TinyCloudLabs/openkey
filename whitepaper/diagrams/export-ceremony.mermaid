@@ -1,0 +1,51 @@
+sequenceDiagram
+    participant User
+    participant Client as Client App
+    participant API as OpenKey API
+    participant TEE
+    participant Email as Email Service
+
+    User->>API: Request export for key
+    activate API
+    API->>Email: Send export notification
+    API-->>User: Require 2FA verification
+    deactivate API
+
+    User->>API: Email confirmation code
+    activate API
+    API-->>User: Email verified
+    deactivate API
+
+    User->>API: Passkey verification
+    activate API
+    API->>API: Start 24-hour timer
+    API-->>User: Export request confirmed
+    deactivate API
+
+    Note over API,Email: 24-hour delay window<br/>User can cancel anytime
+
+    API->>Email: Send reminder at T-4h
+    Email-->>User: "Export will complete in 4 hours"
+
+    Note over User,Client: After 24 hours elapsed
+
+    User->>Client: Generate ephemeral X25519 keypair
+    activate Client
+    Client->>API: Execute export (with ephemeral public key)
+    deactivate Client
+
+    activate API
+    API->>TEE: Unseal private key for export
+    activate TEE
+    TEE->>TEE: HPKE encrypt to recipient public key
+    TEE-->>API: HPKE ciphertext
+    deactivate TEE
+    API-->>Client: Encrypted blob
+    deactivate API
+
+    activate Client
+    Client->>Client: Decrypt with ephemeral private key
+    Client-->>User: Display raw private key
+    deactivate Client
+
+    Note over User: Key is now exported<br/>User must securely store it

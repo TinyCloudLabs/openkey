@@ -1,0 +1,69 @@
+graph TB
+    subgraph VerifiedAttestation["Verified by Remote Attestation"]
+        TDX["Intel TDX Hardware<br/>(Hardware Root of Trust)"]
+        KMS["dstack KMS<br/>(Key Derivation from Hardware Fuses)"]
+        OKApp["OpenKey Application<br/>(Runs in TEE)"]
+    end
+
+    subgraph VerifiedOpenSource["Verified by Open Source Code"]
+        Code["OpenKey Source Code<br/>(github.com/tinycloudlabs/openkey)"]
+        Build["Reproducible Builds<br/>(Docker + Attestation)"]
+    end
+
+    subgraph TrustAssumption["Trust Assumptions"]
+        Intel["Intel Corporation<br/>(TDX Implementation)"]
+        Operator["OpenKey Operator<br/>(Runs Attested Instance)"]
+    end
+
+    subgraph DataLayer["Data Storage"]
+        DB[(PostgreSQL<br/>Sealed Blobs Only)]
+    end
+
+    subgraph UserLayer["User Trust Model"]
+        User["User with Passkey"]
+        App["Third-Party Application"]
+    end
+
+    subgraph SelfHosting["Self-Hosting Model"]
+        Op1["Operator A<br/>(node1.openkey.xyz)"]
+        Op2["Operator B<br/>(node2.openkey.xyz)"]
+        Op3["Operator C<br/>(self-hosted.example.com)"]
+        Discovery["OIDC Discovery<br/>(Apps whitelist trusted instances)"]
+    end
+
+    TDX --> KMS
+    KMS --> OKApp
+    OKApp --> DB
+
+    Code --> Build
+    Build --> OKApp
+
+    Intel -.->|Hardware guarantee| TDX
+    Operator -.->|Operates| OKApp
+
+    User -->|Authenticates via passkey| OKApp
+    User -->|Verifies attestation| VerifiedAttestation
+    User -->|Reviews code| VerifiedOpenSource
+
+    App -->|Whitelists via OIDC| Discovery
+    Discovery --> Op1
+    Discovery --> Op2
+    Discovery --> Op3
+
+    Op1 --> OKApp
+    Op2 --> OKApp
+    Op3 --> OKApp
+
+    classDef teeStyle fill:#e1f5ff,stroke:#0288d1,stroke-width:3px
+    classDef trustStyle fill:#fff3e0,stroke:#f57c00,stroke-width:2px
+    classDef verifyStyle fill:#e8f5e9,stroke:#388e3c,stroke-width:2px
+    classDef userStyle fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+
+    class TDX,KMS,OKApp teeStyle
+    class Intel,Operator trustStyle
+    class Code,Build verifyStyle
+    class User,App userStyle
+
+    note1["Trust Model:<br/>1. User trusts Intel TDX + Open Source (verified via attestation)<br/>2. OpenKey trusts dstack KMS + Intel TDX<br/>3. dstack trusts Intel TDX hardware fuses<br/>4. Apps whitelist trusted OpenKey instances"]
+
+    style note1 fill:#fff9c4,stroke:#f57f17,stroke-width:2px
