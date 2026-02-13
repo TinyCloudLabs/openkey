@@ -22,6 +22,8 @@ export type OpenKeyMode = 'iframe' | 'popup' | 'redirect';
 export interface OpenKeyConfig {
   /** OpenKey host URL (default: https://openkey.so) */
   host?: string;
+  /** OAuth API host URL (default: derived from host by prefixing 'api.') */
+  oauthHost?: string;
   /** App identifier for display */
   appName?: string;
   /** UI mode: 'iframe' (default), 'popup', or 'redirect' */
@@ -110,6 +112,9 @@ type MessageType =
   | { type: 'openkey:link-wallet:delegate' }
   | { type: 'openkey:link-wallet:result'; success: true; address: string; keyId: string }
   | { type: 'openkey:link-wallet:result'; success: false; error: OpenKeyError }
+  | { type: 'openkey:register:delegate' }
+  | { type: 'openkey:register:result'; success: true; sessionToken: string }
+  | { type: 'openkey:register:result'; success: false; error: OpenKeyError }
   | { type: 'openkey:resize'; height: number }
   | { type: 'openkey:ready' }
   | { type: 'openkey:close' };
@@ -362,6 +367,7 @@ class ExternalWalletError extends Error {
 
 export class OpenKey {
   private host: string;
+  private oauthHost: string;
   private appName: string;
   private mode: OpenKeyMode;
   private config: OpenKeyConfig;
@@ -373,6 +379,7 @@ export class OpenKey {
   constructor(config: OpenKeyConfig = {}) {
     this.config = config;
     this.host = config.host || DEFAULT_HOST;
+    this.oauthHost = config.oauthHost || this.deriveOAuthHost(this.host);
     this.appName = config.appName || window.location.hostname;
     this.mode = config.mode ?? 'iframe';
 
@@ -383,6 +390,21 @@ export class OpenKey {
         this.discoveredProviders.push(event.detail);
       });
       window.dispatchEvent(new Event('eip6963:requestProvider'));
+    }
+  }
+
+  /**
+   * Derive the OAuth API host from the main host by prefixing 'api.'
+   * @param host - The main host URL
+   * @returns The derived OAuth API host URL
+   */
+  private deriveOAuthHost(host: string): string {
+    try {
+      const url = new URL(host);
+      url.hostname = 'api.' + url.hostname;
+      return url.toString().replace(/\/$/, '');
+    } catch {
+      return 'https://api.openkey.so';
     }
   }
 
@@ -575,7 +597,7 @@ export class OpenKey {
       );
 
       // Build authorization URL
-      const authUrl = new URL(`${this.host}/api/auth/oauth2/authorize`);
+      const authUrl = new URL(`${this.oauthHost}/api/auth/oauth2/authorize`);
       authUrl.searchParams.set('client_id', config.clientId);
       authUrl.searchParams.set('redirect_uri', config.redirectUri);
       authUrl.searchParams.set('response_type', 'code');
@@ -605,7 +627,7 @@ export class OpenKey {
 
       const { verifier } = JSON.parse(stored);
 
-      const response = await fetch(`${this.host}/api/auth/oauth2/token`, {
+      const response = await fetch(`${this.oauthHost}/api/auth/oauth2/token`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
@@ -854,6 +876,11 @@ export class OpenKey {
             return;
           }
 
+          if (data.type === 'openkey:register:delegate') {
+            this.handleRegisterDelegation(modal!);
+            return;
+          }
+
           if (
             data.type === 'openkey:auth:response' ||
             data.type === 'openkey:sign:response' ||
@@ -947,6 +974,69 @@ export class OpenKey {
         }
       },
     });
+  }
+
+  /**
+   * Opens a popup window for registration (email/Google OAuth + passkey).
+   * Google OAuth cannot run inside an iframe (X-Frame-Options: DENY), so
+   * the embed widget delegates registration to the parent SDK which opens
+   * it in a popup. After registration completes, the popup posts the
+   * session token back, which we relay to the embed iframe.
+   */
+  private handleRegisterDelegation(modal: IframeModal) {
+    const sendResult = (result: MessageType) => modal.postMessage(result);
+
+    const left = window.screenX + (window.outerWidth - POPUP_WIDTH) / 2;
+    const top = window.screenY + (window.outerHeight - POPUP_HEIGHT) / 2;
+
+    const registerUrl = `${this.host}/auth/register?embed=true`;
+    const popup = window.open(
+      registerUrl,
+      'openkey-register',
+      `width=${POPUP_WIDTH},height=${POPUP_HEIGHT},left=${left},top=${top},popup=true`
+    );
+
+    if (!popup) {
+      sendResult({
+        type: 'openkey:register:result',
+        success: false,
+        error: { code: 'POPUP_BLOCKED', message: 'Popup was blocked. Please allow popups for this site.' },
+      });
+      return;
+    }
+
+    const handleMessage = (event: MessageEvent) => {
+      if (event.origin !== this.host) return;
+      const data = event.data;
+      if (data?.type === 'openkey:register:complete') {
+        window.removeEventListener('message', handleMessage);
+        clearInterval(pollClosed);
+        popup.close();
+        if (data.sessionToken) {
+          sendResult({ type: 'openkey:register:result', success: true, sessionToken: data.sessionToken });
+        } else {
+          sendResult({
+            type: 'openkey:register:result',
+            success: false,
+            error: { code: 'UNKNOWN', message: 'Registration completed but no session token received' },
+          });
+        }
+      }
+    };
+
+    window.addEventListener('message', handleMessage);
+
+    const pollClosed = setInterval(() => {
+      if (popup.closed) {
+        window.removeEventListener('message', handleMessage);
+        clearInterval(pollClosed);
+        sendResult({
+          type: 'openkey:register:result',
+          success: false,
+          error: { code: 'USER_CANCELLED', message: 'Registration cancelled' },
+        });
+      }
+    }, 500);
   }
 
   private openPopup<T>(

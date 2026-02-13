@@ -2,7 +2,7 @@
   import { page } from '$app/stores';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
-  import { isEmbedContext, embedSignInPasskey, clearSessionToken, getSessionToken } from '$lib/embed-passkey';
+  import { isEmbedContext, embedSignInPasskey, clearSessionToken, getSessionToken, setSessionToken } from '$lib/embed-passkey';
   import Button from '$lib/components/ui/button.svelte';
 
   const session = authClient.useSession();
@@ -66,6 +66,13 @@
         loadKeys().then(() => { keysLoaded = true; });
       }
     }
+    if (event.data?.type === 'openkey:register:result') {
+      if (event.data.success && event.data.sessionToken) {
+        // Registration completed in popup — store token and mark authenticated
+        setSessionToken(event.data.sessionToken);
+        embedAuthenticated = true;
+      }
+    }
   }
 
   async function loadKeys() {
@@ -110,6 +117,16 @@
   function linkWallet() {
     // In embed mode, delegate wallet linking to parent SDK
     window.parent.postMessage({ type: 'openkey:link-wallet:delegate' }, origin);
+  }
+
+  function register() {
+    if (inIframe) {
+      // Delegate registration to parent SDK — it opens a popup so that
+      // Google OAuth (which blocks iframes) works correctly.
+      window.parent.postMessage({ type: 'openkey:register:delegate' }, origin);
+    } else {
+      window.location.href = '/auth/register';
+    }
   }
 
   function cancel() {
@@ -254,7 +271,7 @@
     </button>
   {:else}
     <div class="flex items-center justify-center gap-3 text-sm">
-      <a href="/auth/register" class="text-surface-500 hover:text-surface-700 transition-colors">Register</a>
+      <button onclick={register} class="text-surface-500 hover:text-surface-700 transition-colors bg-transparent border-none cursor-pointer text-sm">Register</button>
       <span class="text-surface-300">|</span>
       <a href="/auth/recover" class="text-surface-500 hover:text-surface-700 transition-colors">Recover account</a>
     </div>

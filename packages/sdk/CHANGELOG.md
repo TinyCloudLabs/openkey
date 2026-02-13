@@ -1,5 +1,13 @@
 # @openkey/sdk
 
+## 0.4.0
+
+### Minor Changes
+
+- db03d51: Delegate registration to popup when in iframe embed mode
+
+  Google OAuth sends `X-Frame-Options: DENY`, preventing sign-in with Google inside an iframe. The embed connect widget now delegates registration to the parent SDK, which opens a popup window for the full registration flow (email/Google + passkey). After completion, the session token is relayed back to the iframe via postMessage.
+
 ## 0.3.0
 
 ### Minor Changes

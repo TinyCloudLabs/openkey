@@ -39,3 +39,6 @@ packages/db/prisma/*.db-journal
 
 # Bun
 bun.lockb
+
+# Scratch / demo
+demo*/
