@@ -55,7 +55,7 @@ const { values: preValues } = parseArgs({
 const envPath = (preValues.env || '.env') as string;
 const resolvedEnvPath = resolve(process.cwd(), envPath);
 if (existsSync(resolvedEnvPath)) {
-  config({ path: resolvedEnvPath });
+  config({ path: resolvedEnvPath, override: true });
   console.log(`Loaded environment from ${envPath}`);
 } else if (preValues.env) {
   console.error(`Error: Env file not found: ${envPath}`);
