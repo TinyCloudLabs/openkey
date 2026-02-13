@@ -5,11 +5,11 @@ import { defineConfig } from 'vite';
 export default defineConfig({
   plugins: [tailwindcss(), sveltekit()],
   server: {
-    port: 5173,
+    port: parseInt(process.env.WEB_PORT || '5173'),
     allowedHosts: ['openkey-web.ngrok.app'],
     proxy: {
       '/api': {
-        target: 'http://localhost:3001',
+        target: process.env.API_URL || `http://localhost:${process.env.API_PORT || '3001'}`,
         changeOrigin: true,
       },
     },

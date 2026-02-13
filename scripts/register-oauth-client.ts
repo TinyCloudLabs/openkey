@@ -12,18 +12,18 @@
  *   --redirect-uri, -r  Redirect URI (required, can be specified multiple times)
  *   --uri, -u           Application website URL
  *   --icon, -i          Application icon URL
- *   --type, -t          Application type: spa, web, native (default: spa)
+ *   --type, -t          Application type: spa, native (default: spa)
  *   --list, -l          List all registered clients
  *   --delete, -d        Delete a client by client ID
  *   --env, -e           Path to .env file (default: .env)
  *   --help, -h          Show help
  *
  * Environment (from .env file or shell):
- *   OPENKEY_API_URL     OpenKey API URL (default: http://localhost:3001)
+ *   OPENKEY_API_URL     OpenKey API URL (falls back to API_URL from .env)
  *   ADMIN_API_KEY       Admin API key (required)
  *
  * Examples:
- *   # Register a web app (uses .env by default)
+ *   # Register an app (uses .env by default)
  *   bun run scripts/register-oauth-client.ts \
  *     --name "My App" \
  *     --redirect-uri "https://myapp.com/callback"
@@ -62,7 +62,7 @@ if (existsSync(resolvedEnvPath)) {
   process.exit(1);
 }
 
-const API_URL = process.env.OPENKEY_API_URL || 'http://localhost:3001';
+const API_URL = process.env.OPENKEY_API_URL || process.env.API_URL!;
 const ADMIN_KEY = process.env.ADMIN_API_KEY;
 
 async function apiRequest(method: string, path: string, body?: object) {
@@ -111,16 +111,8 @@ async function registerClient(options: {
   console.log('========================================');
   console.log(`Client ID:     ${client.clientId}`);
   console.log(`Type:          ${client.type || 'spa'}`);
-  console.log(`Public:        ${client.public ? 'Yes (no secret required)' : 'No'}`);
-  if (client.clientSecret) {
-    console.log(`Client Secret: ${client.clientSecret}`);
-  }
+  console.log(`Public:        Yes (PKCE-only, no client secret)`);
   console.log(`Redirect URIs: ${client.redirectUris.join(', ')}`);
-  if (client.clientSecret) {
-    console.log('----------------------------------------');
-    console.log('IMPORTANT: Store the client secret securely!');
-    console.log('It is hashed in the database and cannot be retrieved.');
-  }
   console.log('========================================\n');
 }
 
@@ -165,14 +157,14 @@ Options:
   --redirect-uri, -r  Redirect URI (required, can specify multiple)
   --uri, -u           Application website URL
   --icon, -i          Application icon URL
-  --type, -t          Application type: spa, web, native (default: spa)
+  --type, -t          Application type: spa, native (default: spa)
   --list, -l          List all registered clients
   --delete, -d        Delete a client by client ID
   --env, -e           Path to .env file (default: .env)
   --help, -h          Show this help
 
 Environment (loaded from .env file):
-  OPENKEY_API_URL     OpenKey API URL (default: http://localhost:3001)
+  OPENKEY_API_URL     OpenKey API URL (falls back to API_URL from .env)
   ADMIN_API_KEY       Admin API key (required)
 
 Examples:
@@ -239,7 +231,7 @@ async function main() {
     process.exit(1);
   }
 
-  const validTypes = ['spa', 'web', 'native'];
+  const validTypes = ['spa', 'native'];
   if (values.type && !validTypes.includes(values.type)) {
     console.error(`Error: --type must be one of: ${validTypes.join(', ')}`);
     process.exit(1);

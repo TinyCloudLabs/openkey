@@ -28,6 +28,7 @@ model User {
   oauthAccessTokens  OauthAccessToken[]
   oauthRefreshTokens OauthRefreshToken[]
   oauthConsents      OauthConsent[]
+  developerAccount   DeveloperAccount?
 
   @@map("user")
 }
@@ -138,6 +139,52 @@ model Jwks {
 }
 
 // ======= OAuth 2.1 Provider tables =======
+
+enum Plan {
+  FREE
+  PRO
+  SCALE
+  ENTERPRISE
+}
+
+enum BillingState {
+  FREE        // No Stripe subscription
+  ACTIVE      // Paying, subscription current
+  PAST_DUE    // Payment failed
+  CANCELLED   // Subscription ended
+}
+
+// DeveloperAccount — 1:1 with User, created on first admin console login
+model DeveloperAccount {
+  id                   String       @id @default(cuid())
+  userId               String       @unique
+  stripeCustomerId     String?      @unique
+  plan                 Plan         @default(FREE)
+  billingState         BillingState @default(FREE)
+  mauLimit             Int          @default(1000)
+  appLimit             Int          @default(3)
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+  stripeSubscriptionId String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("developer_account")
+}
+
+// Daily analytics rollup keyed by clientId
+model OauthDailyStats {
+  id                  String   @id @default(cuid())
+  clientId            String
+  date                DateTime @db.Date
+  uniqueUsers         Int      @default(0)
+  totalAuthorizations Int      @default(0)
+  totalTokenExchanges Int      @default(0)
+
+  @@unique([clientId, date])
+  @@index([clientId])
+  @@map("oauth_daily_stats")
+}
 
 // Registered OAuth clients (third-party applications)
 model OauthClient {
