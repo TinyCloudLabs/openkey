@@ -8,10 +8,6 @@ import { accountRouter } from './routes/account';
 import { oauthAdminRouter } from './routes/oauth-admin';
 import { passkeyProxyRouter } from './routes/passkey-proxy';
 import { trackAuthorization, trackTokenExchange, trackUniqueUser } from './analytics';
-import { seedKnownClients } from './seed-clients';
-
-// Seed known OAuth clients on startup
-seedKnownClients().catch((err) => console.error('[Seed] Failed to seed OAuth clients:', err));
 
 // Create Hono app
 const app = new Hono();
