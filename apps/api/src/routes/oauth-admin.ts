@@ -41,7 +41,7 @@ function generateClientSecret(): string {
 }
 
 function hashSecret(secret: string): string {
-  return createHash('sha256').update(secret).digest('hex');
+  return createHash('sha256').update(secret).digest('base64url');
 }
 
 // POST /api/admin/oauth/clients - Register a new OAuth client

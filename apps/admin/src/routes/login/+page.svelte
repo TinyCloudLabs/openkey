@@ -13,9 +13,15 @@
       <p class="text-surface-500 mt-2">Sign in to your developer account</p>
     </div>
 
+    {#if data.error}
+      <div class="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-md mb-4 text-sm">
+        {data.error}
+      </div>
+    {/if}
+
     <div class="bg-white border border-surface-200 rounded-lg p-6">
       <a
-        href={data.authorizeUrl}
+        href="/auth/authorize"
         class="block w-full py-2.5 px-4 bg-primary-600 text-white rounded-md font-medium text-center hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors no-underline"
       >
         Sign in with OpenKey

@@ -38,22 +38,19 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
   cookies.delete('oauth_state', { path: '/' });
   cookies.delete('oauth_code_verifier', { path: '/' });
 
-  // Exchange authorization code for tokens
+  // Exchange authorization code for tokens (public client — PKCE only, no secret)
   const redirectUri = `${url.origin}/auth/callback`;
-
-  // Use Basic Auth (client_secret_basic) as required by the registered client
-  const credentials = btoa(`${env.ADMIN_OAUTH_CLIENT_ID}:${env.ADMIN_OAUTH_CLIENT_SECRET}`);
 
   const tokenResponse = await fetch(`${env.API_URL}/api/auth/oauth2/token`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
-      'Authorization': `Basic ${credentials}`,
     },
     body: new URLSearchParams({
       grant_type: 'authorization_code',
       code,
       redirect_uri: redirectUri,
+      client_id: env.ADMIN_OAUTH_CLIENT_ID || '',
       code_verifier: codeVerifier,
     }),
   });
