@@ -1,5 +1,5 @@
 // Server-side auth helper - validates OAuth access tokens
-const API_URL = process.env.API_URL || 'http://localhost:3001';
+const API_URL = process.env.API_URL!;
 
 interface AuthUser {
   id: string;

@@ -3,7 +3,7 @@ import type { PageServerLoad } from './$types';
 import { generateCodeVerifier, generateCodeChallenge, generateState } from '$lib/server/pkce';
 import { env } from '$env/dynamic/private';
 
-const API_URL = process.env.API_URL || 'http://localhost:3001';
+const API_URL = process.env.API_URL!;
 
 export const load: PageServerLoad = async ({ url, cookies }) => {
   // Generate PKCE values

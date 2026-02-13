@@ -19,7 +19,7 @@
  *   --help, -h          Show help
  *
  * Environment (from .env file or shell):
- *   OPENKEY_API_URL     OpenKey API URL (default: http://localhost:3001)
+ *   OPENKEY_API_URL     OpenKey API URL (falls back to API_URL from .env)
  *   ADMIN_API_KEY       Admin API key (required)
  *
  * Examples:
@@ -62,7 +62,7 @@ if (existsSync(resolvedEnvPath)) {
   process.exit(1);
 }
 
-const API_URL = process.env.OPENKEY_API_URL || 'http://localhost:3001';
+const API_URL = process.env.OPENKEY_API_URL || process.env.API_URL!;
 const ADMIN_KEY = process.env.ADMIN_API_KEY;
 
 async function apiRequest(method: string, path: string, body?: object) {
@@ -172,7 +172,7 @@ Options:
   --help, -h          Show this help
 
 Environment (loaded from .env file):
-  OPENKEY_API_URL     OpenKey API URL (default: http://localhost:3001)
+  OPENKEY_API_URL     OpenKey API URL (falls back to API_URL from .env)
   ADMIN_API_KEY       Admin API key (required)
 
 Examples:

@@ -1,7 +1,7 @@
 // API client for key management
 import { getSessionToken } from '$lib/embed-passkey';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+const API_URL = import.meta.env.VITE_API_URL;
 
 async function fetchAPI<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = {

@@ -5,10 +5,10 @@ import { defineConfig } from 'vite';
 export default defineConfig({
   plugins: [tailwindcss(), sveltekit()],
   server: {
-    port: 5174,
+    port: parseInt(process.env.ADMIN_PORT || '5174'),
     proxy: {
       '/api': {
-        target: 'http://localhost:3001',
+        target: process.env.API_URL || `http://localhost:${process.env.API_PORT || '3001'}`,
         changeOrigin: true,
       },
     },

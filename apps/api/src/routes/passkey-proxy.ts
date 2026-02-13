@@ -18,7 +18,7 @@ function cleanExpiredChallenges() {
 }
 
 // Base URL for constructing internal requests to better-auth
-const baseURL = process.env.BETTER_AUTH_URL || 'http://localhost:3001';
+const baseURL = process.env.BETTER_AUTH_URL!;
 
 /**
  * Extract the passkey challenge cookie name and value from Set-Cookie headers.

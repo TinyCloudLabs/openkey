@@ -20,12 +20,11 @@ const resend = process.env.RESEND_API_KEY
   : null;
 
 // Environment-based configuration
-const isDev = process.env.NODE_ENV !== 'production' && process.env.TEE_MODE !== 'production';
-const rpID = process.env.WEBAUTHN_RP_ID || (isDev ? 'localhost' : 'openkey.so');
-const origin = process.env.WEBAUTHN_ORIGIN || (isDev ? 'http://localhost:5173' : 'https://openkey.so');
+const rpID = process.env.WEBAUTHN_RP_ID!;
+const origin = process.env.WEBAUTHN_ORIGIN!;
 
 // Base URL for proper request context
-const baseURL = process.env.BETTER_AUTH_URL || (isDev ? 'http://localhost:3001' : 'https://api.openkey.so');
+const baseURL = process.env.BETTER_AUTH_URL!;
 
 export const auth = betterAuth({
   baseURL,

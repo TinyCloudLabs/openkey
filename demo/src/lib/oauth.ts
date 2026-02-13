@@ -5,7 +5,7 @@ export const OPENKEY_HOST = import.meta.env.VITE_OPENKEY_HOST || 'https://openke
 export const CLIENT_ID = import.meta.env.VITE_CLIENT_ID || 'demo_client';
 export const REDIRECT_URI = typeof window !== 'undefined'
   ? `${window.location.origin}/callback`
-  : 'http://localhost:5174/callback';
+  : import.meta.env.VITE_REDIRECT_URI;
 
 // PKCE utilities
 
