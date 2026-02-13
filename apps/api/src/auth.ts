@@ -177,6 +177,15 @@ export const auth = betterAuth({
   // Trust proxy for production (dstack gateway)
   trustedOrigins: [origin],
 
+  // Cross-subdomain cookies: session cookie set on api.openkey.so must be
+  // readable by openkey.so (e.g. after Google OAuth redirect back to the web app).
+  // In dev (localhost), cookies share the domain naturally so this is only needed in prod.
+  advanced: {
+    crossSubDomainCookies: isDev
+      ? { enabled: false }
+      : { enabled: true, domain: '.openkey.so' },
+  },
+
   // Auto-generate an Ethereum key when a new user is created
   databaseHooks: {
     user: {
