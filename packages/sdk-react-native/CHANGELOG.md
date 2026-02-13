@@ -1,5 +1,17 @@
 # @openkey/sdk-react-native
 
+## 0.0.5
+
+### Patch Changes
+
+- Restore full OAuth scopes (openid email keys offline_access) for muse-api OpenKey authentication
+
+## 0.0.4
+
+### Patch Changes
+
+- Reduce OAuth scopes to 'openid' only to fix login on servers that don't yet support email/keys/offline_access scopes
+
 ## 0.0.3
 
 ### Patch Changes
