@@ -3,8 +3,6 @@ import { redirect } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { env } from '$env/dynamic/private';
 
-const API_URL = process.env.API_URL!;
-
 export const GET: RequestHandler = async ({ url, cookies }) => {
   const code = url.searchParams.get('code');
   const state = url.searchParams.get('state');
@@ -43,7 +41,7 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
   // Exchange authorization code for tokens
   const redirectUri = `${url.origin}/auth/callback`;
 
-  const tokenResponse = await fetch(`${API_URL}/api/auth/oauth2/token`, {
+  const tokenResponse = await fetch(`${env.API_URL}/api/auth/oauth2/token`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',

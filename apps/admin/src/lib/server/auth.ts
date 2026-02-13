@@ -1,5 +1,5 @@
 // Server-side auth helper - validates OAuth access tokens
-const API_URL = process.env.API_URL!;
+import { env } from '$env/dynamic/private';
 
 interface AuthUser {
   id: string;
@@ -22,7 +22,7 @@ export async function validateToken(
     return null;
   }
 
-  const response = await fetch(`${API_URL}/api/auth/oauth2/userinfo`, {
+  const response = await fetch(`${env.API_URL}/api/auth/oauth2/userinfo`, {
     headers: {
       Authorization: `Bearer ${accessToken}`,
     },

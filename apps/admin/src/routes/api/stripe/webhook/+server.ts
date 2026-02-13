@@ -1,11 +1,10 @@
 import type { RequestHandler } from './$types';
 import { stripe, syncStripeDataToDb } from '$lib/server/stripe';
 import { db } from '$lib/server/db';
-
-const WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
+import { env } from '$env/dynamic/private';
 
 export const POST: RequestHandler = async ({ request }) => {
-  if (!WEBHOOK_SECRET) {
+  if (!env.STRIPE_WEBHOOK_SECRET) {
     return new Response('Webhook secret not configured', { status: 500 });
   }
 
@@ -18,7 +17,7 @@ export const POST: RequestHandler = async ({ request }) => {
 
   let event;
   try {
-    event = stripe.webhooks.constructEvent(body, signature, WEBHOOK_SECRET);
+    event = stripe.webhooks.constructEvent(body, signature, env.STRIPE_WEBHOOK_SECRET);
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
     return new Response(`Webhook signature verification failed: ${message}`, { status: 400 });

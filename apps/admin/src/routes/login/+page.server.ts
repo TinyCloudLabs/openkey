@@ -3,8 +3,6 @@ import type { PageServerLoad } from './$types';
 import { generateCodeVerifier, generateCodeChallenge, generateState } from '$lib/server/pkce';
 import { env } from '$env/dynamic/private';
 
-const API_URL = process.env.API_URL!;
-
 export const load: PageServerLoad = async ({ url, cookies }) => {
   // Generate PKCE values
   const codeVerifier = generateCodeVerifier();
@@ -30,7 +28,7 @@ export const load: PageServerLoad = async ({ url, cookies }) => {
 
   // Build the authorization URL
   const redirectUri = `${url.origin}/auth/callback`;
-  const authorizeUrl = new URL(`${API_URL}/api/auth/oauth2/authorize`);
+  const authorizeUrl = new URL(`${env.API_URL}/api/auth/oauth2/authorize`);
   const clientId = env.ADMIN_OAUTH_CLIENT_ID;
   if (!clientId) {
     throw new Error('ADMIN_OAUTH_CLIENT_ID environment variable is not set');
