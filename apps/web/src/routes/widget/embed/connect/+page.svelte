@@ -66,13 +66,6 @@
         loadKeys().then(() => { keysLoaded = true; });
       }
     }
-    if (event.data?.type === 'openkey:register:result') {
-      if (event.data.success && event.data.sessionToken) {
-        // Registration completed in popup — store token and mark authenticated
-        setSessionToken(event.data.sessionToken);
-        embedAuthenticated = true;
-      }
-    }
   }
 
   async function loadKeys() {
@@ -121,9 +114,34 @@
 
   function register() {
     if (inIframe) {
-      // Delegate registration to parent SDK — it opens a popup so that
-      // Google OAuth (which blocks iframes) works correctly.
-      window.parent.postMessage({ type: 'openkey:register:delegate' }, origin);
+      // Open register page in a popup directly from this click handler.
+      // Must be synchronous with the user gesture — if we delegate to the
+      // parent SDK via postMessage, the gesture context is lost and mobile
+      // browsers silently block the popup.
+      const registerUrl = `${window.location.origin}/auth/register?embed=true`;
+      const popup = window.open(registerUrl, 'openkey-register', 'popup=true');
+      if (!popup) {
+        // Popup blocked — fall back to navigating the iframe itself
+        window.location.href = '/auth/register?embed=true';
+        return;
+      }
+      // Listen for completion from the popup
+      const onMessage = (event: MessageEvent) => {
+        if (event.data?.type === 'openkey:register:complete' && event.data.sessionToken) {
+          window.removeEventListener('message', onMessage);
+          clearInterval(poll);
+          popup.close();
+          setSessionToken(event.data.sessionToken);
+          embedAuthenticated = true;
+        }
+      };
+      window.addEventListener('message', onMessage);
+      const poll = setInterval(() => {
+        if (popup.closed) {
+          window.removeEventListener('message', onMessage);
+          clearInterval(poll);
+        }
+      }, 500);
     } else {
       window.location.href = '/auth/register';
     }
