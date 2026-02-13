@@ -16,7 +16,7 @@ const app = new Hono();
 app.use('*', logger());
 
 // Parse CORS_ORIGIN - supports comma-separated list or single origin
-const corsOrigins = process.env.CORS_ORIGIN!
+const corsOrigins = (process.env.CORS_ORIGIN || 'http://localhost:5173')
   .split(',')
   .map(o => o.trim());
 
@@ -113,7 +113,7 @@ app.onError((err, c) => {
 });
 
 // Start server
-const port = parseInt(process.env.API_PORT!);
+const port = parseInt(process.env.API_PORT || '3001');
 
 console.log(`OpenKey API starting on port ${port}...`);
 console.log(`TEE Mode: ${process.env.TEE_MODE || 'development'}`);

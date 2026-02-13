@@ -21,6 +21,7 @@ const resend = process.env.RESEND_API_KEY
   : null;
 
 // Environment-based configuration
+const isDev = process.env.NODE_ENV !== 'production' && process.env.TEE_MODE !== 'production';
 const rpID = process.env.WEBAUTHN_RP_ID!;
 const origin = process.env.WEBAUTHN_ORIGIN!;
 
