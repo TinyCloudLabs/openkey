@@ -2,7 +2,7 @@
 // Protected by ADMIN_API_KEY - for registering OAuth clients
 import { Hono } from 'hono';
 import { PrismaClient } from '@prisma/client';
-import { createHash, randomBytes } from 'crypto';
+import { randomBytes } from 'crypto';
 
 const prisma = new PrismaClient();
 
@@ -36,14 +36,6 @@ function generateClientId(): string {
   return `ok_${randomBytes(16).toString('hex')}`;
 }
 
-function generateClientSecret(): string {
-  return `oks_${randomBytes(32).toString('hex')}`;
-}
-
-function hashSecret(secret: string): string {
-  return createHash('sha256').update(secret).digest('base64url');
-}
-
 // POST /api/admin/oauth/clients - Register a new OAuth client
 oauthAdminRouter.post('/clients', async (c) => {
   const body = await c.req.json<{
@@ -51,7 +43,7 @@ oauthAdminRouter.post('/clients', async (c) => {
     redirectUris: string[];
     uri?: string;
     icon?: string;
-    type?: 'web' | 'native' | 'spa';
+    type?: 'native' | 'spa';
   }>();
 
   // Validation
@@ -71,23 +63,20 @@ oauthAdminRouter.post('/clients', async (c) => {
     }
   }
 
-  const validTypes = ['web', 'native', 'spa'];
+  const validTypes = ['native', 'spa'];
   if (body.type && !validTypes.includes(body.type)) {
     return c.json({ error: `type must be one of: ${validTypes.join(', ')}` }, 400);
   }
 
-  // Generate credentials
+  // Generate credentials - all clients are public (PKCE-only)
   const clientId = generateClientId();
-  const isPublic = body.type === 'spa' || body.type === 'native';
-  const clientSecret = isPublic ? null : generateClientSecret();
-  const hashedSecret = clientSecret ? hashSecret(clientSecret) : null;
 
   try {
     const client = await prisma.oauthClient.create({
       data: {
         id: generateId(),
         clientId,
-        clientSecret: hashedSecret,
+        clientSecret: null,
         name: body.name,
         uri: body.uri || null,
         icon: body.icon || null,
@@ -96,11 +85,11 @@ oauthAdminRouter.post('/clients', async (c) => {
         disabled: false,
         skipConsent: false,
         enableEndSession: false,
-        tokenEndpointAuthMethod: isPublic ? 'none' : 'client_secret_basic',
+        tokenEndpointAuthMethod: 'none',
         grantTypes: ['authorization_code', 'refresh_token'],
         responseTypes: ['code'],
-        type: body.type || 'web',
-        public: isPublic,
+        type: body.type || 'spa',
+        public: true,
         contacts: [],
       },
     });
@@ -110,12 +99,11 @@ oauthAdminRouter.post('/clients', async (c) => {
       client: {
         id: client.id,
         clientId,
-        clientSecret: clientSecret || undefined, // Only returned on creation, not for public clients
         name: client.name,
         redirectUris: client.redirectUris,
         uri: client.uri,
         type: client.type,
-        public: isPublic,
+        public: true,
         createdAt: client.createdAt,
       },
     }, 201);

@@ -4,19 +4,14 @@
 	let name = $state('');
 	let uri = $state('');
 	let icon = $state('');
-	let type = $state<'web' | 'spa' | 'native'>('web');
+	let type = $state<'spa' | 'native'>('spa');
 	let redirectUris = $state<string[]>(['']);
 	let scopeKeys = $state(false);
 
 	let submitting = $state(false);
 	let error = $state('');
 
-	// One-time secret modal state
-	let showSecretModal = $state(false);
 	let createdClientId = $state('');
-	let createdClientSecret = $state<string | null>(null);
-	let copiedId = $state(false);
-	let copiedSecret = $state(false);
 
 	function addRedirectUri() {
 		redirectUris = [...redirectUris, ''];
@@ -29,17 +24,6 @@
 
 	function updateRedirectUri(index: number, value: string) {
 		redirectUris = redirectUris.map((u, i) => (i === index ? value : u));
-	}
-
-	async function copyToClipboard(text: string, field: 'id' | 'secret') {
-		await navigator.clipboard.writeText(text);
-		if (field === 'id') {
-			copiedId = true;
-			setTimeout(() => (copiedId = false), 2000);
-		} else {
-			copiedSecret = true;
-			setTimeout(() => (copiedSecret = false), 2000);
-		}
 	}
 
 	async function handleSubmit() {
@@ -79,8 +63,7 @@
 
 			const data = await res.json();
 			createdClientId = data.clientId;
-			createdClientSecret = data.clientSecret;
-			showSecretModal = true;
+			goto(`/apps/${createdClientId}`);
 		} catch (err) {
 			error = 'Network error. Please try again.';
 		} finally {
@@ -88,9 +71,6 @@
 		}
 	}
 
-	function handleDone() {
-		goto(`/apps/${createdClientId}`);
-	}
 </script>
 
 <div class="max-w-2xl">
@@ -151,9 +131,8 @@
 			<legend class="block text-sm font-medium text-surface-700 mb-2">Application Type</legend>
 			<div class="flex gap-4">
 				{#each [
-					{ value: 'web', label: 'Web', desc: 'Server-side app with client secret' },
-					{ value: 'spa', label: 'SPA', desc: 'Single-page app, public client' },
-					{ value: 'native', label: 'Native', desc: 'Mobile/desktop app with secret' },
+					{ value: 'spa', label: 'SPA', desc: 'Single-page web application' },
+					{ value: 'native', label: 'Native', desc: 'Mobile or desktop application' },
 				] as option}
 					<label
 						class="flex-1 cursor-pointer border rounded-lg p-3 transition-colors {type === option.value
@@ -249,71 +228,3 @@
 	</form>
 </div>
 
-<!-- One-time Secret Modal -->
-{#if showSecretModal}
-	<div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-		<div class="bg-white rounded-xl shadow-xl max-w-lg w-full p-6">
-			<div class="flex items-center gap-3 mb-4">
-				<div class="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center">
-					<svg class="w-5 h-5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
-					</svg>
-				</div>
-				<h2 class="text-xl font-bold text-surface-900">Application Created</h2>
-			</div>
-
-			<div class="space-y-4">
-				<!-- Client ID -->
-				<div>
-					<label class="block text-sm font-medium text-surface-700 mb-1">Client ID</label>
-					<div class="flex items-center gap-2">
-						<code class="flex-1 px-3 py-2 bg-surface-100 rounded-lg text-sm font-mono text-surface-800 break-all">
-							{createdClientId}
-						</code>
-						<button
-							onclick={() => copyToClipboard(createdClientId, 'id')}
-							class="px-3 py-2 text-sm border border-surface-200 rounded-lg hover:bg-surface-50 transition-colors whitespace-nowrap"
-						>
-							{copiedId ? 'Copied!' : 'Copy'}
-						</button>
-					</div>
-				</div>
-
-				<!-- Client Secret (only for web/native) -->
-				{#if createdClientSecret}
-					<div>
-						<label class="block text-sm font-medium text-surface-700 mb-1">Client Secret</label>
-						<div class="flex items-center gap-2">
-							<code class="flex-1 px-3 py-2 bg-surface-100 rounded-lg text-sm font-mono text-surface-800 break-all">
-								{createdClientSecret}
-							</code>
-							<button
-								onclick={() => copyToClipboard(createdClientSecret!, 'secret')}
-								class="px-3 py-2 text-sm border border-surface-200 rounded-lg hover:bg-surface-50 transition-colors whitespace-nowrap"
-							>
-								{copiedSecret ? 'Copied!' : 'Copy'}
-							</button>
-						</div>
-						<div class="mt-2 flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-lg p-3">
-							<svg class="w-4 h-4 text-amber-600 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
-							</svg>
-							<p class="text-sm text-amber-800">
-								Save your client secret now. You won't be able to see it again.
-							</p>
-						</div>
-					</div>
-				{/if}
-			</div>
-
-			<div class="mt-6">
-				<button
-					onclick={handleDone}
-					class="w-full px-4 py-2.5 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors font-medium"
-				>
-					Done
-				</button>
-			</div>
-		</div>
-	</div>
-{/if}

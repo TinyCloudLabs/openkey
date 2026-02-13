@@ -17,11 +17,6 @@
 	let showDeleteConfirm = $state(false);
 	let deleting = $state(false);
 
-	// Rotate secret
-	let showRotateConfirm = $state(false);
-	let rotating = $state(false);
-	let newSecret = $state<string | null>(null);
-	let copiedSecret = $state(false);
 	let copiedId = $state(false);
 
 	function addRedirectUri() {
@@ -37,15 +32,10 @@
 		redirectUris = redirectUris.map((u, i) => (i === index ? value : u));
 	}
 
-	async function copyToClipboard(text: string, field: 'id' | 'secret') {
+	async function copyToClipboard(text: string) {
 		await navigator.clipboard.writeText(text);
-		if (field === 'id') {
-			copiedId = true;
-			setTimeout(() => (copiedId = false), 2000);
-		} else {
-			copiedSecret = true;
-			setTimeout(() => (copiedSecret = false), 2000);
-		}
+		copiedId = true;
+		setTimeout(() => (copiedId = false), 2000);
 	}
 
 	function formatDate(date: string | Date): string {
@@ -60,8 +50,6 @@
 
 	function typeBadgeClasses(type: string | null): string {
 		switch (type) {
-			case 'web':
-				return 'bg-primary-100 text-primary-700';
 			case 'spa':
 				return 'bg-blue-100 text-blue-700';
 			case 'native':
@@ -131,27 +119,6 @@
 		}
 	}
 
-	async function handleRotateSecret() {
-		rotating = true;
-		try {
-			const res = await fetch(`/api/apps/${data.app.clientId}/rotate-secret`, { method: 'POST' });
-			if (!res.ok) {
-				const result = await res.json();
-				saveError = result.error || 'Failed to rotate secret';
-				rotating = false;
-				showRotateConfirm = false;
-				return;
-			}
-			const result = await res.json();
-			newSecret = result.clientSecret;
-			showRotateConfirm = false;
-		} catch {
-			saveError = 'Network error. Please try again.';
-			showRotateConfirm = false;
-		} finally {
-			rotating = false;
-		}
-	}
 </script>
 
 <div class="max-w-3xl">
@@ -174,7 +141,7 @@
 				<h1 class="text-2xl font-bold text-surface-900">{data.app.name}</h1>
 				<div class="flex items-center gap-2 mt-1">
 					<span class="px-2 py-0.5 text-xs font-medium rounded-full {typeBadgeClasses(data.app.type)}">
-						{data.app.type || 'web'}
+						{data.app.type || 'spa'}
 					</span>
 					{#if data.app.disabled}
 						<span class="px-2 py-0.5 text-xs font-medium rounded-full bg-red-100 text-red-700">Disabled</span>
@@ -217,7 +184,7 @@
 					{data.app.clientId}
 				</code>
 				<button
-					onclick={() => copyToClipboard(data.app.clientId, 'id')}
+					onclick={() => copyToClipboard(data.app.clientId)}
 					class="px-3 py-2 text-sm border border-surface-200 rounded-lg hover:bg-surface-50 transition-colors"
 				>
 					{copiedId ? 'Copied!' : 'Copy'}
@@ -225,44 +192,7 @@
 			</div>
 		</div>
 
-		<!-- Client Secret actions (only for non-public clients) -->
-		{#if !data.app.public}
-			<div>
-				<label class="block text-sm font-medium text-surface-600 mb-1">Client Secret</label>
-				<p class="text-xs text-surface-500 mb-2">The client secret is hashed and cannot be displayed. You can rotate it to generate a new one.</p>
-				<button
-					onclick={() => (showRotateConfirm = true)}
-					class="px-3 py-1.5 text-sm border border-amber-300 text-amber-700 rounded-lg hover:bg-amber-50 transition-colors"
-				>
-					Rotate Secret
-				</button>
-			</div>
-		{/if}
 	</section>
-
-	<!-- New Secret Display -->
-	{#if newSecret}
-		<div class="bg-amber-50 border border-amber-200 rounded-lg p-6 mb-6">
-			<h3 class="text-sm font-semibold text-amber-800 mb-2">New Client Secret</h3>
-			<div class="flex items-center gap-2 mb-2">
-				<code class="flex-1 px-3 py-2 bg-white border border-amber-200 rounded-lg text-sm font-mono text-surface-800 break-all">
-					{newSecret}
-				</code>
-				<button
-					onclick={() => copyToClipboard(newSecret!, 'secret')}
-					class="px-3 py-2 text-sm border border-amber-300 rounded-lg hover:bg-amber-100 transition-colors whitespace-nowrap"
-				>
-					{copiedSecret ? 'Copied!' : 'Copy'}
-				</button>
-			</div>
-			<div class="flex items-start gap-2">
-				<svg class="w-4 h-4 text-amber-600 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
-				</svg>
-				<p class="text-sm text-amber-800">Save your new client secret now. You won't be able to see it again.</p>
-			</div>
-		</div>
-	{/if}
 
 	<!-- Settings Form -->
 	<section class="bg-white border border-surface-200 rounded-lg p-6 mb-6">
@@ -285,7 +215,7 @@
 			<div>
 				<label class="block text-sm font-medium text-surface-700 mb-1">Application Type</label>
 				<p class="px-3 py-2 bg-surface-50 border border-surface-200 rounded-lg text-sm text-surface-600">
-					{data.app.type || 'web'} <span class="text-surface-400">(cannot be changed)</span>
+					{data.app.type || 'spa'} <span class="text-surface-400">(cannot be changed)</span>
 				</p>
 			</div>
 
@@ -423,29 +353,3 @@
 	</div>
 {/if}
 
-<!-- Rotate Secret Confirmation Modal -->
-{#if showRotateConfirm}
-	<div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-		<div class="bg-white rounded-xl shadow-xl max-w-md w-full p-6">
-			<h2 class="text-xl font-bold text-surface-900 mb-2">Rotate Client Secret?</h2>
-			<p class="text-surface-600 text-sm mb-4">
-				This will generate a new client secret. The old secret will stop working immediately. Existing access tokens will remain valid.
-			</p>
-			<div class="flex gap-3 justify-end">
-				<button
-					onclick={() => (showRotateConfirm = false)}
-					class="px-4 py-2 text-sm border border-surface-200 rounded-lg hover:bg-surface-50 transition-colors"
-				>
-					Cancel
-				</button>
-				<button
-					onclick={handleRotateSecret}
-					disabled={rotating}
-					class="px-4 py-2 text-sm bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition-colors font-medium disabled:opacity-50"
-				>
-					{rotating ? 'Rotating...' : 'Rotate Secret'}
-				</button>
-			</div>
-		</div>
-	</div>
-{/if}

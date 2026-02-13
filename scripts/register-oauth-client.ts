@@ -12,7 +12,7 @@
  *   --redirect-uri, -r  Redirect URI (required, can be specified multiple times)
  *   --uri, -u           Application website URL
  *   --icon, -i          Application icon URL
- *   --type, -t          Application type: spa, web, native (default: spa)
+ *   --type, -t          Application type: spa, native (default: spa)
  *   --list, -l          List all registered clients
  *   --delete, -d        Delete a client by client ID
  *   --env, -e           Path to .env file (default: .env)
@@ -23,7 +23,7 @@
  *   ADMIN_API_KEY       Admin API key (required)
  *
  * Examples:
- *   # Register a web app (uses .env by default)
+ *   # Register an app (uses .env by default)
  *   bun run scripts/register-oauth-client.ts \
  *     --name "My App" \
  *     --redirect-uri "https://myapp.com/callback"
@@ -111,16 +111,8 @@ async function registerClient(options: {
   console.log('========================================');
   console.log(`Client ID:     ${client.clientId}`);
   console.log(`Type:          ${client.type || 'spa'}`);
-  console.log(`Public:        ${client.public ? 'Yes (no secret required)' : 'No'}`);
-  if (client.clientSecret) {
-    console.log(`Client Secret: ${client.clientSecret}`);
-  }
+  console.log(`Public:        Yes (PKCE-only, no client secret)`);
   console.log(`Redirect URIs: ${client.redirectUris.join(', ')}`);
-  if (client.clientSecret) {
-    console.log('----------------------------------------');
-    console.log('IMPORTANT: Store the client secret securely!');
-    console.log('It is hashed in the database and cannot be retrieved.');
-  }
   console.log('========================================\n');
 }
 
@@ -165,7 +157,7 @@ Options:
   --redirect-uri, -r  Redirect URI (required, can specify multiple)
   --uri, -u           Application website URL
   --icon, -i          Application icon URL
-  --type, -t          Application type: spa, web, native (default: spa)
+  --type, -t          Application type: spa, native (default: spa)
   --list, -l          List all registered clients
   --delete, -d        Delete a client by client ID
   --env, -e           Path to .env file (default: .env)
@@ -239,7 +231,7 @@ async function main() {
     process.exit(1);
   }
 
-  const validTypes = ['spa', 'web', 'native'];
+  const validTypes = ['spa', 'native'];
   if (values.type && !validTypes.includes(values.type)) {
     console.error(`Error: --type must be one of: ${validTypes.join(', ')}`);
     process.exit(1);
