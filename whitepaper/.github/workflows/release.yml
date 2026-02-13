@@ -1,0 +1,141 @@
+name: Release
+description: Creates version PR when changesets are pending. When merged, publishes to TinyCloudLabs/openkey-whitepaper.
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      published: ${{ steps.changesets.outputs.published }}
+      hasChangesets: ${{ steps.changesets.outputs.hasChangesets }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install Dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Create Release Pull Request
+        id: changesets
+        uses: changesets/action@v1
+        with:
+          version: bun run version
+          commit: "chore: version openkey whitepaper"
+          title: "chore: version openkey whitepaper"
+        env:
+          GITHUB_TOKEN: ${{ secrets.OPENKEY_WHITEPAPER_PUBLISH_TOKEN }}
+
+  publish:
+    name: Publish to Public Repo
+    needs: release
+    # Only publish when there are no pending changesets (version PR was just merged)
+    if: needs.release.outputs.hasChangesets == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Get Version
+        id: get-version
+        run: |
+          VERSION=$(bun -e "console.log(require('./package.json').version)")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Publish to TinyCloudLabs/openkey-whitepaper
+        env:
+          PUBLISH_TOKEN: ${{ secrets.OPENKEY_WHITEPAPER_PUBLISH_TOKEN }}
+        run: |
+          VERSION=${{ steps.get-version.outputs.version }}
+          echo "Publishing version $VERSION to public repo..."
+
+          # Clone the public repo
+          git clone https://x-access-token:${PUBLISH_TOKEN}@github.com/TinyCloudLabs/openkey-whitepaper.git ../openkey-whitepaper-public
+
+          # Copy files
+          cp README.md ../openkey-whitepaper-public/README.md
+
+          # Copy appendix directory if it exists
+          if [ -d "appendix" ]; then
+            rm -rf ../openkey-whitepaper-public/appendix
+            cp -r appendix ../openkey-whitepaper-public/
+          fi
+
+          # Copy diagrams if they exist
+          if [ -d "diagrams" ]; then
+            rm -rf ../openkey-whitepaper-public/diagrams
+            cp -r diagrams ../openkey-whitepaper-public/
+          fi
+
+          # Commit and push
+          cd ../openkey-whitepaper-public
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .
+
+          # Check if there are changes to commit
+          if git diff --staged --quiet; then
+            echo "No changes to publish"
+          else
+            git commit -m "Release v${VERSION}
+
+          Published from TinyCloudLabs/openkey@${{ github.sha }}"
+            git push origin main
+            echo "Published v${VERSION} to TinyCloudLabs/openkey-whitepaper"
+          fi
+
+  tag-release:
+    name: Create Tag and GitHub Release
+    needs: [release, publish]
+    if: needs.release.outputs.hasChangesets == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Get Version
+        id: get-version
+        run: |
+          VERSION=$(bun -e "console.log(require('./package.json').version)")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.get-version.outputs.version }}
+          name: Release v${{ steps.get-version.outputs.version }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

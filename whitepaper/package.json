@@ -1,0 +1,16 @@
+{
+  "name": "@tinycloudlabs/openkey-whitepaper",
+  "version": "0.0.0",
+  "private": true,
+  "description": "OpenKey Protocol Whitepaper",
+  "scripts": {
+    "changeset": "changeset",
+    "version": "changeset version"
+  },
+  "keywords": ["openkey", "whitepaper", "tee", "key-management", "transparent-custody"],
+  "author": "TinyCloud Labs",
+  "license": "MIT",
+  "devDependencies": {
+    "@changesets/cli": "^2.29.8"
+  }
+}

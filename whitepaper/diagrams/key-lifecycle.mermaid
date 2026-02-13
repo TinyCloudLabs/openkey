@@ -1,0 +1,33 @@
+stateDiagram-v2
+    [*] --> Generated: Key created in TEE
+    Generated --> Active: Sealed blob stored
+
+    Active --> Archived: User archives key
+    Archived --> Active: User unarchives key
+
+    Active --> ExportRequested: User initiates export
+    ExportRequested --> TwoFactorVerified: Email + Passkey confirmed
+    ExportRequested --> Active: User cancels export
+
+    TwoFactorVerified --> DelayPeriod: 24-hour timer starts
+    TwoFactorVerified --> Active: User cancels export
+
+    DelayPeriod --> Exported: Timer expires, export executed
+    DelayPeriod --> Active: User cancels export
+
+    Exported --> Active: Export complete
+
+    note right of Archived
+        Keys are never deleted
+        archivedAt acts as soft-delete
+    end note
+
+    note right of DelayPeriod
+        24-hour security delay
+        User can cancel anytime
+    end note
+
+    note right of Exported
+        One-time HPKE encryption
+        to ephemeral recipient key
+    end note

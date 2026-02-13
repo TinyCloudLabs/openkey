@@ -1,0 +1,39 @@
+graph TB
+    subgraph Client["Client Layer"]
+        App["Client Application"]
+        SDK["@openkey/sdk"]
+    end
+
+    subgraph Infrastructure["OpenKey Infrastructure"]
+        API["OpenKey API<br/>(Hono Server)"]
+        Auth["Authentication Layer<br/>(better-auth + Passkeys)"]
+        KeyMgmt["Key Management Routes"]
+        DB[(PostgreSQL<br/>Sealed Blobs)]
+
+        subgraph TEE["TEE Boundary (Intel TDX)"]
+            TEEPkg["@openkey/tee Package"]
+            KMS["dstack KMS<br/>(HKDF Derivation)"]
+            HW["Intel TDX Hardware"]
+        end
+    end
+
+    App --> SDK
+    SDK --> API
+    API --> Auth
+    API --> KeyMgmt
+    KeyMgmt --> TEEPkg
+    KeyMgmt --> DB
+    TEEPkg --> KMS
+    KMS --> HW
+
+    classDef teeStyle fill:#e1f5ff,stroke:#0288d1,stroke-width:3px
+    classDef dbStyle fill:#fff3e0,stroke:#f57c00,stroke-width:2px
+    classDef clientStyle fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+
+    class TEEPkg,KMS,HW teeStyle
+    class DB dbStyle
+    class App,SDK clientStyle
+
+    note1["Private keys NEVER leave<br/>the TEE boundary"]
+
+    style note1 fill:#ffebee,stroke:#c62828,stroke-width:2px

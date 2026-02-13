@@ -1,0 +1,61 @@
+sequenceDiagram
+    participant User
+    participant Web as OpenKey Web
+    participant API as OpenKey API
+    participant TEE
+    participant DB as PostgreSQL
+    participant App as Third-Party App
+
+    rect rgb(240, 248, 255)
+        Note over User,DB: Registration Flow
+        User->>Web: Sign up (email or Google)
+        Web->>API: Verify email OTP / Google token
+        activate API
+        API-->>Web: Account created
+        deactivate API
+        Web-->>User: Require passkey creation
+
+        User->>Web: Create passkey (WebAuthn)
+        Web->>API: Register passkey credential
+        activate API
+        API->>TEE: Generate primary key (Key 0)
+        activate TEE
+        TEE->>TEE: deriveKey() → seal private key
+        TEE-->>API: Sealed blob
+        deactivate TEE
+        API->>DB: Store sealed blob
+        API-->>Web: Registration complete
+        deactivate API
+        Web-->>User: Success
+    end
+
+    rect rgb(240, 255, 240)
+        Note over User,API: Login Flow
+        User->>Web: Login
+        Web->>API: Request passkey challenge
+        activate API
+        API-->>Web: Challenge
+        deactivate API
+
+        User->>Web: Passkey assertion
+        Web->>API: Verify assertion
+        activate API
+        API-->>Web: Session token (7 days)
+        deactivate API
+        Web-->>User: Logged in
+    end
+
+    rect rgb(255, 250, 240)
+        Note over User,App: OAuth Flow (Third-Party App)
+        App->>User: Redirect to OpenKey /authorize
+        User->>Web: Login + consent screen
+        activate Web
+        Web-->>App: Authorization code
+        deactivate Web
+
+        App->>API: Exchange code + PKCE verifier
+        activate API
+        API-->>App: access_token, id_token, refresh_token
+        deactivate API
+        Note over App: App can now access OpenKey API<br/>on behalf of user
+    end
