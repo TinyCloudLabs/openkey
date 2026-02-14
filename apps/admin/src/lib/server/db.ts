@@ -4,6 +4,8 @@
 import { PrismaClient } from '@prisma/client';
 import { DATABASE_URL } from '$env/static/private';
 import { dev } from '$app/environment';
+import { neon } from '@neondatabase/serverless';
+import { PrismaNeon } from '@prisma/adapter-neon';
 
 let prisma: PrismaClient;
 
@@ -20,11 +22,25 @@ function getPrisma() {
       });
     } else {
       // Production (Cloudflare Pages): use Neon serverless adapter
-      // Dynamic import to avoid loading ws in production
-      throw new Error('Production Neon adapter not yet configured - use db:push for now');
+      const sql = neon(DATABASE_URL);
+      const adapter = new PrismaNeon(sql);
+      prisma = new PrismaClient({ adapter });
     }
   }
   return prisma;
 }
 
-export const db = getPrisma();
+// Lazy proxy to avoid initialization at import time
+// This allows SvelteKit's SSR analysis to import this module
+// without actually connecting to the database
+function createLazyProxy(): PrismaClient {
+  let instance: PrismaClient | null = null;
+  return new Proxy({} as PrismaClient, {
+    get(_, prop) {
+      if (!instance) instance = getPrisma();
+      return (instance as any)[prop];
+    }
+  });
+}
+
+export const db = createLazyProxy();
