@@ -112,6 +112,30 @@ app.onError((err, c) => {
   return c.json({ error: 'Internal server error' }, 500);
 });
 
+// One-time startup migration: ensure all OAuth clients have full scopes
+import { PrismaClient } from '@prisma/client';
+const ALL_SCOPES = ['openid', 'email', 'keys', 'offline_access'];
+
+(async () => {
+  try {
+    const prisma = new PrismaClient();
+    const result = await prisma.oauthClient.updateMany({
+      where: {
+        scopes: { equals: ['openid'] },
+      },
+      data: {
+        scopes: ALL_SCOPES,
+      },
+    });
+    if (result.count > 0) {
+      console.log(`[Startup] Updated ${result.count} OAuth client(s) to full scopes`);
+    }
+    await prisma.$disconnect();
+  } catch (err) {
+    console.error('[Startup] Failed to update OAuth client scopes:', err);
+  }
+})();
+
 // Start server
 const port = parseInt(process.env.API_PORT || '3001');
 
