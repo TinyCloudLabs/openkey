@@ -81,7 +81,7 @@ oauthAdminRouter.post('/clients', async (c) => {
         uri: body.uri || null,
         icon: body.icon || null,
         redirectUris: body.redirectUris,
-        scopes: ['openid'],
+        scopes: ['openid', 'email', 'keys', 'offline_access'],
         disabled: false,
         skipConsent: false,
         enableEndSession: false,
@@ -190,6 +190,7 @@ oauthAdminRouter.patch('/clients/:clientId', async (c) => {
     uri?: string;
     icon?: string;
     disabled?: boolean;
+    scopes?: string[];
   }>();
 
   // Validate redirectUris if provided
@@ -206,6 +207,15 @@ oauthAdminRouter.patch('/clients/:clientId', async (c) => {
     }
   }
 
+  // Validate scopes if provided
+  if (body.scopes) {
+    const validScopes = ['openid', 'email', 'keys', 'offline_access'];
+    const invalid = body.scopes.filter((s) => !validScopes.includes(s));
+    if (invalid.length > 0) {
+      return c.json({ error: `Invalid scopes: ${invalid.join(', ')}` }, 400);
+    }
+  }
+
   try {
     const client = await prisma.oauthClient.update({
       where: { clientId },
@@ -215,6 +225,7 @@ oauthAdminRouter.patch('/clients/:clientId', async (c) => {
         ...(body.uri !== undefined && { uri: body.uri || null }),
         ...(body.icon !== undefined && { icon: body.icon || null }),
         ...(body.disabled !== undefined && { disabled: body.disabled }),
+        ...(body.scopes && { scopes: body.scopes }),
       },
       select: {
         id: true,
