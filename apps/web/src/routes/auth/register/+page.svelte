@@ -137,7 +137,15 @@
               />
             </div>
             <Button type="submit" disabled={loading || googleLoading} class="w-full">
-              {loading ? 'Sending...' : 'Continue with Email'}
+              {#if loading}
+                <svg class="mr-2 h-4 w-4 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                </svg>
+                Sending...
+              {:else}
+                Continue with Email
+              {/if}
             </Button>
           </form>
 
@@ -148,7 +156,15 @@
           </div>
 
           <Button variant="secondary" onclick={googleSignIn} disabled={loading || googleLoading} class="w-full">
-            {googleLoading ? 'Connecting...' : 'Continue with Google'}
+            {#if googleLoading}
+              <svg class="mr-2 h-4 w-4 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+              </svg>
+              Connecting...
+            {:else}
+              Continue with Google
+            {/if}
           </Button>
 
           <p class="text-center text-sm text-surface-500 mt-2">
@@ -186,7 +202,15 @@
             />
           </div>
           <Button type="submit" disabled={loading} class="w-full">
-            {loading ? 'Verifying...' : 'Verify'}
+            {#if loading}
+              <svg class="mr-2 h-4 w-4 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+              </svg>
+              Verifying...
+            {:else}
+              Verify
+            {/if}
           </Button>
         </form>
         <Button variant="ghost" onclick={() => { step = 'email'; error = ''; }} class="w-full mt-2">
@@ -208,7 +232,15 @@
 
         <div class="flex flex-col gap-4">
           <Button onclick={registerPasskey} disabled={loading} class="w-full">
-            {loading ? 'Registering...' : 'Register Passkey'}
+            {#if loading}
+              <svg class="mr-2 h-4 w-4 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+              </svg>
+              Registering...
+            {:else}
+              Register Passkey
+            {/if}
           </Button>
         </div>
       {/if}
