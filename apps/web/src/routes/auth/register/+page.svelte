@@ -9,6 +9,7 @@
   let otp = $state('');
   let step = $state<'email' | 'otp' | 'passkey'>('email');
   let loading = $state(false);
+  let googleLoading = $state(false);
   let error = $state('');
 
   // Detect if opened as a popup from the embed SDK flow
@@ -77,8 +78,15 @@
   }
 
   async function googleSignIn() {
-    const callbackParams = isEmbedPopup ? 'step=passkey&embed=true' : 'step=passkey';
-    await authClient.signIn.social({ provider: 'google', callbackURL: `${window.location.origin}/auth/register?${callbackParams}` });
+    googleLoading = true;
+    error = '';
+    try {
+      const callbackParams = isEmbedPopup ? 'step=passkey&embed=true' : 'step=passkey';
+      await authClient.signIn.social({ provider: 'google', callbackURL: `${window.location.origin}/auth/register?${callbackParams}` });
+    } catch (e: any) {
+      error = e.message || 'Failed to sign in with Google';
+      googleLoading = false;
+    }
   }
 
   // Handle callback from Google OAuth
@@ -125,10 +133,10 @@
                 bind:value={email}
                 placeholder="Email address"
                 required
-                disabled={loading}
+                disabled={loading || googleLoading}
               />
             </div>
-            <Button type="submit" disabled={loading} class="w-full">
+            <Button type="submit" disabled={loading || googleLoading} class="w-full">
               {loading ? 'Sending...' : 'Continue with Email'}
             </Button>
           </form>
@@ -139,8 +147,8 @@
             <div class="flex-1 h-px bg-surface-200"></div>
           </div>
 
-          <Button variant="secondary" onclick={googleSignIn} disabled={loading} class="w-full">
-            Continue with Google
+          <Button variant="secondary" onclick={googleSignIn} disabled={loading || googleLoading} class="w-full">
+            {googleLoading ? 'Connecting...' : 'Continue with Google'}
           </Button>
 
           <p class="text-center text-sm text-surface-500 mt-2">
