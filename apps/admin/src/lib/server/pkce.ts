@@ -1,5 +1,5 @@
 // PKCE utilities for server-side OAuth flow
-import { randomBytes, createHash } from 'crypto';
+import { randomBytes, createHash } from 'node:crypto';
 
 /** Generate a cryptographically random code_verifier (43-128 chars, base64url) */
 export function generateCodeVerifier(): string {

@@ -1,4 +1,4 @@
-import { randomBytes, createHash } from 'crypto';
+import { randomBytes, createHash } from 'node:crypto';
 
 export function generateClientId(): string {
 	return `ok_${randomBytes(16).toString('hex')}`;
