@@ -37,7 +37,7 @@
         "stripe": "^17.0.0",
       },
       "devDependencies": {
-        "@sveltejs/adapter-cloudflare": "^4.0.0",
+        "@sveltejs/adapter-cloudflare": "^5.0.0",
         "@sveltejs/kit": "^2.0.0",
         "@sveltejs/vite-plugin-svelte": "^4.0.0",
         "prisma": "^6.0.0",
@@ -600,7 +600,7 @@
 
     "@sveltejs/acorn-typescript": ["@sveltejs/acorn-typescript@1.0.8", "", { "peerDependencies": { "acorn": "^8.9.0" } }, "sha512-esgN+54+q0NjB0Y/4BomT9samII7jGwNy/2a3wNZbT2A2RpmXsXwUt24LvLhx6jUq2gVk4cWEvcRO6MFQbOfNA=="],
 
-    "@sveltejs/adapter-cloudflare": ["@sveltejs/adapter-cloudflare@4.9.0", "", { "dependencies": { "@cloudflare/workers-types": "^4.20231121.0", "esbuild": "^0.24.0", "worktop": "0.8.0-next.18" }, "peerDependencies": { "@sveltejs/kit": "^2.0.0", "wrangler": "^3.28.4" } }, "sha512-o7o8wXy5zDsEuE9oPWSHO5tAuPEulZZg2QavFdc00fcIHh1dxgCyIRZa5LPjAE8EcdJOh+8SFkhFgVRdCfOBvQ=="],
+    "@sveltejs/adapter-cloudflare": ["@sveltejs/adapter-cloudflare@5.1.0", "", { "dependencies": { "@cloudflare/workers-types": "^4.20250312.0", "esbuild": "^0.24.0", "worktop": "0.8.0-next.18" }, "peerDependencies": { "@sveltejs/kit": "^2.0.0", "wrangler": "^3.87.0 || ^4.0.0" } }, "sha512-moQwTcJTYY3cV/SA0FJClsJS+u7zjrziYNlDHLbb+lIbBc0Ze4Cki8MSYwY1qMmP3iarQIb8OXFn7m9TEisW1A=="],
 
     "@sveltejs/kit": ["@sveltejs/kit@2.50.2", "", { "dependencies": { "@standard-schema/spec": "^1.0.0", "@sveltejs/acorn-typescript": "^1.0.5", "@types/cookie": "^0.6.0", "acorn": "^8.14.1", "cookie": "^0.6.0", "devalue": "^5.6.2", "esm-env": "^1.2.2", "kleur": "^4.1.5", "magic-string": "^0.30.5", "mrmime": "^2.0.0", "sade": "^1.8.1", "set-cookie-parser": "^3.0.0", "sirv": "^3.0.0" }, "peerDependencies": { "@opentelemetry/api": "^1.0.0", "@sveltejs/vite-plugin-svelte": "^3.0.0 || ^4.0.0-next.1 || ^5.0.0 || ^6.0.0-next.0", "svelte": "^4.0.0 || ^5.0.0-next.0", "typescript": "^5.3.3", "vite": "^5.0.3 || ^6.0.0 || ^7.0.0-beta.0" }, "optionalPeers": ["@opentelemetry/api", "typescript"], "bin": { "svelte-kit": "svelte-kit.js" } }, "sha512-875hTUkEbz+MyJIxWbQjfMaekqdmEKUUfR7JyKcpfMRZqcGyrO9Gd+iS1D/Dx8LpE5FEtutWGOtlAh4ReSAiOA=="],
 
@@ -1569,8 +1569,6 @@
     "@neondatabase/serverless/@types/pg": ["@types/pg@8.11.6", "", { "dependencies": { "@types/node": "*", "pg-protocol": "*", "pg-types": "^4.0.1" } }, "sha512-/2WmmBXHLsfRqzfHW7BNZ8SbYzE8OSk7i3WjFYvfgRHj7S1xj+16Je5fUKv3lVdVzk/zn9TXOqf+avFCFIE0yQ=="],
 
     "@noble/curves/@noble/hashes": ["@noble/hashes@1.8.0", "", {}, "sha512-jCs9ldd7NwzpgXDIf6P3+NrHh9/sD6CQdxHyjQI+h/6rDNo88ypBxxz45UDuZHz9r3tNz7N/VInSVoVdtXEI4A=="],
-
-    "@openkey/web/@sveltejs/adapter-cloudflare": ["@sveltejs/adapter-cloudflare@5.1.0", "", { "dependencies": { "@cloudflare/workers-types": "^4.20250312.0", "esbuild": "^0.24.0", "worktop": "0.8.0-next.18" }, "peerDependencies": { "@sveltejs/kit": "^2.0.0", "wrangler": "^3.87.0 || ^4.0.0" } }, "sha512-moQwTcJTYY3cV/SA0FJClsJS+u7zjrziYNlDHLbb+lIbBc0Ze4Cki8MSYwY1qMmP3iarQIb8OXFn7m9TEisW1A=="],
 
     "@phala/dstack-sdk/@noble/hashes": ["@noble/hashes@1.8.0", "", {}, "sha512-jCs9ldd7NwzpgXDIf6P3+NrHh9/sD6CQdxHyjQI+h/6rDNo88ypBxxz45UDuZHz9r3tNz7N/VInSVoVdtXEI4A=="],
 
