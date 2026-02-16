@@ -1,7 +1,24 @@
 import type { Handle } from '@sveltejs/kit';
 import { redirect } from '@sveltejs/kit';
-import { validateToken } from '$lib/server/auth';
-import { db } from '$lib/server/db';
+
+// Dynamic imports to avoid SvelteKit's vite-plugin-sveltekit-guard
+// triggering "An impossible situation occurred" on Cloudflare CI.
+// The guard incorrectly evaluates static $lib/server/* imports during
+// the client build phase on node 22. Dynamic imports bypass this.
+let _validateToken: typeof import('$lib/server/auth').validateToken;
+let _db: typeof import('$lib/server/db').db;
+
+async function getServerModules() {
+  if (!_validateToken) {
+    const auth = await import('$lib/server/auth');
+    _validateToken = auth.validateToken;
+  }
+  if (!_db) {
+    const dbModule = await import('$lib/server/db');
+    _db = dbModule.db;
+  }
+  return { validateToken: _validateToken, db: _db };
+}
 
 export const handle: Handle = async ({ event, resolve }) => {
   // Initialize locals
@@ -20,6 +37,8 @@ export const handle: Handle = async ({ event, resolve }) => {
   ) {
     return resolve(event);
   }
+
+  const { validateToken, db } = await getServerModules();
 
   // Validate session using OAuth access token from cookie
   const accessToken = event.cookies.get('admin_session');
