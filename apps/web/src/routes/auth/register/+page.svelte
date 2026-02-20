@@ -1,18 +1,22 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
-  import { authClient } from '$lib/auth-client';
+  import { authClient, API_BASE } from '$lib/auth-client';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
 
+  let { data } = $props();
+
   let email = $state('');
   let otp = $state('');
-  let step = $state<'email' | 'otp' | 'passkey'>('email');
+  let step = $state<'email' | 'otp' | 'passkey'>(data.initialStep);
   let loading = $state(false);
   let error = $state('');
 
   // Detect if opened as a popup from the embed SDK flow
-  const isEmbedPopup = typeof window !== 'undefined' && !!window.opener && new URLSearchParams(window.location.search).has('embed');
+  const isEmbedPopup = typeof window !== 'undefined' && !!window.opener && data.isEmbed;
+
+  const OAUTH_STORAGE_KEY = 'openkey:pending_oauth';
 
   async function sendOTP() {
     loading = true;
@@ -67,7 +71,14 @@
         const sessionToken = sessionRes.headers.get('set-auth-token');
         window.opener.postMessage({ type: 'openkey:register:complete', sessionToken }, '*');
       } else {
-        goto('/dashboard');
+        // Resume pending OAuth authorization flow if the user came from an OAuth client
+        const pendingOAuth = sessionStorage.getItem(OAUTH_STORAGE_KEY);
+        if (pendingOAuth) {
+          sessionStorage.removeItem(OAUTH_STORAGE_KEY);
+          window.location.href = API_BASE + '/api/auth/oauth2/authorize?' + pendingOAuth;
+        } else {
+          goto('/dashboard');
+        }
       }
     } catch (e: any) {
       error = e.message || 'Failed to register passkey';
@@ -80,17 +91,6 @@
     const callbackParams = isEmbedPopup ? 'step=passkey&embed=true' : 'step=passkey';
     await authClient.signIn.social({ provider: 'google', callbackURL: `${window.location.origin}/auth/register?${callbackParams}` });
   }
-
-  // Handle callback from Google OAuth
-  import { page } from '$app/stores';
-  import { onMount } from 'svelte';
-
-  onMount(() => {
-    const urlStep = $page.url.searchParams.get('step');
-    if (urlStep === 'passkey') {
-      step = 'passkey';
-    }
-  });
 </script>
 
 <div class="flex min-h-screen items-center justify-center bg-surface-50 px-4 py-12">

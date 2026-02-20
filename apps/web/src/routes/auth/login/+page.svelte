@@ -10,6 +10,17 @@
   let error = $state('');
   let showDevMode = $state(import.meta.env.DEV);
 
+  // Persist OAuth params in sessionStorage so the register flow can resume the OAuth
+  // authorization after passkey creation (params survive the Google OAuth round-trip)
+  const OAUTH_STORAGE_KEY = 'openkey:pending_oauth';
+  if (typeof window !== 'undefined' && $page.url.searchParams.has('client_id')) {
+    const oauthParams = new URLSearchParams($page.url.searchParams);
+    oauthParams.delete('sig');
+    oauthParams.delete('exp');
+    oauthParams.delete('prompt');
+    sessionStorage.setItem(OAUTH_STORAGE_KEY, oauthParams.toString());
+  }
+
   // Dev-only email OTP state
   let devEmail = $state('');
   let devOtp = $state('');
