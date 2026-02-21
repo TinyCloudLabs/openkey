@@ -1,5 +1,14 @@
 # @openkey/sdk
 
+## 0.5.0
+
+### Minor Changes
+
+- 418e6f0: Add oauthHost config option for separate OAuth endpoint resolution. Defaults to deriving from host by prefixing 'api.' to the hostname.
+- 3ba5a47: Delegate registration to popup when in iframe embed mode
+
+  Google OAuth sends `X-Frame-Options: DENY`, preventing sign-in with Google inside an iframe. The embed connect widget now delegates registration to the parent SDK, which opens a popup window for the full registration flow (email/Google + passkey). After completion, the session token is relayed back to the iframe via postMessage.
+
 ## 0.4.0
 
 ### Minor Changes
