@@ -1,6 +1,0 @@
-# Cloudflare Pages configuration for OpenKey Admin
-# Cloudflare Pages looks for wrangler.toml at the repo root
-name = "openkey-admin"
-compatibility_date = "2024-09-23"
-compatibility_flags = ["nodejs_compat"]
-pages_build_output_dir = "apps/admin/.svelte-kit/cloudflare"
