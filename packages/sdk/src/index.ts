@@ -398,6 +398,9 @@ export class OpenKey {
   private deriveOAuthHost(host: string): string {
     try {
       const url = new URL(host);
+      if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') {
+        return host.replace(/\/$/, '');
+      }
       url.hostname = 'api.' + url.hostname;
       return url.toString().replace(/\/$/, '');
     } catch {
