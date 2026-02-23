@@ -41,3 +41,38 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Notify consumer repos of new release
+        if: steps.changesets.outputs.published == 'true'
+        env:
+          DISPATCH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+          PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.publishedPackages }}
+        run: |
+          # Convert changesets array [{name, version}] to object {name: version}
+          PACKAGES=$(echo "$PUBLISHED_PACKAGES" | jq -c '[.[] | {(.name): .version}] | add')
+
+          # Use the first published package version as the top-level version
+          VERSION=$(echo "$PUBLISHED_PACKAGES" | jq -r '.[0].version')
+
+          PAYLOAD=$(jq -nc \
+            --arg source "openkey" \
+            --arg version "$VERSION" \
+            --argjson packages "$PACKAGES" \
+            '{source: $source, version: $version, packages: $packages}')
+
+          # Dispatch to consumer repos
+          REPOS=(
+            "tinycloudlabs/OpenCredentials"
+            "tinycloudlabs/remember"
+            "tinycloudlabs/web-sdk"
+            "tinycloudlabs/lightning"
+          )
+
+          for REPO in "${REPOS[@]}"; do
+            echo "Dispatching dependency-bump to $REPO"
+            curl -s -X POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: token $DISPATCH_TOKEN" \
+              "https://api.github.com/repos/$REPO/dispatches" \
+              -d "$(jq -nc --argjson payload "$PAYLOAD" '{event_type: "dependency-bump", client_payload: $payload}')"
+          done
