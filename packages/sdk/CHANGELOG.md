@@ -1,5 +1,11 @@
 # @openkey/sdk
 
+## 0.5.1
+
+### Patch Changes
+
+- 2cc7e60: Fix OAuth host derivation for localhost: skip `api.` prefix for localhost/127.0.0.1 since the OAuth API is behind the same proxy in local development.
+
 ## 0.5.0
 
 ### Minor Changes
