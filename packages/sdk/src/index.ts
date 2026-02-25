@@ -726,6 +726,7 @@ export class OpenKey {
     );
 
     if (!this.popup) {
+      showToast('Popup was blocked. Please allow popups for this site.', 'error');
       reject({
         code: 'POPUP_BLOCKED',
         message: 'Popup was blocked. Please allow popups or use redirect mode.',
@@ -988,6 +989,7 @@ export class OpenKey {
     );
 
     if (!this.popup) {
+      showToast('Popup was blocked. Please allow popups for this site.', 'error');
       reject({
         code: 'POPUP_BLOCKED',
         message: 'Popup was blocked. Please allow popups for this site.',
