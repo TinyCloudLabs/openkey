@@ -1,5 +1,11 @@
 # @openkey/sdk
 
+## 0.5.2
+
+### Patch Changes
+
+- 97cfdd3: Show error toast when popup is blocked by the browser
+
 ## 0.5.1
 
 ### Patch Changes
