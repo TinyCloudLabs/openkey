@@ -63,7 +63,7 @@
         // Opened from embed SDK — get a bearer token from the session and
         // post it back to the parent SDK so the embed iframe can authenticate.
         // The bearer() plugin returns the token via the set-auth-token header.
-        const sessionRes = await fetch('/api/auth/get-session', {
+        const sessionRes = await fetch(`${API_BASE}/api/auth/get-session`, {
           method: 'GET',
           credentials: 'include',
           headers: { 'Accept': 'application/json' },
