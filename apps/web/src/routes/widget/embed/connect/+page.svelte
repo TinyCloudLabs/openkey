@@ -24,6 +24,7 @@
   const isAuthenticated = $derived(inIframe ? embedAuthenticated : !!$session.data);
 
   const origin = $page.url.searchParams.get('origin') || '*';
+  const hasEoa = $page.url.searchParams.get('hasEoa') === 'true';
 
   $effect(() => {
     if (typeof window !== 'undefined' && !initialized) {
@@ -156,6 +157,10 @@
     sendClose();
   }
 
+  function useExternalWallet() {
+    sendResponse({ type: 'openkey:auth:use-external-wallet' });
+  }
+
   function sendResponse(data: object) {
     window.parent.postMessage(data, origin);
   }
@@ -215,6 +220,15 @@
         <Button onclick={signInWithPasskey} disabled={signingIn} class="w-full rounded-xl">
           {signingIn ? 'Signing in...' : 'Sign in with Passkey'}
         </Button>
+
+        {#if hasEoa}
+          <button
+            onclick={useExternalWallet}
+            class="mt-3 text-xs text-surface-400 hover:text-surface-600 transition-colors bg-transparent border-none cursor-pointer"
+          >
+            or use an external wallet
+          </button>
+        {/if}
       </div>
     {:else if loading}
       <div class="flex flex-col items-center justify-center text-center text-surface-400 py-6">

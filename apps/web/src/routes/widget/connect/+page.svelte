@@ -17,6 +17,7 @@
   let signingIn = $state(false);
 
   const origin = $page.url.searchParams.get('origin') || '*';
+  const hasEoa = $page.url.searchParams.get('hasEoa') === 'true';
 
   // Use $effect instead of onMount for Svelte 5 compatibility with SSR disabled
   // onMount doesn't fire when ssr=false in SvelteKit, but $effect does
@@ -99,6 +100,10 @@
     sendClose();
   }
 
+  function useExternalWallet() {
+    sendResponse({ type: 'openkey:auth:use-external-wallet' });
+  }
+
   function sendResponse(data: object) {
     if (window.opener) {
       window.opener.postMessage(data, origin);
@@ -174,6 +179,15 @@
           <Button onclick={signInWithPasskey} disabled={signingIn} class="w-full rounded-xl">
             {signingIn ? 'Signing in...' : 'Sign in with Passkey'}
           </Button>
+
+          {#if hasEoa}
+            <button
+              onclick={useExternalWallet}
+              class="mt-3 text-xs text-surface-400 hover:text-surface-600 transition-colors bg-transparent border-none cursor-pointer"
+            >
+              or use an external wallet
+            </button>
+          {/if}
         </div>
       {:else if loading}
         <div class="flex flex-col items-center justify-center text-center text-surface-400 py-8">

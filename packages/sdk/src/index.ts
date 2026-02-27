@@ -112,6 +112,7 @@ type MessageType =
   | { type: 'openkey:link-wallet:delegate' }
   | { type: 'openkey:link-wallet:result'; success: true; address: string; keyId: string }
   | { type: 'openkey:link-wallet:result'; success: false; error: OpenKeyError }
+  | { type: 'openkey:auth:use-external-wallet' }
   | { type: 'openkey:resize'; height: number }
   | { type: 'openkey:ready' }
   | { type: 'openkey:close' };
@@ -807,23 +808,30 @@ export class OpenKey {
     return override ?? this.mode;
   }
 
+  private hasDetectedEoa(): boolean {
+    if (this.discoveredProviders.length > 0) return true;
+    if (typeof window !== 'undefined' && (window as any).ethereum) return true;
+    return false;
+  }
+
   private async openFlow<T>(action: string, message: object, modeOverride?: OpenKeyMode): Promise<T> {
     const mode = this.resolveMode(modeOverride);
     const origin = encodeURIComponent(window.location.origin);
+    const eoaFlag = action === 'connect' && this.hasDetectedEoa() ? '&hasEoa=true' : '';
 
     if (mode === 'popup') {
-      const url = `${this.host}/widget/${action}?origin=${origin}`;
+      const url = `${this.host}/widget/${action}?origin=${origin}${eoaFlag}`;
       return new Promise((resolve, reject) => this.openPopup(url, message, resolve, reject));
     }
 
     if (mode === 'redirect') {
-      const url = `${this.host}/widget/${action}?origin=${origin}`;
+      const url = `${this.host}/widget/${action}?origin=${origin}${eoaFlag}`;
       window.location.href = url;
       return new Promise(() => {}); // never resolves, page navigates
     }
 
     // iframe mode with auto-fallback
-    const url = `${this.host}/widget/embed/${action}?origin=${origin}`;
+    const url = `${this.host}/widget/embed/${action}?origin=${origin}${eoaFlag}`;
     return this.openIframeModal<T>(url, action, message, origin);
   }
 
@@ -874,6 +882,12 @@ export class OpenKey {
 
           if (data.type === 'openkey:link-wallet:delegate') {
             this.handleWalletLinkDelegation(modal!);
+            return;
+          }
+
+          if (data.type === 'openkey:auth:use-external-wallet') {
+            cleanup();
+            this.handleExternalWalletConnect<T>(resolve, reject);
             return;
           }
 
@@ -972,6 +986,30 @@ export class OpenKey {
     });
   }
 
+  private handleExternalWalletConnect<T>(
+    resolve: (value: T) => void,
+    reject: (error: OpenKeyError) => void
+  ) {
+    new WalletPicker({
+      providers: this.discoveredProviders,
+      onCancel: () => {
+        reject({ code: 'USER_CANCELLED', message: 'User cancelled wallet selection' });
+      },
+      onSelect: async (provider) => {
+        try {
+          const accounts = await provider.request({ method: 'eth_requestAccounts' }) as string[];
+          const address = accounts[0];
+          if (!address) throw new Error('No account returned');
+          const result = { address, keyId: `external:${address}`, keyType: 'EXTERNAL' as const };
+          this.lastAuth = result;
+          resolve(result as T);
+        } catch (e: any) {
+          reject({ code: 'UNKNOWN', message: e.message || 'Failed to connect wallet' });
+        }
+      },
+    });
+  }
+
   private openPopup<T>(
     url: string,
     message: object,
@@ -1043,6 +1081,13 @@ export class OpenKey {
           code: 'USER_CANCELLED',
           message: 'User cancelled the request',
         });
+        return;
+      }
+
+      if (data.type === 'openkey:auth:use-external-wallet') {
+        cleanup();
+        this.popup?.close();
+        this.handleExternalWalletConnect<T>(resolve, reject);
         return;
       }
 
