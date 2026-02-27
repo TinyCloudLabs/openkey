@@ -1,6 +1,8 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
+  import { page } from '$app/stores';
   import { authClient, API_BASE } from '$lib/auth-client';
+  import { api } from '$lib/api';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
@@ -16,7 +18,16 @@
   // Detect if opened as a popup from the embed SDK flow
   const isEmbedPopup = typeof window !== 'undefined' && !!window.opener && data.isEmbed;
 
+  // Persist OAuth params in sessionStorage so the OAuth authorization can be
+  // resumed after passkey registration (mirrors the login page logic)
   const OAUTH_STORAGE_KEY = 'openkey:pending_oauth';
+  if (typeof window !== 'undefined' && $page.url.searchParams.has('client_id')) {
+    const oauthParams = new URLSearchParams($page.url.searchParams);
+    oauthParams.delete('sig');
+    oauthParams.delete('exp');
+    oauthParams.delete('prompt');
+    sessionStorage.setItem(OAUTH_STORAGE_KEY, oauthParams.toString());
+  }
 
   async function sendOTP() {
     loading = true;
@@ -52,6 +63,21 @@
     }
   }
 
+  // Ensure the user has at least one Ethereum key (the databaseHook auto-generates
+  // one on user creation, but if it failed we create one here so the user isn't
+  // stuck on an empty dashboard or sent back to an app with no key).
+  async function ensureKeyExists() {
+    try {
+      const { keys } = await api.listKeys();
+      if (keys.length === 0) {
+        await api.generateKey();
+      }
+    } catch (e) {
+      // Non-blocking — key can be created later from the dashboard
+      console.error('[Register] Failed to ensure key exists:', e);
+    }
+  }
+
   async function registerPasskey() {
     loading = true;
     error = '';
@@ -59,25 +85,30 @@
       const result = await authClient.passkey.addPasskey();
       if (result?.error) {
         error = result.error.message || 'Failed to register passkey';
-      } else if (isEmbedPopup) {
-        // Opened from embed SDK — get a bearer token from the session and
-        // post it back to the parent SDK so the embed iframe can authenticate.
-        // The bearer() plugin returns the token via the set-auth-token header.
-        const sessionRes = await fetch(`${API_BASE}/api/auth/get-session`, {
-          method: 'GET',
-          credentials: 'include',
-          headers: { 'Accept': 'application/json' },
-        });
-        const sessionToken = sessionRes.headers.get('set-auth-token');
-        window.opener.postMessage({ type: 'openkey:register:complete', sessionToken }, '*');
       } else {
-        // Resume pending OAuth authorization flow if the user came from an OAuth client
-        const pendingOAuth = sessionStorage.getItem(OAUTH_STORAGE_KEY);
-        if (pendingOAuth) {
-          sessionStorage.removeItem(OAUTH_STORAGE_KEY);
-          window.location.href = API_BASE + '/api/auth/oauth2/authorize?' + pendingOAuth;
+        // Ensure the user has a key before proceeding
+        await ensureKeyExists();
+
+        if (isEmbedPopup) {
+          // Opened from embed SDK — get a bearer token from the session and
+          // post it back to the parent SDK so the embed iframe can authenticate.
+          // The bearer() plugin returns the token via the set-auth-token header.
+          const sessionRes = await fetch(`${API_BASE}/api/auth/get-session`, {
+            method: 'GET',
+            credentials: 'include',
+            headers: { 'Accept': 'application/json' },
+          });
+          const sessionToken = sessionRes.headers.get('set-auth-token');
+          window.opener.postMessage({ type: 'openkey:register:complete', sessionToken }, '*');
         } else {
-          goto('/dashboard');
+          // Resume pending OAuth authorization flow if the user came from an OAuth client
+          const pendingOAuth = sessionStorage.getItem(OAUTH_STORAGE_KEY);
+          if (pendingOAuth) {
+            sessionStorage.removeItem(OAUTH_STORAGE_KEY);
+            window.location.href = API_BASE + '/api/auth/oauth2/authorize?' + pendingOAuth;
+          } else {
+            goto('/dashboard');
+          }
         }
       }
     } catch (e: any) {
