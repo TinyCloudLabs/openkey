@@ -23,7 +23,7 @@ always-auth=true
 NPMRC
 
 # Create .npmrc in publishable packages
-for pkg in packages/sdk packages/types; do
+for pkg in packages/sdk packages/types packages/core packages/cli packages/sdk-react-native; do
   if [ -d "$pkg" ]; then
     cat > "$pkg/.npmrc" << NPMRC
 registry=https://registry.npmjs.org/

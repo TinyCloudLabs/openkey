@@ -24,7 +24,7 @@ jobs:
           token: ${{ secrets.GH_TOKEN }}
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v1
+        uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
 
@@ -48,21 +48,33 @@ jobs:
       - name: Build packages
         run: bun run build
 
-      - name: Publish packages with npm directly
+      - name: Resolve workspace dependencies
+        run: ./scripts/resolve-workspace-deps.sh
+
+      - name: Publish packages
         run: |
           export NPM_TOKEN="${{ secrets.NPM_TOKEN }}"
-          export NODE_AUTH_TOKEN="${{ secrets.NPM_TOKEN }}"
+          ./scripts/npm-auth.sh
 
-          echo "Publishing packages..."
           ROOT_DIR=$(pwd)
+          for pkg in packages/core packages/types packages/sdk packages/cli packages/sdk-react-native; do
+            if [ ! -f "$pkg/package.json" ]; then
+              continue
+            fi
 
-          # Publish SDK
-          cd "$ROOT_DIR/packages/sdk"
-          npm publish --access public
+            pkg_name=$(jq -r '.name' "$pkg/package.json")
+            pkg_version=$(jq -r '.version' "$pkg/package.json")
+            is_private=$(jq -r '.private // false' "$pkg/package.json")
 
-          # Publish types
-          cd "$ROOT_DIR/packages/types"
-          npm publish --access public
+            if [ "$is_private" = "true" ]; then
+              echo "Skipping $pkg_name (private)"
+              continue
+            fi
+
+            echo "Publishing $pkg_name@$pkg_version..."
+            cd "$ROOT_DIR/$pkg"
+            npm publish --access public || echo "  Failed or already published"
+          done
 
           cd "$ROOT_DIR"
         env:
@@ -70,41 +82,10 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
 
-      - name: Create tags
-        run: |
-          ROOT_DIR=$(pwd)
-
-          cd "$ROOT_DIR/packages/sdk"
-          SDK_VERSION=$(cat package.json | grep '"version"' | head -1 | awk -F: '{ print $2 }' | sed 's/[",]//g' | tr -d '[[:space:]]')
-          git tag "sdk-v$SDK_VERSION"
-
-          cd "$ROOT_DIR/packages/types"
-          TYPES_VERSION=$(cat package.json | grep '"version"' | head -1 | awk -F: '{ print $2 }' | sed 's/[",]//g' | tr -d '[[:space:]]')
-          git tag "types-v$TYPES_VERSION"
-
-          cd "$ROOT_DIR"
-
       - name: Commit changes
         run: |
+          git checkout -- .  # Revert workspace:* rewrites before committing
           git add .
           git commit -m "chore: release version [skip ci]" || echo "No changes to commit"
           git push origin HEAD:main
           git push origin --tags
-
-      - name: Create GitHub draft releases
-        run: |
-          # Create draft release for SDK
-          echo "Creating draft release for sdk v$SDK_VERSION..."
-          gh release create "sdk-v$SDK_VERSION" \
-            --title "SDK v$SDK_VERSION" \
-            --notes "Release notes for @openkey/sdk v$SDK_VERSION" \
-            --draft
-
-          # Create draft release for types
-          echo "Creating draft release for types v$TYPES_VERSION..."
-          gh release create "types-v$TYPES_VERSION" \
-            --title "Types v$TYPES_VERSION" \
-            --notes "Release notes for @openkey/types v$TYPES_VERSION" \
-            --draft
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
