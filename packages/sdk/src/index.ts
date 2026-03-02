@@ -1,6 +1,13 @@
 // OpenKey SDK - Browser client for third-party apps
 // Provides "Sign with OpenKey" functionality via popup or iframe
 
+import {
+  generateCodeVerifier,
+  generateCodeChallenge,
+  generateState,
+  buildAuthorizationUrl,
+} from '@openkey/core';
+
 export interface EIP1193Provider {
   request(args: { method: string; params?: any[] }): Promise<any>;
 }
@@ -330,32 +337,6 @@ function showToast(message = 'Opening in new window\u2026', variant: 'info' | 'e
   setTimeout(() => root.remove(), 4000);
 }
 
-// ======= PKCE Utilities =======
-
-function base64UrlEncode(buffer: Uint8Array): string {
-  const base64 = btoa(String.fromCharCode(...buffer));
-  return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-}
-
-async function generateCodeVerifier(): Promise<string> {
-  const array = new Uint8Array(32);
-  crypto.getRandomValues(array);
-  return base64UrlEncode(array);
-}
-
-async function generateCodeChallenge(verifier: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(verifier);
-  const digest = await crypto.subtle.digest('SHA-256', data);
-  return base64UrlEncode(new Uint8Array(digest));
-}
-
-function generateState(): string {
-  const array = new Uint8Array(16);
-  crypto.getRandomValues(array);
-  return base64UrlEncode(array);
-}
-
 class ExternalWalletError extends Error {
   constructor(message: string) {
     super(message);
@@ -587,7 +568,7 @@ export class OpenKey {
      */
     connect: async (config: OAuthConfig): Promise<OAuthResult> => {
       // Generate PKCE values
-      const verifier = await generateCodeVerifier();
+      const verifier = generateCodeVerifier();
       const challenge = await generateCodeChallenge(verifier);
       const state = config.state || generateState();
 
@@ -598,16 +579,16 @@ export class OpenKey {
       );
 
       // Build authorization URL
-      const authUrl = new URL(`${this.oauthHost}/api/auth/oauth2/authorize`);
-      authUrl.searchParams.set('client_id', config.clientId);
-      authUrl.searchParams.set('redirect_uri', config.redirectUri);
-      authUrl.searchParams.set('response_type', 'code');
-      authUrl.searchParams.set('scope', 'openid');
-      authUrl.searchParams.set('state', state);
-      authUrl.searchParams.set('code_challenge', challenge);
-      authUrl.searchParams.set('code_challenge_method', 'S256');
+      const authUrl = buildAuthorizationUrl({
+        host: this.oauthHost,
+        clientId: config.clientId,
+        redirectUri: config.redirectUri,
+        codeChallenge: challenge,
+        state,
+        scopes: ['openid'],
+      });
 
-      return this.openOAuthFlow(authUrl.toString(), state, config.redirectUri);
+      return this.openOAuthFlow(authUrl, state, config.redirectUri);
     },
 
     /**

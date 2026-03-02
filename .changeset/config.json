@@ -4,7 +4,7 @@
   "commit": false,
   "fixed": [],
   "linked": [
-    ["@openkey/sdk", "@openkey/types"]
+    ["@openkey/sdk", "@openkey/sdk-react-native", "@openkey/core", "@openkey/types"]
   ],
   "access": "public",
   "baseBranch": "main",

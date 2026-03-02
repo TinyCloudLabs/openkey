@@ -1,14 +1,16 @@
 {
-  "name": "@openkey/sdk",
-  "version": "0.6.0",
-  "main": "./dist/index.js",
-  "module": "./dist/index.mjs",
+  "name": "@openkey/core",
+  "version": "0.0.1",
+  "description": "Shared OAuth 2.1 PKCE utilities for OpenKey SDKs",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.mjs",
-      "require": "./dist/index.js"
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
     }
   },
   "files": [
@@ -22,9 +24,6 @@
     "dev": "tsup --watch",
     "build": "tsup",
     "typecheck": "tsc --noEmit"
-  },
-  "dependencies": {
-    "@openkey/core": "workspace:*"
   },
   "devDependencies": {
     "tsup": "^8.0.0",

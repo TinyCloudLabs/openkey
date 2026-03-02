@@ -1,13 +1,11 @@
 /**
- * PKCE (Proof Key for Code Exchange) utilities for React Native.
+ * PKCE (Proof Key for Code Exchange) utilities.
  *
- * Unlike the browser SDK, this module avoids `btoa()` which is not
- * available in all React Native runtimes (e.g. Hermes < 0.73).
- * Base64url encoding is implemented from scratch using a lookup table.
+ * Uses a pure-JS base64url encoder (no `btoa()`) so it works across
+ * Node.js, browsers, and React Native (including Hermes < 0.73).
  *
- * The default SHA-256 implementation uses `crypto.subtle.digest` which
- * is available in Hermes 0.73+. For older runtimes, pass a custom
- * `SHA256Fn` backed by expo-crypto or react-native-quick-crypto.
+ * The default SHA-256 implementation uses `crypto.subtle.digest`.
+ * For runtimes without Web Crypto, pass a custom `SHA256Fn`.
  */
 
 /**
@@ -21,7 +19,7 @@ const BASE64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012345
 
 /**
  * Pure JS base64url encoding from a Uint8Array.
- * Does NOT use `btoa()` — safe for all React Native runtimes.
+ * Does NOT use `btoa()` — safe for all runtimes.
  */
 export function base64UrlEncode(buffer: Uint8Array): string {
   let base64 = '';
@@ -56,7 +54,7 @@ export function generateCodeVerifier(): string {
 
 /**
  * Default SHA-256 implementation using Web Crypto API.
- * Available in Hermes 0.73+ and modern JS runtimes.
+ * Available in Node.js 18+, modern browsers, and Hermes 0.73+.
  */
 async function defaultSha256(input: string): Promise<Uint8Array> {
   const encoder = new TextEncoder();
