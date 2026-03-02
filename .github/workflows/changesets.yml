@@ -64,7 +64,7 @@ jobs:
           REPOS=(
             "tinycloudlabs/OpenCredentials"
             "tinycloudlabs/remember"
-            "tinycloudlabs/web-sdk"
+            "tinycloudlabs/js-sdk"
             "tinycloudlabs/lightning"
           )
 
