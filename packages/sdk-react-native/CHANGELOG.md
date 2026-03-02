@@ -1,5 +1,13 @@
 # @openkey/sdk-react-native
 
+## 0.7.0
+
+### Patch Changes
+
+- bfa5806: Extract shared PKCE, OAuth URL building, token exchange, and error handling into @openkey/core. Refactor @openkey/sdk and @openkey/sdk-react-native to use @openkey/core instead of duplicated internal implementations. No public API changes to existing SDKs.
+- Updated dependencies [bfa5806]
+  - @openkey/core@0.7.0
+
 ## 0.0.5
 
 ### Patch Changes
