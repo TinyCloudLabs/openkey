@@ -1,6 +1,6 @@
 {
   "name": "@openkey/core",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Shared OAuth 2.1 PKCE utilities for OpenKey SDKs",
   "type": "module",
   "main": "./dist/index.cjs",

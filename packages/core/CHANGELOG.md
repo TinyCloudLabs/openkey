@@ -1,5 +1,11 @@
 # @openkey/core
 
+## 0.7.1
+
+### Patch Changes
+
+- b87511e: Fix workspace:\* dependencies leaking to npm — resolve to concrete versions before publish
+
 ## 0.7.0
 
 ### Minor Changes
