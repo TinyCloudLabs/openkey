@@ -1,128 +1,151 @@
 ---
 name: openkey-cli
-description: Develop and extend the OpenKey CLI package. Use when working on CLI commands, auth flows, credential storage, or adding new commands to the openkey CLI tool. Covers architecture, OAuth PKCE flow, local callback server, and token management.
+description: Authenticate with OpenKey, manage keys, and sign messages from the terminal. Use when the user needs to log in to OpenKey, list or manage Ethereum keys, sign messages, or get access tokens from the command line.
 ---
 
-# OpenKey CLI Development
+# OpenKey CLI
 
-## Architecture
-
-The CLI is at `packages/cli/` in the OpenKey monorepo. It authenticates users via OAuth 2.1 PKCE by opening a browser and receiving the callback on a local HTTP server.
-
-### Package Dependencies
-- `@openkey/core` (workspace) — PKCE, OAuth URL building, token exchange, errors
-- `commander` — CLI argument parsing
-- `open` — cross-platform browser opening
-
-### Source Structure
-```
-packages/cli/src/
-├── cli.ts              # Entry point, commander setup, global options
-├── auth.ts             # OAuth login flow (local HTTP server + browser open)
-├── credentials.ts      # Token persistence (~/.openkey/credentials.json)
-├── api.ts              # Authenticated fetch helper, auto-refresh
-└── commands/
-    ├── login.ts        # openkey login [--no-browser]
-    ├── logout.ts       # openkey logout
-    ├── whoami.ts       # openkey whoami
-    ├── keys.ts         # openkey keys
-    ├── sign.ts         # openkey sign <message> [--key-id <id>]
-    └── token.ts        # openkey token (prints access token for piping)
-```
-
-### Build
-- Built with tsup (ESM only, shebang banner)
-- Binary: `packages/cli/dist/cli.js`
-- `bin` field in package.json: `{ "openkey": "./dist/cli.js" }`
-
-## Key Concepts
-
-### OAuth PKCE Login Flow
-1. Generate PKCE verifier + challenge + state via `@openkey/core`
-2. Start ephemeral HTTP server on `localhost:{random_port}`
-3. Build authorization URL via `buildAuthorizationUrl()` from core
-4. Open browser (or print URL with `--no-browser`)
-5. Server receives `GET /callback?code=...&state=...`
-6. Validate state, exchange code for tokens via `exchangeAuthorizationCode()`
-7. Save tokens to `~/.openkey/credentials.json`, shut down server
-
-### Credential Storage
-- Location: `~/.openkey/credentials.json`
-- Permissions: `0600` (owner read/write only)
-- Keyed by host URL (supports multiple OpenKey instances)
-- Stores: `{ tokens: AuthTokens, storedAt: ISO string }`
-- Auto-refresh: commands call `getValidTokens()` which refreshes expired tokens
-
-### Global CLI Options
-- `--host <url>` — OpenKey server (default: `https://openkey.so`)
-- `--client-id <id>` — OAuth client ID (required for most commands)
-
-## Adding a New Command
-
-1. Create `src/commands/mycommand.ts`:
-```typescript
-import { authenticatedFetch } from '../api';
-
-export async function myCommand(options: { host: string; clientId: string }) {
-  const res = await authenticatedFetch(options.host, options.clientId, '/api/my-endpoint');
-  if (!res.ok) throw new Error(`Failed: ${res.status}`);
-  const data = await res.json();
-  console.log(data);
-}
-```
-
-2. Register in `src/cli.ts`:
-```typescript
-import { myCommand } from './commands/mycommand';
-
-program
-  .command('mycommand')
-  .description('Does something')
-  .action(async () => {
-    const { host, clientId } = program.opts();
-    await myCommand({ host, clientId });
-  });
-```
-
-3. Build: `bun run --filter '@openkey/cli' build`
-4. Test: `node packages/cli/dist/cli.js mycommand --client-id <id>`
-
-## OpenKey API Endpoints (used by CLI)
-
-| Command | Endpoint | Auth |
-|---------|----------|------|
-| login | `POST /api/auth/oauth2/token` | PKCE code exchange |
-| logout | `POST /api/auth/revoke` | Bearer token |
-| whoami | `GET /api/auth/userinfo` | Bearer token |
-| keys | `GET /api/keys` | Bearer token |
-| sign | `POST /api/keys/:keyId/sign` | Bearer token |
-| token | (local only) | reads stored credentials |
-
-## @openkey/core Functions Used
-
-- `generateCodeVerifier()` — sync, returns base64url string
-- `generateCodeChallenge(verifier, sha256?)` — async, SHA-256 hash
-- `generateState()` — sync, returns base64url string
-- `buildAuthorizationUrl(opts)` — builds full OAuth authorize URL
-- `exchangeAuthorizationCode(opts)` — POSTs to token endpoint, returns `AuthTokens`
-- `refreshAccessToken(opts)` — refresh flow, returns `AuthTokens`
-- `OpenKeyError` — error class with typed `code` field
-
-## Testing
+## Quick start
 
 ```bash
-# Build
-bun run --filter '@openkey/cli' build
-
-# Verify binary
-node packages/cli/dist/cli.js --help
-
-# Smoke test against local dev server
-node packages/cli/dist/cli.js login --no-browser --host http://localhost:3001 --client-id <id>
+openkey login --client-id <id>           # Sign in (opens browser)
+openkey whoami --client-id <id>          # Show current user
+openkey keys --client-id <id>            # List your keys
+openkey sign "hello" --client-id <id>    # Sign a message
 ```
 
-## Conventions
-- All commands that need auth use `getValidTokens()` or `authenticatedFetch()` from `api.ts`
-- Errors are `OpenKeyError` instances with typed codes
-- `token` command writes to stdout without newline (for piping)
-- No graceful fallbacks — let errors surface clearly
+## Authentication
+
+```bash
+openkey login                    # Open browser for OAuth sign-in
+openkey login --no-browser       # Print URL instead (for SSH/headless)
+openkey logout                   # Revoke tokens and clear credentials
+```
+
+Login opens your browser to OpenKey, authenticates via OAuth 2.1 PKCE, and stores tokens locally. With `--no-browser`, it prints the URL for you to open manually while the local callback server waits.
+
+Credentials are saved to `~/.openkey/credentials.json` (permissions `0600`). Tokens auto-refresh when expired.
+
+## User info
+
+```bash
+openkey whoami                   # Show email, keys, account info
+```
+
+## Key management
+
+```bash
+openkey keys                     # List all keys (address, type, label)
+```
+
+## Signing
+
+```bash
+openkey sign "hello world"                  # Sign with default key
+openkey sign "hello world" --key-id <id>    # Sign with specific key
+```
+
+Signs a message using a managed key via OpenKey's TEE. Returns the signature and address.
+
+## Access tokens
+
+```bash
+openkey token                    # Print access token to stdout
+```
+
+Outputs the current access token with no trailing newline, for piping to other tools:
+
+```bash
+curl -H "Authorization: Bearer $(openkey token --client-id <id>)" \
+  https://openkey.so/api/keys
+```
+
+## Global options
+
+```bash
+openkey --host <url>             # OpenKey server (default: https://openkey.so)
+openkey --client-id <id>         # OAuth client ID (required)
+openkey --version                # Show version
+openkey --help                   # Show help
+openkey <command> --help         # Show help for a command
+```
+
+## Using with a local dev server
+
+```bash
+openkey login --host http://localhost:3001 --client-id <id>
+openkey whoami --host http://localhost:3001 --client-id <id>
+```
+
+Credentials are stored per-host, so you can be logged in to both production and local simultaneously.
+
+## Registering an OAuth client
+
+Before using the CLI, register an OAuth client for it:
+
+```bash
+# In the openkey monorepo
+bun run oauth:register \
+  --name "OpenKey CLI" \
+  --type native \
+  --redirect-uri "http://127.0.0.1"
+```
+
+Use the returned client ID with `--client-id`.
+
+## Example: Full workflow
+
+```bash
+# Register a CLI client (one-time setup)
+bun run oauth:register --name "My CLI" --type native --redirect-uri "http://127.0.0.1"
+# Output: Client ID: ok_abc123
+
+# Log in
+openkey login --client-id ok_abc123
+
+# Check identity
+openkey whoami --client-id ok_abc123
+# Email: sam@example.com
+# Address: 0xAbC...dEf
+
+# List keys
+openkey keys --client-id ok_abc123
+# ck_123  0xAbC...dEf  MANAGED  "default"
+# ck_456  0x789...012  EXTERNAL "metamask"
+
+# Sign a message
+openkey sign "authorize action" --client-id ok_abc123
+# Signature: 0x1a2b3c...
+# Address: 0xAbC...dEf
+
+# Use token in scripts
+TOKEN=$(openkey token --client-id ok_abc123)
+curl -H "Authorization: Bearer $TOKEN" https://openkey.so/api/keys
+```
+
+## Example: Headless / SSH environment
+
+```bash
+openkey login --no-browser --client-id ok_abc123
+
+# Output:
+# Open this URL in your browser to sign in:
+#   https://openkey.so/api/auth/oauth2/authorize?client_id=ok_abc123&...
+#
+# Waiting for callback...
+
+# Open the URL on another machine, authenticate, and the CLI
+# receives the callback on its local server.
+
+# Authenticated as sam@example.com
+```
+
+## Error codes
+
+| Code | Meaning |
+|------|---------|
+| `UNAUTHORIZED` | Not logged in or session expired — run `openkey login` |
+| `NETWORK_ERROR` | Cannot reach OpenKey server |
+| `TIMEOUT` | Login flow timed out waiting for browser callback |
+| `STATE_MISMATCH` | CSRF check failed — retry login |
+| `UNKNOWN` | Unexpected error |
