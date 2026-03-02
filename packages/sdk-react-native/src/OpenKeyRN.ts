@@ -1,7 +1,14 @@
 import type { OpenKeyRNConfig, AuthTokens } from './types';
 import { OpenKeyError } from './types';
-import type { SHA256Fn } from './pkce';
-import { generateCodeVerifier, generateCodeChallenge, generateState } from './pkce';
+import type { SHA256Fn } from '@openkey/core';
+import {
+  generateCodeVerifier,
+  generateCodeChallenge,
+  generateState,
+  buildAuthorizationUrl,
+  exchangeAuthorizationCode,
+  refreshAccessToken,
+} from '@openkey/core';
 
 /**
  * A function that opens a URL in the system browser (e.g. via expo-web-browser or react-native Linking).
@@ -72,17 +79,14 @@ export class OpenKeyRN {
     const challenge = await generateCodeChallenge(verifier, this.sha256);
     const state = generateState();
 
-    const params = new URLSearchParams({
-      client_id: this.clientId,
-      redirect_uri: this.redirectUri,
-      response_type: 'code',
-      scope: 'openid email keys offline_access',
+    const authUrl = buildAuthorizationUrl({
+      host: this.host,
+      clientId: this.clientId,
+      redirectUri: this.redirectUri,
+      codeChallenge: challenge,
       state,
-      code_challenge: challenge,
-      code_challenge_method: 'S256',
+      scopes: ['openid', 'email', 'keys', 'offline_access'],
     });
-
-    const authUrl = `${this.host}/api/auth/oauth2/authorize?${params.toString()}`;
 
     const tokensPromise = new Promise<AuthTokens>((resolve, reject) => {
       this.pendingFlows.set(state, { verifier, resolve, reject });
@@ -140,7 +144,14 @@ export class OpenKeyRN {
     this.pendingFlows.delete(state);
 
     // Fire the token exchange asynchronously — handleCallback returns synchronously
-    this.exchangeCode(code, pending.verifier).then(
+    exchangeAuthorizationCode({
+      host: this.host,
+      code,
+      redirectUri: this.redirectUri,
+      clientId: this.clientId,
+      codeVerifier: pending.verifier,
+      resource: this.resource,
+    }).then(
       (tokens) => pending.resolve(tokens),
       (error) => {
         if (error instanceof OpenKeyError) {
@@ -160,89 +171,15 @@ export class OpenKeyRN {
   }
 
   /**
-   * Exchange an authorization code for tokens.
-   */
-  private async exchangeCode(code: string, verifier: string): Promise<AuthTokens> {
-    const body = new URLSearchParams({
-      grant_type: 'authorization_code',
-      code,
-      redirect_uri: this.redirectUri,
-      client_id: this.clientId,
-      code_verifier: verifier,
-      resource: this.resource,
-    });
-
-    let response: Response;
-    try {
-      response = await fetch(`${this.host}/api/auth/oauth2/token`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: body.toString(),
-      });
-    } catch (error) {
-      throw new OpenKeyError(
-        'NETWORK_ERROR',
-        error instanceof Error ? error.message : 'Network request failed',
-      );
-    }
-
-    if (!response.ok) {
-      let detail = '';
-      try {
-        detail = await response.text();
-      } catch {
-        // ignore
-      }
-      throw new OpenKeyError(
-        'UNKNOWN',
-        `Token exchange failed: ${response.status} ${response.statusText}${detail ? ` - ${detail}` : ''}`,
-      );
-    }
-
-    const data = (await response.json()) as Record<string, unknown>;
-    return this.mapTokenResponse(data);
-  }
-
-  /**
    * Refresh an access token using a refresh token.
    */
-  async refreshToken(refreshToken: string): Promise<AuthTokens> {
-    const body = new URLSearchParams({
-      grant_type: 'refresh_token',
-      refresh_token: refreshToken,
-      client_id: this.clientId,
+  async refreshToken(refreshTokenValue: string): Promise<AuthTokens> {
+    return refreshAccessToken({
+      host: this.host,
+      refreshToken: refreshTokenValue,
+      clientId: this.clientId,
       resource: this.resource,
     });
-
-    let response: Response;
-    try {
-      response = await fetch(`${this.host}/api/auth/oauth2/token`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: body.toString(),
-      });
-    } catch (error) {
-      throw new OpenKeyError(
-        'NETWORK_ERROR',
-        error instanceof Error ? error.message : 'Network request failed',
-      );
-    }
-
-    if (!response.ok) {
-      let detail = '';
-      try {
-        detail = await response.text();
-      } catch {
-        // ignore
-      }
-      throw new OpenKeyError(
-        'UNKNOWN',
-        `Token refresh failed: ${response.status} ${response.statusText}${detail ? ` - ${detail}` : ''}`,
-      );
-    }
-
-    const data = (await response.json()) as Record<string, unknown>;
-    return this.mapTokenResponse(data);
   }
 
   /**
@@ -291,17 +228,5 @@ export class OpenKeyRN {
         error instanceof Error ? error.message : 'Network request failed',
       );
     }
-  }
-
-  /**
-   * Map a snake_case token response to the camelCase AuthTokens interface.
-   */
-  private mapTokenResponse(data: Record<string, unknown>): AuthTokens {
-    return {
-      accessToken: data.access_token as string,
-      idToken: data.id_token as string,
-      refreshToken: data.refresh_token as string | undefined,
-      expiresIn: data.expires_in as number,
-    };
   }
 }

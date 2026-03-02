@@ -1,8 +1,9 @@
-export type { OpenKeyRNConfig, AuthTokens, OpenKeyErrorCode } from './types';
-export { OpenKeyError } from './types';
+// Re-export shared types from core (backward compatibility)
+export type { AuthTokens, OpenKeyErrorCode, SHA256Fn } from '@openkey/core';
+export { OpenKeyError, base64UrlEncode, generateCodeVerifier, generateCodeChallenge, generateState } from '@openkey/core';
 
-export type { SHA256Fn } from './pkce';
-export { base64UrlEncode, generateCodeVerifier, generateCodeChallenge, generateState } from './pkce';
+// RN-specific config
+export type { OpenKeyRNConfig } from './types';
 
 export type { BrowserOpener } from './OpenKeyRN';
 export { OpenKeyRN, type OpenKeyRNFullConfig } from './OpenKeyRN';

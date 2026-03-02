@@ -4,8 +4,8 @@ import {
   generateCodeVerifier,
   generateCodeChallenge,
   generateState,
-} from '../pkce';
-import type { SHA256Fn } from '../pkce';
+} from '@openkey/core';
+import type { SHA256Fn } from '@openkey/core';
 
 const BASE64URL_REGEX = /^[A-Za-z0-9_-]+$/;
 
