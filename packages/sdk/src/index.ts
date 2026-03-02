@@ -202,6 +202,7 @@ class IframeModal {
 
     this.messageHandler = (event: MessageEvent) => {
       if (event.origin !== this.host) return;
+      if (event.source !== this.iframe.contentWindow) return;
       const data = event.data as MessageType;
       if (data.type === 'openkey:resize') {
         const h = Math.min(data.height, Math.floor(window.innerHeight * 0.85));
@@ -1046,6 +1047,7 @@ export class OpenKey {
     // Listen for messages
     const handleMessage = (event: MessageEvent) => {
       if (event.origin !== this.host) return;
+      if (event.source !== this.popup) return;
 
       const data = event.data as MessageType;
 
