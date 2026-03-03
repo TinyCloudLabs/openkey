@@ -169,7 +169,10 @@
   }
 
   function formatDate(date: string): string {
-    return new Date(date).toLocaleDateString(undefined, {
+    if (!date) return 'recently';
+    const d = new Date(date);
+    if (isNaN(d.getTime())) return 'recently';
+    return d.toLocaleDateString(undefined, {
       year: 'numeric',
       month: 'short',
       day: 'numeric',

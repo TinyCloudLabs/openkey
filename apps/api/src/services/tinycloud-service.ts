@@ -160,11 +160,11 @@ export class TinyCloudService {
     const secrets: Array<{ name: string; createdAt: string }> = [];
     for (const key of listResult.data) {
       const name = key.replace('secrets/', '');
-      // Get metadata via head to extract createdAt without decrypting
-      const headResult = await session.tc.vault.head(key);
       let createdAt = '';
-      if (headResult.ok && headResult.data['x-vault-created']) {
-        createdAt = headResult.data['x-vault-created'];
+      // Read the stored payload to get createdAt
+      const getResult = await session.tc.vault.get<{ value: string; createdAt: string }>(key);
+      if (getResult.ok && getResult.data?.createdAt) {
+        createdAt = getResult.data.createdAt;
       }
       secrets.push({ name, createdAt });
     }
