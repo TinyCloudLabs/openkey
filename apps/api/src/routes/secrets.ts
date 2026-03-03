@@ -64,11 +64,23 @@ secretsRouter.post('/enable', async (c) => {
   return c.json(result);
 });
 
-// GET /status - Check if TinyCloud is enabled
+// GET /status - Check if TinyCloud is enabled (auto-restores session if needed)
 secretsRouter.get('/status', async (c) => {
   const user = c.get('user');
 
-  const enabled = await tinyCloudService.isEnabledForUser(user.id);
+  let enabled = await tinyCloudService.isEnabledForUser(user.id);
+
+  // Auto-restore session if user has a managed key (survives server restarts)
+  if (!enabled) {
+    const privateKey = await getUserPrivateKey(user.id);
+    if (privateKey) {
+      try {
+        await tinyCloudService.enableForUser(user.id, privateKey);
+        enabled = true;
+      } catch { /* user has key but TC session failed — treat as not enabled */ }
+    }
+  }
+
   if (!enabled) {
     return c.json({ enabled: false });
   }
