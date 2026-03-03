@@ -154,4 +154,19 @@
       </div>
     {/if}
   </Card>
+
+  <!-- API Keys Card -->
+  <Card class="mt-6">
+    <div class="flex items-center justify-between">
+      <div>
+        <h2 class="text-xl font-semibold text-surface-900">Secrets & Variables</h2>
+        <p class="text-sm text-surface-500 mt-1">
+          Store and manage secrets and environment variables with encrypted storage.
+        </p>
+      </div>
+      <Button variant="secondary" href="/dashboard/api-keys">
+        Manage
+      </Button>
+    </div>
+  </Card>
 </div>

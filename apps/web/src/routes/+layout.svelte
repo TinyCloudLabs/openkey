@@ -29,6 +29,9 @@
           <a href="/dashboard" class="text-surface-500 hover:text-surface-900 transition-colors no-underline">
             Dashboard
           </a>
+          <a href="/dashboard/api-keys" class="text-surface-500 hover:text-surface-900 transition-colors no-underline">
+            API Keys
+          </a>
         </div>
       </nav>
     </header>
