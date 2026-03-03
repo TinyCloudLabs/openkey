@@ -29,6 +29,7 @@ model User {
   oauthRefreshTokens OauthRefreshToken[]
   oauthConsents      OauthConsent[]
   developerAccount   DeveloperAccount?
+  encryptionKey      UserEncryptionKey?
 
   @@map("user")
 }
@@ -126,6 +127,19 @@ model EthereumKey {
 
   @@index([userId])
   @@map("ethereum_keys")
+}
+
+// Per-user RSA encryption keypair for encrypting secrets in transit
+model UserEncryptionKey {
+  id               String   @id @default(cuid())
+  userId           String   @unique
+  publicKey        String   // PEM-encoded RSA public key
+  sealedPrivateKey String   // RSA private key sealed with TEE
+  createdAt        DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_encryption_key")
 }
 
 // better-auth JWKS (required by JWT plugin)

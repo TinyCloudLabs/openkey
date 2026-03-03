@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 import { PrismaClient } from '@prisma/client';
 import { createTeeClient, unseal } from '@openkey/tee';
 import { requireSession, type SessionContext } from '../middleware/session';
-import { tinyCloudService } from '../services/tinycloud-service';
+import { tinyCloudService, type EncryptedPayload } from '../services/tinycloud-service';
 
 const prisma = new PrismaClient();
 const tee = createTeeClient();
@@ -42,6 +42,14 @@ export const secretsRouter = new Hono<SessionContext>();
 
 // All routes require authentication
 secretsRouter.use('*', requireSession);
+
+// GET /public-key - Get user's RSA public key for client-side encryption
+secretsRouter.get('/public-key', async (c) => {
+  const user = c.get('user');
+
+  const { publicKey } = await tinyCloudService.getOrCreateEncryptionKey(user.id);
+  return c.json({ publicKey });
+});
 
 // POST /enable - Enable TinyCloud for the user
 secretsRouter.post('/enable', async (c) => {
@@ -88,48 +96,72 @@ secretsRouter.get('/', async (c) => {
   return c.json({ secrets });
 });
 
-// POST / - Create a secret
+// POST / - Create a secret (accepts encrypted payload)
 secretsRouter.post('/', async (c) => {
   const user = c.get('user');
-  const body = await c.req.json<{ name: string; value: string }>();
+  const body = await c.req.json<{ name: string; encryptedValue: string; encryptedKey?: string; iv?: string }>();
 
   const nameError = validateName(body.name);
   if (nameError) {
     return c.json({ error: nameError }, 400);
   }
 
-  if (!body.value || body.value.length === 0) {
-    return c.json({ error: 'Value is required' }, 400);
+  if (!body.encryptedValue) {
+    return c.json({ error: 'encryptedValue is required' }, 400);
   }
 
-  if (body.value.length > MAX_VALUE_SIZE) {
+  // Build encrypted payload
+  const encrypted: EncryptedPayload = body.encryptedKey
+    ? { encryptedKey: body.encryptedKey, encryptedValue: body.encryptedValue, iv: body.iv! }
+    : { encryptedValue: body.encryptedValue };
+
+  // Decrypt on server side
+  const value = await tinyCloudService.decryptValue(user.id, encrypted);
+
+  if (value.length === 0) {
+    return c.json({ error: 'Decrypted value is empty' }, 400);
+  }
+
+  if (value.length > MAX_VALUE_SIZE) {
     return c.json({ error: 'Value exceeds maximum size of 10KB' }, 400);
   }
 
-  const result = await tinyCloudService.putSecret(user.id, body.name, body.value);
+  const result = await tinyCloudService.putSecret(user.id, body.name, value);
   return c.json(result, 201);
 });
 
-// PUT /:name - Update a secret
+// PUT /:name - Update a secret (accepts encrypted payload)
 secretsRouter.put('/:name', async (c) => {
   const user = c.get('user');
   const name = c.req.param('name');
-  const body = await c.req.json<{ value: string }>();
+  const body = await c.req.json<{ encryptedValue: string; encryptedKey?: string; iv?: string }>();
 
   const nameError = validateName(name);
   if (nameError) {
     return c.json({ error: nameError }, 400);
   }
 
-  if (!body.value || body.value.length === 0) {
-    return c.json({ error: 'Value is required' }, 400);
+  if (!body.encryptedValue) {
+    return c.json({ error: 'encryptedValue is required' }, 400);
   }
 
-  if (body.value.length > MAX_VALUE_SIZE) {
+  // Build encrypted payload
+  const encrypted: EncryptedPayload = body.encryptedKey
+    ? { encryptedKey: body.encryptedKey, encryptedValue: body.encryptedValue, iv: body.iv! }
+    : { encryptedValue: body.encryptedValue };
+
+  // Decrypt on server side
+  const value = await tinyCloudService.decryptValue(user.id, encrypted);
+
+  if (value.length === 0) {
+    return c.json({ error: 'Decrypted value is empty' }, 400);
+  }
+
+  if (value.length > MAX_VALUE_SIZE) {
     return c.json({ error: 'Value exceeds maximum size of 10KB' }, 400);
   }
 
-  const result = await tinyCloudService.putSecret(user.id, name, body.value);
+  const result = await tinyCloudService.putSecret(user.id, name, value);
   return c.json(result);
 });
 

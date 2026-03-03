@@ -1,8 +1,13 @@
 // TinyCloud service - manages TinyCloud sessions and operations on behalf of users
 import { TinyCloudNode } from '@tinycloud/node-sdk';
 import { Wallet } from 'ethers';
+import { PrismaClient } from '@prisma/client';
+import { createTeeClient, seal, unseal } from '@openkey/tee';
+import { generateKeyPairSync, privateDecrypt, constants } from 'crypto';
 
 const TINYCLOUD_URL = process.env.TINYCLOUD_URL || 'https://node.tinycloud.xyz';
+const prisma = new PrismaClient();
+const tee = createTeeClient();
 
 interface TinyCloudSession {
   tc: TinyCloudNode;
@@ -43,6 +48,84 @@ export class TinyCloudService {
 
   async isEnabledForUser(userId: string): Promise<boolean> {
     return sessions.has(userId);
+  }
+
+  // =========================================================================
+  // Per-user encryption keypair
+  // =========================================================================
+
+  async getOrCreateEncryptionKey(userId: string): Promise<{ publicKey: string }> {
+    const existing = await prisma.userEncryptionKey.findUnique({
+      where: { userId },
+    });
+
+    if (existing) {
+      return { publicKey: existing.publicKey };
+    }
+
+    // Generate RSA-OAEP 2048-bit keypair
+    const { publicKey, privateKey } = generateKeyPairSync('rsa', {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
+      privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+    });
+
+    // Seal private key with TEE
+    const sealingKey = await tee.deriveKey(`openkey/user/${userId}/encryption`);
+    const sealedPrivateKey = await seal(privateKey as string, sealingKey);
+
+    await prisma.userEncryptionKey.create({
+      data: {
+        userId,
+        publicKey: publicKey as string,
+        sealedPrivateKey,
+      },
+    });
+
+    return { publicKey: publicKey as string };
+  }
+
+  async decryptValue(userId: string, encrypted: EncryptedPayload): Promise<string> {
+    const encKey = await prisma.userEncryptionKey.findUnique({
+      where: { userId },
+    });
+
+    if (!encKey) {
+      throw new Error('No encryption key found for user');
+    }
+
+    // Unseal private key
+    const sealingKey = await tee.deriveKey(`openkey/user/${userId}/encryption`);
+    const privateKeyPem = await unseal(encKey.sealedPrivateKey, sealingKey);
+
+    if ('encryptedKey' in encrypted) {
+      // Hybrid encryption: RSA-decrypt the AES key, then AES-decrypt the value
+      const aesKeyBuf = privateDecrypt(
+        { key: privateKeyPem, oaepHash: 'sha256', padding: constants.RSA_PKCS1_OAEP_PADDING },
+        Buffer.from(encrypted.encryptedKey, 'base64'),
+      );
+
+      const iv = Buffer.from(encrypted.iv, 'base64');
+      const ciphertext = Buffer.from(encrypted.encryptedValue, 'base64');
+
+      // AES-256-GCM: last 16 bytes are auth tag
+      const authTag = ciphertext.subarray(ciphertext.length - 16);
+      const data = ciphertext.subarray(0, ciphertext.length - 16);
+
+      const { createDecipheriv } = await import('crypto');
+      const decipher = createDecipheriv('aes-256-gcm', aesKeyBuf, iv);
+      decipher.setAuthTag(authTag);
+
+      const decrypted = Buffer.concat([decipher.update(data), decipher.final()]);
+      return decrypted.toString('utf8');
+    } else {
+      // Direct RSA encryption (small payloads)
+      const decrypted = privateDecrypt(
+        { key: privateKeyPem, oaepHash: 'sha256', padding: constants.RSA_PKCS1_OAEP_PADDING },
+        Buffer.from(encrypted.encryptedValue, 'base64'),
+      );
+      return decrypted.toString('utf8');
+    }
   }
 
   // =========================================================================
@@ -171,5 +254,18 @@ export class TinyCloudService {
     }
   }
 }
+
+// Encrypted payload types
+export interface EncryptedPayloadDirect {
+  encryptedValue: string; // base64 RSA-OAEP ciphertext
+}
+
+export interface EncryptedPayloadHybrid {
+  encryptedKey: string;   // base64 RSA-OAEP encrypted AES key
+  encryptedValue: string; // base64 AES-256-GCM ciphertext + auth tag
+  iv: string;             // base64 AES-GCM IV
+}
+
+export type EncryptedPayload = EncryptedPayloadDirect | EncryptedPayloadHybrid;
 
 export const tinyCloudService = new TinyCloudService();
