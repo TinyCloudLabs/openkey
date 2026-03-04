@@ -1,5 +1,4 @@
 // API client for secrets and variables management
-// Secrets are encrypted client-side with the user's RSA public key before sending
 import { getSessionToken } from '$lib/embed-passkey';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
@@ -34,71 +33,6 @@ async function fetchAPI<T>(path: string, options: RequestInit = {}): Promise<T> 
 }
 
 // =========================================================================
-// Client-side encryption utilities (Web Crypto API)
-// =========================================================================
-
-let cachedPublicKey: CryptoKey | null = null;
-let cachedPublicKeyPem: string | null = null;
-
-async function getPublicKey(): Promise<CryptoKey> {
-  if (cachedPublicKey) return cachedPublicKey;
-
-  const { publicKey: pem } = await fetchAPI<{ publicKey: string }>('/api/secrets/public-key');
-  cachedPublicKeyPem = pem;
-
-  // Parse PEM to ArrayBuffer
-  const pemBody = pem
-    .replace(/-----BEGIN PUBLIC KEY-----/, '')
-    .replace(/-----END PUBLIC KEY-----/, '')
-    .replace(/\s/g, '');
-  const binaryDer = Uint8Array.from(atob(pemBody), (c) => c.charCodeAt(0));
-
-  cachedPublicKey = await crypto.subtle.importKey(
-    'spki',
-    binaryDer.buffer,
-    { name: 'RSA-OAEP', hash: 'SHA-256' },
-    false,
-    ['encrypt'],
-  );
-
-  return cachedPublicKey;
-}
-
-// RSA-OAEP with SHA-256 and 2048-bit key can encrypt up to 190 bytes
-const RSA_MAX_PLAINTEXT = 190;
-
-async function encryptValue(value: string): Promise<{ encryptedValue: string; encryptedKey?: string; iv?: string }> {
-  const pubKey = await getPublicKey();
-  const encoded = new TextEncoder().encode(value);
-
-  if (encoded.byteLength <= RSA_MAX_PLAINTEXT) {
-    // Direct RSA encryption for small values
-    const ciphertext = await crypto.subtle.encrypt({ name: 'RSA-OAEP' }, pubKey, encoded);
-    return {
-      encryptedValue: btoa(String.fromCharCode(...new Uint8Array(ciphertext))),
-    };
-  }
-
-  // Hybrid encryption for larger values
-  // 1. Generate random AES-256-GCM key
-  const aesKey = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt']);
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-
-  // 2. Encrypt value with AES-GCM
-  const aesCiphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', length: 256 }, aesKey, encoded);
-
-  // 3. Export and RSA-encrypt the AES key
-  const rawAesKey = await crypto.subtle.exportKey('raw', aesKey);
-  const encryptedAesKey = await crypto.subtle.encrypt({ name: 'RSA-OAEP' }, pubKey, rawAesKey);
-
-  return {
-    encryptedKey: btoa(String.fromCharCode(...new Uint8Array(encryptedAesKey))),
-    encryptedValue: btoa(String.fromCharCode(...new Uint8Array(aesCiphertext))),
-    iv: btoa(String.fromCharCode(...iv)),
-  };
-}
-
-// =========================================================================
 // Public API
 // =========================================================================
 
@@ -124,27 +58,21 @@ export const secretsApi = {
     return fetchAPI('/api/secrets/enable', { method: 'POST' });
   },
 
-  async getPublicKey(): Promise<{ publicKey: string }> {
-    return fetchAPI('/api/secrets/public-key');
-  },
-
   async listSecrets(): Promise<{ secrets: Secret[] }> {
     return fetchAPI('/api/secrets');
   },
 
   async createSecret(name: string, value: string): Promise<{ name: string; createdAt: string }> {
-    const encrypted = await encryptValue(value);
     return fetchAPI('/api/secrets', {
       method: 'POST',
-      body: JSON.stringify({ name, ...encrypted }),
+      body: JSON.stringify({ name, value }),
     });
   },
 
   async updateSecret(name: string, value: string): Promise<{ name: string; updatedAt: string }> {
-    const encrypted = await encryptValue(value);
     return fetchAPI(`/api/secrets/${encodeURIComponent(name)}`, {
       method: 'PUT',
-      body: JSON.stringify(encrypted),
+      body: JSON.stringify({ value }),
     });
   },
 

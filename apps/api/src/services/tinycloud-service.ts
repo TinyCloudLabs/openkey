@@ -1,16 +1,12 @@
 // TinyCloud service - manages TinyCloud sessions and operations on behalf of users
 import { TinyCloudNode } from '@tinycloud/node-sdk';
 import { Wallet } from 'ethers';
-import { PrismaClient } from '@prisma/client';
-import { createTeeClient, seal, unseal } from '@openkey/tee';
-import { generateKeyPairSync, privateDecrypt, constants } from 'crypto';
 
 const TINYCLOUD_URL = process.env.TINYCLOUD_URL || 'https://node.tinycloud.xyz';
-const prisma = new PrismaClient();
-const tee = createTeeClient();
 
 interface TinyCloudSession {
-  tc: TinyCloudNode;
+  tc: TinyCloudNode;       // prefix: 'openkey' — for KV/variables
+  secretsTc: TinyCloudNode; // prefix: 'secrets' — for vault/secrets
   wallet: Wallet;
 }
 
@@ -23,19 +19,28 @@ async function getSession(userId: string, privateKey: string): Promise<TinyCloud
     return existing;
   }
 
-  // Initialize new TinyCloudNode for this user
   const wallet = new Wallet(`0x${privateKey}`);
+
+  // Main space for variables/KV
   const tc = new TinyCloudNode({
     host: TINYCLOUD_URL,
-    privateKey: privateKey,
+    privateKey,
     prefix: 'openkey',
     autoCreateSpace: true,
   });
-
   await tc.signIn();
-  await tc.vault.unlock(wallet);
 
-  const session: TinyCloudSession = { tc, wallet };
+  // Secrets space for vault
+  const secretsTc = new TinyCloudNode({
+    host: TINYCLOUD_URL,
+    privateKey,
+    prefix: 'secrets',
+    autoCreateSpace: true,
+  });
+  await secretsTc.signIn();
+  await secretsTc.vault.unlock(wallet);
+
+  const session: TinyCloudSession = { tc, secretsTc, wallet };
   sessions.set(userId, session);
   return session;
 }
@@ -51,84 +56,6 @@ export class TinyCloudService {
   }
 
   // =========================================================================
-  // Per-user encryption keypair
-  // =========================================================================
-
-  async getOrCreateEncryptionKey(userId: string): Promise<{ publicKey: string }> {
-    const existing = await prisma.userEncryptionKey.findUnique({
-      where: { userId },
-    });
-
-    if (existing) {
-      return { publicKey: existing.publicKey };
-    }
-
-    // Generate RSA-OAEP 2048-bit keypair
-    const { publicKey, privateKey } = generateKeyPairSync('rsa', {
-      modulusLength: 2048,
-      publicKeyEncoding: { type: 'spki', format: 'pem' },
-      privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
-    });
-
-    // Seal private key with TEE
-    const sealingKey = await tee.deriveKey(`openkey/user/${userId}/encryption`);
-    const sealedPrivateKey = await seal(privateKey as string, sealingKey);
-
-    await prisma.userEncryptionKey.create({
-      data: {
-        userId,
-        publicKey: publicKey as string,
-        sealedPrivateKey,
-      },
-    });
-
-    return { publicKey: publicKey as string };
-  }
-
-  async decryptValue(userId: string, encrypted: EncryptedPayload): Promise<string> {
-    const encKey = await prisma.userEncryptionKey.findUnique({
-      where: { userId },
-    });
-
-    if (!encKey) {
-      throw new Error('No encryption key found for user');
-    }
-
-    // Unseal private key
-    const sealingKey = await tee.deriveKey(`openkey/user/${userId}/encryption`);
-    const privateKeyPem = await unseal(encKey.sealedPrivateKey, sealingKey);
-
-    if ('encryptedKey' in encrypted) {
-      // Hybrid encryption: RSA-decrypt the AES key, then AES-decrypt the value
-      const aesKeyBuf = privateDecrypt(
-        { key: privateKeyPem, oaepHash: 'sha256', padding: constants.RSA_PKCS1_OAEP_PADDING },
-        Buffer.from(encrypted.encryptedKey, 'base64'),
-      );
-
-      const iv = Buffer.from(encrypted.iv, 'base64');
-      const ciphertext = Buffer.from(encrypted.encryptedValue, 'base64');
-
-      // AES-256-GCM: last 16 bytes are auth tag
-      const authTag = ciphertext.subarray(ciphertext.length - 16);
-      const data = ciphertext.subarray(0, ciphertext.length - 16);
-
-      const { createDecipheriv } = await import('crypto');
-      const decipher = createDecipheriv('aes-256-gcm', aesKeyBuf, iv);
-      decipher.setAuthTag(authTag);
-
-      const decrypted = Buffer.concat([decipher.update(data), decipher.final()]);
-      return decrypted.toString('utf8');
-    } else {
-      // Direct RSA encryption (small payloads)
-      const decrypted = privateDecrypt(
-        { key: privateKeyPem, oaepHash: 'sha256', padding: constants.RSA_PKCS1_OAEP_PADDING },
-        Buffer.from(encrypted.encryptedValue, 'base64'),
-      );
-      return decrypted.toString('utf8');
-    }
-  }
-
-  // =========================================================================
   // Secrets (vault - encrypted)
   // =========================================================================
 
@@ -139,7 +66,7 @@ export class TinyCloudService {
     }
 
     const createdAt = new Date().toISOString();
-    const result = await session.tc.vault.put(`secrets/${name}`, { value, createdAt });
+    const result = await session.secretsTc.vault.put(`secrets/${name}`, { value, createdAt });
     if (!result.ok) {
       throw new Error(`Failed to store secret: ${(result as any).error?.message}`);
     }
@@ -152,7 +79,7 @@ export class TinyCloudService {
       throw new Error('TinyCloud not enabled for user');
     }
 
-    const listResult = await session.tc.vault.list({ prefix: 'secrets/' });
+    const listResult = await session.secretsTc.vault.list({ prefix: 'secrets/' });
     if (!listResult.ok) {
       throw new Error(`Failed to list secrets: ${(listResult as any).error?.message}`);
     }
@@ -162,7 +89,7 @@ export class TinyCloudService {
       const name = key.replace('secrets/', '');
       let createdAt = '';
       // Read the stored payload to get createdAt
-      const getResult = await session.tc.vault.get<{ value: string; createdAt: string }>(key);
+      const getResult = await session.secretsTc.vault.get<{ value: string; createdAt: string }>(key);
       if (getResult.ok && getResult.data?.createdAt) {
         createdAt = getResult.data.createdAt;
       }
@@ -178,7 +105,7 @@ export class TinyCloudService {
       throw new Error('TinyCloud not enabled for user');
     }
 
-    const result = await session.tc.vault.delete(`secrets/${name}`);
+    const result = await session.secretsTc.vault.delete(`secrets/${name}`);
     if (!result.ok) {
       throw new Error(`Failed to delete secret: ${(result as any).error?.message}`);
     }
@@ -254,18 +181,5 @@ export class TinyCloudService {
     }
   }
 }
-
-// Encrypted payload types
-export interface EncryptedPayloadDirect {
-  encryptedValue: string; // base64 RSA-OAEP ciphertext
-}
-
-export interface EncryptedPayloadHybrid {
-  encryptedKey: string;   // base64 RSA-OAEP encrypted AES key
-  encryptedValue: string; // base64 AES-256-GCM ciphertext + auth tag
-  iv: string;             // base64 AES-GCM IV
-}
-
-export type EncryptedPayload = EncryptedPayloadDirect | EncryptedPayloadHybrid;
 
 export const tinyCloudService = new TinyCloudService();
