@@ -56,7 +56,7 @@
         "@better-auth/passkey": "1.5.0-beta.10",
         "@openkey/tee": "workspace:*",
         "@prisma/client": "^6.0.0",
-        "@tinycloud/node-sdk": "^1.3.0",
+        "@tinycloud/node-sdk": "^1.4.1",
         "better-auth": "1.5.0-beta.10",
         "ethers": "^6.16.0",
         "hono": "^4.11.3",
@@ -747,9 +747,9 @@
 
     "@tailwindcss/vite": ["@tailwindcss/vite@4.1.18", "", { "dependencies": { "@tailwindcss/node": "4.1.18", "@tailwindcss/oxide": "4.1.18", "tailwindcss": "4.1.18" }, "peerDependencies": { "vite": "^5.2.0 || ^6 || ^7" } }, "sha512-jVA+/UpKL1vRLg6Hkao5jldawNmRo7mQYrZtNHMIVpLfLhDml5nMRUo/8MwoX2vNXvnaXNNMedrMfMugAVX1nA=="],
 
-    "@tinycloud/node-sdk": ["@tinycloud/node-sdk@1.3.0", "", { "dependencies": { "@tinycloud/node-sdk-wasm": "^1.0.1", "@tinycloud/sdk-core": "^1.3.0", "@tinycloud/web-core": "^1.1.0", "siwe": "^2.3.2" } }, "sha512-bzNK0uIlEE9mhjCMJ6X5C1voTPJbdrZjZASfOU7GedVB4iye+aL9rLQpFknXLbNDfyKWJO9o401Roe+81xE8jA=="],
+    "@tinycloud/node-sdk": ["@tinycloud/node-sdk@1.4.1", "", { "dependencies": { "@tinycloud/node-sdk-wasm": "^1.4.1", "@tinycloud/sdk-core": "^1.3.0", "@tinycloud/web-core": "^1.1.0", "siwe": "^2.3.2" } }, "sha512-z3Pj2yei2+uvosphqjuQsZcwoAhVvHTDwfW27CdXMQ8X2z84a8UJZCQhFyG2UKA5aPG/WrcM1UUo9uBZkVEkag=="],
 
-    "@tinycloud/node-sdk-wasm": ["@tinycloud/node-sdk-wasm@1.0.1", "", {}, "sha512-c4SCcTrygPkcP2ng+ubNIrGXovo4az6w5kR62DiIoUL87ADsnnh8SEZkCP3jRIID6Gwh6V5M7Nn67BaqGgXl4Q=="],
+    "@tinycloud/node-sdk-wasm": ["@tinycloud/node-sdk-wasm@1.4.1", "", {}, "sha512-znNF5ICQM6jw8WRj1zESMd/pAuYhuSWiNp7BL1bFuOYH1Lhp/JB/g9eoyn6mxRHMyL3fsct/EMVKTwgrBOHpKA=="],
 
     "@tinycloud/sdk-core": ["@tinycloud/sdk-core@1.3.0", "", { "dependencies": { "@tinycloud/sdk-services": "^1.3.0", "@tinycloud/web-core": "^1.1.0", "zod": "^3.22.0", "zod-to-json-schema": "^3.22.0" } }, "sha512-HRAoSkGXNLzVxClmui7n0fA5sVJqVFNQLuKC82gUWj10PGfiy5HrpCQwXgxj5nBOhTUjnC25sI2l/1tQ2RXp/Q=="],
 
