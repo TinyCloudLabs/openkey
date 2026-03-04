@@ -4,6 +4,7 @@
   import { api, type EthereumKey } from '$lib/api';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
+  import SiweMessage from '$lib/components/ui/siwe-message.svelte';
 
   const session = authClient.useSession();
 
@@ -168,7 +169,7 @@
 
       <Card class="p-4">
         <span class="block text-surface-400 text-xs uppercase mb-2">Message:</span>
-        <pre class="m-0 whitespace-pre-wrap break-all font-mono text-sm max-h-[200px] overflow-y-auto">{message}</pre>
+        <SiweMessage {message} theme="dark" />
       </Card>
 
       {#if error}

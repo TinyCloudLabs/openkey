@@ -9,6 +9,7 @@ import { oauthAdminRouter } from './routes/oauth-admin';
 import { passkeyProxyRouter } from './routes/passkey-proxy';
 import { secretsRouter } from './routes/secrets';
 import { variablesRouter } from './routes/variables';
+import { delegateRouter } from './routes/delegate';
 import { trackAuthorization, trackTokenExchange, trackUniqueUser } from './analytics';
 
 // Create Hono app
@@ -108,6 +109,9 @@ app.route('/api/admin/oauth', oauthAdminRouter);
 // Secrets and variables routes (TinyCloud-backed)
 app.route('/api/secrets', secretsRouter);
 app.route('/api/variables', variablesRouter);
+
+// Delegate route (CLI auth flow)
+app.route('/api/delegate', delegateRouter);
 
 // 404 handler
 app.notFound((c) => c.json({ error: 'Not found' }, 404));
