@@ -30,6 +30,7 @@
   let delegating = $state(false);
   let done = $state(false);
   let pasteCode = $state('');
+  let callbackFailed = $state(false);
   let step = $state<'select-key' | 'link-wallet' | 'consent' | 'choose-wallet' | 'done'>('select-key');
   let preparedData = $state<any>(null);
   let siweMessage = $state('');
@@ -394,18 +395,26 @@
 
   async function finishDelegate(data: any) {
     if (callback) {
-      const cbRes = await fetch(callback, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-      });
+      try {
+        const cbRes = await fetch(callback, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data),
+        });
 
-      if (!cbRes.ok) {
-        throw new Error('Failed to send delegation data to CLI');
+        if (!cbRes.ok) {
+          throw new Error('Failed to send delegation data to CLI');
+        }
+
+        done = true;
+        step = 'done';
+      } catch {
+        // Callback unreachable (e.g. CLI on remote machine) — fall back to paste code
+        callbackFailed = true;
+        pasteCode = btoa(JSON.stringify(data));
+        done = true;
+        step = 'done';
       }
-
-      done = true;
-      step = 'done';
     } else {
       pasteCode = btoa(JSON.stringify(data));
       done = true;
@@ -452,7 +461,11 @@
 
           {#if pasteCode}
             <h2 class="text-lg font-semibold text-surface-900 mb-2">Delegation Created</h2>
-            <p class="text-surface-500 text-sm mb-4">Copy this code and paste it into the CLI:</p>
+            {#if callbackFailed}
+              <p class="text-surface-500 text-sm mb-4">Could not reach the CLI automatically. Copy this code and paste it into the CLI to complete authentication.</p>
+            {:else}
+              <p class="text-surface-500 text-sm mb-4">Copy this code and paste it into the CLI:</p>
+            {/if}
             <textarea
               readonly
               class="w-full h-24 p-3 bg-surface-50 border border-surface-200 rounded-xl text-xs font-mono resize-none"
