@@ -120,10 +120,15 @@ delegateRouter.post('/', async (c) => {
     signature,
   });
 
-  const activationResult = await activateSessionWithHost(host, session.delegationHeader);
-
-  if (!activationResult.success) {
-    console.warn(`[Delegate] Session activation warning: ${activationResult.error}`);
+  let hostActivated = false;
+  try {
+    const activationResult = await activateSessionWithHost(host, session.delegationHeader);
+    hostActivated = activationResult.success;
+    if (!hostActivated) {
+      console.warn(`[Delegate] Session activation warning: ${activationResult.error}`);
+    }
+  } catch (e) {
+    console.warn(`[Delegate] Session activation failed (host unreachable):`, e);
   }
 
   const primaryDid = `did:pkh:eip155:${chainId}:${address}`;
@@ -137,6 +142,7 @@ delegateRouter.post('/', async (c) => {
     jwk: body.jwk,
     address,
     chainId,
+    hostActivated,
   });
 });
 
@@ -239,10 +245,15 @@ delegateRouter.post('/complete', async (c) => {
     signature: body.signature,
   });
 
-  const activationResult = await activateSessionWithHost(body.host, session.delegationHeader);
-
-  if (!activationResult.success) {
-    console.warn(`[Delegate] Session activation warning: ${activationResult.error}`);
+  let hostActivated = false;
+  try {
+    const activationResult = await activateSessionWithHost(body.host, session.delegationHeader);
+    hostActivated = activationResult.success;
+    if (!hostActivated) {
+      console.warn(`[Delegate] Session activation warning: ${activationResult.error}`);
+    }
+  } catch (e) {
+    console.warn(`[Delegate] Session activation failed (host unreachable):`, e);
   }
 
   // Extract address/chainId from the prepared data
@@ -260,5 +271,6 @@ delegateRouter.post('/complete', async (c) => {
     jwk: body.jwk,
     address,
     chainId,
+    hostActivated,
   });
 });

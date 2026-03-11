@@ -282,7 +282,11 @@
         throw new Error(body.error || `HTTP ${res.status}`);
       }
 
-      await finishDelegate(await res.json());
+      const data = await res.json();
+      if (!data.hostActivated) {
+        await activateWithHost(host, data.delegationHeader);
+      }
+      await finishDelegate(data);
     } catch (e: any) {
       error = e.message || 'Delegation failed';
     } finally {
@@ -381,7 +385,11 @@
         throw new Error(body.error || `HTTP ${compRes.status}`);
       }
 
-      await finishDelegate(await compRes.json());
+      const data = await compRes.json();
+      if (!data.hostActivated) {
+        await activateWithHost(host, data.delegationHeader);
+      }
+      await finishDelegate(data);
     } catch (e: any) {
       if (e.code === 4001) {
         error = 'Signature was rejected by wallet.';
@@ -434,6 +442,24 @@
       error = e.message || 'Passkey sign-in failed';
     } finally {
       signingIn = false;
+    }
+  }
+
+  async function activateWithHost(
+    targetHost: string,
+    delegationHeader: { Authorization: string }
+  ): Promise<void> {
+    try {
+      const res = await fetch(`${targetHost}/delegate`, {
+        method: 'POST',
+        headers: delegationHeader,
+      });
+      if (!res.ok) {
+        const errorText = await res.text().catch(() => res.statusText);
+        console.warn(`[Delegate] Browser activation warning: ${errorText}`);
+      }
+    } catch (e) {
+      console.warn(`[Delegate] Browser activation failed:`, e);
     }
   }
 
