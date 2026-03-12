@@ -31,6 +31,7 @@
   let done = $state(false);
   let pasteCode = $state('');
   let callbackFailed = $state(false);
+  let copied = $state(false);
   let step = $state<'select-key' | 'link-wallet' | 'consent' | 'choose-wallet' | 'done'>('select-key');
   let preparedData = $state<any>(null);
   let siweMessage = $state('');
@@ -463,6 +464,12 @@
     }
   }
 
+  async function copyPasteCode() {
+    await navigator.clipboard.writeText(pasteCode);
+    copied = true;
+    setTimeout(() => { copied = false; }, 2000);
+  }
+
   function formatAddress(address: string): string {
     return `${address.slice(0, 6)}...${address.slice(-4)}`;
   }
@@ -498,6 +505,21 @@
               value={pasteCode}
               onfocus={(e) => (e.target as HTMLTextAreaElement).select()}
             ></textarea>
+            <button
+              class="mt-2 p-1.5 bg-surface-50 border border-surface-200 rounded-lg cursor-pointer hover:opacity-80 transition-opacity"
+              onclick={copyPasteCode}
+              title="Copy to clipboard"
+            >
+              {#if copied}
+                <svg class="w-4 h-4 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+                </svg>
+              {:else}
+                <svg class="w-4 h-4 text-surface-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M15.666 3.888A2.25 2.25 0 0013.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 01-.75.75H9.75a.75.75 0 01-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 01-2.25 2.25H6.75A2.25 2.25 0 014.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 011.927-.184" />
+                </svg>
+              {/if}
+            </button>
           {:else}
             <h2 class="text-lg font-semibold text-surface-900 mb-2">Authenticated</h2>
             <p class="text-surface-500 text-sm">You can close this window and return to the CLI.</p>
