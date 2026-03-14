@@ -1114,7 +1114,7 @@ export class OpenKey {
 /**
  * EIP-1193 compatible provider that wraps an OpenKey instance.
  * Transparently routes signing to either OpenKey (managed keys) or the user's
- * wallet (external keys). Pass directly to TinyCloudWeb's `provider` option.
+ * wallet (external keys).
  */
 export class OpenKeyProvider implements EIP1193Provider {
   private openkey: OpenKey;
