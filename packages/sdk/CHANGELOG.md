@@ -1,5 +1,11 @@
 # @openkey/sdk
 
+## 0.8.0
+
+### Minor Changes
+
+- 44bdb60: Rename OpenKeyEIP1193Provider to OpenKeyProvider. The old name is kept as a deprecated alias for backwards compatibility.
+
 ## 0.7.2
 
 ### Patch Changes
