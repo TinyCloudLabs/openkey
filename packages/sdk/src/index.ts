@@ -1112,11 +1112,11 @@ export class OpenKey {
 }
 
 /**
- * Unified EIP-1193 provider that wraps an OpenKey instance.
+ * EIP-1193 compatible provider that wraps an OpenKey instance.
  * Transparently routes signing to either OpenKey (managed keys) or the user's
  * wallet (external keys).
  */
-export class OpenKeyEIP1193Provider implements EIP1193Provider {
+export class OpenKeyProvider implements EIP1193Provider {
   private openkey: OpenKey;
   private address: string;
   private keyId: string;
@@ -1181,6 +1181,11 @@ export class OpenKeyEIP1193Provider implements EIP1193Provider {
     return new TextDecoder().decode(bytes);
   }
 }
+
+/**
+ * @deprecated Use `OpenKeyProvider` instead. Will be removed in a future version.
+ */
+export const OpenKeyEIP1193Provider = OpenKeyProvider;
 
 // Default export for convenience
 export default OpenKey;
