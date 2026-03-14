@@ -1182,11 +1182,6 @@ export class OpenKeyProvider implements EIP1193Provider {
   }
 }
 
-/**
- * @deprecated Use `OpenKeyProvider` instead. Will be removed in a future version.
- */
-export const OpenKeyEIP1193Provider = OpenKeyProvider;
-
 // Default export for convenience
 export default OpenKey;
 
