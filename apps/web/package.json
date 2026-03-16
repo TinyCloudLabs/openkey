@@ -10,7 +10,7 @@
     "typecheck": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json"
   },
   "dependencies": {
-    "@better-auth/oauth-provider": "1.5.0-beta.10",
+    "@better-auth/oauth-provider": "1.5.5",
     "@better-auth/passkey": "1.5.0-beta.10",
     "better-auth": "1.5.0-beta.10"
   },
