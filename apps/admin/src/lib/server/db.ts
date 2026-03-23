@@ -1,11 +1,10 @@
 // Prisma database client for admin dashboard
-// Uses Neon serverless adapter in production (Cloudflare Pages),
+// Uses @prisma/adapter-pg in production (Cloudflare Pages),
 // direct PrismaClient in development
 import { PrismaClient } from '@prisma/client';
 import { env } from '$env/dynamic/private';
 import { dev } from '$app/environment';
-import { neon } from '@neondatabase/serverless';
-import { PrismaNeon } from '@prisma/adapter-neon';
+import { PrismaPg } from '@prisma/adapter-pg';
 
 let prisma: PrismaClient;
 
@@ -21,9 +20,8 @@ function getPrisma() {
         datasourceUrl: env.DATABASE_URL,
       });
     } else {
-      // Production (Cloudflare Pages): use Neon serverless adapter
-      const sql = neon(env.DATABASE_URL);
-      const adapter = new PrismaNeon(sql);
+      // Production (Cloudflare Pages): use pg adapter with nodejs_compat
+      const adapter = new PrismaPg({ connectionString: env.DATABASE_URL });
       prisma = new PrismaClient({ adapter });
     }
   }

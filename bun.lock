@@ -31,10 +31,9 @@
       "name": "@openkey/admin",
       "version": "0.0.1",
       "dependencies": {
-        "@neondatabase/serverless": "^0.10.0",
         "@openkey/db": "workspace:*",
         "@openkey/sdk": "workspace:*",
-        "@prisma/adapter-neon": "^6.0.0",
+        "@prisma/adapter-pg": "^6.0.0",
         "stripe": "^17.0.0",
       },
       "devDependencies": {
@@ -124,7 +123,7 @@
     },
     "packages/sdk": {
       "name": "@openkey/sdk",
-      "version": "0.7.2",
+      "version": "0.8.4",
       "dependencies": {
         "@openkey/core": "workspace:*",
       },
@@ -597,7 +596,7 @@
 
     "@poppinss/exception": ["@poppinss/exception@1.2.3", "", {}, "sha512-dCED+QRChTVatE9ibtoaxc+WkdzOSjYTKi/+uacHWIsfodVfpsueo3+DKpgU5Px8qXjgmXkSvhXvSCz3fnP9lw=="],
 
-    "@prisma/adapter-neon": ["@prisma/adapter-neon@6.19.2", "", { "dependencies": { "@neondatabase/serverless": ">0.6.0 <2", "@prisma/driver-adapter-utils": "6.19.2", "postgres-array": "3.0.4" } }, "sha512-LDDjem82zAPqMdFUyyHgdB5sUm/IHDqd3eNLOtiPaEqh+3hdWD8vARSwPzuzy6cvh/KHKiGhGXL8qHaduRqyaQ=="],
+    "@prisma/adapter-pg": ["@prisma/adapter-pg@6.19.2", "", { "dependencies": { "@prisma/driver-adapter-utils": "6.19.2", "pg": "^8.11.3", "postgres-array": "3.0.4" } }, "sha512-t80uX4u4+V/F/OO220LVFY2nsXRGvt8x7PDDveQJJUrGAq4yKHiHiwxOb/PusUSioKkJrgLZjzLwGrpPYG4arw=="],
 
     "@prisma/client": ["@prisma/client@6.19.2", "", { "peerDependencies": { "prisma": "*", "typescript": ">=5.1.0" }, "optionalPeers": ["prisma", "typescript"] }, "sha512-gR2EMvfK/aTxsuooaDA32D8v+us/8AAet+C3J1cc04SW35FPdZYgLF+iN4NDLUgAaUGTKdAB0CYenu1TAgGdMg=="],
 

@@ -10,8 +10,7 @@
     "typecheck": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json"
   },
   "dependencies": {
-    "@neondatabase/serverless": "^0.10.0",
-    "@prisma/adapter-neon": "^6.0.0",
+    "@prisma/adapter-pg": "^6.0.0",
     "@openkey/db": "workspace:*",
     "@openkey/sdk": "workspace:*",
     "stripe": "^17.0.0"
