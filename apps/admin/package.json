@@ -13,7 +13,7 @@
     "@prisma/adapter-pg": "^6.0.0",
     "@openkey/db": "workspace:*",
     "@openkey/sdk": "workspace:*",
-    "stripe": "^17.0.0"
+    "stripe": "^20.4.1"
   },
   "devDependencies": {
     "@sveltejs/adapter-cloudflare": "^5.0.0",
