@@ -117,7 +117,7 @@
   }
 </script>
 
-<div class="min-h-screen bg-surface-950 flex items-center justify-center px-4">
+<div class="min-h-screen bg-surface-50 flex items-center justify-center px-4">
   <Card class="w-full max-w-md">
     {#if loading}
       <div class="py-12 text-center text-surface-400">
