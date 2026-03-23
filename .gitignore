@@ -36,6 +36,7 @@ coverage/
 # Prisma
 packages/db/prisma/*.db
 packages/db/prisma/*.db-journal
+packages/db/src/generated/
 
 # Bun
 bun.lockb

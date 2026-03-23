@@ -1,12 +1,12 @@
 // Key management routes
 import { Hono } from 'hono';
-import { PrismaClient } from '@prisma/client';
+import { createPrismaClient } from '@openkey/db';
 import { createTeeClient, seal, unseal, generatePrivateKey, getAddressFromPrivateKey } from '@openkey/tee';
 import { requireSession, type SessionContext } from '../middleware/session';
 import { verifyMessage } from 'viem';
 import type { Hex } from 'viem';
 
-const prisma = new PrismaClient();
+const prisma = createPrismaClient();
 const tee = createTeeClient();
 
 // In-memory challenge nonce store with 5-minute TTL

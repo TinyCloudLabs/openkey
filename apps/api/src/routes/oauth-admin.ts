@@ -1,10 +1,10 @@
 // OAuth Client Administration Routes
 // Protected by ADMIN_API_KEY - for registering OAuth clients
 import { Hono } from 'hono';
-import { PrismaClient } from '@prisma/client';
+import { createPrismaClient } from '@openkey/db';
 import { randomBytes } from 'crypto';
 
-const prisma = new PrismaClient();
+const prisma = createPrismaClient();
 
 export const oauthAdminRouter = new Hono();
 

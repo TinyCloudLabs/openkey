@@ -1,11 +1,11 @@
 // Secrets CRUD routes - encrypted storage via TinyCloud vault
 import { Hono } from 'hono';
-import { PrismaClient } from '@prisma/client';
+import { createPrismaClient } from '@openkey/db';
 import { createTeeClient, unseal } from '@openkey/tee';
 import { requireSession, type SessionContext } from '../middleware/session';
 import { tinyCloudService } from '../services/tinycloud-service';
 
-const prisma = new PrismaClient();
+const prisma = createPrismaClient();
 const tee = createTeeClient();
 
 // Name validation: must start with letter, contain only letters/numbers/underscores, max 256 chars

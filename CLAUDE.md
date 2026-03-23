@@ -59,7 +59,7 @@ Schema lives at `packages/db/prisma/schema.prisma`.
 
 ## Auth Architecture (better-auth)
 
-- **Version**: `1.5.0-beta.10` (pinned across monorepo)
+- **Version**: `^1.5.5` (across monorepo, except `@better-auth/cli` which is at `1.5.0-beta.13`)
 - **Plugins**: passkey, emailOTP, jwt, oauthProvider
 - **Important**: API runs TypeScript directly with Bun (no bundling) to preserve AsyncLocalStorage context. Bundling breaks better-auth's request state tracking.
 
