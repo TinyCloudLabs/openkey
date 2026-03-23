@@ -1,8 +1,8 @@
 // OpenKey API - OAuth analytics instrumentation
 // Tracks daily authorization, token exchange, and unique user metrics per client
-import { PrismaClient } from '@prisma/client';
+import { createPrismaClient } from '@openkey/db';
 
-const prisma = new PrismaClient();
+const prisma = createPrismaClient();
 
 function getToday(): Date {
   const today = new Date();

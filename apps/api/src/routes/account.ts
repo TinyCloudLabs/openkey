@@ -1,10 +1,10 @@
 // Account management routes
 import { Hono } from 'hono';
-import { PrismaClient } from '@prisma/client';
+import { createPrismaClient } from '@openkey/db';
 import { requireSession, type SessionContext } from '../middleware/session';
 import { auth } from '../auth';
 
-const prisma = new PrismaClient();
+const prisma = createPrismaClient();
 
 export const accountRouter = new Hono<SessionContext>();
 

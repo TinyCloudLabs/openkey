@@ -123,12 +123,12 @@ app.onError((err, c) => {
 });
 
 // One-time startup migration: ensure all OAuth clients have full scopes
-import { PrismaClient } from '@prisma/client';
+import { createPrismaClient } from '@openkey/db';
 const ALL_SCOPES = ['openid', 'email', 'keys', 'offline_access'];
 
 (async () => {
   try {
-    const prisma = new PrismaClient();
+    const prisma = createPrismaClient();
     const result = await prisma.oauthClient.updateMany({
       where: {
         scopes: { equals: ['openid'] },

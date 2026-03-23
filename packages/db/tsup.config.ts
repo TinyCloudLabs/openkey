@@ -6,5 +6,5 @@ export default defineConfig({
   dts: true,
   clean: true,
   sourcemap: true,
-  external: ['@prisma/client'],
+  external: ['@prisma/client', '@prisma/adapter-pg'],
 });

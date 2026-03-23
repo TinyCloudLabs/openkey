@@ -10,17 +10,17 @@
     "typecheck": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json"
   },
   "dependencies": {
-    "@better-auth/oauth-provider": "1.5.0-beta.10",
-    "@better-auth/passkey": "1.5.0-beta.10",
-    "better-auth": "1.5.0-beta.10"
+    "@better-auth/oauth-provider": "^1.5.5",
+    "@better-auth/passkey": "^1.5.5",
+    "better-auth": "^1.5.5"
   },
   "devDependencies": {
     "@sveltejs/adapter-cloudflare": "^5.0.0",
     "@sveltejs/kit": "^2.0.0",
-    "@sveltejs/vite-plugin-svelte": "^4.0.0",
+    "@sveltejs/vite-plugin-svelte": "^7.0.0",
     "svelte": "^5.0.0",
     "svelte-check": "^4.0.0",
     "typescript": "^5.7.0",
-    "vite": "^6.0.0"
+    "vite": "^8.0.0"
   }
 }

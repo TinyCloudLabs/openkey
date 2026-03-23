@@ -1,10 +1,8 @@
 // Prisma database client for admin dashboard
-// Uses @prisma/adapter-pg in production (Cloudflare Pages),
-// direct PrismaClient in development
-import { PrismaClient } from '@prisma/client';
-import { env } from '$env/dynamic/private';
-import { dev } from '$app/environment';
+// Uses @prisma/adapter-pg for all connections (required by Prisma 7)
+import { PrismaClient } from '@openkey/db';
 import { PrismaPg } from '@prisma/adapter-pg';
+import { env } from '$env/dynamic/private';
 
 let prisma: PrismaClient;
 
@@ -14,16 +12,8 @@ function getPrisma() {
       throw new Error('DATABASE_URL environment variable is not set');
     }
 
-    if (dev) {
-      // Development: direct connection (no adapter needed)
-      prisma = new PrismaClient({
-        datasourceUrl: env.DATABASE_URL,
-      });
-    } else {
-      // Production (Cloudflare Pages): use pg adapter with nodejs_compat
-      const adapter = new PrismaPg({ connectionString: env.DATABASE_URL });
-      prisma = new PrismaClient({ adapter });
-    }
+    const adapter = new PrismaPg({ connectionString: env.DATABASE_URL });
+    prisma = new PrismaClient({ adapter });
   }
   return prisma;
 }

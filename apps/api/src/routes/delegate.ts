@@ -1,6 +1,6 @@
 // Delegate route - creates TinyCloud delegation for CLI auth flow
 import { Hono } from 'hono';
-import { PrismaClient } from '@prisma/client';
+import { createPrismaClient } from '@openkey/db';
 import { createTeeClient, unseal } from '@openkey/tee';
 import { requireSession, type SessionContext } from '../middleware/session';
 import type { Hex } from 'viem';
@@ -12,7 +12,7 @@ import {
 } from '@tinycloud/node-sdk-wasm';
 import { activateSessionWithHost } from '@tinycloud/sdk-core';
 
-const prisma = new PrismaClient();
+const prisma = createPrismaClient();
 const tee = createTeeClient();
 
 export const delegateRouter = new Hono<SessionContext>();

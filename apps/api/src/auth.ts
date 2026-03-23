@@ -6,11 +6,11 @@ import { passkey } from '@better-auth/passkey';
 import { bearer, emailOTP, jwt } from 'better-auth/plugins';
 import { oauthProvider } from '@better-auth/oauth-provider';
 import { Resend } from 'resend';
-import { PrismaClient } from '@prisma/client';
+import { createPrismaClient } from '@openkey/db';
 import { createTeeClient, seal, generatePrivateKey, getAddressFromPrivateKey } from '@openkey/tee';
 import { buildEmailClaims } from './claims';
 
-const prisma = new PrismaClient({
+const prisma = createPrismaClient({
   log: ['error', 'warn'],
 });
 const tee = createTeeClient();

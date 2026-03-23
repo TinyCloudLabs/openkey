@@ -12,10 +12,10 @@
  * Store the client_secret securely - it cannot be retrieved again.
  */
 
-import { PrismaClient } from '@prisma/client';
+import { createPrismaClient } from '../src/index';
 import { createHash, randomBytes } from 'crypto';
 
-const prisma = new PrismaClient();
+const prisma = createPrismaClient();
 
 interface ClientConfig {
   /** Display name for the application */
