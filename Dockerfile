@@ -19,6 +19,7 @@ RUN bun node_modules/.bin/prisma generate --schema=./packages/db/prisma/schema.p
 # Build packages
 FROM deps AS builder
 COPY . .
+RUN bun run build --filter @openkey/db
 RUN bun run build --filter @openkey/tee
 RUN bun run build --filter @openkey/api
 
@@ -33,12 +34,11 @@ COPY --from=builder /app/apps/api/src ./apps/api/src
 COPY --from=builder /app/apps/api/package.json ./apps/api/
 COPY --from=builder /app/packages/tee/dist ./packages/tee/dist
 COPY --from=builder /app/packages/tee/package.json ./packages/tee/
+COPY --from=builder /app/packages/db/dist ./packages/db/dist
+COPY --from=builder /app/packages/db/src/generated ./packages/db/src/generated
 COPY --from=builder /app/packages/db/prisma ./packages/db/prisma
 COPY --from=builder /app/packages/db/package.json ./packages/db/
 COPY --from=builder /app/package.json ./
-
-# Generate Prisma client
-RUN bun node_modules/.bin/prisma generate --schema=./packages/db/prisma/schema.prisma
 
 EXPOSE 3001
 
