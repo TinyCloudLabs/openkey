@@ -10,7 +10,6 @@
   "baseBranch": "main",
   "updateInternalDependencies": "patch",
   "ignore": [
-    "@openkey/admin",
     "@openkey/api",
     "@openkey/web",
     "@openkey/db",

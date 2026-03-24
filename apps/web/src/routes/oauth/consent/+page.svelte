@@ -120,13 +120,13 @@
 <div class="min-h-screen bg-surface-50 flex items-center justify-center px-4">
   <Card class="w-full max-w-md">
     {#if loading}
-      <div class="py-12 text-center text-surface-400">
+      <div class="py-12 text-center text-surface-500">
         Loading...
       </div>
     {:else if error && !clientInfo}
       <div class="py-12 text-center">
-        <div class="text-red-400 mb-4">{error}</div>
-        <a href="/" class="text-primary-400 hover:text-primary-300">Return home</a>
+        <div class="text-red-600 mb-4">{error}</div>
+        <a href="/" class="text-primary-600 hover:text-primary-700">Return home</a>
       </div>
     {:else if clientInfo}
       <div class="text-center mb-6">
@@ -137,14 +137,14 @@
             class="w-16 h-16 rounded-lg mx-auto mb-4"
           />
         {:else}
-          <div class="w-16 h-16 rounded-lg bg-surface-800 mx-auto mb-4 flex items-center justify-center">
-            <span class="text-2xl text-surface-400">
+          <div class="w-16 h-16 rounded-lg bg-surface-100 mx-auto mb-4 flex items-center justify-center">
+            <span class="text-2xl text-surface-500">
               {clientInfo.name.charAt(0).toUpperCase()}
             </span>
           </div>
         {/if}
 
-        <h1 class="text-xl font-bold text-surface-50 mb-2">
+        <h1 class="text-xl font-bold text-surface-900 mb-2">
           {clientInfo.name}
         </h1>
 
@@ -153,25 +153,25 @@
             href={clientInfo.uri}
             target="_blank"
             rel="noopener noreferrer"
-            class="text-sm text-surface-400 hover:text-surface-300"
+            class="text-sm text-surface-500 hover:text-surface-700"
           >
             {clientInfo.uri}
           </a>
         {/if}
       </div>
 
-      <div class="border-t border-surface-700 pt-6 mb-6">
-        <p class="text-surface-300 mb-4 text-center">
+      <div class="border-t border-surface-200 pt-6 mb-6">
+        <p class="text-surface-600 mb-4 text-center">
           wants to verify your identity
         </p>
 
-        <div class="bg-surface-800 rounded-lg p-4">
-          <h3 class="text-sm font-semibold text-surface-400 uppercase tracking-wide mb-2">
+        <div class="bg-surface-100 rounded-lg p-4">
+          <h3 class="text-sm font-semibold text-surface-500 uppercase tracking-wide mb-2">
             This will allow the app to:
           </h3>
           <ul class="space-y-2">
-            <li class="flex items-center gap-2 text-surface-200">
-              <svg class="w-4 h-4 text-primary-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <li class="flex items-center gap-2 text-surface-700">
+              <svg class="w-4 h-4 text-primary-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
               </svg>
               Verify your OpenKey identity
@@ -181,7 +181,7 @@
       </div>
 
       {#if error}
-        <div class="text-red-400 text-sm text-center mb-4">{error}</div>
+        <div class="text-red-600 text-sm text-center mb-4">{error}</div>
       {/if}
 
       <div class="flex flex-col gap-3">
@@ -193,7 +193,7 @@
         </Button>
       </div>
 
-      <p class="text-xs text-surface-500 text-center mt-6">
+      <p class="text-xs text-surface-400 text-center mt-6">
         Signed in as {$session.data?.user?.email}
       </p>
     {/if}

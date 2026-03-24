@@ -1,9 +1,23 @@
 <script lang="ts">
+  import { page } from '$app/stores';
   import { authClient } from '$lib/auth-client';
   import Card from '$lib/components/ui/card.svelte';
   import Button from '$lib/components/ui/button.svelte';
 
   const session = authClient.useSession();
+
+  const oauthError = $page.url.searchParams.get('error');
+  const errorDescription = $page.url.searchParams.get('error_description');
+
+  function formatErrorMessage(error: string, description: string | null): string {
+    const messages: Record<string, string> = {
+      invalid_redirect: 'The application provided an invalid redirect URL. This usually means the redirect URI uses http instead of https, or hasn\'t been registered.',
+      access_denied: 'Access was denied to the requesting application.',
+      invalid_client: 'The application that sent you here is not recognized.',
+      server_error: 'Something went wrong on our end. Please try again.',
+    };
+    return messages[error] || description?.replace(/\+/g, ' ') || `OAuth error: ${error}`;
+  }
 </script>
 
 <div class="min-h-screen flex flex-col lg:flex-row bg-[#fafafa]">
@@ -52,6 +66,19 @@
   <!-- Right content pane -->
   <div class="flex-1 flex items-center justify-center px-6 py-12 lg:w-[55%] lg:p-12">
     <div class="w-full max-w-lg lg:max-w-md">
+      {#if oauthError}
+        <div class="mb-8 rounded-xl border border-red-200 bg-red-50 p-4 text-center">
+          <p class="text-sm font-medium text-red-800">
+            {formatErrorMessage(oauthError, errorDescription)}
+          </p>
+          {#if oauthError === 'invalid_redirect'}
+            <p class="mt-2 text-xs text-red-600">
+              If you're a developer, check that your OAuth client's redirect URI uses https and matches exactly.
+            </p>
+          {/if}
+        </div>
+      {/if}
+
       <!-- Mobile logo (hidden on desktop) -->
       <div class="mb-6 flex justify-center lg:hidden">
         <div class="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-surface-900">
