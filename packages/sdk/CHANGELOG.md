@@ -1,5 +1,12 @@
 # @openkey/sdk
 
+## 0.8.5
+
+### Patch Changes
+
+- Updated dependencies [fe323ae]
+  - @openkey/core@0.8.5
+
 ## 0.8.0
 
 ### Minor Changes
