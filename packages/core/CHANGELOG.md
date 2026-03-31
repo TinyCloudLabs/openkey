@@ -1,5 +1,11 @@
 # @openkey/core
 
+## 0.8.5
+
+### Patch Changes
+
+- fe323ae: Update TypeScript to v6, zod to v4, commander to v14, adapter-cloudflare to v7
+
 ## 0.7.1
 
 ### Patch Changes
