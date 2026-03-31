@@ -99,9 +99,12 @@ export class OpenKeyRN {
         }
       }, this.timeoutMs);
 
-      // Ensure the timer doesn't keep the Node/Bun process alive
-      if (typeof timer === 'object' && 'unref' in timer) {
-        timer.unref();
+      // Ensure the timer doesn't keep the Node/Bun process alive.
+      // In Node/Bun, setTimeout returns an object with unref(); in browsers it returns a number.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const t = timer as any;
+      if (typeof t === 'object' && typeof t.unref === 'function') {
+        t.unref();
       }
     });
 
