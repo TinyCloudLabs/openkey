@@ -10,6 +10,7 @@
     "resolveJsonModule": true,
     "declaration": true,
     "declarationMap": true,
-    "noUncheckedIndexedAccess": true
+    "noUncheckedIndexedAccess": true,
+    "ignoreDeprecations": "6.0"
   }
 }
