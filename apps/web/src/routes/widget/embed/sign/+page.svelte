@@ -4,6 +4,7 @@
   import { api, type EthereumKey } from '$lib/api';
   import { isEmbedContext, embedSignInPasskey, setSessionToken } from '$lib/embed-passkey';
   import Button from '$lib/components/ui/button.svelte';
+  import SiweMessage from '$lib/components/ui/siwe-message.svelte';
 
   const session = authClient.useSession();
   const inIframe = typeof window !== 'undefined' && isEmbedContext();
@@ -208,7 +209,7 @@
         <!-- Message -->
         <div class="bg-surface-50 border border-surface-200 rounded-xl p-3">
           <span class="block text-surface-400 text-xs uppercase tracking-wide mb-1">Message</span>
-          <pre class="m-0 whitespace-pre-wrap break-all font-mono text-xs text-surface-900 max-h-[160px] overflow-y-auto">{message}</pre>
+          <SiweMessage {message} theme="light" />
         </div>
 
         {#if error}
