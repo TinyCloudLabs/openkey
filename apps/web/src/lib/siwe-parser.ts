@@ -163,6 +163,7 @@ export interface GroupedCapability {
 const NAMESPACE_LABELS: Record<string, string> = {
   'tinycloud.kv': 'Key-Value Storage',
   'tinycloud.sql': 'SQL Database',
+  'tinycloud.space': 'Space Management',
   'tinycloud.capabilities': 'Capabilities',
 };
 
