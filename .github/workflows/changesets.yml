@@ -30,19 +30,20 @@ jobs:
       - name: Build Packages
         run: npx turbo build --force
 
-      - name: Check for changesets
+      - name: Check for publishable changesets
         id: check
         run: |
-          COUNT=$(find .changeset -name '*.md' ! -name 'README.md' | wc -l)
-          echo "pending=$COUNT" >> "$GITHUB_OUTPUT"
-          if [ "$COUNT" -gt 0 ]; then
-            echo "Found $COUNT pending changeset(s) — will create version PR"
+          # Run changeset status to see if any non-ignored packages have pending bumps
+          if bun changeset status 2>&1 | grep -q "NO packages"; then
+            echo "has_changesets=false" >> "$GITHUB_OUTPUT"
+            echo "No publishable changesets — will attempt to publish if versions are unpublished"
           else
-            echo "No pending changesets — will publish if versions are unpublished"
+            echo "has_changesets=true" >> "$GITHUB_OUTPUT"
+            echo "Found publishable changesets — will create version PR"
           fi
 
       - name: Create Release Pull Request
-        if: steps.check.outputs.pending != '0'
+        if: steps.check.outputs.has_changesets == 'true'
         uses: changesets/action@v1
         with:
           version: bun changeset version
@@ -52,7 +53,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
 
       - name: Publish to npm
-        if: steps.check.outputs.pending == '0'
+        if: steps.check.outputs.has_changesets == 'false'
         run: bun run publish
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
