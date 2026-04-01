@@ -173,16 +173,20 @@ const NAMESPACE_LABELS: Record<string, string> = {
 
 /**
  * Extract a short display path from a resource URI.
- * e.g. "urn:recap:resource:tinycloud.kv:my-store" → "my-store"
- *      "https://example.com/api/v1" → "/api/v1"
+ * Resource keys typically look like:
+ *   "urn:recap:resource:pkh:eip155:1:0xABCD...:kv/my-store"
+ * Strip the PKH address prefix and return just the service/path portion.
  */
 function extractResourcePath(resource: string): string {
-  // For URN-style resources, take the last segment(s) after the namespace
+  // Strip PKH address prefix: everything after 0x<40 hex chars>:
+  const pkhMatch = resource.match(/0x[a-fA-F0-9]{40}:(.+)$/);
+  if (pkhMatch) {
+    return pkhMatch[1];
+  }
+  // For URN-style without PKH, take the last meaningful segment
   if (resource.startsWith('urn:')) {
     const parts = resource.split(':');
-    // Typically: urn:recap:resource:namespace:path or similar
-    // Return everything after the namespace part
-    return parts.length > 3 ? parts.slice(3).join(':') : parts[parts.length - 1];
+    return parts[parts.length - 1] || resource;
   }
   // For URL-style resources, show the path
   try {
