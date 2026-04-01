@@ -3,6 +3,7 @@
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
   import { isEmbedContext, embedSignInPasskey, setSessionToken } from '$lib/embed-passkey';
+  import { parseSIWE } from '$lib/siwe-parser';
   import Button from '$lib/components/ui/button.svelte';
   import SiweMessage from '$lib/components/ui/siwe-message.svelte';
 
@@ -135,6 +136,17 @@
     return `${address.slice(0, 6)}...${address.slice(-4)}`;
   }
 
+  let siweDomain = $derived(message ? parseSIWE(message)?.message.domain ?? null : null);
+
+  let originDomain = $derived.by(() => {
+    if (!origin || origin === '*') return null;
+    try { return new URL(origin).hostname; } catch { return origin; }
+  });
+
+  let domainMismatch = $derived(
+    siweDomain && originDomain && siweDomain !== originDomain
+  );
+
   async function signInWithPasskey() {
     signingIn = true;
     error = '';
@@ -205,6 +217,19 @@
             <code class="font-mono text-surface-400 text-xs">{formatAddress(key.address)}</code>
           </div>
         </div>
+
+        <!-- Request from -->
+        {#if siweDomain}
+          <div class="bg-surface-50 border border-surface-200 rounded-xl p-3">
+            <span class="block text-surface-400 text-xs uppercase tracking-wide mb-1">Request from</span>
+            <span class="text-sm font-medium text-surface-900">{siweDomain}</span>
+            {#if domainMismatch}
+              <div class="mt-1.5 text-xs text-amber-600">
+                Domain mismatch: requesting page is {originDomain} but message is from {siweDomain}
+              </div>
+            {/if}
+          </div>
+        {/if}
 
         <!-- Message -->
         <div class="bg-surface-50 border border-surface-200 rounded-xl p-3">

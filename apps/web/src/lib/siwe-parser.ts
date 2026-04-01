@@ -158,6 +158,10 @@ export interface GroupedCapability {
   namespace: string;
   label: string;
   actions: string[];
+  /** The resource URI this capability applies to */
+  resource: string;
+  /** A short display-friendly version of the resource path */
+  resourcePath: string;
 }
 
 const NAMESPACE_LABELS: Record<string, string> = {
@@ -167,27 +171,84 @@ const NAMESPACE_LABELS: Record<string, string> = {
   'tinycloud.capabilities': 'Capabilities',
 };
 
+/**
+ * Extract a short display path from a resource URI.
+ * e.g. "urn:recap:resource:tinycloud.kv:my-store" → "my-store"
+ *      "https://example.com/api/v1" → "/api/v1"
+ */
+function extractResourcePath(resource: string): string {
+  // For URN-style resources, take the last segment(s) after the namespace
+  if (resource.startsWith('urn:')) {
+    const parts = resource.split(':');
+    // Typically: urn:recap:resource:namespace:path or similar
+    // Return everything after the namespace part
+    return parts.length > 3 ? parts.slice(3).join(':') : parts[parts.length - 1];
+  }
+  // For URL-style resources, show the path
+  try {
+    const url = new URL(resource);
+    return url.pathname === '/' ? url.hostname : url.pathname;
+  } catch {
+    return resource;
+  }
+}
+
 export function groupCapabilities(recap: RecapCapability[]): GroupedCapability[] {
-  const byNamespace = new Map<string, string[]>();
+  // Group by resource + namespace so that two different resources with the same
+  // namespace are shown separately (e.g. two KV stores with different permissions).
+  const byKey = new Map<string, { namespace: string; resource: string; actions: string[] }>();
 
   for (const cap of recap) {
     for (const ability of cap.abilities) {
       const ns = ability.namespace;
-      if (!byNamespace.has(ns)) {
-        byNamespace.set(ns, []);
+      const key = `${cap.resource}\0${ns}`;
+      if (!byKey.has(key)) {
+        byKey.set(key, { namespace: ns, resource: cap.resource, actions: [] });
       }
-      byNamespace.get(ns)!.push(ability.action);
+      byKey.get(key)!.actions.push(ability.action);
     }
   }
 
   const result: GroupedCapability[] = [];
-  for (const [namespace, actions] of byNamespace) {
+  for (const { namespace, resource, actions } of byKey.values()) {
     result.push({
       namespace,
       label: NAMESPACE_LABELS[namespace] || namespace,
       actions,
+      resource,
+      resourcePath: extractResourcePath(resource),
     });
   }
 
   return result;
+}
+
+/**
+ * Compute a human-readable relative time string until the given ISO timestamp.
+ * Returns "Expired" if the time is in the past.
+ */
+export function timeUntilExpiry(iso: string): { text: string; expired: boolean } {
+  const now = Date.now();
+  const target = new Date(iso).getTime();
+  const diff = target - now;
+
+  if (diff <= 0) {
+    return { text: 'Expired', expired: true };
+  }
+
+  const seconds = Math.floor(diff / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+
+  if (days > 0) {
+    return { text: `in ${days} day${days === 1 ? '' : 's'}`, expired: false };
+  }
+  if (hours > 0) {
+    return { text: `in ${hours} hour${hours === 1 ? '' : 's'}`, expired: false };
+  }
+  if (minutes > 0) {
+    return { text: `in ${minutes} minute${minutes === 1 ? '' : 's'}`, expired: false };
+  }
+  return { text: `in ${seconds} second${seconds === 1 ? '' : 's'}`, expired: false };
 }
