@@ -2,6 +2,7 @@
   import { page } from '$app/stores';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
+  import { parseSIWE } from '$lib/siwe-parser';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import SiweMessage from '$lib/components/ui/siwe-message.svelte';
@@ -133,6 +134,17 @@
   function formatAddress(address: string): string {
     return `${address.slice(0, 6)}...${address.slice(-4)}`;
   }
+
+  let siweDomain = $derived(message ? parseSIWE(message)?.message.domain ?? null : null);
+
+  let originDomain = $derived.by(() => {
+    if (!origin || origin === '*') return null;
+    try { return new URL(origin).hostname; } catch { return origin; }
+  });
+
+  let domainMismatch = $derived(
+    siweDomain && originDomain && siweDomain !== originDomain
+  );
 </script>
 
 <div class="flex-1 flex flex-col">
@@ -166,6 +178,18 @@
         <span class="font-semibold mr-2">{key.label || `Key ${key.keyIndex}`}</span>
         <code class="font-mono text-surface-400 text-sm">{formatAddress(key.address)}</code>
       </Card>
+
+      {#if siweDomain}
+        <Card class="p-4">
+          <span class="block text-surface-400 text-xs uppercase mb-2">Request from:</span>
+          <span class="text-surface-50 text-sm font-medium">{siweDomain}</span>
+          {#if domainMismatch}
+            <div class="mt-2 text-xs text-amber-400">
+              Domain mismatch: requesting page is {originDomain} but message is from {siweDomain}
+            </div>
+          {/if}
+        </Card>
+      {/if}
 
       <Card class="p-4">
         <span class="block text-surface-400 text-xs uppercase mb-2">Message:</span>

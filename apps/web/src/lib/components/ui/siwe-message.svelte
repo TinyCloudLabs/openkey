@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { parseSIWE, groupCapabilities, type ParsedSIWE, type GroupedCapability } from '$lib/siwe-parser';
+  import { parseSIWE, groupCapabilities, timeUntilExpiry, type ParsedSIWE, type GroupedCapability } from '$lib/siwe-parser';
 
   interface Props {
     /** The raw message string to parse. */
@@ -18,6 +18,7 @@
     parsed?.recap ? groupCapabilities(parsed.recap) : []
   );
   let isSiwe = $derived(parsed !== null);
+  let expiry = $derived(parsed?.message.expirationTime ? timeUntilExpiry(parsed.message.expirationTime) : null);
 
   async function copyMessage() {
     await navigator.clipboard.writeText(message);
@@ -46,12 +47,6 @@
 
 {#if isSiwe && parsed}
   <div class="flex flex-col gap-3">
-    <!-- Domain + address -->
-    <div class="p-3 {bg} border {border} rounded-xl">
-      <div class="text-xs {textMuted} mb-1">Request from</div>
-      <div class="{textPrimary} text-sm font-medium">{parsed.message.domain}</div>
-    </div>
-
     <!-- Capabilities / permissions -->
     {#if grouped.length > 0}
       <div>
@@ -64,6 +59,9 @@
               </svg>
               <div>
                 <div class="text-sm font-medium {textPrimary}">{cap.label}</div>
+                {#if cap.resourcePath}
+                  <div class="text-xs {textMuted} font-mono mt-0.5">{cap.resourcePath}</div>
+                {/if}
                 <div class="flex flex-wrap gap-1 mt-1">
                   {#each cap.actions as action}
                     <span class="text-xs px-1.5 py-0.5 rounded {badgeBg} {textSecondary}">{action}</span>
@@ -81,6 +79,9 @@
       <div class="p-3 {bg} border {border} rounded-xl">
         <div class="text-xs {textMuted} mb-1">Expires</div>
         <span class="text-sm {textPrimary}">{formatDate(parsed.message.expirationTime)}</span>
+        {#if expiry}
+          <div class="text-xs mt-0.5 {expiry.expired ? 'text-amber-500' : textMuted}">{expiry.text}</div>
+        {/if}
       </div>
     {/if}
 
