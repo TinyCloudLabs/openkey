@@ -6,9 +6,11 @@
     message: string;
     /** Optional: override light/dark style. Defaults to 'light'. */
     theme?: 'light' | 'dark';
+    /** Optional: hide parsed permissions when a parent renders custom controls. */
+    hidePermissions?: boolean;
   }
 
-  let { message, theme = 'light' }: Props = $props();
+  let { message, theme = 'light', hidePermissions = false }: Props = $props();
 
   let showRaw = $state(false);
   let copied = $state(false);
@@ -48,7 +50,7 @@
 {#if isSiwe && parsed}
   <div class="flex flex-col gap-3">
     <!-- Capabilities / permissions -->
-    {#if grouped.length > 0}
+    {#if grouped.length > 0 && !hidePermissions}
       <div>
         <div class="text-xs {textMuted} mb-2">Permissions requested</div>
         <div class="flex flex-col gap-2">

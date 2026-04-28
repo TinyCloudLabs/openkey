@@ -9,6 +9,7 @@ import {
   completeSessionSetup,
   ensureEip55,
   makeSpaceId,
+  parseRecapFromSiwe,
 } from '@tinycloud/node-sdk-wasm';
 import { activateSessionWithHost } from '@tinycloud/sdk-core';
 
@@ -24,7 +25,26 @@ const SIWE_DOMAIN = 'cli.tinycloud.xyz';
 delegateRouter.use('*', requireSession);
 
 // Default abilities (same as NodeUserAuthorization)
-const DEFAULT_ABILITIES = {
+type DelegationJwk = { kty: string; crv: string; x: string };
+type AbilitiesMap = Record<string, Record<string, string[]>>;
+
+interface RecapEntry {
+  service: string;
+  space: string;
+  path: string;
+  actions: string[];
+}
+
+interface PermissionOption {
+  key: string;
+  service: string;
+  path: string;
+  label: string;
+  resourcePath: string;
+  actions: string[];
+}
+
+const DEFAULT_ABILITIES: AbilitiesMap = {
   kv: {
     '': [
       'tinycloud.kv/put',
@@ -47,6 +67,148 @@ const DEFAULT_ABILITIES = {
   },
 };
 
+const SERVICE_LABELS: Record<string, string> = {
+  kv: 'Key-Value Storage',
+  sql: 'SQL Database',
+  capabilities: 'Capabilities',
+};
+
+function permissionKey(entry: RecapEntry): string {
+  return `${entry.service}\0${entry.space}\0${entry.path}`;
+}
+
+function permissionOption(entry: RecapEntry): PermissionOption {
+  const resourcePath = entry.path ? `${entry.service}/${entry.path}` : entry.service;
+  return {
+    key: permissionKey(entry),
+    service: entry.service,
+    path: entry.path,
+    label: SERVICE_LABELS[entry.service] || entry.service,
+    resourcePath,
+    actions: entry.actions.map((action) => action.slice(action.indexOf('/') + 1)),
+  };
+}
+
+function entriesToAbilities(entries: RecapEntry[]): AbilitiesMap {
+  const abilities: AbilitiesMap = {};
+
+  for (const entry of entries) {
+    abilities[entry.service] ??= {};
+    const serviceAbilities = abilities[entry.service];
+    if (!serviceAbilities) continue;
+    serviceAbilities[entry.path] = entry.actions;
+  }
+
+  return abilities;
+}
+
+function assertDefaultSubset(entries: RecapEntry[]) {
+  if (entries.length === 0) {
+    throw new Error('Only SIWE ReCap messages can be edited');
+  }
+
+  for (const entry of entries) {
+    const serviceAbilities = DEFAULT_ABILITIES[entry.service];
+    const allowedActions = serviceAbilities?.[entry.path];
+
+    if (!allowedActions) {
+      throw new Error('Edited permissions must be a subset of the default delegation');
+    }
+
+    for (const action of entry.actions) {
+      if (!allowedActions.includes(action)) {
+        throw new Error('Edited permissions must be a subset of the default delegation');
+      }
+    }
+  }
+}
+
+function parsePreparedRecap(siwe: string): RecapEntry[] {
+  const entries = parseRecapFromSiwe(siwe) as RecapEntry[];
+  return entries;
+}
+
+function normalizePermissionKeys(permissionKeys: unknown): string[] | undefined {
+  if (permissionKeys === undefined) return undefined;
+  if (!Array.isArray(permissionKeys)) {
+    throw new Error('permissionKeys must be an array');
+  }
+  if (!permissionKeys.every((key): key is string => typeof key === 'string')) {
+    throw new Error('permissionKeys must only contain strings');
+  }
+  return [...new Set(permissionKeys)];
+}
+
+function prepareDelegationSession({
+  address,
+  chainId,
+  prefix,
+  jwk,
+  permissionKeys,
+}: {
+  address: string;
+  chainId: number;
+  prefix: string;
+  jwk: DelegationJwk;
+  permissionKeys?: string[];
+}) {
+  const spaceId = makeSpaceId(address, chainId, prefix);
+
+  const now = new Date();
+  const expirationTime = new Date(now.getTime() + 60 * 60 * 1000); // 1 hour
+  const baseConfig = {
+    address,
+    chainId,
+    domain: SIWE_DOMAIN,
+    issuedAt: now.toISOString(),
+    expirationTime: expirationTime.toISOString(),
+    spaceId,
+    jwk,
+  };
+
+  const baselinePrepared = prepareSession({
+    ...baseConfig,
+    abilities: DEFAULT_ABILITIES,
+  });
+  const baselineEntries = parsePreparedRecap(baselinePrepared.siwe);
+
+  if (baselineEntries.length === 0) {
+    throw new Error('Only SIWE ReCap messages can be edited');
+  }
+
+  const permissionOptions = baselineEntries.map(permissionOption);
+  const baselineKeys = new Set(permissionOptions.map((permission) => permission.key));
+  const selectedKeys = permissionKeys ?? permissionOptions.map((permission) => permission.key);
+  const selectedKeySet = new Set(selectedKeys);
+
+  for (const key of selectedKeySet) {
+    if (!baselineKeys.has(key)) {
+      throw new Error('Requested permissions are not available for this delegation');
+    }
+  }
+
+  if (selectedKeySet.size === 0) {
+    throw new Error('At least one permission is required');
+  }
+
+  const selectedEntries = baselineEntries.filter((entry) => selectedKeySet.has(permissionKey(entry)));
+  const edited = selectedEntries.length < baselineEntries.length;
+  const prepared = edited
+    ? prepareSession({
+        ...baseConfig,
+        abilities: entriesToAbilities(selectedEntries),
+      })
+    : baselinePrepared;
+
+  return {
+    prepared,
+    permissions: permissionOptions,
+    selectedPermissionKeys: selectedEntries.map(permissionKey),
+    edited,
+    spaceId,
+  };
+}
+
 /**
  * POST /api/delegate
  *
@@ -57,9 +219,10 @@ delegateRouter.post('/', async (c) => {
   const user = c.get('user');
   const body = await c.req.json<{
     keyId: string;
-    jwk: { kty: string; crv: string; x: string };
+    jwk: DelegationJwk;
     host: string;
     prefix?: string;
+    permissionKeys?: unknown;
   }>();
 
   if (!body.keyId || !body.jwk || !body.host) {
@@ -94,29 +257,25 @@ delegateRouter.post('/', async (c) => {
   const chainId = 1;
   const prefix = body.prefix || 'default';
   const host = body.host;
-
-  const spaceId = makeSpaceId(address, chainId, prefix);
-
-  const now = new Date();
-  const expirationTime = new Date(now.getTime() + 60 * 60 * 1000); // 1 hour
-
-  const prepared = prepareSession({
-    abilities: DEFAULT_ABILITIES,
-    address,
-    chainId,
-    domain: SIWE_DOMAIN,
-    issuedAt: now.toISOString(),
-    expirationTime: expirationTime.toISOString(),
-    spaceId,
-    jwk: body.jwk,
-  });
+  let preparedResult: ReturnType<typeof prepareDelegationSession>;
+  try {
+    preparedResult = prepareDelegationSession({
+      address,
+      chainId,
+      prefix,
+      jwk: body.jwk,
+      permissionKeys: normalizePermissionKeys(body.permissionKeys),
+    });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'Failed to prepare delegation' }, 400);
+  }
 
   const signature = await account.signMessage({
-    message: prepared.siwe,
+    message: preparedResult.prepared.siwe,
   });
 
   const session = completeSessionSetup({
-    ...prepared,
+    ...preparedResult.prepared,
     signature,
   });
 
@@ -136,13 +295,14 @@ delegateRouter.post('/', async (c) => {
   return c.json({
     delegationHeader: session.delegationHeader,
     delegationCid: session.delegationCid,
-    spaceId,
+    spaceId: preparedResult.spaceId,
     primaryDid,
     verificationMethod: session.verificationMethod,
     jwk: body.jwk,
     address,
     chainId,
     hostActivated,
+    edited: preparedResult.edited,
   });
 });
 
@@ -158,9 +318,10 @@ delegateRouter.post('/prepare', async (c) => {
   const user = c.get('user');
   const body = await c.req.json<{
     keyId: string;
-    jwk: { kty: string; crv: string; x: string };
+    jwk: DelegationJwk;
     host: string;
     prefix?: string;
+    permissionKeys?: unknown;
   }>();
 
   if (!body.keyId || !body.jwk || !body.host) {
@@ -179,22 +340,18 @@ delegateRouter.post('/prepare', async (c) => {
   const chainId = 1;
   const prefix = body.prefix || 'default';
   const host = body.host;
-
-  const spaceId = makeSpaceId(address, chainId, prefix);
-
-  const now = new Date();
-  const expirationTime = new Date(now.getTime() + 60 * 60 * 1000); // 1 hour
-
-  const prepared = prepareSession({
-    abilities: DEFAULT_ABILITIES,
-    address,
-    chainId,
-    domain: SIWE_DOMAIN,
-    issuedAt: now.toISOString(),
-    expirationTime: expirationTime.toISOString(),
-    spaceId,
-    jwk: body.jwk,
-  });
+  let preparedResult: ReturnType<typeof prepareDelegationSession>;
+  try {
+    preparedResult = prepareDelegationSession({
+      address,
+      chainId,
+      prefix,
+      jwk: body.jwk,
+      permissionKeys: normalizePermissionKeys(body.permissionKeys),
+    });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'Failed to prepare delegation' }, 400);
+  }
 
   const primaryDid = `did:pkh:eip155:${chainId}:${address}`;
 
@@ -202,18 +359,21 @@ delegateRouter.post('/prepare', async (c) => {
   // The WASM prepareSession may return JWK as a special object that
   // doesn't serialize correctly, so we merge the original JWK back in.
   const preparedData = {
-    ...prepared,
+    ...preparedResult.prepared,
     jwk: body.jwk,
   };
 
   return c.json({
     prepared: preparedData,
-    spaceId,
+    spaceId: preparedResult.spaceId,
     primaryDid,
     address,
     chainId,
     host,
     jwk: body.jwk,
+    permissions: preparedResult.permissions,
+    selectedPermissionKeys: preparedResult.selectedPermissionKeys,
+    edited: preparedResult.edited,
   });
 });
 
@@ -231,11 +391,20 @@ delegateRouter.post('/complete', async (c) => {
     prepared: any;
     signature: string;
     host: string;
-    jwk: { kty: string; crv: string; x: string };
+    jwk: DelegationJwk;
+    edited?: boolean;
   }>();
 
   if (!body.prepared || !body.signature || !body.host || !body.jwk) {
     return c.json({ error: 'prepared, signature, host, and jwk are required' }, 400);
+  }
+
+  if (body.edited) {
+    try {
+      assertDefaultSubset(parsePreparedRecap(body.prepared.siwe || ''));
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : 'Invalid edited permissions' }, 400);
+    }
   }
 
   // Ensure JWK is a proper object with kty for WASM deserialization
@@ -272,5 +441,6 @@ delegateRouter.post('/complete', async (c) => {
     address,
     chainId,
     hostActivated,
+    edited: Boolean(body.edited),
   });
 });
