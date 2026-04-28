@@ -57,10 +57,10 @@
               <svg class="w-4 h-4 {textMuted} mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
-              <div>
+              <div class="min-w-0 flex-1">
                 <div class="text-sm font-medium {textPrimary}">{cap.label}</div>
                 {#if cap.resourcePath}
-                  <div class="text-xs {textMuted} font-mono mt-0.5">{cap.resourcePath}</div>
+                  <div class="text-xs {textMuted} font-mono mt-0.5 break-all">{cap.resourcePath}</div>
                 {/if}
                 <div class="flex flex-wrap gap-1 mt-1">
                   {#each cap.actions as action}
