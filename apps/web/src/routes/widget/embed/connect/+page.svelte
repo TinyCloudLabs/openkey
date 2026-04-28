@@ -74,6 +74,10 @@
     try {
       const result = await api.listKeys();
       keys = result.keys;
+      if (keys.length === 1) {
+        selectKey(keys[0]);
+        return;
+      }
     } catch (e: any) {
       error = e.message;
     } finally {
