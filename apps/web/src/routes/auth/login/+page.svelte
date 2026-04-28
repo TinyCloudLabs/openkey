@@ -1,7 +1,7 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
   import { page } from '$app/stores';
-  import { authClient, API_BASE } from '$lib/auth-client';
+  import { authClient, API_BASE, authErrorMessage } from '$lib/auth-client';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
@@ -48,7 +48,7 @@
     try {
       const result = await authClient.signIn.passkey();
       if (result.error) {
-        error = result.error.message || 'Passkey sign-in failed';
+        error = authErrorMessage(result.error, 'Passkey sign-in failed');
       } else {
         handlePostSignIn();
       }
@@ -65,7 +65,7 @@
     try {
       const result = await authClient.emailOtp.sendVerificationOtp({ email: devEmail, type: 'sign-in' });
       if (result.error) {
-        error = result.error.message || 'Failed to send code';
+        error = authErrorMessage(result.error, 'Failed to send code');
       } else {
         devStep = 'otp';
       }
@@ -82,7 +82,7 @@
     try {
       const result = await authClient.signIn.emailOtp({ email: devEmail, otp: devOtp });
       if (result.error) {
-        error = result.error.message || 'Invalid code';
+        error = authErrorMessage(result.error, 'Invalid code');
       } else {
         handlePostSignIn();
       }

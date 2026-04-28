@@ -37,14 +37,14 @@
     icon: 'h-10 w-10',
   };
 
-  const baseClasses = cn(
+  const baseClasses = $derived(cn(
     'inline-flex items-center justify-center whitespace-nowrap rounded-xl font-medium transition-colors',
     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-surface-400 focus-visible:ring-offset-2 focus-visible:ring-offset-white',
     'disabled:pointer-events-none disabled:opacity-50',
     variants[variant],
     sizes[size],
     className
-  );
+  ));
 </script>
 
 {#if href}

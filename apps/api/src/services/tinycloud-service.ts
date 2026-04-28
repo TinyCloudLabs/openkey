@@ -90,8 +90,8 @@ export class TinyCloudService {
       let createdAt = '';
       // Read the stored payload to get createdAt
       const getResult = await session.secretsTc.vault.get<{ value: string; createdAt: string }>(key);
-      if (getResult.ok && getResult.data?.createdAt) {
-        createdAt = getResult.data.createdAt;
+      if (getResult.ok && getResult.data?.value.createdAt) {
+        createdAt = getResult.data.value.createdAt;
       }
       secrets.push({ name, createdAt });
     }

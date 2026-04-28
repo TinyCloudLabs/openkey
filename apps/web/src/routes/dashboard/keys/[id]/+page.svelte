@@ -38,7 +38,12 @@
     loading = true;
     error = '';
     try {
-      const result = await api.getKey($page.params.id);
+      const keyId = $page.params.id;
+      if (!keyId) {
+        error = 'Key not found';
+        return;
+      }
+      const result = await api.getKey(keyId);
       key = result.key;
       newLabel = key.label || '';
     } catch (e: any) {
@@ -133,7 +138,7 @@
 
       <div class="space-y-4">
         <div>
-          <label class="mb-1 block text-sm text-surface-500">Address</label>
+          <p class="mb-1 block text-sm text-surface-500">Address</p>
           <div class="flex items-center gap-2">
             <code class="flex-1 rounded-xl bg-surface-50 border border-surface-200 p-3 font-mono text-sm text-surface-900">
               {key.address}
@@ -145,7 +150,7 @@
         </div>
 
         <div>
-          <label class="mb-1 block text-sm text-surface-500">Public Key</label>
+          <p class="mb-1 block text-sm text-surface-500">Public Key</p>
           <div class="flex items-center gap-2">
             <code class="flex-1 truncate rounded-xl bg-surface-50 border border-surface-200 p-3 font-mono text-sm text-surface-900">
               {key.publicKey}
@@ -157,7 +162,7 @@
         </div>
 
         <div>
-          <label class="mb-1 block text-sm text-surface-500">Created</label>
+          <p class="mb-1 block text-sm text-surface-500">Created</p>
           <p class="text-surface-900">
             {new Date(key.createdAt).toLocaleDateString(undefined, {
               year: 'numeric',
@@ -192,7 +197,7 @@
 
         {#if signature}
           <div>
-            <label class="mb-1 block text-sm text-surface-500">Signature</label>
+            <p class="mb-1 block text-sm text-surface-500">Signature</p>
             <div class="flex items-start gap-2">
               <code class="flex-1 break-all rounded-xl bg-surface-50 border border-surface-200 p-3 font-mono text-xs text-surface-900">
                 {signature}
