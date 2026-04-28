@@ -1,7 +1,7 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
   import { page } from '$app/stores';
-  import { authClient, API_BASE } from '$lib/auth-client';
+  import { authClient, API_BASE, authErrorMessage } from '$lib/auth-client';
   import { api } from '$lib/api';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
@@ -11,12 +11,16 @@
 
   let email = $state('');
   let otp = $state('');
-  let step = $state<'email' | 'otp' | 'passkey'>(data.initialStep);
+  let step = $state<'email' | 'otp' | 'passkey'>(getInitialStep());
   let loading = $state(false);
   let error = $state('');
 
   // Detect if opened as a popup from the embed SDK flow
-  const isEmbedPopup = typeof window !== 'undefined' && !!window.opener && data.isEmbed;
+  const isEmbedPopup = $derived(typeof window !== 'undefined' && !!window.opener && data.isEmbed);
+
+  function getInitialStep() {
+    return data.initialStep;
+  }
 
   // Persist OAuth params in sessionStorage so the OAuth authorization can be
   // resumed after passkey registration (mirrors the login page logic)
@@ -35,7 +39,7 @@
     try {
       const result = await authClient.emailOtp.sendVerificationOtp({ email, type: 'sign-in' });
       if (result.error) {
-        error = result.error.message || 'Failed to send code';
+        error = authErrorMessage(result.error, 'Failed to send code');
       } else {
         step = 'otp';
       }
@@ -52,7 +56,7 @@
     try {
       const result = await authClient.signIn.emailOtp({ email, otp });
       if (result.error) {
-        error = result.error.message || 'Invalid code';
+        error = authErrorMessage(result.error, 'Invalid code');
       } else {
         step = 'passkey';
       }
@@ -84,7 +88,7 @@
     try {
       const result = await authClient.passkey.addPasskey();
       if (result?.error) {
-        error = result.error.message || 'Failed to register passkey';
+        error = authErrorMessage(result.error, 'Failed to register passkey');
       } else {
         // Ensure the user has a key before proceeding
         await ensureKeyExists();

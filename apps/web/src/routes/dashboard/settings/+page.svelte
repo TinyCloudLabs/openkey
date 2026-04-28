@@ -1,6 +1,6 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
-  import { authClient } from '$lib/auth-client';
+  import { authClient, authErrorMessage } from '$lib/auth-client';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
@@ -9,7 +9,7 @@
 
   interface Passkey {
     id: string;
-    name: string | null;
+    name?: string | null;
     createdAt: Date;
     deviceType: string;
   }
@@ -44,7 +44,7 @@
     try {
       const result = await authClient.passkey.listUserPasskeys();
       if (result.error) {
-        error = result.error.message || 'Failed to load passkeys';
+        error = authErrorMessage(result.error, 'Failed to load passkeys');
       } else {
         passkeys = result.data || [];
       }
@@ -61,7 +61,7 @@
     try {
       const result = await authClient.passkey.addPasskey();
       if (result?.error) {
-        error = result.error.message || 'Failed to add passkey';
+        error = authErrorMessage(result.error, 'Failed to add passkey');
       } else {
         await loadPasskeys();
       }
@@ -92,7 +92,7 @@
         name: editName || 'Unnamed Passkey',
       });
       if (result.error) {
-        error = result.error.message || 'Failed to update passkey';
+        error = authErrorMessage(result.error, 'Failed to update passkey');
       } else {
         await loadPasskeys();
         cancelEdit();
@@ -116,7 +116,7 @@
     try {
       const result = await authClient.passkey.deletePasskey({ id });
       if (result.error) {
-        error = result.error.message || 'Failed to delete passkey';
+        error = authErrorMessage(result.error, 'Failed to delete passkey');
       } else {
         await loadPasskeys();
       }

@@ -65,7 +65,8 @@ export const passkeyProxyRouter = new Hono();
 passkeyProxyRouter.post('/generate-register-options', async (c) => {
   cleanExpiredChallenges();
 
-  const body = await c.req.json<{ authenticatorAttachment?: string; name?: string }>().catch(() => ({}));
+  type GenerateRegisterOptionsBody = { authenticatorAttachment?: string; name?: string };
+  const body = await c.req.json<GenerateRegisterOptionsBody>().catch((): GenerateRegisterOptionsBody => ({}));
 
   // Build query params from body
   const params = new URLSearchParams();

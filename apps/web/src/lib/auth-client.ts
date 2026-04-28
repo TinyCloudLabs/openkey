@@ -25,3 +25,7 @@ export const {
   signUp,
   useSession,
 } = authClient;
+
+export function authErrorMessage(error: { message?: unknown } | null | undefined, fallback: string): string {
+  return typeof error?.message === 'string' ? error.message : fallback;
+}

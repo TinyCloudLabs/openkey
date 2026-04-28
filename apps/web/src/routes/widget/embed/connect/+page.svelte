@@ -1,6 +1,6 @@
 <script lang="ts">
   import { page } from '$app/stores';
-  import { authClient } from '$lib/auth-client';
+  import { authClient, authErrorMessage } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
   import { isEmbedContext, embedSignInPasskey, clearSessionToken, getSessionToken, setSessionToken } from '$lib/embed-passkey';
   import Button from '$lib/components/ui/button.svelte';
@@ -187,7 +187,7 @@
       } else {
         const result = await authClient.signIn.passkey();
         if (result.error) {
-          error = result.error.message || 'Passkey sign-in failed';
+          error = authErrorMessage(result.error, 'Passkey sign-in failed');
         }
       }
     } catch (e: any) {

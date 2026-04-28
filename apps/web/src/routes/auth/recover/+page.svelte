@@ -1,6 +1,6 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
-  import { authClient } from '$lib/auth-client';
+  import { authClient, authErrorMessage } from '$lib/auth-client';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
@@ -17,7 +17,7 @@
     try {
       const result = await authClient.emailOtp.sendVerificationOtp({ email, type: 'sign-in' });
       if (result.error) {
-        error = result.error.message || 'Failed to send code';
+        error = authErrorMessage(result.error, 'Failed to send code');
       } else {
         step = 'otp';
       }
@@ -34,7 +34,7 @@
     try {
       const result = await authClient.signIn.emailOtp({ email, otp });
       if (result.error) {
-        error = result.error.message || 'Invalid code';
+        error = authErrorMessage(result.error, 'Invalid code');
       } else {
         step = 'passkey';
       }
@@ -51,7 +51,7 @@
     try {
       const result = await authClient.passkey.addPasskey();
       if (result?.error) {
-        error = result.error.message || 'Failed to register passkey';
+        error = authErrorMessage(result.error, 'Failed to register passkey');
       } else {
         goto('/dashboard');
       }

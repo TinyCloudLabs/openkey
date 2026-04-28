@@ -31,7 +31,7 @@ app.use('/api/auth/oauth2/token', cors({
 
 // All other routes: restricted to whitelisted origins
 app.use('*', cors({
-  origin: corsOrigins.length === 1 ? corsOrigins[0] : corsOrigins,
+  origin: corsOrigins.length === 1 ? corsOrigins[0]! : corsOrigins,
   credentials: true,
 }));
 
