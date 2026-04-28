@@ -18,11 +18,18 @@
     provider: any;
   }
 
+  interface DelegatePermissionAction {
+    key: string;
+    action: string;
+    ability: string;
+    required: boolean;
+  }
+
   interface DelegatePermission {
     key: string;
     label: string;
     resourcePath: string;
-    actions: string[];
+    actions: DelegatePermissionAction[];
   }
 
   const session = authClient.useSession();
@@ -44,7 +51,7 @@
   let siweMessage = $state('');
   let preparing = $state(false);
   let permissionOptions = $state<DelegatePermission[]>([]);
-  let selectedPermissionKeys = $state<string[]>([]);
+  let selectedActionKeys = $state<string[]>([]);
   let editingPermissions = $state(false);
   let updatingPermissions = $state(false);
   let permissionsEdited = $state(false);
@@ -141,7 +148,7 @@
     }
   }
 
-  async function prepareDelegation(key: EthereumKey, permissionKeys?: string[]) {
+  async function prepareDelegation(key: EthereumKey, actionKeys?: string[]) {
     const API_URL = import.meta.env.VITE_API_URL || '';
     const body: Record<string, unknown> = {
       keyId: key.id,
@@ -149,8 +156,8 @@
       host,
       prefix: 'default',
     };
-    if (permissionKeys) {
-      body.permissionKeys = permissionKeys;
+    if (actionKeys) {
+      body.actionKeys = actionKeys;
     }
 
     const res = await fetch(`${API_URL}/api/delegate/prepare`, {
@@ -176,9 +183,9 @@
     preparedData = data.prepared;
     siweMessage = data.prepared?.siwe || '';
     permissionOptions = permissions;
-    selectedPermissionKeys = Array.isArray(data.selectedPermissionKeys)
-      ? data.selectedPermissionKeys.filter((key: unknown): key is string => typeof key === 'string')
-      : permissions.map((permission) => permission.key);
+    selectedActionKeys = Array.isArray(data.selectedActionKeys)
+      ? data.selectedActionKeys.filter((key: unknown): key is string => typeof key === 'string')
+      : permissions.flatMap((permission) => permission.actions.map((action) => action.key));
     permissionsEdited = Boolean(data.edited);
   }
 
@@ -186,7 +193,7 @@
     preparedData = null;
     siweMessage = '';
     permissionOptions = [];
-    selectedPermissionKeys = [];
+    selectedActionKeys = [];
     editingPermissions = false;
     updatingPermissions = false;
     permissionsEdited = false;
@@ -276,7 +283,7 @@
       error = 'Permissions are still updating.';
       return;
     }
-    if (permissionOptions.length > 0 && selectedPermissionKeys.length === 0) {
+    if (permissionOptions.length > 0 && selectedActionKeys.length === 0) {
       error = 'At least one permission is required.';
       return;
     }
@@ -313,14 +320,20 @@
     error = '';
   }
 
-  function isPermissionSelected(key: string): boolean {
-    return selectedPermissionKeys.includes(key);
+  function isActionSelected(key: string): boolean {
+    return selectedActionKeys.includes(key);
   }
 
-  async function togglePermission(key: string) {
-    const nextKeys = isPermissionSelected(key)
-      ? selectedPermissionKeys.filter((selectedKey) => selectedKey !== key)
-      : [...selectedPermissionKeys, key];
+  function selectedActions(permission: DelegatePermission): DelegatePermissionAction[] {
+    return permission.actions.filter((action) => isActionSelected(action.key));
+  }
+
+  async function toggleAction(action: DelegatePermissionAction) {
+    if (action.required) return;
+
+    const nextKeys = isActionSelected(action.key)
+      ? selectedActionKeys.filter((selectedKey) => selectedKey !== action.key)
+      : [...selectedActionKeys, action.key];
 
     if (nextKeys.length === 0) {
       error = 'At least one permission is required.';
@@ -383,7 +396,7 @@
         prefix: 'default',
       };
       if (permissionsEdited) {
-        body.permissionKeys = selectedPermissionKeys;
+        body.actionKeys = selectedActionKeys;
       }
 
       const res = await fetch(`${API_URL}/api/delegate`, {
@@ -836,44 +849,75 @@
                       </div>
 
                       {#each permissionOptions as permission}
-                        <label
-                          class="flex items-start gap-2.5 p-2.5 bg-surface-50 border border-surface-200 rounded-lg cursor-pointer transition-opacity"
-                          class:opacity-60={!isPermissionSelected(permission.key)}
-                        >
-                          <input
-                            type="checkbox"
-                            class="mt-0.5 h-4 w-4 rounded border-surface-300 text-surface-900"
-                            checked={isPermissionSelected(permission.key)}
-                            disabled={updatingPermissions}
-                            onchange={() => togglePermission(permission.key)}
-                          />
-                          <span class="min-w-0 flex-1">
-                            <span class="block text-sm font-medium text-surface-900">{permission.label}</span>
+                        <div class="p-2.5 bg-surface-50 border border-surface-200 rounded-lg">
+                          <div class="min-w-0">
+                            <div class="text-sm font-medium text-surface-900">{permission.label}</div>
                             {#if permission.resourcePath}
-                              <span class="block text-xs text-surface-400 font-mono mt-0.5 break-all">{permission.resourcePath}</span>
+                              <div class="text-xs text-surface-400 font-mono mt-0.5 break-all">{permission.resourcePath}</div>
                             {/if}
-                            <span class="flex flex-wrap gap-1 mt-1">
+                            <div class="flex flex-wrap gap-2 mt-2">
                               {#each permission.actions as action}
-                                <span class="text-xs px-1.5 py-0.5 rounded bg-surface-100 text-surface-500">{action}</span>
+                                <label
+                                  class="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded bg-white border border-surface-200 text-surface-600 cursor-pointer transition-opacity"
+                                  class:opacity-60={!isActionSelected(action.key)}
+                                  class:cursor-not-allowed={action.required || updatingPermissions}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    class="h-3.5 w-3.5 rounded border-surface-300 text-surface-900"
+                                    checked={isActionSelected(action.key)}
+                                    disabled={updatingPermissions || action.required}
+                                    onchange={() => toggleAction(action)}
+                                  />
+                                  <span>{action.action}</span>
+                                  {#if action.required}
+                                    <span class="text-surface-400">required</span>
+                                  {/if}
+                                </label>
                               {/each}
-                            </span>
-                          </span>
-                        </label>
+                            </div>
+                          </div>
+                        </div>
                       {/each}
 
                       {#if updatingPermissions}
                         <div class="text-xs text-surface-400">Updating permissions...</div>
                       {/if}
                     </div>
-                  {:else if permissionsEdited}
-                    <div class="bg-amber-50 border border-amber-200 text-amber-700 px-3 py-2 rounded-lg text-xs mb-3">
-                      Editing permissions may result in the application not working as expected.
+                  {:else}
+                    <div class="flex flex-col gap-2">
+                      {#if permissionsEdited}
+                        <div class="bg-amber-50 border border-amber-200 text-amber-700 px-3 py-2 rounded-lg text-xs">
+                          Editing permissions may result in the application not working as expected.
+                        </div>
+                      {/if}
+
+                      {#each permissionOptions as permission}
+                        {#if selectedActions(permission).length > 0}
+                          <div class="flex items-start gap-2.5 p-2.5 bg-surface-50 border border-surface-200 rounded-lg">
+                            <svg class="w-4 h-4 text-surface-400 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                              <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                            <div class="min-w-0 flex-1">
+                              <div class="text-sm font-medium text-surface-900">{permission.label}</div>
+                              {#if permission.resourcePath}
+                                <div class="text-xs text-surface-400 font-mono mt-0.5 break-all">{permission.resourcePath}</div>
+                              {/if}
+                              <div class="flex flex-wrap gap-1 mt-1">
+                                {#each selectedActions(permission) as action}
+                                  <span class="text-xs px-1.5 py-0.5 rounded bg-surface-100 text-surface-500">{action.action}</span>
+                                {/each}
+                              </div>
+                            </div>
+                          </div>
+                        {/if}
+                      {/each}
                     </div>
                   {/if}
                 </div>
               {/if}
 
-              <SiweMessage message={siweMessage} theme="light" hidePermissions={editingPermissions} />
+              <SiweMessage message={siweMessage} theme="light" hidePermissions={permissionOptions.length > 0} />
             </div>
           {/if}
 
@@ -882,7 +926,7 @@
             <Button variant="secondary" onclick={goBack} disabled={delegating} class="flex-1 rounded-xl">
               Back
             </Button>
-            <Button onclick={approveDelegate} disabled={delegating || updatingPermissions || selectedPermissionKeys.length === 0} class="flex-1 rounded-xl">
+            <Button onclick={approveDelegate} disabled={delegating || updatingPermissions || selectedActionKeys.length === 0} class="flex-1 rounded-xl">
               {#if delegating}
                 Signing...
               {:else if updatingPermissions}

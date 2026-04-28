@@ -35,13 +35,20 @@ interface RecapEntry {
   actions: string[];
 }
 
+interface PermissionActionOption {
+  key: string;
+  action: string;
+  ability: string;
+  required: boolean;
+}
+
 interface PermissionOption {
   key: string;
   service: string;
   path: string;
   label: string;
   resourcePath: string;
-  actions: string[];
+  actions: PermissionActionOption[];
 }
 
 const DEFAULT_ABILITIES: AbilitiesMap = {
@@ -77,6 +84,14 @@ function permissionKey(entry: RecapEntry): string {
   return `${entry.service}\0${entry.space}\0${entry.path}`;
 }
 
+function actionKey(entry: RecapEntry, action: string): string {
+  return `${permissionKey(entry)}\0${action}`;
+}
+
+function isRequiredAction(entry: RecapEntry, action: string): boolean {
+  return entry.service === 'capabilities' && action === 'tinycloud.capabilities/read';
+}
+
 function permissionOption(entry: RecapEntry): PermissionOption {
   const resourcePath = entry.path ? `${entry.service}/${entry.path}` : entry.service;
   return {
@@ -85,7 +100,12 @@ function permissionOption(entry: RecapEntry): PermissionOption {
     path: entry.path,
     label: SERVICE_LABELS[entry.service] || entry.service,
     resourcePath,
-    actions: entry.actions.map((action) => action.slice(action.indexOf('/') + 1)),
+    actions: entry.actions.map((action) => ({
+      key: actionKey(entry, action),
+      action: action.slice(action.indexOf('/') + 1),
+      ability: action,
+      required: isRequiredAction(entry, action),
+    })),
   };
 }
 
@@ -123,20 +143,45 @@ function assertDefaultSubset(entries: RecapEntry[]) {
   }
 }
 
+function assertRequiredActions(entries: RecapEntry[]) {
+  const hasRequiredCapabilitiesRead = entries.some(
+    (entry) =>
+      entry.service === 'capabilities' &&
+      entry.actions.includes('tinycloud.capabilities/read')
+  );
+
+  if (!hasRequiredCapabilitiesRead) {
+    throw new Error('capabilities/read is required for this delegation');
+  }
+}
+
 function parsePreparedRecap(siwe: string): RecapEntry[] {
   const entries = parseRecapFromSiwe(siwe) as RecapEntry[];
   return entries;
 }
 
-function normalizePermissionKeys(permissionKeys: unknown): string[] | undefined {
-  if (permissionKeys === undefined) return undefined;
-  if (!Array.isArray(permissionKeys)) {
-    throw new Error('permissionKeys must be an array');
+function normalizeStringArray(value: unknown, name: string): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) {
+    throw new Error(`${name} must be an array`);
   }
-  if (!permissionKeys.every((key): key is string => typeof key === 'string')) {
-    throw new Error('permissionKeys must only contain strings');
+  if (!value.every((key): key is string => typeof key === 'string')) {
+    throw new Error(`${name} must only contain strings`);
   }
-  return [...new Set(permissionKeys)];
+  return [...new Set(value)];
+}
+
+function entriesForSelectedActions(entries: RecapEntry[], selectedActionKeys: Set<string>): RecapEntry[] {
+  const selectedEntries: RecapEntry[] = [];
+
+  for (const entry of entries) {
+    const actions = entry.actions.filter((action) => selectedActionKeys.has(actionKey(entry, action)));
+    if (actions.length > 0) {
+      selectedEntries.push({ ...entry, actions });
+    }
+  }
+
+  return selectedEntries;
 }
 
 function prepareDelegationSession({
@@ -144,12 +189,14 @@ function prepareDelegationSession({
   chainId,
   prefix,
   jwk,
+  actionKeys,
   permissionKeys,
 }: {
   address: string;
   chainId: number;
   prefix: string;
   jwk: DelegationJwk;
+  actionKeys?: string[];
   permissionKeys?: string[];
 }) {
   const spaceId = makeSpaceId(address, chainId, prefix);
@@ -177,22 +224,40 @@ function prepareDelegationSession({
   }
 
   const permissionOptions = baselineEntries.map(permissionOption);
-  const baselineKeys = new Set(permissionOptions.map((permission) => permission.key));
-  const selectedKeys = permissionKeys ?? permissionOptions.map((permission) => permission.key);
-  const selectedKeySet = new Set(selectedKeys);
+  const baselineActionKeys = new Set(
+    baselineEntries.flatMap((entry) => entry.actions.map((action) => actionKey(entry, action)))
+  );
+  const requiredActionKeys = baselineEntries.flatMap((entry) =>
+    entry.actions
+      .filter((action) => isRequiredAction(entry, action))
+      .map((action) => actionKey(entry, action))
+  );
+  const selectedKeys = actionKeys ?? (
+    permissionKeys
+      ? baselineEntries
+          .filter((entry) => permissionKeys.includes(permissionKey(entry)))
+          .flatMap((entry) => entry.actions.map((action) => actionKey(entry, action)))
+      : [...baselineActionKeys]
+  );
+  const selectedActionKeys = new Set(selectedKeys);
 
-  for (const key of selectedKeySet) {
-    if (!baselineKeys.has(key)) {
+  for (const key of selectedActionKeys) {
+    if (!baselineActionKeys.has(key)) {
       throw new Error('Requested permissions are not available for this delegation');
     }
   }
 
-  if (selectedKeySet.size === 0) {
+  for (const key of requiredActionKeys) {
+    selectedActionKeys.add(key);
+  }
+
+  if (selectedActionKeys.size === 0) {
     throw new Error('At least one permission is required');
   }
 
-  const selectedEntries = baselineEntries.filter((entry) => selectedKeySet.has(permissionKey(entry)));
-  const edited = selectedEntries.length < baselineEntries.length;
+  const selectedEntries = entriesForSelectedActions(baselineEntries, selectedActionKeys);
+  const selectedActionCount = selectedEntries.reduce((count, entry) => count + entry.actions.length, 0);
+  const edited = selectedActionCount < baselineActionKeys.size;
   const prepared = edited
     ? prepareSession({
         ...baseConfig,
@@ -203,7 +268,9 @@ function prepareDelegationSession({
   return {
     prepared,
     permissions: permissionOptions,
-    selectedPermissionKeys: selectedEntries.map(permissionKey),
+    selectedActionKeys: selectedEntries.flatMap((entry) =>
+      entry.actions.map((action) => actionKey(entry, action))
+    ),
     edited,
     spaceId,
   };
@@ -222,6 +289,7 @@ delegateRouter.post('/', async (c) => {
     jwk: DelegationJwk;
     host: string;
     prefix?: string;
+    actionKeys?: unknown;
     permissionKeys?: unknown;
   }>();
 
@@ -264,7 +332,8 @@ delegateRouter.post('/', async (c) => {
       chainId,
       prefix,
       jwk: body.jwk,
-      permissionKeys: normalizePermissionKeys(body.permissionKeys),
+      actionKeys: normalizeStringArray(body.actionKeys, 'actionKeys'),
+      permissionKeys: normalizeStringArray(body.permissionKeys, 'permissionKeys'),
     });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'Failed to prepare delegation' }, 400);
@@ -321,6 +390,7 @@ delegateRouter.post('/prepare', async (c) => {
     jwk: DelegationJwk;
     host: string;
     prefix?: string;
+    actionKeys?: unknown;
     permissionKeys?: unknown;
   }>();
 
@@ -347,7 +417,8 @@ delegateRouter.post('/prepare', async (c) => {
       chainId,
       prefix,
       jwk: body.jwk,
-      permissionKeys: normalizePermissionKeys(body.permissionKeys),
+      actionKeys: normalizeStringArray(body.actionKeys, 'actionKeys'),
+      permissionKeys: normalizeStringArray(body.permissionKeys, 'permissionKeys'),
     });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'Failed to prepare delegation' }, 400);
@@ -372,7 +443,7 @@ delegateRouter.post('/prepare', async (c) => {
     host,
     jwk: body.jwk,
     permissions: preparedResult.permissions,
-    selectedPermissionKeys: preparedResult.selectedPermissionKeys,
+    selectedActionKeys: preparedResult.selectedActionKeys,
     edited: preparedResult.edited,
   });
 });
@@ -401,7 +472,9 @@ delegateRouter.post('/complete', async (c) => {
 
   if (body.edited) {
     try {
-      assertDefaultSubset(parsePreparedRecap(body.prepared.siwe || ''));
+      const entries = parsePreparedRecap(body.prepared.siwe || '');
+      assertDefaultSubset(entries);
+      assertRequiredActions(entries);
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'Invalid edited permissions' }, 400);
     }
