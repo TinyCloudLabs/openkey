@@ -18,6 +18,20 @@
     provider: any;
   }
 
+  interface DelegatePermissionAction {
+    key: string;
+    action: string;
+    ability: string;
+    required: boolean;
+  }
+
+  interface DelegatePermission {
+    key: string;
+    label: string;
+    resourcePath: string;
+    actions: DelegatePermissionAction[];
+  }
+
   const session = authClient.useSession();
 
   let keys = $state<EthereumKey[]>([]);
@@ -36,6 +50,11 @@
   let preparedData = $state<any>(null);
   let siweMessage = $state('');
   let preparing = $state(false);
+  let permissionOptions = $state<DelegatePermission[]>([]);
+  let selectedActionKeys = $state<string[]>([]);
+  let editingPermissions = $state(false);
+  let updatingPermissions = $state(false);
+  let permissionsEdited = $state(false);
 
   // Link wallet state
   let wallets = $state<EIP6963ProviderDetail[]>([]);
@@ -117,28 +136,9 @@
     preparing = true;
 
     try {
-      // Always call /prepare to get the SIWE message for display
-      const API_URL = import.meta.env.VITE_API_URL || '';
-      const res = await fetch(`${API_URL}/api/delegate/prepare`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          keyId: key.id,
-          jwk,
-          host,
-          prefix: 'default',
-        }),
-      });
-
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({ error: 'Unknown error' }));
-        throw new Error(body.error || `HTTP ${res.status}`);
-      }
-
-      const data = await res.json();
-      preparedData = data.prepared;
-      siweMessage = data.prepared.siwe || '';
+      const data = await prepareDelegation(key);
+      applyPreparedDelegation(data);
+      editingPermissions = false;
       step = 'consent';
     } catch (e: any) {
       error = e.message || 'Failed to prepare delegation';
@@ -146,6 +146,57 @@
     } finally {
       preparing = false;
     }
+  }
+
+  async function prepareDelegation(key: EthereumKey, actionKeys?: string[]) {
+    const API_URL = import.meta.env.VITE_API_URL || '';
+    const body: Record<string, unknown> = {
+      keyId: key.id,
+      jwk,
+      host,
+      prefix: 'default',
+    };
+    if (actionKeys) {
+      body.actionKeys = actionKeys;
+    }
+
+    const res = await fetch(`${API_URL}/api/delegate/prepare`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ error: 'Unknown error' }));
+      throw new Error(body.error || `HTTP ${res.status}`);
+    }
+
+    return res.json();
+  }
+
+  function applyPreparedDelegation(data: any) {
+    const permissions = Array.isArray(data.permissions)
+      ? (data.permissions as DelegatePermission[])
+      : [];
+
+    preparedData = data.prepared;
+    siweMessage = data.prepared?.siwe || '';
+    permissionOptions = permissions;
+    selectedActionKeys = Array.isArray(data.selectedActionKeys)
+      ? data.selectedActionKeys.filter((key: unknown): key is string => typeof key === 'string')
+      : permissions.flatMap((permission) => permission.actions.map((action) => action.key));
+    permissionsEdited = Boolean(data.edited);
+  }
+
+  function resetDelegationState() {
+    preparedData = null;
+    siweMessage = '';
+    permissionOptions = [];
+    selectedActionKeys = [];
+    editingPermissions = false;
+    updatingPermissions = false;
+    permissionsEdited = false;
   }
 
   function showLinkWallet() {
@@ -158,6 +209,7 @@
     selectedKey = null;
     step = 'select-key';
     error = '';
+    resetDelegationState();
   }
 
   function selectWallet(wallet: EIP6963ProviderDetail) {
@@ -227,6 +279,14 @@
       error = 'Missing key or JWK parameter.';
       return;
     }
+    if (updatingPermissions) {
+      error = 'Permissions are still updating.';
+      return;
+    }
+    if (permissionOptions.length > 0 && selectedActionKeys.length === 0) {
+      error = 'At least one permission is required.';
+      return;
+    }
 
     if (selectedKey.keyType === 'MANAGED') {
       doManagedDelegate();
@@ -260,22 +320,90 @@
     error = '';
   }
 
+  function isActionSelected(key: string): boolean {
+    return selectedActionKeys.includes(key);
+  }
+
+  function selectedActions(permission: DelegatePermission): DelegatePermissionAction[] {
+    return permission.actions.filter((action) => isActionSelected(action.key));
+  }
+
+  async function toggleAction(action: DelegatePermissionAction) {
+    if (action.required) return;
+
+    const nextKeys = isActionSelected(action.key)
+      ? selectedActionKeys.filter((selectedKey) => selectedKey !== action.key)
+      : [...selectedActionKeys, action.key];
+
+    if (nextKeys.length === 0) {
+      error = 'At least one permission is required.';
+      return;
+    }
+
+    await updatePermissions(nextKeys);
+  }
+
+  async function updatePermissions(nextKeys: string[]) {
+    if (!selectedKey || !jwk) {
+      error = 'Missing key or JWK parameter.';
+      return;
+    }
+
+    updatingPermissions = true;
+    error = '';
+
+    try {
+      const data = await prepareDelegation(selectedKey, nextKeys);
+      applyPreparedDelegation(data);
+      editingPermissions = true;
+    } catch (e: any) {
+      error = e.message || 'Failed to update permissions';
+    } finally {
+      updatingPermissions = false;
+    }
+  }
+
+  async function resetPermissions() {
+    if (!selectedKey || !jwk) {
+      error = 'Missing key or JWK parameter.';
+      return;
+    }
+
+    updatingPermissions = true;
+    error = '';
+
+    try {
+      const data = await prepareDelegation(selectedKey);
+      applyPreparedDelegation(data);
+      editingPermissions = false;
+    } catch (e: any) {
+      error = e.message || 'Failed to reset permissions';
+    } finally {
+      updatingPermissions = false;
+    }
+  }
+
   async function doManagedDelegate() {
     delegating = true;
     error = '';
 
     try {
       const API_URL = import.meta.env.VITE_API_URL || '';
+      const body: Record<string, unknown> = {
+        keyId: selectedKey!.id,
+        jwk,
+        host,
+        prefix: 'default',
+      };
+      if (permissionsEdited) {
+        body.actionKeys = selectedActionKeys;
+      }
+
       const res = await fetch(`${API_URL}/api/delegate`, {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          keyId: selectedKey!.id,
-          jwk,
-          host,
-          prefix: 'default',
-        }),
+        body: JSON.stringify(body),
       });
 
       if (!res.ok) {
@@ -378,6 +506,7 @@
           signature,
           host,
           jwk,
+          edited: permissionsEdited,
         }),
       });
 
@@ -403,12 +532,14 @@
   }
 
   async function finishDelegate(data: any) {
+    const payload = permissionsEdited ? { ...data, edited: true } : data;
+
     if (callback) {
       try {
         const cbRes = await fetch(callback, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(data),
+          body: JSON.stringify(payload),
         });
 
         if (!cbRes.ok) {
@@ -420,12 +551,12 @@
       } catch {
         // Callback unreachable (e.g. CLI on remote machine) — fall back to paste code
         callbackFailed = true;
-        pasteCode = btoa(JSON.stringify(data));
+        pasteCode = btoa(JSON.stringify(payload));
         done = true;
         step = 'done';
       }
     } else {
-      pasteCode = btoa(JSON.stringify(data));
+      pasteCode = btoa(JSON.stringify(payload));
       done = true;
       step = 'done';
     }
@@ -686,7 +817,108 @@
 
           <!-- SIWE message details (parsed from actual message) -->
           {#if siweMessage}
-            <SiweMessage message={siweMessage} theme="light" />
+            <div class="flex flex-col gap-3">
+              {#if permissionOptions.length > 0}
+                <div>
+                  <div class="flex items-center justify-between mb-2">
+                    <div class="text-xs text-surface-400">Permissions requested</div>
+                    <div class="flex items-center gap-2">
+                      <button
+                        class="text-xs text-surface-500 hover:text-surface-900 transition-colors bg-transparent border-none cursor-pointer p-0 disabled:opacity-50"
+                        onclick={() => editingPermissions = !editingPermissions}
+                        disabled={updatingPermissions}
+                      >
+                        {editingPermissions ? 'Done' : 'Edit'}
+                      </button>
+                      {#if editingPermissions || permissionsEdited}
+                        <button
+                          class="text-xs text-surface-500 hover:text-surface-900 transition-colors bg-transparent border-none cursor-pointer p-0 disabled:opacity-50"
+                          onclick={resetPermissions}
+                          disabled={updatingPermissions || !permissionsEdited}
+                        >
+                          Reset
+                        </button>
+                      {/if}
+                    </div>
+                  </div>
+
+                  {#if editingPermissions}
+                    <div class="flex flex-col gap-2">
+                      <div class="bg-amber-50 border border-amber-200 text-amber-700 px-3 py-2 rounded-lg text-xs">
+                        Editing permissions may result in the application not working as expected.
+                      </div>
+
+                      {#each permissionOptions as permission}
+                        <div class="p-2.5 bg-surface-50 border border-surface-200 rounded-lg">
+                          <div class="min-w-0">
+                            <div class="text-sm font-medium text-surface-900">{permission.label}</div>
+                            {#if permission.resourcePath}
+                              <div class="text-xs text-surface-400 font-mono mt-0.5 break-all">{permission.resourcePath}</div>
+                            {/if}
+                            <div class="flex flex-wrap gap-2 mt-2">
+                              {#each permission.actions as action}
+                                <label
+                                  class="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded bg-white border border-surface-200 text-surface-600 cursor-pointer transition-opacity"
+                                  class:opacity-60={!isActionSelected(action.key)}
+                                  class:cursor-not-allowed={action.required || updatingPermissions}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    class="h-3.5 w-3.5 rounded border-surface-300 text-surface-900"
+                                    checked={isActionSelected(action.key)}
+                                    disabled={updatingPermissions || action.required}
+                                    onchange={() => toggleAction(action)}
+                                  />
+                                  <span>{action.action}</span>
+                                  {#if action.required}
+                                    <span class="text-surface-400">required</span>
+                                  {/if}
+                                </label>
+                              {/each}
+                            </div>
+                          </div>
+                        </div>
+                      {/each}
+
+                      {#if updatingPermissions}
+                        <div class="text-xs text-surface-400">Updating permissions...</div>
+                      {/if}
+                    </div>
+                  {:else}
+                    <div class="flex flex-col gap-2">
+                      {#if permissionsEdited}
+                        <div class="bg-amber-50 border border-amber-200 text-amber-700 px-3 py-2 rounded-lg text-xs">
+                          Editing permissions may result in the application not working as expected.
+                        </div>
+                      {/if}
+
+                      {#each permissionOptions as permission}
+                        {#if selectedActions(permission).length > 0}
+                          <div class="flex items-start gap-2.5 p-2.5 bg-surface-50 border border-surface-200 rounded-lg">
+                            <svg class="w-4 h-4 text-surface-400 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                              <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                            <div class="min-w-0 flex-1">
+                              <div class="text-sm font-medium text-surface-900">{permission.label}</div>
+                              {#if permission.resourcePath}
+                                <div class="text-xs text-surface-400 font-mono mt-0.5 break-all">{permission.resourcePath}</div>
+                              {/if}
+                              <div class="flex flex-wrap gap-1 mt-1">
+                                {#each selectedActions(permission) as action}
+                                  <span class="text-xs px-1.5 py-0.5 rounded bg-surface-100 text-surface-500">{action.action}</span>
+                                {/each}
+                              </div>
+                            </div>
+                          </div>
+                        {/if}
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+              {/if}
+
+              <SiweMessage message={siweMessage} theme="light" hidePermissions={permissionOptions.length > 0} />
+            </div>
           {/if}
 
           <!-- Actions -->
@@ -694,9 +926,11 @@
             <Button variant="secondary" onclick={goBack} disabled={delegating} class="flex-1 rounded-xl">
               Back
             </Button>
-            <Button onclick={approveDelegate} disabled={delegating} class="flex-1 rounded-xl">
+            <Button onclick={approveDelegate} disabled={delegating || updatingPermissions || selectedActionKeys.length === 0} class="flex-1 rounded-xl">
               {#if delegating}
                 Signing...
+              {:else if updatingPermissions}
+                Updating...
               {:else}
                 Approve
               {/if}
