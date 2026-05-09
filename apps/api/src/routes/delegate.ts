@@ -580,6 +580,11 @@ delegateRouter.post('/', async (c) => {
     chainId,
     hostActivated,
     edited: preparedResult.edited,
+    // Include the SIWE message so callers (CLI, web SDK) can persist it
+    // alongside the delegation. The SDK extracts `expirationTime` from
+    // this string at session-restore time; without it, restored sessions
+    // are treated as expired-at-epoch-zero.
+    siwe: preparedResult.prepared.siwe,
   });
 });
 
@@ -741,5 +746,9 @@ delegateRouter.post('/complete', async (c) => {
     chainId,
     hostActivated,
     edited: Boolean(body.edited),
+    // Echo the SIWE the caller asked us to sign — the SDK extracts
+    // `expirationTime` from this when restoring the session, and
+    // without it a restored session is treated as expired-at-epoch-zero.
+    siwe: body.prepared.siwe,
   });
 });
