@@ -379,11 +379,13 @@ function spacePrefixFromPermissions(permissions: PermissionEntry[]): string {
  */
 const DEFAULT_DELEGATION_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
 /**
- * Hard cap to bound the blast radius of a compromised CLI host. 30 days
- * is roughly 4x the default and gives long-running agents a comfortable
- * window without letting a forgotten delegation linger for years.
+ * Upper bound on caller-supplied expiry. Ten years is effectively "forever"
+ * — calls that ask for more get clamped here. The constant exists primarily
+ * to guard against integer overflow / silly inputs, not as a security policy
+ * lever. Long-lived agents and API-token-style delegations are first-class
+ * use cases; revocation, not expiry, is the right control for them.
  */
-const MAX_DELEGATION_EXPIRY_MS = 30 * 24 * 60 * 60 * 1000;
+const MAX_DELEGATION_EXPIRY_MS = 10 * 365 * 24 * 60 * 60 * 1000;
 const MIN_DELEGATION_EXPIRY_MS = 60 * 1000; // 1 minute
 
 const MS_UNIT_FACTORS: Record<string, number> = {
