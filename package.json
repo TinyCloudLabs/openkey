@@ -6,6 +6,9 @@
     "dev": "turbo dev",
     "dev:api": "turbo dev --filter @openkey/api",
     "dev:web": "turbo dev --filter @openkey/web",
+    "dev:portless": "bun --env-file=.env.portless run-script dev:portless:web & bun --env-file=.env.portless run-script dev:portless:api",
+    "dev:portless:web": "turbo run dev:portless --filter @openkey/web",
+    "dev:portless:api": "turbo run dev:portless --filter @openkey/api",
     "build": "turbo build",
     "lint": "turbo lint",
     "typecheck": "turbo typecheck",
@@ -34,6 +37,7 @@
     "@changesets/cli": "^2.27.1",
     "@rollup/rollup-darwin-x64": "^4.57.1",
     "@tailwindcss/vite": "^4.1.18",
+    "portless": "^0.13.0",
     "tailwindcss": "^4.1.18",
     "turbo": "^2.3.0",
     "typescript": "^6.0.0"

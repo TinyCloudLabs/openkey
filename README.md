@@ -68,6 +68,24 @@ bun dev
 
 API runs at `http://localhost:3000`, Web at `http://localhost:5173`.
 
+#### HTTPS dev with portless
+
+WebAuthn refuses non-secure origins (other than `http://localhost`). When you
+need to test sign-in from a different origin (the TinyCloud CLI, an app under
+test, etc.), use [portless](https://github.com/vercel-labs/portless) to expose
+both servers under `https://*.localhost`:
+
+```bash
+cp .env.portless.example .env.portless
+# fill in BETTER_AUTH_SECRET, GOOGLE_CLIENT_ID/SECRET, RESEND_API_KEY, …
+
+bun dev:portless
+```
+
+This starts Web at `https://openkey.localhost` and API at
+`https://api.openkey.localhost`. The first run will prompt portless to install
+its trusted CA into your system keychain so the certificates validate.
+
 ## Architecture
 
 ```
