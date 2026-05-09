@@ -11,9 +11,9 @@
     "typecheck": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json"
   },
   "dependencies": {
-    "@better-auth/oauth-provider": "^1.5.5",
-    "@better-auth/passkey": "^1.5.5",
-    "better-auth": "^1.5.5"
+    "@better-auth/oauth-provider": "^1.6.9",
+    "@better-auth/passkey": "^1.6.9",
+    "better-auth": "^1.6.9"
   },
   "devDependencies": {
     "@sveltejs/adapter-cloudflare": "^7.0.0",
