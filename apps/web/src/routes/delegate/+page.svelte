@@ -67,6 +67,11 @@
   const callback = $page.url.searchParams.get('callback') || '';
   const host = $page.url.searchParams.get('host') || 'https://node.tinycloud.xyz';
   const permissionsB64 = $page.url.searchParams.get('permissions') || '';
+  // Optional caller-supplied delegation lifetime. The CLI encodes this as
+  // an ms-format string ("7d", "30m") or a millisecond integer. Validation
+  // and clamping are owned by the API to keep the source of truth in one
+  // place; we just forward it.
+  const expiryParam = $page.url.searchParams.get('expiry') || '';
 
   // Decode JWK from base64url
   let jwk: object | null = null;
@@ -200,6 +205,9 @@
     // baseline-edit UI surface is bypassed for CLI requests.
     if (requestedPermissions.length > 0) {
       body.permissions = requestedPermissions;
+    }
+    if (expiryParam) {
+      body.expiry = expiryParam;
     }
 
     const res = await fetch(`${API_URL}/api/delegate/prepare`, {
@@ -442,6 +450,9 @@
       }
       if (requestedPermissions.length > 0) {
         body.permissions = requestedPermissions;
+      }
+      if (expiryParam) {
+        body.expiry = expiryParam;
       }
 
       const res = await fetch(`${API_URL}/api/delegate`, {

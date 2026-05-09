@@ -192,6 +192,7 @@ function prepareDelegationSession({
   actionKeys,
   permissionKeys,
   permissions,
+  expiryMs,
 }: {
   address: string;
   chainId: number;
@@ -206,6 +207,8 @@ function prepareDelegationSession({
    * Mutually exclusive with `actionKeys`/`permissionKeys` editing.
    */
   permissions?: PermissionEntry[];
+  /** Pre-validated, clamped delegation lifetime in milliseconds. */
+  expiryMs: number;
 }) {
   // CLI-driven path: build abilities + prefix from the explicit request,
   // skip the baseline (DEFAULT_ABILITIES → trim) flow that the
@@ -214,7 +217,7 @@ function prepareDelegationSession({
     const cliPrefix = spacePrefixFromPermissions(permissions);
     const cliSpaceId = makeSpaceId(address, chainId, cliPrefix);
     const now = new Date();
-    const expirationTime = new Date(now.getTime() + 60 * 60 * 1000);
+    const expirationTime = new Date(now.getTime() + expiryMs);
     const prepared = prepareSession({
       address,
       chainId,
@@ -240,7 +243,7 @@ function prepareDelegationSession({
   const spaceId = makeSpaceId(address, chainId, prefix);
 
   const now = new Date();
-  const expirationTime = new Date(now.getTime() + 60 * 60 * 1000); // 1 hour
+  const expirationTime = new Date(now.getTime() + expiryMs);
   const baseConfig = {
     address,
     chainId,
@@ -368,6 +371,69 @@ function spacePrefixFromPermissions(permissions: PermissionEntry[]): string {
   return space.slice(space.lastIndexOf(':') + 1);
 }
 
+/**
+ * Default lifetime when callers don't specify one. Tuned to match the
+ * client-side default in `@tinycloud/cli` so an agent can run unattended
+ * for the same window whether it's signing locally or coming through
+ * OpenKey.
+ */
+const DEFAULT_DELEGATION_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
+/**
+ * Hard cap to bound the blast radius of a compromised CLI host. 30 days
+ * is roughly 4x the default and gives long-running agents a comfortable
+ * window without letting a forgotten delegation linger for years.
+ */
+const MAX_DELEGATION_EXPIRY_MS = 30 * 24 * 60 * 60 * 1000;
+const MIN_DELEGATION_EXPIRY_MS = 60 * 1000; // 1 minute
+
+const MS_UNIT_FACTORS: Record<string, number> = {
+  ms: 1,
+  s: 1000,
+  m: 60 * 1000,
+  h: 60 * 60 * 1000,
+  d: 24 * 60 * 60 * 1000,
+  w: 7 * 24 * 60 * 60 * 1000,
+};
+
+/**
+ * Parse a caller-provided expiry into a clamped ms count.
+ *  - missing → default (7d)
+ *  - number → treated as raw milliseconds
+ *  - "604800000" → numeric milliseconds
+ *  - "7d", "30m", "12h", "1w" → ms-format string (small subset of
+ *    the popular `ms` package, inlined to avoid a new dep)
+ *
+ * Result is clamped to [MIN, MAX]. Bad input throws a 400-friendly Error.
+ */
+function resolveDelegationExpiryMs(input: unknown): number {
+  if (input === undefined || input === null || input === '') {
+    return DEFAULT_DELEGATION_EXPIRY_MS;
+  }
+  let raw: number;
+  if (typeof input === 'number') {
+    raw = input;
+  } else if (typeof input === 'string') {
+    const trimmed = input.trim();
+    if (/^\d+$/.test(trimmed)) {
+      raw = Number(trimmed);
+    } else {
+      const match = trimmed.match(/^(\d+(?:\.\d+)?)\s*(ms|s|m|h|d|w)$/i);
+      if (!match) {
+        throw new Error(`Invalid expiry "${input}" — use ms-format ("7d", "30m") or a millisecond integer.`);
+      }
+      const value = Number(match[1]);
+      const factor = MS_UNIT_FACTORS[match[2].toLowerCase()];
+      raw = value * factor;
+    }
+  } else {
+    throw new Error(`expiry must be a string or number, got ${typeof input}`);
+  }
+  if (!Number.isFinite(raw) || raw <= 0) {
+    throw new Error(`expiry must be a positive number, got ${input}`);
+  }
+  return Math.min(MAX_DELEGATION_EXPIRY_MS, Math.max(MIN_DELEGATION_EXPIRY_MS, raw));
+}
+
 function validatePermissions(permissions: unknown): PermissionEntry[] {
   if (!Array.isArray(permissions) || permissions.length === 0) {
     throw new Error('permissions must be a non-empty array');
@@ -414,6 +480,7 @@ delegateRouter.post('/', async (c) => {
     actionKeys?: unknown;
     permissionKeys?: unknown;
     permissions?: unknown;
+    expiry?: unknown;
   }>();
 
   if (!body.keyId || !body.jwk || !body.host) {
@@ -456,6 +523,12 @@ delegateRouter.post('/', async (c) => {
       return c.json({ error: (err as Error).message }, 400);
     }
   }
+  let expiryMs: number;
+  try {
+    expiryMs = resolveDelegationExpiryMs(body.expiry);
+  } catch (err) {
+    return c.json({ error: (err as Error).message }, 400);
+  }
   let preparedResult: ReturnType<typeof prepareDelegationSession>;
   try {
     preparedResult = prepareDelegationSession({
@@ -466,6 +539,7 @@ delegateRouter.post('/', async (c) => {
       actionKeys: normalizeStringArray(body.actionKeys, 'actionKeys'),
       permissionKeys: normalizeStringArray(body.permissionKeys, 'permissionKeys'),
       permissions,
+      expiryMs,
     });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'Failed to prepare delegation' }, 400);
@@ -525,6 +599,7 @@ delegateRouter.post('/prepare', async (c) => {
     actionKeys?: unknown;
     permissionKeys?: unknown;
     permissions?: unknown;
+    expiry?: unknown;
   }>();
 
   if (!body.keyId || !body.jwk || !body.host) {
@@ -551,6 +626,12 @@ delegateRouter.post('/prepare', async (c) => {
       return c.json({ error: (err as Error).message }, 400);
     }
   }
+  let expiryMs: number;
+  try {
+    expiryMs = resolveDelegationExpiryMs(body.expiry);
+  } catch (err) {
+    return c.json({ error: (err as Error).message }, 400);
+  }
   let preparedResult: ReturnType<typeof prepareDelegationSession>;
   try {
     preparedResult = prepareDelegationSession({
@@ -561,6 +642,7 @@ delegateRouter.post('/prepare', async (c) => {
       actionKeys: normalizeStringArray(body.actionKeys, 'actionKeys'),
       permissionKeys: normalizeStringArray(body.permissionKeys, 'permissionKeys'),
       permissions,
+      expiryMs,
     });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'Failed to prepare delegation' }, 400);
