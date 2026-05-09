@@ -66,6 +66,7 @@
   const jwkB64 = $page.url.searchParams.get('jwk') || '';
   const callback = $page.url.searchParams.get('callback') || '';
   const host = $page.url.searchParams.get('host') || 'https://node.tinycloud.xyz';
+  const permissionsB64 = $page.url.searchParams.get('permissions') || '';
 
   // Decode JWK from base64url
   let jwk: object | null = null;
@@ -75,6 +76,41 @@
     } catch {
       // Will show error in UI
     }
+  }
+
+  // Decode the optional permissions request from base64url JSON. The CLI's
+  // `tc auth request` flow encodes a `{ permissions: PermissionEntry[] }`
+  // payload here so the user can grant just the missing capabilities — see
+  // packages/cli/src/auth/browser-auth.ts in tinycloudlabs/js-sdk.
+  interface RequestedPermission {
+    service: string;
+    space: string;
+    path: string;
+    actions: string[];
+  }
+  let requestedPermissions: RequestedPermission[] = [];
+  if (permissionsB64) {
+    try {
+      const payload = JSON.parse(
+        atob(permissionsB64.replace(/-/g, '+').replace(/_/g, '/')),
+      );
+      if (payload && Array.isArray(payload.permissions)) {
+        requestedPermissions = payload.permissions as RequestedPermission[];
+      }
+    } catch {
+      // Surface as a user-visible error during consent rendering.
+      error = 'Could not decode the requested permissions parameter.';
+    }
+  }
+
+  function shortService(service: string): string {
+    return service.startsWith('tinycloud.') ? service.slice('tinycloud.'.length) : service;
+  }
+  function shortSpace(space: string): string {
+    return space.startsWith('tinycloud:') ? space.slice(space.lastIndexOf(':') + 1) : space;
+  }
+  function shortAction(service: string, action: string): string {
+    return action.startsWith(`${service}/`) ? action.slice(service.length + 1) : action;
   }
 
   $effect(() => {
@@ -158,6 +194,12 @@
     };
     if (actionKeys) {
       body.actionKeys = actionKeys;
+    }
+    // CLI-driven flow (e.g. tc auth request): forward the requested caps
+    // verbatim. The API uses these instead of the default abilities, so the
+    // baseline-edit UI surface is bypassed for CLI requests.
+    if (requestedPermissions.length > 0) {
+      body.permissions = requestedPermissions;
     }
 
     const res = await fetch(`${API_URL}/api/delegate/prepare`, {
@@ -397,6 +439,9 @@
       };
       if (permissionsEdited) {
         body.actionKeys = selectedActionKeys;
+      }
+      if (requestedPermissions.length > 0) {
+        body.permissions = requestedPermissions;
       }
 
       const res = await fetch(`${API_URL}/api/delegate`, {

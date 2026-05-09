@@ -191,6 +191,7 @@ function prepareDelegationSession({
   jwk,
   actionKeys,
   permissionKeys,
+  permissions,
 }: {
   address: string;
   chainId: number;
@@ -198,7 +199,44 @@ function prepareDelegationSession({
   jwk: DelegationJwk;
   actionKeys?: string[];
   permissionKeys?: string[];
+  /**
+   * CLI-driven explicit capability request. When set, the prefix is
+   * derived from the entries' space URI, abilities are built directly
+   * from the entries, and the baseline-trim path is bypassed entirely.
+   * Mutually exclusive with `actionKeys`/`permissionKeys` editing.
+   */
+  permissions?: PermissionEntry[];
 }) {
+  // CLI-driven path: build abilities + prefix from the explicit request,
+  // skip the baseline (DEFAULT_ABILITIES → trim) flow that the
+  // user-editable consent UI relies on.
+  if (permissions !== undefined) {
+    const cliPrefix = spacePrefixFromPermissions(permissions);
+    const cliSpaceId = makeSpaceId(address, chainId, cliPrefix);
+    const now = new Date();
+    const expirationTime = new Date(now.getTime() + 60 * 60 * 1000);
+    const prepared = prepareSession({
+      address,
+      chainId,
+      domain: SIWE_DOMAIN,
+      issuedAt: now.toISOString(),
+      expirationTime: expirationTime.toISOString(),
+      spaceId: cliSpaceId,
+      jwk,
+      abilities: abilitiesFromPermissions(permissions),
+    });
+    const entries = parsePreparedRecap(prepared.siwe);
+    return {
+      prepared,
+      permissions: entries.map(permissionOption),
+      selectedActionKeys: entries.flatMap((entry) =>
+        entry.actions.map((action) => actionKey(entry, action)),
+      ),
+      edited: false,
+      spaceId: cliSpaceId,
+    };
+  }
+
   const spaceId = makeSpaceId(address, chainId, prefix);
 
   const now = new Date();
@@ -277,6 +315,90 @@ function prepareDelegationSession({
 }
 
 /**
+ * A capability the CLI is asking us to grant. Mirrors `PermissionEntry`
+ * from `@tinycloud/sdk-core` — duplicated here so this route doesn't pull
+ * the WASM-heavy node-sdk surface just for a type.
+ */
+interface PermissionEntry {
+  service: string;
+  space: string;
+  path: string;
+  actions: string[];
+}
+
+type AbilitiesMap = Record<string, Record<string, string[]>>;
+
+/**
+ * Translate a list of {@link PermissionEntry}s into the `abilities` map shape
+ * that `prepareSession()` expects. Keys are short service names (`kv`, `sql`,
+ * `hooks`, …), values are `path → actions[]`. Actions are kept fully-qualified
+ * (`tinycloud.sql/read`) because the SIWE recap stores them that way.
+ */
+function abilitiesFromPermissions(permissions: PermissionEntry[]): AbilitiesMap {
+  const abilities: AbilitiesMap = {};
+  for (const entry of permissions) {
+    const short = entry.service.startsWith('tinycloud.')
+      ? entry.service.slice('tinycloud.'.length)
+      : entry.service;
+    if (!short) continue;
+    const byPath = abilities[short] ?? (abilities[short] = {});
+    const list = byPath[entry.path] ?? (byPath[entry.path] = []);
+    for (const action of entry.actions) {
+      if (!list.includes(action)) list.push(action);
+    }
+  }
+  return abilities;
+}
+
+/**
+ * Pull the space short-name out of the requested permissions. The CLI groups
+ * its requests by space before calling /delegate, so a single delegation only
+ * ever covers one space. We refuse mixed-space requests rather than silently
+ * dropping caps.
+ */
+function spacePrefixFromPermissions(permissions: PermissionEntry[]): string {
+  const spaces = new Set(permissions.map((p) => p.space));
+  if (spaces.size !== 1) {
+    throw new Error(
+      `permissions must belong to a single space; got ${JSON.stringify([...spaces])}`,
+    );
+  }
+  const [space] = [...spaces];
+  if (!space.startsWith('tinycloud:')) return space;
+  return space.slice(space.lastIndexOf(':') + 1);
+}
+
+function validatePermissions(permissions: unknown): PermissionEntry[] {
+  if (!Array.isArray(permissions) || permissions.length === 0) {
+    throw new Error('permissions must be a non-empty array');
+  }
+  return permissions.map((entry, index) => {
+    if (!entry || typeof entry !== 'object') {
+      throw new Error(`permissions[${index}] is not an object`);
+    }
+    const e = entry as Record<string, unknown>;
+    if (typeof e.service !== 'string' || !e.service) {
+      throw new Error(`permissions[${index}].service is required`);
+    }
+    if (typeof e.space !== 'string' || !e.space) {
+      throw new Error(`permissions[${index}].space is required`);
+    }
+    if (typeof e.path !== 'string') {
+      throw new Error(`permissions[${index}].path must be a string`);
+    }
+    if (!Array.isArray(e.actions) || e.actions.some((a) => typeof a !== 'string')) {
+      throw new Error(`permissions[${index}].actions must be a string[]`);
+    }
+    return {
+      service: e.service,
+      space: e.space,
+      path: e.path,
+      actions: e.actions as string[],
+    };
+  });
+}
+
+/**
  * POST /api/delegate
  *
  * Creates a TinyCloud delegation for the CLI using a MANAGED key.
@@ -291,6 +413,7 @@ delegateRouter.post('/', async (c) => {
     prefix?: string;
     actionKeys?: unknown;
     permissionKeys?: unknown;
+    permissions?: unknown;
   }>();
 
   if (!body.keyId || !body.jwk || !body.host) {
@@ -325,6 +448,14 @@ delegateRouter.post('/', async (c) => {
   const chainId = 1;
   const prefix = body.prefix || 'default';
   const host = body.host;
+  let permissions: PermissionEntry[] | undefined;
+  if (body.permissions !== undefined) {
+    try {
+      permissions = validatePermissions(body.permissions);
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 400);
+    }
+  }
   let preparedResult: ReturnType<typeof prepareDelegationSession>;
   try {
     preparedResult = prepareDelegationSession({
@@ -334,6 +465,7 @@ delegateRouter.post('/', async (c) => {
       jwk: body.jwk,
       actionKeys: normalizeStringArray(body.actionKeys, 'actionKeys'),
       permissionKeys: normalizeStringArray(body.permissionKeys, 'permissionKeys'),
+      permissions,
     });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'Failed to prepare delegation' }, 400);
@@ -392,6 +524,7 @@ delegateRouter.post('/prepare', async (c) => {
     prefix?: string;
     actionKeys?: unknown;
     permissionKeys?: unknown;
+    permissions?: unknown;
   }>();
 
   if (!body.keyId || !body.jwk || !body.host) {
@@ -410,6 +543,14 @@ delegateRouter.post('/prepare', async (c) => {
   const chainId = 1;
   const prefix = body.prefix || 'default';
   const host = body.host;
+  let permissions: PermissionEntry[] | undefined;
+  if (body.permissions !== undefined) {
+    try {
+      permissions = validatePermissions(body.permissions);
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 400);
+    }
+  }
   let preparedResult: ReturnType<typeof prepareDelegationSession>;
   try {
     preparedResult = prepareDelegationSession({
@@ -419,6 +560,7 @@ delegateRouter.post('/prepare', async (c) => {
       jwk: body.jwk,
       actionKeys: normalizeStringArray(body.actionKeys, 'actionKeys'),
       permissionKeys: normalizeStringArray(body.permissionKeys, 'permissionKeys'),
+      permissions,
     });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'Failed to prepare delegation' }, 400);
