@@ -48,16 +48,13 @@ Register your app at [openkey.so/admin](https://openkey.so/admin) to get a clien
 
 Prerequisites:
 - [Bun](https://bun.sh) 1.1+
-- Docker (for Postgres)
+- Docker, optional for Postgres prod-parity testing
 
 ```bash
 # Clone and install
 git clone https://github.com/tinycloudlabs/openkey
 cd openkey
 bun install
-
-# Start Postgres
-bun docker:up
 
 # Push database schema
 bun db:push
@@ -67,6 +64,12 @@ bun dev
 ```
 
 API runs at `http://localhost:3000`, Web at `http://localhost:5173`.
+
+Local development uses PGlite by default, so no Postgres or Docker process is
+required. The default local database lives at
+`~/.local/share/openkey/dev.pglite`. To test against a real Postgres container,
+run `bun docker:up` and set `DATABASE_URL` to
+`postgresql://openkey:openkey@localhost:5432/openkey`.
 
 #### HTTPS dev with portless
 
@@ -79,6 +82,7 @@ both servers under `https://*.localhost`:
 cp .env.portless.example .env.portless
 # fill in BETTER_AUTH_SECRET, GOOGLE_CLIENT_ID/SECRET, RESEND_API_KEY, …
 
+bun db:push
 bun dev:portless
 ```
 
@@ -164,7 +168,7 @@ Users authenticate once with OpenKey, then your app receives:
 
 ```env
 # Database
-DATABASE_URL="postgresql://..."
+DATABASE_URL="pglite:" # local dev; use postgresql://... in production
 
 # Auth (better-auth)
 BETTER_AUTH_SECRET="..."

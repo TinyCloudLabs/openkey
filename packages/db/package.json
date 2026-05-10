@@ -22,14 +22,16 @@
     "dev": "tsup --watch",
     "build": "prisma generate && tsup",
     "db:generate": "prisma generate",
-    "db:push": "prisma db push",
+    "db:push": "bun ../../scripts/db-push.ts",
     "db:migrate": "prisma migrate dev",
     "db:studio": "prisma studio",
     "typecheck": "prisma generate && tsc --noEmit"
   },
   "dependencies": {
+    "@electric-sql/pglite": "^0.4.5",
     "@prisma/adapter-pg": "^7.5.0",
-    "@prisma/client": "^7.5.0"
+    "@prisma/client": "^7.5.0",
+    "pglite-prisma-adapter": "^0.7.2"
   },
   "devDependencies": {
     "prisma": "^7.5.0",
