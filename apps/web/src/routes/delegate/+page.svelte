@@ -2,6 +2,7 @@
   import { page } from '$app/stores';
   import { authClient, authErrorMessage } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
+  import { copyText } from '$lib/clipboard';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import SiweMessage from '$lib/components/ui/siwe-message.svelte';
@@ -652,7 +653,12 @@
   }
 
   async function copyPasteCode() {
-    await navigator.clipboard.writeText(pasteCode);
+    if (!(await copyText(pasteCode))) {
+      error = 'Failed to copy code. Select the code and copy it manually.';
+      return;
+    }
+
+    error = '';
     copied = true;
     setTimeout(() => { copied = false; }, 2000);
   }

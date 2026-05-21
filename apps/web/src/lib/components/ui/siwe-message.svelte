@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { copyText } from '$lib/clipboard';
   import { parseSIWE, groupCapabilities, timeUntilExpiry, type ParsedSIWE, type GroupedCapability } from '$lib/siwe-parser';
 
   interface Props {
@@ -23,9 +24,10 @@
   let expiry = $derived(parsed?.message.expirationTime ? timeUntilExpiry(parsed.message.expirationTime) : null);
 
   async function copyMessage() {
-    await navigator.clipboard.writeText(message);
-    copied = true;
-    setTimeout(() => { copied = false; }, 2000);
+    if (await copyText(message)) {
+      copied = true;
+      setTimeout(() => { copied = false; }, 2000);
+    }
   }
 
   function formatDate(iso?: string): string {

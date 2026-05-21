@@ -2,6 +2,7 @@
   import { goto } from '$app/navigation';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
+  import { copyText } from '$lib/clipboard';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
 
@@ -59,8 +60,13 @@
     return `${address.slice(0, 6)}...${address.slice(-4)}`;
   }
 
-  function copyAddress(address: string, keyId: string) {
-    navigator.clipboard.writeText(address);
+  async function copyAddress(address: string, keyId: string) {
+    if (!(await copyText(address))) {
+      error = 'Failed to copy address. Select the address and copy it manually.';
+      return;
+    }
+
+    error = '';
     copiedId = keyId;
     setTimeout(() => {
       if (copiedId === keyId) copiedId = null;
