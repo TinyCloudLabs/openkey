@@ -153,7 +153,7 @@ class IframeModal {
     const style = document.createElement('style');
     style.textContent = `
       :host{all:initial}
-      .ok-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.4);backdrop-filter:blur(4px);z-index:999999;display:flex;align-items:${isMobile ? 'flex-end' : 'center'};justify-content:center;animation:ok-fade-in 150ms ease-out}
+      .ok-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.42);z-index:999999;display:flex;align-items:${isMobile ? 'flex-end' : 'center'};justify-content:center;animation:ok-fade-in 150ms ease-out}
       .ok-card{position:relative;background:#fafafa;width:${isMobile ? '100%' : '400px'};border-radius:${isMobile ? '16px 16px 0 0' : '16px'};box-shadow:0 25px 50px -12px rgba(0,0,0,0.25);overflow:hidden;overflow-y:auto;animation:${isMobile ? 'ok-slide-up 250ms ease-out' : 'ok-scale-in 200ms ease-out'};max-height:90vh}
       .ok-close{position:absolute;top:8px;right:8px;width:24px;height:24px;border:none;background:transparent;color:#6b7280;font-size:18px;cursor:pointer;z-index:1;display:flex;align-items:center;justify-content:center;border-radius:4px}
       .ok-close:hover{color:#111827}
@@ -250,7 +250,7 @@ class WalletPicker {
     const style = document.createElement('style');
     style.textContent = `
       :host{all:initial}
-      .wp-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.4);backdrop-filter:blur(4px);z-index:1000000;display:flex;align-items:center;justify-content:center;animation:wp-fade 150ms ease-out}
+      .wp-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.42);z-index:1000000;display:flex;align-items:center;justify-content:center;animation:wp-fade 150ms ease-out}
       .wp-card{background:#fff;width:340px;border-radius:16px;box-shadow:0 25px 50px -12px rgba(0,0,0,0.25);padding:20px;animation:wp-scale 200ms ease-out}
       .wp-title{font:600 16px/1.3 system-ui,sans-serif;color:#111;margin:0 0 12px}
       .wp-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
