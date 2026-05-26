@@ -132,7 +132,11 @@
       }
       // Listen for completion from the popup
       const onMessage = (event: MessageEvent) => {
-        if (event.data?.type === 'openkey:register:complete' && event.data.sessionToken) {
+        if (
+          (event.data?.type === 'openkey:register:complete' ||
+            event.data?.type === 'openkey:recover:complete') &&
+          event.data.sessionToken
+        ) {
           window.removeEventListener('message', onMessage);
           clearInterval(poll);
           popup.close();
@@ -149,6 +153,36 @@
       }, 500);
     } else {
       window.location.href = '/auth/register';
+    }
+  }
+
+  function recover() {
+    if (inIframe) {
+      const returnTo = encodeURIComponent(window.location.href);
+      const recoverUrl = `${window.location.origin}/auth/recover?embed=true&returnTo=${returnTo}`;
+      const popup = window.open(recoverUrl, 'openkey-recover', 'popup=true');
+      if (!popup) {
+        window.location.href = `/auth/recover?embed=true&returnTo=${returnTo}`;
+        return;
+      }
+      const onMessage = (event: MessageEvent) => {
+        if (event.data?.type === 'openkey:recover:complete' && event.data.sessionToken) {
+          window.removeEventListener('message', onMessage);
+          clearInterval(poll);
+          popup.close();
+          setSessionToken(event.data.sessionToken);
+          embedAuthenticated = true;
+        }
+      };
+      window.addEventListener('message', onMessage);
+      const poll = setInterval(() => {
+        if (popup.closed) {
+          window.removeEventListener('message', onMessage);
+          clearInterval(poll);
+        }
+      }, 500);
+    } else {
+      window.location.href = '/auth/recover';
     }
   }
 
@@ -309,7 +343,7 @@
     <div class="flex items-center justify-center gap-3 text-sm">
       <button onclick={register} class="text-surface-500 hover:text-surface-700 transition-colors bg-transparent border-none cursor-pointer text-sm">Register</button>
       <span class="text-surface-300">|</span>
-      <a href="/auth/recover" class="text-surface-500 hover:text-surface-700 transition-colors">Recover account</a>
+      <button onclick={recover} class="text-surface-500 hover:text-surface-700 transition-colors bg-transparent border-none cursor-pointer text-sm">Recover account</button>
     </div>
   {/if}
 
