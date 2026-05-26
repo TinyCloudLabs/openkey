@@ -95,6 +95,10 @@
     window.location.href = '/widget/link-wallet?origin=' + encodeURIComponent(origin);
   }
 
+  function recover() {
+    window.location.href = `/auth/recover?returnTo=${encodeURIComponent(window.location.href)}`;
+  }
+
   function cancel() {
     sendResponse({
       type: 'openkey:auth:response',
@@ -259,7 +263,7 @@
       <div class="flex items-center gap-3 text-sm">
         <a href="/auth/register" class="text-surface-500 hover:text-surface-700 transition-colors">Register</a>
         <span class="text-surface-300">|</span>
-        <a href="/auth/recover" class="text-surface-500 hover:text-surface-700 transition-colors">Recover account</a>
+        <button onclick={recover} class="text-surface-500 hover:text-surface-700 transition-colors bg-transparent border-none cursor-pointer text-sm">Recover account</button>
       </div>
     {/if}
 

@@ -1,15 +1,20 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
-  import { authClient, authErrorMessage } from '$lib/auth-client';
+  import { authClient, API_BASE, authErrorMessage } from '$lib/auth-client';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
+  import { setSessionToken } from '$lib/embed-passkey';
+
+  let { data } = $props();
 
   let email = $state('');
   let otp = $state('');
   let step = $state<'email' | 'otp' | 'passkey'>('email');
   let loading = $state(false);
   let error = $state('');
+
+  const isEmbedPopup = $derived(typeof window !== 'undefined' && !!window.opener && data.isEmbed);
 
   async function sendOTP() {
     loading = true;
@@ -45,6 +50,34 @@
     }
   }
 
+  async function readSessionToken() {
+    const sessionRes = await fetch(`${API_BASE}/api/auth/get-session`, {
+      method: 'GET',
+      credentials: 'include',
+      headers: { 'Accept': 'application/json' },
+    });
+    const sessionToken = sessionRes.headers.get('set-auth-token');
+    if (!sessionToken) {
+      throw new Error('Recovery succeeded, but no session token was returned.');
+    }
+    return sessionToken;
+  }
+
+  async function completeRecovery() {
+    if (data.isEmbed) {
+      const sessionToken = await readSessionToken();
+      if (isEmbedPopup) {
+        window.opener.postMessage({ type: 'openkey:recover:complete', sessionToken }, '*');
+      } else {
+        setSessionToken(sessionToken);
+        await goto(data.returnTo || '/widget/embed/connect');
+      }
+      return;
+    }
+
+    await goto(data.returnTo || '/dashboard');
+  }
+
   async function registerPasskey() {
     loading = true;
     error = '';
@@ -53,10 +86,22 @@
       if (result?.error) {
         error = authErrorMessage(result.error, 'Failed to register passkey');
       } else {
-        goto('/dashboard');
+        await completeRecovery();
       }
     } catch (e: any) {
       error = e.message || 'Failed to register passkey';
+    } finally {
+      loading = false;
+    }
+  }
+
+  async function skipPasskey() {
+    loading = true;
+    error = '';
+    try {
+      await completeRecovery();
+    } catch (e: any) {
+      error = e.message || 'Failed to complete recovery';
     } finally {
       loading = false;
     }
@@ -78,7 +123,7 @@
       {#if step === 'email'}
         <h1 class="text-2xl font-bold text-surface-900 text-center mb-2">Recover your account</h1>
         <p class="text-surface-500 text-center mb-6">
-          We'll send a code to verify your identity and set up a new passkey
+          We'll send a code to verify your identity. You can continue with email or add a new passkey.
         </p>
 
         {#if error}
@@ -149,7 +194,7 @@
       {#if step === 'passkey'}
         <h1 class="text-2xl font-bold text-surface-900 text-center mb-2">Set up a new passkey</h1>
         <p class="text-surface-500 text-center mb-6">
-          Your identity has been verified. Register a new passkey to regain access to your account.
+          Your identity has been verified. Add a new passkey for future sign-ins, or skip this step and continue with email.
         </p>
 
         {#if error}
@@ -161,6 +206,9 @@
         <div class="flex flex-col gap-4">
           <Button onclick={registerPasskey} disabled={loading} class="w-full">
             {loading ? 'Registering...' : 'Register New Passkey'}
+          </Button>
+          <Button variant="ghost" onclick={skipPasskey} disabled={loading} class="w-full">
+            Skip this step
           </Button>
         </div>
       {/if}
