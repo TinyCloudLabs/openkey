@@ -1,5 +1,11 @@
 # @openkey/sdk
 
+## 0.8.6
+
+### Patch Changes
+
+- e09589d: Allow SDK-created iframes to use clipboard writes so embedded OpenKey copy buttons can work.
+
 ## 0.8.5
 
 ### Patch Changes
