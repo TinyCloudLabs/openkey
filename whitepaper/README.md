@@ -771,4 +771,4 @@ This whitepaper describes both implemented features and protocol specifications.
 
 ---
 
-*OpenKey is open source software released under the MIT license. For the reference implementation, see [github.com/tinycloudlabs/openkey](https://github.com/tinycloudlabs/openkey).*
+*OpenKey is licensed under the TinyCloud Open Source License (TOSL). For the reference implementation, see [github.com/tinycloudlabs/openkey](https://github.com/tinycloudlabs/openkey).*
