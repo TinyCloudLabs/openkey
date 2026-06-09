@@ -1,5 +1,11 @@
 # @openkey/sdk-react-native
 
+## 0.8.7
+
+### Patch Changes
+
+- 2d363b1: Update package license metadata and bundled license text to the TinyCloud Open Source License.
+
 ## 0.8.5
 
 ### Patch Changes
