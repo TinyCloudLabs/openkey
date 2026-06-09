@@ -191,7 +191,7 @@ sequenceDiagram
 
 Passkeys provide several security advantages:
 
-1. **Phishing resistance**: Passkeys bind to the relying party's origin. A credential created for `openkey.cloud` cannot authenticate to `openkey-phishing.com`, even if the user attempts to use it there.
+1. **Phishing resistance**: Passkeys bind to the relying party's origin. A credential created for `openkey.so` cannot authenticate to `openkey-phishing.com`, even if the user attempts to use it there.
 
 2. **No shared secrets**: The server stores only public keys. A database breach exposes nothing an attacker can use to impersonate users.
 
@@ -215,7 +215,7 @@ OpenKey supports both types, allowing users to choose their preferred authentica
 
 ### Relying Party ID and Origin Binding
 
-The Relying Party ID (rpID) is typically the domain of the service (e.g., `openkey.cloud`). Credentials bind to this rpID and the origin (`https://openkey.cloud`). The authenticator enforces these bindings:
+The Relying Party ID (rpID) is typically the domain of the service (e.g., `openkey.so`). Credentials bind to this rpID and the origin (`https://openkey.so`). The authenticator enforces these bindings:
 
 - During registration: the authenticator records the rpID
 - During authentication: the authenticator verifies the rpID matches before signing
