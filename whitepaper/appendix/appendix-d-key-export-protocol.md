@@ -189,7 +189,7 @@ Key: 0x6a12...C04B (Primary Key)
 Export available at: January 16, 2024 12:00 UTC
 
 If you did not request this export, you still have time to cancel.
-Cancel here: https://openkey.cloud/export/exp_abc123def456/cancel
+Cancel here: https://openkey.so/export/exp_abc123def456/cancel
 
 After the export completes, the private key will exist outside OpenKey's
 protection. Make sure you have a secure storage solution ready.

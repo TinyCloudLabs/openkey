@@ -567,13 +567,13 @@ delegateRouter.post('/', async (c) => {
     console.warn(`[Delegate] Session activation failed (host unreachable):`, e);
   }
 
-  const primaryDid = `did:pkh:eip155:${chainId}:${address}`;
+  const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
 
   return c.json({
     delegationHeader: session.delegationHeader,
     delegationCid: session.delegationCid,
     spaceId: preparedResult.spaceId,
-    primaryDid,
+    ownerDid,
     verificationMethod: session.verificationMethod,
     jwk: body.jwk,
     address,
@@ -655,7 +655,7 @@ delegateRouter.post('/prepare', async (c) => {
     return c.json({ error: e instanceof Error ? e.message : 'Failed to prepare delegation' }, 400);
   }
 
-  const primaryDid = `did:pkh:eip155:${chainId}:${address}`;
+  const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
 
   // Ensure JWK is preserved as a plain object through JSON round-trip.
   // The WASM prepareSession may return JWK as a special object that
@@ -668,7 +668,7 @@ delegateRouter.post('/prepare', async (c) => {
   return c.json({
     prepared: preparedData,
     spaceId: preparedResult.spaceId,
-    primaryDid,
+    ownerDid,
     address,
     chainId,
     host,
@@ -733,13 +733,13 @@ delegateRouter.post('/complete', async (c) => {
   const address = body.prepared.address || '';
   const chainId = body.prepared.chainId || 1;
   const spaceId = body.prepared.spaceId || '';
-  const primaryDid = `did:pkh:eip155:${chainId}:${address}`;
+  const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
 
   return c.json({
     delegationHeader: session.delegationHeader,
     delegationCid: session.delegationCid,
     spaceId,
-    primaryDid,
+    ownerDid,
     verificationMethod: session.verificationMethod,
     jwk: body.jwk,
     address,

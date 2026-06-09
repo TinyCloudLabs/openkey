@@ -13,6 +13,14 @@ OpenKey is an OAuth-compatible identity provider that manages Ethereum keys insi
 - **Multi-key support**: Users can have multiple Ethereum addresses
 - **Attestation**: Clients can verify keys are in a real TEE
 
+## License
+
+OpenKey is licensed under the TinyCloud Open Source License (TOSL). See [LICENSE.md](./LICENSE.md) for the full terms.
+
+## Security
+
+Report vulnerabilities privately through the process in [SECURITY.md](./SECURITY.md).
+
 ## Quick Start
 
 ### For App Developers
