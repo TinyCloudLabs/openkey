@@ -107,6 +107,7 @@ work.
 | Multi-enclave separation | Roadmap |
 | In-enclave policy engine | Roadmap |
 | Decentralized KMS | Roadmap |
+| Post-quantum migration strategy | Roadmap; pending ecosystem standards |
 | On-chain attestation registry | Roadmap |
 
 The current production security argument therefore rests on passkeys,
@@ -373,6 +374,36 @@ future architecture can isolate API handling, policy evaluation, signing, and
 notarization so that compromise of one component does not immediately imply key
 extraction or unauthorized signing.
 
+### Post-Quantum Migration
+
+OpenKey is intended to remain at parity with the cryptographic ecosystem it
+serves. Today, that ecosystem has not settled on a post-quantum account or key
+schema for the EVM and TinyCloud use cases OpenKey supports. OpenKey therefore
+does not introduce a proprietary post-quantum key format ahead of the broader
+standards process.
+
+Post-quantum security matters in three places:
+
+1. **User signing keys.** The managed key generated and sealed for the user is
+currently an EVM-compatible secp256k1 key. OpenKey can migrate this layer when
+the target ecosystem converges on a post-quantum signing scheme, but it should
+land on the same account model and signature format as the applications and
+protocols that consume OpenKey signatures.
+2. **Passkeys.** User authentication depends on WebAuthn/passkey authenticators.
+Moving passkeys to post-quantum signing is primarily a platform, browser, and
+authenticator ecosystem transition rather than an OpenKey-only change.
+3. **TEE and attestation cryptography.** The trust chain for hardware
+attestation, quote verification, KMS communication, and transport security must
+also remain post-quantum safe as vendors and standards bodies update those
+protocols.
+
+OpenKey's posture is to track best available research, use well-reviewed
+standard primitives, and migrate when there is a practical ecosystem path. This
+is a cryptographic ecosystem problem, not only an OpenKey implementation detail:
+moving one layer early does not make the full system post-quantum safe unless
+the user account model, authentication layer, and attestation layer move with
+it.
+
 ---
 
 ## 7. Export, Self-Hosting, and Roadmap
@@ -419,6 +450,8 @@ and multi-party approvals.
 functions have separate privileges.
 - Reduce dependence on centralized dstack KMS through threshold or decentralized
 key derivation.
+- Track post-quantum account, passkey, and TEE attestation standards and migrate
+when the supported ecosystem converges on practical schemes.
 - Define OIDC discovery and federation policy for self-hosted instances.
 
 ---
