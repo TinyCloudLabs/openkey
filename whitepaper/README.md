@@ -490,4 +490,4 @@ trust should be narrow, technical, and verifiable.
 
 ---
 
-*OpenKey is open source software released under the MIT license. For the reference implementation, see [github.com/tinycloudlabs/openkey](https://github.com/tinycloudlabs/openkey).*
+*OpenKey is licensed under the TinyCloud Open Source License (TOSL). For the reference implementation, see [github.com/tinycloudlabs/openkey](https://github.com/tinycloudlabs/openkey).*

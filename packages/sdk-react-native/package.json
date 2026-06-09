@@ -12,7 +12,7 @@
       "require": "./dist/index.cjs"
     }
   },
-  "license": "EGPL",
+  "license": "SEE LICENSE IN LICENSE.md",
   "files": [
     "dist",
     "LICENSE.md"

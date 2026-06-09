@@ -1,6 +1,6 @@
-# TinyCloud Ecosystem General Public License (EGPL) v1.5
+# TinyCloud Open Source License (TOSL) v1.5
 
-License text copyright (c) 2025 TinyCloud Labs. Based on the Ethereum General Public License v1.5.
+License text copyright (c) 2026 TinyCloud Labs. Based on the Ethereum General Public License v1.5.
 Original EGPL copyright © 2025 [Lighthouse Labs](https://lighthouse.cx). All rights reserved.
 
 ## Parameters
@@ -8,7 +8,7 @@ Original EGPL copyright © 2025 [Lighthouse Labs](https://lighthouse.cx). All ri
 **Licensor:** TinyCloud Labs
 
 **Licensed Work:** OpenKey
-The Licensed Work is © 2025 TinyCloud Labs
+The Licensed Work is © 2026 TinyCloud Labs
 
 **Additional Use Grant:** Non-commercial use on TinyCloud-aligned systems
 
@@ -297,7 +297,7 @@ In consideration of the right to use this License text, Licensor covenants to al
 
 ## Notice
 
-This License is not an Open Source license as defined by the Open Source Initiative (OSI) during its initial term before the Transition Date. However, the Licensed Work will automatically become available under an Open Source license (the Transition License) on the Transition Date, as stated in this License.
+The "Open Source" name reflects TinyCloud's ecosystem-aligned source-availability model. This License is not an Open Source license as defined by the Open Source Initiative (OSI) during its initial term before the Transition Date. However, the Licensed Work will automatically become available under an Open Source license (the Transition License) on the Transition Date, as stated in this License.
 
 This License is designed to protect software development for the TinyCloud ecosystem from parasitic use and commercial extraction by non-aligned networks, while ensuring the software eventually enters the open commons for all to use freely.
 
@@ -309,7 +309,7 @@ This License is designed to protect software development for the TinyCloud ecosy
 
 ## Attribution
 
-This software is licensed under the TinyCloud Ecosystem General Public License (EGPL),
+This software is licensed under the TinyCloud Open Source License (TOSL),
 based on the Ethereum General Public License by Lighthouse Labs.
 See LICENSE.md for full terms.
 
