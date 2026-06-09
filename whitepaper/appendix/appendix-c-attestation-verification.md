@@ -44,19 +44,20 @@ Any change to the deployed code or configuration changes MRTD, allowing verifier
 
 ### REPORTDATA: User-Bound Data
 
-REPORTDATA provides 64 bytes for application-specific data bound to the attestation. OpenKey uses REPORTDATA to bind:
+REPORTDATA provides 64 bytes for application-specific data bound to the attestation. OpenKey should bind quotes to a verifier-supplied fresh challenge rather than relying on timestamps alone:
 
 ```
-REPORTDATA = SHA256(address || userId || timestamp)
+REPORTDATA = SHA256(address || userId || verifierNonce || quoteContext)
 ```
 
 | Component | Purpose |
 |-----------|---------|
 | address | Ethereum address being attested |
 | userId | User who owns the key |
-| timestamp | When the quote was generated |
+| verifierNonce | Fresh client-provided challenge for replay resistance |
+| quoteContext | Additional context, such as purpose or timestamp |
 
-This binding proves that a specific key belongs to a specific user and was attested at a specific time.
+This binding proves that a specific key belongs to a specific user for a specific verifier challenge. The current quote endpoint includes timestamped context; production client verification should require a nonce or equivalent fresh challenge to prevent replay and relay confusion.
 
 ### Quote Versions
 
@@ -67,7 +68,7 @@ TDX quotes exist in multiple versions:
 | TDX 1.0 | Initial specification |
 | TDX 1.5 | Added TD migration support, extended measurements |
 
-OpenKey generates and accepts both versions, with version detection during parsing.
+Verifiers should parse the quote version and validate the fields required for that version.
 
 ## Intel DCAP Verification Flow
 
@@ -169,14 +170,14 @@ Check that REPORTDATA contains expected values:
 
 ```typescript
 const expectedReportData = sha256(
-  concat(keyAddress, userId, timestamp)
+  concat(keyAddress, userId, verifierNonce, quoteContext)
 );
 if (quote.tdReport.reportData !== expectedReportData) {
   throw new Error('REPORTDATA mismatch: quote bound to different data');
 }
 ```
 
-REPORTDATA verification confirms the quote corresponds to the specific key and user claimed.
+REPORTDATA verification confirms the quote corresponds to the specific key, user, verifier challenge, and request context claimed.
 
 ### Collateral Requirements
 
@@ -250,8 +251,9 @@ sequenceDiagram
 
 3. **Verify REPORTDATA**: Parse the quote to extract REPORTDATA and confirm it contains:
    - The expected Ethereum address
-   - A recent timestamp (within acceptable bounds)
+   - A fresh verifier nonce or challenge
    - The expected user context
+   - Any additional request context, such as timestamp or purpose
 
 4. **Verify MRTD**: Compare against OpenKey's published code measurements.
 

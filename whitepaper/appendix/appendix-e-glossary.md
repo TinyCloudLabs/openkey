@@ -72,7 +72,7 @@ This appendix defines technical terms used throughout the OpenKey whitepaper and
 
 ## Related Technologies
 
-**QuorumOS** — A Kubernetes-based TEE orchestration system developed by TinyCloud. QuorumOS manages multi-tenant TEE deployments, handles attestation, and provides namespace isolation. OpenKey can deploy on QuorumOS for production environments.
+**QuorumOS** — Turnkey's open-source minimal Linux distribution for secure enclaves. It is relevant to OpenKey as a comparison point for TEE-based key management, but it is not an OpenKey component.
 
 **SSS (Shamir's Secret Sharing)** — A cryptographic technique that splits a secret into multiple shares, requiring a threshold number to reconstruct. SSS enables distributed key management where no single party holds the complete key. OpenKey does not use SSS directly but may integrate with SSS-based systems.
 

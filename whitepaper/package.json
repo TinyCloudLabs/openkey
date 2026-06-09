@@ -9,7 +9,7 @@
   },
   "keywords": ["openkey", "whitepaper", "tee", "key-management", "transparent-custody"],
   "author": "TinyCloud Labs",
-  "license": "MIT",
+  "license": "SEE LICENSE IN ../LICENSE.md",
   "devDependencies": {
     "@changesets/cli": "^2.29.8"
   }
