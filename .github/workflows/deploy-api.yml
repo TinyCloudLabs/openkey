@@ -51,13 +51,48 @@ jobs:
         env:
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
         run: |
-          CVM_APP_ID=$(phala cvms list --json | jq -r '.items[] | select(.cvmName == "openkey-api") | .appId')
-          if [ -z "$CVM_APP_ID" ]; then
-            echo "Error: CVM 'openkey-api' not found"
+          CVMS_JSON=$(phala cvms list --json)
+          CVM_APP_ID=$(jq -r '
+            def cvms:
+              if type == "array" then .
+              elif (.items? | type) == "array" then .items
+              elif (.data?.items? | type) == "array" then .data.items
+              elif (.data? | type) == "array" then .data
+              elif (.cvms? | type) == "array" then .cvms
+              else [] end;
+            cvms[]
+            | select((.cvmName // .name // .appName) == "openkey-api")
+            | (.appId // .id // "")
+          ' <<< "$CVMS_JSON" | head -n 1)
+
+          if [ -z "$CVM_APP_ID" ] || [ "$CVM_APP_ID" = "null" ]; then
+            echo "Error: CVM 'openkey-api' not found in Phala response"
+            echo "Available CVMs:"
+            jq -c '
+              def cvms:
+                if type == "array" then .
+                elif (.items? | type) == "array" then .items
+                elif (.data?.items? | type) == "array" then .data.items
+                elif (.data? | type) == "array" then .data
+                elif (.cvms? | type) == "array" then .cvms
+                else [] end;
+              cvms[] | {
+                cvmName: (.cvmName // .name // .appName // null),
+                appId: (.appId // .id // null),
+                status: (.status // null)
+              }
+            ' <<< "$CVMS_JSON"
             exit 1
           fi
-          echo "app_id=app_${CVM_APP_ID}" >> $GITHUB_OUTPUT
-          echo "Found CVM: app_${CVM_APP_ID}"
+
+          if [[ "$CVM_APP_ID" == app_* ]]; then
+            PHALA_APP_ID="$CVM_APP_ID"
+          else
+            PHALA_APP_ID="app_${CVM_APP_ID}"
+          fi
+
+          echo "app_id=${PHALA_APP_ID}" >> $GITHUB_OUTPUT
+          echo "Found CVM: ${PHALA_APP_ID}"
 
       - name: Deploy to Phala Cloud
         env:
@@ -70,8 +105,40 @@ jobs:
         run: |
           echo "Waiting for CVM to be ready (up to 10 minutes)..."
           for i in {1..60}; do
-            RAW=$(phala cvms list --json | jq '.items[] | select(.cvmName == "openkey-api") | {status, cvmName}')
-            STATUS=$(echo "$RAW" | jq -r '.status')
+            CVMS_JSON=$(phala cvms list --json)
+            RAW=$(jq -c '
+              def cvms:
+                if type == "array" then .
+                elif (.items? | type) == "array" then .items
+                elif (.data?.items? | type) == "array" then .data.items
+                elif (.data? | type) == "array" then .data
+                elif (.cvms? | type) == "array" then .cvms
+                else [] end;
+              cvms[]
+              | select((.cvmName // .name // .appName) == "openkey-api")
+              | {status: (.status // null), cvmName: (.cvmName // .name // .appName // null)}
+            ' <<< "$CVMS_JSON" | head -n 1)
+            STATUS=$(echo "$RAW" | jq -r '.status // empty')
+
+            if [ -z "$STATUS" ]; then
+              echo "CVM 'openkey-api' not found while waiting for deployment"
+              jq -c '
+                def cvms:
+                  if type == "array" then .
+                  elif (.items? | type) == "array" then .items
+                  elif (.data?.items? | type) == "array" then .data.items
+                  elif (.data? | type) == "array" then .data
+                  elif (.cvms? | type) == "array" then .cvms
+                  else [] end;
+                cvms[] | {
+                  cvmName: (.cvmName // .name // .appName // null),
+                  appId: (.appId // .id // null),
+                  status: (.status // null)
+                }
+              ' <<< "$CVMS_JSON"
+              exit 1
+            fi
+
             echo "Attempt $i/60: Status = '$STATUS'"
             if [ "$STATUS" = "running" ]; then
               echo "CVM is running!"
@@ -79,11 +146,11 @@ jobs:
             fi
             if [ "$STATUS" = "failed" ] || [ "$STATUS" = "error" ]; then
               echo "CVM deployment failed with status: $STATUS"
-              phala cvms list --json | jq '.items[] | select(.cvmName == "openkey-api")'
+              echo "$RAW"
               exit 1
             fi
             sleep 10
           done
           echo "Timeout waiting for CVM after 10 minutes"
-          phala cvms list --json | jq '.items[] | select(.cvmName == "openkey-api")'
+          echo "$RAW"
           exit 1
