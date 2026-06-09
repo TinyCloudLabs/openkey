@@ -1,5 +1,11 @@
 # @openkey/sdk
 
+## 0.8.7
+
+### Patch Changes
+
+- 7369be3: Remove backdrop blur from SDK modal scrims to avoid translucent background rendering artifacts under native overlays.
+
 ## 0.8.6
 
 ### Patch Changes
