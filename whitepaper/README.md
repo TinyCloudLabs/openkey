@@ -187,14 +187,14 @@ OpenKey is a web service with four core layers:
 
 ```mermaid
 graph TB
-    Client[Client Application] --> SDK[@openkey/sdk]
-    SDK --> API[OpenKey API<br/>Hono Server]
-    API --> Auth[Authentication<br/>better-auth + Passkeys]
-    API --> Keys[Key Routes<br/>generate, sign, list, archive]
-    Keys --> TEE[TEE Package<br/>@openkey/tee]
-    TEE --> dstack[dstack KMS<br/>Key Derivation + Quote]
-    Keys --> DB[(PostgreSQL<br/>Accounts + Sealed Blobs)]
-    dstack --> TDX[Intel TDX<br/>Hardware]
+    Client["Client Application"] --> SDK["OpenKey SDK"]
+    SDK --> API["OpenKey API"]
+    API --> Auth["Authentication: better-auth + Passkeys"]
+    API --> Keys["Key Routes: generate, sign, list, archive"]
+    Keys --> TEE["TEE Package"]
+    TEE --> dstack["dstack KMS: Key Derivation + Quote"]
+    Keys --> DB["PostgreSQL: Accounts + Sealed Blobs"]
+    dstack --> TDX["Intel TDX Hardware"]
 ```
 
 The repository is a Bun/Turbo monorepo. The API is a Hono service, the web
