@@ -324,7 +324,7 @@ function prepareDelegationSession({
  */
 interface PermissionEntry {
   service: string;
-  space: string;
+  space?: string;
   path: string;
   actions: string[];
 }
@@ -353,6 +353,11 @@ function abilitiesFromPermissions(permissions: PermissionEntry[]): AbilitiesMap 
   return abilities;
 }
 
+function isRawEncryptionPermission(entry: Pick<PermissionEntry, 'service' | 'path'>): boolean {
+  return entry.service === 'tinycloud.encryption' &&
+    entry.path.startsWith('urn:tinycloud:encryption:');
+}
+
 /**
  * Pull the space short-name out of the requested permissions. The CLI groups
  * its requests by space before calling /delegate, so a single delegation only
@@ -360,7 +365,14 @@ function abilitiesFromPermissions(permissions: PermissionEntry[]): AbilitiesMap 
  * dropping caps.
  */
 function spacePrefixFromPermissions(permissions: PermissionEntry[]): string {
-  const spaces = new Set(permissions.map((p) => p.space));
+  const spaces = new Set<string>();
+  for (const permission of permissions) {
+    if (isRawEncryptionPermission(permission)) continue;
+    if (!permission.space) {
+      throw new Error('non-raw permissions must include a space');
+    }
+    spaces.add(permission.space);
+  }
   if (spaces.size !== 1) {
     throw new Error(
       `permissions must belong to a single space; got ${JSON.stringify([...spaces])}`,
@@ -448,8 +460,14 @@ function validatePermissions(permissions: unknown): PermissionEntry[] {
     if (typeof e.service !== 'string' || !e.service) {
       throw new Error(`permissions[${index}].service is required`);
     }
-    if (typeof e.space !== 'string' || !e.space) {
+    const isRawEncryption = e.service === 'tinycloud.encryption' &&
+      typeof e.path === 'string' &&
+      e.path.startsWith('urn:tinycloud:encryption:');
+    if (!isRawEncryption && (typeof e.space !== 'string' || !e.space)) {
       throw new Error(`permissions[${index}].space is required`);
+    }
+    if (e.space !== undefined && typeof e.space !== 'string') {
+      throw new Error(`permissions[${index}].space must be a string`);
     }
     if (typeof e.path !== 'string') {
       throw new Error(`permissions[${index}].path must be a string`);
@@ -459,7 +477,7 @@ function validatePermissions(permissions: unknown): PermissionEntry[] {
     }
     return {
       service: e.service,
-      space: e.space,
+      ...(typeof e.space === 'string' ? { space: e.space } : {}),
       path: e.path,
       actions: e.actions as string[],
     };
