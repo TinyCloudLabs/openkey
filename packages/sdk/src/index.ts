@@ -436,35 +436,49 @@ export class OpenKey {
     return this.signTypedDataWithOpenKey(request, opts?.mode);
   }
 
+  private providerCandidates(): EIP1193Provider[] {
+    const providers: EIP1193Provider[] = [];
+    if (this.config.externalProvider) {
+      providers.push(this.config.externalProvider);
+    }
+    providers.push(...this.discoveredProviders.map(({ provider }) => provider));
+    if (typeof window !== 'undefined' && (window as any).ethereum) {
+      providers.push((window as any).ethereum as EIP1193Provider);
+    }
+    return [...new Set(providers)];
+  }
+
+  private async providerHasAccount(
+    provider: EIP1193Provider,
+    method: 'eth_accounts' | 'eth_requestAccounts',
+    targetAddress: string
+  ): Promise<boolean> {
+    try {
+      const accounts = await provider.request({ method }) as string[];
+      return accounts.some((account) => account.toLowerCase() === targetAddress.toLowerCase());
+    } catch {
+      return false;
+    }
+  }
+
   /**
    * Find a wallet provider that controls the given address.
-   * Checks: 1) app-provided externalProvider, 2) EIP-6963 discovered wallets, 3) window.ethereum
+   * Checks connected accounts first, then asks the wallet to authorize the
+   * app origin if the external key was linked elsewhere.
    */
   async findWalletProvider(targetAddress: string): Promise<EIP1193Provider> {
-    // 1. Try app-provided externalProvider first
-    if (this.config.externalProvider) {
-      return this.config.externalProvider;
+    const providers = this.providerCandidates();
+
+    for (const provider of providers) {
+      if (await this.providerHasAccount(provider, 'eth_accounts', targetAddress)) {
+        return provider;
+      }
     }
 
-    // 2. Check EIP-6963 discovered wallets silently (no popup)
-    for (const { provider } of this.discoveredProviders) {
-      try {
-        const accounts = await provider.request({ method: 'eth_accounts' }) as string[];
-        if (accounts.some(a => a.toLowerCase() === targetAddress.toLowerCase())) {
-          return provider;
-        }
-      } catch {}
-    }
-
-    // 3. Fall back to window.ethereum silently
-    if (typeof window !== 'undefined' && (window as any).ethereum) {
-      const provider = (window as any).ethereum as EIP1193Provider;
-      try {
-        const accounts = await provider.request({ method: 'eth_accounts' }) as string[];
-        if (accounts.some(a => a.toLowerCase() === targetAddress.toLowerCase())) {
-          return provider;
-        }
-      } catch {}
+    for (const provider of providers) {
+      if (await this.providerHasAccount(provider, 'eth_requestAccounts', targetAddress)) {
+        return provider;
+      }
     }
 
     throw new ExternalWalletError('External wallet not found. Connect the wallet that owns this key and try again.');
