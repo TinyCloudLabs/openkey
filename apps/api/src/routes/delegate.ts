@@ -325,6 +325,20 @@ function prepareDelegationSession({
 }
 
 /**
+ * A capability the CLI is asking us to grant. Mirrors `PermissionEntry`
+ * from `@tinycloud/sdk-core` — duplicated here so this route doesn't pull
+ * the WASM-heavy node-sdk surface just for a type.
+ */
+interface PermissionEntry {
+  service: string;
+  space?: string;
+  path: string;
+  actions: string[];
+}
+
+type AbilitiesMap = Record<string, Record<string, string[]>>;
+
+/**
  * Translate a list of {@link PermissionEntry}s into the `abilities` map shape
  * that `prepareSession()` expects. Keys are short service names (`kv`, `sql`,
  * `hooks`, …), values are `path → actions[]`. Actions are kept fully-qualified
@@ -344,6 +358,11 @@ function abilitiesFromPermissions(permissions: PermissionEntry[]): AbilitiesMap 
   return abilities;
 }
 
+function isRawEncryptionPermission(entry: Pick<PermissionEntry, 'service' | 'path'>): boolean {
+  return entry.service === 'tinycloud.encryption' &&
+    entry.path.startsWith('urn:tinycloud:encryption:');
+}
+
 /**
  * Pull the space short-name out of the requested permissions. The CLI groups
  * its requests by space before calling /delegate, so a single delegation only
@@ -351,7 +370,14 @@ function abilitiesFromPermissions(permissions: PermissionEntry[]): AbilitiesMap 
  * dropping caps.
  */
 function spacePrefixFromPermissions(permissions: PermissionEntry[]): string {
-  const spaces = new Set(permissions.map((p) => p.space));
+  const spaces = new Set<string>();
+  for (const permission of permissions) {
+    if (isRawEncryptionPermission(permission)) continue;
+    if (!permission.space) {
+      throw new Error('non-raw permissions must include a space');
+    }
+    spaces.add(permission.space);
+  }
   if (spaces.size !== 1) {
     throw new DelegateRequestError(
       'invalid_permissions',
@@ -435,6 +461,42 @@ function resolveDelegationExpiryMs(input: unknown): number {
     throw new Error(`expiry must be a positive number, got ${input}`);
   }
   return Math.min(MAX_DELEGATION_EXPIRY_MS, Math.max(MIN_DELEGATION_EXPIRY_MS, raw));
+}
+
+function validatePermissions(permissions: unknown): PermissionEntry[] {
+  if (!Array.isArray(permissions) || permissions.length === 0) {
+    throw new Error('permissions must be a non-empty array');
+  }
+  return permissions.map((entry, index) => {
+    if (!entry || typeof entry !== 'object') {
+      throw new Error(`permissions[${index}] is not an object`);
+    }
+    const e = entry as Record<string, unknown>;
+    if (typeof e.service !== 'string' || !e.service) {
+      throw new Error(`permissions[${index}].service is required`);
+    }
+    const isRawEncryption = e.service === 'tinycloud.encryption' &&
+      typeof e.path === 'string' &&
+      e.path.startsWith('urn:tinycloud:encryption:');
+    if (!isRawEncryption && (typeof e.space !== 'string' || !e.space)) {
+      throw new Error(`permissions[${index}].space is required`);
+    }
+    if (e.space !== undefined && typeof e.space !== 'string') {
+      throw new Error(`permissions[${index}].space must be a string`);
+    }
+    if (typeof e.path !== 'string') {
+      throw new Error(`permissions[${index}].path must be a string`);
+    }
+    if (!Array.isArray(e.actions) || e.actions.some((a) => typeof a !== 'string')) {
+      throw new Error(`permissions[${index}].actions must be a string[]`);
+    }
+    return {
+      service: e.service,
+      ...(typeof e.space === 'string' ? { space: e.space } : {}),
+      path: e.path,
+      actions: e.actions as string[],
+    };
+  });
 }
 
 /**
