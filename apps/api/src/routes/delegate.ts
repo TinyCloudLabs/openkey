@@ -12,6 +12,13 @@ import {
   parseRecapFromSiwe,
 } from '@tinycloud/node-sdk-wasm';
 import { activateSessionWithHost } from '@tinycloud/sdk-core';
+import {
+  DelegateRequestError,
+  delegateErrorResponse,
+  shortServiceName,
+  validatePermissions,
+  type PermissionEntry,
+} from './delegate-validation';
 
 const prisma = createPrismaClient();
 const tee = createTeeClient();
@@ -340,9 +347,7 @@ type AbilitiesMap = Record<string, Record<string, string[]>>;
 function abilitiesFromPermissions(permissions: PermissionEntry[]): AbilitiesMap {
   const abilities: AbilitiesMap = {};
   for (const entry of permissions) {
-    const short = entry.service.startsWith('tinycloud.')
-      ? entry.service.slice('tinycloud.'.length)
-      : entry.service;
+    const short = shortServiceName(entry.service);
     if (!short) continue;
     const byPath = abilities[short] ?? (abilities[short] = {});
     const list = byPath[entry.path] ?? (byPath[entry.path] = []);
@@ -374,11 +379,16 @@ function spacePrefixFromPermissions(permissions: PermissionEntry[]): string {
     spaces.add(permission.space);
   }
   if (spaces.size !== 1) {
-    throw new Error(
-      `permissions must belong to a single space; got ${JSON.stringify([...spaces])}`,
+    throw new DelegateRequestError(
+      'invalid_permissions',
+      'permissions must belong to a single space',
+      permissions.map((_permission, index) => ({
+        path: `permissions[${index}].space`,
+        message: 'All permissions must use the same space',
+      })),
     );
   }
-  const [space] = [...spaces];
+  const space = [...spaces][0]!;
   if (!space.startsWith('tinycloud:')) return space;
   return space.slice(space.lastIndexOf(':') + 1);
 }
@@ -435,8 +445,13 @@ function resolveDelegationExpiryMs(input: unknown): number {
       if (!match) {
         throw new Error(`Invalid expiry "${input}" — use ms-format ("7d", "30m") or a millisecond integer.`);
       }
-      const value = Number(match[1]);
-      const factor = MS_UNIT_FACTORS[match[2].toLowerCase()];
+      const valueText = match[1];
+      const unit = match[2]?.toLowerCase();
+      const factor = unit ? MS_UNIT_FACTORS[unit] : undefined;
+      if (!valueText || factor === undefined) {
+        throw new Error(`Invalid expiry "${input}" — use ms-format ("7d", "30m") or a millisecond integer.`);
+      }
+      const value = Number(valueText);
       raw = value * factor;
     }
   } else {
@@ -540,14 +555,14 @@ delegateRouter.post('/', async (c) => {
     try {
       permissions = validatePermissions(body.permissions);
     } catch (err) {
-      return c.json({ error: (err as Error).message }, 400);
+      return c.json(delegateErrorResponse(err, 'Invalid permissions', 'invalid_permissions'), 400);
     }
   }
   let expiryMs: number;
   try {
     expiryMs = resolveDelegationExpiryMs(body.expiry);
   } catch (err) {
-    return c.json({ error: (err as Error).message }, 400);
+    return c.json(delegateErrorResponse(err, 'Invalid expiry', 'invalid_expiry'), 400);
   }
   let preparedResult: ReturnType<typeof prepareDelegationSession>;
   try {
@@ -562,7 +577,7 @@ delegateRouter.post('/', async (c) => {
       expiryMs,
     });
   } catch (e) {
-    return c.json({ error: e instanceof Error ? e.message : 'Failed to prepare delegation' }, 400);
+    return c.json(delegateErrorResponse(e, 'Failed to prepare delegation', 'delegation_prepare_failed'), 400);
   }
 
   const signature = await account.signMessage({
@@ -648,14 +663,14 @@ delegateRouter.post('/prepare', async (c) => {
     try {
       permissions = validatePermissions(body.permissions);
     } catch (err) {
-      return c.json({ error: (err as Error).message }, 400);
+      return c.json(delegateErrorResponse(err, 'Invalid permissions', 'invalid_permissions'), 400);
     }
   }
   let expiryMs: number;
   try {
     expiryMs = resolveDelegationExpiryMs(body.expiry);
   } catch (err) {
-    return c.json({ error: (err as Error).message }, 400);
+    return c.json(delegateErrorResponse(err, 'Invalid expiry', 'invalid_expiry'), 400);
   }
   let preparedResult: ReturnType<typeof prepareDelegationSession>;
   try {
@@ -670,7 +685,7 @@ delegateRouter.post('/prepare', async (c) => {
       expiryMs,
     });
   } catch (e) {
-    return c.json({ error: e instanceof Error ? e.message : 'Failed to prepare delegation' }, 400);
+    return c.json(delegateErrorResponse(e, 'Failed to prepare delegation', 'delegation_prepare_failed'), 400);
   }
 
   const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
