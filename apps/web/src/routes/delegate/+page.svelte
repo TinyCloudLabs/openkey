@@ -56,6 +56,10 @@
   let editingPermissions = $state(false);
   let updatingPermissions = $state(false);
   let permissionsEdited = $state(false);
+  const delegateReturnTo = $derived($page.url.pathname + $page.url.search + $page.url.hash);
+  const registerHref = $derived(`/auth/register?returnTo=${encodeURIComponent(delegateReturnTo)}`);
+  let actionRow: HTMLDivElement | null = $state(null);
+  let showScrollToApprove = $state(false);
 
   // Link wallet state
   let wallets = $state<EIP6963ProviderDetail[]>([]);
@@ -133,6 +137,43 @@
       window.dispatchEvent(new Event('eip6963:requestProvider'));
     }
   });
+
+  $effect(() => {
+    if (typeof window === 'undefined') return;
+
+    const updateScrollAffordance = () => {
+      if (step !== 'consent' || !actionRow) {
+        showScrollToApprove = false;
+        return;
+      }
+
+      const documentElement = document.documentElement;
+      const pageCanScroll = documentElement.scrollHeight > window.innerHeight + 8;
+      const actionRect = actionRow.getBoundingClientRect();
+      showScrollToApprove = pageCanScroll && actionRect.bottom > window.innerHeight - 24;
+    };
+
+    const scheduleUpdate = () => requestAnimationFrame(updateScrollAffordance);
+
+    scheduleUpdate();
+    window.addEventListener('scroll', scheduleUpdate, { passive: true });
+    window.addEventListener('resize', scheduleUpdate);
+
+    return () => {
+      window.removeEventListener('scroll', scheduleUpdate);
+      window.removeEventListener('resize', scheduleUpdate);
+    };
+  });
+
+  function scrollToApprove() {
+    if (typeof window === 'undefined' || !actionRow) return;
+
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    actionRow.scrollIntoView({
+      behavior: prefersReducedMotion ? 'auto' : 'smooth',
+      block: 'end',
+    });
+  }
 
   // Reactively load keys when session becomes available
   $effect(() => {
@@ -984,7 +1025,7 @@
           {/if}
 
           <!-- Actions -->
-          <div class="flex gap-3 mt-1">
+          <div class="flex gap-3 mt-1" bind:this={actionRow}>
             <Button variant="secondary" onclick={goBack} disabled={delegating} class="flex-1 rounded-xl">
               Back
             </Button>
@@ -999,6 +1040,19 @@
             </Button>
           </div>
         </div>
+
+        {#if showScrollToApprove}
+          <button
+            type="button"
+            onclick={scrollToApprove}
+            class="fixed bottom-5 left-1/2 z-40 inline-flex -translate-x-1/2 items-center gap-2 rounded-full bg-surface-900 px-4 py-2.5 text-sm font-medium text-white shadow-lg shadow-surface-900/15 transition-all hover:bg-surface-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-surface-400 focus-visible:ring-offset-2 focus-visible:ring-offset-white"
+          >
+            <span>Scroll to approve</span>
+            <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M12 5v14m0 0l-5-5m5 5l5-5" />
+            </svg>
+          </button>
+        {/if}
 
       {:else}
         <!-- Key selection -->
@@ -1060,7 +1114,7 @@
       </button>
     {:else if !$session.data}
       <div class="flex items-center gap-3 text-sm">
-        <a href="/auth/register" class="text-surface-500 hover:text-surface-700 transition-colors">Register</a>
+        <a href={registerHref} class="text-surface-500 hover:text-surface-700 transition-colors">Register</a>
         <span class="text-surface-300">|</span>
         <a href="/auth/recover" class="text-surface-500 hover:text-surface-700 transition-colors">Recover account</a>
       </div>

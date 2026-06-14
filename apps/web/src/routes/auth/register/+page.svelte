@@ -12,6 +12,7 @@
   let email = $state('');
   let otp = $state('');
   let step = $state<'email' | 'otp' | 'passkey'>(getInitialStep());
+  const initialReturnTo = getInitialReturnTo();
   let loading = $state(false);
   let error = $state('');
 
@@ -22,15 +23,32 @@
     return data.initialStep;
   }
 
+  function getInitialReturnTo() {
+    return data.returnTo;
+  }
+
   // Persist OAuth params in sessionStorage so the OAuth authorization can be
   // resumed after passkey registration (mirrors the login page logic)
   const OAUTH_STORAGE_KEY = 'openkey:pending_oauth';
+  const DELEGATE_RETURN_STORAGE_KEY = 'openkey:pending_delegate_return';
   if (typeof window !== 'undefined' && $page.url.searchParams.has('client_id')) {
     const oauthParams = new URLSearchParams($page.url.searchParams);
     oauthParams.delete('sig');
     oauthParams.delete('exp');
     oauthParams.delete('prompt');
     sessionStorage.setItem(OAUTH_STORAGE_KEY, oauthParams.toString());
+  }
+  if (typeof window !== 'undefined' && initialReturnTo) {
+    sessionStorage.setItem(DELEGATE_RETURN_STORAGE_KEY, initialReturnTo);
+    sessionStorage.removeItem(OAUTH_STORAGE_KEY);
+  }
+
+  function takeDelegateReturnTo() {
+    const returnTo = sessionStorage.getItem(DELEGATE_RETURN_STORAGE_KEY) || initialReturnTo;
+    if (returnTo) {
+      sessionStorage.removeItem(DELEGATE_RETURN_STORAGE_KEY);
+    }
+    return returnTo;
   }
 
   async function sendOTP() {
@@ -105,6 +123,12 @@
           const sessionToken = sessionRes.headers.get('set-auth-token');
           window.opener.postMessage({ type: 'openkey:register:complete', sessionToken }, '*');
         } else {
+          const delegateReturnTo = takeDelegateReturnTo();
+          if (delegateReturnTo) {
+            goto(delegateReturnTo);
+            return;
+          }
+
           // Resume pending OAuth authorization flow if the user came from an OAuth client
           const pendingOAuth = sessionStorage.getItem(OAUTH_STORAGE_KEY);
           if (pendingOAuth) {
