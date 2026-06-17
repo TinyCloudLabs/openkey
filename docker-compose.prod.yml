@@ -19,6 +19,7 @@ services:
       - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET}
       - BETTER_AUTH_URL=${BETTER_AUTH_URL}
       - ADMIN_API_KEY=${ADMIN_API_KEY}
+      - INTERNAL_METRICS_TOKEN=${INTERNAL_METRICS_TOKEN}
     restart: unless-stopped
 
   dstack-ingress:
