@@ -39,6 +39,7 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `RESEND_API_KEY` | Resend API key for emails |
 | `API_PORT` | `3001` |
 | `CORS_ORIGIN` | `https://openkey.so` |
+| `INTERNAL_METRICS_TOKEN` | Bearer token for `GET /api/internal/metrics` |
 | `CLOUDFLARE_API_TOKEN` | For SSL certificate management |
 | `DSTACK_GATEWAY_DOMAIN` | Phala gateway domain |
 | `CERTBOT_EMAIL` | Email for Let's Encrypt |
@@ -72,6 +73,13 @@ Or manually via **Actions > Deploy API to Phala Cloud > Run workflow**.
    ```bash
    curl https://api.openkey.so/api/keys/YOUR_KEY_ID/quote
    # Should return { "quote": "...", "isInTee": true }
+   ```
+
+5. Verify internal metrics are available to trusted callers:
+   ```bash
+   curl -H "Authorization: Bearer $INTERNAL_METRICS_TOKEN" \
+     https://api.openkey.so/api/internal/metrics
+   # Should return account and key totals plus 24h deltas.
    ```
 
 ## Web Deployment (Cloudflare Pages)

@@ -93,6 +93,7 @@ Optional (features degrade gracefully without these):
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Google OAuth sign-in |
 | `RESEND_API_KEY` | Email OTP delivery (without it, OTPs print to console) |
 | `ADMIN_API_KEY` | Protect admin endpoints (OAuth client registration) |
+| `INTERNAL_METRICS_TOKEN` | Protect internal metrics polling endpoint |
 
 ## Scripts
 

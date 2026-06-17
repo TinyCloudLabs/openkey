@@ -10,6 +10,7 @@ import { passkeyProxyRouter } from './routes/passkey-proxy';
 import { secretsRouter } from './routes/secrets';
 import { variablesRouter } from './routes/variables';
 import { delegateRouter } from './routes/delegate';
+import { internalMetricsRouter } from './routes/internal-metrics';
 import { trackAuthorization, trackTokenExchange, trackUniqueUser } from './analytics';
 
 // Create Hono app
@@ -105,6 +106,9 @@ app.route('/api/passkey', passkeyProxyRouter);
 
 // OAuth admin routes (protected by ADMIN_API_KEY)
 app.route('/api/admin/oauth', oauthAdminRouter);
+
+// Internal metrics route (protected by INTERNAL_METRICS_TOKEN)
+app.route('/api/internal/metrics', internalMetricsRouter);
 
 // Secrets and variables routes (TinyCloud-backed)
 app.route('/api/secrets', secretsRouter);
