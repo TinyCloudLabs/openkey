@@ -1,6 +1,7 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
   import { authClient, authErrorMessage } from '$lib/auth-client';
+  import { api, type EthereumKey } from '$lib/api';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
@@ -15,9 +16,12 @@
   }
 
   let passkeys = $state<Passkey[]>([]);
+  let archivedKeys = $state<EthereumKey[]>([]);
   let loading = $state(true);
+  let loadingArchivedKeys = $state(true);
   let error = $state('');
   let addingPasskey = $state(false);
+  let restoringKeyId = $state<string | null>(null);
 
   // Edit state
   let editingId = $state<string | null>(null);
@@ -34,6 +38,7 @@
         goto('/auth/login');
       } else if (passkeys.length === 0 && loading) {
         loadPasskeys();
+        loadArchivedKeys();
       }
     }
   });
@@ -52,6 +57,19 @@
       error = e.message || 'Failed to load passkeys';
     } finally {
       loading = false;
+    }
+  }
+
+  async function loadArchivedKeys() {
+    loadingArchivedKeys = true;
+    error = '';
+    try {
+      const result = await api.listKeys({ includeArchived: true });
+      archivedKeys = result.keys.filter((key) => key.archivedAt);
+    } catch (e: any) {
+      error = e.message || 'Failed to load archived keys';
+    } finally {
+      loadingArchivedKeys = false;
     }
   }
 
@@ -127,6 +145,19 @@
     }
   }
 
+  async function restoreKey(key: EthereumKey) {
+    restoringKeyId = key.id;
+    error = '';
+    try {
+      await api.unarchiveKey(key.id);
+      await loadArchivedKeys();
+    } catch (e: any) {
+      error = e.message || 'Failed to restore key';
+    } finally {
+      restoringKeyId = null;
+    }
+  }
+
   function formatDate(date: Date | string): string {
     return new Date(date).toLocaleDateString(undefined, {
       year: 'numeric',
@@ -141,6 +172,10 @@
 
   function getDeviceLabel(deviceType: string): string {
     return deviceType === 'multiDevice' ? 'Synced' : 'Device-bound';
+  }
+
+  function formatAddress(address: string): string {
+    return `${address.slice(0, 6)}...${address.slice(-4)}`;
   }
 </script>
 
@@ -246,6 +281,61 @@
           Tip: Add multiple passkeys on different devices so you always have a backup way to sign in.
         </p>
       {/if}
+    {/if}
+  </Card>
+
+  <Card class="mt-6">
+    <div class="mb-6">
+      <h2 class="text-xl font-semibold text-surface-900">Archived Keys</h2>
+      <p class="text-sm text-surface-500 mt-1">
+        Archived keys are hidden during sign-in. Restore a key to make it available again.
+      </p>
+    </div>
+
+    {#if loadingArchivedKeys}
+      <div class="py-12 text-center text-surface-400">
+        <p>Loading archived keys...</p>
+      </div>
+    {:else if archivedKeys.length === 0}
+      <div class="py-12 text-center text-surface-400">
+        <p>No archived keys.</p>
+      </div>
+    {:else}
+      <div class="flex flex-col gap-3">
+        {#each archivedKeys as key}
+          <div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-surface-200 bg-surface-50 p-4">
+            <div class="min-w-0 flex-1">
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="font-semibold text-surface-900">
+                  {key.label || `Key ${key.keyIndex}`}
+                </span>
+                <span class="rounded-full bg-white px-2 py-0.5 text-xs font-medium text-surface-500">
+                  Archived
+                </span>
+              </div>
+              <div class="mt-1.5 flex flex-wrap items-center gap-2 text-sm">
+                <code class="font-mono text-surface-500">{formatAddress(key.address)}</code>
+                {#if key.archivedAt}
+                  <span class="text-surface-400">Archived {formatDate(key.archivedAt)}</span>
+                {/if}
+              </div>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+              <Button variant="secondary" size="sm" href="/dashboard/keys/{key.id}">
+                View
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onclick={() => restoreKey(key)}
+                disabled={restoringKeyId === key.id}
+              >
+                {restoringKeyId === key.id ? 'Restoring...' : 'Restore'}
+              </Button>
+            </div>
+          </div>
+        {/each}
+      </div>
     {/if}
   </Card>
 

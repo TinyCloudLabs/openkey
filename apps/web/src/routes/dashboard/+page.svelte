@@ -120,7 +120,7 @@
     {:else}
       <div class="flex flex-col gap-3">
         {#each keys as key, i}
-          <div class="flex items-center justify-between rounded-xl border border-surface-200 bg-white p-4">
+          <div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-surface-200 bg-white p-4">
             <div class="min-w-0 flex-1">
               <div class="flex items-center gap-2">
                 <span class="font-medium text-surface-900">
