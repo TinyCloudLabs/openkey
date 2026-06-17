@@ -16,8 +16,6 @@ import {
   DelegateRequestError,
   delegateErrorResponse,
   shortServiceName,
-  validatePermissions,
-  type PermissionEntry,
 } from './delegate-validation';
 
 const prisma = createPrismaClient();
@@ -336,8 +334,6 @@ interface PermissionEntry {
   actions: string[];
 }
 
-type AbilitiesMap = Record<string, Record<string, string[]>>;
-
 /**
  * Translate a list of {@link PermissionEntry}s into the `abilities` map shape
  * that `prepareSession()` expects. Keys are short service names (`kv`, `sql`,
@@ -523,7 +519,7 @@ delegateRouter.post('/', async (c) => {
   }
 
   const key = await prisma.ethereumKey.findFirst({
-    where: { id: body.keyId, userId: user.id },
+    where: { id: body.keyId, userId: user.id, archivedAt: null },
   });
 
   if (!key) {
@@ -647,7 +643,7 @@ delegateRouter.post('/prepare', async (c) => {
   }
 
   const key = await prisma.ethereumKey.findFirst({
-    where: { id: body.keyId, userId: user.id },
+    where: { id: body.keyId, userId: user.id, archivedAt: null },
   });
 
   if (!key) {

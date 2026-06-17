@@ -36,6 +36,7 @@ export interface EthereumKey {
   keyIndex: number;
   label: string | null;
   keyType: 'MANAGED' | 'EXTERNAL';
+  archivedAt?: string | null;
   createdAt: string;
 }
 
@@ -60,6 +61,12 @@ export const api = {
     return fetchAPI(`/api/keys/${keyId}`, {
       method: 'PATCH',
       body: JSON.stringify({ label }),
+    });
+  },
+
+  async archiveKey(keyId: string): Promise<{ success: boolean; archivedAt: string }> {
+    return fetchAPI(`/api/keys/${keyId}/archive`, {
+      method: 'POST',
     });
   },
 

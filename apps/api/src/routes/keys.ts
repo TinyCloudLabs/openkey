@@ -208,7 +208,7 @@ keysRouter.get('/:keyId', async (c) => {
   const keyId = c.req.param('keyId');
 
   const key = await prisma.ethereumKey.findFirst({
-    where: { id: keyId, userId: user.id },
+    where: { id: keyId, userId: user.id, archivedAt: null },
     select: {
       id: true,
       address: true,
@@ -216,6 +216,7 @@ keysRouter.get('/:keyId', async (c) => {
       keyType: true,
       keyIndex: true,
       label: true,
+      archivedAt: true,
       createdAt: true,
     },
   });
@@ -234,7 +235,7 @@ keysRouter.patch('/:keyId', async (c) => {
   const body = await c.req.json<{ label: string }>();
 
   const key = await prisma.ethereumKey.updateMany({
-    where: { id: keyId, userId: user.id },
+    where: { id: keyId, userId: user.id, archivedAt: null },
     data: { label: body.label },
   });
 
@@ -256,7 +257,7 @@ keysRouter.post('/:keyId/sign', async (c) => {
   }>();
 
   const key = await prisma.ethereumKey.findFirst({
-    where: { id: keyId, userId: user.id },
+    where: { id: keyId, userId: user.id, archivedAt: null },
   });
 
   if (!key) {
@@ -298,7 +299,7 @@ keysRouter.post('/:keyId/sign-typed-data', async (c) => {
   }>();
 
   const key = await prisma.ethereumKey.findFirst({
-    where: { id: keyId, userId: user.id },
+    where: { id: keyId, userId: user.id, archivedAt: null },
   });
 
   if (!key) {
@@ -335,7 +336,7 @@ keysRouter.get('/:keyId/quote', async (c) => {
   const keyId = c.req.param('keyId');
 
   const key = await prisma.ethereumKey.findFirst({
-    where: { id: keyId, userId: user.id },
+    where: { id: keyId, userId: user.id, archivedAt: null },
     select: { address: true },
   });
 
@@ -362,16 +363,17 @@ keysRouter.post('/:keyId/archive', async (c) => {
   const user = c.get('user');
   const keyId = c.req.param('keyId');
 
+  const archivedAt = new Date();
   const key = await prisma.ethereumKey.updateMany({
     where: { id: keyId, userId: user.id, archivedAt: null },
-    data: { archivedAt: new Date() },
+    data: { archivedAt },
   });
 
   if (key.count === 0) {
     return c.json({ error: 'Key not found or already archived' }, 404);
   }
 
-  return c.json({ success: true, archivedAt: new Date().toISOString() });
+  return c.json({ success: true, archivedAt: archivedAt.toISOString() });
 });
 
 // Unarchive a key
