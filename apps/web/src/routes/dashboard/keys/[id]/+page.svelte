@@ -23,6 +23,7 @@
   let editingLabel = $state(false);
   let newLabel = $state('');
   let savingLabel = $state(false);
+  let archiving = $state(false);
 
   // Load key when session is ready
   $effect(() => {
@@ -84,6 +85,24 @@
     }
   }
 
+  async function archiveKey() {
+    if (!key) return;
+
+    const confirmed = window.confirm('Archive this key? It will no longer appear during sign-in.');
+    if (!confirmed) return;
+
+    archiving = true;
+    error = '';
+    try {
+      await api.archiveKey(key.id);
+      goto('/dashboard');
+    } catch (e: any) {
+      error = e.message || 'Failed to archive key';
+    } finally {
+      archiving = false;
+    }
+  }
+
   async function copyToClipboard(text: string) {
     if (!(await copyText(text))) {
       error = 'Failed to copy value. Select the value and copy it manually.';
@@ -131,13 +150,23 @@
             </Button>
           </div>
         {:else}
-          <div class="flex items-center justify-between">
+          <div class="flex flex-wrap items-center justify-between gap-3">
             <h1 class="text-2xl font-bold text-surface-900">
               {key.label || `Key ${key.keyIndex}`}
             </h1>
-            <Button variant="secondary" onclick={() => editingLabel = true}>
-              Edit Label
-            </Button>
+            <div class="flex flex-wrap items-center gap-2">
+              <Button variant="secondary" onclick={() => editingLabel = true}>
+                Edit Label
+              </Button>
+              <Button
+                variant="secondary"
+                onclick={archiveKey}
+                disabled={archiving}
+                class="border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700"
+              >
+                {archiving ? 'Archiving...' : 'Archive Key'}
+              </Button>
+            </div>
           </div>
         {/if}
       </div>
