@@ -42,8 +42,9 @@ export interface EthereumKey {
 
 export const api = {
   // Key management
-  async listKeys(): Promise<{ keys: EthereumKey[] }> {
-    return fetchAPI('/api/keys');
+  async listKeys(options?: { includeArchived?: boolean }): Promise<{ keys: EthereumKey[] }> {
+    const query = options?.includeArchived ? '?archived=true' : '';
+    return fetchAPI(`/api/keys${query}`);
   },
 
   async generateKey(label?: string): Promise<{ key: EthereumKey }> {
@@ -66,6 +67,12 @@ export const api = {
 
   async archiveKey(keyId: string): Promise<{ success: boolean; archivedAt: string }> {
     return fetchAPI(`/api/keys/${keyId}/archive`, {
+      method: 'POST',
+    });
+  },
+
+  async unarchiveKey(keyId: string): Promise<{ success: boolean }> {
+    return fetchAPI(`/api/keys/${keyId}/unarchive`, {
       method: 'POST',
     });
   },

@@ -24,6 +24,7 @@
   let newLabel = $state('');
   let savingLabel = $state(false);
   let archiving = $state(false);
+  let restoring = $state(false);
 
   // Load key when session is ready
   $effect(() => {
@@ -103,6 +104,21 @@
     }
   }
 
+  async function restoreKey() {
+    if (!key) return;
+
+    restoring = true;
+    error = '';
+    try {
+      await api.unarchiveKey(key.id);
+      await loadKey();
+    } catch (e: any) {
+      error = e.message || 'Failed to restore key';
+    } finally {
+      restoring = false;
+    }
+  }
+
   async function copyToClipboard(text: string) {
     if (!(await copyText(text))) {
       error = 'Failed to copy value. Select the value and copy it manually.';
@@ -155,17 +171,28 @@
               {key.label || `Key ${key.keyIndex}`}
             </h1>
             <div class="flex flex-wrap items-center gap-2">
-              <Button variant="secondary" onclick={() => editingLabel = true}>
-                Edit Label
-              </Button>
-              <Button
-                variant="secondary"
-                onclick={archiveKey}
-                disabled={archiving}
-                class="border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700"
-              >
-                {archiving ? 'Archiving...' : 'Archive Key'}
-              </Button>
+              {#if key.archivedAt}
+                <span class="rounded-full bg-surface-100 px-2 py-1 text-xs font-medium text-surface-500">
+                  Archived
+                </span>
+              {/if}
+              {#if key.archivedAt}
+                <Button variant="secondary" onclick={restoreKey} disabled={restoring}>
+                  {restoring ? 'Restoring...' : 'Restore Key'}
+                </Button>
+              {:else}
+                <Button variant="secondary" onclick={() => editingLabel = true}>
+                  Edit Label
+                </Button>
+                <Button
+                  variant="secondary"
+                  onclick={archiveKey}
+                  disabled={archiving}
+                  class="border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700"
+                >
+                  {archiving ? 'Archiving...' : 'Archive Key'}
+                </Button>
+              {/if}
             </div>
           </div>
         {/if}
@@ -208,9 +235,25 @@
             })}
           </p>
         </div>
+
+        {#if key.archivedAt}
+          <div>
+            <p class="mb-1 block text-sm text-surface-500">Archived</p>
+            <p class="text-surface-900">
+              {new Date(key.archivedAt).toLocaleDateString(undefined, {
+                year: 'numeric',
+                month: 'long',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+              })}
+            </p>
+          </div>
+        {/if}
       </div>
     </Card>
 
+    {#if !key.archivedAt}
     <Card>
       <h2 class="mb-4 text-xl font-semibold text-surface-900">Sign Message</h2>
 
@@ -245,6 +288,7 @@
         {/if}
       </div>
     </Card>
+    {/if}
   {:else}
     <Card>
       <div class="py-12 text-center text-surface-400">
