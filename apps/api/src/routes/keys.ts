@@ -208,7 +208,7 @@ keysRouter.get('/:keyId', async (c) => {
   const keyId = c.req.param('keyId');
 
   const key = await prisma.ethereumKey.findFirst({
-    where: { id: keyId, userId: user.id, archivedAt: null },
+    where: { id: keyId, userId: user.id },
     select: {
       id: true,
       address: true,
