@@ -72,6 +72,7 @@
   const callback = $page.url.searchParams.get('callback') || '';
   const host = $page.url.searchParams.get('host') || 'https://node.tinycloud.xyz';
   const permissionsB64 = $page.url.searchParams.get('permissions') || '';
+  const reasonParam = $page.url.searchParams.get('reason') || '';
   // Optional caller-supplied delegation lifetime. The CLI encodes this as
   // an ms-format string ("7d", "30m") or a millisecond integer. Validation
   // and clamping are owned by the API to keep the source of truth in one
@@ -99,6 +100,7 @@
     actions: string[];
   }
   let requestedPermissions: RequestedPermission[] = [];
+  let requestReason = $state(normalizeReason(reasonParam));
   if (permissionsB64) {
     try {
       const payload = JSON.parse(
@@ -107,10 +109,19 @@
       if (payload && Array.isArray(payload.permissions)) {
         requestedPermissions = payload.permissions as RequestedPermission[];
       }
+      const payloadReason = normalizeReason(payload?.reason);
+      if (payloadReason) {
+        requestReason = payloadReason;
+      }
     } catch {
       // Surface as a user-visible error during consent rendering.
       error = 'Could not decode the requested permissions parameter.';
     }
+  }
+
+  function normalizeReason(value: unknown): string {
+    if (typeof value !== 'string') return '';
+    return value.replace(/\s+/g, ' ').trim().slice(0, 500);
   }
 
   function shortService(service: string): string {
@@ -247,6 +258,9 @@
     // baseline-edit UI surface is bypassed for CLI requests.
     if (requestedPermissions.length > 0) {
       body.permissions = requestedPermissions;
+    }
+    if (requestReason) {
+      body.reason = requestReason;
     }
     if (expiryParam) {
       body.expiry = expiryParam;
@@ -493,6 +507,9 @@
       if (requestedPermissions.length > 0) {
         body.permissions = requestedPermissions;
       }
+      if (requestReason) {
+        body.reason = requestReason;
+      }
       if (expiryParam) {
         body.expiry = expiryParam;
       }
@@ -605,6 +622,7 @@
           host,
           jwk,
           edited: permissionsEdited,
+          reason: requestReason || undefined,
         }),
       });
 
@@ -898,6 +916,13 @@
         {/if}
 
         <div class="flex flex-col gap-4">
+          <div class="p-3 bg-surface-50 border border-surface-200 rounded-xl">
+            <div class="text-xs text-surface-400 mb-1">Reason provided by CLI</div>
+            <p class="text-sm text-surface-700 leading-relaxed">
+              {requestReason || 'No additional context was provided by the CLI.'}
+            </p>
+          </div>
+
           <!-- Signing key -->
           <div class="p-3 bg-surface-50 border border-surface-200 rounded-xl">
             <div class="text-xs text-surface-400 mb-1">Signing key</div>

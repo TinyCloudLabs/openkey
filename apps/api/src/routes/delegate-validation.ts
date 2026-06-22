@@ -180,3 +180,12 @@ export function validatePermissions(permissions: unknown): PermissionEntry[] {
     };
   });
 }
+
+export function normalizeDelegateReason(reason: unknown): string | undefined {
+  if (typeof reason !== 'string') return undefined;
+
+  const normalized = reason.replace(/\s+/g, ' ').trim();
+  if (!normalized) return undefined;
+
+  return normalized.slice(0, 500);
+}

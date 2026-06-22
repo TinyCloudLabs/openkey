@@ -15,6 +15,7 @@ import { activateSessionWithHost } from '@tinycloud/sdk-core';
 import {
   DelegateRequestError,
   delegateErrorResponse,
+  normalizeDelegateReason,
   shortServiceName,
 } from './delegate-validation';
 
@@ -512,6 +513,7 @@ delegateRouter.post('/', async (c) => {
     permissionKeys?: unknown;
     permissions?: unknown;
     expiry?: unknown;
+    reason?: unknown;
   }>();
 
   if (!body.keyId || !body.jwk || !body.host) {
@@ -546,6 +548,7 @@ delegateRouter.post('/', async (c) => {
   const chainId = 1;
   const prefix = body.prefix || 'default';
   const host = body.host;
+  const reason = normalizeDelegateReason(body.reason);
   let permissions: PermissionEntry[] | undefined;
   if (body.permissions !== undefined) {
     try {
@@ -609,6 +612,7 @@ delegateRouter.post('/', async (c) => {
     chainId,
     hostActivated,
     edited: preparedResult.edited,
+    reason,
     // Include the SIWE message so callers (CLI, web SDK) can persist it
     // alongside the delegation. The SDK extracts `expirationTime` from
     // this string at session-restore time; without it, restored sessions
@@ -636,6 +640,7 @@ delegateRouter.post('/prepare', async (c) => {
     permissionKeys?: unknown;
     permissions?: unknown;
     expiry?: unknown;
+    reason?: unknown;
   }>();
 
   if (!body.keyId || !body.jwk || !body.host) {
@@ -654,6 +659,7 @@ delegateRouter.post('/prepare', async (c) => {
   const chainId = 1;
   const prefix = body.prefix || 'default';
   const host = body.host;
+  const reason = normalizeDelegateReason(body.reason);
   let permissions: PermissionEntry[] | undefined;
   if (body.permissions !== undefined) {
     try {
@@ -705,6 +711,7 @@ delegateRouter.post('/prepare', async (c) => {
     permissions: preparedResult.permissions,
     selectedActionKeys: preparedResult.selectedActionKeys,
     edited: preparedResult.edited,
+    reason,
   });
 });
 
@@ -724,6 +731,7 @@ delegateRouter.post('/complete', async (c) => {
     host: string;
     jwk: DelegationJwk;
     edited?: boolean;
+    reason?: unknown;
   }>();
 
   if (!body.prepared || !body.signature || !body.host || !body.jwk) {
@@ -763,6 +771,7 @@ delegateRouter.post('/complete', async (c) => {
   const chainId = body.prepared.chainId || 1;
   const spaceId = body.prepared.spaceId || '';
   const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
+  const reason = normalizeDelegateReason(body.reason);
 
   return c.json({
     delegationHeader: session.delegationHeader,
@@ -775,6 +784,7 @@ delegateRouter.post('/complete', async (c) => {
     chainId,
     hostActivated,
     edited: Boolean(body.edited),
+    reason,
     // Echo the SIWE the caller asked us to sign — the SDK extracts
     // `expirationTime` from this when restoring the session, and
     // without it a restored session is treated as expired-at-epoch-zero.

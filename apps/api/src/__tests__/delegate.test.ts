@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { delegateErrorResponse, validatePermissions } from '../routes/delegate-validation';
+import { delegateErrorResponse, normalizeDelegateReason, validatePermissions } from '../routes/delegate-validation';
 
 function invalidPermissionsPayload(permissions: unknown) {
   try {
@@ -92,5 +92,16 @@ describe('validatePermissions', () => {
         expected: 'non-empty string[]',
       },
     ]);
+  });
+});
+
+describe('normalizeDelegateReason', () => {
+  test('accepts optional caller context and trims whitespace', () => {
+    expect(normalizeDelegateReason('  Allow CLI access\nfor a deploy.  ')).toBe('Allow CLI access for a deploy.');
+  });
+
+  test('omits blank or non-string reasons', () => {
+    expect(normalizeDelegateReason('   ')).toBeUndefined();
+    expect(normalizeDelegateReason({ reason: 'nope' })).toBeUndefined();
   });
 });
