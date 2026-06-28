@@ -8,6 +8,7 @@ import {
   prepareSession,
   completeSessionSetup,
   ensureEip55,
+  generateHostSIWEMessage,
   makeSpaceId,
   parseRecapFromSiwe,
 } from '@tinycloud/node-sdk-wasm';
@@ -18,6 +19,11 @@ import {
   normalizeDelegateReason,
   shortServiceName,
 } from './delegate-validation';
+import {
+  evaluateAutoSignPolicy,
+  evaluateBootstrapHostScope,
+  evaluateBootstrapSessionScope,
+} from './delegate-autosign';
 
 const prisma = createPrismaClient();
 const tee = createTeeClient();
@@ -497,6 +503,109 @@ function validatePermissions(permissions: unknown): PermissionEntry[] {
 }
 
 /**
+ * POST /api/delegate/host
+ *
+ * Signs a TinyCloud space/host SIWE for a managed key. This is the root-key
+ * half of bootstrap space hosting; the caller submits the signed SIWE to the
+ * node's /delegate endpoint.
+ */
+delegateRouter.post('/host', async (c) => {
+  const user = c.get('user');
+  const body = await c.req.json<{
+    keyId: string;
+    peerId: string;
+    space?: string;
+    prefix?: string;
+  }>();
+
+  if (!body.keyId || !body.peerId) {
+    return c.json({ error: 'keyId and peerId are required' }, 400);
+  }
+
+  const spacePrefix = body.space || body.prefix;
+  if (!spacePrefix) {
+    return c.json({ error: 'space is required' }, 400);
+  }
+
+  const key = await prisma.ethereumKey.findFirst({
+    where: { id: body.keyId, userId: user.id, archivedAt: null },
+  });
+
+  if (!key) {
+    return c.json({ error: 'Key not found' }, 404);
+  }
+
+  if (key.keyType !== 'MANAGED') {
+    return c.json({ error: 'Only managed keys can be used with this endpoint.' }, 400);
+  }
+
+  if (!key.sealedBlob) {
+    return c.json({ error: 'Key has no sealed data' }, 400);
+  }
+
+  const address = ensureEip55(key.address);
+  const chainId = 1;
+  const normalizedSpace = spacePrefix.startsWith('tinycloud:')
+    ? spacePrefix.slice(spacePrefix.lastIndexOf(':') + 1)
+    : spacePrefix;
+  const spaceId = makeSpaceId(address, chainId, normalizedSpace);
+  const issuedAt = new Date().toISOString();
+  const siwe = generateHostSIWEMessage({
+    address,
+    chainId,
+    domain: SIWE_DOMAIN,
+    issuedAt,
+    spaceId,
+    peerId: body.peerId,
+  });
+
+  const autoSignPreference = await prisma.user.findUnique({
+    where: { id: user.id },
+    select: { autoSignEnabled: true },
+  });
+
+  if (!autoSignPreference) {
+    return c.json({ error: 'User not found' }, 404);
+  }
+
+  const autoSignDecision = evaluateAutoSignPolicy(
+    autoSignPreference.autoSignEnabled,
+    evaluateBootstrapHostScope({
+      entries: parsePreparedRecap(siwe),
+      address,
+      chainId,
+      spaceId,
+    }),
+  );
+
+  if (!autoSignDecision.allowed) {
+    return c.json({
+      error: autoSignDecision.reason,
+      code: autoSignDecision.code,
+      message: 'This managed-key host delegation is outside the Auto-Sign bootstrap policy.',
+    }, 403);
+  }
+
+  const sealingKey = await tee.deriveKey(`openkey/user/${user.id}/keys`);
+  const privateKey = await unseal(key.sealedBlob, sealingKey) as Hex;
+
+  const { createWalletFromPrivateKey } = await import('@openkey/tee');
+  const account = createWalletFromPrivateKey(privateKey);
+  const signature = await account.signMessage({ message: siwe });
+  const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
+
+  return c.json({
+    siwe,
+    signature,
+    spaceId,
+    ownerDid,
+    address,
+    chainId,
+    peerId: body.peerId,
+  });
+});
+
+/**
  * POST /api/delegate
  *
  * Creates a TinyCloud delegation for the CLI using a MANAGED key.
@@ -536,14 +645,6 @@ delegateRouter.post('/', async (c) => {
     return c.json({ error: 'Key has no sealed data' }, 400);
   }
 
-  // Unseal the private key
-  const sealingKey = await tee.deriveKey(`openkey/user/${user.id}/keys`);
-  const privateKey = await unseal(key.sealedBlob, sealingKey) as Hex;
-
-  // Import viem account for signing
-  const { createWalletFromPrivateKey } = await import('@openkey/tee');
-  const account = createWalletFromPrivateKey(privateKey);
-
   const address = ensureEip55(key.address);
   const chainId = 1;
   const prefix = body.prefix || 'default';
@@ -578,6 +679,41 @@ delegateRouter.post('/', async (c) => {
   } catch (e) {
     return c.json(delegateErrorResponse(e, 'Failed to prepare delegation', 'delegation_prepare_failed'), 400);
   }
+
+  const autoSignPreference = await prisma.user.findUnique({
+    where: { id: user.id },
+    select: { autoSignEnabled: true },
+  });
+
+  if (!autoSignPreference) {
+    return c.json({ error: 'User not found' }, 404);
+  }
+
+  const autoSignDecision = evaluateAutoSignPolicy(
+    autoSignPreference.autoSignEnabled,
+    evaluateBootstrapSessionScope({
+      entries: parsePreparedRecap(preparedResult.prepared.siwe),
+      address,
+      chainId,
+      spaceId: preparedResult.spaceId,
+    }),
+  );
+
+  if (!autoSignDecision.allowed) {
+    return c.json({
+      error: autoSignDecision.reason,
+      code: autoSignDecision.code,
+      message: 'This managed-key delegation is outside the Auto-Sign bootstrap policy.',
+    }, 403);
+  }
+
+  // Unseal only after the Auto-Sign policy has accepted the prepared scope.
+  const sealingKey = await tee.deriveKey(`openkey/user/${user.id}/keys`);
+  const privateKey = await unseal(key.sealedBlob, sealingKey) as Hex;
+
+  // Import viem account for signing
+  const { createWalletFromPrivateKey } = await import('@openkey/tee');
+  const account = createWalletFromPrivateKey(privateKey);
 
   const signature = await account.signMessage({
     message: preparedResult.prepared.siwe,

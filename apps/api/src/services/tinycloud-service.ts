@@ -1,12 +1,14 @@
 // TinyCloud service - manages TinyCloud sessions and operations on behalf of users
 import { TinyCloudNode } from '@tinycloud/node-sdk';
+import { SECRETS_SPACE } from '@tinycloud/bootstrap';
 import { Wallet } from 'ethers';
 
 const TINYCLOUD_URL = process.env.TINYCLOUD_URL || 'https://node.tinycloud.xyz';
+const OPENKEY_LEGACY_SPACE = 'openkey';
 
 interface TinyCloudSession {
-  tc: TinyCloudNode;       // prefix: 'openkey' — for KV/variables
-  secretsTc: TinyCloudNode; // prefix: 'secrets' — for vault/secrets
+  tc: TinyCloudNode;       // legacy OpenKey-internal space for KV/variables
+  secretsTc: TinyCloudNode; // canonical bootstrap secrets space for vault/secrets
   wallet: Wallet;
 }
 
@@ -25,7 +27,7 @@ async function getSession(userId: string, privateKey: string): Promise<TinyCloud
   const tc = new TinyCloudNode({
     host: TINYCLOUD_URL,
     privateKey,
-    prefix: 'openkey',
+    prefix: OPENKEY_LEGACY_SPACE,
     autoCreateSpace: true,
   });
   await tc.signIn();
@@ -34,7 +36,7 @@ async function getSession(userId: string, privateKey: string): Promise<TinyCloud
   const secretsTc = new TinyCloudNode({
     host: TINYCLOUD_URL,
     privateKey,
-    prefix: 'secrets',
+    prefix: SECRETS_SPACE,
     autoCreateSpace: true,
   });
   await secretsTc.signIn();

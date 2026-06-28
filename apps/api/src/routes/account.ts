@@ -2,7 +2,7 @@
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { requireSession, type SessionContext } from '../middleware/session';
-import { auth } from '../auth';
+import { parseAutoSignPreferencePatch } from './account-preferences';
 
 const prisma = createPrismaClient();
 
@@ -22,6 +22,7 @@ accountRouter.get('/', async (c) => {
       email: true,
       name: true,
       emailVerified: true,
+      autoSignEnabled: true,
       createdAt: true,
       _count: {
         select: {
@@ -33,6 +34,44 @@ accountRouter.get('/', async (c) => {
   });
 
   return c.json({ user: userData });
+});
+
+// Get Auto-Sign preference
+accountRouter.get('/auto-sign', async (c) => {
+  const user = c.get('user');
+
+  const preference = await prisma.user.findUnique({
+    where: { id: user.id },
+    select: { autoSignEnabled: true },
+  });
+
+  if (!preference) {
+    return c.json({ error: 'User not found' }, 404);
+  }
+
+  return c.json({ autoSignEnabled: preference.autoSignEnabled });
+});
+
+// Update Auto-Sign preference
+accountRouter.patch('/auto-sign', async (c) => {
+  const user = c.get('user');
+  let patch;
+
+  try {
+    patch = parseAutoSignPreferencePatch(await c.req.json());
+  } catch (err) {
+    return c.json({
+      error: err instanceof Error ? err.message : 'Invalid request body',
+    }, 400);
+  }
+
+  const preference = await prisma.user.update({
+    where: { id: user.id },
+    data: { autoSignEnabled: patch.autoSignEnabled },
+    select: { autoSignEnabled: true },
+  });
+
+  return c.json({ autoSignEnabled: preference.autoSignEnabled });
 });
 
 // Delete account permanently
