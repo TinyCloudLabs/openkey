@@ -28,6 +28,12 @@ interface ScopeEvaluationInput {
   spaceId: string;
 }
 
+interface SigningScopeEvaluationInput {
+  entries: RecapEntry[];
+  address: string;
+  chainId: number;
+}
+
 const bootstrapSpaces = new Set<BootstrapSpaceName>(
   BOOTSTRAP_ALLOWLIST.map((entry) => entry.space),
 );
@@ -62,6 +68,17 @@ function ownerDid(address: string, chainId: number): string {
 
 function expandRawResource(resource: string, address: string, chainId: number): string {
   return resource.replace('{ownerDid}', ownerDid(address, chainId));
+}
+
+function scopeSpaceId(entries: RecapEntry[]): string | undefined {
+  return entries.find((entry) => entry.space.startsWith('tinycloud:'))?.space;
+}
+
+function isHostSigningScope(entries: RecapEntry[]): boolean {
+  return entries.some((entry) => (
+    fullServiceName(entry.service) === 'tinycloud.space' ||
+    entry.actions.includes('tinycloud.space/host')
+  ));
 }
 
 function denied(reason: string): AutoSignPolicyDecision {
@@ -101,12 +118,12 @@ export function evaluateBootstrapSessionScope(input: ScopeEvaluationInput): Auto
   }
 
   for (const entry of input.entries) {
-    if (entry.space !== bootstrapSpace.expectedSpaceId) {
-      return denied('Requested capability targets a space outside the bootstrap request');
-    }
-
     const service = fullServiceName(entry.service);
     if (service === 'tinycloud.encryption') {
+      if (entry.space !== 'encryption') {
+        return denied('Requested raw capability is outside the bootstrap allowlist');
+      }
+
       const rawAbility = allowed.rawAbilities?.find((ability) => (
         ability.service === service &&
         expandRawResource(ability.resource, input.address, input.chainId) === entry.path &&
@@ -117,6 +134,10 @@ export function evaluateBootstrapSessionScope(input: ScopeEvaluationInput): Auto
         return denied('Requested raw capability is outside the bootstrap allowlist');
       }
       continue;
+    }
+
+    if (entry.space !== bootstrapSpace.expectedSpaceId) {
+      return denied('Requested capability targets a space outside the bootstrap request');
     }
 
     const resource = allowed.resources?.find((candidate) => (
@@ -132,6 +153,19 @@ export function evaluateBootstrapSessionScope(input: ScopeEvaluationInput): Auto
   }
 
   return { allowed: true };
+}
+
+export function evaluateBootstrapSigningScope(input: SigningScopeEvaluationInput): AutoSignPolicyDecision {
+  const spaceId = scopeSpaceId(input.entries);
+  if (!spaceId) {
+    return denied('Signed SIWE message does not target a bootstrap space');
+  }
+
+  if (isHostSigningScope(input.entries)) {
+    return evaluateBootstrapHostScope({ ...input, spaceId });
+  }
+
+  return evaluateBootstrapSessionScope({ ...input, spaceId });
 }
 
 export function evaluateBootstrapHostScope(input: ScopeEvaluationInput): AutoSignPolicyDecision {
