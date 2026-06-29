@@ -56,7 +56,11 @@
       credentials: 'include',
       headers: { 'Accept': 'application/json' },
     });
-    const sessionToken = sessionRes.headers.get('set-auth-token');
+    const sessionBody = await sessionRes.json().catch(() => null);
+    const sessionToken =
+      sessionRes.headers.get('set-auth-token') ||
+      sessionBody?.session?.token ||
+      sessionBody?.token;
     if (!sessionToken) {
       throw new Error('Recovery succeeded, but no session token was returned.');
     }
@@ -67,7 +71,8 @@
     if (data.isEmbed) {
       const sessionToken = await readSessionToken();
       if (isEmbedPopup) {
-        window.opener.postMessage({ type: 'openkey:recover:complete', sessionToken }, '*');
+        window.opener.postMessage({ type: 'openkey:recover:complete', sessionToken }, window.location.origin);
+        window.close();
       } else {
         setSessionToken(sessionToken);
         await goto(data.returnTo || '/widget/embed/connect');

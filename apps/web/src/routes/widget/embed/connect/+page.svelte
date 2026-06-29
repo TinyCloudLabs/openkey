@@ -18,7 +18,7 @@
   let contentEl = $state<HTMLDivElement | undefined>(undefined);
   let signingIn = $state(false);
   // Track embed auth separately since better-auth session store won't update
-  let embedAuthenticated = $state(false);
+  let embedAuthenticated = $state(typeof window !== 'undefined' && !!getSessionToken());
 
   // Derived: whether user is authenticated (either via cookies or embed token)
   const isAuthenticated = $derived(inIframe ? embedAuthenticated : !!$session.data);
@@ -123,15 +123,17 @@
       // Must be synchronous with the user gesture — if we delegate to the
       // parent SDK via postMessage, the gesture context is lost and mobile
       // browsers silently block the popup.
-      const registerUrl = `${window.location.origin}/auth/register?embed=true`;
+      const returnTo = encodeURIComponent(window.location.href);
+      const registerUrl = `${window.location.origin}/auth/register?embed=true&returnTo=${returnTo}`;
       const popup = window.open(registerUrl, 'openkey-register', 'popup=true');
       if (!popup) {
-        // Popup blocked — fall back to navigating the iframe itself
-        window.location.href = '/auth/register?embed=true';
+        error = 'Your browser blocked the registration window. Allow popups for OpenKey, then try Register again.';
         return;
       }
       // Listen for completion from the popup
       const onMessage = (event: MessageEvent) => {
+        if (event.origin !== window.location.origin) return;
+        if (event.source !== popup) return;
         if (
           (event.data?.type === 'openkey:register:complete' ||
             event.data?.type === 'openkey:recover:complete') &&
@@ -162,10 +164,12 @@
       const recoverUrl = `${window.location.origin}/auth/recover?embed=true&returnTo=${returnTo}`;
       const popup = window.open(recoverUrl, 'openkey-recover', 'popup=true');
       if (!popup) {
-        window.location.href = `/auth/recover?embed=true&returnTo=${returnTo}`;
+        error = 'Your browser blocked the recovery window. Allow popups for OpenKey, then try Recover account again.';
         return;
       }
       const onMessage = (event: MessageEvent) => {
+        if (event.origin !== window.location.origin) return;
+        if (event.source !== popup) return;
         if (event.data?.type === 'openkey:recover:complete' && event.data.sessionToken) {
           window.removeEventListener('message', onMessage);
           clearInterval(poll);

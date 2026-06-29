@@ -34,6 +34,7 @@ app.use('/api/auth/oauth2/token', cors({
 app.use('*', cors({
   origin: corsOrigins.length === 1 ? corsOrigins[0]! : corsOrigins,
   credentials: true,
+  exposeHeaders: ['set-auth-token'],
 }));
 
 // Health check

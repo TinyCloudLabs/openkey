@@ -193,7 +193,7 @@ class IframeModal {
     this.iframe = document.createElement('iframe');
     this.iframe.src = opts.url;
     this.iframe.setAttribute('allow', 'clipboard-write *; publickey-credentials-get *; publickey-credentials-create *');
-    this.iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups');
+    this.iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox');
     card.appendChild(this.iframe);
 
     backdrop.appendChild(card);
