@@ -42,4 +42,9 @@ COPY --from=builder /app/package.json ./
 
 EXPOSE 3001
 
-CMD ["bun", "run", "apps/api/src/index.ts"]
+# Sync the DB schema to the deployed code before starting the API.
+# Prod uses `prisma db push` (no migration history) — see CLAUDE.md / db:push:prod.
+# This applies pending additive schema changes (e.g. new columns) on every deploy so
+# the running code never queries a column the database lacks. `db push` without
+# --accept-data-loss fails safe (refuses) on destructive changes, blocking start.
+CMD ["sh", "-c", "bun node_modules/.bin/prisma db push --schema=./packages/db/prisma/schema.prisma --skip-generate && exec bun run apps/api/src/index.ts"]
