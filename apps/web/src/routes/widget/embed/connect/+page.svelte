@@ -123,15 +123,17 @@
       // Must be synchronous with the user gesture — if we delegate to the
       // parent SDK via postMessage, the gesture context is lost and mobile
       // browsers silently block the popup.
-      const registerUrl = `${window.location.origin}/auth/register?embed=true`;
+      const returnTo = encodeURIComponent(window.location.href);
+      const registerUrl = `${window.location.origin}/auth/register?embed=true&returnTo=${returnTo}`;
       const popup = window.open(registerUrl, 'openkey-register', 'popup=true');
       if (!popup) {
         // Popup blocked — fall back to navigating the iframe itself
-        window.location.href = '/auth/register?embed=true';
+        window.location.href = `/auth/register?embed=true&returnTo=${returnTo}`;
         return;
       }
       // Listen for completion from the popup
       const onMessage = (event: MessageEvent) => {
+        if (event.origin !== window.location.origin) return;
         if (
           (event.data?.type === 'openkey:register:complete' ||
             event.data?.type === 'openkey:recover:complete') &&
