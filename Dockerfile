@@ -15,11 +15,6 @@ COPY packages/types/package.json ./packages/types/
 RUN bun install --ignore-scripts
 # Generate Prisma client (skipped by --ignore-scripts)
 RUN bun node_modules/.bin/prisma generate --schema=./packages/db/prisma/schema.prisma
-# Pre-fetch the Prisma schema/migration engine at build time so `db push` works at
-# runtime in the locked-down TEE (which can't download engines). `migrate diff`
-# against the datamodel needs no DB connection but materializes the engine binary.
-RUN bun node_modules/.bin/prisma migrate diff --from-empty \
-      --to-schema-datamodel ./packages/db/prisma/schema.prisma --script > /dev/null 2>&1 || true
 
 # Build packages
 FROM deps AS builder
@@ -47,9 +42,4 @@ COPY --from=builder /app/package.json ./
 
 EXPOSE 3001
 
-# Sync the DB schema to the deployed code before starting the API.
-# Prod uses `prisma db push` (no migration history) — see CLAUDE.md / db:push:prod.
-# Applies pending additive schema changes (e.g. new columns) on deploy so the running
-# code never queries a column the DB lacks. NON-FATAL: if the sync fails for any reason
-# the API still starts (degraded) rather than crash-looping the container.
-CMD ["sh", "-c", "bun node_modules/.bin/prisma db push --schema=./packages/db/prisma/schema.prisma --skip-generate || echo 'WARN: prisma db push failed; starting API anyway'; exec bun run apps/api/src/index.ts"]
+CMD ["bun", "run", "apps/api/src/index.ts"]
