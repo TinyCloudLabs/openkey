@@ -53,7 +53,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.2.0
 
       - name: Sync prod DB schema
         env:
@@ -63,7 +63,7 @@ jobs:
             echo "DATABASE_URL secret not set; skipping prod schema sync"
             exit 0
           fi
-          bun install
+          bun install --frozen-lockfile
           bun node_modules/.bin/prisma db push --schema=./packages/db/prisma/schema.prisma
 
       - name: Install Phala CLI
