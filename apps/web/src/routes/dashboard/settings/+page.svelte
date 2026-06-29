@@ -19,9 +19,13 @@
   let archivedKeys = $state<EthereumKey[]>([]);
   let loading = $state(true);
   let loadingArchivedKeys = $state(true);
+  let settingsLoaded = $state(false);
   let error = $state('');
   let addingPasskey = $state(false);
   let restoringKeyId = $state<string | null>(null);
+  let autoSignEnabled = $state(true);
+  let loadingAutoSign = $state(true);
+  let savingAutoSign = $state(false);
 
   // Edit state
   let editingId = $state<string | null>(null);
@@ -36,9 +40,11 @@
     if (!$session.isPending) {
       if (!$session.data) {
         goto('/auth/login');
-      } else if (passkeys.length === 0 && loading) {
+      } else if (!settingsLoaded) {
+        settingsLoaded = true;
         loadPasskeys();
         loadArchivedKeys();
+        loadAutoSignPreference();
       }
     }
   });
@@ -70,6 +76,38 @@
       error = e.message || 'Failed to load archived keys';
     } finally {
       loadingArchivedKeys = false;
+    }
+  }
+
+  async function loadAutoSignPreference() {
+    loadingAutoSign = true;
+    error = '';
+    try {
+      const result = await api.getAutoSignPreference();
+      autoSignEnabled = result.autoSignEnabled;
+    } catch (e: any) {
+      error = e.message || 'Failed to load Auto-Sign preference';
+    } finally {
+      loadingAutoSign = false;
+    }
+  }
+
+  async function setAutoSignPreference(enabled: boolean) {
+    if (loadingAutoSign || savingAutoSign) return;
+
+    const previous = autoSignEnabled;
+    autoSignEnabled = enabled;
+    savingAutoSign = true;
+    error = '';
+
+    try {
+      const result = await api.updateAutoSignPreference(enabled);
+      autoSignEnabled = result.autoSignEnabled;
+    } catch (e: any) {
+      autoSignEnabled = previous;
+      error = e.message || 'Failed to update Auto-Sign preference';
+    } finally {
+      savingAutoSign = false;
     }
   }
 
@@ -282,6 +320,35 @@
         </p>
       {/if}
     {/if}
+  </Card>
+
+  <Card class="mt-6">
+    <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+      <div class="max-w-xl">
+        <h2 class="text-xl font-semibold text-surface-900">Auto-Sign</h2>
+        <p class="text-sm text-surface-500 mt-1">
+          Automatically signs TinyCloud account bootstrap requests that match the fixed bootstrap allowlist.
+        </p>
+      </div>
+      <div class="flex shrink-0 items-center gap-3">
+        <div class="min-w-16 text-right text-sm font-medium {autoSignEnabled ? 'text-surface-900' : 'text-surface-500'}">
+          {loadingAutoSign ? 'Loading' : savingAutoSign ? 'Saving' : autoSignEnabled ? 'Enabled' : 'Disabled'}
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={autoSignEnabled}
+          aria-label="Toggle Auto-Sign"
+          onclick={() => setAutoSignPreference(!autoSignEnabled)}
+          disabled={loadingAutoSign || savingAutoSign}
+          class="relative h-7 w-12 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60 {autoSignEnabled ? 'bg-surface-900' : 'bg-surface-300'}"
+        >
+          <span
+            class="absolute left-1 top-1 h-5 w-5 rounded-full bg-white shadow-sm transition-transform {autoSignEnabled ? 'translate-x-5' : 'translate-x-0'}"
+          ></span>
+        </button>
+      </div>
+    </div>
   </Card>
 
   <Card class="mt-6">

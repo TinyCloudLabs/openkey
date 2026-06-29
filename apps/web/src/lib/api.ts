@@ -40,6 +40,10 @@ export interface EthereumKey {
   createdAt: string;
 }
 
+export interface AutoSignPreference {
+  autoSignEnabled: boolean;
+}
+
 export const api = {
   // Key management
   async listKeys(options?: { includeArchived?: boolean }): Promise<{ keys: EthereumKey[] }> {
@@ -96,6 +100,17 @@ export const api = {
 
   async getQuote(keyId: string): Promise<{ quote: string; address: string; inTee: boolean }> {
     return fetchAPI(`/api/keys/${keyId}/quote`);
+  },
+
+  async getAutoSignPreference(): Promise<AutoSignPreference> {
+    return fetchAPI('/api/account/auto-sign');
+  },
+
+  async updateAutoSignPreference(autoSignEnabled: boolean): Promise<AutoSignPreference> {
+    return fetchAPI('/api/account/auto-sign', {
+      method: 'PATCH',
+      body: JSON.stringify({ autoSignEnabled }),
+    });
   },
 
   async getLinkChallenge(): Promise<{ message: string; nonce: string }> {

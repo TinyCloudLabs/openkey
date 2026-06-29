@@ -188,6 +188,8 @@ export const auth = betterAuth({
   },
 
   // Auto-generate an Ethereum key when a new user is created
+  // User.autoSignEnabled is @default(true) in Prisma, so every new account
+  // starts with bootstrap Auto-Sign enabled before this provisioning hook runs.
   databaseHooks: {
     user: {
       create: {
