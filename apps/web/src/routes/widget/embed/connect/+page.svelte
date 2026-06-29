@@ -18,7 +18,7 @@
   let contentEl = $state<HTMLDivElement | undefined>(undefined);
   let signingIn = $state(false);
   // Track embed auth separately since better-auth session store won't update
-  let embedAuthenticated = $state(false);
+  let embedAuthenticated = $state(typeof window !== 'undefined' && !!getSessionToken());
 
   // Derived: whether user is authenticated (either via cookies or embed token)
   const isAuthenticated = $derived(inIframe ? embedAuthenticated : !!$session.data);

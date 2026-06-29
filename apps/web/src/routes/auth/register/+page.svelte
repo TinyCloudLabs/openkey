@@ -186,6 +186,15 @@
     }
   }
 
+  async function returnToEmbedSignIn() {
+    const returnTo = takeReturnTo() || '/widget/embed/connect';
+    if (isEmbedPopup) {
+      window.close();
+    } else {
+      await goto(returnTo);
+    }
+  }
+
   function registrationCallbackParams() {
     const params = new URLSearchParams({ step: 'passkey' });
     if (data.isEmbed) params.set('embed', 'true');
@@ -249,9 +258,22 @@
             Continue with Google
           </Button>
 
-          <p class="text-center text-sm text-surface-500 mt-2">
-            Already have an account? <a href="/auth/login" class="text-surface-900 font-medium hover:underline">Sign in</a>
-          </p>
+          {#if data.isEmbed}
+            <p class="text-center text-sm text-surface-500 mt-2">
+              Already have an account?
+              <button
+                type="button"
+                onclick={returnToEmbedSignIn}
+                class="text-surface-900 font-medium hover:underline bg-transparent border-none p-0 cursor-pointer"
+              >
+                Back to sign in
+              </button>
+            </p>
+          {:else}
+            <p class="text-center text-sm text-surface-500 mt-2">
+              Already have an account? <a href="/auth/login" class="text-surface-900 font-medium hover:underline">Sign in</a>
+            </p>
+          {/if}
         </div>
       {/if}
 
