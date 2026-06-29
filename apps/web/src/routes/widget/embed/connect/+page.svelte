@@ -164,10 +164,12 @@
       const recoverUrl = `${window.location.origin}/auth/recover?embed=true&returnTo=${returnTo}`;
       const popup = window.open(recoverUrl, 'openkey-recover', 'popup=true');
       if (!popup) {
-        window.location.href = `/auth/recover?embed=true&returnTo=${returnTo}`;
+        error = 'Your browser blocked the recovery window. Allow popups for OpenKey, then try Recover account again.';
         return;
       }
       const onMessage = (event: MessageEvent) => {
+        if (event.origin !== window.location.origin) return;
+        if (event.source !== popup) return;
         if (event.data?.type === 'openkey:recover:complete' && event.data.sessionToken) {
           window.removeEventListener('message', onMessage);
           clearInterval(poll);

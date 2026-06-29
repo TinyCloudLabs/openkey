@@ -59,7 +59,11 @@
       credentials: 'include',
       headers: { 'Accept': 'application/json' },
     });
-    const sessionToken = sessionRes.headers.get('set-auth-token');
+    const sessionBody = await sessionRes.json().catch(() => null);
+    const sessionToken =
+      sessionRes.headers.get('set-auth-token') ||
+      sessionBody?.session?.token ||
+      sessionBody?.token;
     if (!sessionToken) {
       throw new Error('Passkey registered, but no session token was returned.');
     }
@@ -148,18 +152,17 @@
     error = '';
     try {
       if (data.isEmbed) {
-        if (!registeredSessionToken) {
-          registeredSessionToken = await readSessionToken();
-        }
+        const sessionToken = registeredSessionToken || await readSessionToken();
+        registeredSessionToken = sessionToken;
 
         if (isEmbedPopup) {
           window.opener.postMessage(
-            { type: 'openkey:register:complete', sessionToken: registeredSessionToken },
+            { type: 'openkey:register:complete', sessionToken },
             window.location.origin
           );
           window.close();
         } else {
-          setSessionToken(registeredSessionToken);
+          setSessionToken(sessionToken);
           await goto(takeReturnTo() || '/widget/embed/connect');
         }
         return;
