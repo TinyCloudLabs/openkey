@@ -43,6 +43,29 @@ jobs:
         run: |
           sed -i "s|\${DOCKER_IMAGE}|${{ env.DOCKER_IMAGE }}:${{ github.sha }}|g" docker-compose.prod.yml
 
+      # Sync the prod Postgres schema to the deployed code BEFORE shipping it.
+      # The Phala TEE can't run Prisma's schema-engine, so the schema must be
+      # pushed from CI (where the engine works) rather than at container start.
+      # Requires DATABASE_URL to be added as a GitHub Actions secret; until then
+      # this step skips gracefully so deploys keep working.
+      # NOTE: no --accept-data-loss — destructive changes fail the step (and block
+      # the later Phala deploy) instead of silently dropping data.
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.0
+
+      - name: Sync prod DB schema
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "DATABASE_URL secret not set; skipping prod schema sync"
+            exit 0
+          fi
+          bun install --frozen-lockfile
+          bun node_modules/.bin/prisma db push --schema=./packages/db/prisma/schema.prisma
+
       - name: Install Phala CLI
         run: npm install -g phala
 
