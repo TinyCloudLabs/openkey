@@ -127,13 +127,13 @@
       const registerUrl = `${window.location.origin}/auth/register?embed=true&returnTo=${returnTo}`;
       const popup = window.open(registerUrl, 'openkey-register', 'popup=true');
       if (!popup) {
-        // Popup blocked — fall back to navigating the iframe itself
-        window.location.href = `/auth/register?embed=true&returnTo=${returnTo}`;
+        error = 'Your browser blocked the registration window. Allow popups for OpenKey, then try Register again.';
         return;
       }
       // Listen for completion from the popup
       const onMessage = (event: MessageEvent) => {
         if (event.origin !== window.location.origin) return;
+        if (event.source !== popup) return;
         if (
           (event.data?.type === 'openkey:register:complete' ||
             event.data?.type === 'openkey:recover:complete') &&
