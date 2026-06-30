@@ -19,11 +19,12 @@ model User {
   updatedAt     DateTime  @updatedAt
 
   // Relations
-  passkeys           Passkey[]
-  ethereumKeys       EthereumKey[]
-  sessions           Session[]
-  accounts           Account[]
-  verification       Verification[]
+  passkeys                Passkey[]
+  ethereumKeys            EthereumKey[]
+  tinyCloudBootstrapState TinyCloudBootstrapState[]
+  sessions                Session[]
+  accounts                Account[]
+  verification            Verification[]
   // OAuth provider relations
   oauthClients       OauthClient[]
   oauthAccessTokens  OauthAccessToken[]
@@ -124,9 +125,37 @@ model EthereumKey {
   createdAt  DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tinyCloudBootstrapState TinyCloudBootstrapState[]
 
   @@index([userId])
   @@map("ethereum_keys")
+}
+
+model TinyCloudBootstrapState {
+  id               String    @id @default(cuid())
+  userId           String
+  keyId            String
+  address          String
+  chainId          Int
+  tinycloudHost    String
+  bootstrapVersion String
+  status           String
+  attemptId        String?
+  lockExpiresAt    DateTime?
+  checkedAt        DateTime
+  completedAt      DateTime?
+  failureCode      String?
+  failureReason    String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  key  EthereumKey @relation(fields: [keyId], references: [id], onDelete: Cascade)
+
+  @@unique([keyId, chainId, tinycloudHost, bootstrapVersion])
+  @@index([userId])
+  @@index([status])
+  @@map("tinycloud_bootstrap_state")
 }
 
 // better-auth JWKS (required by JWT plugin)
