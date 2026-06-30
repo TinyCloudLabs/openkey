@@ -1,5 +1,12 @@
 # @openkey/cli
 
+## 0.1.4
+
+### Patch Changes
+
+- Updated dependencies [f478606]
+  - @openkey/core@0.8.8
+
 ## 0.1.3
 
 ### Patch Changes
