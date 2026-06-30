@@ -663,7 +663,20 @@ async function executeSqlSchema(
   database: string,
   schema: readonly string[],
 ): Promise<void> {
-  await invokeJson(host, session, 'sql', database, 'tinycloud.sql/write', {
+  await invokeJsonWithActions(host, session, [
+    {
+      spaceId: session.spaceId,
+      service: 'sql',
+      path: database,
+      action: 'tinycloud.sql/schema',
+    },
+    {
+      spaceId: session.spaceId,
+      service: 'sql',
+      path: database,
+      action: 'tinycloud.sql/write',
+    },
+  ], {
     action: 'execute',
     sql: 'SELECT 1',
     params: [],
@@ -794,6 +807,28 @@ async function invokeJson(
   await invokeRaw(host, session, service, path, action, JSON.stringify(body), {
     'Content-Type': 'application/json',
   });
+}
+
+async function invokeJsonWithActions(
+  host: string,
+  session: BootstrapSession,
+  entries: Array<{
+    spaceId: string;
+    service: string;
+    path: string;
+    action: string;
+  }>,
+  body: Record<string, unknown>,
+): Promise<void> {
+  const headers = invokeAny(session.session, entries, undefined) as Record<string, string>;
+  const response = await fetch(`${host}/invoke`, {
+    method: 'POST',
+    headers: { ...headers, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    throw new Error(`TinyCloud multi-action invocation failed: HTTP ${response.status} ${await response.text()}`);
+  }
 }
 
 async function invokeRaw(
