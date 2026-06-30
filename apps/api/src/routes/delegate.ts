@@ -17,6 +17,7 @@ import {
   DelegateRequestError,
   delegateErrorResponse,
   normalizeDelegateReason,
+  resolvePreparedExpirationTime,
   shortServiceName,
 } from './delegate-validation';
 import {
@@ -326,22 +327,6 @@ function prepareDelegationSession({
     edited,
     spaceId,
   };
-}
-
-function resolvePreparedExpirationTime(prepared: any): string | undefined {
-  if (typeof prepared?.expirationTime === 'string' && !Number.isNaN(Date.parse(prepared.expirationTime))) {
-    return prepared.expirationTime;
-  }
-
-  if (typeof prepared?.siwe === 'string') {
-    const match = prepared.siwe.match(/^Expiration Time:\s*(.+)$/im);
-    const expirationTime = match?.[1]?.trim();
-    if (expirationTime && !Number.isNaN(Date.parse(expirationTime))) {
-      return expirationTime;
-    }
-  }
-
-  return undefined;
 }
 
 /**
@@ -810,6 +795,11 @@ delegateRouter.post('/', async (c) => {
     return c.json(delegateErrorResponse(e, 'Failed to prepare delegation', 'delegation_prepare_failed'), 400);
   }
 
+  const expirationTime = resolvePreparedExpirationTime(preparedResult.prepared);
+  if (!expirationTime) {
+    return c.json({ error: 'prepared session must include a valid expirationTime or SIWE Expiration Time' }, 400);
+  }
+
   const signature = await signManagedKey(user.id, key.sealedBlob, preparedResult.prepared.siwe);
 
   const session = completeSessionSetup({
@@ -829,7 +819,6 @@ delegateRouter.post('/', async (c) => {
   }
 
   const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
-  const expirationTime = preparedResult.prepared.expirationTime;
 
   return c.json({
     delegationHeader: session.delegationHeader,
@@ -981,6 +970,11 @@ delegateRouter.post('/complete', async (c) => {
     }
   }
 
+  const expirationTime = resolvePreparedExpirationTime(body.prepared);
+  if (!expirationTime) {
+    return c.json({ error: 'prepared session must include a valid expirationTime or SIWE Expiration Time' }, 400);
+  }
+
   // Ensure JWK is a proper object with kty for WASM deserialization
   const session = completeSessionSetup({
     ...body.prepared,
@@ -1005,10 +999,6 @@ delegateRouter.post('/complete', async (c) => {
   const spaceId = body.prepared.spaceId || '';
   const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
   const reason = normalizeDelegateReason(body.reason);
-  const expirationTime = resolvePreparedExpirationTime(body.prepared);
-  if (!expirationTime) {
-    return c.json({ error: 'prepared session must include a valid expirationTime or SIWE Expiration Time' }, 400);
-  }
 
   return c.json({
     delegationHeader: session.delegationHeader,
