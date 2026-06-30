@@ -328,6 +328,22 @@ function prepareDelegationSession({
   };
 }
 
+function resolvePreparedExpirationTime(prepared: any): string | undefined {
+  if (typeof prepared?.expirationTime === 'string' && !Number.isNaN(Date.parse(prepared.expirationTime))) {
+    return prepared.expirationTime;
+  }
+
+  if (typeof prepared?.siwe === 'string') {
+    const match = prepared.siwe.match(/^Expiration Time:\s*(.+)$/im);
+    const expirationTime = match?.[1]?.trim();
+    if (expirationTime && !Number.isNaN(Date.parse(expirationTime))) {
+      return expirationTime;
+    }
+  }
+
+  return undefined;
+}
+
 /**
  * A capability the CLI is asking us to grant. Mirrors `PermissionEntry`
  * from `@tinycloud/sdk-core` — duplicated here so this route doesn't pull
@@ -813,6 +829,7 @@ delegateRouter.post('/', async (c) => {
   }
 
   const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
+  const expirationTime = preparedResult.prepared.expirationTime;
 
   return c.json({
     delegationHeader: session.delegationHeader,
@@ -826,6 +843,9 @@ delegateRouter.post('/', async (c) => {
     hostActivated,
     edited: preparedResult.edited,
     reason,
+    expirationTime,
+    expiresAt: expirationTime,
+    expiry: expirationTime,
     // Include the SIWE message so callers (CLI, web SDK) can persist it
     // alongside the delegation. The SDK extracts `expirationTime` from
     // this string at session-restore time; without it, restored sessions
@@ -985,6 +1005,10 @@ delegateRouter.post('/complete', async (c) => {
   const spaceId = body.prepared.spaceId || '';
   const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
   const reason = normalizeDelegateReason(body.reason);
+  const expirationTime = resolvePreparedExpirationTime(body.prepared);
+  if (!expirationTime) {
+    return c.json({ error: 'prepared session must include a valid expirationTime or SIWE Expiration Time' }, 400);
+  }
 
   return c.json({
     delegationHeader: session.delegationHeader,
@@ -998,6 +1022,9 @@ delegateRouter.post('/complete', async (c) => {
     hostActivated,
     edited: Boolean(body.edited),
     reason,
+    expirationTime,
+    expiresAt: expirationTime,
+    expiry: expirationTime,
     // Echo the SIWE the caller asked us to sign — the SDK extracts
     // `expirationTime` from this when restoring the session, and
     // without it a restored session is treated as expired-at-epoch-zero.
