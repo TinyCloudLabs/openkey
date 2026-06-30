@@ -38,9 +38,10 @@
         "@better-auth/passkey": "^1.6.9",
         "@openkey/db": "workspace:*",
         "@openkey/tee": "workspace:*",
-        "@tinycloud/bootstrap": "2.4.0-beta.19",
-        "@tinycloud/node-sdk": "^2.4.0",
-        "@tinycloud/node-sdk-wasm": "^1.7.4",
+        "@tinycloud/bootstrap": "2.4.0",
+        "@tinycloud/node-sdk": "2.4.0",
+        "@tinycloud/node-sdk-wasm": "1.7.4",
+        "@tinycloud/sdk-core": "2.4.0",
         "better-auth": "^1.6.9",
         "ethers": "^6.16.0",
         "hono": "^4.11.3",
@@ -736,7 +737,7 @@
 
     "@tailwindcss/vite": ["@tailwindcss/vite@4.1.18", "", { "dependencies": { "@tailwindcss/node": "4.1.18", "@tailwindcss/oxide": "4.1.18", "tailwindcss": "4.1.18" }, "peerDependencies": { "vite": "^5.2.0 || ^6 || ^7" } }, "sha512-jVA+/UpKL1vRLg6Hkao5jldawNmRo7mQYrZtNHMIVpLfLhDml5nMRUo/8MwoX2vNXvnaXNNMedrMfMugAVX1nA=="],
 
-    "@tinycloud/bootstrap": ["@tinycloud/bootstrap@2.4.0-beta.19", "", { "dependencies": { "viem": "^2.21.53" } }, "sha512-w+3Y0WmD/5hP0aiw2ovd0rCW0fxr1kX8dDvbYOiO8LxyLlziyp2n1iYl62m4hWkQEhaYNqP5o4CNXd/Ns2bLmA=="],
+    "@tinycloud/bootstrap": ["@tinycloud/bootstrap@2.4.0", "", { "dependencies": { "viem": "^2.21.53" } }, "sha512-RN7wSKpi04voknLgfZ/8TdJvbLhWl0TCnpAOfn0e54stQVaALWqiA90uezNC1BXuMwhO14XrSkwPWzjMVlELgg=="],
 
     "@tinycloud/node-sdk": ["@tinycloud/node-sdk@2.4.0", "", { "dependencies": { "@tinycloud/node-sdk-wasm": "1.7.4", "@tinycloud/sdk-core": "2.4.0", "siwe": "^3.0.0" } }, "sha512-OPMi/5YpBKEKJHJie5vOYiZaprKFNhoXJL9qVNpVcxg6vobpHsWMtAI3i8gblsZLbo3ptwG06OsHUWnXSsP4Xg=="],
 
@@ -1883,9 +1884,6 @@
     "@tailwindcss/vite/vite": ["vite@6.4.1", "", { "dependencies": { "esbuild": "^0.25.0", "fdir": "^6.4.4", "picomatch": "^4.0.2", "postcss": "^8.5.3", "rollup": "^4.34.9", "tinyglobby": "^0.2.13" }, "optionalDependencies": { "fsevents": "~2.3.3" }, "peerDependencies": { "@types/node": "^18.0.0 || ^20.0.0 || >=22.0.0", "jiti": ">=1.21.0", "less": "*", "lightningcss": "^1.21.0", "sass": "*", "sass-embedded": "*", "stylus": "*", "sugarss": "*", "terser": "^5.16.0", "tsx": "^4.8.1", "yaml": "^2.4.2" }, "optionalPeers": ["@types/node", "jiti", "less", "lightningcss", "sass", "sass-embedded", "stylus", "sugarss", "terser", "tsx", "yaml"], "bin": { "vite": "bin/vite.js" } }, "sha512-+Oxm7q9hDoLMyJOYfUYBuHQo+dkAloi33apOPP56pzj+vsdJDzr+j1NISE5pyaAuKL4A3UD34qd0lx5+kfKp2g=="],
 
     "@tinycloud/sdk-core/@noble/curves": ["@noble/curves@1.9.7", "", { "dependencies": { "@noble/hashes": "1.8.0" } }, "sha512-gbKGcRUYIjA3/zCCNaWDciTMFI0dCkvou3TL8Zmy5Nc7sJ47a0jtOeZoTaMxkuqRo9cRhjOdZJXegxYE5FN/xw=="],
-
-    "@tinycloud/sdk-core/@tinycloud/bootstrap": ["@tinycloud/bootstrap@2.4.0", "", { "dependencies": { "viem": "^2.21.53" } }, "sha512-RN7wSKpi04voknLgfZ/8TdJvbLhWl0TCnpAOfn0e54stQVaALWqiA90uezNC1BXuMwhO14XrSkwPWzjMVlELgg=="],
-
     "@tinycloud/sdk-core/zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
 
     "@tinycloud/sdk-services/zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
