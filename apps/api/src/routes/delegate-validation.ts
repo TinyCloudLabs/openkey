@@ -189,3 +189,19 @@ export function normalizeDelegateReason(reason: unknown): string | undefined {
 
   return normalized.slice(0, 500);
 }
+
+export function resolvePreparedExpirationTime(prepared: any): string | undefined {
+  if (typeof prepared?.expirationTime === 'string' && !Number.isNaN(Date.parse(prepared.expirationTime))) {
+    return prepared.expirationTime;
+  }
+
+  if (typeof prepared?.siwe === 'string') {
+    const match = prepared.siwe.match(/^Expiration Time:\s*(.+)$/im);
+    const expirationTime = match?.[1]?.trim();
+    if (expirationTime && !Number.isNaN(Date.parse(expirationTime))) {
+      return expirationTime;
+    }
+  }
+
+  return undefined;
+}

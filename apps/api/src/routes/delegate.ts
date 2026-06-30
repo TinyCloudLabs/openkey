@@ -17,6 +17,7 @@ import {
   DelegateRequestError,
   delegateErrorResponse,
   normalizeDelegateReason,
+  resolvePreparedExpirationTime,
   shortServiceName,
 } from './delegate-validation';
 import {
@@ -794,6 +795,11 @@ delegateRouter.post('/', async (c) => {
     return c.json(delegateErrorResponse(e, 'Failed to prepare delegation', 'delegation_prepare_failed'), 400);
   }
 
+  const expirationTime = resolvePreparedExpirationTime(preparedResult.prepared);
+  if (!expirationTime) {
+    return c.json({ error: 'prepared session must include a valid expirationTime or SIWE Expiration Time' }, 400);
+  }
+
   const signature = await signManagedKey(user.id, key.sealedBlob, preparedResult.prepared.siwe);
 
   const session = completeSessionSetup({
@@ -826,6 +832,9 @@ delegateRouter.post('/', async (c) => {
     hostActivated,
     edited: preparedResult.edited,
     reason,
+    expirationTime,
+    expiresAt: expirationTime,
+    expiry: expirationTime,
     // Include the SIWE message so callers (CLI, web SDK) can persist it
     // alongside the delegation. The SDK extracts `expirationTime` from
     // this string at session-restore time; without it, restored sessions
@@ -961,6 +970,11 @@ delegateRouter.post('/complete', async (c) => {
     }
   }
 
+  const expirationTime = resolvePreparedExpirationTime(body.prepared);
+  if (!expirationTime) {
+    return c.json({ error: 'prepared session must include a valid expirationTime or SIWE Expiration Time' }, 400);
+  }
+
   // Ensure JWK is a proper object with kty for WASM deserialization
   const session = completeSessionSetup({
     ...body.prepared,
@@ -998,6 +1012,9 @@ delegateRouter.post('/complete', async (c) => {
     hostActivated,
     edited: Boolean(body.edited),
     reason,
+    expirationTime,
+    expiresAt: expirationTime,
+    expiry: expirationTime,
     // Echo the SIWE the caller asked us to sign — the SDK extracts
     // `expirationTime` from this when restoring the session, and
     // without it a restored session is treated as expired-at-epoch-zero.
