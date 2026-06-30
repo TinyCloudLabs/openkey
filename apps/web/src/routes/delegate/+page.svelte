@@ -119,6 +119,41 @@
     }
   }
 
+  // Extract the expected owner address from a `tinycloud:pkh:eip155:<chain>:<addr>:<name>`
+  // space URI. Returns the address only when every permission resolves to the
+  // SAME owner via the pkh form. If any permission's space is missing, malformed,
+  // or non-pkh, or addresses disagree, we return null and fall back to the
+  // previous unconstrained behavior. This avoids pinning the UI to an address
+  // when the request is genuinely unscoped or only partially scoped.
+  function extractExpectedAddress(perms: RequestedPermission[]): string | null {
+    if (perms.length === 0) return null;
+    const addresses = new Set<string>();
+    for (const p of perms) {
+      if (typeof p.space !== 'string') return null;
+      const match = p.space.match(/^tinycloud:pkh:eip155:\d+:(0x[a-fA-F0-9]{40}):/);
+      if (!match) return null;
+      addresses.add(match[1].toLowerCase());
+    }
+    return addresses.size === 1 ? [...addresses][0] : null;
+  }
+
+  const expectedAddress = extractExpectedAddress(requestedPermissions);
+  const expectedAddressShort = $derived(
+    expectedAddress
+      ? `${expectedAddress.slice(0, 6)}...${expectedAddress.slice(-4)}`
+      : '',
+  );
+  // True once we've completed the auto-select attempt for the expected wallet.
+  // Used to avoid showing the "wallet not connected" warning before keys load.
+  let preselectAttempted = $state(false);
+  // True when the user has explicitly chosen to proceed with a non-matching
+  // wallet via the override path on the key picker.
+  let overrideMismatch = $state(false);
+  const selectedMatchesExpected = $derived(
+    !expectedAddress ||
+      (selectedKey?.address?.toLowerCase() === expectedAddress),
+  );
+
   function normalizeReason(value: unknown): string {
     if (typeof value !== 'string') return '';
     return value.replace(/\s+/g, ' ').trim().slice(0, 500);
@@ -205,6 +240,25 @@
       loading = false;
     }
   }
+
+  // Auto-select the CLI-requested wallet once keys are loaded. Only runs on
+  // the initial 'select-key' step so revisiting the picker (Back, link-wallet
+  // round-trip) doesn't trap the user in an auto-advance loop.
+  $effect(() => {
+    if (loading || preselectAttempted) return;
+    if (step !== 'select-key') return;
+    if (!expectedAddress) {
+      preselectAttempted = true;
+      return;
+    }
+    const match = keys.find(
+      (k) => k.address.toLowerCase() === expectedAddress,
+    );
+    preselectAttempted = true;
+    if (match) {
+      onKeySelect(match);
+    }
+  });
 
   async function generateAndSelect() {
     loading = true;
@@ -391,6 +445,12 @@
     }
     if (permissionOptions.length > 0 && selectedActionKeys.length === 0) {
       error = 'At least one permission is required.';
+      return;
+    }
+    // Defense-in-depth: the Approve button is already disabled in this case,
+    // but block here too so a stray invocation can't slip through.
+    if (!selectedMatchesExpected && !overrideMismatch) {
+      error = `This CLI requested wallet ${expectedAddressShort}. Pick that wallet or explicitly override.`;
       return;
     }
 
@@ -915,6 +975,26 @@
           </div>
         {/if}
 
+        {#if expectedAddress && !selectedMatchesExpected}
+          <div class="w-full bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-xl mb-4 text-sm" role="alert">
+            <div class="font-medium mb-1">Wallet mismatch</div>
+            <p class="leading-relaxed">
+              This CLI requested a delegation from
+              <code class="font-mono text-xs">{expectedAddressShort}</code>,
+              but you're about to sign with
+              <code class="font-mono text-xs">{formatAddress(selectedKey.address)}</code>.
+              The CLI will reject the resulting delegation.
+            </p>
+            <button
+              type="button"
+              class="mt-2 text-xs text-amber-900 underline bg-transparent border-none cursor-pointer p-0"
+              onclick={goBack}
+            >
+              Choose a different wallet
+            </button>
+          </div>
+        {/if}
+
         <div class="flex flex-col gap-4">
           <div class="p-3 bg-surface-50 border border-surface-200 rounded-xl">
             <div class="text-xs text-surface-400 mb-1">Reason provided by CLI</div>
@@ -1054,11 +1134,13 @@
             <Button variant="secondary" onclick={goBack} disabled={delegating} class="flex-1 rounded-xl">
               Back
             </Button>
-            <Button onclick={approveDelegate} disabled={delegating || updatingPermissions || selectedActionKeys.length === 0} class="flex-1 rounded-xl">
+            <Button onclick={approveDelegate} disabled={delegating || updatingPermissions || selectedActionKeys.length === 0 || (!selectedMatchesExpected && !overrideMismatch)} class="flex-1 rounded-xl">
               {#if delegating}
                 Signing...
               {:else if updatingPermissions}
                 Updating...
+              {:else if !selectedMatchesExpected && !overrideMismatch}
+                Wallet mismatch
               {:else}
                 Approve
               {/if}
@@ -1092,6 +1174,18 @@
           </div>
         {/if}
 
+        {#if expectedAddress && preselectAttempted && !keys.some((k) => k.address.toLowerCase() === expectedAddress)}
+          <div class="w-full bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-xl mb-4 text-sm" role="alert">
+            <div class="font-medium mb-1">Wallet not connected</div>
+            <p class="leading-relaxed">
+              This request is for wallet
+              <code class="font-mono text-xs">{expectedAddressShort}</code>.
+              That wallet isn't currently connected. Link it below, or switch
+              to a profile that uses a wallet you have here.
+            </p>
+          </div>
+        {/if}
+
         {#if keys.length === 0}
           <div class="flex flex-col items-center justify-center text-center py-4">
             <p class="text-surface-500 text-sm mb-5">No keys found. Generate your first key to connect.</p>
@@ -1106,8 +1200,17 @@
           <div class="flex flex-col gap-3">
             <p class="text-surface-500 text-sm">Select a key to authorize:</p>
             {#each keys as key}
+              {@const isExpected = !!expectedAddress && key.address.toLowerCase() === expectedAddress}
+              {@const isMismatch = !!expectedAddress && !isExpected}
               <button
-                class="flex justify-between items-center p-4 bg-white border border-surface-200 rounded-xl cursor-pointer transition-all hover:border-surface-900 hover:bg-surface-50 group"
+                class="flex justify-between items-center p-4 bg-white border rounded-xl cursor-pointer transition-all group"
+                class:border-surface-900={isExpected}
+                class:bg-surface-50={isExpected}
+                class:border-surface-200={!isExpected}
+                class:hover:border-surface-900={!isMismatch}
+                class:hover:bg-surface-50={!isMismatch}
+                class:opacity-60={isMismatch && !overrideMismatch}
+                disabled={isMismatch && !overrideMismatch}
                 onclick={() => onKeySelect(key)}
               >
                 <span class="font-medium flex items-center gap-2">
@@ -1115,10 +1218,22 @@
                   {#if key.keyType === 'EXTERNAL'}
                     <span class="text-xs font-medium px-1.5 py-0.5 rounded-md bg-surface-100 text-surface-500">(External)</span>
                   {/if}
+                  {#if isExpected}
+                    <span class="text-xs font-medium px-1.5 py-0.5 rounded-md bg-emerald-100 text-emerald-700">Requested</span>
+                  {/if}
                 </span>
                 <code class="font-mono text-surface-400 text-sm">{formatAddress(key.address)}</code>
               </button>
             {/each}
+            {#if expectedAddress && !overrideMismatch && !keys.some((k) => k.address.toLowerCase() === expectedAddress)}
+              <button
+                type="button"
+                class="text-xs text-surface-500 hover:text-surface-900 transition-colors bg-transparent border-none cursor-pointer underline self-start"
+                onclick={() => (overrideMismatch = true)}
+              >
+                Continue with a different wallet anyway
+              </button>
+            {/if}
             <Button variant="secondary" onclick={generateAndSelect} class="rounded-xl">
               + Generate New Key
             </Button>
