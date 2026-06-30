@@ -5,6 +5,10 @@ import { createTeeClient, seal, unseal, generatePrivateKey, getAddressFromPrivat
 import { requireSession, type SessionContext } from '../middleware/session';
 import { verifyMessage } from 'viem';
 import type { Hex } from 'viem';
+import {
+  TinyCloudBootstrapError,
+  ensureTinyCloudBootstrapForApprovedSign,
+} from '../services/tinycloud-bootstrap';
 
 const prisma = createPrismaClient();
 const tee = createTeeClient();
@@ -276,6 +280,21 @@ keysRouter.post('/:keyId/sign', async (c) => {
 
   // personal_sign adds EIP-191 prefix, raw signs the message directly
   const format = body.format || 'personal_sign';
+  try {
+    await ensureTinyCloudBootstrapForApprovedSign({
+      prisma,
+      userId: user.id,
+      key,
+      privateKey,
+      message: body.message,
+      format,
+    });
+  } catch (error) {
+    if (!(error instanceof TinyCloudBootstrapError)) {
+      throw error;
+    }
+  }
+
   const signature = await account.signMessage({
     message: format === 'raw' ? { raw: body.message as Hex } : body.message,
   });
