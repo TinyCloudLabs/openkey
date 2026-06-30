@@ -120,22 +120,20 @@
   }
 
   // Extract the expected owner address from a `tinycloud:pkh:eip155:<chain>:<addr>:<name>`
-  // space URI. The CLI pins delegation requests to a specific owner via this
-  // space encoding; if all requested permissions share a single owner address,
-  // we use it to pre-select the matching wallet and to block mismatched signing.
+  // space URI. Returns the address only when every permission resolves to the
+  // SAME owner via the pkh form. If any permission's space is missing, malformed,
+  // or non-pkh, or addresses disagree, we return null and fall back to the
+  // previous unconstrained behavior. This avoids pinning the UI to an address
+  // when the request is genuinely unscoped or only partially scoped.
   function extractExpectedAddress(perms: RequestedPermission[]): string | null {
+    if (perms.length === 0) return null;
     const addresses = new Set<string>();
     for (const p of perms) {
-      const match = typeof p.space === 'string'
-        ? p.space.match(/^tinycloud:pkh:eip155:\d+:(0x[a-fA-F0-9]{40}):/)
-        : null;
-      if (match) {
-        addresses.add(match[1].toLowerCase());
-      }
+      if (typeof p.space !== 'string') return null;
+      const match = p.space.match(/^tinycloud:pkh:eip155:\d+:(0x[a-fA-F0-9]{40}):/);
+      if (!match) return null;
+      addresses.add(match[1].toLowerCase());
     }
-    // Only treat as scope-pinned when every permission resolves to the same
-    // owner address. Mixed-owner requests aren't expected today; falling back
-    // to null preserves the previous unconstrained behavior.
     return addresses.size === 1 ? [...addresses][0] : null;
   }
 
@@ -447,6 +445,12 @@
     }
     if (permissionOptions.length > 0 && selectedActionKeys.length === 0) {
       error = 'At least one permission is required.';
+      return;
+    }
+    // Defense-in-depth: the Approve button is already disabled in this case,
+    // but block here too so a stray invocation can't slip through.
+    if (!selectedMatchesExpected && !overrideMismatch) {
+      error = `This CLI requested wallet ${expectedAddressShort}. Pick that wallet or explicitly override.`;
       return;
     }
 
