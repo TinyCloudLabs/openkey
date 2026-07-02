@@ -259,6 +259,13 @@ function isSupportedTinyCloudChainId(chainId: number): boolean {
 export async function ensureTinyCloudBootstrapForApprovedSign(
   input: EnsureTinyCloudBootstrapInput,
 ): Promise<TinyCloudBootstrapOutcome> {
+  // Kill-switch: clients on the SDK auto-sign strategy bootstrap through
+  // POST /api/delegate/sign instead; this hook only compensates for older
+  // clients. Disable once /delegate/sign traffic replaces widget signs.
+  if (process.env.TINYCLOUD_BOOTSTRAP_ON_SIGN === 'off') {
+    return { status: 'skipped' };
+  }
+
   if (input.format === 'raw') {
     return { status: 'skipped' };
   }

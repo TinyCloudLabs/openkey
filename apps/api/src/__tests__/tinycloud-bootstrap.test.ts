@@ -177,6 +177,21 @@ describe('ensureTinyCloudBootstrapForApprovedSign', () => {
     expect(prisma.tinyCloudBootstrapState.findUnique).not.toHaveBeenCalled();
   });
 
+  test('kill-switch TINYCLOUD_BOOTSTRAP_ON_SIGN=off skips the hook entirely', async () => {
+    process.env.TINYCLOUD_BOOTSTRAP_ON_SIGN = 'off';
+    try {
+      const outcome = await ensureTinyCloudBootstrapForApprovedSign(
+        ensureInput(approvedTinyCloudSiwe()),
+      );
+
+      expect(outcome).toEqual({ status: 'skipped' });
+      expect(executor).not.toHaveBeenCalled();
+      expect(prisma.user.findUnique).not.toHaveBeenCalled();
+    } finally {
+      delete process.env.TINYCLOUD_BOOTSTRAP_ON_SIGN;
+    }
+  });
+
   test('does not apply bootstrap expiry rejection when auto-sign is disabled', async () => {
     autoSignEnabled = false;
     const expiredMessage = tinyCloudSiwe({
