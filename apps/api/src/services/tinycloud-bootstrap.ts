@@ -91,6 +91,11 @@ export class TinyCloudBootstrapError extends Error {
   }
 }
 
+export type TinyCloudBootstrapOutcome =
+  | { status: 'complete' }
+  | { status: 'skipped' }
+  | { status: 'failed'; errorCode: string; errorMessage: string };
+
 interface RecapEntry {
   service: string;
   space: string;
@@ -253,18 +258,25 @@ function isSupportedTinyCloudChainId(chainId: number): boolean {
 
 export async function ensureTinyCloudBootstrapForApprovedSign(
   input: EnsureTinyCloudBootstrapInput,
-): Promise<void> {
+): Promise<TinyCloudBootstrapOutcome> {
+  // Kill-switch: clients on the SDK auto-sign strategy bootstrap through
+  // POST /api/delegate/sign instead; this hook only compensates for older
+  // clients. Disable once /delegate/sign traffic replaces widget signs.
+  if (process.env.TINYCLOUD_BOOTSTRAP_ON_SIGN === 'off') {
+    return { status: 'skipped' };
+  }
+
   if (input.format === 'raw') {
-    return;
+    return { status: 'skipped' };
   }
 
   const parsed = parseTinyCloudSiwe(input.message);
   if (!parsed || !isTinyCloudSiweForSigner(parsed, input.key.address)) {
-    return;
+    return { status: 'skipped' };
   }
 
   if (!isSupportedTinyCloudChainId(parsed.chainId)) {
-    return;
+    return { status: 'skipped' };
   }
 
   const preference = await input.prisma.user.findUnique({
@@ -272,19 +284,30 @@ export async function ensureTinyCloudBootstrapForApprovedSign(
     select: { autoSignEnabled: true },
   });
   if (!preference?.autoSignEnabled) {
-    return;
+    return { status: 'skipped' };
   }
 
   const expirationTime = parsed.expirationTime?.getTime();
   if (expirationTime !== undefined && expirationTime - Date.now() < MIN_USEFUL_SIWE_TTL_MS) {
-    throw new TinyCloudBootstrapError(
-      'TinyCloud sign-in request is expired or too close to expiry.',
-      'tinycloud_bootstrap_expired_request',
-      false,
-    );
+    return {
+      status: 'failed',
+      errorCode: 'tinycloud_bootstrap_expired_request',
+      errorMessage: 'TinyCloud sign-in request is expired or too close to expiry.',
+    };
   }
 
-  const tinycloudHost = trustedTinyCloudBootstrapHost();
+  let tinycloudHost: string;
+  try {
+    tinycloudHost = trustedTinyCloudBootstrapHost();
+  } catch (error) {
+    const bootstrapErr = error instanceof TinyCloudBootstrapError ? error : null;
+    return {
+      status: 'failed',
+      errorCode: bootstrapErr?.code ?? 'tinycloud_bootstrap_untrusted_host',
+      errorMessage: bootstrapErr?.message ?? String(error),
+    };
+  }
+
   const cacheKey = {
     keyId: input.key.id,
     chainId: parsed.chainId,
@@ -296,7 +319,7 @@ export async function ensureTinyCloudBootstrapForApprovedSign(
     where: { keyId_chainId_tinycloudHost_bootstrapVersion: cacheKey },
   });
   if (state?.status === 'complete') {
-    return;
+    return { status: 'complete' };
   }
 
   const attemptId = crypto.randomUUID();
@@ -316,13 +339,13 @@ export async function ensureTinyCloudBootstrapForApprovedSign(
       where: { keyId_chainId_tinycloudHost_bootstrapVersion: cacheKey },
     });
     if (refreshed?.status === 'complete') {
-      return;
+      return { status: 'complete' };
     }
-    throw new TinyCloudBootstrapError(
-      'TinyCloud account bootstrap is already in progress for this key.',
-      'tinycloud_bootstrap_in_progress',
-      true,
-    );
+    return {
+      status: 'failed',
+      errorCode: 'tinycloud_bootstrap_in_progress',
+      errorMessage: 'TinyCloud account bootstrap is already in progress for this key.',
+    };
   }
 
   try {
@@ -357,6 +380,8 @@ export async function ensureTinyCloudBootstrapForApprovedSign(
     if (completed.count !== 1) {
       throw new Error('TinyCloud bootstrap lock was lost before completion');
     }
+
+    return { status: 'complete' };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     await input.prisma.tinyCloudBootstrapState.updateMany({
@@ -369,7 +394,11 @@ export async function ensureTinyCloudBootstrapForApprovedSign(
         lockExpiresAt: null,
       },
     });
-    throw new TinyCloudBootstrapError(reason);
+    return {
+      status: 'failed',
+      errorCode: 'tinycloud_bootstrap_failed',
+      errorMessage: reason,
+    };
   }
 }
 

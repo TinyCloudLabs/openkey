@@ -30,6 +30,15 @@ app.use('/api/auth/oauth2/token', cors({
   credentials: false, // credentials not needed for token exchange
 }));
 
+// Zero-gesture bootstrap signing: allow any origin. Third-party apps call
+// this from the browser with a bearer session token (no cookies), and the
+// auto-sign policy gate restricts what can ever be signed to the bootstrap
+// allowlist. credentials:false keeps cookie auth off this route entirely.
+app.use('/api/delegate/sign', cors({
+  origin: '*',
+  credentials: false,
+}));
+
 // All other routes: restricted to whitelisted origins
 app.use('*', cors({
   origin: corsOrigins.length === 1 ? corsOrigins[0]! : corsOrigins,

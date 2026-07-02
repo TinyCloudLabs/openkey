@@ -405,6 +405,27 @@ export class OpenKey {
   }
 
   /**
+   * Better-auth session token relayed during connect(), or null if the
+   * flow did not provide one. Use as a bearer token for API calls made
+   * on the user's behalf (e.g. TinyCloud auto-sign bootstrap signing).
+   */
+  getSessionToken(): string | null {
+    return this.sessionToken;
+  }
+
+  /**
+   * Endpoint + bearer token for a TinyCloud auto-sign signing strategy.
+   * The endpoint is on the OpenKey API host and only signs requests the
+   * server-side bootstrap allowlist permits.
+   */
+  tinycloudSigningOptions(): { endpoint: string; token: string | null } {
+    return {
+      endpoint: `${this.oauthHost}/api/delegate/sign`,
+      token: this.sessionToken,
+    };
+  }
+
+  /**
    * Link an external wallet to the user's OpenKey account
    * Opens link-wallet widget flow
    */
