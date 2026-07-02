@@ -6,7 +6,6 @@ import { requireSession, type SessionContext } from '../middleware/session';
 import { verifyMessage } from 'viem';
 import type { Hex } from 'viem';
 import {
-  TinyCloudBootstrapError,
   ensureTinyCloudBootstrapForApprovedSign,
 } from '../services/tinycloud-bootstrap';
 
@@ -280,19 +279,21 @@ keysRouter.post('/:keyId/sign', async (c) => {
 
   // personal_sign adds EIP-191 prefix, raw signs the message directly
   const format = body.format || 'personal_sign';
-  try {
-    await ensureTinyCloudBootstrapForApprovedSign({
-      prisma,
-      userId: user.id,
-      key,
-      privateKey,
-      message: body.message,
-      format,
+  const bootstrap = await ensureTinyCloudBootstrapForApprovedSign({
+    prisma,
+    userId: user.id,
+    key,
+    privateKey,
+    message: body.message,
+    format,
+  });
+
+  if (bootstrap.status === 'failed') {
+    console.error('[Keys] TinyCloud bootstrap failed', {
+      keyId: key.id,
+      errorCode: bootstrap.errorCode,
+      errorMessage: bootstrap.errorMessage,
     });
-  } catch (error) {
-    if (!(error instanceof TinyCloudBootstrapError)) {
-      throw error;
-    }
   }
 
   const signature = await account.signMessage({
@@ -303,6 +304,9 @@ keysRouter.post('/:keyId/sign', async (c) => {
     signature,
     address: key.address,
     format,
+    tinycloudBootstrap: bootstrap.status === 'failed'
+      ? { status: 'failed', errorCode: bootstrap.errorCode }
+      : { status: bootstrap.status },
   });
 });
 

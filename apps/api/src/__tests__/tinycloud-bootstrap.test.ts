@@ -238,8 +238,9 @@ describe('ensureTinyCloudBootstrapForApprovedSign', () => {
   test('uses the complete cache without running bootstrap again', async () => {
     state = { id: 'state_1', status: 'complete' };
 
-    await ensureTinyCloudBootstrapForApprovedSign(ensureInput());
+    const outcome = await ensureTinyCloudBootstrapForApprovedSign(ensureInput());
 
+    expect(outcome).toEqual({ status: 'complete' });
     expect(executor).not.toHaveBeenCalled();
     expect(probe).not.toHaveBeenCalled();
     expect(prisma.tinyCloudBootstrapState.create).not.toHaveBeenCalled();
@@ -247,8 +248,9 @@ describe('ensureTinyCloudBootstrapForApprovedSign', () => {
   });
 
   test('creates a cache row, bootstraps, and marks the key complete', async () => {
-    await ensureTinyCloudBootstrapForApprovedSign(ensureInput());
+    const outcome = await ensureTinyCloudBootstrapForApprovedSign(ensureInput());
 
+    expect(outcome).toEqual({ status: 'complete' });
     expect(prisma.tinyCloudBootstrapState.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         keyId: key.id,
@@ -281,7 +283,7 @@ describe('ensureTinyCloudBootstrapForApprovedSign', () => {
     });
   });
 
-  test('returns a retryable error when another bootstrap attempt owns the fresh lock', async () => {
+  test('returns a failed outcome when another bootstrap attempt owns the fresh lock', async () => {
     state = {
       id: 'state_1',
       status: 'in_progress',
@@ -289,10 +291,40 @@ describe('ensureTinyCloudBootstrapForApprovedSign', () => {
       lockExpiresAt: new Date(Date.now() + 60_000),
     };
 
-    await expect(ensureTinyCloudBootstrapForApprovedSign(ensureInput())).rejects.toBeInstanceOf(TinyCloudBootstrapError);
+    const outcome = await ensureTinyCloudBootstrapForApprovedSign(ensureInput());
 
+    expect(outcome).toEqual({
+      status: 'failed',
+      errorCode: 'tinycloud_bootstrap_in_progress',
+      errorMessage: 'TinyCloud account bootstrap is already in progress for this key.',
+    });
     expect(executor).not.toHaveBeenCalled();
     expect(probe).not.toHaveBeenCalled();
     expect(prisma.tinyCloudBootstrapState.updateMany).not.toHaveBeenCalled();
+  });
+
+  test('returns a failed outcome when the bootstrap executor throws', async () => {
+    executor.mockImplementationOnce(async () => {
+      throw new Error('node unreachable');
+    });
+
+    const outcome = await ensureTinyCloudBootstrapForApprovedSign(ensureInput());
+
+    expect(outcome).toEqual({
+      status: 'failed',
+      errorCode: 'tinycloud_bootstrap_failed',
+      errorMessage: 'node unreachable',
+    });
+    expect(state).toMatchObject({ status: 'failed', failureCode: 'tinycloud_bootstrap_failed' });
+  });
+
+  test('returns a skipped outcome when auto-sign is disabled', async () => {
+    autoSignEnabled = false;
+
+    const outcome = await ensureTinyCloudBootstrapForApprovedSign(ensureInput());
+
+    expect(outcome).toEqual({ status: 'skipped' });
+    expect(executor).not.toHaveBeenCalled();
+    expect(probe).not.toHaveBeenCalled();
   });
 });

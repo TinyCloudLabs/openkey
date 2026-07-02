@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from 'bun:test';
+import { beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
 
@@ -6,16 +6,6 @@ const privateKey = '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789
 const account = privateKeyToAccount(privateKey);
 const address = account.address;
 const user = { id: 'user_1', email: 'test@example.com' };
-
-class MockTinyCloudBootstrapError extends Error {
-  constructor(
-    message: string,
-    public readonly code = 'tinycloud_bootstrap_failed',
-    public readonly retryable = true,
-  ) {
-    super(message);
-  }
-}
 
 let calls: string[] = [];
 let keyRecord: {
@@ -30,6 +20,7 @@ let keyRecord: {
 const unseal = mock(async () => privateKey);
 const ensureTinyCloudBootstrapForApprovedSign = mock(async () => {
   calls.push('bootstrap');
+  return { status: 'complete' as const };
 });
 
 const prisma = {
@@ -72,7 +63,6 @@ mock.module('@openkey/tee', () => ({
 }));
 
 mock.module('../services/tinycloud-bootstrap', () => ({
-  TinyCloudBootstrapError: MockTinyCloudBootstrapError,
   ensureTinyCloudBootstrapForApprovedSign,
 }));
 
@@ -172,10 +162,67 @@ describe('keysRouter managed signing', () => {
     expect(calls).toEqual([]);
   });
 
-  test('POST /:keyId/sign still signs the approved message when bootstrap fails', async () => {
+  test('POST /:keyId/sign includes tinycloudBootstrap:complete in response on success', async () => {
+    const router = await keysRouter();
+    const message = 'listen.tinycloud.xyz wants you to sign in with your Ethereum account';
+
+    const response = await router.request('/key_1/sign', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message }),
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      signature: expect.stringMatching(/^0x[0-9a-f]+$/i),
+      address,
+      format: 'personal_sign',
+      tinycloudBootstrap: { status: 'complete' },
+    });
+  });
+
+  test('POST /:keyId/sign still signs when bootstrap returns failed and includes status in response', async () => {
     ensureTinyCloudBootstrapForApprovedSign.mockImplementationOnce(async () => {
       calls.push('bootstrap');
-      throw new MockTinyCloudBootstrapError('bootstrap failed', 'tinycloud_bootstrap_failed', true);
+      return {
+        status: 'failed' as const,
+        errorCode: 'tinycloud_bootstrap_failed',
+        errorMessage: 'node unreachable',
+      };
+    });
+    const consoleSpy = spyOn(console, 'error').mockImplementation(() => {});
+    const router = await keysRouter();
+
+    const response = await router.request('/key_1/sign', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'hello' }),
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toMatchObject({
+      signature: expect.stringMatching(/^0x[0-9a-f]+$/i),
+      address,
+      format: 'personal_sign',
+      tinycloudBootstrap: { status: 'failed', errorCode: 'tinycloud_bootstrap_failed' },
+    });
+    expect(calls).toEqual(['bootstrap', 'sign']);
+    expect(consoleSpy).toHaveBeenCalledWith(
+      '[Keys] TinyCloud bootstrap failed',
+      expect.objectContaining({
+        keyId: keyRecord.id,
+        errorCode: 'tinycloud_bootstrap_failed',
+        errorMessage: 'node unreachable',
+      }),
+    );
+    consoleSpy.mockRestore();
+  });
+
+  test('POST /:keyId/sign includes tinycloudBootstrap:skipped when bootstrap is not applicable', async () => {
+    ensureTinyCloudBootstrapForApprovedSign.mockImplementationOnce(async () => {
+      calls.push('bootstrap');
+      return { status: 'skipped' as const };
     });
     const router = await keysRouter();
 
@@ -187,9 +234,7 @@ describe('keysRouter managed signing', () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
-      signature: expect.stringMatching(/^0x[0-9a-f]+$/i),
-      address,
-      format: 'personal_sign',
+      tinycloudBootstrap: { status: 'skipped' },
     });
     expect(calls).toEqual(['bootstrap', 'sign']);
   });
