@@ -1,5 +1,11 @@
 # @openkey/sdk
 
+## 0.9.0
+
+### Minor Changes
+
+- 85c6417: Expose `getSessionToken()` and `tinycloudSigningOptions()` so apps can construct a TinyCloud auto-sign signing strategy against `POST /api/delegate/sign` with bearer authentication.
+
 ## 0.8.8
 
 ### Patch Changes
