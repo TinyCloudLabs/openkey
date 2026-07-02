@@ -1,6 +1,6 @@
 {
   "name": "@openkey/sdk-react-native",
-  "version": "0.8.7",
+  "version": "0.8.8",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
