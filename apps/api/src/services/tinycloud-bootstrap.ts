@@ -567,8 +567,10 @@ async function runTinyCloudBootstrap(input: {
   const accountSession = requiredSession(sessionBySpace, ACCOUNT_REGISTRY_SPACE);
   const secretsSession = requiredSession(sessionBySpace, SECRETS_SPACE);
 
+  // Schema first: seedBootstrapSpaces now writes account-index rows and
+  // needs the spaces table to exist.
+  await runAccountSchema(input.tinycloudHost, accountSession, steps);
   await Promise.all([
-    runAccountSchema(input.tinycloudHost, accountSession, steps),
     seedBootstrapSpaces(input.tinycloudHost, accountSession, input.address, input.chainId),
     seedBootstrapApplications(input.tinycloudHost, accountSession, steps),
   ]);
@@ -707,7 +709,11 @@ async function executeSqlSchema(
     },
   ], {
     action: 'execute',
-    sql: 'SELECT 1',
+    // The carrier statement runs under `execute`, which rejects statements
+    // that return rows ("Execute returned results - did you mean to call
+    // query?"). Re-run the last schema statement: idempotent, row-free, and
+    // authorized by the same tinycloud.sql/schema ability.
+    sql: schema[schema.length - 1] ?? 'CREATE TABLE IF NOT EXISTS _bootstrap_noop (id INTEGER PRIMARY KEY)',
     params: [],
     schema: [...schema],
   });
@@ -720,21 +726,48 @@ async function seedBootstrapSpaces(
   chainId: number,
 ): Promise<void> {
   const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
-  await Promise.all(BOOTSTRAP_SPACE_NAMES.map((name) => invokeRaw(
+  const now = new Date().toISOString();
+  const records = BOOTSTRAP_SPACE_NAMES.map((name) => ({
+    name,
+    spaceId: `tinycloud:pkh:eip155:${chainId}:${address}:${name}`,
+  }));
+
+  // KV + SQL must match what the SDK's account.spaces.register() writes
+  // (spaces/<fullSpaceId> keys, type "owned", mirrored account-index rows) —
+  // otherwise isFreshBootstrapAccount() sees an unprovisioned account and
+  // clients re-run bootstrap on every sign-in.
+  await Promise.all(records.map(({ name, spaceId }) => invokeRaw(
     host,
     session,
     'kv',
-    `spaces/${name}`,
+    `spaces/${spaceId}`,
     'tinycloud.kv/put',
     JSON.stringify({
+      space_id: spaceId,
       name,
-      space_id: `tinycloud:pkh:eip155:${chainId}:${address}:${name}`,
       owner_did: ownerDid,
-      type: name === 'public' ? 'public' : 'private',
+      type: 'owned',
+      permissions: ['*'],
       status: 'active',
-      updated_at: new Date().toISOString(),
+      registered_at: now,
+      updated_at: now,
     }),
   )));
+
+  await invokeJsonWithActions(host, session, [
+    {
+      spaceId: session.spaceId,
+      service: 'sql',
+      path: 'account',
+      action: 'tinycloud.sql/write',
+    },
+  ], {
+    action: 'batch',
+    statements: records.map(({ name, spaceId }) => ({
+      sql: 'INSERT OR REPLACE INTO spaces (space_id, name, owner_did, type, permissions_json, status, registered_at, updated_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      params: [spaceId, name, ownerDid, 'owned', JSON.stringify(['*']), 'active', now, now, null],
+    })),
+  });
 }
 
 async function seedBootstrapApplications(
