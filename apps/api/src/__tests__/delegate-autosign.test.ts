@@ -174,18 +174,40 @@ describe('evaluateBootstrapSessionScope', () => {
       spaceId,
       entries: [
         entry('capabilities', spaceId, '', ['tinycloud.capabilities/read']),
-        entry('kv', spaceId, '/', [
+        entry('kv', spaceId, '', [
           'tinycloud.kv/get',
           'tinycloud.kv/put',
           'tinycloud.kv/del',
           'tinycloud.kv/list',
           'tinycloud.kv/metadata',
         ]),
-        entry('sql', spaceId, '/', ['tinycloud.sql/read', 'tinycloud.sql/write']),
+        entry('sql', spaceId, '', ['tinycloud.sql/read', 'tinycloud.sql/write']),
       ],
     });
 
     expect(decision).toEqual({ allowed: true });
+  });
+
+  test('rejects legacy "/" root paths from pre-2.4.1 bootstrap clients', () => {
+    // Old @tinycloud/bootstrap encoded root permissions as path "/", which
+    // produced double-slash recap resources the node can never authorize.
+    // Denying them here degrades those clients' bootstrap to skipped rather
+    // than minting unusable delegations.
+    const spaceId = bootstrapSpaceId(address, chainId, 'default');
+
+    const decision = evaluateBootstrapSessionScope({
+      address,
+      chainId,
+      spaceId,
+      entries: [
+        entry('sql', spaceId, '/', ['tinycloud.sql/read', 'tinycloud.sql/write']),
+      ],
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      code: 'outside_bootstrap_allowlist',
+    });
   });
 
   test('accepts the account bootstrap raw encryption capability', () => {
@@ -234,7 +256,7 @@ describe('evaluateBootstrapSigningScope', () => {
       chainId,
       entries: [
         entry('capabilities', spaceId, '', ['tinycloud.capabilities/read']),
-        entry('kv', spaceId, '/', ['tinycloud.kv/get']),
+        entry('kv', spaceId, '', ['tinycloud.kv/get']),
       ],
     });
 

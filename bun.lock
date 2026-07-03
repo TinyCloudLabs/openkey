@@ -38,10 +38,10 @@
         "@better-auth/passkey": "^1.6.9",
         "@openkey/db": "workspace:*",
         "@openkey/tee": "workspace:*",
-        "@tinycloud/bootstrap": "2.4.0",
-        "@tinycloud/node-sdk": "2.4.0",
+        "@tinycloud/bootstrap": "2.4.1",
+        "@tinycloud/node-sdk": "2.5.1",
         "@tinycloud/node-sdk-wasm": "1.7.4",
-        "@tinycloud/sdk-core": "2.4.0",
+        "@tinycloud/sdk-core": "2.5.1",
         "better-auth": "^1.6.9",
         "ethers": "^6.16.0",
         "hono": "^4.11.3",
@@ -73,7 +73,7 @@
     },
     "packages/cli": {
       "name": "@openkey/cli",
-      "version": "0.1.3",
+      "version": "0.1.4",
       "bin": {
         "openkey": "./dist/cli.js",
       },
@@ -89,7 +89,7 @@
     },
     "packages/core": {
       "name": "@openkey/core",
-      "version": "0.8.5",
+      "version": "0.8.8",
       "devDependencies": {
         "tsup": "^8.0.0",
         "typescript": "^6.0.0",
@@ -112,7 +112,7 @@
     },
     "packages/sdk": {
       "name": "@openkey/sdk",
-      "version": "0.8.7",
+      "version": "0.9.0",
       "dependencies": {
         "@openkey/core": "workspace:*",
       },
@@ -123,7 +123,7 @@
     },
     "packages/sdk-react-native": {
       "name": "@openkey/sdk-react-native",
-      "version": "0.8.7",
+      "version": "0.8.8",
       "dependencies": {
         "@openkey/core": "workspace:*",
       },
@@ -152,7 +152,7 @@
     },
     "packages/types": {
       "name": "@openkey/types",
-      "version": "0.0.1",
+      "version": "0.8.8",
       "dependencies": {
         "zod": "^4.0.0",
       },
@@ -737,15 +737,15 @@
 
     "@tailwindcss/vite": ["@tailwindcss/vite@4.1.18", "", { "dependencies": { "@tailwindcss/node": "4.1.18", "@tailwindcss/oxide": "4.1.18", "tailwindcss": "4.1.18" }, "peerDependencies": { "vite": "^5.2.0 || ^6 || ^7" } }, "sha512-jVA+/UpKL1vRLg6Hkao5jldawNmRo7mQYrZtNHMIVpLfLhDml5nMRUo/8MwoX2vNXvnaXNNMedrMfMugAVX1nA=="],
 
-    "@tinycloud/bootstrap": ["@tinycloud/bootstrap@2.4.0", "", { "dependencies": { "viem": "^2.21.53" } }, "sha512-RN7wSKpi04voknLgfZ/8TdJvbLhWl0TCnpAOfn0e54stQVaALWqiA90uezNC1BXuMwhO14XrSkwPWzjMVlELgg=="],
+    "@tinycloud/bootstrap": ["@tinycloud/bootstrap@2.4.1", "", { "dependencies": { "viem": "^2.21.53" } }, "sha512-7Mgf9kcD5I2iLb9SSma+VyWcOCwEediNOP1x/UElOH0vMwH5osPuRrE9M6hbBDn8/FYVQ6MDCKzksBDpgh4FPg=="],
 
-    "@tinycloud/node-sdk": ["@tinycloud/node-sdk@2.4.0", "", { "dependencies": { "@tinycloud/node-sdk-wasm": "1.7.4", "@tinycloud/sdk-core": "2.4.0", "siwe": "^3.0.0" } }, "sha512-OPMi/5YpBKEKJHJie5vOYiZaprKFNhoXJL9qVNpVcxg6vobpHsWMtAI3i8gblsZLbo3ptwG06OsHUWnXSsP4Xg=="],
+    "@tinycloud/node-sdk": ["@tinycloud/node-sdk@2.5.1", "", { "dependencies": { "@tinycloud/node-sdk-wasm": "1.7.4", "@tinycloud/sdk-core": "2.5.1", "siwe": "^3.0.0" } }, "sha512-psP6P/XZU5WLIY+K9ZFn8ThY6BeP6UYUY99bsbSsVM6os538Oae8Sii2JCz/D/u7r4nZlp+8khsUjtkZALK8BA=="],
 
     "@tinycloud/node-sdk-wasm": ["@tinycloud/node-sdk-wasm@1.7.4", "", {}, "sha512-hOzqatgIGbvfOUslXeXVOP1QvcH+iipfDDseBKpnc2Db7bxzGAc06aQXyZSujkftsvgezS2eVBx9gai37BageQ=="],
 
-    "@tinycloud/sdk-core": ["@tinycloud/sdk-core@2.4.0", "", { "dependencies": { "@multiformats/multiaddr": "^13.0.1", "@multiformats/multiaddr-to-uri": "^12.0.0", "@multiformats/uri-to-multiaddr": "^10.0.0", "@noble/curves": "^1.9.7", "@tinycloud/bootstrap": "2.4.0", "@tinycloud/sdk-services": "2.4.0", "ms": "^2.1.3", "multiformats": "^13.4.1", "siwe": "^3.0.0", "viem": "^2.21.53", "zod": "^3.22.0", "zod-to-json-schema": "^3.22.0" } }, "sha512-3Z1GUjpKXSeWJ9ADAZScfoRgib+e1s2GiQjCnuV6ed9cGP/itfmixaIPzP/lB+r5nUTIF04Ijr77ZfhYmR6Ezw=="],
+    "@tinycloud/sdk-core": ["@tinycloud/sdk-core@2.5.1", "", { "dependencies": { "@multiformats/multiaddr": "^13.0.1", "@multiformats/multiaddr-to-uri": "^12.0.0", "@multiformats/uri-to-multiaddr": "^10.0.0", "@noble/curves": "^1.9.7", "@tinycloud/bootstrap": "2.4.1", "@tinycloud/sdk-services": "2.4.2", "ms": "^2.1.3", "multiformats": "^13.4.1", "siwe": "^3.0.0", "viem": "^2.21.53", "zod": "^3.22.0", "zod-to-json-schema": "^3.22.0" } }, "sha512-XVVnoK2CE4ZWUQf+nTr+3IRGOsRuJZVEQde+NXf8KHoliGqJ9Yha29lZcAjXO26n7IT2qxalLciDU+mPSSUuxg=="],
 
-    "@tinycloud/sdk-services": ["@tinycloud/sdk-services@2.4.0", "", { "dependencies": { "zod": "^3.23.0" } }, "sha512-lr8L788eTf6zHCRHN1uIvaTVpO5DL6rPrYATPhEeSz0DAxb4fewM9SxEN96GHwr69chEKBWBHJBSD/gRb6H1JQ=="],
+    "@tinycloud/sdk-services": ["@tinycloud/sdk-services@2.4.2", "", { "dependencies": { "zod": "^3.23.0" } }, "sha512-LxCH+Ss8aIGW6UIPbpqvnNPe38iDT9BMOCSJ2+sJ+/wPSDp0UtezpCBEOY29pssF68DI+RAvorGQ9Y3u6IbCDA=="],
 
     "@types/bun": ["@types/bun@1.3.14", "", { "dependencies": { "bun-types": "1.3.14" } }, "sha512-h1hFqFVcvAvD9j9K7ZW7vd82aSA+rTdznZa+5bwvCwqSB1jmmfLcbIWhOLx1/+boy/xmjgCs/OMUL8hRJSmnPw=="],
 
@@ -1884,6 +1884,7 @@
     "@tailwindcss/vite/vite": ["vite@6.4.1", "", { "dependencies": { "esbuild": "^0.25.0", "fdir": "^6.4.4", "picomatch": "^4.0.2", "postcss": "^8.5.3", "rollup": "^4.34.9", "tinyglobby": "^0.2.13" }, "optionalDependencies": { "fsevents": "~2.3.3" }, "peerDependencies": { "@types/node": "^18.0.0 || ^20.0.0 || >=22.0.0", "jiti": ">=1.21.0", "less": "*", "lightningcss": "^1.21.0", "sass": "*", "sass-embedded": "*", "stylus": "*", "sugarss": "*", "terser": "^5.16.0", "tsx": "^4.8.1", "yaml": "^2.4.2" }, "optionalPeers": ["@types/node", "jiti", "less", "lightningcss", "sass", "sass-embedded", "stylus", "sugarss", "terser", "tsx", "yaml"], "bin": { "vite": "bin/vite.js" } }, "sha512-+Oxm7q9hDoLMyJOYfUYBuHQo+dkAloi33apOPP56pzj+vsdJDzr+j1NISE5pyaAuKL4A3UD34qd0lx5+kfKp2g=="],
 
     "@tinycloud/sdk-core/@noble/curves": ["@noble/curves@1.9.7", "", { "dependencies": { "@noble/hashes": "1.8.0" } }, "sha512-gbKGcRUYIjA3/zCCNaWDciTMFI0dCkvou3TL8Zmy5Nc7sJ47a0jtOeZoTaMxkuqRo9cRhjOdZJXegxYE5FN/xw=="],
+
     "@tinycloud/sdk-core/zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
 
     "@tinycloud/sdk-services/zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
