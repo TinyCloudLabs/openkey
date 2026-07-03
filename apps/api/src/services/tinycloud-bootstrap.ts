@@ -552,8 +552,13 @@ async function runTinyCloudBootstrap(input: {
   tinycloudHost: string;
 }): Promise<void> {
   const steps = bootstrapSteps(input.address, input.chainId);
-  const sessionSteps = steps.filter(isSessionStep);
-  const hostSteps = steps.filter((step): step is BootstrapSpaceStep => step.kind === 'host');
+  // Requests inside each Promise.all fire in array order — put the spaces
+  // apps check first (applications, account) at the front so they are the
+  // most likely to be hosted before the /sign sync budget expires.
+  const sessionSteps = steps.filter(isSessionStep).sort(bySpacePriority);
+  const hostSteps = steps
+    .filter((step): step is BootstrapSpaceStep => step.kind === 'host')
+    .sort(bySpacePriority);
 
   const [sessions, hostDelegations] = await Promise.all([
     Promise.all(sessionSteps.map((step) => createBootstrapSession(input, step))),
@@ -583,6 +588,15 @@ async function runTinyCloudBootstrap(input: {
 
 function isSessionStep(step: BootstrapStep): step is BootstrapSpaceStep {
   return step.kind === 'session';
+}
+
+const BOOTSTRAP_SPACE_PRIORITY: Record<string, number> = {
+  applications: 0,
+  account: 1,
+};
+
+function bySpacePriority(a: BootstrapSpaceStep, b: BootstrapSpaceStep): number {
+  return (BOOTSTRAP_SPACE_PRIORITY[a.space] ?? 9) - (BOOTSTRAP_SPACE_PRIORITY[b.space] ?? 9);
 }
 
 async function createBootstrapSession(
