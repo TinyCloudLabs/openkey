@@ -17,6 +17,10 @@ const challengeStore = new Map<string, { message: string; expiresAt: number }>()
 
 const CHALLENGE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
+// Max time TinyCloud bootstrap may hold up a /sign response before it is
+// moved to the background. Overridable for tests/tuning.
+const BOOTSTRAP_SYNC_BUDGET_MS = Number(process.env.TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS ?? 2500);
+
 function cleanExpiredChallenges() {
   const now = Date.now();
   for (const [nonce, entry] of challengeStore) {
@@ -279,7 +283,12 @@ keysRouter.post('/:keyId/sign', async (c) => {
 
   // personal_sign adds EIP-191 prefix, raw signs the message directly
   const format = body.format || 'personal_sign';
-  const bootstrap = await ensureTinyCloudBootstrapForApprovedSign({
+  // Bound how long bootstrap may delay the signature response. Cache hits
+  // resolve in milliseconds; a fresh bootstrap usually finishes space
+  // hosting within the budget and completes the rest in the background
+  // under its existing lock/heartbeat. Worst case for the user: host
+  // delegations get created the default interactive way.
+  const bootstrapPromise = ensureTinyCloudBootstrapForApprovedSign({
     prisma,
     userId: user.id,
     key,
@@ -287,8 +296,33 @@ keysRouter.post('/:keyId/sign', async (c) => {
     message: body.message,
     format,
   });
+  const bootstrap = await Promise.race([
+    bootstrapPromise,
+    new Promise<{ status: 'pending' }>((resolve) =>
+      setTimeout(() => resolve({ status: 'pending' }), BOOTSTRAP_SYNC_BUDGET_MS),
+    ),
+  ]);
 
-  if (bootstrap.status === 'failed') {
+  if (bootstrap.status === 'pending') {
+    void bootstrapPromise
+      .then((outcome) => {
+        if (outcome.status === 'failed') {
+          console.error('[Keys] TinyCloud bootstrap failed (async)', {
+            keyId: key.id,
+            errorCode: outcome.errorCode,
+            errorMessage: outcome.errorMessage,
+          });
+        } else {
+          console.log('[Keys] TinyCloud bootstrap finished (async)', {
+            keyId: key.id,
+            status: outcome.status,
+          });
+        }
+      })
+      .catch((err) => {
+        console.error('[Keys] TinyCloud bootstrap crashed (async)', { keyId: key.id, err });
+      });
+  } else if (bootstrap.status === 'failed') {
     console.error('[Keys] TinyCloud bootstrap failed', {
       keyId: key.id,
       errorCode: bootstrap.errorCode,
