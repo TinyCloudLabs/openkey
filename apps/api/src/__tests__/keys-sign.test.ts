@@ -2,6 +2,10 @@ import { beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
 
+// Keep the bootstrap sync budget short so the pending-path test is fast.
+// Must be set before the routes/keys module is first imported.
+process.env.TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS = '75';
+
 const privateKey = '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 const account = privateKeyToAccount(privateKey);
 const address = account.address;
@@ -237,5 +241,35 @@ describe('keysRouter managed signing', () => {
       tinycloudBootstrap: { status: 'skipped' },
     });
     expect(calls).toEqual(['bootstrap', 'sign']);
+  });
+
+  test('POST /:keyId/sign does not wait for a slow bootstrap — returns pending within the budget', async () => {
+    let resolveBootstrap!: (outcome: { status: 'complete' }) => void;
+    ensureTinyCloudBootstrapForApprovedSign.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveBootstrap = resolve;
+        }),
+    );
+    const router = await keysRouter();
+
+    const startedAt = Date.now();
+    const response = await router.request('/key_1/sign', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'hello' }),
+    });
+    const elapsed = Date.now() - startedAt;
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { signature?: string; tinycloudBootstrap?: unknown };
+    expect(body.signature).toBeTruthy();
+    expect(body.tinycloudBootstrap).toEqual({ status: 'pending' });
+    // Budget is 75ms in this suite; the signature must not wait on bootstrap.
+    expect(elapsed).toBeLessThan(1000);
+
+    // Let the background bootstrap settle so the test leaves no dangling work.
+    resolveBootstrap({ status: 'complete' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
   });
 });
