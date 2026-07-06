@@ -38,7 +38,7 @@
     "@changesets/cli": "^2.27.1",
     "@rollup/rollup-darwin-x64": "^4.57.1",
     "@tailwindcss/vite": "^4.1.18",
-    "portless": "^0.14.0",
+    "portless": "^0.15.1",
     "tailwindcss": "^4.1.18",
     "turbo": "^2.3.0",
     "typescript": "^6.0.0"
