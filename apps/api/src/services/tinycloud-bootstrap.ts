@@ -4,7 +4,11 @@ import {
   BOOTSTRAP_ENCRYPTION_NETWORK_NAME,
   BOOTSTRAP_MANIFEST,
   BOOTSTRAP_SPACE_NAMES,
+  CAPABILITIES,
+  ENCRYPTION,
+  KV,
   SECRETS_SPACE,
+  SQL,
   bootstrapSteps,
   type BootstrapSpaceName,
   type BootstrapSpaceStep,
@@ -45,7 +49,7 @@ const BOOTSTRAP_LOCK_REFRESH_MS = 30 * 1000;
 const BOOTSTRAP_WAIT_MS = 500;
 const MIN_USEFUL_SIWE_TTL_MS = 5_000;
 const BOOTSTRAP_DOMAIN = 'cli.tinycloud.xyz';
-const NETWORK_CREATE_ACTION = 'tinycloud.encryption/network.create';
+const NETWORK_CREATE_ACTION = ENCRYPTION.NETWORK_CREATE;
 const NETWORK_ADMIN_TYPE = 'tinycloud.encryption.network-admin/v1';
 
 type PrismaLike = {
@@ -236,15 +240,15 @@ function isAccountBootstrapEntry(
   return (
     entry.service === 'capabilities' &&
     (entry.path === '' || entry.path === 'capabilities') &&
-    entry.actions.includes('tinycloud.capabilities/read')
+    entry.actions.includes(CAPABILITIES.READ)
   ) || (
     entry.service === 'kv' &&
     (entry.path === 'applications/' || entry.path === 'spaces/') &&
-    hasAnyAction(entry.actions, ['tinycloud.kv/get', 'tinycloud.kv/list', 'tinycloud.kv/put'])
+    hasAnyAction(entry.actions, [KV.GET, KV.LIST, KV.PUT])
   ) || (
     entry.service === 'sql' &&
     entry.path === 'account' &&
-    hasAnyAction(entry.actions, ['tinycloud.sql/read', 'tinycloud.sql/schema', 'tinycloud.sql/write'])
+    hasAnyAction(entry.actions, [SQL.READ, SQL.SCHEMA, SQL.WRITE])
   );
 }
 
@@ -542,7 +546,7 @@ async function probeTinyCloudBootstrap(input: {
     return;
   }
 
-  await invokeRaw(input.tinycloudHost, session, 'capabilities', '', 'tinycloud.capabilities/read');
+  await invokeRaw(input.tinycloudHost, session, 'capabilities', '', CAPABILITIES.READ);
 }
 
 async function runTinyCloudBootstrap(input: {
@@ -713,13 +717,13 @@ async function executeSqlSchema(
       spaceId: session.spaceId,
       service: 'sql',
       path: database,
-      action: 'tinycloud.sql/schema',
+      action: SQL.SCHEMA,
     },
     {
       spaceId: session.spaceId,
       service: 'sql',
       path: database,
-      action: 'tinycloud.sql/write',
+      action: SQL.WRITE,
     },
   ], {
     action: 'execute',
@@ -755,7 +759,7 @@ async function seedBootstrapSpaces(
     session,
     'kv',
     `spaces/${spaceId}`,
-    'tinycloud.kv/put',
+    KV.PUT,
     JSON.stringify({
       space_id: spaceId,
       name,
@@ -773,7 +777,7 @@ async function seedBootstrapSpaces(
       spaceId: session.spaceId,
       service: 'sql',
       path: 'account',
-      action: 'tinycloud.sql/write',
+      action: SQL.WRITE,
     },
   ], {
     action: 'batch',
@@ -800,7 +804,7 @@ async function putApplicationManifest(host: string, session: BootstrapSession, m
     session,
     'kv',
     `applications/${manifest.app_id}`,
-    'tinycloud.kv/put',
+    KV.PUT,
     JSON.stringify({
       app_id: manifest.app_id,
       name: manifest.name,

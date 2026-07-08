@@ -13,6 +13,7 @@ import {
   parseRecapFromSiwe,
 } from '@tinycloud/node-sdk-wasm';
 import { activateSessionWithHost } from '@tinycloud/sdk-core';
+import { CAPABILITIES, KV, SQL } from '@tinycloud/bootstrap';
 import {
   DelegateRequestError,
   delegateErrorResponse,
@@ -63,26 +64,20 @@ interface PermissionOption {
   actions: PermissionActionOption[];
 }
 
+// Capability URNs come from the TC-112 registry constants published by
+// @tinycloud/bootstrap. Note: tinycloud.sql/export is deliberately absent —
+// it was never a node-dispatched ability (SQL export ops are authorized as
+// sql/read) and js-sdk 2.6.0's exportDb mints sql/read, so granting it was a
+// dead no-op (TC-114).
 const DEFAULT_ABILITIES: AbilitiesMap = {
   kv: {
-    '': [
-      'tinycloud.kv/put',
-      'tinycloud.kv/get',
-      'tinycloud.kv/del',
-      'tinycloud.kv/list',
-      'tinycloud.kv/metadata',
-    ],
+    '': [KV.PUT, KV.GET, KV.DEL, KV.LIST, KV.METADATA],
   },
   sql: {
-    '': [
-      'tinycloud.sql/read',
-      'tinycloud.sql/write',
-      'tinycloud.sql/admin',
-      'tinycloud.sql/export',
-    ],
+    '': [SQL.READ, SQL.WRITE, SQL.ADMIN],
   },
   capabilities: {
-    '': ['tinycloud.capabilities/read'],
+    '': [CAPABILITIES.READ],
   },
 };
 
@@ -101,7 +96,7 @@ function actionKey(entry: RecapEntry, action: string): string {
 }
 
 function isRequiredAction(entry: RecapEntry, action: string): boolean {
-  return entry.service === 'capabilities' && action === 'tinycloud.capabilities/read';
+  return entry.service === 'capabilities' && action === CAPABILITIES.READ;
 }
 
 function permissionOption(entry: RecapEntry): PermissionOption {
@@ -159,7 +154,7 @@ function assertRequiredActions(entries: RecapEntry[]) {
   const hasRequiredCapabilitiesRead = entries.some(
     (entry) =>
       entry.service === 'capabilities' &&
-      entry.actions.includes('tinycloud.capabilities/read')
+      entry.actions.includes(CAPABILITIES.READ)
   );
 
   if (!hasRequiredCapabilitiesRead) {
