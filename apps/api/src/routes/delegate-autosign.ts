@@ -1,5 +1,6 @@
 import {
   BOOTSTRAP_ALLOWLIST,
+  SPACE,
   bootstrapSpaceId,
   type BootstrapAllowlistEntry,
   type BootstrapAllowlistKind,
@@ -77,7 +78,7 @@ function scopeSpaceId(entries: RecapEntry[]): string | undefined {
 function isHostSigningScope(entries: RecapEntry[]): boolean {
   return entries.some((entry) => (
     fullServiceName(entry.service) === 'tinycloud.space' ||
-    entry.actions.includes('tinycloud.space/host')
+    entry.actions.includes(SPACE.HOST)
   ));
 }
 
