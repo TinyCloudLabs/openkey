@@ -1,0 +1,56 @@
+name: Register OAuth Client
+
+# Manually register a public (PKCE-only) OAuth client in the prod database.
+# OpenKey uses pre-registered clients only, and the prod ADMIN_API_KEY lives
+# solely in the Phala CVM env — this workflow provides an auditable
+# registration path using the same DATABASE_URL secret the deploy workflow's
+# schema-sync step already uses. Client ids are public, so log output is safe.
+
+on:
+  workflow_dispatch:
+    inputs:
+      name:
+        description: 'Application display name (shown on the consent screen)'
+        required: true
+      redirect_uris:
+        description: 'Comma-separated allowed redirect URIs'
+        required: true
+      type:
+        description: 'Client type'
+        required: true
+        default: 'native'
+        type: choice
+        options:
+          - native
+          - spa
+      uri:
+        description: 'Application website URL (optional)'
+        required: false
+
+jobs:
+  register:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.0
+
+      - name: Register client
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          CLIENT_NAME: ${{ inputs.name }}
+          CLIENT_REDIRECT_URIS: ${{ inputs.redirect_uris }}
+          CLIENT_TYPE: ${{ inputs.type }}
+          CLIENT_URI: ${{ inputs.uri }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "DATABASE_URL secret not set" >&2
+            exit 1
+          fi
+          bun install --frozen-lockfile
+          bun node_modules/.bin/prisma generate --schema=./packages/db/prisma/schema.prisma
+          bun run scripts/ci-register-oauth-client.ts
