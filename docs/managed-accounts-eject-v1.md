@@ -6,7 +6,7 @@
 
 **Last updated:** 2026-07-15
 
-**Visual walkthrough:** [Managed accounts architecture and flows](./managed-accounts-architecture.html)
+**Visual walkthrough:** [Managed accounts architecture and flows](../apps/web/static/managed-accounts-architecture.html)
 
 ## Summary
 
