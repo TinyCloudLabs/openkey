@@ -5,6 +5,7 @@ import { defineConfig } from "prisma/config";
 const databaseUrl = process.env.DATABASE_URL?.startsWith("pglite:")
   ? "postgresql://openkey:openkey@localhost:5432/openkey"
   : process.env.DATABASE_URL ?? "postgresql://openkey:openkey@localhost:5432/openkey";
+const shadowDatabaseUrl = process.env.SHADOW_DATABASE_URL;
 
 export default defineConfig({
   schema: path.join(__dirname, "prisma/schema.prisma"),
@@ -13,5 +14,6 @@ export default defineConfig({
   },
   datasource: {
     url: databaseUrl,
+    ...(shadowDatabaseUrl ? { shadowDatabaseUrl } : {}),
   },
 });

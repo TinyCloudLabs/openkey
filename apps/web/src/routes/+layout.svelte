@@ -9,6 +9,7 @@
   let isFullScreen = $derived(
     $page.url.pathname === '/' ||
     $page.url.pathname.startsWith('/auth/') ||
+    $page.url.pathname.startsWith('/managed/register') ||
     $page.url.pathname.startsWith('/delegate') ||
     isEmbed
   );
@@ -32,6 +33,12 @@
           </a>
           <a href="/dashboard/api-keys" class="text-surface-500 hover:text-surface-900 transition-colors no-underline">
             API Keys
+          </a>
+          <a href="/dashboard/managed-accounts" class="text-surface-500 hover:text-surface-900 transition-colors no-underline">
+            Managed Accounts
+          </a>
+          <a href="/dashboard/organizations" class="text-surface-500 hover:text-surface-900 transition-colors no-underline">
+            Organizations
           </a>
         </div>
       </nav>

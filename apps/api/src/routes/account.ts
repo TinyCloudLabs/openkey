@@ -26,7 +26,7 @@ accountRouter.get('/', async (c) => {
       createdAt: true,
       _count: {
         select: {
-          ethereumKeys: { where: { archivedAt: null } },
+          ethereumKeys: { where: { archivedAt: null, keyPurpose: 'PERSONAL' } },
           passkeys: true,
         },
       },
@@ -91,15 +91,31 @@ accountRouter.post('/delete', async (c) => {
     }, 400);
   }
 
-  // Get user's keys count for final warning
+  // Managed accounts are a custody boundary and cannot be deleted by the
+  // personal account route. Fail before touching personal data.
+  const managedAccount = await prisma.managedAccount.findFirst({
+    where: { ownerUserId: user.id },
+    select: { id: true },
+  });
+  if (managedAccount) {
+    return c.json({
+      error: {
+        code: 'MANAGED_ACCOUNTS_BLOCK_DELETION',
+        message: 'Transfer or eject all managed accounts before deleting this OpenKey account',
+      },
+    }, 409);
+  }
+
+  // Count and delete only personal keys. Managed keys are never part of this
+  // personal deletion contract.
   const keyCount = await prisma.ethereumKey.count({
-    where: { userId: user.id },
+    where: { userId: user.id, keyPurpose: 'PERSONAL' },
   });
 
   // Delete all user data in transaction
   await prisma.$transaction(async (tx) => {
     // Delete all ethereum keys (sealed blobs will be unrecoverable)
-    await tx.ethereumKey.deleteMany({ where: { userId: user.id } });
+    await tx.ethereumKey.deleteMany({ where: { userId: user.id, keyPurpose: 'PERSONAL' } });
 
     // Delete all passkeys
     await tx.passkey.deleteMany({ where: { userId: user.id } });

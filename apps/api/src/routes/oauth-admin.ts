@@ -3,6 +3,8 @@
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { randomBytes } from 'crypto';
+import { issueOrganizationCredential } from '../services/organization-credentials';
+import { publicPlanDefaults } from '../services/plan-entitlements';
 
 const prisma = createPrismaClient();
 
@@ -35,6 +37,115 @@ function generateId(): string {
 function generateClientId(): string {
   return `ok_${randomBytes(16).toString('hex')}`;
 }
+
+const publicPlans = ['FREE', 'PRO', 'ENTERPRISE'] as const;
+
+// POST /api/admin/oauth/organizations - demo/admin fixture for tenant creation
+oauthAdminRouter.post('/organizations', async (c) => {
+  const body = await c.req.json<{
+    name: string;
+    ownerUserId: string;
+    plan?: typeof publicPlans[number];
+    brokerDid?: string;
+  }>();
+  if (!body.name || !body.ownerUserId || (body.plan && !publicPlans.includes(body.plan))) {
+    return c.json({ error: 'name, ownerUserId, and a public plan are required' }, 400);
+  }
+  const plan = body.plan ?? 'FREE';
+  const owner = await prisma.user.findUnique({ where: { id: body.ownerUserId }, select: { id: true } });
+  if (!owner) return c.json({ error: 'Owner user not found' }, 404);
+  const organization = await prisma.$transaction(async (tx) => {
+    const created = await tx.organization.create({
+      data: { name: body.name, plan, brokerDid: body.brokerDid ?? null },
+    });
+    await tx.organizationMembership.create({
+      data: { organizationId: created.id, userId: body.ownerUserId, role: 'ADMIN' },
+    });
+    await tx.planEntitlements.create({
+      data: { organizationId: created.id, ...publicPlanDefaults(plan) },
+    });
+    return created;
+  });
+  return c.json({ organization }, 201);
+});
+
+oauthAdminRouter.patch('/organizations/:organizationId/plan', async (c) => {
+  const body = await c.req.json<{ plan: typeof publicPlans[number] }>();
+  if (!publicPlans.includes(body.plan)) return c.json({ error: 'Unknown public plan' }, 400);
+  const defaults = publicPlanDefaults(body.plan);
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      const organization = await tx.organization.update({
+        where: { id: c.req.param('organizationId') },
+        data: { plan: body.plan, billingState: body.plan === 'FREE' ? 'FREE' : 'ACTIVE' },
+      });
+      const entitlements = await tx.planEntitlements.upsert({
+        where: { organizationId: organization.id },
+        create: { organizationId: organization.id, ...defaults },
+        update: defaults,
+      });
+      return { organization, entitlements };
+    });
+    return c.json({ ...result, entitlements: { ...result.entitlements, storageBytesPerManagedAccount: result.entitlements.storageBytesPerManagedAccount.toString() } });
+  } catch (error: any) {
+    if (error.code === 'P2025') return c.json({ error: 'Organization not found' }, 404);
+    throw error;
+  }
+});
+
+oauthAdminRouter.post('/organizations/:organizationId/credentials', async (c) => {
+  const body = await c.req.json<{ name: string; subjectUserId: string; kind: 'BROKER' | 'PROVISIONER' }>();
+  if (!body.name || !body.subjectUserId || !['BROKER', 'PROVISIONER'].includes(body.kind)) {
+    return c.json({ error: 'name, subjectUserId, and kind are required' }, 400);
+  }
+  const membership = await prisma.organizationMembership.findFirst({
+    where: {
+      organizationId: c.req.param('organizationId'),
+      userId: body.subjectUserId,
+      status: 'ACTIVE',
+      revokedAt: null,
+    },
+    select: { id: true },
+  });
+  if (!membership) return c.json({ error: 'Active organization member not found' }, 404);
+  const issued = await issueOrganizationCredential(prisma, {
+    organizationId: c.req.param('organizationId'),
+    subjectUserId: body.subjectUserId,
+    name: body.name,
+    kind: body.kind,
+  });
+  return c.json(issued, 201);
+});
+
+oauthAdminRouter.post('/organizations/:organizationId/clients', async (c) => {
+  const body = await c.req.json<{ name: string; redirectUris: string[]; uri?: string; icon?: string; type?: 'native' | 'spa' }>();
+  if (!body.name || !Array.isArray(body.redirectUris) || body.redirectUris.length === 0) {
+    return c.json({ error: 'name and redirectUris are required' }, 400);
+  }
+  for (const uri of body.redirectUris) {
+    try { new URL(uri); } catch { return c.json({ error: `Invalid redirect URI: ${uri}` }, 400); }
+  }
+  const organizationId = c.req.param('organizationId');
+  const organization = await prisma.organization.findUnique({
+    where: { id: organizationId },
+    include: { planEntitlements: true, _count: { select: { oauthClients: true } } },
+  });
+  if (!organization) return c.json({ error: 'Organization not found' }, 404);
+  if (!organization.planEntitlements || organization._count.oauthClients >= organization.planEntitlements.maxApps) {
+    return c.json({ error: { code: 'PLAN_LIMIT_EXCEEDED', limit: 'maxApps' } }, 429);
+  }
+  const clientId = generateClientId();
+  const client = await prisma.oauthClient.create({
+    data: {
+      id: generateId(), clientId, clientSecret: null, organizationId, name: body.name,
+      uri: body.uri ?? null, icon: body.icon ?? null, redirectUris: body.redirectUris,
+      scopes: ['openid', 'email', 'keys', 'offline_access'], disabled: false, skipConsent: false,
+      enableEndSession: false, tokenEndpointAuthMethod: 'none', grantTypes: ['authorization_code', 'refresh_token'],
+      responseTypes: ['code'], type: body.type ?? 'spa', public: true, contacts: [],
+    },
+  });
+  return c.json({ client }, 201);
+});
 
 // POST /api/admin/oauth/clients - Register a new OAuth client
 oauthAdminRouter.post('/clients', async (c) => {

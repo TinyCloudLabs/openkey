@@ -1,6 +1,7 @@
 // OpenKey API - better-auth configuration
 // Auth Flow: Email OTP OR Google → Passkey creation (required) → Passkey login
-import { betterAuth } from 'better-auth';
+import { betterAuth, type BetterAuthPlugin } from 'better-auth';
+import type { AuthMiddleware } from '@better-auth/core/api';
 import { prismaAdapter } from 'better-auth/adapters/prisma';
 import { passkey } from '@better-auth/passkey';
 import { bearer, emailOTP, jwt } from 'better-auth/plugins';
@@ -9,6 +10,11 @@ import { Resend } from 'resend';
 import { createPrismaClient } from '@openkey/db';
 import { createTeeClient, seal, generatePrivateKey, getAddressFromPrivateKey } from '@openkey/tee';
 import { buildEmailClaims } from './claims';
+import { createSealingContext } from './services/key-sealing';
+import {
+  assertFreshPasskeyUserVerification,
+  recordVerifiedPasskeySession,
+} from './services/passkey-freshness';
 
 const prisma = createPrismaClient({
   log: ['error', 'warn'],
@@ -27,6 +33,18 @@ const origin = process.env.WEBAUTHN_ORIGIN!;
 
 // Base URL for proper request context
 const baseURL = process.env.BETTER_AUTH_URL!;
+
+const passkeyFreshnessPlugin = {
+  id: 'openkey-passkey-freshness',
+  hooks: {
+    after: [{
+      matcher: (ctx) => ctx.path === '/passkey/verify-authentication',
+      handler: (async (ctx: { path?: string; headers?: Headers; context: { returned?: unknown } }) => {
+        await recordVerifiedPasskeySession(prisma, ctx.context.returned, ctx.headers?.get('x-openkey-passkey-ceremony'));
+      }) as AuthMiddleware,
+    }],
+  },
+} satisfies BetterAuthPlugin;
 
 export const auth = betterAuth({
   baseURL,
@@ -57,11 +75,22 @@ export const auth = betterAuth({
   },
 
   plugins: [
+    passkeyFreshnessPlugin,
     // Passkey authentication (required for login after initial registration)
     passkey({
       rpID,
       rpName: 'OpenKey',
       origin,
+      authentication: {
+        // Better Auth does not expose a per-request requireUserVerification
+        // option. Keep ordinary login behavior unchanged, but require UV on
+        // the server-issued ceremony marker used for custody freshness.
+        afterVerification: async ({ ctx, verification }) => {
+          if (ctx.headers?.get('x-openkey-passkey-ceremony')) {
+            assertFreshPasskeyUserVerification(verification);
+          }
+        },
+      },
     }),
 
     // Email OTP for initial registration verification
@@ -126,6 +155,7 @@ export const auth = betterAuth({
           const keys = await prisma.ethereumKey.findMany({
             where: {
               userId: user.id,
+              keyPurpose: 'PERSONAL',
               archivedAt: null,
             },
             select: {
@@ -152,7 +182,7 @@ export const auth = betterAuth({
         }
         if (scopes.includes('keys')) {
           const keys = await prisma.ethereumKey.findMany({
-            where: { userId: user.id, archivedAt: null },
+            where: { userId: user.id, keyPurpose: 'PERSONAL', archivedAt: null },
             select: { id: true, address: true, keyType: true },
             orderBy: { keyIndex: 'asc' },
           });
@@ -197,7 +227,8 @@ export const auth = betterAuth({
           try {
             const privateKey = generatePrivateKey();
             const address = getAddressFromPrivateKey(privateKey);
-            const sealingKey = await tee.deriveKey(`openkey/user/${user.id}/keys`);
+            const sealingContext = createSealingContext();
+            const sealingKey = await tee.deriveKey(`openkey/key/${sealingContext}`);
             const sealedBlob = await seal(privateKey, sealingKey);
 
             await prisma.ethereumKey.create({
@@ -206,6 +237,8 @@ export const auth = betterAuth({
                 address,
                 publicKey: address,
                 sealedBlob,
+                sealingContext,
+                keyPurpose: 'PERSONAL',
                 keyIndex: 0,
                 label: 'Key 0',
               },

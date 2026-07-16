@@ -4,9 +4,16 @@
 // where SameSite=Lax cookies are blocked.
 import { Hono } from 'hono';
 import { auth } from '../auth';
+import {
+  beginPasskeyCeremony,
+  completePasskeyCeremony,
+  discardPasskeyCeremony,
+  issuePasskeyCeremony,
+} from '../services/passkey-freshness';
 
 // In-memory challenge store: maps challengeToken -> cookie name+value
 const challengeStore = new Map<string, { cookieName: string; cookieValue: string; expires: number }>();
+const MAX_CHALLENGES = 10_000;
 
 function cleanExpiredChallenges() {
   const now = Date.now();
@@ -64,6 +71,9 @@ export const passkeyProxyRouter = new Hono();
 // Proxies to GET /api/auth/passkey/generate-register-options
 passkeyProxyRouter.post('/generate-register-options', async (c) => {
   cleanExpiredChallenges();
+  if (challengeStore.size >= MAX_CHALLENGES) {
+    return c.json({ error: 'Too many passkey challenges in progress' }, 503);
+  }
 
   type GenerateRegisterOptionsBody = { authenticatorAttachment?: string; name?: string };
   const body = await c.req.json<GenerateRegisterOptionsBody>().catch((): GenerateRegisterOptionsBody => ({}));
@@ -93,6 +103,9 @@ passkeyProxyRouter.post('/generate-register-options', async (c) => {
 
   // Generate a challenge token and store the cookie name+value
   const challengeToken = crypto.randomUUID();
+  if (!issuePasskeyCeremony(challengeToken)) {
+    return c.json({ error: 'Too many passkey ceremonies in progress' }, 503);
+  }
   challengeStore.set(challengeToken, {
     cookieName: passkeyCookie.name,
     cookieValue: passkeyCookie.value,
@@ -120,9 +133,12 @@ passkeyProxyRouter.post('/verify-registration', async (c) => {
     return c.json({ error: 'Challenge token not found or expired' }, 400);
   }
   challengeStore.delete(challengeToken);
-
   if (stored.expires <= Date.now()) {
+    discardPasskeyCeremony(challengeToken);
     return c.json({ error: 'Challenge token expired' }, 400);
+  }
+  if (!beginPasskeyCeremony(challengeToken)) {
+    return c.json({ error: 'Challenge token not found or expired' }, 400);
   }
 
   // Build cookie header with the stored passkey challenge (using correct cookie name)
@@ -133,6 +149,9 @@ passkeyProxyRouter.post('/verify-registration', async (c) => {
 
   const headers = new Headers(c.req.raw.headers);
   headers.set('cookie', cookieHeader);
+  // This token is one-time in the proxy store and accompanies the verified
+  // ceremony to the Better Auth hook; clients cannot turn it into freshness.
+  headers.set('x-openkey-passkey-ceremony', challengeToken);
 
   const internalReq = new Request(`${baseURL}/api/auth/passkey/verify-registration`, {
     method: 'POST',
@@ -142,6 +161,8 @@ passkeyProxyRouter.post('/verify-registration', async (c) => {
 
   const response = await auth.handler(internalReq);
   const responseBody = await response.json();
+  if (response.status >= 200 && response.status < 300) completePasskeyCeremony(challengeToken);
+  else discardPasskeyCeremony(challengeToken);
 
   // Extract session token from response cookies
   const sessionToken = extractSessionToken(response.headers);
@@ -157,6 +178,9 @@ passkeyProxyRouter.post('/verify-registration', async (c) => {
 // Proxies to GET /api/auth/passkey/generate-authenticate-options
 passkeyProxyRouter.post('/generate-authenticate-options', async (c) => {
   cleanExpiredChallenges();
+  if (challengeStore.size >= MAX_CHALLENGES) {
+    return c.json({ error: 'Too many passkey challenges in progress' }, 503);
+  }
 
   const url = `${baseURL}/api/auth/passkey/generate-authenticate-options`;
 
@@ -176,6 +200,9 @@ passkeyProxyRouter.post('/generate-authenticate-options', async (c) => {
 
   // Generate a challenge token and store the cookie name+value
   const challengeToken = crypto.randomUUID();
+  if (!issuePasskeyCeremony(challengeToken)) {
+    return c.json({ error: 'Too many passkey ceremonies in progress' }, 503);
+  }
   challengeStore.set(challengeToken, {
     cookieName: passkeyCookie.name,
     cookieValue: passkeyCookie.value,
@@ -202,9 +229,12 @@ passkeyProxyRouter.post('/verify-authentication', async (c) => {
     return c.json({ error: 'Challenge token not found or expired' }, 400);
   }
   challengeStore.delete(challengeToken);
-
   if (stored.expires <= Date.now()) {
+    discardPasskeyCeremony(challengeToken);
     return c.json({ error: 'Challenge token expired' }, 400);
+  }
+  if (!beginPasskeyCeremony(challengeToken)) {
+    return c.json({ error: 'Challenge token not found or expired' }, 400);
   }
 
   // Build cookie header with the stored passkey challenge (using correct cookie name)
@@ -215,6 +245,7 @@ passkeyProxyRouter.post('/verify-authentication', async (c) => {
 
   const headers = new Headers(c.req.raw.headers);
   headers.set('cookie', cookieHeader);
+  headers.set('x-openkey-passkey-ceremony', challengeToken);
 
   const internalReq = new Request(`${baseURL}/api/auth/passkey/verify-authentication`, {
     method: 'POST',
@@ -224,6 +255,8 @@ passkeyProxyRouter.post('/verify-authentication', async (c) => {
 
   const response = await auth.handler(internalReq);
   const responseBody = await response.json();
+  if (response.status >= 200 && response.status < 300) completePasskeyCeremony(challengeToken);
+  else discardPasskeyCeremony(challengeToken);
 
   // Extract session token from response cookies
   const sessionToken = extractSessionToken(response.headers);

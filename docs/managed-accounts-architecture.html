@@ -1,0 +1,912 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A visual guide to OpenKey managed accounts, multi-tenancy, plans, registration, custody transfer, and TinyCloud access revocation.">
+  <title>OpenKey managed accounts — architecture and flows</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --primary-50: #f5f3ff;
+      --primary-100: #ede9fe;
+      --primary-200: #ddd6fe;
+      --primary-300: #c4b5fd;
+      --primary-500: #8b5cf6;
+      --primary-600: #7c3aed;
+      --primary-700: #6d28d9;
+      --primary-900: #4c1d95;
+      --primary-950: #2e1065;
+      --surface-0: #ffffff;
+      --surface-50: #fafafa;
+      --surface-100: #f5f5f5;
+      --surface-200: #e5e5e5;
+      --surface-300: #d4d4d4;
+      --surface-500: #737373;
+      --surface-600: #525252;
+      --surface-700: #404040;
+      --surface-800: #262626;
+      --surface-900: #171717;
+      --success-50: #ecfdf5;
+      --success-200: #a7f3d0;
+      --success-700: #047857;
+      --warning-50: #fffbeb;
+      --warning-200: #fde68a;
+      --warning-800: #92400e;
+      --danger-50: #fef2f2;
+      --danger-200: #fecaca;
+      --danger-800: #991b1b;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      --content: 1180px;
+      --nav-width: 228px;
+      --radius: 14px;
+      --z-sticky: 20;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; scroll-padding-top: 88px; }
+    body {
+      margin: 0;
+      overflow-x: clip;
+      background: var(--surface-50);
+      color: var(--surface-900);
+      font-family: var(--font-sans);
+      font-size: 16px;
+      line-height: 1.6;
+      text-rendering: optimizeLegibility;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: inherit; }
+    button { font: inherit; }
+    code, .mono { font-family: var(--font-mono); }
+
+    .skip-link {
+      position: fixed;
+      left: 16px;
+      top: 12px;
+      z-index: 100;
+      transform: translateY(-140%);
+      border-radius: 8px;
+      background: var(--surface-900);
+      color: white;
+      padding: 10px 14px;
+      transition: transform 180ms ease-out;
+    }
+    .skip-link:focus { transform: translateY(0); }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: var(--z-sticky);
+      border-bottom: 1px solid var(--surface-200);
+      background: rgb(250 250 250 / 94%);
+      backdrop-filter: blur(10px);
+    }
+    .topbar-inner {
+      max-width: var(--content);
+      min-height: 64px;
+      margin: 0 auto;
+      padding: 0 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      overflow: hidden;
+    }
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      text-decoration: none;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+    .brand-mark {
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      border-radius: 8px;
+      background: var(--primary-700);
+      color: white;
+      font-size: 14px;
+      line-height: 1;
+    }
+    .topbar-meta {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--surface-600);
+      font-size: 14px;
+    }
+    .release-pill {
+      max-width: 190px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: var(--primary-100);
+      color: var(--primary-900);
+      padding: 4px 10px;
+      font-weight: 650;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .hero {
+      background:
+        radial-gradient(circle at 84% 22%, rgb(139 92 246 / 20%), transparent 30%),
+        var(--primary-950);
+      color: white;
+    }
+    .hero-inner {
+      max-width: var(--content);
+      margin: 0 auto;
+      padding: 76px 24px 68px;
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.65fr);
+      gap: clamp(40px, 8vw, 112px);
+      align-items: end;
+      min-width: 0;
+    }
+    .hero h1 {
+      max-width: 760px;
+      margin: 0;
+      font-size: clamp(2.5rem, 6vw, 5rem);
+      line-height: 0.98;
+      letter-spacing: -0.04em;
+      text-wrap: balance;
+    }
+    .hero-lede {
+      max-width: 69ch;
+      margin: 26px 0 0;
+      color: var(--primary-100);
+      font-size: clamp(1.05rem, 1.6vw, 1.28rem);
+      line-height: 1.65;
+      text-wrap: pretty;
+    }
+    .hero-facts {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      border-top: 1px solid rgb(255 255 255 / 24%);
+    }
+    .hero-facts li {
+      display: grid;
+      grid-template-columns: 96px 1fr;
+      gap: 14px;
+      padding: 15px 0;
+      border-bottom: 1px solid rgb(255 255 255 / 16%);
+    }
+    .hero-facts strong {
+      color: var(--primary-200);
+      font-size: 13px;
+      font-weight: 650;
+    }
+    .hero-facts span { font-size: 14px; line-height: 1.5; }
+
+    .status-rail {
+      border-bottom: 1px solid var(--surface-200);
+      background: var(--surface-0);
+    }
+    .status-rail-inner {
+      max-width: var(--content);
+      margin: 0 auto;
+      padding: 18px 24px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px 28px;
+      font-size: 14px;
+    }
+    .status-item { display: inline-flex; align-items: center; gap: 9px; }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success-700); }
+    .status-note { color: var(--surface-600); }
+
+    .page-shell {
+      max-width: var(--content);
+      margin: 0 auto;
+      padding: 54px 24px 96px;
+      display: grid;
+      grid-template-columns: var(--nav-width) minmax(0, 1fr);
+      gap: clamp(36px, 7vw, 88px);
+      align-items: start;
+    }
+    .side-nav {
+      position: sticky;
+      top: 92px;
+    }
+    .side-nav p {
+      margin: 0 0 12px;
+      color: var(--surface-500);
+      font-size: 13px;
+      font-weight: 650;
+    }
+    .side-nav ul { margin: 0; padding: 0; list-style: none; }
+    .side-nav a {
+      display: block;
+      margin: 2px 0;
+      border-radius: 8px;
+      padding: 7px 10px;
+      color: var(--surface-600);
+      font-size: 14px;
+      text-decoration: none;
+      transition: background 160ms ease-out, color 160ms ease-out;
+    }
+    .side-nav a:hover { background: var(--surface-100); color: var(--surface-900); }
+    .side-nav a[aria-current="true"] { background: var(--primary-100); color: var(--primary-900); font-weight: 650; }
+
+    main { min-width: 0; }
+    section { margin: 0 0 88px; }
+    section:last-child { margin-bottom: 0; }
+    h2 {
+      margin: 0;
+      font-size: 2rem;
+      line-height: 1.18;
+      letter-spacing: -0.03em;
+      text-wrap: balance;
+    }
+    h3 {
+      margin: 0;
+      font-size: 1.14rem;
+      line-height: 1.35;
+      letter-spacing: -0.015em;
+      text-wrap: balance;
+    }
+    .section-intro {
+      max-width: 72ch;
+      margin: 14px 0 30px;
+      color: var(--surface-600);
+      font-size: 1.04rem;
+      text-wrap: pretty;
+    }
+
+    .promise {
+      margin: 0;
+      border: 1px solid var(--primary-200);
+      border-radius: var(--radius);
+      background: var(--primary-50);
+      padding: clamp(24px, 4vw, 42px);
+      color: var(--primary-950);
+      font-size: clamp(1.35rem, 3vw, 2.15rem);
+      font-weight: 720;
+      line-height: 1.3;
+      letter-spacing: -0.025em;
+      text-wrap: balance;
+    }
+    .promise small {
+      display: block;
+      max-width: 72ch;
+      margin-top: 18px;
+      color: var(--primary-900);
+      font-size: 14px;
+      font-weight: 500;
+      line-height: 1.6;
+      letter-spacing: 0;
+    }
+
+    .comparison {
+      overflow: hidden;
+      border: 1px solid var(--surface-200);
+      border-radius: var(--radius);
+      background: var(--surface-0);
+    }
+    .comparison-row {
+      display: grid;
+      grid-template-columns: minmax(130px, 0.48fr) 1fr 1fr;
+      border-top: 1px solid var(--surface-200);
+    }
+    .comparison-row:first-child { border-top: 0; }
+    .comparison-row > div { padding: 18px 20px; }
+    .comparison-row > div + div { border-left: 1px solid var(--surface-200); }
+    .comparison-label { color: var(--surface-700); font-size: 14px; font-weight: 700; }
+    .comparison-before { background: var(--surface-50); color: var(--surface-600); }
+    .comparison-now { color: var(--surface-900); }
+    .comparison-head { font-size: 13px; font-weight: 750; }
+    .comparison-head .comparison-before { color: var(--danger-800); }
+    .comparison-head .comparison-now { background: var(--success-50); color: var(--success-700); }
+
+    .diagram-panel {
+      width: 100%;
+      min-width: 0;
+      overflow: auto;
+      border: 1px solid var(--surface-200);
+      border-radius: var(--radius);
+      background: var(--surface-0);
+      padding: clamp(18px, 3vw, 30px);
+    }
+    .diagram-panel .mermaid {
+      display: flex;
+      justify-content: center;
+      min-width: 620px;
+      margin: 0;
+      font-family: var(--font-sans);
+    }
+    .diagram-caption {
+      margin: 12px 0 0;
+      color: var(--surface-500);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .boundary-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 1px;
+      margin-top: 28px;
+      overflow: hidden;
+      border: 1px solid var(--surface-200);
+      border-radius: var(--radius);
+      background: var(--surface-200);
+    }
+    .boundary-item { background: var(--surface-0); padding: 22px; }
+    .boundary-item p { margin: 8px 0 0; color: var(--surface-600); font-size: 14px; }
+    .boundary-item code { color: var(--primary-900); font-size: 13px; font-weight: 650; }
+
+    .step-notes {
+      margin: 28px 0 0;
+      padding: 0;
+      list-style: none;
+      counter-reset: step;
+      border-top: 1px solid var(--surface-200);
+    }
+    .step-notes li {
+      counter-increment: step;
+      display: grid;
+      grid-template-columns: 34px minmax(0, 1fr);
+      gap: 14px;
+      padding: 18px 0;
+      border-bottom: 1px solid var(--surface-200);
+    }
+    .step-notes li::before {
+      content: counter(step);
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      background: var(--primary-100);
+      color: var(--primary-900);
+      font-size: 13px;
+      font-weight: 750;
+    }
+    .step-notes strong { display: block; margin-bottom: 3px; }
+    .step-notes span { color: var(--surface-600); font-size: 14px; }
+
+    .plan-table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--surface-200);
+      border-radius: var(--radius);
+      background: var(--surface-0);
+    }
+    table { width: 100%; min-width: 720px; border-collapse: collapse; text-align: left; }
+    th, td { padding: 15px 18px; border-bottom: 1px solid var(--surface-200); vertical-align: top; }
+    tr:last-child td { border-bottom: 0; }
+    th { background: var(--surface-50); color: var(--surface-700); font-size: 13px; font-weight: 750; }
+    td { color: var(--surface-700); font-size: 14px; }
+    td:first-child { color: var(--surface-900); font-weight: 650; }
+    .plan-name { color: var(--primary-900); font-weight: 750; }
+
+    .invariant-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 14px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+    .invariant-list li {
+      border: 1px solid var(--surface-200);
+      border-radius: 12px;
+      background: var(--surface-0);
+      padding: 18px;
+      color: var(--surface-700);
+      font-size: 14px;
+    }
+    .invariant-list strong { display: block; margin-bottom: 5px; color: var(--surface-900); font-size: 15px; }
+
+    .honesty-note {
+      display: grid;
+      grid-template-columns: 40px minmax(0, 1fr);
+      gap: 16px;
+      margin-top: 28px;
+      border: 1px solid var(--warning-200);
+      border-radius: var(--radius);
+      background: var(--warning-50);
+      padding: 20px;
+      color: var(--warning-800);
+    }
+    .honesty-icon {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      background: #fef3c7;
+      font-weight: 800;
+    }
+    .honesty-note p { margin: 5px 0 0; max-width: 72ch; font-size: 14px; }
+
+    .validation-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1px;
+      overflow: hidden;
+      border: 1px solid var(--surface-200);
+      border-radius: var(--radius);
+      background: var(--surface-200);
+    }
+    .validation-item {
+      flex: 1 1 190px;
+      min-height: 104px;
+      background: var(--surface-0);
+      padding: 20px;
+    }
+    .validation-item strong { display: block; color: var(--success-700); font-size: 1.2rem; }
+    .validation-item span { display: block; margin-top: 4px; color: var(--surface-600); font-size: 13px; }
+
+    .review-map {
+      margin: 28px 0 0;
+      padding: 0;
+      list-style: none;
+      border-top: 1px solid var(--surface-200);
+    }
+    .review-map li {
+      display: grid;
+      grid-template-columns: minmax(190px, 0.7fr) 1fr;
+      gap: 20px;
+      padding: 16px 0;
+      border-bottom: 1px solid var(--surface-200);
+    }
+    .review-map code { color: var(--primary-900); font-size: 13px; overflow-wrap: anywhere; }
+    .review-map span { color: var(--surface-600); font-size: 14px; }
+
+    footer {
+      border-top: 1px solid var(--surface-200);
+      background: var(--surface-0);
+    }
+    .footer-inner {
+      max-width: var(--content);
+      margin: 0 auto;
+      padding: 26px 24px;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 12px 28px;
+      color: var(--surface-600);
+      font-size: 13px;
+    }
+
+    :focus-visible { outline: 3px solid var(--primary-300); outline-offset: 3px; }
+    ::selection { background: var(--primary-200); color: var(--primary-950); }
+
+    @media (max-width: 880px) {
+      .hero-inner { grid-template-columns: 1fr; }
+      .hero-facts { max-width: 560px; }
+      .page-shell { grid-template-columns: 1fr; }
+      .side-nav { display: none; }
+      .comparison-row { grid-template-columns: 116px 1fr 1fr; }
+      .comparison-row > div { padding: 15px; }
+    }
+    @media (max-width: 640px) {
+      .topbar-inner, .hero-inner, .status-rail-inner, .page-shell, .footer-inner { padding-left: 18px; padding-right: 18px; }
+      .topbar-meta > span:not(.release-pill) { display: none; }
+      .hero-inner { padding-top: 54px; padding-bottom: 52px; }
+      .hero h1 { font-size: 2.7rem; }
+      section { margin-bottom: 68px; }
+      .comparison { overflow-x: auto; }
+      .comparison-row { min-width: 680px; }
+      .review-map li { grid-template-columns: 1fr; gap: 5px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
+    }
+    @media print {
+      .topbar, .side-nav, .skip-link { display: none; }
+      .hero { background: white; color: black; border-bottom: 2px solid black; }
+      .hero-lede, .hero-facts strong { color: #333; }
+      .hero-facts li { border-color: #ccc; }
+      .page-shell { display: block; padding-top: 30px; }
+      section { break-inside: avoid; margin-bottom: 44px; }
+      .diagram-panel { overflow: visible; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#content">Skip to architecture</a>
+
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="#top" aria-label="OpenKey managed accounts overview">
+        <span class="brand-mark" aria-hidden="true">O</span>
+        <span>OpenKey</span>
+      </a>
+      <div class="topbar-meta">
+        <span>Architecture brief</span>
+        <span class="release-pill">Managed accounts v1</span>
+      </div>
+    </div>
+  </header>
+
+  <div id="top" class="hero">
+    <div class="hero-inner">
+      <div>
+        <h1>App-managed by default. User&#8209;owned by choice.</h1>
+        <p class="hero-lede">
+          OpenKey now gives applications a policy-bounded way to provision and manage user accounts—without making the application the permanent owner. A user can transfer the unchanged account to personal OpenKey custody at any time.
+        </p>
+      </div>
+      <ul class="hero-facts" aria-label="Release summary">
+        <li><strong>Tenancy</strong><span>Organizations isolate apps, credentials, subjects, keys, and quotas.</span></li>
+        <li><strong>Identity</strong><span>The user establishes an independent OpenKey passkey before management activates.</span></li>
+        <li><strong>Continuity</strong><span>Address, DID, TinyCloud spaces, and encrypted data survive eject unchanged.</span></li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="status-rail" aria-label="Implementation status">
+    <div class="status-rail-inner">
+      <span class="status-item"><span class="status-dot" aria-hidden="true"></span><strong>Demo implementation complete</strong></span>
+      <span class="status-item"><strong>118</strong> tests passing</span>
+      <span class="status-item"><strong>3</strong> public plans</span>
+      <span class="status-note">External rollback-resistant witnessing remains a production hardening item.</span>
+    </div>
+  </div>
+
+  <div class="page-shell">
+    <nav class="side-nav" aria-label="On this page">
+      <p>On this page</p>
+      <ul>
+        <li><a href="#promise">Product promise</a></li>
+        <li><a href="#changes">What changed</a></li>
+        <li><a href="#architecture">System boundary</a></li>
+        <li><a href="#registration">Registration</a></li>
+        <li><a href="#custody">Custody model</a></li>
+        <li><a href="#eject">Eject and revocation</a></li>
+        <li><a href="#plans">Plans</a></li>
+        <li><a href="#invariants">Security invariants</a></li>
+        <li><a href="#validation">Validation</a></li>
+      </ul>
+    </nav>
+
+    <main id="content">
+      <section id="promise">
+        <h2>The product promise</h2>
+        <p class="section-intro">The new model separates a useful managed experience from permanent application ownership.</p>
+        <blockquote class="promise">
+          An app can give every user an embedded OpenKey and TinyCloud account. The app manages it by default. The user can leave without changing their address, DID, spaces, or data.
+          <small>“Personal custody” means the unchanged private key remains sealed inside OpenKey’s TEE. It is not private-key export or external self-custody.</small>
+        </blockquote>
+      </section>
+
+      <section id="changes">
+        <h2>What changed</h2>
+        <p class="section-intro">The previous user-and-client shape has become an explicit custody control plane with durable tenant boundaries.</p>
+        <div class="comparison" role="table" aria-label="Before and after comparison">
+          <div class="comparison-row comparison-head" role="row">
+            <div class="comparison-label" role="columnheader">Area</div>
+            <div class="comparison-before" role="columnheader">Before</div>
+            <div class="comparison-now" role="columnheader">Now</div>
+          </div>
+          <div class="comparison-row" role="row">
+            <div class="comparison-label" role="rowheader">Tenant boundary</div>
+            <div class="comparison-before" role="cell">Developer ownership was implicit in individual users and OAuth clients.</div>
+            <div class="comparison-now" role="cell">Organizations own apps, server credentials, plan entitlements, policies, and managed accounts.</div>
+          </div>
+          <div class="comparison-row" role="row">
+            <div class="comparison-label" role="rowheader">Account creation</div>
+            <div class="comparison-before" role="cell">A global user hook created a personal key, unsuitable for distinct tenant relationships.</div>
+            <div class="comparison-now" role="cell">A short-lived registration intent provisions a new tenant-specific managed key only after user approval.</div>
+          </div>
+          <div class="comparison-row" role="row">
+            <div class="comparison-label" role="rowheader">Application access</div>
+            <div class="comparison-before" role="cell">No complete organization-scoped custody and capability boundary.</div>
+            <div class="comparison-now" role="cell">A typed broker receives one policy-bounded TinyCloud parent delegation—never raw signing authority.</div>
+          </div>
+          <div class="comparison-row" role="row">
+            <div class="comparison-label" role="rowheader">Leaving an app</div>
+            <div class="comparison-before" role="cell">No durable unilateral custody-transfer path.</div>
+            <div class="comparison-now" role="cell">Fresh passkey verification commits a terminal, idempotent transfer and starts tenant-access revocation.</div>
+          </div>
+          <div class="comparison-row" role="row">
+            <div class="comparison-label" role="rowheader">Commercial model</div>
+            <div class="comparison-before" role="cell">No managed-account plan vocabulary.</div>
+            <div class="comparison-now" role="cell">Free, Pro, and Enterprise resolve versioned quotas without ever gating a user’s right to eject.</div>
+          </div>
+        </div>
+      </section>
+
+      <section id="architecture">
+        <h2>The system boundary</h2>
+        <p class="section-intro">OpenKey is the custody and capability control plane. Tenant applications operate through organization credentials and bounded delegations; TinyCloud nodes remain protocol-generic.</p>
+        <div class="diagram-panel" aria-label="Managed-account architecture diagram">
+          <pre class="mermaid">
+flowchart LR
+  classDef user fill:#f5f3ff,stroke:#7c3aed,color:#2e1065,stroke-width:2px
+  classDef tenant fill:#fafafa,stroke:#737373,color:#171717
+  classDef control fill:#ede9fe,stroke:#6d28d9,color:#2e1065,stroke-width:2px
+  classDef data fill:#ecfdf5,stroke:#047857,color:#064e3b
+  classDef security fill:#fff,stroke:#171717,color:#171717,stroke-width:2px
+
+  U["User<br/>OpenKey passkey"]:::user
+
+  subgraph T["Tenant organization"]
+    A["Application"]:::tenant
+    C["Provisioner credential"]:::tenant
+    B["Broker DID"]:::tenant
+  end
+
+  subgraph O["OpenKey control plane"]
+    R["Registration intents"]:::control
+    M["Managed account<br/>owner + tenant + policy"]:::control
+    Z["Central authorization<br/>state + epoch + actor"]:::security
+    K["TEE-sealed key<br/>immutable context"]:::security
+    E["Custody event chain"]:::control
+  end
+
+  subgraph N["TinyCloud protocol"]
+    P["Tenant-parent delegation"]:::data
+    D["Child delegations"]:::data
+    S["Spaces and encrypted data"]:::data
+  end
+
+  A -->|"creates intent"| C
+  C --> R
+  R -->|"hosted ceremony"| U
+  U -->|"approves"| M
+  M --> Z
+  Z --> K
+  K --> P
+  B --> P
+  P --> D
+  D --> S
+  Z --> E
+          </pre>
+        </div>
+        <p class="diagram-caption">Organization identity is derived from the authenticated server credential. It is never trusted from a tenant-supplied request field.</p>
+        <div class="boundary-list">
+          <div class="boundary-item"><h3>Global user</h3><p>One OpenKey principal may use several apps, but credentials and recovery remain private to the user.</p></div>
+          <div class="boundary-item"><h3>Tenant-specific account</h3><p>Each organization relationship creates a distinct managed key. Matching email or external IDs cannot merge custody.</p></div>
+          <div class="boundary-item"><h3>Typed tenant access</h3><p>The broker may request approved TinyCloud capabilities within policy and plan ceilings. There is no tenant raw-sign endpoint.</p></div>
+          <div class="boundary-item"><h3>Stable key identity</h3><p>The key’s <code>sealingContext</code>, address, and account identity do not change when custody changes.</p></div>
+        </div>
+      </section>
+
+      <section id="registration">
+        <h2>Registration now starts with the app—and belongs to the user</h2>
+        <p class="section-intro">The tenant initiates the flow, but OpenKey owns the credential ceremony and will not activate management until the user has an independent passkey.</p>
+        <div class="diagram-panel" aria-label="Managed-account registration sequence">
+          <pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant App as Tenant backend
+  participant API as OpenKey API
+  participant UI as OpenKey hosted UI
+  participant User as User + passkey
+  participant TEE as OpenKey TEE
+  participant Node as TinyCloud node
+
+  App->>API: Create registration intent<br/>server credential + idempotency key
+  API-->>App: Opaque 10-minute intent token
+  App->>UI: Open exact hosted registration URL
+  UI->>API: Resolve signed intent
+  API-->>UI: Organization, policy, exact redirect
+  User->>UI: Sign in or create OpenKey identity
+  User->>UI: Create / verify independent passkey
+  User->>UI: Approve managed account
+  UI->>API: Complete one-time intent
+  API->>TEE: Generate and seal a new managed key
+  API->>Node: Bootstrap spaces + parent delegation
+  API->>API: Commit owner, policy, custody epoch 1
+  API-->>App: Signed webhook: managed_account.created
+  UI-->>App: Redirect to exact registered URI
+          </pre>
+        </div>
+        <ol class="step-notes">
+          <li><div><strong>Intent binding fails closed.</strong><span>Organization, client, external subject, policy, nonce, expiry, and exact redirect are authenticated and single use.</span></div></li>
+          <li><div><strong>The user exists before management.</strong><span>Email or social bootstrap alone is insufficient. A persisted passkey establishes independent eject authority.</span></div></li>
+          <li><div><strong>The managed key is greenfield.</strong><span>A personal key is never silently reused across organizations, so two tenants cannot become co-custodians.</span></div></li>
+          <li><div><strong>Activation is atomic.</strong><span>The account becomes managed only after owner, policy, key, parent delegation, custody head, and lifecycle event are durable.</span></div></li>
+        </ol>
+      </section>
+
+      <section id="custody">
+        <h2>Custody is explicit, versioned, and terminal</h2>
+        <p class="section-intro">Every sensitive operation resolves the authenticated actor, current custody head, lifecycle state, policy, plan, and expected epoch immediately before the TEE key is used.</p>
+        <div class="diagram-panel" aria-label="Managed-account custody state diagram">
+          <pre class="mermaid">
+stateDiagram-v2
+  direction LR
+  [*] --> PROVISIONED: intent accepted
+  PROVISIONED --> MANAGED: passkey + key + policy + parent durable
+  PROVISIONED --> EXPIRED: intent expires
+  PROVISIONED --> FAILED: provisioning cannot complete
+  MANAGED --> EJECTING: fresh owner passkey + expected epoch
+  EJECTING --> MANAGED: signing or transaction fails
+  EJECTING --> USER_OWNED: signed epoch transition commits
+  USER_OWNED --> USER_OWNED: personal approval and signing
+
+  note right of MANAGED
+    Custodian: organization
+    Epoch: 1
+    Tenant access: bounded
+  end note
+
+  note right of USER_OWNED
+    Custodian: user
+    Epoch: 2
+    Terminal in v1
+  end note
+          </pre>
+        </div>
+        <p class="diagram-caption"><code>USER_OWNED</code> is a custody result. TinyCloud revocation convergence is tracked separately so the UI never confuses committed personal custody with network propagation.</p>
+      </section>
+
+      <section id="eject">
+        <h2>Eject is unilateral; revocation converges afterward</h2>
+        <p class="section-intro">The application cannot approve, delay, cancel, or reverse eject. The synchronous transaction removes OpenKey broker authority first; the worker then confirms protocol revocation on every known TinyCloud node.</p>
+        <div class="diagram-panel" aria-label="Eject and TinyCloud revocation flow">
+          <pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant User as User
+  participant UI as OpenKey account UI
+  participant Auth as Authorization boundary
+  participant DB as PostgreSQL custody barrier
+  participant TEE as OpenKey TEE
+  participant Worker as Revocation worker
+  participant Node as Known TinyCloud node
+
+  User->>UI: Choose Leave app
+  UI->>User: Explain unchanged identity and terminal transfer
+  User->>UI: Fresh passkey verification
+  UI->>Auth: Eject + expected epoch + idempotency key
+  Auth->>DB: Lock managed-account row
+  DB->>DB: Enter EJECTING barrier
+  DB->>TEE: Sign next canonical custody event
+  TEE-->>DB: Key-matching event signature
+  DB->>DB: Commit user custody, epoch +1,<br/>broker disabled, tenant grants revoked
+  DB-->>UI: CUSTODY_TRANSFERRED / tenant PENDING
+  UI-->>User: Same address and DID, personal custody active
+  Worker->>Node: Revoke tenant-parent delegation
+  Node-->>Worker: Protocol revocation receipt
+  Worker->>DB: Mark tenant access REVOKED
+  DB-->>UI: Signed lifecycle status available
+          </pre>
+        </div>
+        <div class="honesty-note" role="note">
+          <div class="honesty-icon" aria-hidden="true">!</div>
+          <div><strong>Honest security boundary</strong><p>The demo stores signed, hash-chained custody events in PostgreSQL. A production rollout still needs an external monotonic witness and old-image denial before OpenKey can claim rollback-resistant custody ordering.</p></div>
+        </div>
+      </section>
+
+      <section id="plans">
+        <h2>Plans control service levels—not the right to leave</h2>
+        <p class="section-intro">Entitlements answer how much service an organization may consume. They cannot broaden a cryptographic capability, delete user data, or block authentication, reads, export, or eject.</p>
+        <div class="plan-table-wrap">
+          <table>
+            <thead><tr><th>Dimension</th><th><span class="plan-name">Free</span></th><th><span class="plan-name">Pro</span></th><th><span class="plan-name">Enterprise</span></th></tr></thead>
+            <tbody>
+              <tr><td>Managed registration and eject</td><td>Included</td><td>Included</td><td>Included</td></tr>
+              <tr><td>Apps and managed accounts</td><td>Low defaults</td><td>Higher defaults</td><td>Contracted limits</td></tr>
+              <tr><td>Tenant policy</td><td>Safe fixed template</td><td>Configurable within ceiling</td><td>Versioned custom policy within ceiling</td></tr>
+              <tr><td>Delegation lifetime</td><td>Short</td><td>Extended</td><td>Contracted ceiling</td></tr>
+              <tr><td>Lifecycle webhooks</td><td>Basic events</td><td>Full events and retries</td><td>Full events and delivery controls</td></tr>
+              <tr><td>Audit retention</td><td>Short</td><td>Extended</td><td>Contracted</td></tr>
+              <tr><td>Custody transfer</td><td>Always available</td><td>Always available</td><td>Always available</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="invariants">
+        <h2>The invariants enforced in code and SQL</h2>
+        <p class="section-intro">The service layer is not the only line of defense. PostgreSQL constraints and triggers protect custody coherence when writes bypass normal routes.</p>
+        <ul class="invariant-list">
+          <li><strong>One owner, one active custodian</strong>A managed account has one stable owner and one custody head at its exact current epoch.</li>
+          <li><strong>Immutable key identity</strong>Managed key classification, address, public key, and sealing context cannot be rewritten after binding.</li>
+          <li><strong>One-way custody</strong>Organization custody may transition to user custody once. Returning a user-owned account to tenant management is rejected.</li>
+          <li><strong>Central authorization</strong>Managed key routes cannot authorize through an ad hoc key-and-user lookup; state and epoch are rechecked under lock.</li>
+          <li><strong>Tenant isolation</strong>Intent creators, OAuth clients, managed accounts, webhook endpoints, and deliveries must share the same organization.</li>
+          <li><strong>Bounded delegation</strong>Requested capabilities must fit both the immutable OpenKey ceiling and the account’s versioned policy.</li>
+          <li><strong>Fresh owner proof</strong>Eject requires a recent server-recorded passkey ceremony with user verification, not a client assertion.</li>
+          <li><strong>Durable idempotency</strong>Registration, eject, lifecycle delivery, and revocation work are replay-safe and preserve completed results.</li>
+        </ul>
+      </section>
+
+      <section id="validation">
+        <h2>What was verified</h2>
+        <p class="section-intro">The acceptance suite covers the happy path and the boundaries most likely to fail under concurrency, migration, or cross-tenant input.</p>
+        <div class="validation-strip" aria-label="Validation results">
+          <div class="validation-item"><strong>118 / 118</strong><span>Repository tests passing</span></div>
+          <div class="validation-item"><strong>0 differences</strong><span>Prisma schema versus ordered migrations</span></div>
+          <div class="validation-item"><strong>2 connections</strong><span>PostgreSQL custody barrier contention test</span></div>
+          <div class="validation-item"><strong>12 tasks</strong><span>Serialized build and type-check graph passing</span></div>
+        </div>
+        <ul class="review-map">
+          <li><code>services/registration-intents.ts</code><span>Tenant-authenticated intent creation, hosted completion, TEE key creation, and TinyCloud parent provisioning.</span></li>
+          <li><code>services/managed-key-authorization.ts</code><span>The single custody-sensitive authorization resolver and immutable capability ceiling.</span></li>
+          <li><code>services/custody-transition.ts</code><span>Serializable row-lock barrier, signed custody events, terminal owner transfer, and broker denial.</span></li>
+          <li><code>services/tenant-revocation.ts</code><span>TinyCloud parent revocation, receipt confirmation, retries, and convergence state.</span></li>
+          <li><code>prisma/migrations/20260715_0001…0004</code><span>Ordered schema, constraints, triggers, registration/eject durability, and lifecycle webhooks.</span></li>
+          <li><code>routes/managed/ + dashboard/managed-accounts/</code><span>Hosted registration, custody disclosure, fresh-passkey eject, and revocation progress UI.</span></li>
+        </ul>
+      </section>
+    </main>
+  </div>
+
+  <footer>
+    <div class="footer-inner">
+      <span>OpenKey managed accounts v1 · implementation architecture</span>
+      <span>Generated from the reviewed code and acceptance specification · 16 July 2026</span>
+    </div>
+  </footer>
+
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: 'loose',
+      theme: 'base',
+      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+      flowchart: { curve: 'basis', htmlLabels: true, nodeSpacing: 44, rankSpacing: 54 },
+      sequence: { useMaxWidth: true, wrap: true, diagramMarginX: 20, diagramMarginY: 20 },
+      themeVariables: {
+        primaryColor: '#ede9fe',
+        primaryTextColor: '#2e1065',
+        primaryBorderColor: '#7c3aed',
+        secondaryColor: '#f5f5f5',
+        secondaryTextColor: '#171717',
+        secondaryBorderColor: '#737373',
+        tertiaryColor: '#ecfdf5',
+        tertiaryTextColor: '#064e3b',
+        tertiaryBorderColor: '#047857',
+        lineColor: '#525252',
+        noteBkgColor: '#fffbeb',
+        noteBorderColor: '#fde68a',
+        noteTextColor: '#78350f',
+        actorBkg: '#f5f3ff',
+        actorBorder: '#7c3aed',
+        actorTextColor: '#2e1065',
+        signalColor: '#525252',
+        signalTextColor: '#262626',
+        labelBoxBkgColor: '#fafafa',
+        labelBoxBorderColor: '#d4d4d4',
+        labelTextColor: '#262626',
+        activationBkgColor: '#ede9fe',
+        activationBorderColor: '#7c3aed',
+        stateBkg: '#f5f3ff',
+        stateBorder: '#7c3aed',
+        stateLabelColor: '#2e1065',
+        clusterBkg: '#fafafa',
+        clusterBorder: '#d4d4d4',
+        fontSize: '15px'
+      }
+    });
+
+    try {
+      await mermaid.run({ querySelector: '.mermaid' });
+    } catch (error) {
+      console.error('Mermaid rendering failed', error);
+    }
+
+    const navLinks = [...document.querySelectorAll('.side-nav a')];
+    const sections = navLinks
+      .map((link) => document.querySelector(link.getAttribute('href')))
+      .filter(Boolean);
+
+    const observer = new IntersectionObserver((entries) => {
+      const visible = entries
+        .filter((entry) => entry.isIntersecting)
+        .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
+      if (!visible) return;
+      for (const link of navLinks) {
+        link.setAttribute('aria-current', link.getAttribute('href') === `#${visible.target.id}` ? 'true' : 'false');
+      }
+    }, { rootMargin: '-20% 0px -68% 0px', threshold: 0 });
+
+    for (const section of sections) observer.observe(section);
+  </script>
+</body>
+</html>

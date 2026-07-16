@@ -30,6 +30,7 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 |----------|-------------|
 | `DATABASE_URL` | PostgreSQL connection string |
 | `BETTER_AUTH_SECRET` | 32+ character random secret for session encryption |
+| `REGISTRATION_INTENT_SECRET` | Separate 32+ character secret for signing short-lived managed-registration intents |
 | `BETTER_AUTH_URL` | `https://api.openkey.so` |
 | `WEBAUTHN_RP_ID` | `openkey.so` |
 | `WEBAUTHN_ORIGIN` | `https://openkey.so` |
@@ -39,10 +40,24 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `RESEND_API_KEY` | Resend API key for emails |
 | `API_PORT` | `3001` |
 | `CORS_ORIGIN` | `https://openkey.so` |
-| `INTERNAL_METRICS_TOKEN` | Bearer token for `GET /api/internal/metrics` |
+| `ADMIN_API_KEY` | Bearer token for organization plan fixtures, server credentials, and app registration |
+| `INTERNAL_METRICS_TOKEN` | Bearer token for internal metrics and the revocation/webhook workers |
+| `TINYCLOUD_BOOTSTRAP_HOST` | Trusted TinyCloud node used for account bootstrap and tenant-parent delegation revocation |
 | `CLOUDFLARE_API_TOKEN` | For SSL certificate management |
 | `DSTACK_GATEWAY_DOMAIN` | Phala gateway domain |
 | `CERTBOT_EMAIL` | Email for Let's Encrypt |
+
+#### Managed-account workers
+
+Schedule authenticated POST requests to these internal endpoints. They are
+idempotent and may run repeatedly; without them, custody transfer still commits
+but TinyCloud revocation and lifecycle webhook delivery remain pending.
+
+- `/api/internal/metrics/managed-account-revocations/run`
+- `/api/internal/metrics/webhooks/run`
+
+Use `Authorization: Bearer $INTERNAL_METRICS_TOKEN` for both. Do not expose the
+token to tenant applications or the web frontend.
 
 #### Trigger Conditions
 

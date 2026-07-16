@@ -4,6 +4,7 @@ import { createPrismaClient } from '@openkey/db';
 import { createTeeClient, unseal } from '@openkey/tee';
 import { requireSession, type SessionContext } from '../middleware/session';
 import { tinyCloudService } from '../services/tinycloud-service';
+import { deriveKeyForRecord } from '../services/key-sealing';
 
 const prisma = createPrismaClient();
 const tee = createTeeClient();
@@ -25,14 +26,14 @@ function validateName(name: string): string | null {
 
 async function getUserPrivateKey(userId: string): Promise<string | null> {
   const key = await prisma.ethereumKey.findFirst({
-    where: { userId, keyIndex: 0, keyType: 'MANAGED' },
+    where: { userId, keyIndex: 0, keyType: 'MANAGED', keyPurpose: 'PERSONAL', archivedAt: null },
   });
 
   if (!key || !key.sealedBlob) {
     return null;
   }
 
-  const sealingKey = await tee.deriveKey(`openkey/user/${userId}/keys`);
+  const sealingKey = await deriveKeyForRecord(tee, key);
   const privateKey = await unseal(key.sealedBlob, sealingKey) as string;
   // Strip 0x prefix if present
   return privateKey.startsWith('0x') ? privateKey.slice(2) : privateKey;

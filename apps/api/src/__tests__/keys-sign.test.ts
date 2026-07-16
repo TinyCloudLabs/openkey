@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
+import type { TinyCloudBootstrapOutcome } from '../services/tinycloud-bootstrap';
 
 // Keep the bootstrap sync budget short so the pending-path test is fast.
 // Must be set before the routes/keys module is first imported.
@@ -17,12 +18,13 @@ let keyRecord: {
   userId: string;
   address: string;
   keyType: 'MANAGED' | 'EXTERNAL';
+  keyPurpose: 'PERSONAL' | 'MANAGED_ACCOUNT';
   sealedBlob: string | null;
   archivedAt: null;
 };
 
 const unseal = mock(async () => privateKey);
-const ensureTinyCloudBootstrapForApprovedSign = mock(async () => {
+const ensureTinyCloudBootstrapForApprovedSign = mock(async (): Promise<TinyCloudBootstrapOutcome> => {
   calls.push('bootstrap');
   return { status: 'complete' as const };
 });
@@ -32,6 +34,7 @@ const prisma = {
     findFirst: mock(async ({ where }: { where: Record<string, unknown> }) => {
       if (where.userId !== keyRecord.userId) return null;
       if (where.id !== keyRecord.id) return null;
+      if (where.keyPurpose !== keyRecord.keyPurpose) return null;
       if (where.archivedAt !== null) return null;
       return keyRecord;
     }),
@@ -89,6 +92,7 @@ beforeEach(() => {
     userId: user.id,
     address,
     keyType: 'MANAGED',
+    keyPurpose: 'PERSONAL',
     sealedBlob: 'sealed-private-key',
     archivedAt: null,
   };
@@ -128,6 +132,21 @@ describe('keysRouter managed signing', () => {
       format: 'personal_sign',
     }));
     expect(tee.deriveKey).toHaveBeenCalledWith(`openkey/user/${user.id}/keys`);
+  });
+
+  test('personal signing routes cannot select a tenant-managed key for the same user', async () => {
+    keyRecord = { ...keyRecord, keyPurpose: 'MANAGED_ACCOUNT' };
+    const router = await keysRouter();
+
+    const response = await router.request('/key_1/sign', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'must not sign' }),
+    });
+
+    expect(response.status).toBe(404);
+    expect(unseal).not.toHaveBeenCalled();
+    expect(ensureTinyCloudBootstrapForApprovedSign).not.toHaveBeenCalled();
   });
 
   test('POST /:keyId/sign rejects external keys before unsealing', async () => {
