@@ -305,6 +305,227 @@
     .comparison-head .comparison-before { color: var(--danger-800); }
     .comparison-head .comparison-now { background: var(--success-50); color: var(--success-700); }
 
+    .journey-wrap {
+      position: relative;
+      overflow-x: auto;
+      border-top: 1px solid var(--surface-300);
+      border-bottom: 1px solid var(--surface-300);
+      padding: 28px 0 24px;
+      scroll-snap-type: x proximity;
+      scrollbar-color: var(--surface-300) transparent;
+    }
+    .journey-track {
+      min-width: 1220px;
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 18px;
+      align-items: start;
+    }
+    .journey-step {
+      position: relative;
+      min-width: 0;
+      scroll-snap-align: start;
+    }
+    .journey-step:not(:last-child)::after {
+      content: "→";
+      position: absolute;
+      top: 196px;
+      right: -15px;
+      z-index: 2;
+      width: 26px;
+      height: 26px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      background: var(--surface-900);
+      color: white;
+      font-size: 14px;
+      font-weight: 750;
+    }
+    .journey-meta {
+      min-height: 55px;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .journey-number {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--surface-700);
+      font-size: 13px;
+      font-weight: 750;
+    }
+    .journey-number span {
+      width: 26px;
+      height: 26px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      background: var(--surface-900);
+      color: white;
+      font-size: 12px;
+    }
+    .actor-chip {
+      border-radius: 999px;
+      padding: 4px 8px;
+      font-size: 11px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .actor-chip.tenant { background: var(--surface-200); color: var(--surface-800); }
+    .actor-chip.openkey { background: var(--primary-100); color: var(--primary-900); }
+    .journey-scroll-hint {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 7px;
+      margin: -14px 0 10px;
+      color: var(--surface-600);
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .journey-scroll-hint span {
+      color: var(--primary-700);
+      font-size: 16px;
+      line-height: 1;
+    }
+
+    .wireframe {
+      min-height: 286px;
+      overflow: hidden;
+      border: 1px solid var(--surface-300);
+      border-radius: 14px;
+      background: var(--surface-0);
+    }
+    .wireframe-bar {
+      min-height: 35px;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      border-bottom: 1px solid var(--surface-200);
+      background: var(--surface-100);
+      padding: 0 11px;
+    }
+    .wireframe-bar i {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--surface-300);
+    }
+    .wireframe-bar span {
+      margin-left: auto;
+      color: var(--surface-500);
+      font-family: var(--font-mono);
+      font-size: 9px;
+    }
+    .wireframe-body { padding: 18px 16px; }
+    .wireframe-brand {
+      width: 30px;
+      height: 30px;
+      display: grid;
+      place-items: center;
+      margin-bottom: 18px;
+      border-radius: 8px;
+      background: var(--surface-900);
+      color: white;
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .wireframe-brand.openkey { background: var(--primary-700); }
+    .wireframe h3 { font-size: 15px; letter-spacing: -0.01em; }
+    .wireframe-copy {
+      min-height: 42px;
+      margin: 7px 0 16px;
+      color: var(--surface-600);
+      font-size: 11px;
+      line-height: 1.45;
+    }
+    .wireframe-field,
+    .wireframe-row,
+    .wireframe-status {
+      margin-top: 9px;
+      border: 1px solid var(--surface-200);
+      border-radius: 8px;
+      background: var(--surface-50);
+      padding: 9px 10px;
+      color: var(--surface-700);
+      font-size: 10px;
+    }
+    .wireframe-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .wireframe-row strong { color: var(--surface-900); font-size: 10px; }
+    .wireframe-row span { color: var(--surface-500); }
+    .wireframe-button {
+      display: block;
+      margin-top: 12px;
+      border-radius: 8px;
+      background: var(--primary-700);
+      padding: 9px 10px;
+      color: white;
+      font-size: 10px;
+      font-weight: 750;
+      text-align: center;
+    }
+    .wireframe-button.secondary {
+      border: 1px solid var(--surface-300);
+      background: var(--surface-0);
+      color: var(--surface-800);
+    }
+    .wireframe-button.danger {
+      border: 1px solid var(--danger-200);
+      background: var(--danger-50);
+      color: var(--danger-800);
+    }
+    .wireframe-status {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      border-color: var(--success-200);
+      background: var(--success-50);
+      color: var(--success-700);
+      line-height: 1.4;
+    }
+    .wireframe-status::before {
+      content: "✓";
+      flex: 0 0 auto;
+      width: 16px;
+      height: 16px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      background: var(--success-700);
+      color: white;
+      font-size: 9px;
+      font-weight: 800;
+    }
+    .journey-caption {
+      margin: 14px 2px 0;
+      color: var(--surface-600);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .journey-caption strong { display: block; margin-bottom: 2px; color: var(--surface-900); }
+    .journey-continuity {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1px;
+      margin-top: 22px;
+      overflow: hidden;
+      border: 1px solid var(--primary-200);
+      border-radius: 12px;
+      background: var(--primary-200);
+    }
+    .journey-continuity div { background: var(--primary-50); padding: 15px 16px; }
+    .journey-continuity strong { display: block; color: var(--primary-950); font-size: 13px; }
+    .journey-continuity span { display: block; margin-top: 3px; color: var(--primary-900); font-size: 12px; line-height: 1.45; }
+
     .diagram-panel {
       width: 100%;
       min-width: 0;
@@ -496,6 +717,8 @@
       .comparison { overflow-x: auto; }
       .comparison-row { min-width: 680px; }
       .review-map li { grid-template-columns: 1fr; gap: 5px; }
+      .journey-scroll-hint { justify-content: flex-start; margin-top: -10px; }
+      .journey-continuity { grid-template-columns: 1fr; }
     }
     @media (prefers-reduced-motion: reduce) {
       html { scroll-behavior: auto; }
@@ -559,6 +782,7 @@
       <ul>
         <li><a href="#promise">Product promise</a></li>
         <li><a href="#changes">What changed</a></li>
+        <li><a href="#journey">User journey</a></li>
         <li><a href="#architecture">System boundary</a></li>
         <li><a href="#registration">Registration</a></li>
         <li><a href="#custody">Custody model</a></li>
@@ -613,6 +837,113 @@
             <div class="comparison-before" role="cell">No managed-account plan vocabulary.</div>
             <div class="comparison-now" role="cell">Free, Pro, and Enterprise resolve versioned quotas without ever gating a user’s right to eject.</div>
           </div>
+        </div>
+      </section>
+
+      <section id="journey">
+        <h2>The user journey, screen by screen</h2>
+        <p class="section-intro">The user starts inside a tenant app, establishes independent OpenKey authority, uses the managed account without custody friction, and can later leave from OpenKey without asking the tenant.</p>
+        <p class="journey-scroll-hint">Scroll horizontally to follow all five screens <span aria-hidden="true">→</span></p>
+        <div class="journey-wrap" tabindex="0" aria-label="Scrollable five-step managed-account user journey">
+          <div class="journey-track">
+            <article class="journey-step">
+              <div class="journey-meta">
+                <div class="journey-number"><span>1</span> Start</div>
+                <span class="actor-chip tenant">Tenant app</span>
+              </div>
+              <div class="wireframe">
+                <div class="wireframe-bar"><i></i><i></i><i></i><span>app.example</span></div>
+                <div class="wireframe-body">
+                  <div class="wireframe-brand">A</div>
+                  <h3>Create your workspace</h3>
+                  <p class="wireframe-copy">The app starts a short-lived registration intent tied to this exact organization and return URL.</p>
+                  <div class="wireframe-field">name@example.com</div>
+                  <span class="wireframe-button">Continue with OpenKey</span>
+                </div>
+              </div>
+              <p class="journey-caption"><strong>The app initiates.</strong>No key exists yet, and the tenant never receives a user credential.</p>
+            </article>
+
+            <article class="journey-step">
+              <div class="journey-meta">
+                <div class="journey-number"><span>2</span> Protect</div>
+                <span class="actor-chip openkey">OpenKey hosted</span>
+              </div>
+              <div class="wireframe">
+                <div class="wireframe-bar"><i></i><i></i><i></i><span>openkey.so</span></div>
+                <div class="wireframe-body">
+                  <div class="wireframe-brand openkey">O</div>
+                  <h3>Protect your account</h3>
+                  <p class="wireframe-copy">Create or verify an OpenKey passkey before allowing Acme Workspace to manage a new account.</p>
+                  <div class="wireframe-status">Passkey stays under your control</div>
+                  <span class="wireframe-button">Create passkey</span>
+                </div>
+              </div>
+              <p class="journey-caption"><strong>The user gains independent authority.</strong>Management cannot activate until passkey verification succeeds.</p>
+            </article>
+
+            <article class="journey-step">
+              <div class="journey-meta">
+                <div class="journey-number"><span>3</span> Use</div>
+                <span class="actor-chip tenant">Tenant app</span>
+              </div>
+              <div class="wireframe">
+                <div class="wireframe-bar"><i></i><i></i><i></i><span>app.example/home</span></div>
+                <div class="wireframe-body">
+                  <div class="wireframe-brand">A</div>
+                  <h3>Your workspace is ready</h3>
+                  <p class="wireframe-copy">The app can perform approved TinyCloud work through a bounded delegation. It cannot raw-sign or eject.</p>
+                  <div class="wireframe-row"><strong>Account</strong><span>0x71…9E2</span></div>
+                  <div class="wireframe-row"><strong>Custody</strong><span>Managed by Acme</span></div>
+                  <span class="wireframe-button secondary">Open workspace</span>
+                </div>
+              </div>
+              <p class="journey-caption"><strong>Daily use stays embedded.</strong>Plan and policy determine service limits, not ownership rights.</p>
+            </article>
+
+            <article class="journey-step">
+              <div class="journey-meta">
+                <div class="journey-number"><span>4</span> Leave</div>
+                <span class="actor-chip openkey">OpenKey account</span>
+              </div>
+              <div class="wireframe">
+                <div class="wireframe-bar"><i></i><i></i><i></i><span>openkey.so/account</span></div>
+                <div class="wireframe-body">
+                  <div class="wireframe-brand openkey">O</div>
+                  <h3>Connected apps</h3>
+                  <p class="wireframe-copy">OpenKey explains that the transfer is terminal in v1 and that identity and data remain unchanged.</p>
+                  <div class="wireframe-row"><strong>Acme Workspace</strong><span>Managed</span></div>
+                  <span class="wireframe-button danger">Leave app</span>
+                  <span class="wireframe-button secondary">Verify with passkey</span>
+                </div>
+              </div>
+              <p class="journey-caption"><strong>No tenant approval.</strong>A fresh passkey proof and expected custody epoch authorize the transfer.</p>
+            </article>
+
+            <article class="journey-step">
+              <div class="journey-meta">
+                <div class="journey-number"><span>5</span> Own</div>
+                <span class="actor-chip openkey">OpenKey account</span>
+              </div>
+              <div class="wireframe">
+                <div class="wireframe-bar"><i></i><i></i><i></i><span>openkey.so/account</span></div>
+                <div class="wireframe-body">
+                  <div class="wireframe-brand openkey">O</div>
+                  <h3>Personal custody active</h3>
+                  <p class="wireframe-copy">The same TEE-sealed key now answers only to the user while tenant access revocation converges.</p>
+                  <div class="wireframe-status">Custody transferred successfully</div>
+                  <div class="wireframe-row"><strong>Address</strong><span>0x71…9E2</span></div>
+                  <div class="wireframe-row"><strong>App access</strong><span>Revoked</span></div>
+                </div>
+              </div>
+              <p class="journey-caption"><strong>The relationship ends, not the account.</strong>The user continues with the same identity, spaces, and encrypted data.</p>
+            </article>
+          </div>
+        </div>
+        <div class="journey-continuity" aria-label="What changes and what remains continuous">
+          <div><strong>What changes</strong><span>Custodian, custody epoch, broker authority, and tenant delegation state.</span></div>
+          <div><strong>What stays the same</strong><span>Address, DID, sealing context, TinyCloud spaces, and encrypted data.</span></div>
+          <div><strong>What cannot block eject</strong><span>The tenant, billing status, plan limits, expired OAuth grants, or webhook delivery.</span></div>
         </div>
       </section>
 
