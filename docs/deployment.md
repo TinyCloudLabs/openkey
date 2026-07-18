@@ -58,6 +58,12 @@ pending and is applied normally by `prisma migrate deploy`. An idempotent
 reconciliation migration aligns the one physical index name that differs
 between the historical SQL and db-push schemas.
 
+The inventory recognizes both reviewed `0_init` record checksums committed by
+OpenKey: the current migration checksum and the earlier checksum from commit
+`9c9ce4f`. This exception applies only to the stored `0_init` history row; the
+current on-disk migration must still match its current checksum. No arbitrary or
+additional historical checksums are accepted.
+
 The recovery path also accepts exactly one reviewed interrupted state: a
 successful `0_init`, a successful `20260303_add_user_encryption_key`, and an
 unresolved `20260628_add_auto_sign_enabled` failure with zero applied steps.

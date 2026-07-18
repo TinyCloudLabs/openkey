@@ -22,6 +22,8 @@ const baselineSchemaSha256 =
   '8b8b8479e7b5381c92f142b25a3b1d4975236969ac7cc52a1020f161851170e4';
 const interruptedSchemaSha256 =
   '7e355bc82f06666e5d8f20d85c1d476c0886f6a7fb4eaa83531f842f3cee3129';
+const historicalInitRecordSha256 =
+  '58d6293e97ed14dc7648778c095fbe47f07ed91165090657d36b4ff343a0478c';
 
 const migrationInventory = [
   {
@@ -170,14 +172,13 @@ async function readMigrationHistory() {
 }
 
 function assertKnownChecksums(history: MigrationRow[]) {
-  const checksums = new Map(
-    migrationInventory.map((migration) => [migration.name, migration.sha256])
+  const checksums = new Map<string, string[]>(
+    migrationInventory.map((migration) => [migration.name, [migration.sha256]])
   );
+  checksums.get(initMigration)?.push(historicalInitRecordSha256);
   for (const row of history) {
-    const expected = checksums.get(
-      row.migration_name as (typeof migrationInventory)[number]['name']
-    );
-    if (!expected || row.checksum !== expected) {
+    const approved = checksums.get(row.migration_name);
+    if (!approved?.includes(row.checksum)) {
       throw new Error(
         `Unexpected migration record or checksum: ${row.migration_name}`
       );
