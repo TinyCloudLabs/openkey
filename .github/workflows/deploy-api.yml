@@ -9,6 +9,7 @@ on:
       - 'Dockerfile'
       - 'docker-compose.prod.yml'
       - 'scripts/baseline-production-migrations.ts'
+      - 'scripts/assert-production-migration-ready.ts'
       - 'scripts/verify-managed-account-migrations.ts'
       - '.github/workflows/deploy-api.yml'
   workflow_dispatch:
@@ -68,7 +69,7 @@ jobs:
             exit 1
           fi
           bun install --frozen-lockfile
-          bun run db:migrate:deploy
+          bun run db:migrate:deploy:production
 
       - name: Install Phala CLI
         run: npm install -g phala

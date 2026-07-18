@@ -1,0 +1,322 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// better-auth User model
+model User {
+  id            String    @id
+  email         String    @unique
+  emailVerified Boolean   @default(false)
+  name          String?
+  image         String?
+  autoSignEnabled Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Relations
+  passkeys                Passkey[]
+  ethereumKeys            EthereumKey[]
+  tinyCloudBootstrapState TinyCloudBootstrapState[]
+  sessions                Session[]
+  accounts                Account[]
+  verification            Verification[]
+  // OAuth provider relations
+  oauthClients       OauthClient[]
+  oauthAccessTokens  OauthAccessToken[]
+  oauthRefreshTokens OauthRefreshToken[]
+  oauthConsents      OauthConsent[]
+  developerAccount   DeveloperAccount?
+  userEncryptionKey UserEncryptionKey?
+
+  @@map("user")
+}
+
+// better-auth Session
+model Session {
+  id        String   @id
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("session")
+}
+
+// better-auth Account (for OAuth providers)
+model Account {
+  id                    String    @id
+  userId                String
+  accountId             String
+  providerId            String
+  accessToken           String?
+  refreshToken          String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  idToken               String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("account")
+}
+
+// better-auth Verification (for email OTP)
+model Verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user   User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId String?
+
+  @@map("verification")
+}
+
+// better-auth Passkey credentials
+model Passkey {
+  id           String   @id
+  userId       String
+  name         String?
+  publicKey    String
+  credentialID String   @unique
+  counter      Int      @default(0)
+  deviceType   String
+  backedUp     Boolean
+  transports   String?
+  aaguid       String?
+  createdAt    DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("passkey")
+}
+
+// Legacy table created by the successfully applied 20260303 migration.
+model UserEncryptionKey {
+  id               String   @id
+  userId           String   @unique
+  publicKey        String
+  sealedPrivateKey String
+  createdAt        DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade, map: "user_encryption_key_userId_fkey")
+
+  @@map("user_encryption_key")
+}
+
+enum KeyType {
+  MANAGED
+  EXTERNAL
+}
+
+// Ethereum keys - managed (sealed with TEE) or external (user-provided address)
+model EthereumKey {
+  id         String    @id @default(cuid())
+  userId     String
+  address    String    @unique
+  publicKey  String
+  sealedBlob String?   // Encrypted with dstack KMS; null for external keys
+  keyType    KeyType   @default(MANAGED)
+  keyIndex   Int       @default(0)
+  label      String?
+  archivedAt DateTime? // Soft delete - archived keys are hidden but not deleted
+  createdAt  DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tinyCloudBootstrapState TinyCloudBootstrapState[]
+
+  @@index([userId])
+  @@map("ethereum_keys")
+}
+
+model TinyCloudBootstrapState {
+  id               String    @id @default(cuid())
+  userId           String
+  keyId            String
+  address          String
+  chainId          Int
+  tinycloudHost    String
+  bootstrapVersion String
+  status           String
+  attemptId        String?
+  lockExpiresAt    DateTime?
+  checkedAt        DateTime
+  completedAt      DateTime?
+  failureCode      String?
+  failureReason    String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  key  EthereumKey @relation(fields: [keyId], references: [id], onDelete: Cascade)
+
+  @@unique([keyId, chainId, tinycloudHost, bootstrapVersion])
+  @@index([userId])
+  @@index([status])
+  @@map("tinycloud_bootstrap_state")
+}
+
+// better-auth JWKS (required by JWT plugin)
+model Jwks {
+  id         String   @id
+  publicKey  String
+  privateKey String
+  createdAt  DateTime @default(now())
+
+  @@map("jwks")
+}
+
+// ======= OAuth 2.1 Provider tables =======
+
+enum Plan {
+  FREE
+  PRO
+  SCALE
+  ENTERPRISE
+}
+
+enum BillingState {
+  FREE        // No Stripe subscription
+  ACTIVE      // Paying, subscription current
+  PAST_DUE    // Payment failed
+  CANCELLED   // Subscription ended
+}
+
+// DeveloperAccount — 1:1 with User, created on first admin console login
+model DeveloperAccount {
+  id                   String       @id @default(cuid())
+  userId               String       @unique
+  stripeCustomerId     String?      @unique
+  plan                 Plan         @default(FREE)
+  billingState         BillingState @default(FREE)
+  mauLimit             Int          @default(1000)
+  appLimit             Int          @default(3)
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+  stripeSubscriptionId String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("developer_account")
+}
+
+// Daily analytics rollup keyed by clientId
+model OauthDailyStats {
+  id                  String   @id @default(cuid())
+  clientId            String
+  date                DateTime @db.Date
+  uniqueUsers         Int      @default(0)
+  totalAuthorizations Int      @default(0)
+  totalTokenExchanges Int      @default(0)
+
+  @@unique([clientId, date])
+  @@index([clientId])
+  @@map("oauth_daily_stats")
+}
+
+// Registered OAuth clients (third-party applications)
+model OauthClient {
+  id                      String   @id
+  clientId                String   @unique
+  clientSecret            String? // Hashed, null for public clients
+  name                    String
+  uri                     String? // Application website
+  icon                    String? // Logo URL
+  redirectUris            String[] // Array of allowed redirect URIs
+  scopes                  String[] // Allowed scopes for this client
+  disabled                Boolean  @default(false)
+  skipConsent             Boolean  @default(false) // Always false for OpenKey
+  enableEndSession        Boolean  @default(false)
+  tokenEndpointAuthMethod String? // "client_secret_basic", "client_secret_post", "none"
+  grantTypes              String[] @default(["authorization_code", "refresh_token"])
+  responseTypes           String[] @default(["code"])
+  type                    String? // "web", "native", "spa"
+  public                  Boolean  @default(false)
+  contacts                String[]
+  tos                     String? // Terms of service URL
+  policy                  String? // Privacy policy URL
+  softwareId              String?
+  softwareVersion         String?
+  softwareStatement       String?
+  metadata                Json?
+  userId                  String? // Owner of the client (admin who registered it)
+  referenceId             String?
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@map("oauth_client")
+}
+
+// OAuth access tokens
+model OauthAccessToken {
+  id          String   @id
+  token       String   @unique
+  clientId    String
+  userId      String
+  sessionId   String?
+  refreshId   String? // Associated refresh token
+  referenceId String?
+  scopes      String[]
+  createdAt   DateTime @default(now())
+  expiresAt   DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@index([userId])
+  @@map("oauth_access_token")
+}
+
+// OAuth refresh tokens
+model OauthRefreshToken {
+  id          String   @id
+  token       String   @unique
+  clientId    String
+  userId      String
+  sessionId   String?
+  referenceId String?
+  scopes      String[]
+  revoked     Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  expiresAt   DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@index([userId])
+  @@map("oauth_refresh_token")
+}
+
+// User consent records
+model OauthConsent {
+  id          String   @id
+  userId      String
+  clientId    String
+  referenceId String?
+  scopes      String[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, clientId])
+  @@map("oauth_consent")
+}
