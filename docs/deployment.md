@@ -29,6 +29,9 @@ CVM is updated. Production deploys must not use `prisma db push`: schema push
 does not execute the raw SQL triggers and deferred custody checks in the
 managed-account migrations. Both manual deploys and the one-time baseline
 workflow refuse non-`main` refs and use the protected `production` environment.
+Normal production deploys require the reviewed
+`20260714_origin_main_schema_catchup` marker and no unresolved failed migration
+rows before Prisma may apply anything.
 
 #### One-time migration baseline for the legacy production database
 
@@ -55,11 +58,23 @@ pending and is applied normally by `prisma migrate deploy`. An idempotent
 reconciliation migration aligns the one physical index name that differs
 between the historical SQL and db-push schemas.
 
+The recovery path also accepts exactly one reviewed interrupted state: a
+successful `0_init`, a successful `20260303_add_user_encryption_key`, and an
+unresolved `20260628_add_auto_sign_enabled` failure with zero applied steps.
+Before changing migration history it verifies a separate checksummed physical
+schema snapshot containing the newly created encryption-key table and the
+already-existing auto-sign column. It then resolves only that failed migration
+as applied, records the remaining db-push-equivalent migrations, and writes the
+catchup completion marker. Any other history or physical schema is rejected.
+
 Schema drift, a changed snapshot or inventoried migration, an unexpected or
 incomplete migration record, or a mismatched confirmation stops the job. The
 baseline itself does not modify application tables; after it is recorded,
 `prisma migrate deploy` applies every pending migration and a final schema diff
 plus raw SQL guard verification must pass.
+
+Both production workflows generate the Prisma client before running database
+inspection scripts. `bun install` alone does not generate the gitignored client.
 
 #### Required Phala Environment Variables
 

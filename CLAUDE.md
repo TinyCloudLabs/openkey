@@ -26,6 +26,7 @@ Schema lives at `packages/db/prisma/schema.prisma`.
 | `bun run db:push` | Push schema to local dev database |
 | `bun run db:migrate:dev` | Create a new migration (local dev) |
 | `bun run db:migrate:prod` | Deploy and verify pending migrations in prod (uses `.env.prod`) |
+| `bun run db:migrate:deploy:production` | Require the reviewed baseline marker, then deploy and verify |
 | `bun run db:migrate:verify` | Verify managed-account migrations and raw SQL security guards |
 | `bun run db:migrate:verify-schema` | Verify the deployed database matches the Prisma schema |
 | `bun run db:baseline:prod` | Verify and record the reviewed legacy baseline (one-time, explicit confirmation required) |
@@ -40,6 +41,12 @@ Production uses tracked migrations. The deploy workflow fails if
 SQL custody guards before updating the Phala CVM. Never use `db push` in
 production: it does not execute triggers, deferred constraints, or other raw
 migration SQL.
+
+The production deploy preflight also requires a successful
+`20260714_origin_main_schema_catchup` baseline marker and no unresolved failed
+migrations. This prevents an automatic deploy from running the historical
+migration chain against a non-empty legacy database. Local and fresh-database
+migration commands remain ungated.
 
 An existing production database created by `db push` must use the manual
 **Baseline Production Migrations** workflow exactly once. It first compares the

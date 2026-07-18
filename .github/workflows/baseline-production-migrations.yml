@@ -55,4 +55,4 @@ jobs:
       - name: Deploy and verify managed-account migrations
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: bun run db:migrate:deploy
+        run: bun run db:migrate:deploy:production

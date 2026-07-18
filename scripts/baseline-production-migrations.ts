@@ -12,44 +12,59 @@ const baselineSchema = join(
   repoRoot,
   'packages/db/prisma/baselines/origin-main-44305b4.prisma'
 );
+const interruptedSchema = join(
+  repoRoot,
+  'packages/db/prisma/baselines/origin-main-44305b4-after-user-encryption.prisma'
+);
 const prismaBin = join(repoRoot, 'node_modules/.bin/prisma');
 const confirmation = 'baseline-origin-main-44305b4';
 const baselineSchemaSha256 =
   '8b8b8479e7b5381c92f142b25a3b1d4975236969ac7cc52a1020f161851170e4';
+const interruptedSchemaSha256 =
+  '7e355bc82f06666e5d8f20d85c1d476c0886f6a7fb4eaa83531f842f3cee3129';
 
-// This inventory records whether each migration's application-schema effect is
-// present in a database produced by `prisma db push` from origin/main 44305b4.
-// Only migrations whose complete effect is present may be marked as applied.
 const migrationInventory = [
   {
     name: '0_init',
     sha256: 'b8a48e0a10bda38007bfc729e4824eb0e76a25ef835fd8f897043b2651d5b310',
-    markApplied: true,
+    dbPushEquivalent: true,
   },
   {
     name: '20260303_add_user_encryption_key',
     sha256: '3b15c1561998e4b3e9fdedb0a032879291b9d714b807c7717e490c57f111e012',
-    markApplied: false,
+    dbPushEquivalent: false,
   },
   {
     name: '20260628_add_auto_sign_enabled',
     sha256: 'f6cda47dc0a1108c6e219ed4105771c790386acb84d030e4afcdc0e578af768b',
-    markApplied: true,
+    dbPushEquivalent: true,
   },
   {
     name: '20260630_add_tinycloud_bootstrap_state',
     sha256: '2ec0e404864dffe7a4954b58cc6e46b37c30b80aa3bef940b2d3dfee4185be5c',
-    markApplied: true,
+    dbPushEquivalent: true,
   },
   {
     name: '20260714_origin_main_schema_catchup',
     sha256: '0d55069dce6b6d51b42ab95bd813a8698261d4de32e64a0c702f4d4a17263a09',
-    markApplied: true,
+    dbPushEquivalent: true,
   },
 ] as const;
+const initMigration = '0_init';
+const userEncryptionMigration = '20260303_add_user_encryption_key';
+const autoSignMigration = '20260628_add_auto_sign_enabled';
+const baselineCompletionMarker = '20260714_origin_main_schema_catchup';
 const firstPendingMigration = '20260714_zz_origin_main_db_push_reconciliation';
 const firstManagedAccountMigration =
   '20260715_0001_managed_accounts_phase_a_fix';
+
+type MigrationRow = {
+  migration_name: string;
+  checksum: string;
+  finished_at: Date | null;
+  rolled_back_at: Date | null;
+  applied_steps_count: number;
+};
 
 function requirePostgresUrl() {
   const value = process.env.DATABASE_URL;
@@ -59,7 +74,6 @@ function requirePostgresUrl() {
   if (!value.startsWith('postgresql://') && !value.startsWith('postgres://')) {
     throw new Error('DATABASE_URL must be a PostgreSQL connection string');
   }
-  return value;
 }
 
 function runPrisma(args: string[], allowedStatuses = [0]) {
@@ -89,11 +103,16 @@ function sha256(content: string) {
 }
 
 async function assertFrozenInventory() {
-  const schema = await readFile(baselineSchema, 'utf8');
-  if (sha256(schema) !== baselineSchemaSha256) {
-    throw new Error(
-      'Frozen origin/main baseline schema checksum does not match its reviewed value'
-    );
+  const snapshots = [
+    [baselineSchema, baselineSchemaSha256],
+    [interruptedSchema, interruptedSchemaSha256],
+  ] as const;
+  for (const [schemaPath, checksum] of snapshots) {
+    if (sha256(await readFile(schemaPath, 'utf8')) !== checksum) {
+      throw new Error(
+        `Frozen production schema checksum does not match: ${schemaPath}`
+      );
+    }
   }
 
   for (const migration of migrationInventory) {
@@ -142,17 +161,131 @@ async function readMigrationHistory() {
     if (!table[0]?.exists) {
       return [];
     }
-    return await prisma.$queryRawUnsafe<
-      Array<{
-        migration_name: string;
-        finished_at: Date | null;
-        rolled_back_at: Date | null;
-      }>
-    >(
-      'SELECT migration_name, finished_at, rolled_back_at FROM "_prisma_migrations" ORDER BY started_at'
+    return await prisma.$queryRawUnsafe<Array<MigrationRow>>(
+      'SELECT migration_name, checksum, finished_at, rolled_back_at, applied_steps_count FROM "_prisma_migrations" ORDER BY started_at'
     );
   } finally {
     await prisma.$disconnect();
+  }
+}
+
+function assertKnownChecksums(history: MigrationRow[]) {
+  const checksums = new Map(
+    migrationInventory.map((migration) => [migration.name, migration.sha256])
+  );
+  for (const row of history) {
+    const expected = checksums.get(
+      row.migration_name as (typeof migrationInventory)[number]['name']
+    );
+    if (!expected || row.checksum !== expected) {
+      throw new Error(
+        `Unexpected migration record or checksum: ${row.migration_name}`
+      );
+    }
+  }
+}
+
+function sameNames(rows: MigrationRow[], expected: string[]) {
+  const actual = rows.map((row) => row.migration_name).sort();
+  return actual.join('\n') === [...expected].sort().join('\n');
+}
+
+function classifyHistory(history: MigrationRow[]) {
+  assertKnownChecksums(history);
+  const successful = history.filter(
+    (row) => row.finished_at && !row.rolled_back_at
+  );
+  const activeFailures = history.filter(
+    (row) => !row.finished_at && !row.rolled_back_at
+  );
+  const rolledBack = history.filter((row) => row.rolled_back_at);
+  const dbPushNames = migrationInventory
+    .filter((migration) => migration.dbPushEquivalent)
+    .map((migration) => migration.name);
+  const pristineProgressStates = [
+    [],
+    [initMigration],
+    [initMigration, autoSignMigration],
+    [
+      initMigration,
+      autoSignMigration,
+      '20260630_add_tinycloud_bootstrap_state',
+    ],
+    [...dbPushNames],
+  ];
+
+  const isPristineBaseline =
+    activeFailures.length === 0 &&
+    rolledBack.length === 0 &&
+    pristineProgressStates.some((names) => sameNames(successful, names));
+  if (isPristineBaseline) {
+    return { kind: 'db-push' as const, schema: baselineSchema };
+  }
+
+  const incidentSuccesses = [initMigration, userEncryptionMigration];
+  const exactIncident =
+    sameNames(successful, incidentSuccesses) &&
+    activeFailures.length === 1 &&
+    activeFailures[0]?.migration_name === autoSignMigration &&
+    activeFailures[0].applied_steps_count === 0 &&
+    rolledBack.length === 0;
+  if (exactIncident) {
+    return { kind: 'interrupted' as const, schema: interruptedSchema };
+  }
+
+  const resumedSuccesses = [
+    initMigration,
+    userEncryptionMigration,
+    autoSignMigration,
+  ];
+  const resumedAllowedSuccesses = new Set([
+    ...dbPushNames,
+    userEncryptionMigration,
+  ]);
+  const exactResolvedIncident =
+    new Set(successful.map((row) => row.migration_name)).size ===
+      successful.length &&
+    resumedSuccesses.every((name) =>
+      successful.some((row) => row.migration_name === name)
+    ) &&
+    successful.every((row) =>
+      resumedAllowedSuccesses.has(row.migration_name)
+    ) &&
+    activeFailures.length === 0 &&
+    rolledBack.length === 1 &&
+    rolledBack[0]?.migration_name === autoSignMigration &&
+    rolledBack[0].applied_steps_count === 0;
+  if (exactResolvedIncident) {
+    return { kind: 'interrupted-resolved' as const, schema: interruptedSchema };
+  }
+
+  throw new Error(
+    'Migration history is not an approved db-push baseline or the exact reviewed 20260628 interruption'
+  );
+}
+
+function assertPhysicalSchema(schema: string) {
+  const diff = runPrisma(
+    [
+      'migrate',
+      'diff',
+      '--from-schema',
+      schema,
+      '--to-config-datasource',
+      '--exit-code',
+    ],
+    [0, 2]
+  );
+  if (diff.status === 2) {
+    const details = [diff.stdout, diff.stderr]
+      .filter(Boolean)
+      .join('\n')
+      .trim();
+    throw new Error(
+      `Production schema does not match the approved recovery snapshot. No migration records were changed.${
+        details ? `\n${details}` : ''
+      }`
+    );
   }
 }
 
@@ -165,52 +298,27 @@ async function main() {
   requirePostgresUrl();
   await assertFrozenInventory();
 
-  const migrationsToRecord = migrationInventory.filter(
-    (migration) => migration.markApplied
-  );
-  const recordableNames = new Set<string>(
-    migrationsToRecord.map((migration) => migration.name)
-  );
   const history = await readMigrationHistory();
-  for (const row of history) {
-    if (!recordableNames.has(row.migration_name)) {
-      throw new Error(
-        `Database already records non-baseline migration ${row.migration_name}; use the normal migration deploy path`
-      );
-    }
-    if (!row.finished_at || row.rolled_back_at) {
-      throw new Error(
-        `Migration ${row.migration_name} is not successfully applied; resolve it manually before baselining`
-      );
-    }
-  }
+  const state = classifyHistory(history);
+  assertPhysicalSchema(state.schema);
 
-  const diff = runPrisma(
-    [
-      'migrate',
-      'diff',
-      '--from-schema',
-      baselineSchema,
-      '--to-config-datasource',
-      '--exit-code',
-    ],
-    [0, 2]
-  );
-  if (diff.status === 2) {
-    const details = [diff.stdout, diff.stderr]
-      .filter(Boolean)
-      .join('\n')
-      .trim();
-    throw new Error(
-      `Production schema does not match the frozen origin/main 44305b4 db-push schema. No migrations were marked applied.${
-        details ? `\n${details}` : ''
-      }`
+  if (state.kind === 'interrupted') {
+    runPrisma(['migrate', 'resolve', '--applied', autoSignMigration]);
+    console.log(
+      `Resolved exact failed migration as applied: ${autoSignMigration}`
     );
   }
 
-  const alreadyApplied = new Set(history.map((row) => row.migration_name));
-  for (const migration of migrationsToRecord) {
-    if (alreadyApplied.has(migration.name)) {
+  const refreshedHistory = await readMigrationHistory();
+  const successful = new Set(
+    refreshedHistory
+      .filter((row) => row.finished_at && !row.rolled_back_at)
+      .map((row) => row.migration_name)
+  );
+  for (const migration of migrationInventory.filter(
+    (entry) => entry.dbPushEquivalent
+  )) {
+    if (successful.has(migration.name)) {
       console.log(`Already recorded: ${migration.name}`);
       continue;
     }
@@ -218,8 +326,26 @@ async function main() {
     console.log(`Recorded db-push-equivalent migration: ${migration.name}`);
   }
 
+  const finalHistory = await readMigrationHistory();
+  const activeFailures = finalHistory.filter(
+    (row) => !row.finished_at && !row.rolled_back_at
+  );
+  const marker = finalHistory.some(
+    (row) =>
+      row.migration_name === baselineCompletionMarker &&
+      row.checksum ===
+        migrationInventory.find(
+          (entry) => entry.name === baselineCompletionMarker
+        )?.sha256 &&
+      row.finished_at &&
+      !row.rolled_back_at
+  );
+  if (!marker || activeFailures.length > 0) {
+    throw new Error('Baseline completion marker was not recorded cleanly');
+  }
+
   console.log(
-    'Origin/main db-push baseline recorded. Pending migrations must now run with prisma migrate deploy.'
+    'Production baseline completion marker recorded; production migration deploy is now unlocked.'
   );
 }
 
