@@ -9,42 +9,48 @@ datasource db {
 
 // better-auth User model
 model User {
-  id            String    @id
-  email         String    @unique
-  emailVerified Boolean   @default(false)
-  name          String?
-  image         String?
-  autoSignEnabled Boolean   @default(true)
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  id              String   @id
+  email           String   @unique
+  emailVerified   Boolean  @default(false)
+  name            String?
+  image           String?
+  autoSignEnabled Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   // Relations
-  passkeys                Passkey[]
-  ethereumKeys            EthereumKey[]
-  tinyCloudBootstrapState TinyCloudBootstrapState[]
-  sessions                Session[]
-  accounts                Account[]
-  verification            Verification[]
+  passkeys                       Passkey[]
+  ethereumKeys                   EthereumKey[]
+  tinyCloudBootstrapState        TinyCloudBootstrapState[]
+  sessions                       Session[]
+  accounts                       Account[]
+  userEncryptionKey              UserEncryptionKey?
+  verification                   Verification[]
   // OAuth provider relations
-  oauthClients       OauthClient[]
-  oauthAccessTokens  OauthAccessToken[]
-  oauthRefreshTokens OauthRefreshToken[]
-  oauthConsents      OauthConsent[]
-  developerAccount   DeveloperAccount?
+  oauthClients                   OauthClient[]
+  oauthAccessTokens              OauthAccessToken[]
+  oauthRefreshTokens             OauthRefreshToken[]
+  oauthConsents                  OauthConsent[]
+  developerAccount               DeveloperAccount?
+  organizationMemberships        OrganizationMembership[]
+  ownedManagedAccounts           ManagedAccount[]               @relation("ManagedAccountOwner")
+  organizationCredentialSubjects OrganizationServerCredential[] @relation("OrganizationCredentialSubject")
+  managedAccountEjectRequests    EjectRequest[]
 
   @@map("user")
 }
 
 // better-auth Session
 model Session {
-  id        String   @id
-  userId    String
-  token     String   @unique
-  expiresAt DateTime
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  ipAddress String?
-  userAgent String?
+  id            String    @id
+  userId        String
+  token         String    @unique
+  expiresAt     DateTime
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  ipAddress     String?
+  userAgent     String?
+  lastPasskeyAt DateTime?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -106,28 +112,53 @@ model Passkey {
   @@map("passkey")
 }
 
+// Legacy table retained in the executable migration chain.
+model UserEncryptionKey {
+  id               String   @id
+  userId           String   @unique
+  publicKey        String
+  sealedPrivateKey String
+  createdAt        DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade, map: "user_encryption_key_userId_fkey")
+
+  @@map("user_encryption_key")
+}
+
 enum KeyType {
   MANAGED
   EXTERNAL
 }
 
+enum KeyPurpose {
+  PERSONAL
+  MANAGED_ACCOUNT
+}
+
 // Ethereum keys - managed (sealed with TEE) or external (user-provided address)
 model EthereumKey {
-  id         String    @id @default(cuid())
-  userId     String
-  address    String    @unique
-  publicKey  String
-  sealedBlob String?   // Encrypted with dstack KMS; null for external keys
-  keyType    KeyType   @default(MANAGED)
-  keyIndex   Int       @default(0)
-  label      String?
-  archivedAt DateTime? // Soft delete - archived keys are hidden but not deleted
-  createdAt  DateTime  @default(now())
+  id             String     @id @default(cuid())
+  userId         String
+  address        String     @unique
+  publicKey      String
+  sealedBlob     String? // Encrypted with dstack KMS; null for external keys
+  // Null is retained for pre-v1 rows. New keys use an opaque, immutable
+  // per-key context; resolution falls back to openkey/user/{userId}/keys only
+  // for these legacy rows. See docs/managed-accounts-migration-note.md.
+  sealingContext String?    @unique(map: "ethereum_keys_sealingContext_key")
+  keyType        KeyType    @default(MANAGED)
+  keyPurpose     KeyPurpose @default(PERSONAL)
+  keyIndex       Int        @default(0)
+  label          String?
+  archivedAt     DateTime? // Soft delete - archived keys are hidden but not deleted
+  createdAt      DateTime   @default(now())
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user                    User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
   tinyCloudBootstrapState TinyCloudBootstrapState[]
+  managedAccount          ManagedAccount?
 
-  @@index([userId])
+  @@unique([id, userId], map: "ethereum_keys_id_userId_key")
+  @@index([userId, keyPurpose], map: "ethereum_keys_userId_keyPurpose_idx")
   @@map("ethereum_keys")
 }
 
@@ -149,10 +180,10 @@ model TinyCloudBootstrapState {
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User        @relation(fields: [userId], references: [id], onDelete: Cascade)
   key  EthereumKey @relation(fields: [keyId], references: [id], onDelete: Cascade)
 
-  @@unique([keyId, chainId, tinycloudHost, bootstrapVersion])
+  @@unique([keyId, chainId, tinycloudHost, bootstrapVersion], map: "tinycloud_bootstrap_state_keyId_chainId_tinycloudHost_bootstrap")
   @@index([userId])
   @@index([status])
   @@map("tinycloud_bootstrap_state")
@@ -173,15 +204,17 @@ model Jwks {
 enum Plan {
   FREE
   PRO
+  // Retained only until production data is explicitly audited and mapped.
+  // SCALE is not a public v1 plan; never map it implicitly in application code.
   SCALE
   ENTERPRISE
 }
 
 enum BillingState {
-  FREE        // No Stripe subscription
-  ACTIVE      // Paying, subscription current
-  PAST_DUE    // Payment failed
-  CANCELLED   // Subscription ended
+  FREE // No Stripe subscription
+  ACTIVE // Paying, subscription current
+  PAST_DUE // Payment failed
+  CANCELLED // Subscription ended
 }
 
 // DeveloperAccount — 1:1 with User, created on first admin console login
@@ -196,8 +229,12 @@ model DeveloperAccount {
   createdAt            DateTime     @default(now())
   updatedAt            DateTime     @updatedAt
   stripeSubscriptionId String?
+  // Transitional bridge to the organization tenant boundary. Existing rows
+  // remain user-owned until an explicit, audited migration assigns an org.
+  organizationId       String?      @unique(map: "developer_account_organizationId_key")
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull, map: "developer_account_org_fkey")
 
   @@map("developer_account")
 }
@@ -243,11 +280,19 @@ model OauthClient {
   metadata                Json?
   userId                  String? // Owner of the client (admin who registered it)
   referenceId             String?
+  // Nullable while legacy individual OAuth clients are still present. New
+  // tenant clients must be created with an organization; migration must not
+  // infer this from SCALE or from a request body.
+  organizationId          String?
   createdAt               DateTime @default(now())
   updatedAt               DateTime @updatedAt
 
-  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+  user                User?                @relation(fields: [userId], references: [id], onDelete: SetNull)
+  organization        Organization?        @relation(fields: [organizationId], references: [id], onDelete: SetNull, map: "oauth_client_org_fkey")
+  registrationIntents RegistrationIntent[]
 
+  @@unique([clientId, organizationId], map: "oauth_client_clientId_organizationId_key")
+  @@index([organizationId], map: "oauth_client_organizationId_idx")
   @@map("oauth_client")
 }
 
@@ -305,4 +350,390 @@ model OauthConsent {
 
   @@unique([userId, clientId])
   @@map("oauth_consent")
+}
+
+// ======= Managed accounts and organization tenancy =======
+
+enum OrganizationRole {
+  ADMIN
+  MEMBER
+}
+
+enum MembershipStatus {
+  ACTIVE
+  REVOKED
+}
+
+enum RegistrationIntentStatus {
+  PENDING
+  CONSUMED
+  EXPIRED
+  FAILED
+}
+
+enum ManagedAccountState {
+  PROVISIONED
+  MANAGED
+  EJECTING
+  USER_OWNED
+  EXPIRED
+  FAILED
+}
+
+enum CustodianType {
+  ORGANIZATION
+  USER
+}
+
+enum RevocationStatus {
+  NOT_REQUIRED
+  PENDING
+  REVOKED
+}
+
+enum NodeRole {
+  HOST
+  REPLICA
+}
+
+enum RevocationReceiptStatus {
+  PENDING
+  SUBMITTED
+  CONFIRMED
+  FAILED
+}
+
+model Organization {
+  id                   String       @id @default(cuid())
+  name                 String
+  brokerDid            String?
+  plan                 Plan         @default(FREE)
+  billingState         BillingState @default(FREE)
+  stripeCustomerId     String?      @unique(map: "organization_stripeCustomerId_key")
+  stripeSubscriptionId String?
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+
+  developerAccount    DeveloperAccount?
+  memberships         OrganizationMembership[]
+  serverCredentials   OrganizationServerCredential[]
+  oauthClients        OauthClient[]
+  registrationIntents RegistrationIntent[]
+  managedAccounts     ManagedAccount[]
+  planEntitlements    PlanEntitlements?
+  webhookEndpoints    WebhookEndpoint[]
+  webhookDeliveries   WebhookDelivery[]
+
+  @@map("organization")
+}
+
+// Memberships are append-only for authorization history: revoking an admin
+// creates a new membership on re-join instead of mutating the old interval.
+model OrganizationMembership {
+  id             String           @id @default(cuid())
+  organizationId String
+  userId         String
+  role           OrganizationRole @default(MEMBER)
+  status         MembershipStatus @default(ACTIVE)
+  validFrom      DateTime         @default(now())
+  validUntil     DateTime?
+  revokedAt      DateTime?
+  createdAt      DateTime         @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "membership_org_fkey")
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade, map: "membership_user_fkey")
+
+  @@unique([organizationId, userId, validFrom], map: "organization_membership_org_user_from_key")
+  @@index([organizationId, status], map: "organization_membership_org_status_idx")
+  @@index([userId, status], map: "organization_membership_user_status_idx")
+  @@map("organization_membership")
+}
+
+// Server credentials are bearer credentials at the API boundary. Only the
+// verifier hash is persisted; the plaintext is returned once at creation.
+model OrganizationServerCredential {
+  id             String                     @id @default(cuid())
+  organizationId String
+  name           String
+  secretHash     String
+  secretPrefix   String
+  subjectUserId  String?
+  kind           OrganizationCredentialKind @default(BROKER)
+  createdAt      DateTime                   @default(now())
+  lastUsedAt     DateTime?
+  revokedAt      DateTime?
+
+  organization        Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "credential_org_fkey")
+  subjectUser         User?                @relation("OrganizationCredentialSubject", fields: [subjectUserId], references: [id], onDelete: SetNull, map: "credential_subject_fkey")
+  registrationIntents RegistrationIntent[]
+
+  @@unique([secretPrefix], map: "organization_server_credential_secretPrefix_key")
+  @@index([organizationId, revokedAt], map: "organization_server_credential_org_revoked_idx")
+  @@map("organization_server_credential")
+}
+
+model PlanEntitlements {
+  id                            String   @id @default(cuid())
+  organizationId                String   @unique
+  version                       Int      @default(1)
+  maxApps                       Int
+  maxOrganizationMembers        Int
+  maxManagedAccounts            Int
+  monthlyActiveManagedUsers     Int
+  storageBytesPerManagedAccount BigInt
+  requestsPerMinute             Int
+  maxTenantDelegationTtlSeconds Int
+  maxTenantPolicyVersion        Int
+  webhookDelivery               Boolean  @default(false)
+  auditRetentionDays            Int
+  createdAt                     DateTime @default(now())
+  updatedAt                     DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "plan_entitlements_org_fkey")
+
+  @@map("plan_entitlements")
+}
+
+model RegistrationIntent {
+  id                    String                   @id @default(cuid())
+  organizationId        String
+  publicClientId        String
+  externalUserId        String
+  redirectUri           String
+  policyTemplate        String
+  policyVersion         Int                      @default(1)
+  nonce                 String                   @unique(map: "registration_intent_nonce_key")
+  idempotencyKey        String
+  createdByCredentialId String
+  managedAccountId      String?                  @unique(map: "registration_intent_managedAccountId_key")
+  metadata              Json?
+  status                RegistrationIntentStatus @default(PENDING)
+  createdAt             DateTime                 @default(now())
+  expiresAt             DateTime
+  consumedAt            DateTime?
+
+  organization        Organization                 @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "registration_intent_org_fkey")
+  client              OauthClient                  @relation(fields: [publicClientId, organizationId], references: [clientId, organizationId], onDelete: Restrict, map: "registration_intent_client_org_fkey")
+  createdByCredential OrganizationServerCredential @relation(fields: [createdByCredentialId], references: [id], onDelete: Restrict, map: "registration_intent_credential_fkey")
+  managedAccount      ManagedAccount?              @relation(fields: [managedAccountId], references: [id], onDelete: Restrict, map: "registration_intent_account_fkey")
+
+  @@unique([organizationId, idempotencyKey], map: "registration_intent_org_idempotency_key")
+  @@index([organizationId, externalUserId], map: "registration_intent_org_external_idx")
+  @@index([status, expiresAt], map: "registration_intent_status_expiry_idx")
+  @@map("registration_intent")
+}
+
+model ManagedAccount {
+  id                        String              @id @default(cuid())
+  ownerUserId               String
+  organizationId            String
+  externalUserId            String
+  keyId                     String              @unique
+  custodyHeadId             String?             @unique
+  policyTemplate            String              @default("tinycloud-standard-v1")
+  state                     ManagedAccountState @default(PROVISIONED)
+  custodyEpoch              Int                 @default(0)
+  policyVersion             Int                 @default(1)
+  tenantParentDelegationCid String?
+  tenantParentDelegation    Json?
+  tenantParentExpiresAt     DateTime?
+  brokerAccessDisabledAt    DateTime?
+  revocationStatus          RevocationStatus    @default(NOT_REQUIRED)
+  createdAt                 DateTime            @default(now())
+  updatedAt                 DateTime            @updatedAt
+
+  owner                   User                     @relation("ManagedAccountOwner", fields: [ownerUserId], references: [id], onDelete: Restrict, map: "managed_account_owner_fkey")
+  organization            Organization             @relation(fields: [organizationId], references: [id], onDelete: Restrict, map: "managed_account_org_fkey")
+  key                     EthereumKey              @relation(fields: [keyId, ownerUserId], references: [id, userId], onDelete: Restrict, map: "managed_account_key_owner_fkey")
+  custodyHead             KeyCustody?              @relation("ManagedAccountCustodyHead", fields: [custodyHeadId, id], references: [id, managedAccountId], onDelete: Restrict, map: "managed_account_head_fkey")
+  custodyHistory          KeyCustody[]             @relation("ManagedAccountCustodyHistory")
+  policies                ManagedAccountPolicy[]
+  possessionEvents        PossessionEvent[]
+  nodes                   ManagedAccountNode[]
+  ejectRevocationReceipts EjectRevocationReceipt[]
+  registrationIntent      RegistrationIntent?
+  ejectRequests           EjectRequest[]
+  webhookDeliveries       WebhookDelivery[]
+
+  @@unique([organizationId, externalUserId], map: "managed_account_org_external_key")
+  @@unique([keyId, ownerUserId], map: "managed_account_key_owner_key")
+  @@unique([id, keyId], map: "managed_account_id_keyId_key")
+  @@unique([custodyHeadId, id], map: "managed_account_head_account_key")
+  @@index([ownerUserId], map: "managed_account_owner_idx")
+  @@index([organizationId, state], map: "managed_account_org_state_idx")
+  @@map("managed_account")
+}
+
+enum WebhookDeliveryStatus {
+  PENDING
+  DELIVERED
+  FAILED
+}
+
+model WebhookEndpoint {
+  id             String   @id
+  organizationId String
+  url            String
+  eventTypes     String[]
+  secretHash     String
+  sealedSecret   String
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "webhook_endpoint_org_fkey")
+  deliveries   WebhookDelivery[]
+
+  @@index([organizationId, active], map: "webhook_endpoint_org_active_idx")
+  @@map("webhook_endpoint")
+}
+
+model WebhookDelivery {
+  id               String                @id @default(cuid())
+  endpointId       String
+  organizationId   String
+  managedAccountId String
+  eventType        String
+  custodyEpoch     Int
+  payload          Json
+  status           WebhookDeliveryStatus @default(PENDING)
+  attempts         Int                   @default(0)
+  lastAttemptAt    DateTime?
+  deliveredAt      DateTime?
+  responseDigest   String?
+  createdAt        DateTime              @default(now())
+
+  endpoint       WebhookEndpoint @relation(fields: [endpointId], references: [id], onDelete: Restrict, map: "webhook_delivery_endpoint_fkey")
+  organization   Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict, map: "webhook_delivery_org_fkey")
+  managedAccount ManagedAccount  @relation(fields: [managedAccountId], references: [id], onDelete: Restrict, map: "webhook_delivery_account_fkey")
+
+  @@unique([endpointId, managedAccountId, eventType, custodyEpoch], map: "webhook_delivery_ordering_key")
+  @@index([status, createdAt], map: "webhook_delivery_status_created_idx")
+  @@map("webhook_delivery")
+}
+
+enum EjectRequestStatus {
+  PENDING
+  COMPLETED
+  FAILED
+}
+
+model EjectRequest {
+  id               String             @id @default(cuid())
+  managedAccountId String
+  ownerUserId      String
+  idempotencyKey   String
+  expectedEpoch    Int
+  status           EjectRequestStatus @default(PENDING)
+  result           Json?
+  createdAt        DateTime           @default(now())
+  completedAt      DateTime?
+
+  managedAccount ManagedAccount @relation(fields: [managedAccountId], references: [id], onDelete: Restrict, map: "eject_request_account_fkey")
+  owner          User           @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, map: "eject_request_owner_fkey")
+
+  @@unique([managedAccountId, ownerUserId, idempotencyKey], map: "eject_request_account_owner_idempotency_key")
+  @@index([managedAccountId, status], map: "eject_request_account_status_idx")
+  @@map("eject_request")
+}
+
+model KeyCustody {
+  id               String        @id @default(cuid())
+  managedAccountId String
+  custodianType    CustodianType
+  custodianId      String
+  epoch            Int
+  activatedAt      DateTime      @default(now())
+  revokedAt        DateTime?
+
+  managedAccount ManagedAccount  @relation("ManagedAccountCustodyHistory", fields: [managedAccountId], references: [id], onDelete: Restrict, map: "key_custody_account_fkey")
+  headOfAccount  ManagedAccount? @relation("ManagedAccountCustodyHead")
+
+  @@unique([managedAccountId, epoch], map: "key_custody_account_epoch_key")
+  @@unique([id, managedAccountId], map: "key_custody_id_account_key")
+  @@index([managedAccountId, revokedAt], map: "key_custody_account_revoked_idx")
+  @@map("key_custody")
+}
+
+enum OrganizationCredentialKind {
+  BROKER
+  PROVISIONER
+}
+
+model ManagedAccountPolicy {
+  id               String   @id @default(cuid())
+  managedAccountId String
+  version          Int
+  template         String
+  grants           Json
+  maxTtlSeconds    Int
+  createdAt        DateTime @default(now())
+
+  managedAccount ManagedAccount @relation(fields: [managedAccountId], references: [id], onDelete: Restrict, map: "managed_policy_account_fkey")
+
+  @@unique([managedAccountId, version], map: "managed_account_policy_account_version_key")
+  @@map("managed_account_policy")
+}
+
+model PossessionEvent {
+  id                   String   @id @default(cuid())
+  managedAccountId     String
+  keyId                String
+  epoch                Int
+  previousEventHash    String?
+  eventHash            String   @unique
+  fromPrincipal        String
+  toPrincipal          String
+  reason               String
+  credentialPolicyHash String
+  createdAt            DateTime @default(now())
+  accountKeySignature  String
+  witnessReceipt       Json?
+
+  managedAccount     ManagedAccount           @relation(fields: [managedAccountId, keyId], references: [id, keyId], onDelete: Restrict, map: "possession_event_account_key_fkey")
+  revocationReceipts EjectRevocationReceipt[]
+
+  @@unique([managedAccountId, epoch], map: "possession_event_account_epoch_key")
+  @@unique([id, managedAccountId], map: "possession_event_id_account_key")
+  @@index([managedAccountId, createdAt], map: "possession_event_account_created_idx")
+  @@map("possession_event")
+}
+
+model ManagedAccountNode {
+  id               String    @id @default(cuid())
+  managedAccountId String
+  nodeId           String
+  baseUrl          String
+  role             NodeRole
+  firstSeenAt      DateTime  @default(now())
+  lastConfirmedAt  DateTime?
+  active           Boolean   @default(true)
+
+  managedAccount     ManagedAccount           @relation(fields: [managedAccountId], references: [id], onDelete: Restrict, map: "node_account_fkey")
+  revocationReceipts EjectRevocationReceipt[]
+
+  @@unique([managedAccountId, nodeId], map: "managed_account_node_account_node_key")
+  @@unique([id, managedAccountId], map: "managed_account_node_id_account_key")
+  @@index([managedAccountId, active], map: "managed_account_node_account_active_idx")
+  @@map("managed_account_node")
+}
+
+model EjectRevocationReceipt {
+  id                        String                  @id @default(cuid())
+  possessionEventId         String
+  nodeId                    String
+  managedAccountId          String
+  tenantParentDelegationCid String
+  submittedAt               DateTime?
+  confirmedAt               DateTime?
+  status                    RevocationReceiptStatus @default(PENDING)
+  responseDigest            String?
+
+  managedAccount  ManagedAccount     @relation(fields: [managedAccountId], references: [id], onDelete: Restrict, map: "receipt_account_fkey")
+  possessionEvent PossessionEvent    @relation(fields: [possessionEventId, managedAccountId], references: [id, managedAccountId], onDelete: Restrict, map: "receipt_event_account_fkey")
+  node            ManagedAccountNode @relation(fields: [nodeId, managedAccountId], references: [id, managedAccountId], onDelete: Restrict, map: "receipt_node_account_fkey")
+
+  @@unique([possessionEventId, nodeId], map: "eject_receipt_event_node_key")
+  @@index([nodeId, status], map: "eject_receipt_node_status_idx")
+  @@map("eject_revocation_receipt")
 }

@@ -33,6 +33,7 @@ import {
   fetchPeerId,
   submitHostDelegation,
 } from '@tinycloud/sdk-core';
+import type { PrismaClient } from '@openkey/db';
 
 export const TINYCLOUD_BOOTSTRAP_VERSION = `@tinycloud/bootstrap:${canonicalHashHex({
   allowlist: BOOTSTRAP_ALLOWLIST,
@@ -52,16 +53,7 @@ const BOOTSTRAP_DOMAIN = 'cli.tinycloud.xyz';
 const NETWORK_CREATE_ACTION = ENCRYPTION.NETWORK_CREATE;
 const NETWORK_ADMIN_TYPE = 'tinycloud.encryption.network-admin/v1';
 
-type PrismaLike = {
-  user: {
-    findUnique(args: unknown): Promise<{ autoSignEnabled: boolean } | null>;
-  };
-  tinyCloudBootstrapState: {
-    findUnique(args: unknown): Promise<BootstrapStateRecord | null>;
-    create(args: unknown): Promise<BootstrapStateRecord>;
-    updateMany(args: unknown): Promise<{ count: number }>;
-  };
-};
+type PrismaLike = Pick<PrismaClient, 'user' | 'tinyCloudBootstrapState'>;
 
 interface BootstrapStateRecord {
   id: string;
@@ -73,7 +65,8 @@ interface BootstrapStateRecord {
 export interface TinyCloudBootstrapKey {
   id: string;
   address: string;
-  keyType?: string;
+  keyType: string;
+  keyPurpose: 'PERSONAL';
 }
 
 export interface EnsureTinyCloudBootstrapInput {
@@ -263,6 +256,14 @@ function isSupportedTinyCloudChainId(chainId: number): boolean {
 export async function ensureTinyCloudBootstrapForApprovedSign(
   input: EnsureTinyCloudBootstrapInput,
 ): Promise<TinyCloudBootstrapOutcome> {
+  if (input.key.keyPurpose !== 'PERSONAL') {
+    return {
+      status: 'failed',
+      errorCode: 'managed_key_requires_managed_boundary',
+      errorMessage: 'Tenant-managed keys cannot use the personal bootstrap route.',
+    };
+  }
+
   // Kill-switch: clients on the SDK auto-sign strategy bootstrap through
   // POST /api/delegate/sign instead; this hook only compensates for older
   // clients. Disable once /delegate/sign traffic replaces widget signs.

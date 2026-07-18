@@ -11,6 +11,9 @@ import { secretsRouter } from './routes/secrets';
 import { variablesRouter } from './routes/variables';
 import { delegateRouter } from './routes/delegate';
 import { internalMetricsRouter } from './routes/internal-metrics';
+import { hostedRegistrationRouter, managedAccountsRouter } from './routes/managed-accounts';
+import { personalManagedAccountsRouter } from './routes/personal-managed-accounts';
+import { organizationsRouter } from './routes/organizations';
 import { trackAuthorization, trackTokenExchange, trackUniqueUser } from './analytics';
 
 // Create Hono app
@@ -126,6 +129,12 @@ app.route('/api/variables', variablesRouter);
 
 // Delegate route (CLI auth flow)
 app.route('/api/delegate', delegateRouter);
+
+// Organization-scoped managed-account API and OpenKey-owned registration ceremony.
+app.route('/v1', managedAccountsRouter);
+app.route('/api/managed-account-registration', hostedRegistrationRouter);
+app.route('/api/managed-accounts', personalManagedAccountsRouter);
+app.route('/api/organizations', organizationsRouter);
 
 // 404 handler
 app.notFound((c) => c.json({ error: 'Not found' }, 404));

@@ -180,6 +180,7 @@ DATABASE_URL="pglite:" # local dev; use postgresql://... in production
 
 # Auth (better-auth)
 BETTER_AUTH_SECRET="..."
+REGISTRATION_INTENT_SECRET="..."
 GOOGLE_CLIENT_ID="..."
 GOOGLE_CLIENT_SECRET="..."
 
@@ -189,6 +190,7 @@ RESEND_API_KEY="..."
 # TEE
 TEE_MODE="production"  # or "development" for mock
 DEV_SEALING_KEY="..."  # only needed in development
+TINYCLOUD_BOOTSTRAP_HOST="https://node.tinycloud.xyz"
 
 # WebAuthn
 WEBAUTHN_RP_ID="openkey.so"

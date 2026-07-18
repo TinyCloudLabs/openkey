@@ -8,6 +8,7 @@ import type { Hex } from 'viem';
 import {
   ensureTinyCloudBootstrapForApprovedSign,
 } from '../services/tinycloud-bootstrap';
+import { createSealingContext, deriveKeyForRecord } from '../services/key-sealing';
 
 const prisma = createPrismaClient();
 const tee = createTeeClient();
@@ -108,7 +109,7 @@ keysRouter.post('/link', async (c) => {
 
   // Get next key index for this user
   const lastKey = await prisma.ethereumKey.findFirst({
-    where: { userId: user.id },
+    where: { userId: user.id, keyPurpose: 'PERSONAL' },
     orderBy: { keyIndex: 'desc' },
   });
   const keyIndex = (lastKey?.keyIndex ?? -1) + 1;
@@ -120,6 +121,7 @@ keysRouter.post('/link', async (c) => {
       address: body.address,
       publicKey: body.address,
       keyType: 'EXTERNAL',
+      keyPurpose: 'PERSONAL',
       sealedBlob: null,
       keyIndex,
       label: body.label || `External Key ${keyIndex}`,
@@ -146,6 +148,7 @@ keysRouter.get('/', async (c) => {
   const keys = await prisma.ethereumKey.findMany({
     where: {
       userId: user.id,
+      keyPurpose: 'PERSONAL',
       ...(includeArchived ? {} : { archivedAt: null }),
     },
     select: {
@@ -171,7 +174,7 @@ keysRouter.post('/generate', async (c) => {
 
   // Get next key index for this user
   const lastKey = await prisma.ethereumKey.findFirst({
-    where: { userId: user.id },
+    where: { userId: user.id, keyPurpose: 'PERSONAL' },
     orderBy: { keyIndex: 'desc' },
   });
   const keyIndex = (lastKey?.keyIndex ?? -1) + 1;
@@ -180,8 +183,8 @@ keysRouter.post('/generate', async (c) => {
   const privateKey = generatePrivateKey();
   const address = getAddressFromPrivateKey(privateKey);
 
-  // Derive sealing key from TEE for this user
-  const sealingKey = await tee.deriveKey(`openkey/user/${user.id}/keys`);
+  const sealingContext = createSealingContext();
+  const sealingKey = await tee.deriveKey(`openkey/key/${sealingContext}`);
 
   // Seal the private key
   const sealedBlob = await seal(privateKey, sealingKey);
@@ -193,6 +196,8 @@ keysRouter.post('/generate', async (c) => {
       address,
       publicKey: address, // For Ethereum, address is derived from public key
       sealedBlob,
+      sealingContext,
+      keyPurpose: 'PERSONAL',
       keyIndex,
       label: body.label || `Key ${keyIndex}`,
     },
@@ -215,7 +220,7 @@ keysRouter.get('/:keyId', async (c) => {
   const keyId = c.req.param('keyId');
 
   const key = await prisma.ethereumKey.findFirst({
-    where: { id: keyId, userId: user.id },
+    where: { id: keyId, userId: user.id, keyPurpose: 'PERSONAL' },
     select: {
       id: true,
       address: true,
@@ -242,7 +247,7 @@ keysRouter.patch('/:keyId', async (c) => {
   const body = await c.req.json<{ label: string }>();
 
   const key = await prisma.ethereumKey.updateMany({
-    where: { id: keyId, userId: user.id, archivedAt: null },
+    where: { id: keyId, userId: user.id, keyPurpose: 'PERSONAL', archivedAt: null },
     data: { label: body.label },
   });
 
@@ -264,7 +269,7 @@ keysRouter.post('/:keyId/sign', async (c) => {
   }>();
 
   const key = await prisma.ethereumKey.findFirst({
-    where: { id: keyId, userId: user.id, archivedAt: null },
+    where: { id: keyId, userId: user.id, keyPurpose: 'PERSONAL', archivedAt: null },
   });
 
   if (!key) {
@@ -275,7 +280,7 @@ keysRouter.post('/:keyId/sign', async (c) => {
     return c.json({ error: 'External keys must be signed client-side' }, 400);
   }
 
-  const sealingKey = await tee.deriveKey(`openkey/user/${user.id}/keys`);
+  const sealingKey = await deriveKeyForRecord(tee, key);
   const privateKey = await unseal(key.sealedBlob!, sealingKey) as Hex;
 
   const { createWalletFromPrivateKey } = await import('@openkey/tee');
@@ -291,7 +296,7 @@ keysRouter.post('/:keyId/sign', async (c) => {
   const bootstrapPromise = ensureTinyCloudBootstrapForApprovedSign({
     prisma,
     userId: user.id,
-    key,
+    key: { ...key, keyPurpose: 'PERSONAL' as const },
     privateKey,
     message: body.message,
     format,
@@ -356,7 +361,7 @@ keysRouter.post('/:keyId/sign-typed-data', async (c) => {
   }>();
 
   const key = await prisma.ethereumKey.findFirst({
-    where: { id: keyId, userId: user.id, archivedAt: null },
+    where: { id: keyId, userId: user.id, keyPurpose: 'PERSONAL', archivedAt: null },
   });
 
   if (!key) {
@@ -368,7 +373,7 @@ keysRouter.post('/:keyId/sign-typed-data', async (c) => {
   }
 
   // Unseal and sign
-  const sealingKey = await tee.deriveKey(`openkey/user/${user.id}/keys`);
+  const sealingKey = await deriveKeyForRecord(tee, key);
   const privateKey = await unseal(key.sealedBlob!, sealingKey) as Hex;
 
   const { createWalletFromPrivateKey } = await import('@openkey/tee');
@@ -393,7 +398,7 @@ keysRouter.get('/:keyId/quote', async (c) => {
   const keyId = c.req.param('keyId');
 
   const key = await prisma.ethereumKey.findFirst({
-    where: { id: keyId, userId: user.id, archivedAt: null },
+    where: { id: keyId, userId: user.id, keyPurpose: 'PERSONAL', archivedAt: null },
     select: { address: true },
   });
 
@@ -422,7 +427,7 @@ keysRouter.post('/:keyId/archive', async (c) => {
 
   const archivedAt = new Date();
   const key = await prisma.ethereumKey.updateMany({
-    where: { id: keyId, userId: user.id, archivedAt: null },
+    where: { id: keyId, userId: user.id, keyPurpose: 'PERSONAL', archivedAt: null },
     data: { archivedAt },
   });
 
@@ -439,7 +444,7 @@ keysRouter.post('/:keyId/unarchive', async (c) => {
   const keyId = c.req.param('keyId');
 
   const key = await prisma.ethereumKey.updateMany({
-    where: { id: keyId, userId: user.id, archivedAt: { not: null } },
+    where: { id: keyId, userId: user.id, keyPurpose: 'PERSONAL', archivedAt: { not: null } },
     data: { archivedAt: null },
   });
 

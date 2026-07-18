@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { prepareSession } from '@tinycloud/node-sdk-wasm';
+import type { TinyCloudBootstrapOutcome } from '../services/tinycloud-bootstrap';
 
 const address = '0x31d40B62C395B9418C4198363619B11c65cD406F';
 const chainId = 1;
 const privateKey = '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
-const key = { id: 'key_1', address };
+const key = { id: 'key_1', address, keyType: 'MANAGED', keyPurpose: 'PERSONAL' as const };
 const userId = 'user_1';
 const tinycloudHost = 'https://tee.node.tinycloud.xyz';
 const defaultTinycloudHost = 'https://node.tinycloud.xyz';
@@ -30,7 +31,7 @@ type BootstrapHook = (input: {
 
 let TINYCLOUD_BOOTSTRAP_VERSION: string;
 let TinyCloudBootstrapError: new (...args: any[]) => Error;
-let ensureTinyCloudBootstrapForApprovedSign: (input: any) => Promise<void>;
+let ensureTinyCloudBootstrapForApprovedSign: (input: any) => Promise<TinyCloudBootstrapOutcome>;
 let setTinyCloudBootstrapExecutorForTests: (executor?: BootstrapHook) => void;
 let setTinyCloudBootstrapProbeForTests: (probe?: BootstrapHook) => void;
 let trustedTinyCloudBootstrapHost: () => string;

@@ -163,6 +163,19 @@
 
   <!-- API Keys Card -->
   <Card class="mt-6">
+    <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+      <div>
+        <h2 class="text-xl font-semibold text-surface-900">Managed Accounts</h2>
+        <p class="text-sm text-surface-500 mt-1">
+          See which apps manage an account and transfer custody back to your OpenKey.
+        </p>
+      </div>
+      <Button variant="secondary" href="/dashboard/managed-accounts">Review custody</Button>
+    </div>
+  </Card>
+
+  <!-- API Keys Card -->
+  <Card class="mt-6">
     <div class="flex items-center justify-between">
       <div>
         <h2 class="text-xl font-semibold text-surface-900">Secrets & Variables</h2>

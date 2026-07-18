@@ -25,6 +25,7 @@ import {
   evaluateAutoSignPolicy,
   evaluateBootstrapSigningScope,
 } from './delegate-autosign';
+import { deriveKeyForRecord } from '../services/key-sealing';
 
 const prisma = createPrismaClient();
 const tee = createTeeClient();
@@ -527,8 +528,12 @@ function openKeyApprovalRequired(reason: string, code: string) {
   };
 }
 
-async function signManagedKey(userId: string, sealedBlob: string, message: string) {
-  const sealingKey = await tee.deriveKey(`openkey/user/${userId}/keys`);
+async function signManagedKey(
+  key: { userId: string; sealingContext?: string | null },
+  sealedBlob: string,
+  message: string,
+) {
+  const sealingKey = await deriveKeyForRecord(tee, key);
   const privateKey = await unseal(sealedBlob, sealingKey) as Hex;
   const { createWalletFromPrivateKey } = await import('@openkey/tee');
   const account = createWalletFromPrivateKey(privateKey);
@@ -576,6 +581,7 @@ delegateRouter.post('/sign', async (c) => {
   const key = await prisma.ethereumKey.findFirst({
     where: {
       userId: user.id,
+      keyPurpose: 'PERSONAL',
       archivedAt: null,
       ...(body.keyId
         ? { id: body.keyId }
@@ -637,7 +643,7 @@ delegateRouter.post('/sign', async (c) => {
     return c.json(openKeyApprovalRequired(autoSignDecision.reason, autoSignDecision.code));
   }
 
-  const signature = await signManagedKey(user.id, key.sealedBlob, body.message);
+  const signature = await signManagedKey(key, key.sealedBlob, body.message);
   return c.json({
     approved: true,
     signature,
@@ -670,7 +676,7 @@ delegateRouter.post('/host', async (c) => {
   }
 
   const key = await prisma.ethereumKey.findFirst({
-    where: { id: body.keyId, userId: user.id, archivedAt: null },
+    where: { id: body.keyId, userId: user.id, keyPurpose: 'PERSONAL', archivedAt: null },
   });
 
   if (!key) {
@@ -701,7 +707,7 @@ delegateRouter.post('/host', async (c) => {
     peerId: body.peerId,
   });
 
-  const signature = await signManagedKey(user.id, key.sealedBlob, siwe);
+  const signature = await signManagedKey(key, key.sealedBlob, siwe);
   const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
 
   return c.json({
@@ -740,7 +746,7 @@ delegateRouter.post('/', async (c) => {
   }
 
   const key = await prisma.ethereumKey.findFirst({
-    where: { id: body.keyId, userId: user.id, archivedAt: null },
+    where: { id: body.keyId, userId: user.id, keyPurpose: 'PERSONAL', archivedAt: null },
   });
 
   if (!key) {
@@ -795,7 +801,7 @@ delegateRouter.post('/', async (c) => {
     return c.json({ error: 'prepared session must include a valid expirationTime or SIWE Expiration Time' }, 400);
   }
 
-  const signature = await signManagedKey(user.id, key.sealedBlob, preparedResult.prepared.siwe);
+  const signature = await signManagedKey(key, key.sealedBlob, preparedResult.prepared.siwe);
 
   const session = completeSessionSetup({
     ...preparedResult.prepared,
@@ -865,7 +871,7 @@ delegateRouter.post('/prepare', async (c) => {
   }
 
   const key = await prisma.ethereumKey.findFirst({
-    where: { id: body.keyId, userId: user.id, archivedAt: null },
+    where: { id: body.keyId, userId: user.id, keyPurpose: 'PERSONAL', archivedAt: null },
   });
 
   if (!key) {

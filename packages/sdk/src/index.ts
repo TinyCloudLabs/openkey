@@ -103,6 +103,66 @@ export interface OAuthTokenResponse {
   refresh_token?: string;
 }
 
+export type ManagedAccountState = 'PROVISIONED' | 'MANAGED' | 'EJECTING' | 'USER_OWNED' | 'EXPIRED' | 'FAILED';
+
+export interface ManagedAccountRegistrationIntentRequest {
+  clientId: string;
+  externalUserId: string;
+  redirectUri: string;
+  policyTemplate: string;
+  policyVersion?: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ManagedAccountRegistrationIntent {
+  id: string;
+  registrationIntent: string;
+  status: 'PENDING' | 'CONSUMED' | 'EXPIRED' | 'FAILED';
+  expiresAt: string;
+  clientId: string;
+  redirectUri: string;
+  managedAccountId: string | null;
+}
+
+export interface ManagedAccountSummary {
+  managedAccountId: string;
+  externalUserId: string;
+  address: string;
+  ownerDid: string;
+  state: ManagedAccountState;
+  custodyEpoch: number;
+  policyTemplate: string;
+  policyVersion: number;
+  tenantParentDelegationCid: string | null;
+  tenantAccess: 'NOT_REQUIRED' | 'PENDING' | 'REVOKED';
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OrganizationEntitlements {
+  plan: 'FREE' | 'PRO' | 'ENTERPRISE';
+  version: number;
+  maxApps: number;
+  maxOrganizationMembers: number;
+  maxManagedAccounts: number;
+  monthlyActiveManagedUsers: number;
+  storageBytesPerManagedAccount: string;
+  requestsPerMinute: number;
+  maxTenantDelegationTtlSeconds: number;
+  maxTenantPolicyVersion: number;
+  webhookDelivery: boolean;
+  auditRetentionDays: number;
+}
+
+export type OpenKeyLifecycleEvent =
+  | 'managed_account.created'
+  | 'managed_account.provisioning_failed'
+  | 'custody.transfer_started'
+  | 'custody.transferred'
+  | 'tenant_access.revocation_pending'
+  | 'tenant_access.revoked'
+  | 'managed_account.quota_changed';
+
 type MessageType =
   | { type: 'openkey:auth:request'; appName: string }
   | { type: 'openkey:auth:response'; success: true; address: string; keyId: string; keyType?: 'MANAGED' | 'EXTERNAL'; sessionToken?: string }
@@ -1151,6 +1211,83 @@ export class OpenKey {
  * Transparently routes signing to either OpenKey (managed keys) or the user's
  * wallet (external keys).
  */
+/** Server-side tenant client. Keep this credential on the tenant backend. */
+export class OpenKeyManagementClient {
+  private readonly apiBaseUrl: string;
+  private readonly serverCredential: string;
+  private readonly fetchImpl: typeof fetch;
+
+  constructor(input: { apiBaseUrl?: string; serverCredential: string; fetch?: typeof fetch }) {
+    this.apiBaseUrl = (input.apiBaseUrl ?? 'https://api.openkey.so').replace(/\/$/, '');
+    this.serverCredential = input.serverCredential;
+    this.fetchImpl = input.fetch ?? fetch;
+  }
+
+  async createRegistrationIntent(
+    request: ManagedAccountRegistrationIntentRequest,
+    idempotencyKey: string,
+  ): Promise<ManagedAccountRegistrationIntent> {
+    return this.request('/v1/managed-account-registration-intents', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify(request),
+    });
+  }
+
+  async getRegistrationIntent(id: string): Promise<Omit<ManagedAccountRegistrationIntent, 'registrationIntent'>> {
+    return this.request(`/v1/managed-account-registration-intents/${encodeURIComponent(id)}`);
+  }
+
+  async listManagedAccounts(externalUserId?: string): Promise<{ accounts: ManagedAccountSummary[] }> {
+    const query = externalUserId ? `?externalUserId=${encodeURIComponent(externalUserId)}` : '';
+    return this.request(`/v1/managed-accounts${query}`);
+  }
+
+  async getManagedAccount(id: string): Promise<ManagedAccountSummary> {
+    return this.request(`/v1/managed-accounts/${encodeURIComponent(id)}`);
+  }
+
+  async getEntitlements(): Promise<{ entitlements: OrganizationEntitlements; usage: { managedAccounts: number } }> {
+    return this.request('/v1/organization/entitlements');
+  }
+
+  async createWebhookEndpoint(url: string, eventTypes: OpenKeyLifecycleEvent[]): Promise<{
+    endpoint: { id: string; url: string; eventTypes: OpenKeyLifecycleEvent[]; active: boolean; createdAt: string };
+    secret: string;
+  }> {
+    return this.request('/v1/webhook-endpoints', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url, eventTypes }),
+    });
+  }
+
+  async listWebhookEndpoints(): Promise<{ endpoints: Array<{ id: string; url: string; eventTypes: OpenKeyLifecycleEvent[]; active: boolean }> }> {
+    return this.request('/v1/webhook-endpoints');
+  }
+
+  async disableWebhookEndpoint(id: string): Promise<{ success: true }> {
+    return this.request(`/v1/webhook-endpoints/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  }
+
+  hostedRegistrationUrl(registrationIntent: string, webHost = 'https://openkey.so'): string {
+    const url = new URL('/managed/register', webHost);
+    url.searchParams.set('intent', registrationIntent);
+    return url.toString();
+  }
+
+  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const headers = new Headers(init.headers);
+    headers.set('Authorization', `Bearer ${this.serverCredential}`);
+    const response = await this.fetchImpl(`${this.apiBaseUrl}${path}`, { ...init, headers });
+    const body = await response.json().catch(() => ({})) as any;
+    if (!response.ok) {
+      const error = new Error(body?.error?.message ?? body?.error ?? `OpenKey API error ${response.status}`);
+      Object.assign(error, { code: body?.error?.code ?? 'OPENKEY_API_ERROR', status: response.status });
+      throw error;
+    }
+    return body as T;
+  }
+}
+
 export class OpenKeyProvider implements EIP1193Provider {
   private openkey: OpenKey;
   private address: string;

@@ -1,6 +1,8 @@
 import { timingSafeEqual } from 'crypto';
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
+import { processPendingRevocations } from '../services/tenant-revocation';
+import { processPendingWebhooks } from '../services/lifecycle-webhooks';
 
 const prisma = createPrismaClient();
 
@@ -47,5 +49,27 @@ internalMetricsRouter.get('/', async (c) => {
       active: activeKeys,
       new24h: newKeys24h
     }
+  });
+});
+
+internalMetricsRouter.post('/managed-account-revocations/run', async (c) => {
+  if (!process.env.INTERNAL_METRICS_TOKEN) return c.json({ error: 'Internal worker is not configured' }, 503);
+  if (!authorized(c.req.header('Authorization'))) return c.json({ error: 'Unauthorized' }, 401);
+  const results = await processPendingRevocations(prisma);
+  return c.json({
+    processed: results.length,
+    confirmed: results.filter((result) => result.ok).length,
+    failed: results.filter((result) => !result.ok).length,
+  });
+});
+
+internalMetricsRouter.post('/webhooks/run', async (c) => {
+  if (!process.env.INTERNAL_METRICS_TOKEN) return c.json({ error: 'Internal worker is not configured' }, 503);
+  if (!authorized(c.req.header('Authorization'))) return c.json({ error: 'Unauthorized' }, 401);
+  const results = await processPendingWebhooks(prisma);
+  return c.json({
+    processed: results.length,
+    delivered: results.filter((result) => result.ok).length,
+    failed: results.filter((result) => !result.ok).length,
   });
 });
