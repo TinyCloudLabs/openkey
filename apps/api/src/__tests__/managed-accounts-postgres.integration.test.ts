@@ -10,6 +10,7 @@ const migrationNames = [
   '20260628_add_auto_sign_enabled',
   '20260630_add_tinycloud_bootstrap_state',
   '20260714_origin_main_schema_catchup',
+  '20260714_zz_origin_main_db_push_reconciliation',
   '20260715_0001_managed_accounts_phase_a_fix',
   '20260715_0002_managed_accounts_registration_api',
   '20260715_0003_managed_accounts_eject_api',

@@ -24,25 +24,31 @@ Schema lives at `packages/db/prisma/schema.prisma`.
 | Command | Description |
 |---------|-------------|
 | `bun run db:push` | Push schema to local dev database |
-| `bun run db:push:prod` | Push schema to prod (uses `.env.prod`) - **use for quick schema sync** |
 | `bun run db:migrate:dev` | Create a new migration (local dev) |
-| `bun run db:migrate:prod` | Deploy pending migrations to prod (uses `.env.prod`) |
-| `bun run db:baseline` | Baseline existing prod DB for migration history (one-time setup) |
+| `bun run db:migrate:prod` | Deploy and verify pending migrations in prod (uses `.env.prod`) |
+| `bun run db:migrate:verify` | Verify managed-account migrations and raw SQL security guards |
+| `bun run db:migrate:verify-schema` | Verify the deployed database matches the Prisma schema |
+| `bun run db:baseline:prod` | Verify and record the reviewed legacy baseline (one-time, explicit confirmation required) |
 | `bun run db:generate` | Regenerate Prisma client |
 | `bun run db:studio` | Open Prisma Studio (local) |
 | `bun run db:studio:prod` | Open Prisma Studio (prod, uses `.env.prod`) |
 
 ### Migration Strategy
 
-**Current state**: Using `db push` for both dev and prod (no migration history).
+Production uses tracked migrations. The deploy workflow fails if
+`DATABASE_URL` is absent, runs `prisma migrate deploy`, and verifies the raw
+SQL custody guards before updating the Phala CVM. Never use `db push` in
+production: it does not execute triggers, deferred constraints, or other raw
+migration SQL.
 
-**Moving to production migrations**:
-1. Run `bun run db:baseline` once to create initial migration from current schema and mark it as applied in prod
-2. After baselining, use `bun run db:migrate:dev` to create new migrations locally
-3. Use `bun run db:migrate:prod` to deploy migrations to prod
-4. Never use `db push` on prod after baselining - it bypasses migration history
+An existing production database created by `db push` must use the manual
+**Baseline Production Migrations** workflow exactly once. It first compares the
+database to a checksummed snapshot of the exact origin/main schema used by
+`db push`, and refuses to record migration history if it finds drift. See
+`docs/deployment.md` for the operator procedure and typed confirmation.
 
-**Important**: `prisma migrate dev` will ask to reset the database if it detects drift. Use `db push` if you just need to sync schema without migration history. Only use `migrate dev` when you're ready to track migrations properly.
+**Important**: `prisma migrate dev` may ask to reset a development database if
+it detects drift. `db:push` remains a local-development command only.
 
 ## Deployment
 

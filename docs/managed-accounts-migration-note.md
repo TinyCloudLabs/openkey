@@ -36,3 +36,11 @@ user-owned records usable during the transition from `DeveloperAccount` to
 
 This note is migration guidance, not evidence that the production database has
 been migrated or that custody is rollback-resistant.
+
+Production deployment uses `prisma migrate deploy`, followed by
+`scripts/verify-managed-account-migrations.ts`. The verifier checks the applied
+migration records and the raw SQL security triggers and check constraints; a
+final Prisma schema diff verifies the physical schema too. Any mismatch blocks
+the API deploy. A legacy database previously managed by `prisma db push` must
+first follow the explicit, checksummed and drift-checked baseline procedure in
+`docs/deployment.md`.

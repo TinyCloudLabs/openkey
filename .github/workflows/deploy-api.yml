@@ -8,15 +8,23 @@ on:
       - 'packages/**'
       - 'Dockerfile'
       - 'docker-compose.prod.yml'
+      - 'scripts/baseline-production-migrations.ts'
+      - 'scripts/verify-managed-account-migrations.ts'
       - '.github/workflows/deploy-api.yml'
   workflow_dispatch:
+
+concurrency:
+  group: production-api
+  cancel-in-progress: false
 
 env:
   DOCKER_IMAGE: skgbafa/openkey-api
 
 jobs:
   deploy:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    environment: production
     steps:
       - uses: actions/checkout@v4
 
@@ -43,28 +51,24 @@ jobs:
         run: |
           sed -i "s|\${DOCKER_IMAGE}|${{ env.DOCKER_IMAGE }}:${{ github.sha }}|g" docker-compose.prod.yml
 
-      # Sync the prod Postgres schema to the deployed code BEFORE shipping it.
-      # The Phala TEE can't run Prisma's schema-engine, so the schema must be
-      # pushed from CI (where the engine works) rather than at container start.
-      # Requires DATABASE_URL to be added as a GitHub Actions secret; until then
-      # this step skips gracefully so deploys keep working.
-      # NOTE: no --accept-data-loss — destructive changes fail the step (and block
-      # the later Phala deploy) instead of silently dropping data.
+      # Apply the tracked migrations before shipping the code. Raw migration SQL
+      # installs custody and tenant-boundary guards that `prisma db push` omits.
+      # The API container intentionally does not contain or run the schema engine.
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.2.0
 
-      - name: Sync prod DB schema
+      - name: Deploy and verify production migrations
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
           if [ -z "$DATABASE_URL" ]; then
-            echo "DATABASE_URL secret not set; skipping prod schema sync"
-            exit 0
+            echo "DATABASE_URL secret not set; refusing to deploy without migrations" >&2
+            exit 1
           fi
           bun install --frozen-lockfile
-          bun node_modules/.bin/prisma db push --schema=./packages/db/prisma/schema.prisma
+          bun run db:migrate:deploy
 
       - name: Install Phala CLI
         run: npm install -g phala
