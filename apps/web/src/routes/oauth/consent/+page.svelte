@@ -4,6 +4,7 @@
   import { authClient, API_BASE } from '$lib/auth-client';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
+  import { safeExternalHttpUrl, safeOAuthNavigationUrl } from '$lib/safe-oauth-url';
 
   const session = authClient.useSession();
 
@@ -98,9 +99,13 @@
 
       // Redirect to the URI returned by the consent endpoint
       if (result?.uri) {
-        window.location.href = result.uri;
+        const target = safeOAuthNavigationUrl(result.uri);
+        if (!target) throw new Error('The application returned an unsafe redirect URI');
+        window.location.href = target;
       } else if (result?.redirect) {
-        window.location.href = result.redirect;
+        const target = safeOAuthNavigationUrl(result.redirect);
+        if (!target) throw new Error('The application returned an unsafe redirect URI');
+        window.location.href = target;
       }
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'An error occurred';
@@ -130,9 +135,9 @@
       </div>
     {:else if clientInfo}
       <div class="text-center mb-6">
-        {#if clientInfo.icon}
+        {#if safeExternalHttpUrl(clientInfo.icon)}
           <img
-            src={clientInfo.icon}
+            src={safeExternalHttpUrl(clientInfo.icon)!}
             alt={clientInfo.name}
             class="w-16 h-16 rounded-lg mx-auto mb-4"
           />
@@ -148,9 +153,9 @@
           {clientInfo.name}
         </h1>
 
-        {#if clientInfo.uri}
+        {#if safeExternalHttpUrl(clientInfo.uri)}
           <a
-            href={clientInfo.uri}
+            href={safeExternalHttpUrl(clientInfo.uri)!}
             target="_blank"
             rel="noopener noreferrer"
             class="text-sm text-surface-500 hover:text-surface-700"

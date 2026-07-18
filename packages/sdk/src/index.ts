@@ -151,6 +151,7 @@ export interface OrganizationEntitlements {
   maxTenantDelegationTtlSeconds: number;
   maxTenantPolicyVersion: number;
   webhookDelivery: boolean;
+  maxWebhookEndpoints: number;
   auditRetentionDays: number;
 }
 

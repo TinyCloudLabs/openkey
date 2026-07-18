@@ -76,7 +76,7 @@ function makeDb(account = baseAccount()) {
       kind: 'BROKER',
       revokedAt: null,
     },
-    membership: { id: 'membership-a' },
+    membership: { id: 'membership-a', role: 'ADMIN' } as { id: string; role: 'ADMIN' | 'MEMBER' } | null,
     session: {
       id: 'session-a',
       userId: 'user-a',
@@ -110,7 +110,8 @@ function makeDb(account = baseAccount()) {
       findUnique: async ({ where }: any) => where.id === state.credential.id ? state.credential : null,
     },
     organizationMembership: {
-      findFirst: async () => state.membership,
+      findFirst: async ({ where }: any) => state.membership
+        && (where.role === undefined || where.role === state.membership.role) ? state.membership : null,
     },
     session: {
       findUnique: async ({ where }: any) => where.id === state.session.id ? state.session : null,
@@ -244,6 +245,8 @@ describe('managed key authorization', () => {
     await denied(authorizeKeyOperation(db, orgInput(), { now }), 'CREDENTIAL_REVOKED');
     db.state.credential.revokedAt = null;
     db.state.membership = null;
+    await denied(authorizeKeyOperation(db, orgInput(), { now }), 'MEMBERSHIP_REVOKED');
+    db.state.membership = { id: 'membership-a', role: 'MEMBER' };
     await denied(authorizeKeyOperation(db, orgInput(), { now }), 'MEMBERSHIP_REVOKED');
   });
 

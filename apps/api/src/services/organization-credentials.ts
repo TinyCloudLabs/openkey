@@ -14,7 +14,7 @@ export type AuthenticatedOrganization = {
 };
 
 export class OrganizationCredentialError extends Error {
-  constructor(readonly code: 'INVALID_CREDENTIAL' | 'CREDENTIAL_REVOKED' | 'MEMBERSHIP_REVOKED') {
+  constructor(readonly code: 'INVALID_CREDENTIAL' | 'CREDENTIAL_REVOKED' | 'MEMBERSHIP_REVOKED' | 'ADMIN_REQUIRED') {
     super(code);
     this.name = 'OrganizationCredentialError';
   }
@@ -37,7 +37,21 @@ export async function issueOrganizationCredential(
     name: string;
     kind: 'BROKER' | 'PROVISIONER';
   },
+  now = new Date(),
 ) {
+  const adminMembership = await db.organizationMembership.findFirst({
+    where: {
+      organizationId: input.organizationId,
+      userId: input.subjectUserId,
+      role: 'ADMIN',
+      status: 'ACTIVE',
+      revokedAt: null,
+      validFrom: { lte: now },
+      OR: [{ validUntil: null }, { validUntil: { gt: now } }],
+    },
+    select: { id: true },
+  });
+  if (!adminMembership) throw new OrganizationCredentialError('ADMIN_REQUIRED');
   const prefix = randomBytes(12).toString('base64url');
   const secret = randomBytes(SECRET_BYTES).toString('base64url');
   const credential = await db.organizationServerCredential.create({
@@ -88,6 +102,7 @@ export async function authenticateOrganizationCredential(
     where: {
       organizationId: credential.organizationId,
       userId: credential.subjectUserId,
+      role: 'ADMIN',
       status: 'ACTIVE',
       revokedAt: null,
       validFrom: { lte: now },
