@@ -14,6 +14,7 @@ import { internalMetricsRouter } from './routes/internal-metrics';
 import { hostedRegistrationRouter, managedAccountsRouter } from './routes/managed-accounts';
 import { personalManagedAccountsRouter } from './routes/personal-managed-accounts';
 import { organizationsRouter } from './routes/organizations';
+import { tenantConsoleRouter } from './routes/tenant-console';
 import { trackAuthorization, trackTokenExchange, trackUniqueUser } from './analytics';
 
 // Create Hono app
@@ -135,6 +136,7 @@ app.route('/v1', managedAccountsRouter);
 app.route('/api/managed-account-registration', hostedRegistrationRouter);
 app.route('/api/managed-accounts', personalManagedAccountsRouter);
 app.route('/api/organizations', organizationsRouter);
+app.route('/api/console/organizations', tenantConsoleRouter);
 
 // 404 handler
 app.notFound((c) => c.json({ error: 'Not found' }, 404));

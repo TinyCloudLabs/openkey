@@ -3,8 +3,13 @@
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { randomBytes } from 'crypto';
-import { issueOrganizationCredential } from '../services/organization-credentials';
+import { issueOrganizationCredential, OrganizationCredentialError } from '../services/organization-credentials';
 import { publicPlanDefaults } from '../services/plan-entitlements';
+import {
+  oauthApplicationType,
+  validateOAuthClientMetadataUrl,
+  validateOAuthRedirectUris,
+} from '../services/oauth-redirect-uris';
 
 const prisma = createPrismaClient();
 
@@ -102,19 +107,29 @@ oauthAdminRouter.post('/organizations/:organizationId/credentials', async (c) =>
     where: {
       organizationId: c.req.param('organizationId'),
       userId: body.subjectUserId,
+      role: 'ADMIN',
       status: 'ACTIVE',
       revokedAt: null,
+      validFrom: { lte: new Date() },
+      OR: [{ validUntil: null }, { validUntil: { gt: new Date() } }],
     },
     select: { id: true },
   });
-  if (!membership) return c.json({ error: 'Active organization member not found' }, 404);
-  const issued = await issueOrganizationCredential(prisma, {
-    organizationId: c.req.param('organizationId'),
-    subjectUserId: body.subjectUserId,
-    name: body.name,
-    kind: body.kind,
-  });
-  return c.json(issued, 201);
+  if (!membership) return c.json({ error: 'Active organization administrator not found' }, 404);
+  try {
+    const issued = await issueOrganizationCredential(prisma, {
+      organizationId: c.req.param('organizationId'),
+      subjectUserId: body.subjectUserId,
+      name: body.name,
+      kind: body.kind,
+    });
+    return c.json(issued, 201);
+  } catch (caught) {
+    if (caught instanceof OrganizationCredentialError && caught.code === 'ADMIN_REQUIRED') {
+      return c.json({ error: 'Active organization administrator not found' }, 404);
+    }
+    throw caught;
+  }
 });
 
 oauthAdminRouter.post('/organizations/:organizationId/clients', async (c) => {
@@ -122,8 +137,17 @@ oauthAdminRouter.post('/organizations/:organizationId/clients', async (c) => {
   if (!body.name || !Array.isArray(body.redirectUris) || body.redirectUris.length === 0) {
     return c.json({ error: 'name and redirectUris are required' }, 400);
   }
-  for (const uri of body.redirectUris) {
-    try { new URL(uri); } catch { return c.json({ error: `Invalid redirect URI: ${uri}` }, 400); }
+  if (body.type !== undefined && body.type !== 'native' && body.type !== 'spa') {
+    return c.json({ error: 'type must be native or spa' }, 400);
+  }
+  const redirectValidation = validateOAuthRedirectUris(body.redirectUris, body.type ?? 'spa');
+  if (!redirectValidation.valid) {
+    return c.json({ error: redirectValidation.reason }, 400);
+  }
+  for (const value of [body.uri, body.icon]) {
+    if (value !== undefined && value !== '' && !validateOAuthClientMetadataUrl(value).valid) {
+      return c.json({ error: 'Application URI and icon must use HTTPS or loopback HTTP' }, 400);
+    }
   }
   const organizationId = c.req.param('organizationId');
   const organization = await prisma.organization.findUnique({
@@ -166,17 +190,18 @@ oauthAdminRouter.post('/clients', async (c) => {
     return c.json({ error: 'redirectUris must be a non-empty array' }, 400);
   }
 
-  for (const uri of body.redirectUris) {
-    try {
-      new URL(uri);
-    } catch {
-      return c.json({ error: `Invalid redirect URI: ${uri}` }, 400);
-    }
-  }
-
   const validTypes = ['native', 'spa'];
   if (body.type && !validTypes.includes(body.type)) {
     return c.json({ error: `type must be one of: ${validTypes.join(', ')}` }, 400);
+  }
+  const redirectValidation = validateOAuthRedirectUris(body.redirectUris, body.type ?? 'spa');
+  if (!redirectValidation.valid) {
+    return c.json({ error: redirectValidation.reason }, 400);
+  }
+  for (const value of [body.uri, body.icon]) {
+    if (value !== undefined && value !== '' && !validateOAuthClientMetadataUrl(value).valid) {
+      return c.json({ error: 'Application URI and icon must use HTTPS or loopback HTTP' }, 400);
+    }
   }
 
   // Generate credentials - all clients are public (PKCE-only)
@@ -304,17 +329,22 @@ oauthAdminRouter.patch('/clients/:clientId', async (c) => {
     scopes?: string[];
   }>();
 
-  // Validate redirectUris if provided
+  // Validate redirectUris against the persisted client type when provided.
   if (body.redirectUris) {
-    if (!Array.isArray(body.redirectUris) || body.redirectUris.length === 0) {
-      return c.json({ error: 'redirectUris must be a non-empty array' }, 400);
-    }
-    for (const uri of body.redirectUris) {
-      try {
-        new URL(uri);
-      } catch {
-        return c.json({ error: `Invalid redirect URI: ${uri}` }, 400);
-      }
+    const existing = await prisma.oauthClient.findUnique({
+      where: { clientId },
+      select: { type: true },
+    });
+    if (!existing) return c.json({ error: 'Client not found' }, 404);
+    const redirectValidation = validateOAuthRedirectUris(
+      body.redirectUris,
+      oauthApplicationType(existing.type),
+    );
+    if (!redirectValidation.valid) return c.json({ error: redirectValidation.reason }, 400);
+  }
+  for (const value of [body.uri, body.icon]) {
+    if (value !== undefined && value !== '' && !validateOAuthClientMetadataUrl(value).valid) {
+      return c.json({ error: 'Application URI and icon must use HTTPS or loopback HTTP' }, 400);
     }
   }
 

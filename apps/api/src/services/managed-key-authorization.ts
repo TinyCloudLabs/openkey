@@ -100,6 +100,7 @@ function activeMembershipWhere(now: Date, organizationId: string, userId: string
   return {
     organizationId,
     userId,
+    role: 'ADMIN',
     status: 'ACTIVE',
     revokedAt: null,
     validFrom: { lte: now },

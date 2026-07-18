@@ -3,6 +3,7 @@
   import { authClient } from '$lib/auth-client';
   import { api, type HostedRegistrationIntent } from '$lib/api';
   import Button from '$lib/components/ui/button.svelte';
+  import { safeOAuthNavigationUrl } from '$lib/safe-oauth-url';
 
   const session = authClient.useSession();
   const token = $derived($page.url.searchParams.get('intent') ?? '');
@@ -57,6 +58,10 @@
     const label = intent?.metadata?.displayName;
     return typeof label === 'string' ? label : null;
   }
+
+  function safeTenantRedirect(): string | null {
+    return safeOAuthNavigationUrl(intent?.redirectUri);
+  }
 </script>
 
 <svelte:head>
@@ -103,7 +108,11 @@
           </div>
         </dl>
 
-        <Button href={intent.redirectUri} size="lg" class="w-full sm:w-auto">Continue to {intent.organization.name}</Button>
+        {#if safeTenantRedirect()}
+          <Button href={safeTenantRedirect()!} size="lg" class="w-full sm:w-auto">Continue to {intent.organization.name}</Button>
+        {:else}
+          <p class="text-sm text-surface-600">Return to {intent.organization.name} from the app where you started.</p>
+        {/if}
       </section>
     {:else if intent}
       <section class="rounded-2xl bg-white p-6 shadow-sm sm:p-8">

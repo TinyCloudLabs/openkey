@@ -13,6 +13,7 @@ import { activateProvisionedManagedAccount } from './custody-transition';
 import type { AuthenticatedOrganization } from './organization-credentials';
 import { TinyCloudNode, serializeDelegation, type PermissionEntry } from '@tinycloud/node-sdk';
 import { trustedTinyCloudBootstrapHost } from './tinycloud-bootstrap';
+import { oauthApplicationType, validateOAuthRedirectUri } from './oauth-redirect-uris';
 
 const INTENT_TTL_MS = 10 * 60 * 1000;
 const TOKEN_PATTERN = /^okri_([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]{43})$/;
@@ -108,13 +109,26 @@ export async function createRegistrationIntent(
   if (actor.kind !== 'PROVISIONER') {
     throw new RegistrationIntentError('PROVISIONING_NOT_ALLOWED', 'A provisioner credential is required');
   }
+  if (input.policyTemplate !== 'tinycloud-standard-v1' || (input.policyVersion ?? 1) !== 1) {
+    throw new RegistrationIntentError(
+      'INVALID_REQUEST',
+      'Only tinycloud-standard-v1 policy version 1 is supported',
+    );
+  }
   const client = await db.oauthClient.findFirst({
     where: { clientId: input.clientId, organizationId: actor.organizationId, disabled: false },
-    select: { clientId: true, redirectUris: true },
+    select: { clientId: true, redirectUris: true, type: true },
   });
   if (!client) throw new RegistrationIntentError('CLIENT_NOT_FOUND', 'OAuth client not found');
-  if (!client.redirectUris.includes(input.redirectUri)) {
-    throw new RegistrationIntentError('REDIRECT_URI_MISMATCH', 'redirectUri must exactly match a registered URI');
+  const redirectValidation = validateOAuthRedirectUri(
+    input.redirectUri,
+    oauthApplicationType(client.type),
+  );
+  if (!redirectValidation.valid || !client.redirectUris.includes(input.redirectUri)) {
+    throw new RegistrationIntentError(
+      'REDIRECT_URI_MISMATCH',
+      'redirectUri must be a permitted exact match for a registered URI',
+    );
   }
 
   const entitlements = await resolvePlanEntitlements(db, actor.organizationId);
@@ -184,11 +198,18 @@ export async function resolveRegistrationIntent(db: PrismaClient, token: string,
   if (!parsed) throw new RegistrationIntentError('INTENT_NOT_FOUND', 'Registration intent not found');
   const intent = await db.registrationIntent.findUnique({
     where: { id: parsed.id },
-    include: { organization: { select: { id: true, name: true, plan: true, brokerDid: true } } },
+    include: {
+      organization: { select: { id: true, name: true, plan: true, brokerDid: true } },
+      client: { select: { type: true, redirectUris: true } },
+    },
   });
   if (!intent) throw new RegistrationIntentError('INTENT_NOT_FOUND', 'Registration intent not found');
   const expected = tokenSignature(intent.id, intent.nonce);
   if (parsed.signature.length !== expected.length || !timingSafeEqual(parsed.signature, expected)) {
+    throw new RegistrationIntentError('INTENT_NOT_FOUND', 'Registration intent not found');
+  }
+  if (!validateOAuthRedirectUri(intent.redirectUri, oauthApplicationType(intent.client.type)).valid
+    || !intent.client.redirectUris.includes(intent.redirectUri)) {
     throw new RegistrationIntentError('INTENT_NOT_FOUND', 'Registration intent not found');
   }
   if (intent.status === 'PENDING' && intent.expiresAt <= now) {

@@ -13,7 +13,11 @@ import { authorizeKeyOperation } from '../services/managed-key-authorization';
 import { signWithUserOwnedManagedAccount } from '../services/personal-managed-key';
 import { verifyMessage } from 'viem';
 import { createHmac } from 'node:crypto';
-import { createWebhookEndpoint, deliverWebhook } from '../services/lifecycle-webhooks';
+import {
+  createWebhookEndpoint,
+  deliverWebhook,
+  WebhookEndpointLimitError,
+} from '../services/lifecycle-webhooks';
 
 const migrationNames = [
   '0_init',
@@ -119,6 +123,18 @@ describe('managed-account registration', () => {
     await expect(createRegistrationIntent(db, actor, 'cross-client', {
       clientId: 'client-org-b', externalUserId: 'x', redirectUri: 'https://org-b.example/callback', policyTemplate: 'tinycloud-standard-v1',
     })).rejects.toMatchObject({ code: 'CLIENT_NOT_FOUND' });
+
+    await db.oauthClient.update({
+      where: { clientId: 'client-org-a' },
+      data: { redirectUris: ['javascript:alert(1)'] },
+    });
+    await expect(createRegistrationIntent(db, actor, 'legacy-unsafe-redirect', {
+      clientId: 'client-org-a', externalUserId: 'x', redirectUri: 'javascript:alert(1)', policyTemplate: 'tinycloud-standard-v1',
+    })).rejects.toMatchObject({ code: 'REDIRECT_URI_MISMATCH' });
+    await db.oauthClient.update({
+      where: { clientId: 'client-org-a' },
+      data: { redirectUris: ['https://org-a.example/callback'] },
+    });
   });
 
   test('owner eject is idempotent, preserves identity, blocks the tenant, and converges revocation', async () => {
@@ -203,6 +219,7 @@ describe('managed-account registration', () => {
     let captured: { body: string; signature: string } | undefined;
     await deliverWebhook(db, delivery.id, {
       now: new Date('2026-07-15T12:00:00.000Z'),
+      resolve: async () => [{ address: '93.184.216.34' }],
       fetch: async (_url, init) => {
         captured = {
           body: String(init?.body),
@@ -216,5 +233,19 @@ describe('managed-account registration', () => {
     expect(captured!.signature).toBe(`t=${timestamp},v1=${expected}`);
     expect(JSON.parse(captured!.body).type).toBe('managed_account.created');
     expect(await db.webhookDelivery.findUnique({ where: { id: delivery.id }, select: { status: true } })).toEqual({ status: 'DELIVERED' });
+  }, 30_000);
+
+  test('serializes the Free-plan webhook endpoint cap under concurrent creation', async () => {
+    await db.webhookEndpoint.deleteMany({ where: { organizationId: 'org-a' } });
+    const results = await Promise.allSettled(Array.from({ length: 4 }, (_, index) => createWebhookEndpoint(db, {
+      organizationId: 'org-a',
+      url: `https://hooks-${index}.example/openkey`,
+      eventTypes: ['managed_account.created'],
+    })));
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(3);
+    const rejected = results.filter((result) => result.status === 'rejected') as PromiseRejectedResult[];
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]!.reason).toBeInstanceOf(WebhookEndpointLimitError);
+    expect(await db.webhookEndpoint.count({ where: { organizationId: 'org-a', active: true } })).toBe(3);
   }, 30_000);
 });

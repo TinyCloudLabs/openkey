@@ -14,7 +14,13 @@ import {
 } from '../services/registration-intents';
 import { resolvePlanEntitlements, serializeEntitlements } from '../services/plan-entitlements';
 import { authorizeKeyOperation, ManagedKeyAuthorizationError } from '../services/managed-key-authorization';
-import { createWebhookEndpoint, LIFECYCLE_EVENTS, type LifecycleEvent } from '../services/lifecycle-webhooks';
+import {
+  createWebhookEndpoint,
+  LIFECYCLE_EVENTS,
+  WebhookEndpointLimitError,
+  webhookEndpointLimitForPlan,
+  type LifecycleEvent,
+} from '../services/lifecycle-webhooks';
 
 const prisma = createPrismaClient();
 
@@ -147,7 +153,13 @@ managedAccountsRouter.get('/organization/entitlements', async (c) => {
   const managedAccounts = await prisma.managedAccount.count({
     where: { organizationId: c.get('organizationActor').organizationId },
   });
-  return c.json({ entitlements: serializeEntitlements(entitlements), usage: { managedAccounts } });
+  return c.json({
+    entitlements: {
+      ...serializeEntitlements(entitlements),
+      maxWebhookEndpoints: webhookEndpointLimitForPlan(entitlements.plan),
+    },
+    usage: { managedAccounts },
+  });
 });
 
 managedAccountsRouter.get('/webhook-endpoints', async (c) => {
@@ -178,6 +190,9 @@ managedAccountsRouter.post('/webhook-endpoints', async (c) => {
     });
     return c.json(endpoint, 201);
   } catch (error) {
+    if (error instanceof WebhookEndpointLimitError) {
+      return c.json({ error: { code: 'PLAN_LIMIT_EXCEEDED', message: error.message } }, 429);
+    }
     return c.json({ error: { code: 'INVALID_REQUEST', message: error instanceof Error ? error.message : 'Invalid webhook endpoint' } }, 400);
   }
 });
