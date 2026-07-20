@@ -10,6 +10,14 @@ import { Resend } from 'resend';
 import { createPrismaClient } from '@openkey/db';
 import { createTeeClient, seal, generatePrivateKey, getAddressFromPrivateKey } from '@openkey/tee';
 import { buildEmailClaims } from './claims';
+import {
+  DEFAULT_OAUTH_SCOPES,
+  OAUTH_SCOPES,
+  TINYCLOUD_MCP_SCOPE,
+  TINYCLOUD_OWNER_DIDS_CLAIM,
+  dynamicClientRegistrationEnabled,
+  oauthValidAudiences,
+} from './oauth-config';
 import { createSealingContext } from './services/key-sealing';
 import {
   assertFreshPasskeyUserVerification,
@@ -140,13 +148,33 @@ export const auth = betterAuth({
     oauthProvider({
       loginPage: `${origin}/auth/login`,
       consentPage: `${origin}/oauth/consent`,
-      allowDynamicClientRegistration: false, // Pre-registered clients only
-      validAudiences: [baseURL], // Accept baseURL as valid resource/audience for JWT access tokens
-      scopes: ['openid', 'email', 'keys', 'offline_access'], // openid for identity, email for userinfo, keys for user key addresses, offline_access for refresh tokens
+      allowDynamicClientRegistration: dynamicClientRegistrationEnabled(),
+      allowUnauthenticatedClientRegistration: dynamicClientRegistrationEnabled(),
+      validAudiences: oauthValidAudiences(baseURL),
+      scopes: [...OAUTH_SCOPES],
+      clientRegistrationDefaultScopes: [...DEFAULT_OAUTH_SCOPES],
+      clientRegistrationAllowedScopes: [...OAUTH_SCOPES],
       accessTokenExpiresIn: 60 * 60, // 1 hour in seconds
       refreshTokenExpiresIn: 60 * 60 * 24 * 7, // 7 days in seconds
       idTokenExpiresIn: 60 * 60, // 1 hour in seconds
       storeClientSecret: 'hashed',
+      async customAccessTokenClaims({ user, scopes }) {
+        if (!user || !scopes.includes(TINYCLOUD_MCP_SCOPE)) return {};
+        const keys = await prisma.ethereumKey.findMany({
+          where: {
+            userId: user.id,
+            keyPurpose: 'PERSONAL',
+            archivedAt: null,
+          },
+          select: { address: true },
+          orderBy: { keyIndex: 'asc' },
+        });
+        return {
+          [TINYCLOUD_OWNER_DIDS_CLAIM]: keys.map((key) =>
+            `did:pkh:eip155:1:${key.address}`
+          ),
+        };
+      },
       async customIdTokenClaims({ user, scopes }) {
         const claims: Record<string, unknown> = {};
 

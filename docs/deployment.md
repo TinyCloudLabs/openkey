@@ -92,6 +92,8 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `BETTER_AUTH_SECRET` | 32+ character random secret for session encryption |
 | `REGISTRATION_INTENT_SECRET` | Separate 32+ character secret for signing short-lived managed-registration intents |
 | `BETTER_AUTH_URL` | `https://api.openkey.so` |
+| `OAUTH_DYNAMIC_CLIENT_REGISTRATION` | Keep `true` for MCP clients that register automatically; set `false` only as an emergency disable |
+| `OAUTH_VALID_AUDIENCES` | Comma-separated additional OAuth resource URLs; production includes `https://mcp.tinycloud.xyz/mcp` |
 | `WEBAUTHN_RP_ID` | `openkey.so` |
 | `WEBAUTHN_ORIGIN` | `https://openkey.so` |
 | `GOOGLE_CLIENT_ID` | Google OAuth client ID |
