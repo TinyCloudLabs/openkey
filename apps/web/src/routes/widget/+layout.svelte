@@ -10,7 +10,7 @@
 {#if isEmbed}
   {@render children()}
 {:else}
-  <div class="min-h-screen flex flex-col">
+  <div class="openkey-widget-theme min-h-screen flex flex-col">
     {@render children()}
   </div>
 {/if}

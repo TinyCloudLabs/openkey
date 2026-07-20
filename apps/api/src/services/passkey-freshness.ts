@@ -131,3 +131,17 @@ export async function recordVerifiedPasskeySession(
   completePasskeyCeremony(ceremonyId, verifiedAt.getTime());
   return true;
 }
+
+/**
+ * Adapts freshness recording to Better Auth's after-hook contract. Better Auth
+ * 1.5.x reads properties from the hook result without guarding `undefined`, so
+ * every matched hook must return an object even when no freshness marker exists.
+ */
+export async function recordPasskeyFreshnessAfterHook(
+  db: Pick<PrismaClient, 'session'>,
+  returned: unknown,
+  ceremonyId: string | null | undefined,
+): Promise<Record<string, never>> {
+  await recordVerifiedPasskeySession(db, returned, ceremonyId);
+  return {};
+}
