@@ -2,6 +2,10 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
+import {
+  oauthProviderAuthServerMetadata,
+  oauthProviderOpenIdConfigMetadata,
+} from '@better-auth/oauth-provider';
 import { auth } from './auth';
 import { keysRouter } from './routes/keys';
 import { accountRouter } from './routes/account';
@@ -102,6 +106,29 @@ app.use('/api/auth/oauth2/authorize', async (c, next) => {
     console.error('[Analytics] Error in authorization tracking middleware:', err);
   }
 });
+
+// Better Auth marks metadata handlers as server-only when basePath is not `/`.
+// Export the RFC 8414 issuer path explicitly so remote OAuth clients can
+// discover OpenKey without knowing Better Auth's internal route layout.
+// The OAuth plugin is cast in auth.ts to work around Better Auth's plugin
+// inference depth, so its server-only APIs are present at runtime but omitted
+// from the inferred Auth type here.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const authorizationServerMetadata = oauthProviderAuthServerMetadata(auth as any);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const openIdConfiguration = oauthProviderOpenIdConfigMetadata(auth as any);
+app.get('/.well-known/oauth-authorization-server', (c) =>
+  authorizationServerMetadata(c.req.raw)
+);
+app.get('/.well-known/oauth-authorization-server/api/auth', (c) =>
+  authorizationServerMetadata(c.req.raw)
+);
+app.get('/.well-known/openid-configuration', (c) =>
+  openIdConfiguration(c.req.raw)
+);
+app.get('/api/auth/.well-known/openid-configuration', (c) =>
+  openIdConfiguration(c.req.raw)
+);
 
 // better-auth routes - mount at /api/auth
 // Avoid async/await wrapper to preserve AsyncLocalStorage context in Bun
