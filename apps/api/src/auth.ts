@@ -13,7 +13,7 @@ import { buildEmailClaims } from './claims';
 import { createSealingContext } from './services/key-sealing';
 import {
   assertFreshPasskeyUserVerification,
-  recordVerifiedPasskeySession,
+  recordPasskeyFreshnessAfterHook,
 } from './services/passkey-freshness';
 
 const prisma = createPrismaClient({
@@ -40,7 +40,11 @@ const passkeyFreshnessPlugin = {
     after: [{
       matcher: (ctx) => ctx.path === '/passkey/verify-authentication',
       handler: (async (ctx: { path?: string; headers?: Headers; context: { returned?: unknown } }) => {
-        await recordVerifiedPasskeySession(prisma, ctx.context.returned, ctx.headers?.get('x-openkey-passkey-ceremony'));
+        return recordPasskeyFreshnessAfterHook(
+          prisma,
+          ctx.context.returned,
+          ctx.headers?.get('x-openkey-passkey-ceremony'),
+        );
       }) as AuthMiddleware,
     }],
   },

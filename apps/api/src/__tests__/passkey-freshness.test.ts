@@ -5,6 +5,7 @@ import {
   completePasskeyCeremony,
   issuePasskeyCeremony,
   pendingPasskeyCeremonyCount,
+  recordPasskeyFreshnessAfterHook,
   recordVerifiedPasskeySession,
 } from '../services/passkey-freshness';
 import { authorizeKeyOperation } from '../services/managed-key-authorization';
@@ -79,6 +80,14 @@ test('missing and expired markers cannot set freshness, and the marker store is 
 test('custody freshness requires UV only for the marked ceremony', () => {
   expect(() => assertFreshPasskeyUserVerification({ authenticationInfo: { userVerified: false } })).toThrow();
   expect(() => assertFreshPasskeyUserVerification({ authenticationInfo: { userVerified: true } })).not.toThrow();
+});
+
+test('Better Auth after hook always returns a result object', async () => {
+  const db = {
+    session: { updateMany: async () => ({ count: 0 }) },
+  } as any;
+
+  expect(await recordPasskeyFreshnessAfterHook(db, null, null)).toEqual({});
 });
 
 test('concurrent hook invocations single-claim one marker and write freshness once', async () => {
