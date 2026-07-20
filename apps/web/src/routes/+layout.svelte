@@ -11,6 +11,7 @@
     $page.url.pathname.startsWith('/auth/') ||
     $page.url.pathname.startsWith('/managed/register') ||
     $page.url.pathname.startsWith('/delegate') ||
+    $page.url.pathname.startsWith('/console') ||
     isEmbed
   );
 </script>
@@ -24,21 +25,27 @@
   {@render children()}
 {:else}
   <div class="min-h-screen flex flex-col">
-    <header class="border-b border-surface-200 bg-white px-6 py-4">
-      <nav class="max-w-6xl mx-auto flex items-center justify-between">
-        <a href="/" class="text-2xl font-bold text-surface-900 no-underline">OpenKey</a>
-        <div class="flex items-center gap-4">
-          <a href="/dashboard" class="text-surface-500 hover:text-surface-900 transition-colors no-underline">
+    <header class="border-b border-surface-200/80 bg-surface-50/90 backdrop-blur px-5 py-4">
+      <nav class="mx-auto flex max-w-6xl items-center justify-between gap-4">
+        <a href="/" class="flex items-center gap-3 text-[15px] font-semibold tracking-[-0.03em] text-surface-900 no-underline">
+          <span class="inline-grid h-8 w-8 place-items-center rounded-full bg-primary-600 font-mono text-[12px] text-white">OK</span>
+          OpenKey Account
+        </a>
+        <div class="flex items-center gap-2 overflow-x-auto">
+          <a href="/dashboard" class="rounded-full px-3 py-1.5 text-sm text-surface-500 no-underline transition-colors hover:bg-surface-100 hover:text-surface-900">
             Dashboard
           </a>
-          <a href="/dashboard/api-keys" class="text-surface-500 hover:text-surface-900 transition-colors no-underline">
-            API Keys
+          <a href="/dashboard/api-keys" class="rounded-full px-3 py-1.5 text-sm text-surface-500 no-underline transition-colors hover:bg-surface-100 hover:text-surface-900">
+            API keys
           </a>
-          <a href="/dashboard/managed-accounts" class="text-surface-500 hover:text-surface-900 transition-colors no-underline">
-            Managed Accounts
+          <a href="/dashboard/managed-accounts" class="rounded-full px-3 py-1.5 text-sm text-surface-500 no-underline transition-colors hover:bg-surface-100 hover:text-surface-900">
+            Connected apps
           </a>
-          <a href="/dashboard/organizations" class="text-surface-500 hover:text-surface-900 transition-colors no-underline">
+          <a href="/dashboard/organizations" class="rounded-full px-3 py-1.5 text-sm text-surface-500 no-underline transition-colors hover:bg-surface-100 hover:text-surface-900">
             Organizations
+          </a>
+          <a href="/console" class="rounded-full border border-primary-200 bg-primary-50 px-3 py-1.5 text-sm font-semibold text-primary-700 no-underline transition-colors hover:bg-primary-100">
+            Console
           </a>
         </div>
       </nav>
@@ -48,8 +55,8 @@
       {@render children()}
     </main>
 
-    <footer class="border-t border-surface-200 px-6 py-6 text-center text-surface-400">
-      <p>OpenKey - Your keys, secured by passkeys</p>
+    <footer class="border-t border-surface-200/80 px-6 py-6 text-center text-sm text-surface-500">
+      <p>OpenKey Account and OpenKey Console</p>
     </footer>
   </div>
 {/if}

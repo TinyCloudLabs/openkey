@@ -1,0 +1,584 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="description" content="OpenKey managed accounts and tenant control plane project overview." />
+  <title>OpenKey managed accounts · Project brief</title>
+  <style>
+    :root {
+      --brand: #2a56f6;
+      --brand-hover: #3d66f7;
+      --brand-dark: #1e42c8;
+      --page: #f8f9fb;
+      --surface: #ffffff;
+      --surface-muted: #f8fafc;
+      --ink: #1a1c21;
+      --secondary: #64748b;
+      --ghost: #94a3b8;
+      --border: #e2e8f0;
+      --hairline: #f1f5f9;
+      --success: #0f7450;
+      --success-bg: #ecfdf5;
+      --warning: #a15c07;
+      --warning-bg: #fffbeb;
+      --blue-bg: #eef3ff;
+      --danger: #c53b4b;
+      --shadow: none;
+      --radius: 14px;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    [data-theme="dark"] {
+      --page: #0d1117;
+      --surface: #151a23;
+      --surface-muted: #111722;
+      --ink: #f1f5f9;
+      --secondary: #a9b4c4;
+      --ghost: #7f8b9c;
+      --border: #2a3443;
+      --hairline: #202938;
+      --success: #52d39a;
+      --success-bg: #112a22;
+      --warning: #f6bf64;
+      --warning-bg: #302411;
+      --blue-bg: #18254e;
+      --danger: #ff7b8a;
+      --shadow: 0 18px 38px rgba(0, 0, 0, .25);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background-color: var(--page);
+      background-image: radial-gradient(var(--border) .7px, transparent .7px);
+      background-size: 12px 12px;
+      font-family: var(--sans);
+      font-size: 15px;
+      line-height: 1.55;
+    }
+    button, a { -webkit-tap-highlight-color: transparent; }
+    a { color: inherit; }
+    a:focus-visible, button:focus-visible, summary:focus-visible {
+      outline: 3px solid var(--brand);
+      outline-offset: 3px;
+    }
+    .skip-link {
+      position: fixed; top: 10px; left: 10px; z-index: 20;
+      transform: translateY(-140%); padding: 9px 13px; border-radius: 8px;
+      background: var(--ink); color: var(--surface); text-decoration: none;
+    }
+    .skip-link:focus { transform: translateY(0); }
+
+    .topbar {
+      position: sticky; top: 0; z-index: 10;
+      border-bottom: 1px dotted var(--border);
+      background: color-mix(in srgb, var(--page) 92%, transparent);
+      backdrop-filter: blur(12px);
+    }
+    .topbar-inner {
+      max-width: 1400px; margin: auto; min-height: 64px; padding: 0 32px;
+      display: flex; align-items: center; gap: 22px;
+    }
+    .wordmark { display: flex; align-items: center; gap: 10px; text-decoration: none; font-weight: 760; letter-spacing: -.02em; }
+    .mark { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 8px; background: var(--brand); color: white; font: 700 14px/1 var(--mono); }
+    .context { color: var(--secondary); font-weight: 520; }
+    .nav { display: flex; align-items: center; gap: 5px; margin-left: auto; overflow-x: auto; scrollbar-width: none; }
+    .nav a { padding: 7px 10px; border-radius: 999px; color: var(--secondary); text-decoration: none; font-size: 13px; white-space: nowrap; }
+    .nav a:hover, .nav a[aria-current="true"] { color: var(--brand); background: var(--blue-bg); }
+    .icon-button { width: 34px; height: 34px; display: grid; place-items: center; flex: 0 0 auto; border: 1px solid var(--border); border-radius: 999px; color: var(--secondary); background: var(--surface); cursor: pointer; }
+    .icon-button:hover { color: var(--brand); border-color: var(--brand); }
+
+    main { max-width: 1400px; margin: auto; padding: 64px 32px 100px; }
+    section { scroll-margin-top: 92px; margin-top: 96px; }
+    .hero { margin-top: 0; display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(320px, .65fr); gap: 64px; align-items: start; }
+    .eyebrow { display: inline-flex; align-items: center; gap: 8px; margin-bottom: 18px; color: var(--brand); font: 700 12px/1 var(--mono); text-transform: uppercase; letter-spacing: .08em; }
+    .eyebrow::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 4px var(--blue-bg); }
+    h1, h2, h3 { margin: 0; line-height: 1.08; letter-spacing: -.035em; }
+    h1 { max-width: 920px; font-size: clamp(44px, 6.2vw, 84px); font-weight: 760; }
+    h2 { font-size: clamp(30px, 4vw, 48px); font-weight: 730; }
+    h3 { font-size: 19px; font-weight: 700; letter-spacing: -.02em; }
+    .hero-copy { max-width: 770px; margin: 26px 0 0; color: var(--secondary); font-size: clamp(18px, 2vw, 22px); }
+    .hero-copy strong { color: var(--ink); }
+    .hero-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 32px; }
+    .button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 42px; padding: 0 16px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--ink); text-decoration: none; font-weight: 650; font-size: 14px; cursor: pointer; }
+    .button.primary { border-color: var(--brand); background: var(--brand); color: #fff; }
+    .button:hover { border-color: var(--brand); color: var(--brand); }
+    .button.primary:hover { background: var(--brand-hover); color: white; }
+
+    .brief-card { border: 1px solid var(--border); border-top: 3px solid var(--brand); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); }
+    .brief-card .inner { padding: 24px; }
+    .brief-card dl { margin: 0; display: grid; gap: 18px; }
+    .brief-card div { display: grid; grid-template-columns: 95px 1fr; gap: 16px; align-items: baseline; }
+    dt { color: var(--secondary); font: 700 11px/1.3 var(--mono); text-transform: uppercase; letter-spacing: .06em; }
+    dd { margin: 0; font-weight: 650; }
+    .status-line { display: flex; align-items: center; gap: 8px; }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); }
+
+    .section-head { display: grid; grid-template-columns: minmax(0, .85fr) minmax(340px, .55fr); gap: 60px; align-items: end; padding-bottom: 28px; border-bottom: 1px dotted var(--border); }
+    .section-head p { margin: 0; color: var(--secondary); font-size: 17px; }
+    .kicker { margin-bottom: 12px; color: var(--brand); font: 700 12px/1 var(--mono); text-transform: uppercase; letter-spacing: .08em; }
+    .grid { display: grid; gap: 16px; }
+    .grid.three { grid-template-columns: repeat(3, 1fr); }
+    .grid.two { grid-template-columns: repeat(2, 1fr); }
+    .card { position: relative; min-width: 0; padding: 24px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+    .card p { margin: 10px 0 0; color: var(--secondary); }
+    .label { display: inline-flex; align-items: center; gap: 6px; min-height: 25px; padding: 0 9px; border-radius: 999px; color: var(--secondary); background: var(--surface-muted); border: 1px solid var(--border); font: 700 11px/1 var(--mono); letter-spacing: .03em; text-transform: uppercase; }
+    .label.live { color: var(--success); background: var(--success-bg); border-color: color-mix(in srgb, var(--success) 25%, var(--border)); }
+    .label.next { color: var(--brand); background: var(--blue-bg); border-color: color-mix(in srgb, var(--brand) 25%, var(--border)); }
+    .label.decide { color: var(--warning); background: var(--warning-bg); border-color: color-mix(in srgb, var(--warning) 25%, var(--border)); }
+    .mono { font-family: var(--mono); }
+    .micro { color: var(--secondary); font: 12px/1.4 var(--mono); }
+
+    .milestones { margin-top: 28px; grid-template-columns: repeat(4, 1fr); }
+    .milestone { min-height: 220px; display: flex; flex-direction: column; }
+    .milestone .num { width: 34px; height: 34px; display: grid; place-items: center; margin-bottom: 40px; border-radius: 10px; color: var(--brand); background: var(--blue-bg); font: 700 12px var(--mono); }
+    .milestone .label { align-self: flex-start; margin-top: auto; }
+    .milestone a { color: var(--brand); text-decoration: none; }
+    .milestone a:hover { text-decoration: underline; }
+
+    .callout { margin-top: 18px; padding: 18px 20px; border: 1px solid color-mix(in srgb, var(--brand) 18%, var(--border)); border-radius: 10px; background: var(--blue-bg); }
+    .callout strong { display: block; margin-bottom: 4px; }
+    .callout p { margin: 0; color: var(--secondary); }
+
+    .diagram-card { margin-top: 28px; overflow: hidden; }
+    .diagram-title { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 20px; border-bottom: 1px dotted var(--border); }
+    .mermaid-wrap { min-height: 330px; display: grid; place-items: center; overflow-x: auto; padding: 32px 20px; background: var(--surface-muted); }
+    .mermaid { min-width: 760px; }
+    .diagram-fallback { margin: 0; padding: 18px; white-space: pre-wrap; color: var(--secondary); font: 12px/1.65 var(--mono); }
+    .diagram-alt { margin: 0; padding: 14px 20px; border-top: 1px dotted var(--border); color: var(--secondary); font-size: 13px; }
+    .diagram-alt strong { color: var(--ink); }
+
+    .split { display: grid; grid-template-columns: .72fr 1.28fr; gap: 28px; margin-top: 28px; }
+    .principles { display: grid; gap: 10px; }
+    .principle { padding: 16px; border-bottom: 1px dotted var(--border); }
+    .principle:last-child { border-bottom: 0; }
+    .principle strong { display: block; margin-bottom: 4px; }
+    .principle span { color: var(--secondary); }
+    .route-list { display: grid; gap: 8px; margin-top: 20px; }
+    .route { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-muted); }
+    .route code { min-width: 0; overflow-wrap: anywhere; color: var(--ink); font: 12px/1.4 var(--mono); }
+    .route button { padding: 4px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--secondary); cursor: pointer; font: 11px var(--mono); }
+    .route button:hover { color: var(--brand); background: var(--blue-bg); }
+
+    .journey { margin-top: 28px; counter-reset: journey; }
+    .journey-step { display: grid; grid-template-columns: 56px 210px 1fr; gap: 22px; padding: 22px 0; border-bottom: 1px dotted var(--border); counter-increment: journey; }
+    .journey-step::before { content: counter(journey, decimal-leading-zero); color: var(--brand); font: 700 13px/1.5 var(--mono); }
+    .journey-step p { margin: 0; color: var(--secondary); }
+
+    .wireframes { display: grid; grid-template-columns: .75fr 1.25fr; gap: 18px; margin-top: 28px; }
+    .screen { overflow: hidden; margin: 0; padding: 0; }
+    .screen-bar { height: 42px; display: flex; align-items: center; gap: 6px; padding: 0 14px; border-bottom: 1px solid var(--border); background: var(--surface-muted); }
+    .screen-bar i { width: 7px; height: 7px; border-radius: 50%; background: var(--border); }
+    .screen-body { min-height: 410px; display: grid; grid-template-columns: 150px 1fr; }
+    .screen-body.single { grid-template-columns: 1fr; padding: 34px; }
+    .screen-side { padding: 16px 12px; border-right: 1px dotted var(--border); }
+    .screen-logo { height: 25px; width: 88px; margin-bottom: 22px; border-radius: 5px; background: var(--brand); opacity: .9; }
+    .screen-link { height: 9px; margin: 15px 4px; border-radius: 3px; background: var(--border); }
+    .screen-link.active { background: var(--brand); opacity: .7; }
+    .screen-main { padding: 24px; }
+    .skeleton-title { width: 48%; height: 18px; border-radius: 4px; background: var(--ink); opacity: .88; }
+    .skeleton-copy { width: 72%; height: 9px; margin-top: 11px; border-radius: 4px; background: var(--border); }
+    .mock-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; margin-top: 24px; }
+    .mock-card { height: 82px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-muted); }
+    .mock-card b, .check-item b { display: block; width: 52%; height: 8px; border-radius: 3px; background: var(--secondary); opacity: .6; }
+    .mock-card i { display: block; width: 34%; height: 16px; margin-top: 17px; border-radius: 4px; background: var(--ink); opacity: .8; }
+    .checklist { margin-top: 18px; border: 1px solid var(--border); border-radius: 9px; overflow: hidden; }
+    .check-item { display: flex; align-items: center; gap: 10px; height: 45px; padding: 0 13px; border-bottom: 1px dotted var(--border); }
+    .check-item:last-child { border-bottom: 0; }
+    .check-item::before { content: ""; width: 15px; height: 15px; border: 1px solid var(--brand); border-radius: 50%; }
+    .check-item.done::before { background: var(--brand); box-shadow: inset 0 0 0 4px var(--surface); }
+    .signin { max-width: 360px; margin: auto; text-align: center; }
+    .signin .lock { width: 46px; height: 46px; display: grid; place-items: center; margin: 0 auto 20px; border-radius: 12px; background: var(--blue-bg); color: var(--brand); font: 700 18px var(--mono); }
+    .signin p { color: var(--secondary); }
+    .fake-button { height: 42px; display: grid; place-items: center; margin-top: 24px; border-radius: 999px; background: var(--brand); color: white; font-weight: 680; }
+    .screen-caption { padding: 16px 18px; border-top: 1px dotted var(--border); color: var(--secondary); }
+    .screen-caption strong { color: var(--ink); }
+    .setup-rail { display: grid; grid-template-columns: repeat(6, 1fr); gap: 0; margin-top: 18px; overflow: hidden; }
+    .setup-step { min-height: 150px; padding: 18px; border-right: 1px dotted var(--border); }
+    .setup-step:last-child { border-right: 0; }
+    .setup-step span { color: var(--brand); font: 700 11px/1 var(--mono); }
+    .setup-step strong { display: block; margin-top: 26px; line-height: 1.3; }
+    .setup-step small { display: block; margin-top: 7px; color: var(--secondary); line-height: 1.45; }
+
+    .plans { margin-top: 28px; }
+    .plan { display: flex; flex-direction: column; min-height: 240px; }
+    .plan.featured { border-color: var(--brand); box-shadow: inset 0 3px 0 var(--brand); }
+    .plan ul { margin: 18px 0 0; padding: 0; list-style: none; color: var(--secondary); }
+    .plan li { padding: 7px 0; border-bottom: 1px dotted var(--border); }
+    .plan li::before { content: "✓"; margin-right: 8px; color: var(--success); font-weight: 800; }
+
+    .decision-summary { display: flex; flex-wrap: wrap; gap: 10px; margin: 28px 0 16px; }
+    .filter { min-height: 36px; padding: 0 13px; border: 1px solid var(--border); border-radius: 999px; color: var(--secondary); background: var(--surface); cursor: pointer; font-weight: 650; }
+    .filter[aria-pressed="true"] { color: white; border-color: var(--brand); background: var(--brand); }
+    .decisions { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--surface); }
+    details { border-bottom: 1px dotted var(--border); }
+    details:last-child { border-bottom: 0; }
+    summary { display: grid; grid-template-columns: 120px minmax(220px, .8fr) 1.2fr 22px; gap: 18px; align-items: center; padding: 20px; cursor: pointer; list-style: none; }
+    summary::-webkit-details-marker { display: none; }
+    summary::after { content: "+"; color: var(--secondary); font: 18px var(--mono); }
+    details[open] summary::after { content: "−"; }
+    .decision-copy { color: var(--secondary); }
+    .detail-body { padding: 0 20px 22px 158px; color: var(--secondary); }
+    .detail-body strong { color: var(--ink); }
+
+    .next-list { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; margin-top: 28px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
+    .next-item { min-height: 230px; padding: 24px; border-right: 1px dotted var(--border); }
+    .next-item:last-child { border-right: 0; }
+    .next-item .num { color: var(--brand); font: 700 12px var(--mono); }
+    .next-item h3 { margin-top: 36px; }
+    .next-item p { color: var(--secondary); }
+
+    footer { max-width: 1400px; margin: auto; padding: 28px 32px 40px; border-top: 1px dotted var(--border); color: var(--secondary); font-size: 13px; }
+    footer div { display: flex; justify-content: space-between; gap: 20px; }
+
+    @media (max-width: 980px) {
+      .hero, .section-head, .split, .wireframes { grid-template-columns: 1fr; }
+      .hero { gap: 36px; }
+      .milestones, .next-list { grid-template-columns: repeat(2, 1fr); }
+      .next-item:nth-child(2) { border-right: 0; }
+      .next-item:nth-child(-n+2) { border-bottom: 1px dotted var(--border); }
+      .nav { display: none; }
+      .context { display: none; }
+      .setup-rail { grid-template-columns: repeat(3, 1fr); }
+      .setup-step:nth-child(3) { border-right: 0; }
+      .setup-step:nth-child(-n+3) { border-bottom: 1px dotted var(--border); }
+    }
+    @media (max-width: 700px) {
+      .topbar-inner, main, footer { padding-left: 18px; padding-right: 18px; }
+      main { padding-top: 42px; }
+      section { margin-top: 72px; }
+      .grid.three, .grid.two, .milestones, .next-list { grid-template-columns: 1fr; }
+      .next-item { border-right: 0; border-bottom: 1px dotted var(--border); }
+      .next-item:last-child { border-bottom: 0; }
+      .journey-step { grid-template-columns: 38px 1fr; }
+      .journey-step p { grid-column: 2; }
+      .screen-body { grid-template-columns: 92px 1fr; }
+      .mock-cards { grid-template-columns: 1fr; }
+      .setup-rail { grid-template-columns: 1fr; }
+      .setup-step { min-height: 115px; border-right: 0; border-bottom: 1px dotted var(--border); }
+      .setup-step:last-child { border-bottom: 0; }
+      .setup-step strong { margin-top: 14px; }
+      summary { grid-template-columns: 1fr 24px; }
+      summary .label, summary .decision-copy { grid-column: 1; }
+      summary::after { grid-column: 2; grid-row: 1; }
+      .detail-body { padding-left: 20px; }
+      footer div { display: grid; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after { transition-duration: .01ms !important; animation-duration: .01ms !important; }
+    }
+    @media print {
+      :root { --page: #fff; --surface: #fff; --ink: #111; --secondary: #475569; }
+      body { background: #fff; }
+      .topbar, .hero-actions, .decision-summary, .route button { display: none; }
+      main { max-width: none; padding: 20px; }
+      section { break-inside: avoid; margin-top: 48px; }
+      .card, .brief-card, .decisions, .next-list { box-shadow: none; }
+      details > * { display: block !important; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to project brief</a>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="wordmark" href="#overview"><span class="mark">OK</span><span>OpenKey</span><span class="context">Managed accounts brief</span></a>
+      <nav class="nav" aria-label="Project brief">
+        <a href="#status">Status</a><a href="#architecture">Architecture</a><a href="#journey">Journey</a><a href="#wireframes">Wireframes</a><a href="#decisions">Decisions</a><a href="#next">Next</a>
+      </nav>
+      <button class="icon-button" id="themeToggle" type="button" aria-label="Toggle color theme" title="Toggle color theme">◐</button>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero" id="overview">
+      <div>
+        <div class="eyebrow">Project overview · July 2026</div>
+        <h1>One identity layer.<br />Two clear control surfaces.</h1>
+        <p class="hero-copy">OpenKey now supports <strong>tenant-managed accounts that users can unilaterally take into personal custody</strong>. The secure control-plane APIs are deployed. What remains is the operator-facing console that makes the system usable without API calls.</p>
+        <div class="hero-actions">
+          <a class="button primary" href="#decisions">Review decisions <span aria-hidden="true">↓</span></a>
+          <a class="button" href="/managed-accounts-architecture">Open technical explainer</a>
+          <a class="button" href="https://github.com/TinyCloudLabs/openkey/pull/135">Latest merged PR ↗</a>
+        </div>
+      </div>
+      <aside class="brief-card" aria-label="Project at a glance">
+        <div class="inner">
+          <dl>
+            <div><dt>Outcome</dt><dd>Managed identity with user escape hatch</dd></div>
+            <div><dt>Backend</dt><dd class="status-line"><span class="status-dot"></span>Deployed</dd></div>
+            <div><dt>Console UI</dt><dd>Next implementation slice</dd></div>
+            <div><dt>Visual system</dt><dd>OpenCredentials</dd></div>
+            <div><dt>Feedback</dt><dd>Business choices only</dd></div>
+          </dl>
+        </div>
+      </aside>
+    </section>
+
+    <section id="status">
+      <div class="section-head">
+        <div><div class="kicker">Where we are</div><h2>The foundation is live.<br />The interface is next.</h2></div>
+        <p>Three backend milestones have shipped safely to production. The public tenant console routes shown below have not been built yet; this brief is the handoff into that work.</p>
+      </div>
+      <div class="grid milestones">
+        <article class="card milestone">
+          <span class="num">01</span><h3>Managed-account foundation</h3><p>Tenant isolation, Free / Pro / Enterprise entitlements, app-managed registration, and unilateral user eject.</p>
+          <span class="label live">Merged · <a href="https://github.com/TinyCloudLabs/openkey/pull/131">PR #131</a></span>
+        </article>
+        <article class="card milestone">
+          <span class="num">02</span><h3>Production migration recovery</h3><p>Guarded baseline recovery plus acceptance of the one reviewed legacy migration checksum.</p>
+          <span class="label live">Deployed · <a href="https://github.com/TinyCloudLabs/openkey/pull/133">#133</a> / <a href="https://github.com/TinyCloudLabs/openkey/pull/134">#134</a></span>
+        </article>
+        <article class="card milestone">
+          <span class="num">03</span><h3>Tenant console APIs</h3><p>Session-authenticated APIs for apps, credentials, accounts, webhooks, deliveries, and overview data.</p>
+          <span class="label live">Deployed · <a href="https://github.com/TinyCloudLabs/openkey/pull/135">PR #135</a></span>
+        </article>
+        <article class="card milestone">
+          <span class="num">04</span><h3>Operator console</h3><p>A distinct tenant surface for setup, daily operations, member access, usage, audit, and settings.</p>
+          <span class="label next">Now designing</span>
+        </article>
+      </div>
+      <div class="callout"><strong>The important status nuance</strong><p>The control plane is secure and callable today. <span class="mono">/dashboard/organizations</span> already supports organization creation and entitlement viewing, but a user cannot yet visit <span class="mono">/console</span> and operate the full tenant surface.</p></div>
+    </section>
+
+    <section id="architecture">
+      <div class="section-head">
+        <div><div class="kicker">Ecosystem model</div><h2>Personal custody and tenant operations stay separate.</h2></div>
+        <p>OpenKey hosts identity, passkeys, consent, and eject. Tenant apps initiate managed registration. Operators manage their organization through a separate session-authenticated console.</p>
+      </div>
+      <div class="card diagram-card">
+        <div class="diagram-title"><h3>System boundaries</h3><span class="micro">Session auth by default · secret revealed once at creation</span></div>
+        <div class="mermaid-wrap">
+          <pre class="mermaid" role="img" aria-label="OpenKey managed account system boundaries">
+flowchart LR
+  accTitle: OpenKey managed account system boundaries
+  accDescr: A user authenticates with OpenKey, a tenant app initiates managed registration, an organization admin uses a session-authenticated console, and the user can eject to personal custody without tenant approval.
+  U[User] -->|sign in / passkey| O[OpenKey identity]
+  T[Tenant app] -->|managed registration intent| O
+  O --> M[(Managed account)]
+  M -->|until eject| B[Tenant broker custody]
+  U -->|Leave app| E[User eject]
+  E --> P[Personal custody]
+  A[Organization admin] -->|session auth| C[OpenKey Console]
+  C --> API[Tenant control-plane API]
+  API --> APPS[Apps & credentials]
+  API --> OPS[Accounts & webhooks]
+  B -. cannot block .-> E
+
+  classDef primary fill:#eef3ff,stroke:#2a56f6,color:#1a1c21,stroke-width:2px;
+  classDef neutral fill:#ffffff,stroke:#cbd5e1,color:#1a1c21;
+  class O,C,E primary;
+  class U,T,M,B,P,A,API,APPS,OPS neutral;
+          </pre>
+          <noscript><pre class="diagram-fallback">User → OpenKey passkey → managed account → tenant broker custody
+User → Leave app → personal custody (tenant cannot block)
+Organization admin → OpenKey Console → session-authenticated tenant APIs</pre></noscript>
+        </div>
+        <p class="diagram-alt"><strong>Text view:</strong> The tenant app initiates registration; OpenKey authenticates the user; custody begins with the tenant broker. The organization admin uses session-authenticated console APIs. The user can leave at any time and move the same account into personal custody.</p>
+      </div>
+      <div class="split">
+        <div class="card">
+          <span class="label live">Invariant</span>
+          <div class="principles">
+            <div class="principle"><strong>User agency</strong><span>Eject is always user-initiated and cannot be gated by tenant billing or approval.</span></div>
+            <div class="principle"><strong>Tenant isolation</strong><span>Membership and role checks scope every console request; cross-tenant resources return 404.</span></div>
+            <div class="principle"><strong>Secret boundary</strong><span>Credential creation reveals the secret once to the admin browser; plaintext is not persisted and list APIs never return it.</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <span class="label next">Product architecture</span>
+          <h3 style="margin-top:16px">Same application, distinct jobs</h3>
+          <p><strong style="color:var(--ink)">OpenKey Account</strong> is personal: identity, security, and connected apps. <strong style="color:var(--ink)">OpenKey Console</strong> is organizational: apps, credentials, managed accounts, integrations, members, and usage.</p>
+          <div class="route-list">
+            <div class="route"><code>/dashboard/*</code><span class="micro">Personal OpenKey Account</span><button type="button" data-copy="/dashboard/*">copy</button></div>
+            <div class="route"><code>/managed/register</code><span class="micro">Live managed registration</span><button type="button" data-copy="/managed/register">copy</button></div>
+            <div class="route"><code>/dashboard/managed-accounts</code><span class="micro">Live user eject surface</span><button type="button" data-copy="/dashboard/managed-accounts">copy</button></div>
+            <div class="route"><code>/dashboard/organizations</code><span class="micro">Live partial organization UI</span><button type="button" data-copy="/dashboard/organizations">copy</button></div>
+            <div class="route"><code>/console</code><span class="micro">Organization selector</span><button type="button" data-copy="/console">copy</button></div>
+            <div class="route"><code>/console/:organizationId/*</code><span class="micro">Tenant OpenKey Console</span><button type="button" data-copy="/console/:organizationId/*">copy</button></div>
+            <div class="route"><code>/api/console/organizations/:id/*</code><span class="micro">Deployed API boundary</span><button type="button" data-copy="/api/console/organizations/:id/*">copy</button></div>
+          </div>
+        </div>
+      </div>
+      <div class="grid two" style="margin-top:18px">
+        <div class="card">
+          <span class="label live">API-backed now</span>
+          <h3 style="margin-top:16px">The first useful console release</h3>
+          <p>Overview and entitlements, apps, one-time server credentials and revocation, cursor-paginated managed accounts, webhook endpoints, and delivery history.</p>
+        </div>
+        <div class="card">
+          <span class="label next">Follow-up surfaces</span>
+          <h3 style="margin-top:16px">Only when management APIs are real</h3>
+          <p>Members, dedicated usage, audit, billing, and organization settings should not appear as dead navigation or fabricated data in the first release.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="journey">
+      <div class="section-head">
+        <div><div class="kicker">Signup and custody</div><h2>The app starts the journey.<br />OpenKey earns the trust.</h2></div>
+        <p>There is no separate tenant-owned signup UI. The tenant app creates a registration intent, then sends the user to an OpenKey-hosted passkey and consent flow.</p>
+      </div>
+      <div class="journey">
+        <div class="journey-step"><h3>App requests registration</h3><p>The tenant backend uses its provisioner credential to create a short-lived intent with the app identity and return URL.</p></div>
+        <div class="journey-step"><h3>OpenKey verifies the user</h3><p>The user sees the app name and custody model, then creates or uses an OpenKey passkey on an OpenKey origin.</p></div>
+        <div class="journey-step"><h3>Managed account becomes ready</h3><p>The app receives a safe completion result. Custody begins under the tenant broker and the account appears in the console.</p></div>
+        <div class="journey-step"><h3>User manages connected apps</h3><p>The personal dashboard currently calls this “Managed accounts.” The console release should rename it “Connected apps,” while preserving custody state and the “Leave app” action.</p></div>
+        <div class="journey-step"><h3>Eject switches custody</h3><p>OpenKey validates the user, transitions to personal custody, invalidates tenant authority, and emits lifecycle events.</p></div>
+      </div>
+    </section>
+
+    <section id="wireframes">
+      <div class="section-head">
+        <div><div class="kicker">Wireframe section</div><h2>What signup and tenant control feel like.</h2></div>
+        <p>The visual hierarchy follows OpenCredentials: bright operational surfaces, blue as the single action color, dotted structure, pill states, and restrained density.</p>
+      </div>
+      <div class="wireframes">
+        <figure class="card screen">
+          <div class="screen-bar"><i></i><i></i><i></i><span class="micro" style="margin-left:auto">app.openkey.so/register</span></div>
+          <div class="screen-body single">
+            <div class="signin">
+              <div class="lock">K</div><h3>Continue to Acme</h3><p>Use an OpenKey passkey. Acme will manage this account until you choose to leave.</p><div class="fake-button">Continue with passkey</div><p class="micro">You can move this account to personal custody at any time.</p>
+            </div>
+          </div>
+          <figcaption class="screen-caption"><strong>User-facing signup</strong> · Trust, custody, and reversibility are explained before authentication.</figcaption>
+        </figure>
+        <figure class="card screen">
+          <div class="screen-bar"><i></i><i></i><i></i><span class="micro" style="margin-left:auto">app.openkey.so/console/acme</span></div>
+          <div class="screen-body">
+            <aside class="screen-side"><div class="screen-logo"></div><div class="screen-link active"></div><div class="screen-link"></div><div class="screen-link"></div><div class="screen-link"></div><div class="screen-link"></div><div class="screen-link"></div></aside>
+            <div class="screen-main"><div class="skeleton-title"></div><div class="skeleton-copy"></div><div class="mock-cards"><div class="mock-card"><b></b><i></i></div><div class="mock-card"><b></b><i></i></div><div class="mock-card"><b></b><i></i></div></div><div class="checklist"><div class="check-item done"><b></b></div><div class="check-item done"><b></b></div><div class="check-item"><b></b></div><div class="check-item"><b></b></div></div></div>
+          </div>
+          <figcaption class="screen-caption"><strong>Tenant overview</strong> · Organization context, activation checklist, health signals, and direct paths into daily operations.</figcaption>
+        </figure>
+      </div>
+      <div class="card setup-rail" aria-label="Tenant operator first-run journey">
+        <div class="setup-step"><span>01</span><strong>Create or select organization</strong><small>Free is the automatic starting tier.</small></div>
+        <div class="setup-step"><span>02</span><strong>Configure broker</strong><small>Guided default; existing DID is advanced.</small></div>
+        <div class="setup-step"><span>03</span><strong>Create an app</strong><small>Name it and set strict return URLs.</small></div>
+        <div class="setup-step"><span>04</span><strong>Issue credential</strong><small>Copy the server secret once.</small></div>
+        <div class="setup-step"><span>05</span><strong>Install and test</strong><small>Complete a real managed registration.</small></div>
+        <div class="setup-step"><span>06</span><strong>See first account</strong><small>Webhook setup remains optional.</small></div>
+      </div>
+    </section>
+
+    <section id="plans">
+      <div class="section-head">
+        <div><div class="kicker">Entitlement model</div><h2>One product model,<br />three operational tiers.</h2></div>
+        <p>The tier structure is implemented. Exact prices and several commercial quotas remain business decisions; the platform should not invent them in UI copy.</p>
+      </div>
+      <div class="grid three plans">
+        <article class="card plan"><span class="label">Free</span><h3 style="margin-top:22px">Build and validate</h3><ul><li>1 app · 3 members</li><li>100 managed accounts / MAU</li><li>60 requests per minute</li><li>7-day audit retention</li></ul></article>
+        <article class="card plan featured"><span class="label next">Pro</span><h3 style="margin-top:22px">Operate in production</h3><ul><li>10 apps · 25 members</li><li>10,000 managed accounts / MAU</li><li>600 requests per minute</li><li>90-day audit retention</li></ul></article>
+        <article class="card plan"><span class="label">Enterprise</span><h3 style="margin-top:22px">Govern at scale</h3><ul><li>1,000 apps · 10,000 members</li><li>10M managed accounts / MAU</li><li>10,000 requests per minute</li><li>2,555-day audit retention</li></ul></article>
+      </div>
+      <div class="callout"><strong>Limits are code; pricing is not.</strong><p>These are the configured v1 entitlement defaults. App, account, policy, and webhook limits are enforced today; member count, MAU, request rate, and audit retention are stored and returned but still need runtime enforcement. Exact prices, public quota labels, Enterprise terms, and the legacy <span class="mono">SCALE</span> migration path need product approval.</p></div>
+    </section>
+
+    <section id="decisions">
+      <div class="section-head">
+        <div><div class="kicker">Decision studio</div><h2>Most product choices have a safe default.</h2></div>
+        <p>You are not blocking implementation. Only commercial packaging and the final GA bar need owner input; engineering defaults can proceed as recommended.</p>
+      </div>
+      <div class="decision-summary" role="group" aria-label="Filter decisions">
+        <button class="filter" type="button" aria-pressed="true" data-filter="all">All decisions</button>
+        <button class="filter" type="button" aria-pressed="false" data-filter="locked">Locked</button>
+        <button class="filter" type="button" aria-pressed="false" data-filter="recommended">Recommended</button>
+        <button class="filter" type="button" aria-pressed="false" data-filter="owner">Needs owner</button>
+      </div>
+      <div class="decisions">
+        <details data-kind="locked" open><summary><span class="label live">Locked</span><strong>Custody and eject model</strong><span class="decision-copy">App-managed until the user leaves; the tenant can never block eject.</span></summary><div class="detail-body"><strong>Already implemented.</strong> Keep the invariant visible in registration consent, personal settings, events, and operator documentation.</div></details>
+        <details data-kind="locked"><summary><span class="label live">Locked</span><strong>Browser security boundary</strong><span class="decision-copy">Console requests use OpenKey sessions; an <span class="mono">oksk_</span> secret appears only in its creation response.</span></summary><div class="detail-body"><strong>Already implemented.</strong> The admin browser may display and copy that one-time secret, but must not persist it; later list responses never reveal the plaintext.</div></details>
+        <details data-kind="recommended"><summary><span class="label next">Recommended</span><strong>Console information architecture</strong><span class="decision-copy">Keep <span class="mono">/dashboard</span> personal and introduce a distinct <span class="mono">/console</span> organization shell.</span></summary><div class="detail-body"><strong>Proceed without blocking.</strong> Use an organization switcher and persistent context; rename the personal “Managed accounts” concept to “Connected apps.”</div></details>
+        <details data-kind="recommended"><summary><span class="label next">Recommended</span><strong>First-run operator setup</strong><span class="decision-copy">Generated broker default, app creation, one-time credential, test signup, optional webhook.</span></summary><div class="detail-body"><strong>Proceed without blocking.</strong> Raw broker DIDs remain an advanced path. The checklist should be inline and resumable; webhooks should not block activation.</div></details>
+        <details data-kind="owner"><summary><span class="label decide">Needs owner</span><strong>Price and quota card</strong><span class="decision-copy">Set exact Free / Pro prices, numerical limits, and the upgrade path from legacy SCALE.</span></summary><div class="detail-body"><strong>Needed before billing UI ships, not before console foundations.</strong> Engineering can expose the entitlement values already returned by the API while commercial language stays provisional.</div></details>
+        <details data-kind="owner"><summary><span class="label decide">Needs owner</span><strong>Enterprise and GA scope</strong><span class="decision-copy">Choose SSO / SCIM / compliance timing and whether an external custody witness is required for GA.</span></summary><div class="detail-body"><strong>Needed for roadmap commitment.</strong> This should be a deliberate security and sales decision, not an implicit promise in the first console release.</div></details>
+      </div>
+    </section>
+
+    <section id="next">
+      <div class="section-head">
+        <div><div class="kicker">Next steps</div><h2>Turn the deployed control plane into an operable product.</h2></div>
+        <p>The implementation sequence starts with the smallest complete operator journey, then adds governance and commercial surfaces after real usage exists.</p>
+      </div>
+      <div class="next-list">
+        <article class="next-item"><span class="num">01 · FOUNDATION</span><h3>Console shell</h3><p>Add <span class="mono">/console</span>, organization selection, role-aware navigation, responsive layout, and session error states.</p></article>
+        <article class="next-item"><span class="num">02 · ACTIVATE</span><h3>First-run journey</h3><p>Build organization setup, broker default, app creation, one-time credential reveal, and a test registration checkpoint.</p></article>
+        <article class="next-item"><span class="num">03 · OPERATE</span><h3>Core resources</h3><p>Ship overview, apps, credentials, managed accounts, webhooks, and delivery inspection on the deployed APIs.</p></article>
+        <article class="next-item"><span class="num">04 · GOVERN</span><h3>Teams and plans</h3><p>Add members, usage, audit, settings, upgrades, and Enterprise entry points once pricing and scope are approved.</p></article>
+      </div>
+      <div class="callout"><strong>Definition of the next merge</strong><p>An admin can enter a tenant console, create an app and credential, complete a test registration, see the managed account, and understand how user eject changes custody—all without using raw API calls.</p></div>
+    </section>
+  </main>
+
+  <footer><div><span>OpenKey managed accounts · implementation brief</span><span>Visual language inherited from OpenCredentials</span></div></footer>
+
+  <script type="module">
+    const root = document.documentElement;
+    const themeButton = document.querySelector('#themeToggle');
+    const savedTheme = localStorage.getItem('openkey-brief-theme');
+    if (savedTheme) root.dataset.theme = savedTheme;
+    themeButton.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('openkey-brief-theme', next);
+      renderDiagram(next);
+    });
+
+    document.querySelectorAll('[data-copy]').forEach((button) => {
+      button.addEventListener('click', async () => {
+        await navigator.clipboard.writeText(button.dataset.copy);
+        const before = button.textContent;
+        button.textContent = 'copied';
+        window.setTimeout(() => button.textContent = before, 1200);
+      });
+    });
+
+    document.querySelectorAll('.filter').forEach((button) => {
+      button.addEventListener('click', () => {
+        document.querySelectorAll('.filter').forEach((item) => item.setAttribute('aria-pressed', String(item === button)));
+        const filter = button.dataset.filter;
+        document.querySelectorAll('.decisions details').forEach((detail) => {
+          detail.hidden = filter !== 'all' && detail.dataset.kind !== filter;
+        });
+      });
+    });
+
+    const sections = [...document.querySelectorAll('main section[id]')];
+    const links = [...document.querySelectorAll('.nav a')];
+    const observer = new IntersectionObserver((entries) => {
+      const visible = entries.filter((entry) => entry.isIntersecting).sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+      if (!visible) return;
+      links.forEach((link) => link.setAttribute('aria-current', String(link.hash === `#${visible.target.id}`)));
+    }, { rootMargin: '-20% 0px -65% 0px', threshold: [0, .25, .5] });
+    sections.forEach((section) => observer.observe(section));
+
+    let mermaid;
+    async function renderDiagram(theme = root.dataset.theme || 'light') {
+      try {
+        mermaid ||= (await import('https://cdn.jsdelivr.net/npm/mermaid@11.12.0/dist/mermaid.esm.min.mjs')).default;
+        mermaid.initialize({ startOnLoad: false, theme: theme === 'dark' ? 'dark' : 'base', securityLevel: 'strict', flowchart: { curve: 'basis', htmlLabels: true }, themeVariables: { primaryColor: theme === 'dark' ? '#18254e' : '#eef3ff', primaryTextColor: theme === 'dark' ? '#f1f5f9' : '#1a1c21', primaryBorderColor: '#2a56f6', lineColor: theme === 'dark' ? '#a9b4c4' : '#64748b', secondaryColor: theme === 'dark' ? '#151a23' : '#ffffff', tertiaryColor: theme === 'dark' ? '#111722' : '#f8fafc', fontFamily: 'Inter, ui-sans-serif, system-ui' } });
+        const source = document.querySelector('.mermaid');
+        if (source?.getAttribute('data-processed')) {
+          const original = source.dataset.source;
+          const replacement = document.createElement('pre');
+          replacement.className = 'mermaid';
+          replacement.textContent = original;
+          replacement.dataset.source = original;
+          source.replaceWith(replacement);
+        } else if (source) source.dataset.source = source.textContent;
+        await mermaid.run({ nodes: document.querySelectorAll('.mermaid') });
+      } catch (error) {
+        console.warn('Mermaid could not render; the architecture remains available in the surrounding text.', error);
+      }
+    }
+    renderDiagram();
+  </script>
+</body>
+</html>
