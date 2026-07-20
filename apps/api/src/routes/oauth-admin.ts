@@ -1,6 +1,7 @@
 // OAuth Client Administration Routes
 // Protected by ADMIN_API_KEY - for registering OAuth clients
 import { Hono } from 'hono';
+import { OAUTH_SCOPES } from '../oauth-config';
 import { createPrismaClient } from '@openkey/db';
 import { randomBytes } from 'crypto';
 import { issueOrganizationCredential, OrganizationCredentialError } from '../services/organization-credentials';
@@ -350,8 +351,8 @@ oauthAdminRouter.patch('/clients/:clientId', async (c) => {
 
   // Validate scopes if provided
   if (body.scopes) {
-    const validScopes = ['openid', 'email', 'keys', 'offline_access'];
-    const invalid = body.scopes.filter((s) => !validScopes.includes(s));
+    const validScopes = new Set<string>(OAUTH_SCOPES);
+    const invalid = body.scopes.filter((s) => !validScopes.has(s));
     if (invalid.length > 0) {
       return c.json({ error: `Invalid scopes: ${invalid.join(', ')}` }, 400);
     }
