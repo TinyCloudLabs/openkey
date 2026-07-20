@@ -165,12 +165,15 @@
   <Card class="mt-6">
     <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
       <div>
-        <h2 class="text-xl font-semibold text-surface-900">Managed Accounts</h2>
+        <h2 class="text-xl font-semibold text-surface-900">Connected apps</h2>
         <p class="text-sm text-surface-500 mt-1">
-          See which apps manage an account and transfer custody back to your OpenKey.
+          See which organizations and apps currently manage an account, then review the user-owned exit path.
         </p>
       </div>
-      <Button variant="secondary" href="/dashboard/managed-accounts">Review custody</Button>
+      <div class="flex flex-wrap gap-2">
+        <Button variant="secondary" href="/dashboard/managed-accounts">Open personal view</Button>
+        <Button href="/console">Open console</Button>
+      </div>
     </div>
   </Card>
 

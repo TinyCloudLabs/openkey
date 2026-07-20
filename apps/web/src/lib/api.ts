@@ -88,6 +88,106 @@ export interface OrganizationSummary {
   usage: { apps: number; managedAccounts: number; members: number };
 }
 
+export interface ConsoleOverviewOrganization {
+  id: string;
+  name: string;
+  role: 'ADMIN' | 'MEMBER';
+  plan: 'FREE' | 'PRO' | 'ENTERPRISE';
+  billingState: 'FREE' | 'ACTIVE' | 'PAST_DUE' | 'CANCELLED';
+  brokerDid: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ConsoleEntitlements {
+  version: number;
+  maxApps: number;
+  maxOrganizationMembers: number;
+  maxManagedAccounts: number;
+  monthlyActiveManagedUsers: number;
+  storageBytesPerManagedAccount: string;
+  requestsPerMinute: number;
+  maxTenantDelegationTtlSeconds: number;
+  maxTenantPolicyVersion: number;
+  webhookDelivery: boolean;
+  auditRetentionDays: number;
+  maxWebhookEndpoints: number;
+}
+
+export interface ConsoleOverview {
+  organization: ConsoleOverviewOrganization;
+  entitlements: ConsoleEntitlements | null;
+  usage: {
+    apps: number;
+    managedAccounts: number;
+    members: number;
+    credentials: number;
+    webhookEndpoints: number;
+  };
+}
+
+export interface ConsoleApp {
+  id: string;
+  clientId: string;
+  name: string;
+  uri: string | null;
+  icon: string | null;
+  redirectUris: string[];
+  type: 'spa' | 'native';
+  disabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ConsoleCredential {
+  id: string;
+  name: string;
+  kind: 'BROKER' | 'PROVISIONER';
+  secretPrefix: string;
+  subjectUserId: string | null;
+  createdAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+}
+
+export interface ConsoleManagedAccount {
+  managedAccountId: string;
+  externalUserId: string;
+  address: string;
+  ownerDid: string;
+  state: string;
+  custodyEpoch: number;
+  policyTemplate: string;
+  policyVersion: number;
+  tenantParentDelegationCid: string | null;
+  tenantAccess: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ConsoleManagedAccountDetail extends ConsoleManagedAccount {}
+
+export interface ConsoleWebhookEndpoint {
+  id: string;
+  url: string;
+  eventTypes: string[];
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ConsoleWebhookDelivery {
+  id: string;
+  managedAccountId: string;
+  eventType: string;
+  custodyEpoch: number;
+  status: 'PENDING' | 'FAILED' | 'DELIVERED';
+  attempts: number;
+  lastAttemptAt: string | null;
+  deliveredAt: string | null;
+  createdAt: string;
+}
+
 export const api = {
   // Key management
   async listKeys(options?: { includeArchived?: boolean }): Promise<{ keys: EthereumKey[] }> {
@@ -211,5 +311,118 @@ export const api = {
     return fetchAPI<{ organization: { id: string; name: string; plan: 'FREE' } }>('/api/organizations', {
       method: 'POST', body: JSON.stringify({ name, brokerDid }),
     });
+  },
+
+  async listConsoleOrganizations(): Promise<{ organizations: OrganizationSummary[] }> {
+    return fetchAPI('/api/organizations');
+  },
+
+  async getConsoleOverview(organizationId: string): Promise<ConsoleOverview> {
+    return fetchAPI(`/api/console/organizations/${encodeURIComponent(organizationId)}/overview`);
+  },
+
+  async listConsoleApps(organizationId: string): Promise<{ apps: ConsoleApp[] }> {
+    return fetchAPI(`/api/console/organizations/${encodeURIComponent(organizationId)}/apps`);
+  },
+
+  async createConsoleApp(
+    organizationId: string,
+    input: {
+      name: string;
+      redirectUris: string[];
+      type?: 'spa' | 'native';
+      uri?: string | null;
+      icon?: string | null;
+    },
+  ): Promise<{ client: ConsoleApp }> {
+    return fetchAPI(`/api/console/organizations/${encodeURIComponent(organizationId)}/apps`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  },
+
+  async updateConsoleApp(
+    organizationId: string,
+    appId: string,
+    input: {
+      name?: string;
+      redirectUris?: string[];
+      type?: 'spa' | 'native';
+      uri?: string | null;
+      icon?: string | null;
+      disabled?: boolean;
+    },
+  ): Promise<{ client: ConsoleApp }> {
+    return fetchAPI(`/api/console/organizations/${encodeURIComponent(organizationId)}/apps/${encodeURIComponent(appId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    });
+  },
+
+  async listConsoleCredentials(organizationId: string): Promise<{ credentials: ConsoleCredential[] }> {
+    return fetchAPI(`/api/console/organizations/${encodeURIComponent(organizationId)}/credentials`);
+  },
+
+  async createConsoleCredential(
+    organizationId: string,
+    input: { name: string; kind: 'BROKER' | 'PROVISIONER' },
+  ): Promise<{ credential: ConsoleCredential; secret: string }> {
+    return fetchAPI(`/api/console/organizations/${encodeURIComponent(organizationId)}/credentials`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  },
+
+  async revokeConsoleCredential(organizationId: string, credentialId: string): Promise<{ success: boolean }> {
+    return fetchAPI(`/api/console/organizations/${encodeURIComponent(organizationId)}/credentials/${encodeURIComponent(credentialId)}`, {
+      method: 'DELETE',
+    });
+  },
+
+  async listConsoleManagedAccounts(
+    organizationId: string,
+    options?: { limit?: number; cursor?: string; externalUserId?: string },
+  ): Promise<{ accounts: ConsoleManagedAccount[]; nextCursor: string | null }> {
+    const params = new URLSearchParams();
+    if (options?.limit) params.set('limit', String(options.limit));
+    if (options?.cursor) params.set('cursor', options.cursor);
+    if (options?.externalUserId) params.set('externalUserId', options.externalUserId);
+    const query = params.toString();
+    return fetchAPI(`/api/console/organizations/${encodeURIComponent(organizationId)}/managed-accounts${query ? `?${query}` : ''}`);
+  },
+
+  async getConsoleManagedAccount(organizationId: string, accountId: string): Promise<{ account: ConsoleManagedAccountDetail }> {
+    return fetchAPI(`/api/console/organizations/${encodeURIComponent(organizationId)}/managed-accounts/${encodeURIComponent(accountId)}`);
+  },
+
+  async listConsoleWebhookEndpoints(organizationId: string): Promise<{ endpoints: ConsoleWebhookEndpoint[]; supportedEventTypes: string[] }> {
+    return fetchAPI(`/api/console/organizations/${encodeURIComponent(organizationId)}/webhook-endpoints`);
+  },
+
+  async createConsoleWebhookEndpoint(
+    organizationId: string,
+    input: { url: string; eventTypes: string[] },
+  ): Promise<{ endpoint: ConsoleWebhookEndpoint; secret: string }> {
+    return fetchAPI(`/api/console/organizations/${encodeURIComponent(organizationId)}/webhook-endpoints`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  },
+
+  async deleteConsoleWebhookEndpoint(organizationId: string, endpointId: string): Promise<{ success: boolean }> {
+    return fetchAPI(`/api/console/organizations/${encodeURIComponent(organizationId)}/webhook-endpoints/${encodeURIComponent(endpointId)}`, {
+      method: 'DELETE',
+    });
+  },
+
+  async listConsoleWebhookDeliveries(
+    organizationId: string,
+    endpointId: string,
+    options?: { limit?: number },
+  ): Promise<{ deliveries: ConsoleWebhookDelivery[] }> {
+    const params = new URLSearchParams();
+    if (options?.limit) params.set('limit', String(options.limit));
+    const query = params.toString();
+    return fetchAPI(`/api/console/organizations/${encodeURIComponent(organizationId)}/webhook-endpoints/${encodeURIComponent(endpointId)}/deliveries${query ? `?${query}` : ''}`);
   },
 };

@@ -30,7 +30,7 @@
     try {
       accounts = (await api.listManagedAccounts()).accounts;
     } catch (e: any) {
-      error = e.message || 'Could not load managed accounts.';
+    error = e.message || 'Could not load connected apps.';
     } finally {
       loading = false;
     }
@@ -81,17 +81,20 @@
   }
 </script>
 
-<svelte:head><title>Managed accounts · OpenKey</title></svelte:head>
+<svelte:head><title>Connected apps · OpenKey</title></svelte:head>
 
 <div class="mx-auto max-w-4xl px-4 py-10">
   <div class="mb-8 flex flex-wrap items-end justify-between gap-4">
     <div>
-      <h1 class="text-2xl font-semibold text-surface-900">Managed accounts</h1>
+      <h1 class="text-2xl font-semibold text-surface-900">Connected apps</h1>
       <p class="mt-2 max-w-2xl text-sm leading-6 text-surface-600">
-        Accounts an application currently manages, plus accounts you have transferred to personal OpenKey custody.
+        Accounts and app relationships currently managed by your personal OpenKey Account, plus the path back to personal custody.
       </p>
     </div>
-    <Button variant="secondary" href="/dashboard">Back to keys</Button>
+    <div class="flex flex-wrap gap-2">
+      <Button variant="secondary" href="/dashboard">Back to account</Button>
+      <Button href="/console">Open console</Button>
+    </div>
   </div>
 
   <div aria-live="polite">
@@ -100,15 +103,15 @@
     {/if}
 
     {#if loading}
-      <div class="space-y-3" aria-label="Loading managed accounts">
+      <div class="space-y-3" aria-label="Loading connected apps">
         <div class="h-24 animate-pulse rounded-xl bg-surface-100"></div>
         <div class="h-24 animate-pulse rounded-xl bg-surface-100"></div>
       </div>
     {:else if accounts.length === 0}
       <section class="rounded-2xl bg-white p-8 shadow-sm">
-        <h2 class="text-lg font-semibold text-surface-900">No managed accounts</h2>
+        <h2 class="text-lg font-semibold text-surface-900">No connected apps yet</h2>
         <p class="mt-2 max-w-prose text-sm leading-6 text-surface-600">
-          When an app asks OpenKey to create a managed account, it will appear here with its custodian and exit status.
+          When a tenant app connects to your OpenKey account, it will appear here with its custody state and exit status.
         </p>
       </section>
     {:else}
@@ -132,7 +135,7 @@
                   {:else if account.custody === 'USER_OWNED'}
                     Personal custody is active and known tenant access has been revoked.
                   {:else}
-                    {account.managedBy} can request only the policy-bounded TinyCloud access you approved.
+                    {account.managedBy} can request only the policy-bounded OpenKey access you approved.
                   {/if}
                 </p>
               </div>
@@ -148,7 +151,7 @@
               <div class="mt-6 border-t border-surface-200 pt-6">
                 <h3 class="text-base font-semibold text-surface-900">Transfer this account to personal OpenKey custody?</h3>
                 <p class="mt-2 max-w-2xl text-sm leading-6 text-surface-700">
-                  OpenKey will stop signing for {account.managedBy} immediately after the custody transaction. Your address, DID, TinyCloud spaces, and encrypted data will not change. This transfer cannot be reversed in v1.
+                  OpenKey will stop signing for {account.managedBy} immediately after the custody transaction. Your address, DID, spaces, and encrypted data will not change. This transfer cannot be reversed in v1.
                 </p>
                 <dl class="mt-4 flex flex-col gap-2 text-sm sm:flex-row sm:gap-8">
                   <div><dt class="text-surface-500">Current epoch</dt><dd class="font-medium text-surface-900">{account.custodyEpoch}</dd></div>
@@ -175,7 +178,7 @@
   </div>
 
   <p class="mt-6 text-xs leading-5 text-surface-500">
-    “Personal custody” means the unchanged key remains protected inside OpenKey’s TEE. It is not private-key export or external self-custody.
+    “Personal custody” means the unchanged key remains protected inside OpenKey’s TEE. It is not private-key export or external self-custody. For the organizational console, use the console-managed app and credential flows instead of this personal eject path.
   </p>
 </div>
 
