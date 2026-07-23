@@ -58,7 +58,7 @@
 }
 
 .openkey-widget-theme :focus-visible {
-  outline-color: #7c3aed;
+  outline-color: var(--color-surface-500);
 }
 
 html {

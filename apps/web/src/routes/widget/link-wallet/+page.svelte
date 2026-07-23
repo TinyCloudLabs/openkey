@@ -196,7 +196,7 @@
             <button
               class="flex items-center gap-3 p-3 rounded-lg border transition-colors w-full text-left cursor-pointer
                 {selectedWallet?.info.uuid === wallet.info.uuid
-                  ? 'border-primary-500 bg-primary-500/10'
+                  ? 'border-surface-400 bg-surface-700'
                   : 'border-surface-700 bg-surface-800 hover:border-surface-500'}"
               onclick={() => selectWallet(wallet)}
             >
