@@ -1,5 +1,12 @@
 # @openkey/sdk
 
+## 0.10.0
+
+### Minor Changes
+
+- 9039854: Add organization-scoped managed-account registration, lifecycle, entitlement,
+  and webhook management contracts.
+
 ## 0.9.0
 
 ### Minor Changes
