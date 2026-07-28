@@ -147,6 +147,21 @@
     }
   }
 
+  async function skipPasskey() {
+    loading = true;
+    error = '';
+    try {
+      // Email verification already established the session. A passkey is an
+      // encouraged security upgrade, not a prerequisite for using OpenKey.
+      await ensureKeyExists();
+      await continueAfterRegistration();
+    } catch (e: any) {
+      error = e.message || 'Failed to continue';
+    } finally {
+      loading = false;
+    }
+  }
+
   async function continueAfterRegistration() {
     loading = true;
     error = '';
@@ -198,17 +213,6 @@
     }
   }
 
-  function registrationCallbackParams() {
-    const params = new URLSearchParams({ step: 'passkey' });
-    if (data.isEmbed) params.set('embed', 'true');
-    const returnTo = takeReturnTo();
-    if (returnTo) params.set('returnTo', returnTo);
-    return params.toString();
-  }
-
-  async function googleSignIn() {
-    await authClient.signIn.social({ provider: 'google', callbackURL: `${window.location.origin}/auth/register?${registrationCallbackParams()}` });
-  }
 </script>
 
 <div class="flex min-h-screen items-center justify-center bg-surface-50 px-4 py-12">
@@ -241,7 +245,10 @@
                 id="email"
                 type="email"
                 bind:value={email}
-                placeholder="Email address"
+                placeholder="you@example.com"
+                autocomplete="email"
+                autocapitalize="none"
+                spellcheck={false}
                 required
                 disabled={loading}
               />
@@ -250,16 +257,6 @@
               {loading ? 'Sending...' : 'Continue with Email'}
             </Button>
           </form>
-
-          <div class="flex items-center gap-4 text-surface-400">
-            <div class="flex-1 h-px bg-surface-200"></div>
-            <span class="text-sm">or</span>
-            <div class="flex-1 h-px bg-surface-200"></div>
-          </div>
-
-          <Button variant="secondary" onclick={googleSignIn} disabled={loading} class="w-full">
-            Continue with Google
-          </Button>
 
           {#if data.isEmbed}
             <p class="text-center text-sm text-surface-500 mt-2">
@@ -318,9 +315,9 @@
       {/if}
 
       {#if step === 'passkey'}
-        <h1 class="text-2xl font-bold text-surface-900 text-center mb-2">Set up your passkey</h1>
+        <h1 class="text-2xl font-bold text-surface-900 text-center mb-2">Secure your account</h1>
         <p class="text-surface-500 text-center mb-6">
-          Passkeys are the most secure way to sign in. You'll use this instead of a password.
+          Create a passkey for faster, phishing-resistant sign-in. You can skip this and keep using email codes.
         </p>
 
         {#if error}
@@ -331,7 +328,10 @@
 
         <div class="flex flex-col gap-4">
           <Button onclick={registerPasskey} disabled={loading} class="w-full">
-            {loading ? 'Registering...' : 'Register Passkey'}
+            {loading ? 'Creating passkey…' : 'Create a passkey'}
+          </Button>
+          <Button variant="ghost" onclick={skipPasskey} disabled={loading} class="w-full">
+            Skip for now
           </Button>
         </div>
       {/if}

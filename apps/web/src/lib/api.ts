@@ -61,17 +61,6 @@ export interface OwnerManagedAccount {
   revocationReceipts: Array<{ status: 'PENDING' | 'SUBMITTED' | 'CONFIRMED' | 'FAILED' }>;
 }
 
-export interface HostedRegistrationIntent {
-  organization: { id: string; name: string; plan: 'FREE' | 'PRO' | 'ENTERPRISE' };
-  clientId: string;
-  redirectUri: string;
-  policyTemplate: string;
-  policyVersion: number;
-  metadata: Record<string, unknown> | null;
-  status: 'PENDING' | 'CONSUMED' | 'EXPIRED' | 'FAILED';
-  expiresAt: string;
-}
-
 export interface OrganizationSummary {
   id: string;
   name: string;
@@ -129,6 +118,7 @@ export interface ConsoleOverview {
 export interface ConsoleApp {
   id: string;
   clientId: string;
+  mode: 'PERSONAL' | 'TENANT_MANAGED';
   name: string;
   uri: string | null;
   icon: string | null;
@@ -142,7 +132,7 @@ export interface ConsoleApp {
 export interface ConsoleCredential {
   id: string;
   name: string;
-  kind: 'BROKER' | 'PROVISIONER';
+  kind: 'MANAGEMENT';
   secretPrefix: string;
   subjectUserId: string | null;
   createdAt: string;
@@ -151,15 +141,12 @@ export interface ConsoleCredential {
 }
 
 export interface ConsoleManagedAccount {
-  managedAccountId: string;
-  externalUserId: string;
+  id: string;
+  subjectEmail: string;
+  externalUserId: string | null;
   address: string;
-  ownerDid: string;
   state: string;
   custodyEpoch: number;
-  policyTemplate: string;
-  policyVersion: number;
-  tenantParentDelegationCid: string | null;
   tenantAccess: string;
   createdAt: string;
   updatedAt: string;
@@ -270,16 +257,6 @@ export const api = {
     });
   },
 
-  async getHostedRegistrationIntent(token: string): Promise<{ intent: HostedRegistrationIntent }> {
-    return fetchAPI(`/api/managed-account-registration/${encodeURIComponent(token)}`);
-  },
-
-  async completeHostedRegistration(token: string): Promise<{ account: {
-    managedAccountId: string; address: string; ownerDid: string; state: string; custodyEpoch: number;
-  } }> {
-    return fetchAPI(`/api/managed-account-registration/${encodeURIComponent(token)}/complete`, { method: 'POST' });
-  },
-
   async listManagedAccounts(): Promise<{ accounts: OwnerManagedAccount[] }> {
     return fetchAPI('/api/managed-accounts');
   },
@@ -365,7 +342,7 @@ export const api = {
 
   async createConsoleCredential(
     organizationId: string,
-    input: { name: string; kind: 'BROKER' | 'PROVISIONER' },
+    input: { name: string },
   ): Promise<{ credential: ConsoleCredential; secret: string }> {
     return fetchAPI(`/api/console/organizations/${encodeURIComponent(organizationId)}/credentials`, {
       method: 'POST',
@@ -379,14 +356,24 @@ export const api = {
     });
   },
 
+  async rotateConsoleCredential(
+    organizationId: string,
+    credentialId: string,
+  ): Promise<{ credential: ConsoleCredential; secret: string }> {
+    return fetchAPI(`/api/console/organizations/${encodeURIComponent(organizationId)}/credentials/${encodeURIComponent(credentialId)}/rotate`, {
+      method: 'POST',
+    });
+  },
+
   async listConsoleManagedAccounts(
     organizationId: string,
-    options?: { limit?: number; cursor?: string; externalUserId?: string },
+    options?: { limit?: number; cursor?: string; externalUserId?: string; status?: 'active' | 'disabled' | 'history' | 'user_owned' },
   ): Promise<{ accounts: ConsoleManagedAccount[]; nextCursor: string | null }> {
     const params = new URLSearchParams();
     if (options?.limit) params.set('limit', String(options.limit));
     if (options?.cursor) params.set('cursor', options.cursor);
     if (options?.externalUserId) params.set('externalUserId', options.externalUserId);
+    if (options?.status) params.set('status', options.status);
     const query = params.toString();
     return fetchAPI(`/api/console/organizations/${encodeURIComponent(organizationId)}/managed-accounts${query ? `?${query}` : ''}`);
   },

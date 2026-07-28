@@ -11,10 +11,11 @@ COPY apps/api/package.json ./apps/api/
 COPY packages/tee/package.json ./packages/tee/
 COPY packages/db/package.json ./packages/db/
 COPY packages/db/prisma ./packages/db/prisma
+COPY scripts/generate-prisma.ts ./scripts/generate-prisma.ts
 COPY packages/types/package.json ./packages/types/
 RUN bun install --ignore-scripts
 # Generate Prisma client (skipped by --ignore-scripts)
-RUN bun node_modules/.bin/prisma generate --schema=./packages/db/prisma/schema.prisma
+RUN bun run scripts/generate-prisma.ts
 
 # Build packages
 FROM deps AS builder

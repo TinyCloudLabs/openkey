@@ -20,12 +20,12 @@
   },
   "scripts": {
     "dev": "tsup --watch",
-    "build": "prisma generate && tsup",
-    "db:generate": "prisma generate",
+    "build": "bun ../../scripts/generate-prisma.ts --then tsup",
+    "db:generate": "bun ../../scripts/generate-prisma.ts",
     "db:push": "bun ../../scripts/db-push.ts",
     "db:migrate": "prisma migrate dev",
     "db:studio": "prisma studio",
-    "typecheck": "prisma generate && tsc --noEmit"
+    "typecheck": "bun ../../scripts/generate-prisma.ts --then tsc --noEmit"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.1",

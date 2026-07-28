@@ -61,7 +61,7 @@ export async function ejectManagedAccount(
 ): Promise<EjectResponse> {
   const account = await db.managedAccount.findFirst({
     where: { id: input.managedAccountId, ownerUserId: input.ownerUserId },
-    select: { id: true, keyId: true },
+    select: { id: true, keyId: true, organizationId: true },
   });
   if (!account) throw new EjectRequestError('MANAGED_ACCOUNT_NOT_FOUND');
 
@@ -94,6 +94,7 @@ export async function ejectManagedAccount(
   }
   if (request.status !== 'PENDING') throw new EjectRequestError('EJECT_IN_PROGRESS');
 
+  // Token revocation is handled transactionally inside transitionManagedAccountToUserCustody.
   const transition = await transitionManagedAccountToUserCustody(db, options.tee ?? createTeeClient(), {
     type: 'user',
     sessionId: input.sessionId,

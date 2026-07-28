@@ -289,6 +289,7 @@
               <div class="min-w-0">
                 <div class="flex flex-wrap items-center gap-2">
                   <h3 class="text-base font-semibold text-surface-900">{app.name}</h3>
+                  <span class="rounded-full border border-primary-200 bg-primary-50 px-2.5 py-1 text-xs font-semibold text-primary-700">{app.mode === 'TENANT_MANAGED' ? 'Tenant managed' : 'Personal'}</span>
                   <span class="rounded-full border border-surface-200 bg-surface-50 px-2.5 py-1 text-xs font-semibold text-surface-600">{app.type}</span>
                   {#if app.disabled}
                     <span class="rounded-full border border-surface-200 bg-surface-50 px-2.5 py-1 text-xs font-semibold text-surface-600">Disabled</span>

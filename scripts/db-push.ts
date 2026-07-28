@@ -12,6 +12,7 @@ import {
   isPgliteConnectionString,
   resolvePgliteDataDir,
 } from '../packages/db/src/pglite-url';
+import { withPrismaGenerateLock } from './generate-prisma';
 
 const repoRoot = resolve(import.meta.dir, '..');
 const schemaPath = join(repoRoot, 'packages/db/prisma/schema.prisma');
@@ -165,7 +166,7 @@ async function pushPglite(connectionString: string) {
     process.exitCode = undefined;
   }
 
-  runPrisma(['generate', '--schema', schemaPath]);
+  await withPrismaGenerateLock(() => runPrisma(['generate', '--schema', schemaPath]));
 }
 
 async function main() {

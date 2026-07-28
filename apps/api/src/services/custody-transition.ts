@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { createWalletFromPrivateKey, type TeeClient, unseal } from '@openkey/tee';
+import { recoverMessageAddress } from 'viem';
 import { Prisma, type PrismaClient } from '@openkey/db';
-import { verifyMessage } from 'viem';
 import {
   authorizeKeyOperationInTransaction,
   ManagedKeyAuthorizationError,
@@ -24,7 +24,15 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value, (_key, item) => item instanceof Date ? item.toISOString() : item);
 }
 
-async function credentialPolicyHash(tx: Prisma.TransactionClient, ownerUserId: string): Promise<string> {
+function catchAdvisoryLockVoidError(error: unknown): void {
+  if (error instanceof Error && (
+    error.message.includes("column of type 'void'")
+    || error.message.includes('Failed to deserialize column of type')
+  )) return;
+  throw error;
+}
+
+async function ownerPasskeyPolicyHash(tx: Prisma.TransactionClient, ownerUserId: string): Promise<string> {
   const passkeys = await tx.passkey.findMany({
     where: { userId: ownerUserId },
     select: {
@@ -41,12 +49,20 @@ async function credentialPolicyHash(tx: Prisma.TransactionClient, ownerUserId: s
     orderBy: { credentialID: 'asc' },
   });
   if (passkeys.length === 0) {
-    throw new ManagedKeyAuthorizationError('OWNER_PASSKEY_REQUIRED', 'Managed custody requires a persisted owner passkey');
+    throw new ManagedKeyAuthorizationError('PASSKEY_NOT_FRESH', 'Eject requires a persisted owner passkey');
   }
   return createHash('sha256').update(canonicalJson(passkeys)).digest('hex');
 }
 
-function possessionEventHash(input: {
+function organizationCustodyPolicyHash(organizationId: string, policyVersion: number): string {
+  return createHash('sha256').update(canonicalJson({
+    custodianType: 'ORGANIZATION',
+    organizationId,
+    policyVersion,
+  })).digest('hex');
+}
+
+export type PossessionEventHashInput = {
   managedAccountId: string;
   keyId: string;
   epoch: number;
@@ -56,12 +72,18 @@ function possessionEventHash(input: {
   reason: string;
   credentialPolicyHash: string;
   createdAt: Date;
-}): string {
+};
+
+export function possessionEventHash(input: PossessionEventHashInput): string {
   return createHash('sha256').update(canonicalJson(input)).digest('hex');
 }
 
+export function organizationInitialActivationPolicyHash(organizationId: string, policyVersion: number): string {
+  return organizationCustodyPolicyHash(organizationId, policyVersion);
+}
+
 /** Internal primitive: it returns only the signature, never key material. */
-async function signPossessionEvent(tee: TeeClient, key: { userId: string; sealingContext: string | null; sealedBlob: string | null }, address: string, hash: string): Promise<string> {
+export async function signPossessionEvent(tee: TeeClient, key: { userId: string | null; sealingContext: string | null; sealedBlob: string | null }, address: string, hash: string): Promise<string> {
   if (!key.sealedBlob || !key.sealingContext) {
     throw new ManagedKeyAuthorizationError('KEY_NOT_SEALABLE', 'The managed account key cannot sign its custody event');
   }
@@ -69,8 +91,14 @@ async function signPossessionEvent(tee: TeeClient, key: { userId: string; sealin
   const privateKey = await unseal(key.sealedBlob, sealingKey) as `0x${string}`;
   const wallet = createWalletFromPrivateKey(privateKey);
   const signature = await wallet.signMessage({ message: hash });
-  const valid = await verifyMessage({ address: address as `0x${string}`, message: hash, signature });
-  if (!valid) throw new ManagedKeyAuthorizationError('KEY_NOT_SEALABLE', 'Custody event signature does not match the managed address');
+  // Verify the signature recovers to the persisted address before returning.
+  // This catches any divergence between the sealing material and the stored
+  // address (e.g. wrong key unsealed, corrupted sealed blob) before any
+  // custody rows or possession events are written.
+  const recovered = await recoverMessageAddress({ message: hash, signature });
+  if (recovered.toLowerCase() !== address.toLowerCase()) {
+    throw new ManagedKeyAuthorizationError('KEY_NOT_SEALABLE', 'Possession event signature verification failed: recovered address does not match the stored address');
+  }
   return signature;
 }
 
@@ -98,6 +126,7 @@ export async function transitionManagedAccountToUserCustody(
   }
 
   return db.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${'oauth-lifecycle:' + input.managedAccountId}))`.catch(catchAdvisoryLockVoidError);
     await tx.$queryRaw`SELECT "id" FROM "managed_account" WHERE "id" = ${input.managedAccountId} FOR UPDATE`;
     const authorized = await authorizeKeyOperationInTransaction(tx, input, now);
     const current = await tx.managedAccount.findFirst({
@@ -126,33 +155,38 @@ export async function transitionManagedAccountToUserCustody(
       throw new ManagedKeyAuthorizationError('CUSTODY_NOT_ACTIVE', 'Organization custody is not the current custody head');
     }
 
+    const ownerUserId = current.ownerUserId;
+    if (!ownerUserId) {
+      throw new ManagedKeyAuthorizationError('OPERATION_NOT_ALLOWED', 'Ejection requires an associated owner');
+    }
+
     // The row lock plus EJECTING state is the signing barrier. Any managed
     // operation queued behind this transaction re-resolves the lifecycle and
     // epoch after commit; a signing failure rolls this state change back.
     await tx.managedAccount.update({ where: { id: current.id }, data: { state: 'EJECTING' } });
 
     const previous = await latestEvent(tx, current.id);
-    const policyHash = await credentialPolicyHash(tx, current.ownerUserId);
+    const policyHash = await ownerPasskeyPolicyHash(tx, ownerUserId);
     const eventFields = {
       managedAccountId: current.id,
       keyId: current.keyId,
       epoch: nextEpoch,
       previousEventHash: previous?.eventHash ?? null,
       fromPrincipal: `organization:${current.organizationId}`,
-      toPrincipal: `user:${current.ownerUserId}`,
+      toPrincipal: `user:${ownerUserId}`,
       reason: 'OWNER_REQUEST',
       credentialPolicyHash: policyHash,
       createdAt: now,
     } as const;
     const hash = possessionEventHash(eventFields);
-    const accountKeySignature = await signPossessionEvent(tee, key, key.address, hash);
+    const accountKeySignature = await signPossessionEvent(tee, { ...key, userId: key.userId ?? '' }, key.address, hash);
 
     await tx.keyCustody.update({ where: { id: current.custodyHead.id }, data: { revokedAt: now } });
     const next = await tx.keyCustody.create({
       data: {
         managedAccountId: current.id,
         custodianType: 'USER',
-        custodianId: current.ownerUserId,
+        custodianId: ownerUserId,
         epoch: nextEpoch,
         activatedAt: now,
       },
@@ -160,17 +194,23 @@ export async function transitionManagedAccountToUserCustody(
     const event = await tx.possessionEvent.create({
       data: { ...eventFields, eventHash: hash, accountKeySignature },
     });
+    // Revoke all access and refresh tokens issued to this user under any
+    // TENANT_MANAGED OAuth client of this organization. Revocation is
+    // transactional – it is part of the custody transfer, not fire-and-forget.
+    // We do NOT filter by referenceId because that field is often unset on
+    // tokens issued by the authorization-code flow.
     const clientIds = (await tx.oauthClient.findMany({
-      where: { organizationId: current.organizationId },
+      where: { organizationId: current.organizationId, mode: 'TENANT_MANAGED' },
       select: { clientId: true },
     })).map((client) => client.clientId);
     if (clientIds.length > 0) {
-      await tx.oauthAccessToken.deleteMany({
-        where: { clientId: { in: clientIds }, userId: current.ownerUserId, referenceId: current.id },
+      await tx.oauthAccessToken.updateMany({
+        where: { clientId: { in: clientIds }, userId: ownerUserId },
+        data: { expiresAt: new Date(0) },
       });
       await tx.oauthRefreshToken.updateMany({
-        where: { clientId: { in: clientIds }, userId: current.ownerUserId, referenceId: current.id },
-        data: { revoked: true },
+        where: { clientId: { in: clientIds }, userId: ownerUserId },
+        data: { revoked: now },
       });
     }
     if (current.nodes.length > 0 && !current.tenantParentDelegationCid) {
@@ -236,7 +276,7 @@ export async function transitionManagedAccountToUserCustody(
       });
     }
     return result;
-  }, { isolationLevel: 'Serializable' });
+  }, { isolationLevel: 'ReadCommitted' });
 }
 
 export type ProvisioningInput = AuthorizeKeyOperationInput & { nextEpoch: 1 };
@@ -280,7 +320,7 @@ export async function activateProvisionedManagedAccount(
     }
 
     const previous = await latestEvent(tx, current.id);
-    const policyHash = await credentialPolicyHash(tx, current.ownerUserId);
+    const policyHash = organizationCustodyPolicyHash(current.organizationId, current.policyVersion);
     const eventFields = {
       managedAccountId: current.id,
       keyId: current.keyId,
@@ -293,7 +333,7 @@ export async function activateProvisionedManagedAccount(
       createdAt: now,
     } as const;
     const hash = possessionEventHash(eventFields);
-    const accountKeySignature = await signPossessionEvent(tee, key, key.address, hash);
+    const accountKeySignature = await signPossessionEvent(tee, { ...key, userId: key.userId ?? '' }, key.address, hash);
     const head = await tx.keyCustody.create({
       data: {
         managedAccountId: current.id,

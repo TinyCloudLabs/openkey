@@ -10,7 +10,7 @@ export type AuthenticatedOrganization = {
   credentialId: string;
   organizationId: string;
   subjectUserId: string;
-  kind: 'BROKER' | 'PROVISIONER';
+  kind: 'BROKER' | 'PROVISIONER' | 'MANAGEMENT';
 };
 
 export class OrganizationCredentialError extends Error {
@@ -35,7 +35,7 @@ export async function issueOrganizationCredential(
     organizationId: string;
     subjectUserId: string;
     name: string;
-    kind: 'BROKER' | 'PROVISIONER';
+    kind?: 'MANAGEMENT';
   },
   now = new Date(),
 ) {
@@ -59,11 +59,21 @@ export async function issueOrganizationCredential(
       organizationId: input.organizationId,
       subjectUserId: input.subjectUserId,
       name: input.name,
-      kind: input.kind,
+      kind: 'MANAGEMENT',
       secretPrefix: prefix,
       secretHash: digest(secret).toString('hex'),
     },
-    select: { id: true, organizationId: true, name: true, kind: true, createdAt: true },
+    select: {
+      id: true,
+      organizationId: true,
+      name: true,
+      kind: true,
+      secretPrefix: true,
+      subjectUserId: true,
+      createdAt: true,
+      lastUsedAt: true,
+      revokedAt: true,
+    },
   });
   return { credential, secret: `${CREDENTIAL_PREFIX}${prefix}.${secret}` };
 }
@@ -120,7 +130,7 @@ export async function authenticateOrganizationCredential(
     credentialId: credential.id,
     organizationId: credential.organizationId,
     subjectUserId: credential.subjectUserId,
-    kind: credential.kind,
+    kind: credential.kind as AuthenticatedOrganization['kind'],
   };
 }
 

@@ -12,6 +12,7 @@
     name: string;
     uri?: string;
     icon?: string;
+    mode?: string;
   } | null>(null);
   let loading = $state(true);
   let submitting = $state(false);
@@ -51,6 +52,7 @@
           name: data.client_name || data.name || 'Unknown',
           uri: data.client_uri || data.uri,
           icon: data.logo_uri || data.icon,
+          mode: data.metadata?.openkeyClientMode ?? data.mode,
         };
       } else {
         const data = await res.json().catch(() => null);
@@ -97,16 +99,14 @@
         return;
       }
 
-      // Redirect to the URI returned by the consent endpoint
-      if (result?.uri) {
-        const target = safeOAuthNavigationUrl(result.uri);
-        if (!target) throw new Error('The application returned an unsafe redirect URI');
-        window.location.href = target;
-      } else if (result?.redirect) {
-        const target = safeOAuthNavigationUrl(result.redirect);
-        if (!target) throw new Error('The application returned an unsafe redirect URI');
-        window.location.href = target;
-      }
+      // Better Auth 1.6 returns { redirect: true, url }. Older responses used
+      // uri or a string-valued redirect, so accept each explicit URL shape.
+      const redirectUrl = result?.uri
+        ?? result?.url
+        ?? (typeof result?.redirect === 'string' ? result.redirect : undefined);
+      const target = safeOAuthNavigationUrl(redirectUrl);
+      if (!target) throw new Error('The application returned an unsafe redirect URI');
+      window.location.href = target;
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'An error occurred';
       submitting = false;
@@ -181,8 +181,27 @@
               </svg>
               Verify your OpenKey identity
             </li>
+            {#if clientInfo?.mode === 'TENANT_MANAGED'}
+            <li class="flex items-center gap-2 text-surface-700">
+              <svg class="w-4 h-4 text-primary-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+              </svg>
+              Receive your verified email address
+            </li>
+            <li class="flex items-center gap-2 text-surface-700">
+              <svg class="w-4 h-4 text-amber-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              Sign on your behalf without prompting until you eject your account
+            </li>
+            {/if}
           </ul>
         </div>
+        {#if clientInfo?.mode === 'TENANT_MANAGED'}
+        <p class="mt-3 text-xs text-surface-500">
+          This organization manages a key on your behalf. You can eject at any time from your OpenKey account dashboard to transfer custody to yourself.
+        </p>
+        {/if}
       </div>
 
       {#if error}

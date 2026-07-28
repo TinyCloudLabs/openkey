@@ -529,7 +529,7 @@ function openKeyApprovalRequired(reason: string, code: string) {
 }
 
 async function signManagedKey(
-  key: { userId: string; sealingContext?: string | null },
+  key: { userId: string | null; sealingContext?: string | null },
   sealedBlob: string,
   message: string,
 ) {

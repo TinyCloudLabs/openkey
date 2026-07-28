@@ -9,7 +9,6 @@
   let isFullScreen = $derived(
     $page.url.pathname === '/' ||
     $page.url.pathname.startsWith('/auth/') ||
-    $page.url.pathname.startsWith('/managed/register') ||
     $page.url.pathname.startsWith('/delegate') ||
     $page.url.pathname.startsWith('/console') ||
     isEmbed

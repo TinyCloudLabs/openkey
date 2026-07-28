@@ -103,41 +103,38 @@ export interface OAuthTokenResponse {
   refresh_token?: string;
 }
 
-export type ManagedAccountState = 'PROVISIONED' | 'MANAGED' | 'EJECTING' | 'USER_OWNED' | 'EXPIRED' | 'FAILED';
-
-export interface ManagedAccountRegistrationIntentRequest {
-  clientId: string;
-  externalUserId: string;
-  redirectUri: string;
-  policyTemplate: string;
-  policyVersion?: number;
-  metadata?: Record<string, unknown>;
-}
-
-export interface ManagedAccountRegistrationIntent {
-  id: string;
-  registrationIntent: string;
-  status: 'PENDING' | 'CONSUMED' | 'EXPIRED' | 'FAILED';
-  expiresAt: string;
-  clientId: string;
-  redirectUri: string;
-  managedAccountId: string | null;
-}
+export type ManagedAccountState = 'PROVISIONED' | 'MANAGED' | 'DISABLED' | 'EJECTING' | 'USER_OWNED' | 'EXPIRED' | 'FAILED';
 
 export interface ManagedAccountSummary {
-  managedAccountId: string;
-  externalUserId: string;
+  id: string;
+  subjectEmail: string;
+  externalUserId: string | null;
+  email: string;
   address: string;
-  ownerDid: string;
   state: ManagedAccountState;
   custodyEpoch: number;
-  policyTemplate: string;
-  policyVersion: number;
-  tenantParentDelegationCid: string | null;
   tenantAccess: 'NOT_REQUIRED' | 'PENDING' | 'REVOKED';
   createdAt: string;
   updatedAt: string;
 }
+
+export type CredentialRotationResponse = {
+  credential: {
+    id: string;
+    name: string;
+    kind: 'MANAGEMENT';
+    secretPrefix: string;
+    subjectUserId: string | null;
+    createdAt: string;
+    lastUsedAt: string | null;
+    revokedAt: string | null;
+  };
+  secret: string;
+} | {
+  alreadyRotated: true;
+  credentialId: string | null;
+  message: string;
+};
 
 export interface OrganizationEntitlements {
   plan: 'FREE' | 'PRO' | 'ENTERPRISE';
@@ -1224,28 +1221,87 @@ export class OpenKeyManagementClient {
     this.fetchImpl = input.fetch ?? fetch;
   }
 
-  async createRegistrationIntent(
-    request: ManagedAccountRegistrationIntentRequest,
+  async createAccount(
+    request: { email: string; externalUserId?: string; metadata?: Record<string, unknown> },
     idempotencyKey: string,
-  ): Promise<ManagedAccountRegistrationIntent> {
-    return this.request('/v1/managed-account-registration-intents', {
+  ): Promise<ManagedAccountSummary> {
+    return this.request('/v1/accounts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
       body: JSON.stringify(request),
     });
   }
 
-  async getRegistrationIntent(id: string): Promise<Omit<ManagedAccountRegistrationIntent, 'registrationIntent'>> {
-    return this.request(`/v1/managed-account-registration-intents/${encodeURIComponent(id)}`);
+  async listAccounts(filters: { email?: string; externalUserId?: string; status?: 'active' | 'disabled' | 'user_owned' | 'history'; limit?: number; cursor?: string } = {}): Promise<{ accounts: ManagedAccountSummary[]; nextCursor: string | null }> {
+    const params = new URLSearchParams();
+    if (filters.email) params.set('email', filters.email);
+    if (filters.externalUserId) params.set('externalUserId', filters.externalUserId);
+    if (filters.status) params.set('status', filters.status);
+    if (filters.limit) params.set('limit', String(filters.limit));
+    if (filters.cursor) params.set('cursor', filters.cursor);
+    const query = params.toString();
+    return this.request(`/v1/accounts${query ? `?${query}` : ''}`);
+  }
+
+  async getAccount(id: string): Promise<ManagedAccountSummary> {
+    return this.request(`/v1/accounts/${encodeURIComponent(id)}`);
+  }
+
+  async sign(
+    id: string,
+    request:
+      | { message: string; format?: 'utf8' | 'hex' }
+      | { typedData: SignTypedDataRequest }
+      | { digest: `0x${string}`; auditContext: string }
+      | { transaction: unknown },
+    idempotencyKey: string,
+    expectedCustodyEpoch: number,
+  ): Promise<{ signature?: string; signedTransaction?: string; address: string }> {
+    return this.request(`/v1/accounts/${encodeURIComponent(id)}/sign`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify({ ...request, expectedCustodyEpoch }),
+    });
+  }
+
+  async disableAccount(id: string, idempotencyKey: string, expectedCustodyEpoch: number): Promise<ManagedAccountSummary> {
+    return this.request(`/v1/accounts/${encodeURIComponent(id)}/disable`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify({ expectedCustodyEpoch }),
+    });
+  }
+
+  async restoreAccount(id: string, idempotencyKey: string, expectedCustodyEpoch: number): Promise<ManagedAccountSummary> {
+    return this.request(`/v1/accounts/${encodeURIComponent(id)}/restore`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify({ expectedCustodyEpoch }),
+    });
+  }
+
+  async rotateCredential(
+    id: string,
+    idempotencyKey: string,
+  ): Promise<CredentialRotationResponse> {
+    return this.request(`/v1/credentials/${encodeURIComponent(id)}/rotate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
+    });
+  }
+
+  async revokeCredential(id: string): Promise<{ success: boolean }> {
+    return this.request(`/v1/credentials/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
   }
 
   async listManagedAccounts(externalUserId?: string): Promise<{ accounts: ManagedAccountSummary[] }> {
-    const query = externalUserId ? `?externalUserId=${encodeURIComponent(externalUserId)}` : '';
-    return this.request(`/v1/managed-accounts${query}`);
+    return this.listAccounts(externalUserId ? { externalUserId } : {});
   }
 
   async getManagedAccount(id: string): Promise<ManagedAccountSummary> {
-    return this.request(`/v1/managed-accounts/${encodeURIComponent(id)}`);
+    return this.getAccount(id);
   }
 
   async getEntitlements(): Promise<{ entitlements: OrganizationEntitlements; usage: { managedAccounts: number } }> {
@@ -1269,10 +1325,43 @@ export class OpenKeyManagementClient {
     return this.request(`/v1/webhook-endpoints/${encodeURIComponent(id)}`, { method: 'DELETE' });
   }
 
-  hostedRegistrationUrl(registrationIntent: string, webHost = 'https://openkey.so'): string {
-    const url = new URL('/managed/register', webHost);
-    url.searchParams.set('intent', registrationIntent);
-    return url.toString();
+  createTinyCloudSigner(input: {
+    accountId: string;
+    chainId?: number;
+    getChainId?: () => number | Promise<number>;
+    idempotencyKeyFactory?: () => string;
+  }) {
+    const nextKey = input.idempotencyKeyFactory ?? (() => generateState());
+    const getChainId = input.getChainId ?? (() => input.chainId ?? 1);
+    const getCurrentAccount = async () => this.getAccount(input.accountId);
+    const toHexMessage = (message: Uint8Array) => `0x${Array.from(message).map((byte) => byte.toString(16).padStart(2, '0')).join('')}`;
+    return {
+      getAddress: async () => (await getCurrentAccount()).address,
+      getChainId,
+      signMessage: async (message: Uint8Array | string) => {
+        const account = await getCurrentAccount();
+        const payload = typeof message === 'string'
+          ? { message }
+          : { message: toHexMessage(message), format: 'hex' as const };
+        const result = await this.sign(input.accountId, payload, nextKey(), account.custodyEpoch);
+        return result.signature ?? result.signedTransaction ?? '';
+      },
+      signTypedData: async (typedData: SignTypedDataRequest) => {
+        const account = await getCurrentAccount();
+        const result = await this.sign(input.accountId, { typedData }, nextKey(), account.custodyEpoch);
+        return result.signature ?? '';
+      },
+      signDigest: async (digest: `0x${string}`, auditContext: string) => {
+        const account = await getCurrentAccount();
+        const result = await this.sign(input.accountId, { digest, auditContext }, nextKey(), account.custodyEpoch);
+        return result.signature ?? '';
+      },
+      signTransaction: async (transaction: unknown) => {
+        const account = await getCurrentAccount();
+        const result = await this.sign(input.accountId, { transaction }, nextKey(), account.custodyEpoch);
+        return result.signedTransaction ?? result.signature ?? '';
+      },
+    };
   }
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
