@@ -7,6 +7,12 @@ const requiredMigrations = [
   '20260715_0002_managed_accounts_registration_api',
   '20260715_0003_managed_accounts_eject_api',
   '20260715_0004_managed_accounts_webhooks',
+  '20260720_0001_tenant_managed_email_accounts',
+  '20260720_0002_management_credential_default',
+  '20260720_0003_tenant_managed_account_guard_fixes',
+  '20260720_0004_drop_registration_intent',
+  '20260721_0001_better_auth_1_6_oauth_refresh_tokens',
+  '20260728_0001_oauth_tenant_lifecycle_guard',
 ] as const;
 
 const requiredTriggers = [
@@ -62,7 +68,7 @@ const requiredTriggers = [
     'managed_account_key_guard',
     'managed_account',
     'openkey_managed_key_guard',
-    false,
+    true,
   ],
   [
     'managed_account_state_guard',
@@ -95,15 +101,21 @@ const requiredTriggers = [
     true,
   ],
   [
-    'registration_intent_tenant_guard',
-    'registration_intent',
-    'openkey_registration_intent_tenant_guard',
-    false,
-  ],
-  [
     'webhook_delivery_tenant_guard',
     'webhook_delivery',
     'openkey_webhook_tenant_guard',
+    false,
+  ],
+  [
+    'oauth_access_token_tenant_lifecycle_guard',
+    'oauth_access_token',
+    'openkey_oauth_tenant_lifecycle_guard',
+    false,
+  ],
+  [
+    'oauth_refresh_token_tenant_lifecycle_guard',
+    'oauth_refresh_token',
+    'openkey_oauth_tenant_lifecycle_guard',
     false,
   ],
 ] as const;
@@ -119,6 +131,11 @@ const requiredCheckConstraints = [
     'managed_account_epoch_positive_check',
     'managed_account',
     'CHECK ("custodyEpoch" >= 0)',
+  ],
+  [
+    'managed_account_subject_email_ascii_check',
+    'managed_account',
+    `CHECK ("subjectEmail" = lower(btrim("subjectEmail", E'\\t\\n\\r\\x0c\\x0b '::text)) AND char_length("subjectEmail") <= 254 AND octet_length("subjectEmail") = char_length("subjectEmail"))`,
   ],
   [
     'organization_membership_interval_check',
@@ -137,7 +154,7 @@ const requiredCheckConstraints = [
   ],
 ] as const;
 
-type TriggerRow = {
+export type TriggerRow = {
   name: string;
   relation: string;
   function: string;
@@ -154,7 +171,52 @@ type ConstraintRow = {
 };
 
 function normalizeDefinition(definition: string) {
-  return definition.replace(/\s+/g, ' ').trim();
+  const normalizedControls = definition
+    // PostgreSQL may render the same string constant with or without the
+    // escape-string prefix. Normalize that presentation detail before
+    // comparing the parsed constraint definitions.
+    .replace(/\bE(?=')/gi, '')
+    .replace(/\t/g, '\\t')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/\f/g, '\\x0c')
+    .replace(/\v/g, '\\x0b')
+    .replace(/\\(?:t|n|r|f|v|x0c|x0b)/gi, (escape) => {
+      switch (escape.toLowerCase()) {
+        case '\\t': return '\\t';
+        case '\\n': return '\\n';
+        case '\\r': return '\\r';
+        case '\\f': return '\\x0c';
+        case '\\v': return '\\x0b';
+        case '\\x0c': return '\\x0c';
+        case '\\x0b': return '\\x0b';
+        default: return escape;
+      }
+    });
+  return normalizedControls.replace(/\s+/g, ' ').trim();
+}
+
+export function validateRequiredTriggers(triggers: readonly TriggerRow[]): string[] {
+  const failures: string[] = [];
+  for (const [name, relation, functionName, deferred] of requiredTriggers) {
+    const row = triggers.find((candidate) => candidate.name === name);
+    if (!row) {
+      failures.push(`Missing security trigger: ${name}`);
+      continue;
+    }
+    if (
+      row.relation !== relation ||
+      row.function !== functionName ||
+      row.enabled !== 'O' ||
+      row.deferrable !== deferred ||
+      row.initiallyDeferred !== deferred
+    ) {
+      failures.push(
+        `Invalid security trigger ${name}: expected relation=${relation}, function=${functionName}, enabled=O, deferrable=${deferred}, initiallyDeferred=${deferred}; got relation=${row.relation}, function=${row.function}, enabled=${row.enabled}, deferrable=${row.deferrable}, initiallyDeferred=${row.initiallyDeferred}`
+      );
+    }
+  }
+  return failures;
 }
 
 async function main() {
@@ -219,24 +281,7 @@ async function main() {
       }
     }
 
-    for (const [name, relation, functionName, deferred] of requiredTriggers) {
-      const row = triggers.find((candidate) => candidate.name === name);
-      if (!row) {
-        failures.push(`Missing security trigger: ${name}`);
-        continue;
-      }
-      if (
-        row.relation !== relation ||
-        row.function !== functionName ||
-        row.enabled !== 'O' ||
-        row.deferrable !== deferred ||
-        row.initiallyDeferred !== deferred
-      ) {
-        failures.push(
-          `Invalid security trigger ${name}: expected relation=${relation}, function=${functionName}, enabled=O, deferrable=${deferred}, initiallyDeferred=${deferred}; got relation=${row.relation}, function=${row.function}, enabled=${row.enabled}, deferrable=${row.deferrable}, initiallyDeferred=${row.initiallyDeferred}`
-        );
-      }
-    }
+    failures.push(...validateRequiredTriggers(triggers));
 
     for (const [name, relation, definition] of requiredCheckConstraints) {
       const row = constraints.find((candidate) => candidate.name === name);
@@ -271,7 +316,9 @@ async function main() {
   );
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : error);
-  process.exit(1);
-});
+if (import.meta.main) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : error);
+    process.exit(1);
+  });
+}

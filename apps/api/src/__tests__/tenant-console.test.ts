@@ -1,8 +1,5 @@
 import { beforeEach, describe, expect, mock, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
-import { privateKeyToAccount } from 'viem/accounts';
-
-const testPrivateKey = '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 
 const now = new Date('2026-07-18T12:00:00.000Z');
 const organizations = {
@@ -34,6 +31,7 @@ let webhooks: any[];
 
 const accountA = {
   id: 'account-a', organizationId: 'org-a', ownerUserId: 'owner-a', keyId: 'private-key-id',
+  subjectEmail: 'customer-a@example.com',
   externalUserId: 'customer-a', state: 'MANAGED', custodyEpoch: 1, policyVersion: 1,
   policyTemplate: 'tinycloud-standard-v1', tenantParentDelegationCid: 'bafy-parent',
   tenantParentDelegation: { private: 'must-not-leak' }, revocationStatus: 'NOT_REQUIRED',
@@ -87,6 +85,11 @@ const prisma = {
   organizationServerCredential: {
     count: mock(async ({ where }: any) => credentials.filter((credential) =>
       credential.organizationId === where.organizationId && !credential.revokedAt).length),
+    findFirst: mock(async ({ where }: any) => credentials.find((credential) =>
+      credential.organizationId === where.organizationId
+      && credential.id === where.id
+      && (!('revokedAt' in where) || credential.revokedAt === where.revokedAt)
+      && (!('kind' in where) || credential.kind === where.kind)) ?? null),
     create: mock(async ({ data }: any) => {
       const credential = { id: `credential-${credentials.length + 1}`, ...data, createdAt: now, lastUsedAt: null, revokedAt: null };
       credentials.push(credential);
@@ -138,15 +141,6 @@ mock.module('@openkey/db', () => ({
   Prisma: { JsonNull: null },
 }));
 
-mock.module('@openkey/tee', () => ({
-  createTeeClient: () => ({ deriveKey: async () => new Uint8Array(32) }),
-  generatePrivateKey: () => testPrivateKey,
-  getAddressFromPrivateKey: () => privateKeyToAccount(testPrivateKey).address,
-  createWalletFromPrivateKey: (privateKey: `0x${string}`) => privateKeyToAccount(privateKey),
-  seal: async () => 'sealed',
-  unseal: async () => 'secret',
-}));
-
 mock.module('../middleware/session', () => ({
   requireSession: createMiddleware(async (c, next) => {
     const userId = c.req.header('x-test-user');
@@ -172,7 +166,7 @@ async function consoleRouter() {
 beforeEach(() => {
   apps = [{
     id: 'app-a', clientId: 'ok_app_a', organizationId: 'org-a', name: 'Alpha app', uri: null, icon: null,
-    redirectUris: ['https://alpha.example/callback'], type: 'spa', disabled: false, createdAt: now, updatedAt: now,
+    redirectUris: ['https://alpha.example/callback'], type: 'spa', mode: 'TENANT_MANAGED', disabled: false, createdAt: now, updatedAt: now,
   }];
   credentials = [];
   webhooks = [{
@@ -212,11 +206,18 @@ describe('tenant console boundary', () => {
     const router = await consoleRouter();
     const created = await router.request('/org-a/credentials', {
       method: 'POST', headers: { 'content-type': 'application/json', 'x-test-user': 'admin' },
-      body: JSON.stringify({ name: 'Production provisioner', kind: 'PROVISIONER' }),
+      body: JSON.stringify({ name: 'Production management credential' }),
     });
     expect(created.status).toBe(201);
     const creationBody = await created.json() as any;
     expect(creationBody.secret).toStartWith('oksk_');
+
+    const rotated = await router.request(`/org-a/credentials/${creationBody.credential.id}/rotate`, {
+      method: 'POST',
+      headers: { 'x-test-user': 'admin' },
+    });
+    expect(rotated.status).toBe(201);
+    expect((await rotated.json() as any).secret).toStartWith('oksk_');
 
     const listed = await router.request('/org-a/credentials', { headers: { 'x-test-user': 'admin' } });
     const listText = await listed.text();
@@ -238,7 +239,7 @@ describe('tenant console boundary', () => {
       body: JSON.stringify({ name: 'Beta app', redirectUris: ['https://beta.example/callback'] }),
     });
     expect(created.status).toBe(201);
-    expect(await created.json()).toMatchObject({ client: { name: 'Beta app', disabled: false } });
+    expect(await created.json()).toMatchObject({ client: { name: 'Beta app', disabled: false, mode: 'TENANT_MANAGED' } });
 
     const loopback = await router.request('/org-b/apps', {
       method: 'POST', headers: { 'content-type': 'application/json', 'x-test-user': 'admin-b' },
@@ -283,10 +284,15 @@ describe('tenant console boundary', () => {
     });
     expect(response.status).toBe(200);
     const body = await response.json() as any;
-    expect(body.account).toMatchObject({ managedAccountId: 'account-a', externalUserId: 'customer-a' });
+    expect(body.account).toMatchObject({ id: 'account-a', externalUserId: 'customer-a' });
+    expect(body.account).not.toHaveProperty('managedAccountId');
     expect(body.account).not.toHaveProperty('ownerUserId');
     expect(body.account).not.toHaveProperty('keyId');
     expect(body.account).not.toHaveProperty('tenantParentDelegation');
+    expect(body.account).not.toHaveProperty('ownerDid');
+    expect(body.account).not.toHaveProperty('policyTemplate');
+    expect(body.account).not.toHaveProperty('policyVersion');
+    expect(body.account).not.toHaveProperty('tenantParentDelegationCid');
 
     const page = await router.request('/org-a/managed-accounts?limit=1', {
       headers: { 'x-test-user': 'member' },
@@ -312,16 +318,17 @@ describe('tenant console boundary', () => {
   });
 });
 
-describe('registration policy catalog', () => {
-  test('rejects unsupported template labels and versions before persistence', async () => {
-    const { createRegistrationIntent } = await import('../services/registration-intents');
-    const actor = { credentialId: 'credential', organizationId: 'org-a', subjectUserId: 'admin', kind: 'PROVISIONER' } as const;
-    const input = { clientId: 'ok_app_a', externalUserId: 'customer', redirectUri: 'https://alpha.example/callback' };
-    await expect(createRegistrationIntent(prisma as any, actor, 'unsupported-template', {
-      ...input, policyTemplate: 'custom-but-hardcoded', policyVersion: 1,
-    })).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
-    await expect(createRegistrationIntent(prisma as any, actor, 'unsupported-version', {
-      ...input, policyTemplate: 'tinycloud-standard-v1', policyVersion: 2,
-    })).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+describe('management credential catalog', () => {
+  test('rejects legacy broker/provisioner credential kinds on create', async () => {
+    const router = await consoleRouter();
+    const response = await router.request('/org-a/credentials', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-user': 'admin' },
+      body: JSON.stringify({ name: 'Legacy broker', kind: 'BROKER' }),
+    });
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: 'INVALID_REQUEST' },
+    });
   });
 });

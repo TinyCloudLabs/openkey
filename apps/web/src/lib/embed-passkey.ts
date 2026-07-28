@@ -24,6 +24,37 @@ export function setSessionToken(token: string): void {
   sessionStorage.setItem(SESSION_TOKEN_KEY, token);
 }
 
+export function signInWithEmailPopup(returnTo = window.location.href): Promise<string> {
+  const authUrl = new URL('/auth/register', window.location.origin);
+  authUrl.searchParams.set('embed', 'true');
+  authUrl.searchParams.set('returnTo', returnTo);
+  const popup = window.open(authUrl, 'openkey-email-sign-in', 'popup=true');
+  if (!popup) {
+    return Promise.reject(new Error('Your browser blocked the OpenKey sign-in window. Allow popups, then try again.'));
+  }
+
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      window.removeEventListener('message', onMessage);
+      clearInterval(poll);
+    };
+    const onMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin || event.source !== popup) return;
+      if (event.data?.type !== 'openkey:register:complete' || !event.data.sessionToken) return;
+      cleanup();
+      popup.close();
+      setSessionToken(event.data.sessionToken);
+      resolve(event.data.sessionToken);
+    };
+    window.addEventListener('message', onMessage);
+    const poll = window.setInterval(() => {
+      if (!popup.closed) return;
+      cleanup();
+      reject(new Error('OpenKey sign-in was cancelled.'));
+    }, 500);
+  });
+}
+
 export function clearSessionToken(): void {
   sessionStorage.removeItem(SESSION_TOKEN_KEY);
 }

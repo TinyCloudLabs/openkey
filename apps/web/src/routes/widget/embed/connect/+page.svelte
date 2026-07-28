@@ -2,7 +2,7 @@
   import { page } from '$app/stores';
   import { authClient, authErrorMessage } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
-  import { isEmbedContext, embedSignInPasskey, clearSessionToken, getSessionToken, setSessionToken } from '$lib/embed-passkey';
+  import { isEmbedContext, embedSignInPasskey, clearSessionToken, getSessionToken, setSessionToken, signInWithEmailPopup } from '$lib/embed-passkey';
   import Button from '$lib/components/ui/button.svelte';
 
   const session = authClient.useSession();
@@ -158,6 +158,23 @@
     }
   }
 
+  async function signInWithEmail() {
+    signingIn = true;
+    error = '';
+    try {
+      if (inIframe) {
+        await signInWithEmailPopup();
+        embedAuthenticated = true;
+      } else {
+        window.location.href = `/auth/login?redirect=${encodeURIComponent(window.location.href)}`;
+      }
+    } catch (e: any) {
+      error = e.message || 'Email sign-in failed';
+    } finally {
+      signingIn = false;
+    }
+  }
+
   function recover() {
     if (inIframe) {
       const returnTo = encodeURIComponent(window.location.href);
@@ -251,7 +268,7 @@
   <div class="bg-white border border-surface-200 rounded-2xl shadow-sm p-5">
     {#if !isAuthenticated}
       <div class="flex flex-col items-center justify-center text-center py-2">
-        <p class="text-surface-500 text-sm mb-4">Sign in with your passkey to continue</p>
+        <p class="text-surface-500 text-sm mb-4">Sign in or create an account to continue</p>
 
         {#if error}
           <div class="w-full bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl mb-4 text-sm" role="alert">
@@ -259,8 +276,11 @@
           </div>
         {/if}
 
-        <Button onclick={signInWithPasskey} disabled={signingIn} class="w-full rounded-xl">
-          {signingIn ? 'Signing in...' : 'Sign in with Passkey'}
+        <Button onclick={signInWithEmail} disabled={signingIn} class="w-full rounded-xl">
+          {signingIn ? 'Opening sign-in…' : 'Continue with email'}
+        </Button>
+        <Button onclick={signInWithPasskey} variant="secondary" disabled={signingIn} class="mt-3 w-full rounded-xl">
+          {signingIn ? 'Signing in…' : 'Use a passkey instead'}
         </Button>
 
         {#if hasEoa}

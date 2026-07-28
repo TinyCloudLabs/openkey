@@ -58,6 +58,7 @@
   let permissionsEdited = $state(false);
   const delegateReturnTo = $derived($page.url.pathname + $page.url.search + $page.url.hash);
   const registerHref = $derived(`/auth/register?returnTo=${encodeURIComponent(delegateReturnTo)}`);
+  const emailSignInHref = $derived(`/auth/login?redirect=${encodeURIComponent(delegateReturnTo)}`);
   let actionRow: HTMLDivElement | null = $state(null);
   let showScrollToApprove = $state(false);
 
@@ -845,7 +846,7 @@
         </header>
 
         <div class="flex flex-col items-center justify-center text-center py-4">
-          <p class="text-surface-500 text-sm mb-5">Sign in with your passkey to continue</p>
+          <p class="text-surface-500 text-sm mb-5">Sign in to authorize the CLI</p>
 
           {#if error}
             <div class="w-full bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl mb-4 text-sm" role="alert">
@@ -853,8 +854,11 @@
             </div>
           {/if}
 
-          <Button onclick={signInWithPasskey} disabled={signingIn} class="w-full rounded-xl">
-            {signingIn ? 'Signing in...' : 'Sign in with Passkey'}
+          <Button onclick={() => { window.location.href = emailSignInHref; }} disabled={signingIn} class="w-full rounded-xl">
+            Continue with email
+          </Button>
+          <Button onclick={signInWithPasskey} variant="secondary" disabled={signingIn} class="mt-3 w-full rounded-xl">
+            {signingIn ? 'Signing in…' : 'Use a passkey instead'}
           </Button>
         </div>
 

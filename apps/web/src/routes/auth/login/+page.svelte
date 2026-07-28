@@ -2,29 +2,29 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/stores';
   import { authClient, API_BASE, authErrorMessage } from '$lib/auth-client';
+  import { api } from '$lib/api';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
 
+  type Step = 'email' | 'otp' | 'passkey';
+
+  let email = $state('');
+  let otp = $state('');
+  let step = $state<Step>('email');
   let loading = $state(false);
   let error = $state('');
-  let showDevMode = $state(import.meta.env.DEV);
 
-  // Persist OAuth params in sessionStorage so the register flow can resume the OAuth
-  // authorization after passkey creation (params survive the Google OAuth round-trip)
-  const OAUTH_STORAGE_KEY = 'openkey:pending_oauth';
-  if (typeof window !== 'undefined' && $page.url.searchParams.has('client_id')) {
-    const oauthParams = new URLSearchParams($page.url.searchParams);
-    oauthParams.delete('sig');
-    oauthParams.delete('exp');
-    oauthParams.delete('prompt');
-    sessionStorage.setItem(OAUTH_STORAGE_KEY, oauthParams.toString());
+  function getOAuthQuery(): string | undefined {
+    const oauthQuery = $page.url.searchParams.get('oauth_query');
+    if (oauthQuery) return oauthQuery;
+    if (!$page.url.searchParams.has('client_id')) return undefined;
+    const params = new URLSearchParams($page.url.searchParams);
+    params.delete('sig');
+    params.delete('exp');
+    params.delete('prompt');
+    return params.toString();
   }
-
-  // Dev-only email OTP state
-  let devEmail = $state('');
-  let devOtp = $state('');
-  let devStep = $state<'email' | 'otp'>('email');
 
   function handlePostSignIn() {
     const clientId = $page.url.searchParams.get('client_id');
@@ -39,6 +39,68 @@
       goto(redirect);
     } else {
       goto('/dashboard');
+    }
+  }
+
+  async function sendOTP() {
+    loading = true;
+    error = '';
+    try {
+      const result = await authClient.emailOtp.sendVerificationOtp({ email, type: 'sign-in' });
+      if (result.error) {
+        error = authErrorMessage(result.error, 'Failed to send code');
+      } else {
+        step = 'otp';
+      }
+    } catch (e: any) {
+      error = e.message || 'Failed to send code';
+    } finally {
+      loading = false;
+    }
+  }
+
+  async function verifyOTP() {
+    loading = true;
+    error = '';
+    try {
+      const result = await authClient.signIn.emailOtp({
+        email,
+        otp,
+        oauth_query: getOAuthQuery(),
+      });
+      if (result.error) {
+        error = authErrorMessage(result.error, 'Invalid code');
+        return;
+      }
+
+      // Email OTP is also the default account-creation path. The API normally
+      // provisions a key in its user hook; this keeps the user moving if that
+      // non-critical hook needs to be retried.
+      try {
+        const { keys } = await api.listKeys();
+        if (keys.length === 0) await api.generateKey();
+      } catch (keyError) {
+        console.error('[Login] Failed to ensure key exists:', keyError);
+      }
+
+      // Encourage passkey setup for accounts that do not have one, but never
+      // make it a condition of continuing. Passkey discovery is best-effort:
+      // any failure (network, API unavailable) falls through to handlePostSignIn()
+      // so that OTP sign-in works independently of passkey availability.
+      try {
+        const passkeys = await authClient.passkey.listUserPasskeys();
+        if (!passkeys.error && Array.isArray(passkeys.data) && passkeys.data.length === 0) {
+          step = 'passkey';
+          return;
+        }
+      } catch (passkeyError) {
+        console.error('[Login] Failed to check passkeys, continuing without prompt:', passkeyError);
+      }
+      handlePostSignIn();
+    } catch (e: any) {
+      error = e.message || 'Invalid code';
+    } finally {
+      loading = false;
     }
   }
 
@@ -59,160 +121,162 @@
     }
   }
 
-  async function devSendOTP() {
+  async function registerPasskey() {
     loading = true;
     error = '';
     try {
-      const result = await authClient.emailOtp.sendVerificationOtp({ email: devEmail, type: 'sign-in' });
-      if (result.error) {
-        error = authErrorMessage(result.error, 'Failed to send code');
-      } else {
-        devStep = 'otp';
-      }
-    } catch (e: any) {
-      error = e.message || 'Failed to send code';
-    } finally {
-      loading = false;
-    }
-  }
-
-  async function devVerifyOTP() {
-    loading = true;
-    error = '';
-    try {
-      const result = await authClient.signIn.emailOtp({ email: devEmail, otp: devOtp });
-      if (result.error) {
-        error = authErrorMessage(result.error, 'Invalid code');
+      const result = await authClient.passkey.addPasskey();
+      if (result?.error) {
+        error = authErrorMessage(result.error, 'Failed to create passkey');
       } else {
         handlePostSignIn();
       }
     } catch (e: any) {
-      error = e.message || 'Invalid code';
+      error = e.message || 'Failed to create passkey';
     } finally {
       loading = false;
     }
   }
+
+  function useDifferentEmail() {
+    step = 'email';
+    otp = '';
+    error = '';
+  }
 </script>
 
-<div class="min-h-screen bg-surface-50 flex flex-col items-center justify-center px-4">
-  <!-- Logo mark -->
-  <div class="mb-8 flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br from-surface-800 to-surface-950 shadow-md">
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-6 w-6">
-      <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
-    </svg>
-  </div>
-
-  <!-- Main card -->
-  <Card class="w-full max-w-md p-10">
-    <h1 class="text-[22px] font-semibold text-surface-900 text-center mb-2">Welcome back</h1>
-    <p class="text-sm text-surface-500 text-center mb-8">Sign in with your passkey to continue</p>
-
-    {#if error}
-      <div class="bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl mb-6 text-sm" role="alert">
-        {error}
+<div class="flex min-h-screen items-center justify-center bg-surface-50 px-4 py-12">
+  <div class="w-full max-w-md">
+    <div class="mb-8 flex justify-center">
+      <div class="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-surface-900">
+        <svg class="h-6 w-6 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
+        </svg>
       </div>
-    {/if}
+    </div>
 
-    <div class="flex flex-col gap-4">
-      <Button onclick={signInWithPasskey} disabled={loading} class="w-full rounded-xl">
-        {#if loading}
-          Signing in...
-        {:else}
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mr-2 h-4 w-4">
+    <Card class="w-full p-8 sm:p-10">
+      {#if step === 'email'}
+        <h1 class="mb-2 text-center text-2xl font-bold text-surface-900">Welcome to OpenKey</h1>
+        <p class="mb-7 text-center text-sm text-surface-500">Sign in or create an account with your email</p>
+
+        {#if error}
+          <div class="mb-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" role="alert">
+            {error}
+          </div>
+        {/if}
+
+        <form onsubmit={(event) => { event.preventDefault(); sendOTP(); }} class="flex flex-col gap-4">
+          <div>
+            <label for="email" class="mb-2 block text-sm font-medium text-surface-700">Email address</label>
+            <Input
+              id="email"
+              type="email"
+              bind:value={email}
+              placeholder="you@example.com"
+              autocomplete="email"
+              autocapitalize="none"
+              spellcheck={false}
+              required
+              disabled={loading}
+              autofocus
+            />
+          </div>
+          <Button type="submit" disabled={loading} class="w-full">
+            {loading ? 'Sending code…' : 'Continue with email'}
+          </Button>
+        </form>
+
+        <div class="my-6 flex items-center gap-4 text-surface-400" aria-hidden="true">
+          <div class="h-px flex-1 bg-surface-200"></div>
+          <span class="text-sm">or</span>
+          <div class="h-px flex-1 bg-surface-200"></div>
+        </div>
+
+        <Button variant="secondary" onclick={signInWithPasskey} disabled={loading} class="w-full">
+          <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M2 18v3c0 .6.4 1 1 1h4v-3h3v-3h2l1.4-1.4a6.5 6.5 0 1 0-4-4Z" />
             <circle cx="16.5" cy="7.5" r=".5" fill="currentColor" />
           </svg>
-          Sign in with Passkey
-        {/if}
-      </Button>
-    </div>
+          {loading ? 'Waiting for passkey…' : 'Use a passkey instead'}
+        </Button>
+      {:else if step === 'otp'}
+        <h1 class="mb-2 text-center text-2xl font-bold text-surface-900">Check your email</h1>
+        <p class="mb-7 text-center text-sm text-surface-500">
+          Enter the 6-digit code sent to <span class="font-medium text-surface-900">{email}</span>
+        </p>
 
-    <!-- Bottom links -->
-    <div class="mt-8 flex items-center justify-center gap-3 text-sm">
-      <a href="/auth/register" class="text-surface-500 hover:text-surface-700 transition-colors">
-        Register
-      </a>
-      <span class="text-surface-300">|</span>
-      <a href="/auth/recover" class="text-surface-500 hover:text-surface-700 transition-colors">
-        Recover account
-      </a>
-    </div>
-
-    <!-- Dev mode section -->
-    {#if import.meta.env.DEV}
-      <div class="mt-6 pt-6 border-t border-surface-100">
-        <button
-          type="button"
-          onclick={() => { showDevMode = !showDevMode; }}
-          class="w-full text-xs text-surface-400 hover:text-surface-500 transition-colors text-center"
-        >
-          {showDevMode ? 'Hide' : 'Show'} Dev mode
-        </button>
-
-        {#if showDevMode}
-          <div class="mt-4 flex flex-col gap-3">
-            {#if devStep === 'email'}
-              <form onsubmit={(e) => { e.preventDefault(); devSendOTP(); }} class="flex flex-col gap-3">
-                <div>
-                  <label for="dev-email" class="sr-only">Email address</label>
-                  <Input
-                    id="dev-email"
-                    type="email"
-                    bind:value={devEmail}
-                    placeholder="Email address"
-                    required
-                    disabled={loading}
-                  />
-                </div>
-                <Button type="submit" variant="secondary" disabled={loading} class="w-full rounded-xl">
-                  {loading ? 'Sending...' : 'Sign in with Email OTP'}
-                </Button>
-              </form>
-            {:else}
-              <div class="flex flex-col gap-3">
-                <p class="text-surface-500 text-center text-sm">
-                  Enter the code sent to <span class="text-surface-900 font-medium">{devEmail}</span>
-                </p>
-                <form onsubmit={(e) => { e.preventDefault(); devVerifyOTP(); }} class="flex flex-col gap-3">
-                  <div>
-                    <label for="dev-otp" class="sr-only">Verification code</label>
-                    <Input
-                      id="dev-otp"
-                      type="text"
-                      bind:value={devOtp}
-                      placeholder="000000"
-                      maxlength={6}
-                      inputmode="numeric"
-                      autocomplete="one-time-code"
-                      required
-                      disabled={loading}
-                      class="text-center text-2xl tracking-widest font-mono"
-                    />
-                  </div>
-                  <Button type="submit" variant="secondary" disabled={loading} class="w-full rounded-xl">
-                    {loading ? 'Verifying...' : 'Verify Code'}
-                  </Button>
-                </form>
-                <button
-                  type="button"
-                  onclick={() => { devStep = 'email'; devOtp = ''; error = ''; }}
-                  class="text-surface-500 hover:text-surface-700 text-sm text-center transition-colors"
-                >
-                  Use a different email
-                </button>
-              </div>
-            {/if}
+        {#if error}
+          <div class="mb-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" role="alert">
+            {error}
           </div>
         {/if}
-      </div>
-    {/if}
-  </Card>
 
-  <!-- Trust badge -->
-  <div class="mt-6 flex items-center gap-2 text-xs text-surface-400">
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4">
-      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-    </svg>
-    Protected by TEE hardware security
+        <form onsubmit={(event) => { event.preventDefault(); verifyOTP(); }} class="flex flex-col gap-4">
+          <div>
+            <label for="otp" class="sr-only">Verification code</label>
+            <Input
+              id="otp"
+              type="text"
+              bind:value={otp}
+              placeholder="000000"
+              maxlength={6}
+              inputmode="numeric"
+              autocomplete="one-time-code"
+              required
+              disabled={loading}
+              autofocus
+              class="text-center font-mono text-2xl tracking-widest"
+            />
+          </div>
+          <Button type="submit" disabled={loading} class="w-full">
+            {loading ? 'Verifying…' : 'Verify and continue'}
+          </Button>
+        </form>
+        <button
+          type="button"
+          onclick={useDifferentEmail}
+          disabled={loading}
+          class="mt-4 w-full text-center text-sm font-medium text-surface-600 transition-colors hover:text-surface-900 disabled:opacity-50"
+        >
+          Use a different email
+        </button>
+      {:else}
+        <div class="mb-5 flex justify-center">
+          <div class="inline-flex h-12 w-12 items-center justify-center rounded-full bg-primary-50 text-primary-700 ring-1 ring-primary-200">
+            <svg class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M2 18v3c0 .6.4 1 1 1h4v-3h3v-3h2l1.4-1.4a6.5 6.5 0 1 0-4-4Z" />
+              <circle cx="16.5" cy="7.5" r=".5" fill="currentColor" />
+            </svg>
+          </div>
+        </div>
+        <h1 class="mb-2 text-center text-2xl font-bold text-surface-900">Secure your account</h1>
+        <p class="mb-7 text-center text-sm text-surface-500">
+          Create a passkey for faster, phishing-resistant sign-in. You can skip this and keep using email codes.
+        </p>
+
+        {#if error}
+          <div class="mb-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" role="alert">
+            {error}
+          </div>
+        {/if}
+
+        <div class="flex flex-col gap-3">
+          <Button onclick={registerPasskey} disabled={loading} class="w-full">
+            {loading ? 'Creating passkey…' : 'Create a passkey'}
+          </Button>
+          <Button variant="ghost" onclick={handlePostSignIn} disabled={loading} class="w-full">
+            Skip for now
+          </Button>
+        </div>
+      {/if}
+    </Card>
+
+    <div class="mt-6 flex items-center justify-center gap-2 text-xs text-surface-500">
+      <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+      </svg>
+      Protected by TEE hardware security
+    </div>
   </div>
 </div>

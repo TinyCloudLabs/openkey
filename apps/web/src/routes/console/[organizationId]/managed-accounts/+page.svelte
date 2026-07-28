@@ -16,6 +16,7 @@
   let error = $state('');
   let loadedFor = $state('');
   let selectedAccountId = $state<string | null>(null);
+  let statusFilter = $state<'active' | 'disabled' | 'history' | 'user_owned'>('active');
 
   async function loadAccounts(reset = true) {
     loading = reset;
@@ -25,13 +26,14 @@
       const result = await api.listConsoleManagedAccounts(currentOrganizationId, {
         limit: 12,
         cursor: reset ? undefined : nextCursor ?? undefined,
+        status: statusFilter,
       });
       accounts = reset ? result.accounts : [...accounts, ...result.accounts];
       nextCursor = result.nextCursor;
       if (!selectedAccountId || reset) {
-        selectedAccountId = accounts[0]?.managedAccountId ?? null;
-      } else if (!accounts.some((account) => account.managedAccountId === selectedAccountId)) {
-        selectedAccountId = accounts[0]?.managedAccountId ?? null;
+        selectedAccountId = accounts[0]?.id ?? null;
+      } else if (!accounts.some((account) => account.id === selectedAccountId)) {
+        selectedAccountId = accounts[0]?.id ?? null;
       }
     } catch (caught: any) {
       error = caught.message || 'Could not load managed accounts.';
@@ -74,7 +76,7 @@
   });
 
   function selectedAccount() {
-    return accounts.find((account) => account.managedAccountId === selectedAccountId) ?? accounts[0] ?? null;
+    return accounts.find((account) => account.id === selectedAccountId) ?? accounts[0] ?? null;
   }
 </script>
 
@@ -98,6 +100,27 @@
         </span>
         <Button variant="secondary" href="/dashboard/managed-accounts">Open user eject path</Button>
       </div>
+    </div>
+    <div class="flex flex-wrap gap-2">
+      {#each [
+        ['active', 'Active'],
+        ['history', 'History'],
+        ['disabled', 'Disabled'],
+        ['user_owned', 'User-owned'],
+      ] as [value, label]}
+        <Button
+          variant={statusFilter === value ? 'default' : 'secondary'}
+          type="button"
+          onclick={() => {
+            statusFilter = value as typeof statusFilter;
+            selectedAccountId = null;
+            nextCursor = null;
+            void loadAccounts(true);
+          }}
+        >
+          {label}
+        </Button>
+      {/each}
     </div>
     <div class="rounded-2xl border border-dotted border-surface-200 bg-white px-4 py-3 text-sm leading-6 text-surface-600">
       The personal OpenKey Account owns the eject action. The console only explains the state and links out to the user-owned path.
@@ -142,11 +165,11 @@
             <button
               type="button"
               class={`w-full rounded-2xl border p-4 text-left transition-colors ${
-                selectedAccountId === account.managedAccountId
+                selectedAccountId === account.id
                   ? 'border-primary-200 bg-primary-50/60'
                   : 'border-surface-200 bg-white hover:border-surface-300 hover:bg-surface-50'
               }`}
-              onclick={() => { selectedAccountId = account.managedAccountId; }}
+              onclick={() => { selectedAccountId = account.id; }}
             >
               <div class="flex flex-wrap items-start justify-between gap-3">
                 <div class="min-w-0">
@@ -156,7 +179,7 @@
                       {account.state}
                     </span>
                   </div>
-                  <p class="mt-2 font-mono text-xs text-surface-500 break-all">{account.ownerDid}</p>
+                  <p class="mt-2 font-mono text-xs text-surface-500 break-all">{account.subjectEmail}</p>
                   <p class="mt-2 text-sm leading-6 text-surface-600">{statusCopy(account)}</p>
                 </div>
                 <div class="text-right text-xs text-surface-500">
@@ -193,12 +216,12 @@
 
           <dl class="grid gap-3 sm:grid-cols-2">
             <div class="rounded-2xl border border-surface-200 bg-surface-50 p-4">
-              <dt class="text-xs font-semibold uppercase tracking-[0.08em] text-surface-500">Address</dt>
-              <dd class="mt-2 break-all font-mono text-sm text-surface-900">{account.address}</dd>
+              <dt class="text-xs font-semibold uppercase tracking-[0.08em] text-surface-500">Subject email</dt>
+              <dd class="mt-2 break-all text-sm text-surface-900">{account.subjectEmail}</dd>
             </div>
             <div class="rounded-2xl border border-surface-200 bg-surface-50 p-4">
-              <dt class="text-xs font-semibold uppercase tracking-[0.08em] text-surface-500">Owner DID</dt>
-              <dd class="mt-2 break-all font-mono text-sm text-surface-900">{account.ownerDid}</dd>
+              <dt class="text-xs font-semibold uppercase tracking-[0.08em] text-surface-500">Address</dt>
+              <dd class="mt-2 break-all font-mono text-sm text-surface-900">{account.address}</dd>
             </div>
             <div class="rounded-2xl border border-surface-200 bg-surface-50 p-4">
               <dt class="text-xs font-semibold uppercase tracking-[0.08em] text-surface-500">Custody epoch</dt>
@@ -207,14 +230,6 @@
             <div class="rounded-2xl border border-surface-200 bg-surface-50 p-4">
               <dt class="text-xs font-semibold uppercase tracking-[0.08em] text-surface-500">Tenant access</dt>
               <dd class="mt-2 text-sm font-semibold text-surface-900">{account.tenantAccess}</dd>
-            </div>
-            <div class="rounded-2xl border border-surface-200 bg-surface-50 p-4 sm:col-span-2">
-              <dt class="text-xs font-semibold uppercase tracking-[0.08em] text-surface-500">Policy template / version</dt>
-              <dd class="mt-2 text-sm font-semibold text-surface-900">{account.policyTemplate} · v{account.policyVersion}</dd>
-            </div>
-            <div class="rounded-2xl border border-surface-200 bg-surface-50 p-4 sm:col-span-2">
-              <dt class="text-xs font-semibold uppercase tracking-[0.08em] text-surface-500">Tenant-parent delegation</dt>
-              <dd class="mt-2 break-all font-mono text-xs text-surface-900">{account.tenantParentDelegationCid ?? 'Not yet provisioned'}</dd>
             </div>
           </dl>
 

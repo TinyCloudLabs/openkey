@@ -100,9 +100,9 @@ oauthAdminRouter.patch('/organizations/:organizationId/plan', async (c) => {
 });
 
 oauthAdminRouter.post('/organizations/:organizationId/credentials', async (c) => {
-  const body = await c.req.json<{ name: string; subjectUserId: string; kind: 'BROKER' | 'PROVISIONER' }>();
-  if (!body.name || !body.subjectUserId || !['BROKER', 'PROVISIONER'].includes(body.kind)) {
-    return c.json({ error: 'name, subjectUserId, and kind are required' }, 400);
+  const body = await c.req.json<{ name: string; subjectUserId: string }>();
+  if (!body.name || !body.subjectUserId) {
+    return c.json({ error: 'name and subjectUserId are required' }, 400);
   }
   const membership = await prisma.organizationMembership.findFirst({
     where: {
@@ -122,7 +122,6 @@ oauthAdminRouter.post('/organizations/:organizationId/credentials', async (c) =>
       organizationId: c.req.param('organizationId'),
       subjectUserId: body.subjectUserId,
       name: body.name,
-      kind: body.kind,
     });
     return c.json(issued, 201);
   } catch (caught) {
@@ -164,9 +163,11 @@ oauthAdminRouter.post('/organizations/:organizationId/clients', async (c) => {
     data: {
       id: generateId(), clientId, clientSecret: null, organizationId, name: body.name,
       uri: body.uri ?? null, icon: body.icon ?? null, redirectUris: body.redirectUris,
-      scopes: ['openid', 'email', 'keys', 'offline_access'], disabled: false, skipConsent: false,
+      scopes: [...OAUTH_SCOPES], disabled: false, skipConsent: false,
       enableEndSession: false, tokenEndpointAuthMethod: 'none', grantTypes: ['authorization_code', 'refresh_token'],
       responseTypes: ['code'], type: body.type ?? 'spa', public: true, contacts: [],
+      mode: 'TENANT_MANAGED',
+      metadata: { openkeyClientMode: 'TENANT_MANAGED', openkeyOrganizationId: organizationId },
     },
   });
   return c.json({ client }, 201);
@@ -218,7 +219,7 @@ oauthAdminRouter.post('/clients', async (c) => {
         uri: body.uri || null,
         icon: body.icon || null,
         redirectUris: body.redirectUris,
-        scopes: ['openid', 'email', 'keys', 'offline_access'],
+        scopes: [...OAUTH_SCOPES],
         disabled: false,
         skipConsent: false,
         enableEndSession: false,
@@ -228,6 +229,8 @@ oauthAdminRouter.post('/clients', async (c) => {
         type: body.type || 'spa',
         public: true,
         contacts: [],
+        mode: 'PERSONAL',
+        metadata: { openkeyClientMode: 'PERSONAL' },
       },
     });
 
@@ -319,6 +322,9 @@ oauthAdminRouter.delete('/clients/:clientId', async (c) => {
 });
 
 // PATCH /api/admin/oauth/clients/:clientId - Update a client
+// Note: `mode` is immutable. Once set at creation it cannot be changed because
+// existing access and refresh tokens were issued under the original mode. Any
+// attempt to include `mode` in the request body is rejected with 400.
 oauthAdminRouter.patch('/clients/:clientId', async (c) => {
   const clientId = c.req.param('clientId');
   const body = await c.req.json<{
@@ -328,7 +334,14 @@ oauthAdminRouter.patch('/clients/:clientId', async (c) => {
     icon?: string;
     disabled?: boolean;
     scopes?: string[];
+    mode?: unknown;
   }>();
+
+  // Guard: mode is immutable. Issued tokens are bound to the mode at creation;
+  // changing it after the fact would break existing token claims.
+  if ('mode' in body && body.mode !== undefined) {
+    return c.json({ error: { code: 'IMMUTABLE_FIELD', message: 'mode cannot be changed after client creation' } }, 400);
+  }
 
   // Validate redirectUris against the persisted client type when provided.
   if (body.redirectUris) {

@@ -11,7 +11,7 @@ import {
   webhookEndpointLimitForPlan,
   type LifecycleEvent,
 } from '../services/lifecycle-webhooks';
-import { RegistrationIntentError, tenantSafeAccount } from '../services/registration-intents';
+import { TenantManagedAccountError, tenantSafeAccount } from '../services/tenant-managed-accounts';
 import {
   oauthApplicationType,
   validateOAuthClientMetadataUrl,
@@ -43,6 +43,7 @@ class ConsolePlanLimitError extends Error {}
 const APP_SELECT = {
   id: true,
   clientId: true,
+  mode: true,
   name: true,
   uri: true,
   icon: true,
@@ -129,27 +130,22 @@ function parseAppInput(
 
 function presentAccount(account: {
   id: string;
-  externalUserId: string;
+  subjectEmail: string;
+  externalUserId: string | null;
   state: string;
   custodyEpoch: number;
-  policyVersion: number;
-  policyTemplate: string;
-  tenantParentDelegationCid: string | null;
   revocationStatus: string;
   createdAt: Date;
   updatedAt: Date;
   key: { address: string };
 }) {
   return {
-    managedAccountId: account.id,
+    id: account.id,
+    subjectEmail: account.subjectEmail,
     externalUserId: account.externalUserId,
     address: account.key.address,
-    ownerDid: `did:pkh:eip155:1:${account.key.address}`,
     state: account.state,
     custodyEpoch: account.custodyEpoch,
-    policyTemplate: account.policyTemplate,
-    policyVersion: account.policyVersion,
-    tenantParentDelegationCid: account.tenantParentDelegationCid,
     tenantAccess: account.revocationStatus,
     createdAt: account.createdAt,
     updatedAt: account.updatedAt,
@@ -271,6 +267,8 @@ export function createTenantConsoleRouter(
                 type: input.type ?? 'spa',
                 public: true,
                 contacts: [],
+                mode: 'TENANT_MANAGED',
+                metadata: { openkeyClientMode: 'TENANT_MANAGED', openkeyOrganizationId: organizationId },
               },
               select: APP_SELECT,
             });
@@ -321,15 +319,14 @@ export function createTenantConsoleRouter(
     if (!isAdmin(c)) return error(c, 403, 'FORBIDDEN', 'Administrator access is required');
     const body: Record<string, unknown> = await c.req.json<Record<string, unknown>>().catch(() => ({}));
     if (typeof body.name !== 'string' || !body.name.trim() || body.name.length > 100
-      || (body.kind !== 'BROKER' && body.kind !== 'PROVISIONER')) {
-      return error(c, 400, 'INVALID_REQUEST', 'A valid name and credential kind are required');
+      || (body.kind !== undefined && body.kind !== 'MANAGEMENT')) {
+      return error(c, 400, 'INVALID_REQUEST', 'A valid name is required');
     }
     try {
       const issued = await issueCredential(db, {
         organizationId: c.req.param('organizationId'),
         subjectUserId: c.get('user').id,
         name: body.name.trim(),
-        kind: body.kind,
       });
       return c.json(issued, 201);
     } catch (caught) {
@@ -354,11 +351,51 @@ export function createTenantConsoleRouter(
     return c.json({ success: true });
   });
 
+  router.post('/:organizationId/credentials/:credentialId/rotate', async (c) => {
+    if (!isAdmin(c)) return error(c, 403, 'FORBIDDEN', 'Administrator access is required');
+    try {
+      const issued = await db.$transaction(async (tx) => {
+        const credential = await tx.organizationServerCredential.findFirst({
+          where: {
+            id: c.req.param('credentialId'),
+            organizationId: c.req.param('organizationId'),
+            revokedAt: null,
+            kind: 'MANAGEMENT',
+          },
+          select: {
+            id: true,
+            name: true,
+            subjectUserId: true,
+          },
+        });
+        if (!credential) return null;
+        const replacement = await issueOrganizationCredential(tx, {
+          organizationId: c.req.param('organizationId'),
+          subjectUserId: credential.subjectUserId ?? c.get('user').id,
+          name: credential.name,
+        });
+        await tx.organizationServerCredential.updateMany({
+          where: { id: credential.id },
+          data: { revokedAt: new Date() },
+        });
+        return replacement;
+      });
+      if (!issued) return error(c, 404, 'NOT_FOUND', 'Credential not found');
+      return c.json(issued, 201);
+    } catch (caught) {
+      if (caught instanceof OrganizationCredentialError && caught.code === 'ADMIN_REQUIRED') {
+        return error(c, 403, 'FORBIDDEN', 'Administrator access is required');
+      }
+      throw caught;
+    }
+  });
+
   router.get('/:organizationId/managed-accounts', async (c) => {
     const limit = parseLimit(c.req.query('limit'));
     if (!limit) return error(c, 400, 'INVALID_REQUEST', 'limit must be between 1 and 100');
     const organizationId = c.req.param('organizationId');
     const cursor = c.req.query('cursor');
+    const status = c.req.query('status');
     if (cursor) {
       const cursorAccount = await db.managedAccount.findFirst({
         where: { id: cursor, organizationId },
@@ -367,16 +404,21 @@ export function createTenantConsoleRouter(
       if (!cursorAccount) return error(c, 404, 'NOT_FOUND', 'Managed account not found');
     }
     const externalUserId = c.req.query('externalUserId');
+    const stateFilter = status === 'disabled'
+      ? { state: 'DISABLED' as const }
+      : status === 'user_owned'
+        ? { state: 'USER_OWNED' as const }
+        : status === 'history'
+          ? { state: { in: ['MANAGED', 'DISABLED', 'USER_OWNED', 'PROVISIONED', 'EJECTING', 'EXPIRED', 'FAILED'] as any } }
+          : { state: 'MANAGED' as const };
     const accounts = await db.managedAccount.findMany({
-      where: { organizationId, ...(externalUserId ? { externalUserId } : {}) },
+      where: { organizationId, ...(externalUserId ? { externalUserId } : {}), ...stateFilter },
       select: {
         id: true,
+        subjectEmail: true,
         externalUserId: true,
         state: true,
         custodyEpoch: true,
-        policyVersion: true,
-        policyTemplate: true,
-        tenantParentDelegationCid: true,
         revocationStatus: true,
         createdAt: true,
         updatedAt: true,
@@ -389,7 +431,7 @@ export function createTenantConsoleRouter(
     const hasMore = accounts.length > limit;
     const page = accounts.slice(0, limit);
     return c.json({
-      accounts: page.map(presentAccount),
+      accounts: (page as any[]).map((account) => presentAccount(account)),
       nextCursor: hasMore ? page.at(-1)?.id ?? null : null,
     });
   });
@@ -402,7 +444,7 @@ export function createTenantConsoleRouter(
         c.req.param('accountId'),
       ) });
     } catch (caught) {
-      if (caught instanceof RegistrationIntentError && caught.code === 'INTENT_NOT_FOUND') {
+      if (caught instanceof TenantManagedAccountError) {
         return error(c, 404, 'NOT_FOUND', 'Managed account not found');
       }
       throw caught;

@@ -16,13 +16,13 @@ describe('organization credentials', () => {
       organizationMembership: { findFirst: async () => ({ id: 'membership' }) },
     } as any;
     const issued = await issueOrganizationCredential(db, {
-      organizationId: 'organization', subjectUserId: 'member', name: 'Provisioner', kind: 'PROVISIONER',
+      organizationId: 'organization', subjectUserId: 'member', name: 'Management', kind: 'MANAGEMENT',
     });
     expect(issued.secret).toStartWith('oksk_');
     expect(stored.secretHash).not.toContain(issued.secret);
     expect(stored).not.toHaveProperty('secret');
     await expect(authenticateOrganizationCredential(db, issued.secret)).resolves.toMatchObject({
-      credentialId: 'credential-id', organizationId: 'organization', kind: 'PROVISIONER',
+      credentialId: 'credential-id', organizationId: 'organization', kind: 'MANAGEMENT',
     });
     await expect(authenticateOrganizationCredential(db, `${issued.secret.slice(0, -1)}x`))
       .rejects.toMatchObject({ code: 'INVALID_CREDENTIAL' });
@@ -45,13 +45,13 @@ describe('organization credentials', () => {
       },
     } as any;
     const input = {
-      organizationId: 'organization', subjectUserId: 'member', name: 'Provisioner', kind: 'PROVISIONER' as const,
+      organizationId: 'organization', subjectUserId: 'member', name: 'Management', kind: 'MANAGEMENT' as const,
     };
     await expect(issueOrganizationCredential(db, input)).rejects.toMatchObject({ code: 'ADMIN_REQUIRED' });
     role = 'ADMIN';
     const issued = await issueOrganizationCredential(db, input);
     await expect(authenticateOrganizationCredential(db, issued.secret)).resolves.toMatchObject({
-      credentialId: 'credential-id', organizationId: 'organization', kind: 'PROVISIONER',
+      credentialId: 'credential-id', organizationId: 'organization', kind: 'MANAGEMENT',
     });
     role = 'MEMBER';
     await expect(authenticateOrganizationCredential(db, issued.secret))

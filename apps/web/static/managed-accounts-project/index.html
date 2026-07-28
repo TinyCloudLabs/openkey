@@ -50,9 +50,11 @@
     }
 
     * { box-sizing: border-box; }
-    html { scroll-behavior: smooth; }
+    html { max-width: 100%; scroll-behavior: smooth; overflow-x: hidden; }
     body {
       margin: 0;
+      max-width: 100%;
+      overflow-x: hidden;
       color: var(--ink);
       background-color: var(--page);
       background-image: radial-gradient(var(--border) .7px, transparent .7px);
@@ -93,8 +95,9 @@
     .icon-button { width: 34px; height: 34px; display: grid; place-items: center; flex: 0 0 auto; border: 1px solid var(--border); border-radius: 999px; color: var(--secondary); background: var(--surface); cursor: pointer; }
     .icon-button:hover { color: var(--brand); border-color: var(--brand); }
 
-    main { max-width: 1400px; margin: auto; padding: 64px 32px 100px; }
-    section { scroll-margin-top: 92px; margin-top: 96px; }
+    main { width: 100%; max-width: 1400px; margin: auto; padding: 64px 32px 100px; }
+    main, section, .hero > *, .section-head > * { min-width: 0; }
+    section { width: 100%; scroll-margin-top: 92px; margin-top: 96px; }
     .hero { margin-top: 0; display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(320px, .65fr); gap: 64px; align-items: start; }
     .eyebrow { display: inline-flex; align-items: center; gap: 8px; margin-bottom: 18px; color: var(--brand); font: 700 12px/1 var(--mono); text-transform: uppercase; letter-spacing: .08em; }
     .eyebrow::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 4px var(--blue-bg); }
@@ -144,10 +147,47 @@
     .callout { margin-top: 18px; padding: 18px 20px; border: 1px solid color-mix(in srgb, var(--brand) 18%, var(--border)); border-radius: 10px; background: var(--blue-bg); }
     .callout strong { display: block; margin-bottom: 4px; }
     .callout p { margin: 0; color: var(--secondary); }
+    .callout.warning { border-color: color-mix(in srgb, var(--warning) 28%, var(--border)); background: var(--warning-bg); }
+    .callout.warning strong { color: var(--warning); }
+    .readiness { display: grid; grid-template-columns: repeat(5, 1fr); margin-top: 28px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--surface); }
+    .phase { min-height: 132px; padding: 18px; border-right: 1px dotted var(--border); }
+    .phase:last-child { border-right: 0; }
+    .phase span { display: inline-flex; align-items: center; gap: 7px; color: var(--secondary); font: 700 11px/1 var(--mono); }
+    .phase span::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--ghost); }
+    .phase.done span { color: var(--success); }
+    .phase.done span::before { background: var(--success); }
+    .phase.active span { color: var(--brand); }
+    .phase.active span::before { background: var(--brand); box-shadow: 0 0 0 4px var(--blue-bg); }
+    .phase.blocked span { color: var(--warning); }
+    .phase.blocked span::before { background: var(--warning); }
+    .phase strong { display: block; margin-top: 24px; line-height: 1.3; }
+    .phase small { display: block; margin-top: 6px; color: var(--secondary); line-height: 1.4; }
+    .status-table { margin-top: 28px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--surface); }
+    .status-row { display: grid; grid-template-columns: 160px minmax(220px, .8fr) 1.2fr; gap: 18px; align-items: start; padding: 17px 20px; border-bottom: 1px dotted var(--border); }
+    .status-row:last-child { border-bottom: 0; }
+    .status-row p { margin: 0; color: var(--secondary); }
+    .status-row strong { line-height: 1.35; }
+    .repo-map { margin-top: 28px; border-top: 1px solid var(--border); }
+    .repo-row { display: grid; grid-template-columns: 190px 120px 1fr; gap: 24px; padding: 20px 0; border-bottom: 1px dotted var(--border); }
+    .repo-row p { margin: 0; color: var(--secondary); }
+    .repo-row code { overflow-wrap: anywhere; font: 12px/1.5 var(--mono); }
+    .data-boundaries { display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px; margin-top: 28px; }
+    .data-list { margin: 18px 0 0; padding: 0; list-style: none; }
+    .data-list li { padding: 9px 0; border-bottom: 1px dotted var(--border); color: var(--secondary); }
+    .data-list li:last-child { border-bottom: 0; }
+    .data-list strong { color: var(--ink); }
+    .ask-panel { margin-top: 28px; display: grid; grid-template-columns: minmax(260px, .72fr) minmax(0, 1.28fr); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--surface); }
+    .ask-summary { padding: 28px; background: var(--blue-bg); }
+    .ask-summary h3 { margin-top: 18px; font-size: 28px; }
+    .ask-summary p { color: var(--secondary); }
+    .ask-items { padding: 8px 28px; }
+    .ask-item { padding: 20px 0; border-bottom: 1px dotted var(--border); }
+    .ask-item:last-child { border-bottom: 0; }
+    .ask-item p { margin: 7px 0 0; color: var(--secondary); }
 
-    .diagram-card { margin-top: 28px; overflow: hidden; }
+    .diagram-card { width: 100%; max-width: 100%; min-width: 0; margin-top: 28px; overflow: hidden; }
     .diagram-title { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 20px; border-bottom: 1px dotted var(--border); }
-    .mermaid-wrap { min-height: 330px; display: grid; place-items: center; overflow-x: auto; padding: 32px 20px; background: var(--surface-muted); }
+    .mermaid-wrap { width: 100%; max-width: 100%; min-width: 0; min-height: 330px; display: grid; place-items: center; overflow-x: auto; padding: 32px 20px; background: var(--surface-muted); }
     .mermaid { min-width: 760px; }
     .diagram-fallback { margin: 0; padding: 18px; white-space: pre-wrap; color: var(--secondary); font: 12px/1.65 var(--mono); }
     .diagram-alt { margin: 0; padding: 14px 20px; border-top: 1px dotted var(--border); color: var(--secondary); font-size: 13px; }
@@ -237,9 +277,13 @@
     footer div { display: flex; justify-content: space-between; gap: 20px; }
 
     @media (max-width: 980px) {
-      .hero, .section-head, .split, .wireframes { grid-template-columns: 1fr; }
+      .hero, .section-head, .split, .wireframes, .data-boundaries, .ask-panel { grid-template-columns: minmax(0, 1fr); }
       .hero { gap: 36px; }
       .milestones, .next-list { grid-template-columns: repeat(2, 1fr); }
+      .readiness { grid-template-columns: repeat(2, 1fr); }
+      .phase { border-bottom: 1px dotted var(--border); }
+      .status-row, .repo-row { grid-template-columns: 140px 1fr; }
+      .status-row p, .repo-row p { grid-column: 2; }
       .next-item:nth-child(2) { border-right: 0; }
       .next-item:nth-child(-n+2) { border-bottom: 1px dotted var(--border); }
       .nav { display: none; }
@@ -252,12 +296,22 @@
       .topbar-inner, main, footer { padding-left: 18px; padding-right: 18px; }
       main { padding-top: 42px; }
       section { margin-top: 72px; }
-      .grid.three, .grid.two, .milestones, .next-list { grid-template-columns: 1fr; }
+      h1 { font-size: 40px; overflow-wrap: anywhere; }
+      h2 { font-size: 30px; overflow-wrap: anywhere; }
+      .hero-copy { font-size: 18px; overflow-wrap: anywhere; }
+      .hero-actions { display: grid; }
+      .hero-actions .button { width: 100%; max-width: 100%; }
+      .brief-card div { grid-template-columns: 82px minmax(0, 1fr); }
+      .grid.three, .grid.two, .milestones, .next-list { grid-template-columns: minmax(0, 1fr); }
       .next-item { border-right: 0; border-bottom: 1px dotted var(--border); }
       .next-item:last-child { border-bottom: 0; }
       .journey-step { grid-template-columns: 38px 1fr; }
       .journey-step p { grid-column: 2; }
       .screen-body { grid-template-columns: 92px 1fr; }
+      .readiness { grid-template-columns: minmax(0, 1fr); }
+      .phase { border-right: 0; }
+      .status-row, .repo-row { grid-template-columns: 1fr; gap: 8px; }
+      .status-row p, .repo-row p { grid-column: 1; }
       .mock-cards { grid-template-columns: 1fr; }
       .setup-rail { grid-template-columns: 1fr; }
       .setup-step { min-height: 115px; border-right: 0; border-bottom: 1px dotted var(--border); }
@@ -290,7 +344,7 @@
     <div class="topbar-inner">
       <a class="wordmark" href="#overview"><span class="mark">OK</span><span>OpenKey</span><span class="context">Managed accounts brief</span></a>
       <nav class="nav" aria-label="Project brief">
-        <a href="#status">Status</a><a href="#architecture">Architecture</a><a href="#journey">Journey</a><a href="#wireframes">Wireframes</a><a href="#decisions">Decisions</a><a href="#next">Next</a>
+        <a href="#status">Status</a><a href="#architecture">System</a><a href="#journey">Flow</a><a href="#plans">E2E</a><a href="#wireframes">Repositories</a><a href="#decisions">Input</a><a href="#next">Remaining</a>
       </nav>
       <button class="icon-button" id="themeToggle" type="button" aria-label="Toggle color theme" title="Toggle color theme">◐</button>
     </div>
@@ -299,23 +353,23 @@
   <main id="main">
     <section class="hero" id="overview">
       <div>
-        <div class="eyebrow">Project overview · July 2026</div>
-        <h1>One identity layer.<br />Two clear control surfaces.</h1>
-        <p class="hero-copy">OpenKey now supports <strong>tenant-managed accounts that users can unilaterally take into personal custody</strong>. The secure control-plane APIs are deployed. What remains is the operator-facing console that makes the system usable without API calls.</p>
+        <div class="eyebrow">Live branch brief · July 21, 2026</div>
+        <h1>The main loop is built.<br />Hardening iteration two is active.</h1>
+        <p class="hero-copy">The branch implements <strong>email-bound tenant accounts, management signing, OAuth association, disable/restore, user eject, the SDK, the operator console, and email-first authentication</strong>. Production email delivery now works. The release gate is still red while the implementation loop fixes PostgreSQL concurrency, OAuth lifecycle, migration, cursor, and test-isolation findings.</p>
         <div class="hero-actions">
-          <a class="button primary" href="#decisions">Review decisions <span aria-hidden="true">↓</span></a>
+          <a class="button primary" href="#status">See current status <span aria-hidden="true">↓</span></a>
           <a class="button" href="/managed-accounts-architecture">Open technical explainer</a>
-          <a class="button" href="https://github.com/TinyCloudLabs/openkey/pull/135">Latest merged PR ↗</a>
+          <a class="button" href="#decisions">What I need from you</a>
         </div>
       </div>
       <aside class="brief-card" aria-label="Project at a glance">
         <div class="inner">
           <dl>
-            <div><dt>Outcome</dt><dd>Managed identity with user escape hatch</dd></div>
-            <div><dt>Backend</dt><dd class="status-line"><span class="status-dot"></span>Deployed</dd></div>
-            <div><dt>Console UI</dt><dd>Next implementation slice</dd></div>
-            <div><dt>Visual system</dt><dd>OpenCredentials</dd></div>
-            <div><dt>Feedback</dt><dd>Business choices only</dd></div>
+            <div><dt>Outcome</dt><dd>Tenant control with sovereign eject</dd></div>
+            <div><dt>Code</dt><dd>Implemented · fixes in progress</dd></div>
+            <div><dt>Email</dt><dd class="status-line"><span class="status-dot"></span>Production OTP passed</dd></div>
+            <div><dt>Gate</dt><dd>Not approved yet</dd></div>
+            <div><dt>Workflow</dt><dd>Iteration 2 · implementation</dd></div>
           </dl>
         </div>
       </aside>
@@ -323,201 +377,193 @@
 
     <section id="status">
       <div class="section-head">
-        <div><div class="kicker">Where we are</div><h2>The foundation is live.<br />The interface is next.</h2></div>
-        <p>Three backend milestones have shipped safely to production. The public tenant console routes shown below have not been built yet; this brief is the handoff into that work.</p>
+        <div><div class="kicker">Where we are</div><h2>Built, under review,<br />and not ready to ship.</h2></div>
+        <p>The first repair pass cleared most executable checks, but Luna found two deterministic failures and Sol requested changes across nine production-readiness areas. Their feedback is already feeding a second implementation pass; nothing is waiting on the project owner.</p>
       </div>
-      <div class="grid milestones">
-        <article class="card milestone">
-          <span class="num">01</span><h3>Managed-account foundation</h3><p>Tenant isolation, Free / Pro / Enterprise entitlements, app-managed registration, and unilateral user eject.</p>
-          <span class="label live">Merged · <a href="https://github.com/TinyCloudLabs/openkey/pull/131">PR #131</a></span>
-        </article>
-        <article class="card milestone">
-          <span class="num">02</span><h3>Production migration recovery</h3><p>Guarded baseline recovery plus acceptance of the one reviewed legacy migration checksum.</p>
-          <span class="label live">Deployed · <a href="https://github.com/TinyCloudLabs/openkey/pull/133">#133</a> / <a href="https://github.com/TinyCloudLabs/openkey/pull/134">#134</a></span>
-        </article>
-        <article class="card milestone">
-          <span class="num">03</span><h3>Tenant console APIs</h3><p>Session-authenticated APIs for apps, credentials, accounts, webhooks, deliveries, and overview data.</p>
-          <span class="label live">Deployed · <a href="https://github.com/TinyCloudLabs/openkey/pull/135">PR #135</a></span>
-        </article>
-        <article class="card milestone">
-          <span class="num">04</span><h3>Operator console</h3><p>A distinct tenant surface for setup, daily operations, member access, usage, audit, and settings.</p>
-          <span class="label next">Now designing</span>
-        </article>
+      <div class="readiness" aria-label="Release readiness sequence">
+        <div class="phase done"><span>BUILT</span><strong>Product loop</strong><small>Create, sign, associate, disable, restore, and eject paths exist.</small></div>
+        <div class="phase done"><span>PASS</span><strong>Production email</strong><small>Resend delivered a real OTP to Mailinator and authenticated a verified user.</small></div>
+        <div class="phase active"><span>ACTIVE</span><strong>Fix iteration 2</strong><small>Sonnet is applying Luna and Sol feedback to the existing branch.</small></div>
+        <div class="phase blocked"><span>RETRY</span><strong>Luna + Sol gate</strong><small>Validation reruns after the current fixes; Sol has not approved the branch.</small></div>
+        <div class="phase blocked"><span>LATER</span><strong>Staging ceremony</strong><small>Platform passkey, tenant lifecycle, and TinyCloud network proof remain.</small></div>
       </div>
-      <div class="callout"><strong>The important status nuance</strong><p>The control plane is secure and callable today. <span class="mono">/dashboard/organizations</span> already supports organization creation and entitlement viewing, but a user cannot yet visit <span class="mono">/console</span> and operate the full tenant surface.</p></div>
+      <div class="status-table" aria-label="Implementation status by surface">
+        <div class="status-row"><span class="label live">Implemented</span><strong>Tenant management API</strong><p>One management credential model; account creation, listing, signing, disable/restore, rotation, audit attribution, and idempotency.</p></div>
+        <div class="status-row"><span class="label live">Implemented</span><strong>Email identity + OAuth</strong><p>One account per organization and normalized email; verified-email binding selects the same managed key without replacing personal keys.</p></div>
+        <div class="status-row"><span class="label live">Implemented</span><strong>User sovereignty</strong><p>Associated users see tenant keys and can eject to terminal user custody using a fresh passkey.</p></div>
+        <div class="status-row"><span class="label live">Implemented</span><strong>Console and SDK</strong><p>Organization console routes plus <span class="mono">createTinyCloudSigner</span>, account operations, and direct typed-data / transaction signing.</p></div>
+        <div class="status-row"><span class="label live">Fixed</span><strong>Association before passkey</strong><p>Verified email can now associate, disable, and restore an account without a passkey. A fresh passkey remains mandatory only for terminal custody ejection.</p></div>
+        <div class="status-row"><span class="label next">Active</span><strong>Second repair pass</strong><p>Fixing Serializable idempotency replay, real OAuth lifecycle boundaries, legacy client migration, ASCII email canonicalization, strict cursors, direct-signature coverage, and deterministic test isolation.</p></div>
+        <div class="status-row"><span class="label decide">Retry</span><strong>Luna validation</strong><p>Typechecks, builds, migration deployment, preflight, guards, schema parity, SDK tests, and most API tests passed. The real PostgreSQL concurrency test setup and combined test isolation failed.</p></div>
+        <div class="status-row"><span class="label decide">Changes requested</span><strong>Codex Sol review</strong><p>Sol found nine major production-readiness issues. The workflow automatically started iteration two with the complete review feedback.</p></div>
+        <div class="status-row"><span class="label live">Pass</span><strong>Production email OTP</strong><p>OpenKey delivered an OTP through Resend to a fresh public Mailinator inbox, returned a verified session, and created one personal OpenKey address.</p></div>
+      </div>
+      <div class="callout warning"><strong>Do not call this production-ready yet.</strong><p>Email delivery is now proven, but review-discovered correctness issues remain. After those are green, staging must still prove tenant-managed OAuth, a platform-authenticator eject, post-eject signing denial, and TinyCloud network write/read.</p></div>
     </section>
 
     <section id="architecture">
       <div class="section-head">
-        <div><div class="kicker">Ecosystem model</div><h2>Personal custody and tenant operations stay separate.</h2></div>
-        <p>OpenKey hosts identity, passkeys, consent, and eject. Tenant apps initiate managed registration. Operators manage their organization through a separate session-authenticated console.</p>
+        <div><div class="kicker">System model</div><h2>OpenKey controls identity.<br />TinyCloud stores user data.</h2></div>
+        <p>The tenant pre-provisions an email-bound signing account through OpenKey. The managed signer authorizes TinyCloud operations. PostgreSQL stores control-plane identity and custody state; it is not the document database.</p>
       </div>
       <div class="card diagram-card">
-        <div class="diagram-title"><h3>System boundaries</h3><span class="micro">Session auth by default · secret revealed once at creation</span></div>
+        <div class="diagram-title"><h3>The tenant-managed account loop</h3><span class="micro">One account per organization + normalized email</span></div>
         <div class="mermaid-wrap">
           <pre class="mermaid" role="img" aria-label="OpenKey managed account system boundaries">
 flowchart LR
-  accTitle: OpenKey managed account system boundaries
-  accDescr: A user authenticates with OpenKey, a tenant app initiates managed registration, an organization admin uses a session-authenticated console, and the user can eject to personal custody without tenant approval.
-  U[User] -->|sign in / passkey| O[OpenKey identity]
-  T[Tenant app] -->|managed registration intent| O
-  O --> M[(Managed account)]
-  M -->|until eject| B[Tenant broker custody]
-  U -->|Leave app| E[User eject]
-  E --> P[Personal custody]
-  A[Organization admin] -->|session auth| C[OpenKey Console]
-  C --> API[Tenant control-plane API]
-  API --> APPS[Apps & credentials]
-  API --> OPS[Accounts & webhooks]
-  B -. cannot block .-> E
+  accTitle: OpenKey tenant managed account loop
+  accDescr: A tenant pre-provisions an account by email, signs TinyCloud operations through OpenKey, the user later verifies that email and sees the same key, and the user can eject to end tenant access.
+  T[Tenant backend] -->|management key + email| API[OpenKey management API]
+  API --> M[(Managed key · epoch 1)]
+  M -->|remote signer| TC[(TinyCloud data)]
+  U[User] -->|verified email OAuth| O[OpenKey identity]
+  O -->|atomic association| M
+  M -->|same address in claims| U
+  U -->|fresh passkey + exact epoch| E[User eject]
+  E --> P[(User custody · epoch 2)]
+  P -. tenant signing denied .-> API
 
   classDef primary fill:#eef3ff,stroke:#2a56f6,color:#1a1c21,stroke-width:2px;
   classDef neutral fill:#ffffff,stroke:#cbd5e1,color:#1a1c21;
-  class O,C,E primary;
-  class U,T,M,B,P,A,API,APPS,OPS neutral;
+  class O,API,E primary;
+  class U,T,M,TC,P neutral;
           </pre>
-          <noscript><pre class="diagram-fallback">User → OpenKey passkey → managed account → tenant broker custody
-User → Leave app → personal custody (tenant cannot block)
-Organization admin → OpenKey Console → session-authenticated tenant APIs</pre></noscript>
+          <noscript><pre class="diagram-fallback">Tenant backend → OpenKey management API → email-bound managed key → signed TinyCloud data
+User → verified email OAuth → the same managed key
+User → fresh passkey eject → user custody; tenant signing ends</pre></noscript>
         </div>
-        <p class="diagram-alt"><strong>Text view:</strong> The tenant app initiates registration; OpenKey authenticates the user; custody begins with the tenant broker. The organization admin uses session-authenticated console APIs. The user can leave at any time and move the same account into personal custody.</p>
+        <p class="diagram-alt"><strong>Text view:</strong> The tenant creates an account for an email and can sign with it through OpenKey. After the user verifies the same email, OpenKey attaches the exact same address. A fresh-passkey eject moves it to epoch-two user custody and permanently ends tenant signing.</p>
       </div>
       <div class="split">
         <div class="card">
           <span class="label live">Invariant</span>
           <div class="principles">
-            <div class="principle"><strong>User agency</strong><span>Eject is always user-initiated and cannot be gated by tenant billing or approval.</span></div>
-            <div class="principle"><strong>Tenant isolation</strong><span>Membership and role checks scope every console request; cross-tenant resources return 404.</span></div>
-            <div class="principle"><strong>Secret boundary</strong><span>Credential creation reveals the secret once to the admin browser; plaintext is not persisted and list APIs never return it.</span></div>
+            <div class="principle"><strong>Stable identity</strong><span>Tenant pre-provisioning and tenant-managed OAuth converge on the same organization/email key.</span></div>
+            <div class="principle"><strong>Separate personal keys</strong><span>An existing TinyCloud user keeps their personal account; tenant OAuth returns only the tenant-managed key.</span></div>
+            <div class="principle"><strong>Terminal eject</strong><span>Epoch two is immutable user custody. OpenKey never silently replaces an ejected key for the tenant.</span></div>
           </div>
         </div>
         <div class="card">
-          <span class="label next">Product architecture</span>
-          <h3 style="margin-top:16px">Same application, distinct jobs</h3>
-          <p><strong style="color:var(--ink)">OpenKey Account</strong> is personal: identity, security, and connected apps. <strong style="color:var(--ink)">OpenKey Console</strong> is organizational: apps, credentials, managed accounts, integrations, members, and usage.</p>
+          <span class="label next">Public surfaces</span>
+          <h3 style="margin-top:16px">One product, three trust boundaries</h3>
+          <p><strong style="color:var(--ink)">OpenKey Console</strong> configures tenant apps, credentials, and accounts. <strong style="color:var(--ink)">OpenKey OAuth + Account</strong> handles verified identity, disclosure, and eject. <strong style="color:var(--ink)">The management API</strong> performs tenant operations without exposing key material.</p>
           <div class="route-list">
-            <div class="route"><code>/dashboard/*</code><span class="micro">Personal OpenKey Account</span><button type="button" data-copy="/dashboard/*">copy</button></div>
-            <div class="route"><code>/managed/register</code><span class="micro">Live managed registration</span><button type="button" data-copy="/managed/register">copy</button></div>
-            <div class="route"><code>/dashboard/managed-accounts</code><span class="micro">Live user eject surface</span><button type="button" data-copy="/dashboard/managed-accounts">copy</button></div>
-            <div class="route"><code>/dashboard/organizations</code><span class="micro">Live partial organization UI</span><button type="button" data-copy="/dashboard/organizations">copy</button></div>
-            <div class="route"><code>/console</code><span class="micro">Organization selector</span><button type="button" data-copy="/console">copy</button></div>
-            <div class="route"><code>/console/:organizationId/*</code><span class="micro">Tenant OpenKey Console</span><button type="button" data-copy="/console/:organizationId/*">copy</button></div>
-            <div class="route"><code>/api/console/organizations/:id/*</code><span class="micro">Deployed API boundary</span><button type="button" data-copy="/api/console/organizations/:id/*">copy</button></div>
+            <div class="route"><code>POST /v1/accounts</code><span class="micro">Pre-provision by email</span><button type="button" data-copy="POST /v1/accounts">copy</button></div>
+            <div class="route"><code>POST /v1/accounts/:id/sign</code><span class="micro">Remote management signer</span><button type="button" data-copy="POST /v1/accounts/:id/sign">copy</button></div>
+            <div class="route"><code>POST /v1/accounts/:id/disable</code><span class="micro">Reversible tenant pause</span><button type="button" data-copy="POST /v1/accounts/:id/disable">copy</button></div>
+            <div class="route"><code>/oauth/consent</code><span class="micro">Tenant-control disclosure</span><button type="button" data-copy="/oauth/consent">copy</button></div>
+            <div class="route"><code>/dashboard/managed-accounts</code><span class="micro">User eject surface</span><button type="button" data-copy="/dashboard/managed-accounts">copy</button></div>
+            <div class="route"><code>/console/:organizationId/*</code><span class="micro">Tenant operations</span><button type="button" data-copy="/console/:organizationId/*">copy</button></div>
           </div>
         </div>
       </div>
       <div class="grid two" style="margin-top:18px">
         <div class="card">
-          <span class="label live">API-backed now</span>
-          <h3 style="margin-top:16px">The first useful console release</h3>
-          <p>Overview and entitlements, apps, one-time server credentials and revocation, cursor-paginated managed accounts, webhook endpoints, and delivery history.</p>
+          <span class="label live">PostgreSQL</span>
+          <h3 style="margin-top:16px">OpenKey control-plane state</h3>
+          <p>Users and verified emails, organizations, OAuth clients and tokens, management credentials, managed accounts, custody epochs, sealed keys, idempotency results, and audit records.</p>
         </div>
         <div class="card">
-          <span class="label next">Follow-up surfaces</span>
-          <h3 style="margin-top:16px">Only when management APIs are real</h3>
-          <p>Members, dedicated usage, audit, billing, and organization settings should not appear as dead navigation or fabricated data in the first release.</p>
+          <span class="label next">TinyCloud</span>
+          <h3 style="margin-top:16px">Signed application data</h3>
+          <p>Markdown, KV values, and other user data live on TinyCloud. OpenKey supplies signatures and a public address; TinyCloud does not receive the managed private key.</p>
         </div>
       </div>
     </section>
 
     <section id="journey">
       <div class="section-head">
-        <div><div class="kicker">Signup and custody</div><h2>The app starts the journey.<br />OpenKey earns the trust.</h2></div>
-        <p>There is no separate tenant-owned signup UI. The tenant app creates a registration intent, then sends the user to an OpenKey-hosted passkey and consent flow.</p>
+        <div><div class="kicker">Main product loop</div><h2>Pre-provision first.<br />Associate when the user arrives.</h2></div>
+        <p>Claim links and registration intents are gone. Email is the durable association point: the tenant may prepare data before signup, and verified OpenKey authentication later attaches that same account without merging it into the user’s personal key.</p>
       </div>
       <div class="journey">
-        <div class="journey-step"><h3>App requests registration</h3><p>The tenant backend uses its provisioner credential to create a short-lived intent with the app identity and return URL.</p></div>
-        <div class="journey-step"><h3>OpenKey verifies the user</h3><p>The user sees the app name and custody model, then creates or uses an OpenKey passkey on an OpenKey origin.</p></div>
-        <div class="journey-step"><h3>Managed account becomes ready</h3><p>The app receives a safe completion result. Custody begins under the tenant broker and the account appears in the console.</p></div>
-        <div class="journey-step"><h3>User manages connected apps</h3><p>The personal dashboard currently calls this “Managed accounts.” The console release should rename it “Connected apps,” while preserving custody state and the “Leave app” action.</p></div>
-        <div class="journey-step"><h3>Eject switches custody</h3><p>OpenKey validates the user, transitions to personal custody, invalidates tenant authority, and emits lifecycle events.</p></div>
+        <div class="journey-step"><h3>Tenant creates the account</h3><p><span class="mono">POST /v1/accounts</span> accepts a normalized email plus optional external ID and metadata. It returns the same account on an identical idempotent retry.</p></div>
+        <div class="journey-step"><h3>Tenant prepares TinyCloud data</h3><p>The remote signer authorizes messages, typed data, digests, or unsigned transactions under fixed <span class="mono">tenant-full-signing-v1</span> policy.</p></div>
+        <div class="journey-step"><h3>User verifies the same email</h3><p>Email OTP or allowlisted verified Google identity binds every matching unowned account across organizations in one serializable operation.</p></div>
+        <div class="journey-step"><h3>OAuth returns the same key</h3><p>A <span class="mono">TENANT_MANAGED</span> client discloses tenant control and includes only this organization’s managed key in its claims. The personal key remains separate.</p></div>
+        <div class="journey-step"><h3>User ejects permanently</h3><p>A fresh passkey and exact custody epoch move the same address to terminal user custody. Every later tenant signing request rechecks custody and fails.</p></div>
       </div>
     </section>
 
     <section id="wireframes">
       <div class="section-head">
-        <div><div class="kicker">Wireframe section</div><h2>What signup and tenant control feel like.</h2></div>
-        <p>The visual hierarchy follows OpenCredentials: bright operational surfaces, blue as the single action color, dotted structure, pill states, and restrained density.</p>
+        <div><div class="kicker">Repository map</div><h2>Most changes are in OpenKey.<br />TinyCloud is the external target.</h2></div>
+        <p>The working implementation is a dirty OpenKey feature branch. No TinyCloud node or JavaScript SDK source was changed during the smoke test. The meta-workspace only contains workflow routing.</p>
       </div>
-      <div class="wireframes">
-        <figure class="card screen">
-          <div class="screen-bar"><i></i><i></i><i></i><span class="micro" style="margin-left:auto">app.openkey.so/register</span></div>
-          <div class="screen-body single">
-            <div class="signin">
-              <div class="lock">K</div><h3>Continue to Acme</h3><p>Use an OpenKey passkey. Acme will manage this account until you choose to leave.</p><div class="fake-button">Continue with passkey</div><p class="micro">You can move this account to personal custody at any time.</p>
-            </div>
-          </div>
-          <figcaption class="screen-caption"><strong>User-facing signup</strong> · Trust, custody, and reversibility are explained before authentication.</figcaption>
-        </figure>
-        <figure class="card screen">
-          <div class="screen-bar"><i></i><i></i><i></i><span class="micro" style="margin-left:auto">app.openkey.so/console/acme</span></div>
-          <div class="screen-body">
-            <aside class="screen-side"><div class="screen-logo"></div><div class="screen-link active"></div><div class="screen-link"></div><div class="screen-link"></div><div class="screen-link"></div><div class="screen-link"></div><div class="screen-link"></div></aside>
-            <div class="screen-main"><div class="skeleton-title"></div><div class="skeleton-copy"></div><div class="mock-cards"><div class="mock-card"><b></b><i></i></div><div class="mock-card"><b></b><i></i></div><div class="mock-card"><b></b><i></i></div></div><div class="checklist"><div class="check-item done"><b></b></div><div class="check-item done"><b></b></div><div class="check-item"><b></b></div><div class="check-item"><b></b></div></div></div>
-          </div>
-          <figcaption class="screen-caption"><strong>Tenant overview</strong> · Organization context, activation checklist, health signals, and direct paths into daily operations.</figcaption>
-        </figure>
+      <div class="repo-map" aria-label="Repositories and changes">
+        <div class="repo-row"><strong>OpenKey</strong><span class="label live">Changed</span><p><code>packages/db</code> adds five tracked migrations and schema changes. <code>apps/api</code> adds tenant-account and credential routes plus custody/signing services. <code>packages/sdk</code> adds management methods and the remote signer. <code>apps/web</code> adds console, consent, and account surfaces.</p></div>
+        <div class="repo-row"><strong>TinyCloud node</strong><span class="label decide">Not reached</span><p>The intended destination for the Markdown document. No reachable node or test credential was configured, so no network write/read was performed and no source was changed.</p></div>
+        <div class="repo-row"><strong>TinyCloud JS SDK</strong><span class="label">Unchanged</span><p>The OpenKey SDK’s remote signer conforms to TinyCloud’s structural signer contract, but the full client integration was not exercised in this run.</p></div>
+        <div class="repo-row"><strong>tinycloud-dev</strong><span class="label next">Workflow only</span><p><code>.smithers/agents.ts</code> and <code>.smithers/workflows/implement.tsx</code> route Sonnet implementation, Codex Luna validation, and Codex Sol review.</p></div>
       </div>
-      <div class="card setup-rail" aria-label="Tenant operator first-run journey">
-        <div class="setup-step"><span>01</span><strong>Create or select organization</strong><small>Free is the automatic starting tier.</small></div>
-        <div class="setup-step"><span>02</span><strong>Configure broker</strong><small>Guided default; existing DID is advanced.</small></div>
-        <div class="setup-step"><span>03</span><strong>Create an app</strong><small>Name it and set strict return URLs.</small></div>
-        <div class="setup-step"><span>04</span><strong>Issue credential</strong><small>Copy the server secret once.</small></div>
-        <div class="setup-step"><span>05</span><strong>Install and test</strong><small>Complete a real managed registration.</small></div>
-        <div class="setup-step"><span>06</span><strong>See first account</strong><small>Webhook setup remains optional.</small></div>
+      <div class="data-boundaries">
+        <article class="card"><span class="label live">PostgreSQL stores</span><h3 style="margin-top:18px">Control-plane truth</h3><ul class="data-list"><li><strong>Identity:</strong> users, verified emails, passkeys, sessions</li><li><strong>Tenancy:</strong> organizations, apps, OAuth clients, tokens</li><li><strong>Custody:</strong> managed accounts, epochs, sealed keys</li><li><strong>Operations:</strong> management credentials, idempotency, audit</li></ul></article>
+        <article class="card"><span class="label next">TinyCloud stores</span><h3 style="margin-top:18px">Application data</h3><ul class="data-list"><li><strong>Documents:</strong> the Markdown file and other user content</li><li><strong>KV data:</strong> tenant-prepared state authorized by signatures</li><li><strong>Public proof:</strong> signer address and signature verification</li><li><strong>Never:</strong> OpenKey private-key material or custody policy</li></ul></article>
       </div>
     </section>
 
     <section id="plans">
       <div class="section-head">
-        <div><div class="kicker">Entitlement model</div><h2>One product model,<br />three operational tiers.</h2></div>
-        <p>The tier structure is implemented. Exact prices and several commercial quotas remain business decisions; the platform should not invent them in UI copy.</p>
+        <div><div class="kicker">End-to-end evidence</div><h2>Production email now passes.<br />The branch lifecycle is still under review.</h2></div>
+        <p>A fresh public Mailinator identity proved production Resend delivery, OTP verification, session issuance, and personal-key creation. The managed-account lifecycle has strong local coverage, but the current branch still needs its second validation gate and a staging platform-passkey ceremony.</p>
       </div>
-      <div class="grid three plans">
-        <article class="card plan"><span class="label">Free</span><h3 style="margin-top:22px">Build and validate</h3><ul><li>1 app · 3 members</li><li>100 managed accounts / MAU</li><li>60 requests per minute</li><li>7-day audit retention</li></ul></article>
-        <article class="card plan featured"><span class="label next">Pro</span><h3 style="margin-top:22px">Operate in production</h3><ul><li>10 apps · 25 members</li><li>10,000 managed accounts / MAU</li><li>600 requests per minute</li><li>90-day audit retention</li></ul></article>
-        <article class="card plan"><span class="label">Enterprise</span><h3 style="margin-top:22px">Govern at scale</h3><ul><li>1,000 apps · 10,000 members</li><li>10M managed accounts / MAU</li><li>10,000 requests per minute</li><li>2,555-day audit retention</li></ul></article>
+      <div class="status-table" aria-label="End-to-end test results">
+        <div class="status-row"><span class="label decide">Retry</span><strong>PostgreSQL migrations</strong><p>Fresh deployment, preflight, guards, and schema parity passed. The seeded legacy upgrade and true two-connection concurrency regressions are being corrected and rerun.</p></div>
+        <div class="status-row"><span class="label decide">Partial</span><strong>Tenant provisioning</strong><p>Organization, <span class="mono">TENANT_MANAGED</span> OAuth client, management credential, account creation, and sequential idempotent replay succeeded. Concurrent replay is under repair.</p></div>
+        <div class="status-row"><span class="label live">Pass</span><strong>Signing + association</strong><p>The Markdown hash and content were signed. OAuth userinfo returned the same public address: <span class="mono">0xA2f311…BD10</span>.</p></div>
+        <div class="status-row"><span class="label live">Pass</span><strong>Optional-passkey custody</strong><p>Association, disable, and restore work before passkey enrollment. Disable blocks signing with <span class="mono">ACCOUNT_DISABLED</span>, restore preserves the address, and signing resumes.</p></div>
+        <div class="status-row"><span class="label live">Pass in production</span><strong>Email authentication</strong><p>Resend delivered a real OTP to <span class="mono">openkey-e2e-mrvgc9td@mailinator.com</span>. OpenKey returned a verified user session and one key at <span class="mono">0xcbE6b8…aFaf0</span>. No OTP, token, or cookie is retained in this report.</p></div>
+        <div class="status-row"><span class="label live">Pass in dev</span><strong>Passkey + eject</strong><p>Virtual WebAuthn completed terminal epoch-two custody and subsequent tenant signing failed with <span class="mono">TENANT_ACCESS_ENDED</span>. A real platform ceremony remains for staging.</p></div>
+        <div class="status-row"><span class="label live">Pass in dev</span><strong>TinyCloud write/read</strong><p>The remote signer wrote and read the Markdown document through the development TinyCloud fixture. A staging node smoke remains before release sign-off.</p></div>
       </div>
-      <div class="callout"><strong>Limits are code; pricing is not.</strong><p>These are the configured v1 entitlement defaults. App, account, policy, and webhook limits are enforced today; member count, MAU, request rate, and audit retention are stored and returned but still need runtime enforcement. Exact prices, public quota labels, Enterprise terms, and the legacy <span class="mono">SCALE</span> migration path need product approval.</p></div>
+      <div class="callout"><strong>Sanitized artifact</strong><p><span class="mono">smoke-test-document-20260721.md</span> · SHA-256 <span class="mono">a00ef5f3…c4bdedc</span> · account <span class="mono">cmruxzij7000ajs6jm2gvm87v</span>. No secrets, OTPs, tokens, cookies, or private keys belong in this report.</p></div>
     </section>
 
     <section id="decisions">
       <div class="section-head">
-        <div><div class="kicker">Decision studio</div><h2>Most product choices have a safe default.</h2></div>
-        <p>You are not blocking implementation. Only commercial packaging and the final GA bar need owner input; engineering defaults can proceed as recommended.</p>
+        <div><div class="kicker">Input needed</div><h2>Nothing is waiting on you<br />during the current fix loop.</h2></div>
+        <p>The automated implementation, Luna validation, and Sol review workflow is running without an approval gate. Owner input returns only when the branch is green enough for a staging TinyCloud target and one interactive platform-passkey ceremony.</p>
+      </div>
+      <div class="ask-panel">
+        <div class="ask-summary"><span class="label live">No action now</span><h3>The engineering loop is moving.</h3><p>Mailinator removed the email-mailbox dependency. I will surface a concrete owner request only when it is necessary for the remaining staging ceremony.</p></div>
+        <div class="ask-items">
+          <div class="ask-item"><strong>1. Email delivery · resolved</strong><p>Production Resend → Mailinator → OTP sign-in passed. No personal mailbox or email credential is needed.</p></div>
+          <div class="ask-item"><strong>2. TinyCloud target · later</strong><p>After the code gate passes, use a reachable non-production node to write and read one harmless Markdown document.</p></div>
+          <div class="ask-item"><strong>3. Human passkey gesture · later</strong><p>Complete one browser-mediated platform-passkey creation and eject on an approved staging origin.</p></div>
+        </div>
       </div>
       <div class="decision-summary" role="group" aria-label="Filter decisions">
-        <button class="filter" type="button" aria-pressed="true" data-filter="all">All decisions</button>
-        <button class="filter" type="button" aria-pressed="false" data-filter="locked">Locked</button>
-        <button class="filter" type="button" aria-pressed="false" data-filter="recommended">Recommended</button>
-        <button class="filter" type="button" aria-pressed="false" data-filter="owner">Needs owner</button>
+        <button class="filter" type="button" aria-pressed="true" data-filter="all">All items</button>
+        <button class="filter" type="button" aria-pressed="false" data-filter="locked">Settled</button>
+        <button class="filter" type="button" aria-pressed="false" data-filter="recommended">Engineering</button>
+        <button class="filter" type="button" aria-pressed="false" data-filter="owner">Later owner input</button>
       </div>
       <div class="decisions">
-        <details data-kind="locked" open><summary><span class="label live">Locked</span><strong>Custody and eject model</strong><span class="decision-copy">App-managed until the user leaves; the tenant can never block eject.</span></summary><div class="detail-body"><strong>Already implemented.</strong> Keep the invariant visible in registration consent, personal settings, events, and operator documentation.</div></details>
-        <details data-kind="locked"><summary><span class="label live">Locked</span><strong>Browser security boundary</strong><span class="decision-copy">Console requests use OpenKey sessions; an <span class="mono">oksk_</span> secret appears only in its creation response.</span></summary><div class="detail-body"><strong>Already implemented.</strong> The admin browser may display and copy that one-time secret, but must not persist it; later list responses never reveal the plaintext.</div></details>
-        <details data-kind="recommended"><summary><span class="label next">Recommended</span><strong>Console information architecture</strong><span class="decision-copy">Keep <span class="mono">/dashboard</span> personal and introduce a distinct <span class="mono">/console</span> organization shell.</span></summary><div class="detail-body"><strong>Proceed without blocking.</strong> Use an organization switcher and persistent context; rename the personal “Managed accounts” concept to “Connected apps.”</div></details>
-        <details data-kind="recommended"><summary><span class="label next">Recommended</span><strong>First-run operator setup</strong><span class="decision-copy">Generated broker default, app creation, one-time credential, test signup, optional webhook.</span></summary><div class="detail-body"><strong>Proceed without blocking.</strong> Raw broker DIDs remain an advanced path. The checklist should be inline and resumable; webhooks should not block activation.</div></details>
-        <details data-kind="owner"><summary><span class="label decide">Needs owner</span><strong>Price and quota card</strong><span class="decision-copy">Set exact Free / Pro prices, numerical limits, and the upgrade path from legacy SCALE.</span></summary><div class="detail-body"><strong>Needed before billing UI ships, not before console foundations.</strong> Engineering can expose the entitlement values already returned by the API while commercial language stays provisional.</div></details>
-        <details data-kind="owner"><summary><span class="label decide">Needs owner</span><strong>Enterprise and GA scope</strong><span class="decision-copy">Choose SSO / SCIM / compliance timing and whether an external custody witness is required for GA.</span></summary><div class="detail-body"><strong>Needed for roadmap commitment.</strong> This should be a deliberate security and sales decision, not an implicit promise in the first console release.</div></details>
+        <details data-kind="locked" open><summary><span class="label live">Settled</span><strong>Identity model</strong><span class="decision-copy">Email remains first-class; one tenant account per organization and normalized email.</span></summary><div class="detail-body"><strong>Implemented.</strong> Existing personal keys remain distinct. No claim links, plus-address collapsing, or cross-organization key reuse.</div></details>
+        <details data-kind="locked"><summary><span class="label live">Settled</span><strong>Tenant authority</strong><span class="decision-copy">The tenant may sign arbitrary supported payloads under fixed policy until disable or eject.</span></summary><div class="detail-body"><strong>Implemented.</strong> Messages, typed data, 32-byte digests with audit context, and unsigned transactions are supported; no policy builder is included.</div></details>
+        <details data-kind="locked"><summary><span class="label live">Fixed</span><strong>Optional-passkey custody</strong><span class="decision-copy">Allow association before passkey; require a fresh passkey only for eject.</span></summary><div class="detail-body"><strong>Implemented and verified.</strong> Fresh and <span class="mono">origin/main</span> upgrade tests prove bind → disable → restore works before passkey, while eject remains protected.</div></details>
+        <details data-kind="recommended"><summary><span class="label next">Engineering</span><strong>Preserve test honesty</strong><span class="decision-copy">Do not label DB-read OTPs, synthetic passkeys, or signed local files as end-to-end.</span></summary><div class="detail-body"><strong>No owner input needed.</strong> Keep service-level proof separate from external delivery, platform authentication, and TinyCloud network proof.</div></details>
+        <details data-kind="owner"><summary><span class="label decide">Later</span><strong>Staging integration access</strong><span class="decision-copy">TinyCloud target and one interactive browser ceremony remain after the code gate is green.</span></summary><div class="detail-body"><strong>Not blocking the current iteration.</strong> Secrets should stay in the existing secret store; no credentials need to be pasted into chat.</div></details>
+        <details data-kind="owner"><summary><span class="label decide">Later</span><strong>Commercial and GA scope</strong><span class="decision-copy">Pricing, public quotas, Enterprise commitments, and the final production security bar.</span></summary><div class="detail-body"><strong>Not blocking this engineering milestone.</strong> These decisions remain necessary before billing or broad GA claims.</div></details>
       </div>
     </section>
 
     <section id="next">
       <div class="section-head">
-        <div><div class="kicker">Next steps</div><h2>Turn the deployed control plane into an operable product.</h2></div>
-        <p>The implementation sequence starts with the smallest complete operator journey, then adds governance and commercial surfaces after real usage exists.</p>
+        <div><div class="kicker">Remaining to completion</div><h2>Clear the code gate.<br />Then prove the staging lifecycle.</h2></div>
+        <p>Completion means the branch is reviewed, committed, and opened as a PR only after the same harmless document survives the entire tenant → user → eject lifecycle in a real test environment.</p>
       </div>
       <div class="next-list">
-        <article class="next-item"><span class="num">01 · FOUNDATION</span><h3>Console shell</h3><p>Add <span class="mono">/console</span>, organization selection, role-aware navigation, responsive layout, and session error states.</p></article>
-        <article class="next-item"><span class="num">02 · ACTIVATE</span><h3>First-run journey</h3><p>Build organization setup, broker default, app creation, one-time credential reveal, and a test registration checkpoint.</p></article>
-        <article class="next-item"><span class="num">03 · OPERATE</span><h3>Core resources</h3><p>Ship overview, apps, credentials, managed accounts, webhooks, and delivery inspection on the deployed APIs.</p></article>
-        <article class="next-item"><span class="num">04 · GOVERN</span><h3>Teams and plans</h3><p>Add members, usage, audit, settings, upgrades, and Enterprise entry points once pricing and scope are approved.</p></article>
+        <article class="next-item"><span class="num">01 · FIX · ACTIVE</span><h3>Close review findings</h3><p>Finish iteration two across PostgreSQL concurrency, OAuth boundaries, migration compatibility, strict cursors, signature coverage, and test isolation.</p></article>
+        <article class="next-item"><span class="num">02 · VALIDATE</span><h3>Rerun Luna + Sol</h3><p>Require real PostgreSQL regressions, the complete deterministic API suite, builds, schema parity, and an approving production-readiness review.</p></article>
+        <article class="next-item"><span class="num">03 · PROVE</span><h3>Run the staging ceremony</h3><p>Write/read Markdown on TinyCloud, bind the tenant address, perform platform WebAuthn eject, and prove later tenant signing fails. External email is already proven.</p></article>
+        <article class="next-item"><span class="num">04 · SHIP</span><h3>Open the PR</h3><p>Commit the focused diff, open the OpenKey PR, and merge only when CI and staging evidence are green.</p></article>
       </div>
-      <div class="callout"><strong>Definition of the next merge</strong><p>An admin can enter a tenant console, create an app and credential, complete a test registration, see the managed account, and understand how user eject changes custody—all without using raw API calls.</p></div>
+      <div class="callout"><strong>Definition of done</strong><p>A tenant creates a disposable test identity, signs and stores a Markdown document in TinyCloud, the user receives real email authentication and sees the same address, the user ejects with a real passkey, and every later tenant signing attempt fails because custody is now user-owned.</p></div>
     </section>
   </main>
 
-  <footer><div><span>OpenKey managed accounts · implementation brief</span><span>Visual language inherited from OpenCredentials</span></div></footer>
+  <footer><div><span>OpenKey tenant-managed accounts · live project brief</span><span>Updated July 21, 2026 · iteration 2 active</span></div></footer>
 
   <script type="module">
     const root = document.documentElement;

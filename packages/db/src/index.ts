@@ -50,7 +50,7 @@ async function releasePgliteClient(dataDir: string) {
   process.exitCode = undefined;
 }
 
-export function createPrismaClient(opts?: { connectionString?: string; log?: Array<'query' | 'info' | 'warn' | 'error'> }) {
+export function createPrismaClient(opts?: { connectionString?: string; schema?: string; log?: Array<'query' | 'info' | 'warn' | 'error'> }) {
   const connStr = resolveConnectionString(opts);
   if (isPgliteConnectionString(connStr)) {
     const { dataDir, client } = getPgliteClient(connStr);
@@ -70,7 +70,11 @@ export function createPrismaClient(opts?: { connectionString?: string; log?: Arr
     return prisma;
   }
 
-  const adapter = new PrismaPg({ connectionString: connStr });
+  const schema = opts?.schema ?? process.env.OPENKEY_DATABASE_SCHEMA;
+  const adapter = new PrismaPg({
+    connectionString: connStr,
+    options: schema ? `-c search_path=${schema}` : undefined,
+  }, schema ? { schema } : undefined);
   return new PrismaClient({ adapter, log: opts?.log });
 }
 

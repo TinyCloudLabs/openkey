@@ -12,7 +12,7 @@ personalManagedAccountsRouter.use('*', requireSession);
 
 personalManagedAccountsRouter.get('/', async (c) => {
   const accounts = await prisma.managedAccount.findMany({
-    where: { ownerUserId: c.get('user').id, state: { in: ['MANAGED', 'EJECTING', 'USER_OWNED'] } },
+    where: { ownerUserId: c.get('user').id, state: { in: ['MANAGED', 'DISABLED', 'EJECTING', 'USER_OWNED'] } },
     select: {
       id: true,
       state: true,

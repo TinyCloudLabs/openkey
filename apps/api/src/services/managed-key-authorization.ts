@@ -61,7 +61,7 @@ const accountInclude = {
 type AuthorizedAccount = Prisma.ManagedAccountGetPayload<{ include: typeof accountInclude }>;
 
 type ResolvedActor =
-  | { type: 'organization'; organizationId: string; credentialId: string; kind: 'BROKER' | 'PROVISIONER' }
+  | { type: 'organization'; organizationId: string; credentialId: string; kind: 'BROKER' | 'PROVISIONER' | 'MANAGEMENT' }
   | { type: 'user'; userId: string; sessionId: string; lastPasskeyAt: Date | null };
 
 export type ManagedKeyAuthorizationErrorCode =
@@ -79,7 +79,6 @@ export type ManagedKeyAuthorizationErrorCode =
   | 'PLAN_POLICY_VERSION_DENIED'
   | 'PROVISIONING_ENTITLEMENT_DENIED'
   | 'DELEGATION_POLICY_DENIED'
-  | 'OWNER_PASSKEY_REQUIRED'
   | 'KEY_NOT_SEALABLE';
 
 export class ManagedKeyAuthorizationError extends Error {
@@ -251,8 +250,8 @@ function assertAuthorized(account: AuthorizedAccount, actor: ResolvedActor, inpu
       return;
     }
     if (input.request.operation === 'READ_MANAGED_ACCOUNT') {
-      if (!['PROVISIONED', 'MANAGED'].includes(account.state)) deny('LIFECYCLE_NOT_AUTHORIZED', 'Managed account is not readable');
-      if (account.state === 'MANAGED' && !activeOrganizationCustody) deny('CUSTODIAN_NOT_AUTHORIZED', 'Organization custody is not active');
+      if (!['PROVISIONED', 'MANAGED', 'DISABLED', 'USER_OWNED'].includes(account.state)) deny('LIFECYCLE_NOT_AUTHORIZED', 'Managed account is not readable');
+      if (['MANAGED', 'DISABLED'].includes(account.state) && !activeOrganizationCustody) deny('CUSTODIAN_NOT_AUTHORIZED', 'Organization custody is not active');
       assertEpoch(account, input, true);
       return;
     }
@@ -268,7 +267,7 @@ function assertAuthorized(account: AuthorizedAccount, actor: ResolvedActor, inpu
   }
 
   if (input.request.operation === 'EJECT') {
-    if (account.state !== 'MANAGED' || !activeOrganizationCustody) {
+    if (!['MANAGED', 'DISABLED'].includes(account.state) || !activeOrganizationCustody) {
       deny('LIFECYCLE_NOT_AUTHORIZED', 'Eject requires active organization custody');
     }
     if (!isFreshPasskey(actor.lastPasskeyAt, now)) {
@@ -278,8 +277,8 @@ function assertAuthorized(account: AuthorizedAccount, actor: ResolvedActor, inpu
     return;
   }
   if (input.request.operation === 'READ_MANAGED_ACCOUNT') {
-    if (!['MANAGED', 'USER_OWNED'].includes(account.state)) deny('LIFECYCLE_NOT_AUTHORIZED', 'Managed account is not readable');
-    if (account.state === 'MANAGED' && !activeOrganizationCustody) deny('CUSTODIAN_NOT_AUTHORIZED', 'Organization custody is not active');
+    if (!['MANAGED', 'DISABLED', 'USER_OWNED'].includes(account.state)) deny('LIFECYCLE_NOT_AUTHORIZED', 'Managed account is not readable');
+    if (['MANAGED', 'DISABLED'].includes(account.state) && !activeOrganizationCustody) deny('CUSTODIAN_NOT_AUTHORIZED', 'Organization custody is not active');
     if (account.state === 'USER_OWNED' && !activeUserCustody) deny('CUSTODY_NOT_ACTIVE', 'User custody is not active');
     assertEpoch(account, input, false);
     return;

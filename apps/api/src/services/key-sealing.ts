@@ -29,7 +29,7 @@ export function assertSealingContext(value: unknown): asserts value is string {
 }
 
 export type SealingContextKey = {
-  userId: string;
+  userId: string | null;
   sealingContext?: string | null;
 };
 
@@ -39,6 +39,9 @@ export type SealingContextKey = {
  */
 export function resolveSealingContext(key: SealingContextKey): string {
   if (key.sealingContext === null || key.sealingContext === undefined) {
+    if (!key.userId) {
+      throw new Error('Missing userId for legacy sealing context');
+    }
     return `openkey/user/${key.userId}/keys`;
   }
 

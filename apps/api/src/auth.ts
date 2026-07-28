@@ -1,13 +1,17 @@
 // OpenKey API - better-auth configuration
-// Auth Flow: Email OTP OR Google → Passkey creation (required) → Passkey login
+// Auth flow: email OTP by default, with optional passkey enrollment and sign-in.
 import { betterAuth, type BetterAuthPlugin } from 'better-auth';
+import { APIError, getSessionFromCtx } from 'better-auth/api';
+import { parseSetCookieHeader } from 'better-auth/cookies';
 import type { AuthMiddleware } from '@better-auth/core/api';
 import { prismaAdapter } from 'better-auth/adapters/prisma';
 import { passkey } from '@better-auth/passkey';
 import { bearer, emailOTP, jwt } from 'better-auth/plugins';
 import { oauthProvider } from '@better-auth/oauth-provider';
 import { Resend } from 'resend';
-import { createPrismaClient } from '@openkey/db';
+import { createHash } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { createPrismaClient, type PrismaClient } from '@openkey/db';
 import { createTeeClient, seal, generatePrivateKey, getAddressFromPrivateKey } from '@openkey/tee';
 import { buildEmailClaims } from './claims';
 import {
@@ -20,11 +24,15 @@ import {
 } from './oauth-config';
 import { createSealingContext } from './services/key-sealing';
 import {
+  ensureTenantManagedAccountForVerifiedEmail,
+  normalizeSubjectEmail,
+} from './services/tenant-managed-accounts';
+import {
   assertFreshPasskeyUserVerification,
   recordPasskeyFreshnessAfterHook,
 } from './services/passkey-freshness';
 
-const prisma = createPrismaClient({
+export const prisma: PrismaClient = createPrismaClient({
   log: ['error', 'warn'],
 });
 const tee = createTeeClient();
@@ -42,6 +50,187 @@ const origin = process.env.WEBAUTHN_ORIGIN!;
 // Base URL for proper request context
 const baseURL = process.env.BETTER_AUTH_URL!;
 
+type AuthoritativeOauthClient = {
+  mode: 'PERSONAL' | 'TENANT_MANAGED';
+  organizationId: string | null;
+};
+
+const oauthRequestContext = new AsyncLocalStorage<{ clientId?: string }>();
+
+function setOauthClientContext(clientId: string | undefined) {
+  oauthRequestContext.enterWith(clientId ? { clientId } : {});
+}
+
+function currentOauthClientId() {
+  return oauthRequestContext.getStore()?.clientId;
+}
+
+async function loadAuthoritativeOauthClient(
+  database: PrismaClient,
+  clientId: string | undefined,
+): Promise<AuthoritativeOauthClient | null> {
+  if (!clientId) return null;
+  return database.oauthClient.findFirst({
+    where: { clientId },
+    select: { mode: true, organizationId: true },
+  });
+}
+
+export async function buildKeyClaims(
+  user: { id: string; email: string; emailVerified: boolean },
+  scopes: string[],
+  client: AuthoritativeOauthClient | undefined,
+  mutate = false,
+  database: PrismaClient = prisma,
+) {
+  if (!scopes.includes('keys')) return undefined;
+  if (!client) return [];
+  if (client.mode === 'TENANT_MANAGED') {
+    if (!client.organizationId) {
+      console.error('[Auth] Tenant-managed OAuth client is missing organizationId');
+      return [];
+    }
+    if (!user.emailVerified) return [];
+    if (mutate) {
+      const ensured = await ensureTenantManagedAccountForVerifiedEmail(database, {
+          organizationId: client.organizationId,
+          email: user.email,
+          userId: user.id,
+        });
+      const account = await database.managedAccount.findFirst({
+        where: {
+          id: ensured.id,
+          organizationId: client.organizationId,
+          subjectEmail: normalizeSubjectEmail(user.email),
+          state: { notIn: ['DISABLED', 'USER_OWNED'] },
+          OR: [{ ownerUserId: null }, { ownerUserId: user.id }],
+        },
+        select: {
+          key: { select: { id: true, address: true, keyType: true } },
+        },
+      });
+      return account ? [{
+        address: account.key.address,
+        keyType: account.key.keyType,
+        keyId: account.key.id,
+      }] : [];
+    }
+    // Fail closed: only return the key if the account is unbound or bound to this user.
+    const account = await database.managedAccount.findFirst({
+      where: {
+        organizationId: client.organizationId,
+        subjectEmail: normalizeSubjectEmail(user.email),
+        state: { notIn: ['DISABLED', 'USER_OWNED'] },
+        OR: [{ ownerUserId: null }, { ownerUserId: user.id }],
+      },
+      select: {
+        key: { select: { id: true, address: true, keyType: true } },
+      },
+    });
+    return account ? [{
+      address: account.key.address,
+      keyType: account.key.keyType,
+      keyId: account.key.id,
+    }] : [];
+  }
+
+  const keys = await database.ethereumKey.findMany({
+    where: {
+      userId: user.id,
+      keyPurpose: 'PERSONAL',
+      archivedAt: null,
+    },
+    select: {
+      id: true,
+      address: true,
+      keyType: true,
+    },
+    orderBy: { keyIndex: 'asc' },
+  });
+  return keys.map((k) => ({
+    address: k.address,
+    keyType: k.keyType,
+    keyId: k.id,
+  }));
+}
+
+export async function buildOauthKeyClaims(
+  user: { id: string; email: string; emailVerified: boolean },
+  scopes: string[],
+  client: AuthoritativeOauthClient | undefined,
+  database: PrismaClient = prisma,
+) {
+  try {
+    return await buildKeyClaims(user, scopes, client, true, database);
+  } catch (error) {
+    const code = error && typeof error === 'object' && 'code' in error
+      ? (error as { code?: unknown }).code
+      : undefined;
+    if (code === 'TENANT_ACCESS_ENDED') {
+      throw APIError.from('FORBIDDEN', {
+        code,
+        message: 'This account is now user-owned and the tenant can no longer access it.',
+      });
+    }
+    if (code === 'ACCOUNT_DISABLED') {
+      throw APIError.from('FORBIDDEN', {
+        code,
+        message: 'This tenant-managed account is disabled.',
+      });
+    }
+    if (code === 'ACCOUNT_IDENTITY_CONFLICT') {
+      throw APIError.from('FORBIDDEN', {
+        code,
+        message: 'This email is already associated with an account owned by another user.',
+      });
+    }
+    throw error;
+  }
+}
+
+/**
+ * Userinfo variant: checks account state at the userinfo endpoint without
+ * provisioning. Throws FORBIDDEN for disabled or ejected accounts so that
+ * already-issued tokens cannot retrieve stale key claims.
+ */
+export async function buildUserInfoKeyClaims(
+  user: { id: string; email: string; emailVerified: boolean },
+  scopes: string[],
+  client: AuthoritativeOauthClient | undefined,
+  database: PrismaClient = prisma,
+) {
+  if (!scopes.includes('keys')) return undefined;
+  if (!client) return [];
+  if (client.mode !== 'TENANT_MANAGED') {
+    return buildKeyClaims(user, scopes, client, false, database);
+  }
+  if (!client.organizationId || !user.emailVerified) return [];
+  // Fail closed: only return the key if the account is unbound or bound to this user.
+  const account = await database.managedAccount.findFirst({
+    where: {
+      organizationId: client.organizationId,
+      subjectEmail: normalizeSubjectEmail(user.email),
+      OR: [{ ownerUserId: null }, { ownerUserId: user.id }],
+    },
+    select: { state: true, key: { select: { id: true, address: true, keyType: true } } },
+  });
+  if (!account) return [];
+  if (account.state === 'DISABLED') {
+    throw APIError.from('FORBIDDEN', {
+      code: 'ACCOUNT_DISABLED',
+      message: 'This tenant-managed account is disabled.',
+    });
+  }
+  if (account.state === 'USER_OWNED') {
+    throw APIError.from('FORBIDDEN', {
+      code: 'TENANT_ACCESS_ENDED',
+      message: 'This account is now user-owned and the tenant can no longer access it.',
+    });
+  }
+  if (account.state !== 'MANAGED') return [];
+  return [{ address: account.key.address, keyType: account.key.keyType, keyId: account.key.id }];
+}
+
 const passkeyFreshnessPlugin = {
   id: 'openkey-passkey-freshness',
   hooks: {
@@ -57,6 +246,227 @@ const passkeyFreshnessPlugin = {
     }],
   },
 } satisfies BetterAuthPlugin;
+
+/**
+ * Enforce tenant-managed account state. Fails closed: disabled or ejected
+ * accounts may not obtain or refresh OAuth tokens.
+ */
+async function enforceTenantManagedAccountStateForOrg(
+  database: PrismaClient,
+  organizationId: string,
+  userEmail: string,
+  userEmailVerified: boolean | undefined,
+) {
+  if (!userEmailVerified) {
+    throw APIError.from('FORBIDDEN', {
+      code: 'EMAIL_NOT_VERIFIED',
+      message: 'A verified email is required for tenant-managed OAuth access.',
+    });
+  }
+  const account = await database.managedAccount.findFirst({
+    where: {
+      organizationId,
+      subjectEmail: normalizeSubjectEmail(userEmail),
+    },
+    select: { state: true },
+  });
+  if (!account) return;
+  if (account.state === 'DISABLED') {
+    throw APIError.from('FORBIDDEN', {
+      code: 'ACCOUNT_DISABLED',
+      message: 'This tenant-managed account is disabled.',
+    });
+  }
+  if (account.state === 'USER_OWNED') {
+    throw APIError.from('FORBIDDEN', {
+      code: 'TENANT_ACCESS_ENDED',
+      message: 'This account is now user-owned and the tenant can no longer access it.',
+    });
+  }
+}
+
+async function enforceTenantManagedAccountStateForClient(
+  database: PrismaClient,
+  clientId: string,
+  user: { email: string; emailVerified?: boolean },
+) {
+  const client = await database.oauthClient.findFirst({
+    where: { clientId },
+    select: { mode: true, organizationId: true },
+  });
+  if (!client || client.mode !== 'TENANT_MANAGED') return;
+  if (!client.organizationId) {
+    throw APIError.from('FORBIDDEN', {
+      code: 'TENANT_CLIENT_MISCONFIGURED',
+      message: 'This tenant-managed OAuth client is not associated with an organization.',
+    });
+  }
+  await enforceTenantManagedAccountStateForOrg(database, client.organizationId, user.email, user.emailVerified);
+}
+
+async function hashOauthProviderToken(token: string) {
+  return createHash('sha256').update(token).digest('base64url');
+}
+
+function oauthClientIdFromTokenRequest(
+  body: { client_id?: string } | undefined,
+  headers: Headers | undefined,
+) {
+  const authorization = headers?.get('authorization');
+  if (authorization?.startsWith('Basic ')) {
+    try {
+      const decoded = Buffer.from(authorization.slice('Basic '.length), 'base64').toString('utf8');
+      const separator = decoded.indexOf(':');
+      if (separator > 0) return decoded.slice(0, separator);
+    } catch {
+      // The OAuth provider will return the authoritative invalid_client error.
+    }
+  }
+  return body?.client_id;
+}
+
+/**
+ * Plugin that enforces tenant-managed account lifecycle at every authorization-code
+ * issuance boundary. The token endpoint is covered by customTokenResponseFields,
+ * which runs after the provider has resolved the user and before it creates any
+ * access or refresh token, including opaque tokens.
+ */
+function createTenantManagedLifecyclePlugin(database: PrismaClient) {
+  return {
+  id: 'openkey-tenant-managed-lifecycle',
+  hooks: {
+    before: [
+      {
+        // Refresh callbacks do not receive the client ID. Resolve the opaque
+        // refresh token here so lifecycle checks use the authoritative client
+        // columns rather than JSON metadata.
+        matcher: (ctx: { path?: string }) => ctx.path === '/oauth2/token',
+        handler: (async (ctx: {
+          headers?: Headers;
+          body?: { grant_type?: string; client_id?: string; refresh_token?: string; code?: string };
+        }) => {
+          // client_secret_basic carries client_id only in Authorization. The
+          // provider accepts all three advertised methods, so resolve the
+          // authoritative client from the same request representation before
+          // looking up the user for refresh/code lifecycle enforcement.
+          const body = ctx.body;
+          const clientId = oauthClientIdFromTokenRequest(body, ctx.headers);
+          if (!clientId) return;
+          const client = await database.oauthClient.findFirst({
+            where: { clientId },
+            select: { mode: true, organizationId: true },
+          });
+          setOauthClientContext(clientId);
+          if (!client || client.mode !== 'TENANT_MANAGED') return;
+          if (!client.organizationId) {
+            throw APIError.from('FORBIDDEN', {
+              code: 'TENANT_CLIENT_MISCONFIGURED',
+              message: 'This tenant-managed OAuth client is not associated with an organization.',
+            });
+          }
+          let userId: string | undefined;
+          if (body?.grant_type === 'refresh_token' && body.refresh_token) {
+            const refreshToken = await database.oauthRefreshToken.findFirst({
+              where: { token: await hashOauthProviderToken(body.refresh_token) },
+              select: { userId: true },
+            });
+            userId = refreshToken?.userId;
+          } else if (body?.grant_type === 'authorization_code' && body.code) {
+            const verification = await database.verification.findFirst({
+              where: { identifier: await hashOauthProviderToken(body.code) },
+              select: { value: true },
+            });
+            if (verification) {
+              try {
+                userId = (JSON.parse(verification.value) as { userId?: unknown }).userId as string | undefined;
+              } catch {
+                return;
+              }
+            }
+          } else return;
+          if (!userId) return;
+          const user = await database.user.findUnique({
+            where: { id: userId },
+            select: { email: true, emailVerified: true },
+          });
+          if (!user) return;
+          await enforceTenantManagedAccountStateForOrg(database, client.organizationId, user.email, user.emailVerified);
+        }) as AuthMiddleware,
+      },
+      {
+        // /oauth2/authorize may issue a code immediately when consent already
+        // exists. /oauth2/consent and /oauth2/continue can also reach the
+        // provider's code issuance helper, so all three resolve the session
+        // explicitly instead of assuming a before-hook has done so.
+        matcher: (ctx: { path?: string }) =>
+          ctx.path === '/oauth2/authorize'
+          || ctx.path === '/oauth2/consent'
+          || ctx.path === '/oauth2/continue',
+        handler: (async (ctx: {
+          path?: string;
+          query?: Record<string, string>;
+          body?: { oauth_query?: string };
+          context?: { session?: { user?: { email?: string; emailVerified?: boolean } } };
+        }) => {
+          const query = ctx.body?.oauth_query
+            ? new URLSearchParams(ctx.body.oauth_query)
+            : undefined;
+          const clientId = ctx.query?.client_id ?? query?.get('client_id') ?? undefined;
+          if (!clientId) return;
+          setOauthClientContext(clientId);
+          const session = await getSessionFromCtx(ctx as never);
+          const user = session?.user;
+          if (!user?.email) return;
+          await enforceTenantManagedAccountStateForClient(database, clientId, user);
+        }) as AuthMiddleware,
+      },
+    ],
+    after: [
+      {
+        // Better Auth's OAuth provider after-hook resumes authorization after
+        // sign-in by consuming the OAuth query and newly-created session cookie.
+        // Run before that provider hook so a disabled, user-owned, or
+        // unverified tenant identity cannot receive a code after login.
+        matcher: (ctx: {
+          body?: { oauth_query?: string };
+          context?: { responseHeaders?: Headers };
+        }) => Boolean(ctx.body?.oauth_query && ctx.context?.responseHeaders?.get('set-cookie')),
+        handler: (async (ctx: {
+          body?: { oauth_query?: string };
+          context: {
+            responseHeaders?: Headers;
+            authCookies: { sessionToken: { name: string } };
+            internalAdapter: { findSession: (token: string) => Promise<{ user: { email: string; emailVerified?: boolean } } | null> };
+          };
+        }) => {
+          const clientId = new URLSearchParams(ctx.body?.oauth_query).get('client_id');
+          setOauthClientContext(clientId ?? undefined);
+          const sessionToken = clientId
+            ? parseSetCookieHeader(ctx.context.responseHeaders?.get('set-cookie') ?? '')
+                .get(ctx.context.authCookies.sessionToken.name)?.value?.split('.')[0]
+            : undefined;
+          if (!clientId || !sessionToken) return;
+          const session = await ctx.context.internalAdapter.findSession(sessionToken);
+          const user = session?.user;
+          if (!user?.email) return;
+          try {
+            await enforceTenantManagedAccountStateForClient(database, clientId, user);
+          } catch (error) {
+            // The OAuth provider's own after-hook runs later and would otherwise
+            // resume authorization after handling this error. Removing the new
+            // session cookie makes that hook a no-op before rethrowing the deny.
+            ctx.context.responseHeaders?.delete('set-cookie');
+            throw error;
+          }
+          return {};
+        }) as AuthMiddleware,
+      },
+    ],
+  },
+  } satisfies BetterAuthPlugin;
+}
+
+const tenantManagedLifecyclePlugin = createTenantManagedLifecyclePlugin(prisma);
 
 export const auth = betterAuth({
   baseURL,
@@ -74,7 +484,7 @@ export const auth = betterAuth({
     provider: 'postgresql',
   }),
 
-  // Disable email/password - we're passkey-first
+  // Passwords stay disabled; email OTP is the default authentication path.
   emailAndPassword: {
     enabled: false,
   },
@@ -88,7 +498,8 @@ export const auth = betterAuth({
 
   plugins: [
     passkeyFreshnessPlugin,
-    // Passkey authentication (required for login after initial registration)
+    tenantManagedLifecyclePlugin,
+    // Passkeys are an encouraged optional sign-in and step-up method.
     passkey({
       rpID,
       rpName: 'OpenKey',
@@ -105,7 +516,7 @@ export const auth = betterAuth({
       },
     }),
 
-    // Email OTP for initial registration verification
+    // Email OTP is the default registration and sign-in method.
     emailOTP({
       async sendVerificationOTP({ email, otp, type }) {
         if (!resend) {
@@ -158,8 +569,19 @@ export const auth = betterAuth({
       refreshTokenExpiresIn: 60 * 60 * 24 * 7, // 7 days in seconds
       idTokenExpiresIn: 60 * 60, // 1 hour in seconds
       storeClientSecret: 'hashed',
+      async customTokenResponseFields({ user, verificationValue }) {
+        // This callback is invoked for every user token response before the
+        // provider creates access/refresh tokens. Unlike customAccessTokenClaims,
+        // it also runs for the provider's default opaque access-token path.
+        const clientId = verificationValue?.query?.client_id;
+        if (clientId) setOauthClientContext(clientId);
+        if (clientId && user) await enforceTenantManagedAccountStateForClient(prisma, clientId, user);
+        return {};
+      },
       async customAccessTokenClaims({ user, scopes }) {
         if (!user || !scopes.includes(TINYCLOUD_MCP_SCOPE)) return {};
+        const client = await loadAuthoritativeOauthClient(prisma, currentOauthClientId());
+        if (!client || client.mode !== 'PERSONAL') return {};
         const keys = await prisma.ethereumKey.findMany({
           where: {
             userId: user.id,
@@ -182,60 +604,42 @@ export const auth = betterAuth({
         const emailClaims = buildEmailClaims(user, scopes);
         Object.assign(claims, emailClaims);
 
-        // Keys claims (requires prisma)
-        if (scopes.includes('keys')) {
-          const keys = await prisma.ethereumKey.findMany({
-            where: {
-              userId: user.id,
-              keyPurpose: 'PERSONAL',
-              archivedAt: null,
-            },
-            select: {
-              id: true,
-              address: true,
-              keyType: true,
-            },
-            orderBy: { keyIndex: 'asc' },
-          });
-          claims.keys = keys.map((k) => ({
-            address: k.address,
-            keyType: k.keyType,
-            keyId: k.id,
-          }));
-        }
+        const client = await loadAuthoritativeOauthClient(prisma, currentOauthClientId());
+        const keys = client
+          ? await buildOauthKeyClaims(user, scopes, client)
+          : [];
+        if (keys) claims.keys = keys;
 
         return claims;
       },
-      async customUserInfoClaims({ user, scopes }) {
+      async customUserInfoClaims({ user, scopes, jwt }) {
         const claims: Record<string, unknown> = {};
         if (scopes.includes('email')) {
           claims.email = user.email;
           claims.emailVerified = user.emailVerified;
         }
-        if (scopes.includes('keys')) {
-          const keys = await prisma.ethereumKey.findMany({
-            where: { userId: user.id, keyPurpose: 'PERSONAL', archivedAt: null },
-            select: { id: true, address: true, keyType: true },
-            orderBy: { keyIndex: 'asc' },
-          });
-          claims.keys = keys.map((k) => ({
-            address: k.address,
-            keyType: k.keyType,
-            keyId: k.id,
-          }));
-        }
+        const clientId = (jwt as { client_id?: string; azp?: string }).client_id ?? (jwt as { client_id?: string; azp?: string }).azp;
+        const client = await loadAuthoritativeOauthClient(prisma, clientId);
+        const keys = await buildUserInfoKeyClaims(
+          user,
+          scopes,
+          client ?? undefined,
+        );
+        if (keys) claims.keys = keys;
         return claims;
       },
     }) as any,
   ],
 
-  // Social providers (Google as alternative to email OTP for registration)
-  socialProviders: {
-    google: {
-      clientId: process.env.GOOGLE_CLIENT_ID || '',
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
-    },
-  },
+  // Do not advertise provider flows that are not actually configured.
+  socialProviders: process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET
+    ? {
+        google: {
+          clientId: process.env.GOOGLE_CLIENT_ID,
+          clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+        },
+      }
+    : {},
 
   // Trust proxy for production (dstack gateway)
   trustedOrigins: [origin],

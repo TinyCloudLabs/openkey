@@ -1,11 +1,17 @@
 import { describe, expect, test } from 'bun:test';
 import { createCipheriv, randomBytes } from 'node:crypto';
+import { verifyMessage } from 'viem';
 import {
   authorizeKeyOperation,
   ManagedKeyAuthorizationError,
   type AuthorizeKeyOperationInput,
 } from '../services/managed-key-authorization';
-import { activateProvisionedManagedAccount, transitionManagedAccountToUserCustody } from '../services/custody-transition';
+import {
+  activateProvisionedManagedAccount,
+  transitionManagedAccountToUserCustody,
+  possessionEventHash,
+  organizationInitialActivationPolicyHash,
+} from '../services/custody-transition';
 import {
   assertSealingContext,
   createSealingContext,
@@ -297,13 +303,133 @@ describe('managed key authorization', () => {
   });
 });
 
-describe('custody transition service', () => {
-  test('initializes exactly once from PROVISIONED epoch 0 to organization epoch 1', async () => {
+describe('initial activation possession event (direct provisioning)', () => {
+  test('canonical hash uses possessionEventHash and real signature verifies against the managed address', async () => {
+    // Use a real secp256k1 private key to verify that signPossessionEvent produces
+    // a valid Ethereum signature that can be recovered via verifyMessage.
+    const { generatePrivateKey, getAddressFromPrivateKey, seal, createWalletFromPrivateKey } = await import('@openkey/tee');
+    const privateKey = generatePrivateKey() as `0x${string}`;
+    const address = getAddressFromPrivateKey(privateKey);
+    const sealingKey = new Uint8Array(32); // all-zero key matches the test tee
+    const sealedBlob = await seal(privateKey, sealingKey);
+    const teeForTest = { deriveKey: async (_path: string) => new Uint8Array(32) } as any;
+
     const db = makeDb();
     db.state.account.state = 'PROVISIONED';
     db.state.account.custodyEpoch = 0;
     db.state.account.custodyHead = null;
-    db.state.account.key.sealedBlob = barrierSealedBlob('0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef');
+    db.state.credential.kind = 'PROVISIONER';
+    db.state.account.key = {
+      ...db.state.account.key,
+      address,
+      sealedBlob,
+      sealingContext: context,
+    };
+
+    const result = await activateProvisionedManagedAccount(db, teeForTest, {
+      type: 'organization',
+      credentialId: 'credential-a',
+      managedAccountId: 'account-a',
+      keyId: 'key-a',
+      expectedEpoch: 0,
+      nextEpoch: 1,
+      request: { operation: 'TINYCLOUD_BOOTSTRAP' },
+    }, now);
+
+    // Verify the canonical hash was computed correctly
+    const expectedHash = possessionEventHash({
+      managedAccountId: 'account-a',
+      keyId: 'key-a',
+      epoch: 1,
+      previousEventHash: null,
+      fromPrincipal: 'none',
+      toPrincipal: 'organization:org-a',
+      reason: 'INITIAL_ACTIVATION',
+      credentialPolicyHash: organizationInitialActivationPolicyHash('org-a', 1),
+      createdAt: now,
+    });
+    expect(result.eventHash).toBe(expectedHash);
+
+    // Verify the stored signature is a valid secp256k1 signature of the hash
+    const storedEvent = db.state.events.at(-1);
+    expect(storedEvent).toBeTruthy();
+    const signatureValid = await verifyMessage({
+      address: address as `0x${string}`,
+      message: expectedHash,
+      signature: (storedEvent as any).accountKeySignature as `0x${string}`,
+    });
+    expect(signatureValid).toBe(true);
+  });
+});
+
+describe('eject token revocation is transactional and does not rely on referenceId', () => {
+  test('eject revokes all TENANT_MANAGED tokens for the owner without referenceId filter', async () => {
+    const { generatePrivateKey, getAddressFromPrivateKey, seal } = await import('@openkey/tee');
+    const privateKey = generatePrivateKey() as `0x${string}`;
+    const address = getAddressFromPrivateKey(privateKey);
+    const sealingKey = new Uint8Array(32);
+    const sealedBlob = await seal(privateKey, sealingKey);
+    const teeForTest = { deriveKey: async () => new Uint8Array(32) } as any;
+
+    const db = makeDb();
+    db.state.account.key = {
+      ...db.state.account.key,
+      address,
+      sealedBlob,
+      sealingContext: context,
+    };
+    // Seed a TENANT_MANAGED OAuth client
+    const revokedAccessTokens: any[] = [];
+    const revokedRefreshTokens: any[] = [];
+    db.oauthClient = {
+      findMany: async ({ where }: any) => {
+        if (where?.mode === 'TENANT_MANAGED') return [{ clientId: 'tm-client-1' }];
+        return [];
+      },
+    };
+    db.oauthAccessToken = {
+      updateMany: async (args: any) => { revokedAccessTokens.push(args); return { count: 1 }; },
+      deleteMany: async () => ({ count: 0 }),
+    };
+    db.oauthRefreshToken = {
+      updateMany: async (args: any) => { revokedRefreshTokens.push(args); return { count: 1 }; },
+    };
+
+    await transitionManagedAccountToUserCustody(db, teeForTest, {
+      type: 'user',
+      sessionId: 'session-a',
+      managedAccountId: 'account-a',
+      keyId: 'key-a',
+      expectedEpoch: 1,
+      nextEpoch: 2,
+      request: { operation: 'EJECT', reason: 'OWNER_REQUEST' },
+    }, now);
+
+    // Token revocation must have happened without a referenceId filter
+    expect(revokedAccessTokens.length).toBeGreaterThan(0);
+    const accessWhere = revokedAccessTokens[0]?.where;
+    expect(accessWhere).toMatchObject({ userId: 'user-a', clientId: { in: ['tm-client-1'] } });
+    expect(accessWhere).not.toHaveProperty('referenceId');
+
+    expect(revokedRefreshTokens.length).toBeGreaterThan(0);
+    const refreshWhere = revokedRefreshTokens[0]?.where;
+    expect(refreshWhere).toMatchObject({ userId: 'user-a', clientId: { in: ['tm-client-1'] } });
+    expect(refreshWhere).not.toHaveProperty('referenceId');
+  });
+});
+
+describe('custody transition service', () => {
+  test('initializes exactly once from PROVISIONED epoch 0 to organization epoch 1', async () => {
+    const { generatePrivateKey, getAddressFromPrivateKey, seal } = await import('@openkey/tee');
+    const privateKey = generatePrivateKey() as `0x${string}`;
+    const address = getAddressFromPrivateKey(privateKey);
+    const sealedBlob = await seal(privateKey, new Uint8Array(32));
+    const db = makeDb();
+    db.state.account.state = 'PROVISIONED';
+    db.state.account.custodyEpoch = 0;
+    db.state.account.custodyHead = null;
+    db.state.account.key.sealedBlob = sealedBlob;
+    db.state.account.key.address = address;
     db.state.credential.kind = 'PROVISIONER';
     const result = await activateProvisionedManagedAccount(db, tee, {
       type: 'organization', credentialId: 'credential-a', managedAccountId: 'account-a', keyId: 'key-a', expectedEpoch: 0,
@@ -318,26 +444,37 @@ describe('custody transition service', () => {
     }, now), 'LIFECYCLE_NOT_AUTHORIZED');
   });
 
-  test('refuses activation without an owner passkey before signing or custody mutation', async () => {
+  test('activates organization custody without requiring an owner passkey', async () => {
+    const { generatePrivateKey, getAddressFromPrivateKey, seal } = await import('@openkey/tee');
+    const privateKey = generatePrivateKey() as `0x${string}`;
+    const address = getAddressFromPrivateKey(privateKey);
+    const sealedBlob = await seal(privateKey, new Uint8Array(32));
     const db = makeDb();
     db.state.account.state = 'PROVISIONED';
     db.state.account.custodyEpoch = 0;
     db.state.account.custodyHead = null;
     db.state.credential.kind = 'PROVISIONER';
     db.state.passkeys.findMany = async () => [];
-    db.state.account.key.sealedBlob = barrierSealedBlob('0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef');
-    await denied(activateProvisionedManagedAccount(db, tee, {
+    db.state.account.key.sealedBlob = sealedBlob;
+    db.state.account.key.address = address;
+    const result = await activateProvisionedManagedAccount(db, tee, {
       type: 'organization', credentialId: 'credential-a', managedAccountId: 'account-a', keyId: 'key-a', expectedEpoch: 0,
       nextEpoch: 1, request: { operation: 'TINYCLOUD_BOOTSTRAP' },
-    }, now), 'OWNER_PASSKEY_REQUIRED');
-    expect(db.state.account.state).toBe('PROVISIONED');
-    expect(db.state.account.custodyHead).toBeNull();
-    expect(db.state.events).toHaveLength(0);
+    }, now);
+    expect(result).toMatchObject({ previousEpoch: 0, custodyEpoch: 1, state: 'MANAGED' });
+    expect(db.state.account.state).toBe('MANAGED');
+    expect(db.state.account.custodyHead.custodianType).toBe('ORGANIZATION');
+    expect(db.state.events).toHaveLength(1);
   });
 
   test('commits exactly one next epoch and writes head, history, and event atomically', async () => {
+    const { generatePrivateKey, getAddressFromPrivateKey, seal } = await import('@openkey/tee');
+    const privateKey = generatePrivateKey() as `0x${string}`;
+    const address = getAddressFromPrivateKey(privateKey);
+    const sealedBlob = await seal(privateKey, new Uint8Array(32));
     const db = makeDb();
-    db.state.account.key.sealedBlob = barrierSealedBlob('0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef');
+    db.state.account.key.sealedBlob = sealedBlob;
+    db.state.account.key.address = address;
     const result = await transitionManagedAccountToUserCustody(db, tee, {
       type: 'user', sessionId: 'session-a', managedAccountId: 'account-a', keyId: 'key-a', expectedEpoch: 1,
       nextEpoch: 2, request: { operation: 'EJECT', reason: 'OWNER_REQUEST' },
@@ -352,8 +489,13 @@ describe('custody transition service', () => {
   });
 
   test('rejects gaps and serializes two competing transitions', async () => {
+    const { generatePrivateKey, getAddressFromPrivateKey, seal } = await import('@openkey/tee');
+    const privateKey = generatePrivateKey() as `0x${string}`;
+    const address = getAddressFromPrivateKey(privateKey);
+    const sealedBlob = await seal(privateKey, new Uint8Array(32));
     const db = makeDb();
-    db.state.account.key.sealedBlob = barrierSealedBlob('0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef');
+    db.state.account.key.sealedBlob = sealedBlob;
+    db.state.account.key.address = address;
     await denied(transitionManagedAccountToUserCustody(db, tee, {
       type: 'user', sessionId: 'session-a', managedAccountId: 'account-a', keyId: 'key-a', expectedEpoch: 1,
       nextEpoch: 3, request: { operation: 'EJECT', reason: 'OWNER_REQUEST' },
@@ -370,5 +512,34 @@ describe('custody transition service', () => {
     await first;
     await denied(second, 'LIFECYCLE_NOT_AUTHORIZED');
     expect(db.state.events).toHaveLength(1);
+  });
+
+  test('signPossessionEvent rejects when recovered address does not match the stored address', async () => {
+    // Import the real signPossessionEvent to test the negative mismatch path directly
+    const { signPossessionEvent } = await import('../services/custody-transition');
+    const { generatePrivateKey, getAddressFromPrivateKey, seal } = await import('@openkey/tee');
+    // Generate key A - its address will be stored
+    const privateKeyA = generatePrivateKey() as `0x${string}`;
+    const addressA = getAddressFromPrivateKey(privateKeyA);
+    // Generate key B - it will be sealed but stored under key A's address
+    const privateKeyB = generatePrivateKey() as `0x${string}`;
+    const addressB = getAddressFromPrivateKey(privateKeyB);
+    // Ensure the two keys have different addresses (guaranteed by randomness)
+    if (addressA.toLowerCase() === addressB.toLowerCase()) {
+      // Astronomically unlikely; skip the check silently
+      return;
+    }
+    const sealingKey = new Uint8Array(32);
+    const sealedBlobB = await seal(privateKeyB, sealingKey);
+    const teeForTest = { deriveKey: async (_path: string) => new Uint8Array(32) } as any;
+    // Key B is sealed but we store address A — the signature will recover address B, not A
+    const mismatchKey = { userId: 'user-a', sealingContext: context, sealedBlob: sealedBlobB };
+    try {
+      await signPossessionEvent(teeForTest, mismatchKey, addressA, 'test-hash');
+      throw new Error('expected KEY_NOT_SEALABLE');
+    } catch (error) {
+      expect(error).toMatchObject({ code: 'KEY_NOT_SEALABLE' });
+      expect((error as Error).message).toContain('recovered address does not match');
+    }
   });
 });

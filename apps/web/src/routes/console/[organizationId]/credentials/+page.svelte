@@ -17,11 +17,12 @@
   let createError = $state('');
   let createLoading = $state(false);
   let revokeLoading = $state('');
+  let rotateLoading = $state('');
   let loadedFor = $state('');
 
   let name = $state('');
-  let kind = $state<'BROKER' | 'PROVISIONER'>('PROVISIONER');
   let secretReveal = $state<{ credential: ConsoleCredential; secret: string } | null>(null);
+  let rotateReveal = $state<{ credential: ConsoleCredential; secret: string } | null>(null);
   let copyState = $state<'idle' | 'copied' | 'failed'>('idle');
   let acknowledged = $state(false);
 
@@ -40,7 +41,6 @@
 
   function beginCreate() {
     name = '';
-    kind = 'PROVISIONER';
     createError = '';
   }
 
@@ -53,8 +53,9 @@
       return;
     }
     try {
-      const result = await api.createConsoleCredential(currentOrganizationId, { name: name.trim(), kind });
+      const result = await api.createConsoleCredential(currentOrganizationId, { name: name.trim() });
       secretReveal = { credential: result.credential, secret: result.secret };
+      rotateReveal = null;
       acknowledged = false;
       copyState = 'idle';
       beginCreate();
@@ -66,10 +67,28 @@
     }
   }
 
-  async function copySecret() {
-    if (!secretReveal) return;
-    const copied = await copyText(secretReveal.secret);
+  async function copySecret(reveal: { credential: ConsoleCredential; secret: string } | null = secretReveal) {
+    if (!reveal) return;
+    const copied = await copyText(reveal.secret);
     copyState = copied ? 'copied' : 'failed';
+  }
+
+  async function rotateCredential(credential: ConsoleCredential) {
+    if (!confirm(`Rotate ${credential.name}? A replacement secret will be issued and the current secret will be revoked immediately. Update every client now; clients still using the old secret will lose access.`)) return;
+    rotateLoading = credential.id;
+    error = '';
+    try {
+      const result = await api.rotateConsoleCredential(currentOrganizationId, credential.id);
+      rotateReveal = { credential: result.credential, secret: result.secret };
+      secretReveal = null;
+      acknowledged = false;
+      copyState = 'idle';
+      await Promise.all([loadCredentials(), refresh()]);
+    } catch (caught: any) {
+      error = caught.message || 'Could not rotate the credential.';
+    } finally {
+      rotateLoading = '';
+    }
   }
 
   async function revokeCredential(credential: ConsoleCredential) {
@@ -93,6 +112,7 @@
       void loadCredentials();
       beginCreate();
       secretReveal = null;
+      rotateReveal = null;
       acknowledged = false;
     }
   });
@@ -175,13 +195,59 @@
     </Card>
   {/if}
 
+  {#if rotateReveal}
+    <Card class="space-y-4 border-amber-200 bg-amber-50/60">
+      <div class="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <p class="text-xs font-semibold uppercase tracking-[0.12em] text-amber-700">Rotated secret</p>
+          <h2 class="mt-2 text-lg font-semibold tracking-[-0.03em] text-surface-900">{rotateReveal.credential.name}</h2>
+          <p class="mt-1 text-sm leading-6 text-surface-600">
+            This rotation created a replacement secret for the same management credential. Save it now; it will not be shown again.
+          </p>
+        </div>
+        <span class="rounded-full border border-amber-200 bg-white px-3 py-1 text-xs font-semibold text-amber-700">
+          {rotateReveal.credential.kind}
+        </span>
+      </div>
+
+      <div class="rounded-2xl border border-dotted border-surface-200 bg-white p-4">
+        <div class="flex items-center justify-between gap-3">
+          <code class="break-all font-mono text-sm text-surface-900">{rotateReveal.secret}</code>
+          <Button variant="secondary" type="button" onclick={() => void copySecret(rotateReveal)}>
+            {copyState === 'copied' ? 'Copied' : 'Copy'}
+          </Button>
+        </div>
+      </div>
+
+      <div class="rounded-2xl border border-surface-200 bg-white p-4 text-sm leading-6 text-surface-600">
+        <strong class="text-surface-900">Immediate invalidation:</strong> the old secret was revoked when this replacement was created. Update every client to use the new secret now.
+      </div>
+
+      <div class="flex flex-wrap gap-2">
+        <Button
+          type="button"
+          disabled={acknowledged}
+          onclick={() => {
+            acknowledged = true;
+            rotateReveal = null;
+          }}
+        >
+          {acknowledged ? 'Acknowledged' : 'I saved this rotated secret'}
+        </Button>
+        <Button variant="secondary" type="button" onclick={() => { rotateReveal = null; }}>
+          Dismiss
+        </Button>
+      </div>
+    </Card>
+  {/if}
+
   {#if $overview?.organization.role === 'ADMIN'}
     <Card class="space-y-5">
       <div class="flex items-start justify-between gap-4">
         <div>
           <h2 class="text-lg font-semibold tracking-[-0.03em] text-surface-900">Create credential</h2>
           <p class="mt-1 text-sm leading-6 text-surface-600">
-            Use `PROVISIONER` for first-run bootstrap. Use `BROKER` only when the organization needs a dedicated broker identity.
+            Create the single management credential for this organization. It can create, sign, disable, restore, rotate, and revoke.
           </p>
         </div>
         <span class="rounded-full border border-surface-200 bg-surface-50 px-3 py-1 text-xs font-semibold text-surface-600">
@@ -189,21 +255,10 @@
         </span>
       </div>
 
-      <form class="grid gap-4 lg:grid-cols-[1fr_220px_auto]" onsubmit={(event) => { event.preventDefault(); void createCredential(); }}>
+      <form class="grid gap-4 lg:grid-cols-[1fr_auto]" onsubmit={(event) => { event.preventDefault(); void createCredential(); }}>
         <div class="space-y-2">
           <label class="text-sm font-semibold text-surface-900" for="credential-name">Credential name</label>
           <Input id="credential-name" bind:value={name} placeholder="First-run provisioner" required />
-        </div>
-        <div class="space-y-2">
-          <label class="text-sm font-semibold text-surface-900" for="credential-kind">Kind</label>
-          <select
-            id="credential-kind"
-            bind:value={kind}
-            class="h-10 w-full rounded-xl border border-surface-200 bg-white px-3 text-sm text-surface-900 focus-visible:border-primary-500 focus-visible:ring-2 focus-visible:ring-primary-200"
-          >
-            <option value="PROVISIONER">Provisioner</option>
-            <option value="BROKER">Broker</option>
-          </select>
         </div>
         <div class="flex items-end gap-2">
           <Button type="submit" disabled={createLoading}>{createLoading ? 'Creating...' : 'Create credential'}</Button>
@@ -240,7 +295,7 @@
       <div class="rounded-2xl border border-dotted border-surface-200 bg-surface-50 p-6">
         <h3 class="text-base font-semibold text-surface-900">No credentials yet</h3>
         <p class="mt-2 max-w-2xl text-sm leading-6 text-surface-600">
-          Create the first credential to start signing the registration and management requests for this organization.
+          Create the first credential to start signing the management requests for this organization.
         </p>
       </div>
     {:else}
@@ -268,6 +323,9 @@
               </div>
               <div class="flex flex-wrap gap-2">
                 {#if $overview?.organization.role === 'ADMIN' && !credential.revokedAt}
+                  <Button variant="secondary" type="button" onclick={() => void rotateCredential(credential)} disabled={rotateLoading === credential.id}>
+                    {rotateLoading === credential.id ? 'Rotating...' : 'Rotate'}
+                  </Button>
                   <Button variant="secondary" type="button" onclick={() => void revokeCredential(credential)} disabled={revokeLoading === credential.id}>
                     {revokeLoading === credential.id ? 'Revoking...' : 'Revoke'}
                   </Button>
