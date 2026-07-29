@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { createHash } from 'node:crypto';
 import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
@@ -20,6 +20,8 @@ process.env.OPENKEY_COORDINATIONOS_ORIGIN = configuredOrigin;
 const rawBearer = 'opaque_OpenKey_token_123';
 const tokenHash = createHash('sha256').update(rawBearer).digest('base64url');
 const tokenAudit = createHash('sha256').update(rawBearer).digest('hex');
+const serverRequestIdPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const privateKey = '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 const account = privateKeyToAccount(privateKey);
 const address = account.address;
@@ -200,6 +202,13 @@ afterAll(() => {
   mock.restore();
 });
 
+afterEach(() => {
+  for (const decision of decisions) {
+    expect(decision.requestId).toMatch(serverRequestIdPattern);
+    expect(decision.evidence.requestId).toBe(decision.requestId);
+  }
+});
+
 beforeEach(() => {
   decisions = [];
   grants = [];
@@ -347,8 +356,9 @@ describe('CoordinationOS OAuth signer route', () => {
 
     expect(response.status).toBe(200);
     expect(decisions).toHaveLength(1);
-    expect(decisions[0].requestId).toBeNull();
-    expect(decisions[0].evidence.requestId).toBeNull();
+    expect(decisions[0].requestId).toMatch(serverRequestIdPattern);
+    expect(decisions[0].requestId).not.toBe(rawBearer);
+    expect(decisions[0].evidence.requestId).toBe(decisions[0].requestId);
     expect(decisions[0].tokenDigest).toBe(tokenAudit);
     expect(decisions[0].evidence.tokenDigest).toBe(tokenAudit);
     expect(decisions[0].tokenDigest).toMatch(/^[0-9a-f]{64}$/);
@@ -409,6 +419,10 @@ describe('CoordinationOS OAuth signer route', () => {
       ['ALLOW', 'allow'],
       ['ERROR', 'signer_failed'],
     ]);
+    expect(decisions[0].requestId).toMatch(serverRequestIdPattern);
+    expect(decisions[1].requestId).toBe(decisions[0].requestId);
+    expect(decisions[0].evidence.requestId).toBe(decisions[0].requestId);
+    expect(decisions[1].evidence.requestId).toBe(decisions[0].requestId);
 
     bootstrapMode = 'fresh';
     const reuse = await sign();
@@ -528,6 +542,10 @@ describe('CoordinationOS OAuth signer route', () => {
       ['ALLOW', 'allow'],
       ['ERROR', 'signer_failed'],
     ]);
+    expect(decisions[0].requestId).toMatch(serverRequestIdPattern);
+    expect(decisions[1].requestId).toBe(decisions[0].requestId);
+    expect(decisions[0].evidence.requestId).toBe(decisions[0].requestId);
+    expect(decisions[1].evidence.requestId).toBe(decisions[0].requestId);
     expect(JSON.stringify(decisions)).not.toContain(rawBearer);
 
     signerFailure = false;

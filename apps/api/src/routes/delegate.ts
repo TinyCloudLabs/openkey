@@ -1,4 +1,5 @@
 // Delegate route - creates TinyCloud delegation for CLI auth flow
+import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { createTeeClient, unseal } from '@openkey/tee';
@@ -633,7 +634,7 @@ delegateRouter.post('/sign', async (c) => {
   const principal = c.get('delegateSignerPrincipal');
   const authFailure = c.get('delegateSignerAuthFailure');
   const oauthContext = c.get('delegateSignerOauthContext');
-  const requestId = null;
+  const requestId = randomUUID();
 
   const auditDenial = async (
     code: CoordinationosDenialCode,
