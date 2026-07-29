@@ -71,6 +71,7 @@ let resolvedOauthUser: { id: string; emailVerified: boolean } | null = {
   id: 'user_1',
   emailVerified: true,
 };
+let resolvedKey: any = { ...key };
 
 const prisma: any = {
   oauthAccessToken: {
@@ -85,7 +86,7 @@ const prisma: any = {
       : resolvedOauthUser),
   },
   ethereumKey: {
-    findUnique: mock(async ({ where }: any) => where.id === key.id ? key : null),
+    findUnique: mock(async ({ where }: any) => where.id === key.id ? resolvedKey : null),
     findFirst: mock(async ({ where }: any) => {
       if (where.id && where.id !== key.id) return null;
       return key;
@@ -224,6 +225,7 @@ beforeEach(() => {
   ensureTinyCloudBootstrapForApprovedSign.mockClear();
   transactionTail = Promise.resolve();
   resolvedOauthUser = { id: 'user_1', emailVerified: true };
+  resolvedKey = { ...key };
   token.clientId = configuredClientId;
   token.userId = 'user_1';
   token.scopes = ['openid', 'email', 'keys', 'tinycloud:session'];
@@ -243,20 +245,32 @@ beforeEach(() => {
   installSignerAuth();
 });
 
-function signingBody() {
+function signingBody(options: {
+  requestAddress?: string;
+  requestChainId?: number;
+  domain?: string;
+  siweChainId?: number;
+  issuedAt?: string;
+  expirationTime?: string;
+  spaceId?: string;
+  abilities?: Record<string, Record<string, string[]>>;
+  type?: string;
+  purpose?: string;
+} = {}) {
   const current = new Date();
   return {
-    address,
-    chainId: 1,
+    address: options.requestAddress ?? address,
+    chainId: options.requestChainId ?? 1,
     message: prepareSession({
       address,
-      chainId: 1,
-      domain: 'coordination.example',
-      issuedAt: current.toISOString(),
-      expirationTime: new Date(current.getTime() + 3_600_000).toISOString(),
-      spaceId: `tinycloud:pkh:eip155:1:${address}:applications`,
+      chainId: options.siweChainId ?? 1,
+      domain: options.domain ?? 'coordination.example',
+      issuedAt: options.issuedAt ?? current.toISOString(),
+      expirationTime: options.expirationTime
+        ?? new Date(current.getTime() + 3_600_000).toISOString(),
+      spaceId: options.spaceId ?? `tinycloud:pkh:eip155:1:${address}:applications`,
       jwk: { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' },
-      abilities: {
+      abilities: options.abilities ?? {
         kv: {
           [`coordinationos/integration/v1/${coordinationosUserNamespace(key.id)}/canary`]: [
             'tinycloud.kv/get',
@@ -265,8 +279,8 @@ function signingBody() {
         },
       },
     }).siwe,
-    type: 'siwe',
-    purpose: 'sign-in',
+    type: options.type ?? 'siwe',
+    purpose: options.purpose ?? 'sign-in',
     keyId: key.id,
   };
 }
@@ -386,6 +400,44 @@ async function expectDenied(
   expect(signerCalls).toBe(expectedSignerCalls);
   expect(JSON.stringify(decisions)).not.toContain(rawBearer);
   expect(JSON.stringify(decisions)).not.toContain('unknownOpaqueBearer123');
+}
+
+function expectDigestOnlyDenialEvidence(body?: unknown) {
+  expect(decisions).toHaveLength(1);
+  expect(bootstrapCalls).toHaveLength(0);
+  expect(ensureTinyCloudBootstrapForApprovedSign).not.toHaveBeenCalled();
+  expect(signerCalls).toBe(0);
+
+  const serialized = JSON.stringify(decisions);
+  expect(serialized).not.toContain(rawBearer);
+  expect(serialized).not.toContain(tokenHash);
+  expect(serialized).not.toContain('alice@example.test');
+  expect(serialized).not.toContain(key.sealedBlob);
+  if (body && typeof body === 'object' && 'message' in body) {
+    const message = (body as { message?: unknown }).message;
+    if (typeof message === 'string') expect(serialized).not.toContain(message);
+  }
+
+  const evidence = decisions[0].evidence;
+  for (const digest of [
+    evidence.tokenDigest,
+    evidence.siweDigest,
+    evidence.capabilityDigest,
+    evidence.nonceDigest,
+  ]) {
+    if (digest !== null) expect(digest).toMatch(/^[0-9a-f]{64}$/);
+  }
+}
+
+async function expectRouteDenial(
+  body: unknown,
+  status: number,
+  code: string,
+  authorization: string | null = `Bearer ${rawBearer}`,
+  headers: Record<string, string> = {},
+) {
+  await expectDenied(sign(body, authorization, headers), status, code);
+  expectDigestOnlyDenialEvidence(body);
 }
 
 describe('CoordinationOS OAuth signer route', () => {
@@ -520,7 +572,8 @@ describe('CoordinationOS OAuth signer route', () => {
     ['multiple authorization', `Bearer ${rawBearer}, Bearer second`, 'multiple_authorization'],
     ['unknown bearer', 'Bearer unknownOpaqueBearer123', 'unknown_token'],
   ])('%s is audited before signing', async (_name, authorization, code) => {
-    await expectDenied(sign(signingBody(), authorization), 401, code);
+    const body = signingBody();
+    await expectRouteDenial(body, 401, code, authorization);
   });
 
   test.each([
@@ -554,26 +607,29 @@ describe('CoordinationOS OAuth signer route', () => {
     code,
   ) => {
     mutate();
-    await expectDenied(sign(), 403, code);
+    const body = signingBody();
+    await expectRouteDenial(body, 403, code);
   });
 
   test('expired and over-300-second OAuth tokens are audited before signing', async () => {
+    const expiredBody = signingBody();
     token.expiresAt = new Date(Date.now() - 1);
-    await expectDenied(sign(), 401, 'token_expired');
+    await expectRouteDenial(expiredBody, 401, 'token_expired');
 
     decisions = [];
     token.expiresAt = new Date(Date.now() + 60_000);
     token.createdAt = new Date(Date.now() - 300_001);
-    await expectDenied(sign(), 401, 'token_too_old');
+    const oldBody = signingBody();
+    await expectRouteDenial(oldBody, 401, 'token_too_old');
   });
 
   test('malformed JSON and every missing OAuth request field are audited without signing', async () => {
-    await expectDenied(sign('{'), 400, 'malformed_json');
+    await expectRouteDenial('{', 400, 'malformed_json');
     for (const field of ['address', 'chainId', 'message', 'type', 'purpose', 'keyId']) {
       decisions = [];
       const body: any = signingBody();
       delete body[field];
-      await expectDenied(sign(body), 400, 'missing_field');
+      await expectRouteDenial(body, 400, 'missing_field');
     }
   });
 
@@ -583,12 +639,13 @@ describe('CoordinationOS OAuth signer route', () => {
       /^URI: .*$/m,
       'URI: did:key:not_multibase#not_multibase',
     );
-    await expectDenied(sign(body), 403, 'siwe_uri_mismatch');
+    await expectRouteDenial(body, 403, 'siwe_uri_mismatch');
   });
 
   test('a real ReCap with caveats [{}] is denied before bootstrap or signing', async () => {
-    await expectDenied(
-      sign(withRecapCaveat(signingBody(), {})),
+    const body = withRecapCaveat(signingBody(), {});
+    await expectRouteDenial(
+      body,
       403,
       'capability_escalation',
     );
@@ -603,8 +660,9 @@ describe('CoordinationOS OAuth signer route', () => {
     _name,
     sqlFirst,
   ) => {
-    await expectDenied(
-      sign(withSqlAndCanaryRecaps(signingBody(), sqlFirst)),
+    const body = withSqlAndCanaryRecaps(signingBody(), sqlFirst);
+    await expectRouteDenial(
+      body,
       403,
       'capability_escalation',
     );
@@ -616,6 +674,136 @@ describe('CoordinationOS OAuth signer route', () => {
     expect(bootstrapCalls).toHaveLength(0);
     expect(ensureTinyCloudBootstrapForApprovedSign).not.toHaveBeenCalled();
     expect(signerCalls).toBe(0);
+  });
+
+  test.each([
+    ['missing key', () => { resolvedKey = null; }, 'key_not_found'],
+    ['other-user key', () => { resolvedKey.userId = 'user_2'; }, 'wrong_user'],
+    ['non-personal key', () => {
+      resolvedKey.keyPurpose = 'MANAGED_ACCOUNT';
+    }, 'wrong_key_purpose'],
+    ['external key', () => { resolvedKey.keyType = 'EXTERNAL'; }, 'external_key_denied'],
+    ['archived key', () => { resolvedKey.archivedAt = new Date(); }, 'key_archived'],
+    ['address-mismatched key', () => {
+      resolvedKey.address = '0x1111111111111111111111111111111111111111';
+    }, 'key_address_mismatch'],
+    ['unsealed key', () => { resolvedKey.sealedBlob = null; }, 'key_unavailable'],
+  ])('%s route denial records digest-only evidence without bootstrap or signing', async (
+    _name,
+    mutate,
+    code,
+  ) => {
+    mutate();
+    const body = signingBody();
+    await expectRouteDenial(body, 403, code);
+  });
+
+  test.each([
+    ['missing origin', () => signingBody(), { origin: '' }, 403, 'missing_origin'],
+    ['wrong origin', () => signingBody(), { origin: 'https://evil.example' }, 403, 'wrong_origin'],
+    ['SIWE domain mismatch', () => signingBody({
+      domain: 'evil.example',
+    }), {}, 403, 'siwe_domain_mismatch'],
+    ['wrong request chain', () => signingBody({
+      requestChainId: 137,
+    }), {}, 403, 'wrong_chain'],
+    ['SIWE chain mismatch', () => signingBody({
+      siweChainId: 137,
+    }), {}, 403, 'chain_mismatch'],
+    ['ReCap space chain mismatch', () => signingBody({
+      spaceId: `tinycloud:pkh:eip155:137:${address}:applications`,
+    }), {}, 403, 'chain_mismatch'],
+    ['wrong signing type', () => signingBody({
+      type: 'message',
+    }), {}, 403, 'wrong_type'],
+    ['wrong signing purpose', () => signingBody({
+      purpose: 'bootstrap-session',
+    }), {}, 403, 'wrong_purpose'],
+    ['malformed SIWE', () => ({
+      ...signingBody(),
+      message: 'not siwe',
+    }), {}, 400, 'invalid_siwe'],
+    ['wrong canary capability', () => signingBody({
+      abilities: {
+        kv: {
+          'coordinationos/integration/v1/wrong/canary': [
+            'tinycloud.kv/get',
+            'tinycloud.kv/put',
+          ],
+        },
+      },
+    }), {}, 403, 'wrong_capability'],
+    ['capability escalation', () => signingBody({
+      abilities: {
+        kv: {
+          [`coordinationos/integration/v1/${coordinationosUserNamespace(key.id)}/canary`]: [
+            'tinycloud.kv/get',
+            'tinycloud.kv/put',
+            'tinycloud.kv/delete',
+          ],
+        },
+      },
+    }), {}, 403, 'capability_escalation'],
+    ['invalid nonce', () => {
+      const body = signingBody();
+      body.message = body.message.replace(/^Nonce: .*$/m, 'Nonce: short');
+      return body;
+    }, {}, 400, 'invalid_nonce'],
+    ['future issued-at', () => {
+      const current = Date.now();
+      return signingBody({
+        issuedAt: new Date(current + 61_000).toISOString(),
+        expirationTime: new Date(current + 3_600_000).toISOString(),
+      });
+    }, {}, 403, 'issued_at_invalid'],
+    ['expired session', () => {
+      const current = Date.now();
+      return signingBody({
+        issuedAt: new Date(current - 30_000).toISOString(),
+        expirationTime: new Date(current - 1_000).toISOString(),
+      });
+    }, {}, 403, 'session_expired'],
+    ['session TTL exceeded', () => {
+      const current = Date.now();
+      return signingBody({
+        issuedAt: new Date(current).toISOString(),
+        expirationTime: new Date(current + 3_601_000).toISOString(),
+      });
+    }, {}, 403, 'session_ttl_exceeded'],
+  ])('%s policy dimension is denied at the route with one digest-only audit row', async (
+    _name,
+    makeBody,
+    headers,
+    status,
+    code,
+  ) => {
+    const body = makeBody();
+    await expectRouteDenial(body, status, code, `Bearer ${rawBearer}`, headers);
+  });
+
+  test.each([
+    ['token reuse', 'token_consumed', (body: ReturnType<typeof signingBody>) => {
+      grants.push({
+        oauthAccessTokenId: token.id,
+        nonceDigest: 'f'.repeat(64),
+      });
+    }],
+    ['nonce replay', 'nonce_replayed', (body: ReturnType<typeof signingBody>) => {
+      const nonce = /^Nonce: (.*)$/m.exec(body.message)?.[1];
+      if (!nonce) throw new Error('fixture nonce missing');
+      grants.push({
+        oauthAccessTokenId: 'another_token',
+        nonceDigest: createHash('sha256').update(nonce).digest('hex'),
+      });
+    }],
+  ])('%s is denied at the route with one DENY row and no bootstrap or signer calls', async (
+    _name,
+    code,
+    arrange,
+  ) => {
+    const body = signingBody();
+    arrange(body);
+    await expectRouteDenial(body, 409, code);
   });
 
   test('signer failure consumes the grant and appends ERROR audit evidence', async () => {
@@ -676,6 +864,14 @@ describe('CoordinationOS OAuth signer route', () => {
     expect(signerCalls).toBe(1);
   });
 
+  test('matching OAuth bearer is denied when CoordinationOS configuration is unset', async () => {
+    delete process.env.OPENKEY_COORDINATIONOS_OAUTH_CLIENT_ID;
+    delete process.env.OPENKEY_COORDINATIONOS_ORIGIN;
+    const body = signingBody();
+
+    await expectRouteDenial(body, 403, 'wrong_client');
+  });
+
   test('Better Auth session signing still honors disabled Auto-Sign', async () => {
     delete process.env.OPENKEY_COORDINATIONOS_OAUTH_CLIENT_ID;
     delete process.env.OPENKEY_COORDINATIONOS_ORIGIN;
@@ -694,10 +890,47 @@ describe('CoordinationOS OAuth signer route', () => {
   });
 
   test('the complete stable-code status map matches the contract', () => {
-    expect(Object.entries(COORDINATIONOS_DENIAL_STATUS).filter(([, status]) => status === 400).map(([code]) => code))
-      .toEqual(['malformed_json', 'missing_field', 'invalid_siwe', 'invalid_nonce']);
-    expect(Object.keys(COORDINATIONOS_DENIAL_STATUS)).toHaveLength(40);
-    expect(COORDINATIONOS_DENIAL_STATUS.token_consumed).toBe(409);
-    expect(COORDINATIONOS_DENIAL_STATUS.signer_failed).toBe(500);
+    expect(COORDINATIONOS_DENIAL_STATUS).toEqual({
+      malformed_json: 400,
+      missing_field: 400,
+      invalid_siwe: 400,
+      invalid_nonce: 400,
+      missing_authorization: 401,
+      malformed_authorization: 401,
+      multiple_authorization: 401,
+      unknown_token: 401,
+      token_expired: 401,
+      token_too_old: 401,
+      wrong_client: 403,
+      client_disabled: 403,
+      client_misconfigured: 403,
+      missing_scope: 403,
+      user_not_found: 403,
+      email_not_verified: 403,
+      key_not_found: 403,
+      wrong_user: 403,
+      wrong_key_purpose: 403,
+      external_key_denied: 403,
+      key_archived: 403,
+      key_address_mismatch: 403,
+      key_unavailable: 403,
+      missing_origin: 403,
+      wrong_origin: 403,
+      siwe_domain_mismatch: 403,
+      wrong_chain: 403,
+      chain_mismatch: 403,
+      wrong_type: 403,
+      wrong_purpose: 403,
+      siwe_uri_mismatch: 403,
+      wrong_capability: 403,
+      capability_escalation: 403,
+      issued_at_invalid: 403,
+      session_expired: 403,
+      session_ttl_exceeded: 403,
+      nonce_replayed: 409,
+      token_consumed: 409,
+      audit_write_failed: 500,
+      signer_failed: 500,
+    });
   });
 });
