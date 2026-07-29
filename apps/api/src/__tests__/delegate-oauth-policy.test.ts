@@ -20,9 +20,10 @@ function validMessage(overrides: {
   chainId?: number;
   issuedAt?: string;
   expirationTime?: string;
+  spaceId?: string;
   abilities?: Record<string, Record<string, string[]>>;
 } = {}) {
-  const spaceId = `tinycloud:pkh:eip155:1:${address}:applications`;
+  const spaceId = overrides.spaceId ?? `tinycloud:pkh:eip155:1:${address}:applications`;
   return prepareSession({
     address,
     chainId: overrides.chainId ?? 1,
@@ -86,6 +87,19 @@ function fixture(): CoordinationosSessionPolicyInput {
   };
 }
 
+function withNonemptyRecapCaveat(message: string): string {
+  const encoded = /- urn:recap:([A-Za-z0-9_-]+)/.exec(message)?.[1];
+  if (!encoded) throw new Error('fixture does not contain a ReCap resource');
+  const recap = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as {
+    att: Record<string, Record<string, unknown[]>>;
+  };
+  for (const abilities of Object.values(recap.att)) {
+    for (const ability of Object.keys(abilities)) abilities[ability] = [{ limited: true }];
+  }
+  const mutated = Buffer.from(JSON.stringify(recap), 'utf8').toString('base64url');
+  return message.replace(`urn:recap:${encoded}`, `urn:recap:${mutated}`);
+}
+
 describe('CoordinationOS TinyCloud session policy', () => {
   test('real prepareSession ReCap canonicalizes from kv and full space URI', () => {
     const result = evaluateCoordinationosSessionRequest(fixture());
@@ -117,8 +131,23 @@ describe('CoordinationOS TinyCloud session policy', () => {
 
   const cases: Array<[string, (input: CoordinationosSessionPolicyInput) => void, string]> = [
     ['wrong client', (input) => { input.principal.clientId = 'other'; }, 'wrong_client'],
+    ['unregistered client', (input) => { input.client = null; }, 'wrong_client'],
     ['disabled client', (input) => { input.client!.disabled = true; }, 'client_disabled'],
     ['public client', (input) => { input.client!.public = true; }, 'client_misconfigured'],
+    ['non-web client', (input) => { input.client!.type = 'spa'; }, 'client_misconfigured'],
+    ['non-personal client', (input) => { input.client!.mode = 'TENANT_MANAGED'; }, 'client_misconfigured'],
+    ['wrong auth method', (input) => {
+      input.client!.tokenEndpointAuthMethod = 'none';
+    }, 'client_misconfigured'],
+    ['wrong grants', (input) => {
+      input.client!.grantTypes = ['authorization_code', 'refresh_token'];
+    }, 'client_misconfigured'],
+    ['wrong response types', (input) => {
+      input.client!.responseTypes = ['code', 'token'];
+    }, 'client_misconfigured'],
+    ['extra client scope', (input) => {
+      input.client!.scopes.push('offline_access');
+    }, 'client_misconfigured'],
     ['missing scope', (input) => {
       input.client!.scopes = ['openid', 'email', 'keys'];
     }, 'missing_scope'],
@@ -145,6 +174,11 @@ describe('CoordinationOS TinyCloud session policy', () => {
     ['SIWE chain mismatch', (input) => {
       input.request.message = validMessage({ chainId: 137 });
     }, 'chain_mismatch'],
+    ['ReCap space chain mismatch', (input) => {
+      input.request.message = validMessage({
+        spaceId: `tinycloud:pkh:eip155:137:${address}:applications`,
+      });
+    }, 'chain_mismatch'],
     ['wrong type', (input) => { input.request.type = 'message'; }, 'wrong_type'],
     ['wrong purpose', (input) => { input.request.purpose = 'bootstrap-session'; }, 'wrong_purpose'],
     ['malformed SIWE', (input) => { input.request.message = 'not siwe'; }, 'invalid_siwe'],
@@ -158,6 +192,12 @@ describe('CoordinationOS TinyCloud session policy', () => {
       input.request.message = validMessage({
         issuedAt: new Date(now.getTime() + 61_000).toISOString(),
         expirationTime: new Date(now.getTime() + 3_600_000).toISOString(),
+      });
+    }, 'issued_at_invalid'],
+    ['old issued at', (input) => {
+      input.request.message = validMessage({
+        issuedAt: new Date(now.getTime() - 61_000).toISOString(),
+        expirationTime: new Date(now.getTime() + 3_000_000).toISOString(),
       });
     }, 'issued_at_invalid'],
     ['expired session', (input) => {
@@ -192,6 +232,16 @@ describe('CoordinationOS TinyCloud session policy', () => {
     expect(result).toMatchObject({ allowed: false, code: 'siwe_uri_mismatch' });
   });
 
+  test('matching did:key fragments must still be a valid multibase identifier', () => {
+    const input = fixture();
+    input.request.message = (input.request.message as string).replace(
+      /^URI: .*$/m,
+      'URI: did:key:not_multibase#not_multibase',
+    );
+    const result = evaluateCoordinationosSessionRequest(input);
+    expect(result).toMatchObject({ allowed: false, code: 'siwe_uri_mismatch' });
+  });
+
   test('extra capability is denied as capability_escalation', () => {
     const input = fixture();
     input.request.message = validMessage({
@@ -207,5 +257,86 @@ describe('CoordinationOS TinyCloud session policy', () => {
     });
     const result = evaluateCoordinationosSessionRequest(input);
     expect(result).toMatchObject({ allowed: false, code: 'capability_escalation' });
+  });
+
+  test.each([
+    ['wrong space', {
+      spaceId: `tinycloud:pkh:eip155:1:${address}:other`,
+    }, 'wrong_capability'],
+    ['wrong path', {
+      abilities: { kv: { 'coordinationos/integration/v1/wrong/canary': [
+        'tinycloud.kv/get', 'tinycloud.kv/put',
+      ] } },
+    }, 'wrong_capability'],
+    ['prefix grant', {
+      abilities: { kv: { [`coordinationos/integration/v1/${coordinationosUserNamespace(keyId)}`]: [
+        'tinycloud.kv/get', 'tinycloud.kv/put',
+      ] } },
+    }, 'wrong_capability'],
+    ['missing action', {
+      abilities: { kv: { [`coordinationos/integration/v1/${coordinationosUserNamespace(keyId)}/canary`]: [
+        'tinycloud.kv/get',
+      ] } },
+    }, 'wrong_capability'],
+    ['delete action', {
+      abilities: { kv: { [`coordinationos/integration/v1/${coordinationosUserNamespace(keyId)}/canary`]: [
+        'tinycloud.kv/get', 'tinycloud.kv/put', 'tinycloud.kv/delete',
+      ] } },
+    }, 'capability_escalation'],
+    ['list action', {
+      abilities: { kv: { [`coordinationos/integration/v1/${coordinationosUserNamespace(keyId)}/canary`]: [
+        'tinycloud.kv/get', 'tinycloud.kv/put', 'tinycloud.kv/list',
+      ] } },
+    }, 'capability_escalation'],
+    ['SQL capability', {
+      abilities: { sql: { '': ['tinycloud.sql/read'] } },
+    }, 'capability_escalation'],
+    ['extra ReCap entry', {
+      abilities: { kv: {
+        [`coordinationos/integration/v1/${coordinationosUserNamespace(keyId)}/canary`]: [
+          'tinycloud.kv/get', 'tinycloud.kv/put',
+        ],
+        'coordinationos/integration/v1/extra/canary': ['tinycloud.kv/get'],
+      } },
+    }, 'capability_escalation'],
+  ])('%s is denied by the exact canary policy', (_name, overrides, code) => {
+    const input = fixture();
+    input.request.message = validMessage(overrides);
+    expect(evaluateCoordinationosSessionRequest(input)).toMatchObject({
+      allowed: false,
+      code,
+    });
+  });
+
+  test('arbitrary SIWE without ReCap authority is denied', () => {
+    const input = fixture();
+    input.request.message = (input.request.message as string).replace(/\nResources:[\s\S]*$/, '');
+    expect(evaluateCoordinationosSessionRequest(input)).toMatchObject({
+      allowed: false,
+      code: 'wrong_capability',
+    });
+  });
+
+  test('duplicate actions and nonempty caveats are rejected as escalation', () => {
+    expect(() => canonicalizeCoordinationosCapabilities([{
+      service: 'kv',
+      space: 'space',
+      path: 'path',
+      actions: ['tinycloud.kv/get', 'tinycloud.kv/get'],
+    }])).toThrow('Duplicate ReCap actions');
+    expect(() => canonicalizeCoordinationosCapabilities([{
+      service: 'kv',
+      space: 'space',
+      path: 'path',
+      actions: ['tinycloud.kv/get', 'tinycloud.kv/put'],
+      caveats: [{ anything: true }],
+    }])).toThrow('caveats');
+
+    const input = fixture();
+    input.request.message = withNonemptyRecapCaveat(input.request.message as string);
+    expect(evaluateCoordinationosSessionRequest(input)).toMatchObject({
+      allowed: false,
+      code: 'capability_escalation',
+    });
   });
 });
