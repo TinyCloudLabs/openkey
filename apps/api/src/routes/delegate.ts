@@ -1,8 +1,13 @@
 // Delegate route - creates TinyCloud delegation for CLI auth flow
+import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { createTeeClient, unseal } from '@openkey/tee';
-import { requireSession, type SessionContext } from '../middleware/session';
+import { requireSession } from '../middleware/session';
+import {
+  createDelegateSignerAuth,
+  type DelegateSignerContext,
+} from '../middleware/delegate-signer-auth';
 import type { Hex } from 'viem';
 import {
   prepareSession,
@@ -26,17 +31,58 @@ import {
   evaluateBootstrapSigningScope,
 } from './delegate-autosign';
 import { deriveKeyForRecord } from '../services/key-sealing';
+import {
+  canonicalizeCoordinationosOrigin,
+  evaluateCoordinationosSessionRequest,
+  sha256Hex,
+  type CoordinationosPolicyEvidence,
+} from '../services/coordinationos-session-policy';
+import {
+  consumeCoordinationosGrant,
+  coordinationosDenialResponse,
+  coordinationosStatus,
+  recordCoordinationosDenial,
+  recordCoordinationosSignerError,
+  sparseCoordinationosEvidence,
+  type CoordinationosDenialCode,
+} from '../services/coordinationos-signing-audit';
 
 const prisma = createPrismaClient();
 const tee = createTeeClient();
 
-export const delegateRouter = new Hono<SessionContext>();
+async function resolveBetterAuthSession(c: any): Promise<boolean> {
+  let resolved = false;
+  await (requireSession as any)(c, async () => {
+    resolved = true;
+  });
+  return resolved;
+}
+
+const defaultDelegateSignerAuth = createDelegateSignerAuth({
+  database: prisma,
+  resolveSession: resolveBetterAuthSession,
+});
+let activeDelegateSignerAuth = defaultDelegateSignerAuth;
+
+export function setDelegateSignerAuthMiddlewareForTests(
+  middleware = defaultDelegateSignerAuth,
+): void {
+  activeDelegateSignerAuth = middleware;
+}
+
+export const delegateRouter = new Hono<DelegateSignerContext>();
 
 // The SIWE domain identifies the requestor (the CLI), not the storage node
 const SIWE_DOMAIN = 'cli.tinycloud.xyz';
 
-// Require authentication
-delegateRouter.use('*', requireSession);
+// Only the signer route accepts the narrow CoordinationOS OAuth principal.
+// Every other delegate endpoint retains the existing Better Auth session gate.
+delegateRouter.use('*', async (c, next) => {
+  if (c.req.path.endsWith('/sign')) {
+    return activeDelegateSignerAuth(c, next);
+  }
+  return (requireSession as any)(c, next);
+});
 
 // Default abilities (same as NodeUserAuthorization)
 type DelegationJwk = { kty: string; crv: string; x: string };
@@ -343,6 +389,7 @@ interface OpenKeySigningRequestBody {
   message: string;
   type: 'siwe' | 'message';
   keyId?: string;
+  purpose?: string;
 }
 
 /**
@@ -528,16 +575,49 @@ function openKeyApprovalRequired(reason: string, code: string) {
   };
 }
 
+async function unsealManagedKey(
+  key: { userId: string | null; sealingContext?: string | null },
+  sealedBlob: string,
+): Promise<Hex> {
+  const sealingKey = await deriveKeyForRecord(tee, key);
+  return unseal(sealedBlob, sealingKey) as Promise<Hex>;
+}
+
 async function signManagedKey(
   key: { userId: string | null; sealingContext?: string | null },
   sealedBlob: string,
   message: string,
 ) {
-  const sealingKey = await deriveKeyForRecord(tee, key);
-  const privateKey = await unseal(sealedBlob, sealingKey) as Hex;
+  const privateKey = await unsealManagedKey(key, sealedBlob);
+  return signWithManagedPrivateKey(privateKey, message);
+}
+
+async function signWithManagedPrivateKey(privateKey: Hex, message: string) {
   const { createWalletFromPrivateKey } = await import('@openkey/tee');
   const account = createWalletFromPrivateKey(privateKey);
   return account.signMessage({ message });
+}
+
+function coordinationosBootstrapTrigger(address: string): string {
+  const now = new Date();
+  return prepareSession({
+    address,
+    chainId: 1,
+    domain: SIWE_DOMAIN,
+    issuedAt: now.toISOString(),
+    expirationTime: new Date(now.getTime() + 3_600_000).toISOString(),
+    spaceId: makeSpaceId(address, 1, 'account'),
+    jwk: {
+      kty: 'OKP',
+      crv: 'Ed25519',
+      x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    },
+    abilities: {
+      capabilities: {
+        capabilities: [CAPABILITIES.READ],
+      },
+    },
+  }).siwe;
 }
 
 /**
@@ -551,6 +631,191 @@ async function signManagedKey(
  * remain explicit-approval flows and deliberately do not apply this gate.
  */
 delegateRouter.post('/sign', async (c) => {
+  const principal = c.get('delegateSignerPrincipal');
+  const authFailure = c.get('delegateSignerAuthFailure');
+  const oauthContext = c.get('delegateSignerOauthContext');
+  const requestId = randomUUID();
+
+  const auditDenial = async (
+    code: CoordinationosDenialCode,
+    evidence: CoordinationosPolicyEvidence,
+  ) => {
+    try {
+      const decision = await recordCoordinationosDenial(prisma, code, evidence, requestId);
+      return c.json(
+        coordinationosDenialResponse(code, decision.decisionId),
+        coordinationosStatus(code) as any,
+      );
+    } catch {
+      return c.json(
+        coordinationosDenialResponse('audit_write_failed', 'unavailable'),
+        500,
+      );
+    }
+  };
+
+  if (!principal) {
+    const code = authFailure?.code ?? 'missing_authorization';
+    return auditDenial(code, sparseCoordinationosEvidence({
+      oauthAccessTokenId: authFailure?.oauthAccessTokenId,
+      tokenDigest: authFailure?.tokenDigest,
+      clientId: authFailure?.clientId,
+      userId: authFailure?.userId,
+    }));
+  }
+
+  if (principal.kind === 'coordinationos-oauth') {
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return auditDenial('malformed_json', sparseCoordinationosEvidence({
+        oauthAccessTokenId: principal.oauthAccessTokenId,
+        tokenDigest: principal.tokenDigest,
+        clientId: principal.clientId,
+        userId: principal.userId,
+      }));
+    }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return auditDenial('malformed_json', sparseCoordinationosEvidence({
+        oauthAccessTokenId: principal.oauthAccessTokenId,
+        tokenDigest: principal.tokenDigest,
+        clientId: principal.clientId,
+        userId: principal.userId,
+      }));
+    }
+    const candidate = body as Record<string, unknown>;
+    const required = ['address', 'chainId', 'message', 'type', 'purpose', 'keyId'] as const;
+    if (required.some((field) => !Object.prototype.hasOwnProperty.call(candidate, field))) {
+      return auditDenial('missing_field', sparseCoordinationosEvidence({
+        oauthAccessTokenId: principal.oauthAccessTokenId,
+        tokenDigest: principal.tokenDigest,
+        clientId: principal.clientId,
+        userId: principal.userId,
+        keyId: typeof candidate.keyId === 'string' ? candidate.keyId : null,
+        origin: canonicalizeCoordinationosOrigin(c.req.header('origin')),
+        chainId: typeof candidate.chainId === 'number' ? candidate.chainId : null,
+        purpose: typeof candidate.purpose === 'string' ? candidate.purpose : null,
+        type: typeof candidate.type === 'string' ? candidate.type : null,
+        siweDigest: typeof candidate.message === 'string' ? sha256Hex(candidate.message) : null,
+      }));
+    }
+
+    const key = typeof candidate.keyId === 'string'
+      ? await prisma.ethereumKey.findUnique({
+          where: { id: candidate.keyId },
+          select: {
+            id: true,
+            userId: true,
+            address: true,
+            keyType: true,
+            keyPurpose: true,
+            archivedAt: true,
+            sealedBlob: true,
+            sealingContext: true,
+          },
+        })
+      : null;
+    const policy = evaluateCoordinationosSessionRequest({
+      principal,
+      client: oauthContext?.client ?? null,
+      user: oauthContext?.user ?? null,
+      key,
+      request: {
+        address: candidate.address,
+        chainId: candidate.chainId,
+        message: candidate.message,
+        type: candidate.type,
+        purpose: candidate.purpose,
+        keyId: candidate.keyId,
+        origin: c.req.header('origin') ?? null,
+      },
+    });
+    if (!policy.allowed) return auditDenial(policy.code, policy.evidence);
+    if (!key || !key.sealedBlob || !policy.evidence.nonceDigest) {
+      return auditDenial('key_unavailable', policy.evidence);
+    }
+
+    let grant;
+    try {
+      grant = await consumeCoordinationosGrant(prisma, {
+        evidence: policy.evidence,
+        oauthAccessTokenId: principal.oauthAccessTokenId,
+        nonceDigest: policy.evidence.nonceDigest,
+        clientId: principal.clientId,
+        userId: principal.userId,
+        keyId: key.id,
+        requestId,
+      });
+    } catch {
+      return c.json(
+        coordinationosDenialResponse('audit_write_failed', 'unavailable'),
+        500,
+      );
+    }
+    if (!grant.allowed) {
+      return c.json(
+        coordinationosDenialResponse(grant.code, grant.decision.decisionId),
+        coordinationosStatus(grant.code) as any,
+      );
+    }
+
+    try {
+      const privateKey = await unsealManagedKey(key, key.sealedBlob);
+      const { ensureTinyCloudBootstrapForApprovedSign } = await import(
+        '../services/tinycloud-bootstrap'
+      );
+      const bootstrap = await ensureTinyCloudBootstrapForApprovedSign({
+        // The OAuth grant is already a policy-approved signing decision. The
+        // bootstrap service's user-preference lookup is for the unchanged
+        // Better Auth session branch, so satisfy that narrow seam without
+        // mutating the user's stored Auto-Sign preference.
+        prisma: {
+          user: {
+            findUnique: async () => ({ autoSignEnabled: true }),
+          },
+          tinyCloudBootstrapState: prisma.tinyCloudBootstrapState,
+        } as any,
+        userId: principal.userId,
+        key: {
+          id: key.id,
+          address: key.address,
+          keyType: key.keyType,
+          keyPurpose: 'PERSONAL',
+        },
+        privateKey,
+        message: coordinationosBootstrapTrigger(key.address),
+        format: 'personal_sign',
+      });
+      if (bootstrap.status !== 'complete') {
+        throw new Error('TinyCloud bootstrap did not complete');
+      }
+      const signature = await signWithManagedPrivateKey(
+        privateKey,
+        candidate.message as string,
+      );
+      return c.json({
+        approved: true,
+        signature,
+        decisionId: grant.decision.decisionId,
+        policyVersion: grant.decision.policyVersion,
+      });
+    } catch {
+      try {
+        const decision = await recordCoordinationosSignerError(prisma, policy.evidence, requestId);
+        return c.json(
+          coordinationosDenialResponse('signer_failed', decision.decisionId),
+          500,
+        );
+      } catch {
+        return c.json(
+          coordinationosDenialResponse('audit_write_failed', 'unavailable'),
+          500,
+        );
+      }
+    }
+  }
+
   const user = c.get('user');
   const body = await c.req.json();
 

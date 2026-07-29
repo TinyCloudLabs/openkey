@@ -198,6 +198,39 @@ describe('oauth key claims', () => {
     ]);
   });
 
+  test('tinycloud session claims query only managed unarchived personal keys', async () => {
+    const claims = await buildKeyClaims(
+      { id: 'user-1', email: 'Alice@Example.Test', emailVerified: true },
+      ['keys', 'tinycloud:session'],
+      { mode: 'PERSONAL', organizationId: null },
+      true,
+    );
+
+    expect(prisma.ethereumKey.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          userId: 'user-1',
+          keyPurpose: 'PERSONAL',
+          keyType: 'MANAGED',
+          archivedAt: null,
+        },
+      }),
+    );
+    expect(claims).toHaveLength(1);
+  });
+
+  test('tinycloud session claims never expose tenant-managed keys', async () => {
+    const claims = await buildKeyClaims(
+      { id: 'user-1', email: 'Alice@Example.Test', emailVerified: true },
+      ['keys', 'tinycloud:session'],
+      { mode: 'TENANT_MANAGED', organizationId: 'org-1' },
+      true,
+    );
+    expect(claims).toEqual([]);
+    expect(ensureTenantManagedAccountForVerifiedEmail).not.toHaveBeenCalled();
+    expect(prisma.managedAccount.findFirst).not.toHaveBeenCalled();
+  });
+
   test.each([
     ['TENANT_ACCESS_ENDED', 'This account is now user-owned'],
     ['ACCOUNT_DISABLED', 'This tenant-managed account is disabled'],

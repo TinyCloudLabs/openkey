@@ -313,6 +313,55 @@ model OauthAccessToken {
   @@map("oauth_access_token")
 }
 
+model CoordinationosSessionGrant {
+  id                 String   @id @default(cuid())
+  createdAt          DateTime @default(now())
+  oauthAccessTokenId String   @unique
+  nonceDigest        String   @unique
+  clientId           String
+  userId             String
+  keyId              String
+  decisionId         String   @unique
+
+  @@index([clientId])
+  @@index([userId])
+  @@index([keyId])
+  @@map("coordinationos_session_grant")
+}
+
+model CoordinationosSigningDecision {
+  id                 String   @id @default(cuid())
+  occurredAt         DateTime @default(now())
+  policyVersion      String
+  decision           String
+  reasonCode         String
+  requestId          String?
+  oauthAccessTokenId String?
+  tokenDigest        String?
+  clientId           String?
+  userId             String?
+  keyId              String?
+  origin             String?
+  chainId            Int?
+  purpose            String?
+  type               String?
+  siweDigest         String?
+  capabilityDigest   String?
+  nonceDigest        String?
+  issuedAt           String?
+  expirationTime     String?
+  sessionTtlSeconds  Int?
+  evidence           Json
+
+  @@index([occurredAt])
+  @@index([decision])
+  @@index([reasonCode])
+  @@index([clientId])
+  @@index([userId])
+  @@index([keyId])
+  @@map("coordinationos_signing_decision")
+}
+
 // OAuth refresh tokens
 model OauthRefreshToken {
   id          String   @id

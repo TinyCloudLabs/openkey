@@ -1,18 +1,30 @@
 // OAuth Client Administration Routes
 // Protected by ADMIN_API_KEY - for registering OAuth clients
 import { Hono } from 'hono';
-import { OAUTH_SCOPES } from '../oauth-config';
+import { OAUTH_SCOPES, TINYCLOUD_SESSION_SCOPE } from '../oauth-config';
 import { createPrismaClient } from '@openkey/db';
-import { randomBytes } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import { issueOrganizationCredential, OrganizationCredentialError } from '../services/organization-credentials';
 import { publicPlanDefaults } from '../services/plan-entitlements';
 import {
   oauthApplicationType,
+  validateCoordinationosWebRedirectUris,
   validateOAuthClientMetadataUrl,
   validateOAuthRedirectUris,
 } from '../services/oauth-redirect-uris';
 
-const prisma = createPrismaClient();
+const defaultPrisma = createPrismaClient();
+let prisma = defaultPrisma;
+
+export function setOauthAdminDatabaseForTests(database: any = defaultPrisma): void {
+  prisma = database as typeof defaultPrisma;
+}
+
+export function disconnectOauthAdminDefaultDatabaseForTests(): Promise<void> {
+  return typeof (defaultPrisma as any).$disconnect === 'function'
+    ? (defaultPrisma as any).$disconnect()
+    : Promise.resolve();
+}
 
 export const oauthAdminRouter = new Hono();
 
@@ -45,6 +57,16 @@ function generateClientId(): string {
 }
 
 const publicPlans = ['FREE', 'PRO', 'ENTERPRISE'] as const;
+const COORDINATIONOS_WEB_SCOPES = ['openid', 'email', 'keys', TINYCLOUD_SESSION_SCOPE] as const;
+const PUBLIC_CLIENT_SCOPES = OAUTH_SCOPES.filter((scope) => scope !== TINYCLOUD_SESSION_SCOPE);
+
+function hasExactCoordinationosScopes(scopes: unknown): scopes is string[] {
+  if (!Array.isArray(scopes) || scopes.length !== COORDINATIONOS_WEB_SCOPES.length) return false;
+  if (!scopes.every((scope): scope is string => typeof scope === 'string')) return false;
+  if (new Set(scopes).size !== scopes.length) return false;
+  const required = new Set<string>(COORDINATIONOS_WEB_SCOPES);
+  return scopes.every((scope) => required.has(scope));
+}
 
 // POST /api/admin/oauth/organizations - demo/admin fixture for tenant creation
 oauthAdminRouter.post('/organizations', async (c) => {
@@ -163,7 +185,7 @@ oauthAdminRouter.post('/organizations/:organizationId/clients', async (c) => {
     data: {
       id: generateId(), clientId, clientSecret: null, organizationId, name: body.name,
       uri: body.uri ?? null, icon: body.icon ?? null, redirectUris: body.redirectUris,
-      scopes: [...OAUTH_SCOPES], disabled: false, skipConsent: false,
+      scopes: [...PUBLIC_CLIENT_SCOPES], disabled: false, skipConsent: false,
       enableEndSession: false, tokenEndpointAuthMethod: 'none', grantTypes: ['authorization_code', 'refresh_token'],
       responseTypes: ['code'], type: body.type ?? 'spa', public: true, contacts: [],
       mode: 'TENANT_MANAGED',
@@ -180,7 +202,8 @@ oauthAdminRouter.post('/clients', async (c) => {
     redirectUris: string[];
     uri?: string;
     icon?: string;
-    type?: 'native' | 'spa';
+    type?: 'native' | 'spa' | 'web';
+    scopes?: string[];
   }>();
 
   // Validation
@@ -192,13 +215,33 @@ oauthAdminRouter.post('/clients', async (c) => {
     return c.json({ error: 'redirectUris must be a non-empty array' }, 400);
   }
 
-  const validTypes = ['native', 'spa'];
-  if (body.type && !validTypes.includes(body.type)) {
+  const validTypes = ['native', 'spa', 'web'];
+  if (body.type !== undefined && !validTypes.includes(body.type)) {
     return c.json({ error: `type must be one of: ${validTypes.join(', ')}` }, 400);
   }
-  const redirectValidation = validateOAuthRedirectUris(body.redirectUris, body.type ?? 'spa');
+  const applicationType = body.type ?? 'spa';
+  const redirectValidation = applicationType === 'web'
+    ? validateCoordinationosWebRedirectUris(
+        body.redirectUris,
+        process.env.OPENKEY_COORDINATIONOS_SUPABASE_CALLBACK_URI,
+      )
+    : validateOAuthRedirectUris(body.redirectUris, applicationType);
   if (!redirectValidation.valid) {
     return c.json({ error: redirectValidation.reason }, 400);
+  }
+  if (body.scopes !== undefined) {
+    const validScopes = new Set<string>(OAUTH_SCOPES);
+    const invalid = Array.isArray(body.scopes)
+      ? body.scopes.filter((scope) => typeof scope !== 'string' || !validScopes.has(scope))
+      : ['scopes'];
+    if (invalid.length > 0) {
+      return c.json({ error: `Invalid scopes: ${invalid.join(', ')}` }, 400);
+    }
+  }
+  if (applicationType === 'web' && !hasExactCoordinationosScopes(body.scopes)) {
+    return c.json({
+      error: `web clients require exactly these scopes: ${COORDINATIONOS_WEB_SCOPES.join(', ')}`,
+    }, 400);
   }
   for (const value of [body.uri, body.icon]) {
     if (value !== undefined && value !== '' && !validateOAuthClientMetadataUrl(value).valid) {
@@ -206,46 +249,63 @@ oauthAdminRouter.post('/clients', async (c) => {
     }
   }
 
-  // Generate credentials - all clients are public (PKCE-only)
   const clientId = generateClientId();
+  const clientSecret = applicationType === 'web'
+    ? randomBytes(32).toString('base64url')
+    : null;
+  const clientSecretHash = clientSecret
+    ? createHash('sha256').update(clientSecret, 'utf8').digest('base64url')
+    : null;
 
   try {
     const client = await prisma.oauthClient.create({
       data: {
         id: generateId(),
         clientId,
-        clientSecret: null,
+        clientSecret: clientSecretHash,
         name: body.name,
         uri: body.uri || null,
         icon: body.icon || null,
         redirectUris: body.redirectUris,
-        scopes: [...OAUTH_SCOPES],
+        scopes: applicationType === 'web' ? [...COORDINATIONOS_WEB_SCOPES] : [...PUBLIC_CLIENT_SCOPES],
         disabled: false,
         skipConsent: false,
         enableEndSession: false,
-        tokenEndpointAuthMethod: 'none',
-        grantTypes: ['authorization_code', 'refresh_token'],
+        tokenEndpointAuthMethod: applicationType === 'web' ? 'client_secret_basic' : 'none',
+        grantTypes: applicationType === 'web'
+          ? ['authorization_code']
+          : ['authorization_code', 'refresh_token'],
         responseTypes: ['code'],
-        type: body.type || 'spa',
-        public: true,
+        type: applicationType,
+        public: applicationType !== 'web',
         contacts: [],
         mode: 'PERSONAL',
         metadata: { openkeyClientMode: 'PERSONAL' },
       },
     });
 
+    const responseClient = {
+      id: client.id,
+      clientId,
+      name: client.name,
+      redirectUris: client.redirectUris,
+      uri: client.uri,
+      type: client.type,
+      public: client.public,
+      createdAt: client.createdAt,
+    };
     return c.json({
       success: true,
-      client: {
-        id: client.id,
-        clientId,
-        name: client.name,
-        redirectUris: client.redirectUris,
-        uri: client.uri,
-        type: client.type,
-        public: true,
-        createdAt: client.createdAt,
-      },
+      client: applicationType === 'web'
+        ? {
+            ...responseClient,
+            tokenEndpointAuthMethod: client.tokenEndpointAuthMethod,
+            grantTypes: client.grantTypes,
+            responseTypes: client.responseTypes,
+            scopes: client.scopes,
+          }
+        : responseClient,
+      ...(clientSecret ? { clientSecret } : {}),
     }, 201);
   } catch (error: any) {
     if (error.code === 'P2002') {
@@ -335,6 +395,7 @@ oauthAdminRouter.patch('/clients/:clientId', async (c) => {
     disabled?: boolean;
     scopes?: string[];
     mode?: unknown;
+    type?: unknown;
   }>();
 
   // Guard: mode is immutable. Issued tokens are bound to the mode at creation;
@@ -342,17 +403,32 @@ oauthAdminRouter.patch('/clients/:clientId', async (c) => {
   if ('mode' in body && body.mode !== undefined) {
     return c.json({ error: { code: 'IMMUTABLE_FIELD', message: 'mode cannot be changed after client creation' } }, 400);
   }
+  if ('type' in body && body.type !== undefined) {
+    return c.json({ error: { code: 'IMMUTABLE_FIELD', message: 'type cannot be changed after client creation' } }, 400);
+  }
 
-  // Validate redirectUris against the persisted client type when provided.
-  if (body.redirectUris) {
-    const existing = await prisma.oauthClient.findUnique({
+  let existing: { type: string | null } | null = null;
+  if ('redirectUris' in body || 'scopes' in body) {
+    existing = await prisma.oauthClient.findUnique({
       where: { clientId },
       select: { type: true },
     });
     if (!existing) return c.json({ error: 'Client not found' }, 404);
+    if (existing.type === 'web') {
+      return c.json({
+        error: {
+          code: 'IMMUTABLE_FIELD',
+          message: 'redirectUris and scopes cannot be changed for web clients',
+        },
+      }, 400);
+    }
+  }
+
+  // Validate redirectUris against the persisted client type when provided.
+  if (body.redirectUris) {
     const redirectValidation = validateOAuthRedirectUris(
       body.redirectUris,
-      oauthApplicationType(existing.type),
+      oauthApplicationType(existing?.type),
     );
     if (!redirectValidation.valid) return c.json({ error: redirectValidation.reason }, 400);
   }

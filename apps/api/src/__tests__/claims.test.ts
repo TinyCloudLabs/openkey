@@ -4,10 +4,11 @@ import { buildEmailClaims } from '../claims';
 describe('buildEmailClaims', () => {
   const user = { email: 'alice@example.com', emailVerified: true };
 
-  test('returns email + emailVerified when email scope is present', () => {
+  test('returns standard and compatibility verified claims when email scope is present', () => {
     const result = buildEmailClaims(user, ['openid', 'email']);
     expect(result).toEqual({
       email: 'alice@example.com',
+      email_verified: true,
       emailVerified: true,
     });
   });
@@ -17,6 +18,7 @@ describe('buildEmailClaims', () => {
     const result = buildEmailClaims(unverifiedUser, ['email']);
     expect(result).toEqual({
       email: 'bob@example.com',
+      email_verified: false,
       emailVerified: false,
     });
   });
@@ -35,8 +37,16 @@ describe('buildEmailClaims', () => {
     const result = buildEmailClaims(user, ['openid', 'email', 'keys']);
     expect(result).toEqual({
       email: 'alice@example.com',
+      email_verified: true,
       emailVerified: true,
     });
+  });
+
+  test('keeps standard and compatibility booleans identical', () => {
+    for (const emailVerified of [true, false]) {
+      const claims = buildEmailClaims({ email: 'same@example.com', emailVerified }, ['email']);
+      expect(claims.email_verified).toBe(claims.emailVerified);
+    }
   });
 
   test('returns empty object when scopes array is empty', () => {

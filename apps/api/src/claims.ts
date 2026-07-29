@@ -8,6 +8,7 @@ export function buildEmailClaims(
   const claims: Record<string, unknown> = {};
   if (scopes.includes('email')) {
     claims.email = user.email;
+    claims.email_verified = user.emailVerified;
     claims.emailVerified = user.emailVerified;
   }
   return claims;

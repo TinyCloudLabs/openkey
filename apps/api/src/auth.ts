@@ -19,6 +19,7 @@ import {
   OAUTH_SCOPES,
   TINYCLOUD_MCP_SCOPE,
   TINYCLOUD_OWNER_DIDS_CLAIM,
+  TINYCLOUD_SESSION_SCOPE,
   dynamicClientRegistrationEnabled,
   oauthValidAudiences,
 } from './oauth-config';
@@ -85,6 +86,7 @@ export async function buildKeyClaims(
 ) {
   if (!scopes.includes('keys')) return undefined;
   if (!client) return [];
+  if (scopes.includes(TINYCLOUD_SESSION_SCOPE) && client.mode !== 'PERSONAL') return [];
   if (client.mode === 'TENANT_MANAGED') {
     if (!client.organizationId) {
       console.error('[Auth] Tenant-managed OAuth client is missing organizationId');
@@ -139,6 +141,9 @@ export async function buildKeyClaims(
       userId: user.id,
       keyPurpose: 'PERSONAL',
       archivedAt: null,
+      ...(scopes.includes(TINYCLOUD_SESSION_SCOPE)
+        ? { keyType: 'MANAGED' as const }
+        : {}),
     },
     select: {
       id: true,
@@ -201,6 +206,7 @@ export async function buildUserInfoKeyClaims(
 ) {
   if (!scopes.includes('keys')) return undefined;
   if (!client) return [];
+  if (scopes.includes(TINYCLOUD_SESSION_SCOPE) && client.mode !== 'PERSONAL') return [];
   if (client.mode !== 'TENANT_MANAGED') {
     return buildKeyClaims(user, scopes, client, false, database);
   }
@@ -565,10 +571,11 @@ export const auth = betterAuth({
       scopes: [...OAUTH_SCOPES],
       clientRegistrationDefaultScopes: [...DEFAULT_OAUTH_SCOPES],
       clientRegistrationAllowedScopes: [...OAUTH_SCOPES],
-      accessTokenExpiresIn: 60 * 60, // 1 hour in seconds
+      accessTokenExpiresIn: 300,
       refreshTokenExpiresIn: 60 * 60 * 24 * 7, // 7 days in seconds
       idTokenExpiresIn: 60 * 60, // 1 hour in seconds
       storeClientSecret: 'hashed',
+      storeTokens: 'hashed',
       async customTokenResponseFields({ user, verificationValue }) {
         // This callback is invoked for every user token response before the
         // provider creates access/refresh tokens. Unlike customAccessTokenClaims,
@@ -613,11 +620,7 @@ export const auth = betterAuth({
         return claims;
       },
       async customUserInfoClaims({ user, scopes, jwt }) {
-        const claims: Record<string, unknown> = {};
-        if (scopes.includes('email')) {
-          claims.email = user.email;
-          claims.emailVerified = user.emailVerified;
-        }
+        const claims: Record<string, unknown> = buildEmailClaims(user, scopes);
         const clientId = (jwt as { client_id?: string; azp?: string }).client_id ?? (jwt as { client_id?: string; azp?: string }).azp;
         const client = await loadAuthoritativeOauthClient(prisma, clientId);
         const keys = await buildUserInfoKeyClaims(
