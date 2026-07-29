@@ -1,9 +1,14 @@
 export const TINYCLOUD_MCP_SCOPE = 'tinycloud:mcp';
+export const TINYCLOUD_SESSION_SCOPE = 'tinycloud:session';
 export const TINYCLOUD_OWNER_DIDS_CLAIM = 'https://tinycloud.xyz/owner_dids';
 export const DEFAULT_TINYCLOUD_MCP_AUDIENCE = 'https://mcp.tinycloud.xyz/mcp';
 
 export const DEFAULT_OAUTH_SCOPES = ['openid', 'email', 'keys', 'offline_access'] as const;
-export const OAUTH_SCOPES = [...DEFAULT_OAUTH_SCOPES, TINYCLOUD_MCP_SCOPE] as const;
+export const OAUTH_SCOPES = [
+  ...DEFAULT_OAUTH_SCOPES,
+  TINYCLOUD_MCP_SCOPE,
+  TINYCLOUD_SESSION_SCOPE,
+] as const;
 
 export function oauthValidAudiences(baseURL: string, configured = process.env.OAUTH_VALID_AUDIENCES): string[] {
   const values = configured?.split(',').map((value) => value.trim()).filter(Boolean) ?? [];

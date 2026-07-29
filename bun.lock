@@ -46,6 +46,7 @@
         "ethers": "^6.16.0",
         "hono": "^4.11.3",
         "resend": "^6.6.0",
+        "siwe": "^3.0.0",
         "viem": "^2.43.5",
       },
       "devDependencies": {

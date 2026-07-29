@@ -12,7 +12,8 @@
  *   --redirect-uri, -r  Redirect URI (required, can be specified multiple times)
  *   --uri, -u           Application website URL
  *   --icon, -i          Application icon URL
- *   --type, -t          Application type: spa, native (default: spa)
+ *   --type, -t          Application type: spa, native, web (default: spa)
+ *   --scope, -s         OAuth scope (repeatable; required for web)
  *   --list, -l          List all registered clients
  *   --delete, -d        Delete a client by client ID
  *   --env, -e           Path to .env file (default: .env)
@@ -95,6 +96,7 @@ async function registerClient(options: {
   uri?: string;
   icon?: string;
   type?: string;
+  scopes?: string[];
 }) {
   const data = await apiRequest('POST', '/api/admin/oauth/clients', {
     name: options.name,
@@ -102,6 +104,7 @@ async function registerClient(options: {
     uri: options.uri,
     icon: options.icon,
     type: options.type || 'spa',
+    ...(options.scopes ? { scopes: options.scopes } : {}),
   });
 
   const { client } = data;
@@ -111,8 +114,12 @@ async function registerClient(options: {
   console.log('========================================');
   console.log(`Client ID:     ${client.clientId}`);
   console.log(`Type:          ${client.type || 'spa'}`);
-  console.log(`Public:        Yes (PKCE-only, no client secret)`);
+  console.log(`Public:        ${client.public ? 'Yes (PKCE-only, no client secret)' : 'No (confidential web client)'}`);
   console.log(`Redirect URIs: ${client.redirectUris.join(', ')}`);
+  if (data.clientSecret) {
+    console.log(`Client Secret: ${data.clientSecret}`);
+    console.log('Store this secret now; OpenKey will not display it again.');
+  }
   console.log('========================================\n');
 }
 
@@ -157,7 +164,8 @@ Options:
   --redirect-uri, -r  Redirect URI (required, can specify multiple)
   --uri, -u           Application website URL
   --icon, -i          Application icon URL
-  --type, -t          Application type: spa, native (default: spa)
+  --type, -t          Application type: spa, native, web (default: spa)
+  --scope, -s         OAuth scope (repeatable; required for web)
   --list, -l          List all registered clients
   --delete, -d        Delete a client by client ID
   --env, -e           Path to .env file (default: .env)
@@ -194,6 +202,7 @@ async function main() {
       uri: { type: 'string', short: 'u' },
       icon: { type: 'string', short: 'i' },
       type: { type: 'string', short: 't' },
+      scope: { type: 'string', short: 's', multiple: true },
       list: { type: 'boolean', short: 'l' },
       delete: { type: 'string', short: 'd' },
       env: { type: 'string', short: 'e' },
@@ -231,7 +240,7 @@ async function main() {
     process.exit(1);
   }
 
-  const validTypes = ['spa', 'native'];
+  const validTypes = ['spa', 'native', 'web'];
   if (values.type && !validTypes.includes(values.type)) {
     console.error(`Error: --type must be one of: ${validTypes.join(', ')}`);
     process.exit(1);
@@ -243,6 +252,7 @@ async function main() {
     uri: values.uri,
     icon: values.icon,
     type: values.type,
+    scopes: values.scope,
   });
 }
 

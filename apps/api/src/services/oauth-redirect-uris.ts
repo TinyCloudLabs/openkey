@@ -1,4 +1,4 @@
-export type OAuthApplicationType = 'spa' | 'native';
+export type OAuthApplicationType = 'spa' | 'native' | 'web';
 
 export type RedirectUriValidation =
   | { valid: true }
@@ -51,7 +51,61 @@ function isLoopbackHostname(hostname: string): boolean {
 }
 
 export function oauthApplicationType(value: string | null | undefined): OAuthApplicationType {
-  return value === 'native' ? 'native' : 'spa';
+  if (value === 'native' || value === 'web') return value;
+  return 'spa';
+}
+
+function isExactCoordinationosLoopback(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
+}
+
+function validateCoordinationosCallback(value: unknown): RedirectUriValidation {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 2_048
+    || value.trim() !== value || /[\u0000-\u0020\u007f*]/.test(value)) {
+    return { valid: false, reason: 'CoordinationOS callback must be an exact absolute URI' };
+  }
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return { valid: false, reason: 'CoordinationOS callback must be an exact absolute URI' };
+  }
+  if (url.username || url.password || url.search || url.hash) {
+    return { valid: false, reason: 'CoordinationOS callback must not contain credentials, query, or fragment' };
+  }
+  if (url.pathname !== '/auth/v1/callback') {
+    return { valid: false, reason: 'CoordinationOS callback must use /auth/v1/callback' };
+  }
+  if (url.protocol === 'https:' && url.hostname) return { valid: true };
+  if (url.protocol === 'http:' && isExactCoordinationosLoopback(url.hostname)) {
+    const authority = /^http:\/\/(\[[^\]]+\]|[^/:?#]+)(?::\d+)?\//i.exec(value)?.[1]?.toLowerCase();
+    if (authority === 'localhost' || authority === '127.0.0.1' || authority === '[::1]') {
+      return { valid: true };
+    }
+  }
+  return {
+    valid: false,
+    reason: 'CoordinationOS callback must use HTTPS or an exact loopback HTTP host',
+  };
+}
+
+export function validateCoordinationosWebRedirectUris(
+  values: unknown,
+  configuredCallback: unknown,
+): RedirectUriValidation {
+  if (!Array.isArray(values) || values.length !== 1) {
+    return { valid: false, reason: 'CoordinationOS web clients require exactly one redirect URI' };
+  }
+  const configured = validateCoordinationosCallback(configuredCallback);
+  if (!configured.valid) {
+    return { valid: false, reason: 'OPENKEY_COORDINATIONOS_SUPABASE_CALLBACK_URI is missing or invalid' };
+  }
+  const requested = validateCoordinationosCallback(values[0]);
+  if (!requested.valid) return requested;
+  if (values[0] !== configuredCallback) {
+    return { valid: false, reason: 'Redirect URI must exactly match the configured CoordinationOS callback' };
+  }
+  return { valid: true };
 }
 
 export function validateOAuthRedirectUri(

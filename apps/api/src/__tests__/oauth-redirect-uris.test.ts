@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   validateOAuthClientMetadataUrl,
+  validateCoordinationosWebRedirectUris,
   validateOAuthRedirectUri,
   validateOAuthRedirectUris,
 } from '../services/oauth-redirect-uris';
@@ -51,5 +52,39 @@ describe('OAuth redirect URI policy', () => {
     expect(validateOAuthClientMetadataUrl('http://localhost:5173/icon.png').valid).toBe(true);
     expect(validateOAuthClientMetadataUrl('javascript:alert(1)').valid).toBe(false);
     expect(validateOAuthClientMetadataUrl('data:image/svg+xml,owned').valid).toBe(false);
+  });
+
+  test('accepts only the exact configured CoordinationOS callback', () => {
+    const callback = 'https://coordination.example/auth/v1/callback';
+    expect(validateCoordinationosWebRedirectUris([callback], callback).valid).toBe(true);
+    for (const value of [
+      `${callback}?next=/`,
+      `${callback}#fragment`,
+      'https://coordination.example.evil.test/auth/v1/callback',
+      'https://user:pass@coordination.example/auth/v1/callback',
+      'http://coordination.example/auth/v1/callback',
+      'com.example.app:/auth/v1/callback',
+    ]) {
+      expect(validateCoordinationosWebRedirectUris([value], callback).valid).toBe(false);
+    }
+    expect(validateCoordinationosWebRedirectUris([], callback).valid).toBe(false);
+    expect(validateCoordinationosWebRedirectUris([callback, callback], callback).valid).toBe(false);
+  });
+
+  test('permits only the three exact loopback host spellings for development', () => {
+    for (const callback of [
+      'http://localhost:54321/auth/v1/callback',
+      'http://127.0.0.1/auth/v1/callback',
+      'http://[::1]:54321/auth/v1/callback',
+    ]) {
+      expect(validateCoordinationosWebRedirectUris([callback], callback).valid).toBe(true);
+    }
+    for (const callback of [
+      'http://dev.localhost/auth/v1/callback',
+      'http://127.0.0.2/auth/v1/callback',
+      'http://127.1/auth/v1/callback',
+    ]) {
+      expect(validateCoordinationosWebRedirectUris([callback], callback).valid).toBe(false);
+    }
   });
 });
