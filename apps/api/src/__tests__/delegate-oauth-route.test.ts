@@ -60,6 +60,9 @@ let signerCalls = 0;
 let signerFailure = false;
 let auditFailure = false;
 let betterAuthSession = false;
+let bootstrapMode: 'fresh' | 'cached' | 'failed' = 'fresh';
+let bootstrapCalls: any[] = [];
+let executionOrder: string[] = [];
 let transactionTail: Promise<void> = Promise.resolve();
 let resolvedOauthUser: { id: string; emailVerified: boolean } | null = {
   id: 'user_1',
@@ -125,6 +128,20 @@ const prisma: any = {
 };
 
 mock.module('@openkey/db', () => ({ createPrismaClient: () => prisma }));
+const ensureTinyCloudBootstrapForApprovedSign = mock(async (input: any) => {
+  bootstrapCalls.push(input);
+  executionOrder.push(`bootstrap:${bootstrapMode}`);
+  return bootstrapMode === 'failed'
+    ? {
+        status: 'failed' as const,
+        errorCode: 'tinycloud_bootstrap_failed',
+        errorMessage: 'bootstrap unavailable',
+      }
+    : { status: 'complete' as const };
+});
+mock.module('../services/tinycloud-bootstrap', () => ({
+  ensureTinyCloudBootstrapForApprovedSign,
+}));
 const realTee = await import('../../../../packages/tee/src/index?coordinationos-route-test' as string);
 mock.module('@openkey/tee', () => ({
   ...realTee,
@@ -136,6 +153,7 @@ mock.module('@openkey/tee', () => ({
       ...wallet,
       signMessage: async (input: { message: string }) => {
         signerCalls += 1;
+        executionOrder.push('sign');
         if (signerFailure) throw new Error('TEE signer unavailable');
         return wallet.signMessage(input);
       },
@@ -189,6 +207,10 @@ beforeEach(() => {
   signerFailure = false;
   auditFailure = false;
   betterAuthSession = false;
+  bootstrapMode = 'fresh';
+  bootstrapCalls = [];
+  executionOrder = [];
+  ensureTinyCloudBootstrapForApprovedSign.mockClear();
   transactionTail = Promise.resolve();
   resolvedOauthUser = { id: 'user_1', emailVerified: true };
   token.clientId = configuredClientId;
@@ -311,6 +333,72 @@ describe('CoordinationOS OAuth signer route', () => {
     expect(decisions[0].tokenDigest).toBe(tokenAudit);
     expect(decisions[0].evidence.tokenDigest).toBe(tokenAudit);
     expect(decisions[0]).toMatchObject({ decision: 'ALLOW', reasonCode: 'allow' });
+  });
+
+  test('fresh managed PERSONAL key bootstraps before exactly one signer call', async () => {
+    bootstrapMode = 'fresh';
+    const response = await sign();
+
+    expect(response.status).toBe(200);
+    expect(bootstrapCalls).toHaveLength(1);
+    expect(bootstrapCalls[0]).toMatchObject({
+      prisma,
+      userId: 'user_1',
+      key: {
+        id: key.id,
+        address,
+        keyType: 'MANAGED',
+        keyPurpose: 'PERSONAL',
+      },
+      privateKey,
+      format: 'personal_sign',
+    });
+    expect(bootstrapCalls[0].message).toContain(
+      `tinycloud:pkh:eip155:1:${address}:account`,
+    );
+    expect(executionOrder).toEqual(['bootstrap:fresh', 'sign']);
+    expect(signerCalls).toBe(1);
+  });
+
+  test('cached bootstrap remains idempotent and still signs exactly once', async () => {
+    bootstrapMode = 'cached';
+    const response = await sign();
+
+    expect(response.status).toBe(200);
+    expect(bootstrapCalls).toHaveLength(1);
+    expect(executionOrder).toEqual(['bootstrap:cached', 'sign']);
+    expect(signerCalls).toBe(1);
+    expect(grants).toHaveLength(1);
+  });
+
+  test('bootstrap failure consumes grant, appends ERROR, and makes zero signing calls', async () => {
+    bootstrapMode = 'failed';
+    const response = await sign();
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({
+      approved: false,
+      needsApproval: false,
+      code: 'signer_failed',
+    });
+    expect(bootstrapCalls).toHaveLength(1);
+    expect(executionOrder).toEqual(['bootstrap:failed']);
+    expect(signerCalls).toBe(0);
+    expect(grants).toHaveLength(1);
+    expect(decisions.map((decision) => [decision.decision, decision.reasonCode])).toEqual([
+      ['ALLOW', 'allow'],
+      ['ERROR', 'signer_failed'],
+    ]);
+
+    bootstrapMode = 'fresh';
+    const reuse = await sign();
+    expect(reuse.status).toBe(409);
+    expect(await reuse.json()).toMatchObject({
+      code: 'token_consumed',
+      needsApproval: false,
+    });
+    expect(bootstrapCalls).toHaveLength(1);
+    expect(signerCalls).toBe(0);
   });
 
   test('one token signs once across sequential and concurrent reuse', async () => {

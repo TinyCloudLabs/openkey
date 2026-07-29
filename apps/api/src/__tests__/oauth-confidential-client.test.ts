@@ -19,6 +19,13 @@ const update = mock(async ({ data, select }: any) => {
   return selected(stored, select);
 });
 const prisma = {
+  organization: {
+    findUnique: mock(async () => ({
+      id: 'organization_1',
+      planEntitlements: { maxApps: 10 },
+      _count: { oauthClients: 0 },
+    })),
+  },
   oauthClient: {
     create,
     update,
@@ -154,6 +161,37 @@ describe('confidential CoordinationOS OAuth client', () => {
       expect(stored.clientSecret).toBeNull();
       expect(stored.public).toBe(true);
       expect(stored.tokenEndpointAuthMethod).toBe('none');
+      expect(stored.scopes).not.toContain('tinycloud:session');
+    }
+  });
+
+  test('tenant-managed, SPA, and native clients never receive tinycloud:session implicitly', async () => {
+    for (const type of ['spa', 'native'] as const) {
+      stored = null;
+      const redirectUris = type === 'native'
+        ? ['com.example.tenant:/oauth/callback']
+        : ['https://tenant.example/callback'];
+      const response = await request('/organizations/organization_1/clients', 'POST', {
+        name: `tenant ${type}`,
+        type,
+        redirectUris,
+      });
+
+      expect(response.status).toBe(201);
+      expect(stored).toMatchObject({
+        organizationId: 'organization_1',
+        mode: 'TENANT_MANAGED',
+        type,
+        public: true,
+        tokenEndpointAuthMethod: 'none',
+      });
+      expect(stored.scopes).toEqual([
+        'openid',
+        'email',
+        'keys',
+        'offline_access',
+        'tinycloud:mcp',
+      ]);
       expect(stored.scopes).not.toContain('tinycloud:session');
     }
   });
