@@ -633,6 +633,60 @@ describe('CoordinationOS OAuth signer route', () => {
     }
   });
 
+  test('OAuth transport and authentication denials are audited before signing', async () => {
+    const cases: Array<{
+      body: unknown;
+      status: number;
+      code: string;
+      authorization?: string | null;
+    }> = [
+      { body: '{', status: 400, code: 'malformed_json' },
+      ...['address', 'chainId', 'message', 'type', 'purpose', 'keyId'].map((field) => {
+        const body: any = signingBody();
+        delete body[field];
+        return { body, status: 400, code: 'missing_field' };
+      }),
+      {
+        body: signingBody(),
+        status: 401,
+        code: 'missing_authorization',
+        authorization: null,
+      },
+      {
+        body: signingBody(),
+        status: 401,
+        code: 'malformed_authorization',
+        authorization: 'Basic opaque',
+      },
+      {
+        body: signingBody(),
+        status: 401,
+        code: 'multiple_authorization',
+        authorization: `Bearer ${rawBearer}, Bearer second`,
+      },
+      {
+        body: signingBody(),
+        status: 401,
+        code: 'unknown_token',
+        authorization: 'Bearer unknownOpaqueBearer123',
+      },
+    ];
+
+    for (const testCase of cases) {
+      decisions = [];
+      grants = [];
+      signerCalls = 0;
+      bootstrapCalls = [];
+      ensureTinyCloudBootstrapForApprovedSign.mockClear();
+      await expectRouteDenial(
+        testCase.body,
+        testCase.status,
+        testCase.code,
+        testCase.authorization,
+      );
+    }
+  });
+
   test('invalid non-multibase did:key URI is audited once and never signed', async () => {
     const body = signingBody();
     body.message = body.message.replace(
