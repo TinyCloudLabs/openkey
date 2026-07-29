@@ -64,7 +64,6 @@ const migrationNames = [
   '20260720_0004_drop_registration_intent',
   '20260721_0001_better_auth_1_6_oauth_refresh_tokens',
   '20260728_0001_oauth_tenant_lifecycle_guard',
-  '20260728_0002_coordinationos_session_grants',
 ] as const;
 
 const migrationSql = new Map<string, Promise<string>>(

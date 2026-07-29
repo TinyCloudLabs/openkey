@@ -216,7 +216,7 @@ oauthAdminRouter.post('/clients', async (c) => {
   }
 
   const validTypes = ['native', 'spa', 'web'];
-  if (body.type && !validTypes.includes(body.type)) {
+  if (body.type !== undefined && !validTypes.includes(body.type)) {
     return c.json({ error: `type must be one of: ${validTypes.join(', ')}` }, 400);
   }
   const applicationType = body.type ?? 'spa';
@@ -284,22 +284,27 @@ oauthAdminRouter.post('/clients', async (c) => {
       },
     });
 
+    const responseClient = {
+      id: client.id,
+      clientId,
+      name: client.name,
+      redirectUris: client.redirectUris,
+      uri: client.uri,
+      type: client.type,
+      public: client.public,
+      createdAt: client.createdAt,
+    };
     return c.json({
       success: true,
-      client: {
-        id: client.id,
-        clientId,
-        name: client.name,
-        redirectUris: client.redirectUris,
-        uri: client.uri,
-        type: client.type,
-        public: client.public,
-        tokenEndpointAuthMethod: client.tokenEndpointAuthMethod,
-        grantTypes: client.grantTypes,
-        responseTypes: client.responseTypes,
-        scopes: client.scopes,
-        createdAt: client.createdAt,
-      },
+      client: applicationType === 'web'
+        ? {
+            ...responseClient,
+            tokenEndpointAuthMethod: client.tokenEndpointAuthMethod,
+            grantTypes: client.grantTypes,
+            responseTypes: client.responseTypes,
+            scopes: client.scopes,
+          }
+        : responseClient,
       ...(clientSecret ? { clientSecret } : {}),
     }, 201);
   } catch (error: any) {

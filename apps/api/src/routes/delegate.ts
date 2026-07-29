@@ -4,7 +4,7 @@ import { createPrismaClient } from '@openkey/db';
 import { createTeeClient, unseal } from '@openkey/tee';
 import { requireSession } from '../middleware/session';
 import {
-  delegateSignerAuth,
+  createDelegateSignerAuth,
   type DelegateSignerContext,
 } from '../middleware/delegate-signer-auth';
 import type { Hex } from 'viem';
@@ -49,6 +49,26 @@ import {
 const prisma = createPrismaClient();
 const tee = createTeeClient();
 
+async function resolveBetterAuthSession(c: any): Promise<boolean> {
+  let resolved = false;
+  await (requireSession as any)(c, async () => {
+    resolved = true;
+  });
+  return resolved;
+}
+
+const defaultDelegateSignerAuth = createDelegateSignerAuth({
+  database: prisma,
+  resolveSession: resolveBetterAuthSession,
+});
+let activeDelegateSignerAuth = defaultDelegateSignerAuth;
+
+export function setDelegateSignerAuthMiddlewareForTests(
+  middleware = defaultDelegateSignerAuth,
+): void {
+  activeDelegateSignerAuth = middleware;
+}
+
 export const delegateRouter = new Hono<DelegateSignerContext>();
 
 // The SIWE domain identifies the requestor (the CLI), not the storage node
@@ -58,7 +78,7 @@ const SIWE_DOMAIN = 'cli.tinycloud.xyz';
 // Every other delegate endpoint retains the existing Better Auth session gate.
 delegateRouter.use('*', async (c, next) => {
   if (c.req.path.endsWith('/sign')) {
-    return delegateSignerAuth(c, next);
+    return activeDelegateSignerAuth(c, next);
   }
   return (requireSession as any)(c, next);
 });

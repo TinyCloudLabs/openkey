@@ -1,9 +1,6 @@
 import { createHash } from 'node:crypto';
 import { createMiddleware } from 'hono/factory';
-import { createPrismaClient } from '@openkey/db';
-import { requireSession, type SessionContext } from './session';
-
-const database = createPrismaClient();
+import type { SessionContext } from './session';
 
 export type DelegateSignerPrincipal =
   | { kind: 'session'; userId: string }
@@ -90,24 +87,27 @@ export function oauthTokenAuditDigest(rawBearer: string): string {
   return createHash('sha256').update(rawBearer, 'utf8').digest('hex');
 }
 
+type DelegateSignerAuthDatabase = {
+  oauthAccessToken: { findUnique: (args: any) => Promise<any> };
+  oauthClient: { findUnique: (args: any) => Promise<any> };
+  user: { findUnique: (args: any) => Promise<any> };
+};
+
+export type DelegateSignerAuthDependencies = {
+  database: DelegateSignerAuthDatabase;
+  resolveSession: (context: any) => Promise<boolean>;
+  now?: () => Date;
+};
+
 function sameStringSet(actual: string[], expected: readonly string[]): boolean {
   return actual.length === expected.length
     && new Set(actual).size === actual.length
     && expected.every((item) => actual.includes(item));
 }
 
-async function tryBetterAuthSession(c: any): Promise<boolean> {
-  let resolved = false;
-  await (requireSession as unknown as (
-    context: typeof c,
-    next: () => Promise<void>,
-  ) => Promise<unknown>)(c, async () => {
-    resolved = true;
-  });
-  return resolved;
-}
-
-export const delegateSignerAuth = createMiddleware<DelegateSignerContext>(async (c, next) => {
+export function createDelegateSignerAuth(dependencies: DelegateSignerAuthDependencies) {
+  const { database, resolveSession, now = () => new Date() } = dependencies;
+  return createMiddleware<DelegateSignerContext>(async (c, next) => {
   c.set('delegateSignerPrincipal', null);
   c.set('delegateSignerOauthContext', null);
   c.set('delegateSignerAuthFailure', null);
@@ -126,7 +126,7 @@ export const delegateSignerAuth = createMiddleware<DelegateSignerContext>(async 
   }
 
   if (parsed.kind === 'missing') {
-    if (await tryBetterAuthSession(c)) {
+    if (await resolveSession(c)) {
       c.set('delegateSignerPrincipal', { kind: 'session', userId: c.get('user').id });
     } else {
       c.set('delegateSignerAuthFailure', {
@@ -156,7 +156,7 @@ export const delegateSignerAuth = createMiddleware<DelegateSignerContext>(async 
   });
 
   if (!token) {
-    if (await tryBetterAuthSession(c)) {
+    if (await resolveSession(c)) {
       c.set('delegateSignerPrincipal', { kind: 'session', userId: c.get('user').id });
     } else {
       c.set('delegateSignerAuthFailure', {
@@ -200,11 +200,11 @@ export const delegateSignerAuth = createMiddleware<DelegateSignerContext>(async 
     clientId: token.clientId,
     userId: token.userId,
   });
-  const now = Date.now();
+  const nowMs = now().getTime();
   const configuredClientId = process.env.OPENKEY_COORDINATIONOS_OAUTH_CLIENT_ID;
 
-  if (token.expiresAt.getTime() <= now) c.set('delegateSignerAuthFailure', failure('token_expired'));
-  else if (token.createdAt.getTime() + 300_000 <= now) c.set('delegateSignerAuthFailure', failure('token_too_old'));
+  if (token.expiresAt.getTime() <= nowMs) c.set('delegateSignerAuthFailure', failure('token_expired'));
+  else if (token.createdAt.getTime() + 300_000 <= nowMs) c.set('delegateSignerAuthFailure', failure('token_too_old'));
   else if (!token.scopes.includes('tinycloud:session')) c.set('delegateSignerAuthFailure', failure('missing_scope'));
   else if (!configuredClientId || token.clientId !== configuredClientId) {
     c.set('delegateSignerAuthFailure', failure('wrong_client'));
@@ -235,4 +235,5 @@ export const delegateSignerAuth = createMiddleware<DelegateSignerContext>(async 
   }
 
   await next();
-});
+  });
+}

@@ -217,7 +217,11 @@ function sameStringSet(actual: string[], expected: readonly string[]): boolean {
 
 function validVerificationMethodUri(uri: string): boolean {
   const match = /^did:key:([^#]+)#([^#]+)$/.exec(uri);
-  return Boolean(match && match[1] === match[2]);
+  if (!match || match[1] !== match[2]) return false;
+  // did:key method identifiers are multibase values. TinyCloud session keys use
+  // base58btc (the `z` prefix), whose alphabet deliberately excludes
+  // ambiguous characters such as 0/O/I/l.
+  return /^z[1-9A-HJ-NP-Za-km-z]+$/.test(match[1]!);
 }
 
 function checksum(value: unknown): string | null {
@@ -227,6 +231,29 @@ function checksum(value: unknown): string | null {
   } catch {
     return null;
   }
+}
+
+function recapHasNonemptyCaveats(resources: string[] | undefined): boolean {
+  for (const resource of resources ?? []) {
+    if (!resource.startsWith('urn:recap:')) continue;
+    try {
+      const recap = JSON.parse(
+        Buffer.from(resource.slice('urn:recap:'.length), 'base64url').toString('utf8'),
+      ) as { att?: unknown };
+      if (!recap.att || typeof recap.att !== 'object') continue;
+      for (const abilities of Object.values(recap.att as Record<string, unknown>)) {
+        if (!abilities || typeof abilities !== 'object') continue;
+        for (const caveats of Object.values(abilities as Record<string, unknown>)) {
+          if (!Array.isArray(caveats)) continue;
+          if (caveats.some((caveat) => !caveat || typeof caveat !== 'object'
+            || Object.keys(caveat as Record<string, unknown>).length > 0)) return true;
+        }
+      }
+    } catch {
+      // The normal parser below owns malformed ReCap classification.
+    }
+  }
+  return false;
 }
 
 function emptyEvidence(input: CoordinationosSessionPolicyInput): CoordinationosPolicyEvidence {
@@ -331,6 +358,7 @@ export function evaluateCoordinationosSessionRequest(
   if (parsed.chainId !== COORDINATIONOS_CHAIN_ID) return deny('chain_mismatch');
   if (checksum(parsed.address) !== keyAddress) return deny('key_address_mismatch');
   if (!validVerificationMethodUri(parsed.uri)) return deny('siwe_uri_mismatch');
+  if (recapHasNonemptyCaveats(parsed.resources)) return deny('capability_escalation');
 
   if (!/^[A-Za-z0-9]{16,64}$/.test(parsed.nonce)) return deny('invalid_nonce');
   evidence.nonceDigest = sha256Hex(parsed.nonce);
@@ -354,14 +382,28 @@ export function evaluateCoordinationosSessionRequest(
 
   let canonicalCapabilities: CanonicalRecapEntry[];
   try {
-    canonicalCapabilities = canonicalizeCoordinationosCapabilities(
-      parseRecapFromSiwe(input.request.message),
-    );
+    const parsedCapabilities = parseRecapFromSiwe(input.request.message);
+    if (Array.isArray(parsedCapabilities) && parsedCapabilities.some((raw) => {
+      if (!raw || typeof raw !== 'object') return false;
+      const candidate = raw as Record<string, unknown>;
+      const actions = candidate.actions;
+      return (typeof candidate.service === 'string'
+          && candidate.service !== 'kv'
+          && candidate.service !== 'tinycloud.kv')
+        || (Array.isArray(actions) && (
+          new Set(actions).size !== actions.length
+          || actions.some((action) => typeof action === 'string'
+            && !REQUIRED_ACTIONS.includes(action as never))
+        ))
+        || (Array.isArray(candidate.caveats) && candidate.caveats.length > 0);
+    })) return deny('capability_escalation');
+    canonicalCapabilities = canonicalizeCoordinationosCapabilities(parsedCapabilities);
   } catch {
     return deny('wrong_capability');
   }
   evidence.capabilityDigest = canonicalCapabilityDigest(canonicalCapabilities);
-  if (canonicalCapabilities.length !== 1) return deny('capability_escalation');
+  if (canonicalCapabilities.length === 0) return deny('wrong_capability');
+  if (canonicalCapabilities.length > 1) return deny('capability_escalation');
 
   const expectedSpace = `tinycloud:pkh:eip155:1:${keyAddress}:applications`;
   const expectedPath = `coordinationos/integration/v1/${coordinationosUserNamespace(input.key.id)}/canary`;
