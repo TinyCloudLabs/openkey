@@ -285,13 +285,18 @@ function bootstrapSigningBody() {
   };
 }
 
-function sign(body: unknown = signingBody(), authorization: string | null = `Bearer ${rawBearer}`) {
+function sign(
+  body: unknown = signingBody(),
+  authorization: string | null = `Bearer ${rawBearer}`,
+  headers: Record<string, string> = {},
+) {
   return router.request('/sign', {
     method: 'POST',
     headers: {
       ...(authorization === null ? {} : { authorization }),
       origin: configuredOrigin,
       'content-type': 'application/json',
+      ...headers,
     },
     body: typeof body === 'string' ? body : JSON.stringify(body),
   });
@@ -333,6 +338,21 @@ describe('CoordinationOS OAuth signer route', () => {
     expect(decisions[0].tokenDigest).toBe(tokenAudit);
     expect(decisions[0].evidence.tokenDigest).toBe(tokenAudit);
     expect(decisions[0]).toMatchObject({ decision: 'ALLOW', reasonCode: 'allow' });
+  });
+
+  test('untrusted request ID cannot persist the raw bearer in audit evidence', async () => {
+    const response = await sign(signingBody(), `Bearer ${rawBearer}`, {
+      'x-request-id': rawBearer,
+    });
+
+    expect(response.status).toBe(200);
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0].requestId).toBeNull();
+    expect(decisions[0].evidence.requestId).toBeNull();
+    expect(decisions[0].tokenDigest).toBe(tokenAudit);
+    expect(decisions[0].evidence.tokenDigest).toBe(tokenAudit);
+    expect(decisions[0].tokenDigest).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.stringify(decisions)).not.toContain(rawBearer);
   });
 
   test('fresh managed PERSONAL key bootstraps before exactly one signer call', async () => {

@@ -633,7 +633,7 @@ delegateRouter.post('/sign', async (c) => {
   const principal = c.get('delegateSignerPrincipal');
   const authFailure = c.get('delegateSignerAuthFailure');
   const oauthContext = c.get('delegateSignerOauthContext');
-  const requestId = c.req.header('x-request-id') ?? null;
+  const requestId = null;
 
   const auditDenial = async (
     code: CoordinationosDenialCode,
