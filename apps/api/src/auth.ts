@@ -639,7 +639,24 @@ export const auth = betterAuth({
   ],
 
   // Provider entries are present only when every required secret is configured.
-  socialProviders: createSocialProviders(),
+  socialProviders: createSocialProviders(process.env, async (providerAccountId) => {
+    const account = await prisma.account.findFirst({
+      where: {
+        providerId: 'apple',
+        accountId: providerAccountId,
+      },
+      select: {
+        user: {
+          select: {
+            email: true,
+            name: true,
+            image: true,
+          },
+        },
+      },
+    });
+    return account?.user ?? null;
+  }),
 
   // Trust proxy for production (dstack gateway)
   trustedOrigins: socialProviderTrustedOrigins(origin),

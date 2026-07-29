@@ -1,4 +1,4 @@
-import { authClient, API_BASE } from './auth-client';
+import { API_BASE } from './auth-client';
 import { setSessionToken } from './embed-passkey';
 
 export type SocialProviderId = 'google' | 'apple';
@@ -6,7 +6,6 @@ export type SocialProviderId = 'google' | 'apple';
 type PopupLike = {
   closed: boolean;
   close(): void;
-  location: { href: string };
 };
 
 type PopupEvent = {
@@ -21,46 +20,43 @@ type PopupEvent = {
 
 export type SocialPopupDependencies = {
   origin: string;
-  open: () => PopupLike | null;
+  open: (url: string) => PopupLike | null;
   addMessageListener: (listener: (event: PopupEvent) => void) => void;
   removeMessageListener: (listener: (event: PopupEvent) => void) => void;
   setPoll: (listener: () => void) => number;
   clearPoll: (id: number) => void;
   persistToken: (token: string) => void;
-  begin: (provider: SocialProviderId, callbackURL: string) => Promise<{
-    error?: { message?: string } | null;
-    data?: { url?: string } | null;
-  }>;
 };
 
 function browserPopupDependencies(): SocialPopupDependencies {
   return {
     origin: window.location.origin,
-    open: () => window.open('', 'openkey-social-sign-in', 'popup=true,width=520,height=720') as PopupLike | null,
+    open: (url) => window.open(url, 'openkey-social-sign-in', 'popup=true,width=520,height=720') as PopupLike | null,
     addMessageListener: (listener) => window.addEventListener('message', listener as unknown as EventListener),
     removeMessageListener: (listener) => window.removeEventListener('message', listener as unknown as EventListener),
     setPoll: (listener) => window.setInterval(listener, 500),
     clearPoll: (id) => window.clearInterval(id),
     persistToken: setSessionToken,
-    begin: async (provider, callbackURL) => authClient.signIn.social({
-      provider,
-      callbackURL,
-      errorCallbackURL: callbackURL,
-      disableRedirect: true,
-    }) as never,
   };
 }
 
-function safeAuthorizationUrl(value: unknown, origin: string): string | null {
+export function socialPopupStartUrl(provider: SocialProviderId, origin: string): string {
+  const url = new URL('/auth/social/callback', origin);
+  url.searchParams.set('provider', provider);
+  return url.href;
+}
+
+export function safeSocialAuthorizationUrl(
+  value: unknown,
+  provider: SocialProviderId,
+): string | null {
   if (typeof value !== 'string') return null;
   try {
-    const url = new URL(value, origin);
-    if (url.protocol === 'https:') return url.href;
-    if (url.protocol === 'http:' && (
-      url.hostname === 'localhost'
-      || url.hostname.endsWith('.localhost')
-      || url.hostname === '127.0.0.1'
-    )) return url.href;
+    const url = new URL(value);
+    const expectedOrigin = provider === 'google'
+      ? 'https://accounts.google.com'
+      : 'https://appleid.apple.com';
+    if (url.origin === expectedOrigin) return url.href;
   } catch {
     // Invalid provider response.
   }
@@ -73,15 +69,15 @@ export async function signInWithSocialPopup(
 ): Promise<string> {
   const deps = dependencies ?? browserPopupDependencies();
 
-  // This must remain the first asynchronous-flow action so it retains the click
-  // gesture and provider pages load in a top-level browsing context.
-  const popup = deps.open();
+  // Open the same-origin starter page directly from the click. It initiates
+  // Better Auth from the top-level popup so OAuth state cookies do not depend
+  // on third-party cookie access from the embedding iframe.
+  const popup = deps.open(socialPopupStartUrl(provider, deps.origin));
   if (!popup) {
     throw new Error(`Your browser blocked the ${provider === 'google' ? 'Google' : 'Apple'} sign-in window. Allow popups, then try again.`);
   }
 
-  let abortCompletion: (error: Error) => void = () => {};
-  const completion = new Promise<string>((resolve, reject) => {
+  return new Promise<string>((resolve, reject) => {
     let settled = false;
     let poll = 0;
     const finish = (callback: () => void) => {
@@ -91,11 +87,13 @@ export async function signInWithSocialPopup(
       deps.clearPoll(poll);
       callback();
     };
-    abortCompletion = (error) => finish(() => reject(error));
     const onMessage = (event: PopupEvent) => {
       if (event.origin !== deps.origin || event.source !== popup) return;
       if (event.data?.type === 'openkey:social:error') {
-        finish(() => reject(new Error(event.data?.message || 'Social sign-in failed.')));
+        finish(() => {
+          popup.close();
+          reject(new Error(event.data?.message || 'Social sign-in failed.'));
+        });
         return;
       }
       if (event.data?.type !== 'openkey:social:complete' || !event.data.sessionToken) return;
@@ -112,33 +110,6 @@ export async function signInWithSocialPopup(
       }
     });
   });
-
-  try {
-    const callbackURL = new URL('/auth/social/callback', deps.origin).href;
-    const startup = await Promise.race([
-      deps.begin(provider, callbackURL).then((result) => ({
-        kind: 'authorization' as const,
-        result,
-      })),
-      completion.then(() => ({ kind: 'completion' as const })),
-    ]);
-    if (startup.kind === 'completion') return completion;
-    const { result } = startup;
-    if (result.error) {
-      throw new Error(result.error.message || `${provider === 'google' ? 'Google' : 'Apple'} sign-in failed.`);
-    }
-    const authorizationUrl = safeAuthorizationUrl(result.data?.url, deps.origin);
-    if (!authorizationUrl) {
-      throw new Error('The sign-in provider returned an invalid authorization URL.');
-    }
-    popup.location.href = authorizationUrl;
-  } catch (error) {
-    popup.close();
-    abortCompletion(error instanceof Error ? error : new Error('Social sign-in failed.'));
-    return completion;
-  }
-
-  return completion;
 }
 
 export async function loadConfiguredSocialProviders(

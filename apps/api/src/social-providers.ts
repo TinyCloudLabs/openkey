@@ -1,8 +1,32 @@
-import { importPKCS8, SignJWT } from 'jose';
+import { decodeJwt, importPKCS8, SignJWT } from 'jose';
 
 export type SocialProviderId = 'google' | 'apple';
 
 type ProviderEnvironment = Record<string, string | undefined>;
+type PersistedAppleUser = {
+  email: string;
+  name: string | null;
+  image: string | null;
+};
+type FindPersistedAppleUser = (
+  providerAccountId: string,
+) => Promise<PersistedAppleUser | null>;
+type AppleTokenSet = {
+  idToken?: string;
+  user?: {
+    email?: string;
+    name?: {
+      firstName?: string;
+      lastName?: string;
+    };
+  };
+};
+type AppleIdTokenClaims = {
+  sub?: string;
+  email?: string;
+  email_verified?: boolean | 'true' | 'false';
+  name?: string;
+};
 
 const APPLE_AUDIENCE = 'https://appleid.apple.com';
 const APPLE_CLIENT_SECRET_TTL_SECONDS = 180 * 24 * 60 * 60;
@@ -50,7 +74,47 @@ export async function generateAppleClientSecret(
     .sign(signingKey);
 }
 
-export function createSocialProviders(env: ProviderEnvironment = process.env) {
+export async function resolveAppleUserInfo(
+  tokens: AppleTokenSet,
+  findPersistedUser: FindPersistedAppleUser,
+) {
+  if (!tokens.idToken) return null;
+
+  const profile = decodeJwt(tokens.idToken) as AppleIdTokenClaims;
+  if (!profile.sub) return null;
+
+  const firstAuthorizationEmail = tokens.user?.email?.trim();
+  const tokenEmail = profile.email?.trim();
+  const persistedUser = tokenEmail || firstAuthorizationEmail
+    ? null
+    : await findPersistedUser(profile.sub);
+  const email = tokenEmail || firstAuthorizationEmail || persistedUser?.email;
+  if (!email) return null;
+
+  const suppliedName = [
+    tokens.user?.name?.firstName,
+    tokens.user?.name?.lastName,
+  ].filter(Boolean).join(' ').trim();
+
+  return {
+    user: {
+      id: profile.sub,
+      email,
+      emailVerified:
+        profile.email_verified === true
+        || profile.email_verified === 'true'
+        || Boolean(persistedUser),
+      name: suppliedName || profile.name || persistedUser?.name || '',
+      image: persistedUser?.image || undefined,
+    },
+    data: profile,
+  };
+}
+
+export function createSocialProviders(
+  env: ProviderEnvironment = process.env,
+  findPersistedAppleUser: FindPersistedAppleUser = async () => null,
+) {
   const providers: Record<string, unknown> = {};
 
   if (hasGoogleConfiguration(env)) {
@@ -72,8 +136,11 @@ export function createSocialProviders(env: ProviderEnvironment = process.env) {
       ...(env.APPLE_APP_BUNDLE_IDENTIFIER
         ? { appBundleIdentifier: env.APPLE_APP_BUNDLE_IDENTIFIER }
         : {}),
-      // Keep Better Auth's persisted provider-account lookup and linking
-      // behavior. Apple only supplies email during the first authorization.
+      // Better Auth requires an email before it performs its persisted-account
+      // lookup. Apple can omit it on later callbacks, so recover it only from
+      // the already-linked provider account instead of creating a new identity.
+      getUserInfo: (tokens: AppleTokenSet) =>
+        resolveAppleUserInfo(tokens, findPersistedAppleUser),
     });
   }
 

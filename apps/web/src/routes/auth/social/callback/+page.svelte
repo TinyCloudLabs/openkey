@@ -1,6 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { API_BASE } from '$lib/auth-client';
+  import { authClient, API_BASE } from '$lib/auth-client';
+  import {
+    safeSocialAuthorizationUrl,
+    type SocialProviderId,
+  } from '$lib/social-auth';
 
   let status = $state('Completing sign-in…');
   let error = $state('');
@@ -12,7 +16,35 @@
     }
 
     try {
-      if (new URL(window.location.href).searchParams.has('error')) {
+      const currentURL = new URL(window.location.href);
+      const providerParam = currentURL.searchParams.get('provider');
+      const provider: SocialProviderId | null =
+        providerParam === 'google' || providerParam === 'apple'
+          ? providerParam
+          : null;
+
+      if (provider) {
+        const providerName = provider === 'google' ? 'Google' : 'Apple';
+        status = `Connecting to ${providerName}…`;
+        const callbackURL = new URL('/auth/social/callback', window.location.origin).href;
+        const result = await authClient.signIn.social({
+          provider,
+          callbackURL,
+          errorCallbackURL: callbackURL,
+          disableRedirect: true,
+        });
+        if (result.error) {
+          throw new Error(result.error.message || `${providerName} sign-in failed.`);
+        }
+        const authorizationURL = safeSocialAuthorizationUrl(result.data?.url, provider);
+        if (!authorizationURL) {
+          throw new Error(`${providerName} returned an invalid authorization URL.`);
+        }
+        window.location.replace(authorizationURL);
+        return;
+      }
+
+      if (currentURL.searchParams.has('error')) {
         throw new Error('The provider could not complete sign-in. Please try again.');
       }
       const response = await fetch(`${API_BASE}/api/auth/get-session`, {
