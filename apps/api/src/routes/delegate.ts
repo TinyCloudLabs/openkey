@@ -777,6 +777,7 @@ delegateRouter.post('/sign', async (c) => {
         privateKey,
         message: coordinationosBootstrapTrigger(key.address),
         format: 'personal_sign',
+        authorization: 'coordinationos-oauth-policy',
       });
       if (bootstrap.status !== 'complete') {
         throw new Error('TinyCloud bootstrap did not complete');

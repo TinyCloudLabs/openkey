@@ -245,8 +245,14 @@ function recapHasNonemptyCaveats(resources: string[] | undefined): boolean {
         if (!abilities || typeof abilities !== 'object') continue;
         for (const caveats of Object.values(abilities as Record<string, unknown>)) {
           if (!Array.isArray(caveats)) continue;
-          if (caveats.some((caveat) => !caveat || typeof caveat !== 'object'
-            || Object.keys(caveat as Record<string, unknown>).length > 0)) return true;
+          // ReCap encodes an uncaveated ability with the required `[{}]`
+          // NotaBene sentinel. Accept only that exact encoding; a nested
+          // `caveats: [{}]`, multiple sentinels, or any populated object is
+          // additional authority and must fail closed.
+          if (caveats.length !== 1) return true;
+          const [caveat] = caveats;
+          if (!caveat || typeof caveat !== 'object'
+            || Object.keys(caveat as Record<string, unknown>).length > 0) return true;
         }
       }
     } catch {

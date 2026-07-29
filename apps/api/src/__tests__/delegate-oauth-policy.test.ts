@@ -87,14 +87,16 @@ function fixture(): CoordinationosSessionPolicyInput {
   };
 }
 
-function withNonemptyRecapCaveat(message: string): string {
+function withRecapCaveat(message: string, caveat: Record<string, unknown>): string {
   const encoded = /- urn:recap:([A-Za-z0-9_-]+)/.exec(message)?.[1];
   if (!encoded) throw new Error('fixture does not contain a ReCap resource');
   const recap = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as {
     att: Record<string, Record<string, unknown[]>>;
   };
   for (const abilities of Object.values(recap.att)) {
-    for (const ability of Object.keys(abilities)) abilities[ability] = [{ limited: true }];
+    for (const ability of Object.keys(abilities)) {
+      abilities[ability] = [{ caveats: [caveat] }];
+    }
   }
   const mutated = Buffer.from(JSON.stringify(recap), 'utf8').toString('base64url');
   return message.replace(`urn:recap:${encoded}`, `urn:recap:${mutated}`);
@@ -331,9 +333,25 @@ describe('CoordinationOS TinyCloud session policy', () => {
       actions: ['tinycloud.kv/get', 'tinycloud.kv/put'],
       caveats: [{ anything: true }],
     }])).toThrow('caveats');
+    expect(() => canonicalizeCoordinationosCapabilities([{
+      service: 'kv',
+      space: 'space',
+      path: 'path',
+      actions: ['tinycloud.kv/get', 'tinycloud.kv/put'],
+      caveats: [{}],
+    }])).toThrow('caveats');
 
     const input = fixture();
-    input.request.message = withNonemptyRecapCaveat(input.request.message as string);
+    input.request.message = withRecapCaveat(input.request.message as string, { limited: true });
+    expect(evaluateCoordinationosSessionRequest(input)).toMatchObject({
+      allowed: false,
+      code: 'capability_escalation',
+    });
+  });
+
+  test('a real ReCap with caveats [{}] is rejected as capability escalation', () => {
+    const input = fixture();
+    input.request.message = withRecapCaveat(input.request.message as string, {});
     expect(evaluateCoordinationosSessionRequest(input)).toMatchObject({
       allowed: false,
       code: 'capability_escalation',

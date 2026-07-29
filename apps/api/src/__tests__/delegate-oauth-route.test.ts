@@ -65,6 +65,7 @@ let betterAuthSession = false;
 let bootstrapMode: 'fresh' | 'cached' | 'failed' = 'fresh';
 let bootstrapCalls: any[] = [];
 let executionOrder: string[] = [];
+let autoSignEnabled = true;
 let transactionTail: Promise<void> = Promise.resolve();
 let resolvedOauthUser: { id: string; emailVerified: boolean } | null = {
   id: 'user_1',
@@ -80,7 +81,7 @@ const prisma: any = {
   },
   user: {
     findUnique: mock(async ({ select }: any) => select?.autoSignEnabled
-      ? { autoSignEnabled: true }
+      ? { autoSignEnabled }
       : resolvedOauthUser),
   },
   ethereumKey: {
@@ -133,6 +134,9 @@ mock.module('@openkey/db', () => ({ createPrismaClient: () => prisma }));
 const ensureTinyCloudBootstrapForApprovedSign = mock(async (input: any) => {
   bootstrapCalls.push(input);
   executionOrder.push(`bootstrap:${bootstrapMode}`);
+  if (!autoSignEnabled && input.authorization !== 'coordinationos-oauth-policy') {
+    return { status: 'skipped' as const };
+  }
   return bootstrapMode === 'failed'
     ? {
         status: 'failed' as const,
@@ -219,6 +223,7 @@ beforeEach(() => {
   bootstrapMode = 'fresh';
   bootstrapCalls = [];
   executionOrder = [];
+  autoSignEnabled = true;
   ensureTinyCloudBootstrapForApprovedSign.mockClear();
   transactionTail = Promise.resolve();
   resolvedOauthUser = { id: 'user_1', emailVerified: true };
@@ -266,6 +271,27 @@ function signingBody() {
     type: 'siwe',
     purpose: 'sign-in',
     keyId: key.id,
+  };
+}
+
+function withRecapCaveat(
+  body: ReturnType<typeof signingBody>,
+  caveat: Record<string, unknown>,
+) {
+  const encoded = /- urn:recap:([A-Za-z0-9_-]+)/.exec(body.message)?.[1];
+  if (!encoded) throw new Error('fixture does not contain a ReCap resource');
+  const recap = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as {
+    att: Record<string, Record<string, unknown[]>>;
+  };
+  for (const abilities of Object.values(recap.att)) {
+    for (const ability of Object.keys(abilities)) {
+      abilities[ability] = [{ caveats: [caveat] }];
+    }
+  }
+  const mutated = Buffer.from(JSON.stringify(recap), 'utf8').toString('base64url');
+  return {
+    ...body,
+    message: body.message.replace(`urn:recap:${encoded}`, `urn:recap:${mutated}`),
   };
 }
 
@@ -367,6 +393,7 @@ describe('CoordinationOS OAuth signer route', () => {
 
   test('fresh managed PERSONAL key bootstraps before exactly one signer call', async () => {
     bootstrapMode = 'fresh';
+    autoSignEnabled = false;
     const response = await sign();
 
     expect(response.status).toBe(200);
@@ -382,6 +409,7 @@ describe('CoordinationOS OAuth signer route', () => {
       },
       privateKey,
       format: 'personal_sign',
+      authorization: 'coordinationos-oauth-policy',
     });
     expect(bootstrapCalls[0].message).toContain(
       `tinycloud:pkh:eip155:1:${address}:account`,
@@ -392,6 +420,7 @@ describe('CoordinationOS OAuth signer route', () => {
 
   test('cached bootstrap remains idempotent and still signs exactly once', async () => {
     bootstrapMode = 'cached';
+    autoSignEnabled = false;
     const response = await sign();
 
     expect(response.status).toBe(200);
@@ -527,6 +556,16 @@ describe('CoordinationOS OAuth signer route', () => {
     await expectDenied(sign(body), 403, 'siwe_uri_mismatch');
   });
 
+  test('a real ReCap with caveats [{}] is denied before bootstrap or signing', async () => {
+    await expectDenied(
+      sign(withRecapCaveat(signingBody(), {})),
+      403,
+      'capability_escalation',
+    );
+    expect(bootstrapCalls).toHaveLength(0);
+    expect(ensureTinyCloudBootstrapForApprovedSign).not.toHaveBeenCalled();
+  });
+
   test('signer failure consumes the grant and appends ERROR audit evidence', async () => {
     signerFailure = true;
     const response = await sign();
@@ -583,6 +622,23 @@ describe('CoordinationOS OAuth signer route', () => {
     });
     expect(decisions).toHaveLength(0);
     expect(signerCalls).toBe(1);
+  });
+
+  test('Better Auth session signing still honors disabled Auto-Sign', async () => {
+    delete process.env.OPENKEY_COORDINATIONOS_OAUTH_CLIENT_ID;
+    delete process.env.OPENKEY_COORDINATIONOS_ORIGIN;
+    betterAuthSession = true;
+    autoSignEnabled = false;
+    const response = await sign(bootstrapSigningBody(), 'Bearer better_auth_session_token');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      approved: false,
+      needsApproval: true,
+      code: 'auto_sign_disabled',
+    });
+    expect(decisions).toHaveLength(0);
+    expect(bootstrapCalls).toHaveLength(0);
+    expect(signerCalls).toBe(0);
   });
 
   test('the complete stable-code status map matches the contract', () => {
