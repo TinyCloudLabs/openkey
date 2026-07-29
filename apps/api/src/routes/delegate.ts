@@ -574,16 +574,49 @@ function openKeyApprovalRequired(reason: string, code: string) {
   };
 }
 
+async function unsealManagedKey(
+  key: { userId: string | null; sealingContext?: string | null },
+  sealedBlob: string,
+): Promise<Hex> {
+  const sealingKey = await deriveKeyForRecord(tee, key);
+  return unseal(sealedBlob, sealingKey) as Promise<Hex>;
+}
+
 async function signManagedKey(
   key: { userId: string | null; sealingContext?: string | null },
   sealedBlob: string,
   message: string,
 ) {
-  const sealingKey = await deriveKeyForRecord(tee, key);
-  const privateKey = await unseal(sealedBlob, sealingKey) as Hex;
+  const privateKey = await unsealManagedKey(key, sealedBlob);
+  return signWithManagedPrivateKey(privateKey, message);
+}
+
+async function signWithManagedPrivateKey(privateKey: Hex, message: string) {
   const { createWalletFromPrivateKey } = await import('@openkey/tee');
   const account = createWalletFromPrivateKey(privateKey);
   return account.signMessage({ message });
+}
+
+function coordinationosBootstrapTrigger(address: string): string {
+  const now = new Date();
+  return prepareSession({
+    address,
+    chainId: 1,
+    domain: SIWE_DOMAIN,
+    issuedAt: now.toISOString(),
+    expirationTime: new Date(now.getTime() + 3_600_000).toISOString(),
+    spaceId: makeSpaceId(address, 1, 'account'),
+    jwk: {
+      kty: 'OKP',
+      crv: 'Ed25519',
+      x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    },
+    abilities: {
+      capabilities: {
+        capabilities: [CAPABILITIES.READ],
+      },
+    },
+  }).siwe;
 }
 
 /**
@@ -727,7 +760,30 @@ delegateRouter.post('/sign', async (c) => {
     }
 
     try {
-      const signature = await signManagedKey(key, key.sealedBlob, candidate.message as string);
+      const privateKey = await unsealManagedKey(key, key.sealedBlob);
+      const { ensureTinyCloudBootstrapForApprovedSign } = await import(
+        '../services/tinycloud-bootstrap'
+      );
+      const bootstrap = await ensureTinyCloudBootstrapForApprovedSign({
+        prisma,
+        userId: principal.userId,
+        key: {
+          id: key.id,
+          address: key.address,
+          keyType: key.keyType,
+          keyPurpose: 'PERSONAL',
+        },
+        privateKey,
+        message: coordinationosBootstrapTrigger(key.address),
+        format: 'personal_sign',
+      });
+      if (bootstrap.status !== 'complete') {
+        throw new Error('TinyCloud bootstrap did not complete');
+      }
+      const signature = await signWithManagedPrivateKey(
+        privateKey,
+        candidate.message as string,
+      );
       return c.json({
         approved: true,
         signature,

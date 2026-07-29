@@ -185,7 +185,7 @@ oauthAdminRouter.post('/organizations/:organizationId/clients', async (c) => {
     data: {
       id: generateId(), clientId, clientSecret: null, organizationId, name: body.name,
       uri: body.uri ?? null, icon: body.icon ?? null, redirectUris: body.redirectUris,
-      scopes: [...OAUTH_SCOPES], disabled: false, skipConsent: false,
+      scopes: [...PUBLIC_CLIENT_SCOPES], disabled: false, skipConsent: false,
       enableEndSession: false, tokenEndpointAuthMethod: 'none', grantTypes: ['authorization_code', 'refresh_token'],
       responseTypes: ['code'], type: body.type ?? 'spa', public: true, contacts: [],
       mode: 'TENANT_MANAGED',
