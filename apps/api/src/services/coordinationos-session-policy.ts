@@ -193,7 +193,10 @@ export function canonicalCapabilityDigest(entries: CanonicalRecapEntry[]): strin
 
 export function canonicalizeCoordinationosOrigin(value: unknown): string | null {
   if (typeof value !== 'string' || value.length === 0
-    || value.trim() !== value || /[\u0000-\u0020\u007f]/.test(value)) return null;
+    || value.trim() !== value || /[\u0000-\u0020\u007f]/.test(value)
+    || value.includes('?') || value.includes('#')) return null;
+  const authority = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)/i.exec(value)?.[1];
+  if (authority?.includes('@')) return null;
   try {
     const url = new URL(value);
     if ((url.protocol !== 'http:' && url.protocol !== 'https:')

@@ -59,9 +59,16 @@ function isExactCoordinationosLoopback(hostname: string): boolean {
   return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
 }
 
+function hasExplicitQueryFragmentOrUserinfo(value: string): boolean {
+  if (value.includes('?') || value.includes('#')) return true;
+  const authority = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)/i.exec(value)?.[1];
+  return authority?.includes('@') ?? false;
+}
+
 function validateCoordinationosCallback(value: unknown): RedirectUriValidation {
   if (typeof value !== 'string' || value.length === 0 || value.length > 2_048
-    || value.trim() !== value || /[\u0000-\u0020\u007f*]/.test(value)) {
+    || value.trim() !== value || /[\u0000-\u0020\u007f*]/.test(value)
+    || hasExplicitQueryFragmentOrUserinfo(value)) {
     return { valid: false, reason: 'CoordinationOS callback must be an exact absolute URI' };
   }
   let url: URL;

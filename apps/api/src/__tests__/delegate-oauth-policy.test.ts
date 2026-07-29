@@ -166,6 +166,11 @@ describe('CoordinationOS TinyCloud session policy', () => {
     }, 'key_address_mismatch'],
     ['missing origin', (input) => { input.request.origin = null; }, 'missing_origin'],
     ['wrong origin', (input) => { input.request.origin = 'https://evil.example'; }, 'wrong_origin'],
+    ['bare-query origin', (input) => { input.request.origin = `${origin}/?`; }, 'wrong_origin'],
+    ['bare-fragment origin', (input) => { input.request.origin = `${origin}/#`; }, 'wrong_origin'],
+    ['empty-userinfo origin', (input) => {
+      input.request.origin = 'https://@coordination.example/';
+    }, 'wrong_origin'],
     ['wrong SIWE domain', (input) => {
       input.request.message = (input.request.message as string).replace(
         'coordination.example wants',

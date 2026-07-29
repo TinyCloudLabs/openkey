@@ -58,8 +58,11 @@ describe('OAuth redirect URI policy', () => {
     const callback = 'https://coordination.example/auth/v1/callback';
     expect(validateCoordinationosWebRedirectUris([callback], callback).valid).toBe(true);
     for (const value of [
+      `${callback}?`,
       `${callback}?next=/`,
+      `${callback}#`,
       `${callback}#fragment`,
+      'https://@coordination.example/auth/v1/callback',
       'https://coordination.example.evil.test/auth/v1/callback',
       'https://user:pass@coordination.example/auth/v1/callback',
       'http://coordination.example/auth/v1/callback',
