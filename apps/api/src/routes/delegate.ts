@@ -766,7 +766,16 @@ delegateRouter.post('/sign', async (c) => {
         '../services/tinycloud-bootstrap'
       );
       const bootstrap = await ensureTinyCloudBootstrapForApprovedSign({
-        prisma,
+        // The OAuth grant is already a policy-approved signing decision. The
+        // bootstrap service's user-preference lookup is for the unchanged
+        // Better Auth session branch, so satisfy that narrow seam without
+        // mutating the user's stored Auto-Sign preference.
+        prisma: {
+          user: {
+            findUnique: async () => ({ autoSignEnabled: true }),
+          },
+          tinyCloudBootstrapState: prisma.tinyCloudBootstrapState,
+        } as any,
         userId: principal.userId,
         key: {
           id: key.id,
@@ -777,7 +786,6 @@ delegateRouter.post('/sign', async (c) => {
         privateKey,
         message: coordinationosBootstrapTrigger(key.address),
         format: 'personal_sign',
-        authorization: 'coordinationos-oauth-policy',
       });
       if (bootstrap.status !== 'complete') {
         throw new Error('TinyCloud bootstrap did not complete');

@@ -123,11 +123,7 @@ function tinyCloudSiwe(options: {
   }).siwe;
 }
 
-function ensureInput(
-  message = approvedTinyCloudSiwe(),
-  format: 'raw' | 'personal_sign' = 'personal_sign',
-  authorization?: 'coordinationos-oauth-policy',
-) {
+function ensureInput(message = approvedTinyCloudSiwe(), format: 'raw' | 'personal_sign' = 'personal_sign') {
   return {
     prisma,
     userId,
@@ -135,7 +131,6 @@ function ensureInput(
     privateKey,
     message,
     format,
-    authorization,
   };
 }
 
@@ -268,20 +263,6 @@ describe('ensureTinyCloudBootstrapForApprovedSign', () => {
     expect(prisma.tinyCloudBootstrapState.updateMany).not.toHaveBeenCalled();
   });
 
-  test('CoordinationOS OAuth policy approval reuses cached bootstrap when Auto-Sign is disabled', async () => {
-    autoSignEnabled = false;
-    state = { id: 'state_1', status: 'complete' };
-
-    const outcome = await ensureTinyCloudBootstrapForApprovedSign(
-      ensureInput(undefined, undefined, 'coordinationos-oauth-policy'),
-    );
-
-    expect(outcome).toEqual({ status: 'complete' });
-    expect(prisma.user.findUnique).not.toHaveBeenCalled();
-    expect(executor).not.toHaveBeenCalled();
-    expect(probe).not.toHaveBeenCalled();
-  });
-
   test('creates a cache row, bootstraps, and marks the key complete', async () => {
     const outcome = await ensureTinyCloudBootstrapForApprovedSign(ensureInput());
 
@@ -316,19 +297,6 @@ describe('ensureTinyCloudBootstrapForApprovedSign', () => {
       failureCode: null,
       failureReason: null,
     });
-  });
-
-  test('CoordinationOS OAuth policy approval bootstraps fresh when Auto-Sign is disabled', async () => {
-    autoSignEnabled = false;
-
-    const outcome = await ensureTinyCloudBootstrapForApprovedSign(
-      ensureInput(undefined, undefined, 'coordinationos-oauth-policy'),
-    );
-
-    expect(outcome).toEqual({ status: 'complete' });
-    expect(prisma.user.findUnique).not.toHaveBeenCalled();
-    expect(probe).toHaveBeenCalledTimes(1);
-    expect(executor).toHaveBeenCalledTimes(1);
   });
 
   test('returns a failed outcome when another bootstrap attempt owns the fresh lock', async () => {

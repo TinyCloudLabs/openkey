@@ -76,7 +76,6 @@ export interface EnsureTinyCloudBootstrapInput {
   privateKey: string;
   message: string;
   format: 'raw' | 'personal_sign';
-  authorization?: 'coordinationos-oauth-policy';
 }
 
 export class TinyCloudBootstrapError extends Error {
@@ -285,14 +284,12 @@ export async function ensureTinyCloudBootstrapForApprovedSign(
     return { status: 'skipped' };
   }
 
-  if (input.authorization !== 'coordinationos-oauth-policy') {
-    const preference = await input.prisma.user.findUnique({
-      where: { id: input.userId },
-      select: { autoSignEnabled: true },
-    });
-    if (!preference?.autoSignEnabled) {
-      return { status: 'skipped' };
-    }
+  const preference = await input.prisma.user.findUnique({
+    where: { id: input.userId },
+    select: { autoSignEnabled: true },
+  });
+  if (!preference?.autoSignEnabled) {
+    return { status: 'skipped' };
   }
 
   const expirationTime = parsed.expirationTime?.getTime();

@@ -134,9 +134,6 @@ mock.module('@openkey/db', () => ({ createPrismaClient: () => prisma }));
 const ensureTinyCloudBootstrapForApprovedSign = mock(async (input: any) => {
   bootstrapCalls.push(input);
   executionOrder.push(`bootstrap:${bootstrapMode}`);
-  if (!autoSignEnabled && input.authorization !== 'coordinationos-oauth-policy') {
-    return { status: 'skipped' as const };
-  }
   return bootstrapMode === 'failed'
     ? {
         status: 'failed' as const,
@@ -399,7 +396,6 @@ describe('CoordinationOS OAuth signer route', () => {
     expect(response.status).toBe(200);
     expect(bootstrapCalls).toHaveLength(1);
     expect(bootstrapCalls[0]).toMatchObject({
-      prisma,
       userId: 'user_1',
       key: {
         id: key.id,
@@ -409,8 +405,11 @@ describe('CoordinationOS OAuth signer route', () => {
       },
       privateKey,
       format: 'personal_sign',
-      authorization: 'coordinationos-oauth-policy',
     });
+    expect(await bootstrapCalls[0].prisma.user.findUnique()).toEqual({ autoSignEnabled: true });
+    expect(bootstrapCalls[0].prisma.tinyCloudBootstrapState).toBe(
+      prisma.tinyCloudBootstrapState,
+    );
     expect(bootstrapCalls[0].message).toContain(
       `tinycloud:pkh:eip155:1:${address}:account`,
     );
