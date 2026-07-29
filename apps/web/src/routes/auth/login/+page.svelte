@@ -1,8 +1,16 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
   import { page } from '$app/stores';
+  import { onMount } from 'svelte';
   import { authClient, API_BASE, authErrorMessage } from '$lib/auth-client';
+  import { normalizeAuthReturnTo, safeOAuthAuthorizeQuery } from '$lib/auth-flow';
+  import {
+    loadConfiguredSocialProviders,
+    signInWithSocialPopup,
+    type SocialProviderId,
+  } from '$lib/social-auth';
   import { api } from '$lib/api';
+  import SocialButtons from '$lib/components/auth/social-buttons.svelte';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
@@ -14,33 +22,31 @@
   let step = $state<Step>('email');
   let loading = $state(false);
   let error = $state('');
+  let providers = $state<SocialProviderId[]>([]);
+  let loadingProvider = $state<SocialProviderId | null>(null);
 
   function getOAuthQuery(): string | undefined {
-    const oauthQuery = $page.url.searchParams.get('oauth_query');
-    if (oauthQuery) return oauthQuery;
-    if (!$page.url.searchParams.has('client_id')) return undefined;
-    const params = new URLSearchParams($page.url.searchParams);
-    params.delete('sig');
-    params.delete('exp');
-    params.delete('prompt');
-    return params.toString();
+    return safeOAuthAuthorizeQuery($page.url.searchParams);
   }
 
   function handlePostSignIn() {
-    const clientId = $page.url.searchParams.get('client_id');
-    const redirect = $page.url.searchParams.get('redirect');
-    if (clientId) {
-      const cleanParams = new URLSearchParams($page.url.searchParams);
-      cleanParams.delete('sig');
-      cleanParams.delete('exp');
-      cleanParams.delete('prompt');
-      window.location.href = API_BASE + '/api/auth/oauth2/authorize?' + cleanParams.toString();
+    const oauthQuery = getOAuthQuery();
+    const redirect = normalizeAuthReturnTo(
+      $page.url.searchParams.get('redirect'),
+      $page.url.origin,
+    );
+    if (oauthQuery) {
+      window.location.href = API_BASE + '/api/auth/oauth2/authorize?' + oauthQuery;
     } else if (redirect) {
       goto(redirect);
     } else {
       goto('/dashboard');
     }
   }
+
+  onMount(async () => {
+    providers = await loadConfiguredSocialProviders().catch(() => []);
+  });
 
   async function sendOTP() {
     loading = true;
@@ -121,6 +127,21 @@
     }
   }
 
+  async function signInWithSocial(provider: SocialProviderId) {
+    loading = true;
+    loadingProvider = provider;
+    error = '';
+    try {
+      await signInWithSocialPopup(provider);
+      handlePostSignIn();
+    } catch (e: any) {
+      error = e.message || `${provider === 'google' ? 'Google' : 'Apple'} sign-in failed`;
+    } finally {
+      loading = false;
+      loadingProvider = null;
+    }
+  }
+
   async function registerPasskey() {
     loading = true;
     error = '';
@@ -186,6 +207,17 @@
             {loading ? 'Sending code…' : 'Continue with email'}
           </Button>
         </form>
+
+        {#if providers.length > 0}
+          <div class="mt-4">
+            <SocialButtons
+              {providers}
+              {loadingProvider}
+              disabled={loading}
+              onsignin={signInWithSocial}
+            />
+          </div>
+        {/if}
 
         <div class="my-6 flex items-center gap-4 text-surface-400" aria-hidden="true">
           <div class="h-px flex-1 bg-surface-200"></div>

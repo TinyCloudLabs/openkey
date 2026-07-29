@@ -94,10 +94,36 @@ Optional (features degrade gracefully without these):
 | Variable | Purpose |
 |----------|---------|
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Google OAuth sign-in |
+| `APPLE_CLIENT_ID` / `APPLE_TEAM_ID` / `APPLE_KEY_ID` / `APPLE_PRIVATE_KEY` | Sign in with Apple (all four are required before the button is shown) |
+| `APPLE_APP_BUNDLE_IDENTIFIER` | Optional native-app audience for Apple ID tokens |
 | `RESEND_API_KEY` | Email OTP delivery (without it, OTPs print to console) |
 | `ADMIN_API_KEY` | Protect admin endpoints (OAuth client registration) |
 | `INTERNAL_METRICS_TOKEN` | Protect internal metrics and the revocation/webhook worker endpoints |
 | `TINYCLOUD_BOOTSTRAP_HOST` | TinyCloud node used to bootstrap managed accounts and their tenant-parent delegations |
+
+### Social sign-in callbacks
+
+Register these exact production callback URLs with each provider:
+
+- Google: `https://api.openkey.so/api/auth/callback/google`
+- Apple: `https://api.openkey.so/api/auth/callback/apple`
+
+For Apple, `APPLE_CLIENT_ID` is the web Services ID, not the native bundle ID.
+OpenKey signs a short-lived ES256 client-secret JWT at runtime using
+`APPLE_TEAM_ID`, `APPLE_KEY_ID`, and the `.p8` value in `APPLE_PRIVATE_KEY`;
+escaped `\n` sequences are accepted. `APPLE_APP_BUNDLE_IDENTIFIER` is optional
+and is only needed for native Apple ID-token audiences. Apple does not accept
+`localhost`, plain HTTP, or callbacks without a valid TLS certificate, so local
+testing must use an HTTPS domain such as the portless profile and that exact
+HTTPS callback must be registered in Apple Developer.
+
+Apple returns an email address only on the first authorization. OpenKey relies
+on Better Auth's persisted provider account and account-linking records on
+later sign-ins; do not delete those records or require later callbacks to carry
+email. If users can choose Apple's private relay, register OpenKey's outbound
+sender domain (including the Resend envelope-sender domain) in Certificates,
+Identifiers & Profiles → Sign in with Apple for Email Communication, and
+configure matching SPF and DKIM records.
 
 ## Scripts
 

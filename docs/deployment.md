@@ -98,6 +98,11 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `WEBAUTHN_ORIGIN` | `https://openkey.so` |
 | `GOOGLE_CLIENT_ID` | Google OAuth client ID |
 | `GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
+| `APPLE_CLIENT_ID` | Apple web Services ID |
+| `APPLE_TEAM_ID` | Apple Developer Team ID |
+| `APPLE_KEY_ID` | Sign in with Apple private-key ID |
+| `APPLE_PRIVATE_KEY` | Apple `.p8` ES256 private key (literal or escaped newlines) |
+| `APPLE_APP_BUNDLE_IDENTIFIER` | Optional native Apple app bundle identifier |
 | `TEE_MODE` | `production` |
 | `RESEND_API_KEY` | Resend API key for emails |
 | `API_PORT` | `3001` |
@@ -108,6 +113,23 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `CLOUDFLARE_API_TOKEN` | For SSL certificate management |
 | `DSTACK_GATEWAY_DOMAIN` | Phala gateway domain |
 | `CERTBOT_EMAIL` | Email for Let's Encrypt |
+
+Google and Apple must be configured with these exact production return URLs:
+
+- `https://api.openkey.so/api/auth/callback/google`
+- `https://api.openkey.so/api/auth/callback/apple`
+
+Apple requires `APPLE_CLIENT_ID` to be the web Services ID. The API generates
+the ES256 client-secret JWT at runtime with a 180-day lifetime, below Apple's
+six-month maximum; the `.p8` key remains API-only and must never be set as a
+`VITE_` variable. Apple rejects localhost, non-HTTPS domains, and invalid TLS,
+so use a registered HTTPS hostname for local testing.
+
+Apple provides email only on the first authorization. Preserve Better Auth's
+account and linking rows so later callbacks resolve the existing user by the
+Apple provider account. Before production, register the outbound sender and
+envelope-sender domains used by Resend in Apple's private email relay settings,
+and publish matching SPF and DKIM records so mail reaches private-relay users.
 
 #### Managed-account workers
 

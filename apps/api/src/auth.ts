@@ -32,6 +32,10 @@ import {
   assertFreshPasskeyUserVerification,
   recordPasskeyFreshnessAfterHook,
 } from './services/passkey-freshness';
+import {
+  createSocialProviders,
+  socialProviderTrustedOrigins,
+} from './social-providers';
 
 export const prisma: PrismaClient = createPrismaClient({
   log: ['error', 'warn'],
@@ -634,18 +638,11 @@ export const auth = betterAuth({
     }) as any,
   ],
 
-  // Do not advertise provider flows that are not actually configured.
-  socialProviders: process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET
-    ? {
-        google: {
-          clientId: process.env.GOOGLE_CLIENT_ID,
-          clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-        },
-      }
-    : {},
+  // Provider entries are present only when every required secret is configured.
+  socialProviders: createSocialProviders(),
 
   // Trust proxy for production (dstack gateway)
-  trustedOrigins: [origin],
+  trustedOrigins: socialProviderTrustedOrigins(origin),
 
   // Cross-subdomain cookies: session cookie set on api.openkey.so must be
   // readable by openkey.so (e.g. after Google OAuth redirect back to the web app).
