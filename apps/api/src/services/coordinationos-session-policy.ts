@@ -367,6 +367,10 @@ export function evaluateCoordinationosSessionRequest(
   if (parsed.chainId !== COORDINATIONOS_CHAIN_ID) return deny('chain_mismatch');
   if (checksum(parsed.address) !== keyAddress) return deny('key_address_mismatch');
   if (!validVerificationMethodUri(parsed.uri)) return deny('siwe_uri_mismatch');
+  const recapResources = parsed.resources?.filter((resource) => resource.startsWith('urn:recap:'))
+    ?? [];
+  if (recapResources.length > 1) return deny('capability_escalation');
+  if (recapResources.length !== 1) return deny('wrong_capability');
   if (recapHasNonemptyCaveats(parsed.resources)) return deny('capability_escalation');
 
   if (!/^[A-Za-z0-9]{16,64}$/.test(parsed.nonce)) return deny('invalid_nonce');

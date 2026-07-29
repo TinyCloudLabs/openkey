@@ -102,6 +102,22 @@ function withRecapCaveat(message: string, caveat: Record<string, unknown>): stri
   return message.replace(`urn:recap:${encoded}`, `urn:recap:${mutated}`);
 }
 
+function withSqlAndCanaryRecaps(message: string, sqlFirst: boolean): string {
+  const canaryResource = /^- urn:recap:[A-Za-z0-9_-]+$/m.exec(message)?.[0];
+  const sqlResource = /^- urn:recap:[A-Za-z0-9_-]+$/m.exec(validMessage({
+    abilities: {
+      sql: {
+        '': ['tinycloud.sql/read', 'tinycloud.sql/write'],
+      },
+    },
+  }))?.[0];
+  if (!canaryResource || !sqlResource) throw new Error('fixture does not contain a ReCap resource');
+  const resources = sqlFirst
+    ? `${sqlResource}\n${canaryResource}`
+    : `${canaryResource}\n${sqlResource}`;
+  return message.replace(canaryResource, resources);
+}
+
 describe('CoordinationOS TinyCloud session policy', () => {
   test('real prepareSession ReCap canonicalizes from kv and full space URI', () => {
     const result = evaluateCoordinationosSessionRequest(fixture());
@@ -264,6 +280,21 @@ describe('CoordinationOS TinyCloud session policy', () => {
     });
     const result = evaluateCoordinationosSessionRequest(input);
     expect(result).toMatchObject({ allowed: false, code: 'capability_escalation' });
+  });
+
+  test.each([
+    ['SQL ReCap first', true],
+    ['canary ReCap first', false],
+  ])('%s among multiple ReCap resources is denied as capability escalation', (_name, sqlFirst) => {
+    const input = fixture();
+    input.request.message = withSqlAndCanaryRecaps(
+      input.request.message as string,
+      sqlFirst,
+    );
+    expect(evaluateCoordinationosSessionRequest(input)).toMatchObject({
+      allowed: false,
+      code: 'capability_escalation',
+    });
   });
 
   test.each([

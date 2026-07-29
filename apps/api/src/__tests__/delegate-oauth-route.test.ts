@@ -292,6 +292,37 @@ function withRecapCaveat(
   };
 }
 
+function withSqlAndCanaryRecaps(
+  body: ReturnType<typeof signingBody>,
+  sqlFirst: boolean,
+) {
+  const canaryResource = /^- urn:recap:[A-Za-z0-9_-]+$/m.exec(body.message)?.[0];
+  const current = new Date();
+  const sqlMessage = prepareSession({
+    address,
+    chainId: 1,
+    domain: 'coordination.example',
+    issuedAt: current.toISOString(),
+    expirationTime: new Date(current.getTime() + 3_600_000).toISOString(),
+    spaceId: `tinycloud:pkh:eip155:1:${address}:applications`,
+    jwk: { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' },
+    abilities: {
+      sql: {
+        '': ['tinycloud.sql/read', 'tinycloud.sql/write'],
+      },
+    },
+  }).siwe;
+  const sqlResource = /^- urn:recap:[A-Za-z0-9_-]+$/m.exec(sqlMessage)?.[0];
+  if (!canaryResource || !sqlResource) throw new Error('fixture does not contain a ReCap resource');
+  const resources = sqlFirst
+    ? `${sqlResource}\n${canaryResource}`
+    : `${canaryResource}\n${sqlResource}`;
+  return {
+    ...body,
+    message: body.message.replace(canaryResource, resources),
+  };
+}
+
 function bootstrapSigningBody() {
   const abilities: Record<string, Record<string, string[]>> = {};
   for (const resource of BOOTSTRAP_SESSION_REQUESTS.default.resources) {
@@ -563,6 +594,28 @@ describe('CoordinationOS OAuth signer route', () => {
     );
     expect(bootstrapCalls).toHaveLength(0);
     expect(ensureTinyCloudBootstrapForApprovedSign).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['SQL ReCap first', true],
+    ['canary ReCap first', false],
+  ])('%s among multiple ReCap resources is audited once without bootstrap or signing', async (
+    _name,
+    sqlFirst,
+  ) => {
+    await expectDenied(
+      sign(withSqlAndCanaryRecaps(signingBody(), sqlFirst)),
+      403,
+      'capability_escalation',
+    );
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]).toMatchObject({
+      decision: 'DENY',
+      reasonCode: 'capability_escalation',
+    });
+    expect(bootstrapCalls).toHaveLength(0);
+    expect(ensureTinyCloudBootstrapForApprovedSign).not.toHaveBeenCalled();
+    expect(signerCalls).toBe(0);
   });
 
   test('signer failure consumes the grant and appends ERROR audit evidence', async () => {
