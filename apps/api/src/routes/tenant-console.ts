@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import { createPrismaClient, type PrismaClient } from '@openkey/db';
+import { getAddress } from 'viem';
 import { requireSession, type SessionContext } from '../middleware/session';
 import { issueOrganizationCredential, OrganizationCredentialError } from '../services/organization-credentials';
 import { resolvePlanEntitlements, serializeEntitlements } from '../services/plan-entitlements';
@@ -39,6 +40,8 @@ type TenantConsoleDependencies = {
 };
 
 class ConsolePlanLimitError extends Error {}
+class ConsoleMemberLimitError extends Error {}
+class ConsoleMemberAlreadyExistsError extends Error {}
 
 const APP_SELECT = {
   id: true,
@@ -65,7 +68,27 @@ const CREDENTIAL_SELECT = {
   revokedAt: true,
 } as const;
 
-function error(c: Context, status: 400 | 403 | 404 | 429, code: string, message: string) {
+const MEMBER_SELECT = {
+  id: true,
+  role: true,
+  validFrom: true,
+  createdAt: true,
+  user: {
+    select: {
+      id: true,
+      email: true,
+      name: true,
+      ethereumKeys: {
+        where: { keyPurpose: 'PERSONAL', archivedAt: null },
+        select: { address: true },
+        orderBy: { createdAt: 'asc' },
+        take: 1,
+      },
+    },
+  },
+} as const;
+
+function error(c: Context, status: 400 | 403 | 404 | 409 | 429, code: string, message: string) {
   return c.json({ error: { code, message } }, status);
 }
 
@@ -78,6 +101,40 @@ function parseLimit(value: string | undefined): number | null {
   if (!/^\d+$/.test(value)) return null;
   const limit = Number(value);
   return limit >= 1 && limit <= 100 ? limit : null;
+}
+
+function activeMembershipWhere(organizationId: string, now: Date) {
+  return {
+    organizationId,
+    status: 'ACTIVE' as const,
+    revokedAt: null,
+    validFrom: { lte: now },
+    OR: [{ validUntil: null }, { validUntil: { gt: now } }],
+  };
+}
+
+function presentMember(member: {
+  id: string;
+  role: 'ADMIN' | 'MEMBER';
+  validFrom: Date;
+  createdAt: Date;
+  user: {
+    id: string;
+    email: string;
+    name: string | null;
+    ethereumKeys: Array<{ address: string }>;
+  };
+}) {
+  return {
+    id: member.id,
+    userId: member.user.id,
+    email: member.user.email,
+    name: member.user.name,
+    address: member.user.ethereumKeys[0]?.address ?? null,
+    role: member.role,
+    validFrom: member.validFrom,
+    createdAt: member.createdAt,
+  };
 }
 
 function parseAppInput(
@@ -225,6 +282,110 @@ export function createTenantConsoleRouter(
       orderBy: { createdAt: 'desc' },
     });
     return c.json({ apps });
+  });
+
+  router.get('/:organizationId/members', async (c) => {
+    const now = new Date();
+    const members = await db.organizationMembership.findMany({
+      where: activeMembershipWhere(c.req.param('organizationId'), now),
+      select: MEMBER_SELECT,
+      orderBy: { createdAt: 'asc' },
+    });
+    return c.json({ members: members.map(presentMember) });
+  });
+
+  router.post('/:organizationId/members', async (c) => {
+    if (!isAdmin(c)) return error(c, 403, 'FORBIDDEN', 'Administrator access is required');
+    const body: { address?: unknown } = await c.req.json().catch(() => ({}));
+    if (typeof body.address !== 'string') {
+      return error(c, 400, 'INVALID_ADDRESS', 'A valid Ethereum address is required');
+    }
+    let address: `0x${string}`;
+    try {
+      address = getAddress(body.address.trim());
+    } catch {
+      return error(c, 400, 'INVALID_ADDRESS', 'A valid Ethereum address is required');
+    }
+
+    const organizationId = c.req.param('organizationId');
+    try {
+      let result: { member: ReturnType<typeof presentMember>; created: boolean } | undefined;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          result = await db.$transaction(async (tx) => {
+            const now = new Date();
+            const key = await tx.ethereumKey.findFirst({
+              where: {
+                address: { equals: address, mode: 'insensitive' },
+                keyPurpose: 'PERSONAL',
+                archivedAt: null,
+                userId: { not: null },
+              },
+              select: {
+                address: true,
+                userId: true,
+                user: { select: { emailVerified: true } },
+              },
+            });
+            if (!key?.userId || !key.user?.emailVerified) return null;
+
+            const existing = await tx.organizationMembership.findFirst({
+              where: {
+                ...activeMembershipWhere(organizationId, now),
+                userId: key.userId,
+              },
+              select: MEMBER_SELECT,
+            });
+            if (existing) {
+              if (existing.role !== 'ADMIN') {
+                throw new ConsoleMemberAlreadyExistsError();
+              }
+              return { member: presentMember(existing), created: false };
+            }
+
+            const entitlements = await resolvePlanEntitlements(tx, organizationId);
+            if (!entitlements) return null;
+            const memberCount = await tx.organizationMembership.count({
+              where: activeMembershipWhere(organizationId, now),
+            });
+            if (memberCount >= entitlements.maxOrganizationMembers) {
+              throw new ConsoleMemberLimitError();
+            }
+
+            const member = await tx.organizationMembership.create({
+              data: {
+                organizationId,
+                userId: key.userId,
+                role: 'ADMIN',
+              },
+              select: MEMBER_SELECT,
+            });
+            return { member: presentMember(member), created: true };
+          }, { isolationLevel: 'Serializable' }) ?? undefined;
+          break;
+        } catch (caught) {
+          if ((caught as { code?: string }).code === 'P2034' && attempt < 2) continue;
+          throw caught;
+        }
+      }
+      if (!result) {
+        return error(
+          c,
+          404,
+          'OPENKEY_USER_NOT_FOUND',
+          'No verified OpenKey account has linked this active personal address',
+        );
+      }
+      return c.json({ member: result.member }, result.created ? 201 : 200);
+    } catch (caught) {
+      if (caught instanceof ConsoleMemberLimitError) {
+        return error(c, 429, 'PLAN_LIMIT_EXCEEDED', 'Organization member limit is exhausted');
+      }
+      if (caught instanceof ConsoleMemberAlreadyExistsError) {
+        return error(c, 409, 'MEMBER_ALREADY_EXISTS', 'This OpenKey user is already an organization member');
+      }
+      throw caught;
+    }
   });
 
   router.post('/:organizationId/apps', async (c) => {

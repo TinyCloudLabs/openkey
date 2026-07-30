@@ -129,6 +129,17 @@ export interface ConsoleApp {
   updatedAt: string;
 }
 
+export interface ConsoleMember {
+  id: string;
+  userId: string;
+  email: string;
+  name: string | null;
+  address: string | null;
+  role: 'ADMIN' | 'MEMBER';
+  validFrom: string;
+  createdAt: string;
+}
+
 export interface ConsoleCredential {
   id: string;
   name: string;
@@ -296,6 +307,17 @@ export const api = {
 
   async getConsoleOverview(organizationId: string): Promise<ConsoleOverview> {
     return fetchAPI(`/api/console/organizations/${encodeURIComponent(organizationId)}/overview`);
+  },
+
+  async listConsoleMembers(organizationId: string): Promise<{ members: ConsoleMember[] }> {
+    return fetchAPI(`/api/console/organizations/${encodeURIComponent(organizationId)}/members`);
+  },
+
+  async addConsoleAdmin(organizationId: string, address: string): Promise<{ member: ConsoleMember }> {
+    return fetchAPI(`/api/console/organizations/${encodeURIComponent(organizationId)}/members`, {
+      method: 'POST',
+      body: JSON.stringify({ address }),
+    });
   },
 
   async listConsoleApps(organizationId: string): Promise<{ apps: ConsoleApp[] }> {

@@ -116,7 +116,7 @@
         <div class="rounded-2xl border border-surface-200 bg-surface-50 p-4">
           <div class="text-xs font-semibold uppercase tracking-[0.08em] text-surface-500">Members</div>
           <div class="mt-2 text-2xl font-semibold text-surface-900">{formatCount($overview.usage.members, $overview.entitlements?.maxOrganizationMembers ?? $overview.usage.members, false)}</div>
-          <div class="mt-1 text-xs text-surface-500">Configured ceiling only.</div>
+          <div class="mt-1 text-xs text-surface-500">Enforced when adding administrators.</div>
         </div>
         <div class="rounded-2xl border border-surface-200 bg-surface-50 p-4">
           <div class="text-xs font-semibold uppercase tracking-[0.08em] text-surface-500">Webhook endpoints</div>
@@ -172,7 +172,7 @@
         </div>
 
         <div class="rounded-2xl border border-dotted border-surface-200 bg-white px-4 py-3 text-sm leading-6 text-surface-600">
-          App creation and webhook endpoint creation are enforced against plan ceilings today. Member count, managed-user volume, request rate, and audit retention are surfaced here as configured contract values so operators can see the plan without confusing it with checkout.
+          App creation, administrator membership, and webhook endpoint creation are enforced against plan ceilings today. Managed-user volume, request rate, and audit retention are surfaced here as configured contract values so operators can see the plan without confusing it with checkout.
         </div>
       </Card>
 
