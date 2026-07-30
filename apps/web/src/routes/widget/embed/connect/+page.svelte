@@ -1,8 +1,9 @@
 <script lang="ts">
   import { page } from '$app/stores';
-  import { authClient, authErrorMessage } from '$lib/auth-client';
+  import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
-  import { isEmbedContext, embedSignInPasskey, clearSessionToken, getSessionToken, setSessionToken, signInWithEmailPopup } from '$lib/embed-passkey';
+  import { isEmbedContext, clearSessionToken, getSessionToken, setSessionToken } from '$lib/embed-passkey';
+  import EmbeddedSignIn from '$lib/components/auth/embedded-sign-in.svelte';
   import Button from '$lib/components/ui/button.svelte';
 
   const session = authClient.useSession();
@@ -16,7 +17,6 @@
   let keysLoaded = $state(false);
   let initialized = $state(false);
   let contentEl = $state<HTMLDivElement | undefined>(undefined);
-  let signingIn = $state(false);
   // Track embed auth separately since better-auth session store won't update
   let embedAuthenticated = $state(typeof window !== 'undefined' && !!getSessionToken());
 
@@ -158,23 +158,6 @@
     }
   }
 
-  async function signInWithEmail() {
-    signingIn = true;
-    error = '';
-    try {
-      if (inIframe) {
-        await signInWithEmailPopup();
-        embedAuthenticated = true;
-      } else {
-        window.location.href = `/auth/login?redirect=${encodeURIComponent(window.location.href)}`;
-      }
-    } catch (e: any) {
-      error = e.message || 'Email sign-in failed';
-    } finally {
-      signingIn = false;
-    }
-  }
-
   function recover() {
     if (inIframe) {
       const returnTo = encodeURIComponent(window.location.href);
@@ -232,25 +215,6 @@
     return `${address.slice(0, 6)}...${address.slice(-4)}`;
   }
 
-  async function signInWithPasskey() {
-    signingIn = true;
-    error = '';
-    try {
-      if (inIframe) {
-        await embedSignInPasskey();
-        embedAuthenticated = true;
-      } else {
-        const result = await authClient.signIn.passkey();
-        if (result.error) {
-          error = authErrorMessage(result.error, 'Passkey sign-in failed');
-        }
-      }
-    } catch (e: any) {
-      error = e.message || 'Passkey sign-in failed';
-    } finally {
-      signingIn = false;
-    }
-  }
 </script>
 
 <div bind:this={contentEl} class="flex flex-col gap-4 bg-[#fafafa] p-4 rounded-2xl">
@@ -267,31 +231,17 @@
   <!-- Card body -->
   <div class="bg-white border border-surface-200 rounded-2xl shadow-sm p-5">
     {#if !isAuthenticated}
-      <div class="flex flex-col items-center justify-center text-center py-2">
-        <p class="text-surface-500 text-sm mb-4">Sign in or create an account to continue</p>
-
-        {#if error}
-          <div class="w-full bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl mb-4 text-sm" role="alert">
-            {error}
-          </div>
-        {/if}
-
-        <Button onclick={signInWithEmail} disabled={signingIn} class="w-full rounded-xl">
-          {signingIn ? 'Opening sign-in…' : 'Continue with email'}
-        </Button>
-        <Button onclick={signInWithPasskey} variant="secondary" disabled={signingIn} class="mt-3 w-full rounded-xl">
-          {signingIn ? 'Signing in…' : 'Use a passkey instead'}
-        </Button>
-
-        {#if hasEoa}
-          <button
-            onclick={useExternalWallet}
-            class="mt-3 text-xs text-surface-400 hover:text-surface-600 transition-colors bg-transparent border-none cursor-pointer"
-          >
-            or use an external wallet
-          </button>
-        {/if}
-      </div>
+      {#if error}
+        <div class="mb-4 w-full rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" role="alert">
+          {error}
+        </div>
+      {/if}
+      <EmbeddedSignIn
+        prompt="Sign in or create an account to continue"
+        onauthenticated={() => { embedAuthenticated = true; }}
+        {hasEoa}
+        onuseexternalwallet={useExternalWallet}
+      />
     {:else if loading}
       <div class="flex flex-col items-center justify-center text-center text-surface-400 py-6">
         <svg class="w-6 h-6 animate-spin text-surface-400 mb-3" fill="none" viewBox="0 0 24 24">

@@ -24,35 +24,47 @@ export function setSessionToken(token: string): void {
   sessionStorage.setItem(SESSION_TOKEN_KEY, token);
 }
 
-export function signInWithEmailPopup(returnTo = window.location.href): Promise<string> {
-  const authUrl = new URL('/auth/register', window.location.origin);
-  authUrl.searchParams.set('embed', 'true');
-  authUrl.searchParams.set('returnTo', returnTo);
-  const popup = window.open(authUrl, 'openkey-email-sign-in', 'popup=true');
-  if (!popup) {
-    return Promise.reject(new Error('Your browser blocked the OpenKey sign-in window. Allow popups, then try again.'));
-  }
-
-  return new Promise((resolve, reject) => {
-    const cleanup = () => {
-      window.removeEventListener('message', onMessage);
-      clearInterval(poll);
-    };
-    const onMessage = (event: MessageEvent) => {
-      if (event.origin !== window.location.origin || event.source !== popup) return;
-      if (event.data?.type !== 'openkey:register:complete' || !event.data.sessionToken) return;
-      cleanup();
-      popup.close();
-      setSessionToken(event.data.sessionToken);
-      resolve(event.data.sessionToken);
-    };
-    window.addEventListener('message', onMessage);
-    const poll = window.setInterval(() => {
-      if (!popup.closed) return;
-      cleanup();
-      reject(new Error('OpenKey sign-in was cancelled.'));
-    }, 500);
+export async function embedSendEmailOtp(
+  email: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  const response = await fetchImpl(`${API_BASE}/api/auth/email-otp/send-verification-otp`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ email, type: 'sign-in' }),
   });
+  const body = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(body?.message || body?.error || 'Failed to send code');
+  }
+}
+
+export async function embedVerifyEmailOtp(
+  email: string,
+  otp: string,
+  fetchImpl: typeof fetch = fetch,
+  persistToken: (token: string) => void = setSessionToken,
+): Promise<string> {
+  const response = await fetchImpl(`${API_BASE}/api/auth/sign-in/email-otp`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ email, otp }),
+  });
+  const body = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(body?.message || body?.error || 'Invalid code');
+  }
+  const sessionToken =
+    response.headers.get('set-auth-token')
+    || body?.token
+    || body?.session?.token;
+  if (!sessionToken) {
+    throw new Error('Email verified, but no embedded session token was returned.');
+  }
+  persistToken(sessionToken);
+  return sessionToken;
 }
 
 export function clearSessionToken(): void {

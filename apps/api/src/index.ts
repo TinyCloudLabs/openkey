@@ -22,6 +22,7 @@ import { personalManagedAccountsRouter } from './routes/personal-managed-account
 import { organizationsRouter } from './routes/organizations';
 import { tenantConsoleRouter } from './routes/tenant-console';
 import { trackAuthorization, trackTokenExchange, trackUniqueUser } from './analytics';
+import { configuredSocialProviderIds } from './social-providers';
 
 // Create Hono app
 const app = new Hono();
@@ -130,6 +131,12 @@ app.get('/.well-known/openid-configuration', (c) =>
 );
 app.get('/api/auth/.well-known/openid-configuration', (c) =>
   openIdConfiguration(c.req.raw)
+);
+
+// Public capability discovery keeps login buttons aligned with server config.
+// It intentionally exposes provider IDs only, never credentials.
+app.get('/api/auth/providers', (c) =>
+  c.json({ providers: configuredSocialProviderIds() })
 );
 
 // better-auth routes - mount at /api/auth
