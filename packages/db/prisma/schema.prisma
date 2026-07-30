@@ -264,6 +264,8 @@ model OauthClient {
   icon                    String? // Logo URL
   redirectUris            String[] // Array of allowed redirect URIs
   scopes                  String[] // Allowed scopes for this client
+  tinycloudSessionPolicy  String?  // Dashboard-managed automatic signing policy
+  tinycloudSessionOrigin  String?  // Exact browser origin allowed by that policy
   disabled                Boolean  @default(false)
   skipConsent             Boolean  @default(false) // Always false for OpenKey
   enableEndSession        Boolean  @default(false)

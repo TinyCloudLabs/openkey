@@ -123,7 +123,14 @@ export interface ConsoleApp {
   uri: string | null;
   icon: string | null;
   redirectUris: string[];
-  type: 'spa' | 'native';
+  scopes: string[];
+  type: 'web' | 'spa' | 'native';
+  public: boolean;
+  tokenEndpointAuthMethod: string | null;
+  grantTypes: string[];
+  responseTypes: string[];
+  tinycloudSessionPolicy: string | null;
+  tinycloudSessionOrigin: string | null;
   disabled: boolean;
   createdAt: string;
   updatedAt: string;
@@ -350,6 +357,7 @@ export const api = {
       uri?: string | null;
       icon?: string | null;
       disabled?: boolean;
+      tinycloudSessionOrigin?: string | null;
     },
   ): Promise<{ client: ConsoleApp }> {
     return fetchAPI(`/api/console/organizations/${encodeURIComponent(organizationId)}/apps/${encodeURIComponent(appId)}`, {

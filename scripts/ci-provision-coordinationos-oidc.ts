@@ -14,6 +14,7 @@ import { createPrismaClient } from '../packages/db/src/index';
 const EXACT_SCOPES = ['openid', 'email', 'keys', 'tinycloud:session'];
 const PROVIDER_IDENTIFIER = 'custom:openkey';
 const CLIENT_NAME = 'CoordinationOS';
+const TINYCLOUD_SESSION_POLICY = 'coordinationos-kv-v1';
 
 type Configuration = {
   callbackUri: string;
@@ -169,10 +170,16 @@ async function main() {
         throw new Error('Existing custom:openkey provider is not backed by the required OpenKey client');
       }
       await assertOrganizationCanOwnClient(prisma, config.organizationId, client.organizationId);
-      if (!client.organizationId) {
+      if (client.organizationId !== config.organizationId
+        || client.tinycloudSessionPolicy !== TINYCLOUD_SESSION_POLICY
+        || client.tinycloudSessionOrigin !== config.coordinationosUri) {
         await prisma.oauthClient.update({
           where: { clientId: client.clientId },
-          data: { organizationId: config.organizationId },
+          data: {
+            organizationId: config.organizationId,
+            tinycloudSessionPolicy: TINYCLOUD_SESSION_POLICY,
+            tinycloudSessionOrigin: config.coordinationosUri,
+          },
         });
       }
       console.log(`Provider already configured with client ${client.clientId}; organization ownership verified.`);
@@ -216,6 +223,8 @@ async function main() {
         data: {
           clientSecret: clientSecretHash,
           organizationId: config.organizationId,
+          tinycloudSessionPolicy: TINYCLOUD_SESSION_POLICY,
+          tinycloudSessionOrigin: config.coordinationosUri,
         },
       });
     } else {
@@ -233,6 +242,8 @@ async function main() {
           icon: null,
           redirectUris: [config.callbackUri],
           scopes: [...EXACT_SCOPES],
+          tinycloudSessionPolicy: TINYCLOUD_SESSION_POLICY,
+          tinycloudSessionOrigin: config.coordinationosUri,
           disabled: false,
           skipConsent: false,
           enableEndSession: false,

@@ -141,3 +141,23 @@ export function validateConsoleMetadataUrl(value: unknown): { valid: true } | { 
   }
   return { valid: false, reason: 'Application URL must use HTTPS or loopback HTTP' };
 }
+
+export function validateConsoleApplicationOrigin(value: unknown): { valid: true } | { valid: false; reason: string } {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 2_048
+    || value.trim() !== value || /[\u0000-\u0020\u007f]/.test(value)) {
+    return { valid: false, reason: 'Allowed origin must be a non-empty URL without whitespace' };
+  }
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return { valid: false, reason: 'Allowed origin must be an absolute URL' };
+  }
+  if (url.username || url.password || url.hostname.includes('*')
+    || url.pathname !== '/' || url.search || url.hash) {
+    return { valid: false, reason: 'Allowed origin must contain only scheme, host, and optional port' };
+  }
+  if (url.protocol === 'https:' && url.hostname) return { valid: true };
+  if (url.protocol === 'http:' && isLoopbackHostname(url.hostname)) return { valid: true };
+  return { valid: false, reason: 'Allowed origin must use HTTPS or loopback HTTP' };
+}

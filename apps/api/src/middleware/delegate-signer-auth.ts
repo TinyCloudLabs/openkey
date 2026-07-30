@@ -45,6 +45,8 @@ export type CoordinationosOauthContext = {
     grantTypes: string[];
     responseTypes: string[];
     scopes: string[];
+    tinycloudSessionPolicy: string | null;
+    tinycloudSessionOrigin: string | null;
   } | null;
   user: { id: string; emailVerified: boolean } | null;
 };
@@ -184,6 +186,8 @@ export function createDelegateSignerAuth(dependencies: DelegateSignerAuthDepende
         grantTypes: true,
         responseTypes: true,
         scopes: true,
+        tinycloudSessionPolicy: true,
+        tinycloudSessionOrigin: true,
       },
     }),
     database.user.findUnique({
@@ -201,14 +205,11 @@ export function createDelegateSignerAuth(dependencies: DelegateSignerAuthDepende
     userId: token.userId,
   });
   const nowMs = now().getTime();
-  const configuredClientId = process.env.OPENKEY_COORDINATIONOS_OAUTH_CLIENT_ID;
 
   if (token.expiresAt.getTime() <= nowMs) c.set('delegateSignerAuthFailure', failure('token_expired'));
   else if (token.createdAt.getTime() + 300_000 <= nowMs) c.set('delegateSignerAuthFailure', failure('token_too_old'));
   else if (!token.scopes.includes('tinycloud:session')) c.set('delegateSignerAuthFailure', failure('missing_scope'));
-  else if (!configuredClientId || token.clientId !== configuredClientId) {
-    c.set('delegateSignerAuthFailure', failure('wrong_client'));
-  } else if (!client || client.clientId !== token.clientId) {
+  else if (!client || client.clientId !== token.clientId) {
     c.set('delegateSignerAuthFailure', failure('wrong_client'));
   } else if (client.disabled) c.set('delegateSignerAuthFailure', failure('client_disabled'));
   else if (!client.scopes.includes('tinycloud:session')) {

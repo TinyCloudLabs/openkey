@@ -19,6 +19,10 @@ import {
   validateOAuthRedirectUris,
   type OAuthApplicationType,
 } from '../services/oauth-redirect-uris';
+import {
+  COORDINATIONOS_POLICY_VERSION,
+  validateCoordinationosClientOrigin,
+} from '../services/coordinationos-session-policy';
 
 type ConsoleMembership = {
   id: string;
@@ -51,7 +55,14 @@ const APP_SELECT = {
   uri: true,
   icon: true,
   redirectUris: true,
+  scopes: true,
   type: true,
+  public: true,
+  tokenEndpointAuthMethod: true,
+  grantTypes: true,
+  responseTypes: true,
+  tinycloudSessionPolicy: true,
+  tinycloudSessionOrigin: true,
   disabled: true,
   createdAt: true,
   updatedAt: true,
@@ -140,7 +151,16 @@ function presentMember(member: {
 function parseAppInput(
   body: Record<string, unknown>,
   partial = false,
-  current?: { type: string | null; redirectUris: string[] },
+  current?: {
+    type: string | null;
+    redirectUris: string[];
+    mode: string;
+    public: boolean;
+    tokenEndpointAuthMethod: string | null;
+    grantTypes: string[];
+    responseTypes: string[];
+    scopes: string[];
+  },
 ) {
   const data: {
     name?: string;
@@ -149,6 +169,8 @@ function parseAppInput(
     icon?: string | null;
     type?: 'native' | 'spa';
     disabled?: boolean;
+    tinycloudSessionPolicy?: string | null;
+    tinycloudSessionOrigin?: string | null;
   } = {};
   if (!partial || body.name !== undefined) {
     if (typeof body.name !== 'string' || !body.name.trim() || body.name.length > 100) return null;
@@ -180,6 +202,30 @@ function parseAppInput(
   if (body.disabled !== undefined) {
     if (typeof body.disabled !== 'boolean') return null;
     data.disabled = body.disabled;
+  }
+  if (body.tinycloudSessionOrigin !== undefined) {
+    const eligible = current
+      && current.mode === 'PERSONAL'
+      && current.type === 'web'
+      && !current.public
+      && current.tokenEndpointAuthMethod === 'client_secret_basic'
+      && current.grantTypes.length === 1
+      && current.grantTypes[0] === 'authorization_code'
+      && current.responseTypes.length === 1
+      && current.responseTypes[0] === 'code'
+      && current.scopes.length === 4
+      && ['openid', 'email', 'keys', 'tinycloud:session']
+        .every((scope) => current.scopes.includes(scope));
+    if (!partial || !eligible) return null;
+    if (body.tinycloudSessionOrigin === null || body.tinycloudSessionOrigin === '') {
+      data.tinycloudSessionPolicy = null;
+      data.tinycloudSessionOrigin = null;
+    } else {
+      const origin = validateCoordinationosClientOrigin(body.tinycloudSessionOrigin);
+      if (!origin) return null;
+      data.tinycloudSessionPolicy = COORDINATIONOS_POLICY_VERSION;
+      data.tinycloudSessionOrigin = origin;
+    }
   }
   if (partial && Object.keys(data).length === 0) return null;
   return data;
@@ -456,7 +502,17 @@ export function createTenantConsoleRouter(
     const where = { id: c.req.param('appId'), organizationId: c.req.param('organizationId') };
     const current = await db.oauthClient.findFirst({
       where,
-      select: { id: true, type: true, redirectUris: true },
+      select: {
+        id: true,
+        type: true,
+        redirectUris: true,
+        mode: true,
+        public: true,
+        tokenEndpointAuthMethod: true,
+        grantTypes: true,
+        responseTypes: true,
+        scopes: true,
+      },
     });
     if (!current) return error(c, 404, 'NOT_FOUND', 'Application not found');
     const data = parseAppInput(body, true, current);

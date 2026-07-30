@@ -408,6 +408,81 @@ describe('tenant console boundary', () => {
     expect(metadata.status).toBe(400);
   });
 
+  test('stores an eligible confidential client TinyCloud policy from the dashboard', async () => {
+    apps.push({
+      id: 'app-confidential',
+      clientId: 'ok_coordinationos',
+      organizationId: 'org-a',
+      name: 'CoordinationOS',
+      uri: 'https://coordination.example',
+      icon: null,
+      redirectUris: ['https://project.supabase.co/auth/v1/callback'],
+      scopes: ['openid', 'email', 'keys', 'tinycloud:session'],
+      type: 'web',
+      mode: 'PERSONAL',
+      public: false,
+      tokenEndpointAuthMethod: 'client_secret_basic',
+      grantTypes: ['authorization_code'],
+      responseTypes: ['code'],
+      tinycloudSessionPolicy: null,
+      tinycloudSessionOrigin: null,
+      disabled: false,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const router = await consoleRouter();
+
+    const invalid = await router.request('/org-a/apps/app-confidential', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', 'x-test-user': 'admin' },
+      body: JSON.stringify({ tinycloudSessionOrigin: 'http://coordination.example' }),
+    });
+    expect(invalid.status).toBe(400);
+
+    const configured = await router.request('/org-a/apps/app-confidential', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', 'x-test-user': 'admin' },
+      body: JSON.stringify({ tinycloudSessionOrigin: 'https://coordination.example' }),
+    });
+    expect(configured.status).toBe(200);
+    expect(await configured.json()).toMatchObject({
+      client: {
+        tinycloudSessionPolicy: 'coordinationos-kv-v1',
+        tinycloudSessionOrigin: 'https://coordination.example',
+      },
+    });
+
+    const memberUpdate = await router.request('/org-a/apps/app-confidential', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', 'x-test-user': 'member' },
+      body: JSON.stringify({ tinycloudSessionOrigin: null }),
+    });
+    expect(memberUpdate.status).toBe(403);
+
+    const disabled = await router.request('/org-a/apps/app-confidential', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', 'x-test-user': 'admin' },
+      body: JSON.stringify({ tinycloudSessionOrigin: null }),
+    });
+    expect(disabled.status).toBe(200);
+    expect(await disabled.json()).toMatchObject({
+      client: {
+        tinycloudSessionPolicy: null,
+        tinycloudSessionOrigin: null,
+      },
+    });
+  });
+
+  test('rejects TinyCloud session policy on ineligible public apps', async () => {
+    const router = await consoleRouter();
+    const response = await router.request('/org-a/apps/app-a', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', 'x-test-user': 'admin' },
+      body: JSON.stringify({ tinycloudSessionOrigin: 'https://alpha.example' }),
+    });
+    expect(response.status).toBe(400);
+  });
+
   test('minimizes managed-account fields and paginates list responses', async () => {
     const router = await consoleRouter();
     const response = await router.request('/org-a/managed-accounts/account-a', {

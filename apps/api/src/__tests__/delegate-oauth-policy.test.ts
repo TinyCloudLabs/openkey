@@ -46,8 +46,6 @@ function validMessage(overrides: {
 function fixture(): CoordinationosSessionPolicyInput {
   return {
     now,
-    configuredClientId: clientId,
-    configuredOrigin: origin,
     principal: {
       userId: 'user_1',
       clientId,
@@ -64,6 +62,8 @@ function fixture(): CoordinationosSessionPolicyInput {
       grantTypes: ['authorization_code'],
       responseTypes: ['code'],
       scopes: ['openid', 'email', 'keys', 'tinycloud:session'],
+      tinycloudSessionPolicy: 'coordinationos-kv-v1',
+      tinycloudSessionOrigin: origin,
     },
     user: { id: 'user_1', emailVerified: true },
     key: {
@@ -165,6 +165,16 @@ describe('CoordinationOS TinyCloud session policy', () => {
     }, 'client_misconfigured'],
     ['extra client scope', (input) => {
       input.client!.scopes.push('offline_access');
+    }, 'client_misconfigured'],
+    ['missing client policy', (input) => {
+      input.client!.tinycloudSessionPolicy = null;
+      input.client!.tinycloudSessionOrigin = null;
+    }, 'client_misconfigured'],
+    ['unknown client policy', (input) => {
+      input.client!.tinycloudSessionPolicy = 'unknown-policy';
+    }, 'client_misconfigured'],
+    ['invalid configured origin', (input) => {
+      input.client!.tinycloudSessionOrigin = 'https://coordination.example/path';
     }, 'client_misconfigured'],
     ['missing scope', (input) => {
       input.client!.scopes = ['openid', 'email', 'keys'];

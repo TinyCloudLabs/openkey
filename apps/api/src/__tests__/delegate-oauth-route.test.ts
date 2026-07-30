@@ -14,8 +14,6 @@ import { coordinationosUserNamespace } from '../services/coordinationos-session-
 
 const configuredClientId = 'coordinationos-client';
 const configuredOrigin = 'https://coordination.example';
-process.env.OPENKEY_COORDINATIONOS_OAUTH_CLIENT_ID = configuredClientId;
-process.env.OPENKEY_COORDINATIONOS_ORIGIN = configuredOrigin;
 
 const rawBearer = 'opaque_OpenKey_token_123';
 const tokenHash = createHash('sha256').update(rawBearer).digest('base64url');
@@ -54,6 +52,8 @@ const client = {
   grantTypes: ['authorization_code'],
   responseTypes: ['code'],
   scopes: ['openid', 'email', 'keys', 'tinycloud:session'],
+  tinycloudSessionPolicy: 'coordinationos-kv-v1' as string | null,
+  tinycloudSessionOrigin: configuredOrigin as string | null,
 };
 
 let decisions: any[] = [];
@@ -240,8 +240,8 @@ beforeEach(() => {
   client.grantTypes = ['authorization_code'];
   client.responseTypes = ['code'];
   client.scopes = ['openid', 'email', 'keys', 'tinycloud:session'];
-  process.env.OPENKEY_COORDINATIONOS_OAUTH_CLIENT_ID = configuredClientId;
-  process.env.OPENKEY_COORDINATIONOS_ORIGIN = configuredOrigin;
+  client.tinycloudSessionPolicy = 'coordinationos-kv-v1';
+  client.tinycloudSessionOrigin = configuredOrigin;
   installSignerAuth();
 });
 
@@ -597,6 +597,13 @@ describe('CoordinationOS OAuth signer route', () => {
     ['wrong client scopes', () => {
       client.scopes = ['openid', 'email', 'keys', 'tinycloud:session', 'offline_access'];
     }, 'client_misconfigured'],
+    ['missing client session policy', () => {
+      client.tinycloudSessionPolicy = null;
+      client.tinycloudSessionOrigin = null;
+    }, 'client_misconfigured'],
+    ['unknown client session policy', () => {
+      client.tinycloudSessionPolicy = 'unknown-policy';
+    }, 'client_misconfigured'],
     ['missing user', () => { resolvedOauthUser = null; }, 'user_not_found'],
     ['unverified user', () => {
       resolvedOauthUser = { id: 'user_1', emailVerified: false };
@@ -904,9 +911,7 @@ describe('CoordinationOS OAuth signer route', () => {
     expect(signerCalls).toBe(0);
   });
 
-  test('OAuth configuration off still allows a real Better Auth session through bootstrap policy', async () => {
-    delete process.env.OPENKEY_COORDINATIONOS_OAUTH_CLIENT_ID;
-    delete process.env.OPENKEY_COORDINATIONOS_ORIGIN;
+  test('an OAuth client policy does not affect a real Better Auth session bootstrap', async () => {
     betterAuthSession = true;
     const response = await sign(bootstrapSigningBody(), 'Bearer better_auth_session_token');
     expect(response.status).toBe(200);
@@ -918,17 +923,15 @@ describe('CoordinationOS OAuth signer route', () => {
     expect(signerCalls).toBe(1);
   });
 
-  test('matching OAuth bearer is denied when CoordinationOS configuration is unset', async () => {
-    delete process.env.OPENKEY_COORDINATIONOS_OAUTH_CLIENT_ID;
-    delete process.env.OPENKEY_COORDINATIONOS_ORIGIN;
+  test('matching OAuth bearer is denied when its stored TinyCloud policy is unset', async () => {
+    client.tinycloudSessionPolicy = null;
+    client.tinycloudSessionOrigin = null;
     const body = signingBody();
 
-    await expectRouteDenial(body, 403, 'wrong_client');
+    await expectRouteDenial(body, 403, 'client_misconfigured');
   });
 
   test('Better Auth session signing still honors disabled Auto-Sign', async () => {
-    delete process.env.OPENKEY_COORDINATIONOS_OAUTH_CLIENT_ID;
-    delete process.env.OPENKEY_COORDINATIONOS_ORIGIN;
     betterAuthSession = true;
     autoSignEnabled = false;
     const response = await sign(bootstrapSigningBody(), 'Bearer better_auth_session_token');
