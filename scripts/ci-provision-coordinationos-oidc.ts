@@ -19,6 +19,7 @@ type Configuration = {
   callbackUri: string;
   coordinationosUri: string;
   issuer: string;
+  organizationId: string;
   serviceRoleKey: string;
   supabaseUrl: string;
 };
@@ -44,6 +45,7 @@ export function readConfiguration(): Configuration {
   const callbackUri = required('SUPABASE_CALLBACK_URI');
   const coordinationosUri = required('COORDINATIONOS_URI');
   const issuer = required('OPENKEY_ISSUER');
+  const organizationId = required('OPENKEY_ORGANIZATION_ID');
   const serviceRoleKey = required('COORDINATIONOS_SUPABASE_SERVICE_ROLE_KEY');
   const supabaseUrl = required('SUPABASE_URL').replace(/\/+$/, '');
 
@@ -67,7 +69,7 @@ export function readConfiguration(): Configuration {
   if (issuerUrl.pathname !== '/api/auth') {
     throw new Error('OPENKEY_ISSUER must use the production /api/auth issuer');
   }
-  return { callbackUri, coordinationosUri, issuer, serviceRoleKey, supabaseUrl };
+  return { callbackUri, coordinationosUri, issuer, organizationId, serviceRoleKey, supabaseUrl };
 }
 
 async function providerRequest(
@@ -110,11 +112,41 @@ function safeProviderError(result: {
   return `Supabase provider request failed (${result.status}, ${code}): ${message}`;
 }
 
+export async function assertOrganizationCanOwnClient(
+  prisma: ReturnType<typeof createPrismaClient>,
+  organizationId: string,
+  currentOrganizationId: string | null,
+) {
+  if (currentOrganizationId && currentOrganizationId !== organizationId) {
+    throw new Error('CoordinationOS client already belongs to another OpenKey organization');
+  }
+  if (currentOrganizationId === organizationId) return;
+
+  const organization = await prisma.organization.findUnique({
+    where: { id: organizationId },
+    select: {
+      planEntitlements: { select: { maxApps: true } },
+      _count: { select: { oauthClients: true } },
+    },
+  });
+  if (!organization) throw new Error('OPENKEY_ORGANIZATION_ID does not identify an OpenKey organization');
+  if (!organization.planEntitlements) {
+    throw new Error('OpenKey organization has no plan entitlements');
+  }
+  if (organization._count.oauthClients >= organization.planEntitlements.maxApps) {
+    throw new Error('OpenKey organization application limit is exhausted');
+  }
+}
+
 async function main() {
   const config = readConfiguration();
   const prisma = createPrismaClient();
   let createdClientId: string | null = null;
-  let rotatedClient: { clientId: string; priorSecretHash: string } | null = null;
+  let rotatedClient: {
+    clientId: string;
+    priorOrganizationId: string | null;
+    priorSecretHash: string;
+  } | null = null;
 
   try {
     const currentProvider = await providerRequest(config, 'GET');
@@ -136,7 +168,14 @@ async function main() {
         || !exactStringSet(client.redirectUris, [config.callbackUri])) {
         throw new Error('Existing custom:openkey provider is not backed by the required OpenKey client');
       }
-      console.log(`Provider already configured with client ${client.clientId}; no changes made.`);
+      await assertOrganizationCanOwnClient(prisma, config.organizationId, client.organizationId);
+      if (!client.organizationId) {
+        await prisma.oauthClient.update({
+          where: { clientId: client.clientId },
+          data: { organizationId: config.organizationId },
+        });
+      }
+      console.log(`Provider already configured with client ${client.clientId}; organization ownership verified.`);
       return;
     }
     if (currentProvider.status !== 404) throw new Error(safeProviderError(currentProvider));
@@ -165,13 +204,22 @@ async function main() {
     if (candidates.length === 1) {
       const existing = candidates[0]!;
       if (!existing.clientSecret) throw new Error('Existing confidential client has no secret hash');
+      await assertOrganizationCanOwnClient(prisma, config.organizationId, existing.organizationId);
       clientId = existing.clientId;
-      rotatedClient = { clientId, priorSecretHash: existing.clientSecret };
+      rotatedClient = {
+        clientId,
+        priorOrganizationId: existing.organizationId,
+        priorSecretHash: existing.clientSecret,
+      };
       await prisma.oauthClient.update({
         where: { clientId },
-        data: { clientSecret: clientSecretHash },
+        data: {
+          clientSecret: clientSecretHash,
+          organizationId: config.organizationId,
+        },
       });
     } else {
+      await assertOrganizationCanOwnClient(prisma, config.organizationId, null);
       clientId = `ok_${randomBytes(16).toString('hex')}`;
       createdClientId = clientId;
       await prisma.oauthClient.create({
@@ -179,6 +227,7 @@ async function main() {
           id: randomBytes(16).toString('hex'),
           clientId,
           clientSecret: clientSecretHash,
+          organizationId: config.organizationId,
           name: CLIENT_NAME,
           uri: config.coordinationosUri,
           icon: null,
@@ -221,7 +270,10 @@ async function main() {
     if (rotatedClient) {
       await prisma.oauthClient.update({
         where: { clientId: rotatedClient.clientId },
-        data: { clientSecret: rotatedClient.priorSecretHash },
+        data: {
+          clientSecret: rotatedClient.priorSecretHash,
+          organizationId: rotatedClient.priorOrganizationId,
+        },
       }).catch(() => undefined);
     }
     throw error;

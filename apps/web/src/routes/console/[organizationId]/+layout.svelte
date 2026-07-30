@@ -30,6 +30,7 @@
   const navItems = [
     { href: '', label: 'Overview' },
     { href: '/apps', label: 'Apps' },
+    { href: '/members', label: 'Members' },
     { href: '/credentials', label: 'Credentials' },
     { href: '/managed-accounts', label: 'Managed accounts' },
     { href: '/webhooks', label: 'Webhooks' },

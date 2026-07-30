@@ -28,6 +28,30 @@ const organizations = {
 let apps: any[];
 let credentials: any[];
 let webhooks: any[];
+let organizationMemberships: any[];
+
+const users = {
+  admin: {
+    id: 'admin', email: 'admin@example.com', name: 'Alpha owner', emailVerified: true,
+    ethereumKeys: [{ address: '0x1111111111111111111111111111111111111111' }],
+  },
+  member: {
+    id: 'member', email: 'member@example.com', name: 'Alpha member', emailVerified: true,
+    ethereumKeys: [{ address: '0x2222222222222222222222222222222222222222' }],
+  },
+  'admin-b': {
+    id: 'admin-b', email: 'admin-b@example.com', name: 'Beta owner', emailVerified: true,
+    ethereumKeys: [{ address: '0x3333333333333333333333333333333333333333' }],
+  },
+  target: {
+    id: 'target', email: 'target@example.com', name: 'Target admin', emailVerified: true,
+    ethereumKeys: [{ address: '0xd559CCd9EB87c530A9a349262669386dE93cf412' }],
+  },
+  secondTarget: {
+    id: 'second-target', email: 'second@example.com', name: 'Second target', emailVerified: true,
+    ethereumKeys: [{ address: '0x4444444444444444444444444444444444444444' }],
+  },
+} as const;
 
 const accountA = {
   id: 'account-a', organizationId: 'org-a', ownerUserId: 'owner-a', keyId: 'private-key-id',
@@ -39,21 +63,50 @@ const accountA = {
 };
 const accountB = { ...accountA, id: 'account-b', organizationId: 'org-b', externalUserId: 'customer-b' };
 
-const membership = (userId: string, organizationId: string) => {
-  const roles: Record<string, Record<string, 'ADMIN' | 'MEMBER'>> = {
-    admin: { 'org-a': 'ADMIN' },
-    member: { 'org-a': 'MEMBER' },
-    'admin-b': { 'org-b': 'ADMIN' },
-  };
-  const role = roles[userId]?.[organizationId];
-  return role ? { id: `${userId}-${organizationId}`, userId, organizationId, role } : null;
-};
-
 const prisma = {
   $transaction: mock(async (operation: (tx: any) => unknown) => operation(prisma)),
   organizationMembership: {
-    findFirst: mock(async ({ where }: any) => membership(where.userId, where.organizationId)),
-    count: mock(async ({ where }: any) => where.organizationId === 'org-a' ? 2 : 1),
+    findFirst: mock(async ({ where }: any) => organizationMemberships.find((membership) =>
+      membership.organizationId === where.organizationId
+      && (!where.userId || membership.userId === where.userId)
+      && membership.status === 'ACTIVE'
+      && !membership.revokedAt) ?? null),
+    findMany: mock(async ({ where }: any) => organizationMemberships.filter((membership) =>
+      membership.organizationId === where.organizationId
+      && membership.status === 'ACTIVE'
+      && !membership.revokedAt)),
+    count: mock(async ({ where }: any) => organizationMemberships.filter((membership) =>
+      membership.organizationId === where.organizationId
+      && membership.status === 'ACTIVE'
+      && !membership.revokedAt).length),
+    create: mock(async ({ data }: any) => {
+      const user = (users as any)[data.userId];
+      const membership = {
+        id: `membership-${organizationMemberships.length + 1}`,
+        ...data,
+        status: 'ACTIVE',
+        validFrom: now,
+        validUntil: null,
+        revokedAt: null,
+        createdAt: now,
+        user,
+      };
+      organizationMemberships.push(membership);
+      return membership;
+    }),
+  },
+  ethereumKey: {
+    findFirst: mock(async ({ where }: any) => {
+      const address = where.address.equals.toLowerCase();
+      const user = Object.values(users).find((candidate) =>
+        candidate.ethereumKeys.some((key) => key.address.toLowerCase() === address));
+      if (!user) return null;
+      return {
+        address: user.ethereumKeys[0].address,
+        userId: user.id,
+        user: { emailVerified: user.emailVerified },
+      };
+    }),
   },
   organization: {
     findUnique: mock(async ({ where, select }: any) => {
@@ -173,6 +226,20 @@ beforeEach(() => {
     id: 'webhook-a', organizationId: 'org-a', url: 'https://alpha.example/webhooks',
     eventTypes: ['managed_account.created'], active: true, createdAt: now, updatedAt: now,
   }];
+  organizationMemberships = [
+    {
+      id: 'admin-org-a', organizationId: 'org-a', userId: 'admin', role: 'ADMIN',
+      status: 'ACTIVE', validFrom: now, validUntil: null, revokedAt: null, createdAt: now, user: users.admin,
+    },
+    {
+      id: 'member-org-a', organizationId: 'org-a', userId: 'member', role: 'MEMBER',
+      status: 'ACTIVE', validFrom: now, validUntil: null, revokedAt: null, createdAt: now, user: users.member,
+    },
+    {
+      id: 'admin-org-b', organizationId: 'org-b', userId: 'admin-b', role: 'ADMIN',
+      status: 'ACTIVE', validFrom: now, validUntil: null, revokedAt: null, createdAt: now, user: users['admin-b'],
+    },
+  ];
 });
 
 describe('tenant console boundary', () => {
@@ -181,15 +248,79 @@ describe('tenant console boundary', () => {
     expect((await router.request('/org-a/apps')).status).toBe(401);
     expect((await router.request('/org-a', { headers: { 'x-test-user': 'member' } })).status).toBe(200);
     expect((await router.request('/org-a/apps', { headers: { 'x-test-user': 'member' } })).status).toBe(200);
+    expect((await router.request('/org-a/members', { headers: { 'x-test-user': 'member' } })).status).toBe(200);
     expect((await router.request('/org-a/apps', {
       method: 'POST', headers: { 'content-type': 'application/json', 'x-test-user': 'member' },
       body: JSON.stringify({ name: 'Nope', redirectUris: ['https://example.com/callback'] }),
     })).status).toBe(403);
+    expect((await router.request('/org-a/members', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-test-user': 'member' },
+      body: JSON.stringify({ address: users.target.ethereumKeys[0].address }),
+    })).status).toBe(403);
+  });
+
+  test('adds a verified linked address as an administrator idempotently', async () => {
+    const router = await consoleRouter();
+    const created = await router.request('/org-a/members', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-test-user': 'admin' },
+      body: JSON.stringify({ address: users.target.ethereumKeys[0].address.toLowerCase() }),
+    });
+    expect(created.status).toBe(201);
+    expect(await created.json()).toMatchObject({
+      member: {
+        userId: 'target',
+        email: 'target@example.com',
+        address: users.target.ethereumKeys[0].address,
+        role: 'ADMIN',
+      },
+    });
+    expect(apps[0].mode).toBe('TENANT_MANAGED');
+
+    const repeated = await router.request('/org-a/members', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-test-user': 'admin' },
+      body: JSON.stringify({ address: users.target.ethereumKeys[0].address }),
+    });
+    expect(repeated.status).toBe(200);
+    expect(organizationMemberships.filter((membership) => membership.userId === 'target')).toHaveLength(1);
+
+    const listed = await router.request('/org-a/members', { headers: { 'x-test-user': 'admin' } });
+    expect(listed.status).toBe(200);
+    expect((await listed.json() as any).members).toHaveLength(3);
+  });
+
+  test('rejects invalid or unlinked addresses and enforces the member limit', async () => {
+    const router = await consoleRouter();
+    const invalid = await router.request('/org-a/members', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-test-user': 'admin' },
+      body: JSON.stringify({ address: 'not-an-address' }),
+    });
+    expect(invalid.status).toBe(400);
+    expect(await invalid.json()).toMatchObject({ error: { code: 'INVALID_ADDRESS' } });
+
+    const unlinked = await router.request('/org-a/members', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-test-user': 'admin' },
+      body: JSON.stringify({ address: '0x5555555555555555555555555555555555555555' }),
+    });
+    expect(unlinked.status).toBe(404);
+    expect(await unlinked.json()).toMatchObject({ error: { code: 'OPENKEY_USER_NOT_FOUND' } });
+
+    const first = await router.request('/org-a/members', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-test-user': 'admin' },
+      body: JSON.stringify({ address: users.target.ethereumKeys[0].address }),
+    });
+    expect(first.status).toBe(201);
+    const overLimit = await router.request('/org-a/members', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-test-user': 'admin' },
+      body: JSON.stringify({ address: users.secondTarget.ethereumKeys[0].address }),
+    });
+    expect(overLimit.status).toBe(429);
+    expect(await overLimit.json()).toMatchObject({ error: { code: 'PLAN_LIMIT_EXCEEDED' } });
   });
 
   test('hides organizations and resource IDs across tenant boundaries', async () => {
     const router = await consoleRouter();
     expect((await router.request('/org-b/apps', { headers: { 'x-test-user': 'admin' } })).status).toBe(404);
+    expect((await router.request('/org-b/members', { headers: { 'x-test-user': 'admin' } })).status).toBe(404);
     expect((await router.request('/org-a/apps/app-b', {
       method: 'PATCH', headers: { 'content-type': 'application/json', 'x-test-user': 'admin' },
       body: JSON.stringify({ disabled: true }),
