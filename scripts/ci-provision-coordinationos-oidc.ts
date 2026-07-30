@@ -75,7 +75,10 @@ async function providerRequest(
   method: 'GET' | 'POST',
   body?: Record<string, unknown>,
 ): Promise<{ ok: boolean; status: number; value: Record<string, unknown> | null }> {
-  const suffix = method === 'GET' ? `/${encodeURIComponent(PROVIDER_IDENTIFIER)}` : '';
+  // Supabase's custom-provider router treats the colon as part of the
+  // identifier. Percent-encoding it here reaches the handler as the literal
+  // string "custom%3Aopenkey", which then fails the required custom: prefix.
+  const suffix = method === 'GET' ? `/${PROVIDER_IDENTIFIER}` : '';
   const response = await fetch(`${config.supabaseUrl}/auth/v1/admin/custom-providers${suffix}`, {
     method,
     headers: {
