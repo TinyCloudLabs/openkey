@@ -13,6 +13,7 @@ const requiredMigrations = [
   '20260720_0004_drop_registration_intent',
   '20260721_0001_better_auth_1_6_oauth_refresh_tokens',
   '20260728_0001_oauth_tenant_lifecycle_guard',
+  '20260730_0001_oauth_client_tinycloud_session_policy',
 ] as const;
 
 const requiredTriggers = [
@@ -136,6 +137,11 @@ const requiredCheckConstraints = [
     'managed_account_subject_email_ascii_check',
     'managed_account',
     `CHECK ("subjectEmail" = lower(btrim("subjectEmail", E'\\t\\n\\r\\x0c\\x0b '::text)) AND char_length("subjectEmail") <= 254 AND octet_length("subjectEmail") = char_length("subjectEmail"))`,
+  ],
+  [
+    'oauth_client_tinycloud_session_policy_complete',
+    'oauth_client',
+    'CHECK ("tinycloudSessionPolicy" IS NULL AND "tinycloudSessionOrigin" IS NULL OR "tinycloudSessionPolicy" IS NOT NULL AND "tinycloudSessionOrigin" IS NOT NULL)',
   ],
   [
     'organization_membership_interval_check',

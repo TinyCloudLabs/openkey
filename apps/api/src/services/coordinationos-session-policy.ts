@@ -64,8 +64,6 @@ export interface CoordinationosPolicyEvidence {
 
 export interface CoordinationosSessionPolicyInput {
   now?: Date;
-  configuredClientId?: string;
-  configuredOrigin?: string;
   principal: {
     userId: string;
     clientId: string;
@@ -82,6 +80,8 @@ export interface CoordinationosSessionPolicyInput {
     grantTypes: string[];
     responseTypes: string[];
     scopes: string[];
+    tinycloudSessionPolicy: string | null;
+    tinycloudSessionOrigin: string | null;
   } | null;
   user: { id: string; emailVerified: boolean } | null;
   key: {
@@ -206,10 +206,24 @@ export function canonicalizeCoordinationosOrigin(value: unknown): string | null 
       || (url.protocol === 'https:' && url.port === '443');
     const port = url.port && !defaultPort ? `:${url.port}` : '';
     const hostname = url.hostname.toLowerCase();
+    if (hostname.includes('*')) return null;
     return `${url.protocol.toLowerCase()}//${hostname}${port}`;
   } catch {
     return null;
   }
+}
+
+export function validateCoordinationosClientOrigin(value: unknown): string | null {
+  const origin = canonicalizeCoordinationosOrigin(value);
+  if (!origin) return null;
+  const url = new URL(origin);
+  const loopback = url.hostname === 'localhost'
+    || url.hostname.endsWith('.localhost')
+    || url.hostname === '[::1]'
+    || /^127(?:\.\d{1,3}){3}$/.test(url.hostname);
+  return url.protocol === 'https:' || (url.protocol === 'http:' && loopback)
+    ? origin
+    : null;
 }
 
 function sameStringSet(actual: string[], expected: readonly string[]): boolean {
@@ -297,13 +311,8 @@ export function evaluateCoordinationosSessionRequest(
     code,
     evidence,
   });
-  const configuredClientId = input.configuredClientId
-    ?? process.env.OPENKEY_COORDINATIONOS_OAUTH_CLIENT_ID;
-  const configuredOrigin = input.configuredOrigin
-    ?? process.env.OPENKEY_COORDINATIONOS_ORIGIN;
   const now = input.now ?? new Date();
 
-  if (!configuredClientId || input.principal.clientId !== configuredClientId) return deny('wrong_client');
   if (!input.client || input.client.clientId !== input.principal.clientId) return deny('wrong_client');
   if (input.client.disabled) return deny('client_disabled');
   if (!input.client.scopes.includes('tinycloud:session')) return deny('missing_scope');
@@ -314,6 +323,10 @@ export function evaluateCoordinationosSessionRequest(
     || !sameStringSet(input.client.grantTypes, ['authorization_code'])
     || !sameStringSet(input.client.responseTypes, ['code'])
     || !sameStringSet(input.client.scopes, REQUIRED_CLIENT_SCOPES)) {
+    return deny('client_misconfigured');
+  }
+  const configuredOrigin = validateCoordinationosClientOrigin(input.client.tinycloudSessionOrigin);
+  if (input.client.tinycloudSessionPolicy !== COORDINATIONOS_POLICY_VERSION || !configuredOrigin) {
     return deny('client_misconfigured');
   }
   if (!input.user) return deny('user_not_found');
@@ -336,9 +349,8 @@ export function evaluateCoordinationosSessionRequest(
 
   if (!input.request.origin) return deny('missing_origin');
   const normalizedOrigin = canonicalizeCoordinationosOrigin(input.request.origin);
-  const normalizedConfiguredOrigin = canonicalizeCoordinationosOrigin(configuredOrigin);
   evidence.origin = normalizedOrigin;
-  if (!normalizedOrigin || !normalizedConfiguredOrigin || normalizedOrigin !== normalizedConfiguredOrigin) {
+  if (!normalizedOrigin || normalizedOrigin !== configuredOrigin) {
     return deny('wrong_origin');
   }
 
@@ -360,7 +372,7 @@ export function evaluateCoordinationosSessionRequest(
   evidence.issuedAt = parsed.issuedAt ?? null;
   evidence.expirationTime = parsed.expirationTime ?? null;
 
-  const configuredUrl = new URL(normalizedConfiguredOrigin);
+  const configuredUrl = new URL(configuredOrigin);
   if (parsed.domain.toLowerCase() !== configuredUrl.host.toLowerCase()) {
     return deny('siwe_domain_mismatch');
   }

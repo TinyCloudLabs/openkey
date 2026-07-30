@@ -3,6 +3,7 @@
   import { page } from '$app/stores';
   import { CONSOLE_SHELL, type ConsoleShellContext } from '$lib/console-shell';
   import {
+    validateConsoleApplicationOrigin,
     validateConsoleMetadataUrl,
     validateConsoleRedirectUris,
   } from '$lib/console-validation';
@@ -30,11 +31,13 @@
   let newIcon = $state('');
 
   let editName = $state('');
-  let editType = $state<'spa' | 'native'>('spa');
+  let editType = $state<'web' | 'spa' | 'native'>('spa');
   let editRedirectUris = $state('');
   let editUri = $state('');
   let editIcon = $state('');
   let editDisabled = $state(false);
+  let editTinyCloudSessionEnabled = $state(false);
+  let editTinyCloudSessionOrigin = $state('');
 
   let loadedFor = $state('');
 
@@ -44,6 +47,20 @@
 
   function validateOptionalMetadataUrl(value: string) {
     return value.trim() ? validateConsoleMetadataUrl(value) : { valid: true } as const;
+  }
+
+  function isTinyCloudSessionEligible(app: ConsoleApp) {
+    return app.mode === 'PERSONAL'
+      && app.type === 'web'
+      && !app.public
+      && app.tokenEndpointAuthMethod === 'client_secret_basic'
+      && app.grantTypes.length === 1
+      && app.grantTypes[0] === 'authorization_code'
+      && app.responseTypes.length === 1
+      && app.responseTypes[0] === 'code'
+      && app.scopes.length === 4
+      && ['openid', 'email', 'keys', 'tinycloud:session']
+        .every((scope) => app.scopes.includes(scope));
   }
 
   async function loadApps() {
@@ -77,6 +94,9 @@
     editUri = app.uri ?? '';
     editIcon = app.icon ?? '';
     editDisabled = app.disabled;
+    editTinyCloudSessionEnabled = app.tinycloudSessionPolicy === 'coordinationos-kv-v1'
+      && Boolean(app.tinycloudSessionOrigin);
+    editTinyCloudSessionOrigin = app.tinycloudSessionOrigin ?? '';
   }
 
   function cancelEdit() {
@@ -117,22 +137,36 @@
     editLoading = true;
     editError = '';
     const redirectUris = normalizeLines(editRedirectUris);
-    const redirectResult = validateConsoleRedirectUris(redirectUris, editType);
+    const confidentialWeb = app.type === 'web';
+    const redirectResult = confidentialWeb
+      ? { valid: true } as const
+      : validateConsoleRedirectUris(redirectUris, editType === 'native' ? 'native' : 'spa');
     const metadataResult = validateOptionalMetadataUrl(editUri);
     const iconResult = validateOptionalMetadataUrl(editIcon);
+    const originResult = editTinyCloudSessionEnabled
+      ? validateConsoleApplicationOrigin(editTinyCloudSessionOrigin.trim())
+      : { valid: true } as const;
     if (!editName.trim()) editError = 'Enter an app name.';
     else if (!redirectResult.valid) editError = redirectResult.reason;
     else if (!metadataResult.valid) editError = metadataResult.reason;
     else if (!iconResult.valid) editError = iconResult.reason;
+    else if (!originResult.valid) editError = originResult.reason;
     else {
       try {
         await api.updateConsoleApp(currentOrganizationId, app.id, {
           name: editName.trim(),
-          type: editType,
-          redirectUris,
+          ...(!confidentialWeb && {
+            type: editType === 'native' ? 'native' as const : 'spa' as const,
+            redirectUris,
+          }),
           uri: editUri.trim() || null,
           icon: editIcon.trim() || null,
           disabled: editDisabled,
+          ...(isTinyCloudSessionEligible(app) && {
+            tinycloudSessionOrigin: editTinyCloudSessionEnabled
+              ? editTinyCloudSessionOrigin.trim()
+              : null,
+          }),
         });
         cancelEdit();
         await Promise.all([loadApps(), refresh()]);
@@ -320,12 +354,14 @@
                 </ul>
               </div>
               <div class="rounded-2xl border border-surface-200 bg-surface-50 p-3">
-                <div class="text-xs font-semibold uppercase tracking-[0.08em] text-surface-500">Notes</div>
+                <div class="text-xs font-semibold uppercase tracking-[0.08em] text-surface-500">TinyCloud session</div>
                 <p class="mt-2 text-sm leading-6 text-surface-600">
-                  {#if app.icon}
-                    Icon URL configured. {app.disabled ? 'The app is disabled.' : 'The app is active.'}
+                  {#if app.tinycloudSessionPolicy === 'coordinationos-kv-v1' && app.tinycloudSessionOrigin}
+                    Automatic signing is limited to <span class="break-all font-mono text-xs">{app.tinycloudSessionOrigin}</span>.
+                  {:else if isTinyCloudSessionEligible(app)}
+                    Automatic TinyCloud signing is not configured.
                   {:else}
-                    No icon URL configured. {app.disabled ? 'The app is disabled.' : 'The app is active.'}
+                    This app is not eligible for automatic TinyCloud sessions.
                   {/if}
                 </p>
               </div>
@@ -340,14 +376,18 @@
                   </div>
                   <div class="space-y-2">
                     <label class="text-sm font-semibold text-surface-900" for={`edit-type-${app.id}`}>App type</label>
-                    <select
-                      id={`edit-type-${app.id}`}
-                      class="h-10 w-full rounded-xl border border-surface-200 bg-white px-3 text-sm text-surface-900 focus-visible:border-primary-500 focus-visible:ring-2 focus-visible:ring-primary-200"
-                      bind:value={editType}
-                    >
-                      <option value="spa">Browser app</option>
-                      <option value="native">Native app</option>
-                    </select>
+                    {#if app.type === 'web'}
+                      <Input id={`edit-type-${app.id}`} value="Confidential web" disabled />
+                    {:else}
+                      <select
+                        id={`edit-type-${app.id}`}
+                        class="h-10 w-full rounded-xl border border-surface-200 bg-white px-3 text-sm text-surface-900 focus-visible:border-primary-500 focus-visible:ring-2 focus-visible:ring-primary-200"
+                        bind:value={editType}
+                      >
+                        <option value="spa">Browser app</option>
+                        <option value="native">Native app</option>
+                      </select>
+                    {/if}
                   </div>
                   <div class="space-y-2 lg:col-span-2">
                     <label class="text-sm font-semibold text-surface-900" for={`edit-redirect-${app.id}`}>Redirect URIs</label>
@@ -355,8 +395,14 @@
                       id={`edit-redirect-${app.id}`}
                       bind:value={editRedirectUris}
                       rows="4"
+                      disabled={app.type === 'web'}
                       class="w-full rounded-2xl border border-surface-200 bg-white px-3 py-3 text-sm text-surface-900 placeholder:text-surface-400 focus-visible:border-primary-500 focus-visible:ring-2 focus-visible:ring-primary-200"
                     ></textarea>
+                    {#if app.type === 'web'}
+                      <p class="text-xs leading-5 text-surface-500">
+                        Confidential client redirects are locked after registration.
+                      </p>
+                    {/if}
                   </div>
                   <div class="space-y-2">
                     <label class="text-sm font-semibold text-surface-900" for={`edit-uri-${app.id}`}>Metadata URL</label>
@@ -367,6 +413,40 @@
                     <Input id={`edit-icon-${app.id}`} bind:value={editIcon} />
                   </div>
                 </div>
+
+                {#if isTinyCloudSessionEligible(app)}
+                  <div class="space-y-3 border-t border-dotted border-surface-200 pt-4">
+                    <label class="flex items-start gap-3 text-sm text-surface-700">
+                      <input
+                        type="checkbox"
+                        bind:checked={editTinyCloudSessionEnabled}
+                        class="mt-0.5 h-4 w-4 rounded border-surface-300 text-primary-600 focus-visible:ring-primary-200"
+                      />
+                      <span>
+                        <strong class="block text-surface-900">Allow automatic TinyCloud session signing</strong>
+                        <span class="mt-1 block leading-5">
+                          OpenKey will sign only the registered CoordinationOS KV policy from the exact origin below.
+                        </span>
+                      </span>
+                    </label>
+                    {#if editTinyCloudSessionEnabled}
+                      <div class="max-w-2xl space-y-2">
+                        <label class="text-sm font-semibold text-surface-900" for={`edit-tinycloud-origin-${app.id}`}>
+                          Allowed application origin
+                        </label>
+                        <Input
+                          id={`edit-tinycloud-origin-${app.id}`}
+                          bind:value={editTinyCloudSessionOrigin}
+                          placeholder="https://app.example.com"
+                          required
+                        />
+                        <p class="text-xs leading-5 text-surface-500">
+                          Use only the scheme and host, with an optional port. Paths, queries, and wildcards are rejected.
+                        </p>
+                      </div>
+                    {/if}
+                  </div>
+                {/if}
 
                 <label class="flex items-center gap-2 text-sm text-surface-700">
                   <input type="checkbox" bind:checked={editDisabled} class="h-4 w-4 rounded border-surface-300 text-primary-600 focus-visible:ring-primary-200" />

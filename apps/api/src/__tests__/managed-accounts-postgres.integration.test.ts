@@ -65,6 +65,7 @@ const migrationNames = [
   '20260721_0001_better_auth_1_6_oauth_refresh_tokens',
   '20260728_0001_oauth_tenant_lifecycle_guard',
   '20260728_0002_coordinationos_session_grants',
+  '20260730_0001_oauth_client_tinycloud_session_policy',
 ] as const;
 
 const migrationSql = new Map<string, Promise<string>>(
@@ -106,6 +107,10 @@ INSERT INTO "managed_account" ("id", "ownerUserId", "organizationId", "subjectEm
 
 async function exerciseConstraints(db: SqlExecutor) {
   await db.exec(seedSql);
+
+  await db.exec(`INSERT INTO "oauth_client" ("id", "clientId", "name", "redirectUris", "scopes", "contacts", "tinycloudSessionPolicy", "tinycloudSessionOrigin", "updatedAt") VALUES ('oc1', 'ok_policy_client', 'Policy Client', ARRAY['https://app.example/cb'], ARRAY['openid'], ARRAY[]::text[], 'coordinationos-kv-v1', 'https://app.example', '${timestamp}')`);
+  await expectRejected(() => db.exec(`UPDATE "oauth_client" SET "tinycloudSessionOrigin" = NULL WHERE "id" = 'oc1'`));
+  await db.exec(`UPDATE "oauth_client" SET "tinycloudSessionPolicy" = NULL, "tinycloudSessionOrigin" = NULL WHERE "id" = 'oc1'`);
 
   // Email association and organization custody do not require a passkey. A
   // passkey is an optional account hardening method and a required eject
