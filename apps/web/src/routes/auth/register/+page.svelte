@@ -1,9 +1,16 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
   import { page } from '$app/stores';
+  import { onMount } from 'svelte';
   import { authClient, API_BASE, authErrorMessage } from '$lib/auth-client';
   import { api } from '$lib/api';
   import { setSessionToken } from '$lib/embed-passkey';
+  import {
+    loadConfiguredSocialProviders,
+    signInWithSocialPopup,
+    type SocialProviderId,
+  } from '$lib/social-auth';
+  import SocialButtons from '$lib/components/auth/social-buttons.svelte';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
@@ -17,6 +24,8 @@
   let loading = $state(false);
   let error = $state('');
   let registeredSessionToken = $state<string | null>(null);
+  let providers = $state<SocialProviderId[]>([]);
+  let loadingProvider = $state<SocialProviderId | null>(null);
 
   // Detect if opened as a popup from the embed SDK flow
   const isEmbedPopup = $derived(typeof window !== 'undefined' && !!window.opener && data.isEmbed);
@@ -44,6 +53,12 @@
     sessionStorage.setItem(RETURN_TO_STORAGE_KEY, initialReturnTo);
     sessionStorage.removeItem(OAUTH_STORAGE_KEY);
   }
+
+  onMount(async () => {
+    if (!data.isEmbed) {
+      providers = await loadConfiguredSocialProviders().catch(() => []);
+    }
+  });
 
   function takeReturnTo() {
     const returnTo = sessionStorage.getItem(RETURN_TO_STORAGE_KEY) || initialReturnTo;
@@ -116,6 +131,22 @@
     } catch (e) {
       // Non-blocking — key can be created later from the dashboard
       console.error('[Register] Failed to ensure key exists:', e);
+    }
+  }
+
+  async function signInWithSocial(provider: SocialProviderId) {
+    loading = true;
+    loadingProvider = provider;
+    error = '';
+    try {
+      await signInWithSocialPopup(provider);
+      await ensureKeyExists();
+      await continueAfterRegistration();
+    } catch (e: any) {
+      error = e.message || `${provider === 'google' ? 'Google' : 'Apple'} sign-up failed`;
+    } finally {
+      loading = false;
+      loadingProvider = null;
     }
   }
 
@@ -257,6 +288,15 @@
               {loading ? 'Sending...' : 'Continue with Email'}
             </Button>
           </form>
+
+          {#if providers.length > 0}
+            <SocialButtons
+              {providers}
+              {loadingProvider}
+              disabled={loading}
+              onsignin={signInWithSocial}
+            />
+          {/if}
 
           {#if data.isEmbed}
             <p class="text-center text-sm text-surface-500 mt-2">
