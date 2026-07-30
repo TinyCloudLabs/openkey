@@ -485,8 +485,18 @@ export const auth = betterAuth({
   disabledPaths: ['/token'], // Avoid conflicts with OAuth token endpoint
   logger: {
     level: 'debug',
+    disableColors: true,
     log: (level, message, ...args) => {
-      console.log(`[Better Auth] [${level}]`, message, ...args);
+      const details = args.map((arg) => {
+        if (!(arg instanceof Error)) return arg;
+        return {
+          name: arg.name,
+          message: arg.message,
+          stack: arg.stack,
+          cause: arg.cause,
+        };
+      });
+      console.log(`[Better Auth] [${level}]`, message, ...details);
     },
   },
 
@@ -556,6 +566,9 @@ export const auth = betterAuth({
       },
       otpLength: 6,
       expiresIn: 300, // 5 minutes
+      // Repeated requests during the active window must not invalidate a code
+      // that may still be arriving or grouped into the same email thread.
+      resendStrategy: 'reuse',
     }),
 
     // Bearer plugin - returns session token in set-auth-token header
