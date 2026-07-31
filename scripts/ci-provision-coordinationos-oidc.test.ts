@@ -2,6 +2,7 @@ import { afterEach, describe, expect, mock, test } from 'bun:test';
 import {
   assertOrganizationCanOwnClient,
   readConfiguration,
+  resolveRepairOrganizationId,
 } from './ci-provision-coordinationos-oidc';
 
 const original = { ...process.env };
@@ -65,6 +66,45 @@ describe('CoordinationOS OIDC provisioning configuration', () => {
 });
 
 describe('CoordinationOS client organization ownership', () => {
+  test('recovers an unowned client only when one organization exists', async () => {
+    const findMany = mock(async () => [{ id: 'org-only' }]);
+    await expect(resolveRepairOrganizationId(
+      { organization: { findMany } } as any,
+      undefined,
+      null,
+    )).resolves.toBe('org-only');
+  });
+
+  test('refuses to guess an owner across zero or multiple organizations', async () => {
+    for (const organizations of [
+      [],
+      [{ id: 'org-a' }, { id: 'org-b' }],
+    ]) {
+      await expect(resolveRepairOrganizationId(
+        { organization: { findMany: mock(async () => organizations) } } as any,
+        undefined,
+        null,
+      )).rejects.toThrow('unless exactly one');
+    }
+  });
+
+  test('keeps a configured or persisted owner without listing organizations', async () => {
+    const findMany = mock(async () => {
+      throw new Error('organization listing should not run');
+    });
+    await expect(resolveRepairOrganizationId(
+      { organization: { findMany } } as any,
+      'org-configured',
+      null,
+    )).resolves.toBe('org-configured');
+    await expect(resolveRepairOrganizationId(
+      { organization: { findMany } } as any,
+      undefined,
+      'org-persisted',
+    )).resolves.toBe('org-persisted');
+    expect(findMany).not.toHaveBeenCalled();
+  });
+
   test('does not consume another app seat when the client already belongs to the organization', async () => {
     const findUnique = mock(async () => {
       throw new Error('organization lookup should not run');
