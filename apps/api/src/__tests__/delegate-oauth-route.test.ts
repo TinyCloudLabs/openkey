@@ -10,7 +10,11 @@ import {
 import {
   COORDINATIONOS_DENIAL_STATUS,
 } from '../services/coordinationos-signing-audit';
-import { coordinationosUserNamespace } from '../services/coordinationos-session-policy';
+import {
+  coordinationosCanaryPath,
+  coordinationosInviteCodePath,
+  coordinationosUserNamespace,
+} from '../services/coordinationos-session-policy';
 
 const configuredClientId = 'coordinationos-client';
 const configuredOrigin = 'https://coordination.example';
@@ -453,6 +457,29 @@ describe('CoordinationOS OAuth signer route', () => {
     expect(decisions[0].tokenDigest).toBe(tokenAudit);
     expect(decisions[0].evidence.tokenDigest).toBe(tokenAudit);
     expect(decisions[0]).toMatchObject({ decision: 'ALLOW', reasonCode: 'allow' });
+  });
+
+  test('signs an exact canary plus private invite-code session once', async () => {
+    const response = await sign(signingBody({
+      abilities: {
+        kv: {
+          [coordinationosCanaryPath(key.id)]: [
+            'tinycloud.kv/get',
+            'tinycloud.kv/put',
+          ],
+          [coordinationosInviteCodePath(key.id)]: [
+            'tinycloud.kv/get',
+            'tinycloud.kv/put',
+          ],
+        },
+      },
+    }));
+
+    expect(response.status).toBe(200);
+    expect(signerCalls).toBe(1);
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]).toMatchObject({ decision: 'ALLOW', reasonCode: 'allow' });
+    expect(grants).toHaveLength(1);
   });
 
   test('untrusted request ID cannot persist the raw bearer in audit evidence', async () => {
