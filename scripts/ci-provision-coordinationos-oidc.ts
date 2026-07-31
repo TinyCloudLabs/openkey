@@ -143,6 +143,25 @@ export async function assertOrganizationCanOwnClient(
   }
 }
 
+export async function resolveRepairOrganizationId(
+  database: Pick<ReturnType<typeof createPrismaClient>, 'organization'>,
+  configuredOrganizationId: string | undefined,
+  currentOrganizationId: string | null,
+): Promise<string> {
+  const knownOrganizationId = configuredOrganizationId ?? currentOrganizationId;
+  if (knownOrganizationId) return knownOrganizationId;
+  const organizations = await database.organization.findMany({
+    select: { id: true },
+    take: 2,
+  });
+  if (organizations.length !== 1) {
+    throw new Error(
+      'OPENKEY_ORGANIZATION_ID is required unless exactly one OpenKey organization exists',
+    );
+  }
+  return organizations[0]!.id;
+}
+
 async function main() {
   const config = readConfiguration();
   const prisma = createPrismaClient();
@@ -174,12 +193,11 @@ async function main() {
         );
       }
       const client = candidates[0]!;
-      const organizationId = config.organizationId ?? client.organizationId;
-      if (!organizationId) {
-        throw new Error(
-          'OPENKEY_ORGANIZATION_ID is required because the existing CoordinationOS client has no owner',
-        );
-      }
+      const organizationId = await resolveRepairOrganizationId(
+        prisma,
+        config.organizationId,
+        client.organizationId,
+      );
       await assertOrganizationCanOwnClient(prisma, organizationId, client.organizationId);
       await prisma.oauthClient.update({
         where: { clientId: client.clientId },
