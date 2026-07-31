@@ -137,6 +137,14 @@ export function coordinationosUserNamespace(keyId: string): string {
     .slice(0, 22);
 }
 
+export function coordinationosCanaryPath(keyId: string): string {
+  return `coordinationos/integration/v1/${coordinationosUserNamespace(keyId)}/canary`;
+}
+
+export function coordinationosInviteCodePath(keyId: string): string {
+  return `coordinationos/integration/v1/${coordinationosUserNamespace(keyId)}/invite-code`;
+}
+
 function compareUtf8(left: string, right: string): number {
   return Buffer.compare(Buffer.from(utf8.encode(left)), Buffer.from(utf8.encode(right)));
 }
@@ -428,24 +436,35 @@ export function evaluateCoordinationosSessionRequest(
   }
   evidence.capabilityDigest = canonicalCapabilityDigest(canonicalCapabilities);
   if (canonicalCapabilities.length === 0) return deny('wrong_capability');
-  if (canonicalCapabilities.length > 1) return deny('capability_escalation');
+  if (canonicalCapabilities.length > 2) return deny('capability_escalation');
 
   const expectedSpace = `tinycloud:pkh:eip155:1:${keyAddress}:applications`;
-  const expectedPath = `coordinationos/integration/v1/${coordinationosUserNamespace(input.key.id)}/canary`;
-  const capability = canonicalCapabilities[0]!;
-  if (capability.space.includes(':eip155:') && !capability.space.includes(':eip155:1:')) {
-    return deny('chain_mismatch');
+  const canaryPath = coordinationosCanaryPath(input.key.id);
+  const allowedPaths = new Set([
+    canaryPath,
+    coordinationosInviteCodePath(input.key.id),
+  ]);
+  const requestedPaths = new Set(canonicalCapabilities.map((capability) => capability.path));
+  if (requestedPaths.size !== canonicalCapabilities.length) return deny('capability_escalation');
+  if (!requestedPaths.has(canaryPath)) return deny('wrong_capability');
+  if ([...requestedPaths].some((path) => !allowedPaths.has(path))) {
+    return canonicalCapabilities.length > 1
+      ? deny('capability_escalation')
+      : deny('wrong_capability');
   }
-  if (capability.service !== 'tinycloud.kv'
-    || capability.space !== expectedSpace
-    || capability.path !== expectedPath) {
-    return deny('wrong_capability');
+  for (const capability of canonicalCapabilities) {
+    if (capability.space.includes(':eip155:') && !capability.space.includes(':eip155:1:')) {
+      return deny('chain_mismatch');
+    }
+    if (capability.service !== 'tinycloud.kv' || capability.space !== expectedSpace) {
+      return deny('wrong_capability');
+    }
+    if (capability.actions.some((action) => !REQUIRED_ACTIONS.includes(action as never))
+      || capability.actions.length > REQUIRED_ACTIONS.length) {
+      return deny('capability_escalation');
+    }
+    if (!sameStringSet(capability.actions, REQUIRED_ACTIONS)) return deny('wrong_capability');
   }
-  if (capability.actions.some((action) => !REQUIRED_ACTIONS.includes(action as never))
-    || capability.actions.length > REQUIRED_ACTIONS.length) {
-    return deny('capability_escalation');
-  }
-  if (!sameStringSet(capability.actions, REQUIRED_ACTIONS)) return deny('wrong_capability');
 
   return { allowed: true, evidence, canonicalCapabilities, parsed };
 }

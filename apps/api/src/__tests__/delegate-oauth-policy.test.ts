@@ -4,6 +4,8 @@ import {
   canonicalCapabilityDigest,
   canonicalCapabilityJson,
   canonicalizeCoordinationosCapabilities,
+  coordinationosCanaryPath,
+  coordinationosInviteCodePath,
   coordinationosUserNamespace,
   evaluateCoordinationosSessionRequest,
   type CoordinationosSessionPolicyInput,
@@ -132,6 +134,32 @@ describe('CoordinationOS TinyCloud session policy', () => {
     expect(result.evidence.capabilityDigest).toBe(
       'cd11297f7a882b9b80f0c7618294a19c1aa78eabdaea3c76778c6b1d7eba36b1',
     );
+  });
+
+  test('allows the exact canary and private invite-code records together', () => {
+    const input = fixture();
+    input.request.message = validMessage({
+      abilities: {
+        kv: {
+          [coordinationosCanaryPath(keyId)]: [
+            'tinycloud.kv/get',
+            'tinycloud.kv/put',
+          ],
+          [coordinationosInviteCodePath(keyId)]: [
+            'tinycloud.kv/get',
+            'tinycloud.kv/put',
+          ],
+        },
+      },
+    });
+
+    const result = evaluateCoordinationosSessionRequest(input);
+    expect(result.allowed).toBe(true);
+    if (!result.allowed) throw new Error(result.code);
+    expect(result.canonicalCapabilities.map((capability) => capability.path)).toEqual([
+      coordinationosCanaryPath(keyId),
+      coordinationosInviteCodePath(keyId),
+    ]);
   });
 
   test('canonical capability digest is stable across action and entry order', () => {
@@ -321,6 +349,11 @@ describe('CoordinationOS TinyCloud session policy', () => {
         'tinycloud.kv/get', 'tinycloud.kv/put',
       ] } },
     }, 'wrong_capability'],
+    ['invite code without canary', {
+      abilities: { kv: { [coordinationosInviteCodePath(keyId)]: [
+        'tinycloud.kv/get', 'tinycloud.kv/put',
+      ] } },
+    }, 'wrong_capability'],
     ['missing action', {
       abilities: { kv: { [`coordinationos/integration/v1/${coordinationosUserNamespace(keyId)}/canary`]: [
         'tinycloud.kv/get',
@@ -347,7 +380,7 @@ describe('CoordinationOS TinyCloud session policy', () => {
         'coordinationos/integration/v1/extra/canary': ['tinycloud.kv/get'],
       } },
     }, 'capability_escalation'],
-  ])('%s is denied by the exact canary policy', (_name, overrides, code) => {
+  ])('%s is denied by the exact CoordinationOS storage policy', (_name, overrides, code) => {
     const input = fixture();
     input.request.message = validMessage(overrides);
     expect(evaluateCoordinationosSessionRequest(input)).toMatchObject({
