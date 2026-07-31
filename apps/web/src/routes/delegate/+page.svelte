@@ -6,6 +6,12 @@
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import SiweMessage from '$lib/components/ui/siwe-message.svelte';
+  import SigningApproval from '$lib/components/signing/signing-approval.svelte';
+  import {
+    parseCapabilityReview,
+    defaultSelection,
+    type CapabilityReviewModel,
+  } from '@openkey/capability-review';
 
   interface EIP6963ProviderInfo {
     uuid: string;
@@ -56,6 +62,10 @@
   let editingPermissions = $state(false);
   let updatingPermissions = $state(false);
   let permissionsEdited = $state(false);
+  let authorizationContextToken = $state<string | null>(null);
+  let reviewModel = $state<CapabilityReviewModel | null>(null);
+  let reviewSelection = $state(new Set<string>());
+  let reviewEditing = $state(false);
   const delegateReturnTo = $derived($page.url.pathname + $page.url.search + $page.url.hash);
   const registerHref = $derived(`/auth/register?returnTo=${encodeURIComponent(delegateReturnTo)}`);
   const emailSignInHref = $derived(`/auth/login?redirect=${encodeURIComponent(delegateReturnTo)}`);
@@ -348,6 +358,45 @@
       ? data.selectedActionKeys.filter((key: unknown): key is string => typeof key === 'string')
       : permissions.flatMap((permission) => permission.actions.map((action) => action.key));
     permissionsEdited = Boolean(data.edited);
+    // Versioned protocol: capture the opaque single-use token so /complete
+    // can re-validate every bound invariant server-side.
+    authorizationContextToken =
+      typeof data.authorizationContext?.token === 'string'
+        ? data.authorizationContext.token
+        : null;
+    // Build the shared capability-review model — the SigningApproval
+    // component renders from this instead of custom markup so CLI, popup,
+    // and iframe show the same content for the same request.
+    if (siweMessage && selectedKey) {
+      try {
+        const model = parseCapabilityReview({
+          message: siweMessage,
+          signer: {
+            label: selectedKey.label ?? `Key ${selectedKey.keyIndex}`,
+            address: selectedKey.address,
+            chainId: 1,
+            provenance: selectedKey.keyType === 'EXTERNAL' ? 'external' : 'managed',
+          },
+          editable: true,
+          metadataTrust: { status: 'unsigned', reason: 'no manifest supplied' },
+          reason: { text: requestReason, source: requestReason ? 'caller' : 'none' },
+          requester: {
+            displayName: 'TinyCloud CLI',
+            verifiedOrigin: null,
+            manifestId: null,
+            manifestDigest: null,
+            domainWarning: false,
+            originWarning: false,
+          },
+        });
+        reviewModel = model;
+        reviewSelection = defaultSelection(model);
+      } catch {
+        reviewModel = null;
+      }
+    } else {
+      reviewModel = null;
+    }
   }
 
   function resetDelegationState() {
@@ -688,6 +737,15 @@
           // signed SIWE against the CLI request instead of DEFAULT_ABILITIES.
           ...(requestedPermissions.length > 0
             ? { permissions: requestedPermissions }
+            : {}),
+          // Versioned protocol: echo the /prepare token so the server can
+          // re-verify every bound invariant (user, key, JWK, host, immutable
+          // SIWE fields, allowed action set, required action set).
+          ...(authorizationContextToken
+            ? {
+                authorizationContextToken,
+                selectedActionIds: selectedActionKeys,
+              }
             : {}),
         }),
       });

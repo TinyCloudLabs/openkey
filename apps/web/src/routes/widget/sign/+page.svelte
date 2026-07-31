@@ -6,6 +6,12 @@
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import SiweMessage from '$lib/components/ui/siwe-message.svelte';
+  import SigningApproval from '$lib/components/signing/signing-approval.svelte';
+  import {
+    parseCapabilityReview,
+    defaultSelection,
+    type CapabilityReviewModel,
+  } from '@openkey/capability-review';
 
   const session = authClient.useSession();
 
@@ -17,6 +23,18 @@
   let error = $state('');
   let sessionChecked = $state(false);
 
+  // Shared capability-review state — the SigningApproval component uses this
+  // when the request looks like a TinyCloud SIWE-ReCap. Legacy plain
+  // signMessage requests still render via the legacy fallback below.
+  let reviewModel = $state<CapabilityReviewModel | null>(null);
+  let reviewSelection = $state(new Set<string>());
+  let reviewEditing = $state(false);
+
+  // Rawquery-string origin. Legacy: any origin ever accepted; the widget
+  // used '*' as a fallback. New default: we still surface '*' here for
+  // backward compatibility with popups where the parent origin was unknown,
+  // but STRICT origin validation happens on the message ingress path via
+  // the widget-transport in the versioned flow.
   const origin = $page.url.searchParams.get('origin') || '*';
 
   // Use $effect instead of onMount for Svelte 5 compatibility with SSR disabled
@@ -62,12 +80,48 @@
   });
 
   async function handleMessage(event: MessageEvent) {
+    // Strict origin/source validation for versioned callers. The '*' origin
+    // (legacy) still bypasses this check but ONLY reaches this branch when
+    // the widget was opened without an origin parameter.
+    if (origin !== '*') {
+      if (event.origin !== origin) return;
+      if (event.source !== window.opener && event.source !== window.parent) return;
+    }
+
     console.log('[sign widget] received message:', event.data?.type, event.data);
     if (event.data?.type === 'openkey:sign:request') {
       console.log('[sign widget] sign request received, message:', event.data.message?.substring(0, 100), 'keyId:', event.data.keyId);
       message = event.data.message;
       keyId = event.data.keyId || null;
       keyFetched = false; // Reset so effect can run
+
+      // Build shared capability-review model for the SigningApproval view.
+      try {
+        const model = parseCapabilityReview({
+          message,
+          signer: {
+            label: 'Selected key',
+            address: key?.address ?? '0x0000000000000000000000000000000000000000',
+            chainId: 1,
+            provenance: key?.keyType === 'EXTERNAL' ? 'external' : 'managed',
+          },
+          editable: true,
+          metadataTrust: { status: 'unsigned', reason: 'no manifest supplied' },
+          reason: { text: '', source: 'none' },
+          requester: {
+            displayName: origin === '*' ? 'Unknown origin' : origin,
+            verifiedOrigin: origin === '*' ? null : origin,
+            manifestId: null,
+            manifestDigest: null,
+            domainWarning: false,
+            originWarning: false,
+          },
+        });
+        reviewModel = model;
+        reviewSelection = defaultSelection(model);
+      } catch {
+        reviewModel = null;
+      }
 
       // Try immediately if session is already available
       if (keyId && $session.data) {
@@ -90,11 +144,29 @@
 
     try {
       const result = await api.signMessage(key.id, message);
+      // Versioned response: include signedMessage (exact bytes signed —
+      // always the input `message` here because the popup does not rewrite
+      // bytes; regeneration happens server-side via /prepare + /complete),
+      // selectedActionKeys, and effective permissions when we have a review
+      // model. Legacy callers ignore these extra fields.
+      const effectivePermissions = reviewModel
+        ? reviewModel.permissions.map((grant) => ({
+            service: grant.service,
+            space: grant.space,
+            path: grant.path,
+            actions: grant.actions
+              .filter((action) => reviewSelection.has(action.id))
+              .map((action) => action.ability),
+          }))
+        : undefined;
       sendResponse({
         type: 'openkey:sign:response',
         success: true,
         signature: result.signature,
         address: result.address,
+        signedMessage: message,
+        selectedActionKeys: reviewModel ? Array.from(reviewSelection) : undefined,
+        permissions: effectivePermissions,
       });
       sendClose();
     } catch (e: any) {
@@ -171,7 +243,28 @@
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
       <p>Please connect first to sign messages.</p>
     </div>
+  {:else if reviewModel && reviewModel.protocol === 'tinycloud-siwe-recap'}
+    <!--
+      Editable TinyCloud request — render via the shared SigningApproval
+      component so CLI browser, popup, and iframe show the same content.
+    -->
+    <SigningApproval
+      model={reviewModel}
+      selection={reviewSelection}
+      editing={reviewEditing}
+      approving={signing}
+      {error}
+      onApprove={signMessage}
+      onCancel={cancel}
+      onSelectionChange={(next) => (reviewSelection = next)}
+      onEditingChange={(next) => (reviewEditing = next)}
+    />
   {:else}
+    <!--
+      Legacy plain signMessage / non-ReCap SIWE fallback. The existing
+      review UI stays for backward compatibility with pre-consolidation
+      callers.
+    -->
     <div class="flex flex-col gap-4 flex-1">
       <Card class="p-4">
         <span class="block text-surface-400 text-xs uppercase mb-2">Signing with:</span>

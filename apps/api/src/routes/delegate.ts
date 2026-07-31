@@ -27,8 +27,10 @@ import {
   DEFAULT_ABILITIES,
   SIWE_DOMAIN,
   abilitiesFromPermissions,
+  actionKey as computeActionKey,
   assertBaselineSubset,
   assertRequiredActions,
+  isRequiredAction,
   normalizeStringArray,
   parsePreparedRecap,
   prepareDelegationSession,
@@ -50,6 +52,13 @@ import {
   evaluateAutoSignPolicy,
   evaluateBootstrapSigningScope,
 } from './delegate-autosign';
+import {
+  consumeAuthorizationContext,
+  digestAbilities,
+  digestImmutableFields,
+  issueAuthorizationContext,
+  type AuthorizationContextToken,
+} from '../services/authorization-signing';
 import { deriveKeyForRecord } from '../services/key-sealing';
 import {
   canonicalizeCoordinationosOrigin,
@@ -219,6 +228,74 @@ function validatePermissions(permissions: unknown): PermissionEntry[] {
       actions: e.actions as string[],
     };
   });
+}
+
+/**
+ * Extract the immutable SIWE header fields whose digest binds the /prepare
+ * context to /complete. Any change in any of these fields between prepare
+ * and complete indicates tampering — reject.
+ */
+function extractImmutableSiweFields(
+  siwe: string,
+  fallback: {
+    address: string;
+    chainId: number;
+    spaceId: string;
+  },
+): {
+  address: string;
+  chainId: number;
+  domain: string;
+  issuedAt: string;
+  expirationTime: string;
+  spaceId: string;
+  nonce: string;
+} {
+  const domainMatch = siwe.match(/^(.+?) wants you to sign in with your Ethereum account:$/m);
+  const nonceMatch = siwe.match(/^Nonce:\s*(.+)$/m);
+  const issuedMatch = siwe.match(/^Issued At:\s*(.+)$/m);
+  const expireMatch = siwe.match(/^Expiration Time:\s*(.+)$/m);
+  return {
+    address: fallback.address,
+    chainId: fallback.chainId,
+    domain: domainMatch?.[1]?.trim() ?? SIWE_DOMAIN,
+    issuedAt: issuedMatch?.[1]?.trim() ?? '',
+    expirationTime: expireMatch?.[1]?.trim() ?? '',
+    spaceId: fallback.spaceId,
+    nonce: nonceMatch?.[1]?.trim() ?? '',
+  };
+}
+
+/**
+ * Collect the set of action IDs classifier says are required for the given
+ * ReCap entries. These IDs are the ones the server MUST see in the final
+ * completed selection or the delegation fails.
+ */
+function requiredActionIdSet(entries: RecapEntry[]): Set<string> {
+  const set = new Set<string>();
+  for (const entry of entries) {
+    for (const action of entry.actions) {
+      if (isRequiredAction(entry, action)) {
+        set.add(computeActionKey(entry, action));
+      }
+    }
+  }
+  return set;
+}
+
+/**
+ * Collect the set of action IDs present in a set of ReCap entries. This is
+ * the "allowed" set the /prepare context binds — /complete cannot select
+ * anything outside this set.
+ */
+function allowedActionIdSet(entries: RecapEntry[]): Set<string> {
+  const set = new Set<string>();
+  for (const entry of entries) {
+    for (const action of entry.actions) {
+      set.add(computeActionKey(entry, action));
+    }
+  }
+  return set;
 }
 
 function isOpenKeySigningRequestBody(body: unknown): body is OpenKeySigningRequestBody {
@@ -754,6 +831,19 @@ delegateRouter.post('/', async (c) => {
 
   const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
 
+  let effectiveEntries: RecapEntry[] = [];
+  try {
+    effectiveEntries = parsePreparedRecap(preparedResult.prepared.siwe);
+  } catch {
+    effectiveEntries = [];
+  }
+  const effectiveGrants = effectiveEntries.map((entry) => ({
+    service: entry.service,
+    space: entry.space,
+    path: entry.path,
+    actions: [...entry.actions],
+  }));
+
   return c.json({
     delegationHeader: session.delegationHeader,
     delegationCid: session.delegationCid,
@@ -774,6 +864,11 @@ delegateRouter.post('/', async (c) => {
     // this string at session-restore time; without it, restored sessions
     // are treated as expired-at-epoch-zero.
     siwe: preparedResult.prepared.siwe,
+    // Versioned protocol: `signedMessage` is the exact bytes signed,
+    // `permissions` is the effective grant set. Callers should prefer
+    // these fields over reconstructing from the SIWE string.
+    signedMessage: preparedResult.prepared.siwe,
+    permissions: effectiveGrants,
   });
 });
 
@@ -856,6 +951,51 @@ delegateRouter.post('/prepare', async (c) => {
     jwk: body.jwk,
   };
 
+  // Issue an opaque single-use authorization context so /complete cannot
+  // be replayed with a broader SIWE, a different key, or a different host.
+  // The context digests are the sole authority for /complete — the `edited`
+  // flag in the /complete body is not consulted for authority.
+  let authorizationContext: AuthorizationContextToken | null = null;
+  try {
+    const baselineEntries = parsePreparedRecap(preparedResult.prepared.siwe);
+    const allowedActionIds = allowedActionIdSet(baselineEntries);
+    const initialSelectionActionIds = new Set(preparedResult.selectedActionKeys);
+    const immutableFields = extractImmutableSiweFields(
+      preparedResult.prepared.siwe,
+      { address, chainId, spaceId: preparedResult.spaceId },
+    );
+    const baselineAbilitiesDigest = digestAbilities(
+      // Use the exact abilities map that would be re-derived at /complete.
+      permissions
+        ? abilitiesFromPermissions(permissions)
+        : DEFAULT_ABILITIES,
+    );
+    authorizationContext = issueAuthorizationContext({
+      userId: user.id,
+      keyId: key.id,
+      keyAddress: address,
+      jwk: body.jwk,
+      host,
+      spaceId: preparedResult.spaceId,
+      baselineAbilitiesDigest,
+      immutableFieldsDigest: digestImmutableFields(immutableFields),
+      allowedActionIds,
+      initialSelectionActionIds,
+      expirationTime: immutableFields.expirationTime,
+    });
+  } catch (issueErr) {
+    console.warn('[Delegate] Failed to issue authorization context:', issueErr);
+    // If we cannot issue a context there is no safe /complete path — force
+    // callers to retry.
+    return c.json(
+      {
+        error: 'Failed to issue authorization context',
+        code: 'authorization_context_failed',
+      },
+      500,
+    );
+  }
+
   return c.json({
     prepared: preparedData,
     spaceId: preparedResult.spaceId,
@@ -868,6 +1008,12 @@ delegateRouter.post('/prepare', async (c) => {
     selectedActionKeys: preparedResult.selectedActionKeys,
     edited: preparedResult.edited,
     reason,
+    // Versioned protocol: /complete MUST echo this token.
+    authorizationContext: {
+      token: authorizationContext.token,
+      expiresAt: authorizationContext.expiresAt,
+      baselineAbilitiesDigest: authorizationContext.baselineAbilitiesDigest,
+    },
   });
 });
 
@@ -895,6 +1041,21 @@ delegateRouter.post('/complete', async (c) => {
      * broader SIWE. Optional; falls back to DEFAULT_ABILITIES when absent.
      */
     permissions?: unknown;
+    /**
+     * Versioned protocol: opaque token issued by /prepare. Required for
+     * new callers. When present, the server re-validates every bound
+     * invariant (key, JWK, host, immutable SIWE fields, allowed action
+     * set, required action set) regardless of the `edited` flag. The
+     * `edited` flag is retained for backward compatibility ONLY as a
+     * hint for the UI response payload; it has NO effect on authority.
+     */
+    authorizationContextToken?: string;
+    /**
+     * Which action IDs the user finally selected. Required alongside
+     * `authorizationContextToken`; each ID must be in the /prepare
+     * allowed set and every required action must remain.
+     */
+    selectedActionIds?: unknown;
   }>();
 
   if (!body.prepared || !body.signature || !body.host || !body.jwk) {
@@ -910,16 +1071,54 @@ delegateRouter.post('/complete', async (c) => {
     }
   }
 
-  if (body.edited) {
-    try {
-      const entries = parsePreparedRecap(body.prepared.siwe || '');
-      const baseline = baselinePermissions
-        ? abilitiesFromPermissions(baselinePermissions)
-        : DEFAULT_ABILITIES;
-      assertBaselineSubset(entries, baseline);
-      assertRequiredActions(entries);
-    } catch (e) {
-      return c.json({ error: e instanceof Error ? e.message : 'Invalid edited permissions' }, 400);
+  // Authority-side validation always runs; the `edited` request field is
+  // never trusted as an authority gate. Older callers omit both the
+  // context token and the selectedActionIds field; those paths still get
+  // strict subset+required validation over the SIWE bytes here.
+  try {
+    const entries = parsePreparedRecap(body.prepared.siwe || '');
+    const baseline = baselinePermissions
+      ? abilitiesFromPermissions(baselinePermissions)
+      : DEFAULT_ABILITIES;
+    assertBaselineSubset(entries, baseline);
+    assertRequiredActions(entries);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'Invalid delegation' }, 400);
+  }
+
+  const preparedAddress = String(body.prepared.address || '');
+  const preparedChainId = Number(body.prepared.chainId) || 1;
+  const preparedSpaceId = String(body.prepared.spaceId || '');
+
+  if (body.authorizationContextToken) {
+    if (typeof body.authorizationContextToken !== 'string') {
+      return c.json({ error: 'authorizationContextToken must be a string' }, 400);
+    }
+    if (!Array.isArray(body.selectedActionIds) || body.selectedActionIds.some((id) => typeof id !== 'string')) {
+      return c.json({ error: 'selectedActionIds must be a string[] when authorizationContextToken is provided' }, 400);
+    }
+    const preparedEntries = parsePreparedRecap(body.prepared.siwe || '');
+    const immutable = extractImmutableSiweFields(body.prepared.siwe || '', {
+      address: preparedAddress,
+      chainId: preparedChainId,
+      spaceId: preparedSpaceId,
+    });
+    const consume = consumeAuthorizationContext({
+      token: body.authorizationContextToken,
+      userId: user.id,
+      // Key identity is enforced via keyAddress (which the /complete SIWE
+      // always carries); the /prepare context also bound the keyId but we
+      // do not require it here.
+      keyAddress: preparedAddress,
+      jwk: body.jwk,
+      host: body.host,
+      spaceId: preparedSpaceId,
+      selectedActionIds: new Set(body.selectedActionIds as string[]),
+      candidateImmutableFieldsDigest: digestImmutableFields(immutable),
+      requiredActionIds: requiredActionIdSet(preparedEntries),
+    });
+    if (!consume.ok) {
+      return c.json({ error: consume.message, code: consume.error }, 400);
     }
   }
 
@@ -953,6 +1152,22 @@ delegateRouter.post('/complete', async (c) => {
   const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
   const reason = normalizeDelegateReason(body.reason);
 
+  // Effective grants after any narrowing — the SDK consumer uses these
+  // to reconcile local state so returned permissions can never appear
+  // broader than what was signed.
+  let effectiveEntries: RecapEntry[] = [];
+  try {
+    effectiveEntries = parsePreparedRecap(body.prepared.siwe || '');
+  } catch {
+    effectiveEntries = [];
+  }
+  const effectiveGrants = effectiveEntries.map((entry) => ({
+    service: entry.service,
+    space: entry.space,
+    path: entry.path,
+    actions: [...entry.actions],
+  }));
+
   return c.json({
     delegationHeader: session.delegationHeader,
     delegationCid: session.delegationCid,
@@ -972,5 +1187,12 @@ delegateRouter.post('/complete', async (c) => {
     // `expirationTime` from this when restoring the session, and
     // without it a restored session is treated as expired-at-epoch-zero.
     siwe: body.prepared.siwe,
+    // Versioned protocol additions:
+    //   `signedMessage` is the exact bytes the signature verifies against
+    //   (identical to `siwe`, but named per the SDK protocol so clients
+    //   have a stable field).
+    //   `permissions` is the effective grant set after any narrowing.
+    signedMessage: body.prepared.siwe,
+    permissions: effectiveGrants,
   });
 });

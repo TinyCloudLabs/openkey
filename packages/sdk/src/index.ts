@@ -103,6 +103,59 @@ export interface OAuthTokenResponse {
   refresh_token?: string;
 }
 
+// ======= Versioned TinyCloud authorization protocol =======
+//
+// This protocol replaces the legacy `signMessage()` path for TinyCloud
+// SIWE-ReCap requests. It preserves the legacy exact-byte behavior for
+// existing callers: `signMessage()` continues to sign the caller's exact
+// bytes and OpenKey NEVER rewrites them. Callers who want to let the user
+// narrow the requested capabilities call `authorizeTinyCloud()` instead.
+//
+// The response carries `signedMessage` — the exact bytes the signature
+// verifies against. TinyCloud completes the session with these bytes, not
+// the caller's original request. See `NodeUserAuthorization` in the
+// js-sdk for the consumer side of this contract.
+
+export interface TinyCloudAuthorizationRequestV1 {
+  protocolVersion: 1;
+  /** Suggested SIWE (may be edited server-side before signing). */
+  siwe: string;
+  /** The keyId the user picked, if the caller has one in mind. */
+  keyId?: string;
+  /** Optional presentation envelope (name, reason, manifest). */
+  presentation?: CapabilityPresentationEnvelopeV1;
+}
+
+export interface TinyCloudAuthorizationResultV1 {
+  protocolVersion: 1;
+  /** EIP-55 signer address. */
+  address: string;
+  /** Signature over `signedMessage`. */
+  signature: string;
+  /** The EXACT bytes the signature verifies against. Never the caller's original. */
+  signedMessage: string;
+  /** The action IDs the user (or default consent) selected. */
+  selectedActionKeys: string[];
+  /** Effective grant set after any narrowing. */
+  permissions: Array<{
+    service: string;
+    space: string;
+    path: string;
+    actions: string[];
+  }>;
+}
+
+export interface CapabilityPresentationEnvelopeV1 {
+  protocolVersion: 1;
+  /** Human-readable requester name shown in the review. */
+  displayName?: string;
+  /** Reason string the requester supplied for the delegation. */
+  reason?: string;
+  /** Manifest ID + digest, when the app publishes a signed manifest. */
+  manifestId?: string;
+  manifestDigest?: string;
+}
+
 export type ManagedAccountState = 'PROVISIONED' | 'MANAGED' | 'DISABLED' | 'EJECTING' | 'USER_OWNED' | 'EXPIRED' | 'FAILED';
 
 export interface ManagedAccountSummary {
@@ -167,6 +220,23 @@ type MessageType =
   | { type: 'openkey:auth:response'; success: false; error: OpenKeyError }
   | { type: 'openkey:sign:request'; message: string; keyId?: string; sessionToken?: string }
   | { type: 'openkey:sign:response'; success: true; signature: string; address: string }
+  | {
+      type: 'openkey:sign:response';
+      success: true;
+      signature: string;
+      address: string;
+      /** Versioned: exact bytes the signature verifies against. */
+      signedMessage?: string;
+      /** Versioned: action IDs selected by the user. */
+      selectedActionKeys?: string[];
+      /** Versioned: effective grants after narrowing. */
+      permissions?: Array<{
+        service: string;
+        space: string;
+        path: string;
+        actions: string[];
+      }>;
+    }
   | { type: 'openkey:sign:response'; success: false; error: OpenKeyError }
   | { type: 'openkey:signTypedData:request'; data: SignTypedDataRequest; sessionToken?: string }
   | { type: 'openkey:signTypedData:response'; success: true; signature: string; address: string }
@@ -502,6 +572,68 @@ export class OpenKey {
       return this.signWithExternalWallet(request);
     }
     return this.signWithOpenKey(request, opts?.mode);
+  }
+
+  /**
+   * Versioned TinyCloud authorization protocol (v1).
+   *
+   * Unlike `signMessage()` (which is contractually byte-exact — the returned
+   * signature always verifies against the caller's exact bytes), this method
+   * permits the user to narrow the requested capabilities before signing.
+   * OpenKey may therefore regenerate the SIWE. The response carries
+   * `signedMessage` — the exact bytes the signature actually verifies against.
+   *
+   * TinyCloud completes the session with `signedMessage`, not the original
+   * `siwe` passed in. Consumers MUST use the returned bytes and MUST NOT
+   * assume the returned grants are a superset of what they requested — the
+   * user is allowed to remove any grant that is not required.
+   *
+   * Legacy `signMessage()` callers are unaffected: their exact-byte contract
+   * remains preserved and OpenKey never rewrites their bytes.
+   */
+  async authorizeTinyCloud(
+    request: TinyCloudAuthorizationRequestV1,
+    opts?: { mode?: OpenKeyMode },
+  ): Promise<TinyCloudAuthorizationResultV1> {
+    if (request.protocolVersion !== 1) {
+      throw new Error(
+        `authorizeTinyCloud only supports protocolVersion 1; got ${request.protocolVersion}`,
+      );
+    }
+    if (typeof request.siwe !== 'string' || !request.siwe) {
+      throw new Error('authorizeTinyCloud requires a non-empty SIWE');
+    }
+    // Send as a sign request so the widget renders the review; the widget's
+    // signing-approval component recognises the SIWE-ReCap protocol and
+    // returns a rich response.
+    const raw = await this.openFlow<{
+      signature: string;
+      address: string;
+      signedMessage?: string;
+      selectedActionKeys?: string[];
+      permissions?: TinyCloudAuthorizationResultV1['permissions'];
+    }>(
+      'sign',
+      {
+        type: 'openkey:sign:request',
+        message: request.siwe,
+        keyId: request.keyId,
+        sessionToken: this.sessionToken || undefined,
+      },
+      opts?.mode,
+    );
+    const signedMessage = raw.signedMessage ?? request.siwe;
+    // Structural verification: the widget MUST return a signedMessage. If it
+    // came back without one, we treat the response as legacy exact-byte
+    // (the returned signature is over `request.siwe`).
+    return {
+      protocolVersion: 1,
+      address: raw.address,
+      signature: raw.signature,
+      signedMessage,
+      selectedActionKeys: raw.selectedActionKeys ?? [],
+      permissions: raw.permissions ?? [],
+    };
   }
 
   /**

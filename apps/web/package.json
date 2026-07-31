@@ -13,6 +13,7 @@
   "dependencies": {
     "@better-auth/oauth-provider": "^1.6.9",
     "@better-auth/passkey": "^1.6.9",
+    "@openkey/capability-review": "workspace:*",
     "better-auth": "^1.6.9"
   },
   "devDependencies": {

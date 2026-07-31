@@ -7,6 +7,12 @@
   import { parseSIWE } from '$lib/siwe-parser';
   import Button from '$lib/components/ui/button.svelte';
   import SiweMessage from '$lib/components/ui/siwe-message.svelte';
+  import SigningApproval from '$lib/components/signing/signing-approval.svelte';
+  import {
+    parseCapabilityReview,
+    defaultSelection,
+    type CapabilityReviewModel,
+  } from '@openkey/capability-review';
 
   const session = authClient.useSession();
   const inIframe = typeof window !== 'undefined' && isEmbedContext();
@@ -22,6 +28,9 @@
   let keyFetched = $state(false);
   let contentEl = $state<HTMLDivElement | undefined>(undefined);
   let embedAuthenticated = $state(typeof window !== 'undefined' && !!getSessionToken());
+  let reviewModel = $state<CapabilityReviewModel | null>(null);
+  let reviewSelection = $state(new Set<string>());
+  let reviewEditing = $state(false);
 
   const isAuthenticated = $derived(inIframe ? embedAuthenticated : !!$session.data);
 
@@ -38,12 +47,16 @@
     }
   });
 
-  // ResizeObserver to notify parent of height changes
+  // ResizeObserver to notify parent of height changes. Target the configured
+  // origin — never '*'. If origin is unknown ('*'), the widget does not emit
+  // resize messages (the parent will not receive them, but a wildcard target
+  // would leak DOM sizing info to any listener on any origin).
   $effect(() => {
     if (!contentEl) return;
     const observer = new ResizeObserver(() => {
+      if (origin === '*') return;
       const height = contentEl!.scrollHeight;
-      window.parent.postMessage({ type: 'openkey:resize', height }, '*');
+      window.parent.postMessage({ type: 'openkey:resize', height }, origin);
     });
     observer.observe(contentEl);
     return () => observer.disconnect();
@@ -70,6 +83,12 @@
   });
 
   async function handleMessage(event: MessageEvent) {
+    // Strict origin/source validation for versioned callers.
+    if (origin !== '*') {
+      if (event.origin !== origin) return;
+      if (event.source !== window.parent) return;
+    }
+
     if (event.data?.type === 'openkey:sign:request') {
       message = event.data.message;
       keyId = event.data.keyId || null;
@@ -79,6 +98,36 @@
       if (event.data.sessionToken && inIframe) {
         setSessionToken(event.data.sessionToken);
         embedAuthenticated = true;
+      }
+
+      // Build the shared capability-review model when this is a TinyCloud
+      // SIWE ReCap. Plain sign-message requests fall through to the legacy
+      // renderer below.
+      try {
+        const model = parseCapabilityReview({
+          message,
+          signer: {
+            label: 'Selected key',
+            address: key?.address ?? '0x0000000000000000000000000000000000000000',
+            chainId: 1,
+            provenance: key?.keyType === 'EXTERNAL' ? 'external' : 'managed',
+          },
+          editable: true,
+          metadataTrust: { status: 'unsigned', reason: 'no manifest supplied' },
+          reason: { text: '', source: 'none' },
+          requester: {
+            displayName: origin === '*' ? 'Unknown origin' : origin,
+            verifiedOrigin: origin === '*' ? null : origin,
+            manifestId: null,
+            manifestDigest: null,
+            domainWarning: false,
+            originWarning: false,
+          },
+        });
+        reviewModel = model;
+        reviewSelection = defaultSelection(model);
+      } catch {
+        reviewModel = null;
       }
 
       if (keyId && isAuthenticated) {
@@ -101,11 +150,24 @@
 
     try {
       const result = await api.signMessage(key.id, message);
+      const effectivePermissions = reviewModel
+        ? reviewModel.permissions.map((grant) => ({
+            service: grant.service,
+            space: grant.space,
+            path: grant.path,
+            actions: grant.actions
+              .filter((action) => reviewSelection.has(action.id))
+              .map((action) => action.ability),
+          }))
+        : undefined;
       sendResponse({
         type: 'openkey:sign:response',
         success: true,
         signature: result.signature,
         address: result.address,
+        signedMessage: message,
+        selectedActionKeys: reviewModel ? Array.from(reviewSelection) : undefined,
+        permissions: effectivePermissions,
       });
       sendClose();
     } catch (e: any) {
@@ -179,6 +241,22 @@
       <div class="flex flex-col items-center justify-center text-center text-surface-500 py-4">
         <p class="text-sm">Please connect first to sign messages.</p>
       </div>
+    {:else if reviewModel && reviewModel.protocol === 'tinycloud-siwe-recap'}
+      <!--
+        Editable TinyCloud request — render via the shared SigningApproval
+        component so the iframe surface shows the same content as popup + CLI.
+      -->
+      <SigningApproval
+        model={reviewModel}
+        selection={reviewSelection}
+        editing={reviewEditing}
+        approving={signing}
+        {error}
+        onApprove={signMessage}
+        onCancel={cancel}
+        onSelectionChange={(next) => (reviewSelection = next)}
+        onEditingChange={(next) => (reviewEditing = next)}
+      />
     {:else}
       <div class="flex flex-col gap-3">
         <!-- Signing with -->
