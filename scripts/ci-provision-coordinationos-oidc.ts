@@ -20,7 +20,7 @@ type Configuration = {
   callbackUri: string;
   coordinationosUri: string;
   issuer: string;
-  organizationId: string;
+  organizationId: string | undefined;
   serviceRoleKey: string;
   supabaseUrl: string;
 };
@@ -46,7 +46,7 @@ export function readConfiguration(): Configuration {
   const callbackUri = required('SUPABASE_CALLBACK_URI');
   const coordinationosUri = required('COORDINATIONOS_URI');
   const issuer = required('OPENKEY_ISSUER');
-  const organizationId = required('OPENKEY_ORGANIZATION_ID');
+  const organizationId = process.env.OPENKEY_ORGANIZATION_ID?.trim() || undefined;
   const serviceRoleKey = required('COORDINATIONOS_SUPABASE_SERVICE_ROLE_KEY');
   const supabaseUrl = required('SUPABASE_URL').replace(/\/+$/, '');
 
@@ -169,14 +169,20 @@ async function main() {
         || !exactStringSet(client.redirectUris, [config.callbackUri])) {
         throw new Error('Existing custom:openkey provider is not backed by the required OpenKey client');
       }
-      await assertOrganizationCanOwnClient(prisma, config.organizationId, client.organizationId);
-      if (client.organizationId !== config.organizationId
+      const organizationId = config.organizationId ?? client.organizationId;
+      if (!organizationId) {
+        throw new Error(
+          'OPENKEY_ORGANIZATION_ID is required because the existing CoordinationOS client has no owner',
+        );
+      }
+      await assertOrganizationCanOwnClient(prisma, organizationId, client.organizationId);
+      if (client.organizationId !== organizationId
         || client.tinycloudSessionPolicy !== TINYCLOUD_SESSION_POLICY
         || client.tinycloudSessionOrigin !== config.coordinationosUri) {
         await prisma.oauthClient.update({
           where: { clientId: client.clientId },
           data: {
-            organizationId: config.organizationId,
+            organizationId,
             tinycloudSessionPolicy: TINYCLOUD_SESSION_POLICY,
             tinycloudSessionOrigin: config.coordinationosUri,
           },
@@ -186,6 +192,12 @@ async function main() {
       return;
     }
     if (currentProvider.status !== 404) throw new Error(safeProviderError(currentProvider));
+    const organizationId = config.organizationId;
+    if (!organizationId) {
+      throw new Error(
+        'OPENKEY_ORGANIZATION_ID is required when provisioning a new CoordinationOS client',
+      );
+    }
 
     const candidates = (await prisma.oauthClient.findMany({
       where: { name: CLIENT_NAME, disabled: false },
@@ -211,7 +223,7 @@ async function main() {
     if (candidates.length === 1) {
       const existing = candidates[0]!;
       if (!existing.clientSecret) throw new Error('Existing confidential client has no secret hash');
-      await assertOrganizationCanOwnClient(prisma, config.organizationId, existing.organizationId);
+      await assertOrganizationCanOwnClient(prisma, organizationId, existing.organizationId);
       clientId = existing.clientId;
       rotatedClient = {
         clientId,
@@ -222,13 +234,13 @@ async function main() {
         where: { clientId },
         data: {
           clientSecret: clientSecretHash,
-          organizationId: config.organizationId,
+          organizationId,
           tinycloudSessionPolicy: TINYCLOUD_SESSION_POLICY,
           tinycloudSessionOrigin: config.coordinationosUri,
         },
       });
     } else {
-      await assertOrganizationCanOwnClient(prisma, config.organizationId, null);
+      await assertOrganizationCanOwnClient(prisma, organizationId, null);
       clientId = `ok_${randomBytes(16).toString('hex')}`;
       createdClientId = clientId;
       await prisma.oauthClient.create({
@@ -236,7 +248,7 @@ async function main() {
           id: randomBytes(16).toString('hex'),
           clientId,
           clientSecret: clientSecretHash,
-          organizationId: config.organizationId,
+          organizationId,
           name: CLIENT_NAME,
           uri: config.coordinationosUri,
           icon: null,

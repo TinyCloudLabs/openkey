@@ -38,13 +38,18 @@ describe('CoordinationOS OIDC provisioning configuration', () => {
     });
   });
 
+  test('allows an existing client to retain its persisted organization owner', () => {
+    validEnvironment();
+    delete process.env.OPENKEY_ORGANIZATION_ID;
+    expect(readConfiguration().organizationId).toBeUndefined();
+  });
+
   test.each([
     ['CONFIRM_PROVISION', 'wrong'],
     ['SUPABASE_CALLBACK_URI', 'https://other.supabase.co/auth/v1/callback'],
     ['SUPABASE_CALLBACK_URI', 'https://project.supabase.co/auth/v1/callback?leak=1'],
     ['SUPABASE_URL', 'http://project.supabase.co'],
     ['OPENKEY_ISSUER', 'https://api.openkey.so/wrong'],
-    ['OPENKEY_ORGANIZATION_ID', ''],
     ['COORDINATIONOS_URI', 'https://user:pass@coordination.example'],
   ])('rejects unsafe %s values', (name, value) => {
     validEnvironment();
