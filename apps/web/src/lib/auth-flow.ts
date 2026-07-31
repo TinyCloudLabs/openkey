@@ -12,6 +12,13 @@ const OAUTH_AUTHORIZE_KEYS = new Set([
   'max_age',
   'ui_locales',
   'claims',
+  'prompt',
+  // @better-auth/oauth-provider signs the complete pre-login query and
+  // rejects oauth_query on sign-in if any of this envelope is missing.
+  'exp',
+  'ba_iat',
+  'ba_pl',
+  'sig',
 ]);
 
 const SAFE_RETURN_PREFIXES = [

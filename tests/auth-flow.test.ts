@@ -25,6 +25,9 @@ describe('auth return context', () => {
       state: 'state-1',
       code_challenge: 'challenge',
       code_challenge_method: 'S256',
+      exp: '1785458628',
+      ba_iat: '1785458028625',
+      prompt: 'login',
       sig: 'server-only-signature',
       redirect: 'https://evil.test',
     });
@@ -38,6 +41,10 @@ describe('auth return context', () => {
       state: 'state-1',
       code_challenge: 'challenge',
       code_challenge_method: 'S256',
+      exp: '1785458628',
+      ba_iat: '1785458028625',
+      prompt: 'login',
+      sig: 'server-only-signature',
     });
   });
 
@@ -45,7 +52,10 @@ describe('auth return context', () => {
     const nested = new URLSearchParams({
       client_id: 'client-2',
       state: 'state-2',
-      prompt: 'none',
+      exp: '1785458628',
+      ba_iat: '1785458028625',
+      ba_pl: 'session-1',
+      sig: 'signed-query',
       injected: 'nope',
     });
     const safe = new URLSearchParams(safeOAuthAuthorizeQuery(new URLSearchParams({
@@ -54,6 +64,10 @@ describe('auth return context', () => {
     expect(Object.fromEntries(safe)).toEqual({
       client_id: 'client-2',
       state: 'state-2',
+      exp: '1785458628',
+      ba_iat: '1785458028625',
+      ba_pl: 'session-1',
+      sig: 'signed-query',
     });
   });
 });
