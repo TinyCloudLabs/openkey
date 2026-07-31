@@ -544,6 +544,30 @@
     return permission.actions.filter((action) => isActionSelected(action.key));
   }
 
+  // Translate a capability-review selection (Set of client-side action IDs)
+  // into the server's actionKey strings. The server-side actionKey uses the
+  // SHORT-form service name (e.g. `kv`) while the client-side ability uses
+  // the LONG-form (`tinycloud.kv/get`). We match by ability string, which is
+  // identical on both sides, and lift the matching server key.
+  function mapReviewSelectionToActionKeys(selection: Set<string>): string[] {
+    if (!reviewModel) return [];
+    const selectedAbilities = new Set<string>();
+    for (const grant of reviewModel.permissions) {
+      for (const action of grant.actions) {
+        if (selection.has(action.id)) selectedAbilities.add(action.ability);
+      }
+    }
+    const out: string[] = [];
+    for (const perm of permissionOptions) {
+      for (const action of perm.actions) {
+        if (selectedAbilities.has(action.ability) || action.required) {
+          out.push(action.key);
+        }
+      }
+    }
+    return out;
+  }
+
   async function toggleAction(action: DelegatePermissionAction) {
     if (action.required) return;
 
@@ -1090,129 +1114,60 @@
             </div>
           {/if}
 
-          <!-- SIWE message details (parsed from actual message) -->
-          {#if siweMessage}
+          <!--
+            Shared authorization view. When the /prepare response parses into
+            a CapabilityReviewModel we render SigningApproval so this CLI
+            surface shows the SAME content as the widget popup and iframe.
+            Toggling an action in SigningApproval maps back to the server's
+            actionKeys and re-issues /prepare so subset validation still runs
+            on the API. When parsing fails (legacy or malformed input), we
+            fall back to the raw SIWE view for byte-exact review.
+          -->
+          {#if reviewModel}
+            <div bind:this={actionRow}>
+              <SigningApproval
+                model={reviewModel}
+                selection={reviewSelection}
+                editing={reviewEditing}
+                approving={delegating || updatingPermissions}
+                {error}
+                onApprove={approveDelegate}
+                onCancel={goBack}
+                onSelectionChange={(next) => {
+                  reviewSelection = next;
+                  const nextServerKeys = mapReviewSelectionToActionKeys(next);
+                  if (nextServerKeys.length === 0) {
+                    error = 'At least one permission is required.';
+                    return;
+                  }
+                  updatePermissions(nextServerKeys);
+                }}
+                onEditingChange={(next) => (reviewEditing = next)}
+              />
+            </div>
+          {:else if siweMessage}
             <div class="flex flex-col gap-3">
-              {#if permissionOptions.length > 0}
-                <div>
-                  <div class="flex items-center justify-between mb-2">
-                    <div class="text-xs text-surface-400">Permissions requested</div>
-                    <div class="flex items-center gap-2">
-                      <button
-                        class="text-xs text-surface-500 hover:text-surface-900 transition-colors bg-transparent border-none cursor-pointer p-0 disabled:opacity-50"
-                        onclick={() => editingPermissions = !editingPermissions}
-                        disabled={updatingPermissions}
-                      >
-                        {editingPermissions ? 'Done' : 'Edit'}
-                      </button>
-                      {#if editingPermissions || permissionsEdited}
-                        <button
-                          class="text-xs text-surface-500 hover:text-surface-900 transition-colors bg-transparent border-none cursor-pointer p-0 disabled:opacity-50"
-                          onclick={resetPermissions}
-                          disabled={updatingPermissions || !permissionsEdited}
-                        >
-                          Reset
-                        </button>
-                      {/if}
-                    </div>
-                  </div>
-
-                  {#if editingPermissions}
-                    <div class="flex flex-col gap-2">
-                      <div class="bg-amber-50 border border-amber-200 text-amber-700 px-3 py-2 rounded-lg text-xs">
-                        Editing permissions may result in the application not working as expected.
-                      </div>
-
-                      {#each permissionOptions as permission}
-                        <div class="p-2.5 bg-surface-50 border border-surface-200 rounded-lg">
-                          <div class="min-w-0">
-                            <div class="text-sm font-medium text-surface-900">{permission.label}</div>
-                            {#if permission.resourcePath}
-                              <div class="text-xs text-surface-400 font-mono mt-0.5 break-all">{permission.resourcePath}</div>
-                            {/if}
-                            <div class="flex flex-wrap gap-2 mt-2">
-                              {#each permission.actions as action}
-                                <label
-                                  class="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded bg-white border border-surface-200 text-surface-600 cursor-pointer transition-opacity"
-                                  class:opacity-60={!isActionSelected(action.key)}
-                                  class:cursor-not-allowed={action.required || updatingPermissions}
-                                >
-                                  <input
-                                    type="checkbox"
-                                    class="h-3.5 w-3.5 rounded border-surface-300 text-surface-900"
-                                    checked={isActionSelected(action.key)}
-                                    disabled={updatingPermissions || action.required}
-                                    onchange={() => toggleAction(action)}
-                                  />
-                                  <span>{action.action}</span>
-                                  {#if action.required}
-                                    <span class="text-surface-400">required</span>
-                                  {/if}
-                                </label>
-                              {/each}
-                            </div>
-                          </div>
-                        </div>
-                      {/each}
-
-                      {#if updatingPermissions}
-                        <div class="text-xs text-surface-400">Updating permissions...</div>
-                      {/if}
-                    </div>
-                  {:else}
-                    <div class="flex flex-col gap-2">
-                      {#if permissionsEdited}
-                        <div class="bg-amber-50 border border-amber-200 text-amber-700 px-3 py-2 rounded-lg text-xs">
-                          Editing permissions may result in the application not working as expected.
-                        </div>
-                      {/if}
-
-                      {#each permissionOptions as permission}
-                        {#if selectedActions(permission).length > 0}
-                          <div class="flex items-start gap-2.5 p-2.5 bg-surface-50 border border-surface-200 rounded-lg">
-                            <svg class="w-4 h-4 text-surface-400 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                              <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                            </svg>
-                            <div class="min-w-0 flex-1">
-                              <div class="text-sm font-medium text-surface-900">{permission.label}</div>
-                              {#if permission.resourcePath}
-                                <div class="text-xs text-surface-400 font-mono mt-0.5 break-all">{permission.resourcePath}</div>
-                              {/if}
-                              <div class="flex flex-wrap gap-1 mt-1">
-                                {#each selectedActions(permission) as action}
-                                  <span class="text-xs px-1.5 py-0.5 rounded bg-surface-100 text-surface-500">{action.action}</span>
-                                {/each}
-                              </div>
-                            </div>
-                          </div>
-                        {/if}
-                      {/each}
-                    </div>
-                  {/if}
-                </div>
-              {/if}
-
               <SiweMessage message={siweMessage} theme="light" hidePermissions={permissionOptions.length > 0} />
             </div>
-          {/if}
 
-          <!-- Actions -->
-          <div class="flex gap-3 mt-1" bind:this={actionRow}>
-            <Button variant="secondary" onclick={goBack} disabled={delegating} class="flex-1 rounded-xl">
-              Back
-            </Button>
-            <Button onclick={approveDelegate} disabled={delegating || updatingPermissions || selectedActionKeys.length === 0 || (!selectedMatchesExpected && !overrideMismatch)} class="flex-1 rounded-xl">
-              {#if delegating}
-                Signing...
-              {:else if updatingPermissions}
-                Updating...
-              {:else if !selectedMatchesExpected && !overrideMismatch}
-                Wallet mismatch
-              {:else}
-                Approve
-              {/if}
-            </Button>
-          </div>
+            <!-- Actions (legacy raw-SIWE fallback) -->
+            <div class="flex gap-3 mt-1" bind:this={actionRow}>
+              <Button variant="secondary" onclick={goBack} disabled={delegating} class="flex-1 rounded-xl">
+                Back
+              </Button>
+              <Button onclick={approveDelegate} disabled={delegating || updatingPermissions || selectedActionKeys.length === 0 || (!selectedMatchesExpected && !overrideMismatch)} class="flex-1 rounded-xl">
+                {#if delegating}
+                  Signing...
+                {:else if updatingPermissions}
+                  Updating...
+                {:else if !selectedMatchesExpected && !overrideMismatch}
+                  Wallet mismatch
+                {:else}
+                  Approve
+                {/if}
+              </Button>
+            </div>
+          {/if}
         </div>
 
         {#if showScrollToApprove}

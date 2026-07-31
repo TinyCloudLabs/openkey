@@ -119,6 +119,94 @@ export const MALFORMED_SIWE = [
   "Chain ID: not-a-number",
 ].join("\n");
 
+// ---------------------------------------------------------------------------
+// Real ReCap fixtures (canonical urn:recap:<b64> wire form)
+//
+// TinyCloud SIWE messages carry capabilities as a base64url JSON payload keyed
+// by resource URI, not as expanded `service/verb:space` resource lines. These
+// fixtures mirror the real wire form so the parser is exercised end-to-end.
+// ---------------------------------------------------------------------------
+
+function base64UrlEncode(json: unknown): string {
+  const s = JSON.stringify(json);
+  // Node/Bun: Buffer is available and preserves UTF-8. Fall back to btoa when
+  // Buffer is missing (browser test runners). btoa needs latin1 bytes.
+  const bufferCtor = (globalThis as { Buffer?: { from(s: string, enc: string): { toString(enc: string): string } } })
+    .Buffer;
+  if (bufferCtor) {
+    return bufferCtor.from(s, "utf8")
+      .toString("base64")
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/, "");
+  }
+  const bytes = new TextEncoder().encode(s);
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/** Build a `urn:recap:<b64>` resource line from an att map. */
+export function makeRecapResource(att: Record<string, Record<string, unknown[]>>): string {
+  return `urn:recap:${base64UrlEncode({ att, prf: [] })}`;
+}
+
+// Canonical wire-form recap: bootstrap KV/SQL/capabilities in the default
+// space. Matches what tinycloud-node emits for a bootstrap session.
+export const REAL_RECAP_BOOTSTRAP = siwe([
+  makeRecapResource({
+    [SPACE]: {
+      "tinycloud.kv/get": [{}],
+      "tinycloud.kv/put": [{}],
+      "tinycloud.kv/del": [{}],
+      "tinycloud.sql/read": [{}],
+      "tinycloud.sql/write": [{}],
+      "tinycloud.capabilities/read": [{}],
+    },
+  }),
+]);
+
+// Real recap with a path inside the resource URI (matches accept.json vector
+// pinned from tinycloud-node): `tinycloud:pkh:...:default/sql/xyz.tinycloud.listen/conversations`.
+const RECAP_PATH = `${SPACE}/sql/xyz.tinycloud.listen/conversations`;
+export const REAL_RECAP_WITH_PATH = siwe([
+  makeRecapResource({
+    [RECAP_PATH]: {
+      "tinycloud.kv/get": [{}],
+      "tinycloud.sql/read": [{}],
+    },
+  }),
+]);
+
+// Two recap resources given in one order for determinism testing.
+export const REAL_RECAP_MIXED_A = siwe([
+  makeRecapResource({
+    [SPACE]: {
+      "tinycloud.kv/put": [{}],
+      "tinycloud.kv/get": [{}],
+      "tinycloud.capabilities/read": [{}],
+    },
+    [FEED_SPACE]: {
+      "tinycloud.sql/read": [{}],
+    },
+  }),
+]);
+
+// Same capabilities as A but the ability keys and att entries are in the
+// reverse order. A deterministic parser must yield an identical model.
+export const REAL_RECAP_MIXED_B = siwe([
+  makeRecapResource({
+    [FEED_SPACE]: {
+      "tinycloud.sql/read": [{}],
+    },
+    [SPACE]: {
+      "tinycloud.capabilities/read": [{}],
+      "tinycloud.kv/get": [{}],
+      "tinycloud.kv/put": [{}],
+    },
+  }),
+]);
+
 export const FIXTURE_META = {
   address: ADDR,
   chainId: CHAIN,
@@ -128,4 +216,5 @@ export const FIXTURE_META = {
   feedSpace: FEED_SPACE,
   issuedAt: ISSUED,
   expirationTime: EXPIRES,
+  recapPath: RECAP_PATH,
 };

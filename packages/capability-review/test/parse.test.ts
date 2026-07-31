@@ -20,6 +20,10 @@ import {
   MALFORMED_SIWE,
   ORDINARY_SIWE,
   PLAIN_TEXT_MESSAGE,
+  REAL_RECAP_BOOTSTRAP,
+  REAL_RECAP_MIXED_A,
+  REAL_RECAP_MIXED_B,
+  REAL_RECAP_WITH_PATH,
   SECRETS_MUTATION_REQUEST,
   SECRETS_READ_REQUEST,
   UNKNOWN_SERVICE_REQUEST,
@@ -175,6 +179,51 @@ describe("parseCapabilityReview", () => {
       [base.permissions[0]!.id]: "Menstrual cycle history",
     });
     expect(labelled.permissions[0]!.metadataLabel).toBe(null);
+  });
+
+  it("decodes a real urn:recap: base64 payload into grants", () => {
+    const model = parseCapabilityReview(ctx({ message: REAL_RECAP_BOOTSTRAP }));
+    expect(model.protocol).toBe("tinycloud-siwe-recap");
+    const families = model.permissions.map((p) => p.family).sort();
+    expect(families).toContain("bootstrap-kv");
+    expect(families).toContain("bootstrap-sql");
+    expect(families).toContain("bootstrap-capabilities");
+    // No 'unrecognized-recap-namespace' warning: the payload was decoded.
+    expect(
+      model.parseWarnings.some(
+        (w) => w.code === "unrecognized-recap-namespace",
+      ),
+    ).toBe(false);
+    // Each ability is preserved in its fully-qualified form so the wire
+    // subset check has an exact string to match against.
+    const kv = model.permissions.find((p) => p.family === "bootstrap-kv");
+    expect(kv?.actions.map((a) => a.ability).sort()).toEqual([
+      "tinycloud.kv/del",
+      "tinycloud.kv/get",
+      "tinycloud.kv/put",
+    ]);
+  });
+
+  it("splits resource URI path from space for path-scoped recap entries", () => {
+    const model = parseCapabilityReview(
+      ctx({ message: REAL_RECAP_WITH_PATH }),
+    );
+    expect(model.protocol).toBe("tinycloud-siwe-recap");
+    const kv = model.permissions.find((p) => p.family === "bootstrap-kv");
+    // The space stays the pkh URI without the trailing path segments; the
+    // path portion moves into `path`.
+    expect(kv?.space).toBe(FIXTURE_META.ownSpace);
+    expect(kv?.path).toBe("sql/xyz.tinycloud.listen/conversations");
+  });
+
+  it("produces identical model JSON regardless of att key ordering", () => {
+    const a = parseCapabilityReview(ctx({ message: REAL_RECAP_MIXED_A }));
+    const b = parseCapabilityReview(ctx({ message: REAL_RECAP_MIXED_B }));
+    // rawMessage differs (different SIWE bytes) but the permissions model
+    // must be identical after determinism sorting.
+    expect(JSON.stringify(a.permissions)).toBe(
+      JSON.stringify(b.permissions),
+    );
   });
 });
 
