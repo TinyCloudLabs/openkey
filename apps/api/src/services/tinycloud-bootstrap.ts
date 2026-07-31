@@ -954,7 +954,7 @@ function authorizationHeader(headers: Record<string, string>): string {
 async function rewriteInvocationAudience(
   authorization: string,
   audience: string,
-  jwk: Record<string, unknown>,
+  jwk: Record<string, unknown> | Map<string, unknown>,
 ): Promise<string> {
   const [headerPart, payloadPart] = authorization.split('.');
   if (!headerPart || !payloadPart) {
@@ -970,8 +970,18 @@ async function rewriteInvocationAudience(
   return `${signingInput}.${base64UrlEncode(signature)}`;
 }
 
-async function signWithJwk(signingInput: string, jwk: Record<string, unknown>): Promise<Uint8Array> {
+export function sessionJwkForSigning(
+  jwk: Record<string, unknown> | Map<string, unknown>,
+): Record<string, unknown> {
+  return jwk instanceof Map ? Object.fromEntries(jwk) : jwk;
+}
+
+async function signWithJwk(
+  signingInput: string,
+  sessionJwk: Record<string, unknown> | Map<string, unknown>,
+): Promise<Uint8Array> {
   const bytes = new TextEncoder().encode(signingInput);
+  const jwk = sessionJwkForSigning(sessionJwk);
   try {
     const key = await crypto.subtle.importKey('jwk', jwk, { name: 'Ed25519' }, false, ['sign']);
     return new Uint8Array(await crypto.subtle.sign({ name: 'Ed25519' }, key, bytes));
