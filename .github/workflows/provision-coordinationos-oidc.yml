@@ -7,8 +7,8 @@ on:
         description: 'Type PROVISION_COORDINATIONOS_OIDC'
         required: true
       organization_id:
-        description: 'OpenKey organization that will own the CoordinationOS client'
-        required: true
+        description: 'OpenKey organization for first provision (omit to keep an existing client owner)'
+        required: false
 
 permissions:
   contents: read
