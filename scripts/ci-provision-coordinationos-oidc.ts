@@ -21,7 +21,7 @@ type Configuration = {
   coordinationosUri: string;
   issuer: string;
   organizationId: string | undefined;
-  serviceRoleKey: string;
+  serviceRoleKey: string | undefined;
   supabaseUrl: string;
 };
 
@@ -47,7 +47,7 @@ export function readConfiguration(): Configuration {
   const coordinationosUri = required('COORDINATIONOS_URI');
   const issuer = required('OPENKEY_ISSUER');
   const organizationId = process.env.OPENKEY_ORGANIZATION_ID?.trim() || undefined;
-  const serviceRoleKey = required('COORDINATIONOS_SUPABASE_SERVICE_ROLE_KEY');
+  const serviceRoleKey = process.env.COORDINATIONOS_SUPABASE_SERVICE_ROLE_KEY?.trim() || undefined;
   const supabaseUrl = required('SUPABASE_URL').replace(/\/+$/, '');
 
   const callback = new URL(callbackUri);
@@ -78,6 +78,10 @@ async function providerRequest(
   method: 'GET' | 'POST',
   body?: Record<string, unknown>,
 ): Promise<{ ok: boolean; status: number; value: Record<string, unknown> | null }> {
+  const serviceRoleKey = config.serviceRoleKey;
+  if (!serviceRoleKey) {
+    throw new Error('COORDINATIONOS_SUPABASE_SERVICE_ROLE_KEY is required to provision the Supabase provider');
+  }
   // Supabase's custom-provider router treats the colon as part of the
   // identifier. Percent-encoding it here reaches the handler as the literal
   // string "custom%3Aopenkey", which then fails the required custom: prefix.
@@ -85,8 +89,8 @@ async function providerRequest(
   const response = await fetch(`${config.supabaseUrl}/auth/v1/admin/custom-providers${suffix}`, {
     method,
     headers: {
-      apikey: config.serviceRoleKey,
-      authorization: `Bearer ${config.serviceRoleKey}`,
+      apikey: serviceRoleKey,
+      authorization: `Bearer ${serviceRoleKey}`,
       ...(body ? { 'content-type': 'application/json' } : {}),
     },
     ...(body ? { body: JSON.stringify(body) } : {}),
@@ -150,6 +154,45 @@ async function main() {
   } | null = null;
 
   try {
+    const findCandidates = async () => (await prisma.oauthClient.findMany({
+      where: { name: CLIENT_NAME, disabled: false },
+    })).filter((client) => (
+      !client.public
+      && client.mode === 'PERSONAL'
+      && client.type === 'web'
+      && client.tokenEndpointAuthMethod === 'client_secret_basic'
+      && exactStringSet(client.scopes, EXACT_SCOPES)
+      && exactStringSet(client.grantTypes, ['authorization_code'])
+      && exactStringSet(client.responseTypes, ['code'])
+      && exactStringSet(client.redirectUris, [config.callbackUri])
+    ));
+    if (!config.serviceRoleKey) {
+      const candidates = await findCandidates();
+      if (candidates.length !== 1) {
+        throw new Error(
+          'Policy-only repair requires exactly one active CoordinationOS confidential client',
+        );
+      }
+      const client = candidates[0]!;
+      const organizationId = config.organizationId ?? client.organizationId;
+      if (!organizationId) {
+        throw new Error(
+          'OPENKEY_ORGANIZATION_ID is required because the existing CoordinationOS client has no owner',
+        );
+      }
+      await assertOrganizationCanOwnClient(prisma, organizationId, client.organizationId);
+      await prisma.oauthClient.update({
+        where: { clientId: client.clientId },
+        data: {
+          organizationId,
+          tinycloudSessionPolicy: TINYCLOUD_SESSION_POLICY,
+          tinycloudSessionOrigin: config.coordinationosUri,
+        },
+      });
+      console.log(`Updated TinyCloud dashboard policy for existing client ${client.clientId}.`);
+      return;
+    }
+
     const currentProvider = await providerRequest(config, 'GET');
     if (currentProvider.ok) {
       const providerClientId = currentProvider.value?.client_id;
@@ -199,18 +242,7 @@ async function main() {
       );
     }
 
-    const candidates = (await prisma.oauthClient.findMany({
-      where: { name: CLIENT_NAME, disabled: false },
-    })).filter((client) => (
-      !client.public
-      && client.mode === 'PERSONAL'
-      && client.type === 'web'
-      && client.tokenEndpointAuthMethod === 'client_secret_basic'
-      && exactStringSet(client.scopes, EXACT_SCOPES)
-      && exactStringSet(client.grantTypes, ['authorization_code'])
-      && exactStringSet(client.responseTypes, ['code'])
-      && exactStringSet(client.redirectUris, [config.callbackUri])
-    ));
+    const candidates = await findCandidates();
     if (candidates.length > 1) {
       throw new Error('Multiple active CoordinationOS confidential clients found; refusing to guess');
     }

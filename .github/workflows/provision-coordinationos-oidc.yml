@@ -44,5 +44,4 @@ jobs:
       - name: Provision OpenKey client and Supabase provider
         run: |
           test -n "$DATABASE_URL"
-          test -n "$COORDINATIONOS_SUPABASE_SERVICE_ROLE_KEY"
           bun run scripts/ci-provision-coordinationos-oidc.ts

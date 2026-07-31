@@ -44,6 +44,12 @@ describe('CoordinationOS OIDC provisioning configuration', () => {
     expect(readConfiguration().organizationId).toBeUndefined();
   });
 
+  test('allows a database-only repair after the one-time Supabase secret is removed', () => {
+    validEnvironment();
+    delete process.env.COORDINATIONOS_SUPABASE_SERVICE_ROLE_KEY;
+    expect(readConfiguration().serviceRoleKey).toBeUndefined();
+  });
+
   test.each([
     ['CONFIRM_PROVISION', 'wrong'],
     ['SUPABASE_CALLBACK_URI', 'https://other.supabase.co/auth/v1/callback'],
