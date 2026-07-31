@@ -34,6 +34,9 @@ let TinyCloudBootstrapError: new (...args: any[]) => Error;
 let ensureTinyCloudBootstrapForApprovedSign: (input: any) => Promise<TinyCloudBootstrapOutcome>;
 let setTinyCloudBootstrapExecutorForTests: (executor?: BootstrapHook) => void;
 let setTinyCloudBootstrapProbeForTests: (probe?: BootstrapHook) => void;
+let sessionJwkForSigning: (
+  jwk: Record<string, unknown> | Map<string, unknown>,
+) => Record<string, unknown>;
 let trustedTinyCloudBootstrapHost: () => string;
 
 const prisma = {
@@ -72,6 +75,7 @@ beforeEach(async () => {
     ensureTinyCloudBootstrapForApprovedSign,
     setTinyCloudBootstrapExecutorForTests,
     setTinyCloudBootstrapProbeForTests,
+    sessionJwkForSigning,
     trustedTinyCloudBootstrapHost,
   } = await import('../services/tinycloud-bootstrap.ts?actual' as string));
   autoSignEnabled = true;
@@ -135,6 +139,26 @@ function ensureInput(message = approvedTinyCloudSiwe(), format: 'raw' | 'persona
 }
 
 describe('ensureTinyCloudBootstrapForApprovedSign', () => {
+  test('normalizes the WASM session JWK map before Ed25519 signing', () => {
+    const sessionJwk = new Map<string, unknown>([
+      ['alg', 'EdDSA'],
+      ['kid', 'session-key'],
+      ['kty', 'OKP'],
+      ['crv', 'Ed25519'],
+      ['x', 'public'],
+      ['d', 'private'],
+    ]);
+
+    expect(sessionJwkForSigning(sessionJwk)).toEqual({
+      alg: 'EdDSA',
+      kid: 'session-key',
+      kty: 'OKP',
+      crv: 'Ed25519',
+      x: 'public',
+      d: 'private',
+    });
+  });
+
   test('defaults to the public TinyCloud node host', () => {
     delete process.env.TINYCLOUD_BOOTSTRAP_HOST;
 
