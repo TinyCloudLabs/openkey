@@ -135,3 +135,4 @@ describe('resolvePreparedExpirationTime', () => {
     expect(resolvePreparedExpirationTime({ siwe: 'Expiration Time: not-a-date' })).toBeUndefined();
   });
 });
+

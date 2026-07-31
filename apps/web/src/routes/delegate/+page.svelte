@@ -684,6 +684,11 @@
           jwk,
           edited: permissionsEdited,
           reason: requestReason || undefined,
+          // Forward the CLI-supplied baseline so the server can validate the
+          // signed SIWE against the CLI request instead of DEFAULT_ABILITIES.
+          ...(requestedPermissions.length > 0
+            ? { permissions: requestedPermissions }
+            : {}),
         }),
       });
 

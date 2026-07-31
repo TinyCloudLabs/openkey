@@ -15,17 +15,37 @@ import {
   ensureEip55,
   generateHostSIWEMessage,
   makeSpaceId,
-  parseRecapFromSiwe,
 } from '@tinycloud/node-sdk-wasm';
 import { activateSessionWithHost } from '@tinycloud/sdk-core';
-import { CAPABILITIES, KV, SQL } from '@tinycloud/bootstrap';
+import { CAPABILITIES } from '@tinycloud/bootstrap';
 import {
-  DelegateRequestError,
   delegateErrorResponse,
   normalizeDelegateReason,
   resolvePreparedExpirationTime,
-  shortServiceName,
 } from './delegate-validation';
+import {
+  DEFAULT_ABILITIES,
+  SIWE_DOMAIN,
+  abilitiesFromPermissions,
+  assertBaselineSubset,
+  assertRequiredActions,
+  normalizeStringArray,
+  parsePreparedRecap,
+  prepareDelegationSession,
+  type DelegationJwk,
+  type DelegationPermissionEntry,
+  type RecapEntry,
+} from './delegate-session';
+
+// Re-export the pure delegation helpers so existing external test files
+// (e.g. delegate-oauth-route.test.ts) that import them from this module
+// keep working.
+export {
+  prepareDelegationSession,
+  assertBaselineSubset,
+  assertDefaultSubset,
+  DEFAULT_ABILITIES,
+} from './delegate-session';
 import {
   evaluateAutoSignPolicy,
   evaluateBootstrapSigningScope,
@@ -72,9 +92,6 @@ export function setDelegateSignerAuthMiddlewareForTests(
 
 export const delegateRouter = new Hono<DelegateSignerContext>();
 
-// The SIWE domain identifies the requestor (the CLI), not the storage node
-const SIWE_DOMAIN = 'cli.tinycloud.xyz';
-
 // Only the signer route accepts the narrow CoordinationOS OAuth principal.
 // Every other delegate endpoint retains the existing Better Auth session gate.
 delegateRouter.use('*', async (c, next) => {
@@ -84,304 +101,10 @@ delegateRouter.use('*', async (c, next) => {
   return (requireSession as any)(c, next);
 });
 
-// Default abilities (same as NodeUserAuthorization)
-type DelegationJwk = { kty: string; crv: string; x: string };
-type AbilitiesMap = Record<string, Record<string, string[]>>;
-
-interface RecapEntry {
-  service: string;
-  space: string;
-  path: string;
-  actions: string[];
-}
-
-interface PermissionActionOption {
-  key: string;
-  action: string;
-  ability: string;
-  required: boolean;
-}
-
-interface PermissionOption {
-  key: string;
-  service: string;
-  path: string;
-  label: string;
-  resourcePath: string;
-  actions: PermissionActionOption[];
-}
-
-// Capability URNs come from the TC-112 registry constants published by
-// @tinycloud/bootstrap. Note: tinycloud.sql/export is deliberately absent —
-// it was never a node-dispatched ability (SQL export ops are authorized as
-// sql/read) and js-sdk 2.6.0's exportDb mints sql/read, so granting it was a
-// dead no-op (TC-114).
-const DEFAULT_ABILITIES: AbilitiesMap = {
-  kv: {
-    '': [KV.PUT, KV.GET, KV.DEL, KV.LIST, KV.METADATA],
-  },
-  sql: {
-    '': [SQL.READ, SQL.WRITE, SQL.ADMIN],
-  },
-  capabilities: {
-    '': [CAPABILITIES.READ],
-  },
-};
-
-const SERVICE_LABELS: Record<string, string> = {
-  kv: 'Key-Value Storage',
-  sql: 'SQL Database',
-  capabilities: 'Capabilities',
-};
-
-function permissionKey(entry: RecapEntry): string {
-  return `${entry.service}\0${entry.space}\0${entry.path}`;
-}
-
-function actionKey(entry: RecapEntry, action: string): string {
-  return `${permissionKey(entry)}\0${action}`;
-}
-
-function isRequiredAction(entry: RecapEntry, action: string): boolean {
-  return entry.service === 'capabilities' && action === CAPABILITIES.READ;
-}
-
-function permissionOption(entry: RecapEntry): PermissionOption {
-  const resourcePath = entry.path ? `${entry.service}/${entry.path}` : entry.service;
-  return {
-    key: permissionKey(entry),
-    service: entry.service,
-    path: entry.path,
-    label: SERVICE_LABELS[entry.service] || entry.service,
-    resourcePath,
-    actions: entry.actions.map((action) => ({
-      key: actionKey(entry, action),
-      action: action.slice(action.indexOf('/') + 1),
-      ability: action,
-      required: isRequiredAction(entry, action),
-    })),
-  };
-}
-
-function entriesToAbilities(entries: RecapEntry[]): AbilitiesMap {
-  const abilities: AbilitiesMap = {};
-
-  for (const entry of entries) {
-    abilities[entry.service] ??= {};
-    const serviceAbilities = abilities[entry.service];
-    if (!serviceAbilities) continue;
-    serviceAbilities[entry.path] = entry.actions;
-  }
-
-  return abilities;
-}
-
-function assertDefaultSubset(entries: RecapEntry[]) {
-  if (entries.length === 0) {
-    throw new Error('Only SIWE ReCap messages can be edited');
-  }
-
-  for (const entry of entries) {
-    const serviceAbilities = DEFAULT_ABILITIES[entry.service];
-    const allowedActions = serviceAbilities?.[entry.path];
-
-    if (!allowedActions) {
-      throw new Error('Edited permissions must be a subset of the default delegation');
-    }
-
-    for (const action of entry.actions) {
-      if (!allowedActions.includes(action)) {
-        throw new Error('Edited permissions must be a subset of the default delegation');
-      }
-    }
-  }
-}
-
-function assertRequiredActions(entries: RecapEntry[]) {
-  const hasRequiredCapabilitiesRead = entries.some(
-    (entry) =>
-      entry.service === 'capabilities' &&
-      entry.actions.includes(CAPABILITIES.READ)
-  );
-
-  if (!hasRequiredCapabilitiesRead) {
-    throw new Error('capabilities/read is required for this delegation');
-  }
-}
-
-function parsePreparedRecap(siwe: string): RecapEntry[] {
-  const entries = parseRecapFromSiwe(siwe) as RecapEntry[];
-  return entries;
-}
-
-function normalizeStringArray(value: unknown, name: string): string[] | undefined {
-  if (value === undefined) return undefined;
-  if (!Array.isArray(value)) {
-    throw new Error(`${name} must be an array`);
-  }
-  if (!value.every((key): key is string => typeof key === 'string')) {
-    throw new Error(`${name} must only contain strings`);
-  }
-  return [...new Set(value)];
-}
-
-function entriesForSelectedActions(entries: RecapEntry[], selectedActionKeys: Set<string>): RecapEntry[] {
-  const selectedEntries: RecapEntry[] = [];
-
-  for (const entry of entries) {
-    const actions = entry.actions.filter((action) => selectedActionKeys.has(actionKey(entry, action)));
-    if (actions.length > 0) {
-      selectedEntries.push({ ...entry, actions });
-    }
-  }
-
-  return selectedEntries;
-}
-
-function prepareDelegationSession({
-  address,
-  chainId,
-  prefix,
-  jwk,
-  actionKeys,
-  permissionKeys,
-  permissions,
-  expiryMs,
-}: {
-  address: string;
-  chainId: number;
-  prefix: string;
-  jwk: DelegationJwk;
-  actionKeys?: string[];
-  permissionKeys?: string[];
-  /**
-   * CLI-driven explicit capability request. When set, the prefix is
-   * derived from the entries' space URI, abilities are built directly
-   * from the entries, and the baseline-trim path is bypassed entirely.
-   * Mutually exclusive with `actionKeys`/`permissionKeys` editing.
-   */
-  permissions?: PermissionEntry[];
-  /** Pre-validated, clamped delegation lifetime in milliseconds. */
-  expiryMs: number;
-}) {
-  // CLI-driven path: build abilities + prefix from the explicit request,
-  // skip the baseline (DEFAULT_ABILITIES → trim) flow that the
-  // user-editable consent UI relies on.
-  if (permissions !== undefined) {
-    const cliPrefix = spacePrefixFromPermissions(permissions);
-    const cliSpaceId = makeSpaceId(address, chainId, cliPrefix);
-    const now = new Date();
-    const expirationTime = new Date(now.getTime() + expiryMs);
-    const prepared = prepareSession({
-      address,
-      chainId,
-      domain: SIWE_DOMAIN,
-      issuedAt: now.toISOString(),
-      expirationTime: expirationTime.toISOString(),
-      spaceId: cliSpaceId,
-      jwk,
-      abilities: abilitiesFromPermissions(permissions),
-    });
-    const entries = parsePreparedRecap(prepared.siwe);
-    return {
-      prepared,
-      permissions: entries.map(permissionOption),
-      selectedActionKeys: entries.flatMap((entry) =>
-        entry.actions.map((action) => actionKey(entry, action)),
-      ),
-      edited: false,
-      spaceId: cliSpaceId,
-    };
-  }
-
-  const spaceId = makeSpaceId(address, chainId, prefix);
-
-  const now = new Date();
-  const expirationTime = new Date(now.getTime() + expiryMs);
-  const baseConfig = {
-    address,
-    chainId,
-    domain: SIWE_DOMAIN,
-    issuedAt: now.toISOString(),
-    expirationTime: expirationTime.toISOString(),
-    spaceId,
-    jwk,
-  };
-
-  const baselinePrepared = prepareSession({
-    ...baseConfig,
-    abilities: DEFAULT_ABILITIES,
-  });
-  const baselineEntries = parsePreparedRecap(baselinePrepared.siwe);
-
-  if (baselineEntries.length === 0) {
-    throw new Error('Only SIWE ReCap messages can be edited');
-  }
-
-  const permissionOptions = baselineEntries.map(permissionOption);
-  const baselineActionKeys = new Set(
-    baselineEntries.flatMap((entry) => entry.actions.map((action) => actionKey(entry, action)))
-  );
-  const requiredActionKeys = baselineEntries.flatMap((entry) =>
-    entry.actions
-      .filter((action) => isRequiredAction(entry, action))
-      .map((action) => actionKey(entry, action))
-  );
-  const selectedKeys = actionKeys ?? (
-    permissionKeys
-      ? baselineEntries
-          .filter((entry) => permissionKeys.includes(permissionKey(entry)))
-          .flatMap((entry) => entry.actions.map((action) => actionKey(entry, action)))
-      : [...baselineActionKeys]
-  );
-  const selectedActionKeys = new Set(selectedKeys);
-
-  for (const key of selectedActionKeys) {
-    if (!baselineActionKeys.has(key)) {
-      throw new Error('Requested permissions are not available for this delegation');
-    }
-  }
-
-  for (const key of requiredActionKeys) {
-    selectedActionKeys.add(key);
-  }
-
-  if (selectedActionKeys.size === 0) {
-    throw new Error('At least one permission is required');
-  }
-
-  const selectedEntries = entriesForSelectedActions(baselineEntries, selectedActionKeys);
-  const selectedActionCount = selectedEntries.reduce((count, entry) => count + entry.actions.length, 0);
-  const edited = selectedActionCount < baselineActionKeys.size;
-  const prepared = edited
-    ? prepareSession({
-        ...baseConfig,
-        abilities: entriesToAbilities(selectedEntries),
-      })
-    : baselinePrepared;
-
-  return {
-    prepared,
-    permissions: permissionOptions,
-    selectedActionKeys: selectedEntries.flatMap((entry) =>
-      entry.actions.map((action) => actionKey(entry, action))
-    ),
-    edited,
-    spaceId,
-  };
-}
-
-/**
- * A capability the CLI is asking us to grant. Mirrors `PermissionEntry`
- * from `@tinycloud/sdk-core` — duplicated here so this route doesn't pull
- * the WASM-heavy node-sdk surface just for a type.
- */
-interface PermissionEntry {
-  service: string;
-  space?: string;
-  path: string;
-  actions: string[];
-}
+// Route-layer alias for the CLI permission entry shape. Keeps existing route
+// bodies using their historical local type name while the actual definition
+// lives in delegate-session.ts.
+type PermissionEntry = DelegationPermissionEntry;
 
 interface OpenKeySigningRequestBody {
   address: string;
@@ -390,61 +113,6 @@ interface OpenKeySigningRequestBody {
   type: 'siwe' | 'message';
   keyId?: string;
   purpose?: string;
-}
-
-/**
- * Translate a list of {@link PermissionEntry}s into the `abilities` map shape
- * that `prepareSession()` expects. Keys are short service names (`kv`, `sql`,
- * `hooks`, …), values are `path → actions[]`. Actions are kept fully-qualified
- * (`tinycloud.sql/read`) because the SIWE recap stores them that way.
- */
-function abilitiesFromPermissions(permissions: PermissionEntry[]): AbilitiesMap {
-  const abilities: AbilitiesMap = {};
-  for (const entry of permissions) {
-    const short = shortServiceName(entry.service);
-    if (!short) continue;
-    const byPath = abilities[short] ?? (abilities[short] = {});
-    const list = byPath[entry.path] ?? (byPath[entry.path] = []);
-    for (const action of entry.actions) {
-      if (!list.includes(action)) list.push(action);
-    }
-  }
-  return abilities;
-}
-
-function isRawEncryptionPermission(entry: Pick<PermissionEntry, 'service' | 'path'>): boolean {
-  return entry.service === 'tinycloud.encryption' &&
-    entry.path.startsWith('urn:tinycloud:encryption:');
-}
-
-/**
- * Pull the space short-name out of the requested permissions. The CLI groups
- * its requests by space before calling /delegate, so a single delegation only
- * ever covers one space. We refuse mixed-space requests rather than silently
- * dropping caps.
- */
-function spacePrefixFromPermissions(permissions: PermissionEntry[]): string {
-  const spaces = new Set<string>();
-  for (const permission of permissions) {
-    if (isRawEncryptionPermission(permission)) continue;
-    if (!permission.space) {
-      throw new Error('non-raw permissions must include a space');
-    }
-    spaces.add(permission.space);
-  }
-  if (spaces.size !== 1) {
-    throw new DelegateRequestError(
-      'invalid_permissions',
-      'permissions must belong to a single space',
-      permissions.map((_permission, index) => ({
-        path: `permissions[${index}].space`,
-        message: 'All permissions must use the same space',
-      })),
-    );
-  }
-  const space = [...spaces][0]!;
-  if (!space.startsWith('tinycloud:')) return space;
-  return space.slice(space.lastIndexOf(':') + 1);
 }
 
 /**
@@ -1220,16 +888,35 @@ delegateRouter.post('/complete', async (c) => {
     jwk: DelegationJwk;
     edited?: boolean;
     reason?: unknown;
+    /**
+     * The CLI-supplied permissions that were the baseline for /prepare.
+     * When present, this is used instead of DEFAULT_ABILITIES for the
+     * subset check that guards against a compromised frontend crafting a
+     * broader SIWE. Optional; falls back to DEFAULT_ABILITIES when absent.
+     */
+    permissions?: unknown;
   }>();
 
   if (!body.prepared || !body.signature || !body.host || !body.jwk) {
     return c.json({ error: 'prepared, signature, host, and jwk are required' }, 400);
   }
 
+  let baselinePermissions: PermissionEntry[] | undefined;
+  if (body.permissions !== undefined) {
+    try {
+      baselinePermissions = validatePermissions(body.permissions);
+    } catch (err) {
+      return c.json(delegateErrorResponse(err, 'Invalid permissions', 'invalid_permissions'), 400);
+    }
+  }
+
   if (body.edited) {
     try {
       const entries = parsePreparedRecap(body.prepared.siwe || '');
-      assertDefaultSubset(entries);
+      const baseline = baselinePermissions
+        ? abilitiesFromPermissions(baselinePermissions)
+        : DEFAULT_ABILITIES;
+      assertBaselineSubset(entries, baseline);
       assertRequiredActions(entries);
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'Invalid edited permissions' }, 400);
