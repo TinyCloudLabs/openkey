@@ -46,6 +46,11 @@ import {
   sparseCoordinationosEvidence,
   type CoordinationosDenialCode,
 } from '../services/coordinationos-signing-audit';
+import {
+  delegationResponse,
+  verifyDelegationProof,
+  type VerifiedDelegationProof,
+} from './delegate-proof';
 
 const prisma = createPrismaClient();
 const tee = createTeeClient();
@@ -1066,10 +1071,23 @@ delegateRouter.post('/', async (c) => {
     return c.json({ error: 'prepared session must include a valid expirationTime or SIWE Expiration Time' }, 400);
   }
 
-  const signature = await signManagedKey(key, key.sealedBlob, preparedResult.prepared.siwe);
+  const preparedSiwe = String(preparedResult.prepared.siwe);
+  const signature = await signManagedKey(key, key.sealedBlob, preparedSiwe);
+
+  let proof: VerifiedDelegationProof;
+  try {
+    proof = await verifyDelegationProof(
+      preparedSiwe,
+      signature,
+      address,
+    );
+  } catch {
+    return c.json({ error: 'Managed delegation proof verification failed' }, 500);
+  }
 
   const session = completeSessionSetup({
     ...preparedResult.prepared,
+    siwe: preparedSiwe,
     signature,
   });
 
@@ -1084,29 +1102,14 @@ delegateRouter.post('/', async (c) => {
     console.warn(`[Delegate] Session activation failed (host unreachable):`, e);
   }
 
-  const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
-
-  return c.json({
-    delegationHeader: session.delegationHeader,
-    delegationCid: session.delegationCid,
+  return c.json(delegationResponse(session, {
     spaceId: preparedResult.spaceId,
-    ownerDid,
-    verificationMethod: session.verificationMethod,
     jwk: body.jwk,
-    address,
-    chainId,
+    proof,
     hostActivated,
     edited: preparedResult.edited,
     reason,
-    expirationTime,
-    expiresAt: expirationTime,
-    expiry: expirationTime,
-    // Include the SIWE message so callers (CLI, web SDK) can persist it
-    // alongside the delegation. The SDK extracts `expirationTime` from
-    // this string at session-restore time; without it, restored sessions
-    // are treated as expired-at-epoch-zero.
-    siwe: preparedResult.prepared.siwe,
-  });
+  }));
 });
 
 /**
@@ -1241,6 +1244,13 @@ delegateRouter.post('/complete', async (c) => {
     return c.json({ error: 'prepared session must include a valid expirationTime or SIWE Expiration Time' }, 400);
   }
 
+  let proof: VerifiedDelegationProof;
+  try {
+    proof = await verifyDelegationProof(body.prepared.siwe, body.signature);
+  } catch {
+    return c.json({ error: 'External delegation proof verification failed' }, 400);
+  }
+
   // Ensure JWK is a proper object with kty for WASM deserialization
   const session = completeSessionSetup({
     ...body.prepared,
@@ -1259,31 +1269,15 @@ delegateRouter.post('/complete', async (c) => {
     console.warn(`[Delegate] Session activation failed (host unreachable):`, e);
   }
 
-  // Extract address/chainId from the prepared data
-  const address = body.prepared.address || '';
-  const chainId = body.prepared.chainId || 1;
   const spaceId = body.prepared.spaceId || '';
-  const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
   const reason = normalizeDelegateReason(body.reason);
 
-  return c.json({
-    delegationHeader: session.delegationHeader,
-    delegationCid: session.delegationCid,
+  return c.json(delegationResponse(session, {
     spaceId,
-    ownerDid,
-    verificationMethod: session.verificationMethod,
     jwk: body.jwk,
-    address,
-    chainId,
+    proof,
     hostActivated,
     edited: Boolean(body.edited),
     reason,
-    expirationTime,
-    expiresAt: expirationTime,
-    expiry: expirationTime,
-    // Echo the SIWE the caller asked us to sign — the SDK extracts
-    // `expirationTime` from this when restoring the session, and
-    // without it a restored session is treated as expired-at-epoch-zero.
-    siwe: body.prepared.siwe,
-  });
+  }));
 });
