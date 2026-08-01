@@ -393,3 +393,104 @@ describe("subset validation", () => {
     expect(check.ok).toBe(true);
   });
 });
+
+describe("caveats (Sol continuation contract)", () => {
+  // Sol continuation contract: caveats are preserved end-to-end through the
+  // model, and the subset validator compares them structurally. A candidate
+  // that DROPS caveats or MUTATES them is broader than the baseline and MUST
+  // be rejected.
+  //
+  // The vacuous `[{}]` placeholder every real TinyCloud recap uses does NOT
+  // count as a meaningful caveat — the parser marks such actions editable.
+  // Only actions carrying a non-empty caveat object are non-editable.
+
+  // Import fixtures we need locally to build caveat-bearing recaps.
+  const { makeRecapResource, FIXTURE_META } = require("./fixtures/index.js");
+  const ADDR = FIXTURE_META.address;
+  const CHAIN = FIXTURE_META.chainId;
+  const SPACE = FIXTURE_META.ownSpace;
+
+  function siweWithRecap(att: Record<string, Record<string, unknown[]>>): string {
+    return [
+      `cli.tinycloud.xyz wants you to sign in with your Ethereum account:`,
+      ADDR,
+      "",
+      "TinyCloud delegation",
+      "",
+      `URI: https://cli.tinycloud.xyz`,
+      "Version: 1",
+      `Chain ID: ${CHAIN}`,
+      "Nonce: abcdef123456",
+      `Issued At: ${FIXTURE_META.issuedAt}`,
+      `Expiration Time: ${FIXTURE_META.expirationTime}`,
+      "Resources:",
+      `- ${makeRecapResource(att)}`,
+    ].join("\n");
+  }
+
+  it("parses caveats onto each action", () => {
+    const message = siweWithRecap({
+      [SPACE]: {
+        "tinycloud.kv/get": [{ maxCount: 5 }],
+        "tinycloud.capabilities/read": [{}],
+      },
+    });
+    const model = parseCapabilityReview(ctx({ message }));
+    const kv = model.permissions.find((p) => p.family === "bootstrap-kv");
+    const kvGet = kv?.actions.find((a) => a.ability === "tinycloud.kv/get");
+    expect(kvGet?.caveats).toEqual([{ maxCount: 5 }]);
+    // Meaningful caveats make the action non-editable — the WASM emitter
+    // would drop them, so the UI cannot present a broadening toggle.
+    expect(kvGet?.editable).toBe(false);
+  });
+
+  it("treats the vacuous [{}] placeholder as no caveats", () => {
+    const message = siweWithRecap({
+      [SPACE]: {
+        "tinycloud.kv/get": [{}],
+        "tinycloud.capabilities/read": [{}],
+      },
+    });
+    const model = parseCapabilityReview(ctx({ message }));
+    const kv = model.permissions.find((p) => p.family === "bootstrap-kv");
+    const kvGet = kv?.actions.find((a) => a.ability === "tinycloud.kv/get");
+    // Vacuous caveat = editable. Otherwise every real recap would be locked.
+    expect(kvGet?.editable).toBe(true);
+  });
+
+  it("subset validator rejects dropped caveats", () => {
+    const message = siweWithRecap({
+      [SPACE]: {
+        "tinycloud.kv/get": [{ maxCount: 5 }],
+        "tinycloud.capabilities/read": [{}],
+      },
+    });
+    const base = parseCapabilityReview(ctx({ message }));
+    // Build a candidate model with the caveat stripped — this is what
+    // WASM's naive re-emit would produce.
+    const candidate = JSON.parse(JSON.stringify(base));
+    for (const grant of candidate.permissions) {
+      for (const action of grant.actions) {
+        if (action.ability === "tinycloud.kv/get") {
+          action.caveats = [];
+        }
+      }
+    }
+    const check = assertBaselineSubset(base, candidate);
+    expect(check.ok).toBe(false);
+    expect(check.violations.some((v) => v.code === "broadened-caveat")).toBe(true);
+  });
+
+  it("subset validator accepts identical caveats", () => {
+    const message = siweWithRecap({
+      [SPACE]: {
+        "tinycloud.kv/get": [{ maxCount: 5 }],
+        "tinycloud.capabilities/read": [{}],
+      },
+    });
+    const base = parseCapabilityReview(ctx({ message }));
+    const cand = parseCapabilityReview(ctx({ message }));
+    const check = assertBaselineSubset(base, cand);
+    expect(check.ok).toBe(true);
+  });
+});

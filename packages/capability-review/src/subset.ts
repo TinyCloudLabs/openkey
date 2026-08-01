@@ -95,12 +95,29 @@ export function assertBaselineSubset(
       });
       continue;
     }
-    const baseActions = new Set(base.actions.map((a) => a.ability));
+    // Index baseline actions by ability so we can compare caveats too.
+    const baseActionByAbility = new Map(base.actions.map((a) => [a.ability, a]));
     for (const action of cand.actions) {
-      if (!baseActions.has(action.ability)) {
+      const baseAction = baseActionByAbility.get(action.ability);
+      if (!baseAction) {
         violations.push({
           code: "added-action",
           message: `Candidate added action ${action.ability} on ${cand.service} ${cand.space} ${cand.path}.`,
+        });
+        continue;
+      }
+      // Caveat comparison: candidate MUST carry the SAME caveats (order
+      // and content) as the baseline. A candidate that drops caveats is
+      // broader than the baseline; a candidate that adds caveats might
+      // seem narrower, but the WASM emitter cannot round-trip added
+      // caveats so we still fail closed. Deep equality via JSON.stringify
+      // — caveats are arbitrary JSON per the ReCap spec.
+      const baseCav = JSON.stringify(baseAction.caveats ?? []);
+      const candCav = JSON.stringify(action.caveats ?? []);
+      if (baseCav !== candCav) {
+        violations.push({
+          code: "broadened-caveat",
+          message: `Candidate caveats for ${action.ability} on ${cand.service} ${cand.space} ${cand.path} differ from baseline (baseline=${baseCav}, candidate=${candCav}).`,
         });
       }
     }

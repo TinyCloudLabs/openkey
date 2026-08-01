@@ -547,15 +547,21 @@
   // Translate a capability-review selection (Set of client-side action IDs)
   // into the server's actionKey strings.
   //
-  // The review model grant IDs use space as separator ("service space path"),
-  // while the server permission keys use NUL as separator ("service\0space\0path").
-  // We correlate by converting between the two formats so that two distinct
-  // resources that share an ability string (e.g. tinycloud.kv/get on different
-  // paths) can be independently selected without collapsing into one another.
+  // Sol MAJOR-5 fix: capability-review grant IDs and server permission keys
+  // are BOTH NUL-separated (`service\0space\0path`). The previous code
+  // stripped NULs to spaces before lookup, which caused every grant ID to
+  // miss and the selection to collapse to required-only actions.
+  //
+  // Correlation is done in two passes over the CANONICAL server keys — a
+  // server permission has already been canonicalized (`kv` → `tinycloud.kv`)
+  // and capability-review derives the same canonical service from the
+  // `tinycloud.kv/get` ability. So a direct id-to-id lookup is safe AND
+  // preserves independent selection when two paths share an ability
+  // (e.g. `chat` vs `feed` KV grants).
   function mapReviewSelectionToActionKeys(selection: Set<string>): string[] {
     if (!reviewModel) return [];
 
-    // Build a map from review grant ID → Set<selected ability> for selected actions.
+    // Build map: canonical grant ID → Set<selected ability>.
     const selectedAbilitiesByGrantId = new Map<string, Set<string>>();
     for (const grant of reviewModel.permissions) {
       for (const action of grant.actions) {
@@ -572,9 +578,11 @@
 
     const out: string[] = [];
     for (const perm of permissionOptions) {
-      // Convert server NUL-separated key to space-separated review grant ID.
-      const reviewGrantId = perm.key.replaceAll('\0', ' ');
-      const selectedAbilities = selectedAbilitiesByGrantId.get(reviewGrantId);
+      // Direct match: both sides are NUL-separated
+      // `service\0space\0path` after service canonicalization.
+      // Two paths sharing an ability (e.g. `chat` vs `feed`) keep
+      // distinct grant IDs so their action selections stay independent.
+      const selectedAbilities = selectedAbilitiesByGrantId.get(perm.key);
       for (const action of perm.actions) {
         if (action.required || selectedAbilities?.has(action.ability)) {
           out.push(action.key);

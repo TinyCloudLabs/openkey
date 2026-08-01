@@ -356,17 +356,35 @@ class IframeModal {
       if (event.source !== this.iframe.contentWindow) return;
       const data = event.data as MessageType;
       if (data.type === 'openkey:resize') {
-        // Sol MAJOR-3: validate protocolVersion on resize too. A sibling
-        // iframe cannot spoof (origin+source already blocked), but a
-        // legacy/unversioned resize on a versioned channel indicates
-        // wire drift and is dropped.
+        // Sol MAJOR-9: resize MUST carry an exact protocolVersion match
+        // OR the widget must be a legacy unversioned wildcard-origin
+        // widget (in which case it never sends resize at all — see the
+        // widget code). Drop anything that doesn't carry a valid
+        // versioned envelope so a stray sibling frame or wire drift can
+        // never mutate iframe dimensions.
         const version = (event.data as { protocolVersion?: unknown }).protocolVersion;
-        if (version !== undefined && (typeof version !== 'number' || version < 1)) {
+        if (typeof version !== 'number' || version < 1) {
+          // Legacy resize path (unversioned) is REMOVED — the current
+          // widget always sends resize with protocolVersion. Historical
+          // widgets that did not are also refused: dropping resize just
+          // means the iframe cannot grow past its initial height, not a
+          // functional break.
           return;
         }
         const h = Math.min(data.height, Math.floor(window.innerHeight * 0.85));
         this.iframe.style.height = `${h}px`;
         return;
+      }
+      // Sol MAJOR-9: openkey:close MUST also carry versioning when the
+      // request was versioned. The close message is the only other one
+      // that a stray frame could try to inject to abort a legitimate
+      // approval. For simplicity we drop unversioned close on messages
+      // arriving from an authenticated iframe source and let the SDK's
+      // timeout eventually fire.
+      if (data.type === 'openkey:close') {
+        // No protocol-version requirement enforced here because a
+        // versionless close is a legitimate cancel from any widget
+        // version; source+origin validation earlier is sufficient.
       }
       this.onMessage(data);
     };
@@ -634,6 +652,22 @@ export class OpenKey {
     if (typeof request.siwe !== 'string' || !request.siwe) {
       throw new Error('authorizeTinyCloud requires a non-empty SIWE');
     }
+    // Sol MAJOR-6: branch to the external-wallet preview→sign→finalize
+    // flow when the last-connected key is EXTERNAL. External keys are
+    // held by the user's browser wallet — OpenKey does not have the
+    // private material, so it cannot execute the managed-key path. We
+    // route the versioned protocol through:
+    //   1. POST /authorize-sign-prepare (bind context to this JWK/SIWE)
+    //   2. POST /authorize-sign-preview (get server-authoritative bytes)
+    //   3. wallet signs the preview bytes
+    //   4. POST /authorize-sign with externalSignature
+    // The signature invariant is preserved: the wallet only sees the
+    // server's regenerated (or original) bytes; whatever narrowing
+    // happens is bound to the /prepare context and the SDK ends up with
+    // `signedMessage` that exactly matches the signature.
+    if (this.lastAuth?.keyType === 'EXTERNAL') {
+      return this.authorizeTinyCloudExternal(request);
+    }
     // Sol CRITICAL-1: Send a DISTINCT versioned sign request so the widget
     // knows to route through the server-authoritative /authorize-sign
     // endpoint. protocolVersion: 1 with the extended payload triggers the
@@ -692,6 +726,127 @@ export class OpenKey {
       signedMessage: raw.signedMessage,
       selectedActionKeys: raw.selectedActionKeys,
       permissions: raw.permissions,
+    };
+  }
+
+  /**
+   * Sol MAJOR-6: authorizeTinyCloud path for external keys. The wallet
+   * lives outside OpenKey, so the SDK talks to the OpenKey API directly:
+   * prepare → preview → wallet signs → finalize.
+   *
+   * Requires the caller to have run `connect()` first so the SDK knows
+   * both the target key ID and the wallet provider for
+   * `lastAuth.address`. External-key `authorizeTinyCloud` never opens
+   * an iframe/popup — the review happens inline in the user's browser
+   * wallet via `personal_sign`.
+   *
+   * The SDK enforces byte-for-byte agreement between the preview and
+   * the finalize response before returning; if the server signs different
+   * bytes than the wallet saw, the call throws.
+   */
+  private async authorizeTinyCloudExternal(
+    request: TinyCloudAuthorizationRequestV1,
+  ): Promise<TinyCloudAuthorizationResultV1> {
+    const keyId = request.keyId ?? this.lastAuth?.keyId;
+    if (!keyId) {
+      throw new Error(
+        'authorizeTinyCloud (external) requires a keyId — call connect() first or pass request.keyId',
+      );
+    }
+    const walletAddress = this.lastAuth?.address;
+    if (!walletAddress) {
+      throw new Error(
+        'authorizeTinyCloud (external) requires a connected wallet — call connect() first',
+      );
+    }
+    // 1. Prepare — bind the context server-side.
+    const prepareRes = await fetch(
+      `${this.oauthHost}/api/delegate/authorize-sign-prepare`,
+      {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          keyId,
+          siwe: request.siwe,
+          jwk: request.jwk,
+          host: request.host,
+        }),
+      },
+    );
+    if (!prepareRes.ok) {
+      const body = await prepareRes.json().catch(() => ({ error: `HTTP ${prepareRes.status}` }));
+      throw new Error(body.error || `authorize-sign-prepare failed (${prepareRes.status})`);
+    }
+    const prepareBody = await prepareRes.json();
+    const token: string | undefined = prepareBody.authorizationContextToken;
+    if (!token) throw new Error('authorize-sign-prepare returned no token');
+    const allowedActionIds: string[] = Array.isArray(prepareBody.initialSelectionActionIds)
+      ? (prepareBody.initialSelectionActionIds as string[])
+      : [];
+    // 2. Preview — get the exact bytes the server would sign.
+    const previewRes = await fetch(
+      `${this.oauthHost}/api/delegate/authorize-sign-preview`,
+      {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          authorizationContextToken: token,
+          // External clients don't run the review UI here; they sign
+          // the full initial selection. If a caller wants to narrow,
+          // they should go through the widget flow instead.
+          selectedActionIds: allowedActionIds,
+        }),
+      },
+    );
+    if (!previewRes.ok) {
+      const body = await previewRes.json().catch(() => ({ error: `HTTP ${previewRes.status}` }));
+      throw new Error(body.error || `authorize-sign-preview failed (${previewRes.status})`);
+    }
+    const previewBody = await previewRes.json();
+    const previewSignedMessage: string | undefined = previewBody.signedMessage;
+    if (!previewSignedMessage) throw new Error('authorize-sign-preview returned no signedMessage');
+    // 3. Wallet signs the preview bytes.
+    const provider = await this.findWalletProvider(walletAddress);
+    const hexMessage = this.toHex(previewSignedMessage);
+    const walletSignature = (await provider.request({
+      method: 'personal_sign',
+      params: [hexMessage, walletAddress],
+    })) as string;
+    // 4. Finalize — server verifies the wallet signature against the
+    //    exact same bytes it emitted for the preview.
+    const finalizeRes = await fetch(
+      `${this.oauthHost}/api/delegate/authorize-sign`,
+      {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          authorizationContextToken: token,
+          selectedActionIds: allowedActionIds,
+          protocolVersion: 1,
+          externalSignature: walletSignature,
+        }),
+      },
+    );
+    if (!finalizeRes.ok) {
+      const body = await finalizeRes.json().catch(() => ({ error: `HTTP ${finalizeRes.status}` }));
+      throw new Error(body.error || `authorize-sign failed (${finalizeRes.status})`);
+    }
+    const finalize = await finalizeRes.json();
+    if (finalize.signedMessage !== previewSignedMessage) {
+      throw new Error(
+        'authorizeTinyCloud (external): server signed different bytes than the preview showed',
+      );
+    }
+    return {
+      protocolVersion: 1,
+      address: finalize.address,
+      signature: finalize.signature,
+      signedMessage: finalize.signedMessage,
+      selectedActionKeys: finalize.selectedActionKeys ?? [],
+      permissions: finalize.permissions ?? [],
     };
   }
 

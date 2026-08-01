@@ -41,6 +41,24 @@
   // path (compat) does not carry a requestId — it uses direct postMessage.
   let currentRequestId = $state<string | null>(null);
   let transport: WidgetTransport | null = null;
+  // Sol MAJOR-9 (per-request immutable state): once a request lands we
+  // never mutate its bound state. A follow-up transport request creates
+  // a NEW logical request. If a versioned request is already in-flight
+  // (approval pending / signing running / previewing), overlapping
+  // requests are refused server-side by our own state machine so the
+  // response cannot escape to the wrong parent.
+  let requestSealed = $state(false);
+  // Sol CRITICAL-1 (distinct final approval): the popup MUST call
+  // /authorize-sign-preview so the user sees the EXACT bytes the server
+  // would sign, then approves again before /authorize-sign consumes the
+  // token. `previewSignedMessage` holds the server-returned candidate;
+  // `previewToken` is the opaque authorization-context token bound at
+  // /authorize-sign-prepare time. Both are cleared when the user edits
+  // the selection so the flow returns to preview+approve.
+  let previewSignedMessage = $state<string | null>(null);
+  let previewToken = $state<string | null>(null);
+  let previewing = $state(false);
+  let previewApproved = $state(false);
 
   // Shared capability-review state — the SigningApproval component uses this
   // when the request looks like a TinyCloud SIWE-ReCap. Legacy plain
@@ -116,6 +134,32 @@
 
   function handleTransportRequest(request: WidgetRequest) {
     console.log('[sign widget] transport request:', request.requestId);
+    // Sol MAJOR-9 (immutable per-request state): once a request lands
+    // we refuse to overwrite it with another. A sibling call from the
+    // same parent (or a re-post from a stuck SDK) MUST NOT hijack the
+    // in-flight approval — we respond to it with a dedicated error via
+    // the transport so the caller gets a clear rejection rather than a
+    // silent drop.
+    if (requestSealed) {
+      console.warn(
+        '[sign widget] refusing overlapping request; existing request:',
+        currentRequestId,
+        'new:',
+        request.requestId,
+      );
+      transport?.respond({
+        type: 'openkey:sign:response',
+        requestId: request.requestId,
+        protocolVersion: request.protocolVersion,
+        success: false,
+        error: {
+          code: 'UNKNOWN',
+          message:
+            'A signing request is already in progress in this widget instance. Cancel it before starting another.',
+        },
+      });
+      return;
+    }
     const data = request.data;
     currentRequestId = request.requestId;
     message = String(data.message ?? '');
@@ -124,6 +168,12 @@
     messageHost = typeof data.host === 'string' ? data.host : '';
     keyId = typeof data.keyId === 'string' ? data.keyId : null;
     keyFetched = false;
+    // Reset preview state — a new request always starts with no bound
+    // preview. Editing selection also clears these fields.
+    previewSignedMessage = null;
+    previewToken = null;
+    previewApproved = false;
+    requestSealed = true;
   }
 
   function handleTransportClose() {
@@ -185,6 +235,11 @@
 
     console.log('[sign widget] received message:', event.data?.type, event.data);
     if (event.data?.type === 'openkey:sign:request') {
+      // Sol MAJOR-9: refuse overlapping legacy request too.
+      if (requestSealed) {
+        console.warn('[sign widget] refusing overlapping legacy request');
+        return;
+      }
       console.log('[sign widget] sign request received, message:', event.data.message?.substring(0, 100), 'keyId:', event.data.keyId);
       message = event.data.message;
       messageProtocolVersion = incomingProtocolVersion;
@@ -192,6 +247,7 @@
       messageHost = typeof event.data.host === 'string' ? event.data.host : '';
       keyId = event.data.keyId || null;
       keyFetched = false; // Reset so effect can run
+      requestSealed = true;
 
       // Try immediately if session is already available
       if (keyId && $session.data) {
@@ -225,6 +281,23 @@
       messageProtocolVersion !== null &&
       messageProtocolVersion >= 1 &&
       origin !== '*';
+    // Sol MAJOR-8 (requester + origin/domain facts wired into model):
+    // compute REAL warnings rather than hard-coding them to false. The
+    // SIWE `domain` line and the postMessage origin's hostname MUST
+    // agree — otherwise the widget is presenting a review from one
+    // relying party while the parent frame is a different origin.
+    let siweDomainForModel: string | null = null;
+    let originHostForModel: string | null = null;
+    try {
+      const domainMatch = message.match(/^(.+?) wants you to sign in with your Ethereum account:$/m);
+      if (domainMatch && domainMatch[1]) siweDomainForModel = domainMatch[1].trim();
+    } catch { /* nothing to do; leave null */ }
+    try {
+      if (origin && origin !== '*') originHostForModel = new URL(origin).hostname;
+    } catch { /* leave null */ }
+    const domainMismatchForModel =
+      !!siweDomainForModel && !!originHostForModel && siweDomainForModel !== originHostForModel;
+    const originIsWildcard = origin === '*';
     try {
       const model = parseCapabilityReview({
         message,
@@ -238,13 +311,24 @@
         metadataTrust: { status: 'unsigned', reason: 'no manifest supplied' },
         reason: { text: '', source: 'none' },
         requester: {
-          displayName: origin === '*' ? 'Unknown origin' : origin,
-          verifiedOrigin: origin === '*' ? null : origin,
+          displayName: originIsWildcard ? 'Unknown origin' : origin,
+          verifiedOrigin: originIsWildcard ? null : origin,
           manifestId: null,
           manifestDigest: null,
-          domainWarning: false,
-          originWarning: false,
+          domainWarning: domainMismatchForModel,
+          // Sol MAJOR-8: wildcard origin means the widget cannot prove
+          // the parent's identity — surface it as a warning rather than
+          // silently accepting.
+          originWarning: originIsWildcard,
         },
+        // Sol MAJOR-8: this widget does NOT yet resolve verified
+        // manifest metadata for the requesting app. Fail closed by
+        // leaving `requesterAddress` unset so the classifier flags any
+        // grant on a space whose owner differs from the signer as
+        // cross-app-data. When the manifest resolution pipeline lands,
+        // wire it here — never accept caller-echoed metadata as verified.
+        requesterAddress: null,
+        requesterVerified: false,
       });
       reviewModel = model;
       reviewSelection = defaultSelection(model);
@@ -253,32 +337,49 @@
     }
   });
 
-  async function signMessage() {
+  // Helper: is this request eligible for server-authoritative narrowing?
+  function canUseAuthorizeSignFn(): boolean {
+    return (
+      messageProtocolVersion !== null &&
+      messageProtocolVersion >= 1 &&
+      origin !== '*' &&
+      reviewModel !== null &&
+      reviewModel.protocol === 'tinycloud-siwe-recap'
+    );
+  }
+
+  // Convert the current review selection to canonical action IDs.
+  function currentSelectedActionIds(): string[] {
+    if (!reviewModel) return [];
+    const out: string[] = [];
+    for (const grant of reviewModel.permissions) {
+      for (const action of grant.actions) {
+        if (reviewSelection.has(action.id)) {
+          out.push(action.id);
+        }
+      }
+    }
+    return out;
+  }
+
+  // Sol CRITICAL-1: preview step. Issues (or re-uses) an authorization
+  // context via /authorize-sign-prepare, then calls
+  // /authorize-sign-preview to obtain the EXACT bytes the server would
+  // sign for the current selection. The user must approve the preview
+  // before /authorize-sign consumes the token.
+  async function requestPreview(): Promise<void> {
     if (!key || !message) return;
-
-    signing = true;
+    if (!canUseAuthorizeSignFn()) return;
+    previewing = true;
     error = '';
-
+    previewApproved = false;
     try {
-      // Sol CRITICAL-1: for editable TinyCloud requests (versioned
-      // protocol + real origin + ReCap SIWE), route through the
-      // server-authoritative /api/delegate/authorize-sign endpoint. The
-      // server regenerates a narrowed SIWE from the current selection
-      // and signs THOSE bytes — the widget never returns `signedMessage`
-      // that differs from what the signature verifies against.
-      const canUseAuthorizeSign =
-        messageProtocolVersion !== null &&
-        messageProtocolVersion >= 1 &&
-        origin !== '*' &&
-        reviewModel !== null &&
-        reviewModel.protocol === 'tinycloud-siwe-recap';
-
-      if (canUseAuthorizeSign) {
-        // Sol continuation contract: caller-echoed SIWE/JWK/selection are
-        // NEVER trusted. First call /authorize-sign-prepare so the server
-        // binds the SIWE, JWK, key, and immutable header fields into an
-        // opaque single-use context. Then call /authorize-sign with the
-        // token — the server narrows from its bound baseline.
+      // Issue a bound context if we don't have one yet. We keep the same
+      // token across selection edits until the user approves — token TTL
+      // is 5 minutes, so a fresh /authorize-sign-prepare per selection
+      // change would burn tokens without benefit.
+      let token = previewToken;
+      if (!token) {
         const prepareRes = await fetch(
           `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign-prepare`,
           {
@@ -298,25 +399,61 @@
           throw new Error(errBody.error || `HTTP ${prepareRes.status}`);
         }
         const prepareResult = await prepareRes.json();
-        const authorizationContextToken: string | undefined = prepareResult.authorizationContextToken;
-        if (!authorizationContextToken) {
+        token = typeof prepareResult.authorizationContextToken === 'string'
+          ? prepareResult.authorizationContextToken
+          : null;
+        if (!token) {
           throw new Error('authorize-sign-prepare did not return a context token');
         }
+        previewToken = token;
+      }
+      const previewRes = await fetch(
+        `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign-preview`,
+        {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            authorizationContextToken: token,
+            selectedActionIds: currentSelectedActionIds(),
+          }),
+        },
+      );
+      if (!previewRes.ok) {
+        const errBody = await previewRes.json().catch(() => ({ error: 'authorize-sign-preview failed' }));
+        throw new Error(errBody.error || `HTTP ${previewRes.status}`);
+      }
+      const previewResult = await previewRes.json();
+      if (typeof previewResult.signedMessage !== 'string' || !previewResult.signedMessage) {
+        throw new Error('authorize-sign-preview did not return signedMessage');
+      }
+      previewSignedMessage = previewResult.signedMessage;
+    } catch (e: any) {
+      error = e.message || 'Preview failed';
+      // On failure, invalidate any stored token so the next attempt gets
+      // a fresh one — the server may have expired the token or rejected
+      // the immutable-fields digest.
+      previewToken = null;
+      previewSignedMessage = null;
+    } finally {
+      previewing = false;
+    }
+  }
 
-        // Convert the review selection to actionKey strings the server
-        // recognizes. The review model IDs are NUL-separated
-        // (service\0space\0path\0ability) — same format the server uses.
-        const selectedActionIds: string[] = [];
-        for (const grant of reviewModel!.permissions) {
-          for (const action of grant.actions) {
-            if (reviewSelection.has(action.id)) {
-              // The action.id is already in the (service\0space\0path\0ability)
-              // format because it comes from ids.actionId(service, space, path, ability).
-              selectedActionIds.push(action.id);
-            }
-          }
+  // Sol CRITICAL-1: distinct final approval. The preview bytes are what
+  // gets signed; the token binding + preview digest are the sole
+  // authorities. This is the ONLY function that calls /authorize-sign
+  // and consumes the token.
+  async function approveAndSign() {
+    if (!key || !message) return;
+    signing = true;
+    error = '';
+    try {
+      if (canUseAuthorizeSignFn()) {
+        if (!previewToken || !previewSignedMessage) {
+          throw new Error('Preview required before approval — call requestPreview() first');
         }
-
+        const selectedActionIds = currentSelectedActionIds();
         const authorizeRes = await fetch(
           `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign`,
           {
@@ -324,7 +461,7 @@
             credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              authorizationContextToken,
+              authorizationContextToken: previewToken,
               selectedActionIds,
               protocolVersion: 1,
             }),
@@ -335,12 +472,19 @@
           throw new Error(errBody.error || `HTTP ${authorizeRes.status}`);
         }
         const authorizeResult = await authorizeRes.json();
+        // Defence in depth: the server must have signed the exact bytes
+        // the user approved. If /authorize-sign returned different bytes
+        // than the preview showed, refuse.
+        if (authorizeResult.signedMessage !== previewSignedMessage) {
+          throw new Error(
+            'Server signed bytes differ from the previewed bytes — refusing to accept',
+          );
+        }
         sendResponse({
           type: 'openkey:sign:response',
           success: true,
           signature: authorizeResult.signature,
           address: authorizeResult.address,
-          // signedMessage is the ACTUAL bytes signed — never `message`.
           signedMessage: authorizeResult.signedMessage,
           selectedActionKeys: authorizeResult.selectedActionKeys,
           permissions: authorizeResult.permissions,
@@ -378,6 +522,16 @@
     } finally {
       signing = false;
     }
+  }
+
+  // Called by SigningApproval when the selection changes. Clears any
+  // approved preview so the user must review + approve the new bytes.
+  function invalidatePreviewForSelectionEdit() {
+    previewSignedMessage = null;
+    // Keep the token: the /authorize-sign-preview call handles a stale
+    // selection safely (it re-derives the SIWE without consuming). If
+    // the token expires the preview call fails cleanly.
+    previewApproved = false;
   }
 
   function cancel() {
@@ -478,20 +632,62 @@
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
       <p>Please connect first to sign messages.</p>
     </div>
+  {:else if reviewModel && reviewModel.protocol === 'tinycloud-siwe-recap' && previewSignedMessage && canUseAuthorizeSignFn()}
+    <!--
+      Sol CRITICAL-1: distinct final-approval screen. The user has
+      previewed the EXACT bytes the server will sign; they must approve
+      those specific bytes (not the widget-supplied request) before
+      /authorize-sign is invoked.
+    -->
+    <div class="flex flex-col gap-4 flex-1">
+      <Card class="p-4">
+        <span class="block text-surface-400 text-xs uppercase mb-2">Final review — server-authoritative bytes</span>
+        <p class="text-surface-300 text-xs mb-3">
+          These are the EXACT bytes the server will sign for the current selection.
+          Approving finalizes the delegation with these bytes; editing sends you back to review.
+        </p>
+        <pre class="whitespace-pre-wrap break-all text-xs text-surface-200 font-mono max-h-72 overflow-y-auto">{previewSignedMessage}</pre>
+      </Card>
+      {#if error}
+        <Card class="bg-red-500/10 border-red-500 text-red-500 p-4">{error}</Card>
+      {/if}
+      <div class="flex gap-3 mt-auto">
+        <Button variant="secondary" class="flex-1" onclick={() => { previewSignedMessage = null; }}>
+          Back to selection
+        </Button>
+        <Button class="flex-1" onclick={approveAndSign} disabled={signing}>
+          {signing ? 'Signing...' : 'Approve exact bytes'}
+        </Button>
+      </div>
+    </div>
   {:else if reviewModel && reviewModel.protocol === 'tinycloud-siwe-recap'}
     <!--
       Editable TinyCloud request — render via the shared SigningApproval
-      component so CLI browser, popup, and iframe show the same content.
+      component. The onApprove handler routes through requestPreview() so
+      the user must review the server-returned candidate bytes before the
+      final /authorize-sign step. Non-versioned requests skip preview and
+      fall through to approveAndSign() directly.
     -->
     <SigningApproval
       model={reviewModel}
       selection={reviewSelection}
       editing={reviewEditing}
-      approving={signing}
+      approving={signing || previewing}
       {error}
-      onApprove={signMessage}
+      onApprove={() => {
+        if (canUseAuthorizeSignFn()) {
+          // Fetch preview; user then sees the distinct approval screen.
+          requestPreview();
+        } else {
+          // Legacy exact-byte path — no preview step is possible.
+          approveAndSign();
+        }
+      }}
       onCancel={cancel}
-      onSelectionChange={(next) => (reviewSelection = next)}
+      onSelectionChange={(next) => {
+        reviewSelection = next;
+        invalidatePreviewForSelectionEdit();
+      }}
       onEditingChange={(next) => (reviewEditing = next)}
     />
   {:else}
@@ -532,7 +728,7 @@
 
       <div class="flex gap-3 mt-auto">
         <Button variant="secondary" class="flex-1" onclick={cancel}>Cancel</Button>
-        <Button class="flex-1" onclick={signMessage} disabled={signing}>
+        <Button class="flex-1" onclick={approveAndSign} disabled={signing}>
           {signing ? 'Signing...' : 'Sign Message'}
         </Button>
       </div>

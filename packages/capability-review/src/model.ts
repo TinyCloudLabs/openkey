@@ -72,6 +72,20 @@ export interface CapabilityAction {
    * editable. Actions the CLI marked immutable are not editable either.
    */
   editable: boolean;
+  /**
+   * ReCap caveats attached to this (resource, ability) pair, preserved as
+   * the exact JSON values parsed from the `urn:recap:` payload. An empty
+   * array means "no caveats"; caveats narrow authority so removing them
+   * server-side is a broadening violation. Subset validation compares
+   * caveats structurally — the candidate must carry the SAME list, in the
+   * SAME order, or be a documented subset (see subset.ts).
+   *
+   * Sol continuation contract: presence of ANY caveats disables /authorize-
+   * sign narrowing because the current WASM emitter drops caveats when
+   * regenerating a SIWE from an abilities map. The classifier / UI still
+   * displays them for review.
+   */
+  caveats: unknown[];
 }
 
 export interface CapabilityGrant {

@@ -358,16 +358,22 @@ function requiredActionIdSet(entries: RecapEntry[]): Set<string> {
 }
 
 /**
- * Detect whether the SIWE's `urn:recap:` payload carries any caveats.
- * We inspect the raw ReCap JSON because the WASM `parseRecapFromSiwe`
- * strips caveats. If any (resource, action) has a non-empty caveat list,
- * the caller must not narrow via /authorize-sign — the regenerated SIWE
- * would drop the caveats and broaden authority.
+ * Detect whether the SIWE's `urn:recap:` payload carries MEANINGFUL
+ * caveats — i.e. any (resource, ability) pair whose caveat array
+ * contains a non-empty object. The ReCap canonical shape is `[{}]` for
+ * "no caveats", which every real TinyCloud-emitted recap uses; treating
+ * `[{}]` as a real caveat would refuse to narrow every request.
  *
- * Returns true when at least one caveat is present, false when the SIWE
- * has no ReCap block or every caveat list is empty. Silently returns
- * false on decode failure so parsing bugs cannot bypass this guard —
- * the outer parse step already rejected malformed ReCap payloads.
+ * We inspect the raw ReCap JSON because the WASM `parseRecapFromSiwe`
+ * strips caveats. If any (resource, action) has a meaningful caveat
+ * list, the caller must not narrow via /authorize-sign — the regenerated
+ * SIWE would drop the caveats and broaden authority.
+ *
+ * Returns true when at least one meaningful caveat is present; false
+ * when the SIWE has no ReCap block, no caveats at all, or only the
+ * vacuous `[{}]` placeholder. Silently returns false on decode failure
+ * so parsing bugs cannot bypass this guard — the outer parse step
+ * already rejected malformed ReCap payloads.
  */
 function hasRecapCaveats(siwe: string): boolean {
   const lines = siwe.split(/\r?\n/);
@@ -385,7 +391,16 @@ function hasRecapCaveats(siwe: string): boolean {
       for (const abilityMap of Object.values(parsed.att)) {
         if (!abilityMap || typeof abilityMap !== 'object') continue;
         for (const caveats of Object.values(abilityMap)) {
-          if (Array.isArray(caveats) && caveats.length > 0) return true;
+          if (!Array.isArray(caveats)) continue;
+          for (const c of caveats) {
+            if (
+              c !== null &&
+              typeof c === 'object' &&
+              Object.keys(c as Record<string, unknown>).length > 0
+            ) {
+              return true;
+            }
+          }
         }
       }
     } catch {
@@ -1817,9 +1832,19 @@ delegateRouter.post('/authorize-sign', async (c) => {
     spaceId: bound.spaceId,
   });
 
+  // Sol MAJOR-3: enforce the candidate abilities digest against the
+  // bound baseline. The digest is computed from the ORIGINAL entries
+  // (via entriesToAbilities) — same source the /authorize-sign-prepare
+  // baseline digest was derived from — so an unchanged selection MUST
+  // match, and a narrowed selection SHOULD match too because the
+  // baseline is the ORIGINAL entries, not the current selection. This
+  // catches attempts to swap the bound SIWE mid-flow or corruption in
+  // the /prepare→/consume path.
+  const candidateAbilitiesDigest = digestAbilities(entriesToAbilities(originalEntries));
+
   // Consume the token — this validates every bound invariant. Any drift
-  // (user, key, JWK, host, spaceId, immutable fields, allowed/required
-  // action sets) is a hard fail.
+  // (user, key, JWK, host, spaceId, immutable fields, baseline abilities
+  // digest, allowed/required action sets) is a hard fail.
   const consume = consumeAuthorizationContext({
     token: body.authorizationContextToken,
     userId: user.id,
@@ -1830,6 +1855,7 @@ delegateRouter.post('/authorize-sign', async (c) => {
     spaceId: bound.spaceId,
     selectedActionIds,
     candidateImmutableFieldsDigest: digestImmutableFields(immutable),
+    candidateAbilitiesDigest,
     requiredActionIds: requiredActionIdSet(originalEntries),
   });
   if (!consume.ok) {

@@ -38,3 +38,31 @@ Additional hardening:
 - SDK `authorizeTinyCloud` no longer silently falls back to
   `request.siwe` when the widget omits `signedMessage` — protocol
   violations now throw.
+- Widget signing pages now enforce a distinct final approval step: the
+  user MUST review the exact server-returned bytes from
+  `/api/delegate/authorize-sign-preview` before `/authorize-sign` is
+  invoked. Editing selection invalidates the preview. Overlapping
+  transport requests are refused with a `USER_CANCELLED`-style error
+  so a second `openkey:sign:request` cannot hijack the in-flight
+  approval (per-request state is immutable once sealed).
+- `/api/delegate/authorize-sign` now enforces `candidateAbilitiesDigest`
+  against the bound baseline so store corruption or bound-SIWE swap
+  during consume are hard failures.
+- `capability-review` preserves ReCap caveats end-to-end. The subset
+  validator compares candidate vs baseline caveats structurally
+  (broadening = removed caveats). Actions carrying meaningful (non-
+  vacuous) caveats are marked non-editable in the UI. `/authorize-sign`
+  refuses to narrow when meaningful caveats are present (the WASM
+  emitter drops them; regenerating would broaden authority).
+- SDK `authorizeTinyCloud` branches to a preview→wallet-sign→finalize
+  flow when the last-connected key is EXTERNAL. The wallet signs the
+  server-emitted preview bytes; finalize verifies the signature against
+  those exact bytes and refuses any drift.
+- SDK iframe resize channel now requires `protocolVersion: 1` — legacy
+  unversioned resize messages are dropped so a stray sibling frame
+  cannot mutate iframe dimensions.
+- Widget page requester metadata now surfaces real `domainWarning`
+  (SIWE domain vs origin hostname mismatch) and `originWarning`
+  (wildcard origin) rather than hard-coding both to false. Verified
+  requester metadata is intentionally left unset (fail-closed
+  cross-app classification) until the widget resolves signed manifests.

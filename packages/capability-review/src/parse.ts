@@ -60,6 +60,22 @@ export interface ParseContext {
   reason: ReasonProvenance;
   /** Requester (app) identity, verified by the caller before parse. */
   requester: RequesterIdentity;
+  /**
+   * Sol MAJOR-8: the requesting app's verified Ethereum address, lowercased.
+   * When BOTH `requesterAddress` and `requesterVerified === true` are set,
+   * the classifier uses this identity to distinguish own-app vs cross-app
+   * grants — replacing the deprecated signer-address fallback that caused
+   * every cross-user grant sharing a signer with its owner to appear as
+   * own-app-data. Callers MUST NOT supply an unverified address here.
+   */
+  requesterAddress?: string | null;
+  /**
+   * True only when `requesterAddress` was derived from a signed manifest
+   * whose digest matched, whose signature verified, and whose freshness
+   * is within the configured window. Any lower trust state MUST leave
+   * this false (or omit it).
+   */
+  requesterVerified?: boolean;
 }
 
 const SIWE_DOMAIN_LINE = /^(.*?) wants you to sign in with your Ethereum account:$/m;
@@ -78,6 +94,14 @@ interface ParsedRecapEntry {
   space: string;
   path: string;
   actions: string[];
+  /**
+   * Per-ability caveats keyed by the fully-qualified ability string. Empty
+   * arrays mean "no caveats" and are indistinguishable from an absent key
+   * — callers should not rely on absence to encode "no caveats". Preserved
+   * end-to-end so subset validation can compare candidate vs baseline
+   * caveats structurally.
+   */
+  caveatsByAbility: Record<string, unknown[]>;
 }
 
 /**
@@ -313,7 +337,7 @@ function decodeRecapUri(
       continue;
     }
     const { space, path } = splitResourceUri(resourceUri);
-    for (const ability of Object.keys(
+    for (const [ability, rawCaveats] of Object.entries(
       abilityMapRaw as Record<string, unknown>,
     )) {
       const split = splitAbility(ability);
@@ -328,7 +352,7 @@ function decodeRecapUri(
       const key = `${service} ${space} ${path}`;
       let entry = grouped.get(key);
       if (!entry) {
-        entry = { service, space, path, actions: [] };
+        entry = { service, space, path, actions: [], caveatsByAbility: {} };
         grouped.set(key, entry);
       }
       if (entry.actions.includes(ability)) {
@@ -338,6 +362,20 @@ function decodeRecapUri(
         });
       } else {
         entry.actions.push(ability);
+      }
+      // Preserve caveats verbatim. ReCap requires the value be an array —
+      // treat non-arrays as empty and warn so the operator sees the input
+      // was malformed rather than silently accepted.
+      if (Array.isArray(rawCaveats)) {
+        entry.caveatsByAbility[ability] = rawCaveats as unknown[];
+      } else {
+        entry.caveatsByAbility[ability] = [];
+        if (rawCaveats !== undefined) {
+          warnings.push({
+            code: "malformed-space",
+            message: `ReCap ability "${ability}" caveats value is not an array; treated as empty.`,
+          });
+        }
       }
     }
   }
@@ -415,7 +453,7 @@ function parseRecapResources(message: string): {
     const key = `${service} ${space} ${path}`;
     let entry = grouped.get(key);
     if (!entry) {
-      entry = { service, space, path, actions: [] };
+      entry = { service, space, path, actions: [], caveatsByAbility: {} };
       grouped.set(key, entry);
     }
     // Dedupe actions but flag the duplicate so callers can note the redundancy.
@@ -427,6 +465,11 @@ function parseRecapResources(message: string): {
       });
     } else {
       entry.actions.push(qualified);
+    }
+    // Legacy expanded form cannot encode caveats — record empty list so
+    // downstream comparisons treat every ability uniformly.
+    if (entry.caveatsByAbility[qualified] === undefined) {
+      entry.caveatsByAbility[qualified] = [];
     }
   }
 
@@ -466,13 +509,30 @@ function buildActions(
       (ability === "tinycloud.capabilities/read" || ability === "capabilities/read");
     const isRequired = required.has(id) || structurallyRequired;
     const isSelected = selected ? selected.has(id) || isRequired : true;
+    const caveats = entry.caveatsByAbility[ability] ?? [];
+    // A ReCap ability whose caveat list is MEANINGFULLY non-empty
+    // narrows authority in ways the SIWE regenerator cannot preserve.
+    // "Meaningfully non-empty" excludes ReCap's canonical `[{}]`
+    // vacuous-caveat placeholder — that is the standard shape for
+    // "no caveats" and appears in every real TinyCloud-emitted recap.
+    // A caveat array that carries any non-empty object is a real
+    // narrowing constraint and we mark the action non-editable.
+    const hasMeaningfulCaveats =
+      Array.isArray(caveats) &&
+      caveats.some(
+        (c) =>
+          c !== null &&
+          typeof c === "object" &&
+          Object.keys(c as Record<string, unknown>).length > 0,
+      );
     return {
       id,
       ability,
       verb,
       required: isRequired,
       selected: isSelected,
-      editable: ctx.editable && !isRequired,
+      editable: ctx.editable && !isRequired && !hasMeaningfulCaveats,
+      caveats,
     };
   });
 }
@@ -494,18 +554,45 @@ function buildGrants(
   signer: SignerInfo,
 ): CapabilityGrant[] {
   const signerAddress = signer.address.toLowerCase();
+  // Sol MAJOR-8 (requester classification): derive the ownership axis from
+  // the verified requester identity when the parser was given one. `signer`
+  // is the OpenKey user account — using it as the ownership axis mis-labels
+  // every cross-app request that shares the SAME signer with the space
+  // owner (which is common: a user often signs into OpenKey with the same
+  // wallet that owns their TinyCloud space). Only a VERIFIED requester
+  // address (from a signed manifest that matched its expected digest) is
+  // trustworthy for cross-app classification.
+  const requesterAddress = ctx.requesterAddress ?? null;
+  const requesterVerified = ctx.requesterVerified === true;
   return entries.map((entry): CapabilityGrant => {
-    // Forward the signer address so classifyRecapEntry can distinguish
-    // own-app vs cross-app grants for KV/SQL services.
+    // Forward both the (deprecated) signer address and the verified
+    // requester identity so classifyRecapEntry can distinguish own-app
+    // vs cross-app grants correctly.
     const { family, displayLabel } = classifyRecapEntry({
       ...entry,
       signerAddress,
+      requesterAddress,
+      requesterVerified,
     });
     const severity = classifySeverityFromActions(family, entry.actions);
     const actions = buildActions(entry, ctx);
     const ownership = ownerFromSpace(entry.space);
+    // ownedBySelf is a UI hint. Prefer the VERIFIED requester when
+    // available; fall back to the signer address only when there is no
+    // requester identity to compare against. When neither is available
+    // (and the space has an owner), we fail closed by reporting null so
+    // the UI does not falsely claim self-ownership.
+    const trustedOwnershipAxis = requesterVerified && requesterAddress
+      ? requesterAddress.toLowerCase()
+      : requesterAddress
+        ? null
+        : signerAddress;
     const ownedBySelf =
-      ownership.owner === null ? null : ownership.owner === signerAddress;
+      ownership.owner === null
+        ? null
+        : trustedOwnershipAxis === null
+          ? null
+          : ownership.owner === trustedOwnershipAxis;
     return {
       id: permissionId(entry.service, entry.space, entry.path),
       family,
