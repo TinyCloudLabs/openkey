@@ -412,4 +412,209 @@ describe('POST /authorize-sign — caveat semantics for narrowing', () => {
     const sign = await signRes.json() as any;
     expect(sign.signedMessage).toBe(siwe);
   });
+
+  // Sol final contract MAJOR-3: route-level cases that prove caveat
+  // preservation and duplicate-count preservation traverse the actual
+  // HTTP routes end-to-end. The existing route tests only verified that
+  // whole-ability removal returned a narrower statement; they did NOT
+  // decode the `urn:recap:` payload and compare caveats between the
+  // baseline and the finalized signed bytes. These tests do — decoding
+  // BOTH sides via the same base64url ReCap payload the SDK consumer
+  // walks, and asserting the caveat arrays are multiset-equal on every
+  // surviving (resource, ability) pair. A regression that quietly drops
+  // caveats (broadening authority on surviving actions) or that changes
+  // a caveat duplicate count would fail here even when the higher-level
+  // statement/permissions assertions still pass.
+  test('finalize preserves baseline caveat multisets (byte-for-byte) on retained abilities across the HTTP route', async () => {
+    const { token, siwe, allowed } = await issuePrepareContext();
+    // Narrow: drop kv/put. kv/get and capabilities/read must survive
+    // with EVERY baseline caveat preserved (the server reuses baseline
+    // caveats when regenerating; a bug that swapped or dropped caveats
+    // would surface here).
+    const narrowed = allowed.filter((id: string) => !id.includes('kv/put'));
+    expect(narrowed.length).toBeLessThan(allowed.length);
+    const previewRes = await router.request('/authorize-sign-preview', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ authorizationContextToken: token, selectedActionIds: narrowed }),
+    });
+    const preview = await previewRes.json() as any;
+    const signRes = await router.request('/authorize-sign', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        authorizationContextToken: token,
+        previewApprovalToken: preview.previewApprovalToken,
+        selectedActionIds: narrowed,
+        protocolVersion: 1,
+      }),
+    });
+    expect(signRes.status).toBe(200);
+    const sign = await signRes.json() as any;
+    // Decode the ATT map from BOTH the baseline SIWE and the finalized
+    // signedMessage. The base64url helper mirrors what the js-sdk
+    // consumer walks — a divergence here IS a wire-format bug.
+    const baselineAtt = extractAttFromSiwe(siwe);
+    const finalAtt = extractAttFromSiwe(sign.signedMessage);
+    // For every (resource, ability) that survives in `finalAtt`, the
+    // caveat MULTISET must equal the baseline's caveat multiset for
+    // that same pair. Whole-ability and whole-resource removals are
+    // legal; caveat mutations on survivors are not.
+    for (const [resource, finalAbilityMap] of Object.entries(finalAtt)) {
+      const baselineAbilityMap = baselineAtt[resource];
+      expect(baselineAbilityMap, `resource ${resource} missing from baseline`).toBeDefined();
+      for (const [ability, finalCaveats] of Object.entries(finalAbilityMap)) {
+        const baselineCaveats = baselineAbilityMap[ability];
+        expect(baselineCaveats, `ability ${ability} on ${resource} missing from baseline`).toBeDefined();
+        // Multiset equality — sort canonical JSON strings and compare
+        // element-wise. Handles duplicates AND key-order differences.
+        expect(multisetEqual(baselineCaveats!, finalCaveats)).toBe(true);
+      }
+    }
+    // Sanity: the finalize DID drop the requested ability from ATT
+    // (i.e. the narrowing actually happened) — otherwise the caveat
+    // multiset test would pass trivially by comparing to the baseline
+    // unchanged.
+    const anyKvActions = Object.values(finalAtt)
+      .flatMap((abilityMap) => Object.keys(abilityMap));
+    expect(anyKvActions).toContain('tinycloud.kv/get');
+    expect(anyKvActions).not.toContain('tinycloud.kv/put');
+  });
+
+  test('finalize preserves baseline caveat duplicate counts on retained abilities across the HTTP route', async () => {
+    // A prepared SIWE constructed via `prepareSession` emits caveats
+    // exactly once per ability, so on the standard route the
+    // finalize/baseline duplicate counts are both zero — comparing
+    // them proves the pipeline does NOT synthesize spurious caveats.
+    // We assert this explicitly rather than relying on the multiset
+    // check above: the check above would pass trivially if both
+    // sides were [] on every ability. Here we go further and prove
+    // that the finalize-side caveat length on each surviving ability
+    // EXACTLY equals the baseline-side length (not just multiset-
+    // equal). A regression that ADDED a caveat on a surviving
+    // ability would fail here even if the added caveat matched a
+    // baseline caveat coincidentally.
+    const { token, siwe, allowed } = await issuePrepareContext();
+    const narrowed = allowed.filter((id: string) => !id.includes('kv/put'));
+    const previewRes = await router.request('/authorize-sign-preview', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ authorizationContextToken: token, selectedActionIds: narrowed }),
+    });
+    const preview = await previewRes.json() as any;
+    const signRes = await router.request('/authorize-sign', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        authorizationContextToken: token,
+        previewApprovalToken: preview.previewApprovalToken,
+        selectedActionIds: narrowed,
+        protocolVersion: 1,
+      }),
+    });
+    expect(signRes.status).toBe(200);
+    const sign = await signRes.json() as any;
+    const baselineAtt = extractAttFromSiwe(siwe);
+    const finalAtt = extractAttFromSiwe(sign.signedMessage);
+    for (const [resource, finalAbilityMap] of Object.entries(finalAtt)) {
+      for (const [ability, finalCaveats] of Object.entries(finalAbilityMap)) {
+        const baselineCaveats = baselineAtt[resource]?.[ability] ?? [];
+        expect(finalCaveats.length).toBe(baselineCaveats.length);
+      }
+    }
+  });
+
+  test('full-selection round-trip preserves the entire baseline ATT map byte-for-byte on the HTTP route', async () => {
+    // When nothing is narrowed the server reuses the caller's exact
+    // prepared bytes — the ATT map on both sides must be structurally
+    // identical, including caveat multisets AND duplicate counts.
+    // This is the strictest form of the caveat-preservation check.
+    const { token, siwe, allowed } = await issuePrepareContext();
+    const previewRes = await router.request('/authorize-sign-preview', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ authorizationContextToken: token, selectedActionIds: allowed }),
+    });
+    const preview = await previewRes.json() as any;
+    const signRes = await router.request('/authorize-sign', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        authorizationContextToken: token,
+        previewApprovalToken: preview.previewApprovalToken,
+        selectedActionIds: allowed,
+        protocolVersion: 1,
+      }),
+    });
+    expect(signRes.status).toBe(200);
+    const sign = await signRes.json() as any;
+    const baselineAtt = extractAttFromSiwe(siwe);
+    const finalAtt = extractAttFromSiwe(sign.signedMessage);
+    // Same resource set, same ability set per resource.
+    expect(Object.keys(finalAtt).sort()).toEqual(Object.keys(baselineAtt).sort());
+    for (const resource of Object.keys(baselineAtt)) {
+      expect(Object.keys(finalAtt[resource]!).sort()).toEqual(
+        Object.keys(baselineAtt[resource]!).sort(),
+      );
+      for (const ability of Object.keys(baselineAtt[resource]!)) {
+        expect(multisetEqual(
+          baselineAtt[resource]![ability]!,
+          finalAtt[resource]![ability]!,
+        )).toBe(true);
+      }
+    }
+  });
 });
+
+/**
+ * Decode the `urn:recap:` base64url payload out of a SIWE and return
+ * the merged `att` map: resource → ability → caveats[]. Matches the
+ * shared canonical decoder used in the js-sdk consumer so a wire-
+ * format drift on either side surfaces here.
+ */
+function extractAttFromSiwe(siwe: string): Record<string, Record<string, unknown[]>> {
+  const merged: Record<string, Record<string, unknown[]>> = {};
+  for (const line of siwe.split(/\r?\n/)) {
+    const m = line.match(/urn:recap:([A-Za-z0-9_-]+=*)/);
+    if (!m || !m[1]) continue;
+    const normalized = m[1].replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
+    const json = Buffer.from(padded, 'base64').toString('utf8');
+    const parsed = JSON.parse(json) as { att?: Record<string, Record<string, unknown[]>> };
+    const att = parsed?.att;
+    if (!att || typeof att !== 'object') continue;
+    for (const [resource, abilityMap] of Object.entries(att)) {
+      const target = merged[resource] ?? (merged[resource] = {});
+      for (const [ability, caveats] of Object.entries(abilityMap)) {
+        if (!Array.isArray(caveats)) continue;
+        target[ability] = [...(target[ability] ?? []), ...caveats];
+      }
+    }
+  }
+  return merged;
+}
+
+/**
+ * Canonicalize + multiset-compare two caveat arrays. Sorts by a
+ * deterministic JSON key that ignores object property ordering so
+ * structurally identical caveats compare equal regardless of surface
+ * serialization order. Matches the canonicalMultisetEqual behaviour
+ * of the shared @openkey/capability-review subset validator.
+ */
+function multisetEqual(a: readonly unknown[], b: readonly unknown[]): boolean {
+  if (a.length !== b.length) return false;
+  const canon = (v: unknown): string =>
+    JSON.stringify(v, function (this: unknown, key: string, val: unknown) {
+      void key;
+      if (val === null || typeof val !== 'object' || Array.isArray(val)) return val;
+      const rec = val as Record<string, unknown>;
+      const keys = Object.keys(rec).sort();
+      const out: Record<string, unknown> = {};
+      for (const k of keys) out[k] = rec[k];
+      return out;
+    });
+  const sa = a.map(canon).sort();
+  const sb = b.map(canon).sort();
+  for (let i = 0; i < sa.length; i += 1) if (sa[i] !== sb[i]) return false;
+  return true;
+}

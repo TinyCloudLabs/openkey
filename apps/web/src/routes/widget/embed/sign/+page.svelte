@@ -168,7 +168,26 @@
       if (transport) {
         transport.emitResize(height);
       } else {
-        window.parent.postMessage({ type: 'openkey:resize', height, protocolVersion: 1 }, origin);
+        // Sol MAJOR-5 (final): the fallback resize (used only when the
+        // shared transport hasn't been created — legacy wildcard-origin
+        // compat path) MUST carry the same correlation the transport
+        // enforces: `requestId` bound to the active request AND the
+        // negotiated `protocolVersion`. Missing correlation lets a
+        // sibling frame's resize be accepted or accepted after a newer
+        // request has already superseded this one. When no request has
+        // been bound yet (widget bootstrap), we SUPPRESS the resize
+        // rather than emitting an uncorrelated one — the parent
+        // rejects any resize without a matching active request anyway.
+        if (!currentRequestId || messageProtocolVersion === null) return;
+        window.parent.postMessage(
+          {
+            type: 'openkey:resize',
+            height,
+            protocolVersion: messageProtocolVersion,
+            requestId: currentRequestId,
+          },
+          origin,
+        );
       }
     });
     observer.observe(contentEl);

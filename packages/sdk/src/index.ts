@@ -340,6 +340,35 @@ export function validateIframeResize(
   return Math.min(data.height, Math.floor(expected.viewportHeight * 0.85));
 }
 
+/**
+ * Sol MAJOR-4 (final): pure routing helper — decides whether an
+ * `authorizeTinyCloud` call should route through the external-wallet
+ * preview→sign→finalize flow or the managed-key widget-signs-server-side
+ * flow. Exported so unit tests can exercise every branch
+ * (explicit-external + external-session, explicit-external + external-
+ * session with different keyId, no-explicit + external-session,
+ * explicit-managed + managed-session, no-session) without booting the
+ * browser runtime.
+ *
+ * The decision is authoritative from the ACTIVE session's keyType. A
+ * user cannot be authenticated with two different active session keys
+ * at once, so lastAuth.keyType is definitive for routing — the caller's
+ * `explicitKeyId` is not needed to resolve the type.
+ *
+ * The pre-Sol-MAJOR-4-final check compared `lastAuth.keyId ===
+ * explicitKeyId` and only routed external when strings matched. That
+ * check failed silently when the caller passed a different identifier
+ * form (address vs internal id, casing drift), forcing an external
+ * key through the managed path and calling /authorize-sign without an
+ * externalSignature — the widget then errored on server-side signing
+ * with no material.
+ */
+export function shouldRouteAuthorizeTinyCloudExternal(state: {
+  lastAuth: { keyType?: 'MANAGED' | 'EXTERNAL' | null } | null;
+}): boolean {
+  return state.lastAuth?.keyType === 'EXTERNAL';
+}
+
 class IframeModal {
   private root: HTMLDivElement;
   private shadow: ShadowRoot;
@@ -726,33 +755,40 @@ export class OpenKey {
     if (typeof request.siwe !== 'string' || !request.siwe) {
       throw new Error('authorizeTinyCloud requires a non-empty SIWE');
     }
-    // Sol MAJOR-3 (continuation): branch to the external-wallet preview→
-    // sign→finalize flow when the target key is EXTERNAL. External keys
-    // are held by the user's browser wallet — OpenKey does not have the
-    // private material, so it cannot execute the managed-key path.
+    // Sol MAJOR-3 (continuation) + Sol MAJOR-4 (final): route to the
+    // external-wallet preview→sign→finalize flow whenever the ACTIVE
+    // authentication session is against an EXTERNAL key. External keys
+    // are held by the user's browser wallet — OpenKey does not have
+    // the private material, so it cannot execute the managed-key
+    // widget-signs-server-side path.
     //
-    // Routing rules:
-    //   1. If the caller passed request.keyId AND it references an
-    //      EXTERNAL key (lastAuth.keyId matches AND lastAuth.keyType is
-    //      EXTERNAL), route to external.
-    //   2. If the caller did NOT pass request.keyId but the lastAuth key
-    //      is EXTERNAL, route to external.
-    //   3. Otherwise (managed key), route through the widget for
-    //      server-side signing.
+    // Sol's final continuation rejection: the prior check
+    // `this.lastAuth?.keyId === explicitKeyId && ... === 'EXTERNAL'`
+    // let an explicitly-supplied external keyId enter the managed
+    // widget path whenever the caller's `explicitKeyId` did not match
+    // `lastAuth.keyId` string-for-string (for example: caller passes
+    // the address; lastAuth carries the internal key record id — same
+    // key, different identifier). A user cannot be authenticated with
+    // two different active session keys at once — the ONE active
+    // session's `keyType` is therefore authoritative for routing.
     //
-    // The prior check `this.lastAuth?.keyType === 'EXTERNAL'` alone let
-    // an explicit external keyId enter the managed widget path when
-    // lastAuth was MANAGED, causing /authorize-sign to be called without
-    // an externalSignature.
-    const explicitKeyId = request.keyId;
-    const explicitKeyIsExternal =
-      explicitKeyId &&
-      this.lastAuth?.keyId === explicitKeyId &&
-      this.lastAuth?.keyType === 'EXTERNAL';
-    const shouldRouteExternal =
-      explicitKeyIsExternal ||
-      (!explicitKeyId && this.lastAuth?.keyType === 'EXTERNAL');
-    if (shouldRouteExternal) {
+    // Routing rules (revised):
+    //   1. If `lastAuth?.keyType === 'EXTERNAL'`, route to external
+    //      (the wallet holds the material; the widget cannot sign
+    //      server-side either way).
+    //   2. If `lastAuth?.keyType === 'MANAGED'`, route to managed.
+    //   3. If `lastAuth` is missing (no active session), route to
+    //      managed — the widget renders a connect flow first, and
+    //      once the user connects the widget resolves keyType from
+    //      the fresh session; if that turns out to be EXTERNAL the
+    //      widget itself refuses to server-sign and asks the SDK to
+    //      re-enter via the external path.
+    //
+    // This resolves the key type authoritatively from the ONE active
+    // session rather than relying on a fragile keyId string match.
+    // See `shouldRouteAuthorizeTinyCloudExternal` for the full
+    // routing-decision rationale and its unit tests for every branch.
+    if (shouldRouteAuthorizeTinyCloudExternal({ lastAuth: this.lastAuth })) {
       return this.authorizeTinyCloudExternal(request, opts);
     }
     // Sol CRITICAL-1: Send a DISTINCT versioned sign request so the widget

@@ -395,6 +395,145 @@ describe('OpenKey ↔ NodeUserAuthorization e2e', () => {
       expect(groundedPairs.has(key)).toBe(true);
     }
   });
+
+  // Sol final continuation contract MAJOR-1 (final): additionally
+  // verify the finalize body structurally matches what
+  // `NodeUserAuthorization.signInWithOpenKeyResult` validates. We
+  // cannot import the js-sdk directly (separate repo, separate package
+  // manager, separate test graph — the sdk-rs WASM would need to be
+  // rebuilt inside the OpenKey worktree for the import to resolve),
+  // BUT we can mirror the exact wire-shape validators the SDK runs
+  // and prove every one of them accepts the Hono response:
+  //   - protocolVersion === 1
+  //   - address is a non-empty string
+  //   - signature is a non-empty string
+  //   - signedMessage is a non-empty parseable SIWE
+  //   - selectedActionKeys is an array of canonical four-part IDs
+  //   - permissions is an array of {service,space,path,actions[non-empty]}
+  //   - selectedActionKeys entries all appear in ATT of signedMessage
+  //     (this is exactly `grantedFourPartIndex.has(rawKey)` in the SDK)
+  //   - permissions actions all appear in ATT of signedMessage
+  //     (this is exactly the "not confirmed in signedMessage
+  //     capabilities" rejection path in the SDK)
+  // The matching test on the js-sdk side (`NodeUserAuthorization.
+  // signInWithOpenKeyResult.test.ts::accepts a finalize body in the
+  // EXACT wire shape the Hono /authorize-sign route emits`) hands the
+  // SAME wire shape to the REAL signInWithOpenKeyResult and completes
+  // the session, so together the two tests prove every validator
+  // accepts what the route emits.
+  test('finalize body validates against a MIRROR of every signInWithOpenKeyResult wire-format check (Sol MAJOR-1 final)', async () => {
+    const { siwe } = makeProductionShapeSiwe();
+    const prepRes = await router.request('/authorize-sign-prepare', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ keyId: keyRecord.id, siwe, jwk, host: 'https://node.tinycloud.xyz' }),
+    });
+    const prepBody = await prepRes.json() as any;
+    const previewRes = await router.request('/authorize-sign-preview', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        authorizationContextToken: prepBody.authorizationContextToken,
+        selectedActionIds: prepBody.allowedActionIds,
+      }),
+    });
+    const previewBody = await previewRes.json() as any;
+    const signRes = await router.request('/authorize-sign', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        authorizationContextToken: prepBody.authorizationContextToken,
+        previewApprovalToken: previewBody.previewApprovalToken,
+        selectedActionIds: prepBody.allowedActionIds,
+        protocolVersion: 1,
+      }),
+    });
+    const signBody = await signRes.json() as any;
+
+    // Mirror 1: protocolVersion is exactly 1 (SDK: `if (result.protocolVersion !== 1) throw`).
+    expect(signBody.protocolVersion).toBe(1);
+
+    // Mirror 2: address is a non-empty string, and after canonicalization
+    // MUST match a well-formed EIP-55 shape. The SDK canonicalizes and
+    // compares against its local signer; we approximate the canonical
+    // check by asserting a 0x-prefixed 40-hex-char form.
+    expect(typeof signBody.address).toBe('string');
+    expect(signBody.address).toMatch(/^0x[a-fA-F0-9]{40}$/);
+
+    // Mirror 3: signature is a non-empty string that recovers to address.
+    expect(typeof signBody.signature).toBe('string');
+    expect(signBody.signature.length).toBeGreaterThan(0);
+    const recovered = verifyMessage(signBody.signedMessage, signBody.signature);
+    expect(recovered.toLowerCase()).toBe(signBody.address.toLowerCase());
+
+    // Mirror 4: signedMessage is a non-empty parseable SIWE. The SDK
+    // constructs a `SiweMessage(result.signedMessage)` and treats a
+    // parse failure as a hard error. Approximation: SIWE contains the
+    // canonical header line + address line + URI + Version + Chain ID +
+    // Nonce + Issued At.
+    expect(typeof signBody.signedMessage).toBe('string');
+    for (const line of ['wants you to sign in with your Ethereum account', 'URI:', 'Version:', 'Chain ID:', 'Nonce:', 'Issued At:']) {
+      expect(signBody.signedMessage).toContain(line);
+    }
+
+    // Mirror 5: selectedActionKeys is an array of canonical four-part
+    // IDs. The SDK's malformed-key check rejects any entry whose
+    // `split("\0").length` is not 4.
+    expect(Array.isArray(signBody.selectedActionKeys)).toBe(true);
+    for (const key of signBody.selectedActionKeys) {
+      expect(typeof key).toBe('string');
+      expect(key.split('\0').length).toBe(4);
+    }
+    // No duplicates — the SDK explicitly rejects duplicate selectedActionKeys.
+    expect(new Set(signBody.selectedActionKeys).size).toBe(signBody.selectedActionKeys.length);
+
+    // Mirror 6: permissions is an array of {service, space, path,
+    // actions[non-empty]}. The SDK rejects empty permissions on a
+    // capability-bearing SIWE and rejects entries with empty actions.
+    expect(Array.isArray(signBody.permissions)).toBe(true);
+    // Our fixture SIWE carries capabilities so permissions MUST be
+    // non-empty — mirrors the SDK's capability-bearing check.
+    expect(signBody.permissions.length).toBeGreaterThan(0);
+    for (const perm of signBody.permissions) {
+      expect(typeof perm.service).toBe('string');
+      expect(perm.service.length).toBeGreaterThan(0);
+      expect(typeof perm.space).toBe('string');
+      expect(typeof perm.path).toBe('string');
+      expect(Array.isArray(perm.actions)).toBe(true);
+      expect(perm.actions.length).toBeGreaterThan(0);
+    }
+
+    // Mirror 7: every selectedActionKey resolves to a (resource,
+    // ability) pair in signedMessage's ATT. This is the SDK's
+    // `grantedFourPartIndex.get(rawKey)` lookup — walk the ATT with
+    // the SAME canonical parser the SDK uses.
+    const attSource = extractAttFromSiwe(signBody.signedMessage);
+    const groundedFourPart = new Set<string>();
+    for (const [resource, actionMap] of Object.entries(attSource)) {
+      const { space, path } = canonicalRecapSplit(resource);
+      for (const action of Object.keys(actionMap)) {
+        const service = action.includes('/') ? action.split('/')[0]! : '';
+        if (!service) continue;
+        groundedFourPart.add(`${service}\0${space}\0${path}\0${action}`);
+      }
+    }
+    for (const key of signBody.selectedActionKeys) {
+      expect(groundedFourPart.has(key)).toBe(true);
+    }
+
+    // Mirror 8: every permissions action appears in signedMessage's ATT.
+    // Sol's "permissions entry action not present in signedMessage"
+    // rejection path.
+    const allSignedActions = new Set<string>();
+    for (const abilityMap of Object.values(attSource)) {
+      for (const ability of Object.keys(abilityMap)) allSignedActions.add(ability);
+    }
+    for (const perm of signBody.permissions) {
+      for (const action of perm.actions) {
+        expect(allSignedActions.has(action)).toBe(true);
+      }
+    }
+  });
 });
 
 /**
