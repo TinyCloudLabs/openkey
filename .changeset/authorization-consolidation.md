@@ -29,9 +29,12 @@ Additional hardening:
   wildcard origin. The capability-review model is built only after the key
   has loaded (fixes zero-address bug during initial render).
 - `capability-review` classifier now distinguishes own-app-data vs
-  cross-app-data based on whether the space owner matches the signer, and
-  recognizes real app path families (Listen, Chat, Feed, Cycle health,
-  Metadata, Credentials).
+  cross-app-data based on whether the space owner matches a VERIFIED
+  requester identity (falling back to attention-level severity when
+  requester metadata is unverifiable). App/product identity labels
+  require verified manifest metadata bound to the request — the
+  classifier does NOT special-case any product name (Listen, Chat,
+  Feed, Cycle, etc.) via path prefix.
 - SDK `authorizeTinyCloud` no longer silently falls back to
   `request.siwe` when the widget omits `signedMessage` — protocol
   violations now throw.

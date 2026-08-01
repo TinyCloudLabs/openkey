@@ -25,6 +25,9 @@
   let message = $state('');
   let messageProtocolVersion = $state<number | null>(null);
   let messageJwk = $state<Record<string, unknown> | null>(null);
+  // Sol MAJOR-2: bind the TinyCloud host into /authorize-sign-prepare
+  // so /authorize-sign cannot swap hosts.
+  let messageHost = $state<string>('');
   let keyId = $state<string | null>(null);
   let key = $state<EthereumKey | null>(null);
   let loading = $state(true);
@@ -92,6 +95,7 @@
     message = String(data.message ?? '');
     messageProtocolVersion = request.protocolVersion;
     messageJwk = (data.jwk as Record<string, unknown>) ?? null;
+    messageHost = typeof data.host === 'string' ? data.host : '';
     keyId = typeof data.keyId === 'string' ? data.keyId : null;
     keyFetched = false;
     if (data.sessionToken && inIframe && typeof data.sessionToken === 'string') {
@@ -172,6 +176,7 @@
       message = event.data.message;
       messageProtocolVersion = incomingProtocolVersion;
       messageJwk = event.data.jwk ?? null;
+      messageHost = typeof event.data.host === 'string' ? event.data.host : '';
       keyId = event.data.keyId || null;
       keyFetched = false;
 
@@ -265,6 +270,7 @@
               keyId: key.id,
               siwe: message,
               jwk: messageJwk,
+              host: messageHost,
             }),
           },
         );

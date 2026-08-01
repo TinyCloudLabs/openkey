@@ -139,4 +139,34 @@ describe('authorization-signing', () => {
     const b = digestJwk({ x: 'AAA', crv: 'Ed25519', kty: 'OKP' });
     expect(a).toBe(b);
   });
+
+  it('accepts a matching candidate abilities digest', () => {
+    const { token } = issueAuthorizationContext(baseIssueInput());
+    const result = consumeAuthorizationContext({
+      ...baseConsumeInput(token),
+      candidateAbilitiesDigest: digestAbilities(abilities),
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects a mismatched candidate abilities digest', () => {
+    const { token } = issueAuthorizationContext(baseIssueInput());
+    const result = consumeAuthorizationContext({
+      ...baseConsumeInput(token),
+      candidateAbilitiesDigest: digestAbilities({
+        kv: { '': ['tinycloud.kv/get', 'tinycloud.kv/put', 'tinycloud.kv/del'] },
+      }),
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toBe('baseline-digest-mismatch');
+  });
+
+  it('skips candidate abilities check when null', () => {
+    const { token } = issueAuthorizationContext(baseIssueInput());
+    const result = consumeAuthorizationContext({
+      ...baseConsumeInput(token),
+      candidateAbilitiesDigest: null,
+    });
+    expect(result.ok).toBe(true);
+  });
 });

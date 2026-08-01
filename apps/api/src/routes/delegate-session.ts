@@ -83,8 +83,25 @@ const SERVICE_LABELS: Record<string, string> = {
   capabilities: 'Capabilities',
 };
 
+/**
+ * Canonicalize a WASM/short service name (e.g. `kv`) to its fully-qualified
+ * TinyCloud namespace (`tinycloud.kv`). The WASM `parseRecapFromSiwe`
+ * emits short names in RecapEntry.service, but the canonical OpenKey
+ * action ID and the js-sdk NodeUserAuthorization consumer both expect
+ * the four-part `service\0space\0path\0ability` form where `service`
+ * is `tinycloud.<short>` — matching how ReCap actions are prefixed
+ * (`tinycloud.kv/get`, etc.).
+ *
+ * Passing `tinycloud.kv` (already-qualified) returns it unchanged.
+ */
+export function canonicalizeServiceName(service: string): string {
+  if (!service) return service;
+  if (service.startsWith('tinycloud.')) return service;
+  return `tinycloud.${service}`;
+}
+
 export function permissionKey(entry: RecapEntry): string {
-  return `${entry.service}\0${entry.space}\0${entry.path}`;
+  return `${canonicalizeServiceName(entry.service)}\0${entry.space}\0${entry.path}`;
 }
 
 export function actionKey(entry: RecapEntry, action: string): string {

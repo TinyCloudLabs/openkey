@@ -225,6 +225,15 @@ export interface ConsumeInput {
    */
   candidateImmutableFieldsDigest: string;
   /**
+   * Sol critical-3: recomputed digest for the abilities encoded in the
+   * candidate SIWE the caller wants to complete. When provided, it must
+   * match the baseline digest bound at /prepare (or be a strict subset
+   * of it — the caller is responsible for supplying the subset digest).
+   * Passing `null` opts out of the check for callers that separately
+   * enforce the abilities invariant.
+   */
+  candidateAbilitiesDigest?: string | null;
+  /**
    * Set of action IDs that the classifier says are required. Used to enforce
    * the "required actions remain" invariant.
    */
@@ -306,6 +315,24 @@ export function consumeAuthorizationContext(
       ok: false,
       error: "immutable-fields-changed",
       message: "SIWE immutable fields (domain, issuedAt, expirationTime, nonce, chainId, spaceId, address) do not match the prepared context.",
+    };
+  }
+  // Sol critical-3: if the caller supplied a candidate abilities digest,
+  // enforce that it matches the bound baseline exactly. Callers that
+  // want to sign a strict subset MUST first re-derive the SIWE for the
+  // narrowed selection and let their own baseline enforcement gate the
+  // narrowing; here we only ratify the invariant that the SIWE the
+  // caller wants signed has the SAME baseline the /prepare step
+  // recorded.
+  if (
+    input.candidateAbilitiesDigest !== undefined &&
+    input.candidateAbilitiesDigest !== null &&
+    !constantTimeEqual(stored.baselineAbilitiesDigest, input.candidateAbilitiesDigest)
+  ) {
+    return {
+      ok: false,
+      error: "baseline-digest-mismatch",
+      message: "Candidate abilities digest does not match the prepared baseline.",
     };
   }
   const allowed = new Set(stored.allowedActionIds);

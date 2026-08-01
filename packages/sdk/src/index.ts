@@ -130,6 +130,14 @@ export interface TinyCloudAuthorizationRequestV1 {
    * to fail — never a silent fallback to the caller's exact bytes.
    */
   jwk?: Record<string, unknown>;
+  /**
+   * The TinyCloud host the resulting session will activate against.
+   * Bound into the /authorize-sign-prepare context so /authorize-sign
+   * cannot swap hosts server-side. Optional for callers that do not
+   * plan to activate a delegation (they should still forward it when
+   * known; the empty string is treated as "unknown").
+   */
+  host?: string;
   /** Optional presentation envelope (name, reason, manifest). */
   presentation?: CapabilityPresentationEnvelopeV1;
 }
@@ -222,12 +230,17 @@ export type OpenKeyLifecycleEvent =
   | 'tenant_access.revoked'
   | 'managed_account.quota_changed';
 
+// Sol MAJOR-3: transport messages must carry `requestId` and
+// `protocolVersion` for the SDK to correlate concurrent flows. Legacy
+// (unversioned) messages are allowed for backward compatibility with
+// the plain signMessage path, but versioned flows (authorizeTinyCloud)
+// always carry both fields and the SDK matches them on response.
 type MessageType =
   | { type: 'openkey:auth:request'; appName: string }
-  | { type: 'openkey:auth:response'; success: true; address: string; keyId: string; keyType?: 'MANAGED' | 'EXTERNAL'; sessionToken?: string }
-  | { type: 'openkey:auth:response'; success: false; error: OpenKeyError }
-  | { type: 'openkey:sign:request'; message: string; keyId?: string; sessionToken?: string }
-  | { type: 'openkey:sign:response'; success: true; signature: string; address: string }
+  | { type: 'openkey:auth:response'; success: true; address: string; keyId: string; keyType?: 'MANAGED' | 'EXTERNAL'; sessionToken?: string; requestId?: string; protocolVersion?: number }
+  | { type: 'openkey:auth:response'; success: false; error: OpenKeyError; requestId?: string; protocolVersion?: number }
+  | { type: 'openkey:sign:request'; message: string; keyId?: string; sessionToken?: string; requestId?: string; protocolVersion?: number }
+  | { type: 'openkey:sign:response'; success: true; signature: string; address: string; requestId?: string; protocolVersion?: number }
   | {
       type: 'openkey:sign:response';
       success: true;
@@ -244,11 +257,13 @@ type MessageType =
         path: string;
         actions: string[];
       }>;
+      requestId?: string;
+      protocolVersion?: number;
     }
-  | { type: 'openkey:sign:response'; success: false; error: OpenKeyError }
-  | { type: 'openkey:signTypedData:request'; data: SignTypedDataRequest; sessionToken?: string }
-  | { type: 'openkey:signTypedData:response'; success: true; signature: string; address: string }
-  | { type: 'openkey:signTypedData:response'; success: false; error: OpenKeyError }
+  | { type: 'openkey:sign:response'; success: false; error: OpenKeyError; requestId?: string; protocolVersion?: number }
+  | { type: 'openkey:signTypedData:request'; data: SignTypedDataRequest; sessionToken?: string; requestId?: string; protocolVersion?: number }
+  | { type: 'openkey:signTypedData:response'; success: true; signature: string; address: string; requestId?: string; protocolVersion?: number }
+  | { type: 'openkey:signTypedData:response'; success: false; error: OpenKeyError; requestId?: string; protocolVersion?: number }
   | { type: 'openkey:link-wallet:request' }
   | { type: 'openkey:link-wallet:response'; success: true; address: string; keyId: string }
   | { type: 'openkey:link-wallet:response'; success: false; error: OpenKeyError }
@@ -256,8 +271,8 @@ type MessageType =
   | { type: 'openkey:link-wallet:result'; success: true; address: string; keyId: string }
   | { type: 'openkey:link-wallet:result'; success: false; error: OpenKeyError }
   | { type: 'openkey:auth:use-external-wallet' }
-  | { type: 'openkey:resize'; height: number }
-  | { type: 'openkey:ready' }
+  | { type: 'openkey:resize'; height: number; protocolVersion?: number }
+  | { type: 'openkey:ready'; protocolVersion?: number }
   | { type: 'openkey:close' };
 
 const DEFAULT_HOST = 'https://openkey.so';
@@ -341,6 +356,14 @@ class IframeModal {
       if (event.source !== this.iframe.contentWindow) return;
       const data = event.data as MessageType;
       if (data.type === 'openkey:resize') {
+        // Sol MAJOR-3: validate protocolVersion on resize too. A sibling
+        // iframe cannot spoof (origin+source already blocked), but a
+        // legacy/unversioned resize on a versioned channel indicates
+        // wire drift and is dropped.
+        const version = (event.data as { protocolVersion?: unknown }).protocolVersion;
+        if (version !== undefined && (typeof version !== 'number' || version < 1)) {
+          return;
+        }
         const h = Math.min(data.height, Math.floor(window.innerHeight * 0.85));
         this.iframe.style.height = `${h}px`;
         return;
@@ -635,6 +658,9 @@ export class OpenKey {
         // Forward JWK so the widget can pass it to /authorize-sign for
         // narrowed-SIWE regeneration.
         jwk: request.jwk,
+        // Forward the TinyCloud host so the widget can bind it into the
+        // /authorize-sign-prepare context (Sol MAJOR-2).
+        host: request.host,
         sessionToken: this.sessionToken || undefined,
       },
       opts?.mode,
@@ -1076,6 +1102,15 @@ export class OpenKey {
   }
 
   private openIframeModal<T>(url: string, action: string, message: object, origin: string): Promise<T> {
+    // Sol MAJOR-3: capture the outgoing request's correlation IDs so
+    // response handlers can require them to match. Legacy unversioned
+    // requests carry neither and skip correlation.
+    const outgoingRequestId = (message as { requestId?: unknown }).requestId;
+    const outgoingProtocolVersion = (message as { protocolVersion?: unknown }).protocolVersion;
+    const isVersionedRequest =
+      typeof outgoingRequestId === 'string' &&
+      typeof outgoingProtocolVersion === 'number' &&
+      outgoingProtocolVersion >= 1;
     return new Promise((resolve, reject) => {
       let readyReceived = false;
       let settled = false;
@@ -1110,6 +1145,16 @@ export class OpenKey {
             readyReceived = true;
             modal?.postMessage(message);
             return;
+          }
+          // Sol MAJOR-3: correlate versioned responses. If the request
+          // was versioned, drop any response that doesn't match the
+          // outgoing requestId/protocolVersion. If the request was
+          // unversioned (legacy), accept any response.
+          if (isVersionedRequest) {
+            const respRequestId = (data as { requestId?: unknown }).requestId;
+            const respVersion = (data as { protocolVersion?: unknown }).protocolVersion;
+            if (respRequestId !== outgoingRequestId) return;
+            if (respVersion !== outgoingProtocolVersion) return;
           }
 
           if (data.type === 'openkey:close') {
@@ -1308,6 +1353,13 @@ export class OpenKey {
       });
     }, DEFAULT_TIMEOUT);
 
+    // Sol MAJOR-3: correlation IDs for versioned popups.
+    const outgoingRequestId = (message as { requestId?: unknown }).requestId;
+    const outgoingProtocolVersion = (message as { protocolVersion?: unknown }).protocolVersion;
+    const isVersionedRequest =
+      typeof outgoingRequestId === 'string' &&
+      typeof outgoingProtocolVersion === 'number' &&
+      outgoingProtocolVersion >= 1;
     // Listen for messages
     const handleMessage = (event: MessageEvent) => {
       if (event.origin !== this.host) return;
@@ -1345,6 +1397,13 @@ export class OpenKey {
         data.type === 'openkey:signTypedData:response' ||
         data.type === 'openkey:link-wallet:response'
       ) {
+        // Sol MAJOR-3: drop cross-correlated responses on versioned flows.
+        if (isVersionedRequest) {
+          const respRequestId = (data as { requestId?: unknown }).requestId;
+          const respVersion = (data as { protocolVersion?: unknown }).protocolVersion;
+          if (respRequestId !== outgoingRequestId) return;
+          if (respVersion !== outgoingProtocolVersion) return;
+        }
         cleanup();
         this.popup?.close();
 

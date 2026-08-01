@@ -91,6 +91,33 @@ describe('prepareDelegationSession — CLI explicit permission narrowing', () =>
     expect(kvEntry?.actions).toEqual(['tinycloud.kv/list']);
   });
 
+  test('action IDs are canonical four-part (Sol CRITICAL-1)', () => {
+    // The action IDs the server hands to the widget MUST be the same
+    // canonical four-part form the js-sdk NodeUserAuthorization consumer
+    // expects: `tinycloud.<service>\0<space>\0<path>\0<ability>`. The
+    // pre-fix `${service}\0` prefix used the SHORT WASM name (`kv`),
+    // which never matched a real OpenKey ID in the SDK's grantedFourPartIndex.
+    const result = prepareDelegationSession({
+      address,
+      chainId,
+      prefix: 'default',
+      jwk,
+      permissions: cliPermissions(),
+      expiryMs,
+    });
+
+    for (const permission of result.permissions) {
+      for (const action of permission.actions) {
+        const parts = action.key.split('\0');
+        expect(parts.length).toBe(4);
+        // The first part MUST be the fully-qualified `tinycloud.<short>`.
+        expect(parts[0]?.startsWith('tinycloud.')).toBe(true);
+        // The fourth part MUST match `parts[0]/<verb>`.
+        expect(parts[3]?.startsWith(`${parts[0]}/`)).toBe(true);
+      }
+    }
+  });
+
   test('actionKeys must be a subset of the CLI baseline', () => {
     const baseline = prepareDelegationSession({
       address,

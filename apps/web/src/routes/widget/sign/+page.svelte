@@ -26,6 +26,10 @@
   // /authorize-sign endpoint to regenerate a narrowed SIWE bound to the
   // same session key. Legacy requests do not include this.
   let messageJwk = $state<Record<string, unknown> | null>(null);
+  // Sol MAJOR-2: the TinyCloud host the resulting session will activate
+  // against. Forwarded to /authorize-sign-prepare so the server binds it
+  // and /authorize-sign cannot swap hosts.
+  let messageHost = $state<string>('');
   let keyId = $state<string | null>(null);
   let key = $state<EthereumKey | null>(null);
   let loading = $state(true);
@@ -117,6 +121,7 @@
     message = String(data.message ?? '');
     messageProtocolVersion = request.protocolVersion;
     messageJwk = (data.jwk as Record<string, unknown>) ?? null;
+    messageHost = typeof data.host === 'string' ? data.host : '';
     keyId = typeof data.keyId === 'string' ? data.keyId : null;
     keyFetched = false;
   }
@@ -184,6 +189,7 @@
       message = event.data.message;
       messageProtocolVersion = incomingProtocolVersion;
       messageJwk = event.data.jwk ?? null;
+      messageHost = typeof event.data.host === 'string' ? event.data.host : '';
       keyId = event.data.keyId || null;
       keyFetched = false; // Reset so effect can run
 
@@ -283,6 +289,7 @@
               keyId: key.id,
               siwe: message,
               jwk: messageJwk,
+              host: messageHost,
             }),
           },
         );

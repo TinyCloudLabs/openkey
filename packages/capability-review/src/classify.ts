@@ -33,14 +33,36 @@ interface RecapEntryLike {
   path: string;
   actions: string[];
   /**
-   * The signer's own EIP-55 address, lowercased. When provided, the classifier
-   * compares against the space owner (derived from `space`) so a KV grant on
-   * a DIFFERENT user's space is labelled `cross-app-data` (attention) rather
-   * than being lumped into `bootstrap-kv`.
-   *
-   * Optional: legacy callers that don't supply it keep the old classification.
+   * @deprecated Use `requesterAddress` when the classifier is asked to
+   * determine cross-app ownership. Kept only as a fall-through hint when
+   * verified requester metadata is unavailable. `signerAddress` is the
+   * OpenKey session signer — an implementation detail, not the requesting
+   * app's identity — and using it as the ownership axis mis-labels every
+   * cross-app request that shares a signer with the space owner.
    */
   signerAddress?: string | null;
+  /**
+   * The requesting app's *verified* Ethereum address, lowercased. When
+   * supplied AND `requesterVerified === true`, the classifier compares the
+   * space owner (derived from `space`) against this identity so a grant
+   * on the requester's own space stays own-app-data while a grant on
+   * anyone else's space becomes cross-app-data.
+   *
+   * Callers MUST NOT pass unverified addresses here — that would let a
+   * malicious app claim ownership of another user's space and downgrade
+   * the severity. Fail-closed rule: when metadata is unverifiable, leave
+   * `requesterAddress` unset; the classifier then treats every non-empty
+   * space it can't attribute as cross-app-data.
+   */
+  requesterAddress?: string | null;
+  /**
+   * True only when `requesterAddress` was derived from a signed manifest
+   * whose digest matched, whose signature verified, and whose freshness
+   * is within the configured window. Any lower trust state MUST leave
+   * this false (or omit it), in which case the classifier fails closed
+   * on cross-app labelling.
+   */
+  requesterVerified?: boolean;
 }
 
 const BOOTSTRAP_KV_SERVICES = new Set([
@@ -133,10 +155,22 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
   displayLabel: string;
 } {
   const { service, space, path } = entry;
+  // Sol MAJOR-7: prefer VERIFIED requester identity for cross-app
+  // classification. Fall back to signer ONLY when no requester info is
+  // present — and even then treat cross-app as attention.
+  const requesterAddress =
+    entry.requesterVerified && entry.requesterAddress
+      ? entry.requesterAddress.toLowerCase()
+      : null;
   const signerAddress = entry.signerAddress ? entry.signerAddress.toLowerCase() : null;
+  const ownershipAxis = requesterAddress ?? signerAddress;
   const spaceOwner = ownerFromSpace(space);
+  // Fail-closed: if we have a spaceOwner but NO trusted ownership axis
+  // to compare against, treat the request as cross-app (attention).
+  // Otherwise compare against the trusted axis.
   const isCrossApp =
-    signerAddress !== null && spaceOwner !== null && spaceOwner !== signerAddress;
+    spaceOwner !== null &&
+    (ownershipAxis === null || spaceOwner !== ownershipAxis);
 
   // KV entries with a secret path are classified as secret-read/mutation,
   // not generic bootstrap-kv. Real CLI secret requests use tinycloud.kv with
