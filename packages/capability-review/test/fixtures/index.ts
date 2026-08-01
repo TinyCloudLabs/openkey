@@ -251,12 +251,20 @@ export const FIXTURE_META = {
 // exercise Sol MAJOR-6: a review-selection mapping must be able to pick one
 // resource without collapsing the other. If the mapping keys by ability
 // alone, both resources get selected/deselected together — a bug.
+//
+// Sol final continuation contract requirement 1: the on-wire resource URI
+// is `<space>/<short-service>/<sub-path>`. Two grants on the same
+// service must therefore encode different `<sub-path>` values, not
+// different `<short-service>` values — otherwise the canonical parser
+// would classify them as two DIFFERENT services (`chat` vs `feed`), not
+// the same ability on two paths. This fixture uses `kv/chat` and
+// `kv/feed` so the paths are sub-paths of the SAME (kv) service.
 export const REAL_RECAP_SAME_ABILITY_TWO_PATHS = siwe([
   makeRecapResource({
-    [`${SPACE}/chat`]: {
+    [`${SPACE}/kv/chat`]: {
       "tinycloud.kv/get": [{}],
     },
-    [`${SPACE}/feed`]: {
+    [`${SPACE}/kv/feed`]: {
       "tinycloud.kv/get": [{}],
     },
     [SPACE]: {

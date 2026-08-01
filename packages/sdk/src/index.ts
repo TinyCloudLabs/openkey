@@ -306,6 +306,40 @@ const DEFAULT_TIMEOUT = 5 * 60 * 1000; // 5 minutes
 const IFRAME_READY_TIMEOUT = 3000; // 3 seconds
 const OAUTH_STORAGE_KEY = 'openkey_oauth';
 
+/**
+ * Sol final continuation contract requirement 5: pure validation of an
+ * incoming iframe resize message envelope. Exported so unit tests can
+ * exercise every rejection branch — wrong requestId, wrong version, no
+ * active request, malformed height — without booting the browser
+ * runtime that `IframeModal` requires.
+ *
+ * Returns the sanitized height when acceptable, or `null` when the
+ * message must be dropped.
+ */
+export function validateIframeResize(
+  incoming: unknown,
+  expected: {
+    requestId: string | null;
+    protocolVersion: number | null;
+    viewportHeight: number;
+  },
+): number | null {
+  if (!incoming || typeof incoming !== 'object') return null;
+  const data = incoming as Record<string, unknown>;
+  if (data.type !== 'openkey:resize') return null;
+  if (expected.requestId === null || expected.protocolVersion === null) return null;
+  if (typeof data.protocolVersion !== 'number' || data.protocolVersion !== expected.protocolVersion) {
+    return null;
+  }
+  if (typeof data.requestId !== 'string' || data.requestId !== expected.requestId) {
+    return null;
+  }
+  if (typeof data.height !== 'number' || !Number.isFinite(data.height) || data.height <= 0) {
+    return null;
+  }
+  return Math.min(data.height, Math.floor(expected.viewportHeight * 0.85));
+}
+
 class IframeModal {
   private root: HTMLDivElement;
   private shadow: ShadowRoot;
@@ -314,6 +348,13 @@ class IframeModal {
   private onMessage: (data: MessageType) => void;
   private messageHandler: (event: MessageEvent) => void;
   private host: string;
+  // Sol final continuation contract requirement 5: iframe resize traffic
+  // MUST correlate to the active request's requestId AND protocolVersion.
+  // Set by `setExpectedCorrelation` after the outer flow decides which
+  // request this modal is bound to. When both are null, resize messages
+  // are dropped (no active request → no resize authority).
+  private expectedRequestId: string | null = null;
+  private expectedProtocolVersion: number | null = null;
 
   constructor(opts: { url: string; host: string; onClose: () => void; onMessage: (data: MessageType) => void }) {
     this.host = opts.host;
@@ -380,22 +421,16 @@ class IframeModal {
       if (event.source !== this.iframe.contentWindow) return;
       const data = event.data as MessageType;
       if (data.type === 'openkey:resize') {
-        // Sol MAJOR-9: resize MUST carry an exact protocolVersion match
-        // OR the widget must be a legacy unversioned wildcard-origin
-        // widget (in which case it never sends resize at all — see the
-        // widget code). Drop anything that doesn't carry a valid
-        // versioned envelope so a stray sibling frame or wire drift can
-        // never mutate iframe dimensions.
-        const version = (event.data as { protocolVersion?: unknown }).protocolVersion;
-        if (typeof version !== 'number' || version < 1) {
-          // Legacy resize path (unversioned) is REMOVED — the current
-          // widget always sends resize with protocolVersion. Historical
-          // widgets that did not are also refused: dropping resize just
-          // means the iframe cannot grow past its initial height, not a
-          // functional break.
-          return;
-        }
-        const h = Math.min(data.height, Math.floor(window.innerHeight * 0.85));
+        // Sol final continuation contract requirement 5: resize MUST
+        // carry the EXACT active requestId AND protocolVersion. Every
+        // rejection branch is covered by unit tests over
+        // `validateIframeResize`.
+        const h = validateIframeResize(event.data, {
+          requestId: this.expectedRequestId,
+          protocolVersion: this.expectedProtocolVersion,
+          viewportHeight: window.innerHeight,
+        });
+        if (h === null) return;
         this.iframe.style.height = `${h}px`;
         return;
       }
@@ -418,6 +453,21 @@ class IframeModal {
 
   postMessage(message: object) {
     this.iframe.contentWindow?.postMessage(message, this.host);
+  }
+
+  /**
+   * Sol final continuation contract requirement 5: bind the active
+   * request correlation so subsequent resize (and future correlated)
+   * messages can be verified against `requestId` + `protocolVersion`.
+   *
+   * The outer flow calls this immediately BEFORE posting the sign
+   * request into the iframe, so a resize that arrives synchronously
+   * after ready is correlated correctly. Passing `null` for either
+   * argument disables correlation (resize is dropped).
+   */
+  setExpectedCorrelation(requestId: string | null, protocolVersion: number | null): void {
+    this.expectedRequestId = requestId;
+    this.expectedProtocolVersion = protocolVersion;
   }
 
   destroy() {
@@ -1343,6 +1393,16 @@ export class OpenKey {
         onMessage: (data: MessageType) => {
           if (data.type === 'openkey:ready') {
             readyReceived = true;
+            // Sol final continuation contract requirement 5: bind the
+            // correlation BEFORE posting the sign request so any resize
+            // that races the request into the parent is validated
+            // against the correct (requestId, protocolVersion) pair.
+            if (isVersionedRequest && modal) {
+              modal.setExpectedCorrelation(
+                outgoingRequestId as string,
+                outgoingProtocolVersion as number,
+              );
+            }
             modal?.postMessage(message);
             return;
           }

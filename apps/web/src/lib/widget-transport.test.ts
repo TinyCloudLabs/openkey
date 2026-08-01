@@ -355,18 +355,38 @@ describe('widget-transport', () => {
     expect(last?.data.error).toEqual({ code: 'USER_CANCELLED', message: 'Cancelled' });
   });
 
-  it('resize goes to origin, never *', () => {
-    const { parent } = makeWindows();
+  it('resize goes to origin, never * (and carries requestId + protocolVersion per Sol continuation req 5)', () => {
+    const { parent, child } = makeWindows();
     const transport = createWidgetTransport({
       origin: 'https://caller.example',
       container: 'popup',
       onRequest: () => {},
       onClose: () => {},
     });
+    // Sol final continuation contract requirement 5: `emitResize` drops
+    // when no active sign request exists. Dispatch a sign request first
+    // so the transport has an authoritative (requestId, protocolVersion)
+    // pair to bind the resize to.
+    child.dispatch({
+      origin: 'https://caller.example',
+      source: parent as unknown as MessageEventSource,
+      data: {
+        type: 'openkey:sign:request',
+        requestId: 'r-resize',
+        protocolVersion: 1,
+        message: 'msg',
+      },
+    });
+    parent.sent = [];
     transport.emitResize(200);
     expect(parent.sent).toContainEqual({
       target: 'https://caller.example',
-      data: { type: 'openkey:resize', height: 200, protocolVersion: 1 },
+      data: {
+        type: 'openkey:resize',
+        height: 200,
+        protocolVersion: 1,
+        requestId: 'r-resize',
+      },
     });
   });
 
@@ -462,6 +482,142 @@ describe('widget-transport', () => {
     });
     expect(closed).toBe(0);
     expect(invalids).toContain('invalid-close');
+  });
+
+  // Sol final continuation contract requirement 5: iframe resize traffic
+  // MUST include and exactly match the active requestId + protocolVersion.
+  // The transport's `emitResize` is the widget-side emitter; the parent
+  // SDK's IframeModal is the consumer. These tests exercise the emitter.
+  describe('emitResize correlation (Sol continuation req 5)', () => {
+    it('drops emitResize when NO sign request is in flight', () => {
+      const { parent } = makeWindows();
+      const transport = createWidgetTransport({
+        origin: 'https://caller.example',
+        container: 'popup',
+        onRequest: () => {},
+        onClose: () => {},
+      });
+      // Sanity: ready is emitted with parent already receiving.
+      transport.emitReady();
+      parent.sent = [];
+      // No sign request has landed yet — active-request tracking is null.
+      transport.emitResize(500);
+      const resizes = parent.sent.filter((m) => m.data?.type === 'openkey:resize');
+      expect(resizes.length).toBe(0);
+    });
+
+    it('emits a resize carrying the active requestId AND protocolVersion after a sign request', () => {
+      const { parent, child } = makeWindows();
+      const transport = createWidgetTransport({
+        origin: 'https://caller.example',
+        container: 'popup',
+        onRequest: () => {},
+        onClose: () => {},
+      });
+      child.dispatch({
+        origin: 'https://caller.example',
+        source: parent as unknown as MessageEventSource,
+        data: {
+          type: 'openkey:sign:request',
+          requestId: 'req-alpha',
+          protocolVersion: 1,
+          message: 'hi',
+        },
+      });
+      parent.sent = [];
+      transport.emitResize(720);
+      const resizes = parent.sent.filter((m) => m.data?.type === 'openkey:resize');
+      expect(resizes.length).toBe(1);
+      const msg = resizes[0]!.data;
+      expect(msg.height).toBe(720);
+      expect(msg.protocolVersion).toBe(1);
+      expect(msg.requestId).toBe('req-alpha');
+      // Sanity: NEVER "*".
+      expect(resizes[0]!.target).toBe('https://caller.example');
+    });
+
+    it('resize is bound to a SPECIFIC requestId — a stale/wrong requestId cannot be forged from the widget side', () => {
+      // The widget-side emitter can only emit the active requestId. This
+      // proves that the emitted `requestId` on the resize message ALWAYS
+      // matches the last-received sign-request's requestId — the widget
+      // cannot emit a resize claiming a different one.
+      const { parent, child } = makeWindows();
+      const transport = createWidgetTransport({
+        origin: 'https://caller.example',
+        container: 'popup',
+        onRequest: () => {},
+        onClose: () => {},
+      });
+      // First sign request — emit resize; MUST carry req-one.
+      child.dispatch({
+        origin: 'https://caller.example',
+        source: parent as unknown as MessageEventSource,
+        data: {
+          type: 'openkey:sign:request',
+          requestId: 'req-one',
+          protocolVersion: 1,
+          message: 'msg-one',
+        },
+      });
+      parent.sent = [];
+      transport.emitResize(400);
+      let resizes = parent.sent.filter((m) => m.data?.type === 'openkey:resize');
+      expect(resizes[0]!.data.requestId).toBe('req-one');
+      // Respond to close the first request, then a NEW request lands —
+      // subsequent resize MUST carry the NEW requestId.
+      transport.respond({
+        type: 'openkey:sign:response',
+        requestId: 'req-one',
+        protocolVersion: 1,
+        success: true,
+        data: {},
+      });
+      child.dispatch({
+        origin: 'https://caller.example',
+        source: parent as unknown as MessageEventSource,
+        data: {
+          type: 'openkey:sign:request',
+          requestId: 'req-two',
+          protocolVersion: 1,
+          message: 'msg-two',
+        },
+      });
+      parent.sent = [];
+      transport.emitResize(500);
+      resizes = parent.sent.filter((m) => m.data?.type === 'openkey:resize');
+      expect(resizes[0]!.data.requestId).toBe('req-two');
+    });
+
+    it('after respond() clears the active request, resize is dropped again until a new request lands', () => {
+      const { parent, child } = makeWindows();
+      const transport = createWidgetTransport({
+        origin: 'https://caller.example',
+        container: 'popup',
+        onRequest: () => {},
+        onClose: () => {},
+      });
+      child.dispatch({
+        origin: 'https://caller.example',
+        source: parent as unknown as MessageEventSource,
+        data: {
+          type: 'openkey:sign:request',
+          requestId: 'req-final',
+          protocolVersion: 1,
+          message: 'msg',
+        },
+      });
+      transport.respond({
+        type: 'openkey:sign:response',
+        requestId: 'req-final',
+        protocolVersion: 1,
+        success: true,
+        data: {},
+      });
+      parent.sent = [];
+      transport.emitResize(999);
+      const resizes = parent.sent.filter((m) => m.data?.type === 'openkey:resize');
+      expect(resizes.length).toBe(0);
+    });
   });
 
   it('refuses a second overlapping sign request while one is in flight', () => {

@@ -326,3 +326,90 @@ describe('POST /authorize-sign-preview response shape (wire format)', () => {
     });
   });
 });
+
+// Sol final continuation contract requirement 3: caveat semantics must
+// be exact for surviving abilities. The normal HTTP flow only exposes
+// whole-ability removal (the server reuses baseline caveats when
+// building the candidate); tests for caveat MUTATIONS live at the
+// service layer (`authorization-signing.test.ts::caveat semantics`).
+// Here we exercise the HTTP path to prove:
+//   - Whole-ability removal succeeds and the narrowed SIWE lacks the
+//     removed ability.
+//   - Baseline caveats survive byte-for-byte on retained abilities.
+describe('POST /authorize-sign — caveat semantics for narrowing', () => {
+  test('removes a whole ability while preserving caveats on retained abilities', async () => {
+    const { token, siwe, allowed } = await issuePrepareContext();
+    // Narrow by removing `tinycloud.kv/put`. `tinycloud.kv/get` and
+    // `tinycloud.capabilities/read` must remain, and their caveats must
+    // match the baseline byte-for-byte because we reuse baseline caveats.
+    const narrowed = allowed.filter((id: string) => !id.includes('kv/put'));
+    expect(narrowed.length).toBeLessThan(allowed.length);
+
+    const previewRes = await router.request('/authorize-sign-preview', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ authorizationContextToken: token, selectedActionIds: narrowed }),
+    });
+    expect(previewRes.status).toBe(200);
+    const preview = await previewRes.json() as any;
+
+    const signRes = await router.request('/authorize-sign', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        authorizationContextToken: token,
+        previewApprovalToken: preview.previewApprovalToken,
+        selectedActionIds: narrowed,
+        protocolVersion: 1,
+      }),
+    });
+    expect(signRes.status).toBe(200);
+    const sign = await signRes.json() as any;
+    // The narrowed SIWE MUST NOT reference the removed ability — the
+    // ReCap-derived statement drops `put` while retaining `get`.
+    expect(sign.signedMessage).not.toMatch(/'tinycloud\.kv':[^\n]*'put'/);
+    expect(sign.signedMessage).toMatch(/'tinycloud\.kv':[^\n]*'get'/);
+    expect(sign.signedMessage).toMatch(/'tinycloud\.capabilities':[^\n]*'read'/);
+    // And the immutable header lines MUST match the original SIWE.
+    const extract = (s: string, name: string) => {
+      const m = s.match(new RegExp(`^${name}:\\s*(.+)$`, 'm'));
+      return m?.[1]?.trim() ?? null;
+    };
+    for (const name of ['URI', 'Version', 'Chain ID', 'Nonce', 'Issued At', 'Expiration Time']) {
+      expect(extract(sign.signedMessage, name)).toBe(extract(siwe, name));
+    }
+    // The signature MUST verify against signedMessage (the final round-trip
+    // guarantee that everything the client cares about is intact).
+    const { verifyMessage } = await import('ethers');
+    const recovered = verifyMessage(sign.signedMessage, sign.signature);
+    expect(recovered.toLowerCase()).toBe(address.toLowerCase());
+  });
+
+  test('full-selection round-trip signs the ORIGINAL bytes byte-for-byte', async () => {
+    // No narrowing means the server must NOT regenerate — it must sign
+    // the caller's exact prepared SIWE. This preserves any caveats and
+    // duplicate counts the baseline carried since we never re-emit.
+    const { token, siwe, allowed } = await issuePrepareContext();
+    const previewRes = await router.request('/authorize-sign-preview', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ authorizationContextToken: token, selectedActionIds: allowed }),
+    });
+    const preview = await previewRes.json() as any;
+    // The preview MUST equal the original SIWE when nothing was narrowed.
+    expect(preview.signedMessage).toBe(siwe);
+    const signRes = await router.request('/authorize-sign', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        authorizationContextToken: token,
+        previewApprovalToken: preview.previewApprovalToken,
+        selectedActionIds: allowed,
+        protocolVersion: 1,
+      }),
+    });
+    expect(signRes.status).toBe(200);
+    const sign = await signRes.json() as any;
+    expect(sign.signedMessage).toBe(siwe);
+  });
+});

@@ -371,32 +371,23 @@ describe('OpenKey ↔ NodeUserAuthorization e2e', () => {
     expect(typeof signBody.signedMessage).toBe('string');
     expect(Array.isArray(signBody.selectedActionKeys)).toBe(true);
     expect(Array.isArray(signBody.permissions)).toBe(true);
-    // Build signedCaps from parseRecapFromSiwe and confirm every 4-part ID
-    // maps back to a real pair — same logic signInWithOpenKeyResult runs.
-    const parsedEntries = parseRecapFromSiwe(signBody.signedMessage) as any[];
+    // Sol final continuation contract requirement 1: build the grounded
+    // pairs the way the REAL js-sdk consumer builds them — from the raw
+    // ATT keys in the SIWE (via `extractRecapAttenuations`) using the
+    // canonical parser that strips the service segment out of `path`.
+    // This is the EXACT path `NodeUserAuthorization.signInWithOpenKeyResult`
+    // walks, so a mismatch here IS a wire-format mismatch. Using
+    // `parseRecapFromSiwe` here masks the bug because WASM's `entry.path`
+    // happens to already carry the sub-path (without the service prefix).
+    // The consumer, by contrast, starts from the raw ATT URI, and we
+    // MUST prove producer/consumer agreement on that path.
+    const attSource = extractAttFromSiwe(signBody.signedMessage);
     const groundedPairs = new Set<string>();
-    for (const entry of parsedEntries) {
-      const resource = entry.path ? `${entry.space}/${entry.path}` : entry.space;
-      // Best-effort canonical service: strip the entry.service short-name
-      // used in the 4-part key. For real production, canonical service is
-      // `tinycloud.<short>` when short doesn't already contain a dot.
-      for (const action of entry.actions) {
+    for (const [resource, actionMap] of Object.entries(attSource)) {
+      const { space, path } = canonicalRecapSplit(resource);
+      for (const action of Object.keys(actionMap)) {
         const service = action.includes('/') ? action.split('/')[0]! : '';
         if (!service) continue;
-        // The 4-part key uses `resource` split as space/path with the
-        // shortServiceName included in the path — parse.rs at the SDK
-        // side splits `resource = space` when path is empty else
-        // `resource = space + "/" + path`. Store `space + "\0" + path`
-        // for a lookup key.
-        let space = resource;
-        let path = '';
-        if (resource.startsWith('tinycloud:')) {
-          const slash = resource.indexOf('/');
-          if (slash >= 0) {
-            space = resource.slice(0, slash);
-            path = resource.slice(slash + 1);
-          }
-        }
         groundedPairs.add(`${service}\0${space}\0${path}\0${action}`);
       }
     }
@@ -405,3 +396,43 @@ describe('OpenKey ↔ NodeUserAuthorization e2e', () => {
     }
   });
 });
+
+/**
+ * Local mirror of the shared `parseCanonicalRecapResource` semantics
+ * (documented in js-sdk `sdk-core/authorization/openkey-protocol.ts`).
+ * Kept as a local helper to avoid pulling the sdk-core dependency into
+ * this Bun test's mocked module graph.
+ */
+function canonicalRecapSplit(resource: string): { space: string; path: string } {
+  if (!resource.startsWith('tinycloud:')) return { space: resource, path: '' };
+  const firstSlash = resource.indexOf('/');
+  if (firstSlash < 0) return { space: resource, path: '' };
+  const space = resource.slice(0, firstSlash);
+  const rest = resource.slice(firstSlash + 1);
+  const secondSlash = rest.indexOf('/');
+  if (secondSlash < 0) return { space, path: '' };
+  return { space, path: rest.slice(secondSlash + 1) };
+}
+
+/** Extract the raw ATT map from every `urn:recap:` resource line. */
+function extractAttFromSiwe(siwe: string): Record<string, Record<string, unknown[]>> {
+  const merged: Record<string, Record<string, unknown[]>> = {};
+  for (const line of siwe.split(/\r?\n/)) {
+    const m = line.match(/urn:recap:([A-Za-z0-9_-]+=*)/);
+    if (!m || !m[1]) continue;
+    const normalized = m[1].replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
+    const json = Buffer.from(padded, 'base64').toString('utf8');
+    const parsed = JSON.parse(json) as { att?: Record<string, Record<string, unknown[]>> };
+    const att = parsed?.att;
+    if (!att || typeof att !== 'object') continue;
+    for (const [resource, actionMap] of Object.entries(att)) {
+      const target = merged[resource] ?? (merged[resource] = {});
+      for (const [action, caveats] of Object.entries(actionMap)) {
+        if (!Array.isArray(caveats)) continue;
+        target[action] = [...(target[action] ?? []), ...caveats];
+      }
+    }
+  }
+  return merged;
+}

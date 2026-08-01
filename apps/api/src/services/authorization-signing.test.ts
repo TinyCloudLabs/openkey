@@ -4,6 +4,7 @@ import {
   consumeAuthorizationContext,
   consumePreviewApproval,
   digestAbilities,
+  digestFullRecapAttenuation,
   digestImmutableFields,
   digestJwk,
   issueAuthorizationContext,
@@ -322,5 +323,197 @@ describe('preview-approval tokens', () => {
     });
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error).toBe('preview-approval-context-mismatch');
+  });
+});
+
+// Sol final continuation contract requirement 3: caveat semantics must be
+// EXACT for every surviving (resource, ability). The consume path exercises
+// `attenuationSubsetFailure` via `candidateAttenuation`/`baselineAttenuation`.
+describe('caveat semantics — surviving abilities require exact multiset equality', () => {
+  beforeEach(() => {
+    _resetAuthorizationContextStoreForTests();
+  });
+
+  const resource = 'tinycloud:pkh:eip155:1:0x1111111111111111111111111111111111111111:default/kv';
+  const abilityGet = 'tinycloud.kv/get';
+  const abilityPut = 'tinycloud.kv/put';
+
+  function issueWithBaseline(baseline: Record<string, Record<string, unknown[]>>) {
+    const input = {
+      ...baseIssueInput(),
+      baselineAbilitiesDigest: digestFullRecapAttenuation(baseline),
+    };
+    return issueAuthorizationContext(input);
+  }
+
+  it('accepts a candidate identical to baseline (no caveat drift)', () => {
+    const baseline = {
+      [resource]: { [abilityGet]: [{}], [abilityPut]: [{ maxSize: 100 }] },
+    };
+    const { token } = issueWithBaseline(baseline);
+    const res = consumeAuthorizationContext({
+      ...baseConsumeInput(token),
+      candidateAttenuation: baseline,
+      baselineAttenuation: baseline,
+    });
+    expect(res.ok).toBe(true);
+  });
+
+  it('accepts a candidate that removes an entire ability from a surviving resource', () => {
+    const baseline = {
+      [resource]: { [abilityGet]: [{}], [abilityPut]: [{}] },
+    };
+    const candidate = {
+      [resource]: { [abilityGet]: [{}] },
+    };
+    const { token } = issueWithBaseline(baseline);
+    const res = consumeAuthorizationContext({
+      ...baseConsumeInput(token),
+      candidateAttenuation: candidate,
+      baselineAttenuation: baseline,
+    });
+    expect(res.ok).toBe(true);
+  });
+
+  it('accepts a candidate that removes an entire resource', () => {
+    const otherResource = 'tinycloud:pkh:eip155:1:0x1111111111111111111111111111111111111111:default/sql';
+    const baseline = {
+      [resource]: { [abilityGet]: [{}] },
+      [otherResource]: { 'tinycloud.sql/read': [{}] },
+    };
+    const candidate = { [resource]: { [abilityGet]: [{}] } };
+    const { token } = issueWithBaseline(baseline);
+    const res = consumeAuthorizationContext({
+      ...baseConsumeInput(token),
+      candidateAttenuation: candidate,
+      baselineAttenuation: baseline,
+    });
+    expect(res.ok).toBe(true);
+  });
+
+  it('rejects a candidate that REMOVES a caveat from a surviving ability', () => {
+    const baseline = {
+      [resource]: { [abilityGet]: [{ maxAge: 60 }, { minSize: 1 }] },
+    };
+    const candidate = {
+      [resource]: { [abilityGet]: [{ maxAge: 60 }] }, // dropped the minSize caveat
+    };
+    const { token } = issueWithBaseline(baseline);
+    const res = consumeAuthorizationContext({
+      ...baseConsumeInput(token),
+      candidateAttenuation: candidate,
+      baselineAttenuation: baseline,
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error).toBe('candidate-broadens-baseline');
+      // The message may cite "removed" (per-caveat drift) or "differ"
+      // (multiset size mismatch) depending on which check surfaced first.
+      expect(res.message).toMatch(/removed|differ/);
+    }
+  });
+
+  it('rejects a candidate that ADDS a caveat to a surviving ability', () => {
+    const baseline = { [resource]: { [abilityGet]: [{ maxAge: 60 }] } };
+    const candidate = {
+      [resource]: { [abilityGet]: [{ maxAge: 60 }, { extraCaveat: true }] },
+    };
+    const { token } = issueWithBaseline(baseline);
+    const res = consumeAuthorizationContext({
+      ...baseConsumeInput(token),
+      candidateAttenuation: candidate,
+      baselineAttenuation: baseline,
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error).toBe('candidate-broadens-baseline');
+      expect(res.message).toMatch(/added|differ/);
+    }
+  });
+
+  it('rejects a candidate that CHANGES a caveat on a surviving ability', () => {
+    const baseline = { [resource]: { [abilityGet]: [{ maxAge: 60 }] } };
+    const candidate = {
+      [resource]: { [abilityGet]: [{ maxAge: 3600 }] }, // different value
+    };
+    const { token } = issueWithBaseline(baseline);
+    const res = consumeAuthorizationContext({
+      ...baseConsumeInput(token),
+      candidateAttenuation: candidate,
+      baselineAttenuation: baseline,
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toBe('candidate-broadens-baseline');
+  });
+
+  it('rejects a candidate that CHANGES DUPLICATE COUNT on a surviving ability', () => {
+    // Baseline has two identical `{}` caveats; candidate collapses to one.
+    // Even though `{}` is the ReCap "no restriction" placeholder, the wire
+    // multiset MUST agree — collapsing the count is a divergence.
+    const baseline = { [resource]: { [abilityGet]: [{}, {}] } };
+    const candidate = { [resource]: { [abilityGet]: [{}] } };
+    const { token } = issueWithBaseline(baseline);
+    const res = consumeAuthorizationContext({
+      ...baseConsumeInput(token),
+      candidateAttenuation: candidate,
+      baselineAttenuation: baseline,
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error).toBe('candidate-broadens-baseline');
+      expect(res.message).toMatch(/duplicate count decreased/);
+    }
+  });
+
+  it('rejects a candidate that INCREASES DUPLICATE COUNT on a surviving ability', () => {
+    const baseline = { [resource]: { [abilityGet]: [{}] } };
+    const candidate = { [resource]: { [abilityGet]: [{}, {}] } };
+    const { token } = issueWithBaseline(baseline);
+    const res = consumeAuthorizationContext({
+      ...baseConsumeInput(token),
+      candidateAttenuation: candidate,
+      baselineAttenuation: baseline,
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error).toBe('candidate-broadens-baseline');
+      expect(res.message).toMatch(/duplicate count increased/);
+    }
+  });
+
+  it('rejects an ability not in baseline (broadening)', () => {
+    const baseline = { [resource]: { [abilityGet]: [{}] } };
+    const candidate = { [resource]: { [abilityGet]: [{}], [abilityPut]: [{}] } };
+    const { token } = issueWithBaseline(baseline);
+    const res = consumeAuthorizationContext({
+      ...baseConsumeInput(token),
+      candidateAttenuation: candidate,
+      baselineAttenuation: baseline,
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error).toBe('candidate-broadens-baseline');
+      expect(res.message).toContain('not in baseline');
+    }
+  });
+
+  it('rejects a resource not in baseline (broadening)', () => {
+    const baseline = { [resource]: { [abilityGet]: [{}] } };
+    const otherResource = 'tinycloud:pkh:eip155:1:0x1111111111111111111111111111111111111111:default/sql';
+    const candidate = {
+      [resource]: { [abilityGet]: [{}] },
+      [otherResource]: { 'tinycloud.sql/read': [{}] },
+    };
+    const { token } = issueWithBaseline(baseline);
+    const res = consumeAuthorizationContext({
+      ...baseConsumeInput(token),
+      candidateAttenuation: candidate,
+      baselineAttenuation: baseline,
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error).toBe('candidate-broadens-baseline');
+      expect(res.message).toContain('not in baseline');
+    }
   });
 });

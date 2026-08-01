@@ -48,12 +48,15 @@ Additional hardening:
 - `/api/delegate/authorize-sign` now enforces `candidateAbilitiesDigest`
   against the bound baseline so store corruption or bound-SIWE swap
   during consume are hard failures.
-- `capability-review` preserves ReCap caveats end-to-end. The subset
-  validator compares candidate vs baseline caveats structurally
-  (broadening = removed caveats). Actions carrying meaningful (non-
-  vacuous) caveats are marked non-editable in the UI. `/authorize-sign`
-  refuses to narrow when meaningful caveats are present (the WASM
-  emitter drops them; regenerating would broaden authority).
+- `capability-review` preserves ReCap caveats end-to-end. Actions
+  carrying meaningful (non-vacuous) caveats are marked non-editable in
+  the UI. `/authorize-sign` refuses to narrow when meaningful caveats
+  are present (the WASM emitter drops them; regenerating would broaden
+  authority). Note: earlier drafts of this changeset claimed the
+  subset validator allowed only "removed caveats"-as-broadening; the
+  actual delivered semantic is stricter — see
+  `sol-final-continuation-fixes.md`, which enforces EXACT multiset
+  equality of caveats for every surviving (resource, ability) pair.
 - SDK `authorizeTinyCloud` branches to a preview→wallet-sign→finalize
   flow when the last-connected key is EXTERNAL. The wallet signs the
   server-emitted preview bytes; finalize verifies the signature against

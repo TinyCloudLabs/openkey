@@ -54,12 +54,17 @@ Major:
   than `true`. This closes the SigningApproval cross-app-warning bypass
   where a signer whose wallet owned the target space silently suppressed
   the warning.
-- Cross-surface parity test suite: `signing-approval-parity.test.ts`
+- Cross-surface source-parity test suite: `signing-approval-parity.test.ts`
   asserts that all three authorization surfaces (`/delegate/+page.svelte`,
   `/widget/sign/+page.svelte`, `/widget/embed/sign/+page.svelte`) import
   the single `SigningApproval` component, derive the model via
   `parseCapabilityReview`, use `defaultSelection`, pass the same props,
-  and do not implement their own permission-list markup.
+  and do not implement their own permission-list markup. Note: this is
+  a SOURCE-LEVEL parity check only. The mounted-DOM parity contract
+  Sol required is added in a later commit; see
+  `sol-final-continuation-fixes.md` for the SSR-based accessibility-tree
+  projection tests that prove each surface renders the same DOM for the
+  same model.
 - Real OpenKey ↔ NodeUserAuthorization round-trip test
   (`delegate-authorize-sign-nodeauth-e2e.test.ts`) invokes the ACTUAL
   Hono router with a SIWE produced by the same WASM emitter

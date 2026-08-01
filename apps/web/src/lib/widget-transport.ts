@@ -318,8 +318,28 @@ export function createWidgetTransport(opts: WidgetTransportOptions): WidgetTrans
       }
     },
     emitResize(height) {
+      // Sol final continuation contract requirement 5: resize messages MUST
+      // correlate to the active request AND to the widget's protocol
+      // version. A resize event that lacks the current `requestId` (or that
+      // arrives with no active request) is not tied to any signing
+      // dialogue and MUST NOT be emitted — the parent has no way to
+      // distinguish it from a stray resize from a stale widget instance.
+      // Emitting an uncorrelated resize also risks the parent applying
+      // the height to the wrong iframe when multiple widgets share the
+      // same origin.
+      if (activeRequestId === null) {
+        // No in-flight request — drop the resize rather than emitting an
+        // uncorrelated one. Callers can retry after the next request
+        // arrives.
+        return;
+      }
       expectedWindow.postMessage(
-        { type: "openkey:resize", height, protocolVersion },
+        {
+          type: "openkey:resize",
+          height,
+          protocolVersion,
+          requestId: activeRequestId,
+        },
         opts.origin,
       );
     },

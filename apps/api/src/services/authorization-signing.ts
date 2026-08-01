@@ -386,18 +386,28 @@ function constantTimeEqual(a: string, b: string): boolean {
 }
 
 /**
- * Sol MAJOR-4: return null when the candidate ReCap attenuation is a strict
- * subset of the baseline; otherwise return a short human message describing
- * the first violation.
+ * Sol final continuation contract requirement 3: return null when the
+ * candidate ReCap attenuation is a legitimate narrowing of the baseline,
+ * otherwise return a short human message describing the first violation.
  *
- * Subset semantics:
- *   - Every candidate resource key must appear in baseline.
- *   - Every candidate (resource, ability) pair must appear in baseline.
- *   - Every caveat entry in the candidate list must appear (structurally)
- *     in the baseline caveat list for the same (resource, ability). We use
- *     multiset semantics: N identical caveats in the candidate require at
- *     least N in the baseline. Removing a caveat is FORBIDDEN because
- *     caveats narrow authority — removing them broadens.
+ * Legitimate narrowing (allowed):
+ *   - Removing an entire resource from the candidate.
+ *   - Removing an entire ability from the candidate on a surviving resource.
+ *
+ * Forbidden (any of these is a "broadening"):
+ *   - Adding a resource or ability not in baseline.
+ *   - Adding a caveat to a surviving ability.
+ *   - Removing a caveat from a surviving ability.
+ *   - Changing (replacing) a caveat on a surviving ability.
+ *   - Changing the duplicate count of any caveat on a surviving ability.
+ *
+ * Rationale: caveats attenuate authority in a way ReCap does not surface
+ * a signed proof for; a widget that quietly drops a restrictive caveat
+ * would broaden authority relative to the recorded baseline. We therefore
+ * require EXACT multiset equality of caveats for every SURVIVING (resource,
+ * ability) pair, and allow only whole-ability or whole-resource removal.
+ * This matches the js-sdk consumer's `unauthorizedRecapCapabilities`
+ * semantics so both sides reject the same set of transformations.
  */
 function attenuationSubsetFailure(
   candidate: Record<string, Record<string, unknown[]>>,
@@ -408,26 +418,57 @@ function attenuationSubsetFailure(
     if (!baselineAbilityMap) {
       return `resource ${resource} not in baseline`;
     }
-    for (const [ability, candidateCaveats] of Object.entries(
+    for (const [ability, candidateCaveatsRaw] of Object.entries(
       candidateAbilityMap,
     )) {
       const baselineCaveats = baselineAbilityMap[ability];
-      if (!baselineCaveats) {
+      if (baselineCaveats === undefined) {
         return `ability ${ability} on ${resource} not in baseline`;
       }
-      // Multiset subset check on stably-stringified caveats.
-      const baselineBucket = new Map<string, number>();
+      const candidateCaveats: unknown[] = Array.isArray(candidateCaveatsRaw)
+        ? (candidateCaveatsRaw as unknown[])
+        : [];
+      // Sol final continuation contract requirement 3: EXACT multiset
+      // equality on surviving abilities. Any drift in caveat counts (an
+      // added caveat, a removed caveat, a replaced caveat, or a changed
+      // duplicate count) is a violation. Whole-ability removal is
+      // permitted at the enclosing loop level: it simply does not appear
+      // in the candidate.
+      const baselineCounts = new Map<string, number>();
       for (const c of baselineCaveats) {
         const key = stableStringify(c);
-        baselineBucket.set(key, (baselineBucket.get(key) ?? 0) + 1);
+        baselineCounts.set(key, (baselineCounts.get(key) ?? 0) + 1);
       }
+      const candidateCounts = new Map<string, number>();
       for (const c of candidateCaveats) {
         const key = stableStringify(c);
-        const remaining = baselineBucket.get(key) ?? 0;
-        if (remaining === 0) {
-          return `caveat ${key.slice(0, 80)} on ${ability}@${resource} not present in baseline`;
+        candidateCounts.set(key, (candidateCounts.get(key) ?? 0) + 1);
+      }
+      if (baselineCounts.size !== candidateCounts.size) {
+        return `caveats on ${ability}@${resource} differ (baseline has ${baselineCounts.size} distinct caveats, candidate has ${candidateCounts.size})`;
+      }
+      for (const [key, baselineN] of baselineCounts) {
+        const candidateN = candidateCounts.get(key) ?? 0;
+        if (candidateN !== baselineN) {
+          const preview = key.length > 80 ? `${key.slice(0, 80)}...` : key;
+          if (candidateN === 0) {
+            return `caveat ${preview} was removed from ${ability}@${resource} (surviving abilities must preserve caveats byte-for-byte)`;
+          }
+          if (candidateN < baselineN) {
+            return `caveat ${preview} duplicate count decreased from ${baselineN} to ${candidateN} on ${ability}@${resource}`;
+          }
+          return `caveat ${preview} duplicate count increased from ${baselineN} to ${candidateN} on ${ability}@${resource}`;
         }
-        baselineBucket.set(key, remaining - 1);
+      }
+      // Any candidate caveat not in baseline is caught by the size check
+      // above OR by the count comparison (candidateN>0, baselineN=0). We
+      // still walk candidateCounts to surface the specific ADD case with
+      // a clearer message when only a new caveat was introduced.
+      for (const [key, candidateN] of candidateCounts) {
+        if (!baselineCounts.has(key)) {
+          const preview = key.length > 80 ? `${key.slice(0, 80)}...` : key;
+          return `caveat ${preview} was added to ${ability}@${resource} (candidate count ${candidateN}, baseline count 0)`;
+        }
       }
     }
   }

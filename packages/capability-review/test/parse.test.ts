@@ -349,15 +349,17 @@ describe("parseCapabilityReview", () => {
       ctx({ message: REAL_RECAP_WITH_PATH }),
     );
     expect(model.protocol).toBe("tinycloud-siwe-recap");
-    // Sol continuation contract: any non-empty path on own space is
-    // structurally own-app-data (not bootstrap-kv). We still verify the
-    // pkh URI split so the `space` / `path` extraction behaviour is
-    // exercised — but the family reflects the structural fact.
+    // Sol final continuation contract requirement 1: the parser strips
+    // the middle `<short-service>` segment out of the ATT resource URI
+    // so `path` mirrors what WASM's `parseRecapFromSiwe` returns. The
+    // fixture's URI is `${SPACE}/sql/xyz.tinycloud.listen/conversations`
+    // — after canonical splitting the short-service segment ("sql")
+    // is stripped and `path` becomes the remainder.
     const kv = model.permissions.find(
       (p) => p.family === "own-app-data" && p.service === "tinycloud.kv",
     );
     expect(kv?.space).toBe(FIXTURE_META.ownSpace);
-    expect(kv?.path).toBe("sql/xyz.tinycloud.listen/conversations");
+    expect(kv?.path).toBe("xyz.tinycloud.listen/conversations");
   });
 
   it("produces identical model JSON regardless of att key ordering", () => {

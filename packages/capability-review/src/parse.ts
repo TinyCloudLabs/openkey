@@ -248,23 +248,41 @@ function utf8BytesToString(bytes: number[]): string | null {
 }
 
 /**
- * Split a ReCap "att" key (a resource URI) into `space` and `path`. Keys of
- * the form `tinycloud:pkh:eip155:<chain>:<addr>:<name>[/<path>]` split at the
- * first `/`. Non-tinycloud URIs (e.g. `eip155://ethereum/eip155Chain/1`) are
- * returned as-is so classification can flag them as unknown.
+ * Split a ReCap "att" key (a resource URI) into `space` and `path`.
+ *
+ * Sol final continuation contract requirement 1: the on-wire structure of a
+ * TinyCloud ReCap resource is `<space>/<short-service>[/<sub-path>]`, and
+ * every producer/consumer of canonical four-part action IDs must parse it
+ * the same way — the WASM `parseRecapFromSiwe` emitter returns
+ * `entry.path` WITHOUT the service segment. Prior code kept the service
+ * segment inside `path` (e.g. `path="kv"` for a `<space>/kv` resource),
+ * which produced a different four-part ID than the delegate route emits
+ * via `computeActionKey(entry, action)` — the divergence Sol cited as a
+ * production round-trip failure. Non-tinycloud URIs (e.g.
+ * `eip155://ethereum/eip155Chain/1`) are returned as-is so classification
+ * can flag them as unknown.
  */
 function splitResourceUri(resourceUri: string): { space: string; path: string } {
-  if (resourceUri.startsWith("tinycloud:")) {
-    const slashIdx = resourceUri.indexOf("/");
-    if (slashIdx >= 0) {
-      return {
-        space: resourceUri.slice(0, slashIdx),
-        path: resourceUri.slice(slashIdx + 1),
-      };
-    }
+  if (!resourceUri.startsWith("tinycloud:")) {
     return { space: resourceUri, path: "" };
   }
-  return { space: resourceUri, path: "" };
+  const firstSlash = resourceUri.indexOf("/");
+  if (firstSlash < 0) {
+    return { space: resourceUri, path: "" };
+  }
+  const space = resourceUri.slice(0, firstSlash);
+  const rest = resourceUri.slice(firstSlash + 1);
+  const secondSlash = rest.indexOf("/");
+  if (secondSlash < 0) {
+    // `<space>/<short>` — the service short-name is the entire remainder;
+    // there is no sub-path, so `path` is empty. This matches WASM's
+    // `parseRecapFromSiwe` behaviour when abilities were declared with
+    // `{ [service]: { "": [...] } }`.
+    return { space, path: "" };
+  }
+  // `<space>/<short>/<sub-path>` — strip the `<short>` segment so the
+  // canonical `path` mirrors WASM's `entry.path`.
+  return { space, path: rest.slice(secondSlash + 1) };
 }
 
 /**
