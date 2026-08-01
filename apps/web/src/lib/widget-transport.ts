@@ -74,6 +74,12 @@ export type WidgetMessageType =
   | "openkey:close"
   | "openkey:resize";
 
+/**
+ * Well-formed sign request as delivered to the widget. The transport
+ * forwards the entire message envelope (minus the type/requestId/
+ * protocolVersion header) as `data` so the widget can extract
+ * application-specific fields (`message`, `keyId`, `jwk`, `sessionToken`).
+ */
 export interface WidgetRequest {
   /** Message type discriminant. */
   type: "openkey:sign:request";
@@ -81,8 +87,11 @@ export interface WidgetRequest {
   requestId: string;
   /** Protocol version. */
   protocolVersion: number;
-  /** Payload delivered by the parent. Application-specific. */
-  payload: unknown;
+  /**
+   * The full message envelope minus the versioning header. Application
+   * fields like `message`, `keyId`, `jwk`, `sessionToken` live here.
+   */
+  data: Record<string, unknown>;
 }
 
 export interface WidgetResponseSuccess {
@@ -90,7 +99,13 @@ export interface WidgetResponseSuccess {
   requestId: string;
   protocolVersion: number;
   success: true;
-  payload: unknown;
+  /**
+   * Application response fields (signature, address, signedMessage,
+   * selectedActionKeys, permissions). Merged into the outgoing message
+   * envelope; must not include `type`, `requestId`, `protocolVersion`,
+   * or `success` (transport supplies those).
+   */
+  data: Record<string, unknown>;
 }
 
 export interface WidgetResponseFailure {
@@ -173,7 +188,7 @@ export function createWidgetTransport(opts: WidgetTransportOptions): WidgetTrans
       type: "openkey:sign:request",
       requestId,
       protocolVersion: version,
-      payload: (data as { payload?: unknown }).payload,
+      data: data as Record<string, unknown>,
     });
   };
 
@@ -187,7 +202,33 @@ export function createWidgetTransport(opts: WidgetTransportOptions): WidgetTrans
       expectedWindow.postMessage({ type: "openkey:ready", protocolVersion }, opts.origin);
     },
     respond(response) {
-      expectedWindow.postMessage(response, opts.origin);
+      // Flatten application fields to the top level so parent listeners
+      // that read `event.data.signature` (the current SDK wire format)
+      // keep working. The transport-defined `type`, `requestId`,
+      // `protocolVersion`, and `success` fields always take precedence.
+      if (response.success) {
+        expectedWindow.postMessage(
+          {
+            ...response.data,
+            type: response.type,
+            requestId: response.requestId,
+            protocolVersion: response.protocolVersion,
+            success: true,
+          },
+          opts.origin,
+        );
+      } else {
+        expectedWindow.postMessage(
+          {
+            type: response.type,
+            requestId: response.requestId,
+            protocolVersion: response.protocolVersion,
+            success: false,
+            error: response.error,
+          },
+          opts.origin,
+        );
+      }
     },
     emitResize(height) {
       expectedWindow.postMessage(

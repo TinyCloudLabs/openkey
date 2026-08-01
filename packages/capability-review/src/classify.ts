@@ -92,32 +92,28 @@ function verbOf(action: string): string {
 }
 
 /**
- * Known real-world path prefixes for TinyCloud apps. Used to give the review
- * UI a specific label instead of the generic "Key-value storage" fallback,
- * and to establish own-app vs cross-app data classification for grants that
- * are clearly app-scoped rather than whole-space.
+ * Structural label for a scoped app-data grant. Sol continuation contract:
+ * we NEVER attach an application name (Listen, Chat, Feed, Cycle …) to a
+ * capability grant based on a path prefix. That would let a malicious
+ * origin request `listen/*` on the user's space and inherit trusted UI
+ * labelling from a real product name. The label must remain STRUCTURAL —
+ * derived from the literal path — unless verified presentation metadata
+ * bound to the request supplies an app identity (see metadata.ts).
+ *
+ * We still detect that a path exists and is scoped to a sub-namespace so
+ * classifyRecapEntry can flag it as own-app-data or cross-app-data (the
+ * ownership distinction is a real structural fact about the space URI vs
+ * the signer). But the DISPLAY label is always the literal path.
  */
 interface AppFamilyMatch {
   displayLabel: (path: string) => string;
 }
 
-const KV_APP_FAMILIES: Array<{ match: (path: string) => boolean; label: (path: string) => string }> = [
-  { match: (p) => p === "listen" || p.startsWith("listen/"), label: (p) => `Listen — ${p}` },
-  { match: (p) => p === "chat" || p.startsWith("chat/"), label: (p) => `Chat — ${p}` },
-  { match: (p) => p === "feed" || p.startsWith("feed/") || p.startsWith("inbox/"), label: (p) => `Feed — ${p}` },
-  { match: (p) => p === "cycle" || p.startsWith("cycle/") || p.startsWith("cycle/health/"), label: (p) => `Cycle health — ${p}` },
-  { match: (p) => p === "metadata" || p.startsWith("metadata/"), label: (p) => `App metadata — ${p}` },
-  { match: (p) => p === "credentials" || p.startsWith("credentials/"), label: (p) => `Credentials — ${p}` },
-];
-
 function matchKvAppFamily(path: string): AppFamilyMatch | null {
+  // Any non-empty path that is not the whole space counts as a
+  // path-scoped app-data grant. We do NOT special-case any product name.
   if (!path) return null;
-  for (const family of KV_APP_FAMILIES) {
-    if (family.match(path)) {
-      return { displayLabel: family.label };
-    }
-  }
-  return null;
+  return { displayLabel: (p: string) => `App data — ${p}` };
 }
 
 /**
@@ -168,10 +164,8 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     // architecturally significant — attention severity is baked in by
     // classifySeverityFromActions when the family is cross-app-data.
     if (isCrossApp) {
-      const appMatch = matchKvAppFamily(path);
-      const label = appMatch
-        ? `Cross-user ${appMatch.displayLabel(path)} — owner ${spaceOwner}`
-        : `Cross-user KV data — owner ${spaceOwner} path=${path || "(whole space)"}`;
+      // Structural label only — never claim an app identity here.
+      const label = `Cross-user KV data — owner ${spaceOwner} path=${path || "(whole space)"}`;
       return { family: "cross-app-data", displayLabel: label };
     }
     // Own-space + recognized app path: label with the app family.

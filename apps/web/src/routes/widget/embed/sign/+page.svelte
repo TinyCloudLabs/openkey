@@ -13,6 +13,11 @@
     defaultSelection,
     type CapabilityReviewModel,
   } from '@openkey/capability-review';
+  import {
+    createWidgetTransport,
+    type WidgetRequest,
+    type WidgetTransport,
+  } from '$lib/widget-transport';
 
   const session = authClient.useSession();
   const inIframe = typeof window !== 'undefined' && isEmbedContext();
@@ -33,6 +38,8 @@
   let reviewModel = $state<CapabilityReviewModel | null>(null);
   let reviewSelection = $state(new Set<string>());
   let reviewEditing = $state(false);
+  let currentRequestId = $state<string | null>(null);
+  let transport: WidgetTransport | null = null;
 
   const isAuthenticated = $derived(inIframe ? embedAuthenticated : !!$session.data);
 
@@ -42,12 +49,60 @@
     if (typeof window !== 'undefined' && !initialized) {
       initialized = true;
 
+      // Sol continuation contract: shared transport for real origins.
+      if (origin !== '*') {
+        try {
+          transport = createWidgetTransport({
+            origin,
+            container: 'iframe',
+            onRequest: handleTransportRequest,
+            onClose: handleTransportClose,
+            onInvalid: (reason, event) => {
+              console.warn('[embed sign widget] invalid message:', reason, event.origin);
+            },
+          });
+          transport.emitReady();
+        } catch (e) {
+          console.warn('[embed sign widget] transport init failed:', e);
+        }
+      }
+
       window.addEventListener('message', handleMessage);
 
-      const targetOrigin = new URL(window.location.href).searchParams.get('origin') || '*';
-      window.parent.postMessage({ type: 'openkey:ready' }, targetOrigin);
+      // Emit legacy ready only under wildcard compat path so pre-
+      // consolidation SDKs still bootstrap.
+      if (origin === '*') {
+        const targetOrigin = new URL(window.location.href).searchParams.get('origin') || '*';
+        window.parent.postMessage({ type: 'openkey:ready' }, targetOrigin);
+      }
     }
   });
+
+  // Cleanup transport when the component unmounts.
+  $effect(() => {
+    return () => {
+      transport?.destroy();
+      transport = null;
+    };
+  });
+
+  function handleTransportRequest(request: WidgetRequest) {
+    const data = request.data;
+    currentRequestId = request.requestId;
+    message = String(data.message ?? '');
+    messageProtocolVersion = request.protocolVersion;
+    messageJwk = (data.jwk as Record<string, unknown>) ?? null;
+    keyId = typeof data.keyId === 'string' ? data.keyId : null;
+    keyFetched = false;
+    if (data.sessionToken && inIframe && typeof data.sessionToken === 'string') {
+      setSessionToken(data.sessionToken);
+      embedAuthenticated = true;
+    }
+  }
+
+  function handleTransportClose() {
+    // parent already closed us
+  }
 
   // ResizeObserver to notify parent of height changes. Target the configured
   // origin — never '*'. If origin is unknown ('*'), the widget does not emit
@@ -58,7 +113,13 @@
     const observer = new ResizeObserver(() => {
       if (origin === '*') return;
       const height = contentEl!.scrollHeight;
-      window.parent.postMessage({ type: 'openkey:resize', height }, origin);
+      // Route through transport (which enforces origin + validated source)
+      // when available; legacy fallback for wildcard-origin compat path.
+      if (transport) {
+        transport.emitResize(height);
+      } else {
+        window.parent.postMessage({ type: 'openkey:resize', height }, origin);
+      }
     });
     observer.observe(contentEl);
     return () => observer.disconnect();
@@ -85,11 +146,14 @@
   });
 
   async function handleMessage(event: MessageEvent) {
-    // Sol MAJOR-4: strict origin AND source validation. Versioned callers
-    // (protocolVersion >= 1) MUST supply a real origin — the iframe cannot
-    // safely regenerate SIWE bytes on behalf of an unknown parent.
+    // Sol continuation contract: versioned messages are handled by the
+    // shared transport (when a real origin is present). This listener only
+    // handles the wildcard-origin compat path and unversioned legacy
+    // requests on real origins.
     const incomingProtocolVersion =
       typeof event.data?.protocolVersion === 'number' ? event.data.protocolVersion : null;
+    const incomingRequestId =
+      typeof event.data?.requestId === 'string' ? event.data.requestId : null;
     if (origin === '*') {
       if (incomingProtocolVersion !== null && incomingProtocolVersion >= 1) {
         console.warn('[embed sign widget] refusing versioned request with wildcard origin');
@@ -97,6 +161,9 @@
       }
       if (event.source !== window.parent) return;
     } else {
+      if (incomingProtocolVersion !== null && incomingProtocolVersion >= 1 && incomingRequestId) {
+        return; // transport handles versioned traffic
+      }
       if (event.origin !== origin) return;
       if (event.source !== window.parent) return;
     }
@@ -186,6 +253,31 @@
         reviewModel.protocol === 'tinycloud-siwe-recap';
 
       if (canUseAuthorizeSign) {
+        // Sol continuation contract: caller-echoed SIWE/JWK/selection are
+        // NEVER trusted. First bind everything into a server-side context.
+        const prepareRes = await fetch(
+          `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign-prepare`,
+          {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              keyId: key.id,
+              siwe: message,
+              jwk: messageJwk,
+            }),
+          },
+        );
+        if (!prepareRes.ok) {
+          const errBody = await prepareRes.json().catch(() => ({ error: 'authorize-sign-prepare failed' }));
+          throw new Error(errBody.error || `HTTP ${prepareRes.status}`);
+        }
+        const prepareResult = await prepareRes.json();
+        const authorizationContextToken: string | undefined = prepareResult.authorizationContextToken;
+        if (!authorizationContextToken) {
+          throw new Error('authorize-sign-prepare did not return a context token');
+        }
+
         const selectedActionIds: string[] = [];
         for (const grant of reviewModel!.permissions) {
           for (const action of grant.actions) {
@@ -201,10 +293,9 @@
             credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              keyId: key.id,
-              siwe: message,
+              authorizationContextToken,
               selectedActionIds,
-              jwk: messageJwk,
+              protocolVersion: 1,
             }),
           },
         );
@@ -264,7 +355,36 @@
     sendClose();
   }
 
-  function sendResponse(data: object) {
+  function sendResponse(data: Record<string, unknown>) {
+    // Route through transport when this was a versioned request.
+    if (transport && currentRequestId && messageProtocolVersion !== null) {
+      const success = data.success === true || data.success === undefined
+        ? true
+        : Boolean(data.success);
+      if (success && data.success !== false) {
+        const { type: _t, success: _s, ...rest } = data as Record<string, unknown>;
+        void _t; void _s;
+        transport.respond({
+          type: 'openkey:sign:response',
+          requestId: currentRequestId,
+          protocolVersion: messageProtocolVersion,
+          success: true,
+          data: rest,
+        });
+      } else {
+        const err = (data.error && typeof data.error === 'object'
+          ? data.error
+          : { code: 'UNKNOWN', message: 'Unknown error' }) as { code: string; message: string };
+        transport.respond({
+          type: 'openkey:sign:response',
+          requestId: currentRequestId,
+          protocolVersion: messageProtocolVersion,
+          success: false,
+          error: err,
+        });
+      }
+      return;
+    }
     window.parent.postMessage(data, origin);
   }
 

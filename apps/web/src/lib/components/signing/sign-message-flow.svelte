@@ -70,7 +70,7 @@
       container,
       onRequest: (req) => {
         requestId = req.requestId;
-        const payload = req.payload as SignRequestPayload;
+        const payload = req.data as unknown as SignRequestPayload;
         const model = parseCapabilityReview({
           message: payload.message,
           signer,
@@ -113,7 +113,7 @@
         requestId,
         protocolVersion: 1,
         success: true,
-        payload: {
+        data: {
           signature: result.signature,
           address: result.address,
           signedMessage: baseline.rawMessage,

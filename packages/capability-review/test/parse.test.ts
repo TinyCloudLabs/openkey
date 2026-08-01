@@ -92,28 +92,36 @@ describe("parseCapabilityReview", () => {
     expect(readAction?.editable).toBe(false);
   });
 
-  it("classifies Chat as own-app-data when owner matches", () => {
+  it("classifies a scoped-path KV grant as own-app-data when owner matches (Chat fixture)", () => {
+    // Sol continuation contract: path-scoped grants are classified as
+    // own-app-data based on the STRUCTURAL fact that the path is a
+    // sub-namespace of the space, not because the path spells "chat".
+    // The display label MUST NOT invent an app identity — it renders
+    // the literal path so a phishing origin cannot inherit product
+    // labelling by picking a matching prefix.
     const model = parseCapabilityReview(ctx({ message: CHAT_APP_REQUEST }));
-    // Chat path prefix triggers own-app-data classification (Sol MAJOR-7),
-    // no longer collapsed into generic bootstrap-kv.
     const chat = model.permissions.find((p) => p.family === "own-app-data");
     expect(chat).toBeDefined();
     expect(chat?.ownedBySelf).toBe(true);
-    expect(chat?.displayLabel).toMatch(/Chat/);
+    expect(chat?.displayLabel).toMatch(/App data/);
+    expect(chat?.displayLabel).toContain(chat!.path);
   });
 
-  it("classifies Feed as own-app-data when owner matches", () => {
+  it("classifies a scoped-path KV grant as own-app-data when owner matches (Feed fixture)", () => {
     const model = parseCapabilityReview(ctx({ message: FEED_APP_REQUEST }));
     const feed = model.permissions.find((p) => p.family === "own-app-data");
     expect(feed).toBeDefined();
     expect(feed?.ownedBySelf).toBe(true);
-    expect(feed?.displayLabel).toMatch(/Feed/);
+    expect(feed?.displayLabel).toMatch(/App data/);
+    expect(feed?.displayLabel).toContain(feed!.path);
   });
 
-  it("classifies Listen cross-app grants as cross-app-data (attention)", () => {
+  it("classifies a scoped-path cross-user KV grant as cross-app-data (attention)", () => {
     // Sol MAJOR-7: a KV grant on a DIFFERENT user's space must be
     // classified as cross-app-data with elevated severity, not lumped
-    // into the generic bootstrap-kv family.
+    // into the generic bootstrap-kv family. Sol continuation contract:
+    // the label MUST NOT claim an app identity — cross-user grants only
+    // show ownership + literal path.
     const model = parseCapabilityReview(
       ctx({ message: LISTEN_CROSS_APP_REQUEST }),
     );
@@ -128,14 +136,16 @@ describe("parseCapabilityReview", () => {
     expect(kv).toBeUndefined();
   });
 
-  it("classifies Cycle-health path as own-app-data", () => {
-    // Cycle health is a distinct app family with metadata-like sensitivity;
-    // it must not be silently collapsed into bootstrap-kv.
+  it("classifies a scoped-path KV grant as own-app-data (Cycle-health fixture)", () => {
+    // The classifier notices the path is scoped (family = own-app-data);
+    // the label reports the literal path with no assumed app identity.
     const model = parseCapabilityReview(ctx({ message: CYCLE_HEALTH_REQUEST }));
     const grant = model.permissions.find(
-      (p) => p.family === "own-app-data" && p.displayLabel.includes("Cycle"),
+      (p) => p.family === "own-app-data",
     );
     expect(grant).toBeDefined();
+    expect(grant?.displayLabel).toMatch(/App data/);
+    expect(grant?.displayLabel).toContain(grant!.path);
   });
 
   it("splits secret read vs mutation classification", () => {
@@ -266,9 +276,13 @@ describe("parseCapabilityReview", () => {
       ctx({ message: REAL_RECAP_WITH_PATH }),
     );
     expect(model.protocol).toBe("tinycloud-siwe-recap");
-    const kv = model.permissions.find((p) => p.family === "bootstrap-kv");
-    // The space stays the pkh URI without the trailing path segments; the
-    // path portion moves into `path`.
+    // Sol continuation contract: any non-empty path on own space is
+    // structurally own-app-data (not bootstrap-kv). We still verify the
+    // pkh URI split so the `space` / `path` extraction behaviour is
+    // exercised — but the family reflects the structural fact.
+    const kv = model.permissions.find(
+      (p) => p.family === "own-app-data" && p.service === "tinycloud.kv",
+    );
     expect(kv?.space).toBe(FIXTURE_META.ownSpace);
     expect(kv?.path).toBe("sql/xyz.tinycloud.listen/conversations");
   });

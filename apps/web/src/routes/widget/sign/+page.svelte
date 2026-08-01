@@ -12,6 +12,11 @@
     defaultSelection,
     type CapabilityReviewModel,
   } from '@openkey/capability-review';
+  import {
+    createWidgetTransport,
+    type WidgetRequest,
+    type WidgetTransport,
+  } from '$lib/widget-transport';
 
   const session = authClient.useSession();
 
@@ -27,6 +32,11 @@
   let signing = $state(false);
   let error = $state('');
   let sessionChecked = $state(false);
+  // When a versioned request comes in through the shared transport, we
+  // remember the correlated requestId so the response echoes it. Legacy
+  // path (compat) does not carry a requestId — it uses direct postMessage.
+  let currentRequestId = $state<string | null>(null);
+  let transport: WidgetTransport | null = null;
 
   // Shared capability-review state — the SigningApproval component uses this
   // when the request looks like a TinyCloud SIWE-ReCap. Legacy plain
@@ -51,18 +61,70 @@
     if (typeof window !== 'undefined' && !initialized) {
       initialized = true;
 
-      // Listen for incoming messages
+      // Sol continuation contract: use the shared widget transport for
+      // real origins (versioned protocol). Compatibility path for '*'
+      // origin is intentionally restricted to read-only exact-byte
+      // signing and uses direct postMessage.
+      if (origin !== '*') {
+        try {
+          const container = window.opener ? 'popup' : 'iframe';
+          transport = createWidgetTransport({
+            origin,
+            container,
+            onRequest: handleTransportRequest,
+            onClose: handleTransportClose,
+            onInvalid: (reason, event) => {
+              console.warn('[sign widget] invalid message:', reason, event.origin);
+            },
+          });
+          transport.emitReady();
+        } catch (e) {
+          console.warn('[sign widget] transport init failed:', e);
+        }
+      }
+
+      // Legacy compatibility: unversioned direct postMessage listener.
+      // Only used by the '*' origin path (read-only exact-byte signing)
+      // and by pre-consolidation SDKs that don't yet include requestId.
       window.addEventListener('message', handleMessage);
 
-      // Notify parent that widget is ready (AFTER listener is set up)
-      const targetOrigin = new URL(window.location.href).searchParams.get('origin') || '*';
-      if (window.opener) {
-        window.opener.postMessage({ type: 'openkey:ready' }, targetOrigin);
-      } else if (window.parent !== window) {
-        window.parent.postMessage({ type: 'openkey:ready' }, targetOrigin);
+      // Legacy ready message for pre-consolidation SDKs that listen for
+      // the unversioned envelope. Only emit under the wildcard-origin
+      // compatibility path — versioned callers get the transport's ready.
+      if (origin === '*') {
+        const targetOrigin = new URL(window.location.href).searchParams.get('origin') || '*';
+        if (window.opener) {
+          window.opener.postMessage({ type: 'openkey:ready' }, targetOrigin);
+        } else if (window.parent !== window) {
+          window.parent.postMessage({ type: 'openkey:ready' }, targetOrigin);
+        }
       }
     }
   });
+
+  // Cleanup transport when the component unmounts.
+  $effect(() => {
+    return () => {
+      transport?.destroy();
+      transport = null;
+    };
+  });
+
+  function handleTransportRequest(request: WidgetRequest) {
+    console.log('[sign widget] transport request:', request.requestId);
+    const data = request.data;
+    currentRequestId = request.requestId;
+    message = String(data.message ?? '');
+    messageProtocolVersion = request.protocolVersion;
+    messageJwk = (data.jwk as Record<string, unknown>) ?? null;
+    keyId = typeof data.keyId === 'string' ? data.keyId : null;
+    keyFetched = false;
+  }
+
+  function handleTransportClose() {
+    console.log('[sign widget] transport close');
+    // Nothing to do — the parent already closed us.
+  }
 
   // Reactively update loading state when session becomes available
   $effect(() => {
@@ -86,27 +148,32 @@
   });
 
   async function handleMessage(event: MessageEvent) {
-    // Sol MAJOR-4: strict origin AND source validation. Legacy '*' origin
-    // is only accepted for read-only responses (i.e. the widget signs the
-    // caller's exact bytes and returns them); it MUST still validate that
-    // `event.source` is `window.opener` or `window.parent`. Versioned
-    // callers (protocolVersion >= 1) require a real origin.
+    // Sol continuation contract: versioned messages are handled by the
+    // shared transport (when a real origin is present). Under the '*'
+    // origin compatibility path, we accept ONLY unversioned messages and
+    // only for read-only exact-byte signing.
     const incomingProtocolVersion =
       typeof event.data?.protocolVersion === 'number' ? event.data.protocolVersion : null;
+    const incomingRequestId =
+      typeof event.data?.requestId === 'string' ? event.data.requestId : null;
+
     if (origin === '*') {
-      // Refuse to accept any versioned request under a wildcard origin.
-      // Editing the SIWE (narrowing capabilities) requires a real origin
-      // so the widget can reject spoofed messages from other frames.
+      // Refuse any versioned request under wildcard origin.
       if (incomingProtocolVersion !== null && incomingProtocolVersion >= 1) {
         console.warn('[sign widget] refusing versioned request with wildcard origin');
         return;
       }
       // Even under '*' we MUST verify the source is a legitimate parent.
-      // Any message from a random window is dropped silently.
       if (event.source !== window.opener && event.source !== window.parent) {
         return;
       }
     } else {
+      // Real origin: skip versioned requests here — the transport handles
+      // them. Only handle legacy unversioned requests as a compatibility
+      // shim for pre-consolidation SDKs.
+      if (incomingProtocolVersion !== null && incomingProtocolVersion >= 1 && incomingRequestId) {
+        return;
+      }
       if (event.origin !== origin) return;
       if (event.source !== window.opener && event.source !== window.parent) return;
     }
@@ -201,6 +268,34 @@
         reviewModel.protocol === 'tinycloud-siwe-recap';
 
       if (canUseAuthorizeSign) {
+        // Sol continuation contract: caller-echoed SIWE/JWK/selection are
+        // NEVER trusted. First call /authorize-sign-prepare so the server
+        // binds the SIWE, JWK, key, and immutable header fields into an
+        // opaque single-use context. Then call /authorize-sign with the
+        // token — the server narrows from its bound baseline.
+        const prepareRes = await fetch(
+          `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign-prepare`,
+          {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              keyId: key.id,
+              siwe: message,
+              jwk: messageJwk,
+            }),
+          },
+        );
+        if (!prepareRes.ok) {
+          const errBody = await prepareRes.json().catch(() => ({ error: 'authorize-sign-prepare failed' }));
+          throw new Error(errBody.error || `HTTP ${prepareRes.status}`);
+        }
+        const prepareResult = await prepareRes.json();
+        const authorizationContextToken: string | undefined = prepareResult.authorizationContextToken;
+        if (!authorizationContextToken) {
+          throw new Error('authorize-sign-prepare did not return a context token');
+        }
+
         // Convert the review selection to actionKey strings the server
         // recognizes. The review model IDs are NUL-separated
         // (service\0space\0path\0ability) — same format the server uses.
@@ -222,13 +317,9 @@
             credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              keyId: key.id,
-              siwe: message,
+              authorizationContextToken,
               selectedActionIds,
-              // The server needs the JWK to regenerate a narrowed SIWE
-              // bound to the same session key. The caller must supply it
-              // in the sign request payload for versioned protocol.
-              jwk: messageJwk,
+              protocolVersion: 1,
             }),
           },
         );
@@ -291,7 +382,38 @@
     sendClose();
   }
 
-  function sendResponse(data: object) {
+  function sendResponse(data: Record<string, unknown>) {
+    // Route through the transport when this was a versioned request
+    // (transport was created and we have a correlated requestId).
+    if (transport && currentRequestId && messageProtocolVersion !== null) {
+      const success = data.success === true || data.success === undefined
+        ? true
+        : Boolean(data.success);
+      if (success && data.success !== false) {
+        const { type: _t, success: _s, ...rest } = data as Record<string, unknown>;
+        void _t; void _s;
+        transport.respond({
+          type: 'openkey:sign:response',
+          requestId: currentRequestId,
+          protocolVersion: messageProtocolVersion,
+          success: true,
+          data: rest,
+        });
+      } else {
+        const err = (data.error && typeof data.error === 'object'
+          ? data.error
+          : { code: 'UNKNOWN', message: 'Unknown error' }) as { code: string; message: string };
+        transport.respond({
+          type: 'openkey:sign:response',
+          requestId: currentRequestId,
+          protocolVersion: messageProtocolVersion,
+          success: false,
+          error: err,
+        });
+      }
+      return;
+    }
+    // Legacy compatibility path (wildcard origin or unversioned caller).
     if (window.opener) {
       window.opener.postMessage(data, origin);
     } else if (window.parent !== window) {

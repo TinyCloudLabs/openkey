@@ -47,6 +47,12 @@ export interface AuthorizationContextIssueInput {
   initialSelectionActionIds: Set<string>;
   /** ISO-8601 expirationTime from the baseline SIWE. */
   expirationTime: string;
+  /**
+   * The original SIWE bytes bound to this context. Stored so /authorize-sign
+   * can narrow from the server-bound baseline instead of trusting a
+   * caller-echoed SIWE.
+   */
+  originalSiwe?: string;
 }
 
 interface StoredContext {
@@ -57,6 +63,7 @@ interface StoredContext {
   keyId: string;
   keyAddress: string;
   jwkDigest: string;
+  jwk: unknown;
   host: string;
   spaceId: string;
   baselineAbilitiesDigest: string;
@@ -64,6 +71,7 @@ interface StoredContext {
   allowedActionIds: string[];
   initialSelectionActionIds: string[];
   expirationTime: string;
+  originalSiwe: string;
 }
 
 const store = new Map<string, StoredContext>();
@@ -163,6 +171,7 @@ export function issueAuthorizationContext(
     keyId: input.keyId,
     keyAddress: input.keyAddress.toLowerCase(),
     jwkDigest,
+    jwk: input.jwk,
     host: input.host,
     spaceId: input.spaceId,
     baselineAbilitiesDigest: input.baselineAbilitiesDigest,
@@ -170,6 +179,7 @@ export function issueAuthorizationContext(
     allowedActionIds: [...input.allowedActionIds].sort(),
     initialSelectionActionIds: [...input.initialSelectionActionIds].sort(),
     expirationTime: input.expirationTime,
+    originalSiwe: input.originalSiwe ?? "",
   };
   store.set(token, stored);
 
@@ -228,6 +238,20 @@ export interface ConsumeSuccess {
   baselineAbilitiesDigest: string;
   spaceId: string;
   expirationTime: string;
+  /**
+   * The original SIWE bound at issue time. Empty string when no SIWE was
+   * bound (legacy /prepare contexts that only carry a digest).
+   */
+  originalSiwe: string;
+  /**
+   * The JWK bound at issue time. Returned so /authorize-sign can regenerate
+   * the narrowed SIWE without trusting a caller-echoed JWK.
+   */
+  jwk: unknown;
+  /** The keyId bound at issue time. */
+  keyId: string;
+  /** The host bound at issue time. */
+  host: string;
 }
 
 export interface ConsumeFailure {
@@ -310,6 +334,71 @@ export function consumeAuthorizationContext(
     baselineAbilitiesDigest: stored.baselineAbilitiesDigest,
     spaceId: stored.spaceId,
     expirationTime: stored.expirationTime,
+    originalSiwe: stored.originalSiwe,
+    jwk: stored.jwk,
+    keyId: stored.keyId,
+    host: stored.host,
+  };
+}
+
+export interface PeekSuccess {
+  ok: true;
+  value: {
+    userId: string;
+    keyId: string;
+    keyAddress: string;
+    host: string;
+    spaceId: string;
+    originalSiwe: string;
+    jwk: unknown;
+    expirationTime: string;
+    allowedActionIds: string[];
+    initialSelectionActionIds: string[];
+  };
+}
+
+export interface PeekFailure {
+  ok: false;
+  error: ConsumeError;
+  message: string;
+}
+
+/**
+ * Non-consuming lookup for a stored authorization context. Returns the bound
+ * fields so a caller can reconstruct the immutable-fields digest before
+ * invoking `consumeAuthorizationContext`. This exists because
+ * `/authorize-sign` needs to look up the bound key row (via keyAddress)
+ * before it can compute the candidate immutable-fields digest for consume.
+ *
+ * Peek DOES NOT extend the token TTL and DOES NOT reveal the token itself.
+ * It only surfaces the bound facts that the caller supplied at issue time.
+ * Callers MUST follow up with `consumeAuthorizationContext` — the peek is
+ * purely a lookup, never an authority.
+ */
+export function peekAuthorizationContext(token: string): PeekSuccess | PeekFailure {
+  const now = Date.now();
+  pruneExpired(now);
+  const stored = store.get(token);
+  if (!stored) {
+    return { ok: false, error: "context-not-found", message: "Authorization context not found." };
+  }
+  if (stored.expiresAt <= now) {
+    return { ok: false, error: "context-expired", message: "Authorization context expired." };
+  }
+  return {
+    ok: true,
+    value: {
+      userId: stored.userId,
+      keyId: stored.keyId,
+      keyAddress: stored.keyAddress,
+      host: stored.host,
+      spaceId: stored.spaceId,
+      originalSiwe: stored.originalSiwe,
+      jwk: stored.jwk,
+      expirationTime: stored.expirationTime,
+      allowedActionIds: [...stored.allowedActionIds],
+      initialSelectionActionIds: [...stored.initialSelectionActionIds],
+    },
   };
 }
 

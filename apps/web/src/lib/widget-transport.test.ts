@@ -175,6 +175,85 @@ describe('widget-transport', () => {
     expect(parent.sent.every((s) => s.target === 'https://caller.example')).toBe(true);
   });
 
+  it('surfaces the full incoming envelope as request.data (Sol continuation contract)', () => {
+    // Sol continuation contract: the transport captures the whole message
+    // envelope so the widget can read application-specific fields (message,
+    // keyId, jwk, sessionToken) directly. This is the wire format the
+    // SDK sends today; changing it silently would break sign requests.
+    const { parent, child } = makeWindows();
+    const seen: any[] = [];
+    createWidgetTransport({
+      origin: 'https://caller.example',
+      container: 'popup',
+      onRequest: (req) => seen.push(req),
+      onClose: () => {},
+    });
+    child.dispatch({
+      origin: 'https://caller.example',
+      source: parent as unknown as MessageEventSource,
+      data: {
+        type: 'openkey:sign:request',
+        requestId: 'r1',
+        protocolVersion: 1,
+        message: 'some SIWE',
+        keyId: 'k1',
+        jwk: { kty: 'OKP' },
+      },
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].data.message).toBe('some SIWE');
+    expect(seen[0].data.keyId).toBe('k1');
+    expect(seen[0].data.jwk).toEqual({ kty: 'OKP' });
+  });
+
+  it('respond flattens data fields into the message envelope', () => {
+    const { parent } = makeWindows();
+    const transport = createWidgetTransport({
+      origin: 'https://caller.example',
+      container: 'popup',
+      onRequest: () => {},
+      onClose: () => {},
+    });
+    transport.respond({
+      type: 'openkey:sign:response',
+      requestId: 'r1',
+      protocolVersion: 1,
+      success: true,
+      data: {
+        signature: '0xdeadbeef',
+        address: '0x1111111111111111111111111111111111111111',
+      },
+    });
+    const last = parent.sent[parent.sent.length - 1];
+    expect(last?.target).toBe('https://caller.example');
+    expect(last?.data.type).toBe('openkey:sign:response');
+    expect(last?.data.requestId).toBe('r1');
+    expect(last?.data.success).toBe(true);
+    // Application fields at the top level so existing SDK listeners work.
+    expect(last?.data.signature).toBe('0xdeadbeef');
+    expect(last?.data.address).toBe('0x1111111111111111111111111111111111111111');
+  });
+
+  it('respond emits a well-formed failure envelope', () => {
+    const { parent } = makeWindows();
+    const transport = createWidgetTransport({
+      origin: 'https://caller.example',
+      container: 'popup',
+      onRequest: () => {},
+      onClose: () => {},
+    });
+    transport.respond({
+      type: 'openkey:sign:response',
+      requestId: 'r1',
+      protocolVersion: 1,
+      success: false,
+      error: { code: 'USER_CANCELLED', message: 'Cancelled' },
+    });
+    const last = parent.sent[parent.sent.length - 1];
+    expect(last?.data.success).toBe(false);
+    expect(last?.data.error).toEqual({ code: 'USER_CANCELLED', message: 'Cancelled' });
+  });
+
   it('resize goes to origin, never *', () => {
     const { parent } = makeWindows();
     const transport = createWidgetTransport({
