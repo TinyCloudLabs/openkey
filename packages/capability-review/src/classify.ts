@@ -155,19 +155,28 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
   displayLabel: string;
 } {
   const { service, space, path } = entry;
-  // Sol MAJOR-7: prefer VERIFIED requester identity for cross-app
-  // classification. Fall back to signer ONLY when no requester info is
-  // present — and even then treat cross-app as attention.
+  // Sol MAJOR-7: with NO verified requester identity, we must NOT fall
+  // back to the signer address as the ownership axis. Doing so would
+  // classify every KV/SQL grant on the signer's own space as own-app-data
+  // even when the requesting app is completely unrelated to the signer's
+  // identity (a widget path where `requesterAddress: null` and
+  // `requesterVerified: false` are always passed). The correct fail-
+  // closed behaviour is: without a verified requester, treat any grant
+  // on a real space as cross-app-data (attention severity).
   const requesterAddress =
     entry.requesterVerified && entry.requesterAddress
       ? entry.requesterAddress.toLowerCase()
       : null;
-  const signerAddress = entry.signerAddress ? entry.signerAddress.toLowerCase() : null;
-  const ownershipAxis = requesterAddress ?? signerAddress;
+  // Retain `signerAddress` extraction so the deprecated field still
+  // reads correctly for callers that will migrate to `requesterAddress`
+  // in a future release. It is INTENTIONALLY NOT part of the ownership
+  // axis computation below.
+  void (entry.signerAddress ? entry.signerAddress.toLowerCase() : null);
+  const ownershipAxis = requesterAddress; // NO signer fallback (Sol MAJOR-7).
   const spaceOwner = ownerFromSpace(space);
   // Fail-closed: if we have a spaceOwner but NO trusted ownership axis
   // to compare against, treat the request as cross-app (attention).
-  // Otherwise compare against the trusted axis.
+  // Otherwise compare against the verified requester.
   const isCrossApp =
     spaceOwner !== null &&
     (ownershipAxis === null || spaceOwner !== ownershipAxis);

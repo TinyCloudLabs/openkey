@@ -675,6 +675,12 @@ export class OpenKey {
     // back to legacy exact-byte signMessage() for a versioned request
     // whose origin is real.
     const requestId = `ok-auth-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    // Sol MAJOR-3: fall back to the connected key when the caller did not
+    // pass an explicit keyId. Without this fallback the widget renders
+    // 'Please connect first.' because it has no key context, and the
+    // NodeUserAuthorization bridge never carries a keyId when the caller
+    // only ran connect() — the widget path is otherwise unable to sign.
+    const resolvedKeyId = request.keyId ?? this.lastAuth?.keyId;
     const raw = await this.openFlow<{
       signature: string;
       address: string;
@@ -688,7 +694,7 @@ export class OpenKey {
         requestId,
         protocolVersion: 1,
         message: request.siwe,
-        keyId: request.keyId,
+        keyId: resolvedKeyId,
         // Forward JWK so the widget can pass it to /authorize-sign for
         // narrowed-SIWE regeneration.
         jwk: request.jwk,
@@ -807,6 +813,15 @@ export class OpenKey {
     const previewBody = await previewRes.json();
     const previewSignedMessage: string | undefined = previewBody.signedMessage;
     if (!previewSignedMessage) throw new Error('authorize-sign-preview returned no signedMessage');
+    // Sol CRITICAL-1: preview response now carries a preview-approval
+    // token that seals the exact selection and bytes. /authorize-sign
+    // requires it — a missing token is a protocol violation.
+    const previewApprovalToken: string | undefined = previewBody.previewApprovalToken;
+    if (!previewApprovalToken) {
+      throw new Error(
+        'authorize-sign-preview did not return a previewApprovalToken — server is out of date',
+      );
+    }
     // 3. Wallet signs the preview bytes.
     const provider = await this.findWalletProvider(walletAddress);
     const hexMessage = this.toHex(previewSignedMessage);
@@ -824,6 +839,7 @@ export class OpenKey {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           authorizationContextToken: token,
+          previewApprovalToken,
           selectedActionIds: allowedActionIds,
           protocolVersion: 1,
           externalSignature: walletSignature,

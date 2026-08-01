@@ -63,7 +63,13 @@
   let updatingPermissions = $state(false);
   let permissionsEdited = $state(false);
   let authorizationContextToken = $state<string | null>(null);
+  // Sol MAJOR-9: `reviewModel` is the STABLE baseline model built from
+  // the ORIGINAL prepared SIWE. It never gets re-derived from a later
+  // narrowed SIWE — otherwise removed optional actions would silently
+  // disappear from the review UI. `reviewSelection` is the effective
+  // subset the user picked; only that changes when the user narrows.
   let reviewModel = $state<CapabilityReviewModel | null>(null);
+  let baselineSiweForReview = $state<string | null>(null);
   let reviewSelection = $state(new Set<string>());
   let reviewEditing = $state(false);
   const delegateReturnTo = $derived($page.url.pathname + $page.url.search + $page.url.hash);
@@ -364,10 +370,15 @@
       typeof data.authorizationContext?.token === 'string'
         ? data.authorizationContext.token
         : null;
-    // Build the shared capability-review model — the SigningApproval
-    // component renders from this instead of custom markup so CLI, popup,
-    // and iframe show the same content for the same request.
-    if (siweMessage && selectedKey) {
+    // Sol MAJOR-9: build the STABLE baseline review model from the FIRST
+    // prepared SIWE only. Re-derivation on every narrowing would drop
+    // optional actions the user removed and make them un-selectable
+    // again — which silently changes the presented authority. Later
+    // /prepare responses are used only for `siweMessage`,
+    // `authorizationContextToken`, and `selectedActionKeys`; the review
+    // model itself is frozen at the first prepare so the user retains
+    // the full add/remove surface.
+    if (baselineSiweForReview === null && siweMessage && selectedKey) {
       try {
         const model = parseCapabilityReview({
           message: siweMessage,
@@ -391,10 +402,11 @@
         });
         reviewModel = model;
         reviewSelection = defaultSelection(model);
+        baselineSiweForReview = siweMessage;
       } catch {
         reviewModel = null;
       }
-    } else {
+    } else if (!siweMessage) {
       reviewModel = null;
     }
   }
@@ -407,6 +419,11 @@
     editingPermissions = false;
     updatingPermissions = false;
     permissionsEdited = false;
+    // Sol MAJOR-9: clear the stable baseline so the next selectKey()
+    // start-fresh flow rebuilds it from the new prepared SIWE.
+    baselineSiweForReview = null;
+    reviewModel = null;
+    reviewSelection = new Set<string>();
   }
 
   function showLinkWallet() {

@@ -65,7 +65,16 @@ export type InvalidReason =
   | "wrong-source"
   | "wrong-protocol-version"
   | "missing-request-id"
-  | "unknown-message-type";
+  | "unknown-message-type"
+  // Sol MAJOR-8: payload-level validation. Every incoming request must
+  // clear a runtime schema for `message`, `keyId`, `jwk`, `host`, and
+  // `sessionToken`; unknown/malformed fields are dropped so the widget
+  // handler is not asked to sign arbitrary bytes.
+  | "invalid-payload"
+  // Close/resize messages must also correlate to the same protocol
+  // version and must not carry unknown/incorrect discriminants.
+  | "invalid-close"
+  | "invalid-resize";
 
 export type WidgetMessageType =
   | "openkey:ready"
@@ -171,6 +180,14 @@ export function createWidgetTransport(opts: WidgetTransportOptions): WidgetTrans
       return;
     }
     if (type === "openkey:close") {
+      // Sol MAJOR-8: correlate close to the same protocolVersion the
+      // channel was established on. A stray unversioned close from the
+      // wrong parent must not tear down a live signing flow.
+      const closeVersion = (data as { protocolVersion?: unknown }).protocolVersion;
+      if (closeVersion !== undefined && closeVersion !== protocolVersion) {
+        opts.onInvalid?.("invalid-close", event);
+        return;
+      }
       opts.onClose();
       return;
     }
@@ -184,11 +201,45 @@ export function createWidgetTransport(opts: WidgetTransportOptions): WidgetTrans
       opts.onInvalid?.("wrong-protocol-version", event);
       return;
     }
+    // Sol MAJOR-8: runtime-validate the sign-request payload before
+    // handing it to the handler. Unknown/malformed fields make the
+    // widget refuse to render — we do NOT let the handler run against
+    // untrusted bytes.
+    const payload = data as Record<string, unknown>;
+    if (typeof payload.message !== "string" || !payload.message) {
+      opts.onInvalid?.("invalid-payload", event);
+      return;
+    }
+    if (
+      payload.keyId !== undefined &&
+      (typeof payload.keyId !== "string" || !payload.keyId)
+    ) {
+      opts.onInvalid?.("invalid-payload", event);
+      return;
+    }
+    if (
+      payload.jwk !== undefined &&
+      (payload.jwk === null || typeof payload.jwk !== "object" || Array.isArray(payload.jwk))
+    ) {
+      opts.onInvalid?.("invalid-payload", event);
+      return;
+    }
+    if (payload.host !== undefined && typeof payload.host !== "string") {
+      opts.onInvalid?.("invalid-payload", event);
+      return;
+    }
+    if (
+      payload.sessionToken !== undefined &&
+      (typeof payload.sessionToken !== "string" || !payload.sessionToken)
+    ) {
+      opts.onInvalid?.("invalid-payload", event);
+      return;
+    }
     opts.onRequest({
       type: "openkey:sign:request",
       requestId,
       protocolVersion: version,
-      data: data as Record<string, unknown>,
+      data: payload,
     });
   };
 

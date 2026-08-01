@@ -53,6 +53,7 @@
   // the token.
   let previewSignedMessage = $state<string | null>(null);
   let previewToken = $state<string | null>(null);
+  let previewApprovalToken = $state<string | null>(null);
   let previewing = $state(false);
   let previewApproved = $state(false);
 
@@ -384,11 +385,19 @@
       if (typeof previewResult.signedMessage !== 'string' || !previewResult.signedMessage) {
         throw new Error('authorize-sign-preview did not return signedMessage');
       }
+      // Sol CRITICAL-1: capture the preview-approval token that seals
+      // the exact (selection, signedMessage) pair. /authorize-sign
+      // requires this token to proceed.
+      if (typeof previewResult.previewApprovalToken !== 'string' || !previewResult.previewApprovalToken) {
+        throw new Error('authorize-sign-preview did not return a previewApprovalToken — server is out of date');
+      }
       previewSignedMessage = previewResult.signedMessage;
+      previewApprovalToken = previewResult.previewApprovalToken;
     } catch (e: any) {
       error = e.message || 'Preview failed';
       previewToken = null;
       previewSignedMessage = null;
+      previewApprovalToken = null;
     } finally {
       previewing = false;
     }
@@ -400,7 +409,7 @@
     error = '';
     try {
       if (canUseAuthorizeSignFn()) {
-        if (!previewToken || !previewSignedMessage) {
+        if (!previewToken || !previewSignedMessage || !previewApprovalToken) {
           throw new Error('Preview required before approval — call requestPreview() first');
         }
         const selectedActionIds = currentSelectedActionIds();
@@ -412,6 +421,10 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               authorizationContextToken: previewToken,
+              // Sol CRITICAL-1: /authorize-sign requires the preview
+              // approval token so it cannot independently accept a
+              // different selection or sign different bytes.
+              previewApprovalToken,
               selectedActionIds,
               protocolVersion: 1,
             }),

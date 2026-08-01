@@ -166,13 +166,114 @@ describe('widget-transport', () => {
         type: 'openkey:sign:request',
         requestId: 'r1',
         protocolVersion: 1,
-        payload: { foo: 'bar' },
+        // Sol MAJOR-8: the payload validator requires `message` to be
+        // a non-empty string. Older tests used `payload: { foo: 'bar' }`
+        // (no `message`) — that shape now correctly fails validation.
+        message: 'some SIWE bytes',
       },
     });
     expect(seen).toHaveLength(1);
     expect((seen[0] as any).requestId).toBe('r1');
     // Ready message and any response go to the parent, never '*'.
     expect(parent.sent.every((s) => s.target === 'https://caller.example')).toBe(true);
+  });
+
+  // Sol MAJOR-8: payload validation tests. Each dropped field surfaces
+  // via onInvalid('invalid-payload') and the handler is never called.
+  it('drops messages missing a `message` field', () => {
+    const { parent, child } = makeWindows();
+    const seen: unknown[] = [];
+    const invalid: string[] = [];
+    createWidgetTransport({
+      origin: 'https://caller.example',
+      container: 'popup',
+      onRequest: (req) => seen.push(req),
+      onClose: () => {},
+      onInvalid: (r) => invalid.push(r),
+    });
+    child.dispatch({
+      origin: 'https://caller.example',
+      source: parent as unknown as MessageEventSource,
+      data: {
+        type: 'openkey:sign:request',
+        requestId: 'r-missing-message',
+        protocolVersion: 1,
+      },
+    });
+    expect(seen).toHaveLength(0);
+    expect(invalid).toContain('invalid-payload');
+  });
+
+  it('drops messages with malformed jwk (non-object)', () => {
+    const { parent, child } = makeWindows();
+    const seen: unknown[] = [];
+    const invalid: string[] = [];
+    createWidgetTransport({
+      origin: 'https://caller.example',
+      container: 'popup',
+      onRequest: (req) => seen.push(req),
+      onClose: () => {},
+      onInvalid: (r) => invalid.push(r),
+    });
+    child.dispatch({
+      origin: 'https://caller.example',
+      source: parent as unknown as MessageEventSource,
+      data: {
+        type: 'openkey:sign:request',
+        requestId: 'r-bad-jwk',
+        protocolVersion: 1,
+        message: 'a message',
+        jwk: 'not-an-object',
+      },
+    });
+    expect(seen).toHaveLength(0);
+    expect(invalid).toContain('invalid-payload');
+  });
+
+  it('drops messages with an empty keyId', () => {
+    const { parent, child } = makeWindows();
+    const seen: unknown[] = [];
+    const invalid: string[] = [];
+    createWidgetTransport({
+      origin: 'https://caller.example',
+      container: 'popup',
+      onRequest: (req) => seen.push(req),
+      onClose: () => {},
+      onInvalid: (r) => invalid.push(r),
+    });
+    child.dispatch({
+      origin: 'https://caller.example',
+      source: parent as unknown as MessageEventSource,
+      data: {
+        type: 'openkey:sign:request',
+        requestId: 'r-empty-keyid',
+        protocolVersion: 1,
+        message: 'a message',
+        keyId: '',
+      },
+    });
+    expect(seen).toHaveLength(0);
+    expect(invalid).toContain('invalid-payload');
+  });
+
+  it('drops close messages that carry a wrong protocolVersion', () => {
+    const { parent, child } = makeWindows();
+    let closed = 0;
+    const invalid: string[] = [];
+    createWidgetTransport({
+      origin: 'https://caller.example',
+      container: 'popup',
+      onRequest: () => {},
+      onClose: () => (closed += 1),
+      onInvalid: (r) => invalid.push(r),
+    });
+    child.dispatch({
+      origin: 'https://caller.example',
+      source: parent as unknown as MessageEventSource,
+      data: { type: 'openkey:close', protocolVersion: 99 },
+    });
+    expect(closed).toBe(0);
+    expect(invalid).toContain('invalid-close');
   });
 
   it('surfaces the full incoming envelope as request.data (Sol continuation contract)', () => {

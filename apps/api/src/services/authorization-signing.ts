@@ -203,6 +203,7 @@ export type ConsumeError =
   | "baseline-digest-mismatch"
   | "immutable-fields-changed"
   | "action-not-in-baseline"
+  | "action-not-in-initial-selection"
   | "required-action-missing";
 
 export interface ConsumeInput {
@@ -336,12 +337,27 @@ export function consumeAuthorizationContext(
     };
   }
   const allowed = new Set(stored.allowedActionIds);
+  const initialSelection = new Set(stored.initialSelectionActionIds);
   for (const actionId of input.selectedActionIds) {
     if (!allowed.has(actionId)) {
       return {
         ok: false,
         error: "action-not-in-baseline",
         message: `Selected action ${actionId} is not part of the prepared baseline.`,
+      };
+    }
+    // Sol CRITICAL-2: the caller may only sign a SUBSET of the initial
+    // selection bound at /prepare. Broadening the initial selection at
+    // /complete would let a CLI request grants the user narrowed away
+    // earlier, so any action outside the bound initial selection is a
+    // hard fail. For flows where /prepare passes allowedActionIds =
+    // initialSelectionActionIds (widget baseline path), this collapses
+    // to the pre-existing subset-of-baseline invariant.
+    if (!initialSelection.has(actionId)) {
+      return {
+        ok: false,
+        error: "action-not-in-initial-selection",
+        message: `Selected action ${actionId} is not part of the initial selection bound at /prepare.`,
       };
     }
   }
@@ -432,4 +448,196 @@ export function peekAuthorizationContext(token: string): PeekSuccess | PeekFailu
 /** Test helper — clears all stored contexts. Not exported to production. */
 export function _resetAuthorizationContextStoreForTests(): void {
   store.clear();
+  previewApprovals.clear();
+}
+
+// ============================================================================
+// Preview approval tokens (Sol CRITICAL-1).
+//
+// The /authorize-sign-preview route returns exactly the bytes the server
+// would sign for a given (context-token, selectedActionIds) pair. Without a
+// preview-approval token that seals BOTH the selection and the candidate
+// bytes, /authorize-sign could independently accept a different
+// selectedActionIds and sign different bytes than were previewed.
+//
+// A preview-approval token binds:
+//   - the parent authorization context token
+//   - the exact selectedActionIds the preview evaluated
+//   - the exact signedMessage bytes the preview would sign
+//   - the authenticated user
+//
+// /authorize-sign requires the preview-approval token AND enforces that the
+// finalized selection + candidate bytes match the sealed values byte-for-byte.
+// The token is single-use, short-lived, and non-transferable across users.
+// ============================================================================
+
+const PREVIEW_APPROVAL_TTL_MS = 5 * 60 * 1000;
+
+interface StoredPreviewApproval {
+  token: string;
+  createdAt: number;
+  expiresAt: number;
+  authorizationContextToken: string;
+  userId: string;
+  keyAddress: string;
+  selectedActionIds: string[]; // sorted for stable comparison
+  signedMessageDigest: string;
+  signedMessage: string;
+}
+
+const previewApprovals = new Map<string, StoredPreviewApproval>();
+
+function prunePreviewApprovals(now: number) {
+  for (const [tok, ap] of previewApprovals) {
+    if (ap.expiresAt <= now) previewApprovals.delete(tok);
+  }
+}
+
+export interface PreviewApprovalIssueInput {
+  authorizationContextToken: string;
+  userId: string;
+  keyAddress: string;
+  selectedActionIds: Set<string>;
+  signedMessage: string;
+}
+
+export interface PreviewApprovalToken {
+  token: string;
+  expiresAt: string;
+  signedMessageDigest: string;
+}
+
+export function issuePreviewApproval(
+  input: PreviewApprovalIssueInput,
+): PreviewApprovalToken {
+  const now = Date.now();
+  prunePreviewApprovals(now);
+  const token = `okp_${randomUUID().replace(/-/g, "")}${randomUUID().replace(/-/g, "")}`;
+  const digest = sha256Hex(input.signedMessage);
+  const stored: StoredPreviewApproval = {
+    token,
+    createdAt: now,
+    expiresAt: now + PREVIEW_APPROVAL_TTL_MS,
+    authorizationContextToken: input.authorizationContextToken,
+    userId: input.userId,
+    keyAddress: input.keyAddress.toLowerCase(),
+    selectedActionIds: [...input.selectedActionIds].sort(),
+    signedMessageDigest: digest,
+    signedMessage: input.signedMessage,
+  };
+  previewApprovals.set(token, stored);
+  return {
+    token,
+    expiresAt: new Date(stored.expiresAt).toISOString(),
+    signedMessageDigest: digest,
+  };
+}
+
+export type PreviewApprovalConsumeError =
+  | "preview-approval-not-found"
+  | "preview-approval-expired"
+  | "preview-approval-user-mismatch"
+  | "preview-approval-context-mismatch"
+  | "preview-approval-selection-mismatch"
+  | "preview-approval-bytes-mismatch";
+
+export interface PreviewApprovalConsumeInput {
+  token: string;
+  authorizationContextToken: string;
+  userId: string;
+  selectedActionIds: Set<string>;
+  /** The candidate signedMessage /authorize-sign is about to sign. */
+  candidateSignedMessage: string;
+}
+
+export interface PreviewApprovalConsumeSuccess {
+  ok: true;
+  signedMessage: string;
+  selectedActionIds: Set<string>;
+  keyAddress: string;
+}
+
+export interface PreviewApprovalConsumeFailure {
+  ok: false;
+  error: PreviewApprovalConsumeError;
+  message: string;
+}
+
+export function consumePreviewApproval(
+  input: PreviewApprovalConsumeInput,
+): PreviewApprovalConsumeSuccess | PreviewApprovalConsumeFailure {
+  const now = Date.now();
+  prunePreviewApprovals(now);
+  const stored = previewApprovals.get(input.token);
+  if (!stored) {
+    return {
+      ok: false,
+      error: "preview-approval-not-found",
+      message: "Preview approval token not found.",
+    };
+  }
+  // Single-use: delete before validation so replay attempts miss.
+  previewApprovals.delete(input.token);
+  if (stored.expiresAt <= now) {
+    return {
+      ok: false,
+      error: "preview-approval-expired",
+      message: "Preview approval expired.",
+    };
+  }
+  if (stored.userId !== input.userId) {
+    return {
+      ok: false,
+      error: "preview-approval-user-mismatch",
+      message: "Preview approval bound to a different user.",
+    };
+  }
+  if (stored.authorizationContextToken !== input.authorizationContextToken) {
+    return {
+      ok: false,
+      error: "preview-approval-context-mismatch",
+      message:
+        "Preview approval was issued for a different authorization context.",
+    };
+  }
+  // Sol CRITICAL-1: enforce EXACT selection equality between preview and
+  // finalize. Any drift means the widget could sign bytes different from
+  // what the user previewed.
+  const candidateSorted = [...input.selectedActionIds].sort();
+  if (candidateSorted.length !== stored.selectedActionIds.length) {
+    return {
+      ok: false,
+      error: "preview-approval-selection-mismatch",
+      message:
+        "selectedActionIds at /authorize-sign does not match the preview approval.",
+    };
+  }
+  for (let i = 0; i < candidateSorted.length; i++) {
+    if (candidateSorted[i] !== stored.selectedActionIds[i]) {
+      return {
+        ok: false,
+        error: "preview-approval-selection-mismatch",
+        message:
+          "selectedActionIds at /authorize-sign does not match the preview approval.",
+      };
+    }
+  }
+  // Sol CRITICAL-1: enforce EXACT signedMessage equality between preview
+  // and finalize. Even one whitespace change indicates the server would
+  // sign different bytes than the preview showed.
+  const candidateDigest = sha256Hex(input.candidateSignedMessage);
+  if (!constantTimeEqual(stored.signedMessageDigest, candidateDigest)) {
+    return {
+      ok: false,
+      error: "preview-approval-bytes-mismatch",
+      message:
+        "Candidate signedMessage bytes do not match the preview approval.",
+    };
+  }
+  return {
+    ok: true,
+    signedMessage: stored.signedMessage,
+    selectedActionIds: new Set(stored.selectedActionIds),
+    keyAddress: stored.keyAddress,
+  };
 }

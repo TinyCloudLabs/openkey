@@ -54,6 +54,15 @@ function ctx(overrides: Partial<ParseContext> = {}): ParseContext {
       domainWarning: false,
       originWarning: false,
     },
+    // Sol MAJOR-7: the classifier no longer falls back to signer as the
+    // ownership axis. Tests that model an OWN-space request must pass a
+    // VERIFIED requester matching the signer — this simulates a signed
+    // presentation manifest whose digest matched, which is the only
+    // trust state that lets classifyRecapEntry attribute a grant to the
+    // requester's own space. Tests that model an unverified requester
+    // (widget path) override this field to `null` / `false`.
+    requesterAddress: FIXTURE_META.address.toLowerCase(),
+    requesterVerified: true,
     ...overrides,
   };
 }
@@ -134,6 +143,38 @@ describe("parseCapabilityReview", () => {
     // Must NOT be a bootstrap-kv grant.
     const kv = model.permissions.find((p) => p.family === "bootstrap-kv");
     expect(kv).toBeUndefined();
+  });
+
+  it("fail-closed: unverified requester + own-space grant classifies as cross-app-data (Sol MAJOR-7)", () => {
+    // Sol MAJOR-7: when no verified requester identity is supplied
+    // (widget path passes requesterAddress: null, requesterVerified:
+    // false), the classifier MUST NOT fall back to the signer address
+    // as the ownership axis. Otherwise every grant on the signer's own
+    // space would be labelled own-app-data even though we have no idea
+    // which app is asking. The correct fail-closed behavior is:
+    // treat the grant as cross-app-data (attention).
+    const model = parseCapabilityReview(
+      ctx({
+        message: FEED_APP_REQUEST,
+        requester: {
+          displayName: "unknown requester",
+          verifiedOrigin: null,
+          manifestId: null,
+          manifestDigest: null,
+          domainWarning: false,
+          originWarning: false,
+        },
+        requesterAddress: null,
+        requesterVerified: false,
+      }),
+    );
+    // No scoped-path grant should be classified as own-app-data because
+    // we could not verify who the requester is.
+    const ownAppData = model.permissions.find((p) => p.family === "own-app-data");
+    expect(ownAppData).toBeUndefined();
+    const crossAppData = model.permissions.find((p) => p.family === "cross-app-data");
+    expect(crossAppData).toBeDefined();
+    expect(crossAppData?.severity).toBe("attention");
   });
 
   it("classifies a scoped-path KV grant as own-app-data (Cycle-health fixture)", () => {

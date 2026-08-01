@@ -57,6 +57,9 @@
   // the selection so the flow returns to preview+approve.
   let previewSignedMessage = $state<string | null>(null);
   let previewToken = $state<string | null>(null);
+  // Sol CRITICAL-1: preview-approval token that seals the exact
+  // (selection, signedMessage) pair. /authorize-sign requires this token.
+  let previewApprovalToken = $state<string | null>(null);
   let previewing = $state(false);
   let previewApproved = $state(false);
 
@@ -172,6 +175,7 @@
     // preview. Editing selection also clears these fields.
     previewSignedMessage = null;
     previewToken = null;
+    previewApprovalToken = null;
     previewApproved = false;
     requestSealed = true;
   }
@@ -427,7 +431,13 @@
       if (typeof previewResult.signedMessage !== 'string' || !previewResult.signedMessage) {
         throw new Error('authorize-sign-preview did not return signedMessage');
       }
+      // Sol CRITICAL-1: capture the sealed preview-approval token so
+      // /authorize-sign can be gated on it.
+      if (typeof previewResult.previewApprovalToken !== 'string' || !previewResult.previewApprovalToken) {
+        throw new Error('authorize-sign-preview did not return a previewApprovalToken — server is out of date');
+      }
       previewSignedMessage = previewResult.signedMessage;
+      previewApprovalToken = previewResult.previewApprovalToken;
     } catch (e: any) {
       error = e.message || 'Preview failed';
       // On failure, invalidate any stored token so the next attempt gets
@@ -435,6 +445,7 @@
       // the immutable-fields digest.
       previewToken = null;
       previewSignedMessage = null;
+      previewApprovalToken = null;
     } finally {
       previewing = false;
     }
@@ -450,7 +461,7 @@
     error = '';
     try {
       if (canUseAuthorizeSignFn()) {
-        if (!previewToken || !previewSignedMessage) {
+        if (!previewToken || !previewSignedMessage || !previewApprovalToken) {
           throw new Error('Preview required before approval — call requestPreview() first');
         }
         const selectedActionIds = currentSelectedActionIds();
@@ -462,6 +473,10 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               authorizationContextToken: previewToken,
+              // Sol CRITICAL-1: the sealed preview-approval token is
+              // required so /authorize-sign cannot independently accept
+              // a different selection or sign different bytes.
+              previewApprovalToken,
               selectedActionIds,
               protocolVersion: 1,
             }),
@@ -528,9 +543,12 @@
   // approved preview so the user must review + approve the new bytes.
   function invalidatePreviewForSelectionEdit() {
     previewSignedMessage = null;
-    // Keep the token: the /authorize-sign-preview call handles a stale
-    // selection safely (it re-derives the SIWE without consuming). If
-    // the token expires the preview call fails cleanly.
+    // Also invalidate the preview-approval token: it was bound to the
+    // old (selection, bytes) pair. A new preview call must issue a
+    // fresh one for the new selection.
+    previewApprovalToken = null;
+    // Keep the context token: the /authorize-sign-preview call handles a
+    // stale selection safely (it re-derives the SIWE without consuming).
     previewApproved = false;
   }
 

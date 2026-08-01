@@ -59,9 +59,11 @@ import {
 } from './delegate-autosign';
 import {
   consumeAuthorizationContext,
+  consumePreviewApproval,
   digestAbilities,
   digestImmutableFields,
   issueAuthorizationContext,
+  issuePreviewApproval,
   peekAuthorizationContext,
   type AuthorizationContextToken,
 } from '../services/authorization-signing';
@@ -1628,6 +1630,13 @@ delegateRouter.post('/authorize-sign', async (c) => {
   const body = await c.req.json<{
     /** REQUIRED: opaque single-use token from /authorize-sign-prepare. */
     authorizationContextToken?: string;
+    /**
+     * REQUIRED (Sol CRITICAL-1): opaque single-use token issued by
+     * /authorize-sign-preview. Seals the exact selectedActionIds and
+     * signedMessage the preview evaluated, so /authorize-sign cannot
+     * independently accept a different selection or sign different bytes.
+     */
+    previewApprovalToken?: string;
     /** The action IDs the user finally selected. */
     selectedActionIds: unknown;
     /** Optional protocol marker; must be >= 1 when present. */
@@ -1653,6 +1662,19 @@ delegateRouter.post('/authorize-sign', async (c) => {
   if (typeof body.authorizationContextToken !== 'string' || !body.authorizationContextToken) {
     return c.json(
       { error: 'authorizationContextToken is required — call /authorize-sign-prepare first', code: 'missing_authorization_context_token' },
+      400,
+    );
+  }
+  // Sol CRITICAL-1: /authorize-sign REQUIRES a preview-approval token so
+  // finalize cannot independently accept a selection or sign bytes the
+  // user did not preview.
+  if (typeof body.previewApprovalToken !== 'string' || !body.previewApprovalToken) {
+    return c.json(
+      {
+        error:
+          'previewApprovalToken is required — call /authorize-sign-preview and echo the returned token',
+        code: 'missing_preview_approval_token',
+      },
       400,
     );
   }
@@ -1983,6 +2005,21 @@ delegateRouter.post('/authorize-sign', async (c) => {
     signedMessage = narrowedPrepared.siwe;
   }
 
+  // Sol CRITICAL-1: consume the preview-approval token now that we know
+  // the exact signedMessage. The token was issued by /authorize-sign-preview
+  // and seals both the selection and the candidate bytes; if either drifts
+  // between preview and finalize, this fails hard.
+  const previewConsume = consumePreviewApproval({
+    token: body.previewApprovalToken!,
+    authorizationContextToken: body.authorizationContextToken!,
+    userId: user.id,
+    selectedActionIds,
+    candidateSignedMessage: signedMessage,
+  });
+  if (!previewConsume.ok) {
+    return c.json({ error: previewConsume.message, code: previewConsume.error }, 400);
+  }
+
   // Sign the (original or regenerated) bytes.
   let signature: string;
   if (isExternal) {
@@ -2220,6 +2257,18 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     entry.actions.map((action) => computeActionKey(entry, action)),
   );
 
+  // Sol CRITICAL-1: issue a preview-approval token that seals the exact
+  // selection AND signed-bytes candidate. /authorize-sign requires this
+  // token; without it, finalize could independently accept a different
+  // selection or sign different bytes than the preview evaluated.
+  const previewApproval = issuePreviewApproval({
+    authorizationContextToken: body.authorizationContextToken!,
+    userId: user.id,
+    keyAddress: ensureEip55(bound.keyAddress),
+    selectedActionIds,
+    signedMessage: preparedSignedMessage,
+  });
+
   return c.json({
     protocolVersion: 1,
     address: ensureEip55(bound.keyAddress),
@@ -2230,5 +2279,9 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     // Echo the token so callers can round-trip it back into
     // /authorize-sign without re-parsing.
     authorizationContextToken: body.authorizationContextToken,
+    // Sol CRITICAL-1: preview-approval token bound to (selection, bytes).
+    previewApprovalToken: previewApproval.token,
+    previewApprovalExpiresAt: previewApproval.expiresAt,
+    signedMessageDigest: previewApproval.signedMessageDigest,
   });
 });
