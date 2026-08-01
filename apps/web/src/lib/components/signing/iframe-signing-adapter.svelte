@@ -1,49 +1,71 @@
 <script lang="ts">
-  // IframeSigningAdapter — thin production wrapper that mounts the shared
-  // SigningApproval component for the embedded iframe (`/widget/embed/sign`)
-  // surface.
+  // IframeSigningAdapter — the substantive production adapter for the
+  // embedded iframe (`/widget/embed/sign`) surface.
   //
-  // All three surface adapters (CLI, popup, iframe) are byte-identical
-  // wrappers: they exist so the production routes and the parity test can
-  // import the SAME real component file and assert it is what actually
-  // renders. If a surface ever needs to diverge (e.g. wrap with an extra
-  // container), that divergence goes here — never in the parity test's
-  // extraction logic.
+  // Popup and iframe surfaces run the same completion logic (both are
+  // widget flows that either fetch a server-signed preview or fall
+  // through to exact-byte signing). This adapter therefore mirrors the
+  // popup adapter one-for-one — the parity test asserts that with the
+  // same model, initialSelection, and transport shape, both adapters
+  // render byte-identical DOM and invoke the same transport calls in
+  // response to the same real DOM keyboard/click events.
 
   import type { CapabilityReviewModel } from "@openkey/capability-review";
   import SigningApproval from "$lib/components/signing/signing-approval.svelte";
+  import type { WidgetSigningTransport } from "./signing-adapter-types";
 
   interface Props {
+    /** The parsed authorization model to review. */
     model: CapabilityReviewModel;
-    selection: Set<string>;
-    editing: boolean;
-    approving?: boolean;
-    error?: string | null;
-    onApprove: () => void;
-    onCancel: () => void;
-    onSelectionChange: (next: Set<string>) => void;
-    onEditingChange: (next: boolean) => void;
+    /**
+     * Initial review selection (typically `defaultSelection(model)` from the
+     * route).
+     */
+    initialSelection: Set<string>;
+    /** Transport for widget-specific completion. */
+    transport: WidgetSigningTransport;
   }
 
-  let {
-    model,
-    selection,
-    editing,
-    approving = false,
-    error = null,
-    onApprove,
-    onCancel,
-    onSelectionChange,
-    onEditingChange,
-  }: Props = $props();
+  let { model, initialSelection, transport }: Props = $props();
+
+  // Adapter-owned presentational state — see popup-signing-adapter.svelte
+  // for the same-shape note. `initialSelection` is only read once.
+  // svelte-ignore state_referenced_locally
+  let selection = $state<Set<string>>(new Set(initialSelection));
+  let editing = $state(false);
+
+  function onSelectionChange(next: Set<string>) {
+    selection = new Set(next);
+    // Mirror the up-to-date selection to the route so its completion
+    // payload (effectivePermissions, selectedActionKeys) sees the
+    // current narrowing.
+    transport.onSelectionEdited(new Set(next));
+    transport.invalidatePreview();
+  }
+
+  function onEditingChange(next: boolean) {
+    editing = next;
+  }
+
+  function onApprove() {
+    if (transport.canUseAuthorizeSign) {
+      void transport.requestPreview();
+    } else {
+      void transport.approveAndSign();
+    }
+  }
+
+  function onCancel() {
+    transport.cancel();
+  }
 </script>
 
 <SigningApproval
   {model}
   {selection}
   {editing}
-  {approving}
-  {error}
+  approving={transport.approving}
+  error={transport.error}
   {onApprove}
   {onCancel}
   {onSelectionChange}

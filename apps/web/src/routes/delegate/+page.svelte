@@ -1166,24 +1166,33 @@
           -->
           {#if reviewModel}
             <div bind:this={actionRow}>
+              <!--
+                CliSigningAdapter is now a substantive adapter that owns
+                the review selection/editing state, the delegate approve
+                path, and the selection-change → prepare re-issue glue.
+                The route only builds the model and hands the adapter a
+                CLI-specific transport. This means the exact adapter used
+                in production is the exact adapter the parity test mounts
+                — including the map-selection-to-server-keys hand-off.
+              -->
               <CliSigningAdapter
                 model={reviewModel}
-                selection={reviewSelection}
-                editing={reviewEditing}
-                approving={delegating || updatingPermissions}
-                {error}
-                onApprove={approveDelegate}
-                onCancel={goBack}
-                onSelectionChange={(next) => {
-                  reviewSelection = next;
-                  const nextServerKeys = mapReviewSelectionToActionKeys(next);
-                  if (nextServerKeys.length === 0) {
-                    error = 'At least one permission is required.';
-                    return;
-                  }
-                  updatePermissions(nextServerKeys);
+                initialSelection={reviewSelection}
+                transport={{
+                  approving: delegating || updatingPermissions,
+                  error,
+                  approveDelegate,
+                  goBack,
+                  updateSelection: (next) => {
+                    reviewSelection = next;
+                    const nextServerKeys = mapReviewSelectionToActionKeys(next);
+                    if (nextServerKeys.length === 0) {
+                      error = 'At least one permission is required.';
+                      return;
+                    }
+                    return updatePermissions(nextServerKeys);
+                  },
                 }}
-                onEditingChange={(next) => (reviewEditing = next)}
               />
             </div>
           {:else if siweMessage}

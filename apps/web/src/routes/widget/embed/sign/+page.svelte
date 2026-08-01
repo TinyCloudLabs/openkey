@@ -670,25 +670,26 @@
         so the user must review the server-returned candidate bytes before
         the final /authorize-sign step.
       -->
+      <!--
+        IframeSigningAdapter mirrors the popup adapter — same substantive
+        widget completion logic, same transport shape. The route only
+        builds the model and hands the adapter its widget transport.
+      -->
       <IframeSigningAdapter
         model={reviewModel}
-        selection={reviewSelection}
-        editing={reviewEditing}
-        approving={signing || previewing}
-        {error}
-        onApprove={() => {
-          if (canUseAuthorizeSignFn()) {
-            requestPreview();
-          } else {
-            approveAndSign();
-          }
+        initialSelection={reviewSelection}
+        transport={{
+          approving: signing || previewing,
+          error,
+          canUseAuthorizeSign: canUseAuthorizeSignFn(),
+          requestPreview,
+          approveAndSign,
+          cancel,
+          onSelectionEdited: (next) => {
+            reviewSelection = next;
+          },
+          invalidatePreview: invalidatePreviewForSelectionEdit,
         }}
-        onCancel={cancel}
-        onSelectionChange={(next) => {
-          reviewSelection = next;
-          invalidatePreviewForSelectionEdit();
-        }}
-        onEditingChange={(next) => (reviewEditing = next)}
       />
     {:else}
       <div class="flex flex-col gap-3">

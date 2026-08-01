@@ -11,6 +11,10 @@
     $page.url.pathname.startsWith('/auth/') ||
     $page.url.pathname.startsWith('/delegate') ||
     $page.url.pathname.startsWith('/console') ||
+    // The dev-only parity harness route hosts a bare adapter mount so
+    // Playwright tests can drive it without surrounding chrome
+    // interfering with focus order.
+    $page.url.pathname.startsWith('/__parity_harness') ||
     isEmbed
   );
 </script>

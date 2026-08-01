@@ -743,27 +743,32 @@
       final /authorize-sign step. Non-versioned requests skip preview and
       fall through to approveAndSign() directly.
     -->
+    <!--
+      PopupSigningAdapter is a substantive adapter that owns the review
+      selection/editing state, the approve decision (preview vs
+      exact-byte), the cancel wiring, and the invalidate-preview-on-edit
+      glue. The route only builds the model and hands the adapter a
+      widget-specific transport. The exact adapter used in production is
+      the exact adapter the parity test mounts — including the preview
+      routing decision and the invalidation-on-selection-change.
+    -->
     <PopupSigningAdapter
       model={reviewModel}
-      selection={reviewSelection}
-      editing={reviewEditing}
-      approving={signing || previewing}
-      {error}
-      onApprove={() => {
-        if (canUseAuthorizeSignFn()) {
-          // Fetch preview; user then sees the distinct approval screen.
-          requestPreview();
-        } else {
-          // Legacy exact-byte path — no preview step is possible.
-          approveAndSign();
-        }
+      initialSelection={reviewSelection}
+      transport={{
+        approving: signing || previewing,
+        error,
+        canUseAuthorizeSign: canUseAuthorizeSignFn(),
+        requestPreview,
+        approveAndSign,
+        cancel,
+        onSelectionEdited: (next) => {
+          // Route-side state mirror kept in sync so downstream fetches
+          // (e.g. sendResponse) still see the up-to-date selection.
+          reviewSelection = next;
+        },
+        invalidatePreview: invalidatePreviewForSelectionEdit,
       }}
-      onCancel={cancel}
-      onSelectionChange={(next) => {
-        reviewSelection = next;
-        invalidatePreviewForSelectionEdit();
-      }}
-      onEditingChange={(next) => (reviewEditing = next)}
     />
   {:else}
     <!--
