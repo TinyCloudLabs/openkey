@@ -77,6 +77,21 @@ export interface NarrowInput {
   expirationTime: string;
   jwk: unknown;
   notBefore?: string;
+  /**
+   * Sol continuation contract (caveats): the baseline attenuation
+   * (resource → ability → caveats[]) parsed from the ORIGINAL SIWE.
+   * When supplied, the narrower splices the ORIGINAL caveat multiset
+   * back onto every surviving (resource, ability) pair after WASM
+   * regenerates the ReCap payload (WASM emits a single empty-object
+   * caveat per ability regardless of the input caveats — so blindly
+   * accepting its payload would drop meaningful caveats from
+   * survivors, which broadens authority).
+   *
+   * When omitted, the WASM-emitted caveats survive unchanged; this is
+   * the correct behaviour when the original SIWE carried no
+   * meaningful caveats (WASM's `[{}]` is equal to WASM's `[{}]`).
+   */
+  baselineCaveats?: Record<string, Record<string, unknown[]>>;
 }
 
 /**
@@ -218,18 +233,47 @@ export function narrowSiwePreservingImmutable(input: NarrowInput): NarrowOutcome
       message: 'Narrowed SIWE has no Resources: block (WASM did not emit ReCap).',
     };
   }
-  const narrowedRecapLines: string[] = [];
+  const narrowedRecapLinesRaw: string[] = [];
   for (let i = narrowedAnchor.resourcesIdx + 1; i < narrowedAnchor.lines.length; i += 1) {
     const l = narrowedAnchor.lines[i]!;
     if (!/^- /.test(l)) break;
-    if (/^- urn:recap:/.test(l)) narrowedRecapLines.push(l);
+    if (/^- urn:recap:/.test(l)) narrowedRecapLinesRaw.push(l);
   }
-  if (narrowedRecapLines.length === 0) {
+  if (narrowedRecapLinesRaw.length === 0) {
     return {
       ok: false,
       code: 'siwe_no_recap_resource',
       message: 'Narrowed SIWE has no urn:recap: resource line (WASM produced an empty ReCap).',
     };
+  }
+
+  // Sol continuation contract (caveats): if the caller supplied a
+  // baseline caveat map, rewrite each `- urn:recap:` line so that
+  // every surviving (resource, ability) pair carries the ORIGINAL
+  // caveats. WASM emits `[{}]` regardless of input caveats, so
+  // trusting its payload verbatim would silently BROADEN authority
+  // on any ability the baseline restricted with meaningful caveats.
+  //
+  // Removed resources / removed abilities keep their caveats with
+  // them (they're gone from the payload entirely, which is the
+  // "whole-ability/whole-resource removal is allowed" rule).
+  let narrowedRecapLines: string[];
+  if (input.baselineCaveats) {
+    const rewritten: string[] = [];
+    for (const line of narrowedRecapLinesRaw) {
+      const rewrittenLine = rewriteRecapLineCaveats(line, input.baselineCaveats);
+      if (!rewrittenLine.ok) {
+        return {
+          ok: false,
+          code: 'narrowed_recap_extract_failed',
+          message: rewrittenLine.message,
+        };
+      }
+      rewritten.push(rewrittenLine.line);
+    }
+    narrowedRecapLines = rewritten;
+  } else {
+    narrowedRecapLines = narrowedRecapLinesRaw;
   }
 
   // Splice: build the new SIWE by taking the ORIGINAL lines and swapping ONLY
@@ -300,6 +344,75 @@ export function narrowSiwePreservingImmutable(input: NarrowInput): NarrowOutcome
   }
 
   return { ok: true, siwe: rebuiltSiwe };
+}
+
+/**
+ * Rewrite the `att` block of a `- urn:recap:...` line so every surviving
+ * (resource, ability) pair carries the ORIGINAL baseline caveat multiset.
+ *
+ * The WASM emitter unconditionally writes `[{}]` for every ability regardless
+ * of input caveats, so blindly accepting its payload would silently BROADEN
+ * authority on any ability the baseline restricted with meaningful caveats.
+ * This helper walks the WASM payload, overwrites the caveat array with the
+ * baseline caveats when the (resource, ability) exists in `baselineCaveats`,
+ * and leaves the ability alone otherwise (whole-ability/whole-resource
+ * removals are legal — those keys simply do not appear in the WASM payload).
+ *
+ * The output uses `base64url` (no padding) — the canonical URN form. Rebuild
+ * order: keys emitted in insertion order so the resulting URN is
+ * byte-for-byte identical to a "same abilities, same caveats" payload the
+ * WASM emitter would produce if it took caveats as input. Verifiers walk
+ * the ATT map by key, so key order is not part of the authority contract.
+ */
+function rewriteRecapLineCaveats(
+  line: string,
+  baselineCaveats: Record<string, Record<string, unknown[]>>,
+):
+  | { ok: true; line: string }
+  | { ok: false; message: string } {
+  const match = line.match(/^(- urn:recap:)([A-Za-z0-9_-]+=*)$/);
+  if (!match || !match[2]) {
+    return { ok: false, message: `Invalid urn:recap: line: ${line}` };
+  }
+  const encoded = match[2];
+  const normalized = encoded.replace(/-/g, '+').replace(/_/g, '/');
+  const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
+  let parsed: { att?: Record<string, Record<string, unknown[]>>; prf?: unknown[] };
+  try {
+    const json = Buffer.from(padded, 'base64').toString('utf8');
+    parsed = JSON.parse(json);
+  } catch (e) {
+    return {
+      ok: false,
+      message: e instanceof Error ? e.message : 'urn:recap: payload not decodable',
+    };
+  }
+  if (!parsed || typeof parsed !== 'object' || !parsed.att || typeof parsed.att !== 'object') {
+    return { ok: false, message: 'urn:recap: payload missing att block' };
+  }
+  // Rewrite in place: for each (resource, ability) present in the WASM output,
+  // if the baseline had the same pair, use the baseline caveats. Otherwise
+  // leave the WASM caveats untouched (this preserves the [{}]  default for
+  // abilities the baseline never carried — the RecapEntry contract does not
+  // require caveats to exist).
+  for (const [resource, abilityMap] of Object.entries(parsed.att)) {
+    const baselineAbilityMap = baselineCaveats[resource];
+    if (!baselineAbilityMap) continue;
+    for (const ability of Object.keys(abilityMap)) {
+      const baselineList = baselineAbilityMap[ability];
+      if (Array.isArray(baselineList)) {
+        abilityMap[ability] = baselineList;
+      }
+    }
+  }
+  // Re-encode. Keep prf as the WASM emitted it (typically empty).
+  const rebuiltJson = JSON.stringify(parsed);
+  const rebuiltEncoded = Buffer.from(rebuiltJson, 'utf8')
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+  return { ok: true, line: `${match[1]}${rebuiltEncoded}` };
 }
 
 /**

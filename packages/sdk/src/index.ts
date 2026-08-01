@@ -350,23 +350,155 @@ export function validateIframeResize(
  * explicit-managed + managed-session, no-session) without booting the
  * browser runtime.
  *
- * The decision is authoritative from the ACTIVE session's keyType. A
- * user cannot be authenticated with two different active session keys
- * at once, so lastAuth.keyType is definitive for routing — the caller's
- * `explicitKeyId` is not needed to resolve the type.
+ * The decision is authoritative from the ACTIVE session's keyType when
+ * no explicit `requestKeyId` was supplied.
  *
- * The pre-Sol-MAJOR-4-final check compared `lastAuth.keyId ===
- * explicitKeyId` and only routed external when strings matched. That
- * check failed silently when the caller passed a different identifier
- * form (address vs internal id, casing drift), forcing an external
- * key through the managed path and calling /authorize-sign without an
- * externalSignature — the widget then errored on server-side signing
- * with no material.
+ * Kept as a thin wrapper for backwards compatibility. New callers should
+ * prefer `resolveAuthorizeTinyCloudRouting` which also considers the
+ * request's explicit `keyId`.
  */
 export function shouldRouteAuthorizeTinyCloudExternal(state: {
   lastAuth: { keyType?: 'MANAGED' | 'EXTERNAL' | null } | null;
 }): boolean {
   return state.lastAuth?.keyType === 'EXTERNAL';
+}
+
+/**
+ * Sol MAJOR-4 (final continuation): resolve the target key's identity and
+ * route by that key's type — NOT by `lastAuth.keyType` alone.
+ *
+ * Sol's rejection: when the caller supplies an explicit `requestKeyId`
+ * that identifies a DIFFERENT key than `lastAuth.keyId` (address vs
+ * internal id, or a genuinely different key), the SDK must
+ *   - resolve THAT key's type,
+ *   - route by that resolved type (external ⇒ wallet path, managed ⇒
+ *     server-signing path), and
+ *   - reject an inconsistent explicit pin whose resolved type contradicts
+ *     the caller's other implicit assumptions (e.g. `lastAuth` is
+ *     external but the caller pinned a managed key).
+ *
+ * Inputs:
+ *   - `lastAuth`: the connected-session key metadata (may be null on
+ *     boot; the widget renders a connect flow first in that case).
+ *   - `requestKeyId`: the caller's explicit pin (may be absent).
+ *   - `knownKeys`: any keys we have metadata for; the SDK's higher-level
+ *     `authorizeTinyCloud` populates this from the server before calling
+ *     the resolver so the pure helper is fully synchronous and testable.
+ *
+ * Return shape:
+ *   { route: 'external' | 'managed', resolvedKeyId: string | null,
+ *     resolvedKeyType: 'EXTERNAL' | 'MANAGED' | null }
+ *
+ * `resolvedKeyId` is null only when neither `requestKeyId` nor
+ * `lastAuth.keyId` exists. When both exist and identify the same key
+ * (matching id OR matching known-key type), the resolver returns that
+ * shared identity. When both exist and identify different keys AND we
+ * know both types AND those types disagree, the resolver throws
+ * `KEY_ID_TYPE_MISMATCH` so no silent route coercion occurs.
+ */
+export interface AuthorizeTinyCloudRouting {
+  route: 'external' | 'managed';
+  resolvedKeyId: string | null;
+  resolvedKeyType: 'EXTERNAL' | 'MANAGED' | null;
+}
+
+export class KeyIdTypeMismatchError extends Error {
+  code: 'KEY_ID_TYPE_MISMATCH';
+  requestKeyId: string;
+  lastAuthKeyId: string | null;
+  requestKeyType: 'EXTERNAL' | 'MANAGED' | null;
+  lastAuthKeyType: 'EXTERNAL' | 'MANAGED' | null;
+  constructor(fields: {
+    message: string;
+    requestKeyId: string;
+    lastAuthKeyId: string | null;
+    requestKeyType: 'EXTERNAL' | 'MANAGED' | null;
+    lastAuthKeyType: 'EXTERNAL' | 'MANAGED' | null;
+  }) {
+    super(fields.message);
+    this.name = 'KeyIdTypeMismatchError';
+    this.code = 'KEY_ID_TYPE_MISMATCH';
+    this.requestKeyId = fields.requestKeyId;
+    this.lastAuthKeyId = fields.lastAuthKeyId;
+    this.requestKeyType = fields.requestKeyType;
+    this.lastAuthKeyType = fields.lastAuthKeyType;
+  }
+}
+
+export function resolveAuthorizeTinyCloudRouting(state: {
+  lastAuth: { keyId?: string | null; keyType?: 'MANAGED' | 'EXTERNAL' | null } | null;
+  requestKeyId?: string | null;
+  knownKeys?: ReadonlyArray<{ id: string; address?: string; keyType: 'MANAGED' | 'EXTERNAL' }>;
+}): AuthorizeTinyCloudRouting {
+  const lastAuthKeyId = state.lastAuth?.keyId ?? null;
+  const lastAuthKeyType = (state.lastAuth?.keyType ?? null) as
+    | 'EXTERNAL'
+    | 'MANAGED'
+    | null;
+
+  const rawRequestKeyId = state.requestKeyId ?? null;
+  const requestKeyId = rawRequestKeyId && rawRequestKeyId.length > 0 ? rawRequestKeyId : null;
+
+  const knownKeys = state.knownKeys ?? [];
+
+  // Helper: resolve a keyId string into its known type. Matches by id
+  // first, then by address (address is a valid public identifier the
+  // caller may pass in place of the internal record id).
+  const lookupType = (id: string): 'EXTERNAL' | 'MANAGED' | null => {
+    for (const k of knownKeys) {
+      if (k.id === id) return k.keyType;
+      if (k.address && k.address.toLowerCase() === id.toLowerCase()) return k.keyType;
+    }
+    // Convention: `external:<address>` is the SDK's synthetic id for a
+    // wallet-only session that never enrolled with OpenKey. Callers
+    // sometimes pass the bare address in requestKeyId; treat both
+    // forms as EXTERNAL.
+    if (id.startsWith('external:')) return 'EXTERNAL';
+    return null;
+  };
+
+  // Case A: no request pin — fall back to lastAuth.keyType.
+  if (!requestKeyId) {
+    const route: 'external' | 'managed' =
+      lastAuthKeyType === 'EXTERNAL' ? 'external' : 'managed';
+    return {
+      route,
+      resolvedKeyId: lastAuthKeyId,
+      resolvedKeyType: lastAuthKeyType,
+    };
+  }
+
+  // Case B: request pin present. Resolve its type.
+  let requestKeyType = lookupType(requestKeyId);
+  // If the pin string-matches lastAuth.keyId AND we did not find it in
+  // knownKeys, adopt lastAuth's type (they identify the same key).
+  if (!requestKeyType && lastAuthKeyId && requestKeyId === lastAuthKeyId) {
+    requestKeyType = lastAuthKeyType;
+  }
+
+  // If both sides tell us a type and they disagree, hard fail —
+  // conflicting pins.
+  if (requestKeyType && lastAuthKeyType && requestKeyType !== lastAuthKeyType) {
+    throw new KeyIdTypeMismatchError({
+      message: `authorizeTinyCloud: request.keyId ${requestKeyId} resolves to ${requestKeyType} but active session key ${lastAuthKeyId} is ${lastAuthKeyType}; refuse to route silently`,
+      requestKeyId,
+      lastAuthKeyId,
+      requestKeyType,
+      lastAuthKeyType,
+    });
+  }
+
+  // If we still do not know the request's type, fall back to
+  // lastAuth.keyType — the widget will surface a connect prompt if the
+  // key is unknown.
+  const effectiveType: 'EXTERNAL' | 'MANAGED' | null =
+    requestKeyType ?? lastAuthKeyType;
+
+  return {
+    route: effectiveType === 'EXTERNAL' ? 'external' : 'managed',
+    resolvedKeyId: requestKeyId,
+    resolvedKeyType: effectiveType,
+  };
 }
 
 class IframeModal {
@@ -672,6 +804,44 @@ export class OpenKey {
   }
 
   /**
+   * Sol MAJOR-4 (final continuation): fetch the caller's registered keys
+   * so `resolveAuthorizeTinyCloudRouting` can resolve an explicit pin
+   * whose keyId does not match the active session key. Called only when
+   * the caller passes a `requestKeyId` we do not already recognise; the
+   * common no-pin path skips the network round-trip.
+   *
+   * Failures do NOT block routing — we fall through with `knownKeys=[]`
+   * so the resolver's lastAuth-based fallback still runs. If the caller
+   * pinned a genuinely unknown key that turns out to be external, the
+   * widget rejects the server-signing path and the SDK surfaces that
+   * error from the finalize call rather than silently routing wrong.
+   */
+  private async fetchKnownKeysIfNeeded(
+    requestKeyId: string | undefined,
+  ): Promise<Array<{ id: string; address?: string; keyType: 'MANAGED' | 'EXTERNAL' }>> {
+    if (!requestKeyId) return [];
+    // If lastAuth already identifies this key (id or address), we do not
+    // need a network round-trip — the resolver adopts lastAuth.keyType.
+    const la = this.lastAuth;
+    if (la?.keyId === requestKeyId) return [];
+    if (la?.address && la.address.toLowerCase() === requestKeyId.toLowerCase()) return [];
+    if (requestKeyId.startsWith('external:')) return [];
+    try {
+      const res = await fetch(`${this.oauthHost}/api/keys`, {
+        method: 'GET',
+        credentials: 'include',
+      });
+      if (!res.ok) return [];
+      const body = (await res.json()) as {
+        keys?: Array<{ id: string; address?: string; keyType: 'MANAGED' | 'EXTERNAL' }>;
+      };
+      return Array.isArray(body?.keys) ? body.keys : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /**
    * Connect to OpenKey and get user's wallet address
    * Opens auth flow for user to select/create a key
    */
@@ -788,7 +958,27 @@ export class OpenKey {
     // session rather than relying on a fragile keyId string match.
     // See `shouldRouteAuthorizeTinyCloudExternal` for the full
     // routing-decision rationale and its unit tests for every branch.
-    if (shouldRouteAuthorizeTinyCloudExternal({ lastAuth: this.lastAuth })) {
+    // Sol MAJOR-4 (final continuation): resolve the target key first
+    // and route by ITS type, not by lastAuth.keyType alone. When the
+    // caller pins a request.keyId that differs from the active session
+    // key, we fetch the caller's key list from the server so the pure
+    // `resolveAuthorizeTinyCloudRouting` helper can decide by resolved
+    // type (or throw on conflicting pins).
+    let routing: AuthorizeTinyCloudRouting;
+    try {
+      const knownKeys = await this.fetchKnownKeysIfNeeded(request.keyId);
+      routing = resolveAuthorizeTinyCloudRouting({
+        lastAuth: this.lastAuth,
+        requestKeyId: request.keyId,
+        knownKeys,
+      });
+    } catch (e) {
+      if (e instanceof KeyIdTypeMismatchError) throw e;
+      throw e instanceof Error
+        ? e
+        : new Error('authorizeTinyCloud: failed to resolve target key type');
+    }
+    if (routing.route === 'external') {
       return this.authorizeTinyCloudExternal(request, opts);
     }
     // Sol CRITICAL-1: Send a DISTINCT versioned sign request so the widget
@@ -803,7 +993,7 @@ export class OpenKey {
     // 'Please connect first.' because it has no key context, and the
     // NodeUserAuthorization bridge never carries a keyId when the caller
     // only ran connect() — the widget path is otherwise unable to sign.
-    const resolvedKeyId = request.keyId ?? this.lastAuth?.keyId;
+    const resolvedKeyId = routing.resolvedKeyId ?? request.keyId ?? this.lastAuth?.keyId;
     const raw = await this.openFlow<{
       signature: string;
       address: string;

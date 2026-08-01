@@ -451,10 +451,13 @@ function buildCandidateAttenuation(
 }
 
 /**
- * Sol MAJOR-4: return null when `candidate` is a strict subset of
- * `baseline`, else a short message describing the first violation. Used at
- * the final regeneration verification step to catch any WASM emitter drift
- * that produced a broader ReCap than the caller narrowed to.
+ * Sol MAJOR-4 (final): return null when the CANDIDATE's caveat multiset on
+ * every (resource, ability) pair EXACTLY matches the BASELINE's caveat
+ * multiset for the same pair, else a short message describing the first
+ * violation. Whole-resource and whole-ability removals are permitted (the
+ * candidate simply omits those keys). Adding, changing, removing, or
+ * changing the duplicate count of a caveat on a surviving (resource,
+ * ability) pair is a violation.
  */
 function attenuationSubsetOrFailure(
   candidate: Record<string, Record<string, unknown[]>>,
@@ -474,58 +477,41 @@ function attenuationSubsetOrFailure(
     for (const [ability, candidateCaveats] of Object.entries(candidateAbilityMap)) {
       const baselineCaveats = baselineAbilityMap[ability];
       if (!baselineCaveats) return `ability ${ability} on ${resource} not in baseline`;
-      const bucket = new Map<string, number>();
+      const baselineCounts = new Map<string, number>();
       for (const c of baselineCaveats) {
         const key = stably(c);
-        bucket.set(key, (bucket.get(key) ?? 0) + 1);
+        baselineCounts.set(key, (baselineCounts.get(key) ?? 0) + 1);
       }
+      const candidateCounts = new Map<string, number>();
       for (const c of candidateCaveats) {
         const key = stably(c);
-        const remaining = bucket.get(key) ?? 0;
-        if (remaining === 0) {
-          return `caveat on ${ability}@${resource} not present in baseline`;
+        candidateCounts.set(key, (candidateCounts.get(key) ?? 0) + 1);
+      }
+      if (baselineCounts.size !== candidateCounts.size) {
+        return `caveats on ${ability}@${resource} differ (baseline distinct=${baselineCounts.size}, candidate distinct=${candidateCounts.size})`;
+      }
+      for (const [key, baselineN] of baselineCounts) {
+        const candidateN = candidateCounts.get(key) ?? 0;
+        if (candidateN !== baselineN) {
+          const preview = key.length > 80 ? `${key.slice(0, 80)}...` : key;
+          if (candidateN === 0) {
+            return `caveat ${preview} was removed from ${ability}@${resource} (surviving abilities must preserve caveats byte-for-byte)`;
+          }
+          if (candidateN < baselineN) {
+            return `caveat ${preview} duplicate count decreased from ${baselineN} to ${candidateN} on ${ability}@${resource}`;
+          }
+          return `caveat ${preview} duplicate count increased from ${baselineN} to ${candidateN} on ${ability}@${resource}`;
         }
-        bucket.set(key, remaining - 1);
+      }
+      for (const [key, candidateN] of candidateCounts) {
+        if (!baselineCounts.has(key)) {
+          const preview = key.length > 80 ? `${key.slice(0, 80)}...` : key;
+          return `caveat ${preview} was added to ${ability}@${resource} (candidate count ${candidateN}, baseline count 0)`;
+        }
       }
     }
   }
   return null;
-}
-
-function hasRecapCaveats(siwe: string): boolean {
-  const lines = siwe.split(/\r?\n/);
-  for (const line of lines) {
-    const match = line.match(/urn:recap:([A-Za-z0-9_-]+=*)/);
-    if (!match) continue;
-    const encoded = match[1];
-    if (!encoded) continue;
-    try {
-      const normalized = encoded.replace(/-/g, '+').replace(/_/g, '/');
-      const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
-      const json = Buffer.from(padded, 'base64').toString('utf8');
-      const parsed = JSON.parse(json) as { att?: Record<string, Record<string, unknown[]>> };
-      if (!parsed?.att) continue;
-      for (const abilityMap of Object.values(parsed.att)) {
-        if (!abilityMap || typeof abilityMap !== 'object') continue;
-        for (const caveats of Object.values(abilityMap)) {
-          if (!Array.isArray(caveats)) continue;
-          for (const c of caveats) {
-            if (
-              c !== null &&
-              typeof c === 'object' &&
-              Object.keys(c as Record<string, unknown>).length > 0
-            ) {
-              return true;
-            }
-          }
-        }
-      }
-    } catch {
-      // Fall through — parse failures are not evidence of caveats.
-      continue;
-    }
-  }
-  return false;
 }
 
 /**
@@ -2037,23 +2023,13 @@ delegateRouter.post('/authorize-sign', async (c) => {
     selectedActionIds.size === originalActionKeys.size &&
     [...selectedActionIds].every((id) => originalActionKeys.has(id));
 
-  // Sol continuation contract (caveats): the WASM `parseRecapFromSiwe`
-  // does not surface caveats, and `prepareSession` produces caveat-less
-  // ReCap blocks. If the original SIWE encoded meaningful caveats and we
-  // regenerate without them, the resulting SIWE is BROADER than the
-  // original. Under the unchanged-selection branch we sign the original
-  // bytes so the caveats survive intact. Otherwise we must refuse to
-  // regenerate.
-  if (!selectionUnchanged && hasRecapCaveats(bound.originalSiwe)) {
-    return c.json(
-      {
-        error:
-          'authorize-sign cannot narrow SIWEs whose ReCap block carries caveats — the WASM narrower drops caveats which would broaden authority',
-        code: 'caveats_not_supported',
-      },
-      400,
-    );
-  }
+  // Sol continuation contract (caveats): removing a whole ability or a
+  // whole resource is allowed even when the baseline carries meaningful
+  // caveats — the removed caveats leave with their ability/resource.
+  // The narrower is responsible for splicing the ORIGINAL caveat multiset
+  // onto every surviving (resource, ability) pair (WASM's regenerator
+  // emits `[{}]` regardless of input caveats, so we cannot trust its
+  // payload). See `narrowSiwePreservingImmutable` + `rewriteRecapLineCaveats`.
 
   let signedMessage: string;
   if (selectionUnchanged) {
@@ -2069,6 +2045,11 @@ delegateRouter.post('/authorize-sign', async (c) => {
     // back into the ORIGINAL SIWE bytes. Every immutable header field
     // (URI, Version, Chain ID, Nonce, Issued At, Expiration Time, Not
     // Before, Request ID, non-ReCap resources) survives byte-for-byte.
+    //
+    // Sol continuation contract (caveats, final): the narrower is given
+    // `baselineCaveats` so the ORIGINAL caveat multiset survives on every
+    // (resource, ability) pair that remains. Whole-ability and
+    // whole-resource removals drop their caveats with them (legal).
     const narrowed = narrowSiwePreservingImmutable({
       originalSiwe: bound.originalSiwe,
       narrowedEntries: selectedEntries,
@@ -2079,6 +2060,7 @@ delegateRouter.post('/authorize-sign', async (c) => {
       expirationTime: immutable.expirationTime,
       spaceId: bound.spaceId,
       jwk: consume.jwk,
+      baselineCaveats: baselineAttenuation,
       ...(immutable.notBefore ? { notBefore: immutable.notBefore } : {}),
     });
     if (!narrowed.ok) {
@@ -2303,15 +2285,10 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
   const selectionUnchanged =
     selectedActionIds.size === originalActionKeys.size &&
     [...selectedActionIds].every((id) => originalActionKeys.has(id));
-  if (!selectionUnchanged && hasRecapCaveats(bound.originalSiwe)) {
-    return c.json(
-      {
-        error: 'authorize-sign-preview cannot narrow SIWEs whose ReCap block carries caveats',
-        code: 'caveats_not_supported',
-      },
-      400,
-    );
-  }
+  // Sol continuation contract (caveats): whole-ability/whole-resource
+  // removal is allowed. Surviving abilities keep the ORIGINAL caveat
+  // multiset (spliced back by the narrower). See /authorize-sign for
+  // the full contract.
 
   let preparedSignedMessage: string;
   if (selectionUnchanged) {
@@ -2321,6 +2298,7 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     // SIWEs always carry a ReCap-derived statement; the previous guard
     // rejected them all, which meant the preview never returned any bytes
     // for a narrowed selection in production.
+    const previewBaselineCaveats = extractRecapAttenuationFromSiwe(bound.originalSiwe);
     const previewNarrowed = narrowSiwePreservingImmutable({
       originalSiwe: bound.originalSiwe,
       narrowedEntries: selectedEntries,
@@ -2331,6 +2309,7 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
       expirationTime: immutable.expirationTime,
       spaceId: bound.spaceId,
       jwk: bound.jwk,
+      baselineCaveats: previewBaselineCaveats,
       ...(immutable.notBefore ? { notBefore: immutable.notBefore } : {}),
     });
     if (!previewNarrowed.ok) {

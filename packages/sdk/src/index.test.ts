@@ -11,6 +11,8 @@ import { describe, expect, test } from 'bun:test';
 import {
   validateIframeResize,
   shouldRouteAuthorizeTinyCloudExternal,
+  resolveAuthorizeTinyCloudRouting,
+  KeyIdTypeMismatchError,
 } from './index';
 
 describe('validateIframeResize (Sol continuation req 5)', () => {
@@ -249,5 +251,169 @@ describe('validateIframeResize (Sol continuation req 5)', () => {
         newExpected,
       ),
     ).toBe(500);
+  });
+});
+
+describe('resolveAuthorizeTinyCloudRouting (Sol MAJOR-4 final continuation)', () => {
+  // Sol MAJOR-4 (final continuation) rejected a routing helper that
+  // looked only at `lastAuth.keyType`. When the caller supplies an
+  // explicit `requestKeyId`, the resolver MUST resolve THAT key's type
+  // and route by it. Conflicting pins (lastAuth is one type, target key
+  // is the other) MUST throw. These cases lock in the new invariants.
+
+  const managedLast = { keyId: 'key_managed_abc', keyType: 'MANAGED' as const };
+  const externalLast = { keyId: 'external:0xdead', keyType: 'EXTERNAL' as const };
+  const managedKey = { id: 'key_managed_abc', keyType: 'MANAGED' as const };
+  const externalKey = {
+    id: 'key_external_xyz',
+    address: '0xDeadBeef00000000000000000000000000000000',
+    keyType: 'EXTERNAL' as const,
+  };
+
+  test('no request pin + external lastAuth → external route', () => {
+    const r = resolveAuthorizeTinyCloudRouting({ lastAuth: externalLast });
+    expect(r.route).toBe('external');
+    expect(r.resolvedKeyType).toBe('EXTERNAL');
+    expect(r.resolvedKeyId).toBe('external:0xdead');
+  });
+
+  test('no request pin + managed lastAuth → managed route', () => {
+    const r = resolveAuthorizeTinyCloudRouting({ lastAuth: managedLast });
+    expect(r.route).toBe('managed');
+    expect(r.resolvedKeyType).toBe('MANAGED');
+    expect(r.resolvedKeyId).toBe('key_managed_abc');
+  });
+
+  test('no request pin + null lastAuth → managed route (widget renders connect)', () => {
+    const r = resolveAuthorizeTinyCloudRouting({ lastAuth: null });
+    expect(r.route).toBe('managed');
+    expect(r.resolvedKeyId).toBeNull();
+    expect(r.resolvedKeyType).toBeNull();
+  });
+
+  test('explicit external keyId + managed lastAuth → EXTERNAL route (target wins)', () => {
+    // This is the exact production bug: a caller pins an external
+    // wallet key while the last connect() was against a managed key.
+    // Prior behaviour: routed managed, /authorize-sign received no
+    // externalSignature, server-sign failed. New behaviour: route
+    // external, throwing KeyIdTypeMismatchError to surface the pin
+    // conflict — never silently coerce a wrong route.
+    let threw = false;
+    try {
+      resolveAuthorizeTinyCloudRouting({
+        lastAuth: managedLast,
+        requestKeyId: externalKey.id,
+        knownKeys: [managedKey, externalKey],
+      });
+    } catch (e) {
+      threw = true;
+      expect(e).toBeInstanceOf(KeyIdTypeMismatchError);
+      expect((e as KeyIdTypeMismatchError).code).toBe('KEY_ID_TYPE_MISMATCH');
+      expect((e as KeyIdTypeMismatchError).requestKeyType).toBe('EXTERNAL');
+      expect((e as KeyIdTypeMismatchError).lastAuthKeyType).toBe('MANAGED');
+    }
+    expect(threw).toBe(true);
+  });
+
+  test('explicit managed keyId + external lastAuth → throws KEY_ID_TYPE_MISMATCH', () => {
+    let threw = false;
+    try {
+      resolveAuthorizeTinyCloudRouting({
+        lastAuth: externalLast,
+        requestKeyId: managedKey.id,
+        knownKeys: [managedKey, externalKey],
+      });
+    } catch (e) {
+      threw = true;
+      expect(e).toBeInstanceOf(KeyIdTypeMismatchError);
+      expect((e as KeyIdTypeMismatchError).requestKeyType).toBe('MANAGED');
+      expect((e as KeyIdTypeMismatchError).lastAuthKeyType).toBe('EXTERNAL');
+    }
+    expect(threw).toBe(true);
+  });
+
+  test('explicit external keyId + external lastAuth (same id) → external route', () => {
+    const r = resolveAuthorizeTinyCloudRouting({
+      lastAuth: externalLast,
+      requestKeyId: externalLast.keyId,
+      knownKeys: [externalKey],
+    });
+    expect(r.route).toBe('external');
+    expect(r.resolvedKeyId).toBe(externalLast.keyId);
+  });
+
+  test('explicit external keyId + external lastAuth (different external id) → external route', () => {
+    // A caller who has multiple external keys enrolled and pins one
+    // that is NOT the last-connected external key. Still routes
+    // external (both are external; no conflict).
+    const secondExternal = {
+      id: 'key_external_two',
+      address: '0xBeefFeed00000000000000000000000000000000',
+      keyType: 'EXTERNAL' as const,
+    };
+    const r = resolveAuthorizeTinyCloudRouting({
+      lastAuth: externalLast,
+      requestKeyId: secondExternal.id,
+      knownKeys: [externalKey, secondExternal],
+    });
+    expect(r.route).toBe('external');
+    expect(r.resolvedKeyId).toBe(secondExternal.id);
+    expect(r.resolvedKeyType).toBe('EXTERNAL');
+  });
+
+  test('explicit managed keyId matching lastAuth → managed route', () => {
+    const r = resolveAuthorizeTinyCloudRouting({
+      lastAuth: managedLast,
+      requestKeyId: managedLast.keyId,
+      knownKeys: [managedKey],
+    });
+    expect(r.route).toBe('managed');
+    expect(r.resolvedKeyId).toBe(managedLast.keyId);
+  });
+
+  test('explicit keyId with unknown type + no lastAuth → managed fallback', () => {
+    const r = resolveAuthorizeTinyCloudRouting({
+      lastAuth: null,
+      requestKeyId: 'key_unknown_xyz',
+      knownKeys: [],
+    });
+    expect(r.route).toBe('managed');
+    expect(r.resolvedKeyId).toBe('key_unknown_xyz');
+    // Unknown; falls back to lastAuth type (null → managed).
+    expect(r.resolvedKeyType).toBeNull();
+  });
+
+  test('explicit keyId resolves by ADDRESS when caller passes address instead of internal id', () => {
+    // Caller passed the external-key address (a public identifier
+    // apps commonly use in place of the internal id). Resolver
+    // identifies this as external via address lookup and throws
+    // mismatch because lastAuth is managed. Prior behaviour: string
+    // equality miss, routed managed. New behaviour: address lookup
+    // succeeds, throws mismatch.
+    let threw = false;
+    try {
+      resolveAuthorizeTinyCloudRouting({
+        lastAuth: managedLast,
+        requestKeyId: externalKey.address,
+        knownKeys: [managedKey, externalKey],
+      });
+    } catch (e) {
+      threw = true;
+      expect(e).toBeInstanceOf(KeyIdTypeMismatchError);
+    }
+    expect(threw).toBe(true);
+  });
+
+  test('bare "external:<addr>" convention id routes external without a knownKeys entry', () => {
+    // Convention: `external:<address>` is the SDK's synthetic id for a
+    // wallet-only session. Even with an empty knownKeys, the resolver
+    // recognises the prefix and treats it as EXTERNAL.
+    const r = resolveAuthorizeTinyCloudRouting({
+      lastAuth: null,
+      requestKeyId: 'external:0xabc',
+      knownKeys: [],
+    });
+    expect(r.route).toBe('external');
+    expect(r.resolvedKeyType).toBe('EXTERNAL');
   });
 });

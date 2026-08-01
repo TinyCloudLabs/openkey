@@ -463,12 +463,14 @@ describe('POST /authorize-sign — caveat semantics for narrowing', () => {
     for (const [resource, finalAbilityMap] of Object.entries(finalAtt)) {
       const baselineAbilityMap = baselineAtt[resource];
       expect(baselineAbilityMap, `resource ${resource} missing from baseline`).toBeDefined();
+      if (!baselineAbilityMap) continue;
       for (const [ability, finalCaveats] of Object.entries(finalAbilityMap)) {
         const baselineCaveats = baselineAbilityMap[ability];
         expect(baselineCaveats, `ability ${ability} on ${resource} missing from baseline`).toBeDefined();
+        if (!baselineCaveats) continue;
         // Multiset equality — sort canonical JSON strings and compare
         // element-wise. Handles duplicates AND key-order differences.
-        expect(multisetEqual(baselineCaveats!, finalCaveats)).toBe(true);
+        expect(multisetEqual(baselineCaveats, finalCaveats)).toBe(true);
       }
     }
     // Sanity: the finalize DID drop the requested ability from ATT
@@ -524,6 +526,160 @@ describe('POST /authorize-sign — caveat semantics for narrowing', () => {
     }
   });
 
+  test('narrowing a SIWE with MEANINGFUL caveats preserves the caveat multiset on every surviving (resource, ability) pair', async () => {
+    // Sol MAJOR-2 (final): the WASM emitter unconditionally writes `[{}]`
+    // for every ability regardless of input caveats. If the narrower
+    // trusted the WASM output verbatim, meaningful caveats on the
+    // baseline would silently disappear on narrowing — broadening
+    // authority. This test constructs a SIWE with a NON-VACUOUS
+    // caveat (`{ nb: 1700000000 }`) on `tinycloud.kv/get` and a
+    // DUPLICATED caveat (`{ nb: 1700000000 }` twice) on
+    // `tinycloud.kv/put`, runs prepare → preview → finalize with
+    // narrowing (drop `tinycloud.kv/put`), and asserts the final
+    // signedMessage preserves the EXACT caveat multiset on the
+    // surviving `tinycloud.kv/get` ability.
+    const baseSiwe = makePreparedSiwe();
+    const baselineAtt = extractAttFromSiwe(baseSiwe);
+    // Inject meaningful caveats + a duplicate on kv/put.
+    const richAtt: Record<string, Record<string, unknown[]>> = {};
+    for (const [resource, abilityMap] of Object.entries(baselineAtt)) {
+      const dst: Record<string, unknown[]> = {};
+      for (const [ability, caveats] of Object.entries(abilityMap)) {
+        if (ability === 'tinycloud.kv/get') {
+          dst[ability] = [{ nb: 1_700_000_000 }];
+        } else if (ability === 'tinycloud.kv/put') {
+          // Duplicate caveat — two structurally identical restrictions.
+          dst[ability] = [{ nb: 1_700_000_000 }, { nb: 1_700_000_000 }];
+        } else {
+          dst[ability] = [...caveats];
+        }
+      }
+      richAtt[resource] = dst;
+    }
+    const richSiwe = rewriteRecapPayload(baseSiwe, richAtt);
+
+    const prepRes = await router.request('/authorize-sign-prepare', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ keyId: keyRecord.id, siwe: richSiwe, jwk, host: 'https://node.tinycloud.xyz' }),
+    });
+    expect(prepRes.status).toBe(200);
+    const prep = await prepRes.json() as any;
+    // Drop kv/put — keep kv/get and capabilities/read.
+    const allowed: string[] = prep.allowedActionIds;
+    const narrowed = allowed.filter((id: string) => !id.includes('kv/put'));
+    expect(narrowed.length).toBeLessThan(allowed.length);
+
+    const previewRes = await router.request('/authorize-sign-preview', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ authorizationContextToken: prep.authorizationContextToken, selectedActionIds: narrowed }),
+    });
+    if (previewRes.status !== 200) {
+      console.error('preview failure:', await previewRes.json());
+    }
+    expect(previewRes.status).toBe(200);
+    const preview = await previewRes.json() as any;
+    const signRes = await router.request('/authorize-sign', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        authorizationContextToken: prep.authorizationContextToken,
+        previewApprovalToken: preview.previewApprovalToken,
+        selectedActionIds: narrowed,
+        protocolVersion: 1,
+      }),
+    });
+    if (signRes.status !== 200) {
+      console.error('sign failure:', await signRes.json());
+    }
+    expect(signRes.status).toBe(200);
+    const sign = await signRes.json() as any;
+
+    const finalAtt = extractAttFromSiwe(sign.signedMessage);
+    // Surviving abilities keep their EXACT baseline caveat multiset.
+    for (const [resource, finalAbilityMap] of Object.entries(finalAtt)) {
+      for (const [ability, finalCaveats] of Object.entries(finalAbilityMap)) {
+        const baselineCaveats = richAtt[resource]?.[ability];
+        expect(baselineCaveats, `ability ${ability} on ${resource} missing from baseline`).toBeDefined();
+        if (!baselineCaveats) continue;
+        expect(multisetEqual(baselineCaveats, finalCaveats)).toBe(true);
+        // Duplicate count must match array length.
+        expect(finalCaveats.length).toBe(baselineCaveats.length);
+      }
+    }
+    // The removed ability MUST NOT appear anywhere in the final ATT.
+    for (const abilityMap of Object.values(finalAtt)) {
+      expect(Object.keys(abilityMap)).not.toContain('tinycloud.kv/put');
+    }
+    // The surviving kv/get MUST carry the meaningful `{ nb: ... }` caveat.
+    const surviving = Object.values(finalAtt).flatMap((m) =>
+      m['tinycloud.kv/get'] ?? [],
+    );
+    expect(surviving.length).toBeGreaterThanOrEqual(1);
+    expect((surviving[0] as any).nb).toBe(1_700_000_000);
+  });
+
+  test('unchanged-selection round-trip on a SIWE with duplicated caveats returns the original bytes verbatim', async () => {
+    // Sol MAJOR-2: even with a DUPLICATED meaningful caveat on
+    // `tinycloud.kv/put`, an unchanged-selection round-trip must return
+    // byte-for-byte the original SIWE (the unchanged-selection branch
+    // signs original bytes verbatim). The multiset preservation is
+    // therefore trivial by construction, but this test guards the
+    // "no narrowing, no rewriting" invariant.
+    const baseSiwe = makePreparedSiwe();
+    const baselineAtt = extractAttFromSiwe(baseSiwe);
+    const richAtt: Record<string, Record<string, unknown[]>> = {};
+    for (const [resource, abilityMap] of Object.entries(baselineAtt)) {
+      const dst: Record<string, unknown[]> = {};
+      for (const [ability, caveats] of Object.entries(abilityMap)) {
+        if (ability === 'tinycloud.kv/put') {
+          dst[ability] = [{ nb: 1_700_000_000 }, { nb: 1_700_000_000 }];
+        } else {
+          dst[ability] = [...caveats];
+        }
+      }
+      richAtt[resource] = dst;
+    }
+    const richSiwe = rewriteRecapPayload(baseSiwe, richAtt);
+    const prepRes = await router.request('/authorize-sign-prepare', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ keyId: keyRecord.id, siwe: richSiwe, jwk, host: 'https://node.tinycloud.xyz' }),
+    });
+    expect(prepRes.status).toBe(200);
+    const prep = await prepRes.json() as any;
+    const previewRes = await router.request('/authorize-sign-preview', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ authorizationContextToken: prep.authorizationContextToken, selectedActionIds: prep.allowedActionIds }),
+    });
+    expect(previewRes.status).toBe(200);
+    const preview = await previewRes.json() as any;
+    expect(preview.signedMessage).toBe(richSiwe);
+    const signRes = await router.request('/authorize-sign', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        authorizationContextToken: prep.authorizationContextToken,
+        previewApprovalToken: preview.previewApprovalToken,
+        selectedActionIds: prep.allowedActionIds,
+        protocolVersion: 1,
+      }),
+    });
+    expect(signRes.status).toBe(200);
+    const sign = await signRes.json() as any;
+    expect(sign.signedMessage).toBe(richSiwe);
+    const finalAtt = extractAttFromSiwe(sign.signedMessage);
+    // Duplicate count preserved.
+    const putList = Object.values(finalAtt).flatMap((m) =>
+      m['tinycloud.kv/put'] ?? [],
+    );
+    expect(putList.length).toBe(2);
+    expect((putList[0] as any).nb).toBe(1_700_000_000);
+    expect((putList[1] as any).nb).toBe(1_700_000_000);
+  });
+
   test('full-selection round-trip preserves the entire baseline ATT map byte-for-byte on the HTTP route', async () => {
     // When nothing is narrowed the server reuses the caller's exact
     // prepared bytes — the ATT map on both sides must be structurally
@@ -565,6 +721,39 @@ describe('POST /authorize-sign — caveat semantics for narrowing', () => {
     }
   });
 });
+
+/**
+ * Rewrite the `urn:recap:` base64url payload of a SIWE to carry the
+ * given `att` map. Preserves every other byte of the SIWE (URI,
+ * Version, statement, headers, non-recap resource lines). Used to
+ * construct fixtures with meaningful caveats + duplicated caveats
+ * that WASM's `prepareSession` will not emit on its own.
+ */
+function rewriteRecapPayload(
+  siwe: string,
+  newAtt: Record<string, Record<string, unknown[]>>,
+): string {
+  const lines = siwe.split('\n');
+  const idx = lines.findIndex((l) => l.startsWith('- urn:recap:'));
+  if (idx < 0) throw new Error('no urn:recap line');
+  const line = lines[idx]!;
+  const m = line.match(/^(- urn:recap:)([A-Za-z0-9_-]+=*)$/);
+  if (!m || !m[2]) throw new Error('malformed urn:recap line');
+  const normalized = m[2].replace(/-/g, '+').replace(/_/g, '/');
+  const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
+  const parsed = JSON.parse(Buffer.from(padded, 'base64').toString('utf8')) as {
+    att?: unknown;
+    prf?: unknown[];
+  };
+  parsed.att = newAtt;
+  const rebuilt = Buffer.from(JSON.stringify(parsed), 'utf8')
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+  lines[idx] = `${m[1]}${rebuilt}`;
+  return lines.join('\n');
+}
 
 /**
  * Decode the `urn:recap:` base64url payload out of a SIWE and return
