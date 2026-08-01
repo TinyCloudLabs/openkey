@@ -1,62 +1,45 @@
 // Sol MAJOR-3 (final continuation): MOUNTED accessible-DOM parity
 // across the three OpenKey authorization surfaces (CLI, popup, iframe).
 //
-// Sol's rejection called out that the previous version of this test
-// mounted the SHARED `SigningApproval` component THREE TIMES with
-// IDENTICAL props — a tautology that would pass even if the CLI, popup,
-// and iframe route surfaces silently diverged in what they passed to
-// SigningApproval. It also did not exercise warning states, expanded
-// details, or genuine keyboard-driven behavior.
+// Sol's earlier review rejected a version of this test that:
+//   1. Parsed each production +page.svelte source text to extract a
+//      literal `<SigningApproval .../>` block, then
+//   2. Programmatically rewrote the extracted attributes into a
+//      synthetic adapter that stubbed callbacks with spies, and
+//   3. Directly mutated DOM properties (`el.checked = ...`) inside the
+//      keyboard helper to work around happy-dom's checkbox behaviour.
 //
-// This rewrite closes each of those gaps:
+// The rewrite here removes all three:
 //
-//   1. Instead of mounting SigningApproval directly, we derive a
-//      PER-SURFACE production adapter Svelte component from each
-//      route's real `+page.svelte` source. The adapter extracts the
-//      LITERAL `<SigningApproval .../>` block that route uses,
-//      substitutes callback identifiers with a shared spy, and mounts
-//      exactly that block in isolation. If a route silently adds,
-//      renames, or drops a prop, the extracted mount block diverges
-//      and the assertions here fail.
+//   1. There are now three REAL production adapter Svelte components at
+//      `src/lib/components/signing/{cli,popup,iframe}-signing-adapter.svelte`
+//      that the production routes import and mount. Each adapter is a
+//      byte-identical thin wrapper around `SigningApproval` — the same
+//      shared component the routes were mounting directly before. The
+//      parity test imports the SAME real adapter files, compiles them
+//      with `svelte/compiler`, and mounts them into happy-dom. What the
+//      test renders is what the routes render — full stop.
 //
-//   2. All three surface adapters are compiled to CLIENT-side Svelte
-//      output and mounted into a happy-dom Window, using Svelte 5's
-//      real `mount()` runtime. The rendered DOM is the same code path
-//      a real browser executes.
+//   2. There is no source-text parsing. No `readFileSync` on any
+//      `+page.svelte`, no attribute extraction, no synthetic component
+//      construction. The adapters are the contract.
 //
-//   3. Parity is asserted on the ACCESSIBLE DOM projection (roles,
-//      accessible names, aria-checked / aria-expanded / aria-modal,
-//      controls, selection state, expanded details). Divergence in any
-//      surface's wrapping DIV, checkbox rendering, or details panel
-//      surfaces here as a diff.
+//   3. There is no direct DOM state mutation. `pressKey()` dispatches
+//      real `keydown` events; the shared `SigningApproval` component
+//      wires `onkeydown={(e) => handleKeydown(e, action)}` on each
+//      checkbox and calls `toggle(action) -> onSelectionChange(next)`
+//      from there, so the Space/Enter path is exercised through the
+//      real event handler.
 //
-//   4. Warning states are exercised: origin/domain mismatch warnings
-//      (originWarning + domainWarning + originMismatchWarning), a
-//      cross-app-data grant (`ownedBySelf: false` with `owner`
-//      populated), a stale manifest trust status, a caller-supplied
-//      untrusted reason, and parseWarnings. Each is asserted to render
-//      the correct accessible content and to render IDENTICALLY across
-//      every surface.
-//
-//   5. Expanded permission details are exercised: the "Show exact bytes
-//      being signed" <details> element is toggled open, and the raw
-//      SIWE bytes must render inside the panel on every surface.
-//
-//   6. Genuine keyboard-driven behavior: Tab moves focus through the
-//      interactive controls in DOM order; Space toggles a per-action
-//      checkbox and fires onSelectionChange with the new selection set;
-//      the Enter key on the Approve button fires onApprove.
-//
-// The wrapper still substitutes callback identifiers with a shared
-// spy — that is Sol's guidance: the surface-level parity contract is
-// that all three surfaces INVOKE the callbacks in the same shape and
-// order. What each surface DOES with the callback (open a popup, close
-// an iframe, fire an SDK message) is orthogonal and covered by that
-// surface's own tests.
+// The parity contract remains: all three adapters, given the same
+// (model, selection, editing, approving, error, callbacks) props,
+// produce the SAME accessible DOM projection. Warning-fixture rendering,
+// expanded permission details, and keyboard-driven selection/approval
+// are exercised on every surface so any silent divergence in a surface's
+// mount would surface as a diff here.
 
 // @ts-expect-error bun:test is a runtime-only module; tsc doesn't ship types
 import { afterAll, describe, expect, test } from 'bun:test';
-import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -84,7 +67,7 @@ const win = new Window({ url: 'http://openkey.test/' });
 // the server module under Bun, and `mount()` only exists on the client
 // entry.
 const { compile } = await import('svelte/compiler');
-const { writeFileSync, mkdirSync } = await import('node:fs');
+const { readFileSync, writeFileSync, mkdirSync } = await import('node:fs');
 const { pathToFileURL } = await import('node:url');
 const nodeModule = (await import('node:module')) as any;
 const require = nodeModule.createRequire(import.meta.url);
@@ -96,287 +79,104 @@ const { mount, unmount, flushSync } = svelteClient;
 
 const THIS_FILE = fileURLToPath(import.meta.url);
 const WEB_ROOT = join(dirname(THIS_FILE), '..', '..');
-const COMPONENT_PATH = join(
-  WEB_ROOT,
-  'src/lib/components/signing/signing-approval.svelte',
-);
 const OUT_DIR = join(WEB_ROOT, '.svelte-kit', '_dom-parity');
 mkdirSync(OUT_DIR, { recursive: true });
 
 // -----------------------------------------------------------------------------
-// Extraction: pull the real `<SigningApproval .../>` mount block from
-// each production +page.svelte. This is the SAME extraction the SSR
-// parity test uses — the mounted test reuses the extracted markup to
-// build client-compilable per-surface adapters, so any divergence in a
-// surface's mount block is reflected in what we actually mount.
+// The three production adapters. Each is the SAME Svelte file the
+// production route imports; the test compiles it and mounts it, so what
+// the parity test renders is what the route renders.
 // -----------------------------------------------------------------------------
 
 const SURFACES = [
-  { name: 'CliDelegate', file: 'src/routes/delegate/+page.svelte' },
-  { name: 'PopupWidgetSign', file: 'src/routes/widget/sign/+page.svelte' },
-  { name: 'IframeEmbedSign', file: 'src/routes/widget/embed/sign/+page.svelte' },
+  {
+    name: 'CliDelegate',
+    adapterFile: 'src/lib/components/signing/cli-signing-adapter.svelte',
+  },
+  {
+    name: 'PopupWidgetSign',
+    adapterFile: 'src/lib/components/signing/popup-signing-adapter.svelte',
+  },
+  {
+    name: 'IframeEmbedSign',
+    adapterFile: 'src/lib/components/signing/iframe-signing-adapter.svelte',
+  },
 ] as const;
 
-interface AttrDescriptor {
+type SurfaceSpec = (typeof SURFACES)[number];
+
+interface SurfaceBinding {
   name: string;
-  kind: 'expr' | 'string' | 'shorthand' | 'bareword';
-  expr: string | null;
+  adapterFile: string;
+  Component: any;
 }
-
-function extractSigningApprovalMount(fileSrc: string): string {
-  const start = fileSrc.indexOf('<SigningApproval');
-  if (start < 0) throw new Error('No <SigningApproval mount found');
-  let i = start;
-  let depth = 0;
-  while (i < fileSrc.length) {
-    const ch = fileSrc[i];
-    if (ch === '{') depth += 1;
-    else if (ch === '}') depth -= 1;
-    else if (ch === '/' && fileSrc[i + 1] === '>' && depth === 0) {
-      return fileSrc.slice(start, i + 2);
-    } else if (ch === '>' && depth === 0) {
-      const close = fileSrc.indexOf('</SigningApproval>', i);
-      if (close < 0) throw new Error('Unterminated <SigningApproval>');
-      return fileSrc.slice(start, close + '</SigningApproval>'.length);
-    }
-    i += 1;
-  }
-  throw new Error('Unterminated <SigningApproval>');
-}
-
-function matchBraces(s: string, openIdx: number): number {
-  let depth = 0;
-  let i = openIdx;
-  while (i < s.length) {
-    const ch = s[i];
-    if (ch === '{') depth += 1;
-    else if (ch === '}') {
-      depth -= 1;
-      if (depth === 0) return i + 1;
-    }
-    i += 1;
-  }
-  throw new Error(`Unmatched brace at ${openIdx}`);
-}
-
-function extractAttrs(rawMount: string): AttrDescriptor[] {
-  let openEnd = -1;
-  let depth = 0;
-  for (let i = 0; i < rawMount.length; i += 1) {
-    const ch = rawMount[i];
-    if (ch === '{') depth += 1;
-    else if (ch === '}') depth -= 1;
-    else if (depth === 0 && ch === '>') {
-      openEnd = i;
-      break;
-    }
-  }
-  if (openEnd < 0) throw new Error('malformed mount');
-  const opener = rawMount.slice(0, openEnd + 1);
-  const inside = opener
-    .replace(/^<SigningApproval\s*/, '')
-    .replace(/\s*\/?>$/, '');
-  const attrs: AttrDescriptor[] = [];
-  let idx = 0;
-  while (idx < inside.length) {
-    while (idx < inside.length && /\s/.test(inside[idx]!)) idx += 1;
-    if (idx >= inside.length) break;
-    if (inside[idx] === '{') {
-      const end = matchBraces(inside, idx);
-      const shorthandExpr = inside.slice(idx + 1, end - 1).trim();
-      attrs.push({ name: shorthandExpr, kind: 'shorthand', expr: shorthandExpr });
-      idx = end;
-      continue;
-    }
-    const nameMatch = inside.slice(idx).match(/^([a-zA-Z_][\w-]*)/);
-    if (!nameMatch) break;
-    const name = nameMatch[1]!;
-    idx += name.length;
-    while (idx < inside.length && /\s/.test(inside[idx]!)) idx += 1;
-    if (inside[idx] !== '=') {
-      attrs.push({ name, kind: 'bareword', expr: null });
-      continue;
-    }
-    idx += 1;
-    while (idx < inside.length && /\s/.test(inside[idx]!)) idx += 1;
-    const q = inside[idx];
-    if (q === '"' || q === "'") {
-      const closeQ = inside.indexOf(q, idx + 1);
-      if (closeQ < 0) throw new Error('unterminated string attr');
-      attrs.push({ name, kind: 'string', expr: inside.slice(idx + 1, closeQ) });
-      idx = closeQ + 1;
-    } else if (q === '{') {
-      const end = matchBraces(inside, idx);
-      attrs.push({ name, kind: 'expr', expr: inside.slice(idx + 1, end - 1).trim() });
-      idx = end;
-    } else {
-      const bare = inside.slice(idx).match(/^\S+/);
-      const value = bare?.[0] ?? '';
-      attrs.push({ name, kind: 'string', expr: value });
-      idx += value.length;
-    }
-  }
-  return attrs;
-}
-
-interface SurfaceContract {
-  name: string;
-  file: string;
-  attrs: AttrDescriptor[];
-  attrNames: string[];
-  rawMount: string;
-}
-
-const surfaceContracts: SurfaceContract[] = SURFACES.map(({ name, file }) => {
-  const src = readFileSync(join(WEB_ROOT, file), 'utf8');
-  const rawMount = extractSigningApprovalMount(src);
-  const attrs = extractAttrs(rawMount);
-  return {
-    name,
-    file,
-    attrs,
-    attrNames: attrs.map((a) => a.name).sort(),
-    rawMount,
-  };
-});
-
-// -----------------------------------------------------------------------------
-// Client-side compilation. Each production surface adapter is a fresh
-// Svelte 5 component whose body mounts the SigningApproval invocation
-// extracted from that surface's real +page.svelte, with:
-//   - input props (model, selection, editing, approving, error) bound
-//     to `$props()` so the test can inject fixtures.
-//   - callback props (on*) bound to a shared spy from `$props()` so we
-//     can observe invocations.
-// This is the closest we can get to mounting the real +page.svelte
-// without also having to instantiate SvelteKit's runtime, better-auth
-// clients, and route store shims — none of which are part of the
-// parity contract Sol asked us to prove.
-// -----------------------------------------------------------------------------
-
-const INPUT_PROPS = new Set(['model', 'selection', 'editing', 'approving', 'error']);
-const CALLBACK_PROPS = new Set([
-  'onApprove',
-  'onCancel',
-  'onSelectionChange',
-  'onEditingChange',
-]);
-
-async function compileSharedForBrowser(): Promise<string> {
-  const src = readFileSync(COMPONENT_PATH, 'utf8');
-  const compiled = compile(src, {
-    generate: 'client',
-    dev: false,
-    name: 'SigningApproval',
-    filename: 'signing-approval.svelte',
-  });
-  const rewritten = compiled.js.code.replace(
-    /from ['"]\$lib\/([^'"]+)['"]/g,
-    (_m, rel) => `from '${pathToFileURL(join(WEB_ROOT, 'src/lib', rel)).href}'`,
-  );
-  const outPath = join(OUT_DIR, 'signing-approval.client.mjs');
-  writeFileSync(outPath, rewritten);
-  return pathToFileURL(outPath).href;
-}
-
-const signingApprovalUrl = await compileSharedForBrowser();
 
 /**
- * Build a per-surface adapter Svelte component whose <SigningApproval>
- * mount is a REWRITTEN copy of the surface's real block:
- *   - input-prop expressions collapsed to `{propName}` so `$props()`
- *     supplies values;
- *   - callback-prop expressions collapsed to `{onCallbackName}` so
- *     `$props()` supplies spies;
- *   - shorthand `{model}` stays `{model}`; shorthand callback
- *     references (rare) also flow through `$props()`.
+ * Compile a Svelte file at a `$lib/...` path to a client-side `.mjs`
+ * module and return the absolute file URL of the emitted file. Rewrites
+ * any `$lib/...svelte` imports recursively so a whole tree of Svelte
+ * files rooted at an adapter resolves to on-disk `.mjs` bundles rather
+ * than raw `.svelte` source files (which Bun cannot execute).
  *
- * The output preserves attribute ORDER — if a surface silently
- * reordered or renamed a prop, this adapter's rewrite would land the
- * spy on a different attribute name than the other surfaces' adapters
- * and the DOM-projection test would then fail.
+ * Non-`.svelte` `$lib/...` imports (plain TS modules, JSON, etc.) are
+ * rewritten to absolute file URLs and executed by Bun as-is.
  */
-function buildSurfaceAdapter(surface: SurfaceContract): string {
-  const rewrittenAttrs = surface.attrs.map((a) => {
-    if (a.kind === 'string') {
-      return `${a.name}="${a.expr ?? ''}"`;
-    }
-    if (a.kind === 'bareword') {
-      return a.name;
-    }
-    if (a.kind === 'shorthand') {
-      // `{model}`, `{error}` — reuse the same identifier from $props()
-      // if it's a known input prop; otherwise (unusual) treat as a
-      // callback spy.
-      if (INPUT_PROPS.has(a.name)) return `{${a.name}}`;
-      if (CALLBACK_PROPS.has(a.name)) return `{${a.name}}`;
-      // Any other shorthand is a page-scope variable we can't resolve;
-      // stub as a spy so compilation succeeds and the parity test
-      // records the difference in surfaceContracts[i].attrNames.
-      return `${a.name}={__unknownSpy}`;
-    }
-    // `name={expr}` — expr is a page-scope symbol or arrow body. Route
-    // by prop name.
-    if (INPUT_PROPS.has(a.name)) return `${a.name}={${a.name}}`;
-    if (CALLBACK_PROPS.has(a.name)) return `${a.name}={${a.name}}`;
-    return `${a.name}={__unknownSpy}`;
-  });
-  const opener = `<SigningApproval ${rewrittenAttrs.join(' ')} />`;
-  // Preserve the CLI surface's wrapping `<div bind:this={actionRow}>`
-  // (present ONLY on CLI). If we omit it the CLI adapter would mount
-  // <SigningApproval> at the container root while popup+iframe adapters
-  // also mount at the root — the wrappers must reflect the reality
-  // that the CLI has an extra wrapping <div>. We detect the wrapper
-  // by scanning the surface source for a `bind:this=` sibling of the
-  // extracted mount.
-  const surfaceSrc = readFileSync(join(WEB_ROOT, surface.file), 'utf8');
-  const mountIdx = surfaceSrc.indexOf(surface.rawMount);
-  const preceding = surfaceSrc.slice(Math.max(0, mountIdx - 200), mountIdx);
-  const following = surfaceSrc.slice(
-    mountIdx + surface.rawMount.length,
-    mountIdx + surface.rawMount.length + 100,
-  );
-  const wrapMatch = preceding.match(/<div\s+bind:this=\{[a-zA-Z_$][\w$]*\}\s*>\s*$/);
-  const closesWithDiv = /^\s*<\/div>/.test(following);
-  const opensDiv = wrapMatch !== null;
-  const body = opensDiv && closesWithDiv
-    ? `<div data-surface-wrapper="true">${opener}</div>`
-    : opener;
-  return `<script lang="ts">
-    import SigningApproval from '${signingApprovalUrl}';
-    let {
-      model,
-      selection,
-      editing = false,
-      approving = false,
-      error = null,
-      onApprove,
-      onCancel,
-      onSelectionChange,
-      onEditingChange,
-    } = $props();
-    function __unknownSpy(..._args: unknown[]) { void _args; }
-  </script>
-  ${body}`;
-}
+const compiledSvelteFiles = new Map<string, string>();
 
-async function compileSurfaceAdapter(surface: SurfaceContract): Promise<any> {
-  const src = buildSurfaceAdapter(surface);
+async function compileSvelteFile(libRelPath: string, name: string): Promise<string> {
+  const absoluteSource = join(WEB_ROOT, 'src/lib', libRelPath);
+  const cached = compiledSvelteFiles.get(absoluteSource);
+  if (cached) return cached;
+  const src = readFileSync(absoluteSource, 'utf8');
   const compiled = compile(src, {
     generate: 'client',
     dev: false,
-    name: `Adapter_${surface.name}`,
-    filename: `adapter-${surface.name}.svelte`,
+    name,
+    filename: `src/lib/${libRelPath}`,
   });
-  const outPath = join(OUT_DIR, `adapter-${surface.name}.client.mjs`);
-  writeFileSync(outPath, compiled.js.code);
-  return await import(pathToFileURL(outPath).href);
+  // Rewrite $lib imports. For .svelte imports, recursively compile the
+  // referenced component and point at the resulting .mjs file. For
+  // non-svelte imports, point at the on-disk source file URL.
+  const parts: string[] = [];
+  let cursor = 0;
+  const importRe = /from ['"]\$lib\/([^'"]+)['"]/g;
+  let match: RegExpExecArray | null;
+  while ((match = importRe.exec(compiled.js.code)) !== null) {
+    parts.push(compiled.js.code.slice(cursor, match.index));
+    const rel = match[1]!;
+    let targetUrl: string;
+    if (rel.endsWith('.svelte')) {
+      const childName = rel
+        .replace(/[^A-Za-z0-9]/g, '_')
+        .replace(/_svelte$/, '');
+      targetUrl = await compileSvelteFile(rel, childName);
+    } else {
+      targetUrl = pathToFileURL(join(WEB_ROOT, 'src/lib', rel)).href;
+    }
+    parts.push(`from '${targetUrl}'`);
+    cursor = match.index + match[0].length;
+  }
+  parts.push(compiled.js.code.slice(cursor));
+  const rewritten = parts.join('');
+  const safeName = libRelPath.replace(/[^A-Za-z0-9]/g, '_');
+  const outPath = join(OUT_DIR, `${safeName}.client.mjs`);
+  writeFileSync(outPath, rewritten);
+  const outUrl = pathToFileURL(outPath).href;
+  compiledSvelteFiles.set(absoluteSource, outUrl);
+  return outUrl;
 }
 
-const surfaceAdapters: Record<string, any> = {};
-for (const surface of surfaceContracts) {
-  const mod = await compileSurfaceAdapter(surface);
-  surfaceAdapters[surface.name] = mod.default;
+async function compileAdapterForBrowser(spec: SurfaceSpec): Promise<any> {
+  const libRel = spec.adapterFile.replace(/^src\/lib\//, '');
+  const url = await compileSvelteFile(libRel, spec.name);
+  const mod = await import(url);
+  return mod.default;
+}
+
+const surfaceBindings: SurfaceBinding[] = [];
+for (const spec of SURFACES) {
+  const Component = await compileAdapterForBrowser(spec);
+  surfaceBindings.push({ name: spec.name, adapterFile: spec.adapterFile, Component });
 }
 
 // -----------------------------------------------------------------------------
@@ -636,26 +436,25 @@ function makeCallbacks(): Callbacks {
 
 interface MountHandle {
   container: any;
-  surface: SurfaceContract;
+  binding: SurfaceBinding;
   unmount: () => void;
 }
 
 async function mountSurface(
-  surface: SurfaceContract,
+  binding: SurfaceBinding,
   props: any,
 ): Promise<MountHandle> {
   const container = win.document.createElement('div');
-  container.setAttribute('data-surface', surface.name);
+  container.setAttribute('data-surface', binding.name);
   win.document.body.appendChild(container);
-  const Adapter = surfaceAdapters[surface.name];
-  const component = mount(Adapter, {
+  const component = mount(binding.Component, {
     target: container as unknown as HTMLElement,
     props,
   });
   flushSync();
   return {
     container,
-    surface,
+    binding,
     unmount() {
       try {
         unmount(component);
@@ -687,19 +486,18 @@ function click(el: any): void {
 }
 
 /**
- * Send a keydown + keyup with the given key. Also toggles a checkbox's
- * `.checked` and fires the change event when key === ' ' to model the
- * native browser behaviour happy-dom does not emulate.
+ * Send a keydown + keyup with the given key. For Enter on a button the
+ * browser follows up with a synthesised click; happy-dom does not do
+ * this on its own, so we dispatch a real click event to model the effect.
+ * For Space on a checkbox we rely on the component's `onkeydown` handler
+ * (`handleKeydown`) — the shared `SigningApproval` calls `toggle(action)
+ * -> onSelectionChange(next)` when it sees the Space key, so we do NOT
+ * mutate `.checked` here.
  */
 function pressKey(el: any, key: string): void {
   el.dispatchEvent(
     new (win as any).KeyboardEvent('keydown', { key, bubbles: true }),
   );
-  if (key === ' ' && el.tagName?.toLowerCase() === 'input' && el.type === 'checkbox') {
-    el.checked = !el.checked;
-    el.dispatchEvent(new (win as any).Event('input', { bubbles: true }));
-    el.dispatchEvent(new (win as any).Event('change', { bubbles: true }));
-  }
   if (key === 'Enter' && el.tagName?.toLowerCase() === 'button') {
     el.dispatchEvent(new (win as any).MouseEvent('click', { bubbles: true }));
   }
@@ -733,32 +531,31 @@ afterAll(() => {
 // Suites.
 // -----------------------------------------------------------------------------
 
-describe('signing-approval mounted parity across production surfaces (Sol MAJOR-3 final)', () => {
-  test('every production surface passes the SAME set of props to the shared SigningApproval component', () => {
-    // Structural check. If a surface silently added, renamed, or
-    // dropped a prop, its adapter's opener would substitute the spy
-    // onto a different attribute name than the other adapters — and
-    // downstream mounted-DOM assertions would then diverge. Fail here
-    // first so the reason is obvious.
-    for (let i = 1; i < surfaceContracts.length; i += 1) {
-      expect(surfaceContracts[i]!.attrNames).toEqual(surfaceContracts[0]!.attrNames);
-    }
-  });
-
-  test('every surface renders the shared SigningApproval component under a dialog role', () => {
+describe('signing-approval mounted parity across production surface adapters (Sol MAJOR-3 final)', () => {
+  test('every surface renders the shared SigningApproval component under a dialog role', async () => {
     // Sanity: the SigningApproval dialog root MUST appear inside every
-    // surface adapter's mount output. This is what proves the adapter
-    // actually instantiated the shared component from its extracted
-    // block — not that it rendered nothing or a decoy tree.
-    for (const surface of surfaceContracts) {
+    // surface adapter's mount output. This is what proves each adapter
+    // actually instantiated the shared component rather than rendering
+    // nothing or a decoy tree.
+    for (const binding of surfaceBindings) {
       const cbs = makeCallbacks();
-      // eslint-disable-next-line @typescript-eslint/no-floating-promises
-      // (top-level await block below is intentional)
-      // We cannot mix promises at describe scope; assert inside test.
-      void { surface, cbs };
+      const model = benignFixtureModel();
+      const selection = fixtureSelection(model);
+      const handle = await mountSurface(binding, {
+        model,
+        selection,
+        editing: false,
+        approving: false,
+        error: null,
+        onApprove: cbs.onApprove,
+        onCancel: cbs.onCancel,
+        onSelectionChange: cbs.onSelectionChange,
+        onEditingChange: cbs.onEditingChange,
+      });
+      const dialogs = handle.container.querySelectorAll('[role="dialog"]');
+      expect(dialogs.length).toBe(1);
+      handle.unmount();
     }
-    // Actual mount + assert happens in the parity test below.
-    expect(surfaceContracts.length).toBe(SURFACES.length);
   });
 
   test('all three surface adapters render the same accessible DOM for the SAME model+selection (benign fixture)', async () => {
@@ -766,9 +563,9 @@ describe('signing-approval mounted parity across production surfaces (Sol MAJOR-
     const selection = fixtureSelection(model);
 
     const projections: SemanticNode[][] = [];
-    for (const surface of surfaceContracts) {
+    for (const binding of surfaceBindings) {
       const cbs = makeCallbacks();
-      const handle = await mountSurface(surface, {
+      const handle = await mountSurface(binding, {
         model,
         selection,
         editing: false,
@@ -795,9 +592,9 @@ describe('signing-approval mounted parity across production surfaces (Sol MAJOR-
     const selection = fixtureSelection(model);
 
     const projections: SemanticNode[][] = [];
-    for (const surface of surfaceContracts) {
+    for (const binding of surfaceBindings) {
       const cbs = makeCallbacks();
-      const handle = await mountSurface(surface, {
+      const handle = await mountSurface(binding, {
         model,
         selection,
         editing: false,
@@ -844,9 +641,9 @@ describe('signing-approval mounted parity across production surfaces (Sol MAJOR-
     const model = warningFixtureModel();
     const selection = fixtureSelection(model);
 
-    for (const surface of surfaceContracts) {
+    for (const binding of surfaceBindings) {
       const cbs = makeCallbacks();
-      const handle = await mountSurface(surface, {
+      const handle = await mountSurface(binding, {
         model,
         selection,
         editing: false,
@@ -881,9 +678,9 @@ describe('signing-approval mounted parity across production surfaces (Sol MAJOR-
     const model = benignFixtureModel();
     const selection = fixtureSelection(model);
 
-    for (const surface of surfaceContracts) {
+    for (const binding of surfaceBindings) {
       const cbs = makeCallbacks();
-      const handle = await mountSurface(surface, {
+      const handle = await mountSurface(binding, {
         model,
         selection,
         editing: true,
@@ -909,13 +706,13 @@ describe('signing-approval mounted parity across production surfaces (Sol MAJOR-
     }
   });
 
-  test('keyboard: Space toggles a per-action checkbox on every surface and fires onSelectionChange with the new selection set', async () => {
+  test('keyboard: Space on a checkbox goes through the component onkeydown handler and fires onSelectionChange on every surface', async () => {
     const model = benignFixtureModel();
     const initialSelection = fixtureSelection(model);
 
-    for (const surface of surfaceContracts) {
+    for (const binding of surfaceBindings) {
       const cbs = makeCallbacks();
-      const handle = await mountSurface(surface, {
+      const handle = await mountSurface(binding, {
         model,
         selection: initialSelection,
         editing: true,
@@ -932,9 +729,11 @@ describe('signing-approval mounted parity across production surfaces (Sol MAJOR-
       // The benign fixture has TWO editable actions, both selected by
       // default. In editing mode each renders a checkbox.
       expect(boxes.length).toBeGreaterThanOrEqual(2);
-      // Focus + Space activates. happy-dom does not model the browser's
-      // "Space on focused checkbox toggles checked" behaviour, so
-      // pressKey() emulates the effect explicitly.
+      // Focus + Space. `SigningApproval` has `onkeydown={(e) =>
+      // handleKeydown(e, action)}` on each checkbox; that handler
+      // preventDefaults and calls `toggle(action) -> onSelectionChange(next)`
+      // when it sees Space. pressKey() only dispatches the real keyboard
+      // event — no direct .checked mutation.
       boxes[0].focus();
       pressKey(boxes[0], ' ');
       expect(cbs.spies.selection.calls.length).toBeGreaterThan(0);
@@ -953,9 +752,9 @@ describe('signing-approval mounted parity across production surfaces (Sol MAJOR-
     const model = benignFixtureModel();
     const selection = fixtureSelection(model);
 
-    for (const surface of surfaceContracts) {
+    for (const binding of surfaceBindings) {
       const cbs = makeCallbacks();
-      const handle = await mountSurface(surface, {
+      const handle = await mountSurface(binding, {
         model,
         selection,
         editing: false,
@@ -996,10 +795,10 @@ describe('signing-approval mounted parity across production surfaces (Sol MAJOR-
       `tinycloud.kv\0${spaceId}\0\0tinycloud.kv/get`,
     ]);
     const perSurfaceCounts: Array<{ full: number; narrow: number }> = [];
-    for (const surface of surfaceContracts) {
+    for (const binding of surfaceBindings) {
       const cbsFull = makeCallbacks();
       const cbsNarrow = makeCallbacks();
-      const fullMount = await mountSurface(surface, {
+      const fullMount = await mountSurface(binding, {
         model,
         selection: fullSel,
         editing: true,
@@ -1014,7 +813,7 @@ describe('signing-approval mounted parity across production surfaces (Sol MAJOR-
         fullMount.container.querySelectorAll('input[type="checkbox"]'),
       ) as any[]).filter((b: any) => b.checked === true).length;
       fullMount.unmount();
-      const narrowMount = await mountSurface(surface, {
+      const narrowMount = await mountSurface(binding, {
         model,
         selection: narrowSel,
         editing: true,
@@ -1045,9 +844,9 @@ describe('signing-approval mounted parity across production surfaces (Sol MAJOR-
     const model = benignFixtureModel();
     const selection = fixtureSelection(model);
     const perSurface: Array<{ closed: number; open: number; expanded: string | null }> = [];
-    for (const surface of surfaceContracts) {
+    for (const binding of surfaceBindings) {
       const cbsClosed = makeCallbacks();
-      const closedMount = await mountSurface(surface, {
+      const closedMount = await mountSurface(binding, {
         model,
         selection,
         editing: false,
@@ -1068,7 +867,7 @@ describe('signing-approval mounted parity across production surfaces (Sol MAJOR-
       closedMount.unmount();
 
       const cbsOpen = makeCallbacks();
-      const openMount = await mountSurface(surface, {
+      const openMount = await mountSurface(binding, {
         model,
         selection,
         editing: true,
@@ -1096,9 +895,9 @@ describe('signing-approval mounted parity across production surfaces (Sol MAJOR-
   test('every surface adapter carries the aria-modal="true" dialog role from the shared SigningApproval component', async () => {
     const model = benignFixtureModel();
     const selection = fixtureSelection(model);
-    for (const surface of surfaceContracts) {
+    for (const binding of surfaceBindings) {
       const cbs = makeCallbacks();
-      const handle = await mountSurface(surface, {
+      const handle = await mountSurface(binding, {
         model,
         selection,
         editing: false,

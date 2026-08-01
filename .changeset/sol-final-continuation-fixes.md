@@ -8,11 +8,14 @@ consolidation.
 
 `@openkey/capability-review`:
 
-- `splitResourceUri` strips the `<short-service>` segment and returns a
-  WASM-aligned `{ space, path }`. `parse.ts` and `subset.ts` share this
-  helper so the parser matches the on-wire structure
-  `<space>/<short-service>[/<sub-path>]` used by WASM's
-  `parseRecapFromSiwe`.
+- `splitResourceUri` is a module-private helper in `parse.ts` that strips
+  the `<short-service>` segment from a TinyCloud resource URI and returns
+  a WASM-aligned `{ space, path }`. It is used by the ReCap decoder
+  (`decodeRecapUri`) in `parse.ts` so the parser matches the on-wire
+  structure `<space>/<short-service>[/<sub-path>]` used by WASM's
+  `parseRecapFromSiwe`. `subset.ts` does not use this helper — it operates
+  on the already-parsed `CapabilityReviewModel` and uses
+  `canonicalMultisetEqual` for caveat-multiset comparison.
 - `canonicalMultisetEqual` compares caveats by canonical-JSON multiset
   equality: object keys are sorted recursively before comparison,
   duplicates are respected, and array element order is preserved.

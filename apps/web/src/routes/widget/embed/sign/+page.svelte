@@ -7,7 +7,7 @@
   import { parseSIWE } from '$lib/siwe-parser';
   import Button from '$lib/components/ui/button.svelte';
   import SiweMessage from '$lib/components/ui/siwe-message.svelte';
-  import SigningApproval from '$lib/components/signing/signing-approval.svelte';
+  import IframeSigningAdapter from '$lib/components/signing/iframe-signing-adapter.svelte';
   import {
     parseCapabilityReview,
     defaultSelection,
@@ -670,7 +670,7 @@
         so the user must review the server-returned candidate bytes before
         the final /authorize-sign step.
       -->
-      <SigningApproval
+      <IframeSigningAdapter
         model={reviewModel}
         selection={reviewSelection}
         editing={reviewEditing}

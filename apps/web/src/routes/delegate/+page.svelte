@@ -6,7 +6,7 @@
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import SiweMessage from '$lib/components/ui/siwe-message.svelte';
-  import SigningApproval from '$lib/components/signing/signing-approval.svelte';
+  import CliSigningAdapter from '$lib/components/signing/cli-signing-adapter.svelte';
   import {
     parseCapabilityReview,
     defaultSelection,
@@ -1166,7 +1166,7 @@
           -->
           {#if reviewModel}
             <div bind:this={actionRow}>
-              <SigningApproval
+              <CliSigningAdapter
                 model={reviewModel}
                 selection={reviewSelection}
                 editing={reviewEditing}

@@ -6,7 +6,7 @@
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import SiweMessage from '$lib/components/ui/siwe-message.svelte';
-  import SigningApproval from '$lib/components/signing/signing-approval.svelte';
+  import PopupSigningAdapter from '$lib/components/signing/popup-signing-adapter.svelte';
   import {
     parseCapabilityReview,
     defaultSelection,
@@ -743,7 +743,7 @@
       final /authorize-sign step. Non-versioned requests skip preview and
       fall through to approveAndSign() directly.
     -->
-    <SigningApproval
+    <PopupSigningAdapter
       model={reviewModel}
       selection={reviewSelection}
       editing={reviewEditing}
