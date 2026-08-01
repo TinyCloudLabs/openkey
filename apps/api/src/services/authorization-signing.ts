@@ -105,6 +105,86 @@ export function digestAbilities(abilities: unknown): string {
   return sha256Hex(stableStringify(abilities));
 }
 
+/**
+ * Sol MAJOR-4: digest the FULL normalized ReCap attenuation, INCLUDING per-
+ * (resource, ability) caveat multisets. Used as the baseline for
+ * `/authorize-sign-prepare` so a narrowed candidate cannot silently drop
+ * caveats (which would broaden authority relative to the recorded baseline).
+ *
+ * The input is the decoded `att` block of the `urn:recap:...` payload — a map
+ * from resource URI to (ability → caveats[]).  Caveats are normalized by
+ * stable stringification of each caveat object; the caveat list at each
+ * (resource, ability) pair is treated as an ORDERED MULTISET (identical to
+ * ReCap wire semantics), so a candidate that removes the second of two
+ * identical `{}` caveats will still diverge in the digest.
+ *
+ * The classifier-visible baseline previously used
+ * `digestAbilities(entriesToAbilities(entries))` which threw away caveats
+ * entirely. That made the equality check tautological because both sides
+ * were computed from the same caveat-stripped `entries`. This function
+ * closes that gap and MUST be used for both baseline and candidate digests.
+ */
+export function digestFullRecapAttenuation(
+  attenuation: Record<string, Record<string, unknown[]>>,
+): string {
+  // Normalize: keys sorted, caveat arrays kept in their original order (a
+  // change in caveat order is a real change), each caveat stably serialized.
+  const normalized: Record<string, Record<string, string[]>> = {};
+  const resourceKeys = Object.keys(attenuation).sort();
+  for (const resource of resourceKeys) {
+    const abilityMap = attenuation[resource] ?? {};
+    const abilityKeys = Object.keys(abilityMap).sort();
+    const normalizedAbilityMap: Record<string, string[]> = {};
+    for (const ability of abilityKeys) {
+      const caveats = abilityMap[ability];
+      const list = Array.isArray(caveats) ? caveats : [];
+      normalizedAbilityMap[ability] = list.map((c) => stableStringify(c));
+    }
+    normalized[resource] = normalizedAbilityMap;
+  }
+  return sha256Hex(stableStringify(normalized));
+}
+
+/**
+ * Parse the `att` block from every `urn:recap:...` resource line in a SIWE.
+ * Returns an empty attenuation when the SIWE carries no ReCap resources.
+ * Silently skips resources whose payload is not decodable — the outer
+ * caller (`parsePreparedRecap` in the delegate route) already asserts that
+ * every `urn:recap:` resource is well-formed before this runs.
+ */
+export function extractRecapAttenuationFromSiwe(
+  siwe: string,
+): Record<string, Record<string, unknown[]>> {
+  const combined: Record<string, Record<string, unknown[]>> = {};
+  const lines = siwe.split(/\r?\n/);
+  for (const line of lines) {
+    const match = line.match(/urn:recap:([A-Za-z0-9_-]+=*)/);
+    if (!match || !match[1]) continue;
+    try {
+      const normalized = match[1].replace(/-/g, '+').replace(/_/g, '/');
+      const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
+      const json = Buffer.from(padded, 'base64').toString('utf8');
+      const parsed = JSON.parse(json) as { att?: Record<string, Record<string, unknown[]>> };
+      const att = parsed?.att;
+      if (!att || typeof att !== 'object') continue;
+      for (const [resource, abilityMap] of Object.entries(att)) {
+        if (!abilityMap || typeof abilityMap !== 'object') continue;
+        const target = combined[resource] ?? (combined[resource] = {});
+        for (const [ability, caveats] of Object.entries(abilityMap)) {
+          if (!Array.isArray(caveats)) continue;
+          // If the same (resource, ability) appears in multiple ReCap
+          // resources (unusual but legal), we concatenate the caveat
+          // lists to keep the multiset semantics.
+          target[ability] = [...(target[ability] ?? []), ...caveats];
+        }
+      }
+    } catch {
+      continue;
+    }
+  }
+  return combined;
+}
+
 export function digestImmutableFields(fields: {
   address: string;
   chainId: number;
@@ -201,6 +281,7 @@ export type ConsumeError =
   | "host-mismatch"
   | "space-mismatch"
   | "baseline-digest-mismatch"
+  | "candidate-broadens-baseline"
   | "immutable-fields-changed"
   | "action-not-in-baseline"
   | "action-not-in-initial-selection"
@@ -226,14 +307,41 @@ export interface ConsumeInput {
    */
   candidateImmutableFieldsDigest: string;
   /**
-   * Sol critical-3: recomputed digest for the abilities encoded in the
-   * candidate SIWE the caller wants to complete. When provided, it must
-   * match the baseline digest bound at /prepare (or be a strict subset
-   * of it — the caller is responsible for supplying the subset digest).
-   * Passing `null` opts out of the check for callers that separately
-   * enforce the abilities invariant.
+   * DEPRECATED (kept for backward-compat with existing tests): equality-only
+   * digest check. Prefer `candidateAttenuation` which enables a proper
+   * subset check including caveats.
+   *
+   * When BOTH `candidateAbilitiesDigest` and `candidateAttenuation` are
+   * supplied, the attenuation subset check takes precedence.
    */
   candidateAbilitiesDigest?: string | null;
+  /**
+   * Sol MAJOR-4: the FULL ReCap attenuation of the candidate SIWE the caller
+   * wants to complete, as returned by `extractRecapAttenuationFromSiwe`.
+   * When supplied, consume verifies that the candidate attenuation is a
+   * STRICT SUBSET of the baseline attenuation bound at /prepare — narrowing
+   * is permitted but broadening (any new resource, ability, or caveat) is
+   * rejected. Caveats compare as ordered multisets — removing a caveat is
+   * broadening because it removes a narrowing constraint.
+   *
+   * The baseline attenuation is not stored directly on the context (the
+   * digest suffices); instead callers pass the ORIGINAL SIWE attenuation
+   * on both sides. Consume is a stateless subset test.
+   */
+  candidateAttenuation?: Record<string, Record<string, unknown[]>>;
+  /**
+   * Sol MAJOR-4: the baseline ReCap attenuation, as extracted from the
+   * ORIGINAL SIWE bound at /prepare. When supplied alongside
+   * `candidateAttenuation`, consume runs a subset check against this
+   * baseline. This is the SAME attenuation whose digest is stored on the
+   * context, so consume additionally cross-checks
+   * `digestFullRecapAttenuation(baselineAttenuation) === stored.baselineAbilitiesDigest`
+   * before running the subset test — a mismatch means the caller supplied
+   * a different baseline than the one bound at /prepare and consume fails
+   * fast rather than accepting a subset check against attacker-controlled
+   * baseline data.
+   */
+  baselineAttenuation?: Record<string, Record<string, unknown[]>>;
   /**
    * Set of action IDs that the classifier says are required. Used to enforce
    * the "required actions remain" invariant.
@@ -277,6 +385,55 @@ function constantTimeEqual(a: string, b: string): boolean {
   return timingSafeEqual(bufA, bufB);
 }
 
+/**
+ * Sol MAJOR-4: return null when the candidate ReCap attenuation is a strict
+ * subset of the baseline; otherwise return a short human message describing
+ * the first violation.
+ *
+ * Subset semantics:
+ *   - Every candidate resource key must appear in baseline.
+ *   - Every candidate (resource, ability) pair must appear in baseline.
+ *   - Every caveat entry in the candidate list must appear (structurally)
+ *     in the baseline caveat list for the same (resource, ability). We use
+ *     multiset semantics: N identical caveats in the candidate require at
+ *     least N in the baseline. Removing a caveat is FORBIDDEN because
+ *     caveats narrow authority — removing them broadens.
+ */
+function attenuationSubsetFailure(
+  candidate: Record<string, Record<string, unknown[]>>,
+  baseline: Record<string, Record<string, unknown[]>>,
+): string | null {
+  for (const [resource, candidateAbilityMap] of Object.entries(candidate)) {
+    const baselineAbilityMap = baseline[resource];
+    if (!baselineAbilityMap) {
+      return `resource ${resource} not in baseline`;
+    }
+    for (const [ability, candidateCaveats] of Object.entries(
+      candidateAbilityMap,
+    )) {
+      const baselineCaveats = baselineAbilityMap[ability];
+      if (!baselineCaveats) {
+        return `ability ${ability} on ${resource} not in baseline`;
+      }
+      // Multiset subset check on stably-stringified caveats.
+      const baselineBucket = new Map<string, number>();
+      for (const c of baselineCaveats) {
+        const key = stableStringify(c);
+        baselineBucket.set(key, (baselineBucket.get(key) ?? 0) + 1);
+      }
+      for (const c of candidateCaveats) {
+        const key = stableStringify(c);
+        const remaining = baselineBucket.get(key) ?? 0;
+        if (remaining === 0) {
+          return `caveat ${key.slice(0, 80)} on ${ability}@${resource} not present in baseline`;
+        }
+        baselineBucket.set(key, remaining - 1);
+      }
+    }
+  }
+  return null;
+}
+
 export function consumeAuthorizationContext(
   input: ConsumeInput,
 ): ConsumeSuccess | ConsumeFailure {
@@ -318,18 +475,49 @@ export function consumeAuthorizationContext(
       message: "SIWE immutable fields (domain, issuedAt, expirationTime, nonce, chainId, spaceId, address) do not match the prepared context.",
     };
   }
-  // Sol critical-3: if the caller supplied a candidate abilities digest,
-  // enforce that it matches the bound baseline exactly. Callers that
-  // want to sign a strict subset MUST first re-derive the SIWE for the
-  // narrowed selection and let their own baseline enforcement gate the
-  // narrowing; here we only ratify the invariant that the SIWE the
-  // caller wants signed has the SAME baseline the /prepare step
-  // recorded.
-  if (
+  // Sol MAJOR-4: attenuation-subset check (preferred). When callers pass a
+  // candidate + baseline attenuation, we cross-check the baseline against
+  // the stored digest, then verify the candidate is a strict subset of the
+  // baseline INCLUDING caveats. This replaces the tautological equality
+  // digest check that previously compared two derivations of the SAME
+  // caveat-stripped `entries`.
+  if (input.candidateAttenuation !== undefined) {
+    if (input.baselineAttenuation === undefined) {
+      return {
+        ok: false,
+        error: "baseline-digest-mismatch",
+        message:
+          "candidateAttenuation supplied without baselineAttenuation — cannot perform subset check.",
+      };
+    }
+    const baselineDigest = digestFullRecapAttenuation(input.baselineAttenuation);
+    if (!constantTimeEqual(stored.baselineAbilitiesDigest, baselineDigest)) {
+      return {
+        ok: false,
+        error: "baseline-digest-mismatch",
+        message:
+          "baselineAttenuation supplied to consume does not match the digest bound at /prepare.",
+      };
+    }
+    const subsetFailure = attenuationSubsetFailure(
+      input.candidateAttenuation,
+      input.baselineAttenuation,
+    );
+    if (subsetFailure) {
+      return {
+        ok: false,
+        error: "candidate-broadens-baseline",
+        message: `Candidate ReCap broadens the prepared baseline: ${subsetFailure}`,
+      };
+    }
+  } else if (
     input.candidateAbilitiesDigest !== undefined &&
     input.candidateAbilitiesDigest !== null &&
     !constantTimeEqual(stored.baselineAbilitiesDigest, input.candidateAbilitiesDigest)
   ) {
+    // Legacy equality-only path: kept for tests that predate the
+    // attenuation-based subset check. Production callers always send
+    // `candidateAttenuation` + `baselineAttenuation`.
     return {
       ok: false,
       error: "baseline-digest-mismatch",

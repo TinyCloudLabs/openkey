@@ -261,6 +261,30 @@ type MessageType =
       protocolVersion?: number;
     }
   | { type: 'openkey:sign:response'; success: false; error: OpenKeyError; requestId?: string; protocolVersion?: number }
+  // Sol MAJOR-3 (continuation): external-key review flow. The widget
+  // renders the shared SigningApproval UI, calls /authorize-sign-prepare
+  // and /authorize-sign-preview on the user's behalf, and — instead of
+  // signing server-side with a managed key — hands the SDK back the
+  // preview data so the SDK can invoke the user's wallet. The SDK then
+  // completes /authorize-sign with the resulting `externalSignature`.
+  | {
+      type: 'openkey:externalSign:approve';
+      success: true;
+      requestId: string;
+      protocolVersion: number;
+      authorizationContextToken: string;
+      previewApprovalToken: string;
+      signedMessage: string;
+      selectedActionIds: string[];
+      address: string;
+    }
+  | {
+      type: 'openkey:externalSign:approve';
+      success: false;
+      requestId: string;
+      protocolVersion: number;
+      error: OpenKeyError;
+    }
   | { type: 'openkey:signTypedData:request'; data: SignTypedDataRequest; sessionToken?: string; requestId?: string; protocolVersion?: number }
   | { type: 'openkey:signTypedData:response'; success: true; signature: string; address: string; requestId?: string; protocolVersion?: number }
   | { type: 'openkey:signTypedData:response'; success: false; error: OpenKeyError; requestId?: string; protocolVersion?: number }
@@ -652,21 +676,34 @@ export class OpenKey {
     if (typeof request.siwe !== 'string' || !request.siwe) {
       throw new Error('authorizeTinyCloud requires a non-empty SIWE');
     }
-    // Sol MAJOR-6: branch to the external-wallet preview→sign→finalize
-    // flow when the last-connected key is EXTERNAL. External keys are
-    // held by the user's browser wallet — OpenKey does not have the
-    // private material, so it cannot execute the managed-key path. We
-    // route the versioned protocol through:
-    //   1. POST /authorize-sign-prepare (bind context to this JWK/SIWE)
-    //   2. POST /authorize-sign-preview (get server-authoritative bytes)
-    //   3. wallet signs the preview bytes
-    //   4. POST /authorize-sign with externalSignature
-    // The signature invariant is preserved: the wallet only sees the
-    // server's regenerated (or original) bytes; whatever narrowing
-    // happens is bound to the /prepare context and the SDK ends up with
-    // `signedMessage` that exactly matches the signature.
-    if (this.lastAuth?.keyType === 'EXTERNAL') {
-      return this.authorizeTinyCloudExternal(request);
+    // Sol MAJOR-3 (continuation): branch to the external-wallet preview→
+    // sign→finalize flow when the target key is EXTERNAL. External keys
+    // are held by the user's browser wallet — OpenKey does not have the
+    // private material, so it cannot execute the managed-key path.
+    //
+    // Routing rules:
+    //   1. If the caller passed request.keyId AND it references an
+    //      EXTERNAL key (lastAuth.keyId matches AND lastAuth.keyType is
+    //      EXTERNAL), route to external.
+    //   2. If the caller did NOT pass request.keyId but the lastAuth key
+    //      is EXTERNAL, route to external.
+    //   3. Otherwise (managed key), route through the widget for
+    //      server-side signing.
+    //
+    // The prior check `this.lastAuth?.keyType === 'EXTERNAL'` alone let
+    // an explicit external keyId enter the managed widget path when
+    // lastAuth was MANAGED, causing /authorize-sign to be called without
+    // an externalSignature.
+    const explicitKeyId = request.keyId;
+    const explicitKeyIsExternal =
+      explicitKeyId &&
+      this.lastAuth?.keyId === explicitKeyId &&
+      this.lastAuth?.keyType === 'EXTERNAL';
+    const shouldRouteExternal =
+      explicitKeyIsExternal ||
+      (!explicitKeyId && this.lastAuth?.keyType === 'EXTERNAL');
+    if (shouldRouteExternal) {
+      return this.authorizeTinyCloudExternal(request, opts);
     }
     // Sol CRITICAL-1: Send a DISTINCT versioned sign request so the widget
     // knows to route through the server-authoritative /authorize-sign
@@ -736,22 +773,28 @@ export class OpenKey {
   }
 
   /**
-   * Sol MAJOR-6: authorizeTinyCloud path for external keys. The wallet
-   * lives outside OpenKey, so the SDK talks to the OpenKey API directly:
-   * prepare → preview → wallet signs → finalize.
+   * Sol MAJOR-3 (continuation): authorizeTinyCloud path for external keys.
+   * The wallet lives outside OpenKey, so the SDK opens the shared widget
+   * for review + preview, then invokes the user's wallet to sign the
+   * preview bytes, then finalizes server-side via /authorize-sign.
    *
-   * Requires the caller to have run `connect()` first so the SDK knows
-   * both the target key ID and the wallet provider for
-   * `lastAuth.address`. External-key `authorizeTinyCloud` never opens
-   * an iframe/popup — the review happens inline in the user's browser
-   * wallet via `personal_sign`.
+   * Flow:
+   *   1. Open the widget with `externalSign: true` — the widget renders
+   *      the shared SigningApproval UI, calls /authorize-sign-prepare,
+   *      calls /authorize-sign-preview after the user approves a
+   *      selection, and hands back `{ previewApprovalToken,
+   *      signedMessage, selectedActionIds, address, authorizationContextToken }`.
+   *   2. SDK invokes the user's wallet on the returned signedMessage.
+   *   3. SDK POSTs /authorize-sign with `externalSignature`.
    *
-   * The SDK enforces byte-for-byte agreement between the preview and
-   * the finalize response before returning; if the server signs different
-   * bytes than the wallet saw, the call throws.
+   * Legacy exact-byte signMessage callers are unaffected — this path is
+   * only taken via authorizeTinyCloud (protocolVersion:1) when the target
+   * key is EXTERNAL. Sol's rejection required this path to go through
+   * the same review UI as managed keys.
    */
   private async authorizeTinyCloudExternal(
     request: TinyCloudAuthorizationRequestV1,
+    opts?: { mode?: OpenKeyMode },
   ): Promise<TinyCloudAuthorizationResultV1> {
     const keyId = request.keyId ?? this.lastAuth?.keyId;
     if (!keyId) {
@@ -765,72 +808,58 @@ export class OpenKey {
         'authorizeTinyCloud (external) requires a connected wallet — call connect() first',
       );
     }
-    // 1. Prepare — bind the context server-side.
-    const prepareRes = await fetch(
-      `${this.oauthHost}/api/delegate/authorize-sign-prepare`,
+    // Sol MAJOR-3 (continuation): open the shared widget UI so the user
+    // sees and can narrow the review, identical to the managed-key flow.
+    const requestId = `ok-ext-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    const approval = await this.openFlow<{
+      authorizationContextToken: string;
+      previewApprovalToken: string;
+      signedMessage: string;
+      selectedActionIds: string[];
+      address: string;
+    }>(
+      'sign',
       {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          keyId,
-          siwe: request.siwe,
-          jwk: request.jwk,
-          host: request.host,
-        }),
-      },
+        type: 'openkey:sign:request',
+        requestId,
+        protocolVersion: 1,
+        message: request.siwe,
+        keyId,
+        jwk: request.jwk,
+        host: request.host,
+        sessionToken: this.sessionToken || undefined,
+        // Sol MAJOR-3 (continuation): tell the widget to hand us back
+        // the previewApproval instead of asking OpenKey to sign
+        // server-side with a managed key. The widget will still render
+        // the SAME SigningApproval component; it just diverges at the
+        // "sign" step and emits `openkey:externalSign:approve` back
+        // through the transport.
+        externalSign: true,
+      } as unknown as MessageType,
+      opts?.mode,
     );
-    if (!prepareRes.ok) {
-      const body = await prepareRes.json().catch(() => ({ error: `HTTP ${prepareRes.status}` }));
-      throw new Error(body.error || `authorize-sign-prepare failed (${prepareRes.status})`);
-    }
-    const prepareBody = await prepareRes.json();
-    const token: string | undefined = prepareBody.authorizationContextToken;
-    if (!token) throw new Error('authorize-sign-prepare returned no token');
-    const allowedActionIds: string[] = Array.isArray(prepareBody.initialSelectionActionIds)
-      ? (prepareBody.initialSelectionActionIds as string[])
-      : [];
-    // 2. Preview — get the exact bytes the server would sign.
-    const previewRes = await fetch(
-      `${this.oauthHost}/api/delegate/authorize-sign-preview`,
-      {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          authorizationContextToken: token,
-          // External clients don't run the review UI here; they sign
-          // the full initial selection. If a caller wants to narrow,
-          // they should go through the widget flow instead.
-          selectedActionIds: allowedActionIds,
-        }),
-      },
-    );
-    if (!previewRes.ok) {
-      const body = await previewRes.json().catch(() => ({ error: `HTTP ${previewRes.status}` }));
-      throw new Error(body.error || `authorize-sign-preview failed (${previewRes.status})`);
-    }
-    const previewBody = await previewRes.json();
-    const previewSignedMessage: string | undefined = previewBody.signedMessage;
-    if (!previewSignedMessage) throw new Error('authorize-sign-preview returned no signedMessage');
-    // Sol CRITICAL-1: preview response now carries a preview-approval
-    // token that seals the exact selection and bytes. /authorize-sign
-    // requires it — a missing token is a protocol violation.
-    const previewApprovalToken: string | undefined = previewBody.previewApprovalToken;
-    if (!previewApprovalToken) {
+    if (!approval?.previewApprovalToken || !approval?.signedMessage) {
       throw new Error(
-        'authorize-sign-preview did not return a previewApprovalToken — server is out of date',
+        'authorizeTinyCloud (external): widget did not return a previewApprovalToken + signedMessage',
       );
     }
-    // 3. Wallet signs the preview bytes.
+    if (
+      approval.address &&
+      approval.address.toLowerCase() !== walletAddress.toLowerCase()
+    ) {
+      throw new Error(
+        `authorizeTinyCloud (external): widget preview address ${approval.address} does not match connected wallet ${walletAddress}`,
+      );
+    }
+    // Wallet signs the exact bytes the widget previewed.
     const provider = await this.findWalletProvider(walletAddress);
-    const hexMessage = this.toHex(previewSignedMessage);
+    const hexMessage = this.toHex(approval.signedMessage);
     const walletSignature = (await provider.request({
       method: 'personal_sign',
       params: [hexMessage, walletAddress],
     })) as string;
-    // 4. Finalize — server verifies the wallet signature against the
-    //    exact same bytes it emitted for the preview.
+    // Finalize — server verifies the wallet signature against the exact
+    // same bytes it emitted for the preview.
     const finalizeRes = await fetch(
       `${this.oauthHost}/api/delegate/authorize-sign`,
       {
@@ -838,9 +867,9 @@ export class OpenKey {
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          authorizationContextToken: token,
-          previewApprovalToken,
-          selectedActionIds: allowedActionIds,
+          authorizationContextToken: approval.authorizationContextToken,
+          previewApprovalToken: approval.previewApprovalToken,
+          selectedActionIds: approval.selectedActionIds,
           protocolVersion: 1,
           externalSignature: walletSignature,
         }),
@@ -851,7 +880,7 @@ export class OpenKey {
       throw new Error(body.error || `authorize-sign failed (${finalizeRes.status})`);
     }
     const finalize = await finalizeRes.json();
-    if (finalize.signedMessage !== previewSignedMessage) {
+    if (finalize.signedMessage !== approval.signedMessage) {
       throw new Error(
         'authorizeTinyCloud (external): server signed different bytes than the preview showed',
       );
@@ -1351,7 +1380,8 @@ export class OpenKey {
             data.type === 'openkey:auth:response' ||
             data.type === 'openkey:sign:response' ||
             data.type === 'openkey:signTypedData:response' ||
-            data.type === 'openkey:link-wallet:response'
+            data.type === 'openkey:link-wallet:response' ||
+            data.type === 'openkey:externalSign:approve'
           ) {
             settle(() => {
               cleanup();
@@ -1361,6 +1391,14 @@ export class OpenKey {
                   resolve({ address: data.address, keyId: data.keyId, keyType: data.keyType || 'MANAGED' } as T);
                 } else if (data.type === 'openkey:link-wallet:response') {
                   resolve({ address: data.address, keyId: data.keyId } as T);
+                } else if (data.type === 'openkey:externalSign:approve') {
+                  resolve({
+                    authorizationContextToken: (data as any).authorizationContextToken,
+                    previewApprovalToken: (data as any).previewApprovalToken,
+                    signedMessage: (data as any).signedMessage,
+                    selectedActionIds: (data as any).selectedActionIds,
+                    address: (data as any).address,
+                  } as T);
                 } else {
                   resolve({
                     signature: (data as any).signature,
@@ -1545,6 +1583,17 @@ export class OpenKey {
       }
 
       if (data.type === 'openkey:close') {
+        // Sol MAJOR-4: correlate close messages to the current versioned
+        // request. A same-origin, same-source stale close from a
+        // previous /widget/sign window MUST NOT tear down the active
+        // request. Unversioned close messages are only accepted on
+        // unversioned flows (legacy signMessage callers).
+        if (isVersionedRequest) {
+          const closeRequestId = (data as { requestId?: unknown }).requestId;
+          const closeVersion = (data as { protocolVersion?: unknown }).protocolVersion;
+          if (closeRequestId !== outgoingRequestId) return;
+          if (closeVersion !== outgoingProtocolVersion) return;
+        }
         cleanup();
         this.popup?.close();
         reject({
@@ -1566,7 +1615,8 @@ export class OpenKey {
         data.type === 'openkey:auth:response' ||
         data.type === 'openkey:sign:response' ||
         data.type === 'openkey:signTypedData:response' ||
-        data.type === 'openkey:link-wallet:response'
+        data.type === 'openkey:link-wallet:response' ||
+        data.type === 'openkey:externalSign:approve'
       ) {
         // Sol MAJOR-3: drop cross-correlated responses on versioned flows.
         if (isVersionedRequest) {
@@ -1584,6 +1634,16 @@ export class OpenKey {
             resolve({ address: data.address, keyId: data.keyId, keyType: data.keyType || 'MANAGED' } as T);
           } else if (data.type === 'openkey:link-wallet:response') {
             resolve({ address: data.address, keyId: data.keyId } as T);
+          } else if (data.type === 'openkey:externalSign:approve') {
+            // Sol MAJOR-3 (continuation): hand the preview payload back
+            // to authorizeTinyCloudExternal so it can invoke the wallet.
+            resolve({
+              authorizationContextToken: (data as any).authorizationContextToken,
+              previewApprovalToken: (data as any).previewApprovalToken,
+              signedMessage: (data as any).signedMessage,
+              selectedActionIds: (data as any).selectedActionIds,
+              address: (data as any).address,
+            } as T);
           } else {
             resolve({
               signature: (data as any).signature,

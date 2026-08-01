@@ -577,22 +577,31 @@ function buildGrants(
     const severity = classifySeverityFromActions(family, entry.actions);
     const actions = buildActions(entry, ctx);
     const ownership = ownerFromSpace(entry.space);
-    // ownedBySelf is a UI hint. Prefer the VERIFIED requester when
-    // available; fall back to the signer address only when there is no
-    // requester identity to compare against. When neither is available
-    // (and the space has an owner), we fail closed by reporting null so
-    // the UI does not falsely claim self-ownership.
+    // Sol MAJOR-5 (continuation): NEVER fall back to the signer address as
+    // the ownership axis. The signer is the OpenKey account signing this
+    // request — it is NOT the identity of the requesting app. A user who
+    // signs into OpenKey with the same wallet that owns their TinyCloud
+    // space (extremely common) would otherwise have every cross-app
+    // request mislabelled as `ownedBySelf === true`, suppressing the
+    // SigningApproval cross-app warning.
+    //
+    // Fail-closed rule: `ownedBySelf` is true ONLY when we have a
+    // VERIFIED requester identity and it matches the space owner.
+    // Anything else — no requester identity, unverified requester, or a
+    // verified requester whose address differs from the owner — is either
+    // null (unknown) or false (definitively cross-app).
     const trustedOwnershipAxis = requesterVerified && requesterAddress
       ? requesterAddress.toLowerCase()
-      : requesterAddress
-        ? null
-        : signerAddress;
+      : null;
     const ownedBySelf =
       ownership.owner === null
         ? null
         : trustedOwnershipAxis === null
           ? null
           : ownership.owner === trustedOwnershipAxis;
+    // signerAddress is retained above only for potential downstream
+    // display; it MUST NOT influence ownership classification.
+    void signerAddress;
     return {
       id: permissionId(entry.service, entry.space, entry.path),
       family,

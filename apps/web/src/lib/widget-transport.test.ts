@@ -369,4 +369,134 @@ describe('widget-transport', () => {
       data: { type: 'openkey:resize', height: 200, protocolVersion: 1 },
     });
   });
+
+  // Sol MAJOR-4 (continuation): close messages MUST correlate to the
+  // active request. A same-origin stale close carrying no requestId must
+  // NOT tear down a live signing flow.
+  it('rejects close messages with a mismatched requestId while a request is active', () => {
+    const { parent, child } = makeWindows();
+    let closed = 0;
+    let requested = 0;
+    const invalids: string[] = [];
+    createWidgetTransport({
+      origin: 'https://caller.example',
+      container: 'popup',
+      onRequest: () => (requested += 1),
+      onClose: () => (closed += 1),
+      onInvalid: (reason) => invalids.push(reason),
+    });
+    // Deliver a valid request.
+    child.dispatch({
+      origin: 'https://caller.example',
+      source: parent as unknown as MessageEventSource,
+      data: {
+        type: 'openkey:sign:request',
+        requestId: 'active-1',
+        protocolVersion: 1,
+        message: 'hi',
+      },
+    });
+    expect(requested).toBe(1);
+    // A close carrying a DIFFERENT requestId is dropped.
+    child.dispatch({
+      origin: 'https://caller.example',
+      source: parent as unknown as MessageEventSource,
+      data: { type: 'openkey:close', requestId: 'stale-999', protocolVersion: 1 },
+    });
+    expect(closed).toBe(0);
+    expect(invalids).toContain('invalid-close');
+  });
+
+  it('accepts a correlated close for the active request', () => {
+    const { parent, child } = makeWindows();
+    let closed = 0;
+    createWidgetTransport({
+      origin: 'https://caller.example',
+      container: 'popup',
+      onRequest: () => {},
+      onClose: () => (closed += 1),
+    });
+    child.dispatch({
+      origin: 'https://caller.example',
+      source: parent as unknown as MessageEventSource,
+      data: {
+        type: 'openkey:sign:request',
+        requestId: 'active-2',
+        protocolVersion: 1,
+        message: 'hi',
+      },
+    });
+    child.dispatch({
+      origin: 'https://caller.example',
+      source: parent as unknown as MessageEventSource,
+      data: { type: 'openkey:close', requestId: 'active-2', protocolVersion: 1 },
+    });
+    expect(closed).toBe(1);
+  });
+
+  it('rejects close messages that omit protocolVersion while a versioned request is active', () => {
+    const { parent, child } = makeWindows();
+    let closed = 0;
+    const invalids: string[] = [];
+    createWidgetTransport({
+      origin: 'https://caller.example',
+      container: 'popup',
+      onRequest: () => {},
+      onClose: () => (closed += 1),
+      onInvalid: (reason) => invalids.push(reason),
+    });
+    child.dispatch({
+      origin: 'https://caller.example',
+      source: parent as unknown as MessageEventSource,
+      data: {
+        type: 'openkey:sign:request',
+        requestId: 'active-3',
+        protocolVersion: 1,
+        message: 'hi',
+      },
+    });
+    child.dispatch({
+      origin: 'https://caller.example',
+      source: parent as unknown as MessageEventSource,
+      data: { type: 'openkey:close' },
+    });
+    expect(closed).toBe(0);
+    expect(invalids).toContain('invalid-close');
+  });
+
+  it('refuses a second overlapping sign request while one is in flight', () => {
+    const { parent, child } = makeWindows();
+    let requested = 0;
+    const invalids: string[] = [];
+    createWidgetTransport({
+      origin: 'https://caller.example',
+      container: 'popup',
+      onRequest: () => (requested += 1),
+      onClose: () => {},
+      onInvalid: (reason) => invalids.push(reason),
+    });
+    child.dispatch({
+      origin: 'https://caller.example',
+      source: parent as unknown as MessageEventSource,
+      data: {
+        type: 'openkey:sign:request',
+        requestId: 'r-a',
+        protocolVersion: 1,
+        message: 'hi',
+      },
+    });
+    // Second (overlapping) request with a different requestId — refused.
+    child.dispatch({
+      origin: 'https://caller.example',
+      source: parent as unknown as MessageEventSource,
+      data: {
+        type: 'openkey:sign:request',
+        requestId: 'r-b',
+        protocolVersion: 1,
+        message: 'hi again',
+      },
+    });
+    expect(requested).toBe(1);
+    expect(invalids).toContain('invalid-payload');
+  });
 });

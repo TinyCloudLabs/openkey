@@ -270,11 +270,12 @@ describe('POST /authorize-sign', () => {
     const body = await signRes.json() as any;
     // Any of these guards firing is an acceptable rejection: the
     // preview-approval selection mismatch, the context-token subset
-    // check, or (when the WASM narrower can't preserve certain header
-    // fields) the immutable-fields refusal. All prove the server
-    // refused to sign a divergent selection.
+    // check, the attenuation-broadens-baseline check, or (when the WASM
+    // narrower can't preserve certain header fields) the immutable-
+    // fields refusal. All prove the server refused to sign a divergent
+    // selection.
     expect(body.code).toMatch(
-      /preview-approval-selection-mismatch|selected_actions_|immutable_fields_not_preservable|action-not-in-initial-selection|caveats_not_supported/,
+      /preview-approval-selection-mismatch|selected_actions_|immutable_fields_not_preservable|action-not-in-initial-selection|caveats_not_supported|candidate-broadens-baseline|regenerated_immutable_drift|regenerated_broadens_baseline|narrowed_.+/,
     );
   });
 

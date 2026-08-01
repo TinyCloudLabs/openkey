@@ -145,6 +145,38 @@ describe("parseCapabilityReview", () => {
     expect(kv).toBeUndefined();
   });
 
+  it("fail-closed: unverified requester + signer-owned space does NOT set ownedBySelf=true (Sol MAJOR-5)", () => {
+    // Sol MAJOR-5 (continuation): SigningApproval renders a cross-app
+    // warning based on `ownedBySelf`. The prior implementation set
+    // `trustedOwnershipAxis = signerAddress` when `requesterAddress` was
+    // absent, which caused every widget-path grant (always unverified
+    // requester) on the signer's own space to set `ownedBySelf: true`
+    // and suppress the warning. The fix: never fall back to the signer.
+    const model = parseCapabilityReview(
+      ctx({
+        message: FEED_APP_REQUEST,
+        requester: {
+          displayName: "unknown requester",
+          verifiedOrigin: null,
+          manifestId: null,
+          manifestDigest: null,
+          domainWarning: false,
+          originWarning: false,
+        },
+        requesterAddress: null,
+        requesterVerified: false,
+      }),
+    );
+    // Every path-scoped grant on the signer's OWN space MUST report
+    // ownedBySelf as null (unknown) — never true — because we have no
+    // verified requester identity to attribute the request to.
+    for (const grant of model.permissions) {
+      if (grant.owner !== null) {
+        expect(grant.ownedBySelf).not.toBe(true);
+      }
+    }
+  });
+
   it("fail-closed: unverified requester + own-space grant classifies as cross-app-data (Sol MAJOR-7)", () => {
     // Sol MAJOR-7: when no verified requester identity is supplied
     // (widget path passes requesterAddress: null, requesterVerified:

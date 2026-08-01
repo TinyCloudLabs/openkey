@@ -163,6 +163,13 @@ export function createWidgetTransport(opts: WidgetTransportOptions): WidgetTrans
   }
   const protocolVersion = opts.protocolVersion ?? 1;
 
+  // Sol MAJOR-4 (continuation): track the current active request so we can
+  // correlate close messages to it. Set when a well-formed sign request
+  // arrives; cleared on respond() or destroy(). A close message that
+  // arrives while `activeRequestId` is non-null MUST carry the same
+  // requestId or it is dropped.
+  let activeRequestId: string | null = null;
+
   const handler = (event: MessageEvent) => {
     if (event.origin !== opts.origin) {
       opts.onInvalid?.("wrong-origin", event);
@@ -180,11 +187,28 @@ export function createWidgetTransport(opts: WidgetTransportOptions): WidgetTrans
       return;
     }
     if (type === "openkey:close") {
-      // Sol MAJOR-8: correlate close to the same protocolVersion the
-      // channel was established on. A stray unversioned close from the
-      // wrong parent must not tear down a live signing flow.
+      // Sol MAJOR-4 (continuation): correlate close to the current channel
+      // BOTH by requestId and by protocolVersion. A stray same-origin
+      // stale close from a previous widget instance would otherwise tear
+      // down the active request. When the transport is used without a
+      // known-active requestId (e.g. before any sign request landed), we
+      // still accept close messages that carry no requestId — but require
+      // an exact protocolVersion match.
       const closeVersion = (data as { protocolVersion?: unknown }).protocolVersion;
-      if (closeVersion !== undefined && closeVersion !== protocolVersion) {
+      if (closeVersion !== protocolVersion) {
+        opts.onInvalid?.("invalid-close", event);
+        return;
+      }
+      const closeRequestId = (data as { requestId?: unknown }).requestId;
+      // If we have an active request, require the close to correlate to
+      // it. If we do not, accept only close messages that carry no
+      // requestId at all (there is no in-flight request to correlate to).
+      if (activeRequestId !== null) {
+        if (typeof closeRequestId !== "string" || closeRequestId !== activeRequestId) {
+          opts.onInvalid?.("invalid-close", event);
+          return;
+        }
+      } else if (closeRequestId !== undefined) {
         opts.onInvalid?.("invalid-close", event);
         return;
       }
@@ -235,6 +259,15 @@ export function createWidgetTransport(opts: WidgetTransportOptions): WidgetTrans
       opts.onInvalid?.("invalid-payload", event);
       return;
     }
+    // Sol MAJOR-4 (continuation): only ONE active request may correlate at
+    // a time. If a request is already in flight, reject any new request
+    // rather than silently letting the second overwrite the first — this
+    // would break the close/response correlation invariant.
+    if (activeRequestId !== null && activeRequestId !== requestId) {
+      opts.onInvalid?.("invalid-payload", event);
+      return;
+    }
+    activeRequestId = requestId;
     opts.onRequest({
       type: "openkey:sign:request",
       requestId,
@@ -253,6 +286,9 @@ export function createWidgetTransport(opts: WidgetTransportOptions): WidgetTrans
       expectedWindow.postMessage({ type: "openkey:ready", protocolVersion }, opts.origin);
     },
     respond(response) {
+      // Sol MAJOR-4 (continuation): clear active-request tracking after
+      // responding so a subsequent request can correlate.
+      if (activeRequestId === response.requestId) activeRequestId = null;
       // Flatten application fields to the top level so parent listeners
       // that read `event.data.signature` (the current SDK wire format)
       // keep working. The transport-defined `type`, `requestId`,

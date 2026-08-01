@@ -56,6 +56,8 @@
   let previewApprovalToken = $state<string | null>(null);
   let previewing = $state(false);
   let previewApproved = $state(false);
+  // Sol MAJOR-3 (continuation): external-key review mode. See widget/sign.
+  let externalSignMode = $state(false);
 
   const isAuthenticated = $derived(inIframe ? embedAuthenticated : !!$session.data);
 
@@ -131,6 +133,8 @@
     messageJwk = (data.jwk as Record<string, unknown>) ?? null;
     messageHost = typeof data.host === 'string' ? data.host : '';
     keyId = typeof data.keyId === 'string' ? data.keyId : null;
+    // Sol MAJOR-3 (continuation): capture the externalSign flag.
+    externalSignMode = data.externalSign === true;
     keyFetched = false;
     if (data.sessionToken && inIframe && typeof data.sessionToken === 'string') {
       setSessionToken(data.sessionToken);
@@ -413,6 +417,22 @@
           throw new Error('Preview required before approval — call requestPreview() first');
         }
         const selectedActionIds = currentSelectedActionIds();
+        // Sol MAJOR-3 (continuation): external-key mode. Hand the preview
+        // payload back to the SDK; the SDK invokes the user's wallet and
+        // completes /authorize-sign with the resulting signature.
+        if (externalSignMode) {
+          sendResponse({
+            type: 'openkey:externalSign:approve',
+            success: true,
+            authorizationContextToken: previewToken,
+            previewApprovalToken,
+            signedMessage: previewSignedMessage,
+            selectedActionIds,
+            address: key.address,
+          });
+          sendClose();
+          return;
+        }
         const authorizeRes = await fetch(
           `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign`,
           {
@@ -495,8 +515,13 @@
   }
 
   function sendResponse(data: Record<string, unknown>) {
-    // Route through transport when this was a versioned request.
-    if (transport && currentRequestId && messageProtocolVersion !== null) {
+    // Sol MAJOR-3 (continuation): external-sign approvals bypass the
+    // transport's `respond()` shape (which always emits
+    // `openkey:sign:response`).
+    const isExternalApprove = data.type === 'openkey:externalSign:approve';
+    // Route through transport when this was a versioned request AND
+    // this is not an external-sign approval.
+    if (transport && currentRequestId && messageProtocolVersion !== null && !isExternalApprove) {
       const success = data.success === true || data.success === undefined
         ? true
         : Boolean(data.success);
@@ -524,11 +549,27 @@
       }
       return;
     }
+    if (isExternalApprove && currentRequestId && messageProtocolVersion !== null) {
+      const envelope = {
+        ...data,
+        requestId: currentRequestId,
+        protocolVersion: messageProtocolVersion,
+      };
+      window.parent.postMessage(envelope, origin);
+      return;
+    }
     window.parent.postMessage(data, origin);
   }
 
   function sendClose() {
-    window.parent.postMessage({ type: 'openkey:close' }, origin);
+    // Sol MAJOR-4 (continuation): correlate close messages to the active
+    // request.
+    const closeMsg: Record<string, unknown> = { type: 'openkey:close' };
+    if (currentRequestId && messageProtocolVersion !== null) {
+      closeMsg.requestId = currentRequestId;
+      closeMsg.protocolVersion = messageProtocolVersion;
+    }
+    window.parent.postMessage(closeMsg, origin);
   }
 
   function formatAddress(address: string): string {

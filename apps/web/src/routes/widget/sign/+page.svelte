@@ -62,6 +62,13 @@
   let previewApprovalToken = $state<string | null>(null);
   let previewing = $state(false);
   let previewApproved = $state(false);
+  // Sol MAJOR-3 (continuation): when the SDK passes `externalSign: true`
+  // on the sign request, the widget MUST NOT call /authorize-sign at
+  // approval time. Instead it emits an `openkey:externalSign:approve`
+  // response with the preview payload so the SDK can invoke the user's
+  // wallet on the previewed bytes and complete /authorize-sign with an
+  // externalSignature.
+  let externalSignMode = $state(false);
 
   // Shared capability-review state — the SigningApproval component uses this
   // when the request looks like a TinyCloud SIWE-ReCap. Legacy plain
@@ -170,6 +177,10 @@
     messageJwk = (data.jwk as Record<string, unknown>) ?? null;
     messageHost = typeof data.host === 'string' ? data.host : '';
     keyId = typeof data.keyId === 'string' ? data.keyId : null;
+    // Sol MAJOR-3 (continuation): capture the externalSign flag from the
+    // sign request. The widget renders the SAME SigningApproval UI in
+    // both modes; only the "approve" behaviour differs.
+    externalSignMode = data.externalSign === true;
     keyFetched = false;
     // Reset preview state — a new request always starts with no bound
     // preview. Editing selection also clears these fields.
@@ -465,6 +476,22 @@
           throw new Error('Preview required before approval — call requestPreview() first');
         }
         const selectedActionIds = currentSelectedActionIds();
+        // Sol MAJOR-3 (continuation): external-key mode. The wallet lives
+        // in the parent frame, not here. Hand back the preview payload
+        // and let the SDK invoke the wallet + call /authorize-sign.
+        if (externalSignMode) {
+          sendResponse({
+            type: 'openkey:externalSign:approve',
+            success: true,
+            authorizationContextToken: previewToken,
+            previewApprovalToken,
+            signedMessage: previewSignedMessage,
+            selectedActionIds,
+            address: key.address,
+          });
+          sendClose();
+          return;
+        }
         const authorizeRes = await fetch(
           `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign`,
           {
@@ -564,7 +591,13 @@
   function sendResponse(data: Record<string, unknown>) {
     // Route through the transport when this was a versioned request
     // (transport was created and we have a correlated requestId).
-    if (transport && currentRequestId && messageProtocolVersion !== null) {
+    // Sol MAJOR-3 (continuation): support both `openkey:sign:response`
+    // and `openkey:externalSign:approve` response types. The transport's
+    // respond() defaults to `openkey:sign:response`; for the external
+    // path we fall through to direct postMessage so the caller receives
+    // the correct discriminator.
+    const isExternalApprove = data.type === 'openkey:externalSign:approve';
+    if (transport && currentRequestId && messageProtocolVersion !== null && !isExternalApprove) {
       const success = data.success === true || data.success === undefined
         ? true
         : Boolean(data.success);
@@ -592,6 +625,23 @@
       }
       return;
     }
+    // Sol MAJOR-3 (continuation): external-sign approvals bypass the
+    // transport's `respond()` shape (which always sends
+    // `openkey:sign:response`). Emit the correlated envelope directly so
+    // the SDK's message listener matches on the correct discriminator.
+    if (isExternalApprove && currentRequestId && messageProtocolVersion !== null) {
+      const envelope = {
+        ...data,
+        requestId: currentRequestId,
+        protocolVersion: messageProtocolVersion,
+      };
+      if (window.opener) {
+        window.opener.postMessage(envelope, origin);
+      } else if (window.parent !== window) {
+        window.parent.postMessage(envelope, origin);
+      }
+      return;
+    }
     // Legacy compatibility path (wildcard origin or unversioned caller).
     if (window.opener) {
       window.opener.postMessage(data, origin);
@@ -601,7 +651,14 @@
   }
 
   function sendClose() {
-    const closeMsg = { type: 'openkey:close' };
+    // Sol MAJOR-4 (continuation): correlate close messages to the active
+    // request so the SDK doesn't tear down a subsequent request when a
+    // stale close arrives late.
+    const closeMsg: Record<string, unknown> = { type: 'openkey:close' };
+    if (currentRequestId && messageProtocolVersion !== null) {
+      closeMsg.requestId = currentRequestId;
+      closeMsg.protocolVersion = messageProtocolVersion;
+    }
     if (window.opener) {
       window.opener.postMessage(closeMsg, origin);
       window.close();

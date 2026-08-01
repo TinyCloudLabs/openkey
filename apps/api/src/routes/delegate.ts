@@ -61,12 +61,15 @@ import {
   consumeAuthorizationContext,
   consumePreviewApproval,
   digestAbilities,
+  digestFullRecapAttenuation,
   digestImmutableFields,
+  extractRecapAttenuationFromSiwe,
   issueAuthorizationContext,
   issuePreviewApproval,
   peekAuthorizationContext,
   type AuthorizationContextToken,
 } from '../services/authorization-signing';
+import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
 import { deriveKeyForRecord } from '../services/key-sealing';
 import {
   canonicalizeCoordinationosOrigin,
@@ -377,6 +380,118 @@ function requiredActionIdSet(entries: RecapEntry[]): Set<string> {
  * so parsing bugs cannot bypass this guard — the outer parse step
  * already rejected malformed ReCap payloads.
  */
+/**
+ * Sol MAJOR-4: build a candidate ReCap attenuation from a set of selected
+ * action IDs, pairing each surviving (resource, ability) pair with the
+ * caveats it carries in the BASELINE attenuation. Because the baseline was
+ * extracted from the ORIGINAL SIWE and we never fabricate caveats, this
+ * guarantees the candidate is at MOST as broad as the baseline before the
+ * subset check runs — the subset check remains authoritative but the
+ * candidate we hand it is always well-formed.
+ */
+function buildCandidateAttenuation(
+  originalEntries: RecapEntry[],
+  selectedActionIds: Set<string>,
+  baselineAttenuation: Record<string, Record<string, unknown[]>>,
+): Record<string, Record<string, unknown[]>> {
+  // Build an index of baseline resource keys so we can find the correct
+  // full resource URI (which the WASM emits as `<space>/<serviceShort>/<path>`)
+  // for each (service, space, path) tuple that `parseRecapFromSiwe`
+  // surfaces. We match by:
+  //   - key STARTS WITH `entry.space` (either exact or `<space>/...`), AND
+  //   - the ability with matching service+verb is present on that key.
+  // For paths, the key's trailing segment is `<serviceShort>/<path>` OR
+  // `<serviceShort>` when the path is empty. We choose the FIRST match
+  // that has ALL selected actions for the entry.
+  const candidate: Record<string, Record<string, unknown[]>> = {};
+  for (const entry of originalEntries) {
+    const selectedActions = entry.actions.filter((action) =>
+      selectedActionIds.has(computeActionKey(entry, action)),
+    );
+    if (selectedActions.length === 0) continue;
+
+    // Find the baseline attenuation key whose ability map contains all
+    // selected actions for this entry AND whose URI matches the shape
+    // `<entry.space>/<any-service-prefix>/<entry.path>` or
+    // `<entry.space>/<any-service-prefix>` when entry.path is empty.
+    let matchedKey: string | null = null;
+    for (const key of Object.keys(baselineAttenuation)) {
+      if (!key.startsWith(entry.space)) continue;
+      const remainder = key.slice(entry.space.length);
+      // Expected shape: "" (whole-space grant), or "/<serviceShort>[/<path>]".
+      if (remainder === '' || remainder.startsWith('/')) {
+        const abilityMap = baselineAttenuation[key];
+        if (!abilityMap) continue;
+        // The remainder (after the leading "/") is either "<service>" or
+        // "<service>/<path>". We require the trailing part after the
+        // first "/" to equal entry.path.
+        const rest = remainder.startsWith('/') ? remainder.slice(1) : remainder;
+        const slashIdx = rest.indexOf('/');
+        const restPath = slashIdx >= 0 ? rest.slice(slashIdx + 1) : '';
+        if (restPath !== entry.path) continue;
+        // All selected actions must be present in this ability map.
+        if (selectedActions.every((a) => abilityMap[a] !== undefined)) {
+          matchedKey = key;
+          break;
+        }
+      }
+    }
+    if (matchedKey === null) {
+      // Nothing matched — the caller supplied an entry not derivable from
+      // the baseline. Skip; subset check will fail closed.
+      continue;
+    }
+    const candidateSlot = candidate[matchedKey] ?? (candidate[matchedKey] = {});
+    for (const action of selectedActions) {
+      const baselineCaveats = baselineAttenuation[matchedKey]?.[action] ?? [];
+      candidateSlot[action] = [...baselineCaveats];
+    }
+  }
+  return candidate;
+}
+
+/**
+ * Sol MAJOR-4: return null when `candidate` is a strict subset of
+ * `baseline`, else a short message describing the first violation. Used at
+ * the final regeneration verification step to catch any WASM emitter drift
+ * that produced a broader ReCap than the caller narrowed to.
+ */
+function attenuationSubsetOrFailure(
+  candidate: Record<string, Record<string, unknown[]>>,
+  baseline: Record<string, Record<string, unknown[]>>,
+): string | null {
+  const stably = (v: unknown): string => {
+    if (v === null || typeof v !== 'object') return JSON.stringify(v);
+    if (Array.isArray(v)) return `[${v.map(stably).join(',')}]`;
+    const entries = Object.entries(v as Record<string, unknown>).sort(([a], [b]) =>
+      a.localeCompare(b),
+    );
+    return `{${entries.map(([k, val]) => `${JSON.stringify(k)}:${stably(val)}`).join(',')}}`;
+  };
+  for (const [resource, candidateAbilityMap] of Object.entries(candidate)) {
+    const baselineAbilityMap = baseline[resource];
+    if (!baselineAbilityMap) return `resource ${resource} not in baseline`;
+    for (const [ability, candidateCaveats] of Object.entries(candidateAbilityMap)) {
+      const baselineCaveats = baselineAbilityMap[ability];
+      if (!baselineCaveats) return `ability ${ability} on ${resource} not in baseline`;
+      const bucket = new Map<string, number>();
+      for (const c of baselineCaveats) {
+        const key = stably(c);
+        bucket.set(key, (bucket.get(key) ?? 0) + 1);
+      }
+      for (const c of candidateCaveats) {
+        const key = stably(c);
+        const remaining = bucket.get(key) ?? 0;
+        if (remaining === 0) {
+          return `caveat on ${ability}@${resource} not present in baseline`;
+        }
+        bucket.set(key, remaining - 1);
+      }
+    }
+  }
+  return null;
+}
+
 function hasRecapCaveats(siwe: string): boolean {
   const lines = siwe.split(/\r?\n/);
   for (const line of lines) {
@@ -1557,11 +1672,17 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
   const allowedActionIds = allowedActionIdSet(originalEntries);
   const initialSelectionActionIds = new Set(allowedActionIds);
 
-  // Baseline abilities digest binds the abilities map that the SIWE
-  // encodes. If /authorize-sign is given a selection whose regenerated
-  // abilities do not derive from this baseline, the token consume step
-  // fails.
-  const baselineAbilitiesDigest = digestAbilities(entriesToAbilities(originalEntries));
+  // Sol MAJOR-4: caveat-inclusive baseline digest. Previously we digested
+  // `entriesToAbilities(entries)` which threw away caveats — making the
+  // /authorize-sign candidate comparison tautological because both sides
+  // were derived from the same caveat-stripped `entries`. We now digest
+  // the FULL ReCap attenuation extracted from the ORIGINAL SIWE bytes,
+  // including per-(resource, ability) caveat multisets. On finalize we
+  // recompute the candidate digest from the regenerated `signedMessage`
+  // (not the bound `originalEntries`) so a caveat-dropping regeneration
+  // fails the equality check.
+  const baselineAttenuation = extractRecapAttenuationFromSiwe(body.siwe);
+  const baselineAbilitiesDigest = digestFullRecapAttenuation(baselineAttenuation);
 
   let issued: AuthorizationContextToken;
   try {
@@ -1854,15 +1975,19 @@ delegateRouter.post('/authorize-sign', async (c) => {
     spaceId: bound.spaceId,
   });
 
-  // Sol MAJOR-3: enforce the candidate abilities digest against the
-  // bound baseline. The digest is computed from the ORIGINAL entries
-  // (via entriesToAbilities) — same source the /authorize-sign-prepare
-  // baseline digest was derived from — so an unchanged selection MUST
-  // match, and a narrowed selection SHOULD match too because the
-  // baseline is the ORIGINAL entries, not the current selection. This
-  // catches attempts to swap the bound SIWE mid-flow or corruption in
-  // the /prepare→/consume path.
-  const candidateAbilitiesDigest = digestAbilities(entriesToAbilities(originalEntries));
+  // Sol MAJOR-4: attenuation-subset check against the caveat-inclusive
+  // baseline. We build the candidate attenuation from the SELECTED
+  // entries (paired with the ORIGINAL caveats for each surviving
+  // (resource, ability) pair) so consume can verify:
+  //   1. baselineAttenuation digest matches what /prepare recorded, AND
+  //   2. candidateAttenuation is a strict subset (narrowing OK, broadening
+  //      or caveat-dropping rejected).
+  const baselineAttenuation = extractRecapAttenuationFromSiwe(bound.originalSiwe);
+  const candidateAttenuation = buildCandidateAttenuation(
+    originalEntries,
+    selectedActionIds,
+    baselineAttenuation,
+  );
 
   // Consume the token — this validates every bound invariant. Any drift
   // (user, key, JWK, host, spaceId, immutable fields, baseline abilities
@@ -1877,7 +2002,8 @@ delegateRouter.post('/authorize-sign', async (c) => {
     spaceId: bound.spaceId,
     selectedActionIds,
     candidateImmutableFieldsDigest: digestImmutableFields(immutable),
-    candidateAbilitiesDigest,
+    candidateAttenuation,
+    baselineAttenuation,
     requiredActionIds: requiredActionIdSet(originalEntries),
   });
   if (!consume.ok) {
@@ -1913,10 +2039,11 @@ delegateRouter.post('/authorize-sign', async (c) => {
 
   // Sol continuation contract (caveats): the WASM `parseRecapFromSiwe`
   // does not surface caveats, and `prepareSession` produces caveat-less
-  // ReCap blocks. If the original SIWE encoded caveats and we regenerate
-  // without them, the resulting SIWE is BROADER than the original.
-  // Under the unchanged-selection branch we sign the original bytes so
-  // the caveats survive intact. Otherwise we must refuse to regenerate.
+  // ReCap blocks. If the original SIWE encoded meaningful caveats and we
+  // regenerate without them, the resulting SIWE is BROADER than the
+  // original. Under the unchanged-selection branch we sign the original
+  // bytes so the caveats survive intact. Otherwise we must refuse to
+  // regenerate.
   if (!selectionUnchanged && hasRecapCaveats(bound.originalSiwe)) {
     return c.json(
       {
@@ -1933,66 +2060,47 @@ delegateRouter.post('/authorize-sign', async (c) => {
     // Sign the caller-supplied original SIWE bytes verbatim.
     signedMessage = bound.originalSiwe;
   } else {
-    // Regenerate the narrowed SIWE using the bound JWK — never a
-    // caller-echoed JWK. Preserve immutable fields byte-for-byte via
-    // the header values captured at prepare time. Note: the WASM
-    // `prepareSession` does not currently accept overrides for
-    // notBefore, requestId, statement, or non-ReCap resources. When
-    // any of these are present in the original, we refuse to narrow
-    // because the regenerated SIWE would silently drop them.
-    if (
-      immutable.notBefore ||
-      immutable.requestId ||
-      immutable.statement ||
-      immutable.nonRecapResources
-    ) {
-      return c.json(
-        {
-          error:
-            'authorize-sign cannot narrow SIWEs that carry Not Before, Request ID, statement, or non-ReCap resources — regenerating would drop these fields',
-          code: 'immutable_fields_not_preservable',
-        },
-        400,
-      );
+    // Sol CRITICAL-1: narrow via the preservation splice. The prior
+    // implementation rejected every real production SIWE because the
+    // ReCap-derived `statement` line is non-empty on every prepared
+    // SIWE. We now use `narrowSiwePreservingImmutable`, which regenerates
+    // the SIWE via WASM `prepareSession` for the narrowed abilities and
+    // splices ONLY the ReCap-derived statement + `- urn:recap:` lines
+    // back into the ORIGINAL SIWE bytes. Every immutable header field
+    // (URI, Version, Chain ID, Nonce, Issued At, Expiration Time, Not
+    // Before, Request ID, non-ReCap resources) survives byte-for-byte.
+    const narrowed = narrowSiwePreservingImmutable({
+      originalSiwe: bound.originalSiwe,
+      narrowedEntries: selectedEntries,
+      address: boundAddress,
+      chainId,
+      domain: immutable.domain,
+      issuedAt: immutable.issuedAt,
+      expirationTime: immutable.expirationTime,
+      spaceId: bound.spaceId,
+      jwk: consume.jwk,
+      ...(immutable.notBefore ? { notBefore: immutable.notBefore } : {}),
+    });
+    if (!narrowed.ok) {
+      return c.json({ error: narrowed.message, code: narrowed.code }, 400);
     }
-    const narrowedAbilities = entriesToAbilities(selectedEntries);
-    const boundJwk = consume.jwk as DelegationJwk;
-    let narrowedPrepared;
-    try {
-      narrowedPrepared = prepareSession({
-        address: boundAddress,
-        chainId,
-        domain: immutable.domain,
-        issuedAt: immutable.issuedAt,
-        expirationTime: immutable.expirationTime,
-        spaceId: bound.spaceId,
-        jwk: boundJwk,
-        abilities: narrowedAbilities,
-      });
-    } catch (e) {
-      return c.json(
-        {
-          error: e instanceof Error ? e.message : 'Failed to regenerate narrowed SIWE',
-          code: 'siwe_regenerate_failed',
-        },
-        400,
-      );
-    }
-    // Sol MAJOR-2: cross-check that the regenerated candidate has the
-    // SAME immutable header fields as the bound baseline. This catches
-    // any drift the WASM emitter might introduce (line ending changes,
-    // domain casing, chainId serialization). Compare via the same
-    // stored baselineImmutableFieldsDigest that the consume step
-    // enforced.
-    const candidateImmutable = extractImmutableSiweFields(narrowedPrepared.siwe, {
+    // Sol MAJOR-2: cross-check that the regenerated candidate preserves
+    // EVERY TRULY IMMUTABLE header field. The SIWE `statement` line is a
+    // text encoding of the ReCap contents (the "I further authorize..."
+    // prose the WASM emits from the abilities map), so it LEGITIMATELY
+    // changes when the caller narrows. We compare the digest with
+    // `statement` stripped out. All other header fields — URI, Version,
+    // Chain ID, Nonce, Issued At, Expiration Time, Not Before, Request
+    // ID, domain, address, spaceId, non-ReCap resources — must match
+    // byte-for-byte.
+    const candidateImmutable = extractImmutableSiweFields(narrowed.siwe, {
       address: boundAddress,
       chainId,
       spaceId: bound.spaceId,
     });
-    if (
-      digestImmutableFields(candidateImmutable) !==
-      digestImmutableFields(immutable)
-    ) {
+    const digestExcludingStatement = (f: ReturnType<typeof extractImmutableSiweFields>) =>
+      digestImmutableFields({ ...f, statement: '' });
+    if (digestExcludingStatement(candidateImmutable) !== digestExcludingStatement(immutable)) {
       return c.json(
         {
           error:
@@ -2002,7 +2110,24 @@ delegateRouter.post('/authorize-sign', async (c) => {
         400,
       );
     }
-    signedMessage = narrowedPrepared.siwe;
+    // Sol MAJOR-4: re-verify the regenerated bytes' attenuation is still a
+    // subset of the baseline. This catches any WASM emitter drift that
+    // might silently add abilities under a resource we did not narrow.
+    const regeneratedAttenuation = extractRecapAttenuationFromSiwe(narrowed.siwe);
+    const regenSubsetFailure = attenuationSubsetOrFailure(
+      regeneratedAttenuation,
+      baselineAttenuation,
+    );
+    if (regenSubsetFailure) {
+      return c.json(
+        {
+          error: `Regenerated SIWE ReCap broadens baseline: ${regenSubsetFailure}`,
+          code: 'regenerated_broadens_baseline',
+        },
+        400,
+      );
+    }
+    signedMessage = narrowed.siwe;
   }
 
   // Sol CRITICAL-1: consume the preview-approval token now that we know
@@ -2192,58 +2317,61 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
   if (selectionUnchanged) {
     preparedSignedMessage = bound.originalSiwe;
   } else {
-    if (
-      immutable.notBefore ||
-      immutable.requestId ||
-      immutable.statement ||
-      immutable.nonRecapResources
-    ) {
+    // Sol CRITICAL-1: preview via the preservation splice. Real production
+    // SIWEs always carry a ReCap-derived statement; the previous guard
+    // rejected them all, which meant the preview never returned any bytes
+    // for a narrowed selection in production.
+    const previewNarrowed = narrowSiwePreservingImmutable({
+      originalSiwe: bound.originalSiwe,
+      narrowedEntries: selectedEntries,
+      address: ensureEip55(bound.keyAddress),
+      chainId,
+      domain: immutable.domain,
+      issuedAt: immutable.issuedAt,
+      expirationTime: immutable.expirationTime,
+      spaceId: bound.spaceId,
+      jwk: bound.jwk,
+      ...(immutable.notBefore ? { notBefore: immutable.notBefore } : {}),
+    });
+    if (!previewNarrowed.ok) {
+      return c.json({ error: previewNarrowed.message, code: previewNarrowed.code }, 400);
+    }
+    // Verify no immutable-header drift in the preview candidate. `statement`
+    // is EXCLUDED from the comparison because it is a text encoding of the
+    // ReCap contents and legitimately changes with narrowing.
+    const candidateImmutable = extractImmutableSiweFields(previewNarrowed.siwe, {
+      address: ensureEip55(bound.keyAddress),
+      chainId,
+      spaceId: bound.spaceId,
+    });
+    const digestExcludingStatement = (f: ReturnType<typeof extractImmutableSiweFields>) =>
+      digestImmutableFields({ ...f, statement: '' });
+    if (digestExcludingStatement(candidateImmutable) !== digestExcludingStatement(immutable)) {
       return c.json(
         {
-          error:
-            'authorize-sign-preview cannot narrow SIWEs that carry Not Before, Request ID, statement, or non-ReCap resources',
-          code: 'immutable_fields_not_preservable',
+          error: 'Regenerated SIWE altered immutable header fields — refusing to preview',
+          code: 'regenerated_immutable_drift',
         },
         400,
       );
     }
-    const narrowedAbilities = entriesToAbilities(selectedEntries);
-    try {
-      const narrowedPrepared = prepareSession({
-        address: ensureEip55(bound.keyAddress),
-        chainId,
-        domain: immutable.domain,
-        issuedAt: immutable.issuedAt,
-        expirationTime: immutable.expirationTime,
-        spaceId: bound.spaceId,
-        jwk: bound.jwk as DelegationJwk,
-        abilities: narrowedAbilities,
-      });
-      // Verify no immutable-header drift in the preview candidate.
-      const candidateImmutable = extractImmutableSiweFields(narrowedPrepared.siwe, {
-        address: ensureEip55(bound.keyAddress),
-        chainId,
-        spaceId: bound.spaceId,
-      });
-      if (
-        digestImmutableFields(candidateImmutable) !==
-        digestImmutableFields(immutable)
-      ) {
-        return c.json(
-          {
-            error: 'Regenerated SIWE altered immutable header fields — refusing to preview',
-            code: 'regenerated_immutable_drift',
-          },
-          400,
-        );
-      }
-      preparedSignedMessage = narrowedPrepared.siwe;
-    } catch (e) {
+    // Sol MAJOR-4: assert the regenerated attenuation is a strict subset of
+    // the baseline. Broadening at preview time is a wire-format bug we
+    // must fail closed on rather than let the user "approve" bytes we
+    // would then refuse to sign at /authorize-sign.
+    const previewBaseline = extractRecapAttenuationFromSiwe(bound.originalSiwe);
+    const previewCandidate = extractRecapAttenuationFromSiwe(previewNarrowed.siwe);
+    const previewSubsetFailure = attenuationSubsetOrFailure(previewCandidate, previewBaseline);
+    if (previewSubsetFailure) {
       return c.json(
-        { error: e instanceof Error ? e.message : 'Failed to regenerate narrowed SIWE', code: 'siwe_regenerate_failed' },
+        {
+          error: `Regenerated SIWE ReCap broadens baseline: ${previewSubsetFailure}`,
+          code: 'regenerated_broadens_baseline',
+        },
         400,
       );
     }
+    preparedSignedMessage = previewNarrowed.siwe;
   }
 
   const previewEntries = parsePreparedRecap(preparedSignedMessage);
