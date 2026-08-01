@@ -122,6 +122,14 @@ export interface TinyCloudAuthorizationRequestV1 {
   siwe: string;
   /** The keyId the user picked, if the caller has one in mind. */
   keyId?: string;
+  /**
+   * The session-key JWK bound to `siwe`. Required so the server can
+   * regenerate a narrowed SIWE tied to the SAME session key when the
+   * user removes capabilities. Passing a mismatched jwk (or omitting it
+   * when the widget attempts to narrow) causes the /authorize-sign call
+   * to fail — never a silent fallback to the caller's exact bytes.
+   */
+  jwk?: Record<string, unknown>;
   /** Optional presentation envelope (name, reason, manifest). */
   presentation?: CapabilityPresentationEnvelopeV1;
 }
@@ -603,9 +611,13 @@ export class OpenKey {
     if (typeof request.siwe !== 'string' || !request.siwe) {
       throw new Error('authorizeTinyCloud requires a non-empty SIWE');
     }
-    // Send as a sign request so the widget renders the review; the widget's
-    // signing-approval component recognises the SIWE-ReCap protocol and
-    // returns a rich response.
+    // Sol CRITICAL-1: Send a DISTINCT versioned sign request so the widget
+    // knows to route through the server-authoritative /authorize-sign
+    // endpoint. protocolVersion: 1 with the extended payload triggers the
+    // server-authoritative narrowing path — the widget refuses to fall
+    // back to legacy exact-byte signMessage() for a versioned request
+    // whose origin is real.
+    const requestId = `ok-auth-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     const raw = await this.openFlow<{
       signature: string;
       address: string;
@@ -616,23 +628,44 @@ export class OpenKey {
       'sign',
       {
         type: 'openkey:sign:request',
+        requestId,
+        protocolVersion: 1,
         message: request.siwe,
         keyId: request.keyId,
+        // Forward JWK so the widget can pass it to /authorize-sign for
+        // narrowed-SIWE regeneration.
+        jwk: request.jwk,
         sessionToken: this.sessionToken || undefined,
       },
       opts?.mode,
     );
-    const signedMessage = raw.signedMessage ?? request.siwe;
-    // Structural verification: the widget MUST return a signedMessage. If it
-    // came back without one, we treat the response as legacy exact-byte
-    // (the returned signature is over `request.siwe`).
+    // Sol CRITICAL-1: NO silent fallback to `request.siwe`. If the widget
+    // returned an authorization response without `signedMessage`, that is
+    // a protocol violation and MUST fail — silently accepting the caller's
+    // original bytes as `signedMessage` while selectedActionKeys/permissions
+    // reflect a narrower set is exactly the bug this rewrite prevents.
+    if (typeof raw.signedMessage !== 'string' || !raw.signedMessage) {
+      throw new Error(
+        'authorizeTinyCloud: widget returned no signedMessage — signature would not correspond to the displayed authorization',
+      );
+    }
+    if (!Array.isArray(raw.selectedActionKeys)) {
+      throw new Error(
+        'authorizeTinyCloud: widget returned no selectedActionKeys — cannot verify displayed authorization matches the signed bytes',
+      );
+    }
+    if (!Array.isArray(raw.permissions)) {
+      throw new Error(
+        'authorizeTinyCloud: widget returned no permissions — cannot verify displayed authorization matches the signed bytes',
+      );
+    }
     return {
       protocolVersion: 1,
       address: raw.address,
       signature: raw.signature,
-      signedMessage,
-      selectedActionKeys: raw.selectedActionKeys ?? [],
-      permissions: raw.permissions ?? [],
+      signedMessage: raw.signedMessage,
+      selectedActionKeys: raw.selectedActionKeys,
+      permissions: raw.permissions,
     };
   }
 
@@ -1113,7 +1146,13 @@ export class OpenKey {
                 } else if (data.type === 'openkey:link-wallet:response') {
                   resolve({ address: data.address, keyId: data.keyId } as T);
                 } else {
-                  resolve({ signature: data.signature, address: data.address } as T);
+                  resolve({
+                    signature: (data as any).signature,
+                    address: (data as any).address,
+                    signedMessage: (data as any).signedMessage,
+                    selectedActionKeys: (data as any).selectedActionKeys,
+                    permissions: (data as any).permissions,
+                  } as T);
                 }
               } else {
                 reject(data.error);
@@ -1316,7 +1355,13 @@ export class OpenKey {
           } else if (data.type === 'openkey:link-wallet:response') {
             resolve({ address: data.address, keyId: data.keyId } as T);
           } else {
-            resolve({ signature: data.signature, address: data.address } as T);
+            resolve({
+              signature: (data as any).signature,
+              address: (data as any).address,
+              signedMessage: (data as any).signedMessage,
+              selectedActionKeys: (data as any).selectedActionKeys,
+              permissions: (data as any).permissions,
+            } as T);
           }
         } else {
           reject(data.error);

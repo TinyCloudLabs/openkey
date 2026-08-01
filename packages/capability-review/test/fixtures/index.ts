@@ -207,6 +207,34 @@ export const REAL_RECAP_MIXED_B = siwe([
   }),
 ]);
 
+// Real-world tinycloud.kv path-based secrets (CLI uses tinycloud.kv with a
+// vault/secrets/ path prefix rather than a separate tinycloud.secrets service).
+// These must be classified as secret-read or secret-mutation, not bootstrap-kv.
+const KV_SECRET_PATH = `${SPACE}/vault/secrets/DEPLOY_KEY`;
+export const REAL_KV_SECRET_READ = siwe([
+  makeRecapResource({
+    [KV_SECRET_PATH]: {
+      "tinycloud.kv/get": [{}],
+    },
+    [SPACE]: {
+      "tinycloud.capabilities/read": [{}],
+    },
+  }),
+]);
+
+export const REAL_KV_SECRET_MUTATION = siwe([
+  makeRecapResource({
+    [KV_SECRET_PATH]: {
+      "tinycloud.kv/put": [{}],
+      "tinycloud.kv/get": [{}],
+      "tinycloud.kv/del": [{}],
+    },
+    [SPACE]: {
+      "tinycloud.capabilities/read": [{}],
+    },
+  }),
+]);
+
 export const FIXTURE_META = {
   address: ADDR,
   chainId: CHAIN,
@@ -218,3 +246,21 @@ export const FIXTURE_META = {
   expirationTime: EXPIRES,
   recapPath: RECAP_PATH,
 };
+
+// Two SAME-service SAME-ability grants on different paths. This exists to
+// exercise Sol MAJOR-6: a review-selection mapping must be able to pick one
+// resource without collapsing the other. If the mapping keys by ability
+// alone, both resources get selected/deselected together — a bug.
+export const REAL_RECAP_SAME_ABILITY_TWO_PATHS = siwe([
+  makeRecapResource({
+    [`${SPACE}/chat`]: {
+      "tinycloud.kv/get": [{}],
+    },
+    [`${SPACE}/feed`]: {
+      "tinycloud.kv/get": [{}],
+    },
+    [SPACE]: {
+      "tinycloud.capabilities/read": [{}],
+    },
+  }),
+]);

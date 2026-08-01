@@ -545,22 +545,38 @@
   }
 
   // Translate a capability-review selection (Set of client-side action IDs)
-  // into the server's actionKey strings. The server-side actionKey uses the
-  // SHORT-form service name (e.g. `kv`) while the client-side ability uses
-  // the LONG-form (`tinycloud.kv/get`). We match by ability string, which is
-  // identical on both sides, and lift the matching server key.
+  // into the server's actionKey strings.
+  //
+  // The review model grant IDs use space as separator ("service space path"),
+  // while the server permission keys use NUL as separator ("service\0space\0path").
+  // We correlate by converting between the two formats so that two distinct
+  // resources that share an ability string (e.g. tinycloud.kv/get on different
+  // paths) can be independently selected without collapsing into one another.
   function mapReviewSelectionToActionKeys(selection: Set<string>): string[] {
     if (!reviewModel) return [];
-    const selectedAbilities = new Set<string>();
+
+    // Build a map from review grant ID → Set<selected ability> for selected actions.
+    const selectedAbilitiesByGrantId = new Map<string, Set<string>>();
     for (const grant of reviewModel.permissions) {
       for (const action of grant.actions) {
-        if (selection.has(action.id)) selectedAbilities.add(action.ability);
+        if (selection.has(action.id)) {
+          let abilities = selectedAbilitiesByGrantId.get(grant.id);
+          if (!abilities) {
+            abilities = new Set();
+            selectedAbilitiesByGrantId.set(grant.id, abilities);
+          }
+          abilities.add(action.ability);
+        }
       }
     }
+
     const out: string[] = [];
     for (const perm of permissionOptions) {
+      // Convert server NUL-separated key to space-separated review grant ID.
+      const reviewGrantId = perm.key.replaceAll('\0', ' ');
+      const selectedAbilities = selectedAbilitiesByGrantId.get(reviewGrantId);
       for (const action of perm.actions) {
-        if (selectedAbilities.has(action.ability) || action.required) {
+        if (action.required || selectedAbilities?.has(action.ability)) {
           out.push(action.key);
         }
       }

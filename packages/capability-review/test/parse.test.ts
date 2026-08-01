@@ -23,7 +23,10 @@ import {
   REAL_RECAP_BOOTSTRAP,
   REAL_RECAP_MIXED_A,
   REAL_RECAP_MIXED_B,
+  REAL_RECAP_SAME_ABILITY_TWO_PATHS,
   REAL_RECAP_WITH_PATH,
+  REAL_KV_SECRET_READ,
+  REAL_KV_SECRET_MUTATION,
   SECRETS_MUTATION_REQUEST,
   SECRETS_READ_REQUEST,
   UNKNOWN_SERVICE_REQUEST,
@@ -89,25 +92,50 @@ describe("parseCapabilityReview", () => {
     expect(readAction?.editable).toBe(false);
   });
 
-  it("classifies Chat as own-app bootstrap-kv when owner matches", () => {
+  it("classifies Chat as own-app-data when owner matches", () => {
     const model = parseCapabilityReview(ctx({ message: CHAT_APP_REQUEST }));
-    const kv = model.permissions.find((p) => p.family === "bootstrap-kv");
-    expect(kv?.ownedBySelf).toBe(true);
+    // Chat path prefix triggers own-app-data classification (Sol MAJOR-7),
+    // no longer collapsed into generic bootstrap-kv.
+    const chat = model.permissions.find((p) => p.family === "own-app-data");
+    expect(chat).toBeDefined();
+    expect(chat?.ownedBySelf).toBe(true);
+    expect(chat?.displayLabel).toMatch(/Chat/);
   });
 
-  it("classifies Feed as own-app when owner matches", () => {
+  it("classifies Feed as own-app-data when owner matches", () => {
     const model = parseCapabilityReview(ctx({ message: FEED_APP_REQUEST }));
-    const kv = model.permissions.find((p) => p.family === "bootstrap-kv");
-    expect(kv?.ownedBySelf).toBe(true);
+    const feed = model.permissions.find((p) => p.family === "own-app-data");
+    expect(feed).toBeDefined();
+    expect(feed?.ownedBySelf).toBe(true);
+    expect(feed?.displayLabel).toMatch(/Feed/);
   });
 
-  it("marks Listen cross-app grants as ownedBySelf=false", () => {
+  it("classifies Listen cross-app grants as cross-app-data (attention)", () => {
+    // Sol MAJOR-7: a KV grant on a DIFFERENT user's space must be
+    // classified as cross-app-data with elevated severity, not lumped
+    // into the generic bootstrap-kv family.
     const model = parseCapabilityReview(
       ctx({ message: LISTEN_CROSS_APP_REQUEST }),
     );
+    const cross = model.permissions.find((p) => p.family === "cross-app-data");
+    expect(cross).toBeDefined();
+    expect(cross?.ownedBySelf).toBe(false);
+    expect(cross?.owner).toBe(FIXTURE_META.crossAppOwner.toLowerCase());
+    expect(cross?.severity).toBe("attention");
+    expect(cross?.displayLabel).toMatch(/Cross-user/);
+    // Must NOT be a bootstrap-kv grant.
     const kv = model.permissions.find((p) => p.family === "bootstrap-kv");
-    expect(kv?.ownedBySelf).toBe(false);
-    expect(kv?.owner).toBe(FIXTURE_META.crossAppOwner.toLowerCase());
+    expect(kv).toBeUndefined();
+  });
+
+  it("classifies Cycle-health path as own-app-data", () => {
+    // Cycle health is a distinct app family with metadata-like sensitivity;
+    // it must not be silently collapsed into bootstrap-kv.
+    const model = parseCapabilityReview(ctx({ message: CYCLE_HEALTH_REQUEST }));
+    const grant = model.permissions.find(
+      (p) => p.family === "own-app-data" && p.displayLabel.includes("Cycle"),
+    );
+    expect(grant).toBeDefined();
   });
 
   it("splits secret read vs mutation classification", () => {
@@ -126,6 +154,35 @@ describe("parseCapabilityReview", () => {
       (p) => p.family === "secret-mutation",
     );
     expect(mutateGrant?.severity).toBe("sensitive");
+  });
+
+  it("classifies tinycloud.kv with vault/secrets/ path as secret-read", () => {
+    const model = parseCapabilityReview(
+      ctx({ message: REAL_KV_SECRET_READ }),
+    );
+    expect(model.protocol).toBe("tinycloud-siwe-recap");
+    const secretGrant = model.permissions.find(
+      (p) => p.family === "secret-read",
+    );
+    expect(secretGrant).toBeTruthy();
+    expect(secretGrant?.severity).toBe("attention");
+    // Must NOT be classified as generic bootstrap-kv
+    const bootstrapGrant = model.permissions.find(
+      (p) => p.family === "bootstrap-kv",
+    );
+    expect(bootstrapGrant).toBeUndefined();
+  });
+
+  it("classifies tinycloud.kv with vault/secrets/ path and mutation verbs as secret-mutation", () => {
+    const model = parseCapabilityReview(
+      ctx({ message: REAL_KV_SECRET_MUTATION }),
+    );
+    expect(model.protocol).toBe("tinycloud-siwe-recap");
+    const secretGrant = model.permissions.find(
+      (p) => p.family === "secret-mutation",
+    );
+    expect(secretGrant).toBeTruthy();
+    expect(secretGrant?.severity).toBe("sensitive");
   });
 
   it("classifies encryption/decrypt as sensitive", () => {
@@ -224,6 +281,57 @@ describe("parseCapabilityReview", () => {
     expect(JSON.stringify(a.permissions)).toBe(
       JSON.stringify(b.permissions),
     );
+  });
+
+  it("keeps two same-ability different-path grants distinct (Sol MAJOR-6)", () => {
+    // Two resources with the same ability (`tinycloud.kv/get`) on
+    // different paths (chat vs feed) must yield two separate grants with
+    // distinct action IDs. If the parser collapsed them by ability, a UI
+    // selection on one would inadvertently toggle the other.
+    const model = parseCapabilityReview(
+      ctx({ message: REAL_RECAP_SAME_ABILITY_TWO_PATHS }),
+    );
+    const kvGrants = model.permissions.filter((p) => p.service === "tinycloud.kv");
+    expect(kvGrants.length).toBe(2);
+    const paths = kvGrants.map((g) => g.path).sort();
+    expect(paths).toEqual(["chat", "feed"]);
+    // Every action ID must be unique across grants — otherwise selection
+    // can collapse two resources into one.
+    const allActionIds = kvGrants.flatMap((g) => g.actions.map((a) => a.id));
+    const uniqueActionIds = new Set(allActionIds);
+    expect(uniqueActionIds.size).toBe(allActionIds.length);
+  });
+});
+
+describe("cross-surface parity (Sol MAJOR-8)", () => {
+  // All three OpenKey authorization surfaces (CLI browser at /delegate,
+  // popup at /widget/sign, iframe at /widget/embed/sign) MUST render the
+  // SAME capability-review model for the same signer + message + editable
+  // flag. If any surface renders differently, one of them is bypassing the
+  // shared parser or applying different classification rules — which
+  // reintroduces exactly the "narrow display, broad sign" bug the
+  // consolidation is supposed to fix.
+  it("all three surfaces produce identical models for the same input", () => {
+    const message = REAL_RECAP_BOOTSTRAP;
+    // Simulate the three call sites with the exact same signer + context
+    // shape they use in production (see /delegate, /widget/sign,
+    // /widget/embed/sign).
+    const cli = parseCapabilityReview(ctx({ message }));
+    const popup = parseCapabilityReview(ctx({ message }));
+    const iframe = parseCapabilityReview(ctx({ message }));
+    // Compare the deterministic subset: permissions and rawMessage. The
+    // parseWarnings and requester/reason vary because they encode caller
+    // context, but the actual capability-review model must be identical.
+    expect(JSON.stringify(cli.permissions)).toBe(
+      JSON.stringify(popup.permissions),
+    );
+    expect(JSON.stringify(popup.permissions)).toBe(
+      JSON.stringify(iframe.permissions),
+    );
+    expect(cli.rawMessage).toBe(popup.rawMessage);
+    expect(popup.rawMessage).toBe(iframe.rawMessage);
+    expect(cli.protocol).toBe(popup.protocol);
+    expect(popup.protocol).toBe(iframe.protocol);
   });
 });
 

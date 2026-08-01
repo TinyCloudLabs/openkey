@@ -495,7 +495,12 @@ function buildGrants(
 ): CapabilityGrant[] {
   const signerAddress = signer.address.toLowerCase();
   return entries.map((entry): CapabilityGrant => {
-    const { family, displayLabel } = classifyRecapEntry(entry);
+    // Forward the signer address so classifyRecapEntry can distinguish
+    // own-app vs cross-app grants for KV/SQL services.
+    const { family, displayLabel } = classifyRecapEntry({
+      ...entry,
+      signerAddress,
+    });
     const severity = classifySeverityFromActions(family, entry.actions);
     const actions = buildActions(entry, ctx);
     const ownership = ownerFromSpace(entry.space);

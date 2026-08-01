@@ -18,6 +18,8 @@
   const inIframe = typeof window !== 'undefined' && isEmbedContext();
 
   let message = $state('');
+  let messageProtocolVersion = $state<number | null>(null);
+  let messageJwk = $state<Record<string, unknown> | null>(null);
   let keyId = $state<string | null>(null);
   let key = $state<EthereumKey | null>(null);
   let loading = $state(true);
@@ -83,14 +85,26 @@
   });
 
   async function handleMessage(event: MessageEvent) {
-    // Strict origin/source validation for versioned callers.
-    if (origin !== '*') {
+    // Sol MAJOR-4: strict origin AND source validation. Versioned callers
+    // (protocolVersion >= 1) MUST supply a real origin — the iframe cannot
+    // safely regenerate SIWE bytes on behalf of an unknown parent.
+    const incomingProtocolVersion =
+      typeof event.data?.protocolVersion === 'number' ? event.data.protocolVersion : null;
+    if (origin === '*') {
+      if (incomingProtocolVersion !== null && incomingProtocolVersion >= 1) {
+        console.warn('[embed sign widget] refusing versioned request with wildcard origin');
+        return;
+      }
+      if (event.source !== window.parent) return;
+    } else {
       if (event.origin !== origin) return;
       if (event.source !== window.parent) return;
     }
 
     if (event.data?.type === 'openkey:sign:request') {
       message = event.data.message;
+      messageProtocolVersion = incomingProtocolVersion;
+      messageJwk = event.data.jwk ?? null;
       keyId = event.data.keyId || null;
       keyFetched = false;
 
@@ -98,36 +112,6 @@
       if (event.data.sessionToken && inIframe) {
         setSessionToken(event.data.sessionToken);
         embedAuthenticated = true;
-      }
-
-      // Build the shared capability-review model when this is a TinyCloud
-      // SIWE ReCap. Plain sign-message requests fall through to the legacy
-      // renderer below.
-      try {
-        const model = parseCapabilityReview({
-          message,
-          signer: {
-            label: 'Selected key',
-            address: key?.address ?? '0x0000000000000000000000000000000000000000',
-            chainId: 1,
-            provenance: key?.keyType === 'EXTERNAL' ? 'external' : 'managed',
-          },
-          editable: true,
-          metadataTrust: { status: 'unsigned', reason: 'no manifest supplied' },
-          reason: { text: '', source: 'none' },
-          requester: {
-            displayName: origin === '*' ? 'Unknown origin' : origin,
-            verifiedOrigin: origin === '*' ? null : origin,
-            manifestId: null,
-            manifestDigest: null,
-            domainWarning: false,
-            originWarning: false,
-          },
-        });
-        reviewModel = model;
-        reviewSelection = defaultSelection(model);
-      } catch {
-        reviewModel = null;
       }
 
       if (keyId && isAuthenticated) {
@@ -139,8 +123,50 @@
           // Key not found
         }
       }
+      // reviewModel is built by a $effect below (Sol MAJOR-8) that waits
+      // for `key` to be loaded before rendering a review with the real
+      // signer address.
     }
   }
+
+  // Build the capability-review model reactively. Waits for `key` so the
+  // signer address is correct (Sol MAJOR-8).
+  $effect(() => {
+    if (!message || !key) {
+      reviewModel = null;
+      return;
+    }
+    const canEdit =
+      messageProtocolVersion !== null &&
+      messageProtocolVersion >= 1 &&
+      origin !== '*';
+    try {
+      const model = parseCapabilityReview({
+        message,
+        signer: {
+          label: 'Selected key',
+          address: key.address,
+          chainId: 1,
+          provenance: key.keyType === 'EXTERNAL' ? 'external' : 'managed',
+        },
+        editable: canEdit,
+        metadataTrust: { status: 'unsigned', reason: 'no manifest supplied' },
+        reason: { text: '', source: 'none' },
+        requester: {
+          displayName: origin === '*' ? 'Unknown origin' : origin,
+          verifiedOrigin: origin === '*' ? null : origin,
+          manifestId: null,
+          manifestDigest: null,
+          domainWarning: false,
+          originWarning: false,
+        },
+      });
+      reviewModel = model;
+      reviewSelection = defaultSelection(model);
+    } catch {
+      reviewModel = null;
+    }
+  });
 
   async function signMessage() {
     if (!key || !message) return;
@@ -149,6 +175,58 @@
     error = '';
 
     try {
+      // Sol CRITICAL-1: for versioned + real-origin + ReCap requests, use
+      // the server-authoritative /api/delegate/authorize-sign route so the
+      // signed bytes match what selectedActionKeys and permissions claim.
+      const canUseAuthorizeSign =
+        messageProtocolVersion !== null &&
+        messageProtocolVersion >= 1 &&
+        origin !== '*' &&
+        reviewModel !== null &&
+        reviewModel.protocol === 'tinycloud-siwe-recap';
+
+      if (canUseAuthorizeSign) {
+        const selectedActionIds: string[] = [];
+        for (const grant of reviewModel!.permissions) {
+          for (const action of grant.actions) {
+            if (reviewSelection.has(action.id)) {
+              selectedActionIds.push(action.id);
+            }
+          }
+        }
+        const authorizeRes = await fetch(
+          `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign`,
+          {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              keyId: key.id,
+              siwe: message,
+              selectedActionIds,
+              jwk: messageJwk,
+            }),
+          },
+        );
+        if (!authorizeRes.ok) {
+          const errBody = await authorizeRes.json().catch(() => ({ error: 'authorize-sign failed' }));
+          throw new Error(errBody.error || `HTTP ${authorizeRes.status}`);
+        }
+        const authorizeResult = await authorizeRes.json();
+        sendResponse({
+          type: 'openkey:sign:response',
+          success: true,
+          signature: authorizeResult.signature,
+          address: authorizeResult.address,
+          signedMessage: authorizeResult.signedMessage,
+          selectedActionKeys: authorizeResult.selectedActionKeys,
+          permissions: authorizeResult.permissions,
+        });
+        sendClose();
+        return;
+      }
+
+      // Legacy exact-byte path (no narrowing).
       const result = await api.signMessage(key.id, message);
       const effectivePermissions = reviewModel
         ? reviewModel.permissions.map((grant) => ({

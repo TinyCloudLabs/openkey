@@ -105,8 +105,36 @@ export function digestImmutableFields(fields: {
   expirationTime: string;
   spaceId: string;
   nonce: string;
+  // Sol MAJOR-5: extended immutable-field coverage. Older callers omit
+  // these (the values default to empty string); newer /prepare invocations
+  // supply them and /complete re-verifies them.
+  uri?: string;
+  version?: string;
+  notBefore?: string;
+  requestId?: string;
+  statement?: string;
+  nonRecapResources?: string;
 }): string {
-  return sha256Hex(stableStringify(fields));
+  // Normalize missing optional fields to empty strings so a caller that
+  // supplies { uri: undefined } digests to the same value as one that omits
+  // the key entirely. stableStringify already handles this because it uses
+  // JSON.stringify, but forcing the shape makes the wire behaviour explicit.
+  const normalized = {
+    address: fields.address,
+    chainId: fields.chainId,
+    domain: fields.domain,
+    issuedAt: fields.issuedAt,
+    expirationTime: fields.expirationTime,
+    spaceId: fields.spaceId,
+    nonce: fields.nonce,
+    uri: fields.uri ?? '',
+    version: fields.version ?? '',
+    notBefore: fields.notBefore ?? '',
+    requestId: fields.requestId ?? '',
+    statement: fields.statement ?? '',
+    nonRecapResources: fields.nonRecapResources ?? '',
+  };
+  return sha256Hex(stableStringify(normalized));
 }
 
 export interface AuthorizationContextToken {

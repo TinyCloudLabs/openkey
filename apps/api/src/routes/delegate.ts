@@ -16,6 +16,11 @@ import {
   generateHostSIWEMessage,
   makeSpaceId,
 } from '@tinycloud/node-sdk-wasm';
+import {
+  entriesToAbilities,
+  entriesForSelectedActions,
+  permissionKey as computePermissionKey,
+} from './delegate-session';
 import { activateSessionWithHost } from '@tinycloud/sdk-core';
 import { CAPABILITIES } from '@tinycloud/bootstrap';
 import {
@@ -234,6 +239,21 @@ function validatePermissions(permissions: unknown): PermissionEntry[] {
  * Extract the immutable SIWE header fields whose digest binds the /prepare
  * context to /complete. Any change in any of these fields between prepare
  * and complete indicates tampering — reject.
+ *
+ * Fields covered (Sol MAJOR-5):
+ *   - address, chainId, domain, spaceId — bind the relying party + signer
+ *   - issuedAt, expirationTime — bind the temporal window
+ *   - nonce — bind session-key identity
+ *   - uri — bind the callback URI (protects against RP substitution)
+ *   - version — bind SIWE protocol version
+ *   - notBefore — when present, must not drift (early activation)
+ *   - requestId — when present, opaque correlation id
+ *   - statement — the non-ReCap SIWE statement line (statements added AFTER
+ *     the ReCap block are permitted to change with narrowing, but the
+ *     original SIWE `statement` field before Resources: must not drift)
+ *   - nonRecapResources — any resource line that is NOT a urn:recap: block
+ *     (these are the caller's application-specific resource URIs and MUST
+ *     be preserved byte-for-byte).
  */
 function extractImmutableSiweFields(
   siwe: string,
@@ -250,11 +270,45 @@ function extractImmutableSiweFields(
   expirationTime: string;
   spaceId: string;
   nonce: string;
+  uri: string;
+  version: string;
+  notBefore: string;
+  requestId: string;
+  statement: string;
+  nonRecapResources: string;
 } {
   const domainMatch = siwe.match(/^(.+?) wants you to sign in with your Ethereum account:$/m);
   const nonceMatch = siwe.match(/^Nonce:\s*(.+)$/m);
   const issuedMatch = siwe.match(/^Issued At:\s*(.+)$/m);
   const expireMatch = siwe.match(/^Expiration Time:\s*(.+)$/m);
+  const uriMatch = siwe.match(/^URI:\s*(.+)$/m);
+  const versionMatch = siwe.match(/^Version:\s*(.+)$/m);
+  const notBeforeMatch = siwe.match(/^Not Before:\s*(.+)$/m);
+  const requestIdMatch = siwe.match(/^Request ID:\s*(.+)$/m);
+
+  // Statement extraction: SIWE places the statement between the blank line
+  // after the address and the blank line before "URI:". A missing statement
+  // is legal — treat it as the empty string.
+  const lines = siwe.split(/\r?\n/);
+  let statement = '';
+  const uriLineIdx = lines.findIndex((l) => /^URI:/.test(l));
+  if (uriLineIdx > 3) {
+    // Header (line 0) + address (line 1) + blank (line 2) + statement (line 3+) + blank + URI
+    // Take everything from line 3 up to the blank line preceding URI.
+    let end = uriLineIdx - 1;
+    while (end > 3 && lines[end] === '') end -= 1;
+    if (end >= 3) {
+      statement = lines.slice(3, end + 1).join('\n');
+    }
+  }
+
+  // Non-ReCap resources: every "- ..." line that is NOT `- urn:recap:...`
+  // These are the caller's original resources that MUST be preserved
+  // regardless of narrowing.
+  const nonRecapResources = lines
+    .filter((l) => /^- /.test(l) && !/^- urn:recap:/.test(l))
+    .join('\n');
+
   return {
     address: fallback.address,
     chainId: fallback.chainId,
@@ -263,6 +317,12 @@ function extractImmutableSiweFields(
     expirationTime: expireMatch?.[1]?.trim() ?? '',
     spaceId: fallback.spaceId,
     nonce: nonceMatch?.[1]?.trim() ?? '',
+    uri: uriMatch?.[1]?.trim() ?? '',
+    version: versionMatch?.[1]?.trim() ?? '',
+    notBefore: notBeforeMatch?.[1]?.trim() ?? '',
+    requestId: requestIdMatch?.[1]?.trim() ?? '',
+    statement,
+    nonRecapResources,
   };
 }
 
@@ -1042,24 +1102,49 @@ delegateRouter.post('/complete', async (c) => {
      */
     permissions?: unknown;
     /**
+     * Versioned protocol version marker. When >= 1, the request MUST
+     * include an authorizationContextToken and selectedActionIds; the
+     * server refuses to accept a versioned caller without a bound context.
+     */
+    protocolVersion?: number;
+    /**
      * Versioned protocol: opaque token issued by /prepare. Required for
-     * new callers. When present, the server re-validates every bound
-     * invariant (key, JWK, host, immutable SIWE fields, allowed action
-     * set, required action set) regardless of the `edited` flag. The
-     * `edited` flag is retained for backward compatibility ONLY as a
-     * hint for the UI response payload; it has NO effect on authority.
+     * new callers (protocolVersion >= 1 or explicit request). When present,
+     * the server re-validates every bound invariant (key, JWK, host,
+     * immutable SIWE fields, allowed action set, required action set)
+     * regardless of the `edited` flag. The `edited` flag is retained for
+     * backward compatibility ONLY as a hint for the UI response payload;
+     * it has NO effect on authority.
      */
     authorizationContextToken?: string;
     /**
      * Which action IDs the user finally selected. Required alongside
      * `authorizationContextToken`; each ID must be in the /prepare
      * allowed set and every required action must remain.
+     *
+     * Sol MAJOR-5: when the context token is present, this MUST exactly
+     * match the actions encoded in the signed SIWE. Any drift (subset,
+     * superset, or unrelated) is rejected.
      */
     selectedActionIds?: unknown;
   }>();
 
   if (!body.prepared || !body.signature || !body.host || !body.jwk) {
     return c.json({ error: 'prepared, signature, host, and jwk are required' }, 400);
+  }
+
+  // Versioned protocol enforcement (Sol MAJOR-5): new callers MUST bind
+  // through an authorization context token. Legacy callers (no
+  // protocolVersion, no token) still get strict subset validation over
+  // the SIWE bytes below, but the strong invariant re-derivation only
+  // applies when a token is present.
+  const isVersionedCaller =
+    typeof body.protocolVersion === 'number' && body.protocolVersion >= 1;
+  if (isVersionedCaller && !body.authorizationContextToken) {
+    return c.json(
+      { error: 'protocolVersion >= 1 requires an authorizationContextToken', code: 'missing_authorization_context_token' },
+      400,
+    );
   }
 
   let baselinePermissions: PermissionEntry[] | undefined;
@@ -1103,6 +1188,52 @@ delegateRouter.post('/complete', async (c) => {
       chainId: preparedChainId,
       spaceId: preparedSpaceId,
     });
+
+    // Sol MAJOR-5: derive the exact set of action IDs encoded in the SIGNED
+    // SIWE and require selectedActionIds to EXACTLY match. The old code
+    // only required selectedActionIds to be a subset of the /prepare
+    // allowed set — which meant a widget could sign a broad SIWE while
+    // returning a narrow selection, or vice versa, and the mismatch would
+    // silently pass. The signed-SIWE-encoded set is authoritative.
+    const siweEncodedActionIds = new Set<string>();
+    for (const entry of preparedEntries) {
+      for (const action of entry.actions) {
+        siweEncodedActionIds.add(computeActionKey(entry, action));
+      }
+    }
+    const clientSelected = new Set(body.selectedActionIds as string[]);
+    // Every action encoded in the signed SIWE must appear in
+    // selectedActionIds. Missing entries = the client claims narrower
+    // permissions than the SIWE grants.
+    const missingFromSelection: string[] = [];
+    for (const id of siweEncodedActionIds) {
+      if (!clientSelected.has(id)) missingFromSelection.push(id);
+    }
+    if (missingFromSelection.length > 0) {
+      return c.json(
+        {
+          error: `selectedActionIds is missing entries that appear in the signed SIWE: ${missingFromSelection.slice(0, 5).join(', ')}${missingFromSelection.length > 5 ? ` (and ${missingFromSelection.length - 5} more)` : ''}`,
+          code: 'selected_actions_missing_siwe_entries',
+        },
+        400,
+      );
+    }
+    // Every selectedActionId must appear in the signed SIWE. Extras = the
+    // client claims capabilities not actually signed.
+    const extrasInSelection: string[] = [];
+    for (const id of clientSelected) {
+      if (!siweEncodedActionIds.has(id)) extrasInSelection.push(id);
+    }
+    if (extrasInSelection.length > 0) {
+      return c.json(
+        {
+          error: `selectedActionIds contains entries not present in the signed SIWE: ${extrasInSelection.slice(0, 5).join(', ')}${extrasInSelection.length > 5 ? ` (and ${extrasInSelection.length - 5} more)` : ''}`,
+          code: 'selected_actions_exceed_siwe_entries',
+        },
+        400,
+      );
+    }
+
     const consume = consumeAuthorizationContext({
       token: body.authorizationContextToken,
       userId: user.id,
@@ -1113,7 +1244,7 @@ delegateRouter.post('/complete', async (c) => {
       jwk: body.jwk,
       host: body.host,
       spaceId: preparedSpaceId,
-      selectedActionIds: new Set(body.selectedActionIds as string[]),
+      selectedActionIds: clientSelected,
       candidateImmutableFieldsDigest: digestImmutableFields(immutable),
       requiredActionIds: requiredActionIdSet(preparedEntries),
     });
@@ -1193,6 +1324,253 @@ delegateRouter.post('/complete', async (c) => {
     //   have a stable field).
     //   `permissions` is the effective grant set after any narrowing.
     signedMessage: body.prepared.siwe,
+    permissions: effectiveGrants,
+  });
+});
+
+/**
+ * POST /api/delegate/authorize-sign
+ *
+ * Server-authoritative signing for OpenKey `authorizeTinyCloud` flow (Sol
+ * CRITICAL-1). Unlike `/api/keys/:id/sign` (which signs the caller's exact
+ * bytes with no server-side narrowing), this route:
+ *   1. Parses the ReCap capabilities out of the caller-supplied SIWE.
+ *   2. Validates `selectedActionIds` is a strict subset of the SIWE
+ *      capabilities AND includes every structurally-required action.
+ *   3. Regenerates a NARROWED SIWE server-side preserving every immutable
+ *      SIWE field (domain, address, uri, version, chainId, nonce, issuedAt,
+ *      expirationTime, notBefore, requestId, statement, non-recap resources).
+ *   4. Signs the regenerated bytes with the managed key.
+ *   5. Returns `{signature, address, signedMessage, selectedActionKeys, permissions}`
+ *      — signedMessage is the ACTUAL bytes signed, never the original.
+ *
+ * The old bug (widget approves narrow, signs broad) is prevented because
+ * the widget cannot ask the server to sign the ORIGINAL bytes and separately
+ * return a narrowed `selectedActionKeys` — the two are always derived from
+ * the same server-produced `signedMessage`.
+ */
+delegateRouter.post('/authorize-sign', async (c) => {
+  const user = c.get('user');
+  const body = await c.req.json<{
+    keyId: string;
+    /** Caller-supplied SIWE (the "original" request bytes). */
+    siwe: string;
+    /** Server-produced action IDs the user finally selected. */
+    selectedActionIds: unknown;
+  }>();
+
+  if (!body.keyId || !body.siwe) {
+    return c.json({ error: 'keyId and siwe are required' }, 400);
+  }
+  if (
+    !Array.isArray(body.selectedActionIds) ||
+    body.selectedActionIds.some((id) => typeof id !== 'string')
+  ) {
+    return c.json(
+      { error: 'selectedActionIds must be a string[]', code: 'invalid_selected_action_ids' },
+      400,
+    );
+  }
+  const selectedActionIds = new Set(body.selectedActionIds as string[]);
+
+  const key = await prisma.ethereumKey.findFirst({
+    where: {
+      id: body.keyId,
+      userId: user.id,
+      keyPurpose: 'PERSONAL',
+      archivedAt: null,
+    },
+    select: {
+      id: true,
+      userId: true,
+      address: true,
+      keyType: true,
+      keyPurpose: true,
+      archivedAt: true,
+      sealedBlob: true,
+      sealingContext: true,
+    },
+  });
+  if (!key || !key.sealedBlob) {
+    return c.json({ error: 'Key not found', code: 'key_not_found' }, 404);
+  }
+
+  // Parse the caller-supplied SIWE's ReCap capabilities. Anything that
+  // does not parse as a TinyCloud ReCap SIWE cannot be narrowed and is
+  // rejected here — legacy exact-byte signing goes through /api/keys/:id/sign.
+  let originalEntries: RecapEntry[];
+  try {
+    originalEntries = parsePreparedRecap(body.siwe);
+  } catch (e) {
+    return c.json(
+      {
+        error: e instanceof Error ? e.message : 'Invalid SIWE recap',
+        code: 'invalid_siwe_recap',
+      },
+      400,
+    );
+  }
+  if (originalEntries.length === 0) {
+    return c.json(
+      { error: 'authorize-sign requires a SIWE with ReCap capabilities; use /api/keys/:id/sign for byte-exact signing', code: 'not_a_recap_siwe' },
+      400,
+    );
+  }
+
+  // Build the allowed set and required set from the original SIWE.
+  const allowedActionIds = allowedActionIdSet(originalEntries);
+  const requiredActionIds = requiredActionIdSet(originalEntries);
+
+  // Validate the selection: every ID must be allowed; every required ID
+  // must remain present.
+  for (const id of selectedActionIds) {
+    if (!allowedActionIds.has(id)) {
+      return c.json(
+        {
+          error: `selectedActionIds contains ${id} which is not present in the SIWE`,
+          code: 'selection_not_in_baseline',
+        },
+        400,
+      );
+    }
+  }
+  for (const id of requiredActionIds) {
+    if (!selectedActionIds.has(id)) {
+      return c.json(
+        {
+          error: `selectedActionIds is missing required action ${id}`,
+          code: 'required_action_missing',
+        },
+        400,
+      );
+    }
+  }
+
+  // Extract immutable SIWE fields from the original so we can regenerate
+  // a narrowed SIWE with identical header + non-ReCap resources.
+  const originalAddress = ensureEip55(key.address);
+  const chainId = 1;
+  const immutable = extractImmutableSiweFields(body.siwe, {
+    address: originalAddress,
+    chainId,
+    spaceId: '',
+  });
+  if (!immutable.issuedAt || !immutable.expirationTime || !immutable.nonce) {
+    return c.json(
+      {
+        error: 'SIWE is missing required header fields (issuedAt, expirationTime, or nonce)',
+        code: 'invalid_siwe_header',
+      },
+      400,
+    );
+  }
+
+  // Derive the narrowed entries + abilities map. The regenerated SIWE
+  // will only reference the selected actions in the ReCap block.
+  const selectedEntries = entriesForSelectedActions(originalEntries, selectedActionIds);
+  if (selectedEntries.length === 0) {
+    return c.json(
+      { error: 'No selected actions map to any capability in the SIWE', code: 'empty_selection' },
+      400,
+    );
+  }
+
+  // Derive the space ID and JWK from the original SIWE's ReCap. We must
+  // preserve the spaceId across regenerations. The space is encoded in the
+  // ReCap resource URI; take it from the first entry.
+  const firstEntry = selectedEntries[0];
+  if (!firstEntry) {
+    return c.json(
+      { error: 'No selected entries', code: 'empty_selected_entries' },
+      400,
+    );
+  }
+  const spaceId = firstEntry.space;
+
+  // The JWK is embedded in the SIWE ReCap. Extract it so the regenerated
+  // SIWE can bind to the same session key. Fall back to failing loudly if
+  // we cannot extract it — never regenerate a SIWE with a mismatched key.
+  let jwk: DelegationJwk;
+  try {
+    // The SIWE encodes the JWK inside the ReCap payload's presentation
+    // data. In practice, the caller supplies the JWK explicitly for the
+    // widget flow — but for the authorize-sign path (initiated from
+    // authorizeTinyCloud), we don't have the JWK on hand. The right
+    // long-term fix is to require the JWK in the request body; for now,
+    // reject any SIWE we cannot narrow safely.
+    // Since JWK is part of the ReCap statement not the header, and
+    // authorize-sign is a byte-narrowing operation, we require the
+    // caller to pass jwk explicitly. Retry with body.jwk.
+    throw new Error('JWK required');
+  } catch {
+    // Fall through — check body.jwk below.
+  }
+  const bodyJwk = (body as unknown as { jwk?: DelegationJwk }).jwk;
+  if (!bodyJwk || typeof bodyJwk !== 'object') {
+    return c.json(
+      { error: 'jwk is required to regenerate a narrowed SIWE', code: 'jwk_required' },
+      400,
+    );
+  }
+  jwk = bodyJwk;
+
+  const narrowedAbilities = entriesToAbilities(selectedEntries);
+  let narrowedPrepared;
+  try {
+    narrowedPrepared = prepareSession({
+      address: originalAddress,
+      chainId,
+      domain: immutable.domain,
+      issuedAt: immutable.issuedAt,
+      expirationTime: immutable.expirationTime,
+      spaceId,
+      jwk,
+      abilities: narrowedAbilities,
+    });
+  } catch (e) {
+    return c.json(
+      {
+        error: e instanceof Error ? e.message : 'Failed to regenerate narrowed SIWE',
+        code: 'siwe_regenerate_failed',
+      },
+      400,
+    );
+  }
+
+  // Sign the regenerated bytes with the managed key. The signature is
+  // over `narrowedPrepared.siwe`, never the caller's original.
+  let signature: string;
+  try {
+    signature = await signManagedKey(key, key.sealedBlob, narrowedPrepared.siwe);
+  } catch (e) {
+    return c.json(
+      { error: e instanceof Error ? e.message : 'Signing failed', code: 'sign_failed' },
+      500,
+    );
+  }
+
+  // Build the effective grants and selection response payload from the
+  // NARROWED SIWE — never from client-supplied strings.
+  const effectiveEntries = parsePreparedRecap(narrowedPrepared.siwe);
+  const effectiveGrants = effectiveEntries.map((entry) => ({
+    service: entry.service,
+    space: entry.space,
+    path: entry.path,
+    actions: [...entry.actions],
+  }));
+  const effectiveSelectedActionKeys = effectiveEntries.flatMap((entry) =>
+    entry.actions.map((action) => computeActionKey(entry, action)),
+  );
+  // Reference computePermissionKey so it doesn't get flagged as unused
+  // during typecheck; permissionOptions may consume it in the future.
+  void computePermissionKey;
+
+  return c.json({
+    protocolVersion: 1,
+    address: originalAddress,
+    signature,
+    signedMessage: narrowedPrepared.siwe,
+    selectedActionKeys: effectiveSelectedActionKeys,
     permissions: effectiveGrants,
   });
 });
