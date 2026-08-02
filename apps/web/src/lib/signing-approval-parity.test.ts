@@ -120,6 +120,9 @@ describe('signing-approval production-adapter structural guardrail', () => {
       const src = readWebFile(route);
       expect(src).not.toContain('Final review — server-authoritative bytes');
       expect(src).not.toMatch(/previewSignedMessage\s*&&\s*canUseAuthorizeSignFn\(\)/);
+      expect(src).toContain('{:else if reviewModel}');
+      expect(src).not.toContain("reviewModel && reviewModel.protocol === 'tinycloud-siwe-recap'");
+      expect(src).not.toMatch(/<SiweMessage\b/);
     }
   });
 

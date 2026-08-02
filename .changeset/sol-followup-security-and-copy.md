@@ -55,6 +55,15 @@ The substantive companion changes ride in `@openkey/api` and
   - Compares the SIWE domain with `URL.host`, preserving non-default ports.
 - The iframe signing route follows the same requester-name and authority
   comparison rules as the popup route.
+- Popup and iframe now route every successfully parsed signing protocol
+  through the shared approval component. Plain SIWE and legacy exact-byte
+  requests no longer fall back to route-local review cards, while parser
+  failures expose only a cancel action and cannot be signed.
+- The sealed-preview response must return canonical action keys and grouped
+  permissions that exactly project the selection the user reviewed. The final
+  summary and sensitive-access warning are then derived only from that sealed
+  selection; removed secret/decrypt actions remain available under Edit/Reset
+  but cannot survive in the top-level approval copy.
 - `apps/web/src/lib/signing-approval-parity-mounted.test.ts` domain-
   warning + Advanced-details assertions updated to match the shipped
   contract copy.

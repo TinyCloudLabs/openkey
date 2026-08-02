@@ -4,11 +4,10 @@
   import { api, type EthereumKey } from '$lib/api';
   import { getSessionToken, isEmbedContext, setSessionToken } from '$lib/embed-passkey';
   import EmbeddedSignIn from '$lib/components/auth/embedded-sign-in.svelte';
-  import { parseSIWE } from '$lib/siwe-parser';
   import Button from '$lib/components/ui/button.svelte';
-  import SiweMessage from '$lib/components/ui/siwe-message.svelte';
   import IframeSigningAdapter from '$lib/components/signing/iframe-signing-adapter.svelte';
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
+  import { validatePreviewSelection } from '$lib/preview-review';
   import {
     parseCapabilityReview,
     defaultSelection,
@@ -625,6 +624,7 @@
           };
         }
       }
+      const requestedActionIds = currentSelectedActionIds();
       const previewRes = await fetch(
         `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign-preview`,
         {
@@ -633,7 +633,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             authorizationContextToken: token,
-            selectedActionIds: currentSelectedActionIds(),
+            selectedActionIds: requestedActionIds,
           }),
         },
       );
@@ -651,6 +651,7 @@
       if (typeof previewResult.previewApprovalToken !== 'string' || !previewResult.previewApprovalToken) {
         throw new Error('authorize-sign-preview did not return a previewApprovalToken — server is out of date');
       }
+      reviewSelection = validatePreviewSelection(previewResult, requestedActionIds);
       previewSignedMessage = previewResult.signedMessage;
       previewApprovalToken = previewResult.previewApprovalToken;
     } catch (e: any) {
@@ -836,20 +837,6 @@
     window.parent.postMessage(closeMsg, origin);
   }
 
-  function formatAddress(address: string): string {
-    return `${address.slice(0, 6)}...${address.slice(-4)}`;
-  }
-
-  let siweDomain = $derived(message ? parseSIWE(message)?.message.domain ?? null : null);
-
-  let originDomain = $derived.by(() => {
-    return originAuthority(origin);
-  });
-
-  let domainMismatch = $derived(
-    siweDomain && originDomain && siweDomain !== originDomain
-  );
-
 </script>
 
 <div bind:this={contentEl} class="flex flex-col gap-4 bg-[#fafafa] p-4 rounded-2xl">
@@ -882,11 +869,10 @@
       <div class="flex flex-col items-center justify-center text-center text-surface-500 py-4">
         <p class="text-sm">Please connect first to sign messages.</p>
       </div>
-    {:else if reviewModel && reviewModel.protocol === 'tinycloud-siwe-recap'}
+    {:else if reviewModel}
       <!--
-        Editable TinyCloud request — render via the shared SigningApproval
-        component. The first approval requests server-authoritative bytes;
-        the actual signing approval stays in this same component.
+        Every parsed protocol renders via the shared approval content. Only
+        editable TinyCloud ReCap requests enter the server-preview flow.
       -->
       <!--
         IframeSigningAdapter mirrors the popup adapter — same substantive
@@ -912,45 +898,11 @@
       />
     {:else}
       <div class="flex flex-col gap-3">
-        <!-- Signing with -->
-        <div class="bg-surface-50 border border-surface-200 rounded-xl p-3">
-          <span class="block text-surface-400 text-xs uppercase tracking-wide mb-1">Signing with</span>
-          <div class="flex items-center gap-2">
-            <span class="font-medium text-sm text-surface-900">{key.label || `Key ${key.keyIndex}`}</span>
-            <code class="font-mono text-surface-400 text-xs">{formatAddress(key.address)}</code>
-          </div>
+        <div class="bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl text-sm" role="alert">
+          OpenKey could not build a signing review for this message, so it will not be signed.
         </div>
-
-        <!-- Request from -->
-        {#if siweDomain}
-          <div class="bg-surface-50 border border-surface-200 rounded-xl p-3">
-            <span class="block text-surface-400 text-xs uppercase tracking-wide mb-1">Request from</span>
-            <span class="text-sm font-medium text-surface-900">{siweDomain}</span>
-            {#if domainMismatch}
-              <div class="mt-1.5 text-xs text-amber-600">
-                Domain mismatch: requesting page is {originDomain} but message is from {siweDomain}
-              </div>
-            {/if}
-          </div>
-        {/if}
-
-        <!-- Message -->
-        <div class="bg-surface-50 border border-surface-200 rounded-xl p-3">
-          <span class="block text-surface-400 text-xs uppercase tracking-wide mb-1">Message</span>
-          <SiweMessage {message} theme="light" />
-        </div>
-
-        {#if error}
-          <div class="bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl text-sm" role="alert">
-            {error}
-          </div>
-        {/if}
-
         <div class="flex gap-2 mt-1">
           <Button variant="secondary" size="sm" class="flex-1 rounded-xl" onclick={cancel}>Cancel</Button>
-          <Button size="sm" class="flex-1 rounded-xl" onclick={approveAndSign} disabled={signing}>
-            {signing ? 'Signing...' : 'Sign Message'}
-          </Button>
         </div>
       </div>
     {/if}

@@ -130,10 +130,10 @@ export interface CapabilityGrant {
 
 export interface RequesterIdentity {
   /**
-   * Display name shown in the small summary. May come from the
-   * origin-bound manifest, a caller-echoed envelope value, or the raw
-   * origin — see `manifestName` and `manifestNameProvenance` for the
-   * honest, provenance-labelled breakdown.
+   * Display name shown in the small summary. Widget callers must use only an
+   * origin-bound/verified manifest name or the browser authority here. A
+   * caller-echoed envelope name belongs in `manifestName` with `caller`
+   * provenance so it stays explicitly labelled in Advanced details.
    */
   displayName: string;
   /**

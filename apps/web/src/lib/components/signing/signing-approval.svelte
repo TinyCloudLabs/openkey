@@ -86,16 +86,27 @@
       : PROTOCOL_HINT[model.protocol],
   );
 
-  // Statements for the summary view. Derived structurally from grants.
+  // Summary copy and the sensitive count describe only actions the user is
+  // currently approving. Advanced details deliberately retains the baseline
+  // grants so Edit/Reset can re-add a removed action, but a removed decrypt or
+  // secret action must never survive in the top-level final review.
+  const selectedGrants = $derived(
+    model.permissions.flatMap((grant) => {
+      const actions = grant.actions.filter((action) => selection.has(action.id));
+      return actions.length > 0 ? [{ ...grant, actions }] : [];
+    }),
+  );
+
+  // Statements for the summary view. Derived structurally from selected grants.
   const summaryStatements = $derived(
-    model.permissions.map((grant) => ({
+    selectedGrants.map((grant) => ({
       grant,
       statement: buildStatement(grant),
     })),
   );
 
   const sensitiveCount = $derived(
-    model.permissions.filter(grantReachesSecretDataOrDecryption).length,
+    selectedGrants.filter(grantReachesSecretDataOrDecryption).length,
   );
 
   function isSelected(action: CapabilityAction): boolean {
@@ -242,7 +253,11 @@
         {/each}
       </ul>
     {:else if !isMalformedRecap}
-      <p class="summary-empty">No capability payload — exact-byte signature only.</p>
+      <p class="summary-empty">
+        {model.permissions.length > 0
+          ? "No optional access selected."
+          : "No capability payload — exact-byte signature only."}
+      </p>
     {/if}
   </section>
 

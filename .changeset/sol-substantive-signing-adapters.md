@@ -66,8 +66,9 @@ Parity coverage:
   and drives every interaction via `page.keyboard.press` — real
   Tab-driven focus movement, real Enter/Space synthesis on buttons,
   native `<details>` open toggling on summary click and keyboard.
-  23 tests cover the three surfaces, the widget's
-  `canUseAuthorizeSign=false` fallback, and its shared final-preview state.
+  25 tests cover the three surfaces, the widget's
+  `canUseAuthorizeSign=false` fallback, its shared final-preview state,
+  legacy exact-byte requests, and malformed-request fail-closed behavior.
 
 Legacy `apps/web/src/lib/signing-approval-parity.test.ts` is now a
 structural guardrail only: it asserts each production route imports

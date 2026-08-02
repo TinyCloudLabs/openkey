@@ -2,12 +2,11 @@
   import { page } from '$app/stores';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
-  import { parseSIWE } from '$lib/siwe-parser';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
-  import SiweMessage from '$lib/components/ui/siwe-message.svelte';
   import PopupSigningAdapter from '$lib/components/signing/popup-signing-adapter.svelte';
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
+  import { validatePreviewSelection } from '$lib/preview-review';
   import {
     parseCapabilityReview,
     defaultSelection,
@@ -708,6 +707,7 @@
           };
         }
       }
+      const requestedActionIds = currentSelectedActionIds();
       const previewRes = await fetch(
         `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign-preview`,
         {
@@ -716,7 +716,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             authorizationContextToken: token,
-            selectedActionIds: currentSelectedActionIds(),
+            selectedActionIds: requestedActionIds,
           }),
         },
       );
@@ -733,6 +733,7 @@
       if (typeof previewResult.previewApprovalToken !== 'string' || !previewResult.previewApprovalToken) {
         throw new Error('authorize-sign-preview did not return a previewApprovalToken — server is out of date');
       }
+      reviewSelection = validatePreviewSelection(previewResult, requestedActionIds);
       previewSignedMessage = previewResult.signedMessage;
       previewApprovalToken = previewResult.previewApprovalToken;
     } catch (e: any) {
@@ -959,19 +960,6 @@
     }
   }
 
-  function formatAddress(address: string): string {
-    return `${address.slice(0, 6)}...${address.slice(-4)}`;
-  }
-
-  let siweDomain = $derived(message ? parseSIWE(message)?.message.domain ?? null : null);
-
-  let originDomain = $derived.by(() => {
-    return originAuthority(origin);
-  });
-
-  let domainMismatch = $derived(
-    siweDomain && originDomain && siweDomain !== originDomain
-  );
 </script>
 
 <div class="flex-1 flex flex-col">
@@ -998,13 +986,12 @@
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
       <p>Please connect first to sign messages.</p>
     </div>
-  {:else if reviewModel && reviewModel.protocol === 'tinycloud-siwe-recap'}
+  {:else if reviewModel}
     <!--
-      Editable TinyCloud request — render via the shared SigningApproval
-      component. The first approval requests server-authoritative bytes;
-      the actual signing approval stays in the same component with those
-      exact bytes available under Advanced details. Non-versioned requests
-      fall through to approveAndSign() directly.
+      Every parsed protocol renders through the shared approval content.
+      Editable TinyCloud ReCap requests use the server-preview step; plain
+      SIWE and legacy exact-byte requests approve directly, while malformed
+      ReCaps remain disabled by the shared component.
     -->
     <!--
       PopupSigningAdapter is a substantive adapter that owns the review
@@ -1036,45 +1023,17 @@
     />
   {:else}
     <!--
-      Legacy plain signMessage / non-ReCap SIWE fallback. The existing
-      review UI stays for backward compatibility with pre-consolidation
-      callers.
+      Parser failure is fail-closed. `parseCapabilityReview` normally returns
+      a model even for arbitrary legacy text, so reaching this branch means
+      OpenKey cannot safely construct the shared approval content.
     -->
     <div class="flex flex-col gap-4 flex-1">
-      <Card class="p-4">
-        <span class="block text-surface-400 text-xs uppercase mb-2">Signing with:</span>
-        <span class="font-semibold mr-2">{key.label || `Key ${key.keyIndex}`}</span>
-        <code class="font-mono text-surface-400 text-sm">{formatAddress(key.address)}</code>
+      <Card class="bg-red-500/10 border-red-500 text-red-500 p-4" role="alert">
+        OpenKey could not build a signing review for this message, so it will not be signed.
       </Card>
-
-      {#if siweDomain}
-        <Card class="p-4">
-          <span class="block text-surface-400 text-xs uppercase mb-2">Request from:</span>
-          <span class="text-surface-50 text-sm font-medium">{siweDomain}</span>
-          {#if domainMismatch}
-            <div class="mt-2 text-xs text-amber-400">
-              Domain mismatch: requesting page is {originDomain} but message is from {siweDomain}
-            </div>
-          {/if}
-        </Card>
-      {/if}
-
-      <Card class="p-4">
-        <span class="block text-surface-400 text-xs uppercase mb-2">Message:</span>
-        <SiweMessage {message} theme="dark" />
-      </Card>
-
-      {#if error}
-        <Card class="bg-red-500/10 border-red-500 text-red-500 p-4">
-          {error}
-        </Card>
-      {/if}
 
       <div class="flex gap-3 mt-auto">
         <Button variant="secondary" class="flex-1" onclick={cancel}>Cancel</Button>
-        <Button class="flex-1" onclick={approveAndSign} disabled={signing}>
-          {signing ? 'Signing...' : 'Sign Message'}
-        </Button>
       </div>
     </div>
   {/if}

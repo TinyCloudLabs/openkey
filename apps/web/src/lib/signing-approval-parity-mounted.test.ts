@@ -77,6 +77,7 @@ const win = new Window({ url: 'http://openkey.test/' });
 (globalThis as any).Element = win.Element;
 (globalThis as any).Node = win.Node;
 (globalThis as any).Text = win.Text;
+(globalThis as any).Comment = win.Comment;
 (globalThis as any).getComputedStyle = win.getComputedStyle.bind(win);
 (globalThis as any).navigator = win.navigator;
 (globalThis as any).CustomEvent = win.CustomEvent;
@@ -362,6 +363,47 @@ function warningFixtureModel(): any {
       { code: 'UNRECOGNISED_ACTION', message: 'saw unknown ability tinycloud.kv/frobnicate' },
     ],
   };
+}
+
+function encryptionFixtureModel(): any {
+  const model = benignFixtureModel();
+  const space = 'urn:tinycloud:encryption:did:pkh:eip155:1:0x1111111111111111111111111111111111111111:default';
+  model.rawMessage = 'test-siwe-encryption';
+  model.permissions = [
+    {
+      id: `tinycloud.encryption\0${space}\0`,
+      family: 'encryption-decrypt',
+      severity: 'sensitive',
+      service: 'tinycloud.encryption',
+      space,
+      path: '',
+      owner: null,
+      ownedBySelf: null,
+      displayLabel: null,
+      metadataLabel: null,
+      actions: [
+        {
+          id: `tinycloud.encryption\0${space}\0\0tinycloud.encryption/network.create`,
+          ability: 'tinycloud.encryption/network.create',
+          verb: 'network.create',
+          required: false,
+          selected: true,
+          editable: true,
+          caveats: [{}],
+        },
+        {
+          id: `tinycloud.encryption\0${space}\0\0tinycloud.encryption/decrypt`,
+          ability: 'tinycloud.encryption/decrypt',
+          verb: 'decrypt',
+          required: false,
+          selected: true,
+          editable: true,
+          caveats: [{}],
+        },
+      ],
+    },
+  ];
+  return model;
 }
 
 function fixtureSelection(model: any): Set<string> {
@@ -939,6 +981,67 @@ describe('signing-approval mounted parity across production surface adapters (So
       expect(t._spies.approveAndSign.length).toBe(1);
       expect(t._spies.requestPreview.length).toBe(0);
       handle.unmount();
+    }
+  });
+
+  test('final summary and sensitive warning describe only selected actions', async () => {
+    const widgetBindings = surfaceBindings.filter((b) => b.kind === 'widget');
+    for (const binding of widgetBindings) {
+      const model = encryptionFixtureModel();
+      model.rawMessage = 'server-prepared-create-only-bytes';
+      const createOnly = new Set<string>([model.permissions[0].actions[0].id]);
+      const built = propsForSurface(binding, model, createOnly, {
+        canUseAuthorizeSign: true,
+        previewReady: true,
+      });
+      const handle = await mountSurface(binding, built.props);
+
+      const summary = handle.container.querySelector('.summary');
+      expect(summary?.textContent).toContain('Create a decryption network');
+      expect(summary?.textContent).not.toContain('decrypt protected data');
+      expect(handle.container.querySelector('.sensitive-callout')).toBeNull();
+
+      // Advanced details retains the removed baseline action so the user can
+      // re-add it, but it no longer contaminates the top-level final copy.
+      const details = handle.container.querySelector('details.advanced-details');
+      expect(details?.textContent).toContain('decrypt');
+      handle.unmount();
+    }
+  });
+
+  test('legacy messages use shared approval and malformed ReCaps fail closed', async () => {
+    const widgetBindings = surfaceBindings.filter((b) => b.kind === 'widget');
+    for (const binding of widgetBindings) {
+      const legacy = benignFixtureModel();
+      legacy.protocol = 'legacy-message';
+      legacy.rawMessage = 'legacy exact bytes';
+      legacy.permissions = [];
+      const legacyBuilt = propsForSurface(binding, legacy, new Set(), {
+        canUseAuthorizeSign: false,
+      });
+      const legacyHandle = await mountSurface(binding, legacyBuilt.props);
+      expect(legacyHandle.container.querySelector('[role="dialog"]')).toBeTruthy();
+      const legacyApprove = (Array.from(legacyHandle.container.querySelectorAll('button')) as any[])
+        .find((button) => (button.textContent ?? '').trim() === 'Approve');
+      expect(legacyApprove).toBeTruthy();
+      pressKeyOnButton(legacyApprove, 'Enter');
+      expect(legacyBuilt.widgetTransport!._spies.approveAndSign.length).toBe(1);
+      legacyHandle.unmount();
+
+      const malformed = benignFixtureModel();
+      malformed.protocol = 'malformed-recap';
+      malformed.permissions = [];
+      malformed.parseWarnings = [{ code: 'MALFORMED_RECAP', message: 'decode failed' }];
+      const malformedBuilt = propsForSurface(binding, malformed, new Set(), {
+        canUseAuthorizeSign: false,
+      });
+      const malformedHandle = await mountSurface(binding, malformedBuilt.props);
+      const cannotApprove = (Array.from(malformedHandle.container.querySelectorAll('button')) as any[])
+        .find((button) => (button.textContent ?? '').trim() === 'Cannot approve');
+      expect(cannotApprove).toBeTruthy();
+      expect(cannotApprove.disabled).toBe(true);
+      expect(malformedBuilt.widgetTransport!._spies.approveAndSign.length).toBe(0);
+      malformedHandle.unmount();
     }
   });
 

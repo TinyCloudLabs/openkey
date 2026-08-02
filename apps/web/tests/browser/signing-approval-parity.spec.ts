@@ -45,7 +45,7 @@ interface RecordedCall {
   args?: unknown;
 }
 
-function benignFixtureModel() {
+function benignFixtureModel(): any {
   const space = 'tinycloud:pkh:eip155:1:0x1111111111111111111111111111111111111111:default';
   return {
     version: 1,
@@ -110,6 +110,47 @@ function benignFixtureModel() {
     ],
     parseWarnings: [],
   };
+}
+
+function encryptionFixtureModel() {
+  const model = benignFixtureModel();
+  const space = 'urn:tinycloud:encryption:did:pkh:eip155:1:0x1111111111111111111111111111111111111111:default';
+  model.rawMessage = 'server-prepared-create-only-bytes';
+  model.permissions = [
+    {
+      id: `tinycloud.encryption\x00${space}\x00`,
+      family: 'encryption-decrypt',
+      severity: 'sensitive',
+      service: 'tinycloud.encryption',
+      space,
+      path: '',
+      owner: null,
+      ownedBySelf: null,
+      displayLabel: null,
+      metadataLabel: null,
+      actions: [
+        {
+          id: `tinycloud.encryption\x00${space}\x00\x00tinycloud.encryption/network.create`,
+          ability: 'tinycloud.encryption/network.create',
+          verb: 'network.create',
+          required: false,
+          selected: true,
+          editable: true,
+          caveats: [{}],
+        },
+        {
+          id: `tinycloud.encryption\x00${space}\x00\x00tinycloud.encryption/decrypt`,
+          ability: 'tinycloud.encryption/decrypt',
+          verb: 'decrypt',
+          required: false,
+          selected: true,
+          editable: true,
+          caveats: [{}],
+        },
+      ],
+    },
+  ];
+  return model;
 }
 
 function fixtureInitialSelection(model: any): string[] {
@@ -374,6 +415,54 @@ test.describe('signing-approval browser parity — production adapters', () => {
       await page.keyboard.press('Enter');
       const names = (await readCalls(page)).map((call) => call.name);
       expect(names).toEqual(['approveAndSign']);
+    }
+  });
+
+  test('widget final summary excludes a deselected decrypt action', async ({ page }) => {
+    for (const surface of ['popup', 'iframe'] as const) {
+      const model = encryptionFixtureModel();
+      await loadHarness(page, {
+        surface,
+        model,
+        initialSelection: [model.permissions[0].actions[0].id],
+        canUseAuthorizeSign: true,
+        previewReady: true,
+      });
+
+      const summary = page.locator('.summary');
+      await expect(summary).toContainText('Create a decryption network');
+      await expect(summary).not.toContainText('decrypt protected data');
+      await expect(page.locator('.sensitive-callout')).toHaveCount(0);
+      await expect(page.getByRole('button', { name: 'Approve exact bytes' })).toBeVisible();
+    }
+  });
+
+  test('widget legacy and malformed protocols stay in shared approval content', async ({ page }) => {
+    for (const surface of ['popup', 'iframe'] as const) {
+      const legacy = benignFixtureModel();
+      legacy.protocol = 'legacy-message';
+      legacy.permissions = [];
+      await loadHarness(page, {
+        surface,
+        model: legacy,
+        initialSelection: [],
+        canUseAuthorizeSign: false,
+      });
+      await expect(page.locator('[role="dialog"]')).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Approve' })).toBeEnabled();
+
+      const malformed = benignFixtureModel();
+      malformed.protocol = 'malformed-recap';
+      malformed.permissions = [];
+      malformed.parseWarnings = [{ code: 'MALFORMED_RECAP', message: 'decode failed' }];
+      await loadHarness(page, {
+        surface,
+        model: malformed,
+        initialSelection: [],
+        canUseAuthorizeSign: false,
+      });
+      await expect(page.getByRole('button', { name: 'Cannot approve' })).toBeDisabled();
+      await expect(page.getByText('Refusing to sign: malformed capability payload')).toBeVisible();
     }
   });
 });
