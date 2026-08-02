@@ -70,6 +70,7 @@ import {
   type AuthorizationContextToken,
 } from '../services/authorization-signing';
 import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
+import { fetchAndBindWellKnownManifest } from '../services/manifest-origin-fetch';
 import { deriveKeyForRecord } from '../services/key-sealing';
 import {
   canonicalizeCoordinationosOrigin,
@@ -1537,6 +1538,34 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
      * empty when the widget will not activate a delegation directly.
      */
     host?: string;
+    /**
+     * Optional presentation envelope forwarded by the widget. Display-only
+     * — bound into the authorization context so the review UI can render
+     * honest provenance labels. Size-bounded (≤16KB) and validated below.
+     * The envelope MUST NOT expand authority; the ReCap payload remains
+     * the sole gate for what the user can approve.
+     */
+    presentation?: {
+      protocolVersion?: number;
+      displayName?: string;
+      reason?: string;
+      manifestId?: string;
+      manifestDigest?: string;
+      manifests?: Array<{
+        name?: string;
+        appId?: string;
+        payload?: Record<string, unknown>;
+      }>;
+    };
+    /**
+     * Optional. The browser origin the widget verified from the
+     * postMessage sender. When present AND https, the server attempts an
+     * SSRF-guarded fetch of `.well-known/openkey-manifest.json` and
+     * compares its canonical SHA-256 to `presentation.manifestDigest`.
+     * A successful compare upgrades the metadata-trust status to
+     * `origin-bound`; any failure fails closed to `unsigned`.
+     */
+    reportedOrigin?: string;
   }>();
 
   if (!body.keyId || !body.siwe || !body.jwk || typeof body.jwk !== 'object') {
@@ -1670,6 +1699,98 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
   const baselineAttenuation = extractRecapAttenuationFromSiwe(body.siwe);
   const baselineAbilitiesDigest = digestFullRecapAttenuation(baselineAttenuation);
 
+  // Envelope validation + optional origin-bind. Fail-closed: any validation
+  // failure downgrades to `unsigned` — envelope metadata NEVER expands
+  // authority, and the caller cannot claim `verified` from the client side.
+  let metadataTrust: {
+    status: 'verified' | 'origin-bound' | 'unsigned';
+    reason: string;
+  } = { status: 'unsigned', reason: 'no manifest supplied' };
+  let verifiedManifest:
+    | {
+        name?: string;
+        appId?: string;
+        manifestId?: string;
+        manifestDigest?: string;
+        reportedOrigin?: string;
+      }
+    | undefined;
+
+  if (body.presentation !== undefined) {
+    const envelope = body.presentation;
+    if (envelope === null || typeof envelope !== 'object' || Array.isArray(envelope)) {
+      metadataTrust = { status: 'unsigned', reason: 'presentation envelope was not an object' };
+    } else {
+      // Size-bound the envelope. 16KB matches the widget-transport limit.
+      let serialized: string | null = null;
+      try {
+        serialized = JSON.stringify(envelope);
+      } catch {
+        serialized = null;
+      }
+      const bytes = serialized ? Buffer.byteLength(serialized, 'utf8') : Number.POSITIVE_INFINITY;
+      if (!serialized) {
+        metadataTrust = { status: 'unsigned', reason: 'presentation envelope was not serializable' };
+      } else if (bytes > 16 * 1024) {
+        metadataTrust = {
+          status: 'unsigned',
+          reason: `presentation envelope size ${bytes} bytes exceeds 16KB limit`,
+        };
+      } else {
+        // Optional origin-bind: only attempted when reportedOrigin is
+        // present and https AND the envelope carries a manifestDigest.
+        const reportedOrigin =
+          typeof body.reportedOrigin === 'string' && body.reportedOrigin.startsWith('https://')
+            ? body.reportedOrigin
+            : null;
+        const declaredDigest =
+          typeof envelope.manifestDigest === 'string' && envelope.manifestDigest.length > 0
+            ? envelope.manifestDigest
+            : null;
+        if (reportedOrigin && declaredDigest) {
+          try {
+            const bindResult = await fetchAndBindWellKnownManifest({
+              reportedOrigin,
+              declaredDigest,
+            });
+            if (bindResult.ok) {
+              metadataTrust = {
+                status: 'origin-bound',
+                reason: `manifest at ${reportedOrigin}/.well-known/openkey-manifest.json matched declared digest`,
+              };
+              verifiedManifest = {
+                name:
+                  bindResult.manifest?.name ??
+                  (typeof envelope.displayName === 'string' ? envelope.displayName : undefined),
+                appId: bindResult.manifest?.appId,
+                manifestId:
+                  bindResult.manifest?.manifestId ??
+                  (typeof envelope.manifestId === 'string' ? envelope.manifestId : undefined),
+                manifestDigest: declaredDigest.toLowerCase(),
+                reportedOrigin,
+              };
+            } else {
+              metadataTrust = {
+                status: 'unsigned',
+                reason: `origin-bind failed: ${bindResult.reason ?? 'unknown reason'}`,
+              };
+            }
+          } catch (bindErr) {
+            console.warn('[authorize-sign-prepare] Origin-bind threw:', bindErr);
+            metadataTrust = { status: 'unsigned', reason: 'origin-bind threw' };
+          }
+        } else {
+          metadataTrust = {
+            status: 'unsigned',
+            reason: reportedOrigin
+              ? 'presentation envelope has no manifestDigest to bind'
+              : 'no https reportedOrigin supplied',
+          };
+        }
+      }
+    }
+  }
+
   let issued: AuthorizationContextToken;
   try {
     issued = issueAuthorizationContext({
@@ -1685,6 +1806,8 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       initialSelectionActionIds,
       expirationTime: immutable.expirationTime,
       originalSiwe: body.siwe,
+      metadataTrust,
+      verifiedManifest,
     });
   } catch (issueErr) {
     console.warn('[authorize-sign-prepare] Failed to issue authorization context:', issueErr);
@@ -1704,6 +1827,10 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     // matches the signer it is about to use.
     address: keyAddress,
     spaceId,
+    // Server-decided trust + verified manifest fields. The widget MUST
+    // render trust from THIS value, not from the envelope it forwarded.
+    metadataTrust: issued.metadataTrust,
+    verifiedManifest: issued.verifiedManifest,
   });
 });
 

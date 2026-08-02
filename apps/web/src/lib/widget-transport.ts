@@ -259,6 +259,103 @@ export function createWidgetTransport(opts: WidgetTransportOptions): WidgetTrans
       opts.onInvalid?.("invalid-payload", event);
       return;
     }
+    // Presentation envelope validation. Optional, but if present it MUST
+    // be a plain object, size-bounded, and MUST NOT carry keys that look
+    // like trust/verification overrides. Any oversized/malformed envelope
+    // is dropped by clearing the field — the widget then behaves exactly
+    // as if the caller had not supplied one (fail-closed to no envelope,
+    // not a hard error, so a legitimate sign request still lands).
+    if (payload.presentation !== undefined) {
+      const drop = (why: string) => {
+        // Log so operators see a suspicious envelope being dropped; the
+        // sign request itself is not rejected — the widget will render
+        // with `presentation === undefined` (identical to a caller that
+        // did not supply one).
+        // eslint-disable-next-line no-console
+        console.warn(
+          "[widget-transport] dropping presentation envelope:",
+          why,
+        );
+        payload.presentation = undefined;
+      };
+      if (
+        payload.presentation === null ||
+        typeof payload.presentation !== "object" ||
+        Array.isArray(payload.presentation)
+      ) {
+        drop("presentation must be a plain object");
+      } else {
+        // Serialize to measure size in bytes. 16KB is generous for a
+        // manifest bundle but rejects obvious abuse.
+        let serialized: string | null = null;
+        try {
+          serialized = JSON.stringify(payload.presentation);
+        } catch {
+          drop("presentation is not JSON-serializable");
+        }
+        if (serialized !== null) {
+          // Use encoded byte-length to be robust to non-ASCII characters.
+          const bytes = new TextEncoder().encode(serialized).byteLength;
+          if (bytes > 16 * 1024) {
+            drop(`presentation is ${bytes} bytes (>16KB)`);
+          } else {
+            // Reject keys that look like trust/verification overrides. The
+            // widget MUST derive trust from the server prepare response,
+            // not the caller. Any of these keys signals a hostile envelope.
+            const forbiddenKeys = new Set([
+              "verified",
+              "trust",
+              "trustStatus",
+              "metadataTrust",
+              "manifestTrust",
+              "signature",
+              "origin",
+              "verifiedOrigin",
+              "manifestVerified",
+            ]);
+            const presentationObj = payload.presentation as Record<string, unknown>;
+            for (const key of Object.keys(presentationObj)) {
+              if (forbiddenKeys.has(key)) {
+                drop(`presentation carries forbidden override key ${key}`);
+                break;
+              }
+            }
+            // If `manifests` is present, validate each entry is a plain
+            // object with only string/object fields. Same fail-closed rule.
+            if (payload.presentation !== undefined) {
+              const manifestsRaw = (payload.presentation as Record<string, unknown>).manifests;
+              if (manifestsRaw !== undefined) {
+                if (!Array.isArray(manifestsRaw)) {
+                  drop("presentation.manifests must be an array");
+                } else {
+                  for (const [i, m] of manifestsRaw.entries()) {
+                    if (
+                      m === null ||
+                      typeof m !== "object" ||
+                      Array.isArray(m)
+                    ) {
+                      drop(`presentation.manifests[${i}] must be an object`);
+                      break;
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    // Reported origin is optional. Widget flows use their configured
+    // origin for the actual channel; `reportedOrigin` is a defence-in-
+    // depth hint the SDK can pass so the server prepare route can
+    // origin-bind a manifest. Must be a string when present.
+    if (
+      payload.reportedOrigin !== undefined &&
+      (typeof payload.reportedOrigin !== "string" || !payload.reportedOrigin)
+    ) {
+      opts.onInvalid?.("invalid-payload", event);
+      return;
+    }
     // Sol MAJOR-4 (continuation): only ONE active request may correlate at
     // a time. If a request is already in flight, reject any new request
     // rather than silently letting the second overwrite the first — this

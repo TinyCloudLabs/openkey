@@ -19,6 +19,7 @@ export type PermissionSeverity = "standard" | "attention" | "sensitive";
 
 export type MetadataTrustStatus =
   | "verified" // manifest signed by owner, digest matches, not stale
+  | "origin-bound" // widget browser-verified the origin AND fetched the manifest at the well-known URL with a matching content digest — but no cryptographic manifest signature. Ranks between "unsigned" and "verified": presentation strings may hint but must never override structural severity.
   | "unsigned" // no manifest supplied
   | "stale" // manifest was signed but is past its refresh window
   | "wrong-key" // manifest signature did not verify against expected key
@@ -201,7 +202,17 @@ export type RequestProtocol =
   /** Ordinary SIWE — no ReCap, no editing. */
   | "siwe-plain"
   /** TinyCloud SIWE with ReCap — editable subject to invariants. */
-  | "tinycloud-siwe-recap";
+  | "tinycloud-siwe-recap"
+  /**
+   * A SIWE that carried a `urn:recap:` resource whose payload was
+   * unparseable / produced zero entries. This is NOT the same as plain
+   * SIWE — a plain SIWE has no ReCap at all. A malformed ReCap looks
+   * ReCap-shaped but decoded to nothing, so treating it as `siwe-plain`
+   * would let the widget approve exact-byte signing of a message whose
+   * capability payload was silently ignored. UI MUST refuse to approve
+   * this protocol; the request has to be rejected.
+   */
+  | "malformed-recap";
 
 export interface CapabilityReviewModel {
   /** Version tag so consumers can detect breaking model changes. */

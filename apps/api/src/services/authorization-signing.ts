@@ -53,6 +53,32 @@ export interface AuthorizationContextIssueInput {
    * caller-echoed SIWE.
    */
   originalSiwe?: string;
+  /**
+   * Server-decided trust for the presentation envelope. Bound at prepare
+   * time so the widget cannot upgrade it in a later step. Display-only:
+   * never expands authority.
+   *   - `verified` — reserved for a future signed-manifest path.
+   *   - `origin-bound` — the reported browser origin matched an https
+   *     well-known manifest whose canonical SHA-256 matched the
+   *     envelope's declared digest.
+   *   - `unsigned` — no manifest, or verification failed. Fail-closed.
+   */
+  metadataTrust?: {
+    status: "verified" | "origin-bound" | "unsigned";
+    reason: string;
+  };
+  /**
+   * The subset of envelope manifest metadata the server was willing to
+   * echo back after validation. Never carries the caller's raw envelope;
+   * always the server's derived, size-bounded, sanitized version.
+   */
+  verifiedManifest?: {
+    name?: string;
+    appId?: string;
+    manifestId?: string;
+    manifestDigest?: string;
+    reportedOrigin?: string;
+  };
 }
 
 interface StoredContext {
@@ -72,6 +98,17 @@ interface StoredContext {
   initialSelectionActionIds: string[];
   expirationTime: string;
   originalSiwe: string;
+  metadataTrust: {
+    status: "verified" | "origin-bound" | "unsigned";
+    reason: string;
+  };
+  verifiedManifest?: {
+    name?: string;
+    appId?: string;
+    manifestId?: string;
+    manifestDigest?: string;
+    reportedOrigin?: string;
+  };
 }
 
 const store = new Map<string, StoredContext>();
@@ -232,6 +269,24 @@ export interface AuthorizationContextToken {
   initialSelectionActionIds: string[];
   /** Baseline digest so the widget can prove it received the right prepare. */
   baselineAbilitiesDigest: string;
+  /**
+   * Server-decided trust for the presentation envelope (see
+   * `AuthorizationContextIssueInput.metadataTrust`). Returned so the widget
+   * can render honest provenance labels; the value is bound into the
+   * context and cannot be raised by later steps.
+   */
+  metadataTrust: {
+    status: "verified" | "origin-bound" | "unsigned";
+    reason: string;
+  };
+  /** Verified manifest fields (only present when trust status upgrades). */
+  verifiedManifest?: {
+    name?: string;
+    appId?: string;
+    manifestId?: string;
+    manifestDigest?: string;
+    reportedOrigin?: string;
+  };
 }
 
 export function issueAuthorizationContext(
@@ -242,6 +297,11 @@ export function issueAuthorizationContext(
 
   const token = `oks_${randomUUID().replace(/-/g, "")}${randomUUID().replace(/-/g, "")}`;
   const jwkDigest = digestJwk(input.jwk);
+
+  const metadataTrust = input.metadataTrust ?? {
+    status: "unsigned" as const,
+    reason: "no manifest supplied",
+  };
 
   const stored: StoredContext = {
     token,
@@ -260,6 +320,8 @@ export function issueAuthorizationContext(
     initialSelectionActionIds: [...input.initialSelectionActionIds].sort(),
     expirationTime: input.expirationTime,
     originalSiwe: input.originalSiwe ?? "",
+    metadataTrust,
+    verifiedManifest: input.verifiedManifest,
   };
   store.set(token, stored);
 
@@ -269,6 +331,8 @@ export function issueAuthorizationContext(
     allowedActionIds: stored.allowedActionIds,
     initialSelectionActionIds: stored.initialSelectionActionIds,
     baselineAbilitiesDigest: stored.baselineAbilitiesDigest,
+    metadataTrust: stored.metadataTrust,
+    verifiedManifest: stored.verifiedManifest,
   };
 }
 

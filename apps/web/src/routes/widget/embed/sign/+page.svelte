@@ -43,6 +43,22 @@
   let reviewEditing = $state(false);
   let currentRequestId = $state<string | null>(null);
   let transport: WidgetTransport | null = null;
+  // Presentation envelope forwarded by the SDK. Display-only. Trust is
+  // set only from the server prepare response (see below).
+  let requestPresentation = $state<Record<string, unknown> | null>(null);
+  let serverMetadataTrust = $state<
+    { status: 'verified' | 'origin-bound' | 'unsigned'; reason: string } | null
+  >(null);
+  let serverVerifiedManifest = $state<
+    | {
+        name?: string;
+        appId?: string;
+        manifestId?: string;
+        manifestDigest?: string;
+        reportedOrigin?: string;
+      }
+    | null
+  >(null);
   // Sol MAJOR-9 (per-request immutable state): a second transport request
   // must NOT overwrite an in-flight one — the response would escape to
   // the wrong parent.
@@ -135,6 +151,15 @@
     keyId = typeof data.keyId === 'string' ? data.keyId : null;
     // Sol MAJOR-3 (continuation): capture the externalSign flag.
     externalSignMode = data.externalSign === true;
+    // Envelope (display-only). Widget transport already validated + size-
+    // bounded the object. Trust decision is deferred to /authorize-sign-
+    // prepare and populated into serverMetadataTrust below.
+    requestPresentation =
+      data.presentation && typeof data.presentation === 'object'
+        ? (data.presentation as Record<string, unknown>)
+        : null;
+    serverMetadataTrust = null;
+    serverVerifiedManifest = null;
     keyFetched = false;
     if (data.sessionToken && inIframe && typeof data.sessionToken === 'string') {
       setSessionToken(data.sessionToken);
@@ -248,6 +273,12 @@
       messageJwk = event.data.jwk ?? null;
       messageHost = typeof event.data.host === 'string' ? event.data.host : '';
       keyId = event.data.keyId || null;
+      requestPresentation =
+        event.data.presentation && typeof event.data.presentation === 'object'
+          ? event.data.presentation
+          : null;
+      serverMetadataTrust = null;
+      serverVerifiedManifest = null;
       keyFetched = false;
       requestSealed = true;
 
@@ -297,6 +328,44 @@
     const domainMismatchForModel =
       !!siweDomainForModel && !!originHostForModel && siweDomainForModel !== originHostForModel;
     const originIsWildcard = origin === '*';
+    // Envelope + server-decided trust wiring. Same rules as the popup
+    // widget: envelope is display-only, trust is authoritative from the
+    // server prepare response.
+    const envelope = requestPresentation;
+    const envelopeDisplayName =
+      envelope && typeof envelope.displayName === 'string' && envelope.displayName
+        ? envelope.displayName
+        : null;
+    const envelopeReasonText =
+      envelope && typeof envelope.reason === 'string' && envelope.reason ? envelope.reason : '';
+    const envelopeManifestId =
+      envelope && typeof envelope.manifestId === 'string' && envelope.manifestId
+        ? envelope.manifestId
+        : null;
+    const envelopeManifestDigest =
+      envelope && typeof envelope.manifestDigest === 'string' && envelope.manifestDigest
+        ? envelope.manifestDigest
+        : null;
+    const effectiveTrust = serverMetadataTrust ?? {
+      status: 'unsigned' as const,
+      reason: envelope
+        ? 'awaiting server verification of manifest envelope'
+        : 'no manifest supplied',
+    };
+    const displayManifestId =
+      serverVerifiedManifest?.manifestId ?? envelopeManifestId;
+    const displayManifestDigest =
+      serverVerifiedManifest?.manifestDigest ?? envelopeManifestDigest;
+    const displayName =
+      serverVerifiedManifest?.name ??
+      envelopeDisplayName ??
+      (originIsWildcard ? 'Unknown origin' : origin);
+    const requesterVerifiedNow =
+      effectiveTrust.status === 'verified' || effectiveTrust.status === 'origin-bound';
+    let requesterAddressForClassifier: string | null = null;
+    if (requesterVerifiedNow && key?.address) {
+      requesterAddressForClassifier = key.address.toLowerCase();
+    }
     try {
       const model = parseCapabilityReview({
         message,
@@ -307,21 +376,20 @@
           provenance: key.keyType === 'EXTERNAL' ? 'external' : 'managed',
         },
         editable: canEdit,
-        metadataTrust: { status: 'unsigned', reason: 'no manifest supplied' },
-        reason: { text: '', source: 'none' },
+        metadataTrust: effectiveTrust,
+        reason: envelopeReasonText
+          ? { text: envelopeReasonText, source: 'caller' }
+          : { text: '', source: 'none' },
         requester: {
-          displayName: originIsWildcard ? 'Unknown origin' : origin,
+          displayName,
           verifiedOrigin: originIsWildcard ? null : origin,
-          manifestId: null,
-          manifestDigest: null,
+          manifestId: displayManifestId,
+          manifestDigest: displayManifestDigest,
           domainWarning: domainMismatchForModel,
           originWarning: originIsWildcard,
         },
-        // Sol MAJOR-8: fail closed on requester identity — until the
-        // widget resolves a signed manifest for the parent app, treat
-        // every non-signer-owned space grant as cross-app-data.
-        requesterAddress: null,
-        requesterVerified: false,
+        requesterAddress: requesterAddressForClassifier,
+        requesterVerified: requesterVerifiedNow,
       });
       reviewModel = model;
       reviewSelection = defaultSelection(model);
@@ -363,6 +431,8 @@
     try {
       let token = previewToken;
       if (!token) {
+        const reportedOriginForPrepare =
+          origin && origin !== '*' && origin.startsWith('https://') ? origin : undefined;
         const prepareRes = await fetch(
           `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign-prepare`,
           {
@@ -374,6 +444,8 @@
               siwe: message,
               jwk: messageJwk,
               host: messageHost,
+              presentation: requestPresentation ?? undefined,
+              reportedOrigin: reportedOriginForPrepare,
             }),
           },
         );
@@ -387,6 +459,33 @@
           : null;
         if (!token) throw new Error('authorize-sign-prepare did not return a context token');
         previewToken = token;
+        // Adopt server trust decision + verified manifest fields.
+        if (
+          prepareResult.metadataTrust &&
+          typeof prepareResult.metadataTrust === 'object' &&
+          typeof prepareResult.metadataTrust.status === 'string' &&
+          typeof prepareResult.metadataTrust.reason === 'string'
+        ) {
+          const status = prepareResult.metadataTrust.status;
+          if (status === 'verified' || status === 'origin-bound' || status === 'unsigned') {
+            serverMetadataTrust = { status, reason: prepareResult.metadataTrust.reason };
+          }
+        }
+        if (
+          prepareResult.verifiedManifest &&
+          typeof prepareResult.verifiedManifest === 'object'
+        ) {
+          const vm = prepareResult.verifiedManifest as Record<string, unknown>;
+          serverVerifiedManifest = {
+            name: typeof vm.name === 'string' ? vm.name : undefined,
+            appId: typeof vm.appId === 'string' ? vm.appId : undefined,
+            manifestId: typeof vm.manifestId === 'string' ? vm.manifestId : undefined,
+            manifestDigest:
+              typeof vm.manifestDigest === 'string' ? vm.manifestDigest : undefined,
+            reportedOrigin:
+              typeof vm.reportedOrigin === 'string' ? vm.reportedOrigin : undefined,
+          };
+        }
       }
       const previewRes = await fetch(
         `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign-preview`,
@@ -428,6 +527,14 @@
 
   async function approveAndSign() {
     if (!key || !message) return;
+    // Fail-closed: refuse to sign a malformed ReCap regardless of path.
+    // Silently signing exact bytes for a decoded-to-nothing ReCap would
+    // drop the caller's capability payload without their consent.
+    if (reviewModel && reviewModel.protocol === 'malformed-recap') {
+      error =
+        'Refusing to sign: this SIWE carries a capability payload that could not be decoded.';
+      return;
+    }
     signing = true;
     error = '';
     try {

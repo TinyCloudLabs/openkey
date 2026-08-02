@@ -76,6 +76,26 @@
   let reviewModel = $state<CapabilityReviewModel | null>(null);
   let reviewSelection = $state(new Set<string>());
   let reviewEditing = $state(false);
+  // Presentation envelope forwarded by the SDK. Display-only. The widget
+  // NEVER treats it as verified — trust is decided by the server prepare
+  // response.
+  let requestPresentation = $state<Record<string, unknown> | null>(null);
+  // Server-decided trust for the presentation envelope. Populated after
+  // /authorize-sign-prepare returns. Starts null so we fail closed to the
+  // `unsigned` model until the server responds.
+  let serverMetadataTrust = $state<
+    { status: 'verified' | 'origin-bound' | 'unsigned'; reason: string } | null
+  >(null);
+  let serverVerifiedManifest = $state<
+    | {
+        name?: string;
+        appId?: string;
+        manifestId?: string;
+        manifestDigest?: string;
+        reportedOrigin?: string;
+      }
+    | null
+  >(null);
 
   // Rawquery-string origin. Legacy: any origin ever accepted; the widget
   // used '*' as a fallback. New default: we still surface '*' here for
@@ -181,6 +201,20 @@
     // sign request. The widget renders the SAME SigningApproval UI in
     // both modes; only the "approve" behaviour differs.
     externalSignMode = data.externalSign === true;
+    // Capture the caller-supplied presentation envelope. It has already
+    // been validated + size-bounded by the widget transport; here we only
+    // stash the resulting object so the review model can render it. Trust
+    // decision is still deferred to the server (see /authorize-sign-prepare).
+    requestPresentation =
+      data.presentation && typeof data.presentation === 'object'
+        ? (data.presentation as Record<string, unknown>)
+        : null;
+    // Server-decided trust is not known yet — starts null, populated after
+    // the first /authorize-sign-prepare call. Editing/reset invalidates
+    // the preview but keeps the trust decision (which is bound into the
+    // authorization context, not into the selection).
+    serverMetadataTrust = null;
+    serverVerifiedManifest = null;
     keyFetched = false;
     // Reset preview state — a new request always starts with no bound
     // preview. Editing selection also clears these fields.
@@ -261,6 +295,16 @@
       messageJwk = event.data.jwk ?? null;
       messageHost = typeof event.data.host === 'string' ? event.data.host : '';
       keyId = event.data.keyId || null;
+      // Legacy path: envelope forwarding. The legacy path has weaker
+      // origin/version guarantees, so we only accept `presentation` as
+      // display-only and never upgrade trust off of it — the server
+      // prepare call remains the sole trust authority.
+      requestPresentation =
+        event.data.presentation && typeof event.data.presentation === 'object'
+          ? event.data.presentation
+          : null;
+      serverMetadataTrust = null;
+      serverVerifiedManifest = null;
       keyFetched = false; // Reset so effect can run
       requestSealed = true;
 
@@ -313,6 +357,62 @@
     const domainMismatchForModel =
       !!siweDomainForModel && !!originHostForModel && siweDomainForModel !== originHostForModel;
     const originIsWildcard = origin === '*';
+    // Envelope + server-decided trust wiring. The envelope came from the
+    // SDK (display-only). Trust is authoritative from the server prepare
+    // response (`serverMetadataTrust`); until that lands we fail closed
+    // to `unsigned`. `requesterVerified` is true ONLY when the server
+    // returned `origin-bound` or `verified`.
+    const envelope = requestPresentation;
+    const envelopeDisplayName =
+      envelope && typeof envelope.displayName === 'string' && envelope.displayName
+        ? envelope.displayName
+        : null;
+    const envelopeReasonText =
+      envelope && typeof envelope.reason === 'string' && envelope.reason ? envelope.reason : '';
+    const envelopeManifestId =
+      envelope && typeof envelope.manifestId === 'string' && envelope.manifestId
+        ? envelope.manifestId
+        : null;
+    const envelopeManifestDigest =
+      envelope && typeof envelope.manifestDigest === 'string' && envelope.manifestDigest
+        ? envelope.manifestDigest
+        : null;
+    // Trust: server-authoritative when set, otherwise `unsigned`. NEVER
+    // let the envelope claim its own trust status.
+    const effectiveTrust = serverMetadataTrust ?? {
+      status: 'unsigned' as const,
+      reason: envelope
+        ? 'awaiting server verification of manifest envelope'
+        : 'no manifest supplied',
+    };
+    // Manifest facts displayed: prefer the server's verified fields when
+    // the server upgraded trust; fall back to the caller-echoed envelope
+    // for `unsigned` display (which still surfaces the digest so the user
+    // sees WHAT the caller claimed — the trust label prevents any
+    // implication of verification).
+    const displayManifestId =
+      serverVerifiedManifest?.manifestId ?? envelopeManifestId;
+    const displayManifestDigest =
+      serverVerifiedManifest?.manifestDigest ?? envelopeManifestDigest;
+    const displayName =
+      serverVerifiedManifest?.name ??
+      envelopeDisplayName ??
+      (originIsWildcard ? 'Unknown origin' : origin);
+    // requesterVerified is true only under a real server-issued upgrade.
+    // The `origin-bound` status is a real cryptographic verification of
+    // the manifest at the origin's well-known URL — sufficient to
+    // distinguish own-app vs cross-app grants.
+    const requesterVerifiedNow =
+      effectiveTrust.status === 'verified' ||
+      effectiveTrust.status === 'origin-bound';
+    // Requester address for the classifier. Only supply a lowercased
+    // address if we can prove it (verified/origin-bound). Otherwise fail
+    // closed — the classifier will treat any grant on someone else's
+    // space as cross-app.
+    let requesterAddressForClassifier: string | null = null;
+    if (requesterVerifiedNow && key?.address) {
+      requesterAddressForClassifier = key.address.toLowerCase();
+    }
     try {
       const model = parseCapabilityReview({
         message,
@@ -323,27 +423,23 @@
           provenance: key.keyType === 'EXTERNAL' ? 'external' : 'managed',
         },
         editable: canEdit,
-        metadataTrust: { status: 'unsigned', reason: 'no manifest supplied' },
-        reason: { text: '', source: 'none' },
+        metadataTrust: effectiveTrust,
+        reason: envelopeReasonText
+          ? { text: envelopeReasonText, source: 'caller' }
+          : { text: '', source: 'none' },
         requester: {
-          displayName: originIsWildcard ? 'Unknown origin' : origin,
+          displayName,
           verifiedOrigin: originIsWildcard ? null : origin,
-          manifestId: null,
-          manifestDigest: null,
+          manifestId: displayManifestId,
+          manifestDigest: displayManifestDigest,
           domainWarning: domainMismatchForModel,
           // Sol MAJOR-8: wildcard origin means the widget cannot prove
           // the parent's identity — surface it as a warning rather than
           // silently accepting.
           originWarning: originIsWildcard,
         },
-        // Sol MAJOR-8: this widget does NOT yet resolve verified
-        // manifest metadata for the requesting app. Fail closed by
-        // leaving `requesterAddress` unset so the classifier flags any
-        // grant on a space whose owner differs from the signer as
-        // cross-app-data. When the manifest resolution pipeline lands,
-        // wire it here — never accept caller-echoed metadata as verified.
-        requesterAddress: null,
-        requesterVerified: false,
+        requesterAddress: requesterAddressForClassifier,
+        requesterVerified: requesterVerifiedNow,
       });
       reviewModel = model;
       reviewSelection = defaultSelection(model);
@@ -353,6 +449,7 @@
   });
 
   // Helper: is this request eligible for server-authoritative narrowing?
+  // Never true for `malformed-recap` — that protocol is non-signable.
   function canUseAuthorizeSignFn(): boolean {
     return (
       messageProtocolVersion !== null &&
@@ -361,6 +458,17 @@
       reviewModel !== null &&
       reviewModel.protocol === 'tinycloud-siwe-recap'
     );
+  }
+
+  // Fail-closed: a `malformed-recap` model must never reach any signing
+  // path. Legacy exact-byte signMessage() would otherwise let a caller
+  // sign SIWE bytes whose ReCap payload the widget could not decode —
+  // silently dropping the capability payload the request intended to
+  // grant. This function guards the Approve action for the legacy path;
+  // the authorizeTinyCloud path already refuses via canUseAuthorizeSignFn.
+  function isProtocolSignable(): boolean {
+    if (!reviewModel) return true; // legacy plain-message flow
+    return reviewModel.protocol !== 'malformed-recap';
   }
 
   // Convert the current review selection to canonical action IDs.
@@ -395,6 +503,13 @@
       // change would burn tokens without benefit.
       let token = previewToken;
       if (!token) {
+        // Envelope + reported-origin forwarding. `origin` is the widget's
+        // configured parent origin — the server treats it as advisory
+        // only; the trust decision hinges on the SSRF-guarded well-known
+        // manifest fetch matching the envelope's declared digest. Passing
+        // wildcard origin skips the origin-bind attempt server-side.
+        const reportedOriginForPrepare =
+          origin && origin !== '*' && origin.startsWith('https://') ? origin : undefined;
         const prepareRes = await fetch(
           `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign-prepare`,
           {
@@ -406,6 +521,8 @@
               siwe: message,
               jwk: messageJwk,
               host: messageHost,
+              presentation: requestPresentation ?? undefined,
+              reportedOrigin: reportedOriginForPrepare,
             }),
           },
         );
@@ -421,6 +538,38 @@
           throw new Error('authorize-sign-prepare did not return a context token');
         }
         previewToken = token;
+        // Adopt the server-decided trust decision + verified manifest
+        // fields. The review model rebuild is reactive on these state
+        // fields so the UI relabels itself once trust arrives.
+        if (
+          prepareResult.metadataTrust &&
+          typeof prepareResult.metadataTrust === 'object' &&
+          typeof prepareResult.metadataTrust.status === 'string' &&
+          typeof prepareResult.metadataTrust.reason === 'string'
+        ) {
+          const status = prepareResult.metadataTrust.status;
+          if (status === 'verified' || status === 'origin-bound' || status === 'unsigned') {
+            serverMetadataTrust = {
+              status,
+              reason: prepareResult.metadataTrust.reason,
+            };
+          }
+        }
+        if (
+          prepareResult.verifiedManifest &&
+          typeof prepareResult.verifiedManifest === 'object'
+        ) {
+          const vm = prepareResult.verifiedManifest as Record<string, unknown>;
+          serverVerifiedManifest = {
+            name: typeof vm.name === 'string' ? vm.name : undefined,
+            appId: typeof vm.appId === 'string' ? vm.appId : undefined,
+            manifestId: typeof vm.manifestId === 'string' ? vm.manifestId : undefined,
+            manifestDigest:
+              typeof vm.manifestDigest === 'string' ? vm.manifestDigest : undefined,
+            reportedOrigin:
+              typeof vm.reportedOrigin === 'string' ? vm.reportedOrigin : undefined,
+          };
+        }
       }
       const previewRes = await fetch(
         `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign-preview`,
@@ -468,6 +617,12 @@
   // and consumes the token.
   async function approveAndSign() {
     if (!key || !message) return;
+    // Fail-closed: refuse to sign a malformed ReCap regardless of path.
+    if (!isProtocolSignable()) {
+      error =
+        'Refusing to sign: this SIWE carries a capability payload that could not be decoded. The signer would otherwise silently drop the caller’s ReCap.';
+      return;
+    }
     signing = true;
     error = '';
     try {

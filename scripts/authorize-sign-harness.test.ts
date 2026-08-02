@@ -8,9 +8,21 @@
 // to obtain the actual Hono response body — no fabrication.
 //
 // Even though this file is named `.test.ts`, it is NOT part of the
-// regular Bun test run: the CI test glob (bun test src/) does not
-// match this scripts/ path, so it only runs when the js-sdk cross-
-// repo test asks for it via subprocess.
+// regular Bun test run:
+//   1. `bunfig.toml` at the repo root lists it under `[test].ignore`
+//      so a broad `bun test` walk skips it.
+//   2. As defence-in-depth, the top of this file exits early unless
+//      `OPENKEY_RUN_HARNESS=1` is set. The js-sdk cross-repo test that
+//      spawns this file as a subprocess sets it explicitly.
+if (!process.env.OPENKEY_RUN_HARNESS) {
+  // eslint-disable-next-line no-console
+  console.log(
+    'authorize-sign-harness: skipping (OPENKEY_RUN_HARNESS not set). ' +
+      'This file is a standalone harness for the js-sdk cross-repo contract test; ' +
+      'it is intentionally excluded from broad bun-test discovery.',
+  );
+  process.exit(0);
+}
 
 import { test, mock } from 'bun:test';
 import { createMiddleware } from 'hono/factory';

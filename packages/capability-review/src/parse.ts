@@ -468,7 +468,7 @@ function parseRecapResources(message: string): {
         path = "";
       }
     }
-    const key = `${service} ${space} ${path}`;
+    const key = `${service}\x00${space}\x00${path}`;
     let entry = grouped.get(key);
     if (!entry) {
       entry = { service, space, path, actions: [], caveatsByAbility: {} };
@@ -664,6 +664,39 @@ export function parseCapabilityReview(
 
   const { entries, warnings: recapWarnings } = parseRecapResources(ctx.message);
   warnings.push(...recapWarnings);
+
+  // 3a. Malformed ReCap: the SIWE carried at least one `urn:recap:` resource
+  //     but decoding produced zero entries. Do NOT downgrade to `siwe-plain`
+  //     — that path would let the widget sign the exact bytes as an
+  //     ordinary SIWE and silently drop the capability payload the caller
+  //     intended to grant. Return a non-signable `malformed-recap` protocol
+  //     state so the widget refuses to approve.
+  //
+  //     Detection: the raw message actually contains a `urn:recap:`
+  //     token AND the decoder either emitted a malformation warning OR
+  //     produced zero entries despite the presence of a `urn:recap:`
+  //     line. The latter is the SILENT-drop case that Sol flagged —
+  //     `parseRecapResources` can return `entries=[]` without warnings
+  //     if e.g. an `att` block was present-but-empty; that must still
+  //     be treated as malformed rather than downgraded to `siwe-plain`.
+  const rawHasRecapToken = ctx.message.includes("urn:recap:");
+  if (entries.length === 0 && rawHasRecapToken) {
+    // Downstream (widget/iframe) must refuse to approve. We keep the
+    // warnings so the operator sees what the decoder objected to.
+    return {
+      version: 1,
+      protocol: "malformed-recap",
+      rawMessage: ctx.message,
+      requester: ctx.requester,
+      reason: ctx.reason,
+      signer: ctx.signer,
+      expiry: expiration,
+      immutable,
+      metadataTrust: ctx.metadataTrust,
+      permissions: [],
+      parseWarnings: warnings,
+    };
+  }
 
   // 3. Plain SIWE (no editable capabilities).
   if (entries.length === 0) {

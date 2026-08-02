@@ -68,12 +68,20 @@ export function assertMetadataTrustMonotonic(
   previous: MetadataTrustStatus,
   next: MetadataTrustStatus,
 ): void {
+  // Ranks:
+  //   0..2 = failure states (never upgradable to signed)
+  //   3    = unsigned (no manifest supplied)
+  //   4    = origin-bound (browser origin proven + well-known digest match,
+  //          but no cryptographic manifest signature). Sits BETWEEN
+  //          `unsigned` and `verified` per the merge-readiness contract.
+  //   5    = verified (signed manifest, digest match, in-window)
   const rank: Record<MetadataTrustStatus, number> = {
     "digest-mismatch": 0,
     "wrong-key": 1,
     stale: 2,
     unsigned: 3,
-    verified: 4,
+    "origin-bound": 4,
+    verified: 5,
   };
   if (rank[next] > rank[previous]) {
     throw new Error(

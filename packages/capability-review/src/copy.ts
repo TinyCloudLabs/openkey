@@ -40,6 +40,7 @@ export const PROTOCOL_HEADLINE: Record<RequestProtocol, string> = {
   "legacy-message": "Sign message",
   "siwe-plain": "Sign in with Ethereum",
   "tinycloud-siwe-recap": "Authorize capabilities",
+  "malformed-recap": "Refusing to sign: malformed capability payload",
 };
 
 export const PROTOCOL_HINT: Record<RequestProtocol, string> = {
@@ -49,6 +50,8 @@ export const PROTOCOL_HINT: Record<RequestProtocol, string> = {
     "You will sign this SIWE message exactly. Editing is not available.",
   "tinycloud-siwe-recap":
     "Review the requested capabilities. Uncheck anything you do not want to grant.",
+  "malformed-recap":
+    "This message carries a capability payload we could not decode. Approving is disabled so a broken ReCap cannot be silently signed as an exact-byte SIWE.",
 };
 
 /**

@@ -165,11 +165,27 @@ export interface CapabilityPresentationEnvelopeV1 {
   protocolVersion: 1;
   /** Human-readable requester name shown in the review. */
   displayName?: string;
-  /** Reason string the requester supplied for the delegation. */
+  /**
+   * Reason string the requester supplied for the delegation. Rendered as
+   * caller-supplied (never as verified) unless a signed manifest carries
+   * the same reason string.
+   */
   reason?: string;
   /** Manifest ID + digest, when the app publishes a signed manifest. */
   manifestId?: string;
   manifestDigest?: string;
+  /**
+   * Full manifest payload(s) the caller wants surfaced in the review. The
+   * receiving route validates and size-bounds this before it is used. This
+   * is display-only: no metadata may expand authority beyond what the
+   * ReCap already grants. Bounded to a reasonable size at the transport
+   * boundary — oversized envelopes are dropped.
+   */
+  manifests?: Array<{
+    name?: string;
+    appId?: string;
+    payload?: Record<string, unknown>;
+  }>;
 }
 
 export type ManagedAccountState = 'PROVISIONED' | 'MANAGED' | 'DISABLED' | 'EJECTING' | 'USER_OWNED' | 'EXPIRED' | 'FAILED';
@@ -1014,6 +1030,13 @@ export class OpenKey {
         // Forward the TinyCloud host so the widget can bind it into the
         // /authorize-sign-prepare context (Sol MAJOR-2).
         host: request.host,
+        // Sol MAJOR-2 (envelope): forward the caller-supplied presentation
+        // envelope so the widget can render honest provenance and the
+        // /authorize-sign-prepare route can bind it into the authorization
+        // context. The envelope is display-only; the widget transport
+        // validates and size-bounds it before use and NEVER treats it as
+        // verified unless the server actually origin-binds a manifest.
+        presentation: request.presentation,
         sessionToken: this.sessionToken || undefined,
       },
       opts?.mode,
@@ -1103,6 +1126,11 @@ export class OpenKey {
         keyId,
         jwk: request.jwk,
         host: request.host,
+        // Sol MAJOR-2 (envelope): forward the caller-supplied presentation
+        // envelope. Same rules as the managed path — display-only, size-
+        // bounded at the transport, never treated as verified without
+        // server-side origin-binding.
+        presentation: request.presentation,
         sessionToken: this.sessionToken || undefined,
         // Sol MAJOR-3 (continuation): tell the widget to hand us back
         // the previewApproval instead of asking OpenKey to sign

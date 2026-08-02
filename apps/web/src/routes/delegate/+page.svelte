@@ -408,6 +408,16 @@
       }
     } else if (!siweMessage) {
       reviewModel = null;
+    } else if (reviewModel && siweMessage && siweMessage !== reviewModel.rawMessage) {
+      // The stable baseline (grant selection surface) is kept from the
+      // first prepared SIWE. But the displayed raw bytes MUST reflect the
+      // CURRENT preparedData.siwe — after a narrowing round-trip the
+      // server returned new bytes, and those are the bytes the signer
+      // will produce a signature over. Rendering the stale first-prepare
+      // bytes here means the user reviews text that no longer matches
+      // what will be signed. Assign a fresh model object so Svelte
+      // reactivity picks up the change.
+      reviewModel = { ...reviewModel, rawMessage: siweMessage };
     }
   }
 
