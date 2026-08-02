@@ -7,8 +7,9 @@
 //   - `rawMessage` is the exact bytes that will be signed (or a hint at what
 //     WILL be signed after subset validation). Legacy signMessage callers must
 //     always receive a signature over this exact string.
-//   - `permissions[i].severity` is derived from structural family/actions
-//     ONLY. Metadata cannot lower it (see metadata.ts monotonicity).
+//   - `permissions[i].severity` starts from structural family/actions.
+//     Generic metadata cannot lower it; the sole exception is the dedicated
+//     exact app-scoped-secret proof gate (see app-scope.ts).
 //   - `permissions[i].actions[j].required` marks actions whose removal would
 //     break the delegation. UI must not let the user uncheck required actions.
 //   - `metadataTrust.status` describes signed-manifest verification state.
@@ -94,7 +95,7 @@ export interface CapabilityGrant {
   id: PermissionId;
   /** Structural family used by both classification and UI grouping. */
   family: CapabilityFamily;
-  /** Structural severity. Cannot be lowered by presentation metadata. */
+  /** Structural severity, with only the proven app-scoped-secret exception. */
   severity: PermissionSeverity;
   /** Fully qualified service namespace, e.g. `tinycloud.kv`. */
   service: string;
@@ -113,6 +114,16 @@ export interface CapabilityGrant {
    * hint text only when `metadataTrust.status === "verified"`.
    */
   metadataLabel: string | null;
+  /**
+   * Present only after the dedicated app-scope proof gate has matched an
+   * origin-bound (or verified) manifest declaration to the exact signed
+   * secret name, scope, and requested actions. This is structural review
+   * state, not caller-supplied display metadata.
+   */
+  appScopedSecret?: {
+    secretName: string;
+    scope?: string;
+  };
   /** Actions granted for this resource. */
   actions: CapabilityAction[];
 }

@@ -183,6 +183,43 @@ function isSecretsSqlSpace(space: string): boolean {
   );
 }
 
+function grantVerbSet(grant: CapabilityGrant): Set<string> {
+  return new Set(grant.actions.map((action) => verbOf(action.ability)));
+}
+
+/**
+ * True only when the exact grant reaches TinyCloud secret data or can decrypt
+ * protected data. Kept beside the statement catalog so every UI surface uses
+ * the same structural definition as the copy it displays.
+ *
+ * App-scoped secrets that passed the dedicated origin-bound manifest proof
+ * are deliberately normal and do not enter the warning count. Unknown
+ * sensitive mutations and create-only encryption grants also do not enter the
+ * count: neither fact alone proves access to secret data or decryption.
+ */
+export function grantReachesSecretDataOrDecryption(
+  grant: CapabilityGrant,
+): boolean {
+  if (grant.appScopedSecret) return false;
+
+  if (grant.family === "secret-read" || grant.family === "secret-mutation") {
+    return true;
+  }
+
+  if (ENCRYPTION_SERVICES.has(grant.service)) {
+    const verbs = grantVerbSet(grant);
+    return verbs.has("decrypt") || verbs.has("unwrap");
+  }
+
+  // KV and SQL entries in the structurally named secrets space can be
+  // classified as cross-app data before their domain-specific statement is
+  // projected. They still reach TinyCloud Secrets data and belong here.
+  return (
+    (KV_SERVICES.has(grant.service) || SQL_SERVICES.has(grant.service)) &&
+    isSecretsSqlSpace(grant.space)
+  );
+}
+
 const KV_SERVICES = new Set(["tinycloud.kv", "kv"]);
 const SQL_SERVICES = new Set(["tinycloud.sql", "sql"]);
 const CAPABILITY_SERVICES = new Set(["tinycloud.capabilities", "capabilities"]);
@@ -210,6 +247,45 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
   const abilityStrings = grant.actions.map((a) => a.ability);
   const verbs = classifyVerbs(abilityStrings);
   const resource = resourceOf(grant);
+
+  // An app-scoped secret reaches this branch only after the exact,
+  // origin-bound manifest proof in app-scope.ts. The secret name is therefore
+  // structural review state rather than an unverified friendly label.
+  if (grant.appScopedSecret) {
+    let primaryText: string;
+    if (verbs.hasRead && verbs.hasWrite) {
+      primaryText = `Read and update the app secret ${grant.appScopedSecret.secretName}`;
+    } else if (verbs.onlyWrite) {
+      primaryText = `Update the app secret ${grant.appScopedSecret.secretName}`;
+    } else if (verbs.onlyRead) {
+      primaryText = `Read the app secret ${grant.appScopedSecret.secretName}`;
+    } else {
+      return fallbackStatement(grant);
+    }
+    return { primaryText, service, resource };
+  }
+
+  // App-data ownership is already a structural classification. Keep the
+  // summary understandable without guessing what a path such as `cycle/` or
+  // `inbox/` contains. The literal service and resource remain immediately
+  // below this sentence.
+  if (grant.family === "own-app-data" || grant.family === "cross-app-data") {
+    const noun =
+      grant.family === "own-app-data"
+        ? "this app's data"
+        : "data outside this app";
+    let primaryText: string;
+    if (verbs.hasRead && verbs.hasWrite) {
+      primaryText = `Read and update ${noun}`;
+    } else if (verbs.onlyWrite) {
+      primaryText = `Update ${noun}`;
+    } else if (verbs.onlyRead) {
+      primaryText = `Read ${noun}`;
+    } else {
+      return fallbackStatement(grant);
+    }
+    return { primaryText, service, resource };
+  }
 
   // 1. Encryption: create + decrypt in the same grant.
   if (ENCRYPTION_SERVICES.has(service)) {
@@ -421,8 +497,8 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
 /**
  * Exact copy required by the merge-readiness contract for the sensitive-
  * grant callout pinned at the top of the review. The number must be an
- * integer; callers pass the count of grants whose severity is `sensitive`
- * OR whose family reaches secret data or decryption.
+ * integer; callers pass the count produced with
+ * `grantReachesSecretDataOrDecryption`.
  */
 export function sensitiveCallout(count: number): string {
   return `${count} exact grants reach secret data or decryption. You can review them below.`;

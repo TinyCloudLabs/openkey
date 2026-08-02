@@ -37,6 +37,7 @@
   import {
     buildRenderPlan,
     buildStatement,
+    grantReachesSecretDataOrDecryption,
     grantHeading,
     PROTOCOL_HEADLINE,
     PROTOCOL_HINT,
@@ -89,20 +90,8 @@
     })),
   );
 
-  // A grant is "sensitive" when its structural severity is `sensitive` OR
-  // its family reaches secret or decryption data. The callout counts each
-  // exact grant that meets this bar.
-  function isSensitiveByReach(grant: CapabilityGrant): boolean {
-    if (grant.severity === "sensitive") return true;
-    return (
-      grant.family === "secret-read" ||
-      grant.family === "secret-mutation" ||
-      grant.family === "encryption-decrypt" ||
-      grant.family === "encryption-key"
-    );
-  }
   const sensitiveCount = $derived(
-    model.permissions.filter(isSensitiveByReach).length,
+    model.permissions.filter(grantReachesSecretDataOrDecryption).length,
   );
 
   function isSelected(action: CapabilityAction): boolean {

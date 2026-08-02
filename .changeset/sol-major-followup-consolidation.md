@@ -37,6 +37,16 @@ Test suites now cover the js-sdk production secret path shapes, the
 verb-normalization rule, and the encryption `network.create` variants;
 15 new app-scope tests and 5 new encryption-statement tests all pass.
 
+The final trust-path review also makes the manifest protocol executable end
+to end: OpenKey now hashes the fetched manifest's sorted-key canonical JSON
+using the same representation as js-sdk, accepts the SDK's default-read secret
+declaration, and presents an exact origin-bound scoped-secret match as Standard
+with its secret name and scope. Global, unsigned, mismatched, or action-expanded
+secret grants remain sensitive. The sensitive-access callout now counts only
+grants that structurally reach TinyCloud secret data or decrypt protected data;
+it includes Secrets SQL while excluding unrelated unknown mutations and
+create-only encryption grants.
+
 API (`@openkey/api`, not published):
 
 - **MAJOR-4** — `/authorize-sign-prepare` no longer merges caller-
@@ -57,8 +67,9 @@ Web (`@openkey/web`, not published):
   `requesterVerified = false` and `requesterAddress = null` unless an
   independently verified identity is supplied. It also now calls
   `annotateAppScopedGrants` with the server's origin-bound
-  `declaredAppScope`, so scoped-secret declarations from a trusted
-  manifest surface with a compact `App-scoped secret (…)` label.
+  `declaredAppScope`, so exactly proven scoped-secret declarations from an
+  origin-bound manifest surface with a compact secret/scope label and Standard
+  presentation.
 - **MAJOR-4** — popup / iframe / CLI routes compute
   `manifestName{,Provenance}` and `manifestIdProvenance` alongside the
   display strings and forward them into `parseCapabilityReview`. Server

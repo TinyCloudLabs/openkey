@@ -29,6 +29,9 @@ Capability-review package (`@openkey/capability-review`):
   deterministic single-sentence statement for known structural shapes
   (bootstrap-kv on apps/spaces paths, bootstrap-sql on account or
   secrets space, secret-read/mutation, encryption create+decrypt, etc.).
+  Generic own-app/cross-app data uses action-aware structural copy, and an
+  exactly proven app-scoped secret uses its bound secret name without
+  inferring product-specific meaning from the resource path.
   Unknown shapes fall back to the literal service/resource/actions text
   — never invent friendly semantics. `sensitiveCallout(n)` returns the
   exact contract copy `"N exact grants reach secret data or decryption.

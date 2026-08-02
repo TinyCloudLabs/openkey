@@ -24,6 +24,7 @@ import { beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
 import { prepareSession } from '@tinycloud/node-sdk-wasm';
+import * as manifestOriginFetchModule from '../services/manifest-origin-fetch';
 
 const privateKey = '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 const account = privateKeyToAccount(privateKey);
@@ -104,6 +105,18 @@ mock.module('../middleware/session', () => ({
   }),
 }));
 
+let manifestBindResult: {
+  ok: boolean;
+  manifest?: Record<string, unknown>;
+  fetchedDigest?: string;
+  reason?: string;
+} = { ok: false, reason: 'not configured' };
+
+mock.module('../services/manifest-origin-fetch', () => ({
+  ...manifestOriginFetchModule,
+  fetchAndBindWellKnownManifest: mock(async () => manifestBindResult),
+}));
+
 let router: typeof import('../routes/delegate')['delegateRouter'];
 let resetContexts: typeof import('../services/authorization-signing')['_resetAuthorizationContextStoreForTests'];
 
@@ -118,6 +131,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   currentUser = user;
+  manifestBindResult = { ok: false, reason: 'not configured' };
   resetContexts?.();
 });
 
@@ -161,6 +175,57 @@ async function issuePrepareContext(): Promise<{
   expect(typeof body.authorizationContextToken).toBe('string');
   return { token: body.authorizationContextToken, siwe, allowed: body.allowedActionIds ?? [] };
 }
+
+describe('POST /authorize-sign-prepare manifest provenance', () => {
+  test('propagates only server origin-bound manifest scope declarations', async () => {
+    const digest = 'a'.repeat(64);
+    manifestBindResult = {
+      ok: true,
+      fetchedDigest: digest,
+      manifest: {
+        name: 'Listen',
+        appId: 'xyz.tinycloud.listen',
+        prefix: 'xyz.tinycloud.listen',
+        declaredSecrets: [
+          {
+            secretName: 'GOOGLE_MEET_TOKENS',
+            scope: 'listen',
+            actions: ['read', 'write', 'delete'],
+          },
+        ],
+      },
+    };
+
+    const res = await router.request('/authorize-sign-prepare', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        keyId: keyRecord.id,
+        siwe: makePreparedSiwe(),
+        jwk,
+        reportedOrigin: 'https://listen.tinycloud.xyz',
+        presentation: {
+          protocolVersion: 1,
+          displayName: 'Caller-controlled fallback',
+          manifestDigest: digest,
+        },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as any;
+    expect(body.metadataTrust.status).toBe('origin-bound');
+    expect(body.verifiedManifest.name).toBe('Listen');
+    expect(body.verifiedManifest.name).not.toBe('Caller-controlled fallback');
+    expect(body.verifiedManifest.declaredAppScope.secrets).toEqual([
+      {
+        secretName: 'GOOGLE_MEET_TOKENS',
+        scope: 'listen',
+        actions: ['read', 'write', 'delete'],
+      },
+    ]);
+  });
+});
 
 describe('POST /authorize-sign-preview', () => {
   test('issues a preview-approval token bound to the selection and bytes', async () => {

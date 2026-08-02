@@ -4,8 +4,8 @@
 // presentation-envelope trust label from `unsigned` to `origin-bound` when:
 //   1. The widget reported an https origin as the browser-verified parent.
 //   2. That origin serves `.well-known/openkey-manifest.json` over https.
-//   3. The canonical SHA-256 of the fetched bytes matches the envelope's
-//      `manifestDigest` field.
+//   3. The SHA-256 of the fetched manifest's canonical JSON representation
+//      matches the envelope's `manifestDigest` field.
 //
 // Never used to grant authority — the manifest is display-only. The trust
 // upgrade only lets the widget render a slightly more honest label; the
@@ -99,7 +99,7 @@ export interface OriginBindResult {
      */
     declaredPermissions?: DeclaredPermission[];
   };
-  /** Only present when ok=true. The canonical hex SHA-256 of the fetched bytes. */
+  /** Only present when ok=true. SHA-256 of the fetched canonical manifest JSON. */
   fetchedDigest?: string;
   /** Debug/log reason for failure (never surfaced to the caller). */
   reason?: string;
@@ -108,8 +108,8 @@ export interface OriginBindResult {
 /**
  * Attempt to origin-bind the caller-reported origin against a declared
  * manifest digest. Returns `{ ok: true }` only when every guard passes and
- * the fetched bytes' SHA-256 matches `declaredDigest` (case-insensitive
- * hex compare, constant-time).
+ * the fetched manifest's canonical-JSON SHA-256 matches `declaredDigest`
+ * (case-insensitive hex compare, constant-time).
  */
 export async function fetchAndBindWellKnownManifest(input: {
   reportedOrigin: string;
@@ -297,63 +297,120 @@ export async function fetchAndBindWellKnownManifest(input: {
   }
   const bytes = concatBytes(chunks, total);
 
-  // 6. Compute canonical digest of the exact bytes.
-  const fetchedDigest = createHash("sha256").update(bytes).digest("hex");
+  // Parse, canonicalize, digest, compare, and extract as one fail-closed
+  // operation. The SDK computes the same canonical JSON digest from its
+  // in-memory manifest, so harmless whitespace or object-key ordering in the
+  // published file cannot break origin binding.
+  return bindWellKnownManifestBytes(bytes, normalizedDeclared);
+}
 
-  // 7. Constant-time compare against the declared digest.
-  const a = Buffer.from(fetchedDigest, "hex");
-  const b = Buffer.from(normalizedDeclared, "hex");
-  if (a.length !== b.length || !timingSafeEqual(a, b)) {
+type JsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | JsonValue[]
+  | { [key: string]: JsonValue };
+
+/**
+ * Deterministic sorted-key JSON shared by the manifest digest protocol.
+ * `JSON.stringify`/parse first applies ordinary JSON semantics (including
+ * dropping undefined object fields) before recursive key sorting.
+ */
+export function canonicalizeManifestJson(value: unknown): string {
+  const json = JSON.stringify(value);
+  if (json === undefined) {
+    throw new TypeError("manifest is not JSON-serializable");
+  }
+  return canonicalizeJsonValue(JSON.parse(json) as JsonValue);
+}
+
+function canonicalizeJsonValue(value: JsonValue): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalizeJsonValue).join(",")}]`;
+  }
+  return `{${Object.keys(value)
+    .sort()
+    .map(
+      (key) =>
+        `${JSON.stringify(key)}:${canonicalizeJsonValue(value[key]!)}`,
+    )
+    .join(",")}}`;
+}
+
+export function canonicalManifestSha256Hex(value: unknown): string {
+  return createHash("sha256")
+    .update(canonicalizeManifestJson(value))
+    .digest("hex");
+}
+
+/**
+ * Testable, network-independent half of origin binding. Invalid UTF-8,
+ * invalid/non-object JSON, a malformed digest, or any digest mismatch fails
+ * closed. Extraction happens only after the canonical digest has matched.
+ */
+export function bindWellKnownManifestBytes(
+  bytes: Uint8Array,
+  declaredDigest: string,
+): OriginBindResult {
+  const normalizedDeclared = declaredDigest.trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(normalizedDeclared)) {
+    return { ok: false, reason: "declaredDigest is not a 64-char hex sha256" };
+  }
+
+  let parsed: Record<string, unknown>;
+  try {
+    const decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    const value = JSON.parse(decoded) as unknown;
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return { ok: false, reason: "fetched manifest is not a JSON object" };
+    }
+    parsed = value as Record<string, unknown>;
+  } catch {
+    return { ok: false, reason: "fetched manifest is not valid UTF-8 JSON" };
+  }
+
+  const fetchedDigest = canonicalManifestSha256Hex(parsed);
+  const actual = Buffer.from(fetchedDigest, "hex");
+  const expected = Buffer.from(normalizedDeclared, "hex");
+  if (
+    actual.length !== expected.length ||
+    !timingSafeEqual(actual, expected)
+  ) {
     return {
       ok: false,
       reason: "fetched manifest digest does not match declared digest",
     };
   }
 
-  // 8. Best-effort parse of the manifest for display-only fields. Failure
-  //    to parse is not fatal — we already have a matching digest, which is
-  //    what the trust decision hinges on.
-  //
-  //    Sol MAJOR-2 (app-scoped-secret trust rule): we ALSO extract the
-  //    declared `secrets` block and `permissions` list so the widget can
-  //    verify that any KV/SQL grant asking for a scoped secret actually
-  //    corresponds to a declared entry in the same scope. Extraction is
-  //    lossy-safe: any structural surprise falls through to `undefined`
-  //    and the widget treats the grant as sensitive (the fail-closed
-  //    default).
-  let manifest: OriginBindResult["manifest"];
-  try {
-    const parsed = JSON.parse(new TextDecoder("utf-8").decode(bytes)) as Record<
-      string,
-      unknown
-    >;
-    manifest = {
-      name: typeof parsed.name === "string" ? parsed.name : undefined,
-      appId: typeof parsed.app_id === "string"
+  const manifest: NonNullable<OriginBindResult["manifest"]> = {
+    name: typeof parsed.name === "string" ? parsed.name : undefined,
+    appId:
+      typeof parsed.app_id === "string"
         ? parsed.app_id
         : typeof parsed.appId === "string"
           ? parsed.appId
           : undefined,
-      manifestId:
-        typeof parsed.manifest_id === "string"
-          ? parsed.manifest_id
-          : typeof parsed.manifestId === "string"
-            ? parsed.manifestId
-            : undefined,
-      prefix:
-        typeof parsed.prefix === "string"
-          ? parsed.prefix
-          : typeof parsed.app_id === "string"
-            ? parsed.app_id
-            : undefined,
-      defaultSpace:
-        typeof parsed.space === "string" ? parsed.space : undefined,
-      declaredSecrets: extractDeclaredSecrets(parsed.secrets),
-      declaredPermissions: extractDeclaredPermissions(parsed.permissions),
-    };
-  } catch {
-    manifest = {};
-  }
+    manifestId:
+      typeof parsed.manifest_id === "string"
+        ? parsed.manifest_id
+        : typeof parsed.manifestId === "string"
+          ? parsed.manifestId
+          : undefined,
+    prefix:
+      typeof parsed.prefix === "string"
+        ? parsed.prefix
+        : typeof parsed.app_id === "string"
+          ? parsed.app_id
+          : undefined,
+    defaultSpace:
+      typeof parsed.space === "string" ? parsed.space : undefined,
+    declaredSecrets: extractDeclaredSecrets(parsed.secrets),
+    declaredPermissions: extractDeclaredPermissions(parsed.permissions),
+  };
 
   return { ok: true, manifest, fetchedDigest };
 }
@@ -398,7 +455,11 @@ function extractDeclaredSecrets(input: unknown): DeclaredScopedSecret[] | undefi
       const nameRaw = typeof obj.name === "string" && obj.name.length > 0 ? obj.name : key;
       const scopeRaw = typeof obj.scope === "string" && obj.scope.length > 0 ? obj.scope : undefined;
       let actions: string[] | null = null;
-      if (typeof obj.actions === "string" && obj.actions.length > 0) {
+      // Match js-sdk ManifestSecretActions exactly: an object that omits
+      // `actions` defaults to read.
+      if (obj.actions === undefined) {
+        actions = ["read"];
+      } else if (typeof obj.actions === "string" && obj.actions.length > 0) {
         actions = [obj.actions];
       } else if (Array.isArray(obj.actions) && obj.actions.every((a) => typeof a === "string")) {
         actions = obj.actions as string[];

@@ -189,8 +189,12 @@ describe("annotateAppScopedGrants", () => {
     ];
     const out = annotateAppScopedGrants(m, { secrets: declared });
     expect(out.permissions[0]?.metadataLabel).toBe(
-      "App-scoped secret (listen): API_KEY",
+      "Secret: API_KEY · Scope: listen",
     );
+    expect(out.permissions[0]?.appScopedSecret).toEqual({
+      secretName: "API_KEY",
+      scope: "listen",
+    });
   });
 
   it("never labels under unsigned trust — metadata cannot expand authority", () => {
@@ -206,13 +210,22 @@ describe("annotateAppScopedGrants", () => {
     expect(out.permissions[0]?.metadataLabel).toBeNull();
   });
 
-  it("never lowers severity — sensitive stays sensitive", () => {
+  it("keeps a global app-declared secret sensitive", () => {
+    const grant = kvGrant("secrets/API_KEY", ["get"]);
+    const out = annotateAppScopedGrants(model([grant]), {
+      secrets: [{ secretName: "API_KEY", actions: ["read"] }],
+    });
+    expect(out.permissions[0]?.severity).toBe("sensitive");
+    expect(out.permissions[0]?.appScopedSecret).toBeUndefined();
+  });
+
+  it("presents an exactly proven app-scoped secret as standard", () => {
     const grant = kvGrant("secrets/scoped/listen/API_KEY", ["get"]);
     const m = model([grant]);
     const declared: DeclaredScopedSecret[] = [
       { secretName: "API_KEY", scope: "listen", actions: ["read"] },
     ];
     const out = annotateAppScopedGrants(m, { secrets: declared });
-    expect(out.permissions[0]?.severity).toBe("sensitive");
+    expect(out.permissions[0]?.severity).toBe("standard");
   });
 });

@@ -16,15 +16,15 @@
 //      app-declared secret / permission entry (exact secret name, scope,
 //      actions, and same-scope ReCap resource path).
 //   2. When a match holds AND the metadata trust is at least origin-bound
-//      (never below), sets `metadataLabel` to a compact "app-scoped"
-//      string so the widget can render an honest hint.
+//      (never below), records the proven app-scoped-secret identity, renders
+//      a compact label, and presents the grant at standard severity.
 //   3. Under ANY other condition — no manifest, trust unsigned, no
 //      declared entry, actions mismatched, scope missing on the ReCap —
 //      leaves `metadataLabel` unchanged.
 //
-// This helper NEVER touches `severity`, `family`, `actions`, or any
-// other structural field. Metadata may not lower severity, per the
-// metadata-monotonicity rule in metadata.ts.
+// The severity change is intentionally confined to this proof gate. Generic
+// metadata helpers still cannot lower severity (see metadata.ts), and this
+// helper never changes the authority-bearing actions or resource.
 
 import type { CapabilityGrant, CapabilityReviewModel } from "./model.js";
 import { isVerified } from "./metadata.js";
@@ -51,9 +51,8 @@ export interface DeclaredAppScope {
 
 /**
  * Sol MAJOR-2: annotate grants that match an app-declared scoped-secret
- * entry with a compact "app-scoped" `metadataLabel`. Everything else is
- * left untouched — including severity, so a secret that was classified
- * `sensitive` STAYS `sensitive` even if the label changes.
+ * entry with a compact label and standard app-scoped presentation. Everything
+ * else is left untouched and therefore remains structurally sensitive.
  *
  * Trust gate:
  *   - `model.metadataTrust.status` must be `verified` or `origin-bound`.
@@ -96,14 +95,23 @@ export function annotateAppScopedGrants(
       return grant;
     }
     const match = findMatchingDeclaredSecret(grant, secrets);
-    if (!match) return grant;
-    // Keep the structural severity untouched; only add a metadata label.
-    // The label is a compact, non-marketing string derived from the
-    // manifest's declared secret name plus (when present) its scope.
-    const label = match.scope
-      ? `App-scoped secret (${match.scope}): ${match.secretName}`
-      : `App-declared secret: ${match.secretName}`;
-    return { ...grant, metadataLabel: label };
+    // Only a genuinely scoped secret can receive app-scoped/normal
+    // presentation. Global app-declared secrets remain sensitive.
+    if (!match?.scope) return grant;
+    // This is the one allowed sensitive -> standard presentation transition:
+    // the server independently origin-bound the manifest and this pure gate
+    // matched its exact secret/scope/action declaration to the signed grant.
+    // No authority is added or changed.
+    const label = `Secret: ${match.secretName} · Scope: ${match.scope}`;
+    return {
+      ...grant,
+      severity: "standard",
+      metadataLabel: label,
+      appScopedSecret: {
+        secretName: match.secretName,
+        scope: match.scope,
+      },
+    };
   });
   return { ...model, permissions };
 }

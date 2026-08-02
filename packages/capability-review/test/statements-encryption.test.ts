@@ -10,7 +10,11 @@
 
 import { describe, expect, it } from "bun:test";
 
-import { buildStatement, parseCapabilityReview } from "../src/index.js";
+import {
+  buildStatement,
+  grantReachesSecretDataOrDecryption,
+  parseCapabilityReview,
+} from "../src/index.js";
 import type { CapabilityGrant, SignerInfo } from "../src/index.js";
 import type { ParseContext } from "../src/parse.js";
 import {
@@ -62,6 +66,7 @@ describe("buildStatement — tinycloud.encryption/network.create", () => {
     expect(buildStatement(grant).primaryText).toBe(
       "Create a decryption network",
     );
+    expect(grantReachesSecretDataOrDecryption(grant)).toBe(false);
   });
 
   it("decrypt alone still selects 'Decrypt protected data'", () => {
@@ -69,6 +74,7 @@ describe("buildStatement — tinycloud.encryption/network.create", () => {
     expect(buildStatement(grant).primaryText).toBe(
       "Decrypt protected data",
     );
+    expect(grantReachesSecretDataOrDecryption(grant)).toBe(true);
   });
 });
 
