@@ -383,6 +383,9 @@
         requester: {
           displayName,
           verifiedOrigin: originIsWildcard ? null : origin,
+          // Sol minor: pass origin-bound appId when the server verified
+          // it. Never fall back to caller-echoed envelope data.
+          appId: serverVerifiedManifest?.appId ?? null,
           manifestId: displayManifestId,
           manifestDigest: displayManifestDigest,
           domainWarning: domainMismatchForModel,

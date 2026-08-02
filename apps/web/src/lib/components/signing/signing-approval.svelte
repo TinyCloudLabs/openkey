@@ -293,6 +293,21 @@
         </div>
       {/if}
 
+      <!--
+        Sol minor: render `appId` and `manifestId` as SEPARATE Advanced-
+        details rows. `appId` names the app (from the manifest's
+        `app_id`); `manifestId` is the versioned identifier of the
+        manifest itself. They agree only when a manifest is unversioned
+        and both fields have been set to the same string; anywhere
+        else, showing only `manifestId` would hide "which app is this?"
+        from the operator.
+      -->
+      {#if model.requester.appId}
+        <div class="row">
+          <span class="label">App ID</span>
+          <code class="value mono">{model.requester.appId}</code>
+        </div>
+      {/if}
       {#if model.requester.manifestId}
         <div class="row">
           <span class="label">Manifest ID</span>

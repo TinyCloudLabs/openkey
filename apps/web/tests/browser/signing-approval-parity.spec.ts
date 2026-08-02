@@ -54,6 +54,7 @@ function benignFixtureModel() {
       displayName: 'My App',
       origin: 'https://myapp.example',
       verifiedOrigin: 'https://myapp.example',
+      appId: null,
       manifestId: null,
       manifestDigest: null,
       domainWarning: false,

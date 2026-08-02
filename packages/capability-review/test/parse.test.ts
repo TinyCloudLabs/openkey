@@ -49,6 +49,7 @@ function ctx(overrides: Partial<ParseContext> = {}): ParseContext {
     requester: {
       displayName: "cli.tinycloud.xyz",
       verifiedOrigin: "https://cli.tinycloud.xyz",
+      appId: null,
       manifestId: null,
       manifestDigest: null,
       domainWarning: false,
@@ -158,6 +159,7 @@ describe("parseCapabilityReview", () => {
         requester: {
           displayName: "unknown requester",
           verifiedOrigin: null,
+          appId: null,
           manifestId: null,
           manifestDigest: null,
           domainWarning: false,
@@ -191,6 +193,7 @@ describe("parseCapabilityReview", () => {
         requester: {
           displayName: "unknown requester",
           verifiedOrigin: null,
+          appId: null,
           manifestId: null,
           manifestDigest: null,
           domainWarning: false,

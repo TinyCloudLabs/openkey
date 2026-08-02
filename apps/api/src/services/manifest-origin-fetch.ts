@@ -27,10 +27,46 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { promises as dns } from "node:dns";
 import net from "node:net";
+import { Agent, buildConnector, fetch as undiciFetch } from "undici";
 
 const MANIFEST_PATH = "/.well-known/openkey-manifest.json";
 const REQUEST_TIMEOUT_MS = 5_000;
 const MAX_BYTES = 64 * 1024;
+
+/**
+ * Sol MAJOR-2: a single declared scoped-secret entry extracted from the
+ * origin-bound manifest. The trust rule for surfacing a KV/secret grant
+ * as "app-scoped normal" (rather than the default sensitive presentation)
+ * requires that ALL of `{ secretName, scope, actions }` match a signed
+ * ReCap resource in the same scope. This shape carries what the widget
+ * needs to make that comparison — nothing more.
+ */
+export interface DeclaredScopedSecret {
+  /** The manifest secret key (or explicit `name` override). */
+  secretName: string;
+  /** The app-declared scope namespace. Omit for global secrets. */
+  scope?: string;
+  /** The declared action strings (short verbs, not URNs). */
+  actions: string[];
+}
+
+/**
+ * Sol MAJOR-2: a single declared permission from the origin-bound
+ * manifest. Used to validate that the signed ReCap resource actually
+ * falls within what the manifest declared. Any grant whose (service,
+ * space-suffix, path-prefix, action) does not match a declared entry
+ * MUST remain sensitive — the widget will refuse to demote it.
+ */
+export interface DeclaredPermission {
+  /** Fully-qualified service name, e.g. `tinycloud.kv`. */
+  service: string;
+  /** Space name or full URI, if declared. */
+  space?: string;
+  /** Manifest-relative path (before prefix expansion). */
+  path: string;
+  /** Short action verbs the manifest requested for this resource. */
+  actions: string[];
+}
 
 export interface OriginBindResult {
   ok: boolean;
@@ -39,6 +75,29 @@ export interface OriginBindResult {
     name?: string;
     appId?: string;
     manifestId?: string;
+    /**
+     * Sol MAJOR-2: the manifest's declared `prefix` (or `app_id` when
+     * `prefix` is unset). Used by the widget to build the expected
+     * full ReCap path for each declared permission.
+     */
+    prefix?: string;
+    /** Sol MAJOR-2: the manifest's declared `space` (or default). */
+    defaultSpace?: string;
+    /**
+     * Sol MAJOR-2: declared scoped-secret entries. Only present when the
+     * manifest carries a `secrets` block. The widget uses this to
+     * classify a secret grant as "app-scoped normal" only when the
+     * grant's (service, path, actions) match a declared entry AND the
+     * ReCap resource carries the declared scope. Otherwise the grant
+     * remains sensitive.
+     */
+    declaredSecrets?: DeclaredScopedSecret[];
+    /**
+     * Sol MAJOR-2: declared permissions block. The widget cross-checks
+     * every ReCap resource against this list to decide whether the app
+     * actually asked for it via its published manifest.
+     */
+    declaredPermissions?: DeclaredPermission[];
   };
   /** Only present when ok=true. The canonical hex SHA-256 of the fetched bytes. */
   fetchedDigest?: string;
@@ -79,6 +138,15 @@ export async function fetchAndBindWellKnownManifest(input: {
 
   // 3. DNS resolve + reject private/reserved IPs. Uses `dns.lookup` so it
   //    matches what the network stack itself would use.
+  //
+  // SECURITY (Sol MAJOR-4 — DNS rebinding): a later fetch that re-resolves
+  //  the hostname would be TOCTOU-vulnerable: an attacker's DNS could
+  //  return a public IP here and a private IP on the fetch. To defeat this
+  //  we pick ONE validated address here and pin the actual HTTPS
+  //  connection to it via a custom undici dispatcher below. TLS SNI /
+  //  hostname validation stays bound to `url.hostname`, so the fetch
+  //  refuses if the presented cert is not for the reported origin.
+  let pinnedAddress: string | null = null;
   try {
     const addresses = await dns.lookup(url.hostname, { all: true });
     if (!addresses.length) {
@@ -92,6 +160,9 @@ export async function fetchAndBindWellKnownManifest(input: {
         };
       }
     }
+    // Pick the first validated address as the pin target. Every address
+    // in `addresses` has already been verified public/reserved-safe above.
+    pinnedAddress = addresses[0]!.address;
   } catch {
     return { ok: false, reason: "reportedOrigin DNS lookup threw" };
   }
@@ -103,53 +174,126 @@ export async function fetchAndBindWellKnownManifest(input: {
   }
 
   // 5. Fetch with timeout, size cap, no redirects.
+  //
+  // Sol MAJOR-4: pin the connection to the DNS address that already
+  // passed the private/reserved check (defeats DNS rebinding). We use
+  // undici with a per-request Agent whose `connect` forces `hostname`
+  // to the pinned IP. `servername` is left unset so TLS SNI + cert
+  // validation continue to run against `url.hostname` — the fetch
+  // refuses when the presented certificate does not name the reported
+  // origin, and cannot silently talk to a different host.
+  //
+  // Sol MAJOR-4: the 5-second abort deadline stays active THROUGH the
+  // complete body read. An attacker holding the TCP connection open by
+  // trickling bytes cannot stall this call past REQUEST_TIMEOUT_MS —
+  // the controller.abort() will surface as a body-read error.
   const manifestUrl = `${url.origin}${MANIFEST_PATH}`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  let res: Response;
+  // A per-call Agent avoids leaking sockets and keeps the pin scoped
+  // to THIS request. We install a custom `connector` that hard-overrides
+  // the `hostname` field on the socket-connect callback with the
+  // already-validated `pinnedAddress` — but leaves `servername` (SNI)
+  // and the HTTP Host header intact so TLS certificate validation
+  // continues to check the reported origin. A DNS response that later
+  // flips to a private IP cannot influence this fetch; the socket
+  // connects to the pre-validated IP even if the OS resolver would
+  // have chosen something different.
+  const baseConnect = buildConnector();
+  const pinnedConnector: buildConnector.connector = (options, callback) => {
+    baseConnect(
+      {
+        ...options,
+        // `hostname` is the field the socket layer resolves and dials.
+        hostname: pinnedAddress!,
+      },
+      callback,
+    );
+  };
+  const dispatcher = new Agent({ connect: pinnedConnector });
+  let res: Awaited<ReturnType<typeof undiciFetch>>;
   try {
-    res = await fetch(manifestUrl, {
+    res = await undiciFetch(manifestUrl, {
       method: "GET",
       redirect: "error",
       signal: controller.signal,
+      dispatcher,
       // Some Node fetches allow overriding — set Accept for hygiene only.
       headers: { Accept: "application/json" },
     });
   } catch {
     clearTimeout(timer);
+    try {
+      await dispatcher.close();
+    } catch {
+      // best-effort
+    }
     return { ok: false, reason: "fetch threw" };
   }
-  clearTimeout(timer);
   if (!res.ok) {
+    clearTimeout(timer);
+    try {
+      await dispatcher.close();
+    } catch {
+      // best-effort
+    }
     return { ok: false, reason: `fetch returned status ${res.status}` };
   }
   // Enforce max size — read as bytes and abort if larger than MAX_BYTES.
+  // The abort timer remains armed throughout — a slow trickle attack
+  // trips it inside `reader.read()` and short-circuits with a bounded
+  // failure rather than hanging.
   const reader = res.body?.getReader();
-  if (!reader) return { ok: false, reason: "response body has no reader" };
+  if (!reader) {
+    clearTimeout(timer);
+    try {
+      await dispatcher.close();
+    } catch {
+      // best-effort
+    }
+    return { ok: false, reason: "response body has no reader" };
+  }
   const chunks: Uint8Array[] = [];
   let total = 0;
-  while (true) {
-    let done = false;
-    let value: Uint8Array | undefined;
-    try {
-      const chunk = await reader.read();
-      done = chunk.done;
-      value = chunk.value;
-    } catch {
-      return { ok: false, reason: "response body read threw" };
-    }
-    if (done) break;
-    if (!value) continue;
-    total += value.byteLength;
-    if (total > MAX_BYTES) {
+  let bodyOk = false;
+  try {
+    while (true) {
+      let done = false;
+      let value: Uint8Array | undefined;
       try {
-        await reader.cancel();
+        const chunk = await reader.read();
+        done = chunk.done;
+        value = chunk.value;
       } catch {
-        // best-effort
+        return { ok: false, reason: "response body read threw" };
       }
-      return { ok: false, reason: "response exceeded 64KB" };
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > MAX_BYTES) {
+        try {
+          await reader.cancel();
+        } catch {
+          // best-effort
+        }
+        return { ok: false, reason: "response exceeded 64KB" };
+      }
+      chunks.push(value);
     }
-    chunks.push(value);
+    bodyOk = true;
+  } finally {
+    // Only clear the abort timer AFTER body consumption completes (or
+    // errors). Closing the dispatcher tears down the pinned socket.
+    clearTimeout(timer);
+    try {
+      await dispatcher.close();
+    } catch {
+      // best-effort
+    }
+  }
+  if (!bodyOk) {
+    // Defence in depth — the loop above returns on every error path.
+    return { ok: false, reason: "response body did not complete" };
   }
   const bytes = concatBytes(chunks, total);
 
@@ -169,6 +313,14 @@ export async function fetchAndBindWellKnownManifest(input: {
   // 8. Best-effort parse of the manifest for display-only fields. Failure
   //    to parse is not fatal — we already have a matching digest, which is
   //    what the trust decision hinges on.
+  //
+  //    Sol MAJOR-2 (app-scoped-secret trust rule): we ALSO extract the
+  //    declared `secrets` block and `permissions` list so the widget can
+  //    verify that any KV/SQL grant asking for a scoped secret actually
+  //    corresponds to a declared entry in the same scope. Extraction is
+  //    lossy-safe: any structural surprise falls through to `undefined`
+  //    and the widget treats the grant as sensitive (the fail-closed
+  //    default).
   let manifest: OriginBindResult["manifest"];
   try {
     const parsed = JSON.parse(new TextDecoder("utf-8").decode(bytes)) as Record<
@@ -188,12 +340,99 @@ export async function fetchAndBindWellKnownManifest(input: {
           : typeof parsed.manifestId === "string"
             ? parsed.manifestId
             : undefined,
+      prefix:
+        typeof parsed.prefix === "string"
+          ? parsed.prefix
+          : typeof parsed.app_id === "string"
+            ? parsed.app_id
+            : undefined,
+      defaultSpace:
+        typeof parsed.space === "string" ? parsed.space : undefined,
+      declaredSecrets: extractDeclaredSecrets(parsed.secrets),
+      declaredPermissions: extractDeclaredPermissions(parsed.permissions),
     };
   } catch {
     manifest = {};
   }
 
   return { ok: true, manifest, fetchedDigest };
+}
+
+/**
+ * Sol MAJOR-2: extract `{ secretName, scope, actions }` triples from a
+ * manifest `secrets` block. The shape mirrors js-sdk's
+ * `ManifestSecretActions`:
+ *
+ * ```
+ * secrets: {
+ *   MY_KEY: true                                // implicit "read", global scope
+ *   MY_KEY: "read"                              // single action, global scope
+ *   MY_KEY: ["read", "put"]                     // multiple actions, global scope
+ *   MY_KEY: { scope: "listen", actions: [...] } // scoped
+ * }
+ * ```
+ *
+ * Any entry we cannot confidently parse is DROPPED (fail-closed: the
+ * widget will treat the corresponding grant as sensitive rather than
+ * inventing app-scope-normal semantics from a shape we don't recognize).
+ */
+function extractDeclaredSecrets(input: unknown): DeclaredScopedSecret[] | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+  const out: DeclaredScopedSecret[] = [];
+  for (const [key, raw] of Object.entries(input as Record<string, unknown>)) {
+    if (typeof key !== "string" || key.length === 0) continue;
+    if (raw === true) {
+      out.push({ secretName: key, actions: ["read"] });
+      continue;
+    }
+    if (typeof raw === "string" && raw.length > 0) {
+      out.push({ secretName: key, actions: [raw] });
+      continue;
+    }
+    if (Array.isArray(raw) && raw.every((a) => typeof a === "string")) {
+      out.push({ secretName: key, actions: raw as string[] });
+      continue;
+    }
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      const obj = raw as Record<string, unknown>;
+      const nameRaw = typeof obj.name === "string" && obj.name.length > 0 ? obj.name : key;
+      const scopeRaw = typeof obj.scope === "string" && obj.scope.length > 0 ? obj.scope : undefined;
+      let actions: string[] | null = null;
+      if (typeof obj.actions === "string" && obj.actions.length > 0) {
+        actions = [obj.actions];
+      } else if (Array.isArray(obj.actions) && obj.actions.every((a) => typeof a === "string")) {
+        actions = obj.actions as string[];
+      }
+      if (!actions || actions.length === 0) continue;
+      out.push({ secretName: nameRaw, scope: scopeRaw, actions });
+    }
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+/**
+ * Sol MAJOR-2: extract declared permission entries from a manifest
+ * `permissions` array. Each entry must at minimum carry a `service`,
+ * `path`, and non-empty `actions` array; anything else is dropped.
+ */
+function extractDeclaredPermissions(input: unknown): DeclaredPermission[] | undefined {
+  if (!Array.isArray(input)) return undefined;
+  const out: DeclaredPermission[] = [];
+  for (const raw of input) {
+    if (!raw || typeof raw !== "object") continue;
+    const obj = raw as Record<string, unknown>;
+    if (typeof obj.service !== "string" || obj.service.length === 0) continue;
+    if (typeof obj.path !== "string") continue;
+    if (!Array.isArray(obj.actions) || obj.actions.length === 0) continue;
+    if (!obj.actions.every((a) => typeof a === "string" && a.length > 0)) continue;
+    out.push({
+      service: obj.service,
+      space: typeof obj.space === "string" && obj.space.length > 0 ? obj.space : undefined,
+      path: obj.path,
+      actions: obj.actions as string[],
+    });
+  }
+  return out.length > 0 ? out : undefined;
 }
 
 function concatBytes(chunks: Uint8Array[], total: number): Uint8Array {

@@ -10,7 +10,9 @@
   import {
     parseCapabilityReview,
     defaultSelection,
+    annotateAppScopedGrants,
     type CapabilityReviewModel,
+    type DeclaredAppScope,
   } from '@openkey/capability-review';
   import {
     createWidgetTransport,
@@ -93,6 +95,10 @@
         manifestId?: string;
         manifestDigest?: string;
         reportedOrigin?: string;
+        // Sol MAJOR-2: origin-bound app-scope declarations. Only used
+        // as DISPLAY-only enrichment for KV/secret grants; never
+        // widens authority.
+        declaredAppScope?: DeclaredAppScope;
       }
     | null
   >(null);
@@ -398,21 +404,30 @@
       serverVerifiedManifest?.name ??
       envelopeDisplayName ??
       (originIsWildcard ? 'Unknown origin' : origin);
-    // requesterVerified is true only under a real server-issued upgrade.
-    // The `origin-bound` status is a real cryptographic verification of
-    // the manifest at the origin's well-known URL — sufficient to
-    // distinguish own-app vs cross-app grants.
-    const requesterVerifiedNow =
-      effectiveTrust.status === 'verified' ||
-      effectiveTrust.status === 'origin-bound';
-    // Requester address for the classifier. Only supply a lowercased
-    // address if we can prove it (verified/origin-bound). Otherwise fail
-    // closed — the classifier will treat any grant on someone else's
-    // space as cross-app.
-    let requesterAddressForClassifier: string | null = null;
-    if (requesterVerifiedNow && key?.address) {
-      requesterAddressForClassifier = key.address.toLowerCase();
-    }
+    // Sol MAJOR-1 (final continuation): the widget MUST NOT infer a
+    // "verified requester" identity from data that is not the requester's
+    // own declaration. Prior code marked origin-bound requests as verified
+    // AND used `key.address` — the USER's signing identity — as the
+    // requester address for the classifier. That's wrong on two axes:
+    //   1. `key.address` is not the requester. It is the signer. Using it
+    //      as the classifier's `requesterAddress` claims the requesting
+    //      app is the same principal as the signer, which produces false
+    //      "own-app" classifications for every grant against the signer's
+    //      spaces.
+    //   2. Origin-bind proves the manifest was served from a specific
+    //      origin. It does NOT prove that any declared identity (address,
+    //      DID, or otherwise) belongs to that origin. Upgrading
+    //      `requesterVerified` on origin-bind alone would let the widget
+    //      confidently render a caller's untrusted `displayName` /
+    //      identity as if OpenKey vouched for it.
+    //
+    // Correct semantics: leave `requesterVerified=false` and
+    // `requesterAddress=null` unless an identity has been explicitly
+    // declared by the manifest AND independently verified. The classifier
+    // then falls back to its safe path (treats grants on the signer's
+    // spaces as cross-app), which is the honest report.
+    const requesterVerifiedNow = false;
+    const requesterAddressForClassifier: string | null = null;
     try {
       const model = parseCapabilityReview({
         message,
@@ -430,6 +445,11 @@
         requester: {
           displayName,
           verifiedOrigin: originIsWildcard ? null : origin,
+          // Sol minor: pass the origin-bound `appId` when the server
+          // verified it. Never fall back to the caller-echoed envelope
+          // for this field — it is DISPLAYED as a distinct trusted
+          // identifier in the Advanced-details disclosure.
+          appId: serverVerifiedManifest?.appId ?? null,
           manifestId: displayManifestId,
           manifestDigest: displayManifestDigest,
           domainWarning: domainMismatchForModel,
@@ -441,8 +461,18 @@
         requesterAddress: requesterAddressForClassifier,
         requesterVerified: requesterVerifiedNow,
       });
-      reviewModel = model;
-      reviewSelection = defaultSelection(model);
+      // Sol MAJOR-2: app-scoped-secret trust rule. When the SERVER
+      // origin-bound the manifest (`origin-bound` or `verified` trust
+      // status) AND that manifest declared a scoped secret matching
+      // the grant's exact (secretName, scope, actions) triple, add a
+      // compact "app-scoped" metadata label. In every other case the
+      // grant is left untouched — including its severity, which
+      // metadata may NEVER lower. See app-scope.ts for the rule.
+      reviewModel = annotateAppScopedGrants(
+        model,
+        serverVerifiedManifest?.declaredAppScope,
+      );
+      reviewSelection = defaultSelection(reviewModel);
     } catch {
       reviewModel = null;
     }
@@ -560,6 +590,57 @@
           typeof prepareResult.verifiedManifest === 'object'
         ) {
           const vm = prepareResult.verifiedManifest as Record<string, unknown>;
+          // Sol MAJOR-2: adopt the origin-bound app-scope declarations.
+          // The server extracted these from the ALREADY-digest-matched
+          // well-known manifest; the widget forwards them as
+          // display-only enrichment to `annotateAppScopedGrants`.
+          let declaredAppScope: DeclaredAppScope | undefined;
+          if (
+            vm.declaredAppScope &&
+            typeof vm.declaredAppScope === 'object' &&
+            !Array.isArray(vm.declaredAppScope)
+          ) {
+            const das = vm.declaredAppScope as Record<string, unknown>;
+            const secretsRaw = Array.isArray(das.secrets) ? das.secrets : [];
+            const permsRaw = Array.isArray(das.permissions) ? das.permissions : [];
+            const secrets = secretsRaw
+              .filter(
+                (s): s is { secretName: string; scope?: string; actions: string[] } =>
+                  !!s &&
+                  typeof s === 'object' &&
+                  typeof (s as any).secretName === 'string' &&
+                  Array.isArray((s as any).actions) &&
+                  (s as any).actions.every((a: unknown) => typeof a === 'string'),
+              )
+              .map(s => ({
+                secretName: s.secretName,
+                scope: typeof (s as any).scope === 'string' ? (s as any).scope : undefined,
+                actions: s.actions,
+              }));
+            const permissions = permsRaw
+              .filter(
+                (p): p is { service: string; space?: string; path: string; actions: string[] } =>
+                  !!p &&
+                  typeof p === 'object' &&
+                  typeof (p as any).service === 'string' &&
+                  typeof (p as any).path === 'string' &&
+                  Array.isArray((p as any).actions) &&
+                  (p as any).actions.every((a: unknown) => typeof a === 'string'),
+              )
+              .map(p => ({
+                service: p.service,
+                space: typeof (p as any).space === 'string' ? (p as any).space : undefined,
+                path: p.path,
+                actions: p.actions,
+              }));
+            declaredAppScope = {
+              prefix: typeof das.prefix === 'string' ? das.prefix : undefined,
+              defaultSpace:
+                typeof das.defaultSpace === 'string' ? das.defaultSpace : undefined,
+              secrets: secrets.length > 0 ? secrets : undefined,
+              permissions: permissions.length > 0 ? permissions : undefined,
+            };
+          }
           serverVerifiedManifest = {
             name: typeof vm.name === 'string' ? vm.name : undefined,
             appId: typeof vm.appId === 'string' ? vm.appId : undefined,
@@ -568,6 +649,7 @@
               typeof vm.manifestDigest === 'string' ? vm.manifestDigest : undefined,
             reportedOrigin:
               typeof vm.reportedOrigin === 'string' ? vm.reportedOrigin : undefined,
+            declaredAppScope,
           };
         }
       }

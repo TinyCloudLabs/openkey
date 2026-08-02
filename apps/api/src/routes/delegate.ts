@@ -1713,6 +1713,19 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
         manifestId?: string;
         manifestDigest?: string;
         reportedOrigin?: string;
+        /**
+         * Sol MAJOR-2: only present when origin-bind succeeded AND the
+         * manifest carried a `secrets` block AND/or a `permissions`
+         * block. The widget uses these to decide whether a KV/SQL
+         * secret grant matches an app-declared scoped secret. Missing
+         * or mismatched → grant stays sensitive.
+         */
+        declaredAppScope?: {
+          prefix?: string;
+          defaultSpace?: string;
+          secrets?: Array<{ secretName: string; scope?: string; actions: string[] }>;
+          permissions?: Array<{ service: string; space?: string; path: string; actions: string[] }>;
+        };
       }
     | undefined;
 
@@ -1758,6 +1771,21 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
                 status: 'origin-bound',
                 reason: `manifest at ${reportedOrigin}/.well-known/openkey-manifest.json matched declared digest`,
               };
+              // Sol MAJOR-2: forward the declared secrets + permissions
+              // block extracted from the origin-bound (digest-matched)
+              // manifest. The widget uses this to decide whether a
+              // scoped-secret grant matches an app declaration; absent
+              // a match, the grant stays sensitive. Never used to
+              // expand authority.
+              const declaredAppScope =
+                bindResult.manifest?.declaredSecrets || bindResult.manifest?.declaredPermissions
+                  ? {
+                      prefix: bindResult.manifest?.prefix,
+                      defaultSpace: bindResult.manifest?.defaultSpace,
+                      secrets: bindResult.manifest?.declaredSecrets,
+                      permissions: bindResult.manifest?.declaredPermissions,
+                    }
+                  : undefined;
               verifiedManifest = {
                 name:
                   bindResult.manifest?.name ??
@@ -1768,6 +1796,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
                   (typeof envelope.manifestId === 'string' ? envelope.manifestId : undefined),
                 manifestDigest: declaredDigest.toLowerCase(),
                 reportedOrigin,
+                declaredAppScope,
               };
             } else {
               metadataTrust = {

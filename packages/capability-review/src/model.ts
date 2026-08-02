@@ -125,6 +125,15 @@ export interface RequesterIdentity {
    * postMessage origin). Never a caller-supplied "app name".
    */
   verifiedOrigin: string | null;
+  /**
+   * Sol minor: the manifest's `app_id`. Distinct from `manifestId`
+   * (which is the versioned manifest identifier / registry ID). The
+   * Advanced details disclosure renders these as SEPARATE fields so
+   * the operator can distinguish "which app is this?" from "which
+   * manifest version am I looking at?". Null when the origin-bound
+   * manifest did not carry an `app_id`.
+   */
+  appId: string | null;
   /** Manifest ID and content digest, when available. */
   manifestId: string | null;
   manifestDigest: string | null;

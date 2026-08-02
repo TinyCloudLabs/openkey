@@ -15,3 +15,4 @@ export * from "./restrict.js";
 export * from "./metadata.js";
 export * from "./copy.js";
 export * from "./statements.js";
+export * from "./app-scope.js";

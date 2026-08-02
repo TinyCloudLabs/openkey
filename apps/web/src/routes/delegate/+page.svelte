@@ -394,6 +394,7 @@
           requester: {
             displayName: 'TinyCloud CLI',
             verifiedOrigin: null,
+            appId: null,
             manifestId: null,
             manifestDigest: null,
             domainWarning: false,

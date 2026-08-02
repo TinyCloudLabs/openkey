@@ -290,20 +290,35 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
         resource,
       };
     }
-    // 3c. Account apps / spaces
+    // 3c. Account apps / spaces — action-aware phrasing. Never claim
+    //     "view and update" unless both read and write actions are
+    //     present. Read-only maps to "View"; write-only to "Update".
     if (isAccountAppsPath(path)) {
-      return {
-        primaryText: "View and update your connected apps",
-        service,
-        resource,
-      };
+      let primaryText: string;
+      if (verbs.hasRead && verbs.hasWrite) {
+        primaryText = "View and update your connected apps";
+      } else if (verbs.onlyWrite) {
+        primaryText = "Update your connected apps";
+      } else if (verbs.onlyRead) {
+        primaryText = "View your connected apps";
+      } else {
+        // Unknown/mixed verb combination — do not invent semantics.
+        return fallbackStatement(grant);
+      }
+      return { primaryText, service, resource };
     }
     if (isAccountSpacesPath(path)) {
-      return {
-        primaryText: "View and update your storage spaces",
-        service,
-        resource,
-      };
+      let primaryText: string;
+      if (verbs.hasRead && verbs.hasWrite) {
+        primaryText = "View and update your storage spaces";
+      } else if (verbs.onlyWrite) {
+        primaryText = "Update your storage spaces";
+      } else if (verbs.onlyRead) {
+        primaryText = "View your storage spaces";
+      } else {
+        return fallbackStatement(grant);
+      }
+      return { primaryText, service, resource };
     }
     // 3d. Unknown KV path → fallback.
     return fallbackStatement(grant);
@@ -328,18 +343,36 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
         resource,
       };
     }
+    // Action-aware SQL phrasing. "Read and update" is only truthful when
+    // read AND write (or schema-mutation) actions are both present.
+    // Read-only maps to "Read"; write/schema-only maps to "Update".
+    const hasSqlMutation = verbs.hasWrite || verbs.hasSchema;
+    const sqlReadOnly = verbs.hasRead && !hasSqlMutation;
+    const sqlWriteOnly = hasSqlMutation && !verbs.hasRead;
     if (isSecretsSqlSpace(space)) {
-      return {
-        primaryText: "Read and update TinyCloud Secrets data",
-        service,
-        resource,
-      };
+      let primaryText: string;
+      if (verbs.hasRead && hasSqlMutation) {
+        primaryText = "Read and update TinyCloud Secrets data";
+      } else if (sqlReadOnly) {
+        primaryText = "Read TinyCloud Secrets data";
+      } else if (sqlWriteOnly) {
+        primaryText = "Update TinyCloud Secrets data";
+      } else {
+        return fallbackStatement(grant);
+      }
+      return { primaryText, service, resource };
     }
-    return {
-      primaryText: "Read and update your TinyCloud account",
-      service,
-      resource,
-    };
+    let primaryText: string;
+    if (verbs.hasRead && hasSqlMutation) {
+      primaryText = "Read and update your TinyCloud account";
+    } else if (sqlReadOnly) {
+      primaryText = "Read your TinyCloud account";
+    } else if (sqlWriteOnly) {
+      primaryText = "Update your TinyCloud account";
+    } else {
+      return fallbackStatement(grant);
+    }
+    return { primaryText, service, resource };
   }
 
   // 5. Named secrets service (not KV): read vs mutation family.

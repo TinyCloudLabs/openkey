@@ -32,6 +32,29 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 
 const CONTEXT_TTL_MS = 5 * 60 * 1000;
 
+/**
+ * Sol MAJOR-2: shape of the verified-manifest block the server hands to
+ * the widget. Includes the origin-bound `declaredAppScope` when the
+ * fetched manifest carried a `secrets` or `permissions` block. The
+ * widget uses `declaredAppScope` to distinguish grants the app actually
+ * asked for from grants a compromised caller injected — but this data
+ * is DISPLAY-ONLY. It never expands authority; the ReCap payload is
+ * still the sole gate for what the user may approve.
+ */
+export interface VerifiedManifestFields {
+  name?: string;
+  appId?: string;
+  manifestId?: string;
+  manifestDigest?: string;
+  reportedOrigin?: string;
+  declaredAppScope?: {
+    prefix?: string;
+    defaultSpace?: string;
+    secrets?: Array<{ secretName: string; scope?: string; actions: string[] }>;
+    permissions?: Array<{ service: string; space?: string; path: string; actions: string[] }>;
+  };
+}
+
 export interface AuthorizationContextIssueInput {
   userId: string;
   keyId: string;
@@ -72,13 +95,7 @@ export interface AuthorizationContextIssueInput {
    * echo back after validation. Never carries the caller's raw envelope;
    * always the server's derived, size-bounded, sanitized version.
    */
-  verifiedManifest?: {
-    name?: string;
-    appId?: string;
-    manifestId?: string;
-    manifestDigest?: string;
-    reportedOrigin?: string;
-  };
+  verifiedManifest?: VerifiedManifestFields;
 }
 
 interface StoredContext {
@@ -102,13 +119,7 @@ interface StoredContext {
     status: "verified" | "origin-bound" | "unsigned";
     reason: string;
   };
-  verifiedManifest?: {
-    name?: string;
-    appId?: string;
-    manifestId?: string;
-    manifestDigest?: string;
-    reportedOrigin?: string;
-  };
+  verifiedManifest?: VerifiedManifestFields;
 }
 
 const store = new Map<string, StoredContext>();
@@ -280,13 +291,7 @@ export interface AuthorizationContextToken {
     reason: string;
   };
   /** Verified manifest fields (only present when trust status upgrades). */
-  verifiedManifest?: {
-    name?: string;
-    appId?: string;
-    manifestId?: string;
-    manifestDigest?: string;
-    reportedOrigin?: string;
-  };
+  verifiedManifest?: VerifiedManifestFields;
 }
 
 export function issueAuthorizationContext(

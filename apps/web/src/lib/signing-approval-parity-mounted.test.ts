@@ -241,6 +241,7 @@ function benignFixtureModel(): any {
       displayName: 'My App',
       origin: 'https://myapp.example',
       verifiedOrigin: 'https://myapp.example',
+      appId: null,
       manifestId: null,
       manifestDigest: null,
       domainWarning: false,
@@ -307,6 +308,7 @@ function warningFixtureModel(): any {
       displayName: 'Suspicious Requester',
       origin: 'https://attacker.example',
       verifiedOrigin: 'https://attacker.example',
+      appId: null,
       manifestId: null,
       manifestDigest: null,
       domainWarning: true,
@@ -721,7 +723,17 @@ describe('signing-approval mounted parity across production surface adapters (So
       expect(
         textIncludes(handle.container, 'saw unknown ability tinycloud.kv/frobnicate'),
       ).toBe(true);
-      expect(textIncludes(handle.container, 'Origin does not match SIWE domain')).toBe(true);
+      // Sol MAJOR-6 (parity mounted fix): the component now emits the
+      // contract-required domain-warning copy that names both the SIWE
+      // domain and the verified browser origin as distinct sides of
+      // the mismatch. Update the assertion to match the shipped copy
+      // rather than the pre-consolidation shorter phrasing.
+      expect(
+        textIncludes(
+          handle.container,
+          'Domain warning: SIWE domain does not match the verified browser origin',
+        ),
+      ).toBe(true);
       const projection = collectSemantic(handle.container);
       projections.push(projection);
       handle.unmount();
@@ -731,7 +743,14 @@ describe('signing-approval mounted parity across production surface adapters (So
     }
   });
 
-  test('expanded permission details: every surface shows the "Show exact bytes" details+summary+pre content', async () => {
+  test('expanded permission details: every surface shows a single "Advanced details" details+summary containing the raw message', async () => {
+    // Sol MAJOR-6 (parity mounted fix): the merge-readiness contract
+    // collapses every previous disclosure into a SINGLE `<details>`
+    // labelled "Advanced details". The raw-message `<pre>` lives
+    // INSIDE that single disclosure — the widget no longer emits a
+    // separate "Show exact bytes being signed" summary. Assert the
+    // structural contract shape instead of the pre-consolidation copy.
+    //
     // We assert the STRUCTURAL details/summary/pre content that the
     // shared component always emits. The `<details>` element's browser-
     // level `open` toggling (click on summary flips the `open` attr) is
@@ -746,7 +765,9 @@ describe('signing-approval mounted parity across production surface adapters (So
       const details = handle.container.querySelector('details');
       expect(details).toBeTruthy();
       const summary = details.querySelector('summary');
-      expect(summary?.textContent?.trim()).toBe('Show exact bytes being signed');
+      expect(summary?.textContent?.trim()).toBe('Advanced details');
+      // The raw-message `<pre>` lives inside the single Advanced-details
+      // disclosure. It must contain the exact bytes the widget will sign.
       const pre = details.querySelector('pre');
       expect(pre?.textContent?.trim()).toBe(model.rawMessage);
       handle.unmount();
