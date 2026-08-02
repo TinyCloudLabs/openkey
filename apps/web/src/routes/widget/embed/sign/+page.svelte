@@ -8,6 +8,7 @@
   import Button from '$lib/components/ui/button.svelte';
   import SiweMessage from '$lib/components/ui/siwe-message.svelte';
   import IframeSigningAdapter from '$lib/components/signing/iframe-signing-adapter.svelte';
+  import { originAuthority, requesterDisplayName } from '$lib/requester-display';
   import {
     parseCapabilityReview,
     defaultSelection,
@@ -41,6 +42,7 @@
   let contentEl = $state<HTMLDivElement | undefined>(undefined);
   let embedAuthenticated = $state(typeof window !== 'undefined' && !!getSessionToken());
   let reviewModel = $state<CapabilityReviewModel | null>(null);
+  let reviewSourceMessage = $state<string | null>(null);
   let reviewSelection = $state(new Set<string>());
   let reviewEditing = $state(false);
   let currentRequestId = $state<string | null>(null);
@@ -167,6 +169,9 @@
         : null;
     serverMetadataTrust = null;
     serverVerifiedManifest = null;
+    reviewModel = null;
+    reviewSourceMessage = null;
+    reviewSelection = new Set();
     keyFetched = false;
     if (data.sessionToken && inIframe && typeof data.sessionToken === 'string') {
       setSessionToken(data.sessionToken);
@@ -175,6 +180,7 @@
     // Reset preview state on a fresh request.
     previewSignedMessage = null;
     previewToken = null;
+    previewApprovalToken = null;
     previewApproved = false;
     requestSealed = true;
   }
@@ -329,9 +335,7 @@
       const domainMatch = message.match(/^(.+?) wants you to sign in with your Ethereum account:$/m);
       if (domainMatch && domainMatch[1]) siweDomainForModel = domainMatch[1].trim();
     } catch { /* nothing to do; leave null */ }
-    try {
-      if (origin && origin !== '*') originHostForModel = new URL(origin).hostname;
-    } catch { /* leave null */ }
+    originHostForModel = originAuthority(origin);
     const domainMismatchForModel =
       !!siweDomainForModel && !!originHostForModel && siweDomainForModel !== originHostForModel;
     const originIsWildcard = origin === '*';
@@ -396,9 +400,7 @@
             : 'none';
     const displayManifestDigest =
       serverVerifiedManifest?.manifestDigest ?? envelopeManifestDigest;
-    const displayName =
-      manifestName ??
-      (originIsWildcard ? 'Unknown origin' : origin);
+    const displayName = requesterDisplayName(manifestNameFromServer, origin);
     // Sol MAJOR-2: the widget MUST NOT infer a "verified requester"
     // identity from data that is not the requester's own declaration.
     // Prior code marked origin-bound requests as verified AND used
@@ -466,11 +468,17 @@
       // compact "app-scoped" metadata label. In every other case the
       // grant is left untouched — including its severity, which
       // metadata may NEVER lower. See app-scope.ts for the rule.
-      reviewModel = annotateAppScopedGrants(
+      const nextReviewModel = annotateAppScopedGrants(
         model,
         serverVerifiedManifest?.declaredAppScope,
       );
-      reviewSelection = defaultSelection(reviewModel);
+      reviewModel = previewSignedMessage
+        ? { ...nextReviewModel, rawMessage: previewSignedMessage }
+        : nextReviewModel;
+      if (reviewSourceMessage !== message) {
+        reviewSelection = defaultSelection(reviewModel);
+        reviewSourceMessage = message;
+      }
     } catch {
       reviewModel = null;
     }
@@ -835,8 +843,7 @@
   let siweDomain = $derived(message ? parseSIWE(message)?.message.domain ?? null : null);
 
   let originDomain = $derived.by(() => {
-    if (!origin || origin === '*') return null;
-    try { return new URL(origin).hostname; } catch { return origin; }
+    return originAuthority(origin);
   });
 
   let domainMismatch = $derived(
@@ -875,37 +882,11 @@
       <div class="flex flex-col items-center justify-center text-center text-surface-500 py-4">
         <p class="text-sm">Please connect first to sign messages.</p>
       </div>
-    {:else if reviewModel && reviewModel.protocol === 'tinycloud-siwe-recap' && previewSignedMessage && canUseAuthorizeSignFn()}
-      <!--
-        Sol CRITICAL-1: distinct final-approval screen for iframe. The
-        user has previewed the EXACT bytes the server will sign; they
-        must approve those specific bytes before /authorize-sign is
-        invoked.
-      -->
-      <div class="flex flex-col gap-3">
-        <div class="bg-surface-50 border border-surface-200 rounded-xl p-3">
-          <span class="block text-surface-400 text-xs uppercase tracking-wide mb-1">Final review — server-authoritative bytes</span>
-          <p class="text-surface-500 text-xs mb-2">
-            These are the EXACT bytes the server will sign for the current selection.
-          </p>
-          <pre class="whitespace-pre-wrap break-all text-xs text-surface-700 font-mono max-h-72 overflow-y-auto">{previewSignedMessage}</pre>
-        </div>
-        {#if error}
-          <div class="bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl text-sm" role="alert">{error}</div>
-        {/if}
-        <div class="flex gap-2 mt-1">
-          <Button variant="secondary" size="sm" class="flex-1 rounded-xl" onclick={() => { previewSignedMessage = null; }}>Back</Button>
-          <Button size="sm" class="flex-1 rounded-xl" onclick={approveAndSign} disabled={signing}>
-            {signing ? 'Signing...' : 'Approve exact bytes'}
-          </Button>
-        </div>
-      </div>
     {:else if reviewModel && reviewModel.protocol === 'tinycloud-siwe-recap'}
       <!--
         Editable TinyCloud request — render via the shared SigningApproval
-        component. The onApprove handler routes through requestPreview()
-        so the user must review the server-returned candidate bytes before
-        the final /authorize-sign step.
+        component. The first approval requests server-authoritative bytes;
+        the actual signing approval stays in this same component.
       -->
       <!--
         IframeSigningAdapter mirrors the popup adapter — same substantive
@@ -919,6 +900,7 @@
           approving: signing || previewing,
           error,
           canUseAuthorizeSign: canUseAuthorizeSignFn(),
+          previewReady: Boolean(previewToken && previewSignedMessage && previewApprovalToken),
           requestPreview,
           approveAndSign,
           cancel,

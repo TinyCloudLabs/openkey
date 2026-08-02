@@ -59,10 +59,18 @@ export interface WidgetSigningTransport {
   canUseAuthorizeSign: boolean;
 
   /**
+   * True after the server has prepared exact bytes and sealed them to the
+   * current selection. The adapter keeps rendering the shared approval
+   * content, but the next approval now consumes that preview instead of
+   * requesting another one.
+   */
+  previewReady: boolean;
+
+  /**
    * Server-authoritative narrowing path: fetch a preview of the exact
-   * bytes the server would sign for the current selection. The route
-   * shows the preview screen; the adapter fires this only when
-   * `canUseAuthorizeSign` is true.
+   * bytes the server would sign for the current selection. The route puts
+   * those bytes back into the shared review model; the adapter fires this
+   * only when `canUseAuthorizeSign` is true and no preview is ready.
    */
   requestPreview: () => void | Promise<void>;
 

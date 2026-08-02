@@ -48,6 +48,13 @@ The substantive companion changes ride in `@openkey/api` and
   - Forwards the server's `verifiedManifest.declaredAppScope` into a
     new `annotateAppScopedGrants` call after `parseCapabilityReview`.
   - Renders `appId` in Advanced details as a distinct row.
+  - Uses only a server origin-bound manifest name as the unlabelled
+    top-level requester. Before verification, the summary shows the
+    browser authority; a caller-supplied app name is confined to Advanced
+    details with its unverified provenance label.
+  - Compares the SIWE domain with `URL.host`, preserving non-default ports.
+- The iframe signing route follows the same requester-name and authority
+  comparison rules as the popup route.
 - `apps/web/src/lib/signing-approval-parity-mounted.test.ts` domain-
   warning + Advanced-details assertions updated to match the shipped
   contract copy.

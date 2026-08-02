@@ -34,6 +34,12 @@ Changes in `@openkey/web` (not published; ignored in release config):
   `onEditingChange` wiring. Routes hand each adapter a `transport`
   implementation matching the surface's contract; nothing route-
   specific is inlined at the JSX site any more.
+- Widget transports expose whether a server-sealed preview is ready.
+  The first approval prepares exact bytes; the second approval stays in
+  the same shared content view and consumes those bytes. Popup and iframe
+  no longer replace the categorized grants, Advanced details, manifest
+  provenance, signing identity, and copyable raw message with a route-
+  local final card.
 - The three production routes (`/delegate`, `/widget/sign`,
   `/widget/embed/sign`) now mount their respective adapters with the
   new transport-based API. Selection state and completion callbacks
@@ -60,8 +66,8 @@ Parity coverage:
   and drives every interaction via `page.keyboard.press` — real
   Tab-driven focus movement, real Enter/Space synthesis on buttons,
   native `<details>` open toggling on summary click and keyboard.
-  22 tests cover the three surfaces plus the widget's
-  `canUseAuthorizeSign=false` fallback.
+  23 tests cover the three surfaces, the widget's
+  `canUseAuthorizeSign=false` fallback, and its shared final-preview state.
 
 Legacy `apps/web/src/lib/signing-approval-parity.test.ts` is now a
 structural guardrail only: it asserts each production route imports
@@ -76,7 +82,7 @@ What this changeset does NOT claim:
 - Cross-repo integration: the browser parity suite exercises only
   OpenKey's own adapters. The consumer-side wire-format acceptance
   and end-to-end round-trip live in the companion js-sdk changeset.
-- Any change to the substantive `SigningApproval` content component
-  itself. Its keyboard handling, ARIA structure, and rendering
-  behaviour are unchanged; the adapters are the only files that
-  changed.
+- The shared component's authority decisions. It receives a
+  presentation-only `finalPreview` state so its hint and action label
+  accurately describe the sealed-byte approval; token validation and
+  signing remain route/server responsibilities.

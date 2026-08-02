@@ -7,6 +7,7 @@
   import Card from '$lib/components/ui/card.svelte';
   import SiweMessage from '$lib/components/ui/siwe-message.svelte';
   import PopupSigningAdapter from '$lib/components/signing/popup-signing-adapter.svelte';
+  import { originAuthority, requesterDisplayName } from '$lib/requester-display';
   import {
     parseCapabilityReview,
     defaultSelection,
@@ -76,6 +77,10 @@
   // when the request looks like a TinyCloud SIWE-ReCap. Legacy plain
   // signMessage requests still render via the legacy fallback below.
   let reviewModel = $state<CapabilityReviewModel | null>(null);
+  // Tracks which caller message initialized `reviewSelection`. Server
+  // metadata and exact-byte preview updates rebuild the display model but
+  // must not silently reset a user's narrowed selection.
+  let reviewSourceMessage = $state<string | null>(null);
   let reviewSelection = $state(new Set<string>());
   let reviewEditing = $state(false);
   // Presentation envelope forwarded by the SDK. Display-only. The widget
@@ -221,6 +226,9 @@
     // authorization context, not into the selection).
     serverMetadataTrust = null;
     serverVerifiedManifest = null;
+    reviewModel = null;
+    reviewSourceMessage = null;
+    reviewSelection = new Set();
     keyFetched = false;
     // Reset preview state — a new request always starts with no bound
     // preview. Editing selection also clears these fields.
@@ -357,9 +365,7 @@
       const domainMatch = message.match(/^(.+?) wants you to sign in with your Ethereum account:$/m);
       if (domainMatch && domainMatch[1]) siweDomainForModel = domainMatch[1].trim();
     } catch { /* nothing to do; leave null */ }
-    try {
-      if (origin && origin !== '*') originHostForModel = new URL(origin).hostname;
-    } catch { /* leave null */ }
+    originHostForModel = originAuthority(origin);
     const domainMismatchForModel =
       !!siweDomainForModel && !!originHostForModel && siweDomainForModel !== originHostForModel;
     const originIsWildcard = origin === '*';
@@ -432,9 +438,10 @@
             : 'none';
     const displayManifestDigest =
       serverVerifiedManifest?.manifestDigest ?? envelopeManifestDigest;
-    const displayName =
-      manifestName ??
-      (originIsWildcard ? 'Unknown origin' : origin);
+    // The summary requester must never be a caller-controlled presentation
+    // name. Until the server origin-binds the manifest, show the browser
+    // authority; keep the caller's claimed name only in Advanced details.
+    const displayName = requesterDisplayName(manifestNameFromServer, origin);
     // Sol MAJOR-1 (final continuation): the widget MUST NOT infer a
     // "verified requester" identity from data that is not the requester's
     // own declaration. Prior code marked origin-bound requests as verified
@@ -507,11 +514,20 @@
       // compact "app-scoped" metadata label. In every other case the
       // grant is left untouched — including its severity, which
       // metadata may NEVER lower. See app-scope.ts for the rule.
-      reviewModel = annotateAppScopedGrants(
+      const nextReviewModel = annotateAppScopedGrants(
         model,
         serverVerifiedManifest?.declaredAppScope,
       );
-      reviewSelection = defaultSelection(reviewModel);
+      // Keep the final decision in this same shared model. Only the raw
+      // bytes change after preview; categorized grants and edit/reset stay
+      // visible through the approval that actually signs them.
+      reviewModel = previewSignedMessage
+        ? { ...nextReviewModel, rawMessage: previewSignedMessage }
+        : nextReviewModel;
+      if (reviewSourceMessage !== message) {
+        reviewSelection = defaultSelection(reviewModel);
+        reviewSourceMessage = message;
+      }
     } catch {
       reviewModel = null;
     }
@@ -950,8 +966,7 @@
   let siweDomain = $derived(message ? parseSIWE(message)?.message.domain ?? null : null);
 
   let originDomain = $derived.by(() => {
-    if (!origin || origin === '*') return null;
-    try { return new URL(origin).hostname; } catch { return origin; }
+    return originAuthority(origin);
   });
 
   let domainMismatch = $derived(
@@ -983,40 +998,12 @@
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
       <p>Please connect first to sign messages.</p>
     </div>
-  {:else if reviewModel && reviewModel.protocol === 'tinycloud-siwe-recap' && previewSignedMessage && canUseAuthorizeSignFn()}
-    <!--
-      Sol CRITICAL-1: distinct final-approval screen. The user has
-      previewed the EXACT bytes the server will sign; they must approve
-      those specific bytes (not the widget-supplied request) before
-      /authorize-sign is invoked.
-    -->
-    <div class="flex flex-col gap-4 flex-1">
-      <Card class="p-4">
-        <span class="block text-surface-400 text-xs uppercase mb-2">Final review — server-authoritative bytes</span>
-        <p class="text-surface-300 text-xs mb-3">
-          These are the EXACT bytes the server will sign for the current selection.
-          Approving finalizes the delegation with these bytes; editing sends you back to review.
-        </p>
-        <pre class="whitespace-pre-wrap break-all text-xs text-surface-200 font-mono max-h-72 overflow-y-auto">{previewSignedMessage}</pre>
-      </Card>
-      {#if error}
-        <Card class="bg-red-500/10 border-red-500 text-red-500 p-4">{error}</Card>
-      {/if}
-      <div class="flex gap-3 mt-auto">
-        <Button variant="secondary" class="flex-1" onclick={() => { previewSignedMessage = null; }}>
-          Back to selection
-        </Button>
-        <Button class="flex-1" onclick={approveAndSign} disabled={signing}>
-          {signing ? 'Signing...' : 'Approve exact bytes'}
-        </Button>
-      </div>
-    </div>
   {:else if reviewModel && reviewModel.protocol === 'tinycloud-siwe-recap'}
     <!--
       Editable TinyCloud request — render via the shared SigningApproval
-      component. The onApprove handler routes through requestPreview() so
-      the user must review the server-returned candidate bytes before the
-      final /authorize-sign step. Non-versioned requests skip preview and
+      component. The first approval requests server-authoritative bytes;
+      the actual signing approval stays in the same component with those
+      exact bytes available under Advanced details. Non-versioned requests
       fall through to approveAndSign() directly.
     -->
     <!--
@@ -1035,6 +1022,7 @@
         approving: signing || previewing,
         error,
         canUseAuthorizeSign: canUseAuthorizeSignFn(),
+        previewReady: Boolean(previewToken && previewSignedMessage && previewApprovalToken),
         requestPreview,
         approveAndSign,
         cancel,

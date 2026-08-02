@@ -63,10 +63,10 @@
   }
 
   function onApprove() {
-    // Route the approval through the server-authoritative preview path
-    // when the request is eligible; otherwise fall through to the legacy
-    // exact-byte sign path.
-    if (transport.canUseAuthorizeSign) {
+    // First approval prepares server-authoritative bytes. The second
+    // approval consumes the preview while staying in this same shared
+    // content view. Legacy requests sign their original exact bytes.
+    if (transport.canUseAuthorizeSign && !transport.previewReady) {
       void transport.requestPreview();
     } else {
       void transport.approveAndSign();
@@ -84,6 +84,7 @@
   {editing}
   approving={transport.approving}
   error={transport.error}
+  finalPreview={transport.previewReady}
   {onApprove}
   {onCancel}
   {onSelectionChange}

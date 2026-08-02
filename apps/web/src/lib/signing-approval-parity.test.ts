@@ -112,6 +112,17 @@ describe('signing-approval production-adapter structural guardrail', () => {
     }
   });
 
+  test('widget routes do NOT replace the shared adapter with a route-local final review', () => {
+    for (const route of [
+      'src/routes/widget/sign/+page.svelte',
+      'src/routes/widget/embed/sign/+page.svelte',
+    ]) {
+      const src = readWebFile(route);
+      expect(src).not.toContain('Final review — server-authoritative bytes');
+      expect(src).not.toMatch(/previewSignedMessage\s*&&\s*canUseAuthorizeSignFn\(\)/);
+    }
+  });
+
   test('each substantive adapter mounts the shared SigningApproval component (single source of truth)', () => {
     for (const { adapterFile } of ROUTE_ADAPTERS) {
       const src = readWebFile(adapterFile);

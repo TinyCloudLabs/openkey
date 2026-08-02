@@ -35,6 +35,7 @@ interface HarnessConfig {
   model: any;
   initialSelection: string[];
   canUseAuthorizeSign?: boolean;
+  previewReady?: boolean;
   approving?: boolean;
   error?: string | null;
 }
@@ -129,6 +130,7 @@ async function loadHarness(page: Page, cfg: HarnessConfig) {
       model: cfg.model,
       initialSelection: cfg.initialSelection,
       canUseAuthorizeSign: cfg.canUseAuthorizeSign ?? true,
+      previewReady: cfg.previewReady ?? false,
       approving: cfg.approving ?? false,
       error: cfg.error ?? null,
       calls: [],
@@ -345,6 +347,32 @@ test.describe('signing-approval browser parity — production adapters', () => {
       await page.keyboard.press('Enter');
       const calls = await readCalls(page);
       const names = calls.map((c) => c.name);
+      expect(names).toEqual(['approveAndSign']);
+    }
+  });
+
+  test('widget final preview preserves shared details and approves exact bytes', async ({ page }) => {
+    for (const surface of ['popup', 'iframe'] as const) {
+      const model = benignFixtureModel();
+      model.rawMessage = 'server-prepared-exact-bytes';
+      await loadHarness(page, {
+        surface,
+        model,
+        initialSelection: fixtureInitialSelection(model),
+        canUseAuthorizeSign: true,
+        previewReady: true,
+      });
+
+      await expect(page.locator('details.advanced-details')).toBeVisible();
+      await page.locator('details.advanced-details summary').click();
+      await expect(page.getByText('Exact grants')).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Copy text' })).toBeVisible();
+      await expect(page.getByText('server-prepared-exact-bytes')).toBeVisible();
+
+      const approve = page.getByRole('button', { name: 'Approve exact bytes' });
+      await approve.focus();
+      await page.keyboard.press('Enter');
+      const names = (await readCalls(page)).map((call) => call.name);
       expect(names).toEqual(['approveAndSign']);
     }
   });

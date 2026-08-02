@@ -35,6 +35,7 @@
     initialSelection: string[];
     surface: 'cli' | 'popup' | 'iframe';
     canUseAuthorizeSign?: boolean;
+    previewReady?: boolean;
     approving?: boolean;
     error?: string | null;
     calls: Array<{ name: string; args?: unknown }>;
@@ -82,6 +83,9 @@
   const widgetTransport: WidgetSigningTransport = {
     get canUseAuthorizeSign() {
       return rawGlobals?.canUseAuthorizeSign ?? true;
+    },
+    get previewReady() {
+      return rawGlobals?.previewReady ?? false;
     },
     get approving() {
       return rawGlobals?.approving ?? false;

@@ -50,6 +50,7 @@
     editing: boolean;
     approving?: boolean;
     error?: string | null;
+    finalPreview?: boolean;
     onApprove: () => void;
     onCancel: () => void;
     onSelectionChange: (next: Set<string>) => void;
@@ -62,6 +63,7 @@
     editing,
     approving = false,
     error = null,
+    finalPreview = false,
     onApprove,
     onCancel,
     onSelectionChange,
@@ -79,6 +81,8 @@
   const hint = $derived(
     isMalformedRecap
       ? "This message carries a capability payload we could not decode. Refusing to approve so the request cannot be silently degraded to an exact-byte SIWE signature."
+      : finalPreview && model.protocol === "tinycloud-siwe-recap"
+        ? "Review the server-prepared request. Approving signs the exact bytes shown in Advanced details."
       : PROTOCOL_HINT[model.protocol],
   );
 
@@ -181,7 +185,9 @@
       ? "Cannot approve"
       : approving
         ? "Signing…"
-        : "Approve",
+        : finalPreview
+          ? "Approve exact bytes"
+          : "Approve",
   );
 </script>
 

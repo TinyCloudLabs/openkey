@@ -48,7 +48,7 @@
   }
 
   function onApprove() {
-    if (transport.canUseAuthorizeSign) {
+    if (transport.canUseAuthorizeSign && !transport.previewReady) {
       void transport.requestPreview();
     } else {
       void transport.approveAndSign();
@@ -66,6 +66,7 @@
   {editing}
   approving={transport.approving}
   error={transport.error}
+  finalPreview={transport.previewReady}
   {onApprove}
   {onCancel}
   {onSelectionChange}

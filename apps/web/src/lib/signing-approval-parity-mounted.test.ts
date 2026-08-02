@@ -433,6 +433,7 @@ interface WidgetSpies {
 
 interface WidgetTransport {
   canUseAuthorizeSign: boolean;
+  previewReady: boolean;
   requestPreview: () => void;
   approveAndSign: () => void;
   cancel: () => void;
@@ -443,7 +444,10 @@ interface WidgetTransport {
   _spies: WidgetSpies;
 }
 
-function makeWidgetTransport(canUseAuthorizeSign: boolean): WidgetTransport {
+function makeWidgetTransport(
+  canUseAuthorizeSign: boolean,
+  previewReady = false,
+): WidgetTransport {
   const spies: WidgetSpies = {
     requestPreview: [],
     approveAndSign: [],
@@ -453,6 +457,7 @@ function makeWidgetTransport(canUseAuthorizeSign: boolean): WidgetTransport {
   };
   return {
     canUseAuthorizeSign,
+    previewReady,
     approving: false,
     error: null,
     requestPreview: () => {
@@ -483,7 +488,7 @@ function propsForSurface(
   binding: SurfaceBinding,
   model: any,
   initialSelection: Set<string>,
-  opts: { canUseAuthorizeSign?: boolean } = {},
+  opts: { canUseAuthorizeSign?: boolean; previewReady?: boolean } = {},
 ): { props: any; cliTransport?: CliTransport; widgetTransport?: WidgetTransport } {
   if (binding.kind === 'cli') {
     const transport = makeCliTransport();
@@ -492,7 +497,10 @@ function propsForSurface(
       cliTransport: transport,
     };
   }
-  const transport = makeWidgetTransport(opts.canUseAuthorizeSign ?? true);
+  const transport = makeWidgetTransport(
+    opts.canUseAuthorizeSign ?? true,
+    opts.previewReady ?? false,
+  );
   return {
     props: { model, initialSelection, transport },
     widgetTransport: transport,
@@ -896,6 +904,37 @@ describe('signing-approval mounted parity across production surface adapters (So
       const approve = buttons.find((b) => (b.textContent ?? '').trim() === 'Approve');
       expect(approve).toBeTruthy();
       pressKeyOnButton(approve, 'Enter');
+      const t = built.widgetTransport!;
+      expect(t._spies.approveAndSign.length).toBe(1);
+      expect(t._spies.requestPreview.length).toBe(0);
+      handle.unmount();
+    }
+  });
+
+  test('widget final preview keeps shared content and approves the sealed exact bytes', async () => {
+    const widgetBindings = surfaceBindings.filter((b) => b.kind === 'widget');
+    for (const binding of widgetBindings) {
+      const model = benignFixtureModel();
+      model.rawMessage = 'server-prepared-exact-bytes';
+      const selection = fixtureSelection(model);
+      const built = propsForSurface(binding, model, selection, {
+        canUseAuthorizeSign: true,
+        previewReady: true,
+      });
+      const handle = await mountSurface(binding, built.props);
+
+      expect(handle.container.querySelector('details.advanced-details')).toBeTruthy();
+      expect(handle.container.textContent).toContain('Exact grants');
+      expect(handle.container.textContent).toContain('Copy text');
+      expect(handle.container.textContent).toContain('server-prepared-exact-bytes');
+
+      const buttons = Array.from(handle.container.querySelectorAll('button')) as any[];
+      const approve = buttons.find(
+        (b) => (b.textContent ?? '').trim() === 'Approve exact bytes',
+      );
+      expect(approve).toBeTruthy();
+      pressKeyOnButton(approve, 'Enter');
+
       const t = built.widgetTransport!;
       expect(t._spies.approveAndSign.length).toBe(1);
       expect(t._spies.requestPreview.length).toBe(0);
