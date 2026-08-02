@@ -63,7 +63,14 @@ const MUTATION_VERBS = new Set([
 ]);
 const READ_VERBS = new Set(["read", "get", "peek", "list"]);
 const DECRYPT_VERBS = new Set(["decrypt", "unwrap"]);
-const CREATE_VERBS = new Set(["create"]);
+// Sol MAJOR-3: `create` matches short-verb abilities (e.g. `foo/create`).
+// The production encryption service uses the compound verb
+// `network.create`, so we ALSO recognize that specific form here; the
+// resource is still classified as a network-create action. Adding the
+// compound alias is safer than dropping the dot-segment from every verb
+// blindly, because unrelated services could carry different meanings
+// (e.g. `sql/schema.migrate` should NOT be classified as `migrate`).
+const CREATE_VERBS = new Set(["create", "network.create"]);
 const SCHEMA_VERBS = new Set(["schema"]);
 const LIST_VERBS = new Set(["list"]);
 const METADATA_VERBS = new Set(["metadata"]);

@@ -118,10 +118,19 @@ export function findMatchingDeclaredSecret(
   // Extract the trailing secret name from the ReCap path. Real requests
   // use one of the following shapes:
   //   `secrets/<name>`, `vault/secrets/<name>`,
+  //   `secrets/scoped/<scope>/<name>`, `vault/secrets/scoped/<scope>/<name>`,
   //   `<scope>/secrets/<name>`, `<scope>/vault/secrets/<name>`
   const parsed = parseSecretPath(grant.path);
   if (!parsed) return null;
-  const grantVerbs = grant.actions.map((a) => a.verb.toLowerCase());
+  // Sol MAJOR-1 (this iteration): normalize BOTH sides to a canonical
+  // verb space before comparison. Grants ship short verbs sourced from
+  // the ability tail (`tinycloud.kv/get`, `tinycloud.kv/put`,
+  // `tinycloud.kv/del`), while manifests conventionally use the
+  // longer `read/write/delete` synonyms. Comparing them raw always
+  // failed the app-scope gate on real production capabilities.
+  const grantVerbs = grant.actions.map((a) =>
+    normalizeSecretVerb(a.verb.toLowerCase()),
+  );
   for (const declared of secrets) {
     if (declared.secretName !== parsed.secretName) continue;
     // Scope agreement: an entry without scope MUST match an unscoped
@@ -130,8 +139,11 @@ export function findMatchingDeclaredSecret(
     if ((declared.scope ?? null) !== (parsed.scope ?? null)) continue;
     // Actions: every requested verb must be declared. A missing
     // declared verb on the grant is legal narrowing; ANY grant verb
-    // NOT declared falsifies the match.
-    const declaredVerbs = new Set(declared.actions.map((a) => a.toLowerCase()));
+    // NOT declared falsifies the match. Both sides are canonicalized
+    // through the same verb-normalization table.
+    const declaredVerbs = new Set(
+      declared.actions.map((a) => normalizeSecretVerb(a.toLowerCase())),
+    );
     let ok = true;
     for (const v of grantVerbs) {
       if (!declaredVerbs.has(v)) {
@@ -146,8 +158,51 @@ export function findMatchingDeclaredSecret(
 }
 
 /**
+ * Sol MAJOR-1: canonical verb table. Grants and manifests both target
+ * the same three operations on a secret — READ, WRITE, DELETE — but
+ * they spell them differently:
+ *   - grants (from ability tails): `get` / `put` / `del`
+ *   - manifests (from `ManifestSecretActions`): `read` / `write` / `delete`
+ *
+ * We normalize BOTH sides to the short verb the wire actually carries
+ * (`get`/`put`/`del`) so a declaration like `{ MY_KEY: ["read", "write"] }`
+ * matches a grant asking for `tinycloud.kv/get + tinycloud.kv/put`.
+ *
+ * Unknown verbs pass through untouched — the exact-string match still
+ * applies (e.g., `list`, `admin`), and the gate stays fail-closed for
+ * anything the caller didn't declare.
+ */
+export function normalizeSecretVerb(verb: string): string {
+  switch (verb) {
+    case "read":
+    case "get":
+      return "get";
+    case "write":
+    case "put":
+      return "put";
+    case "delete":
+    case "del":
+      return "del";
+    default:
+      return verb;
+  }
+}
+
+/**
  * Parse the trailing secret-name segment (and optional scope) from a
  * ReCap `path`. Returns null when the shape does not describe a secret.
+ *
+ * Accepted shapes:
+ *   1. `secrets/<name>`                              — global, no vault prefix
+ *   2. `vault/secrets/<name>`                        — global, vault prefix
+ *   3. `secrets/scoped/<scope>/<name>`               — js-sdk production shape (scoped)
+ *   4. `vault/secrets/scoped/<scope>/<name>`         — js-sdk production shape (scoped, vault)
+ *   5. `<scope>/secrets/<name>`                      — alternate scope-first shape
+ *   6. `<scope>/vault/secrets/<name>`                — alternate scope-first (vault)
+ *
+ * The js-sdk `resolveSecretPath` helper emits shapes 1-4 (see
+ * `packages/sdk-services/src/secrets/paths.ts`); shapes 5-6 exist for
+ * backward compatibility with older callers that prefixed the scope.
  */
 function parseSecretPath(path: string): { scope?: string; secretName: string } | null {
   if (!path) return null;
@@ -164,8 +219,30 @@ function parseSecretPath(path: string): { scope?: string; secretName: string } |
     }
   }
   if (anchor < 0) return null;
-  // The `vault` segment may sit immediately before `secrets` — treat it
-  // as part of the anchor prefix (no scope contribution).
+  // Sol MAJOR-1: recognize the js-sdk production shape
+  // `secrets/scoped/<scope>/<name>`. When the segment immediately after
+  // `secrets` is the literal `scoped`, the following segment is the
+  // scope and the segment after that is the secret name. Anything
+  // beyond the secret name is not a legal single-secret grant.
+  if (segments[anchor + 1] === "scoped") {
+    const scopeSegment = segments[anchor + 2];
+    const scopedName = segments[anchor + 3];
+    if (!scopeSegment || scopeSegment.length === 0) return null;
+    if (!scopedName || scopedName.length === 0) return null;
+    if (anchor + 4 !== segments.length) return null;
+    // A scope-first prefix in front of `secrets/scoped/...` is not a
+    // legal shape — the js-sdk never emits it and mixing both scope
+    // conventions in one path is ambiguous.
+    for (let i = 0; i < anchor; i += 1) {
+      const seg = segments[i]!;
+      if (seg !== "vault") return null;
+    }
+    return { scope: scopeSegment, secretName: scopedName };
+  }
+  // Legacy shape: `secrets/<name>` (unscoped) or `<scope>/secrets/<name>`
+  // (scope-first). The `vault` segment may sit immediately before
+  // `secrets` — treat it as part of the anchor prefix (no scope
+  // contribution).
   const secretName = segments[anchor + 1];
   if (!secretName || secretName.length === 0) return null;
   // Anything remaining after the secret name is not a legal single-secret

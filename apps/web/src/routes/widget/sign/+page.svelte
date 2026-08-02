@@ -396,13 +396,44 @@
     // for `unsigned` display (which still surfaces the digest so the user
     // sees WHAT the caller claimed — the trust label prevents any
     // implication of verification).
+    //
+    // Sol MAJOR-4: compute provenance ALONGSIDE the display strings so
+    // the shared component can render each caller-echoed field with a
+    // visible "unverified" hint. Never mark a fall-back envelope value
+    // as origin-bound.
+    const trustStatus = effectiveTrust.status;
+    const manifestNameFromServer =
+      trustStatus === 'verified' || trustStatus === 'origin-bound'
+        ? serverVerifiedManifest?.name ?? null
+        : null;
+    const manifestName =
+      manifestNameFromServer ?? envelopeDisplayName ?? null;
+    const manifestNameProvenance: 'verified' | 'origin-bound' | 'caller' | 'none' =
+      manifestNameFromServer && trustStatus === 'verified'
+        ? 'verified'
+        : manifestNameFromServer && trustStatus === 'origin-bound'
+          ? 'origin-bound'
+          : envelopeDisplayName
+            ? 'caller'
+            : 'none';
+    const manifestIdFromServer =
+      trustStatus === 'verified' || trustStatus === 'origin-bound'
+        ? serverVerifiedManifest?.manifestId ?? null
+        : null;
     const displayManifestId =
-      serverVerifiedManifest?.manifestId ?? envelopeManifestId;
+      manifestIdFromServer ?? envelopeManifestId ?? null;
+    const manifestIdProvenance: 'verified' | 'origin-bound' | 'caller' | 'none' =
+      manifestIdFromServer && trustStatus === 'verified'
+        ? 'verified'
+        : manifestIdFromServer && trustStatus === 'origin-bound'
+          ? 'origin-bound'
+          : envelopeManifestId
+            ? 'caller'
+            : 'none';
     const displayManifestDigest =
       serverVerifiedManifest?.manifestDigest ?? envelopeManifestDigest;
     const displayName =
-      serverVerifiedManifest?.name ??
-      envelopeDisplayName ??
+      manifestName ??
       (originIsWildcard ? 'Unknown origin' : origin);
     // Sol MAJOR-1 (final continuation): the widget MUST NOT infer a
     // "verified requester" identity from data that is not the requester's
@@ -450,7 +481,15 @@
           // for this field — it is DISPLAYED as a distinct trusted
           // identifier in the Advanced-details disclosure.
           appId: serverVerifiedManifest?.appId ?? null,
+          // Sol MAJOR-4: pass manifest name + ID together with their
+          // honest provenance. The Advanced-details disclosure uses the
+          // provenance to render a visible "unverified" hint on caller-
+          // supplied fields; a caller MUST NOT be able to slip a name
+          // past the operator as if OpenKey had verified it.
+          manifestName,
+          manifestNameProvenance,
           manifestId: displayManifestId,
+          manifestIdProvenance,
           manifestDigest: displayManifestDigest,
           domainWarning: domainMismatchForModel,
           // Sol MAJOR-8: wildcard origin means the widget cannot prove

@@ -294,6 +294,34 @@
       {/if}
 
       <!--
+        Sol MAJOR-4: render `manifestName` as a distinct field with its
+        provenance stamp. `origin-bound` fields come from a well-known
+        manifest whose digest matched the caller-supplied envelope;
+        `caller` fields are unverified envelope echoes and MUST carry a
+        visible "unverified" hint so an operator cannot mistake them for
+        a trusted label. Server code never marks a caller-echoed name as
+        origin-bound — see the popup/embed prepare handlers.
+      -->
+      {#if model.requester.manifestName}
+        <div class="row">
+          <span class="label">Manifest name</span>
+          <span class="value">{model.requester.manifestName}</span>
+          <span
+            class="provenance-tag"
+            data-provenance={model.requester.manifestNameProvenance}
+          >
+            {#if model.requester.manifestNameProvenance === "verified"}
+              signed manifest
+            {:else if model.requester.manifestNameProvenance === "origin-bound"}
+              from origin-bound manifest
+            {:else if model.requester.manifestNameProvenance === "caller"}
+              caller-supplied, unverified
+            {/if}
+          </span>
+        </div>
+      {/if}
+
+      <!--
         Sol minor: render `appId` and `manifestId` as SEPARATE Advanced-
         details rows. `appId` names the app (from the manifest's
         `app_id`); `manifestId` is the versioned identifier of the
@@ -312,6 +340,18 @@
         <div class="row">
           <span class="label">Manifest ID</span>
           <code class="value mono">{model.requester.manifestId}</code>
+          <span
+            class="provenance-tag"
+            data-provenance={model.requester.manifestIdProvenance}
+          >
+            {#if model.requester.manifestIdProvenance === "verified"}
+              signed manifest
+            {:else if model.requester.manifestIdProvenance === "origin-bound"}
+              from origin-bound manifest
+            {:else if model.requester.manifestIdProvenance === "caller"}
+              caller-supplied, unverified
+            {/if}
+          </span>
         </div>
       {/if}
       {#if model.requester.manifestDigest}
@@ -677,6 +717,32 @@
     padding: 2px 6px;
     border-radius: 4px;
     font-size: 12px;
+  }
+  /*
+    Sol MAJOR-4: provenance tags are attached to Advanced-details fields
+    whose value came from a caller-echoed envelope. They exist so an
+    operator can never mistake a `caller-supplied, unverified` string
+    for an OpenKey-verified identity. The `caller` variant is styled
+    like the domain warning; `origin-bound` and `verified` variants are
+    neutral so they do not compete with content.
+  */
+  .provenance-tag {
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    line-height: 1.2;
+  }
+  .provenance-tag[data-provenance="verified"] {
+    background: #e6f7ea;
+    color: #14733b;
+  }
+  .provenance-tag[data-provenance="origin-bound"] {
+    background: #eef1e6;
+    color: #4a6f2f;
+  }
+  .provenance-tag[data-provenance="caller"] {
+    background: #fff4d6;
+    color: #995000;
   }
   .metadata-reason,
   .reason-body,

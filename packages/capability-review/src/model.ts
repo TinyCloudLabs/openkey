@@ -118,7 +118,12 @@ export interface CapabilityGrant {
 }
 
 export interface RequesterIdentity {
-  /** Display name from the manifest, or origin fallback. */
+  /**
+   * Display name shown in the small summary. May come from the
+   * origin-bound manifest, a caller-echoed envelope value, or the raw
+   * origin — see `manifestName` and `manifestNameProvenance` for the
+   * honest, provenance-labelled breakdown.
+   */
   displayName: string;
   /**
    * Verified origin of the request (the SIWE `domain` field, or the
@@ -134,8 +139,37 @@ export interface RequesterIdentity {
    * manifest did not carry an `app_id`.
    */
   appId: string | null;
-  /** Manifest ID and content digest, when available. */
+  /**
+   * Sol MAJOR-4: manifest `name` field with honest provenance.
+   *
+   *   - `manifestName` carries the raw string OpenKey stored — never
+   *     interpret this as trusted on its own.
+   *   - `manifestNameProvenance` describes where the string came from:
+   *       - `"verified"` — the string was pulled from a signed manifest.
+   *       - `"origin-bound"` — the string came from a well-known manifest
+   *         at the reported origin whose digest matched the caller-
+   *         supplied envelope. The origin bound the string, but no
+   *         cryptographic signature attests it.
+   *       - `"caller"` — the string is a caller-supplied envelope value
+   *         that OpenKey could NOT verify (unsigned, no origin-bind, or
+   *         the origin-bind manifest omitted `name`). It MUST be
+   *         rendered with a visible "unverified" hint.
+   *       - `"none"` — no manifest name is available.
+   *
+   * The Advanced details disclosure renders the name AND its
+   * provenance as separate fields so the operator can never mistake
+   * a caller-echoed name for a cryptographically-verified label.
+   */
+  manifestName: string | null;
+  manifestNameProvenance: "verified" | "origin-bound" | "caller" | "none";
+  /**
+   * Manifest ID and content digest, when available. `manifestIdProvenance`
+   * mirrors the `manifestName` provenance rule: OpenKey MUST NOT label a
+   * caller-supplied `manifestId` as origin-bound just because the
+   * envelope was successfully bound to some other field.
+   */
   manifestId: string | null;
+  manifestIdProvenance: "verified" | "origin-bound" | "caller" | "none";
   manifestDigest: string | null;
   /** True when domain/origin/manifest disagree. */
   domainWarning: boolean;

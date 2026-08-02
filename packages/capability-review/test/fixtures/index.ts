@@ -85,6 +85,20 @@ export const ENCRYPTION_DECRYPT_REQUEST = siwe([
   `tinycloud.capabilities/read:${SPACE}`,
 ]);
 
+// Sol MAJOR-3: production encryption ability is `network.create`, not
+// bare `create`. This fixture exercises the combined create+decrypt
+// path that appears in real js-sdk requests.
+export const ENCRYPTION_NETWORK_CREATE_AND_DECRYPT_REQUEST = siwe([
+  `tinycloud.encryption/network.create:${SPACE}/health-data`,
+  `tinycloud.encryption/decrypt:${SPACE}/health-data`,
+  `tinycloud.capabilities/read:${SPACE}`,
+]);
+
+export const ENCRYPTION_NETWORK_CREATE_ONLY_REQUEST = siwe([
+  `tinycloud.encryption/network.create:${SPACE}/health-data`,
+  `tinycloud.capabilities/read:${SPACE}`,
+]);
+
 export const UNKNOWN_SERVICE_REQUEST = siwe([
   `some.experimental.service/frobnicate:${SPACE}/misc`,
   `tinycloud.capabilities/read:${SPACE}`,

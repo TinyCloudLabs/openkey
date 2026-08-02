@@ -55,7 +55,10 @@ function benignFixtureModel() {
       origin: 'https://myapp.example',
       verifiedOrigin: 'https://myapp.example',
       appId: null,
+      manifestName: null,
+      manifestNameProvenance: 'none',
       manifestId: null,
+      manifestIdProvenance: 'none',
       manifestDigest: null,
       domainWarning: false,
       originWarning: false,
@@ -272,6 +275,19 @@ test.describe('signing-approval browser parity — production adapters', () => {
         model: benignFixtureModel(),
         initialSelection: fixtureInitialSelection(benignFixtureModel()),
       });
+      // The Edit control lives inside the "Advanced details" <details>
+      // disclosure — that element is closed by default (contract §3.11).
+      // A real user first opens it via the summary; the spec must do the
+      // same or the browser correctly reports the Edit button as not
+      // visible.
+      const details = page.locator('[data-parity-harness] details').first();
+      const isOpen = await details.evaluate((el) => (el as HTMLDetailsElement).open);
+      if (!isOpen) {
+        await details.locator('summary').first().click();
+        await expect
+          .poll(async () => details.evaluate((el) => (el as HTMLDetailsElement).open))
+          .toBe(true);
+      }
       // Enter editing mode by real-clicking the Edit button.
       const edit = page.locator('[data-parity-harness] button', { hasText: 'Edit' }).first();
       await edit.click();

@@ -1786,14 +1786,21 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
                       permissions: bindResult.manifest?.declaredPermissions,
                     }
                   : undefined;
+              // Sol MAJOR-4: never fall back to caller-supplied
+              // envelope fields for `name` or `manifestId` while
+              // marking trust `origin-bound`. Origin-bind proves the
+              // FETCHED manifest matched the declared digest — it says
+              // nothing about the envelope's displayName / manifestId.
+              // Silently merging the envelope in would let a caller
+              // present an unverified label to the operator inside a
+              // field the widget renders as "from origin-bound
+              // manifest". The widget layer adds envelope fallbacks
+              // separately with a distinct `caller-supplied,
+              // unverified` provenance tag.
               verifiedManifest = {
-                name:
-                  bindResult.manifest?.name ??
-                  (typeof envelope.displayName === 'string' ? envelope.displayName : undefined),
+                name: bindResult.manifest?.name,
                 appId: bindResult.manifest?.appId,
-                manifestId:
-                  bindResult.manifest?.manifestId ??
-                  (typeof envelope.manifestId === 'string' ? envelope.manifestId : undefined),
+                manifestId: bindResult.manifest?.manifestId,
                 manifestDigest: declaredDigest.toLowerCase(),
                 reportedOrigin,
                 declaredAppScope,
