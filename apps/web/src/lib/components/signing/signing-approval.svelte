@@ -227,28 +227,67 @@
   // and falls back to a hidden textarea + execCommand for older browsers.
   // The clipboard receives `model.rawMessage` EXACTLY — no normalization.
   let copyState = $state<"idle" | "copied" | "failed">("idle");
+
+  function clipboardPolicyAllowsWrite(): boolean {
+    if (typeof document === "undefined") return false;
+    const policyDocument = document as Document & {
+      permissionsPolicy?: { allowsFeature: (feature: string) => boolean };
+      featurePolicy?: { allowsFeature: (feature: string) => boolean };
+    };
+    const policy =
+      policyDocument.permissionsPolicy ?? policyDocument.featurePolicy;
+    return policy?.allowsFeature
+      ? policy.allowsFeature("clipboard-write")
+      : true;
+  }
+
+  function copyWithExecCommand(text: string): boolean {
+    if (typeof document === "undefined") return false;
+    const activeElement =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.setAttribute("aria-hidden", "true");
+    ta.style.position = "fixed";
+    ta.style.inset = "0 auto auto -9999px";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    const copied = document.execCommand("copy");
+    ta.remove();
+    activeElement?.focus();
+    return copied;
+  }
+
   async function copyRawMessage() {
     const text = model.rawMessage;
-    try {
-      if (typeof navigator !== "undefined" && navigator.clipboard) {
+    let copied = false;
+    if (
+      typeof navigator !== "undefined" &&
+      navigator.clipboard?.writeText &&
+      clipboardPolicyAllowsWrite()
+    ) {
+      try {
         await navigator.clipboard.writeText(text);
-        copyState = "copied";
-      } else {
-        // Legacy fallback
-        const ta = document.createElement("textarea");
-        ta.value = text;
-        ta.setAttribute("readonly", "");
-        ta.style.position = "absolute";
-        ta.style.left = "-9999px";
-        document.body.appendChild(ta);
-        ta.select();
-        const ok = document.execCommand("copy");
-        document.body.removeChild(ta);
-        copyState = ok ? "copied" : "failed";
+        copied = true;
+      } catch {
+        // An iframe may expose Clipboard API while blocking it via
+        // Permissions Policy. Fall through to the user-gesture fallback.
       }
-    } catch {
-      copyState = "failed";
     }
+    if (!copied) {
+      try {
+        copied = copyWithExecCommand(text);
+      } catch {
+        copied = false;
+      }
+    }
+    copyState = copied ? "copied" : "failed";
     setTimeout(() => {
       copyState = "idle";
     }, 2000);
@@ -303,7 +342,12 @@
             class="summary-statement"
             data-severity={statement.severity}
           >
-            <span class="statement-primary">{statement.primaryText}</span>
+            <span class="statement-line">
+              <span class="statement-primary">{statement.primaryText}</span>
+              {#if statement.severity === "sensitive"}
+                <span class="summary-sensitive-pill">Sensitive</span>
+              {/if}
+            </span>
           </li>
         {/each}
       </ul>
@@ -716,6 +760,23 @@
     line-height: 1.45;
     font-weight: 600;
     color: #0f172a;
+  }
+  .statement-line {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .summary-sensitive-pill {
+    flex: 0 0 auto;
+    border: 1px solid #f2c0c0;
+    border-radius: 999px;
+    background: #fff7f7;
+    color: #9f2424;
+    padding: 2px 7px;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1.3;
   }
   .summary-empty {
     color: #475569;

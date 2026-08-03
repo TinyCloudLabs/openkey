@@ -267,6 +267,13 @@ test.describe('signing-approval browser parity — production adapters', () => {
       await expect(dialog).toContainText('Check your TinyCloud account permissions');
       const summary = page.locator('[data-parity-harness] .summary');
       await expect(summary.locator('.summary-statement')).toHaveCount(10);
+      await expect(summary.locator('.summary-sensitive-pill')).toHaveCount(4);
+      await expect(summary.locator('.summary-sensitive-pill')).toHaveText([
+        'Sensitive',
+        'Sensitive',
+        'Sensitive',
+        'Sensitive',
+      ]);
       await expect(summary).not.toContainText(model.requester.displayName);
       await expect(summary).not.toContainText('exact grant');
       await expect(summary).not.toContainText('service');
@@ -507,6 +514,69 @@ test.describe('signing-approval browser parity — production adapters', () => {
       await expect(await details.evaluate((el) => (el as HTMLDetailsElement).open)).toBe(false);
     });
   }
+
+  test('decryption operations carry Sensitive pills in summary and exact grants', async ({ page }) => {
+    const model = encryptionFixtureModel();
+    await loadHarness(page, {
+      surface: 'popup',
+      model,
+      initialSelection: fixtureInitialSelection(model),
+      canUseAuthorizeSign: true,
+    });
+
+    const summary = page.locator('[data-parity-harness] .summary');
+    await expect(summary).toContainText('Create a decryption network and decrypt protected data');
+    await expect(summary.locator('.summary-sensitive-pill')).toHaveText('Sensitive');
+    const details = page.locator('details.advanced-details');
+    await details.locator(':scope > summary').click();
+    await expect(details.locator('.grant-severity[data-severity="sensitive"]')).toHaveText(
+      'Sensitive',
+    );
+  });
+
+  test('copy falls back without calling Clipboard API when policy blocks it', async ({ page }) => {
+    const model = exactRecapFixtureModel();
+    await loadHarness(page, {
+      surface: 'iframe',
+      model,
+      initialSelection: fixtureInitialSelection(model),
+      canUseAuthorizeSign: true,
+    });
+    await page.evaluate(() => {
+      (window as any).__clipboardApiCalls = 0;
+      (window as any).__fallbackClipboardText = null;
+      Object.defineProperty(document, 'permissionsPolicy', {
+        configurable: true,
+        value: { allowsFeature: () => false },
+      });
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: {
+          writeText: async () => {
+            (window as any).__clipboardApiCalls += 1;
+            throw new DOMException('Blocked by Permissions Policy', 'NotAllowedError');
+          },
+        },
+      });
+      (document as any).execCommand = (command: string) => {
+        if (command !== 'copy') return false;
+        const textarea = document.activeElement as HTMLTextAreaElement | null;
+        (window as any).__fallbackClipboardText = textarea?.value ?? null;
+        return true;
+      };
+    });
+
+    const details = page.locator('details.advanced-details');
+    await details.locator(':scope > summary').click();
+    await page.getByRole('button', { name: 'Copy text' }).click();
+    const result = await page.evaluate(() => ({
+      apiCalls: (window as any).__clipboardApiCalls,
+      copiedText: (window as any).__fallbackClipboardText,
+    }));
+    expect(result.apiCalls).toBe(0);
+    expect(result.copiedText).toBe(model.rawMessage);
+    await expect(page.getByRole('button', { name: 'Copy text' })).toHaveText('Copied');
+  });
 
   test('widget approve routes to exact-byte path when canUseAuthorizeSign=false', async ({ page }) => {
     for (const surface of ['popup', 'iframe'] as const) {
