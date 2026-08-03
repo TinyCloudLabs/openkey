@@ -10,6 +10,7 @@ import {
   defaultSelection,
   raiseSeverityFromMetadata,
   applyMetadataLabels,
+  grantReachesSecretDataOrDecryption,
 } from "../src/index.js";
 import type { ParseContext } from "../src/parse.js";
 import type { SignerInfo } from "../src/index.js";
@@ -39,6 +40,9 @@ import {
   REAL_KV_SECRET_ROOT_LIST_AND_UNKNOWN,
   REAL_SQL_SECRET_ROOT_READ,
   REAL_SQL_SECRET_ROOT_WRITE,
+  REAL_SQL_SECRET_ROOT_UNKNOWN,
+  REAL_SQL_SECRET_PATH_READ,
+  REAL_SQL_CROSS_OWNER_SECRET_ROOT_READ,
   SECRETS_MUTATION_REQUEST,
   SECRETS_READ_REQUEST,
   UNKNOWN_SERVICE_REQUEST,
@@ -355,10 +359,165 @@ describe("parseCapabilityReview", () => {
     const read = parseCapabilityReview(ctx({ message: REAL_SQL_SECRET_ROOT_READ }));
     expect(read.permissions[0]?.family).toBe("secret-namespace-list");
     expect(read.permissions[0]?.severity).toBe("sensitive");
+    expect(read.permissions[0]?.displayLabel).toBe(
+      "Secret data — (entire secrets namespace)",
+    );
+    expect(buildStatement(read.permissions[0]!).primaryText).toBe(
+      "Read all TinyCloud Secrets data",
+    );
+    expect(grantReachesSecretDataOrDecryption(read.permissions[0]!)).toBe(true);
 
     const write = parseCapabilityReview(ctx({ message: REAL_SQL_SECRET_ROOT_WRITE }));
     expect(write.permissions[0]?.family).toBe("secret-mutation");
     expect(write.permissions[0]?.severity).toBe("sensitive");
+  });
+
+  it("classifies SQL secret unknown verbs and path-scoped reads fail closed", () => {
+    const unknown = parseCapabilityReview(
+      ctx({ message: REAL_SQL_SECRET_ROOT_UNKNOWN }),
+    );
+    expect(unknown.permissions[0]?.family).toBe("secret-mutation");
+    expect(unknown.permissions[0]?.severity).toBe("sensitive");
+    expect(grantReachesSecretDataOrDecryption(unknown.permissions[0]!)).toBe(true);
+
+    const pathRead = parseCapabilityReview(
+      ctx({ message: REAL_SQL_SECRET_PATH_READ }),
+    );
+    expect(pathRead.permissions[0]?.family).toBe("secret-read");
+    expect(pathRead.permissions[0]?.severity).toBe("attention");
+    expect(grantReachesSecretDataOrDecryption(pathRead.permissions[0]!)).toBe(true);
+  });
+
+  it("keeps SQL secrets sensitive for cross-owner and unverified requesters", () => {
+    const crossOwner = parseCapabilityReview(
+      ctx({ message: REAL_SQL_CROSS_OWNER_SECRET_ROOT_READ }),
+    );
+    expect(crossOwner.permissions[0]?.family).toBe("secret-namespace-list");
+    expect(crossOwner.permissions[0]?.severity).toBe("sensitive");
+    expect(crossOwner.permissions[0]?.ownedBySelf).toBe(false);
+    expect(crossOwner.permissions[0]?.displayLabel).toContain("Cross-user");
+    expect(grantReachesSecretDataOrDecryption(crossOwner.permissions[0]!)).toBe(true);
+
+    const unverified = parseCapabilityReview(
+      ctx({
+        message: REAL_SQL_SECRET_ROOT_READ,
+        requesterAddress: null,
+        requesterVerified: false,
+      }),
+    );
+    expect(unverified.permissions[0]?.family).toBe("secret-namespace-list");
+    expect(unverified.permissions[0]?.severity).toBe("sensitive");
+    expect(unverified.permissions[0]?.ownedBySelf).toBe(null);
+    expect(unverified.permissions[0]?.displayLabel).toContain("Cross-user");
+  });
+
+  it("covers the KV/SQL authority matrix across secret reach and ownership", () => {
+    const ownershipModes = [
+      {
+        label: "same-owner verified",
+        requesterAddress: FIXTURE_META.address,
+        requesterVerified: true,
+        crossOwner: false,
+      },
+      {
+        label: "cross-owner verified",
+        requesterAddress: FIXTURE_META.address,
+        requesterVerified: true,
+        crossOwner: true,
+      },
+      {
+        label: "unverified requester",
+        requesterAddress: null,
+        requesterVerified: false,
+        crossOwner: true,
+      },
+    ];
+    const scopes = ["secrets-root", "secrets-path", "non-secrets"] as const;
+    const operations = ["read", "mutate", "unknown"] as const;
+
+    for (const service of ["tinycloud.kv", "tinycloud.sql"] as const) {
+      for (const scope of scopes) {
+        for (const ownership of ownershipModes) {
+          for (const operation of operations) {
+            const secret = scope !== "non-secrets";
+            const root = scope === "secrets-root";
+            const spaceOwner = ownership.crossOwner
+              ? FIXTURE_META.crossAppOwner
+              : FIXTURE_META.address;
+            const space = secret
+              ? `tinycloud:pkh:eip155:1:${spaceOwner}:secrets`
+              : `tinycloud:pkh:eip155:1:${spaceOwner}:default`;
+            const path = root
+              ? ""
+              : secret
+                ? service === "tinycloud.kv"
+                  ? "vault/secrets/API_KEY"
+                  : "tables"
+                : service === "tinycloud.kv"
+                  ? "app/items"
+                  : "tables";
+            const verb =
+              operation === "read"
+                ? service === "tinycloud.kv"
+                  ? "get"
+                  : "read"
+                : operation === "mutate"
+                  ? service === "tinycloud.kv"
+                    ? "put"
+                    : "write"
+                  : "rotate";
+            const classification = classifyRecapEntry({
+              service,
+              space,
+              path,
+              actions: [`${service}/${verb}`],
+              requesterAddress: ownership.requesterAddress,
+              requesterVerified: ownership.requesterVerified,
+            });
+            const expectedFamily = ownership.crossOwner
+              ? secret
+                ? root && operation === "read"
+                  ? "secret-namespace-list"
+                  : operation === "read"
+                    ? "secret-read"
+                    : "secret-mutation"
+                : "cross-app-data"
+              : secret
+                ? root && operation === "read"
+                  ? "secret-namespace-list"
+                  : operation === "read"
+                    ? "secret-read"
+                    : "secret-mutation"
+                : service === "tinycloud.kv"
+                  ? "own-app-data"
+                  : "bootstrap-sql";
+            const expectedSeverity = secret
+              ? root && operation === "read"
+                ? "sensitive"
+                : operation === "read"
+                  ? "attention"
+                  : "sensitive"
+              : ownership.crossOwner
+                ? "attention"
+                : operation === "mutate"
+                  ? "attention"
+                  : "standard";
+            expect(classification.family, `${service} ${scope} ${ownership.label} ${operation}`).toBe(
+              expectedFamily,
+            );
+            expect(
+              classifySeverityFromActions(classification.family, [
+                `${service}/${verb}`,
+              ], { service, space, path }),
+              `${service} ${scope} ${ownership.label} ${operation}`,
+            ).toBe(expectedSeverity);
+            if (ownership.crossOwner) {
+              expect(classification.displayLabel).toContain("Cross-user");
+            }
+          }
+        }
+      }
+    }
   });
 
   it("does not expose owner or path fragments in cross-user KV/SQL labels", () => {

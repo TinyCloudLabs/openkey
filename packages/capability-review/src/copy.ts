@@ -30,7 +30,7 @@ export const FAMILY_LABEL: Record<CapabilityFamily, string> = {
   "own-app-data": "Your app's data",
   "cross-app-data": "Cross-app data",
   "secret-read": "Named secret (read)",
-  "secret-namespace-list": "Secret names and metadata",
+  "secret-namespace-list": "Secret namespace access",
   "secret-mutation": "Named secret (mutate)",
   "encryption-key": "Encryption key material",
   "encryption-decrypt": "Decrypt encrypted content",

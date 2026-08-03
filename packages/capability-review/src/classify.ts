@@ -1,21 +1,24 @@
 // Deterministic capability classification.
 //
 // Rules (order matters):
-//   1. KV/SQL entries touching a KNOWN application-data path prefix get
+//   1. KV/SQL entries touching a secrets space get secret-reach families
+//      before ownership classification. Secret reach and cross-owner access
+//      are independent risk axes; the display label preserves both facts.
+//   2. KV/SQL entries touching a KNOWN application-data path prefix get
 //      classified as own-app-data (severity: standard for read, attention for
 //      mutation). This covers Listen, Chat, Feed, Cycle-health etc. so a
 //      request targeting a real app's data no longer collapses to a generic
 //      "bootstrap-kv" grant.
-//   2. Same as (1) but when the space owner does NOT match the signer, the
+//   3. Same as (2) but when the space owner does NOT match the signer, the
 //      family becomes cross-app-data (severity: attention). Cross-app grants
 //      are the primary "the app is reading OTHER people's data" case.
-//   3. KV entries with a secret path (vault/secrets or secrets prefixes) get
+//   4. KV entries with a secret path (vault/secrets or secrets prefixes) get
 //      the secret-read/mutation family.
-//   4. Otherwise, KV/SQL/capabilities stay as their bootstrap family — this
+//   5. Otherwise, KV/SQL/capabilities stay as their bootstrap family — this
 //      is the default for whole-space grants without a recognizable path.
-//   5. Named secret services split into read vs mutation.
-//   6. Encryption services split into key material vs decrypt.
-//   7. Unknown services fall back to the "unknown" family and elevate
+//   6. Named secret services split into read vs mutation.
+//   7. Encryption services split into key material vs decrypt.
+//   8. Unknown services fall back to the "unknown" family and elevate
 //      severity.
 //
 // The classifier NEVER lowers severity based on metadata. Metadata may enrich
@@ -206,6 +209,10 @@ function isSecretValueRead(actions: string[]): boolean {
   });
 }
 
+function withCrossUserSignal(isCrossApp: boolean, label: string): string {
+  return isCrossApp ? `Cross-user — ${label}` : label;
+}
+
 export function classifyRecapEntry(entry: RecapEntryLike): {
   family: CapabilityFamily;
   displayLabel: string;
@@ -259,7 +266,10 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     ) {
       return {
         family: "secret-mutation",
-        displayLabel: `Secrets namespace (mutate) — ${path || "(entire namespace)"}`,
+        displayLabel: withCrossUserSignal(
+          isCrossApp,
+          `Secrets namespace (mutate) — ${path || "(entire namespace)"}`,
+        ),
       };
     }
 
@@ -273,9 +283,12 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     ) {
       return {
         family: "secret-namespace-list",
-        displayLabel: isSecretValueRead(entry.actions)
-          ? "Secret data — (entire secrets namespace)"
-          : "Secret names and metadata — (entire secrets namespace)",
+        displayLabel: withCrossUserSignal(
+          isCrossApp,
+          isSecretValueRead(entry.actions)
+            ? "Secret data — (entire secrets namespace)"
+            : "Secret names and metadata — (entire secrets namespace)",
+        ),
       };
     }
 
@@ -292,16 +305,22 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
         .replace(/^secrets\/?/, "") || "(entire secrets namespace)";
       return {
         family: isMutation ? "secret-mutation" : "secret-read",
-        displayLabel: isMutation
-          ? `Named secret (mutate) — ${secretName}`
-          : `Named secret (read) — ${secretName}`,
+        displayLabel: withCrossUserSignal(
+          isCrossApp,
+          isMutation
+            ? `Named secret (mutate) — ${secretName}`
+            : `Named secret (read) — ${secretName}`,
+        ),
       };
     }
 
     if (isSecretsShapedSpace) {
       return {
         family: "secret-read",
-        displayLabel: `Secret data — ${path || "(entire secrets namespace)"}`,
+        displayLabel: withCrossUserSignal(
+          isCrossApp,
+          `Secret data — ${path || "(entire secrets namespace)"}`,
+        ),
       };
     }
     // Cross-app KV grant: reading/writing another user's KV space is
@@ -319,14 +338,6 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     return { family: "bootstrap-kv", displayLabel: "Key-value storage" };
   }
   if (BOOTSTRAP_SQL_SERVICES.has(service)) {
-    // Same cross-app / own-app logic for SQL grants — a SQL grant on
-    // another user's space is cross-app-data.
-    if (isCrossApp) {
-      return {
-        family: "cross-app-data",
-        displayLabel: "Cross-user SQL data",
-      };
-    }
     if (isSecretsSpace(space)) {
       const hasMutation = entry.actions.some((a) => {
         const verb = verbOf(a);
@@ -338,18 +349,36 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
       if (hasMutation || hasUnknownVerb) {
         return {
           family: "secret-mutation",
-          displayLabel: `Secrets data (mutate) — ${path || "(entire namespace)"}`,
+          displayLabel: withCrossUserSignal(
+            isCrossApp,
+            `Secrets data (mutate) — ${path || "(entire namespace)"}`,
+          ),
         };
       }
       if (isWholeSecretsNamespace(space, path)) {
         return {
           family: "secret-namespace-list",
-          displayLabel: "Secret data — (entire secrets namespace)",
+          displayLabel: withCrossUserSignal(
+            isCrossApp,
+            "Secret data — (entire secrets namespace)",
+          ),
         };
       }
       return {
         family: "secret-read",
-        displayLabel: `Secrets data — ${path || "(entire namespace)"}`,
+        displayLabel: withCrossUserSignal(
+          isCrossApp,
+          `Secrets data — ${path || "(entire namespace)"}`,
+        ),
+      };
+    }
+    // Cross-app / own-app logic for non-secrets SQL grants. This follows the
+    // secrets branch so cross-owner secret reach cannot be downgraded to the
+    // attention-level cross-app family.
+    if (isCrossApp) {
+      return {
+        family: "cross-app-data",
+        displayLabel: "Cross-user SQL data",
       };
     }
     return { family: "bootstrap-sql", displayLabel: "SQL database" };
