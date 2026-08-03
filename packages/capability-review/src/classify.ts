@@ -244,6 +244,22 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     spaceOwner !== null &&
     (ownershipAxis === null || spaceOwner !== ownershipAxis);
 
+  // KV and SQL authority inside a TinyCloud secrets space reaches secret
+  // data regardless of requester ownership. Classify it as a secret family
+  // before the generic cross-app branches so the default presentation is
+  // sensitive. The origin-bound app-scope proof remains the sole place that
+  // may later present an exact, manifest-declared KV secret as standard.
+  if (
+    isSecretsSpace(space) &&
+    (BOOTSTRAP_KV_SERVICES.has(service) || BOOTSTRAP_SQL_SERVICES.has(service))
+  ) {
+    const isMutation = entry.actions.some((a) => MUTATION_VERBS.has(verbOf(a)));
+    return {
+      family: isMutation ? "secret-mutation" : "secret-read",
+      displayLabel: `${isMutation ? "Secret data (mutate)" : "Secret data (read)"} — ${describeName(path)}`,
+    };
+  }
+
   // KV entries with a secret path are classified as secret-read/mutation,
   // not generic bootstrap-kv. Real CLI secret requests use tinycloud.kv with
   // paths like "vault/secrets/DEPLOY_KEY" or "secrets/MY_SECRET".
@@ -477,13 +493,6 @@ export function classifySeverityFromActions(
     case "cross-app-data":
       return "attention";
     case "secret-read":
-      return scope &&
-        (BOOTSTRAP_KV_SERVICES.has(scope.service) ||
-          BOOTSTRAP_SQL_SERVICES.has(scope.service)) &&
-        isSecretsSpace(scope.space) &&
-        isWholeSecretsNamespace(scope.space, scope.path)
-        ? "sensitive"
-        : "attention";
     case "secret-namespace-list":
       return "sensitive";
     case "secret-mutation":

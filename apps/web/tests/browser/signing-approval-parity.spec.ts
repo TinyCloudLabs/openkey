@@ -265,14 +265,44 @@ test.describe('signing-approval browser parity — production adapters', () => {
       await expect(dialog).toContainText('Authorize capabilities');
       await expect(dialog).toContainText('Read and update data outside this app');
       await expect(dialog).toContainText('Check your TinyCloud account permissions');
-      await expect(page.locator('[data-parity-harness] .summary-statement')).toHaveCount(7);
-      await expect(dialog).toContainText('3 exact grants · tinycloud.capabilities');
-      await expect(dialog).toContainText('6 exact grants · tinycloud.kv, tinycloud.sql');
+      const summary = page.locator('[data-parity-harness] .summary');
+      await expect(summary.locator('.summary-statement')).toHaveCount(10);
+      await expect(summary).not.toContainText(model.requester.displayName);
+      await expect(summary).not.toContainText('exact grant');
+      await expect(summary).not.toContainText('service');
+      await expect(summary).not.toContainText('tinycloud:pkh:');
+      await expect(summary.locator('.summary-statement').last()).toContainText('Perform ');
       const details = page.locator('details.advanced-details').first();
-      await details.locator('summary').click();
-      await expect(details.locator('summary')).toHaveText('Advanced details');
+      await details.locator(':scope > summary').click();
+      await expect(details.locator(':scope > summary')).toHaveText('Advanced details');
+      await expect(details.getByRole('button', { name: 'Edit' })).toBeVisible();
+      const requesterDetails = details.locator('details.request-details');
+      await expect(requesterDetails).toHaveAttribute('open', '');
+      await expect(details.locator(':scope > .request-details').first()).toBeVisible();
+      const standardPermissions = details.locator(
+        'details.severity-bucket[data-severity="standard"]',
+      );
+      await expect(standardPermissions).not.toHaveAttribute('open', '');
       await expect(page.getByRole('button', { name: 'Copy text' })).toBeVisible();
       await expect(page.locator('[data-parity-harness] .grant')).toHaveCount(17);
+      await expect(details.locator('.grant-severity[data-severity="sensitive"]')).toHaveCount(4);
+      await expect(details.locator('.grant-severity[data-severity="attention"]')).toHaveCount(0);
+      await expect(details.locator('.grant-severity[data-severity="standard"]')).toHaveCount(0);
+
+      await details.getByRole('button', { name: 'Edit' }).click();
+      const editableActions = details.locator('input[type="checkbox"]:not(:disabled)');
+      expect(await editableActions.count()).toBeGreaterThan(0);
+      const inlineDirection = await details.locator('.action-list').first().evaluate(
+        (element) => getComputedStyle(element).flexDirection,
+      );
+      expect(inlineDirection).toBe('row');
+      await editableActions.first().uncheck();
+      await expect(details.getByText('Not granting:', { exact: false }).first()).toBeVisible();
+      await expect(details).not.toContainText('Selected');
+      await expect(details).not.toContainText('Unselected');
+      await details.getByRole('button', { name: 'Reset' }).click();
+      await expect(editableActions.first()).toBeChecked();
+
       await page.getByRole('button', { name: 'Copy text' }).click();
       await expect
         .poll(async () => page.evaluate(() => (window as any).__openkeyClipboardText ?? null))
@@ -411,6 +441,12 @@ test.describe('signing-approval browser parity — production adapters', () => {
       // Enter editing mode by real-clicking the Edit button.
       const edit = page.locator('[data-parity-harness] button', { hasText: 'Edit' }).first();
       await edit.click();
+      const standardPermissions = page.locator(
+        '[data-parity-harness] details.severity-bucket[data-severity="standard"]',
+      );
+      if ((await standardPermissions.count()) > 0) {
+        await standardPermissions.locator(':scope > summary').click();
+      }
       // The checkbox appears once editing is on.
       const boxes = page.locator('[data-parity-harness] input[type="checkbox"]');
       await expect(boxes.first()).toBeVisible();
@@ -482,7 +518,7 @@ test.describe('signing-approval browser parity — production adapters', () => {
       });
 
       await expect(page.locator('details.advanced-details')).toBeVisible();
-      await page.locator('details.advanced-details summary').click();
+      await page.locator('details.advanced-details > summary').click();
       await expect(page.getByText('Exact grants')).toBeVisible();
       await expect(page.getByRole('button', { name: 'Copy text' })).toBeVisible();
       await expect(page.getByText('server-prepared-exact-bytes')).toBeVisible();

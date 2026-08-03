@@ -257,7 +257,7 @@ describe("parseCapabilityReview", () => {
     const readGrant = readOnly.permissions.find(
       (p) => p.family === "secret-read",
     );
-    expect(readGrant?.severity).toBe("attention");
+    expect(readGrant?.severity).toBe("sensitive");
 
     const mutable = parseCapabilityReview(
       ctx({ message: SECRETS_MUTATION_REQUEST }),
@@ -277,7 +277,7 @@ describe("parseCapabilityReview", () => {
       (p) => p.family === "secret-read",
     );
     expect(secretGrant).toBeTruthy();
-    expect(secretGrant?.severity).toBe("attention");
+    expect(secretGrant?.severity).toBe("sensitive");
     // Must NOT be classified as generic bootstrap-kv
     const bootstrapGrant = model.permissions.find(
       (p) => p.family === "bootstrap-kv",
