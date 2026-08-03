@@ -27,6 +27,8 @@
 // No DOM state is mutated by this spec to imitate an event.
 
 import { test, expect, type Page } from '@playwright/test';
+import { parseCapabilityReview } from '../../../../packages/capability-review/src/index';
+import { EXPLORER_PERMISSION_POPUP_REQUEST } from '../../../../packages/capability-review/test/fixtures/index';
 
 type Surface = 'cli' | 'popup' | 'iframe';
 
@@ -73,7 +75,7 @@ function benignFixtureModel(): any {
     },
     expiry: '2026-08-07T00:00:00.000Z',
     immutable: null,
-    metadataTrust: { status: 'unsigned' },
+    metadataTrust: { status: 'unsigned', reason: 'no manifest supplied' },
     permissions: [
       {
         id: `tinycloud.kv\x00${space}\x00`,
@@ -163,9 +165,48 @@ function fixtureInitialSelection(model: any): string[] {
   return out;
 }
 
+function exactRecapFixtureModel(): any {
+  return parseCapabilityReview({
+    message: EXPLORER_PERMISSION_POPUP_REQUEST,
+    editable: true,
+    metadataTrust: { status: 'unsigned', reason: 'no manifest supplied' },
+    reason: { text: '', source: 'none' },
+    requester: {
+      displayName: 'explorer.tinycloud.xyz',
+      verifiedOrigin: 'https://explorer.tinycloud.xyz',
+      appId: null,
+      manifestName: null,
+      manifestNameProvenance: 'none',
+      manifestId: null,
+      manifestIdProvenance: 'none',
+      manifestDigest: null,
+      domainWarning: false,
+      originWarning: false,
+    },
+    signer: {
+      label: 'Managed key',
+      address: '0x1111111111111111111111111111111111111111',
+      chainId: 1,
+      provenance: 'managed',
+    },
+  });
+}
+
 async function loadHarness(page: Page, cfg: HarnessConfig) {
   // Seed globals BEFORE navigation so the harness's onMount reads them.
   await page.addInitScript(({ cfg }) => {
+    try {
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: {
+          writeText: async (text: string) => {
+            (window as any).__openkeyClipboardText = text;
+          },
+        },
+      });
+    } catch {
+      // Older test environments may already expose a clipboard object.
+    }
     (window as any).__openkeyParityHarness = {
       surface: cfg.surface,
       model: cfg.model,
@@ -207,6 +248,42 @@ test.describe('signing-approval browser parity — production adapters', () => {
       const dialog = page.locator('[data-parity-harness] [role="dialog"]');
       await expect(dialog).toBeVisible();
       await expect(dialog).toHaveAttribute('aria-modal', 'true');
+    });
+
+    test(`[${surface}] exact ReCap fixture stays readable in a narrow popup viewport`, async ({ page }) => {
+      await page.setViewportSize({ width: 400, height: 600 });
+      const model = exactRecapFixtureModel();
+      await loadHarness(page, {
+        surface,
+        model,
+        initialSelection: fixtureInitialSelection(model),
+        canUseAuthorizeSign: surface === 'cli' ? undefined : true,
+      });
+
+      const dialog = page.locator('[data-parity-harness] [role="dialog"]');
+      await expect(dialog).toBeVisible();
+      await expect(dialog).toContainText('Authorize capabilities');
+      await expect(dialog).toContainText('Read and update data outside this app');
+      await expect(dialog).toContainText('Check your TinyCloud account permissions');
+      await expect(page.locator('[data-parity-harness] .summary-statement')).toHaveCount(7);
+      await expect(dialog).toContainText('3 exact grants · tinycloud.capabilities');
+      await expect(dialog).toContainText('6 exact grants · tinycloud.kv, tinycloud.sql');
+      const details = page.locator('details.advanced-details').first();
+      await details.locator('summary').click();
+      await expect(details.locator('summary')).toHaveText('Advanced details');
+      await expect(page.getByRole('button', { name: 'Copy text' })).toBeVisible();
+      await expect(page.locator('[data-parity-harness] .grant')).toHaveCount(17);
+      await page.getByRole('button', { name: 'Copy text' }).click();
+      await expect
+        .poll(async () => page.evaluate(() => (window as any).__openkeyClipboardText ?? null))
+        .toBe(model.rawMessage);
+      await expect(page.getByRole('button', { name: 'Copy text' })).toHaveText('Copied');
+
+      const noOverflow = await page.evaluate(() => {
+        const doc = document.documentElement;
+        return doc.scrollWidth <= doc.clientWidth;
+      });
+      expect(noOverflow).toBe(true);
     });
 
     test(`[${surface}] Tab moves focus through interactive controls in DOM order`, async ({ page }) => {

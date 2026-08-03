@@ -66,6 +66,11 @@
 import { afterAll, describe, expect, test } from 'bun:test';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseCapabilityReview } from '../../../../packages/capability-review/src/index';
+import {
+  FIXTURE_META,
+  REAL_RECAP_WITH_PATH,
+} from '../../../../packages/capability-review/test/fixtures/index';
 
 // Install happy-dom BEFORE importing the Svelte client runtime (which
 // touches document/HTMLElement at import time).
@@ -174,13 +179,18 @@ async function compileSvelteFile(libRelPath: string, name: string): Promise<stri
   //   .ts/.js → point at on-disk source URL (Bun executes as-is)
   //   plain name (no ext, e.g. "./signing-adapter-types") → point at
   //   the source URL, letting Bun resolve extension.
-  const importRe = /from\s+['"](\$lib\/[^'"]+|\.\/[^'"]+)['"]/g;
+  const importRe = /from\s+['"]([^'"]+)['"]/g;
   let match: RegExpExecArray | null;
   while ((match = importRe.exec(compiled.js.code)) !== null) {
     parts.push(compiled.js.code.slice(cursor, match.index));
     const spec = match[1]!;
     let targetUrl: string;
-    if (spec.startsWith('$lib/')) {
+    if (spec === '@openkey/capability-review' || spec.startsWith('@openkey/capability-review/')) {
+      const rel = spec === '@openkey/capability-review'
+        ? 'index.ts'
+        : `.${spec.slice('@openkey/capability-review'.length)}`;
+      targetUrl = pathToFileURL(join(WEB_ROOT, '..', '..', 'packages', 'capability-review', 'src', rel)).href;
+    } else if (spec.startsWith('$lib/')) {
       const rel = spec.slice('$lib/'.length);
       if (rel.endsWith('.svelte')) {
         const childName = rel
@@ -190,12 +200,14 @@ async function compileSvelteFile(libRelPath: string, name: string): Promise<stri
       } else {
         targetUrl = pathToFileURL(join(WEB_ROOT, 'src/lib', rel)).href;
       }
-    } else {
+    } else if (spec.startsWith('.')) {
       // Relative import from within the current file's directory.
       const currentDir = dirname(join(WEB_ROOT, 'src/lib', libRelPath));
       let abs = join(currentDir, spec);
       // Bun-executable — TS files resolve without extension.
       targetUrl = pathToFileURL(abs).href;
+    } else {
+      targetUrl = spec;
     }
     parts.push(`from '${targetUrl}'`);
     cursor = match.index + match[0].length;
@@ -404,6 +416,35 @@ function encryptionFixtureModel(): any {
     },
   ];
   return model;
+}
+
+function realRecapFixtureModel(): any {
+  return parseCapabilityReview({
+    message: REAL_RECAP_WITH_PATH,
+    signer: {
+      label: 'Managed key',
+      address: FIXTURE_META.address,
+      chainId: FIXTURE_META.chainId,
+      provenance: 'managed',
+    },
+    editable: true,
+    metadataTrust: { status: 'unsigned', reason: 'no manifest supplied' },
+    reason: { text: '', source: 'none' },
+    requester: {
+      displayName: 'cli.tinycloud.xyz',
+      verifiedOrigin: 'https://cli.tinycloud.xyz',
+      appId: null,
+      manifestName: null,
+      manifestNameProvenance: 'none',
+      manifestId: null,
+      manifestIdProvenance: 'none',
+      manifestDigest: null,
+      domainWarning: false,
+      originWarning: false,
+    },
+    requesterAddress: null,
+    requesterVerified: false,
+  }) as any;
 }
 
 function fixtureSelection(model: any): Set<string> {
@@ -1007,6 +1048,30 @@ describe('signing-approval mounted parity across production surface adapters (So
       expect(details?.textContent).toContain('decrypt');
       handle.unmount();
     }
+  });
+
+  test('popup surfaces render the exact path-scoped ReCap fixture with the split grant-path layout', async () => {
+    const widgetBindings = surfaceBindings.filter((b) => b.kind === 'widget');
+    const projections: SemanticNode[][] = [];
+    for (const binding of widgetBindings) {
+      const model = realRecapFixtureModel();
+      const selection = fixtureSelection(model);
+      const built = propsForSurface(binding, model, selection);
+      const handle = await mountSurface(binding, built.props);
+
+      expect(textIncludes(handle.container, 'Exact grants')).toBe(true);
+
+      const grantPath = handle.container.querySelector('.grant-path');
+      expect(grantPath).toBeTruthy();
+      expect(grantPath?.querySelector('.grant-service')?.textContent).toBe('tinycloud.kv');
+      expect(grantPath?.querySelector('.grant-target')?.textContent).toContain(
+        'tinycloud:pkh:eip155:1:0x1111111111111111111111111111111111111111:default/xyz.tinycloud.listen/conversations',
+      );
+
+      projections.push(collectSemantic(handle.container));
+      handle.unmount();
+    }
+    expect(projections[1]).toEqual(projections[0]);
   });
 
   test('legacy messages use shared approval and malformed ReCaps fail closed', async () => {
