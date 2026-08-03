@@ -124,6 +124,25 @@ export interface CapabilityGrant {
     secretName: string;
     scope?: string;
   };
+  /**
+   * Blocker 4 (Defect 2): true when a grant STRUCTURALLY looks like an
+   * attempt at an app-scoped secret (KV service on a secrets-shaped space
+   * with a secret-family classification) but FAILED the exact-resource
+   * proof — for example a cross-signer secrets space, a non-canonical
+   * vault path, or a mismatched declared entry. `annotateAppScopedGrants`
+   * sets this flag to force `buildStatement` to render the literal
+   * fallback copy (raw service/resource/actions) instead of the friendly
+   * "View secrets stored in your vault" wording the KV secrets branch
+   * would otherwise emit. This closes the near-miss gap where a grant
+   * that never earned an app-scope label still inherited friendly
+   * secret-family copy at attention severity.
+   *
+   * The flag is a demote-only signal: it never lowers severity, and
+   * `annotateAppScopedGrants` always pairs it with an explicit
+   * `severity = "sensitive"` reset so the operator sees the elevated
+   * severity next to the literal fallback copy.
+   */
+  appScopeNearMiss?: boolean;
   /** Actions granted for this resource. */
   actions: CapabilityAction[];
 }

@@ -31,7 +31,11 @@
 // metadata helpers still cannot lower severity (see metadata.ts), and this
 // helper never changes the authority-bearing actions or resource.
 
-import type { CapabilityGrant, CapabilityReviewModel } from "./model.js";
+import type {
+  CapabilityGrant,
+  CapabilityReviewModel,
+  SignerInfo,
+} from "./model.js";
 import { isVerified } from "./metadata.js";
 
 /**
@@ -45,10 +49,14 @@ export const KV_SECRET_SERVICES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * True when `space` identifies the structurally-named secrets space.
- * Mirrors the private isSecretsSqlSpace predicate in statements.ts so that
- * the annotation gate and the structural counting predicate use one shared
- * definition (imported by statements.ts).
+ * Loose structural predicate: true when `space` looks like ANY secrets space.
+ *
+ * Kept as the shared "structural counting" predicate imported by statements.ts
+ * so `grantReachesSecretDataOrDecryption` and other structural surfaces treat
+ * every secrets-shaped space as reaching secret data. This predicate is NOT
+ * sufficient by itself for the app-scoped-secret proof gate — a caller cannot
+ * be trusted just because they target a secrets-shaped space they may not
+ * even own. Use `isSignerOwnedSecretsSpace` for the exact ownership proof.
  */
 export function isSecretsSpace(space: string): boolean {
   return (
@@ -56,6 +64,56 @@ export function isSecretsSpace(space: string): boolean {
     /:secrets(?:\/|$)/.test(space) ||
     /:secrets:/.test(space)
   );
+}
+
+/**
+ * Blocker 4 (Defect 1): exact manifest-derived secrets-space proof.
+ *
+ * The real js-sdk secrets resolver
+ * (`packages/sdk-services/src/secrets/paths.ts`) always targets a KV path
+ * inside the SIGNER's own secrets space:
+ *
+ *   tinycloud:pkh:eip155:<chainId>:<signerAddress>:secrets
+ *
+ * The pre-fix `isSecretsSpace` was purely a shape check — it accepted the
+ * literal string `"secrets"` OR any space whose path contained `:secrets`.
+ * That would happily accept a probe signed by 0x1111…1111 targeting a
+ * space owned by 0x2222…2222, since the string still contains `:secrets`.
+ * `annotateAppScopedGrants` would then demote the cross-signer grant to
+ * standard severity, breaking the app-scope trust rule which requires the
+ * signed grant's space to be the same one the manifest declaration
+ * describes.
+ *
+ * `expectedSignerSecretsSpace` returns the canonical space string derived
+ * from a signer identity. It always emits an EIP-55-independent form: the
+ * address hex is lowercased, matching the canonical PKH form the js-sdk
+ * spaceId helper produces. Space matching is likewise done
+ * case-insensitively on the hex so both `0xABCD…` and `0xabcd…` variants
+ * resolve to the same identity.
+ */
+export function expectedSignerSecretsSpace(signer: {
+  address: string;
+  chainId: number;
+}): string {
+  return `tinycloud:pkh:eip155:${signer.chainId}:${signer.address.toLowerCase()}:secrets`;
+}
+
+/**
+ * Blocker 4 (Defect 1): true only when `space` is the EXACT signer-owned
+ * canonical secrets space derived from `signer.address` + `signer.chainId`.
+ *
+ * A cross-signer secrets space (probe signed by A targeting B:secrets)
+ * fails this predicate even though it passes the loose `isSecretsSpace`
+ * shape check. This is the single predicate the app-scoped-secret gate
+ * uses to prove ownership before allowing any sensitive -> standard
+ * presentation transition; matching is case-insensitive on the address
+ * hex so the widget accepts both EIP-55 and lowercased address forms.
+ */
+export function isSignerOwnedSecretsSpace(
+  space: string,
+  signer: { address: string; chainId: number },
+): boolean {
+  return space.toLowerCase() === expectedSignerSecretsSpace(signer);
 }
 
 // Secret-name and scope validation mirrors js-sdk
@@ -124,12 +182,56 @@ export function annotateAppScopedGrants(
     return model;
   }
   const secrets = declaredAppScope.secrets ?? [];
-  if (secrets.length === 0) return model;
+  const signer = model.signer;
   const permissions = model.permissions.map((grant): CapabilityGrant => {
-    // Only KV/secret-shaped grants can be app-scoped secrets.
+    // Only KV/secret-shaped grants can be app-scoped secrets. Anything
+    // outside the secret family stays exactly as classified — those
+    // paths never render "app secret" copy in the first place.
     if (grant.family !== "secret-read" && grant.family !== "secret-mutation") {
       return grant;
     }
+    // Blocker 4 (Defect 2): near-miss classification.
+    //
+    // Any KV secret-family grant on a secrets-shaped space is
+    // structurally attempting to reach app-scoped secret data. If the
+    // exact-resource proof below rejects it (unknown verb, wrong
+    // service, wrong owner space, non-canonical path, no matching
+    // declaration, unrecognized declared verb, unscoped declaration,
+    // …), the grant must NOT keep the friendly "View secrets stored
+    // in your vault" copy the KV secrets branch of `buildStatement`
+    // would emit — that copy dresses the ability up in reassuring
+    // secret-family framing without the origin-bound proof that would
+    // justify it. Instead, force the operator to see the raw literal
+    // fallback (service + resource + actions).
+    //
+    // The near-miss stamp is a demote-only signal: it always co-occurs
+    // with an explicit `severity = "sensitive"` reset so an attention-
+    // level `secret-read` grant is also elevated to sensitive whenever
+    // it fails the proof. `metadataLabel` is cleared so no caller-
+    // supplied label can leak through.
+    const nearMissMark = (target: CapabilityGrant): CapabilityGrant => {
+      // Only KV secret-family grants (the outer `if` already restricts
+      // this) get the near-miss stamp. `family === "secret-read" |
+      // "secret-mutation"` on a KV service means the classifier already
+      // recognized this as an attempt to reach secret data — every
+      // rejection below therefore represents a near-miss on the
+      // app-scoped-secret proof, and the operator must see the raw
+      // ability + resource instead of the friendly KV secrets copy.
+      //
+      // Non-KV secret grants (family === "secret-read" via the
+      // tinycloud.secrets service branch of the classifier) are not
+      // stamped: buildStatement's SECRETS_SERVICES branch has its own
+      // recognized-actions allowlist and does not emit vault-shaped
+      // friendly copy for them.
+      if (!KV_SECRET_SERVICES.has(target.service)) return target;
+      return {
+        ...target,
+        severity: "sensitive",
+        metadataLabel: null,
+        appScopeNearMiss: true,
+      };
+    };
+
     // Sol MAJOR (this iteration): before doing ANY app-scope match, fail
     // closed on unknown action verbs. `annotateAppScopedGrants` transitions
     // a grant from sensitive -> standard AND stamps `appScopedSecret` on
@@ -143,25 +245,34 @@ export function annotateAppScopedGrants(
     //
     // The canonical recognized verbs are exactly those `normalizeSecretVerb`
     // maps to (`get` / `put` / `del`). Any grant verb whose normalized form
-    // is NOT one of these leaves the grant untouched (fail closed: retains
-    // its structural secret-mutation/sensitive classification and
+    // is NOT one of these fails the proof (fail closed: near-miss stamp so
     // `buildStatement` renders the literal fallback).
     const allVerbsRecognized = grant.actions.every((a) =>
       RECOGNIZED_APP_SCOPE_SECRET_VERBS.has(
         normalizeSecretVerb(a.verb.toLowerCase()),
       ),
     );
-    if (!allVerbsRecognized) return grant;
-    // Blocker 4: exact-resource proof. Only KV service grants on the secrets
-    // space can demote. tinycloud.secrets service grants, non-secrets spaces,
-    // and non-canonical paths all fail closed here, before any path matching.
-    if (!KV_SECRET_SERVICES.has(grant.service) || !isSecretsSpace(grant.space)) {
-      return grant;
+    if (!allVerbsRecognized) return nearMissMark(grant);
+    // Blocker 4 (Defect 1): exact-resource proof. Only KV service grants
+    // on the SIGNER's own canonical secrets space
+    // (`tinycloud:pkh:eip155:<chainId>:<address>:secrets`) can demote.
+    //   - `tinycloud.secrets` service grants (a different surface) fail here.
+    //   - Cross-signer secrets spaces fail here (probe signed by A targeting
+    //     B:secrets is rejected — the pre-fix loose `isSecretsSpace` shape
+    //     check let that through).
+    //   - Non-secrets spaces fail here.
+    //
+    // Only the check below is authoritative for ownership; the loose
+    // `isSecretsSpace` predicate is used only for near-miss stamping.
+    if (!KV_SECRET_SERVICES.has(grant.service)) return nearMissMark(grant);
+    if (!isSignerOwnedSecretsSpace(grant.space, signer)) {
+      return nearMissMark(grant);
     }
-    const match = findMatchingDeclaredSecret(grant, secrets);
     // Only a genuinely scoped secret can receive app-scoped/normal
     // presentation. Global app-declared secrets remain sensitive.
-    if (!match?.scope) return grant;
+    if (secrets.length === 0) return nearMissMark(grant);
+    const match = findMatchingDeclaredSecret(grant, secrets);
+    if (!match?.scope) return nearMissMark(grant);
     // Also fail closed if the DECLARED entry carries any verb outside the
     // recognized set. A manifest that declares `peek` for a secret cannot
     // be used to promote a matching grant from sensitive to standard, even
@@ -171,10 +282,11 @@ export function annotateAppScopedGrants(
         normalizeSecretVerb(a.toLowerCase()),
       ),
     );
-    if (!allDeclaredVerbsRecognized) return grant;
+    if (!allDeclaredVerbsRecognized) return nearMissMark(grant);
     // This is the one allowed sensitive -> standard presentation transition:
     // the server independently origin-bound the manifest and this pure gate
-    // matched its exact secret/scope/action declaration to the signed grant.
+    // matched its exact secret/scope/action declaration to the signed grant
+    // that also sits inside the signer's own canonical secrets space.
     // No authority is added or changed.
     const label = `Secret: ${match.secretName} · Scope: ${match.scope}`;
     return {

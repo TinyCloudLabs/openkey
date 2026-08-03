@@ -302,6 +302,22 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
   const verbs = classifyVerbs(abilityStrings);
   const resource = resourceOf(grant);
 
+  // Blocker 4 (Defect 2): near-miss short-circuit.
+  //
+  // `annotateAppScopedGrants` stamps `appScopeNearMiss` on any KV secret
+  // grant that structurally looked like an app-scoped secret attempt but
+  // failed the exact-resource proof (cross-signer secrets space, non-
+  // canonical vault path, no matching declaration, unknown verb, …).
+  // Those grants MUST render the literal fallback so the operator sees
+  // the raw ability + resource — the friendly "View secrets stored in
+  // your vault" / "Manage secret variables" copy the KV secret branches
+  // below would emit would dress the ability up in reassuring copy that
+  // the failed proof did not earn. Fail closed here, before any
+  // family/service-shaped branch fires.
+  if (grant.appScopeNearMiss) {
+    return fallbackStatement(grant);
+  }
+
   // An app-scoped secret reaches this branch only after the exact,
   // origin-bound manifest proof in app-scope.ts. The secret name is therefore
   // structural review state rather than an unverified friendly label.
