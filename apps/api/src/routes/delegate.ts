@@ -981,6 +981,22 @@ delegateRouter.post('/', async (c) => {
     permissions?: unknown;
     expiry?: unknown;
     reason?: unknown;
+    /**
+     * Blocker 1: versioned managed-approval path. When supplied together
+     * with `authorizationContextToken` and `selectedActionIds`, the
+     * server signs the SIWE bytes that were bound at /prepare instead of
+     * regenerating a fresh preview. The regenerated-preview path is
+     * insecure because the widget shows the /prepare preview but the
+     * caller-echoed re-prepare produces different issuedAt/expirationTime
+     * bytes, so the user would sign different bytes from the ones the
+     * approval UI displayed.
+     *
+     * Token-less callers keep the legacy behavior (regenerate and sign).
+     */
+    prepared?: any;
+    authorizationContextToken?: string;
+    selectedActionIds?: unknown;
+    protocolVersion?: number;
   }>();
 
   if (!body.keyId || !body.jwk || !body.host) {
@@ -1022,6 +1038,261 @@ delegateRouter.post('/', async (c) => {
   } catch (err) {
     return c.json(delegateErrorResponse(err, 'Invalid expiry', 'invalid_expiry'), 400);
   }
+
+  // Blocker 1: versioned managed-approval path. When the widget forwards
+  // the /prepare token AND the exact preview bytes, we sign the STORED
+  // originalSiwe bytes byte-for-byte. Any drift between the preview and
+  // the caller-echoed prepared block is a hard fail — the whole reason
+  // this branch exists is to guarantee "the user signed the exact bytes
+  // the approval UI showed them". We never trust caller-echoed bytes as
+  // the payload; they are only used as the digest cross-check.
+  const isVersionedCaller =
+    typeof body.protocolVersion === 'number' && body.protocolVersion >= 1;
+  const hasToken =
+    typeof body.authorizationContextToken === 'string' &&
+    body.authorizationContextToken.length > 0;
+  if (isVersionedCaller && !hasToken) {
+    return c.json(
+      { error: 'protocolVersion >= 1 requires an authorizationContextToken', code: 'missing_authorization_context_token' },
+      400,
+    );
+  }
+
+  if (hasToken) {
+    const token = body.authorizationContextToken as string;
+    if (!body.prepared || typeof body.prepared !== 'object') {
+      return c.json(
+        { error: 'prepared block is required when authorizationContextToken is present', code: 'missing_prepared' },
+        400,
+      );
+    }
+    if (
+      !Array.isArray(body.selectedActionIds) ||
+      body.selectedActionIds.some((id) => typeof id !== 'string')
+    ) {
+      return c.json(
+        { error: 'selectedActionIds must be a string[] when authorizationContextToken is provided', code: 'invalid_selected_action_ids' },
+        400,
+      );
+    }
+
+    // Peek the token so we can pull the server-bound originalSiwe. Any
+    // downstream mismatch will fail consume; peek itself is non-consuming
+    // so a caller cannot use it to burn the token by sending garbage.
+    const preview = peekAuthorizationContext(token);
+    if (!preview.ok) {
+      return c.json({ error: preview.message, code: preview.error }, 400);
+    }
+    const bound = preview.value;
+
+    // The stored context MUST have bound originalSiwe. Older /prepare
+    // invocations that predate Blocker 1 did not set this field — those
+    // tokens are unusable for the managed signing path and must retry.
+    if (!bound.originalSiwe) {
+      return c.json(
+        {
+          error: 'Authorization context has no bound originalSiwe — /prepare must be called again',
+          code: 'authorization_context_missing_original_siwe',
+        },
+        400,
+      );
+    }
+
+    // Structural cross-checks against the stored context. These duplicate
+    // consumeAuthorizationContext's checks, but running them here surfaces
+    // clearer error codes and lets us fail before we do any real work.
+    if (bound.keyAddress !== address.toLowerCase()) {
+      return c.json(
+        {
+          error: 'Bound keyAddress does not match the supplied keyId',
+          code: 'key-mismatch',
+        },
+        400,
+      );
+    }
+    if (bound.host !== host) {
+      return c.json(
+        { error: 'Host does not match the prepared context.', code: 'host-mismatch' },
+        400,
+      );
+    }
+
+    // The whole point of Blocker 1: sign the STORED bytes. Verify that
+    // the caller-echoed prepared.siwe matches byte-for-byte. Signing the
+    // stored bytes protects us from a compromised widget re-preparing
+    // the SIWE; the caller-echo check surfaces the mismatch to the CLI
+    // so a compromised widget cannot silently return a session bound to
+    // different bytes than the ones the user reviewed.
+    const echoedSiwe = typeof body.prepared.siwe === 'string' ? body.prepared.siwe : '';
+    if (echoedSiwe !== bound.originalSiwe) {
+      return c.json(
+        {
+          error: 'prepared.siwe does not match the SIWE bound at /prepare — refusing to sign',
+          code: 'prepared_siwe_mismatch',
+        },
+        400,
+      );
+    }
+
+    // Parse the bound SIWE, enforce baseline subset and required actions
+    // against it (defense in depth — the /prepare handler already digested
+    // the baseline abilities, but running these here catches store
+    // corruption or any future change that widens the /prepare surface).
+    let preparedEntries: RecapEntry[];
+    try {
+      preparedEntries = parsePreparedRecap(bound.originalSiwe);
+    } catch (e) {
+      return c.json(
+        { error: e instanceof Error ? e.message : 'Bound SIWE could not be re-parsed', code: 'bound_siwe_parse_failed' },
+        500,
+      );
+    }
+    try {
+      const baseline = permissions
+        ? abilitiesFromPermissions(permissions)
+        : DEFAULT_ABILITIES;
+      assertBaselineSubset(preparedEntries, baseline);
+      assertRequiredActions(preparedEntries);
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : 'Invalid delegation' }, 400);
+    }
+
+    // Sol MAJOR-5: derive the EXACT set of action IDs encoded in the
+    // BOUND (i.e. server-authoritative) SIWE. The caller's
+    // selectedActionIds must EXACTLY match this set — a subset would
+    // mean the widget claimed narrower authority than it will sign; a
+    // superset would mean the widget claimed capabilities not in the
+    // signed bytes.
+    const siweEncodedActionIds = new Set<string>();
+    for (const entry of preparedEntries) {
+      for (const action of entry.actions) {
+        siweEncodedActionIds.add(computeActionKey(entry, action));
+      }
+    }
+    const clientSelected = new Set(body.selectedActionIds as string[]);
+    const missingFromSelection: string[] = [];
+    for (const id of siweEncodedActionIds) {
+      if (!clientSelected.has(id)) missingFromSelection.push(id);
+    }
+    if (missingFromSelection.length > 0) {
+      return c.json(
+        {
+          error: `selectedActionIds is missing entries that appear in the signed SIWE: ${missingFromSelection.slice(0, 5).join(', ')}${missingFromSelection.length > 5 ? ` (and ${missingFromSelection.length - 5} more)` : ''}`,
+          code: 'selected_actions_missing_siwe_entries',
+        },
+        400,
+      );
+    }
+    const extrasInSelection: string[] = [];
+    for (const id of clientSelected) {
+      if (!siweEncodedActionIds.has(id)) extrasInSelection.push(id);
+    }
+    if (extrasInSelection.length > 0) {
+      return c.json(
+        {
+          error: `selectedActionIds contains entries not present in the signed SIWE: ${extrasInSelection.slice(0, 5).join(', ')}${extrasInSelection.length > 5 ? ` (and ${extrasInSelection.length - 5} more)` : ''}`,
+          code: 'selected_actions_exceed_siwe_entries',
+        },
+        400,
+      );
+    }
+
+    // Recompute the immutable-fields digest from the BOUND SIWE (never
+    // from the caller-echoed prepared, even though we already verified
+    // they are equal above). The digest bound at /prepare was computed
+    // over the same bytes, so this MUST match.
+    const immutable = extractImmutableSiweFields(bound.originalSiwe, {
+      address,
+      chainId,
+      spaceId: bound.spaceId,
+    });
+
+    const consume = consumeAuthorizationContext({
+      token,
+      userId: user.id,
+      keyId: key.id,
+      keyAddress: address,
+      jwk: body.jwk,
+      host,
+      spaceId: bound.spaceId,
+      selectedActionIds: clientSelected,
+      candidateImmutableFieldsDigest: digestImmutableFields(immutable),
+      requiredActionIds: requiredActionIdSet(preparedEntries),
+    });
+    if (!consume.ok) {
+      return c.json({ error: consume.message, code: consume.error }, 400);
+    }
+
+    const expirationTime = resolvePreparedExpirationTime({ siwe: bound.originalSiwe });
+    if (!expirationTime) {
+      return c.json({ error: 'prepared session must include a valid expirationTime or SIWE Expiration Time' }, 400);
+    }
+
+    // Sign the STORED originalSiwe verbatim. This is the entire point of
+    // Blocker 1: never regenerate the SIWE at approval time.
+    const signature = await signManagedKey(key, key.sealedBlob, bound.originalSiwe);
+
+    // Rebuild the session using the caller-echoed prepared block (already
+    // byte-verified) plus the signature. `completeSessionSetup` uses the
+    // fields off `prepared` (spaceId/jwk/address/nonce/etc) — we
+    // additionally overlay `siwe: bound.originalSiwe` and the JWK so a
+    // subtly different echoed block cannot deviate from what we actually
+    // signed.
+    const session = completeSessionSetup({
+      ...body.prepared,
+      siwe: bound.originalSiwe,
+      jwk: body.jwk,
+      signature,
+    });
+
+    let hostActivated = false;
+    try {
+      const activationResult = await activateSessionWithHost(host, session.delegationHeader);
+      hostActivated = activationResult.success;
+      if (!hostActivated) {
+        console.warn(`[Delegate] Session activation warning: ${activationResult.error}`);
+      }
+    } catch (e) {
+      console.warn(`[Delegate] Session activation failed (host unreachable):`, e);
+    }
+
+    const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
+    const effectiveGrants = preparedEntries.map((entry) => ({
+      service: entry.service,
+      space: entry.space,
+      path: entry.path,
+      actions: [...entry.actions],
+    }));
+
+    return c.json({
+      delegationHeader: session.delegationHeader,
+      delegationCid: session.delegationCid,
+      spaceId: bound.spaceId,
+      ownerDid,
+      verificationMethod: session.verificationMethod,
+      jwk: body.jwk,
+      address,
+      chainId,
+      hostActivated,
+      // `edited` is a hint for the UI response payload; the authority
+      // gate is the token itself. The stored context was issued from a
+      // /prepare that may or may not have narrowed; the actual signed
+      // permissions are derivable from the SIWE bytes and are what the
+      // CLI should trust.
+      edited: false,
+      reason,
+      expirationTime,
+      expiresAt: expirationTime,
+      expiry: expirationTime,
+      siwe: bound.originalSiwe,
+      signedMessage: bound.originalSiwe,
+      permissions: effectiveGrants,
+    });
+  }
+
+  // Legacy token-less path — unchanged behavior. The CLI and any older
+  // callers that predate the versioned protocol land here and continue to
+  // work as before.
   let preparedResult: ReturnType<typeof prepareDelegationSession>;
   try {
     preparedResult = prepareDelegationSession({
@@ -1214,6 +1485,11 @@ delegateRouter.post('/prepare', async (c) => {
       allowedActionIds,
       initialSelectionActionIds,
       expirationTime: immutableFields.expirationTime,
+      // Blocker 1: bind the exact SIWE bytes at prepare time so the
+      // managed approval path can sign the server-stored preview verbatim
+      // instead of regenerating the message (which would produce fresh
+      // issuedAt/expirationTime bytes on every attempt).
+      originalSiwe: preparedResult.prepared.siwe,
     });
   } catch (issueErr) {
     console.warn('[Delegate] Failed to issue authorization context:', issueErr);

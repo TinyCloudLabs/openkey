@@ -75,7 +75,13 @@ describe("grantReachesSecretDataOrDecryption", () => {
     ).toBe(false);
   });
 
-  it("does not count an exactly proven app-scoped secret as sensitive", () => {
+  it("counts an exactly proven app-scoped secret in the secret-reach total", () => {
+    // App-scoped secrets remain in the callout count regardless of the
+    // presentation severity `annotateAppScopedGrants` assigns. The user
+    // is still authorizing access to secret data; the standard-severity
+    // presentation only affects how the grant is displayed, not whether
+    // it belongs in the "N exact grants reach secret data or decryption"
+    // total.
     expect(
       grantReachesSecretDataOrDecryption(
         grant({
@@ -91,6 +97,6 @@ describe("grantReachesSecretDataOrDecryption", () => {
           },
         }),
       ),
-    ).toBe(false);
+    ).toBe(true);
   });
 });

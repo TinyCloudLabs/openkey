@@ -108,6 +108,24 @@ const DECRYPT_VERBS = new Set([
   "unwrap",
 ]);
 
+// The read-shaped verbs the capabilities service is expected to carry.
+// Any capabilities grant that carries a verb outside this set falls into
+// the fail-closed `unknown` family (see BOOTSTRAP_CAPABILITIES_SERVICES
+// branch below).
+const CAPABILITY_READ_VERBS = new Set(["read", "get", "peek", "list"]);
+
+// The verbs the secrets service is expected to carry. Any grant on
+// `tinycloud.secrets` (or `secrets`) with a verb outside this union is
+// classified as `secret-mutation` — the fail-closed side of the
+// sensitive/standard split — rather than silently defaulting to the
+// standard read-shaped family.
+const SECRETS_KNOWN_VERBS = new Set([
+  ...CAPABILITY_READ_VERBS,
+  ...MUTATION_VERBS,
+  "list",
+  "metadata",
+]);
+
 function verbOf(action: string): string {
   if (action.includes("/")) return action.slice(action.indexOf("/") + 1);
   return action;
@@ -230,6 +248,19 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     return { family: "bootstrap-sql", displayLabel: "SQL database" };
   }
   if (BOOTSTRAP_CAPABILITIES_SERVICES.has(service)) {
+    // Fail-closed: a capabilities grant with an unknown verb is not a
+    // known "read your permissions" shape. Downgrading it to
+    // `bootstrap-capabilities` would silently classify it as standard
+    // severity via `classifySeverityFromActions`. Route unknown verbs
+    // through the `unknown` family so severity is elevated (attention
+    // for reads, sensitive for mutations/decrypts).
+    const allRead = entry.actions.every((a) => CAPABILITY_READ_VERBS.has(verbOf(a)));
+    if (!allRead) {
+      return {
+        family: "unknown",
+        displayLabel: `Unknown capabilities action on ${space || "(no space)"}`,
+      };
+    }
     return {
       family: "bootstrap-capabilities",
       displayLabel: "Capability metadata",
@@ -237,11 +268,22 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
   }
   if (SECRETS_SERVICES.has(service)) {
     const isMutation = entry.actions.some((a) => MUTATION_VERBS.has(verbOf(a)));
+    // Fail-closed: an unknown verb on the secrets service could easily be
+    // a mutation we do not yet recognize. Do not classify it as the
+    // attention-level `secret-read` family and hide it in the standard
+    // read bucket — treat it as `secret-mutation` (sensitive) so the
+    // user sees the elevated severity and the grant remains inside the
+    // secret-reach count.
+    const hasUnknownVerb = entry.actions.some((a) => !SECRETS_KNOWN_VERBS.has(verbOf(a)));
+    if (isMutation || hasUnknownVerb) {
+      return {
+        family: "secret-mutation",
+        displayLabel: `Named secret (mutate) — ${describeName(path)}`,
+      };
+    }
     return {
-      family: isMutation ? "secret-mutation" : "secret-read",
-      displayLabel: isMutation
-        ? `Named secret (mutate) — ${describeName(path)}`
-        : `Named secret (read) — ${describeName(path)}`,
+      family: "secret-read",
+      displayLabel: `Named secret (read) — ${describeName(path)}`,
     };
   }
   if (ENCRYPTION_SERVICES.has(service)) {

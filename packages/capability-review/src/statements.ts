@@ -193,15 +193,17 @@ function grantVerbSet(grant: CapabilityGrant): Set<string> {
  * the same structural definition as the copy it displays.
  *
  * App-scoped secrets that passed the dedicated origin-bound manifest proof
- * are deliberately normal and do not enter the warning count. Unknown
- * sensitive mutations and create-only encryption grants also do not enter the
- * count: neither fact alone proves access to secret data or decryption.
+ * still reach secret data — they are just presented at `standard` severity
+ * via `annotateAppScopedGrants` (see app-scope.ts). The count exposed by
+ * `sensitiveCallout` describes every exact grant that reaches secret data
+ * OR decryption regardless of presentation severity, so app-scoped secrets
+ * remain in the count. Unknown sensitive mutations and create-only
+ * encryption grants do not enter the count: neither fact alone proves
+ * access to secret data or decryption.
  */
 export function grantReachesSecretDataOrDecryption(
   grant: CapabilityGrant,
 ): boolean {
-  if (grant.appScopedSecret) return false;
-
   if (grant.family === "secret-read" || grant.family === "secret-mutation") {
     return true;
   }
@@ -317,6 +319,19 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
 
   // 2. Capabilities read (account permissions or secrets permissions).
   if (CAPABILITY_SERVICES.has(service)) {
+    // Fail-closed: capability grants have a very small vocabulary — the
+    // only shape we can render friendly copy for is a read-shaped
+    // permissions check. Any grant that carries a verb outside the
+    // recognized read set (`get`/`read`/`peek`/`list`) is not a known
+    // shape; the contract requires us to fall back to the literal
+    // service/resource/actions rather than invent friendly semantics on
+    // a shape we don't recognize.
+    const allVerbsRecognized = abilityStrings.every((a) =>
+      READ_VERBS.has(verbOf(a)),
+    );
+    if (!allVerbsRecognized) {
+      return fallbackStatement(grant);
+    }
     // A capabilities grant on the secrets service is "check permissions
     // for your secrets"; on any other space it is the generic account
     // permissions check. Structurally, the secrets-permission variant
@@ -460,6 +475,22 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
 
   // 5. Named secrets service (not KV): read vs mutation family.
   if (SECRETS_SERVICES.has(service)) {
+    // Fail-closed: only render friendly copy when every verb belongs to a
+    // recognized set (read / mutation / list / metadata). An unknown
+    // verb on the secrets service is not something we can safely map to
+    // one of the deterministic statements the contract enumerates.
+    const allVerbsRecognized = abilityStrings.every((a) => {
+      const v = verbOf(a);
+      return (
+        READ_VERBS.has(v) ||
+        MUTATION_VERBS.has(v) ||
+        LIST_VERBS.has(v) ||
+        METADATA_VERBS.has(v)
+      );
+    });
+    if (!allVerbsRecognized) {
+      return fallbackStatement(grant);
+    }
     if (grant.family === "secret-mutation" || verbs.hasWrite) {
       return {
         primaryText: "Manage secret variables",
@@ -483,11 +514,10 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
         resource,
       };
     }
-    return {
-      primaryText: "View secrets stored in your vault",
-      service,
-      resource,
-    };
+    // Recognized verbs but none of the shapes above matched — do not
+    // invent a "vault read" statement for grants that carry a verb we
+    // did not classify above.
+    return fallbackStatement(grant);
   }
 
   // 6. Unknown service — never invent friendly semantics.

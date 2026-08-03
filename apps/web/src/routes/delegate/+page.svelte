@@ -683,12 +683,36 @@
     error = '';
 
     try {
+      // Blocker 1: the widget MUST forward the prepared SIWE bytes and the
+      // opaque /prepare token to the server so the managed-approval path
+      // signs the exact bytes the review UI displayed. Without them the
+      // server would regenerate a fresh preview with new
+      // issuedAt/expirationTime — different bytes than the user just
+      // reviewed. We entered this flow by way of applyPreparedDelegation
+      // (see step === 'consent'), so both fields MUST be present. Fail
+      // closed rather than silently degrading to the legacy regenerate path.
+      if (!preparedData) {
+        throw new Error('No prepared session data. Please go back and try again.');
+      }
+      if (!authorizationContextToken) {
+        throw new Error(
+          'Missing authorization context token from /prepare. Please restart the delegation.',
+        );
+      }
+
       const API_URL = import.meta.env.VITE_API_URL || '';
       const body: Record<string, unknown> = {
         keyId: selectedKey!.id,
         jwk,
         host,
         prefix: 'default',
+        // Blocker 1: bind the caller-echoed prepared block + selected
+        // action set + token so the server signs the exact preview bytes
+        // instead of regenerating a new SIWE.
+        prepared: preparedData,
+        authorizationContextToken,
+        selectedActionIds: selectedActionKeys,
+        protocolVersion: 1,
       };
       if (permissionsEdited) {
         body.actionKeys = selectedActionKeys;
