@@ -61,6 +61,59 @@ function makeGrant(input: {
   };
 }
 
+describe("buildStatement — whole-secret ownership", () => {
+  const otherUserSecretsSpace =
+    "tinycloud:pkh:eip155:1:0x2222222222222222222222222222222222222222:secrets";
+
+  it("names another user's vault when reading every secret value", () => {
+    const statement = buildStatement(
+      makeGrant({
+        service: "tinycloud.kv",
+        space: otherUserSecretsSpace,
+        abilities: ["tinycloud.kv/get"],
+        family: "secret-namespace-list",
+        severity: "sensitive",
+        ownedBySelf: false,
+      }),
+    );
+    expect(statement.primaryText).toBe(
+      "Read all secret values in another user's vault",
+    );
+  });
+
+  it("names another user's catalog for root SQL access", () => {
+    const statement = buildStatement(
+      makeGrant({
+        service: "tinycloud.sql",
+        space: otherUserSecretsSpace,
+        abilities: ["tinycloud.sql/read"],
+        family: "secret-namespace-list",
+        severity: "sensitive",
+        ownedBySelf: false,
+      }),
+    );
+    expect(statement.primaryText).toBe(
+      "View another user's entire secret catalog",
+    );
+  });
+
+  it("names another user's vault for root mutation access", () => {
+    const statement = buildStatement(
+      makeGrant({
+        service: "tinycloud.kv",
+        space: otherUserSecretsSpace,
+        abilities: ["tinycloud.kv/put"],
+        family: "secret-mutation",
+        severity: "sensitive",
+        ownedBySelf: false,
+      }),
+    );
+    expect(statement.primaryText).toBe(
+      "Manage all secrets stored in another user's vault",
+    );
+  });
+});
+
 describe("buildStatement — unknown structural shapes", () => {
   it("keeps an unknown cross-user KV target literal", () => {
     const statement = buildStatement(

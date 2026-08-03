@@ -286,7 +286,7 @@ describe("parseCapabilityReview", () => {
       "Secret names and metadata — (entire secrets namespace)",
     );
     expect(buildStatement(namespaceGrant!).primaryText).toBe(
-      "View secret names and details",
+      "View your secret names and details",
     );
     const sensitiveBucket = buildRenderPlan(model.permissions).find(
       (bucket) => bucket.severity === "sensitive",
@@ -340,7 +340,7 @@ describe("parseCapabilityReview", () => {
       "Secret data — (entire secrets namespace)",
     );
     expect(buildStatement(read.permissions[0]!).primaryText).toBe(
-      "Read all TinyCloud Secrets data",
+      "View your entire secret catalog",
     );
     expect(grantReachesSecretDataOrDecryption(read.permissions[0]!)).toBe(true);
 
@@ -374,6 +374,9 @@ describe("parseCapabilityReview", () => {
     expect(crossOwner.permissions[0]?.ownedBySelf).toBe(false);
     expect(crossOwner.permissions[0]?.displayLabel).toBe(
       "Secret data — (entire secrets namespace)",
+    );
+    expect(buildStatement(crossOwner.permissions[0]!).primaryText).toBe(
+      "View another user's entire secret catalog",
     );
     expect(grantReachesSecretDataOrDecryption(crossOwner.permissions[0]!)).toBe(true);
 

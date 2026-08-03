@@ -596,15 +596,28 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
     );
     if (!hasValueRead) {
       return {
-        primaryText: "View secret names and details",
+        primaryText:
+          grant.ownedBySelf === false
+            ? "View another user's secret names and details"
+            : grant.ownedBySelf === true
+              ? "View your secret names and details"
+              : "View the requested secret names and details",
         service,
         resource,
       };
     }
     return {
       primaryText: SQL_SERVICES.has(service)
-        ? "Read all TinyCloud Secrets data"
-        : "View all secrets stored in your vault",
+        ? grant.ownedBySelf === false
+          ? "View another user's entire secret catalog"
+          : grant.ownedBySelf === true
+            ? "View your entire secret catalog"
+            : "View the entire requested secret catalog"
+        : grant.ownedBySelf === false
+          ? "Read all secret values in another user's vault"
+          : grant.ownedBySelf === true
+            ? "Read all secret values in your vault"
+            : "Read all secret values in the requested vault",
       service,
       resource,
     };
@@ -647,14 +660,24 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
   ) {
     if (KV_SERVICES.has(service)) {
       return {
-        primaryText: "Manage all secrets stored in your vault",
+        primaryText:
+          grant.ownedBySelf === false
+            ? "Manage all secrets stored in another user's vault"
+            : grant.ownedBySelf === true
+              ? "Manage all secrets stored in your vault"
+              : "Manage all secrets stored in the requested vault",
         service,
         resource,
       };
     }
     if (SQL_SERVICES.has(service)) {
       return {
-        primaryText: "Manage your entire secret catalog",
+        primaryText:
+          grant.ownedBySelf === false
+            ? "Manage another user's entire secret catalog"
+            : grant.ownedBySelf === true
+              ? "Manage your entire secret catalog"
+              : "Manage the entire requested secret catalog",
         service,
         resource,
       };
