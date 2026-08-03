@@ -49,6 +49,22 @@ export const KV_SECRET_SERVICES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Named-secrets services. `tinycloud.secrets/*` grants are a DIFFERENT surface
+ * from the KV vault path used by app-scoped secrets and CAN NEVER earn the
+ * sensitive -> standard demotion. This set is used only for near-miss
+ * detection: a `tinycloud.secrets/*` grant whose path fingerprint references
+ * a declared secret name/scope MUST be forced to sensitive severity + literal
+ * fallback (Blocker 4, Sol follow-up probe A) — the friendly SECRETS_SERVICES
+ * branch of `buildStatement` (e.g. "Check permissions for your secrets") is
+ * never allowed when the operator is being invited to trust an app-scope
+ * declaration that this grant does not, in fact, satisfy.
+ */
+export const NAMED_SECRETS_SERVICES: ReadonlySet<string> = new Set([
+  "tinycloud.secrets",
+  "secrets",
+]);
+
+/**
  * Loose structural predicate: true when `space` looks like ANY secrets space.
  *
  * Kept as the shared "structural counting" predicate imported by statements.ts
@@ -123,6 +139,47 @@ const SECRET_NAME_RE = /^[A-Z][A-Z0-9_]*$/;
 const SECRET_SCOPE_RE = /^[a-z0-9-]+$/;
 const RESERVED_SCOPES = new Set(["default", "global"]);
 
+/**
+ * Near-miss fingerprint (Blocker 4, Sol follow-up).
+ *
+ * Returns true when the grant path contains a `<scope>/<secretName>` fragment
+ * matching ANY validly-declared secret entry. Used only to widen the near-miss
+ * enforcement above so that a grant on a KV or named-secrets service which
+ * references a declared secret name gets stamped near-miss even if it does
+ * not sit at the canonical `vault/secrets/scoped/<scope>/<name>` shape or on
+ * the signer's own secrets space. The check is a fingerprint, NOT an
+ * authorization signal — matching only forces literal-fallback rendering; it
+ * never grants annotation. Only declared entries that pass the SECRET_NAME_RE
+ * / SECRET_SCOPE_RE / reserved-scope validation participate, so a manifest
+ * cannot smuggle arbitrary strings into the fingerprint.
+ */
+export function pathContainsDeclaredSecretFragment(
+  path: string,
+  secrets: readonly DeclaredScopedSecret[],
+): boolean {
+  if (!path || secrets.length === 0) return false;
+  const normalizedPath = path.replace(/^\/+/, "").replace(/\/+$/, "");
+  for (const declared of secrets) {
+    if (!declared.scope) continue;
+    if (!SECRET_NAME_RE.test(declared.secretName)) continue;
+    if (!SECRET_SCOPE_RE.test(declared.scope)) continue;
+    if (RESERVED_SCOPES.has(declared.scope)) continue;
+    const fragment = `${declared.scope}/${declared.secretName}`;
+    // Match as a whole-segment substring: either at end of path, or
+    // followed by another slash. This avoids accidental matches inside
+    // longer identifier segments.
+    if (
+      normalizedPath === fragment ||
+      normalizedPath.endsWith(`/${fragment}`) ||
+      normalizedPath.includes(`/${fragment}/`) ||
+      normalizedPath.startsWith(`${fragment}/`)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export interface DeclaredScopedSecret {
   secretName: string;
   scope?: string;
@@ -184,46 +241,49 @@ export function annotateAppScopedGrants(
   const secrets = declaredAppScope.secrets ?? [];
   const signer = model.signer;
   const permissions = model.permissions.map((grant): CapabilityGrant => {
-    // Only KV/secret-shaped grants can be app-scoped secrets. Anything
-    // outside the secret family stays exactly as classified — those
-    // paths never render "app secret" copy in the first place.
-    if (grant.family !== "secret-read" && grant.family !== "secret-mutation") {
+    // App-scope near-miss enforcement (Blocker 4, Sol follow-up).
+    //
+    // Two families of grants can plausibly look like an app-scoped-secret
+    // attempt and MUST be prevented from inheriting friendly copy when
+    // they fail the exact-resource proof:
+    //
+    //   (a) KV secret-family grants (family = secret-read/secret-mutation
+    //       on a KV service). The classifier reaches these via a `secrets/`
+    //       or `vault/secrets/` path on tinycloud.kv.
+    //
+    //   (b) ANY grant on a KV or named-secrets service whose path contains
+    //       a `<scope>/<secretName>` fragment matching a declared entry.
+    //       This is what closes Sol's two follow-up probes:
+    //         - `tinycloud.secrets/get` at `secrets/scoped/listen/API_KEY`
+    //           on a non-secrets space; the classifier routes this via the
+    //           SECRETS_SERVICES branch and buildStatement would render
+    //           "Check permissions for your secrets" without this widening.
+    //         - `tinycloud.kv/get` on the signer's secrets space at
+    //           `unrelated/listen/API_KEY`; the classifier routes this via
+    //           cross-app-data (attention) and buildStatement would render
+    //           "Read data outside this app" without this widening.
+    //
+    // Any grant that satisfies (a) OR (b) is a "declared-shape candidate".
+    // If it fails the strict exact-resource proof, we stamp it near-miss +
+    // force sensitive severity so `buildStatement` renders the raw
+    // service/resource/actions fallback. Metadata cannot expand authority
+    // and it cannot dress up an unsatisfied proof in reassuring copy.
+    const isKvSecretFamily =
+      KV_SECRET_SERVICES.has(grant.service) &&
+      (grant.family === "secret-read" || grant.family === "secret-mutation");
+    const isDeclaredShapeCandidate =
+      (KV_SECRET_SERVICES.has(grant.service) ||
+        NAMED_SECRETS_SERVICES.has(grant.service)) &&
+      pathContainsDeclaredSecretFragment(grant.path, secrets);
+    if (!isKvSecretFamily && !isDeclaredShapeCandidate) {
       return grant;
     }
-    // Blocker 4 (Defect 2): near-miss classification.
-    //
-    // Any KV secret-family grant on a secrets-shaped space is
-    // structurally attempting to reach app-scoped secret data. If the
-    // exact-resource proof below rejects it (unknown verb, wrong
-    // service, wrong owner space, non-canonical path, no matching
-    // declaration, unrecognized declared verb, unscoped declaration,
-    // …), the grant must NOT keep the friendly "View secrets stored
-    // in your vault" copy the KV secrets branch of `buildStatement`
-    // would emit — that copy dresses the ability up in reassuring
-    // secret-family framing without the origin-bound proof that would
-    // justify it. Instead, force the operator to see the raw literal
-    // fallback (service + resource + actions).
-    //
-    // The near-miss stamp is a demote-only signal: it always co-occurs
-    // with an explicit `severity = "sensitive"` reset so an attention-
-    // level `secret-read` grant is also elevated to sensitive whenever
-    // it fails the proof. `metadataLabel` is cleared so no caller-
-    // supplied label can leak through.
+
+    // Near-miss stamp: sensitive severity, cleared metadata label, and the
+    // `appScopeNearMiss` flag which `buildStatement` short-circuits into
+    // the literal fallback. Applies to BOTH families identified above so
+    // wrong-service and wrong-path near misses lose their friendly copy.
     const nearMissMark = (target: CapabilityGrant): CapabilityGrant => {
-      // Only KV secret-family grants (the outer `if` already restricts
-      // this) get the near-miss stamp. `family === "secret-read" |
-      // "secret-mutation"` on a KV service means the classifier already
-      // recognized this as an attempt to reach secret data — every
-      // rejection below therefore represents a near-miss on the
-      // app-scoped-secret proof, and the operator must see the raw
-      // ability + resource instead of the friendly KV secrets copy.
-      //
-      // Non-KV secret grants (family === "secret-read" via the
-      // tinycloud.secrets service branch of the classifier) are not
-      // stamped: buildStatement's SECRETS_SERVICES branch has its own
-      // recognized-actions allowlist and does not emit vault-shaped
-      // friendly copy for them.
-      if (!KV_SECRET_SERVICES.has(target.service)) return target;
       return {
         ...target,
         severity: "sensitive",
@@ -407,4 +467,3 @@ export function normalizeSecretVerb(verb: string): string {
       return verb;
   }
 }
-

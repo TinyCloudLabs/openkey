@@ -884,11 +884,13 @@ describe("annotateAppScopedGrants — Defect 2: near-miss literal fallback", () 
     expect(stmt.primaryText).not.toContain("vault");
   });
 
-  it("near-miss: wrong service (tinycloud.secrets) is NOT KV → not stamped", () => {
-    // The tinycloud.secrets service has its own copy path in
-    // buildStatement (recognized-actions allowlist), so we do NOT
-    // near-miss stamp it here. Verify the grant retains sensitive
-    // severity (unchanged from the fixture) and no appScopedSecret.
+  it("near-miss: wrong service (tinycloud.secrets) with declared fragment IS stamped", () => {
+    // Sol follow-up (Blocker 4): a tinycloud.secrets/* grant whose path
+    // fingerprint references a declared secret name+scope MUST be near-miss
+    // stamped so buildStatement renders the literal fallback. Without this
+    // widening, the SECRETS_SERVICES branch of buildStatement would render
+    // "Check permissions for your secrets" / "Manage secret variables" —
+    // friendly copy the failed exact-resource proof did not earn.
     const grant = secretsServiceGrant(
       "vault/secrets/scoped/listen/API_KEY",
       ["get"],
@@ -899,8 +901,11 @@ describe("annotateAppScopedGrants — Defect 2: near-miss literal fallback", () 
     const g = out.permissions[0]!;
     expect(g.severity).toBe("sensitive");
     expect(g.appScopedSecret).toBeUndefined();
-    // No stamp — the SECRETS_SERVICES branch of buildStatement handles this.
-    expect(g.appScopeNearMiss).toBeUndefined();
+    expect(g.appScopeNearMiss).toBe(true);
+    // Literal fallback wins over the SECRETS_SERVICES friendly branch.
+    const stmt = buildStatement(g);
+    expect(stmt.primaryText).not.toContain("secret variables");
+    expect(stmt.primaryText).not.toContain("permissions for your secrets");
   });
 
   it("near-miss: legacy path shape (missing vault/ prefix) → literal fallback", () => {
@@ -988,5 +993,287 @@ describe("buildStatement — appScopeNearMiss short-circuit", () => {
     expect(stmt.primaryText).toBe(
       "Perform tinycloud.kv/get on tinycloud.kv",
     );
+  });
+});
+
+// ─── Sol follow-up regression suite (Blocker 4) ──────────────────────────
+// Locks in Sol's two exact rejection probes:
+//   A) A tinycloud.secrets/get grant on an UNRELATED space at
+//      `secrets/scoped/listen/API_KEY` used to render
+//      "attention" + "Check permissions for your secrets"; the near-miss
+//      fingerprint must now force sensitive + literal fallback.
+//   B) A tinycloud.kv/get grant on the SIGNER'S OWN secrets space at
+//      `unrelated/listen/API_KEY` used to render "cross-app-data" +
+//      "Read data outside this app"; the near-miss fingerprint must now
+//      force sensitive + literal fallback.
+//
+// The exact criterion in both cases is: the manifest-declared secret's
+// `<scope>/<secretName>` fragment appears in the grant path AND the grant
+// is on a KV or named-secrets service AND the grant fails the strict
+// exact-resource proof (wrong service OR wrong space OR wrong path).
+
+describe("annotateAppScopedGrants — Sol follow-up probes (wrong-service / wrong-path)", () => {
+  const DECLARED: DeclaredScopedSecret[] = [
+    { secretName: "API_KEY", scope: "listen", actions: ["read"] },
+  ];
+
+  it("Probe A: tinycloud.secrets/get on unrelated space at declared fragment → sensitive + literal", () => {
+    // Family = "secret-read": the classifier's SECRETS_SERVICES branch
+    // classifies `secrets/get` on an unknown path as read-shaped. Without
+    // the fix, buildStatement's SECRETS_SERVICES branch renders
+    // "Check permissions for your secrets".
+    const grant = secretsServiceGrant(
+      "secrets/scoped/listen/API_KEY",
+      ["get"],
+      "secret-read",
+      "attention",
+    );
+    const out = annotateAppScopedGrants(model([grant]), { secrets: DECLARED });
+    const g = out.permissions[0]!;
+    expect(g.severity).toBe("sensitive");
+    expect(g.appScopedSecret).toBeUndefined();
+    expect(g.metadataLabel).toBeNull();
+    expect(g.appScopeNearMiss).toBe(true);
+    const stmt = buildStatement(g);
+    expect(stmt.primaryText).not.toBe("Check permissions for your secrets");
+    expect(stmt.primaryText).not.toContain("app secret");
+    expect(stmt.primaryText).not.toContain("permissions for your secrets");
+    expect(stmt.primaryText).toBe(
+      "Perform tinycloud.secrets/get on tinycloud.secrets",
+    );
+  });
+
+  it("Probe A (variant): secrets/put on unrelated space at declared fragment → sensitive + literal", () => {
+    // Same probe with a mutation verb. The SECRETS_SERVICES branch of
+    // buildStatement would render "Manage secret variables" — also
+    // disallowed for an unproven grant that references the declared name.
+    const grant = secretsServiceGrant(
+      "secrets/scoped/listen/API_KEY",
+      ["put"],
+      "secret-mutation",
+      "sensitive",
+    );
+    const out = annotateAppScopedGrants(model([grant]), { secrets: DECLARED });
+    const g = out.permissions[0]!;
+    expect(g.severity).toBe("sensitive");
+    expect(g.appScopeNearMiss).toBe(true);
+    const stmt = buildStatement(g);
+    expect(stmt.primaryText).not.toContain("secret variables");
+    expect(stmt.primaryText).not.toContain("app secret");
+  });
+
+  it("Probe B: tinycloud.kv on signer-owned secrets space at unrelated/<scope>/<name> → sensitive + literal", () => {
+    // Cross-app-data family, KV service, secrets space, but the path is
+    // NOT the canonical vault/secrets/scoped/... form — it references
+    // the declared secret via a non-canonical prefix. Without the fix,
+    // buildStatement would render "Read data outside this app".
+    const grant: CapabilityGrant = {
+      id: "b",
+      family: "cross-app-data",
+      severity: "attention",
+      service: "tinycloud.kv",
+      space: SECRETS_SPACE,
+      path: "unrelated/listen/API_KEY",
+      owner: null,
+      ownedBySelf: false,
+      displayLabel: "",
+      metadataLabel: null,
+      actions: [
+        {
+          id: "b1",
+          ability: "tinycloud.kv/get",
+          verb: "get",
+          required: false,
+          selected: true,
+          editable: true,
+          caveats: [{}],
+        },
+      ],
+    };
+    const out = annotateAppScopedGrants(model([grant]), { secrets: DECLARED });
+    const g = out.permissions[0]!;
+    expect(g.severity).toBe("sensitive");
+    expect(g.appScopedSecret).toBeUndefined();
+    expect(g.metadataLabel).toBeNull();
+    expect(g.appScopeNearMiss).toBe(true);
+    const stmt = buildStatement(g);
+    expect(stmt.primaryText).not.toContain("Read data outside this app");
+    expect(stmt.primaryText).not.toContain("app secret");
+    expect(stmt.primaryText).toBe(
+      "Perform tinycloud.kv/get on tinycloud.kv",
+    );
+  });
+
+  it("Probe B (variant): tinycloud.kv on non-secrets space at unrelated/<scope>/<name> → sensitive + literal", () => {
+    // Even on a non-secrets space, a KV grant that references a declared
+    // secret fragment must render literal fallback.
+    const grant: CapabilityGrant = {
+      id: "b2",
+      family: "cross-app-data",
+      severity: "attention",
+      service: "tinycloud.kv",
+      space: SPACE, // :default
+      path: "unrelated/listen/API_KEY",
+      owner: null,
+      ownedBySelf: false,
+      displayLabel: "",
+      metadataLabel: null,
+      actions: [
+        {
+          id: "b2a",
+          ability: "tinycloud.kv/get",
+          verb: "get",
+          required: false,
+          selected: true,
+          editable: true,
+          caveats: [{}],
+        },
+      ],
+    };
+    const out = annotateAppScopedGrants(model([grant]), { secrets: DECLARED });
+    const g = out.permissions[0]!;
+    expect(g.severity).toBe("sensitive");
+    expect(g.appScopeNearMiss).toBe(true);
+  });
+
+  it("no widening when declared fingerprint is absent from path", () => {
+    // A tinycloud.secrets grant whose path does NOT contain any declared
+    // secret name/scope fragment retains its normal classification. The
+    // fingerprint-based widening never fires for unrelated grants.
+    const grant = secretsServiceGrant(
+      "secrets/scoped/otherapp/OTHER_KEY",
+      ["get"],
+      "secret-read",
+      "attention",
+    );
+    const out = annotateAppScopedGrants(model([grant]), { secrets: DECLARED });
+    const g = out.permissions[0]!;
+    // Not near-miss stamped: the declared entry API_KEY/listen doesn't
+    // appear in this path. The classifier's original severity survives.
+    expect(g.appScopeNearMiss).toBeUndefined();
+  });
+
+  it("reserved-scope declarations never participate in the fingerprint", () => {
+    // Even if the manifest declares a reserved-scope entry, the near-miss
+    // fingerprint ignores it. A grant matching that "declaration" is not
+    // stamped as a near-miss — the reserved scope was never a valid
+    // declaration in the first place.
+    const grant = secretsServiceGrant(
+      "secrets/scoped/default/API_KEY",
+      ["get"],
+      "secret-read",
+      "attention",
+    );
+    const bad: DeclaredScopedSecret[] = [
+      { secretName: "API_KEY", scope: "default", actions: ["read"] },
+    ];
+    const out = annotateAppScopedGrants(model([grant]), { secrets: bad });
+    expect(out.permissions[0]?.appScopeNearMiss).toBeUndefined();
+  });
+
+  it("invalid secretName (lowercase) never participates in the fingerprint", () => {
+    const grant = secretsServiceGrant(
+      "secrets/scoped/listen/api_key",
+      ["get"],
+      "secret-read",
+      "attention",
+    );
+    const bad: DeclaredScopedSecret[] = [
+      { secretName: "api_key", scope: "listen", actions: ["read"] },
+    ];
+    const out = annotateAppScopedGrants(model([grant]), { secrets: bad });
+    expect(out.permissions[0]?.appScopeNearMiss).toBeUndefined();
+  });
+
+  it("happy path regression: canonical KV vault path still annotates + counts", () => {
+    // The widening must not break the sole permitted sensitive->standard
+    // transition. A canonical KV vault-path grant on the signer's own
+    // secrets space with declared name/scope+subset verbs still annotates.
+    const out = annotateAppScopedGrants(
+      model([kvSecretsGrant("listen", "API_KEY", ["get"])]),
+      { secrets: DECLARED },
+    );
+    const g = out.permissions[0]!;
+    expect(g.severity).toBe("standard");
+    expect(g.appScopedSecret).toEqual({
+      secretName: "API_KEY",
+      scope: "listen",
+    });
+    expect(g.appScopeNearMiss).toBeUndefined();
+    // Still in the secret-reach count because the family is preserved.
+    expect(g.family).toBe("secret-read");
+  });
+});
+
+describe("pathContainsDeclaredSecretFragment", () => {
+  const DECLARED: DeclaredScopedSecret[] = [
+    { secretName: "API_KEY", scope: "listen", actions: ["read"] },
+  ];
+
+  it("matches canonical vault path", async () => {
+    const { pathContainsDeclaredSecretFragment } = await import(
+      "../src/app-scope.js"
+    );
+    expect(
+      pathContainsDeclaredSecretFragment(
+        "vault/secrets/scoped/listen/API_KEY",
+        DECLARED,
+      ),
+    ).toBe(true);
+  });
+
+  it("matches trailing fragment", async () => {
+    const { pathContainsDeclaredSecretFragment } = await import(
+      "../src/app-scope.js"
+    );
+    expect(
+      pathContainsDeclaredSecretFragment(
+        "unrelated/listen/API_KEY",
+        DECLARED,
+      ),
+    ).toBe(true);
+  });
+
+  it("matches interior fragment", async () => {
+    const { pathContainsDeclaredSecretFragment } = await import(
+      "../src/app-scope.js"
+    );
+    expect(
+      pathContainsDeclaredSecretFragment(
+        "foo/listen/API_KEY/bar",
+        DECLARED,
+      ),
+    ).toBe(true);
+  });
+
+  it("does not match substring inside a longer segment", async () => {
+    const { pathContainsDeclaredSecretFragment } = await import(
+      "../src/app-scope.js"
+    );
+    expect(
+      pathContainsDeclaredSecretFragment(
+        "vault/notlisten/API_KEY_MORE",
+        DECLARED,
+      ),
+    ).toBe(false);
+  });
+
+  it("returns false for empty path", async () => {
+    const { pathContainsDeclaredSecretFragment } = await import(
+      "../src/app-scope.js"
+    );
+    expect(pathContainsDeclaredSecretFragment("", DECLARED)).toBe(false);
+  });
+
+  it("returns false for empty declaration list", async () => {
+    const { pathContainsDeclaredSecretFragment } = await import(
+      "../src/app-scope.js"
+    );
+    expect(
+      pathContainsDeclaredSecretFragment(
+        "vault/secrets/scoped/listen/API_KEY",
+        [],
+      ),
+    ).toBe(false);
   });
 });
