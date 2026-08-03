@@ -106,7 +106,7 @@ export interface CapabilityGrant {
   path: string;
   /** Owner of the addressed resource, when derivable from the space URI. */
   owner: string | null;
-  /** True when `owner` matches the requesting app / user, false when cross-app. */
+  /** True when `owner` matches the account signing this request. */
   ownedBySelf: boolean | null;
   /** Verified, human-safe label. Never overrides `severity`. */
   displayLabel: string;

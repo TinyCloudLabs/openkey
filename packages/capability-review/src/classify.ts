@@ -345,12 +345,14 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
         ),
       };
     }
-    // Cross-app KV grant: reading/writing another user's KV space is
-    // architecturally significant — attention severity is baked in by
-    // classifySeverityFromActions when the family is cross-app-data.
+    // A grant outside a verified requester identity remains cross-app and
+    // keeps attention severity. Do not call it cross-user here: resource
+    // ownership is a separate signer-relative fact computed by the parser.
     if (isCrossApp) {
-      // Structural label only — never claim an app identity here.
-      return { family: "cross-app-data", displayLabel: "Cross-user KV data" };
+      return {
+        family: "cross-app-data",
+        displayLabel: "Data outside this app",
+      };
     }
     // Own-space + recognized app path: label with the app family.
     const appMatch = matchKvAppFamily(path);
@@ -360,47 +362,11 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     return { family: "bootstrap-kv", displayLabel: "Key-value storage" };
   }
   if (BOOTSTRAP_SQL_SERVICES.has(service)) {
-    if (isSecretsSpace(space)) {
-      const hasMutation = entry.actions.some((a) => {
-        const verb = verbOf(a);
-        return MUTATION_VERBS.has(verb) || verb === "schema";
-      });
-      const hasUnknownVerb = entry.actions.some(
-        (a) => !SQL_KNOWN_VERBS.has(verbOf(a)),
-      );
-      if (hasMutation || hasUnknownVerb) {
-        return {
-          family: "secret-mutation",
-          displayLabel: withCrossUserSignal(
-            isCrossApp,
-            `Secrets data (mutate) — ${path || "(entire namespace)"}`,
-          ),
-        };
-      }
-      if (isWholeSecretsNamespace(space, path)) {
-        return {
-          family: "secret-namespace-list",
-          displayLabel: withCrossUserSignal(
-            isCrossApp,
-            "Secret data — (entire secrets namespace)",
-          ),
-        };
-      }
-      return {
-        family: "secret-read",
-        displayLabel: withCrossUserSignal(
-          isCrossApp,
-          `Secrets data — ${path || "(entire namespace)"}`,
-        ),
-      };
-    }
-    // Cross-app / own-app logic for non-secrets SQL grants. This follows the
-    // secrets branch so cross-owner secret reach cannot be downgraded to the
-    // attention-level cross-app family.
+    // Same app-boundary logic for SQL. User ownership is shown separately.
     if (isCrossApp) {
       return {
         family: "cross-app-data",
-        displayLabel: "Cross-user SQL data",
+        displayLabel: "Data outside this app",
       };
     }
     return { family: "bootstrap-sql", displayLabel: "SQL database" };

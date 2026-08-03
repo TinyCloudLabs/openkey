@@ -752,31 +752,16 @@ function buildGrants(
     });
     const actions = buildActions(entry, ctx);
     const ownership = ownerFromSpace(entry.space);
-    // Sol MAJOR-5 (continuation): NEVER fall back to the signer address as
-    // the ownership axis. The signer is the OpenKey account signing this
-    // request — it is NOT the identity of the requesting app. A user who
-    // signs into OpenKey with the same wallet that owns their TinyCloud
-    // space (extremely common) would otherwise have every cross-app
-    // request mislabelled as `ownedBySelf === true`, suppressing the
-    // SigningApproval cross-app warning.
-    //
-    // Fail-closed rule: `ownedBySelf` is true ONLY when we have a
-    // VERIFIED requester identity and it matches the space owner.
-    // Anything else — no requester identity, unverified requester, or a
-    // verified requester whose address differs from the owner — is either
-    // null (unknown) or false (definitively cross-app).
-    const trustedOwnershipAxis = requesterVerified && requesterAddress
-      ? requesterAddress.toLowerCase()
-      : null;
+    // Resource ownership and app identity are distinct. The family/severity
+    // above remains conservative when requester identity is unverified, but
+    // `ownedBySelf` answers the narrower user-facing question: does this
+    // TinyCloud space belong to the account that is signing? This prevents a
+    // same-user grant from being mislabeled as cross-user while preserving
+    // the cross-app attention classification.
     const ownedBySelf =
       ownership.owner === null
         ? null
-        : trustedOwnershipAxis === null
-          ? null
-          : ownership.owner === trustedOwnershipAxis;
-    // signerAddress is retained above only for potential downstream
-    // display; it MUST NOT influence ownership classification.
-    void signerAddress;
+        : ownership.owner === signerAddress;
     // Blocker 4 follow-up (Defect 2): grant ID service segment is the
     // resource-derived service (canonicalized to `tinycloud.<short>`)
     // when the wire carried one; falls back to the ability-derived

@@ -632,7 +632,7 @@
                     </code>
                     {#if grant.ownedBySelf === false}
                       <p class="cross-app-warning">
-                        Cross-app data owned by {grant.owner}
+                        This data belongs to another user.
                       </p>
                     {/if}
                     <ul class="action-list">

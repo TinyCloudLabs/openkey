@@ -276,6 +276,8 @@ test.describe('signing-approval browser parity — production adapters', () => {
       await expect(summary).not.toContainText('exact grant');
       await expect(summary).not.toContainText('service');
       await expect(summary).not.toContainText('tinycloud:pkh:');
+      await expect(dialog).not.toContainText(`owner ${model.signer.address.toLowerCase()}`);
+      await expect(dialog).not.toContainText('path=spaces/');
       await expect(summary.locator('.summary-statement').last()).toContainText('Perform ');
       const details = page.locator('details.advanced-details').first();
       await details.locator(':scope > summary').click();

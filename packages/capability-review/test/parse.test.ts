@@ -150,8 +150,8 @@ describe("parseCapabilityReview", () => {
     // Sol MAJOR-7: a KV grant on a DIFFERENT user's space must be
     // classified as cross-app-data with elevated severity, not lumped
     // into the generic bootstrap-kv family. Sol continuation contract:
-    // the label MUST NOT claim an app identity — cross-user grants only
-    // show ownership + literal path.
+    // the structural heading remains about the app boundary. The separate
+    // ownedBySelf fact reports that the resource belongs to another user.
     const model = parseCapabilityReview(
       ctx({ message: LISTEN_CROSS_APP_REQUEST }),
     );
@@ -160,19 +160,16 @@ describe("parseCapabilityReview", () => {
     expect(cross?.ownedBySelf).toBe(false);
     expect(cross?.owner).toBe(FIXTURE_META.crossAppOwner.toLowerCase());
     expect(cross?.severity).toBe("attention");
-    expect(cross?.displayLabel).toMatch(/Cross-user/);
+    expect(cross?.displayLabel).toBe("Data outside this app");
     // Must NOT be a bootstrap-kv grant.
     const kv = model.permissions.find((p) => p.family === "bootstrap-kv");
     expect(kv).toBeUndefined();
   });
 
-  it("fail-closed: unverified requester + signer-owned space does NOT set ownedBySelf=true (Sol MAJOR-5)", () => {
-    // Sol MAJOR-5 (continuation): SigningApproval renders a cross-app
-    // warning based on `ownedBySelf`. The prior implementation set
-    // `trustedOwnershipAxis = signerAddress` when `requesterAddress` was
-    // absent, which caused every widget-path grant (always unverified
-    // requester) on the signer's own space to set `ownedBySelf: true`
-    // and suppress the warning. The fix: never fall back to the signer.
+  it("reports signer-owned data as same-user even when requester identity is unverified", () => {
+    // App identity remains unverified, so the grant stays cross-app and at
+    // attention severity. Resource ownership is independent: this space is
+    // owned by the account signing the request, so it is not cross-user.
     const model = parseCapabilityReview(
       ctx({
         message: FEED_APP_REQUEST,
@@ -192,12 +189,10 @@ describe("parseCapabilityReview", () => {
         requesterVerified: false,
       }),
     );
-    // Every path-scoped grant on the signer's OWN space MUST report
-    // ownedBySelf as null (unknown) — never true — because we have no
-    // verified requester identity to attribute the request to.
+    // Every addressed space in this fixture is owned by the signer.
     for (const grant of model.permissions) {
       if (grant.owner !== null) {
-        expect(grant.ownedBySelf).not.toBe(true);
+        expect(grant.ownedBySelf).toBe(true);
       }
     }
   });

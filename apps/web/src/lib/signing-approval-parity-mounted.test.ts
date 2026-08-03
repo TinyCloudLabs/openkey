@@ -805,10 +805,11 @@ describe('signing-approval mounted parity across production surface adapters (So
     for (const binding of surfaceBindings) {
       const { props } = propsForSurface(binding, model, selection);
       const handle = await mountSurface(binding, props);
-      // The warning fixture's cross-app warning text must appear on every
-      // surface — the shared component owns that rendering.
+      // The warning fixture's other-user warning must appear on every
+      // surface — the shared component owns that rendering without exposing
+      // a raw owner address in the heading.
       expect(
-        textIncludes(handle.container, 'Cross-app data owned by 0x2222222222222222222222222222222222222222'),
+        textIncludes(handle.container, 'This data belongs to another user.'),
       ).toBe(true);
       expect(textIncludes(handle.container, 'Trust me, this is safe')).toBe(true);
       expect(
