@@ -1,4 +1,4 @@
-// App-scoped-secret trust rule (Sol MAJOR-2).
+// App-scoped-secret trust rule (Sol MAJOR-2 / Blocker 4).
 //
 // The merge-readiness contract says:
 //
@@ -13,14 +13,19 @@
 // well-known manifest, and:
 //
 //   1. For every capability grant, decides whether the grant matches an
-//      app-declared secret / permission entry (exact secret name, scope,
-//      actions, and same-scope ReCap resource path).
-//   2. When a match holds AND the metadata trust is at least origin-bound
-//      (never below), records the proven app-scoped-secret identity, renders
-//      a compact label, and presents the grant at standard severity.
-//   3. Under ANY other condition — no manifest, trust unsigned, no
-//      declared entry, actions mismatched, scope missing on the ReCap —
-//      leaves `metadataLabel` unchanged.
+//      app-declared secret entry via an EXACT resource tuple:
+//        - service must be a KV service (tinycloud.kv or kv), never tinycloud.secrets
+//        - space must be the structurally-named secrets space
+//        - path must equal exactly vault/secrets/scoped/<scope>/<name>
+//          (the canonical js-sdk shape from packages/sdk-services/src/secrets/paths.ts)
+//        - secretName must match /^[A-Z][A-Z0-9_]*$/
+//        - scope must match /^[a-z0-9-]+$/ and not be 'default' or 'global'
+//        - grant verbs must be a subset of declared verbs within the
+//          recognized get/put/del allowlist
+//   2. When ALL conditions hold AND the metadata trust is at least origin-bound,
+//      records the proven app-scoped-secret identity, renders a compact label,
+//      and presents the grant at standard severity.
+//   3. Under ANY other condition leaves the grant untouched (fail closed).
 //
 // The severity change is intentionally confined to this proof gate. Generic
 // metadata helpers still cannot lower severity (see metadata.ts), and this
@@ -28,6 +33,37 @@
 
 import type { CapabilityGrant, CapabilityReviewModel } from "./model.js";
 import { isVerified } from "./metadata.js";
+
+/**
+ * KV services that may hold app-scoped secrets. tinycloud.secrets is the
+ * named-secrets service (a different surface) and must never trigger the
+ * app-scoped annotation; only KV grants on the secrets space carry vault paths.
+ */
+export const KV_SECRET_SERVICES: ReadonlySet<string> = new Set([
+  "tinycloud.kv",
+  "kv",
+]);
+
+/**
+ * True when `space` identifies the structurally-named secrets space.
+ * Mirrors the private isSecretsSqlSpace predicate in statements.ts so that
+ * the annotation gate and the structural counting predicate use one shared
+ * definition (imported by statements.ts).
+ */
+export function isSecretsSpace(space: string): boolean {
+  return (
+    space === "secrets" ||
+    /:secrets(?:\/|$)/.test(space) ||
+    /:secrets:/.test(space)
+  );
+}
+
+// Secret-name and scope validation mirrors js-sdk
+// packages/sdk-services/src/secrets/paths.ts so the OpenKey gate and the
+// js-sdk resolver share the same canonical forms.
+const SECRET_NAME_RE = /^[A-Z][A-Z0-9_]*$/;
+const SECRET_SCOPE_RE = /^[a-z0-9-]+$/;
+const RESERVED_SCOPES = new Set(["default", "global"]);
 
 export interface DeclaredScopedSecret {
   secretName: string;
@@ -116,6 +152,12 @@ export function annotateAppScopedGrants(
       ),
     );
     if (!allVerbsRecognized) return grant;
+    // Blocker 4: exact-resource proof. Only KV service grants on the secrets
+    // space can demote. tinycloud.secrets service grants, non-secrets spaces,
+    // and non-canonical paths all fail closed here, before any path matching.
+    if (!KV_SECRET_SERVICES.has(grant.service) || !isSecretsSpace(grant.space)) {
+      return grant;
+    }
     const match = findMatchingDeclaredSecret(grant, secrets);
     // Only a genuinely scoped secret can receive app-scoped/normal
     // presentation. Global app-declared secrets remain sensitive.
@@ -175,37 +217,38 @@ export const RECOGNIZED_APP_SCOPE_SECRET_VERBS: ReadonlySet<string> = new Set([
 
 /**
  * Test-visible helper: return the matched declared entry, or null.
+ *
+ * Matching rule (Blocker 4 fix — all conjuncts must hold):
+ *   1. declared.secretName matches /^[A-Z][A-Z0-9_]*$/ (js-sdk SECRET_NAME_RE)
+ *   2. declared.scope is present, matches /^[a-z0-9-]+$/, and is not
+ *      'default' or 'global' (mirrors js-sdk scope validation)
+ *   3. grant.path (normalized) equals exactly
+ *      `vault/secrets/scoped/${scope}/${secretName}` — the sole canonical
+ *      shape js-sdk packages/sdk-services/src/secrets/paths.ts ever emits.
+ *      Legacy shapes (secrets/scoped/..., <scope>/secrets/...) do NOT
+ *      annotate; losing annotation is demote-only (fail-closed direction).
+ *   4. Every grant verb (normalized) is declared. Narrowing is allowed;
+ *      any undeclared grant verb falsifies the match.
  */
 export function findMatchingDeclaredSecret(
   grant: CapabilityGrant,
   secrets: readonly DeclaredScopedSecret[],
 ): DeclaredScopedSecret | null {
-  // Extract the trailing secret name from the ReCap path. Real requests
-  // use one of the following shapes:
-  //   `secrets/<name>`, `vault/secrets/<name>`,
-  //   `secrets/scoped/<scope>/<name>`, `vault/secrets/scoped/<scope>/<name>`,
-  //   `<scope>/secrets/<name>`, `<scope>/vault/secrets/<name>`
-  const parsed = parseSecretPath(grant.path);
-  if (!parsed) return null;
-  // Sol MAJOR-1 (this iteration): normalize BOTH sides to a canonical
-  // verb space before comparison. Grants ship short verbs sourced from
-  // the ability tail (`tinycloud.kv/get`, `tinycloud.kv/put`,
-  // `tinycloud.kv/del`), while manifests conventionally use the
-  // longer `read/write/delete` synonyms. Comparing them raw always
-  // failed the app-scope gate on real production capabilities.
+  const normalizedPath = grant.path.replace(/^\/+/, "").replace(/\/+$/, "");
   const grantVerbs = grant.actions.map((a) =>
     normalizeSecretVerb(a.verb.toLowerCase()),
   );
   for (const declared of secrets) {
-    if (declared.secretName !== parsed.secretName) continue;
-    // Scope agreement: an entry without scope MUST match an unscoped
-    // path; an entry WITH scope must match a path prefixed by that
-    // exact scope segment.
-    if ((declared.scope ?? null) !== (parsed.scope ?? null)) continue;
-    // Actions: every requested verb must be declared. A missing
-    // declared verb on the grant is legal narrowing; ANY grant verb
-    // NOT declared falsifies the match. Both sides are canonicalized
-    // through the same verb-normalization table.
+    // Validate secret name against js-sdk SECRET_NAME_RE.
+    if (!SECRET_NAME_RE.test(declared.secretName)) continue;
+    // Scope must be present, canonical, and not reserved.
+    if (!declared.scope) continue;
+    if (!SECRET_SCOPE_RE.test(declared.scope)) continue;
+    if (RESERVED_SCOPES.has(declared.scope)) continue;
+    // Exact manifest-derived path. This is the only shape js-sdk emits.
+    const expectedPath = `vault/secrets/scoped/${declared.scope}/${declared.secretName}`;
+    if (normalizedPath !== expectedPath) continue;
+    // Verb subset check: every grant verb must appear in the declared set.
     const declaredVerbs = new Set(
       declared.actions.map((a) => normalizeSecretVerb(a.toLowerCase())),
     );
@@ -253,73 +296,3 @@ export function normalizeSecretVerb(verb: string): string {
   }
 }
 
-/**
- * Parse the trailing secret-name segment (and optional scope) from a
- * ReCap `path`. Returns null when the shape does not describe a secret.
- *
- * Accepted shapes:
- *   1. `secrets/<name>`                              — global, no vault prefix
- *   2. `vault/secrets/<name>`                        — global, vault prefix
- *   3. `secrets/scoped/<scope>/<name>`               — js-sdk production shape (scoped)
- *   4. `vault/secrets/scoped/<scope>/<name>`         — js-sdk production shape (scoped, vault)
- *   5. `<scope>/secrets/<name>`                      — alternate scope-first shape
- *   6. `<scope>/vault/secrets/<name>`                — alternate scope-first (vault)
- *
- * The js-sdk `resolveSecretPath` helper emits shapes 1-4 (see
- * `packages/sdk-services/src/secrets/paths.ts`); shapes 5-6 exist for
- * backward compatibility with older callers that prefixed the scope.
- */
-function parseSecretPath(path: string): { scope?: string; secretName: string } | null {
-  if (!path) return null;
-  // Normalize any leading slash + trailing slash.
-  const normalized = path.replace(/^\/+/, "").replace(/\/+$/, "");
-  if (normalized.length === 0) return null;
-  const segments = normalized.split("/");
-  // Locate the `secrets` (or `vault/secrets`) segment.
-  let anchor = -1;
-  for (let i = 0; i < segments.length; i += 1) {
-    if (segments[i] === "secrets") {
-      anchor = i;
-      break;
-    }
-  }
-  if (anchor < 0) return null;
-  // Sol MAJOR-1: recognize the js-sdk production shape
-  // `secrets/scoped/<scope>/<name>`. When the segment immediately after
-  // `secrets` is the literal `scoped`, the following segment is the
-  // scope and the segment after that is the secret name. Anything
-  // beyond the secret name is not a legal single-secret grant.
-  if (segments[anchor + 1] === "scoped") {
-    const scopeSegment = segments[anchor + 2];
-    const scopedName = segments[anchor + 3];
-    if (!scopeSegment || scopeSegment.length === 0) return null;
-    if (!scopedName || scopedName.length === 0) return null;
-    if (anchor + 4 !== segments.length) return null;
-    // A scope-first prefix in front of `secrets/scoped/...` is not a
-    // legal shape — the js-sdk never emits it and mixing both scope
-    // conventions in one path is ambiguous.
-    for (let i = 0; i < anchor; i += 1) {
-      const seg = segments[i]!;
-      if (seg !== "vault") return null;
-    }
-    return { scope: scopeSegment, secretName: scopedName };
-  }
-  // Legacy shape: `secrets/<name>` (unscoped) or `<scope>/secrets/<name>`
-  // (scope-first). The `vault` segment may sit immediately before
-  // `secrets` — treat it as part of the anchor prefix (no scope
-  // contribution).
-  const secretName = segments[anchor + 1];
-  if (!secretName || secretName.length === 0) return null;
-  // Anything remaining after the secret name is not a legal single-secret
-  // grant.
-  if (anchor + 2 !== segments.length) return null;
-  // Scope is any segment that precedes the anchor and is NOT `vault`.
-  const scopeSegments: string[] = [];
-  for (let i = 0; i < anchor; i += 1) {
-    const seg = segments[i]!;
-    if (seg === "vault") continue;
-    scopeSegments.push(seg);
-  }
-  const scope = scopeSegments.length > 0 ? scopeSegments.join("/") : undefined;
-  return { scope, secretName };
-}

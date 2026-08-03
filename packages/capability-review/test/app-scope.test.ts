@@ -25,7 +25,11 @@ import type {
 } from "../src/model.js";
 import { buildStatement } from "../src/statements.js";
 
-const SPACE = "tinycloud:pkh:eip155:1:0x1111111111111111111111111111111111111111:default";
+const ACCOUNT = "0x1111111111111111111111111111111111111111";
+// Non-secrets space — used in negative tests to prove space-check fails closed.
+const SPACE = `tinycloud:pkh:eip155:1:${ACCOUNT}:default`;
+// Structurally-named secrets space — required for app-scoped annotation.
+const SECRETS_SPACE = `tinycloud:pkh:eip155:1:${ACCOUNT}:secrets`;
 
 function kvGrant(path: string, verbs: string[]): CapabilityGrant {
   return {
@@ -71,6 +75,34 @@ function secretsServiceGrant(
     actions: verbs.map((verb) => ({
       id: `tinycloud.secrets\x00${SPACE}\x00${path}\x00tinycloud.secrets/${verb}`,
       ability: `tinycloud.secrets/${verb}`,
+      verb,
+      required: false,
+      selected: true,
+      editable: true,
+      caveats: [{}],
+    })),
+  };
+}
+
+// A KV grant on the structurally-named secrets space with the canonical
+// vault/secrets/scoped/<scope>/<name> path. This is the only shape that
+// can receive app-scoped annotation after the Blocker-4 fix.
+function kvSecretsGrant(scope: string, name: string, verbs: string[]): CapabilityGrant {
+  const path = `vault/secrets/scoped/${scope}/${name}`;
+  return {
+    id: `tinycloud.kv\x00${SECRETS_SPACE}\x00${path}`,
+    family: "secret-read",
+    severity: "sensitive",
+    service: "tinycloud.kv",
+    space: SECRETS_SPACE,
+    path,
+    owner: null,
+    ownedBySelf: true,
+    displayLabel: "",
+    metadataLabel: null,
+    actions: verbs.map((verb) => ({
+      id: `tinycloud.kv\x00${SECRETS_SPACE}\x00${path}\x00tinycloud.kv/${verb}`,
+      ability: `tinycloud.kv/${verb}`,
       verb,
       required: false,
       selected: true,
@@ -135,8 +167,8 @@ describe("normalizeSecretVerb", () => {
 });
 
 describe("findMatchingDeclaredSecret — js-sdk production shapes", () => {
-  it("matches secrets/scoped/<scope>/<name> against a scoped declaration", () => {
-    const grant = kvGrant("secrets/scoped/listen/ANTHROPIC_KEY", ["get"]);
+  it("matches vault/secrets/scoped/<scope>/<name> (canonical js-sdk shape)", () => {
+    const grant = kvGrant("vault/secrets/scoped/listen/ANTHROPIC_KEY", ["get"]);
     const declared: DeclaredScopedSecret[] = [
       { secretName: "ANTHROPIC_KEY", scope: "listen", actions: ["read"] },
     ];
@@ -155,7 +187,7 @@ describe("findMatchingDeclaredSecret — js-sdk production shapes", () => {
   });
 
   it("matches multiple normalized verbs (read/write -> get/put)", () => {
-    const grant = kvGrant("secrets/scoped/listen/API_KEY", ["get", "put"]);
+    const grant = kvGrant("vault/secrets/scoped/listen/API_KEY", ["get", "put"]);
     const declared: DeclaredScopedSecret[] = [
       { secretName: "API_KEY", scope: "listen", actions: ["read", "write"] },
     ];
@@ -163,43 +195,90 @@ describe("findMatchingDeclaredSecret — js-sdk production shapes", () => {
   });
 
   it("rejects a grant asking for an undeclared verb", () => {
-    const grant = kvGrant("secrets/scoped/listen/API_KEY", ["get", "del"]);
+    const grant = kvGrant("vault/secrets/scoped/listen/API_KEY", ["get", "del"]);
     const declared: DeclaredScopedSecret[] = [
       { secretName: "API_KEY", scope: "listen", actions: ["read", "write"] },
     ];
     expect(findMatchingDeclaredSecret(grant, declared)).toBeNull();
   });
 
-  it("rejects a scoped grant against an unscoped declaration", () => {
-    const grant = kvGrant("secrets/scoped/listen/API_KEY", ["get"]);
+  it("rejects a scoped grant against an unscoped declaration (no scope in declaration)", () => {
+    const grant = kvGrant("vault/secrets/scoped/listen/API_KEY", ["get"]);
     const declared: DeclaredScopedSecret[] = [
       { secretName: "API_KEY", actions: ["read"] },
     ];
+    // Unscoped declarations lack a scope field; they cannot match the
+    // vault/secrets/scoped/<scope>/<name> pattern.
     expect(findMatchingDeclaredSecret(grant, declared)).toBeNull();
   });
 
-  it("rejects a scoped-name mismatch even at the same scope", () => {
-    const grant = kvGrant("secrets/scoped/listen/API_KEY", ["get"]);
+  it("rejects when the exact path doesn't match the declared name", () => {
+    const grant = kvGrant("vault/secrets/scoped/listen/API_KEY", ["get"]);
     const declared: DeclaredScopedSecret[] = [
       { secretName: "OTHER_KEY", scope: "listen", actions: ["read"] },
     ];
+    // vault/secrets/scoped/listen/API_KEY ≠ vault/secrets/scoped/listen/OTHER_KEY
     expect(findMatchingDeclaredSecret(grant, declared)).toBeNull();
   });
 
-  it("still matches legacy scope-first `<scope>/secrets/<name>` shape", () => {
+  it("does NOT match legacy scope-first `<scope>/secrets/<name>` shape (fail-closed)", () => {
+    // js-sdk never emits this shape; annotation loss is demote-only.
     const grant = kvGrant("listen/secrets/API_KEY", ["get"]);
     const declared: DeclaredScopedSecret[] = [
       { secretName: "API_KEY", scope: "listen", actions: ["read"] },
     ];
-    expect(findMatchingDeclaredSecret(grant, declared)).not.toBeNull();
+    expect(findMatchingDeclaredSecret(grant, declared)).toBeNull();
   });
 
-  it("matches unscoped secrets/<name>", () => {
+  it("does NOT match `secrets/scoped/<scope>/<name>` without vault/ prefix (fail-closed)", () => {
+    // js-sdk emits vault/secrets/scoped/... — the non-vault shape is not canonical.
+    const grant = kvGrant("secrets/scoped/listen/API_KEY", ["get"]);
+    const declared: DeclaredScopedSecret[] = [
+      { secretName: "API_KEY", scope: "listen", actions: ["read"] },
+    ];
+    expect(findMatchingDeclaredSecret(grant, declared)).toBeNull();
+  });
+
+  it("does NOT match unscoped secrets/<name> (no vault path, no scope)", () => {
+    // Unscoped paths don't match vault/secrets/scoped/... and unscoped
+    // declarations have no scope to build an expected path from.
     const grant = kvGrant("secrets/API_KEY", ["get"]);
     const declared: DeclaredScopedSecret[] = [
       { secretName: "API_KEY", actions: ["read"] },
     ];
-    expect(findMatchingDeclaredSecret(grant, declared)).not.toBeNull();
+    expect(findMatchingDeclaredSecret(grant, declared)).toBeNull();
+  });
+
+  it("rejects a secretName that fails SECRET_NAME_RE (lowercase)", () => {
+    const grant = kvGrant("vault/secrets/scoped/listen/api_key", ["get"]);
+    const declared: DeclaredScopedSecret[] = [
+      { secretName: "api_key", scope: "listen", actions: ["read"] },
+    ];
+    expect(findMatchingDeclaredSecret(grant, declared)).toBeNull();
+  });
+
+  it("rejects a reserved scope (default)", () => {
+    const grant = kvGrant("vault/secrets/scoped/default/API_KEY", ["get"]);
+    const declared: DeclaredScopedSecret[] = [
+      { secretName: "API_KEY", scope: "default", actions: ["read"] },
+    ];
+    expect(findMatchingDeclaredSecret(grant, declared)).toBeNull();
+  });
+
+  it("rejects a reserved scope (global)", () => {
+    const grant = kvGrant("vault/secrets/scoped/global/API_KEY", ["get"]);
+    const declared: DeclaredScopedSecret[] = [
+      { secretName: "API_KEY", scope: "global", actions: ["read"] },
+    ];
+    expect(findMatchingDeclaredSecret(grant, declared)).toBeNull();
+  });
+
+  it("rejects a non-canonical scope (uppercase)", () => {
+    const grant = kvGrant("vault/secrets/scoped/Listen/API_KEY", ["get"]);
+    const declared: DeclaredScopedSecret[] = [
+      { secretName: "API_KEY", scope: "Listen", actions: ["read"] },
+    ];
+    expect(findMatchingDeclaredSecret(grant, declared)).toBeNull();
   });
 
   it("returns null for a path that isn't secret-shaped", () => {
@@ -213,7 +292,7 @@ describe("findMatchingDeclaredSecret — js-sdk production shapes", () => {
 
 describe("annotateAppScopedGrants", () => {
   it("labels a matching grant under origin-bound trust", () => {
-    const grant = kvGrant("secrets/scoped/listen/API_KEY", ["get"]);
+    const grant = kvSecretsGrant("listen", "API_KEY", ["get"]);
     const m = model([grant]);
     const declared: DeclaredScopedSecret[] = [
       { secretName: "API_KEY", scope: "listen", actions: ["read"] },
@@ -229,7 +308,7 @@ describe("annotateAppScopedGrants", () => {
   });
 
   it("never labels under unsigned trust — metadata cannot expand authority", () => {
-    const grant = kvGrant("secrets/scoped/listen/API_KEY", ["get"]);
+    const grant = kvSecretsGrant("listen", "API_KEY", ["get"]);
     const m: CapabilityReviewModel = {
       ...model([grant]),
       metadataTrust: { status: "unsigned", reason: "no manifest" },
@@ -241,8 +320,9 @@ describe("annotateAppScopedGrants", () => {
     expect(out.permissions[0]?.metadataLabel).toBeNull();
   });
 
-  it("keeps a global app-declared secret sensitive", () => {
-    const grant = kvGrant("secrets/API_KEY", ["get"]);
+  it("keeps a global app-declared secret sensitive (no scope)", () => {
+    // Unscoped declarations have no scope and cannot form a vault path.
+    const grant = kvSecretsGrant("listen", "API_KEY", ["get"]);
     const out = annotateAppScopedGrants(model([grant]), {
       secrets: [{ secretName: "API_KEY", actions: ["read"] }],
     });
@@ -251,7 +331,7 @@ describe("annotateAppScopedGrants", () => {
   });
 
   it("presents an exactly proven app-scoped secret as standard", () => {
-    const grant = kvGrant("secrets/scoped/listen/API_KEY", ["get"]);
+    const grant = kvSecretsGrant("listen", "API_KEY", ["get"]);
     const m = model([grant]);
     const declared: DeclaredScopedSecret[] = [
       { secretName: "API_KEY", scope: "listen", actions: ["read"] },
@@ -292,7 +372,7 @@ describe("annotateAppScopedGrants — recognized-verb allowlist (Sol MAJOR)", ()
     // standard severity. `peek` is not in the recognized set, so the
     // grant retains its `sensitive` classification and never carries
     // `appScopedSecret`.
-    const grant = kvGrant("secrets/scoped/listen/API_KEY", ["peek"]);
+    const grant = kvSecretsGrant("listen", "API_KEY", ["peek"]);
     const declared: DeclaredScopedSecret[] = [
       { secretName: "API_KEY", scope: "listen", actions: ["peek"] },
     ];
@@ -326,7 +406,7 @@ describe("annotateAppScopedGrants — recognized-verb allowlist (Sol MAJOR)", ()
     // Mixed recognized + unrecognized verbs must still fail closed. A
     // caller cannot smuggle `admin` in alongside `get` to inherit the
     // read-friendly copy for the whole grant.
-    const grant = kvGrant("secrets/scoped/listen/API_KEY", ["get", "admin"]);
+    const grant = kvSecretsGrant("listen", "API_KEY", ["get", "admin"]);
     const declared: DeclaredScopedSecret[] = [
       { secretName: "API_KEY", scope: "listen", actions: ["read", "admin"] },
     ];
@@ -341,7 +421,7 @@ describe("annotateAppScopedGrants — recognized-verb allowlist (Sol MAJOR)", ()
     // declares an unknown verb (`peek`) alongside must fail closed.
     // Otherwise a compromised manifest could widen future authority by
     // stapling an unknown declared verb next to a recognized one.
-    const grant = kvGrant("secrets/scoped/listen/API_KEY", ["get"]);
+    const grant = kvSecretsGrant("listen", "API_KEY", ["get"]);
     const declared: DeclaredScopedSecret[] = [
       { secretName: "API_KEY", scope: "listen", actions: ["read", "peek"] },
     ];
@@ -354,7 +434,7 @@ describe("annotateAppScopedGrants — recognized-verb allowlist (Sol MAJOR)", ()
   it("still annotates a recognized-verb grant with a recognized declaration", () => {
     // Regression guard: the allowlist gate must not break the happy
     // path — read/write/delete (get/put/del) all remain eligible.
-    const grant = kvGrant("secrets/scoped/listen/API_KEY", ["get", "put"]);
+    const grant = kvSecretsGrant("listen", "API_KEY", ["get", "put"]);
     const declared: DeclaredScopedSecret[] = [
       { secretName: "API_KEY", scope: "listen", actions: ["read", "write"] },
     ];
@@ -402,9 +482,9 @@ describe("buildStatement — appScopedSecret branch verb gate (defense-in-depth)
 
   it("still renders friendly copy for a legitimately-stamped recognized grant", () => {
     // Regression guard: the defense-in-depth gate must not break the
-    // happy path. A grant with recognized `get` verbs and a valid
-    // `appScopedSecret` continues to render the friendly copy.
-    const grant = kvGrant("secrets/scoped/listen/API_KEY", ["get"]);
+    // happy path. A grant with recognized `get` verbs, KV service,
+    // secrets space, and canonical vault path renders the friendly copy.
+    const grant = kvSecretsGrant("listen", "API_KEY", ["get"]);
     const stamped: CapabilityGrant = {
       ...grant,
       appScopedSecret: { secretName: "API_KEY", scope: "listen" },
@@ -434,5 +514,163 @@ describe("buildStatement — appScopedSecret branch verb gate (defense-in-depth)
     expect(annotated.appScopedSecret).toBeUndefined();
     const statement = buildStatement(annotated);
     expect(statement.primaryText).not.toBe("Read the app secret API_KEY");
+  });
+});
+
+// ─── Blocker 4 regression suite ───────────────────────────────────────────────
+// Proves the exact-resource proof gate: service, space, and path must all match
+// the manifest-derived canonical tuple for any sensitive → standard transition.
+
+describe("annotateAppScopedGrants — Blocker 4: exact-resource proof gate", () => {
+  const DECLARED: DeclaredScopedSecret[] = [
+    { secretName: "API_KEY", scope: "listen", actions: ["read"] },
+  ];
+
+  it("Sol probe repro (must fail closed): tinycloud.secrets service on unrelated space and wrong path", () => {
+    // Exact repro of the pre-fix exploit: origin-bound declaration
+    // {API_KEY/listen/read} must NOT annotate a tinycloud.secrets/get
+    // grant on an unrelated space at path secrets/scoped/listen/API_KEY.
+    const grant = secretsServiceGrant(
+      "secrets/scoped/listen/API_KEY",
+      ["get"],
+      "secret-mutation",
+      "sensitive",
+    );
+    const out = annotateAppScopedGrants(model([grant]), { secrets: DECLARED });
+    const g = out.permissions[0]!;
+    expect(g.severity).toBe("sensitive");
+    expect(g.appScopedSecret).toBeUndefined();
+    expect(g.metadataLabel).toBeNull();
+    // The literal fallback must name the actual service/actions.
+    const stmt = buildStatement(g);
+    expect(stmt.primaryText).not.toContain("app secret");
+  });
+
+  it("wrong space: KV grant on vault path but non-secrets space is not annotated", () => {
+    // tinycloud.kv + vault/secrets/scoped/... + :default space = fail closed.
+    const grant = kvGrant("vault/secrets/scoped/listen/API_KEY", ["get"]);
+    // grant.space is the :default SPACE constant — not a secrets space.
+    const out = annotateAppScopedGrants(model([grant]), { secrets: DECLARED });
+    const g = out.permissions[0]!;
+    expect(g.severity).toBe("sensitive");
+    expect(g.appScopedSecret).toBeUndefined();
+  });
+
+  it("wrong path: tinycloud.kv on secrets space but path missing vault/ prefix", () => {
+    // secrets/scoped/listen/API_KEY without vault/ prefix is not canonical.
+    const grant: CapabilityGrant = {
+      ...kvSecretsGrant("listen", "API_KEY", ["get"]),
+      path: "secrets/scoped/listen/API_KEY",
+    };
+    const out = annotateAppScopedGrants(model([grant]), { secrets: DECLARED });
+    const g = out.permissions[0]!;
+    expect(g.severity).toBe("sensitive");
+    expect(g.appScopedSecret).toBeUndefined();
+  });
+
+  it("wrong path: legacy scope-first shape on secrets space is not annotated", () => {
+    const grant: CapabilityGrant = {
+      ...kvSecretsGrant("listen", "API_KEY", ["get"]),
+      path: "listen/vault/secrets/API_KEY",
+    };
+    const out = annotateAppScopedGrants(model([grant]), { secrets: DECLARED });
+    expect(out.permissions[0]?.appScopedSecret).toBeUndefined();
+  });
+
+  it("wrong service: tinycloud.secrets/get on secrets space at vault path is not annotated", () => {
+    // The named-secrets service is NOT in KV_SECRET_SERVICES.
+    const grant: CapabilityGrant = {
+      ...secretsServiceGrant(
+        "vault/secrets/scoped/listen/API_KEY",
+        ["get"],
+        "secret-mutation",
+        "sensitive",
+      ),
+      space: SECRETS_SPACE,
+    };
+    const out = annotateAppScopedGrants(model([grant]), { secrets: DECLARED });
+    const g = out.permissions[0]!;
+    expect(g.severity).toBe("sensitive");
+    expect(g.appScopedSecret).toBeUndefined();
+  });
+
+  it("happy path: tinycloud.kv on literal 'secrets' space annotates correctly", () => {
+    const grant: CapabilityGrant = {
+      ...kvSecretsGrant("listen", "API_KEY", ["get"]),
+      space: "secrets",
+    };
+    const out = annotateAppScopedGrants(model([grant]), { secrets: DECLARED });
+    const g = out.permissions[0]!;
+    expect(g.severity).toBe("standard");
+    expect(g.appScopedSecret).toEqual({ secretName: "API_KEY", scope: "listen" });
+    expect(g.metadataLabel).toBe("Secret: API_KEY · Scope: listen");
+  });
+
+  it("happy path: tinycloud.kv on DID-style :secrets space annotates correctly", () => {
+    // Regression guard: tinycloud:pkh:eip155:1:0x...:secrets must annotate.
+    const out = annotateAppScopedGrants(
+      model([kvSecretsGrant("listen", "API_KEY", ["get"])]),
+      { secrets: DECLARED },
+    );
+    const g = out.permissions[0]!;
+    expect(g.severity).toBe("standard");
+    expect(g.metadataLabel).toBe("Secret: API_KEY · Scope: listen");
+  });
+
+  it("happy path: scoped secret remains in the top-level secret-reach count (Blocker 2 invariant)", () => {
+    // Even after demotion to standard severity, the grant must still count
+    // as reaching secret data (grantReachesSecretDataOrDecryption = true).
+    // This is verified via the sensitive-reach suite; here we confirm
+    // appScopedSecret is set so the UI can still include it in the count.
+    const out = annotateAppScopedGrants(
+      model([kvSecretsGrant("listen", "API_KEY", ["get"])]),
+      { secrets: DECLARED },
+    );
+    const g = out.permissions[0]!;
+    expect(g.severity).toBe("standard");
+    expect(g.appScopedSecret).toBeDefined();
+    // family remains secret-read, so grantReachesSecretDataOrDecryption
+    // returns true regardless of severity.
+    expect(g.family).toBe("secret-read");
+  });
+});
+
+describe("buildStatement — Blocker 4: defense-in-depth exact-resource checks", () => {
+  it("falls back when appScopedSecret is stamped but service is tinycloud.secrets", () => {
+    const grant: CapabilityGrant = {
+      ...secretsServiceGrant(
+        "vault/secrets/scoped/listen/API_KEY",
+        ["get"],
+        "secret-read",
+        "standard",
+      ),
+      space: SECRETS_SPACE,
+      appScopedSecret: { secretName: "API_KEY", scope: "listen" },
+      metadataLabel: "Secret: API_KEY · Scope: listen",
+    };
+    const stmt = buildStatement(grant);
+    expect(stmt.primaryText).not.toContain("app secret");
+  });
+
+  it("falls back when appScopedSecret is stamped but space is not a secrets space", () => {
+    const grant: CapabilityGrant = {
+      ...kvSecretsGrant("listen", "API_KEY", ["get"]),
+      space: SPACE, // :default — not a secrets space
+      appScopedSecret: { secretName: "API_KEY", scope: "listen" },
+      severity: "standard",
+    };
+    const stmt = buildStatement(grant);
+    expect(stmt.primaryText).not.toContain("app secret");
+  });
+
+  it("falls back when appScopedSecret is stamped but path is non-canonical", () => {
+    const grant: CapabilityGrant = {
+      ...kvSecretsGrant("listen", "API_KEY", ["get"]),
+      path: "secrets/scoped/listen/API_KEY", // missing vault/
+      appScopedSecret: { secretName: "API_KEY", scope: "listen" },
+      severity: "standard",
+    };
+    const stmt = buildStatement(grant);
+    expect(stmt.primaryText).not.toContain("app secret");
   });
 });

@@ -17,7 +17,9 @@
 
 import type { CapabilityGrant } from "./model.js";
 import {
+  KV_SECRET_SERVICES,
   RECOGNIZED_APP_SCOPE_SECRET_VERBS,
+  isSecretsSpace,
   normalizeSecretVerb,
 } from "./app-scope.js";
 
@@ -230,14 +232,8 @@ function isSecretsVariablesPath(path: string): boolean {
     path.startsWith("vars/")
   );
 }
-function isSecretsSqlSpace(space: string): boolean {
-  // A SQL grant on the "secrets" space or a `tinycloud:...:secrets` space.
-  return (
-    space === "secrets" ||
-    /:secrets(?:\/|$)/.test(space) ||
-    /:secrets:/.test(space)
-  );
-}
+// isSecretsSpace is imported from app-scope.ts to keep one shared predicate
+// across the annotation gate and the structural counting/copy surfaces.
 
 function grantVerbSet(grant: CapabilityGrant): Set<string> {
   return new Set(grant.actions.map((action) => verbOf(action.ability)));
@@ -274,7 +270,7 @@ export function grantReachesSecretDataOrDecryption(
   // projected. They still reach TinyCloud Secrets data and belong here.
   return (
     (KV_SERVICES.has(grant.service) || SQL_SERVICES.has(grant.service)) &&
-    isSecretsSqlSpace(grant.space)
+    isSecretsSpace(grant.space)
   );
 }
 
@@ -330,6 +326,20 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
     );
     if (!allActionsRecognized) {
       return fallbackStatement(grant);
+    }
+    // Defense-in-depth (Blocker 4): re-verify the exact resource tuple even
+    // if this grant somehow bypassed annotateAppScopedGrants. A wrong service
+    // (tinycloud.secrets), a non-secrets space, or a non-canonical path must
+    // never produce friendly copy — the operator must see the raw ability string.
+    if (!KV_SECRET_SERVICES.has(service) || !isSecretsSpace(space)) {
+      return fallbackStatement(grant);
+    }
+    if (grant.appScopedSecret.scope) {
+      const expectedPath = `vault/secrets/scoped/${grant.appScopedSecret.scope}/${grant.appScopedSecret.secretName}`;
+      const normalizedPath = path.replace(/^\/+/, "").replace(/\/+$/, "");
+      if (normalizedPath !== expectedPath) {
+        return fallbackStatement(grant);
+      }
     }
     let primaryText: string;
     if (verbs.hasRead && verbs.hasWrite) {
@@ -416,7 +426,7 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
     // sits inside a capabilities grant whose space names the secrets
     // service — but per the contract the family is bootstrap-capabilities
     // for both. We split on the space, which is a structural fact.
-    if (isSecretsSqlSpace(space) || grant.family === "secret-read") {
+    if (isSecretsSpace(space) || grant.family === "secret-read") {
       return {
         primaryText: "Check permissions for your secrets",
         service,
@@ -525,7 +535,7 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
     const hasSqlMutation = verbs.hasWrite || verbs.hasSchema;
     const sqlReadOnly = verbs.hasRead && !hasSqlMutation;
     const sqlWriteOnly = hasSqlMutation && !verbs.hasRead;
-    if (isSecretsSqlSpace(space)) {
+    if (isSecretsSpace(space)) {
       let primaryText: string;
       if (verbs.hasRead && hasSqlMutation) {
         primaryText = "Read and update TinyCloud Secrets data";

@@ -52,14 +52,19 @@ describe("buildStatement — generic app data", () => {
   });
 
   it("uses the exactly proven app-scoped secret name", () => {
-    expect(
-      buildStatement(
-        grant("secret-read", ["tinycloud.kv/get"], {
-          secretName: "GOOGLE_MEET_TOKENS",
-          scope: "listen",
-        }),
-      ).primaryText,
-    ).toBe("Read the app secret GOOGLE_MEET_TOKENS");
+    // buildStatement defense-in-depth requires exact service/space/path tuple.
+    const scopedGrant: CapabilityGrant = {
+      ...grant("secret-read", ["tinycloud.kv/get"], {
+        secretName: "GOOGLE_MEET_TOKENS",
+        scope: "listen",
+      }),
+      service: "tinycloud.kv",
+      space: "tinycloud:pkh:eip155:1:0x1111111111111111111111111111111111111111:secrets",
+      path: "vault/secrets/scoped/listen/GOOGLE_MEET_TOKENS",
+    };
+    expect(buildStatement(scopedGrant).primaryText).toBe(
+      "Read the app secret GOOGLE_MEET_TOKENS",
+    );
   });
 
   it("falls back for an unknown app-data verb", () => {
