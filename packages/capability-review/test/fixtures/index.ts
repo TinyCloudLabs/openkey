@@ -261,6 +261,64 @@ export const REAL_KV_SECRET_NAMESPACE_LIST = siwe([
   }),
 ]);
 
+export const REAL_KV_SECRET_ROOT_GET = siwe([
+  makeRecapResource({
+    [`${SECRETS_SPACE}/kv`]: {
+      "tinycloud.kv/get": [{}],
+    },
+  }),
+]);
+
+export const REAL_KV_SECRET_ROOT_PUT = siwe([
+  makeRecapResource({
+    [`${SECRETS_SPACE}/kv`]: {
+      "tinycloud.kv/put": [{}],
+    },
+  }),
+]);
+
+export const REAL_KV_SECRET_ROOT_DEL = siwe([
+  makeRecapResource({
+    [`${SECRETS_SPACE}/kv`]: {
+      "tinycloud.kv/del": [{}],
+    },
+  }),
+]);
+
+export const REAL_KV_SECRET_ROOT_LIST_AND_PUT = siwe([
+  makeRecapResource({
+    [`${SECRETS_SPACE}/kv`]: {
+      "tinycloud.kv/list": [{}],
+      "tinycloud.kv/put": [{}],
+    },
+  }),
+]);
+
+export const REAL_KV_SECRET_ROOT_LIST_AND_UNKNOWN = siwe([
+  makeRecapResource({
+    [`${SECRETS_SPACE}/kv`]: {
+      "tinycloud.kv/list": [{}],
+      "tinycloud.kv/rotate": [{}],
+    },
+  }),
+]);
+
+export const REAL_SQL_SECRET_ROOT_READ = siwe([
+  makeRecapResource({
+    [`${SECRETS_SPACE}/sql`]: {
+      "tinycloud.sql/read": [{}],
+    },
+  }),
+]);
+
+export const REAL_SQL_SECRET_ROOT_WRITE = siwe([
+  makeRecapResource({
+    [`${SECRETS_SPACE}/sql`]: {
+      "tinycloud.sql/write": [{}],
+    },
+  }),
+]);
+
 export const FIXTURE_META = {
   address: ADDR,
   chainId: CHAIN,

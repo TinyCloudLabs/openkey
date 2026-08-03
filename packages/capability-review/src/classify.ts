@@ -26,6 +26,7 @@ import type {
   CapabilityFamily,
   PermissionSeverity,
 } from "./model.js";
+import { isSecretsSpace } from "./app-scope.js";
 
 interface RecapEntryLike {
   service: string;
@@ -130,6 +131,14 @@ const SECRETS_KNOWN_VERBS = new Set([
   "metadata",
 ]);
 
+const SQL_KNOWN_VERBS = new Set([
+  "read",
+  "select",
+  "write",
+  "schema",
+  "admin",
+]);
+
 function verbOf(action: string): string {
   if (action.includes("/")) return action.slice(action.indexOf("/") + 1);
   return action;
@@ -190,6 +199,13 @@ function isNamespaceListing(actions: string[]): boolean {
   });
 }
 
+function isSecretValueRead(actions: string[]): boolean {
+  return actions.some((action) => {
+    const verb = verbOf(action);
+    return verb === "get" || verb === "read" || verb === "select";
+  });
+}
+
 export function classifyRecapEntry(entry: RecapEntryLike): {
   family: CapabilityFamily;
   displayLabel: string;
@@ -221,26 +237,48 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     spaceOwner !== null &&
     (ownershipAxis === null || spaceOwner !== ownershipAxis);
 
-  // Enumerating secret names/metadata is a distinct, sensitive operation.
-  // KV namespace resources can arrive with an empty `path` when the wire URI
-  // is `<space>/kv`; named-secrets namespace actions likewise have no path.
-  // Do not let either shape fall through to routine bootstrap KV access.
-  const isWholeSecretNamespaceList =
-    isNamespaceListing(entry.actions) &&
-    ((BOOTSTRAP_KV_SERVICES.has(service) &&
-      isWholeSecretsNamespace(space, path)) ||
-      (SECRETS_SERVICES.has(service) && path === ""));
-  if (isWholeSecretNamespaceList) {
-    return {
-      family: "secret-namespace-list",
-      displayLabel: "Secret names and metadata — (entire secrets namespace)",
-    };
-  }
-
   // KV entries with a secret path are classified as secret-read/mutation,
   // not generic bootstrap-kv. Real CLI secret requests use tinycloud.kv with
   // paths like "vault/secrets/DEPLOY_KEY" or "secrets/MY_SECRET".
   if (BOOTSTRAP_KV_SERVICES.has(service)) {
+    const hasMutation = entry.actions.some((a) =>
+      MUTATION_VERBS.has(verbOf(a)),
+    );
+    const hasUnknownVerb = entry.actions.some(
+      (a) => !SECRETS_KNOWN_VERBS.has(verbOf(a)),
+    );
+    const isSecretsShapedSpace = isSecretsSpace(space);
+    const isWholeSecretNamespace = isWholeSecretsNamespace(space, path);
+
+    // A mutation or unknown action always wins over list/metadata. This is
+    // deliberately before the namespace-read branch so mixed grants cannot
+    // hide write or fail-closed authority behind a listing label.
+    if (
+      (isSecretsShapedSpace || isWholeSecretNamespace) &&
+      (hasMutation || hasUnknownVerb)
+    ) {
+      return {
+        family: "secret-mutation",
+        displayLabel: `Secrets namespace (mutate) — ${path || "(entire namespace)"}`,
+      };
+    }
+
+    // An empty path on a secrets-shaped space is whole-namespace authority.
+    // A read here reaches every secret value, so it is sensitive rather than
+    // the attention-level severity used for one named secret.
+    if (
+      (isSecretsShapedSpace || isWholeSecretNamespace) &&
+      entry.actions.length > 0 &&
+      (isWholeSecretNamespace || isNamespaceListing(entry.actions))
+    ) {
+      return {
+        family: "secret-namespace-list",
+        displayLabel: isSecretValueRead(entry.actions)
+          ? "Secret data — (entire secrets namespace)"
+          : "Secret names and metadata — (entire secrets namespace)",
+      };
+    }
+
     if (
       path &&
       (path.startsWith("vault/secrets/") ||
@@ -248,7 +286,7 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
         path === "vault/secrets" ||
         path === "secrets")
     ) {
-      const isMutation = entry.actions.some((a) => MUTATION_VERBS.has(verbOf(a)));
+      const isMutation = hasMutation || hasUnknownVerb;
       const secretName = path
         .replace(/^vault\/secrets\/?/, "")
         .replace(/^secrets\/?/, "") || "(entire secrets namespace)";
@@ -257,6 +295,13 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
         displayLabel: isMutation
           ? `Named secret (mutate) — ${secretName}`
           : `Named secret (read) — ${secretName}`,
+      };
+    }
+
+    if (isSecretsShapedSpace) {
+      return {
+        family: "secret-read",
+        displayLabel: `Secret data — ${path || "(entire secrets namespace)"}`,
       };
     }
     // Cross-app KV grant: reading/writing another user's KV space is
@@ -280,6 +325,31 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
       return {
         family: "cross-app-data",
         displayLabel: "Cross-user SQL data",
+      };
+    }
+    if (isSecretsSpace(space)) {
+      const hasMutation = entry.actions.some((a) => {
+        const verb = verbOf(a);
+        return MUTATION_VERBS.has(verb) || verb === "schema";
+      });
+      const hasUnknownVerb = entry.actions.some(
+        (a) => !SQL_KNOWN_VERBS.has(verbOf(a)),
+      );
+      if (hasMutation || hasUnknownVerb) {
+        return {
+          family: "secret-mutation",
+          displayLabel: `Secrets data (mutate) — ${path || "(entire namespace)"}`,
+        };
+      }
+      if (isWholeSecretsNamespace(space, path)) {
+        return {
+          family: "secret-namespace-list",
+          displayLabel: "Secret data — (entire secrets namespace)",
+        };
+      }
+      return {
+        family: "secret-read",
+        displayLabel: `Secrets data — ${path || "(entire namespace)"}`,
       };
     }
     return { family: "bootstrap-sql", displayLabel: "SQL database" };
@@ -318,6 +388,14 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
         displayLabel: `Named secret (mutate) — ${describeName(path)}`,
       };
     }
+    if (path === "" && isNamespaceListing(entry.actions)) {
+      return {
+        family: "secret-namespace-list",
+        displayLabel: isSecretValueRead(entry.actions)
+          ? "Secret data — (entire secrets namespace)"
+          : "Secret names and metadata — (entire secrets namespace)",
+      };
+    }
     return {
       family: "secret-read",
       displayLabel: `Named secret (read) — ${describeName(path)}`,
@@ -353,6 +431,7 @@ function describeName(path: string): string {
 export function classifySeverityFromActions(
   family: CapabilityFamily,
   actions: string[],
+  scope?: { service: string; space: string; path: string },
 ): PermissionSeverity {
   const verbs = actions.map(verbOf);
   const hasMutation = verbs.some((v) => MUTATION_VERBS.has(v));
@@ -369,7 +448,13 @@ export function classifySeverityFromActions(
     case "cross-app-data":
       return "attention";
     case "secret-read":
-      return "attention";
+      return scope &&
+        (BOOTSTRAP_KV_SERVICES.has(scope.service) ||
+          BOOTSTRAP_SQL_SERVICES.has(scope.service)) &&
+        isSecretsSpace(scope.space) &&
+        isWholeSecretsNamespace(scope.space, scope.path)
+        ? "sensitive"
+        : "attention";
     case "secret-namespace-list":
       return "sensitive";
     case "secret-mutation":

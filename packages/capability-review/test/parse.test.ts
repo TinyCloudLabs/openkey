@@ -32,6 +32,13 @@ import {
   REAL_KV_SECRET_READ,
   REAL_KV_SECRET_MUTATION,
   REAL_KV_SECRET_NAMESPACE_LIST,
+  REAL_KV_SECRET_ROOT_GET,
+  REAL_KV_SECRET_ROOT_PUT,
+  REAL_KV_SECRET_ROOT_DEL,
+  REAL_KV_SECRET_ROOT_LIST_AND_PUT,
+  REAL_KV_SECRET_ROOT_LIST_AND_UNKNOWN,
+  REAL_SQL_SECRET_ROOT_READ,
+  REAL_SQL_SECRET_ROOT_WRITE,
   SECRETS_MUTATION_REQUEST,
   SECRETS_READ_REQUEST,
   UNKNOWN_SERVICE_REQUEST,
@@ -317,6 +324,41 @@ describe("parseCapabilityReview", () => {
         "tinycloud.kv/list",
       ]),
     ).toBe("sensitive");
+  });
+
+  it("classifies every root KV operation on :secrets as whole-namespace authority", () => {
+    for (const [message, family, severity] of [
+      [REAL_KV_SECRET_ROOT_GET, "secret-namespace-list", "sensitive"],
+      [REAL_KV_SECRET_ROOT_PUT, "secret-mutation", "sensitive"],
+      [REAL_KV_SECRET_ROOT_DEL, "secret-mutation", "sensitive"],
+      [REAL_KV_SECRET_ROOT_LIST_AND_PUT, "secret-mutation", "sensitive"],
+      [REAL_KV_SECRET_ROOT_LIST_AND_UNKNOWN, "secret-mutation", "sensitive"],
+    ] as const) {
+      const model = parseCapabilityReview(ctx({ message }));
+      expect(model.permissions).toHaveLength(1);
+      expect(model.permissions[0]?.family).toBe(family);
+      expect(model.permissions[0]?.severity).toBe(severity);
+      if (message === REAL_KV_SECRET_ROOT_LIST_AND_PUT) {
+        expect(buildStatement(model.permissions[0]!).primaryText).toBe(
+          "Manage all secrets stored in your vault",
+        );
+      }
+      if (message === REAL_KV_SECRET_ROOT_LIST_AND_UNKNOWN) {
+        expect(buildStatement(model.permissions[0]!).primaryText).not.toBe(
+          "View secret names and details",
+        );
+      }
+    }
+  });
+
+  it("classifies root SQL read/write on :secrets as secret authority", () => {
+    const read = parseCapabilityReview(ctx({ message: REAL_SQL_SECRET_ROOT_READ }));
+    expect(read.permissions[0]?.family).toBe("secret-namespace-list");
+    expect(read.permissions[0]?.severity).toBe("sensitive");
+
+    const write = parseCapabilityReview(ctx({ message: REAL_SQL_SECRET_ROOT_WRITE }));
+    expect(write.permissions[0]?.family).toBe("secret-mutation");
+    expect(write.permissions[0]?.severity).toBe("sensitive");
   });
 
   it("does not expose owner or path fragments in cross-user KV/SQL labels", () => {
