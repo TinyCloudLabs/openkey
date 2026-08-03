@@ -292,7 +292,16 @@ describe("buildStatement — happy-path friendly copy preserved", () => {
     );
   });
 
-  it("encryption with [create, decrypt] (short create verb) yields combined copy", () => {
+  it("encryption with [create, decrypt] (unregistered short create verb) falls back to literal", () => {
+    // Sol rejection re-fix: `tinycloud.encryption/create` is NOT in the
+    // canonical js-sdk registry (only `decrypt`, `network.create`, and
+    // `network.revoke` are registered). Mixing it with a registered
+    // `decrypt` must NOT let the whole grant inherit the friendly
+    // combined copy — that would give an unregistered wire shape
+    // reassuring "Create a decryption network and decrypt protected
+    // data" phrasing at sensitive severity. The fail-closed gate in
+    // ENCRYPTION_RECOGNIZED_ABILITIES forces the entire grant into the
+    // literal fallback so the operator sees the raw actions.
     const grant = makeGrant({
       family: "encryption-decrypt",
       service: "tinycloud.encryption",
@@ -303,9 +312,34 @@ describe("buildStatement — happy-path friendly copy preserved", () => {
       ],
       severity: "sensitive",
     });
-    expect(buildStatement(grant).primaryText).toBe(
+    const stmt = buildStatement(grant);
+    expect(stmt.primaryText).toBe(
+      "Perform tinycloud.encryption/create, tinycloud.encryption/decrypt on tinycloud.encryption",
+    );
+    expect(stmt.primaryText).not.toBe(
       "Create a decryption network and decrypt protected data",
     );
+    expect(stmt.primaryText).not.toBe("Decrypt protected data");
+    expect(stmt.primaryText).not.toBe("Create a decryption network");
+  });
+
+  it("encryption with [create] alone (unregistered short create verb) falls back to literal", () => {
+    // Sol rejection re-fix: an unknown-only grant carrying
+    // `tinycloud.encryption/create` must not render the friendly
+    // "Create a decryption network" copy — the wire shape is not in the
+    // canonical js-sdk registry.
+    const grant = makeGrant({
+      family: "encryption-decrypt",
+      service: "tinycloud.encryption",
+      path: "health-data",
+      abilities: ["tinycloud.encryption/create"],
+      severity: "attention",
+    });
+    const stmt = buildStatement(grant);
+    expect(stmt.primaryText).toBe(
+      "Perform tinycloud.encryption/create on tinycloud.encryption",
+    );
+    expect(stmt.primaryText).not.toBe("Create a decryption network");
   });
 
   it("KV apps path with [get] yields \"View your connected apps\"", () => {

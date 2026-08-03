@@ -10,10 +10,14 @@
 // standard severity even though no js-sdk producer emits them.
 //
 // The catalogs now enumerate ONLY the exact wire abilities per the
-// registry, plus the explicitly-tested compatibility paths
-// (`tinycloud.encryption/create` short-form, `tinycloud.kv/delete`
-// deprecated alias, `tinycloud.sql/select` deprecated alias). Anything
-// else falls back to the literal `Perform <actions> on <service>` copy.
+// registry, plus the explicitly-tested deprecated aliases that ARE
+// registered in ACCEPTED_ACTIONS (`tinycloud.kv/delete`,
+// `tinycloud.sql/select`). Anything else — including the
+// unregistered `tinycloud.encryption/create` short-form previously
+// admitted as a compatibility path — falls back to the literal
+// `Perform <actions> on <service>` copy. See
+// `statements-mixed-unknown.test.ts` for the encryption-side
+// fail-closed regressions.
 //
 // Also pins the empty-action-list handling for the capabilities,
 // secrets, and appScopedSecret branches — `every` on `[]` returns

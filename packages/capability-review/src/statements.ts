@@ -127,6 +127,14 @@ const RECOGNIZED_SECRETS_ACTIONS = new Set<string>([
 // compound alias is safer than dropping the dot-segment from every verb
 // blindly, because unrelated services could carry different meanings
 // (e.g. `sql/schema.migrate` should NOT be classified as `migrate`).
+//
+// The bare `create` short verb is retained in this set so any future
+// service that DOES register a `create` action can be classified
+// correctly by `classifyVerbs`. Whether friendly encryption copy fires
+// is gated separately by `ENCRYPTION_RECOGNIZED_ABILITIES`, which does
+// NOT admit `tinycloud.encryption/create` — that string is not in the
+// canonical js-sdk registry, so it falls back to literal even though
+// its short verb is a known "create" verb.
 const CREATE_VERBS = new Set(["create", "network.create"]);
 const SCHEMA_VERBS = new Set(["schema"]);
 const LIST_VERBS = new Set(["list"]);
@@ -387,14 +395,19 @@ const SQL_RECOGNIZED_ABILITIES = new Set<string>([
   "sql/admin",
 ]);
 
-// Encryption abilities. Per the canonical capability registry the
+// Encryption abilities. Per the canonical js-sdk capability registry
+// (`js-sdk/packages/bootstrap/src/generated/capabilities.ts`) the ONLY
 // registered wire shapes are `decrypt`, `network.create`, and
-// `network.revoke`. The bare `create` short-form is NOT registered but IS
-// present as a compatibility path exercised by the mixed-unknown positive
-// tests (see `statements-mixed-unknown.test.ts` — "encryption with
-// [create, decrypt] (short create verb) yields combined copy"), so it
-// stays in the catalog. The `unwrap` verb from the prior catalog is NOT
-// registered and no positive test exercises it — dropped.
+// `network.revoke`. The bare `create` short-form is NOT registered and
+// no js-sdk producer emits it — admitting it here previously let a
+// novel `tinycloud.encryption/create` grant inherit the friendly
+// "Create a decryption network" copy (unknown-only) or the combined
+// "Create a decryption network and decrypt protected data" copy (mixed
+// with a registered `decrypt`) at attention/sensitive severity, even
+// though the wire shape is unregistered. Fail closed on it.
+//
+// The `unwrap` verb from earlier catalogs is likewise NOT registered
+// and no positive test exercises it — dropped.
 const ENCRYPTION_RECOGNIZED_ABILITIES = new Set<string>([
   "tinycloud.encryption/decrypt",
   "encryption/decrypt",
@@ -402,13 +415,6 @@ const ENCRYPTION_RECOGNIZED_ABILITIES = new Set<string>([
   "encryption/network.create",
   "tinycloud.encryption/network.revoke",
   "encryption/network.revoke",
-  // Bare `create` short-form: retained because a positive test asserts
-  // the combined "Create a decryption network and decrypt protected data"
-  // copy for a grant carrying `tinycloud.encryption/create`. The
-  // downstream branch treats `create` via the CREATE_VERBS set (which
-  // includes both `create` and `network.create`).
-  "tinycloud.encryption/create",
-  "encryption/create",
 ]);
 
 /**
