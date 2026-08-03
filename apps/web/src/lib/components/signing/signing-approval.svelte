@@ -71,6 +71,37 @@
   }: Props = $props();
 
   const renderPlan = $derived(buildRenderPlan(model.permissions));
+  const permissionSections = $derived.by(() => {
+    const reviewGrants = renderPlan
+      .filter((bucket) => bucket.severity !== "standard")
+      .flatMap((bucket) => bucket.grants);
+    const standardGrants = renderPlan.find(
+      (bucket) => bucket.severity === "standard",
+    )?.grants ?? [];
+
+    return [
+      ...(reviewGrants.length > 0
+        ? [{
+            key: "review",
+            severity: "review" as const,
+            heading: "Permissions",
+            hint: "Sensitive access is shown first.",
+            grants: reviewGrants,
+            defaultOpen: true,
+          }]
+        : []),
+      ...(standardGrants.length > 0
+        ? [{
+            key: "standard",
+            severity: "standard" as const,
+            heading: "Standard permissions",
+            hint: "Routine bootstrap access.",
+            grants: standardGrants,
+            defaultOpen: false,
+          }]
+        : []),
+    ];
+  });
   const isEditable = $derived(model.protocol === "tinycloud-siwe-recap");
   const isMalformedRecap = $derived(model.protocol === "malformed-recap");
   const headline = $derived(
@@ -468,12 +499,12 @@
           {/if}
         </div>
 
-        {#each renderPlan as bucket}
+        {#each permissionSections as bucket (bucket.key)}
           <details
             class="severity-bucket"
             data-severity={bucket.severity}
             aria-label={bucket.heading}
-            open={bucket.severity !== "standard"}
+            open={bucket.defaultOpen}
           >
             <summary class="bucket-summary">
               <span class="bucket-heading">{bucket.heading}</span>
@@ -917,14 +948,6 @@
   .bucket-content {
     margin-top: 10px;
   }
-  .severity-bucket[data-severity="sensitive"] {
-    border-color: #f2c0c0;
-    background: #fff7f7;
-  }
-  .severity-bucket[data-severity="attention"] {
-    border-color: #ead8a5;
-    background: #fffbf3;
-  }
   .bucket-heading {
     font-size: 13px;
     font-weight: 700;
@@ -1096,7 +1119,7 @@
     padding: 12px;
     border-radius: 12px;
     overflow: auto;
-    max-height: 280px;
+    max-height: 180px;
     font-size: 12px;
     line-height: 1.5;
     white-space: pre-wrap;

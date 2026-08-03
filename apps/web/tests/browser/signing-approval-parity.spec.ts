@@ -283,11 +283,31 @@ test.describe('signing-approval browser parity — production adapters', () => {
         'details.severity-bucket[data-severity="standard"]',
       );
       await expect(standardPermissions).not.toHaveAttribute('open', '');
+      const reviewPermissions = details.locator(
+        'details.severity-bucket[data-severity="review"]',
+      );
+      await expect(reviewPermissions).toHaveCount(1);
+      await expect(reviewPermissions).toHaveAttribute('open', '');
+      await expect(
+        reviewPermissions.locator('.grant').first().locator('.grant-severity'),
+      ).toHaveText('Sensitive');
+      await expect(
+        details.locator(
+          'details.severity-bucket[data-severity="sensitive"], details.severity-bucket[data-severity="attention"]',
+        ),
+      ).toHaveCount(0);
       await expect(page.getByRole('button', { name: 'Copy text' })).toBeVisible();
       await expect(page.locator('[data-parity-harness] .grant')).toHaveCount(17);
       await expect(details.locator('.grant-severity[data-severity="sensitive"]')).toHaveCount(4);
       await expect(details.locator('.grant-severity[data-severity="attention"]')).toHaveCount(0);
       await expect(details.locator('.grant-severity[data-severity="standard"]')).toHaveCount(0);
+      const rawBytes = details.locator('.raw-bytes');
+      const rawViewport = await rawBytes.evaluate((element) => ({
+        clientHeight: element.clientHeight,
+        scrollHeight: element.scrollHeight,
+      }));
+      expect(rawViewport.clientHeight).toBeLessThanOrEqual(180);
+      expect(rawViewport.scrollHeight).toBeGreaterThan(rawViewport.clientHeight);
 
       await details.getByRole('button', { name: 'Edit' }).click();
       const editableActions = details.locator('input[type="checkbox"]:not(:disabled)');
