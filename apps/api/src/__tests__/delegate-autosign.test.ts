@@ -513,7 +513,7 @@ describe('delegateRouter Auto-Sign integration', () => {
     expect(signedMessages).toEqual([]);
   });
 
-  test('POST /api/delegate/sign rejects resources mixed across bootstrap candidates', async () => {
+  test('POST /api/delegate/sign accepts canonical account resources alongside the default anchor', async () => {
     const defaultResource = BOOTSTRAP_SESSION_REQUESTS.default.resources.find(
       (resource) => resource.space === 'default' && resource.path === '',
     );
@@ -526,11 +526,10 @@ describe('delegateRouter Auto-Sign integration', () => {
     const response = await postBootstrapMessage(message);
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
-      approved: false,
-      needsApproval: true,
-      code: 'outside_bootstrap_allowlist',
+      approved: true,
+      signature: expect.stringMatching(/^0x[0-9a-f]+$/i),
     });
-    expect(signedMessages).toEqual([]);
+    expect(signedMessages).toEqual([message]);
   });
 
   test('POST /api/delegate/sign rejects a default anchor combined with account raw encryption ability', async () => {
@@ -593,6 +592,38 @@ describe('delegateRouter Auto-Sign integration', () => {
       ...marker,
       actions: [...marker.actions, 'tinycloud.kv/del'],
     }]);
+
+    const response = await postBootstrapMessage(message);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      approved: false,
+      needsApproval: true,
+      code: 'outside_bootstrap_allowlist',
+    });
+    expect(signedMessages).toEqual([]);
+  });
+
+  test.each([
+    ['account registry delete', 'tinycloud.kv', 'applications/', (resource: typeof BOOTSTRAP_SESSION_REQUESTS.default.resources[number]) => ({
+      ...resource,
+      actions: [...resource.actions, 'tinycloud.kv/del'],
+    })],
+    ['delegation action other than list', 'tinycloud.delegation', '', (resource: typeof BOOTSTRAP_SESSION_REQUESTS.default.resources[number]) => ({
+      ...resource,
+      actions: ['tinycloud.delegation/revoke'],
+    })],
+    ['capabilities action other than read', 'tinycloud.capabilities', '', (resource: typeof BOOTSTRAP_SESSION_REQUESTS.default.resources[number]) => ({
+      ...resource,
+      actions: ['tinycloud.capabilities/write'],
+    })],
+  ])('POST /api/delegate/sign rejects %s from the canonical account bundle', async (_label, service, path, mutate) => {
+    const resource = BOOTSTRAP_SESSION_REQUESTS.default.resources.find(
+      (candidate) => candidate.space === 'account' &&
+        candidate.service === service &&
+        candidate.path === path,
+    );
+    if (!resource) throw new Error(`Missing canonical account resource for ${_label}`);
+    const message = bootstrapSessionSiweWithResources('default', [mutate(resource)]);
 
     const response = await postBootstrapMessage(message);
     expect(response.status).toBe(200);
