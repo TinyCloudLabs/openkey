@@ -155,60 +155,10 @@ test(
         allowHeaders: ['Content-Type', 'Authorization'],
       }),
     );
-    // Harness-scoped post-processor for the delegate preview/finalize
-    // responses. The real `delegateRouter` emits `permissions[].service` in
-    // short form (`kv`, `sql`, `capabilities`, ...) but `computeActionKey`
-    // canonicalizes to `tinycloud.<short>`. The widget's
-    // `validatePreviewSelection` compares the actionId projection of the
-    // returned permissions against the returned `selectedActionKeys`; the
-    // projected IDs would use the short form and the selected keys the
-    // canonical form, so the client-side check throws "permissions disagree
-    // with selectedActionKeys" and the review UI never progresses past the
-    // first Approve click. Canonicalizing the service field on the way out
-    // is a test-only workaround (documented) so the vertical browser proof
-    // can drive the full byte-for-byte flow without patching production
-    // code. Only `/authorize-sign-preview` and `/authorize-sign` responses
-    // are touched; every other route flows through untouched.
-    host.use('/api/delegate/*', async (c, next) => {
-      await next();
-      const path = c.req.path;
-      if (!path.endsWith('/authorize-sign-preview') && !path.endsWith('/authorize-sign')) {
-        return;
-      }
-      const res = c.res;
-      if (!res || res.status !== 200) return;
-      const contentType = res.headers.get('content-type') || '';
-      if (!contentType.includes('application/json')) return;
-      let body: any;
-      try {
-        body = await res.clone().json();
-      } catch {
-        return;
-      }
-      if (!body || !Array.isArray(body.permissions)) return;
-      let mutated = false;
-      const patched = body.permissions.map((p: any) => {
-        if (
-          p &&
-          typeof p.service === 'string' &&
-          p.service.length > 0 &&
-          !p.service.startsWith('tinycloud.')
-        ) {
-          mutated = true;
-          return { ...p, service: `tinycloud.${p.service}` };
-        }
-        return p;
-      });
-      if (!mutated) return;
-      body.permissions = patched;
-      c.res = new Response(JSON.stringify(body), {
-        status: res.status,
-        headers: {
-          'content-type': 'application/json',
-          ...Object.fromEntries(res.headers.entries()),
-        },
-      });
-    });
+    // No response mutation middleware — production routes now emit the
+    // canonical `tinycloud.<short>` service on `permissions[].service`
+    // themselves. The widget's `validatePreviewSelection` succeeds against
+    // the real, unmodified route output.
     host.route('/api/delegate', delegateRouter);
     host.route('/api/keys', keysRouter);
     // Stub the better-auth get-session endpoint the SvelteKit widget hits on

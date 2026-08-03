@@ -17,6 +17,7 @@ import {
   makeSpaceId,
 } from '@tinycloud/node-sdk-wasm';
 import {
+  canonicalizeServiceName,
   entriesToAbilities,
   entriesForSelectedActions,
   permissionKey as computePermissionKey,
@@ -2606,9 +2607,17 @@ delegateRouter.post('/authorize-sign', async (c) => {
   }
 
   // Effective grants + selection derived from the ACTUAL signed bytes.
+  // `service` is canonicalized to the `tinycloud.<short>` form so the wire
+  // shape agrees with `selectedActionKeys` (which come from
+  // `computeActionKey` → `permissionKey` → `canonicalizeServiceName`). The
+  // widget's `validatePreviewSelection` projects each permission through
+  // `actionId(service, space, path, ability)` and requires the projected
+  // set to equal `selectedActionKeys`; if these disagreed the review UI
+  // would throw "permissions disagree with selectedActionKeys" before
+  // ever displaying anything to the user.
   const effectiveEntries = parsePreparedRecap(signedMessage);
   const effectiveGrants = effectiveEntries.map((entry) => ({
-    service: entry.service,
+    service: canonicalizeServiceName(entry.service),
     space: entry.space,
     path: entry.path,
     actions: [...entry.actions],
@@ -2792,9 +2801,14 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     preparedSignedMessage = previewNarrowed.siwe;
   }
 
+  // Preview grants + selection. `service` is canonicalized to the
+  // `tinycloud.<short>` form so the wire shape agrees with
+  // `selectedActionKeys` (see the /authorize-sign response for the full
+  // rationale — the widget's `validatePreviewSelection` requires the
+  // per-permission projection to equal the returned selected keys).
   const previewEntries = parsePreparedRecap(preparedSignedMessage);
   const previewGrants = previewEntries.map((entry) => ({
-    service: entry.service,
+    service: canonicalizeServiceName(entry.service),
     space: entry.space,
     path: entry.path,
     actions: [...entry.actions],

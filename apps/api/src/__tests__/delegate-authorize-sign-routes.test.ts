@@ -392,6 +392,98 @@ describe('POST /authorize-sign-preview response shape (wire format)', () => {
   });
 });
 
+// Regression coverage for the widget's `validatePreviewSelection`
+// contract: the widget projects `permissions[]` through
+// `actionId(service, space, path, ability)` and compares the resulting
+// set with the returned `selectedActionKeys`. Both sides MUST use the
+// canonical `tinycloud.<short>` service form. The previous route
+// implementation emitted the raw WASM short-form (`kv`, `sql`, ...) in
+// `permissions[].service` while `selectedActionKeys` were canonicalized
+// via `computeActionKey`. That mismatch made the widget throw
+// "permissions disagree with selectedActionKeys" and blocked the
+// vertical happy path. This test locks the wire shape.
+describe('POST /authorize-sign-preview and /authorize-sign wire shape — canonical service', () => {
+  function actionIdForPermission(
+    service: string,
+    space: string,
+    path: string,
+    action: string,
+  ): string {
+    // Mirror `@openkey/capability-review`'s `actionId` NUL-tuple exactly.
+    return `${service}\0${space}\0${path}\0${action}`;
+  }
+
+  test('preview returns permissions[].service canonicalized to tinycloud.<short> and projection matches selectedActionKeys', async () => {
+    const { token, allowed } = await issuePrepareContext();
+    const res = await router.request('/authorize-sign-preview', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ authorizationContextToken: token, selectedActionIds: allowed }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as any;
+    expect(Array.isArray(body.permissions)).toBe(true);
+    expect(body.permissions.length).toBeGreaterThan(0);
+    for (const p of body.permissions) {
+      expect(typeof p.service).toBe('string');
+      expect(p.service.startsWith('tinycloud.')).toBe(true);
+    }
+    const projected = new Set<string>(
+      body.permissions.flatMap((p: any) =>
+        (p.actions as string[]).map((a) =>
+          actionIdForPermission(p.service, p.space, p.path, a),
+        ),
+      ),
+    );
+    const returned = new Set<string>(body.selectedActionKeys);
+    // Set equality — projected IDs and returned selected keys agree.
+    expect(projected.size).toBe(returned.size);
+    for (const value of returned) {
+      expect(projected.has(value)).toBe(true);
+    }
+  });
+
+  test('finalize returns permissions[].service canonicalized to tinycloud.<short> and projection matches selectedActionKeys', async () => {
+    const { token, allowed } = await issuePrepareContext();
+    const previewRes = await router.request('/authorize-sign-preview', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ authorizationContextToken: token, selectedActionIds: allowed }),
+    });
+    const preview = await previewRes.json() as any;
+    const signRes = await router.request('/authorize-sign', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        authorizationContextToken: token,
+        previewApprovalToken: preview.previewApprovalToken,
+        selectedActionIds: allowed,
+        protocolVersion: 1,
+      }),
+    });
+    expect(signRes.status).toBe(200);
+    const body = await signRes.json() as any;
+    expect(Array.isArray(body.permissions)).toBe(true);
+    expect(body.permissions.length).toBeGreaterThan(0);
+    for (const p of body.permissions) {
+      expect(typeof p.service).toBe('string');
+      expect(p.service.startsWith('tinycloud.')).toBe(true);
+    }
+    const projected = new Set<string>(
+      body.permissions.flatMap((p: any) =>
+        (p.actions as string[]).map((a) =>
+          actionIdForPermission(p.service, p.space, p.path, a),
+        ),
+      ),
+    );
+    const returned = new Set<string>(body.selectedActionKeys);
+    expect(projected.size).toBe(returned.size);
+    for (const value of returned) {
+      expect(projected.has(value)).toBe(true);
+    }
+  });
+});
+
 // Sol final continuation contract requirement 3: caveat semantics must
 // be exact for surviving abilities. The normal HTTP flow only exposes
 // whole-ability removal (the server reuses baseline caveats when
