@@ -207,6 +207,7 @@ function evaluateBootstrapSessionCandidates(
         fullServiceName(allowedResource.service) === service &&
         allowedResource.path === entry.path &&
         actionSubset(entry.actions, allowedResource.actions) &&
+        isBootstrapSpaceName(allowedResource.space) &&
         entry.space === bootstrapSpaceId(input.address, input.chainId, allowedResource.space)
       ));
       if (!resource) {
@@ -248,6 +249,7 @@ function evaluateBootstrapSessionCandidates(
         fullServiceName(allowedResource.service) === service &&
         allowedResource.path === entry.path &&
         actionSubset(entry.actions, allowedResource.actions) &&
+        isBootstrapSpaceName(allowedResource.space) &&
         entry.space === bootstrapSpaceId(input.address, input.chainId, allowedResource.space)
       ));
       if (!resource) return false;
