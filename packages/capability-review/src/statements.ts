@@ -120,6 +120,26 @@ const RECOGNIZED_SECRETS_ACTIONS = new Set<string>([
   ...RECOGNIZED_SECRETS_LIST_ACTIONS,
   ...RECOGNIZED_SECRETS_METADATA_ACTIONS,
 ]);
+const RECOGNIZED_KV_NAMESPACE_ACTIONS = new Set<string>([
+  "tinycloud.kv/get",
+  "kv/get",
+  "tinycloud.kv/list",
+  "tinycloud.kv/metadata",
+  "kv/list",
+  "kv/metadata",
+]);
+const RECOGNIZED_SQL_NAMESPACE_ACTIONS = new Set<string>([
+  "tinycloud.sql/read",
+  "sql/read",
+  "tinycloud.sql/select",
+  "sql/select",
+]);
+const RECOGNIZED_SECRETS_NAMESPACE_ACTIONS = new Set<string>([
+  "tinycloud.secrets/list",
+  "tinycloud.secrets/metadata",
+  "secrets/list",
+  "secrets/metadata",
+]);
 // Sol MAJOR-3: `create` matches short-verb abilities (e.g. `foo/create`).
 // The production encryption service uses the compound verb
 // `network.create`, so we ALSO recognize that specific form here; the
@@ -276,7 +296,11 @@ function grantVerbSet(grant: CapabilityGrant): Set<string> {
 export function grantReachesSecretDataOrDecryption(
   grant: CapabilityGrant,
 ): boolean {
-  if (grant.family === "secret-read" || grant.family === "secret-mutation") {
+  if (
+    grant.family === "secret-read" ||
+    grant.family === "secret-namespace-list" ||
+    grant.family === "secret-mutation"
+  ) {
     return true;
   }
 
@@ -609,6 +633,42 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
     return { primaryText, service, resource };
   }
 
+  if (grant.family === "secret-namespace-list") {
+    const recognizedActions = SECRETS_SERVICES.has(service)
+      ? RECOGNIZED_SECRETS_NAMESPACE_ACTIONS
+      : KV_SERVICES.has(service)
+        ? RECOGNIZED_KV_NAMESPACE_ACTIONS
+        : SQL_SERVICES.has(service)
+          ? RECOGNIZED_SQL_NAMESPACE_ACTIONS
+        : null;
+    if (
+      grant.actions.length === 0 ||
+      recognizedActions === null ||
+      !grant.actions.every((action) =>
+        recognizedActions.has(action.ability),
+      )
+    ) {
+      return fallbackStatement(grant);
+    }
+    const hasValueRead = grant.actions.some((action) =>
+      ["get", "read", "select"].includes(verbOf(action.ability)),
+    );
+    if (!hasValueRead) {
+      return {
+        primaryText: "View secret names and details",
+        service,
+        resource,
+      };
+    }
+    return {
+      primaryText: SQL_SERVICES.has(service)
+        ? "Read all TinyCloud Secrets data"
+        : "View all secrets stored in your vault",
+      service,
+      resource,
+    };
+  }
+
   // Sol/Fable follow-up gate: for the KV / SQL / encryption family and
   // service branches below, refuse friendly copy whenever ANY action in
   // the grant is outside the byte-exact ability catalog for that service.
@@ -628,6 +688,19 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
   // services (see `allActionsRecognizedForService`).
   if (!allActionsRecognizedForService(grant)) {
     return fallbackStatement(grant);
+  }
+
+  if (
+    grant.family === "secret-mutation" &&
+    KV_SERVICES.has(service) &&
+    isSecretsSpace(space) &&
+    path === ""
+  ) {
+    return {
+      primaryText: "Manage all secrets stored in your vault",
+      service,
+      resource,
+    };
   }
 
   // App-data ownership is already a structural classification. Keep the

@@ -33,6 +33,7 @@ export type CapabilityFamily =
   | "own-app-data"
   | "cross-app-data"
   | "secret-read"
+  | "secret-namespace-list"
   | "secret-mutation"
   | "encryption-key"
   | "encryption-decrypt"

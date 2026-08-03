@@ -1,11 +1,17 @@
 import { describe, it, expect } from "bun:test";
 import {
   parseCapabilityReview,
+  buildRenderPlan,
+  buildStatement,
+  classifyRecapEntry,
+  FAMILY_LABEL,
+  classifySeverityFromActions,
   assertBaselineSubset,
   restrictModel,
   defaultSelection,
   raiseSeverityFromMetadata,
   applyMetadataLabels,
+  grantReachesSecretDataOrDecryption,
 } from "../src/index.js";
 import type { ParseContext } from "../src/parse.js";
 import type { SignerInfo } from "../src/index.js";
@@ -27,6 +33,17 @@ import {
   REAL_RECAP_WITH_PATH,
   REAL_KV_SECRET_READ,
   REAL_KV_SECRET_MUTATION,
+  REAL_KV_SECRET_NAMESPACE_LIST,
+  REAL_KV_SECRET_ROOT_GET,
+  REAL_KV_SECRET_ROOT_PUT,
+  REAL_KV_SECRET_ROOT_DEL,
+  REAL_KV_SECRET_ROOT_LIST_AND_PUT,
+  REAL_KV_SECRET_ROOT_LIST_AND_UNKNOWN,
+  REAL_SQL_SECRET_ROOT_READ,
+  REAL_SQL_SECRET_ROOT_WRITE,
+  REAL_SQL_SECRET_ROOT_UNKNOWN,
+  REAL_SQL_SECRET_PATH_READ,
+  REAL_SQL_CROSS_OWNER_SECRET_ROOT_READ,
   SECRETS_MUTATION_REQUEST,
   SECRETS_READ_REQUEST,
   UNKNOWN_SERVICE_REQUEST,
@@ -278,6 +295,249 @@ describe("parseCapabilityReview", () => {
     );
     expect(secretGrant).toBeTruthy();
     expect(secretGrant?.severity).toBe("sensitive");
+  });
+
+  it("classifies a whole-secrets-namespace list as sensitive end-to-end", () => {
+    const model = parseCapabilityReview(
+      ctx({ message: REAL_KV_SECRET_NAMESPACE_LIST }),
+    );
+    const namespaceGrant = model.permissions.find(
+      (grant) => grant.family === "secret-namespace-list",
+    );
+    expect(namespaceGrant).toBeDefined();
+    expect(namespaceGrant?.severity).toBe("sensitive");
+    expect(namespaceGrant?.displayLabel).toBe(
+      "Secret names and metadata — (entire secrets namespace)",
+    );
+    expect(buildStatement(namespaceGrant!).primaryText).toBe(
+      "View secret names and details",
+    );
+    const sensitiveBucket = buildRenderPlan(model.permissions).find(
+      (bucket) => bucket.severity === "sensitive",
+    );
+    expect(sensitiveBucket?.grants).toContainEqual(namespaceGrant);
+
+    const pathNamespace = classifyRecapEntry({
+      service: "tinycloud.kv",
+      space: FIXTURE_META.ownSpace,
+      path: "secrets",
+      actions: ["tinycloud.kv/list"],
+    });
+    expect(pathNamespace.family).toBe("secret-namespace-list");
+    expect(
+      classifySeverityFromActions(pathNamespace.family, [
+        "tinycloud.kv/list",
+      ]),
+    ).toBe("sensitive");
+  });
+
+  it("classifies every root KV operation on :secrets as whole-namespace authority", () => {
+    for (const [message, family, severity] of [
+      [REAL_KV_SECRET_ROOT_GET, "secret-namespace-list", "sensitive"],
+      [REAL_KV_SECRET_ROOT_PUT, "secret-mutation", "sensitive"],
+      [REAL_KV_SECRET_ROOT_DEL, "secret-mutation", "sensitive"],
+      [REAL_KV_SECRET_ROOT_LIST_AND_PUT, "secret-mutation", "sensitive"],
+      [REAL_KV_SECRET_ROOT_LIST_AND_UNKNOWN, "secret-mutation", "sensitive"],
+    ] as const) {
+      const model = parseCapabilityReview(ctx({ message }));
+      expect(model.permissions).toHaveLength(1);
+      expect(model.permissions[0]?.family).toBe(family);
+      expect(model.permissions[0]?.severity).toBe(severity);
+      if (message === REAL_KV_SECRET_ROOT_LIST_AND_PUT) {
+        expect(buildStatement(model.permissions[0]!).primaryText).toBe(
+          "Manage all secrets stored in your vault",
+        );
+      }
+      if (message === REAL_KV_SECRET_ROOT_LIST_AND_UNKNOWN) {
+        expect(buildStatement(model.permissions[0]!).primaryText).not.toBe(
+          "View secret names and details",
+        );
+      }
+    }
+  });
+
+  it("classifies root SQL read/write on :secrets as secret authority", () => {
+    const read = parseCapabilityReview(ctx({ message: REAL_SQL_SECRET_ROOT_READ }));
+    expect(read.permissions[0]?.family).toBe("secret-namespace-list");
+    expect(read.permissions[0]?.severity).toBe("sensitive");
+    expect(read.permissions[0]?.displayLabel).toBe(
+      "Secret data — (entire secrets namespace)",
+    );
+    expect(buildStatement(read.permissions[0]!).primaryText).toBe(
+      "Read all TinyCloud Secrets data",
+    );
+    expect(grantReachesSecretDataOrDecryption(read.permissions[0]!)).toBe(true);
+
+    const write = parseCapabilityReview(ctx({ message: REAL_SQL_SECRET_ROOT_WRITE }));
+    expect(write.permissions[0]?.family).toBe("secret-mutation");
+    expect(write.permissions[0]?.severity).toBe("sensitive");
+  });
+
+  it("classifies SQL secret unknown verbs and path-scoped reads fail closed", () => {
+    const unknown = parseCapabilityReview(
+      ctx({ message: REAL_SQL_SECRET_ROOT_UNKNOWN }),
+    );
+    expect(unknown.permissions[0]?.family).toBe("secret-mutation");
+    expect(unknown.permissions[0]?.severity).toBe("sensitive");
+    expect(grantReachesSecretDataOrDecryption(unknown.permissions[0]!)).toBe(true);
+
+    const pathRead = parseCapabilityReview(
+      ctx({ message: REAL_SQL_SECRET_PATH_READ }),
+    );
+    expect(pathRead.permissions[0]?.family).toBe("secret-read");
+    expect(pathRead.permissions[0]?.severity).toBe("attention");
+    expect(grantReachesSecretDataOrDecryption(pathRead.permissions[0]!)).toBe(true);
+  });
+
+  it("keeps SQL secrets sensitive for cross-owner and unverified requesters", () => {
+    const crossOwner = parseCapabilityReview(
+      ctx({ message: REAL_SQL_CROSS_OWNER_SECRET_ROOT_READ }),
+    );
+    expect(crossOwner.permissions[0]?.family).toBe("secret-namespace-list");
+    expect(crossOwner.permissions[0]?.severity).toBe("sensitive");
+    expect(crossOwner.permissions[0]?.ownedBySelf).toBe(false);
+    expect(crossOwner.permissions[0]?.displayLabel).toContain("Cross-user");
+    expect(grantReachesSecretDataOrDecryption(crossOwner.permissions[0]!)).toBe(true);
+
+    const unverified = parseCapabilityReview(
+      ctx({
+        message: REAL_SQL_SECRET_ROOT_READ,
+        requesterAddress: null,
+        requesterVerified: false,
+      }),
+    );
+    expect(unverified.permissions[0]?.family).toBe("secret-namespace-list");
+    expect(unverified.permissions[0]?.severity).toBe("sensitive");
+    expect(unverified.permissions[0]?.ownedBySelf).toBe(null);
+    expect(unverified.permissions[0]?.displayLabel).toContain("Cross-user");
+  });
+
+  it("covers the KV/SQL authority matrix across secret reach and ownership", () => {
+    const ownershipModes = [
+      {
+        label: "same-owner verified",
+        requesterAddress: FIXTURE_META.address,
+        requesterVerified: true,
+        crossOwner: false,
+      },
+      {
+        label: "cross-owner verified",
+        requesterAddress: FIXTURE_META.address,
+        requesterVerified: true,
+        crossOwner: true,
+      },
+      {
+        label: "unverified requester",
+        requesterAddress: null,
+        requesterVerified: false,
+        crossOwner: true,
+      },
+    ];
+    const scopes = ["secrets-root", "secrets-path", "non-secrets"] as const;
+    const operations = ["read", "mutate", "unknown"] as const;
+
+    for (const service of ["tinycloud.kv", "tinycloud.sql"] as const) {
+      for (const scope of scopes) {
+        for (const ownership of ownershipModes) {
+          for (const operation of operations) {
+            const secret = scope !== "non-secrets";
+            const root = scope === "secrets-root";
+            const spaceOwner = ownership.crossOwner
+              ? FIXTURE_META.crossAppOwner
+              : FIXTURE_META.address;
+            const space = secret
+              ? `tinycloud:pkh:eip155:1:${spaceOwner}:secrets`
+              : `tinycloud:pkh:eip155:1:${spaceOwner}:default`;
+            const path = root
+              ? ""
+              : secret
+                ? service === "tinycloud.kv"
+                  ? "vault/secrets/API_KEY"
+                  : "tables"
+                : service === "tinycloud.kv"
+                  ? "app/items"
+                  : "tables";
+            const verb =
+              operation === "read"
+                ? service === "tinycloud.kv"
+                  ? "get"
+                  : "read"
+                : operation === "mutate"
+                  ? service === "tinycloud.kv"
+                    ? "put"
+                    : "write"
+                  : "rotate";
+            const classification = classifyRecapEntry({
+              service,
+              space,
+              path,
+              actions: [`${service}/${verb}`],
+              requesterAddress: ownership.requesterAddress,
+              requesterVerified: ownership.requesterVerified,
+            });
+            const expectedFamily = ownership.crossOwner
+              ? secret
+                ? root && operation === "read"
+                  ? "secret-namespace-list"
+                  : operation === "read"
+                    ? "secret-read"
+                    : "secret-mutation"
+                : "cross-app-data"
+              : secret
+                ? root && operation === "read"
+                  ? "secret-namespace-list"
+                  : operation === "read"
+                    ? "secret-read"
+                    : "secret-mutation"
+                : service === "tinycloud.kv"
+                  ? "own-app-data"
+                  : "bootstrap-sql";
+            const expectedSeverity = secret
+              ? root && operation === "read"
+                ? "sensitive"
+                : operation === "read"
+                  ? "attention"
+                  : "sensitive"
+              : ownership.crossOwner
+                ? "attention"
+                : operation === "mutate"
+                  ? "attention"
+                  : "standard";
+            expect(classification.family, `${service} ${scope} ${ownership.label} ${operation}`).toBe(
+              expectedFamily,
+            );
+            expect(
+              classifySeverityFromActions(classification.family, [
+                `${service}/${verb}`,
+              ], { service, space, path }),
+              `${service} ${scope} ${ownership.label} ${operation}`,
+            ).toBe(expectedSeverity);
+            if (ownership.crossOwner) {
+              expect(classification.displayLabel).toContain("Cross-user");
+            }
+          }
+        }
+      }
+    }
+  });
+
+  it("does not expose owner or path fragments in cross-user KV/SQL labels", () => {
+    const requester = FIXTURE_META.address.toLowerCase();
+    const crossUserSpace = `tinycloud:pkh:eip155:1:${FIXTURE_META.crossAppOwner}:other`;
+    for (const service of ["tinycloud.kv", "tinycloud.sql"]) {
+      const classification = classifyRecapEntry({
+        service,
+        space: crossUserSpace,
+        path: "/",
+        actions: [`${service}/read`],
+        requesterAddress: requester,
+        requesterVerified: true,
+      });
+      expect(classification.family).toBe("cross-app-data");
+      expect(classification.displayLabel).toContain("Cross-user");
+      expect(classification.displayLabel).not.toContain("0x");
+      expect(classification.displayLabel).not.toContain("path=");
+    }
   });
 
   it("classifies encryption/decrypt as sensitive", () => {
@@ -579,5 +839,25 @@ describe("caveats (Sol continuation contract)", () => {
     const cand = parseCapabilityReview(ctx({ message }));
     const check = assertBaselineSubset(base, cand);
     expect(check.ok).toBe(true);
+  });
+});
+
+describe("family label copy", () => {
+  // These strings are what a user actually reads on the consent screen, so a
+  // silent edit is a security-UX regression even when severity is unchanged.
+  // `secret-namespace-list` in particular must describe whole-namespace REACH
+  // (it covers value reads, not only name listings) — an earlier label,
+  // "Named secret (read)"-style wording, misdescribed a root `get`.
+  it("pins the labels for the secret families", () => {
+    expect(FAMILY_LABEL["secret-namespace-list"]).toBe("Secret namespace access");
+    expect(FAMILY_LABEL["secret-read"]).toBe("Named secret (read)");
+    expect(FAMILY_LABEL["secret-mutation"]).toBe("Named secret (mutate)");
+  });
+
+  it("keeps the cross-user family label free of owner addresses and paths", () => {
+    const label = FAMILY_LABEL["cross-app-data"];
+    expect(label).toBe("Cross-app data");
+    expect(label).not.toMatch(/0x[0-9a-fA-F]{6,}/);
+    expect(label).not.toContain("path=");
   });
 });

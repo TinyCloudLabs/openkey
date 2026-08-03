@@ -745,7 +745,11 @@ function buildGrants(
       requesterAddress,
       requesterVerified,
     });
-    const severity = classifySeverityFromActions(family, entry.actions);
+    const severity = classifySeverityFromActions(family, entry.actions, {
+      service: entry.service,
+      space: entry.space,
+      path: entry.path,
+    });
     const actions = buildActions(entry, ctx);
     const ownership = ownerFromSpace(entry.space);
     // Sol MAJOR-5 (continuation): NEVER fall back to the signer address as

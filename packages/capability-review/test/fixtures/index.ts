@@ -249,6 +249,101 @@ export const REAL_KV_SECRET_MUTATION = siwe([
   }),
 ]);
 
+// Whole-secrets-namespace list using the canonical `<space>/kv` resource
+// shape. The parser strips `kv` into resourceService and leaves path empty;
+// this is the shape that previously fell through to bootstrap-kv.
+const SECRETS_SPACE = `tinycloud:pkh:eip155:${CHAIN}:${ADDR}:secrets`;
+const CROSS_SECRETS_SPACE = `tinycloud:pkh:eip155:${CHAIN}:${LISTEN_OWNER}:secrets`;
+export const REAL_KV_SECRET_NAMESPACE_LIST = siwe([
+  makeRecapResource({
+    [`${SECRETS_SPACE}/kv`]: {
+      "tinycloud.kv/list": [{}],
+    },
+  }),
+]);
+
+export const REAL_KV_SECRET_ROOT_GET = siwe([
+  makeRecapResource({
+    [`${SECRETS_SPACE}/kv`]: {
+      "tinycloud.kv/get": [{}],
+    },
+  }),
+]);
+
+export const REAL_KV_SECRET_ROOT_PUT = siwe([
+  makeRecapResource({
+    [`${SECRETS_SPACE}/kv`]: {
+      "tinycloud.kv/put": [{}],
+    },
+  }),
+]);
+
+export const REAL_KV_SECRET_ROOT_DEL = siwe([
+  makeRecapResource({
+    [`${SECRETS_SPACE}/kv`]: {
+      "tinycloud.kv/del": [{}],
+    },
+  }),
+]);
+
+export const REAL_KV_SECRET_ROOT_LIST_AND_PUT = siwe([
+  makeRecapResource({
+    [`${SECRETS_SPACE}/kv`]: {
+      "tinycloud.kv/list": [{}],
+      "tinycloud.kv/put": [{}],
+    },
+  }),
+]);
+
+export const REAL_KV_SECRET_ROOT_LIST_AND_UNKNOWN = siwe([
+  makeRecapResource({
+    [`${SECRETS_SPACE}/kv`]: {
+      "tinycloud.kv/list": [{}],
+      "tinycloud.kv/rotate": [{}],
+    },
+  }),
+]);
+
+export const REAL_SQL_SECRET_ROOT_READ = siwe([
+  makeRecapResource({
+    [`${SECRETS_SPACE}/sql`]: {
+      "tinycloud.sql/read": [{}],
+    },
+  }),
+]);
+
+export const REAL_SQL_SECRET_ROOT_WRITE = siwe([
+  makeRecapResource({
+    [`${SECRETS_SPACE}/sql`]: {
+      "tinycloud.sql/write": [{}],
+    },
+  }),
+]);
+
+export const REAL_SQL_SECRET_ROOT_UNKNOWN = siwe([
+  makeRecapResource({
+    [`${SECRETS_SPACE}/sql`]: {
+      "tinycloud.sql/rotate": [{}],
+    },
+  }),
+]);
+
+export const REAL_SQL_SECRET_PATH_READ = siwe([
+  makeRecapResource({
+    [`${SECRETS_SPACE}/sql/tables`]: {
+      "tinycloud.sql/read": [{}],
+    },
+  }),
+]);
+
+export const REAL_SQL_CROSS_OWNER_SECRET_ROOT_READ = siwe([
+  makeRecapResource({
+    [`${CROSS_SECRETS_SPACE}/sql`]: {
+      "tinycloud.sql/read": [{}],
+    },
+  }),
+]);
+
 export const FIXTURE_META = {
   address: ADDR,
   chainId: CHAIN,

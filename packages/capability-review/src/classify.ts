@@ -1,21 +1,24 @@
 // Deterministic capability classification.
 //
 // Rules (order matters):
-//   1. KV/SQL entries touching a KNOWN application-data path prefix get
+//   1. KV/SQL entries touching a secrets space get secret-reach families
+//      before ownership classification. Secret reach and cross-owner access
+//      are independent risk axes; the display label preserves both facts.
+//   2. KV/SQL entries touching a KNOWN application-data path prefix get
 //      classified as own-app-data (severity: standard for read, attention for
 //      mutation). This covers Listen, Chat, Feed, Cycle-health etc. so a
 //      request targeting a real app's data no longer collapses to a generic
 //      "bootstrap-kv" grant.
-//   2. Same as (1) but when the space owner does NOT match the signer, the
+//   3. Same as (2) but when the space owner does NOT match the signer, the
 //      family becomes cross-app-data (severity: attention). Cross-app grants
 //      are the primary "the app is reading OTHER people's data" case.
-//   3. KV entries with a secret path (vault/secrets or secrets prefixes) get
+//   4. KV entries with a secret path (vault/secrets or secrets prefixes) get
 //      the secret-read/mutation family.
-//   4. Otherwise, KV/SQL/capabilities stay as their bootstrap family — this
+//   5. Otherwise, KV/SQL/capabilities stay as their bootstrap family — this
 //      is the default for whole-space grants without a recognizable path.
-//   5. Named secret services split into read vs mutation.
-//   6. Encryption services split into key material vs decrypt.
-//   7. Unknown services fall back to the "unknown" family and elevate
+//   6. Named secret services split into read vs mutation.
+//   7. Encryption services split into key material vs decrypt.
+//   8. Unknown services fall back to the "unknown" family and elevate
 //      severity.
 //
 // The classifier NEVER lowers severity based on metadata. Metadata may enrich
@@ -26,6 +29,7 @@ import type {
   CapabilityFamily,
   PermissionSeverity,
 } from "./model.js";
+import { isSecretsSpace } from "./app-scope.js";
 
 interface RecapEntryLike {
   service: string;
@@ -130,6 +134,14 @@ const SECRETS_KNOWN_VERBS = new Set([
   "metadata",
 ]);
 
+const SQL_KNOWN_VERBS = new Set([
+  "read",
+  "select",
+  "write",
+  "schema",
+  "admin",
+]);
+
 function verbOf(action: string): string {
   if (action.includes("/")) return action.slice(action.indexOf("/") + 1);
   return action;
@@ -172,6 +184,35 @@ function ownerFromSpace(space: string): string | null {
   return match[1].toLowerCase();
 }
 
+function isWholeSecretsNamespace(space: string, path: string): boolean {
+  const normalizedPath = path.replace(/^\/+|\/+$/g, "");
+  if (normalizedPath === "secrets" || normalizedPath === "vault/secrets") {
+    return true;
+  }
+  return (
+    normalizedPath === "" &&
+    (space === "secrets" || /:secrets(?:\/|$)/.test(space))
+  );
+}
+
+function isNamespaceListing(actions: string[]): boolean {
+  return actions.some((action) => {
+    const verb = verbOf(action);
+    return verb === "list" || verb === "metadata";
+  });
+}
+
+function isSecretValueRead(actions: string[]): boolean {
+  return actions.some((action) => {
+    const verb = verbOf(action);
+    return verb === "get" || verb === "read" || verb === "select";
+  });
+}
+
+function withCrossUserSignal(isCrossApp: boolean, label: string): string {
+  return isCrossApp ? `Cross-user — ${label}` : label;
+}
+
 export function classifyRecapEntry(entry: RecapEntryLike): {
   family: CapabilityFamily;
   displayLabel: string;
@@ -207,6 +248,50 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
   // not generic bootstrap-kv. Real CLI secret requests use tinycloud.kv with
   // paths like "vault/secrets/DEPLOY_KEY" or "secrets/MY_SECRET".
   if (BOOTSTRAP_KV_SERVICES.has(service)) {
+    const hasMutation = entry.actions.some((a) =>
+      MUTATION_VERBS.has(verbOf(a)),
+    );
+    const hasUnknownVerb = entry.actions.some(
+      (a) => !SECRETS_KNOWN_VERBS.has(verbOf(a)),
+    );
+    const isSecretsShapedSpace = isSecretsSpace(space);
+    const isWholeSecretNamespace = isWholeSecretsNamespace(space, path);
+
+    // A mutation or unknown action always wins over list/metadata. This is
+    // deliberately before the namespace-read branch so mixed grants cannot
+    // hide write or fail-closed authority behind a listing label.
+    if (
+      (isSecretsShapedSpace || isWholeSecretNamespace) &&
+      (hasMutation || hasUnknownVerb)
+    ) {
+      return {
+        family: "secret-mutation",
+        displayLabel: withCrossUserSignal(
+          isCrossApp,
+          `Secrets namespace (mutate) — ${path || "(entire namespace)"}`,
+        ),
+      };
+    }
+
+    // An empty path on a secrets-shaped space is whole-namespace authority.
+    // A read here reaches every secret value, so it is sensitive rather than
+    // the attention-level severity used for one named secret.
+    if (
+      (isSecretsShapedSpace || isWholeSecretNamespace) &&
+      entry.actions.length > 0 &&
+      (isWholeSecretNamespace || isNamespaceListing(entry.actions))
+    ) {
+      return {
+        family: "secret-namespace-list",
+        displayLabel: withCrossUserSignal(
+          isCrossApp,
+          isSecretValueRead(entry.actions)
+            ? "Secret data — (entire secrets namespace)"
+            : "Secret names and metadata — (entire secrets namespace)",
+        ),
+      };
+    }
+
     if (
       path &&
       (path.startsWith("vault/secrets/") ||
@@ -214,15 +299,28 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
         path === "vault/secrets" ||
         path === "secrets")
     ) {
-      const isMutation = entry.actions.some((a) => MUTATION_VERBS.has(verbOf(a)));
+      const isMutation = hasMutation || hasUnknownVerb;
       const secretName = path
         .replace(/^vault\/secrets\/?/, "")
         .replace(/^secrets\/?/, "") || "(entire secrets namespace)";
       return {
         family: isMutation ? "secret-mutation" : "secret-read",
-        displayLabel: isMutation
-          ? `Named secret (mutate) — ${secretName}`
-          : `Named secret (read) — ${secretName}`,
+        displayLabel: withCrossUserSignal(
+          isCrossApp,
+          isMutation
+            ? `Named secret (mutate) — ${secretName}`
+            : `Named secret (read) — ${secretName}`,
+        ),
+      };
+    }
+
+    if (isSecretsShapedSpace) {
+      return {
+        family: "secret-read",
+        displayLabel: withCrossUserSignal(
+          isCrossApp,
+          `Secret data — ${path || "(entire secrets namespace)"}`,
+        ),
       };
     }
     // Cross-app KV grant: reading/writing another user's KV space is
@@ -230,8 +328,7 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     // classifySeverityFromActions when the family is cross-app-data.
     if (isCrossApp) {
       // Structural label only — never claim an app identity here.
-      const label = `Cross-user KV data — owner ${spaceOwner} path=${path || "(whole space)"}`;
-      return { family: "cross-app-data", displayLabel: label };
+      return { family: "cross-app-data", displayLabel: "Cross-user KV data" };
     }
     // Own-space + recognized app path: label with the app family.
     const appMatch = matchKvAppFamily(path);
@@ -241,12 +338,47 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     return { family: "bootstrap-kv", displayLabel: "Key-value storage" };
   }
   if (BOOTSTRAP_SQL_SERVICES.has(service)) {
-    // Same cross-app / own-app logic for SQL grants — a SQL grant on
-    // another user's space is cross-app-data.
+    if (isSecretsSpace(space)) {
+      const hasMutation = entry.actions.some((a) => {
+        const verb = verbOf(a);
+        return MUTATION_VERBS.has(verb) || verb === "schema";
+      });
+      const hasUnknownVerb = entry.actions.some(
+        (a) => !SQL_KNOWN_VERBS.has(verbOf(a)),
+      );
+      if (hasMutation || hasUnknownVerb) {
+        return {
+          family: "secret-mutation",
+          displayLabel: withCrossUserSignal(
+            isCrossApp,
+            `Secrets data (mutate) — ${path || "(entire namespace)"}`,
+          ),
+        };
+      }
+      if (isWholeSecretsNamespace(space, path)) {
+        return {
+          family: "secret-namespace-list",
+          displayLabel: withCrossUserSignal(
+            isCrossApp,
+            "Secret data — (entire secrets namespace)",
+          ),
+        };
+      }
+      return {
+        family: "secret-read",
+        displayLabel: withCrossUserSignal(
+          isCrossApp,
+          `Secrets data — ${path || "(entire namespace)"}`,
+        ),
+      };
+    }
+    // Cross-app / own-app logic for non-secrets SQL grants. This follows the
+    // secrets branch so cross-owner secret reach cannot be downgraded to the
+    // attention-level cross-app family.
     if (isCrossApp) {
       return {
         family: "cross-app-data",
-        displayLabel: `Cross-user SQL data — owner ${spaceOwner} path=${path || "(whole space)"}`,
+        displayLabel: "Cross-user SQL data",
       };
     }
     return { family: "bootstrap-sql", displayLabel: "SQL database" };
@@ -285,6 +417,14 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
         displayLabel: `Named secret (mutate) — ${describeName(path)}`,
       };
     }
+    if (path === "" && isNamespaceListing(entry.actions)) {
+      return {
+        family: "secret-namespace-list",
+        displayLabel: isSecretValueRead(entry.actions)
+          ? "Secret data — (entire secrets namespace)"
+          : "Secret names and metadata — (entire secrets namespace)",
+      };
+    }
     return {
       family: "secret-read",
       displayLabel: `Named secret (read) — ${describeName(path)}`,
@@ -320,6 +460,7 @@ function describeName(path: string): string {
 export function classifySeverityFromActions(
   family: CapabilityFamily,
   actions: string[],
+  scope?: { service: string; space: string; path: string },
 ): PermissionSeverity {
   const verbs = actions.map(verbOf);
   const hasMutation = verbs.some((v) => MUTATION_VERBS.has(v));
@@ -336,7 +477,15 @@ export function classifySeverityFromActions(
     case "cross-app-data":
       return "attention";
     case "secret-read":
-      return "attention";
+      return scope &&
+        (BOOTSTRAP_KV_SERVICES.has(scope.service) ||
+          BOOTSTRAP_SQL_SERVICES.has(scope.service)) &&
+        isSecretsSpace(scope.space) &&
+        isWholeSecretsNamespace(scope.space, scope.path)
+        ? "sensitive"
+        : "attention";
+    case "secret-namespace-list":
+      return "sensitive";
     case "secret-mutation":
       return "sensitive";
     case "encryption-key":
