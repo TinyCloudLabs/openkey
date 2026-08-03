@@ -396,7 +396,7 @@ const SQL_RECOGNIZED_ABILITIES = new Set<string>([
 ]);
 
 // Encryption abilities. Per the canonical js-sdk capability registry
-// (`js-sdk/packages/bootstrap/src/generated/capabilities.ts`) the ONLY
+// (`js-sdk/packages/bootstrap/src/generated/capabilities.ts`) the
 // registered wire shapes are `decrypt`, `network.create`, and
 // `network.revoke`. The bare `create` short-form is NOT registered and
 // no js-sdk producer emits it — admitting it here previously let a
@@ -408,13 +408,25 @@ const SQL_RECOGNIZED_ABILITIES = new Set<string>([
 //
 // The `unwrap` verb from earlier catalogs is likewise NOT registered
 // and no positive test exercises it — dropped.
+//
+// Sol post-rejection (Behavior 1): `tinycloud.encryption/network.revoke`
+// is a registered wire shape but the encryption family branch below
+// has no friendly statement mapping for it — `classifyVerbs` does not
+// classify the compound `network.revoke` verb, and the encryption
+// branch only speaks about `decrypt` / `network.create`. Prior code
+// admitted `network.revoke` to the recognized set, which passed the
+// whole-grant gate and let the branch render `[decrypt, network.revoke]`
+// as "Decrypt protected data", `[network.create, network.revoke]` as
+// "Create a decryption network", and all three actions as the combined
+// create+decrypt copy — silently swallowing the revoke authority in
+// every mixed grant. Removing `network.revoke` from this set forces
+// the whole-grant gate to fail and the grant falls back to the literal
+// service/resource/actions rendering, preserving every raw ability.
 const ENCRYPTION_RECOGNIZED_ABILITIES = new Set<string>([
   "tinycloud.encryption/decrypt",
   "encryption/decrypt",
   "tinycloud.encryption/network.create",
   "encryption/network.create",
-  "tinycloud.encryption/network.revoke",
-  "encryption/network.revoke",
 ]);
 
 /**
@@ -622,7 +634,25 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
   // summary understandable without guessing what a path such as `cycle/` or
   // `inbox/` contains. The literal service and resource remain immediately
   // below this sentence.
+  //
+  // Sol post-rejection (Behavior 2): the friendly app-data copy is only
+  // truthful for services whose wire abilities we recognize. The current
+  // classifier only stamps `own-app-data` / `cross-app-data` on
+  // KV / SQL grants, but `buildStatement` itself must uphold that
+  // invariant so a future classifier change (or a fixture built by a
+  // caller) cannot smuggle an unknown-service grant into the friendly
+  // "Read this app's data" / "Update data outside this app" copy. Fail
+  // closed for any service outside the KV / SQL recognized set — the
+  // grant renders the literal service/resource/actions instead.
+  //
+  // Capabilities, named-secrets, encryption, and their own-app-scoped
+  // secret siblings never carry the app-data family, so they are not
+  // affected by this gate — the earlier appScopedSecret branch and the
+  // downstream family/service branches keep their exact gates.
   if (grant.family === "own-app-data" || grant.family === "cross-app-data") {
+    if (!KV_SERVICES.has(service) && !SQL_SERVICES.has(service)) {
+      return fallbackStatement(grant);
+    }
     const noun =
       grant.family === "own-app-data"
         ? "this app's data"

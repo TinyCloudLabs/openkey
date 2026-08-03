@@ -561,11 +561,17 @@ describe("buildStatement — appScopedSecret uses byte-exact ability check", () 
 
 // ─── Encryption: registered abilities still earn friendly copy ──────────────
 describe("buildStatement — encryption catalog: registered abilities preserved", () => {
-  it("encryption [network.revoke] alone → literal fallback (not a decrypt/create)", () => {
-    // `network.revoke` IS registered but the encryption branch only
-    // renders friendly copy for decrypt / create combinations. A
-    // standalone `network.revoke` grant falls back to literal — which
-    // is the correct outcome, not a regression.
+  it("encryption [network.revoke] alone → literal fallback (revoke has no friendly mapping)", () => {
+    // `network.revoke` is a registered wire shape on the node, but the
+    // encryption branch has no friendly statement mapping for it —
+    // `classifyVerbs` does not classify the compound `network.revoke`
+    // verb and the branch only speaks about `decrypt` / `network.create`.
+    // Sol post-rejection (Behavior 1): `network.revoke` is intentionally
+    // NOT in ENCRYPTION_RECOGNIZED_ABILITIES so the whole-grant gate
+    // forces any grant containing it — alone or mixed with decrypt /
+    // network.create — into the literal fallback, preserving every raw
+    // ability. See statements-network-revoke.test.ts for the mixed-grant
+    // regressions.
     const grant = makeGrant({
       family: "encryption-key",
       service: "tinycloud.encryption",
