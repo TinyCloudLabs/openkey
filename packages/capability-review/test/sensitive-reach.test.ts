@@ -27,6 +27,7 @@ function grant(input: {
     ownedBySelf: null,
     displayLabel: input.path,
     metadataLabel: null,
+    resourceService: null,
     ...(input.appScopedSecret
       ? { appScopedSecret: input.appScopedSecret }
       : {}),

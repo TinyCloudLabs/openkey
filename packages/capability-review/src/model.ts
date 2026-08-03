@@ -143,6 +143,34 @@ export interface CapabilityGrant {
    * severity next to the literal fallback copy.
    */
   appScopeNearMiss?: boolean;
+  /**
+   * Blocker 4 follow-up (Defect 5): the short-service segment as it
+   * appeared in the resource URI portion of the wire (`kv` from
+   * `<space>/kv/vault/secrets/...`). Preserved SEPARATELY from
+   * `service` (which is derived from the ability head, e.g.
+   * `tinycloud.kv` from `tinycloud.kv/get`) so downstream gates can
+   * detect wire-shape mismatches where the ability service and the
+   * resource-side short-service segment disagree.
+   *
+   * Null when the parsed input carried no resource-side short-service
+   * segment (bare `<space>` resource URI, or the legacy expanded form
+   * where the service is entirely implied by the ability head).
+   */
+  resourceService: string | null;
+  /**
+   * Blocker 4 follow-up (Defect 5): true when the ability-derived
+   * `service` disagrees with the resource-derived `resourceService`
+   * segment on any ability inside this ATT entry (for example, a
+   * resource URI of `<space>/sql/vault/secrets/scoped/listen/API_KEY`
+   * with an ability of `tinycloud.kv/get`).
+   *
+   * This is a demote-only signal: `annotateAppScopedGrants` will never
+   * annotate a service-mismatched grant with `appScopedSecret`, and
+   * `buildStatement` short-circuits any grant carrying this flag to
+   * the literal fallback so friendly copy is never rendered on a
+   * wire-shape mismatch that the operator ought to see verbatim.
+   */
+  serviceMismatch?: boolean;
   /** Actions granted for this resource. */
   actions: CapabilityAction[];
 }

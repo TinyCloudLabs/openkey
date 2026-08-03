@@ -38,6 +38,7 @@ function encryptionGrant(abilities: string[]): CapabilityGrant {
     ownedBySelf: true,
     displayLabel: "",
     metadataLabel: null,
+    resourceService: null,
     actions: abilities.map((ability) => ({
       id: `tinycloud.encryption\x00${SPACE}\x00${path}\x00${ability}`,
       ability,

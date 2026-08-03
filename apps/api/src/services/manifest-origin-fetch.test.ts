@@ -54,6 +54,7 @@ function scopedSecretGrant(): CapabilityGrant {
     ownedBySelf: null,
     displayLabel: "Named secret",
     metadataLabel: null,
+    resourceService: null,
     actions: ["get", "put", "del"].map((verb) => ({
       id: `tinycloud.kv\u0000${space}\u0000${path}\u0000tinycloud.kv/${verb}`,
       ability: `tinycloud.kv/${verb}`,

@@ -45,6 +45,7 @@ function kvGrant(path: string, verbs: string[]): CapabilityGrant {
     ownedBySelf: true,
     displayLabel: "",
     metadataLabel: null,
+    resourceService: null,
     actions: verbs.map((verb) => ({
       id: `tinycloud.kv\x00${SPACE}\x00${path}\x00tinycloud.kv/${verb}`,
       ability: `tinycloud.kv/${verb}`,
@@ -74,6 +75,7 @@ function secretsServiceGrant(
     ownedBySelf: true,
     displayLabel: "",
     metadataLabel: null,
+    resourceService: null,
     actions: verbs.map((verb) => ({
       id: `tinycloud.secrets\x00${SPACE}\x00${path}\x00tinycloud.secrets/${verb}`,
       ability: `tinycloud.secrets/${verb}`,
@@ -102,6 +104,7 @@ function kvSecretsGrant(scope: string, name: string, verbs: string[]): Capabilit
     ownedBySelf: true,
     displayLabel: "",
     metadataLabel: null,
+    resourceService: null,
     actions: verbs.map((verb) => ({
       id: `tinycloud.kv\x00${SECRETS_SPACE}\x00${path}\x00tinycloud.kv/${verb}`,
       ability: `tinycloud.kv/${verb}`,
@@ -784,6 +787,7 @@ describe("annotateAppScopedGrants — Defect 1: cross-signer space attack", () =
       ownedBySelf: true,
       displayLabel: "",
       metadataLabel: null,
+      resourceService: null,
       actions: [
         {
           id: `tinycloud.kv\x00${attackerSecretsSpace}\x00${path}\x00tinycloud.kv/get`,
@@ -1078,6 +1082,7 @@ describe("annotateAppScopedGrants — Sol follow-up probes (wrong-service / wron
       ownedBySelf: false,
       displayLabel: "",
       metadataLabel: null,
+      resourceService: null,
       actions: [
         {
           id: "b1",
@@ -1118,6 +1123,7 @@ describe("annotateAppScopedGrants — Sol follow-up probes (wrong-service / wron
       ownedBySelf: false,
       displayLabel: "",
       metadataLabel: null,
+      resourceService: null,
       actions: [
         {
           id: "b2a",

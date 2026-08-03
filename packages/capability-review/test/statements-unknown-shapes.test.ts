@@ -55,6 +55,7 @@ function makeGrant(input: {
     ownedBySelf: true,
     displayLabel: path || input.service,
     metadataLabel: null,
+    resourceService: null,
     actions,
   };
 }

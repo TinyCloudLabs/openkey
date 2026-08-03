@@ -39,14 +39,45 @@ import type {
 import { isVerified } from "./metadata.js";
 
 /**
- * KV services that may hold app-scoped secrets. tinycloud.secrets is the
- * named-secrets service (a different surface) and must never trigger the
- * app-scoped annotation; only KV grants on the secrets space carry vault paths.
+ * Blocker 4 follow-up (Defect 1): PROOF-SIDE exact service allowlist.
+ *
+ * The sole ability-derived service that can pass the exact-resource proof
+ * (and receive the sensitive → standard demotion) is the fully-qualified
+ * `tinycloud.kv`. Bare short-form abilities (`kv/get`, `kv/put`, `kv/del`)
+ * were previously admitted, but no js-sdk producer emits them — treating
+ * them as acceptable expands the proof surface without a matching wire
+ * shape. `annotateAppScopedGrants` and `buildStatement`'s defense-in-depth
+ * branch use this set to reject anything but the canonical service.
+ *
+ * A grant flagged with `serviceMismatch: true` (ability-derived service
+ * disagrees with the resource-derived short-service segment) is ALSO
+ * rejected by the proof gate even if its `service` is `tinycloud.kv`.
  */
-export const KV_SECRET_SERVICES: ReadonlySet<string> = new Set([
+export const KV_SECRET_SERVICES_PROOF: ReadonlySet<string> = new Set([
+  "tinycloud.kv",
+]);
+
+/**
+ * NEAR-MISS candidacy set (loose): services whose grants participate in the
+ * declared-shape fingerprint check. Wider than the proof set so a bare
+ * short-form `kv/get` grant that references a declared secret name still
+ * gets stamped `appScopeNearMiss` (literal fallback + sensitive) instead
+ * of escaping to friendly copy. Presence in this set never grants
+ * annotation on its own; the proof gate is the authoritative demotion path.
+ */
+export const KV_SECRET_SERVICES_LOOSE: ReadonlySet<string> = new Set([
   "tinycloud.kv",
   "kv",
 ]);
+
+/**
+ * Backwards-compatible alias for external consumers (statements.ts,
+ * downstream tests). Points at the loose set so structural counting
+ * predicates that ask "is this a KV secret service?" continue to include
+ * both the fully-qualified and short forms. The proof gate uses
+ * `KV_SECRET_SERVICES_PROOF` internally for exact matching.
+ */
+export const KV_SECRET_SERVICES: ReadonlySet<string> = KV_SECRET_SERVICES_LOOSE;
 
 /**
  * Named-secrets services. `tinycloud.secrets/*` grants are a DIFFERENT surface
@@ -115,21 +146,34 @@ export function expectedSignerSecretsSpace(signer: {
 }
 
 /**
- * Blocker 4 (Defect 1): true only when `space` is the EXACT signer-owned
- * canonical secrets space derived from `signer.address` + `signer.chainId`.
+ * Blocker 4 (Defect 1) — follow-up: true only when `space` is the EXACT
+ * signer-owned canonical secrets space derived from `signer.address` +
+ * `signer.chainId`, with STRUCTURAL matching rather than a whole-URI
+ * lowercase compare.
  *
- * A cross-signer secrets space (probe signed by A targeting B:secrets)
- * fails this predicate even though it passes the loose `isSecretsSpace`
- * shape check. This is the single predicate the app-scoped-secret gate
- * uses to prove ownership before allowing any sensitive -> standard
- * presentation transition; matching is case-insensitive on the address
- * hex so the widget accepts both EIP-55 and lowercased address forms.
+ * The prior implementation `space.toLowerCase() === expectedSignerSecretsSpace(...)`
+ * accepted spellings that carried an uppercased scheme (`PKH`) or an
+ * uppercased trailing space name (`:SECRETS`), because they collapsed to
+ * the same string once lowercased. The signed wire form uses the exact
+ * lowercase literals `tinycloud:pkh:eip155:` and `:secrets` — anything
+ * else is either a caller mangling the space or a fingerprint of a
+ * different backend surface. Only the address hex is compared case-
+ * insensitively so EIP-55 vs lowercased addresses both pass.
  */
 export function isSignerOwnedSecretsSpace(
   space: string,
   signer: { address: string; chainId: number },
 ): boolean {
-  return space.toLowerCase() === expectedSignerSecretsSpace(signer);
+  const expectedPrefix = `tinycloud:pkh:eip155:${signer.chainId}:`;
+  const expectedSuffix = ":secrets";
+  if (!space.startsWith(expectedPrefix)) return false;
+  if (!space.endsWith(expectedSuffix)) return false;
+  const addr = space.slice(
+    expectedPrefix.length,
+    space.length - expectedSuffix.length,
+  );
+  if (!/^0x[0-9a-fA-F]{40}$/.test(addr)) return false;
+  return addr.toLowerCase() === signer.address.toLowerCase();
 }
 
 // Secret-name and scope validation mirrors js-sdk
@@ -173,6 +217,59 @@ export function pathContainsDeclaredSecretFragment(
       normalizedPath.endsWith(`/${fragment}`) ||
       normalizedPath.includes(`/${fragment}/`) ||
       normalizedPath.startsWith(`${fragment}/`)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Blocker 4 follow-up (Defect 4): scope-independent, service-agnostic
+ * near-miss fingerprint.
+ *
+ * Returns true when the grant path contains ANY declared `secretName`
+ * (that passes `SECRET_NAME_RE`) as a WHOLE PATH SEGMENT. Unlike
+ * `pathContainsDeclaredSecretFragment`, this variant does NOT require the
+ * scope segment to appear next to the name — it catches grants of the
+ * shape `<anything>/API_KEY`, `secrets/scoped/other/API_KEY`,
+ * `variables/API_KEY`, or `API_KEY` alone, where the declared secret
+ * name is present and could plausibly reach the underlying secret bytes.
+ *
+ * This is the primary fingerprint used to force literal-fallback rendering
+ * on wrong-scope / wrong-service paths that share only the declared name
+ * with the trusted declaration. It is a fingerprint, NOT an authorization
+ * signal — matching only demotes to sensitive + literal fallback, never
+ * annotates. Only declared entries that pass SECRET_NAME_RE participate
+ * so a manifest cannot smuggle arbitrary substrings into the fingerprint.
+ */
+export function pathContainsDeclaredSecretName(
+  path: string,
+  secrets: readonly DeclaredScopedSecret[],
+): boolean {
+  if (!path || secrets.length === 0) return false;
+  const normalizedPath = path.replace(/^\/+/, "").replace(/\/+$/, "");
+  for (const declared of secrets) {
+    if (!SECRET_NAME_RE.test(declared.secretName)) continue;
+    // Skip declarations whose scope is PRESENT-but-invalid or reserved.
+    // A manifest that names a reserved scope has produced no valid
+    // declaration; the entry is entirely untrusted (both proof-side and
+    // fingerprint-side) and must not force literal-fallback stamping.
+    // Scope-independent name fingerprinting is intentional — grants of
+    // the shape `<any>/API_KEY` still deserve near-miss stamping when a
+    // valid declaration names API_KEY under a real scope — but the
+    // declaration itself must be valid.
+    if (declared.scope !== undefined) {
+      if (!SECRET_SCOPE_RE.test(declared.scope)) continue;
+      if (RESERVED_SCOPES.has(declared.scope)) continue;
+    }
+    const name = declared.secretName;
+    // Match as a whole path segment: bare, at end, at start, or between slashes.
+    if (
+      normalizedPath === name ||
+      normalizedPath.endsWith(`/${name}`) ||
+      normalizedPath.startsWith(`${name}/`) ||
+      normalizedPath.includes(`/${name}/`)
     ) {
       return true;
     }
@@ -243,45 +340,70 @@ export function annotateAppScopedGrants(
   const permissions = model.permissions.map((grant): CapabilityGrant => {
     // App-scope near-miss enforcement (Blocker 4, Sol follow-up).
     //
-    // Two families of grants can plausibly look like an app-scoped-secret
-    // attempt and MUST be prevented from inheriting friendly copy when
-    // they fail the exact-resource proof:
+    // A grant is a "declared-shape candidate" (subject to near-miss
+    // stamping if it fails the strict exact-resource proof) when ANY of
+    // the following holds:
     //
     //   (a) KV secret-family grants (family = secret-read/secret-mutation
     //       on a KV service). The classifier reaches these via a `secrets/`
     //       or `vault/secrets/` path on tinycloud.kv.
     //
-    //   (b) ANY grant on a KV or named-secrets service whose path contains
-    //       a `<scope>/<secretName>` fragment matching a declared entry.
-    //       This is what closes Sol's two follow-up probes:
-    //         - `tinycloud.secrets/get` at `secrets/scoped/listen/API_KEY`
-    //           on a non-secrets space; the classifier routes this via the
-    //           SECRETS_SERVICES branch and buildStatement would render
-    //           "Check permissions for your secrets" without this widening.
-    //         - `tinycloud.kv/get` on the signer's secrets space at
-    //           `unrelated/listen/API_KEY`; the classifier routes this via
-    //           cross-app-data (attention) and buildStatement would render
-    //           "Read data outside this app" without this widening.
+    //   (b) A grant whose path contains a `<scope>/<secretName>`
+    //       fragment matching a validly-declared entry. This closes the
+    //       original Sol probes on tinycloud.secrets/* + wrong-space and
+    //       tinycloud.kv/* + unrelated-path.
     //
-    // Any grant that satisfies (a) OR (b) is a "declared-shape candidate".
-    // If it fails the strict exact-resource proof, we stamp it near-miss +
-    // force sensitive severity so `buildStatement` renders the raw
-    // service/resource/actions fallback. Metadata cannot expand authority
-    // and it cannot dress up an unsatisfied proof in reassuring copy.
+    //   (c) Blocker 4 follow-up (Defect 4): a grant whose path contains
+    //       ANY declared `secretName` as a whole path segment. This is
+    //       intentionally scope-independent and service-agnostic so
+    //       wrong-scope same-name probes (e.g. `secrets/scoped/other/API_KEY`
+    //       or `variables/API_KEY`) still fail closed to literal fallback.
+    //
+    //   (d) Blocker 4 follow-up (Defect 4): any grant on a secrets-shaped
+    //       space (isSecretsSpace) whose path matches the declared name
+    //       fingerprint — closes SQL/capabilities reads that reach a
+    //       secret path on the secrets space (e.g. tinycloud.sql/read at
+    //       vault/secrets/scoped/listen/API_KEY, or tinycloud.capabilities/read
+    //       at the same path).
+    //
+    // Failed proofs get `appScopeNearMiss` + `severity = "sensitive"` +
+    // `metadataLabel = null` so `buildStatement` renders the literal
+    // fallback. Metadata cannot expand authority and it cannot dress up
+    // an unsatisfied proof in reassuring copy.
     const isKvSecretFamily =
-      KV_SECRET_SERVICES.has(grant.service) &&
+      KV_SECRET_SERVICES_LOOSE.has(grant.service) &&
       (grant.family === "secret-read" || grant.family === "secret-mutation");
+    const nameFingerprintMatches = pathContainsDeclaredSecretName(
+      grant.path,
+      secrets,
+    );
+    const fragmentFingerprintMatches = pathContainsDeclaredSecretFragment(
+      grant.path,
+      secrets,
+    );
+    const spaceIsSecretsShaped = isSecretsSpace(grant.space);
     const isDeclaredShapeCandidate =
-      (KV_SECRET_SERVICES.has(grant.service) ||
+      // Legacy (original) predicate: KV/named-secrets service +
+      // <scope>/<name> fragment. Preserved so the existing follow-up
+      // probes stay covered.
+      ((KV_SECRET_SERVICES_LOOSE.has(grant.service) ||
         NAMED_SECRETS_SERVICES.has(grant.service)) &&
-      pathContainsDeclaredSecretFragment(grant.path, secrets);
+        fragmentFingerprintMatches) ||
+      // Widened (Defect 4): scope-independent, service-agnostic name
+      // fingerprint. ANY grant whose path references a declared secret
+      // name is a candidate, and ANY grant on a secrets-shaped space
+      // that references the name is a candidate. Reaches SQL and
+      // capabilities services on the secrets space, plus wrong-scope
+      // probes on any service.
+      nameFingerprintMatches ||
+      (spaceIsSecretsShaped && nameFingerprintMatches);
     if (!isKvSecretFamily && !isDeclaredShapeCandidate) {
       return grant;
     }
 
     // Near-miss stamp: sensitive severity, cleared metadata label, and the
     // `appScopeNearMiss` flag which `buildStatement` short-circuits into
-    // the literal fallback. Applies to BOTH families identified above so
+    // the literal fallback. Applies to all families identified above so
     // wrong-service and wrong-path near misses lose their friendly copy.
     const nearMissMark = (target: CapabilityGrant): CapabilityGrant => {
       return {
@@ -292,7 +414,13 @@ export function annotateAppScopedGrants(
       };
     };
 
-    // Sol MAJOR (this iteration): before doing ANY app-scope match, fail
+    // Blocker 4 follow-up (Defect 5): a `serviceMismatch` grant (ability-
+    // derived service disagrees with the resource-derived short-service
+    // segment) can NEVER annotate. Force literal fallback + sensitive so
+    // the operator sees the raw wire tuple.
+    if (grant.serviceMismatch === true) return nearMissMark(grant);
+
+    // Sol MAJOR (previous iteration): before doing ANY app-scope match, fail
     // closed on unknown action verbs. `annotateAppScopedGrants` transitions
     // a grant from sensitive -> standard AND stamps `appScopedSecret` on
     // it, which lets `buildStatement` render friendly copy such as
@@ -313,18 +441,26 @@ export function annotateAppScopedGrants(
       ),
     );
     if (!allVerbsRecognized) return nearMissMark(grant);
-    // Blocker 4 (Defect 1): exact-resource proof. Only KV service grants
-    // on the SIGNER's own canonical secrets space
-    // (`tinycloud:pkh:eip155:<chainId>:<address>:secrets`) can demote.
+    // Blocker 4 (Defect 1) — follow-up: exact-resource proof. Only
+    // grants whose ability-derived service is EXACTLY `tinycloud.kv`
+    // (no bare `kv` alias) AND whose resource-derived short-service
+    // segment (when present on the wire) is exactly `kv` on the SIGNER's
+    // own canonical secrets space (`tinycloud:pkh:eip155:<chainId>:<address>:secrets`)
+    // can demote.
     //   - `tinycloud.secrets` service grants (a different surface) fail here.
-    //   - Cross-signer secrets spaces fail here (probe signed by A targeting
-    //     B:secrets is rejected — the pre-fix loose `isSecretsSpace` shape
-    //     check let that through).
+    //   - Bare `kv` service grants fail here (no js-sdk producer emits them).
+    //   - Grants whose resource-side short-service segment is anything
+    //     other than `kv` (e.g. a service-mismatched `<space>/sql/...`
+    //     with a `tinycloud.kv/get` ability) fail here.
+    //   - Cross-signer secrets spaces fail here.
     //   - Non-secrets spaces fail here.
     //
     // Only the check below is authoritative for ownership; the loose
     // `isSecretsSpace` predicate is used only for near-miss stamping.
-    if (!KV_SECRET_SERVICES.has(grant.service)) return nearMissMark(grant);
+    if (!KV_SECRET_SERVICES_PROOF.has(grant.service)) return nearMissMark(grant);
+    if (grant.resourceService !== null && grant.resourceService !== "kv") {
+      return nearMissMark(grant);
+    }
     if (!isSignerOwnedSecretsSpace(grant.space, signer)) {
       return nearMissMark(grant);
     }
@@ -406,7 +542,13 @@ export function findMatchingDeclaredSecret(
   grant: CapabilityGrant,
   secrets: readonly DeclaredScopedSecret[],
 ): DeclaredScopedSecret | null {
-  const normalizedPath = grant.path.replace(/^\/+/, "").replace(/\/+$/, "");
+  // Blocker 4 follow-up (Defect 2): BYTE-EXACT path comparison. The prior
+  // implementation stripped leading/trailing slashes before comparing —
+  // that let a caller send `/vault/secrets/scoped/listen/API_KEY/` (with
+  // decorative slashes) and still hit the proof gate, even though the
+  // js-sdk secrets resolver never emits such a path. Slash variants MUST
+  // now fail the proof and be caught downstream by near-miss stamping.
+  const grantPath = grant.path;
   const grantVerbs = grant.actions.map((a) =>
     normalizeSecretVerb(a.verb.toLowerCase()),
   );
@@ -419,7 +561,7 @@ export function findMatchingDeclaredSecret(
     if (RESERVED_SCOPES.has(declared.scope)) continue;
     // Exact manifest-derived path. This is the only shape js-sdk emits.
     const expectedPath = `vault/secrets/scoped/${declared.scope}/${declared.secretName}`;
-    if (normalizedPath !== expectedPath) continue;
+    if (grantPath !== expectedPath) continue;
     // Verb subset check: every grant verb must appear in the declared set.
     const declaredVerbs = new Set(
       declared.actions.map((a) => normalizeSecretVerb(a.toLowerCase())),

@@ -31,6 +31,9 @@ function grant(
     ownedBySelf: family === "own-app-data",
     displayLabel: "App data — cycle/",
     metadataLabel: null,
+    // Test grants default to null: no wire-shape mismatch signal on
+    // manually-constructed fixtures. See CapabilityGrant.resourceService.
+    resourceService: null,
     ...(appScopedSecret ? { appScopedSecret } : {}),
     actions,
   };

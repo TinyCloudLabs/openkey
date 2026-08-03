@@ -102,6 +102,26 @@ interface ParsedRecapEntry {
    * caveats structurally.
    */
   caveatsByAbility: Record<string, unknown[]>;
+  /**
+   * Blocker 4 follow-up (Defect 5): the resource-side short-service segment
+   * as it appeared in the ATT resource URI (e.g. `kv` from
+   * `<space>/kv/vault/secrets/...`). Preserved SEPARATELY from `service`
+   * (which is derived from the ability key `tinycloud.kv/get`) so downstream
+   * gates can detect wire-shape mismatches where the ability service and
+   * resource service disagree. Null when the resource URI carries no
+   * short-service segment (e.g. `<space>` only) or the input is a non-
+   * tinycloud URI.
+   */
+  resourceService: string | null;
+  /**
+   * Blocker 4 follow-up (Defect 5): true when the ability-derived service
+   * disagrees with the resource-derived short-service segment on any ability
+   * inside this ATT entry. `annotateAppScopedGrants` never annotates a
+   * mismatched grant, and `buildStatement` short-circuits it to the literal
+   * fallback so friendly copy is never rendered on a service-mismatched
+   * wire tuple.
+   */
+  serviceMismatch: boolean;
 }
 
 /**
@@ -262,13 +282,25 @@ function utf8BytesToString(bytes: number[]): string | null {
  * `eip155://ethereum/eip155Chain/1`) are returned as-is so classification
  * can flag them as unknown.
  */
-function splitResourceUri(resourceUri: string): { space: string; path: string } {
+function splitResourceUri(resourceUri: string): {
+  space: string;
+  path: string;
+  /**
+   * Blocker 4 follow-up (Defect 5): the short-service segment stripped
+   * out of the tinycloud resource URI, e.g. `kv` from
+   * `<space>/kv/vault/secrets/...`. Preserved separately so downstream
+   * gates can compare against the ability-derived service and detect
+   * wire-shape mismatches. Null when the resource URI carries no short-
+   * service segment (bare `<space>`) or the input is a non-tinycloud URI.
+   */
+  resourceService: string | null;
+} {
   if (!resourceUri.startsWith("tinycloud:")) {
-    return { space: resourceUri, path: "" };
+    return { space: resourceUri, path: "", resourceService: null };
   }
   const firstSlash = resourceUri.indexOf("/");
   if (firstSlash < 0) {
-    return { space: resourceUri, path: "" };
+    return { space: resourceUri, path: "", resourceService: null };
   }
   const space = resourceUri.slice(0, firstSlash);
   const rest = resourceUri.slice(firstSlash + 1);
@@ -278,11 +310,12 @@ function splitResourceUri(resourceUri: string): { space: string; path: string } 
     // there is no sub-path, so `path` is empty. This matches WASM's
     // `parseRecapFromSiwe` behaviour when abilities were declared with
     // `{ [service]: { "": [...] } }`.
-    return { space, path: "" };
+    return { space, path: "", resourceService: rest };
   }
   // `<space>/<short>/<sub-path>` — strip the `<short>` segment so the
   // canonical `path` mirrors WASM's `entry.path`.
-  return { space, path: rest.slice(secondSlash + 1) };
+  const resourceService = rest.slice(0, secondSlash);
+  return { space, path: rest.slice(secondSlash + 1), resourceService };
 }
 
 /**
@@ -293,6 +326,23 @@ function splitAbility(ability: string): { service: string; verb: string } | null
   const idx = ability.indexOf("/");
   if (idx < 0) return null;
   return { service: ability.slice(0, idx), verb: ability.slice(idx + 1) };
+}
+
+/**
+ * Blocker 4 follow-up (Defect 5): map an ability-derived service
+ * (e.g. `tinycloud.kv`, `tinycloud.sql`, `tinycloud.capabilities`,
+ * `tinycloud.secrets`, `tinycloud.encryption`) to its short-form
+ * counterpart (`kv`, `sql`, `capabilities`, `secrets`, `encryption`).
+ * Also accepts already-short forms (`kv`, `sql`, …) as-is and returns
+ * them unchanged so bare short names are treated symmetrically. Unknown
+ * fully-qualified services return their trailing segment (best-effort
+ * so the mismatch check is a wire-shape comparison, not an allowlist).
+ */
+function shortServiceOf(abilityService: string): string {
+  if (abilityService.startsWith("tinycloud.")) {
+    return abilityService.slice("tinycloud.".length);
+  }
+  return abilityService;
 }
 
 /**
@@ -354,7 +404,7 @@ function decodeRecapUri(
       });
       continue;
     }
-    const { space, path } = splitResourceUri(resourceUri);
+    const { space, path, resourceService } = splitResourceUri(resourceUri);
     for (const [ability, rawCaveats] of Object.entries(
       abilityMapRaw as Record<string, unknown>,
     )) {
@@ -367,11 +417,41 @@ function decodeRecapUri(
         continue;
       }
       const service = split.service;
-      const key = `${service} ${space} ${path}`;
+      // Blocker 4 follow-up (Defect 5): compare the ability-derived
+      // service against the resource-derived short-service segment. If
+      // they disagree, emit a parse warning and flag the entry so
+      // downstream gates (annotateAppScopedGrants, buildStatement) treat
+      // it as service-mismatched — the appScopedSecret gate will refuse
+      // to annotate, and buildStatement will render the literal fallback.
+      const abilityShort = shortServiceOf(service);
+      const mismatch =
+        resourceService !== null &&
+        resourceService !== "" &&
+        resourceService !== abilityShort;
+      if (mismatch) {
+        warnings.push({
+          code: "malformed-space",
+          message: `ReCap ability "${ability}" service does not match resource segment "${resourceService}" in ${resourceUri}.`,
+        });
+      }
+      // Include resourceService in the grouping key so ATT entries with
+      // the same ability service but different resource segments do NOT
+      // collapse into one grant — that would mask a service mismatch.
+      const key = `${service}\x00${space}\x00${path}\x00${resourceService ?? ""}`;
       let entry = grouped.get(key);
       if (!entry) {
-        entry = { service, space, path, actions: [], caveatsByAbility: {} };
+        entry = {
+          service,
+          space,
+          path,
+          actions: [],
+          caveatsByAbility: {},
+          resourceService,
+          serviceMismatch: mismatch,
+        };
         grouped.set(key, entry);
+      } else if (mismatch) {
+        entry.serviceMismatch = true;
       }
       if (entry.actions.includes(ability)) {
         warnings.push({
@@ -468,10 +548,24 @@ function parseRecapResources(message: string): {
         path = "";
       }
     }
-    const key = `${service}\x00${space}\x00${path}`;
+    // Legacy expanded form (`<service>/<verb>:<space>[/<path>]`) has no
+    // separate resource-side short-service segment on the wire; the
+    // service is fully implied by the ability head. resourceService is
+    // therefore null (no wire signal to compare against) and
+    // serviceMismatch is false. Include the null resourceService in the
+    // grouping key to keep this branch symmetrical with decodeRecapUri.
+    const key = `${service}\x00${space}\x00${path}\x00`;
     let entry = grouped.get(key);
     if (!entry) {
-      entry = { service, space, path, actions: [], caveatsByAbility: {} };
+      entry = {
+        service,
+        space,
+        path,
+        actions: [],
+        caveatsByAbility: {},
+        resourceService: null,
+        serviceMismatch: false,
+      };
       grouped.set(key, entry);
     }
     // Dedupe actions but flag the duplicate so callers can note the redundancy.
@@ -631,6 +725,12 @@ function buildGrants(
       ownedBySelf,
       displayLabel,
       metadataLabel: null,
+      // Blocker 4 follow-up (Defect 5): propagate the resource-side
+      // short-service segment and wire-shape mismatch signal so
+      // app-scope.ts / statements.ts can enforce exact tuple matching
+      // and short-circuit mismatched grants to the literal fallback.
+      resourceService: entry.resourceService,
+      ...(entry.serviceMismatch ? { serviceMismatch: true as const } : {}),
       actions,
     };
   });

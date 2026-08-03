@@ -18,6 +18,7 @@
 import type { CapabilityGrant } from "./model.js";
 import {
   KV_SECRET_SERVICES,
+  KV_SECRET_SERVICES_PROOF,
   RECOGNIZED_APP_SCOPE_SECRET_VERBS,
   isSecretsSpace,
   normalizeSecretVerb,
@@ -268,10 +269,21 @@ export function grantReachesSecretDataOrDecryption(
   // KV and SQL entries in the structurally named secrets space can be
   // classified as cross-app data before their domain-specific statement is
   // projected. They still reach TinyCloud Secrets data and belong here.
-  return (
+  //
+  // Blocker 4 follow-up (Defect 5): count grants that STRUCTURALLY reach
+  // secret data via EITHER the ability-derived service OR the resource-
+  // derived short-service segment. A service-mismatched grant (e.g. a
+  // `tinycloud.kv/get` ability on a `<space>/sql/vault/secrets/...`
+  // resource URI) still reaches secret data through the sql surface, so
+  // it must remain in the count even after `appScopeNearMiss` / the
+  // `serviceMismatch` short-circuit demote it to literal fallback.
+  const reachesViaAbility =
     (KV_SERVICES.has(grant.service) || SQL_SERVICES.has(grant.service)) &&
-    isSecretsSpace(grant.space)
-  );
+    isSecretsSpace(grant.space);
+  const reachesViaResource =
+    (grant.resourceService === "kv" || grant.resourceService === "sql") &&
+    isSecretsSpace(grant.space);
+  return reachesViaAbility || reachesViaResource;
 }
 
 const KV_SERVICES = new Set(["tinycloud.kv", "kv"]);
@@ -301,6 +313,20 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
   const abilityStrings = grant.actions.map((a) => a.ability);
   const verbs = classifyVerbs(abilityStrings);
   const resource = resourceOf(grant);
+
+  // Blocker 4 follow-up (Defect 5): serviceMismatch short-circuit.
+  //
+  // A grant flagged with `serviceMismatch: true` (ability-derived service
+  // disagrees with the resource-derived short-service segment; e.g. a
+  // `tinycloud.kv/get` ability on a `<space>/sql/...` resource URI) MUST
+  // render the literal fallback so the operator sees the raw wire tuple.
+  // Any friendly copy on a service-mismatched grant would misrepresent
+  // the underlying authority: the ability-based service branches below
+  // would render KV/secret copy for a grant whose wire form actually
+  // targets a different backend surface.
+  if (grant.serviceMismatch === true) {
+    return fallbackStatement(grant);
+  }
 
   // Blocker 4 (Defect 2): near-miss short-circuit.
   //
@@ -343,17 +369,39 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
     if (!allActionsRecognized) {
       return fallbackStatement(grant);
     }
-    // Defense-in-depth (Blocker 4): re-verify the exact resource tuple even
-    // if this grant somehow bypassed annotateAppScopedGrants. A wrong service
-    // (tinycloud.secrets), a non-secrets space, or a non-canonical path must
-    // never produce friendly copy — the operator must see the raw ability string.
-    if (!KV_SECRET_SERVICES.has(service) || !isSecretsSpace(space)) {
+    // Defense-in-depth (Blocker 4 follow-up): re-verify the exact
+    // resource tuple even if this grant somehow bypassed
+    // annotateAppScopedGrants. The proof requires:
+    //   - Ability-derived service is EXACTLY `tinycloud.kv` (no bare
+    //     `kv` alias; the annotation gate uses KV_SECRET_SERVICES_PROOF).
+    //   - When the wire carried a resource-side short-service segment,
+    //     it must be exactly `kv`.
+    //   - Space is a secrets-shaped space (loose structural check is
+    //     fine here — annotate already required signer-owned exactness).
+    //   - Path is BYTE-EXACTLY
+    //     `vault/secrets/scoped/<scope>/<secretName>` (no leading/
+    //     trailing slash normalization).
+    // A wrong service (tinycloud.secrets, bare `kv`), a service-
+    // mismatched wire tuple, a non-secrets space, or a non-canonical
+    // path must never produce friendly copy.
+    if (!KV_SECRET_SERVICES_PROOF.has(service)) {
+      return fallbackStatement(grant);
+    }
+    if (
+      grant.resourceService !== null &&
+      grant.resourceService !== "kv"
+    ) {
+      return fallbackStatement(grant);
+    }
+    if (!isSecretsSpace(space)) {
       return fallbackStatement(grant);
     }
     if (grant.appScopedSecret.scope) {
       const expectedPath = `vault/secrets/scoped/${grant.appScopedSecret.scope}/${grant.appScopedSecret.secretName}`;
-      const normalizedPath = path.replace(/^\/+/, "").replace(/\/+$/, "");
-      if (normalizedPath !== expectedPath) {
+      // BYTE-EXACT: no slash normalization. Slash-decorated paths never
+      // earned annotation in the first place (see findMatchingDeclaredSecret)
+      // and the defense-in-depth check must match that criterion exactly.
+      if (path !== expectedPath) {
         return fallbackStatement(grant);
       }
     }
