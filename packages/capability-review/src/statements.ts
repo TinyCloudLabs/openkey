@@ -638,6 +638,29 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
     return fallbackStatement(grant);
   }
 
+  // Root access covers the whole secrets store. Preserve that scope in the
+  // plain-language consequence instead of making it sound like one value.
+  if (
+    grant.family === "secret-mutation" &&
+    isSecretsSpace(space) &&
+    path === ""
+  ) {
+    if (KV_SERVICES.has(service)) {
+      return {
+        primaryText: "Manage all secrets stored in your vault",
+        service,
+        resource,
+      };
+    }
+    if (SQL_SERVICES.has(service)) {
+      return {
+        primaryText: "Manage your entire secret catalog",
+        service,
+        resource,
+      };
+    }
+  }
+
   // Resource ownership is a different fact from application identity. Only
   // an owner that differs from the signer earns another-user wording.
   if (grant.ownedBySelf === false && CAPABILITY_SERVICES.has(service)) {

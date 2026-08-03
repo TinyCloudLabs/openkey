@@ -460,7 +460,7 @@ describe("classifyRecapEntry — unknown secrets verbs", () => {
       path: "",
       actions: ["tinycloud.secrets/list", "tinycloud.secrets/metadata"],
     });
-    expect(classification.family).toBe("secret-read");
+    expect(classification.family).toBe("secret-namespace-list");
     expect(
       classifySeverityFromActions(classification.family, [
         "tinycloud.secrets/list",
@@ -468,5 +468,16 @@ describe("classifyRecapEntry — unknown secrets verbs", () => {
       ]),
     ).toBe("sensitive");
     expect(classification.displayLabel).toContain("Secret names and metadata");
+    const statement = buildStatement(
+      makeGrant({
+        service: "tinycloud.secrets",
+        abilities: ["tinycloud.secrets/list", "tinycloud.secrets/metadata"],
+        family: classification.family,
+        severity: "sensitive",
+      }),
+    );
+    expect(statement.primaryText).toBe(
+      "Perform tinycloud.secrets/list, tinycloud.secrets/metadata on tinycloud.secrets",
+    );
   });
 });

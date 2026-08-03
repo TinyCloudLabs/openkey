@@ -361,18 +361,20 @@ describe("parseCapabilityReview", () => {
       ctx({ message: REAL_SQL_SECRET_PATH_READ }),
     );
     expect(pathRead.permissions[0]?.family).toBe("secret-read");
-    expect(pathRead.permissions[0]?.severity).toBe("attention");
+    expect(pathRead.permissions[0]?.severity).toBe("sensitive");
     expect(grantReachesSecretDataOrDecryption(pathRead.permissions[0]!)).toBe(true);
   });
 
-  it("keeps SQL secrets sensitive for cross-owner and unverified requesters", () => {
+  it("keeps SQL secrets sensitive and derives ownership from the signer", () => {
     const crossOwner = parseCapabilityReview(
       ctx({ message: REAL_SQL_CROSS_OWNER_SECRET_ROOT_READ }),
     );
     expect(crossOwner.permissions[0]?.family).toBe("secret-namespace-list");
     expect(crossOwner.permissions[0]?.severity).toBe("sensitive");
     expect(crossOwner.permissions[0]?.ownedBySelf).toBe(false);
-    expect(crossOwner.permissions[0]?.displayLabel).toContain("Cross-user");
+    expect(crossOwner.permissions[0]?.displayLabel).toBe(
+      "Secret data — (entire secrets namespace)",
+    );
     expect(grantReachesSecretDataOrDecryption(crossOwner.permissions[0]!)).toBe(true);
 
     const unverified = parseCapabilityReview(
@@ -384,29 +386,31 @@ describe("parseCapabilityReview", () => {
     );
     expect(unverified.permissions[0]?.family).toBe("secret-namespace-list");
     expect(unverified.permissions[0]?.severity).toBe("sensitive");
-    expect(unverified.permissions[0]?.ownedBySelf).toBe(null);
-    expect(unverified.permissions[0]?.displayLabel).toContain("Cross-user");
+    // Requester metadata is not an ownership signal. The SIWE signer owns
+    // this resource, so the grant remains same-user even when that metadata
+    // is absent.
+    expect(unverified.permissions[0]?.ownedBySelf).toBe(true);
+    expect(unverified.permissions[0]?.displayLabel).toBe(
+      "Secret data — (entire secrets namespace)",
+    );
   });
 
   it("covers the KV/SQL authority matrix across secret reach and ownership", () => {
     const ownershipModes = [
       {
-        label: "same-owner verified",
-        requesterAddress: FIXTURE_META.address,
-        requesterVerified: true,
-        crossOwner: false,
+        label: "same signer",
+        signerAddress: FIXTURE_META.address,
+        otherUser: false,
       },
       {
-        label: "cross-owner verified",
-        requesterAddress: FIXTURE_META.address,
-        requesterVerified: true,
-        crossOwner: true,
+        label: "another user",
+        signerAddress: FIXTURE_META.address,
+        otherUser: true,
       },
       {
-        label: "unverified requester",
-        requesterAddress: null,
-        requesterVerified: false,
-        crossOwner: true,
+        label: "unknown signer",
+        signerAddress: null,
+        otherUser: false,
       },
     ];
     const scopes = ["secrets-root", "secrets-path", "non-secrets"] as const;
@@ -418,7 +422,7 @@ describe("parseCapabilityReview", () => {
           for (const operation of operations) {
             const secret = scope !== "non-secrets";
             const root = scope === "secrets-root";
-            const spaceOwner = ownership.crossOwner
+            const spaceOwner = ownership.otherUser
               ? FIXTURE_META.crossAppOwner
               : FIXTURE_META.address;
             const space = secret
@@ -448,37 +452,24 @@ describe("parseCapabilityReview", () => {
               space,
               path,
               actions: [`${service}/${verb}`],
-              requesterAddress: ownership.requesterAddress,
-              requesterVerified: ownership.requesterVerified,
+              signerAddress: ownership.signerAddress,
             });
-            const expectedFamily = ownership.crossOwner
-              ? secret
-                ? root && operation === "read"
-                  ? "secret-namespace-list"
-                  : operation === "read"
-                    ? "secret-read"
-                    : "secret-mutation"
-                : "cross-app-data"
-              : secret
-                ? root && operation === "read"
-                  ? "secret-namespace-list"
-                  : operation === "read"
-                    ? "secret-read"
-                    : "secret-mutation"
-                : service === "tinycloud.kv"
-                  ? "own-app-data"
-                  : "bootstrap-sql";
-            const expectedSeverity = secret
+            const expectedFamily = secret
               ? root && operation === "read"
-                ? "sensitive"
+                ? "secret-namespace-list"
                 : operation === "read"
-                  ? "attention"
-                  : "sensitive"
-              : ownership.crossOwner
+                  ? "secret-read"
+                  : "secret-mutation"
+              : operation === "unknown"
+                ? "unknown"
+                : ownership.otherUser
+                  ? "cross-app-data"
+                  : "own-app-data";
+            const expectedSeverity = secret
+              ? "sensitive"
+              : operation === "unknown" || ownership.otherUser
                 ? "attention"
-                : operation === "mutate"
-                  ? "attention"
-                  : "standard";
+                : "standard";
             expect(classification.family, `${service} ${scope} ${ownership.label} ${operation}`).toBe(
               expectedFamily,
             );
@@ -488,8 +479,8 @@ describe("parseCapabilityReview", () => {
               ], { service, space, path }),
               `${service} ${scope} ${ownership.label} ${operation}`,
             ).toBe(expectedSeverity);
-            if (ownership.crossOwner) {
-              expect(classification.displayLabel).toContain("Cross-user");
+            if (ownership.otherUser && !secret && operation !== "unknown") {
+              expect(classification.displayLabel).toBe("Another user's data");
             }
           }
         }
@@ -498,19 +489,20 @@ describe("parseCapabilityReview", () => {
   });
 
   it("does not expose owner or path fragments in cross-user KV/SQL labels", () => {
-    const requester = FIXTURE_META.address.toLowerCase();
-    const crossUserSpace = `tinycloud:pkh:eip155:1:${FIXTURE_META.crossAppOwner}:other`;
+    const signerAddress = FIXTURE_META.address.toLowerCase();
+    const crossUserSpace = `tinycloud:pkh:eip155:1:${FIXTURE_META.crossAppOwner}:default`;
     for (const service of ["tinycloud.kv", "tinycloud.sql"]) {
       const classification = classifyRecapEntry({
         service,
         space: crossUserSpace,
-        path: "/",
-        actions: [`${service}/read`],
-        requesterAddress: requester,
-        requesterVerified: true,
+        path: "app/items",
+        actions: [
+          service === "tinycloud.kv" ? "tinycloud.kv/get" : "tinycloud.sql/read",
+        ],
+        signerAddress,
       });
       expect(classification.family).toBe("cross-app-data");
-      expect(classification.displayLabel).toContain("Cross-user");
+      expect(classification.displayLabel).toBe("Another user's data");
       expect(classification.displayLabel).not.toContain("0x");
       expect(classification.displayLabel).not.toContain("path=");
     }
@@ -841,7 +833,7 @@ describe("family label copy", () => {
 
   it("keeps the cross-user family label free of owner addresses and paths", () => {
     const label = FAMILY_LABEL["cross-app-data"];
-    expect(label).toBe("Cross-app data");
+    expect(label).toBe("Another user's data");
     expect(label).not.toMatch(/0x[0-9a-fA-F]{6,}/);
     expect(label).not.toContain("path=");
   });
