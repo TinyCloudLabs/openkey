@@ -263,6 +263,62 @@ export function isRecognizedManifestSecretAction(action: string): boolean {
 }
 
 /**
+ * Sol Blocker B (this iteration): CANONICAL grant-side ability allowlist for
+ * the app-scoped-secret proof gate.
+ *
+ * The only grant-side ability strings a real js-sdk producer emits for an
+ * app-scoped secret are `tinycloud.kv/get`, `tinycloud.kv/put`, and
+ * `tinycloud.kv/del`. The proof gate MUST compare grant-side ability strings
+ * BYTE-EXACTLY against this set:
+ *
+ *   - No case folding. `tinycloud.kv/GET` must fail.
+ *   - No synonym normalization. `tinycloud.kv/read` must fail (js-sdk emits
+ *     `tinycloud.kv/get` on the wire, not `tinycloud.kv/read`).
+ *   - No short-form aliases. `kv/get` must fail (bare `kv` service is
+ *     rejected by `KV_SECRET_SERVICES_PROOF` anyway; the ability-shape check
+ *     enforces this at the ability level too).
+ *
+ * Any deviation from these three exact strings means the grant did not
+ * originate from js-sdk's canonical wire form and cannot earn the
+ * sensitive -> standard demotion. Near-miss stamping still fires so the
+ * operator sees the literal fallback rendering of the raw ability.
+ */
+export const CANONICAL_APP_SCOPE_SECRET_ABILITIES: ReadonlySet<string> = new Set([
+  "tinycloud.kv/get",
+  "tinycloud.kv/put",
+  "tinycloud.kv/del",
+]);
+
+/**
+ * Sol Blocker C (this iteration): js-sdk-parity secret-scope canonicalization,
+ * exposed for near-miss fingerprint use.
+ *
+ * js-sdk's `canonicalizeSecretScope` accepts raw manifest scopes like
+ * `Listen App`, ` listen app `, and `listen--app` and canonicalizes them
+ * ALL to `listen-app`. The signed grant path is therefore produced with
+ * the CANONICAL scope segment (`vault/secrets/scoped/listen-app/API_KEY`).
+ *
+ * Near-miss fingerprint helpers previously skipped any declaration whose
+ * RAW scope failed `SECRET_SCOPE_RE`, so a manifest that legitimately
+ * declared `scope: "Listen App"` produced no fingerprint and the
+ * corresponding grant on the canonical path escaped to friendly copy.
+ * `canonicalizeSecretScopeForFingerprint` returns the canonical scope
+ * string (or null when the scope cannot be canonicalized to a valid,
+ * non-reserved value) so the near-miss predicates match the SAME string
+ * that the signed grant path carries.
+ *
+ * This is a fingerprint-only helper: it only widens near-miss stamping.
+ * The strict proof-side matcher (`canonicalizeSecretScopeStrict` inside
+ * `findMatchingDeclaredSecret`) still requires the raw declared scope to
+ * BE its canonical form — that check remains a fail-closed authority gate.
+ */
+export function canonicalizeSecretScopeForFingerprint(
+  scope: string,
+): string | null {
+  return canonicalizeSecretScopeStrict(scope);
+}
+
+/**
  * Near-miss fingerprint (Blocker 4, Sol follow-up).
  *
  * Returns true when the grant path contains a `<scope>/<secretName>` fragment
@@ -285,9 +341,18 @@ export function pathContainsDeclaredSecretFragment(
   for (const declared of secrets) {
     if (!declared.scope) continue;
     if (!SECRET_NAME_RE.test(declared.secretName)) continue;
-    if (!SECRET_SCOPE_RE.test(declared.scope)) continue;
-    if (RESERVED_SCOPES.has(declared.scope)) continue;
-    const fragment = `${declared.scope}/${declared.secretName}`;
+    // Sol Blocker C (this iteration): use the js-sdk-canonicalized scope
+    // for the fingerprint so declarations with raw scopes like
+    // `Listen App`, ` listen app `, or `listen--app` — all of which
+    // js-sdk canonicalizes to `listen-app` when producing the signed
+    // grant path — still participate in near-miss stamping. The prior
+    // implementation required the RAW scope to satisfy SECRET_SCOPE_RE,
+    // so a legitimately-canonicalizable manifest scope was silently
+    // dropped and the corresponding grant on the canonical path
+    // escaped to friendly copy.
+    const canonicalScope = canonicalizeSecretScopeForFingerprint(declared.scope);
+    if (canonicalScope === null) continue;
+    const fragment = `${canonicalScope}/${declared.secretName}`;
     // Match as a whole-segment substring: either at end of path, or
     // followed by another slash. This avoids accidental matches inside
     // longer identifier segments.
@@ -330,17 +395,25 @@ export function pathContainsDeclaredSecretName(
   const normalizedPath = path.replace(/^\/+/, "").replace(/\/+$/, "");
   for (const declared of secrets) {
     if (!SECRET_NAME_RE.test(declared.secretName)) continue;
-    // Skip declarations whose scope is PRESENT-but-invalid or reserved.
-    // A manifest that names a reserved scope has produced no valid
-    // declaration; the entry is entirely untrusted (both proof-side and
-    // fingerprint-side) and must not force literal-fallback stamping.
-    // Scope-independent name fingerprinting is intentional — grants of
-    // the shape `<any>/API_KEY` still deserve near-miss stamping when a
-    // valid declaration names API_KEY under a real scope — but the
-    // declaration itself must be valid.
+    // Sol Blocker C (this iteration): validate the scope via the SAME
+    // js-sdk canonicalization the signed grant path was produced with,
+    // rather than requiring the raw scope to satisfy SECRET_SCOPE_RE.
+    // Manifests may legitimately declare raw scopes like `Listen App`,
+    // ` listen app `, or `listen--app`; js-sdk canonicalizes them all
+    // to `listen-app` before emitting the signed vault path. A near-
+    // miss fingerprint that only accepted raw-canonical scopes would
+    // silently drop these entries and let same-name grants on the
+    // canonical path escape to friendly copy.
+    //
+    // We still reject scopes that fail to canonicalize (empty after
+    // canonicalization) or resolve to reserved values — those are the
+    // fail-closed states the prior branch enforced by rejecting invalid
+    // or reserved raw scopes.
     if (declared.scope !== undefined) {
-      if (!SECRET_SCOPE_RE.test(declared.scope)) continue;
-      if (RESERVED_SCOPES.has(declared.scope)) continue;
+      const canonicalScope = canonicalizeSecretScopeForFingerprint(
+        declared.scope,
+      );
+      if (canonicalScope === null) continue;
     }
     const name = declared.secretName;
     // Match as a whole path segment: bare, at end, at start, or between slashes.
@@ -499,27 +572,28 @@ export function annotateAppScopedGrants(
     // the operator sees the raw wire tuple.
     if (grant.serviceMismatch === true) return nearMissMark(grant);
 
-    // Sol MAJOR (previous iteration): before doing ANY app-scope match, fail
-    // closed on unknown action verbs. `annotateAppScopedGrants` transitions
-    // a grant from sensitive -> standard AND stamps `appScopedSecret` on
-    // it, which lets `buildStatement` render friendly copy such as
-    // "Read the app secret API_KEY". If we accept an arbitrary verb from
-    // the manifest / grant (e.g. `peek`, `admin`, some novel action), we
-    // would grant that friendly presentation to an action whose actual
-    // authority is not part of the read/write/delete vocabulary the copy
-    // implies. An origin-bound manifest MUST NOT be able to widen the
-    // recognized secret-action vocabulary.
+    // Sol Blocker B (this iteration): the proof gate compares grant-side
+    // abilities BYTE-EXACTLY against the canonical URN allowlist. Prior
+    // code called `normalizeSecretVerb(a.verb.toLowerCase())` and matched
+    // against a case-folded synonym set, so grant abilities like
+    // `tinycloud.kv/GET` or `tinycloud.kv/read` earned standard severity
+    // even though no js-sdk producer emits either shape — the wire form
+    // is always exactly one of `tinycloud.kv/get`, `tinycloud.kv/put`, or
+    // `tinycloud.kv/del`. Anything else is either a caller mangling the
+    // ability or a fingerprint of a different backend surface; fail
+    // closed to near-miss stamping so `buildStatement` renders the raw
+    // ability verbatim.
     //
-    // The canonical recognized verbs are exactly those `normalizeSecretVerb`
-    // maps to (`get` / `put` / `del`). Any grant verb whose normalized form
-    // is NOT one of these fails the proof (fail closed: near-miss stamp so
-    // `buildStatement` renders the literal fallback).
-    const allVerbsRecognized = grant.actions.every((a) =>
-      RECOGNIZED_APP_SCOPE_SECRET_VERBS.has(
-        normalizeSecretVerb(a.verb.toLowerCase()),
-      ),
+    // This exact-byte match is the sole proof-side check on grant
+    // abilities. The synonym-normalization helper `normalizeSecretVerb`
+    // is retained for the DECLARED-side subset check below (manifests
+    // legitimately use the long-form `read`/`write`/`delete` verbs and
+    // must map to the wire short verbs when comparing subsets), but
+    // never for grant-side proof.
+    const allAbilitiesCanonical = grant.actions.every((a) =>
+      CANONICAL_APP_SCOPE_SECRET_ABILITIES.has(a.ability),
     );
-    if (!allVerbsRecognized) return nearMissMark(grant);
+    if (!allAbilitiesCanonical) return nearMissMark(grant);
     // Blocker 4 (Defect 1) — follow-up: exact-resource proof. Only
     // grants whose ability-derived service is EXACTLY `tinycloud.kv`
     // (no bare `kv` alias) AND whose resource-derived short-service
@@ -638,15 +712,26 @@ export function findMatchingDeclaredSecret(
   // js-sdk secrets resolver never emits such a path. Slash variants MUST
   // now fail the proof and be caught downstream by near-miss stamping.
   //
-  // Blocker 4 follow-up (Defect 1): grant-side verb normalization uses
-  // `normalizeSecretVerb` which is case-insensitive (folds `READ` → `get`)
-  // and case-safe for the wire form of the grant's verb (which was
-  // extracted from the ability tail). That's fine here — the grant verb
-  // is a wire-derived string that already came from a canonical
-  // `tinycloud.kv/*` ability.
+  // Sol Blocker B (this iteration): the grant-side ability comparison is
+  // BYTE-EXACT against the canonical URN allowlist. Prior code folded
+  // `a.verb.toLowerCase()` through `normalizeSecretVerb`, which admitted
+  // grant abilities like `tinycloud.kv/GET` (upper-cased verb) and
+  // `tinycloud.kv/read` (long-form synonym) even though no js-sdk producer
+  // emits either shape. Only the exact wire abilities `tinycloud.kv/get`
+  // / `tinycloud.kv/put` / `tinycloud.kv/del` may satisfy the proof. Any
+  // non-canonical grant ability fails the proof and downstream near-miss
+  // stamping catches it into literal-fallback rendering.
+  //
+  // Grant-side verbs used for the subset check below are derived by
+  // stripping the `tinycloud.kv/` prefix from the exact-matched ability
+  // (post-check), so they're always canonical short verbs (`get`/`put`/`del`).
   const grantPath = grant.path;
-  const grantVerbs = grant.actions.map((a) =>
-    normalizeSecretVerb(a.verb.toLowerCase()),
+  const grantAbilities = grant.actions.map((a) => a.ability);
+  for (const a of grantAbilities) {
+    if (!CANONICAL_APP_SCOPE_SECRET_ABILITIES.has(a)) return null;
+  }
+  const grantVerbs = grantAbilities.map((a) =>
+    a.slice("tinycloud.kv/".length),
   );
   for (const declared of secrets) {
     // Validate secret name against js-sdk SECRET_NAME_RE.

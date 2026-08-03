@@ -9,6 +9,7 @@
   import { validatePreviewSelection } from '$lib/preview-review';
   import {
     parseCapabilityReview,
+    parseSiweChainId,
     defaultSelection,
     annotateAppScopedGrants,
     type CapabilityReviewModel,
@@ -465,13 +466,25 @@
     // spaces as cross-app), which is the honest report.
     const requesterVerifiedNow = false;
     const requesterAddressForClassifier: string | null = null;
+    // Sol Blocker A (this iteration): derive the signer chain ID from the
+    // actual SIWE bytes that will be signed, not from a hard-coded default.
+    // The app-scoped-secret proof (expectedSignerSecretsSpace /
+    // isSignerOwnedSecretsSpace) pins the signer's canonical secrets space
+    // to `tinycloud:pkh:eip155:<chainId>:<address>:secrets`. A mismatched
+    // chain ID would silently pass the ownership check for a different-
+    // chain resource URI and let a wrong-chain grant escape to standard
+    // severity. When the SIWE has no parseable `Chain ID:` line (legacy
+    // messages, malformed input) we fall back to `0` so the ownership
+    // check fails closed rather than pretending the request was on mainnet.
+    const parsedChainId = parseSiweChainId(message);
+    const signerChainId = parsedChainId ?? 0;
     try {
       const model = parseCapabilityReview({
         message,
         signer: {
           label: 'Selected key',
           address: key.address,
-          chainId: 1,
+          chainId: signerChainId,
           provenance: key.keyType === 'EXTERNAL' ? 'external' : 'managed',
         },
         editable: canEdit,

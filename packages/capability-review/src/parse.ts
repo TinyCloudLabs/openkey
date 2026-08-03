@@ -89,6 +89,30 @@ const SIWE_EXPIRATION_LINE = /^Expiration Time: (.+)$/m;
 // ReCap capabilities are appended by TinyCloud as a resources list.
 const SIWE_RESOURCE_LINE = /^- (.+)$/gm;
 
+/**
+ * Sol Blocker A (this iteration): parse the SIWE `Chain ID:` line from a raw
+ * SIWE message. Returns null when the message is not a SIWE, does not carry
+ * a `Chain ID` line, or the value is not a base-10 integer that fits in a
+ * JavaScript safe integer.
+ *
+ * Widget entry points (popup + iframe) MUST derive the signer chain ID
+ * from the actual SIWE that will be signed, NOT from a hard-coded default
+ * such as `1`. `expectedSignerSecretsSpace` and `isSignerOwnedSecretsSpace`
+ * — the exact-resource proof for app-scoped secrets — pin the signer's
+ * canonical secrets space to `tinycloud:pkh:eip155:<chainId>:<address>:secrets`,
+ * so a mismatched chain ID silently passes the ownership check for a
+ * different chain and admits a wrong-chain resource URI to the standard-
+ * severity path.
+ */
+export function parseSiweChainId(message: string): number | null {
+  const match = message.match(SIWE_CHAIN_LINE);
+  if (!match || !match[1]) return null;
+  const value = Number(match[1]);
+  if (!Number.isSafeInteger(value)) return null;
+  if (value < 0) return null;
+  return value;
+}
+
 interface ParsedRecapEntry {
   service: string;
   space: string;
