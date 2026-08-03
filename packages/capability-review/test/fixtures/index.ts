@@ -249,6 +249,18 @@ export const REAL_KV_SECRET_MUTATION = siwe([
   }),
 ]);
 
+// Whole-secrets-namespace list using the canonical `<space>/kv` resource
+// shape. The parser strips `kv` into resourceService and leaves path empty;
+// this is the shape that previously fell through to bootstrap-kv.
+const SECRETS_SPACE = `tinycloud:pkh:eip155:${CHAIN}:${ADDR}:secrets`;
+export const REAL_KV_SECRET_NAMESPACE_LIST = siwe([
+  makeRecapResource({
+    [`${SECRETS_SPACE}/kv`]: {
+      "tinycloud.kv/list": [{}],
+    },
+  }),
+]);
+
 export const FIXTURE_META = {
   address: ADDR,
   chainId: CHAIN,

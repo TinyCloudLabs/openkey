@@ -1,6 +1,10 @@
 import { describe, it, expect } from "bun:test";
 import {
   parseCapabilityReview,
+  buildRenderPlan,
+  buildStatement,
+  classifyRecapEntry,
+  classifySeverityFromActions,
   assertBaselineSubset,
   restrictModel,
   defaultSelection,
@@ -27,6 +31,7 @@ import {
   REAL_RECAP_WITH_PATH,
   REAL_KV_SECRET_READ,
   REAL_KV_SECRET_MUTATION,
+  REAL_KV_SECRET_NAMESPACE_LIST,
   SECRETS_MUTATION_REQUEST,
   SECRETS_READ_REQUEST,
   UNKNOWN_SERVICE_REQUEST,
@@ -278,6 +283,59 @@ describe("parseCapabilityReview", () => {
     );
     expect(secretGrant).toBeTruthy();
     expect(secretGrant?.severity).toBe("sensitive");
+  });
+
+  it("classifies a whole-secrets-namespace list as sensitive end-to-end", () => {
+    const model = parseCapabilityReview(
+      ctx({ message: REAL_KV_SECRET_NAMESPACE_LIST }),
+    );
+    const namespaceGrant = model.permissions.find(
+      (grant) => grant.family === "secret-namespace-list",
+    );
+    expect(namespaceGrant).toBeDefined();
+    expect(namespaceGrant?.severity).toBe("sensitive");
+    expect(namespaceGrant?.displayLabel).toBe(
+      "Secret names and metadata — (entire secrets namespace)",
+    );
+    expect(buildStatement(namespaceGrant!).primaryText).toBe(
+      "View secret names and details",
+    );
+    const sensitiveBucket = buildRenderPlan(model.permissions).find(
+      (bucket) => bucket.severity === "sensitive",
+    );
+    expect(sensitiveBucket?.grants).toContainEqual(namespaceGrant);
+
+    const pathNamespace = classifyRecapEntry({
+      service: "tinycloud.kv",
+      space: FIXTURE_META.ownSpace,
+      path: "secrets",
+      actions: ["tinycloud.kv/list"],
+    });
+    expect(pathNamespace.family).toBe("secret-namespace-list");
+    expect(
+      classifySeverityFromActions(pathNamespace.family, [
+        "tinycloud.kv/list",
+      ]),
+    ).toBe("sensitive");
+  });
+
+  it("does not expose owner or path fragments in cross-user KV/SQL labels", () => {
+    const requester = FIXTURE_META.address.toLowerCase();
+    const crossUserSpace = `tinycloud:pkh:eip155:1:${FIXTURE_META.crossAppOwner}:other`;
+    for (const service of ["tinycloud.kv", "tinycloud.sql"]) {
+      const classification = classifyRecapEntry({
+        service,
+        space: crossUserSpace,
+        path: "/",
+        actions: [`${service}/read`],
+        requesterAddress: requester,
+        requesterVerified: true,
+      });
+      expect(classification.family).toBe("cross-app-data");
+      expect(classification.displayLabel).toContain("Cross-user");
+      expect(classification.displayLabel).not.toContain("0x");
+      expect(classification.displayLabel).not.toContain("path=");
+    }
   });
 
   it("classifies encryption/decrypt as sensitive", () => {

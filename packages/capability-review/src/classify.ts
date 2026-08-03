@@ -172,6 +172,24 @@ function ownerFromSpace(space: string): string | null {
   return match[1].toLowerCase();
 }
 
+function isWholeSecretsNamespace(space: string, path: string): boolean {
+  const normalizedPath = path.replace(/^\/+|\/+$/g, "");
+  if (normalizedPath === "secrets" || normalizedPath === "vault/secrets") {
+    return true;
+  }
+  return (
+    normalizedPath === "" &&
+    (space === "secrets" || /:secrets(?:\/|$)/.test(space))
+  );
+}
+
+function isNamespaceListing(actions: string[]): boolean {
+  return actions.some((action) => {
+    const verb = verbOf(action);
+    return verb === "list" || verb === "metadata";
+  });
+}
+
 export function classifyRecapEntry(entry: RecapEntryLike): {
   family: CapabilityFamily;
   displayLabel: string;
@@ -203,6 +221,22 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     spaceOwner !== null &&
     (ownershipAxis === null || spaceOwner !== ownershipAxis);
 
+  // Enumerating secret names/metadata is a distinct, sensitive operation.
+  // KV namespace resources can arrive with an empty `path` when the wire URI
+  // is `<space>/kv`; named-secrets namespace actions likewise have no path.
+  // Do not let either shape fall through to routine bootstrap KV access.
+  const isWholeSecretNamespaceList =
+    isNamespaceListing(entry.actions) &&
+    ((BOOTSTRAP_KV_SERVICES.has(service) &&
+      isWholeSecretsNamespace(space, path)) ||
+      (SECRETS_SERVICES.has(service) && path === ""));
+  if (isWholeSecretNamespaceList) {
+    return {
+      family: "secret-namespace-list",
+      displayLabel: "Secret names and metadata — (entire secrets namespace)",
+    };
+  }
+
   // KV entries with a secret path are classified as secret-read/mutation,
   // not generic bootstrap-kv. Real CLI secret requests use tinycloud.kv with
   // paths like "vault/secrets/DEPLOY_KEY" or "secrets/MY_SECRET".
@@ -230,8 +264,7 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     // classifySeverityFromActions when the family is cross-app-data.
     if (isCrossApp) {
       // Structural label only — never claim an app identity here.
-      const label = `Cross-user KV data — owner ${spaceOwner} path=${path || "(whole space)"}`;
-      return { family: "cross-app-data", displayLabel: label };
+      return { family: "cross-app-data", displayLabel: "Cross-user KV data" };
     }
     // Own-space + recognized app path: label with the app family.
     const appMatch = matchKvAppFamily(path);
@@ -246,7 +279,7 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     if (isCrossApp) {
       return {
         family: "cross-app-data",
-        displayLabel: `Cross-user SQL data — owner ${spaceOwner} path=${path || "(whole space)"}`,
+        displayLabel: "Cross-user SQL data",
       };
     }
     return { family: "bootstrap-sql", displayLabel: "SQL database" };
@@ -337,6 +370,8 @@ export function classifySeverityFromActions(
       return "attention";
     case "secret-read":
       return "attention";
+    case "secret-namespace-list":
+      return "sensitive";
     case "secret-mutation":
       return "sensitive";
     case "encryption-key":

@@ -192,13 +192,19 @@ describe("classifyRecapEntry — unknown secrets verbs", () => {
     ).toBe("sensitive");
   });
 
-  it("keeps a pure list/metadata secrets grant as secret-read", () => {
+  it("classifies a pure list/metadata secrets grant as a sensitive namespace listing", () => {
     const classification = classifyRecapEntry({
       service: "tinycloud.secrets",
       space: SPACE,
       path: "",
       actions: ["tinycloud.secrets/list", "tinycloud.secrets/metadata"],
     });
-    expect(classification.family).toBe("secret-read");
+    expect(classification.family).toBe("secret-namespace-list");
+    expect(
+      classifySeverityFromActions(classification.family, [
+        "tinycloud.secrets/list",
+        "tinycloud.secrets/metadata",
+      ]),
+    ).toBe("sensitive");
   });
 });
