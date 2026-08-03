@@ -63,6 +63,58 @@ const MUTATION_VERBS = new Set([
 ]);
 const READ_VERBS = new Set(["read", "get", "peek", "list"]);
 const DECRYPT_VERBS = new Set(["decrypt", "unwrap"]);
+
+// Exact action shapes we will render friendly copy for on each service.
+// A grant is only eligible for the friendly copy on that service when
+// EVERY action's ability string is in the corresponding recognized set.
+// Anything outside must fall back to `fallbackStatement(grant)` per the
+// merge-readiness contract — do not invent friendly semantics on
+// unrecognized shapes (Sol MAJOR-1).
+
+// The capabilities service only has one canonical action shape today:
+// `tinycloud.capabilities/read`. Verbs like `get`, `peek`, `list` are NOT
+// registered as capability shapes on the node — treating them as friendly
+// "check permissions" grants would classify novel/unknown shapes at
+// standard severity with unearned copy. Fail closed on anything else.
+const RECOGNIZED_CAPABILITY_ACTIONS = new Set([
+  "tinycloud.capabilities/read",
+  "capabilities/read",
+]);
+
+// The named-secrets service accepts the read / mutation / list / metadata
+// shapes below. Anything else must fall back to the literal actions.
+const RECOGNIZED_SECRETS_READ_ACTIONS = new Set([
+  "tinycloud.secrets/read",
+  "tinycloud.secrets/get",
+  "secrets/read",
+  "secrets/get",
+]);
+const RECOGNIZED_SECRETS_WRITE_ACTIONS = new Set([
+  "tinycloud.secrets/put",
+  "tinycloud.secrets/write",
+  "tinycloud.secrets/delete",
+  "tinycloud.secrets/del",
+  "tinycloud.secrets/update",
+  "secrets/put",
+  "secrets/write",
+  "secrets/delete",
+  "secrets/del",
+  "secrets/update",
+]);
+const RECOGNIZED_SECRETS_LIST_ACTIONS = new Set([
+  "tinycloud.secrets/list",
+  "secrets/list",
+]);
+const RECOGNIZED_SECRETS_METADATA_ACTIONS = new Set([
+  "tinycloud.secrets/metadata",
+  "secrets/metadata",
+]);
+const RECOGNIZED_SECRETS_ACTIONS = new Set<string>([
+  ...RECOGNIZED_SECRETS_READ_ACTIONS,
+  ...RECOGNIZED_SECRETS_WRITE_ACTIONS,
+  ...RECOGNIZED_SECRETS_LIST_ACTIONS,
+  ...RECOGNIZED_SECRETS_METADATA_ACTIONS,
+]);
 // Sol MAJOR-3: `create` matches short-verb abilities (e.g. `foo/create`).
 // The production encryption service uses the compound verb
 // `network.create`, so we ALSO recognize that specific form here; the
@@ -319,17 +371,18 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
 
   // 2. Capabilities read (account permissions or secrets permissions).
   if (CAPABILITY_SERVICES.has(service)) {
-    // Fail-closed: capability grants have a very small vocabulary — the
-    // only shape we can render friendly copy for is a read-shaped
-    // permissions check. Any grant that carries a verb outside the
-    // recognized read set (`get`/`read`/`peek`/`list`) is not a known
-    // shape; the contract requires us to fall back to the literal
-    // service/resource/actions rather than invent friendly semantics on
-    // a shape we don't recognize.
-    const allVerbsRecognized = abilityStrings.every((a) =>
-      READ_VERBS.has(verbOf(a)),
+    // Fail-closed (Sol MAJOR-1 re-fix): the capabilities service has
+    // exactly ONE registered structural shape — `capabilities/read` —
+    // so we only render the friendly permissions-check copy when every
+    // action in the grant is that exact ability. Verbs like `get`,
+    // `peek`, or `list` are NOT registered capability shapes and MUST
+    // fall back to literal service/resource/actions rendering. Reusing
+    // the broad `READ_VERBS` verb set here would let novel action names
+    // inherit friendly copy at standard severity.
+    const allActionsRecognized = abilityStrings.every((a) =>
+      RECOGNIZED_CAPABILITY_ACTIONS.has(a),
     );
-    if (!allVerbsRecognized) {
+    if (!allActionsRecognized) {
       return fallbackStatement(grant);
     }
     // A capabilities grant on the secrets service is "check permissions
@@ -475,31 +528,39 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
 
   // 5. Named secrets service (not KV): read vs mutation family.
   if (SECRETS_SERVICES.has(service)) {
-    // Fail-closed: only render friendly copy when every verb belongs to a
-    // recognized set (read / mutation / list / metadata). An unknown
-    // verb on the secrets service is not something we can safely map to
-    // one of the deterministic statements the contract enumerates.
-    const allVerbsRecognized = abilityStrings.every((a) => {
-      const v = verbOf(a);
-      return (
-        READ_VERBS.has(v) ||
-        MUTATION_VERBS.has(v) ||
-        LIST_VERBS.has(v) ||
-        METADATA_VERBS.has(v)
-      );
-    });
-    if (!allVerbsRecognized) {
+    // Fail-closed (Sol MAJOR-1 re-fix): only render friendly copy when
+    // every action's ability is an EXACT registered secrets shape.
+    // Reusing broad verb sets (READ_VERBS/MUTATION_VERBS/…) would map
+    // novel verbs like `secrets/peek` to friendly "permissions" copy at
+    // standard severity even though `peek` is not a registered secrets
+    // action. Fall back to literal actions instead.
+    const allActionsRecognized = abilityStrings.every((a) =>
+      RECOGNIZED_SECRETS_ACTIONS.has(a),
+    );
+    if (!allActionsRecognized) {
       return fallbackStatement(grant);
     }
-    if (grant.family === "secret-mutation" || verbs.hasWrite) {
+    const hasRecognizedWrite = abilityStrings.some((a) =>
+      RECOGNIZED_SECRETS_WRITE_ACTIONS.has(a),
+    );
+    const hasRecognizedRead = abilityStrings.some((a) =>
+      RECOGNIZED_SECRETS_READ_ACTIONS.has(a),
+    );
+    const hasRecognizedList = abilityStrings.some((a) =>
+      RECOGNIZED_SECRETS_LIST_ACTIONS.has(a),
+    );
+    const hasRecognizedMetadata = abilityStrings.some((a) =>
+      RECOGNIZED_SECRETS_METADATA_ACTIONS.has(a),
+    );
+    if (grant.family === "secret-mutation" || hasRecognizedWrite) {
       return {
         primaryText: "Manage secret variables",
         service,
         resource,
       };
     }
-    // capabilities-shape secret reads: "capabilities/read"
-    if (verbs.hasRead && !verbs.hasList && !verbs.hasMetadata) {
+    // capabilities-shape secret reads: "secrets/read" or "secrets/get"
+    if (hasRecognizedRead && !hasRecognizedList && !hasRecognizedMetadata) {
       return {
         primaryText: "Check permissions for your secrets",
         service,
@@ -507,16 +568,15 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
       };
     }
     // list/metadata → variable-shape read
-    if (verbs.hasList || verbs.hasMetadata) {
+    if (hasRecognizedList || hasRecognizedMetadata) {
       return {
         primaryText: "View secret variable names and details",
         service,
         resource,
       };
     }
-    // Recognized verbs but none of the shapes above matched — do not
-    // invent a "vault read" statement for grants that carry a verb we
-    // did not classify above.
+    // Recognized actions but none of the shapes above matched — fall
+    // back to the literal actions rather than invent a statement.
     return fallbackStatement(grant);
   }
 

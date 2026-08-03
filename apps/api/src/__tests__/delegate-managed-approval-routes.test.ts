@@ -262,7 +262,7 @@ describe('POST /api/delegate — Blocker 1 versioned managed approval', () => {
 
   test('rejects a selectedActionIds set that adds actions not in the SIWE', async () => {
     const { token, prepared, selectedActionKeys } = await prepare();
-    const inflatedSelection = [...selectedActionKeys, 'fake fake fake fake'];
+    const inflatedSelection = [...selectedActionKeys, 'fake\u0000fake\u0000fake\u0000fake'];
     const res = await router.request('/', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

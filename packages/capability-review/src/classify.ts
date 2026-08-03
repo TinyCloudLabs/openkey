@@ -108,19 +108,23 @@ const DECRYPT_VERBS = new Set([
   "unwrap",
 ]);
 
-// The read-shaped verbs the capabilities service is expected to carry.
-// Any capabilities grant that carries a verb outside this set falls into
-// the fail-closed `unknown` family (see BOOTSTRAP_CAPABILITIES_SERVICES
-// branch below).
-const CAPABILITY_READ_VERBS = new Set(["read", "get", "peek", "list"]);
+// The single read-shaped verb the capabilities service is expected to
+// carry. Sol MAJOR-1 re-fix: `get`, `peek`, and `list` are NOT
+// registered structural capability actions — only `capabilities/read`
+// is. Any capabilities grant that carries a verb outside this set falls
+// into the fail-closed `unknown` family (see BOOTSTRAP_CAPABILITIES_SERVICES
+// branch below), which elevates severity via `classifySeverityFromActions`.
+const CAPABILITY_READ_VERBS = new Set(["read"]);
 
 // The verbs the secrets service is expected to carry. Any grant on
 // `tinycloud.secrets` (or `secrets`) with a verb outside this union is
 // classified as `secret-mutation` — the fail-closed side of the
-// sensitive/standard split — rather than silently defaulting to the
-// standard read-shaped family.
+// sensitive/standard split — so unknown verbs stay inside the
+// secret-access count and are surfaced at elevated severity rather than
+// silently defaulting to the standard read-shaped family.
+const SECRETS_KNOWN_READ_VERBS = new Set(["read", "get"]);
 const SECRETS_KNOWN_VERBS = new Set([
-  ...CAPABILITY_READ_VERBS,
+  ...SECRETS_KNOWN_READ_VERBS,
   ...MUTATION_VERBS,
   "list",
   "metadata",
