@@ -17,11 +17,9 @@
 
 import type { CapabilityGrant } from "./model.js";
 import {
-  KV_SECRET_SERVICES,
+  CANONICAL_APP_SCOPE_SECRET_ABILITIES,
   KV_SECRET_SERVICES_PROOF,
-  RECOGNIZED_APP_SCOPE_SECRET_VERBS,
   isSecretsSpace,
-  normalizeSecretVerb,
 } from "./app-scope.js";
 
 export interface StatementEntry {
@@ -332,84 +330,85 @@ const ENCRYPTION_SERVICES = new Set(["tinycloud.encryption", "encryption"]);
 // must be added here explicitly — silent inheritance of friendly copy is a
 // merge-readiness contract violation.
 
+// Sol MAJOR (post-rejection re-fix): the KV catalog now enumerates ONLY the
+// exact wire abilities the production js-sdk emits per the canonical
+// capability registry (`js-sdk/packages/bootstrap/src/generated/capabilities.ts`).
+// The prior catalog listed synonyms and near-look-alikes (`peek`, `read`,
+// `update`, `post`, `write`, `admin`, `grant`, `revoke`) that no js-sdk
+// producer emits — treating them as recognized let novel unknown-verb
+// requests inherit friendly copy at standard severity even though the
+// underlying wire shape was unregistered.
+//
+// The short-form alias (`kv/<verb>`) is kept alongside the fully-qualified
+// form because the branch guards below (`KV_SERVICES`) accept both and the
+// service-mismatch check has already validated the resource-side segment.
 const KV_RECOGNIZED_ABILITIES = new Set<string>([
-  // Read verbs the KV branches speak "read" copy for.
   "tinycloud.kv/get",
   "kv/get",
-  "tinycloud.kv/read",
-  "kv/read",
   "tinycloud.kv/list",
   "kv/list",
   "tinycloud.kv/metadata",
   "kv/metadata",
-  "tinycloud.kv/peek",
-  "kv/peek",
-  // Mutation verbs the KV branches speak "update" copy for. Kept in lock-
-  // step with the MUTATION_VERBS set above.
   "tinycloud.kv/put",
   "kv/put",
-  "tinycloud.kv/post",
-  "kv/post",
-  "tinycloud.kv/write",
-  "kv/write",
-  "tinycloud.kv/delete",
-  "kv/delete",
   "tinycloud.kv/del",
   "kv/del",
-  "tinycloud.kv/admin",
-  "kv/admin",
-  "tinycloud.kv/grant",
-  "kv/grant",
-  "tinycloud.kv/revoke",
-  "kv/revoke",
-  "tinycloud.kv/update",
-  "kv/update",
+  // `tinycloud.kv/delete` is a deprecated alias for `tinycloud.kv/del`
+  // that IS in the registered ACCEPTED_ACTIONS list — keep it so wire
+  // shapes emitted via the alias still earn friendly copy.
+  "tinycloud.kv/delete",
+  "kv/delete",
 ]);
 
-// SQL abilities. `schema` alone is the read/write-schema verb the branches
-// speak "update" copy for; compound `schema.*` variants (e.g.
-// `schema.apply`, `schema.drop`, `schema.migrate`) are DDL-shaped mutations
-// the branches also count as mutation via `verbs.hasSchema`. We enumerate
-// the concrete compound spellings the branches will treat as schema so a
-// caller cannot smuggle an unknown verb through the "schema" prefix.
+// SQL abilities. The registered wire shapes per the canonical capability
+// registry are `read`, `select` (alias for `read`), `write`, `schema`, and
+// `admin`. The prior catalog admitted `get`, `put`, `delete`, `del`,
+// `update`, `schema.apply`, `schema.drop`, `schema.migrate` — none of which
+// appear in the registry — and OMITTED `admin`, even though `admin` is
+// registered and previously earned friendly copy via the broad mutation
+// verb set. Restore parity with the registry.
 const SQL_RECOGNIZED_ABILITIES = new Set<string>([
   "tinycloud.sql/read",
   "sql/read",
-  "tinycloud.sql/get",
-  "sql/get",
+  // `tinycloud.sql/select` is a deprecated alias for `tinycloud.sql/read`
+  // that IS in ACCEPTED_ACTIONS; keep it so wire shapes emitted via the
+  // alias still earn friendly copy.
+  "tinycloud.sql/select",
+  "sql/select",
   "tinycloud.sql/write",
   "sql/write",
-  "tinycloud.sql/put",
-  "sql/put",
-  "tinycloud.sql/delete",
-  "sql/delete",
-  "tinycloud.sql/del",
-  "sql/del",
-  "tinycloud.sql/update",
-  "sql/update",
   "tinycloud.sql/schema",
   "sql/schema",
-  "tinycloud.sql/schema.apply",
-  "sql/schema.apply",
-  "tinycloud.sql/schema.drop",
-  "sql/schema.drop",
-  "tinycloud.sql/schema.migrate",
-  "sql/schema.migrate",
+  // `tinycloud.sql/admin` is a registered action that previously
+  // rendered friendly "update" copy via the broad MUTATION_VERBS set
+  // (Sol rejection note: it MUST be included so parity with the prior
+  // recognized behavior is preserved).
+  "tinycloud.sql/admin",
+  "sql/admin",
 ]);
 
-// Encryption abilities. The friendly branches speak "decrypt", "create a
-// decryption network", and the combined form only for these exact shapes.
-// `network.create` is the compound form the js-sdk emits on the wire (see
-// Sol MAJOR-3 note above CREATE_VERBS).
+// Encryption abilities. Per the canonical capability registry the
+// registered wire shapes are `decrypt`, `network.create`, and
+// `network.revoke`. The bare `create` short-form is NOT registered but IS
+// present as a compatibility path exercised by the mixed-unknown positive
+// tests (see `statements-mixed-unknown.test.ts` — "encryption with
+// [create, decrypt] (short create verb) yields combined copy"), so it
+// stays in the catalog. The `unwrap` verb from the prior catalog is NOT
+// registered and no positive test exercises it — dropped.
 const ENCRYPTION_RECOGNIZED_ABILITIES = new Set<string>([
   "tinycloud.encryption/decrypt",
   "encryption/decrypt",
-  "tinycloud.encryption/unwrap",
-  "encryption/unwrap",
-  "tinycloud.encryption/create",
-  "encryption/create",
   "tinycloud.encryption/network.create",
   "encryption/network.create",
+  "tinycloud.encryption/network.revoke",
+  "encryption/network.revoke",
+  // Bare `create` short-form: retained because a positive test asserts
+  // the combined "Create a decryption network and decrypt protected data"
+  // copy for a grant carrying `tinycloud.encryption/create`. The
+  // downstream branch treats `create` via the CREATE_VERBS set (which
+  // includes both `create` and `network.create`).
+  "tinycloud.encryption/create",
+  "encryption/create",
 ]);
 
 /**
@@ -419,12 +418,21 @@ const ENCRYPTION_RECOGNIZED_ABILITIES = new Set<string>([
  * copy for. Any unknown ability (or an empty action list) forces the
  * caller into `fallbackStatement(grant)`.
  *
- * Services outside this catalog (capabilities, named-secrets, unknown
- * services) return `true` unchanged — those branches carry their own
- * dedicated exact-ability allowlists (see the `RECOGNIZED_*_ACTIONS`
- * sets above and the branch bodies below), so a blanket "recognized"
- * answer here does not weaken them. A `false` return would over-block
- * their own gates.
+ * Services with their own dedicated exact-ability allowlists inside the
+ * branch (`CAPABILITY_SERVICES`, `SECRETS_SERVICES`) return `true` here so
+ * the branch's own allowlist stays the sole authority. A blanket `false`
+ * return would over-block their own recognized shapes.
+ *
+ * Unknown services (anything not in KV / SQL / encryption / capabilities
+ * / secrets) return `true` so `buildStatement` reaches its unknown-service
+ * fallback branch untouched. The fallback at the end of `buildStatement`
+ * still emits the literal `Perform <actions> on <service>` copy, so
+ * returning `true` here does NOT admit friendly copy for an unknown
+ * service — it just avoids double-handling.
+ *
+ * Empty action lists ALWAYS return `false` regardless of service. A
+ * friendly sentence would still speak about "read" or "update" authority
+ * that a zero-action grant demonstrably does not carry.
  */
 function allActionsRecognizedForService(grant: CapabilityGrant): boolean {
   const abilityStrings = grant.actions.map((a) => a.ability);
@@ -441,6 +449,9 @@ function allActionsRecognizedForService(grant: CapabilityGrant): boolean {
       ENCRYPTION_RECOGNIZED_ABILITIES.has(a),
     );
   }
+  // Capabilities and named-secrets services keep their own dedicated
+  // allowlists inside the branch. Unknown services always route to
+  // fallbackStatement at the end of buildStatement.
   return true;
 }
 
@@ -504,19 +515,29 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
   // future-buggy `annotateAppScopedGrants`. Even if a grant somehow reached
   // this branch with an unrecognized verb (e.g. `peek`), we MUST NOT let
   // the friendly "Read/Update the app secret" copy fire, because that copy
-  // implies a read/write/delete authority the wire verb may not carry. The
-  // broad `READ_VERBS`/`MUTATION_VERBS` sets used by `classifyVerbs`
-  // intentionally cover synonyms and cannot be relied on as the
-  // authoritative gate here. We re-check every action verb against the same
-  // canonical `RECOGNIZED_APP_SCOPE_SECRET_VERBS` allowlist used by the
-  // annotation gate; anything outside falls back to the literal fallback
-  // statement so the operator sees the raw ability string instead of
-  // borrowed friendly copy.
+  // implies a read/write/delete authority the wire verb may not carry.
+  //
+  // Sol post-rejection: the check uses BYTE-EXACT ability-string membership
+  // against `CANONICAL_APP_SCOPE_SECRET_ABILITIES` (the same URN allowlist
+  // `annotateAppScopedGrants` uses as its proof-side check). The prior
+  // implementation lower-cased `action.verb` and folded synonyms via
+  // `normalizeSecretVerb`, which would silently admit non-canonical wire
+  // shapes like `tinycloud.kv/GET` (upper-cased) or `tinycloud.kv/read`
+  // (long-form synonym) — neither of which is emitted by any js-sdk
+  // producer. Requiring byte-exact ability membership keeps the two proof
+  // surfaces in lock-step; a grant that passes the annotation gate will
+  // also satisfy this defense-in-depth check, and anything the annotation
+  // gate would refuse also falls back here.
+  //
+  // Empty action list also falls back — `every` on `[]` returns `true`,
+  // which would otherwise let a zero-action grant inherit friendly
+  // "app secret" copy despite carrying no authority.
   if (grant.appScopedSecret) {
+    if (grant.actions.length === 0) {
+      return fallbackStatement(grant);
+    }
     const allActionsRecognized = grant.actions.every((a) =>
-      RECOGNIZED_APP_SCOPE_SECRET_VERBS.has(
-        normalizeSecretVerb(a.verb.toLowerCase()),
-      ),
+      CANONICAL_APP_SCOPE_SECRET_ABILITIES.has(a.ability),
     );
     if (!allActionsRecognized) {
       return fallbackStatement(grant);
@@ -651,6 +672,13 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
     // fall back to literal service/resource/actions rendering. Reusing
     // the broad `READ_VERBS` verb set here would let novel action names
     // inherit friendly copy at standard severity.
+    //
+    // An empty action list must ALSO fall back — `every` on `[]` returns
+    // `true` which would otherwise let a zero-action grant inherit the
+    // friendly "Check permissions" copy despite carrying no authority.
+    if (abilityStrings.length === 0) {
+      return fallbackStatement(grant);
+    }
     const allActionsRecognized = abilityStrings.every((a) =>
       RECOGNIZED_CAPABILITY_ACTIONS.has(a),
     );
@@ -806,6 +834,13 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
     // novel verbs like `secrets/peek` to friendly "permissions" copy at
     // standard severity even though `peek` is not a registered secrets
     // action. Fall back to literal actions instead.
+    //
+    // Empty action lists must ALSO fall back — `every` on `[]` returns
+    // `true` which would let a zero-action grant inherit friendly copy
+    // despite carrying no authority.
+    if (abilityStrings.length === 0) {
+      return fallbackStatement(grant);
+    }
     const allActionsRecognized = abilityStrings.every((a) =>
       RECOGNIZED_SECRETS_ACTIONS.has(a),
     );
