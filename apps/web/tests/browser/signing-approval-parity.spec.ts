@@ -27,6 +27,8 @@
 // No DOM state is mutated by this spec to imitate an event.
 
 import { test, expect, type Page } from '@playwright/test';
+import { parseCapabilityReview } from '../../../../packages/capability-review/src/index';
+import { EXPLORER_PERMISSION_POPUP_REQUEST } from '../../../../packages/capability-review/test/fixtures/index';
 
 type Surface = 'cli' | 'popup' | 'iframe';
 
@@ -73,7 +75,7 @@ function benignFixtureModel(): any {
     },
     expiry: '2026-08-07T00:00:00.000Z',
     immutable: null,
-    metadataTrust: { status: 'unsigned' },
+    metadataTrust: { status: 'unsigned', reason: 'no manifest supplied' },
     permissions: [
       {
         id: `tinycloud.kv\x00${space}\x00`,
@@ -163,9 +165,48 @@ function fixtureInitialSelection(model: any): string[] {
   return out;
 }
 
+function exactRecapFixtureModel(): any {
+  return parseCapabilityReview({
+    message: EXPLORER_PERMISSION_POPUP_REQUEST,
+    editable: true,
+    metadataTrust: { status: 'unsigned', reason: 'no manifest supplied' },
+    reason: { text: '', source: 'none' },
+    requester: {
+      displayName: 'explorer.tinycloud.xyz',
+      verifiedOrigin: 'https://explorer.tinycloud.xyz',
+      appId: null,
+      manifestName: null,
+      manifestNameProvenance: 'none',
+      manifestId: null,
+      manifestIdProvenance: 'none',
+      manifestDigest: null,
+      domainWarning: false,
+      originWarning: false,
+    },
+    signer: {
+      label: 'Managed key',
+      address: '0xd559CCd9EB87c530A9a349262669386dE93cf412',
+      chainId: 1,
+      provenance: 'managed',
+    },
+  });
+}
+
 async function loadHarness(page: Page, cfg: HarnessConfig) {
   // Seed globals BEFORE navigation so the harness's onMount reads them.
   await page.addInitScript(({ cfg }) => {
+    try {
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: {
+          writeText: async (text: string) => {
+            (window as any).__openkeyClipboardText = text;
+          },
+        },
+      });
+    } catch {
+      // Older test environments may already expose a clipboard object.
+    }
     (window as any).__openkeyParityHarness = {
       surface: cfg.surface,
       model: cfg.model,
@@ -207,6 +248,114 @@ test.describe('signing-approval browser parity — production adapters', () => {
       const dialog = page.locator('[data-parity-harness] [role="dialog"]');
       await expect(dialog).toBeVisible();
       await expect(dialog).toHaveAttribute('aria-modal', 'true');
+    });
+
+    test(`[${surface}] exact ReCap fixture stays readable in a narrow popup viewport`, async ({ page }) => {
+      await page.setViewportSize({ width: 400, height: 600 });
+      const model = exactRecapFixtureModel();
+      await loadHarness(page, {
+        surface,
+        model,
+        initialSelection: fixtureInitialSelection(model),
+        canUseAuthorizeSign: surface === 'cli' ? undefined : true,
+      });
+
+      const dialog = page.locator('[data-parity-harness] [role="dialog"]');
+      await expect(dialog).toBeVisible();
+      await expect(dialog).toContainText('Authorize capabilities');
+      await expect(dialog).toContainText('Manage your TinyCloud account');
+      await expect(dialog).toContainText('Read and update application data');
+      await expect(dialog).toContainText('Check your TinyCloud permissions');
+      const summary = page.locator('[data-parity-harness] .summary');
+      await expect(summary.locator('.summary-statement')).toHaveCount(7);
+      await expect(summary).toContainText('View secret names and details');
+      await expect(summary).toContainText('Read secret values');
+      await expect(summary.locator('.summary-sensitive-pill')).toHaveText([
+        'Sensitive',
+        'Sensitive',
+        'Sensitive',
+      ]);
+      await expect(summary).not.toContainText(model.requester.displayName);
+      await expect(summary).not.toContainText('exact grant');
+      await expect(summary).not.toContainText('service');
+      await expect(summary).not.toContainText('tinycloud:pkh:');
+      await expect(dialog).not.toContainText(`owner ${model.signer.address.toLowerCase()}`);
+      await expect(dialog).not.toContainText('path=spaces/');
+      await expect(summary).not.toContainText('Perform ');
+      const details = page.locator('details.advanced-details').first();
+      await details.locator(':scope > summary').click();
+      await expect(details.locator(':scope > summary')).toHaveText('Advanced details');
+      await expect(details.getByRole('button', { name: 'Edit' })).toBeVisible();
+      const requesterDetails = details.locator('details.request-details');
+      await expect(requesterDetails).toHaveAttribute('open', '');
+      await expect(details.locator(':scope > .request-details').first()).toBeVisible();
+      const standardPermissions = details.locator(
+        'details.severity-bucket[data-severity="standard"]',
+      );
+      await expect(standardPermissions).not.toHaveAttribute('open', '');
+      const reviewPermissions = details.locator(
+        'details.severity-bucket[data-severity="review"]',
+      );
+      await expect(reviewPermissions).toHaveCount(1);
+      await expect(reviewPermissions).toHaveAttribute('open', '');
+      await expect(
+        reviewPermissions.locator('.grant').first().locator('.grant-severity'),
+      ).toHaveText('Sensitive');
+      await expect(
+        details.locator(
+          'details.severity-bucket[data-severity="sensitive"], details.severity-bucket[data-severity="attention"]',
+        ),
+      ).toHaveCount(0);
+      await expect(page.getByRole('button', { name: 'Copy text' })).toBeVisible();
+      await expect(page.locator('[data-parity-harness] .grant')).toHaveCount(17);
+      await expect(details.locator('.grant-severity[data-severity="sensitive"]')).toHaveCount(4);
+      await expect(details.locator('.grant-severity[data-severity="attention"]')).toHaveCount(0);
+      await expect(details.locator('.grant-severity[data-severity="standard"]')).toHaveCount(0);
+      const vaultGrant = details.locator('.grant').filter({
+        hasText: 'secrets/vault/secrets',
+      });
+      await expect(vaultGrant.locator('.grant-service')).toHaveText('Key Value');
+      await expect(vaultGrant.locator('.grant-service')).toHaveAttribute(
+        'title',
+        'tinycloud.kv',
+      );
+      await expect(vaultGrant.locator('.grant-target')).toHaveAttribute(
+        'title',
+        /:secrets\/kv\/vault\/secrets$/,
+      );
+      const rawBytes = details.locator('.raw-bytes');
+      const rawViewport = await rawBytes.evaluate((element) => ({
+        clientHeight: element.clientHeight,
+        scrollHeight: element.scrollHeight,
+      }));
+      expect(rawViewport.clientHeight).toBeLessThanOrEqual(180);
+      expect(rawViewport.scrollHeight).toBeGreaterThan(rawViewport.clientHeight);
+
+      await details.getByRole('button', { name: 'Edit' }).click();
+      const editableActions = details.locator('input[type="checkbox"]:not(:disabled)');
+      expect(await editableActions.count()).toBeGreaterThan(0);
+      const inlineDirection = await details.locator('.action-list').first().evaluate(
+        (element) => getComputedStyle(element).flexDirection,
+      );
+      expect(inlineDirection).toBe('row');
+      await editableActions.first().uncheck();
+      await expect(details.getByText('Not granting:', { exact: false }).first()).toBeVisible();
+      await expect(details).not.toContainText('Selected');
+      await expect(details).not.toContainText('Unselected');
+      await details.getByRole('button', { name: 'Reset' }).click();
+      await expect(editableActions.first()).toBeChecked();
+
+      await page.getByRole('button', { name: 'Copy text' }).click();
+      await expect
+        .poll(async () => page.evaluate(() => (window as any).__openkeyClipboardText ?? null))
+        .toBe(model.rawMessage);
+      await expect(page.getByRole('button', { name: 'Copy text' })).toHaveText('Copied');
+
+      const noOverflow = await page.evaluate(() => {
+        const doc = document.documentElement;
+        return doc.scrollWidth <= doc.clientWidth;
+      });
+      expect(noOverflow).toBe(true);
     });
 
     test(`[${surface}] Tab moves focus through interactive controls in DOM order`, async ({ page }) => {
@@ -334,6 +483,12 @@ test.describe('signing-approval browser parity — production adapters', () => {
       // Enter editing mode by real-clicking the Edit button.
       const edit = page.locator('[data-parity-harness] button', { hasText: 'Edit' }).first();
       await edit.click();
+      const standardPermissions = page.locator(
+        '[data-parity-harness] details.severity-bucket[data-severity="standard"]',
+      );
+      if ((await standardPermissions.count()) > 0) {
+        await standardPermissions.locator(':scope > summary').click();
+      }
       // The checkbox appears once editing is on.
       const boxes = page.locator('[data-parity-harness] input[type="checkbox"]');
       await expect(boxes.first()).toBeVisible();
@@ -375,6 +530,71 @@ test.describe('signing-approval browser parity — production adapters', () => {
     });
   }
 
+  test('decryption operations carry Sensitive pills in summary and exact grants', async ({ page }) => {
+    const model = encryptionFixtureModel();
+    await loadHarness(page, {
+      surface: 'popup',
+      model,
+      initialSelection: fixtureInitialSelection(model),
+      canUseAuthorizeSign: true,
+    });
+
+    const summary = page.locator('[data-parity-harness] .summary');
+    await expect(summary).toContainText(
+      'Set up encrypted data access and decrypt protected data',
+    );
+    await expect(summary.locator('.summary-sensitive-pill')).toHaveText('Sensitive');
+    const details = page.locator('details.advanced-details');
+    await details.locator(':scope > summary').click();
+    await expect(details.locator('.grant-severity[data-severity="sensitive"]')).toHaveText(
+      'Sensitive',
+    );
+  });
+
+  test('copy falls back without calling Clipboard API when policy blocks it', async ({ page }) => {
+    const model = exactRecapFixtureModel();
+    await loadHarness(page, {
+      surface: 'iframe',
+      model,
+      initialSelection: fixtureInitialSelection(model),
+      canUseAuthorizeSign: true,
+    });
+    await page.evaluate(() => {
+      (window as any).__clipboardApiCalls = 0;
+      (window as any).__fallbackClipboardText = null;
+      Object.defineProperty(document, 'permissionsPolicy', {
+        configurable: true,
+        value: { allowsFeature: () => false },
+      });
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: {
+          writeText: async () => {
+            (window as any).__clipboardApiCalls += 1;
+            throw new DOMException('Blocked by Permissions Policy', 'NotAllowedError');
+          },
+        },
+      });
+      (document as any).execCommand = (command: string) => {
+        if (command !== 'copy') return false;
+        const textarea = document.activeElement as HTMLTextAreaElement | null;
+        (window as any).__fallbackClipboardText = textarea?.value ?? null;
+        return true;
+      };
+    });
+
+    const details = page.locator('details.advanced-details');
+    await details.locator(':scope > summary').click();
+    await page.getByRole('button', { name: 'Copy text' }).click();
+    const result = await page.evaluate(() => ({
+      apiCalls: (window as any).__clipboardApiCalls,
+      copiedText: (window as any).__fallbackClipboardText,
+    }));
+    expect(result.apiCalls).toBe(0);
+    expect(result.copiedText).toBe(model.rawMessage);
+    await expect(page.getByRole('button', { name: 'Copy text' })).toHaveText('Copied');
+  });
+
   test('widget approve routes to exact-byte path when canUseAuthorizeSign=false', async ({ page }) => {
     for (const surface of ['popup', 'iframe'] as const) {
       await loadHarness(page, {
@@ -405,7 +625,7 @@ test.describe('signing-approval browser parity — production adapters', () => {
       });
 
       await expect(page.locator('details.advanced-details')).toBeVisible();
-      await page.locator('details.advanced-details summary').click();
+      await page.locator('details.advanced-details > summary').click();
       await expect(page.getByText('Exact grants')).toBeVisible();
       await expect(page.getByRole('button', { name: 'Copy text' })).toBeVisible();
       await expect(page.getByText('server-prepared-exact-bytes')).toBeVisible();
@@ -430,7 +650,7 @@ test.describe('signing-approval browser parity — production adapters', () => {
       });
 
       const summary = page.locator('.summary');
-      await expect(summary).toContainText('Create a decryption network');
+      await expect(summary).toContainText('Set up encrypted data access');
       await expect(summary).not.toContainText('decrypt protected data');
       await expect(page.locator('.sensitive-callout')).toHaveCount(0);
       await expect(page.getByRole('button', { name: 'Approve exact bytes' })).toBeVisible();

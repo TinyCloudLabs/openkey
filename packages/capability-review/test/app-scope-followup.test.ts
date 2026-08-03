@@ -57,7 +57,8 @@
 //     secrets space with an unknown/mismatched ability (e.g.
 //     `tinycloud.foo/read`) was correctly marked sensitive and
 //     `serviceMismatch`, but returned false from the count predicate.
-//     Any grant on a secrets-shaped space must now count.
+//     Unknown or mismatched grants on a secrets-shaped space must count;
+//     recognized permission checks and metadata-only access are excluded.
 
 import { describe, expect, it } from "bun:test";
 
@@ -160,6 +161,24 @@ function makeModel(grants: CapabilityGrant[]): CapabilityReviewModel {
 
 // ─── Defect 1: KV_SECRET_SERVICES admits bare `kv` abilities ──────────────
 describe("Blocker 4 follow-up (Defect 1): service exactness", () => {
+  it("metadata-only KV access does not become an app-scope near miss", () => {
+    const grant = makeGrant({
+      service: "tinycloud.kv",
+      space: SECRETS_SPACE,
+      path: CANONICAL_PATH,
+      verbs: ["list", "metadata"],
+      family: "secret-read",
+      severity: "standard",
+    });
+    const out = annotateAppScopedGrants(makeModel([grant]), {
+      secrets: DECLARED,
+    });
+    const reviewed = out.permissions[0]!;
+    expect(reviewed.severity).toBe("standard");
+    expect(reviewed.appScopedSecret).toBeUndefined();
+    expect(reviewed.appScopeNearMiss).toBeUndefined();
+  });
+
   it("bare `kv` ability service on the canonical tuple is sensitive + literal fallback", () => {
     // Even though space + path + verbs + declared entry all line up, the
     // ability service is bare `kv` (not `tinycloud.kv`). The proof gate
@@ -193,7 +212,7 @@ describe("Blocker 4 follow-up (Defect 1): service exactness", () => {
     });
     const out = annotateAppScopedGrants(makeModel([grant]), { secrets: DECLARED });
     const g = out.permissions[0]!;
-    expect(g.severity).toBe("standard");
+    expect(g.severity).toBe("sensitive");
     expect(g.appScopedSecret).toEqual({
       secretName: "API_KEY",
       scope: "listen",
@@ -821,8 +840,8 @@ describe("Sol MAJOR-2: resource service in IDs and literal fallback", () => {
   });
 });
 
-// ─── Sol MAJOR-3: any grant on secrets-shaped space counts ────────────────
-describe("Sol MAJOR-3: any grant on secrets-shaped space counts in reach", () => {
+// ─── Sol MAJOR-3: secrets-space grants fail closed at the value boundary ──
+describe("Sol MAJOR-3: secrets-space reach classification", () => {
   it("unknown-service ability on secrets space counts in the reach total", () => {
     // A `tinycloud.foo/read` grant on the signer secrets space has no
     // recognized service, but structurally reaches into the secrets
@@ -839,10 +858,10 @@ describe("Sol MAJOR-3: any grant on secrets-shaped space counts in reach", () =>
     expect(grantReachesSecretDataOrDecryption(grant)).toBe(true);
   });
 
-  it("capabilities/read on secrets space counts in the reach total", () => {
-    // The prior predicate missed capabilities grants on the secrets
-    // space entirely. Any grant on a secrets-shaped space is a
-    // plausible reach into secret bytes; count it.
+  it("capabilities/read on secrets space does not claim secret-value access", () => {
+    // This operation checks the permission metadata for the namespace; it
+    // does not read a stored secret value. Unknown and mismatched services
+    // remain fail-closed in the surrounding tests.
     const grant = makeGrant({
       service: "tinycloud.capabilities",
       space: SECRETS_SPACE,
@@ -851,7 +870,7 @@ describe("Sol MAJOR-3: any grant on secrets-shaped space counts in reach", () =>
       family: "bootstrap-capabilities",
       severity: "standard",
     });
-    expect(grantReachesSecretDataOrDecryption(grant)).toBe(true);
+    expect(grantReachesSecretDataOrDecryption(grant)).toBe(false);
   });
 
   it("service-mismatched unknown-service grant on secrets space still counts", () => {

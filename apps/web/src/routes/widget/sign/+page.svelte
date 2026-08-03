@@ -372,8 +372,7 @@
     // Envelope + server-decided trust wiring. The envelope came from the
     // SDK (display-only). Trust is authoritative from the server prepare
     // response (`serverMetadataTrust`); until that lands we fail closed
-    // to `unsigned`. `requesterVerified` is true ONLY when the server
-    // returned `origin-bound` or `verified`.
+    // to `unsigned`.
     const envelope = requestPresentation;
     const envelopeDisplayName =
       envelope && typeof envelope.displayName === 'string' && envelope.displayName
@@ -442,30 +441,6 @@
     // name. Until the server origin-binds the manifest, show the browser
     // authority; keep the caller's claimed name only in Advanced details.
     const displayName = requesterDisplayName(manifestNameFromServer, origin);
-    // Sol MAJOR-1 (final continuation): the widget MUST NOT infer a
-    // "verified requester" identity from data that is not the requester's
-    // own declaration. Prior code marked origin-bound requests as verified
-    // AND used `key.address` — the USER's signing identity — as the
-    // requester address for the classifier. That's wrong on two axes:
-    //   1. `key.address` is not the requester. It is the signer. Using it
-    //      as the classifier's `requesterAddress` claims the requesting
-    //      app is the same principal as the signer, which produces false
-    //      "own-app" classifications for every grant against the signer's
-    //      spaces.
-    //   2. Origin-bind proves the manifest was served from a specific
-    //      origin. It does NOT prove that any declared identity (address,
-    //      DID, or otherwise) belongs to that origin. Upgrading
-    //      `requesterVerified` on origin-bind alone would let the widget
-    //      confidently render a caller's untrusted `displayName` /
-    //      identity as if OpenKey vouched for it.
-    //
-    // Correct semantics: leave `requesterVerified=false` and
-    // `requesterAddress=null` unless an identity has been explicitly
-    // declared by the manifest AND independently verified. The classifier
-    // then falls back to its safe path (treats grants on the signer's
-    // spaces as cross-app), which is the honest report.
-    const requesterVerifiedNow = false;
-    const requesterAddressForClassifier: string | null = null;
     // Sol Blocker A (this iteration): derive the signer chain ID from the
     // actual SIWE bytes that will be signed, not from a hard-coded default.
     // The app-scoped-secret proof (expectedSignerSecretsSpace /
@@ -516,8 +491,6 @@
           // silently accepting.
           originWarning: originIsWildcard,
         },
-        requesterAddress: requesterAddressForClassifier,
-        requesterVerified: requesterVerifiedNow,
       });
       // Sol MAJOR-2: app-scoped-secret trust rule. When the SERVER
       // origin-bound the manifest (`origin-bound` or `verified` trust

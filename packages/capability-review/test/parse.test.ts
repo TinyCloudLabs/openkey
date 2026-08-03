@@ -75,15 +75,6 @@ function ctx(overrides: Partial<ParseContext> = {}): ParseContext {
       domainWarning: false,
       originWarning: false,
     },
-    // Sol MAJOR-7: the classifier no longer falls back to signer as the
-    // ownership axis. Tests that model an OWN-space request must pass a
-    // VERIFIED requester matching the signer — this simulates a signed
-    // presentation manifest whose digest matched, which is the only
-    // trust state that lets classifyRecapEntry attribute a grant to the
-    // requester's own space. Tests that model an unverified requester
-    // (widget path) override this field to `null` / `false`.
-    requesterAddress: FIXTURE_META.address.toLowerCase(),
-    requesterVerified: true,
     ...overrides,
   };
 }
@@ -98,10 +89,10 @@ describe("parseCapabilityReview", () => {
     expect(families).toContain("bootstrap-capabilities");
   });
 
-  it("elevates a mutation to attention severity for KV", () => {
+  it("keeps the canonical bootstrap KV bundle standard", () => {
     const model = parseCapabilityReview(ctx());
     const kv = model.permissions.find((p) => p.family === "bootstrap-kv");
-    expect(kv?.severity).toBe("attention");
+    expect(kv?.severity).toBe("standard");
   });
 
   it("keeps capabilities/read severity as standard", () => {
@@ -133,46 +124,42 @@ describe("parseCapabilityReview", () => {
     const chat = model.permissions.find((p) => p.family === "own-app-data");
     expect(chat).toBeDefined();
     expect(chat?.ownedBySelf).toBe(true);
-    expect(chat?.displayLabel).toMatch(/App data/);
-    expect(chat?.displayLabel).toContain(chat!.path);
+    expect(chat?.displayLabel).toBe("Application data");
   });
 
-  it("classifies a scoped-path KV grant as own-app-data when owner matches (Feed fixture)", () => {
+  it("keeps an unrecognized custom app space literal without manifest proof", () => {
     const model = parseCapabilityReview(ctx({ message: FEED_APP_REQUEST }));
-    const feed = model.permissions.find((p) => p.family === "own-app-data");
+    const feed = model.permissions.find((p) => p.service === "tinycloud.kv");
     expect(feed).toBeDefined();
     expect(feed?.ownedBySelf).toBe(true);
-    expect(feed?.displayLabel).toMatch(/App data/);
-    expect(feed?.displayLabel).toContain(feed!.path);
+    expect(feed?.family).toBe("unknown");
+    expect(feed?.severity).toBe("sensitive");
+    expect(feed?.displayLabel).toBe("Unrecognized key-value data");
   });
 
-  it("classifies a scoped-path cross-user KV grant as cross-app-data (attention)", () => {
-    // Sol MAJOR-7: a KV grant on a DIFFERENT user's space must be
-    // classified as cross-app-data with elevated severity, not lumped
-    // into the generic bootstrap-kv family. Sol continuation contract:
-    // the label MUST NOT claim an app identity — cross-user grants only
-    // show ownership + literal path.
+  it("keeps an unrecognized cross-user KV target literal and elevated", () => {
+    // Ownership cannot make a custom namespace earn friendly semantics.
+    // The grant stays unknown while ownedBySelf reports the cross-user fact.
     const model = parseCapabilityReview(
       ctx({ message: LISTEN_CROSS_APP_REQUEST }),
     );
-    const cross = model.permissions.find((p) => p.family === "cross-app-data");
+    const cross = model.permissions.find(
+      (p) => p.family === "unknown" && p.service === "tinycloud.kv",
+    );
     expect(cross).toBeDefined();
     expect(cross?.ownedBySelf).toBe(false);
     expect(cross?.owner).toBe(FIXTURE_META.crossAppOwner.toLowerCase());
     expect(cross?.severity).toBe("attention");
-    expect(cross?.displayLabel).toMatch(/Cross-user/);
+    expect(cross?.displayLabel).toBe("Unrecognized key-value data");
     // Must NOT be a bootstrap-kv grant.
     const kv = model.permissions.find((p) => p.family === "bootstrap-kv");
     expect(kv).toBeUndefined();
   });
 
-  it("fail-closed: unverified requester + signer-owned space does NOT set ownedBySelf=true (Sol MAJOR-5)", () => {
-    // Sol MAJOR-5 (continuation): SigningApproval renders a cross-app
-    // warning based on `ownedBySelf`. The prior implementation set
-    // `trustedOwnershipAxis = signerAddress` when `requesterAddress` was
-    // absent, which caused every widget-path grant (always unverified
-    // requester) on the signer's own space to set `ownedBySelf: true`
-    // and suppress the warning. The fix: never fall back to the signer.
+  it("reports signer-owned data as same-user even when requester identity is unverified", () => {
+    // App identity is a manifest concern. Resource ownership remains a
+    // separate signer-relative fact, so missing requester metadata cannot
+    // turn same-user application data into cross-user access.
     const model = parseCapabilityReview(
       ctx({
         message: FEED_APP_REQUEST,
@@ -192,24 +179,15 @@ describe("parseCapabilityReview", () => {
         requesterVerified: false,
       }),
     );
-    // Every path-scoped grant on the signer's OWN space MUST report
-    // ownedBySelf as null (unknown) — never true — because we have no
-    // verified requester identity to attribute the request to.
+    // Every addressed space in this fixture is owned by the signer.
     for (const grant of model.permissions) {
       if (grant.owner !== null) {
-        expect(grant.ownedBySelf).not.toBe(true);
+        expect(grant.ownedBySelf).toBe(true);
       }
     }
   });
 
-  it("fail-closed: unverified requester + own-space grant classifies as cross-app-data (Sol MAJOR-7)", () => {
-    // Sol MAJOR-7: when no verified requester identity is supplied
-    // (widget path passes requesterAddress: null, requesterVerified:
-    // false), the classifier MUST NOT fall back to the signer address
-    // as the ownership axis. Otherwise every grant on the signer's own
-    // space would be labelled own-app-data even though we have no idea
-    // which app is asking. The correct fail-closed behavior is:
-    // treat the grant as cross-app-data (attention).
+  it("does not invent app semantics from missing requester metadata", () => {
     const model = parseCapabilityReview(
       ctx({
         message: FEED_APP_REQUEST,
@@ -229,25 +207,25 @@ describe("parseCapabilityReview", () => {
         requesterVerified: false,
       }),
     );
-    // No scoped-path grant should be classified as own-app-data because
-    // we could not verify who the requester is.
-    const ownAppData = model.permissions.find((p) => p.family === "own-app-data");
-    expect(ownAppData).toBeUndefined();
-    const crossAppData = model.permissions.find((p) => p.family === "cross-app-data");
-    expect(crossAppData).toBeDefined();
-    expect(crossAppData?.severity).toBe("attention");
+    const unknownData = model.permissions.find(
+      (p) => p.family === "unknown" && p.service === "tinycloud.kv",
+    );
+    expect(unknownData).toBeDefined();
+    expect(unknownData?.ownedBySelf).toBe(true);
+    expect(unknownData?.severity).toBe("sensitive");
+    const crossAppData = model.permissions.find(
+      (p) => p.family === "cross-app-data",
+    );
+    expect(crossAppData).toBeUndefined();
   });
 
   it("classifies a scoped-path KV grant as own-app-data (Cycle-health fixture)", () => {
     // The classifier notices the path is scoped (family = own-app-data);
     // the label reports the literal path with no assumed app identity.
     const model = parseCapabilityReview(ctx({ message: CYCLE_HEALTH_REQUEST }));
-    const grant = model.permissions.find(
-      (p) => p.family === "own-app-data",
-    );
+    const grant = model.permissions.find((p) => p.family === "own-app-data");
     expect(grant).toBeDefined();
-    expect(grant?.displayLabel).toMatch(/App data/);
-    expect(grant?.displayLabel).toContain(grant!.path);
+    expect(grant?.displayLabel).toBe("Application data");
   });
 
   it("splits secret read vs mutation classification", () => {
@@ -257,7 +235,7 @@ describe("parseCapabilityReview", () => {
     const readGrant = readOnly.permissions.find(
       (p) => p.family === "secret-read",
     );
-    expect(readGrant?.severity).toBe("attention");
+    expect(readGrant?.severity).toBe("sensitive");
 
     const mutable = parseCapabilityReview(
       ctx({ message: SECRETS_MUTATION_REQUEST }),
@@ -269,15 +247,13 @@ describe("parseCapabilityReview", () => {
   });
 
   it("classifies tinycloud.kv with vault/secrets/ path as secret-read", () => {
-    const model = parseCapabilityReview(
-      ctx({ message: REAL_KV_SECRET_READ }),
-    );
+    const model = parseCapabilityReview(ctx({ message: REAL_KV_SECRET_READ }));
     expect(model.protocol).toBe("tinycloud-siwe-recap");
     const secretGrant = model.permissions.find(
       (p) => p.family === "secret-read",
     );
     expect(secretGrant).toBeTruthy();
-    expect(secretGrant?.severity).toBe("attention");
+    expect(secretGrant?.severity).toBe("sensitive");
     // Must NOT be classified as generic bootstrap-kv
     const bootstrapGrant = model.permissions.find(
       (p) => p.family === "bootstrap-kv",
@@ -310,7 +286,7 @@ describe("parseCapabilityReview", () => {
       "Secret names and metadata — (entire secrets namespace)",
     );
     expect(buildStatement(namespaceGrant!).primaryText).toBe(
-      "View secret names and details",
+      "View your secret names and details",
     );
     const sensitiveBucket = buildRenderPlan(model.permissions).find(
       (bucket) => bucket.severity === "sensitive",
@@ -364,7 +340,7 @@ describe("parseCapabilityReview", () => {
       "Secret data — (entire secrets namespace)",
     );
     expect(buildStatement(read.permissions[0]!).primaryText).toBe(
-      "Read all TinyCloud Secrets data",
+      "View your entire secret catalog",
     );
     expect(grantReachesSecretDataOrDecryption(read.permissions[0]!)).toBe(true);
 
@@ -385,18 +361,23 @@ describe("parseCapabilityReview", () => {
       ctx({ message: REAL_SQL_SECRET_PATH_READ }),
     );
     expect(pathRead.permissions[0]?.family).toBe("secret-read");
-    expect(pathRead.permissions[0]?.severity).toBe("attention");
+    expect(pathRead.permissions[0]?.severity).toBe("sensitive");
     expect(grantReachesSecretDataOrDecryption(pathRead.permissions[0]!)).toBe(true);
   });
 
-  it("keeps SQL secrets sensitive for cross-owner and unverified requesters", () => {
+  it("keeps SQL secrets sensitive and derives ownership from the signer", () => {
     const crossOwner = parseCapabilityReview(
       ctx({ message: REAL_SQL_CROSS_OWNER_SECRET_ROOT_READ }),
     );
     expect(crossOwner.permissions[0]?.family).toBe("secret-namespace-list");
     expect(crossOwner.permissions[0]?.severity).toBe("sensitive");
     expect(crossOwner.permissions[0]?.ownedBySelf).toBe(false);
-    expect(crossOwner.permissions[0]?.displayLabel).toContain("Cross-user");
+    expect(crossOwner.permissions[0]?.displayLabel).toBe(
+      "Secret data — (entire secrets namespace)",
+    );
+    expect(buildStatement(crossOwner.permissions[0]!).primaryText).toBe(
+      "View another user's entire secret catalog",
+    );
     expect(grantReachesSecretDataOrDecryption(crossOwner.permissions[0]!)).toBe(true);
 
     const unverified = parseCapabilityReview(
@@ -408,29 +389,31 @@ describe("parseCapabilityReview", () => {
     );
     expect(unverified.permissions[0]?.family).toBe("secret-namespace-list");
     expect(unverified.permissions[0]?.severity).toBe("sensitive");
-    expect(unverified.permissions[0]?.ownedBySelf).toBe(null);
-    expect(unverified.permissions[0]?.displayLabel).toContain("Cross-user");
+    // Requester metadata is not an ownership signal. The SIWE signer owns
+    // this resource, so the grant remains same-user even when that metadata
+    // is absent.
+    expect(unverified.permissions[0]?.ownedBySelf).toBe(true);
+    expect(unverified.permissions[0]?.displayLabel).toBe(
+      "Secret data — (entire secrets namespace)",
+    );
   });
 
   it("covers the KV/SQL authority matrix across secret reach and ownership", () => {
     const ownershipModes = [
       {
-        label: "same-owner verified",
-        requesterAddress: FIXTURE_META.address,
-        requesterVerified: true,
-        crossOwner: false,
+        label: "same signer",
+        signerAddress: FIXTURE_META.address,
+        otherUser: false,
       },
       {
-        label: "cross-owner verified",
-        requesterAddress: FIXTURE_META.address,
-        requesterVerified: true,
-        crossOwner: true,
+        label: "another user",
+        signerAddress: FIXTURE_META.address,
+        otherUser: true,
       },
       {
-        label: "unverified requester",
-        requesterAddress: null,
-        requesterVerified: false,
-        crossOwner: true,
+        label: "unknown signer",
+        signerAddress: null,
+        otherUser: false,
       },
     ];
     const scopes = ["secrets-root", "secrets-path", "non-secrets"] as const;
@@ -442,7 +425,7 @@ describe("parseCapabilityReview", () => {
           for (const operation of operations) {
             const secret = scope !== "non-secrets";
             const root = scope === "secrets-root";
-            const spaceOwner = ownership.crossOwner
+            const spaceOwner = ownership.otherUser
               ? FIXTURE_META.crossAppOwner
               : FIXTURE_META.address;
             const space = secret
@@ -472,37 +455,24 @@ describe("parseCapabilityReview", () => {
               space,
               path,
               actions: [`${service}/${verb}`],
-              requesterAddress: ownership.requesterAddress,
-              requesterVerified: ownership.requesterVerified,
+              signerAddress: ownership.signerAddress,
             });
-            const expectedFamily = ownership.crossOwner
-              ? secret
-                ? root && operation === "read"
-                  ? "secret-namespace-list"
-                  : operation === "read"
-                    ? "secret-read"
-                    : "secret-mutation"
-                : "cross-app-data"
-              : secret
-                ? root && operation === "read"
-                  ? "secret-namespace-list"
-                  : operation === "read"
-                    ? "secret-read"
-                    : "secret-mutation"
-                : service === "tinycloud.kv"
-                  ? "own-app-data"
-                  : "bootstrap-sql";
-            const expectedSeverity = secret
+            const expectedFamily = secret
               ? root && operation === "read"
-                ? "sensitive"
+                ? "secret-namespace-list"
                 : operation === "read"
-                  ? "attention"
-                  : "sensitive"
-              : ownership.crossOwner
+                  ? "secret-read"
+                  : "secret-mutation"
+              : operation === "unknown"
+                ? "unknown"
+                : ownership.otherUser
+                  ? "cross-app-data"
+                  : "own-app-data";
+            const expectedSeverity = secret
+              ? "sensitive"
+              : operation === "unknown" || ownership.otherUser
                 ? "attention"
-                : operation === "mutate"
-                  ? "attention"
-                  : "standard";
+                : "standard";
             expect(classification.family, `${service} ${scope} ${ownership.label} ${operation}`).toBe(
               expectedFamily,
             );
@@ -512,8 +482,8 @@ describe("parseCapabilityReview", () => {
               ], { service, space, path }),
               `${service} ${scope} ${ownership.label} ${operation}`,
             ).toBe(expectedSeverity);
-            if (ownership.crossOwner) {
-              expect(classification.displayLabel).toContain("Cross-user");
+            if (ownership.otherUser && !secret && operation !== "unknown") {
+              expect(classification.displayLabel).toBe("Another user's data");
             }
           }
         }
@@ -522,19 +492,20 @@ describe("parseCapabilityReview", () => {
   });
 
   it("does not expose owner or path fragments in cross-user KV/SQL labels", () => {
-    const requester = FIXTURE_META.address.toLowerCase();
-    const crossUserSpace = `tinycloud:pkh:eip155:1:${FIXTURE_META.crossAppOwner}:other`;
+    const signerAddress = FIXTURE_META.address.toLowerCase();
+    const crossUserSpace = `tinycloud:pkh:eip155:1:${FIXTURE_META.crossAppOwner}:default`;
     for (const service of ["tinycloud.kv", "tinycloud.sql"]) {
       const classification = classifyRecapEntry({
         service,
         space: crossUserSpace,
-        path: "/",
-        actions: [`${service}/read`],
-        requesterAddress: requester,
-        requesterVerified: true,
+        path: "app/items",
+        actions: [
+          service === "tinycloud.kv" ? "tinycloud.kv/get" : "tinycloud.sql/read",
+        ],
+        signerAddress,
       });
       expect(classification.family).toBe("cross-app-data");
-      expect(classification.displayLabel).toContain("Cross-user");
+      expect(classification.displayLabel).toBe("Another user's data");
       expect(classification.displayLabel).not.toContain("0x");
       expect(classification.displayLabel).not.toContain("path=");
     }
@@ -617,9 +588,7 @@ describe("parseCapabilityReview", () => {
   });
 
   it("splits resource URI path from space for path-scoped recap entries", () => {
-    const model = parseCapabilityReview(
-      ctx({ message: REAL_RECAP_WITH_PATH }),
-    );
+    const model = parseCapabilityReview(ctx({ message: REAL_RECAP_WITH_PATH }));
     expect(model.protocol).toBe("tinycloud-siwe-recap");
     // Sol final continuation contract requirement 1: the parser strips
     // the middle `<short-service>` segment out of the ATT resource URI
@@ -627,11 +596,11 @@ describe("parseCapabilityReview", () => {
     // fixture's URI is `${SPACE}/sql/xyz.tinycloud.listen/conversations`
     // — after canonical splitting the short-service segment ("sql")
     // is stripped and `path` becomes the remainder.
-    const kv = model.permissions.find(
-      (p) => p.family === "own-app-data" && p.service === "tinycloud.kv",
-    );
+    const kv = model.permissions.find((p) => p.service === "tinycloud.kv");
     expect(kv?.space).toBe(FIXTURE_META.ownSpace);
     expect(kv?.path).toBe("xyz.tinycloud.listen/conversations");
+    expect(kv?.serviceMismatch).toBe(true);
+    expect(kv?.family).toBe("unknown");
   });
 
   it("produces identical model JSON regardless of att key ordering", () => {
@@ -639,9 +608,7 @@ describe("parseCapabilityReview", () => {
     const b = parseCapabilityReview(ctx({ message: REAL_RECAP_MIXED_B }));
     // rawMessage differs (different SIWE bytes) but the permissions model
     // must be identical after determinism sorting.
-    expect(JSON.stringify(a.permissions)).toBe(
-      JSON.stringify(b.permissions),
-    );
+    expect(JSON.stringify(a.permissions)).toBe(JSON.stringify(b.permissions));
   });
 
   it("keeps two same-ability different-path grants distinct (Sol MAJOR-6)", () => {
@@ -652,7 +619,9 @@ describe("parseCapabilityReview", () => {
     const model = parseCapabilityReview(
       ctx({ message: REAL_RECAP_SAME_ABILITY_TWO_PATHS }),
     );
-    const kvGrants = model.permissions.filter((p) => p.service === "tinycloud.kv");
+    const kvGrants = model.permissions.filter(
+      (p) => p.service === "tinycloud.kv",
+    );
     expect(kvGrants.length).toBe(2);
     const paths = kvGrants.map((g) => g.path).sort();
     expect(paths).toEqual(["chat", "feed"]);
@@ -709,7 +678,11 @@ describe("subset validation", () => {
     const broader = parseCapabilityReview(ctx()); // more capabilities
     const check = assertBaselineSubset(base, broader);
     expect(check.ok).toBe(false);
-    expect(check.violations.some((v) => v.code === "added-action" || v.code === "added-space")).toBe(true);
+    expect(
+      check.violations.some(
+        (v) => v.code === "added-action" || v.code === "added-space",
+      ),
+    ).toBe(true);
   });
 
   it("rejects an altered immutable field", () => {
@@ -733,7 +706,10 @@ describe("subset validation", () => {
         if (action.required) sel.delete(action.id);
       }
     }
-    const restricted = restrictModel({ baseline: base, selectedActionIds: sel });
+    const restricted = restrictModel({
+      baseline: base,
+      selectedActionIds: sel,
+    });
     // Because restrictModel always keeps required actions, the check should
     // still pass — proving fail-closed behaviour.
     const check = assertBaselineSubset(base, restricted);
@@ -757,7 +733,9 @@ describe("caveats (Sol continuation contract)", () => {
   const CHAIN = FIXTURE_META.chainId;
   const SPACE = FIXTURE_META.ownSpace;
 
-  function siweWithRecap(att: Record<string, Record<string, unknown[]>>): string {
+  function siweWithRecap(
+    att: Record<string, Record<string, unknown[]>>,
+  ): string {
     return [
       `cli.tinycloud.xyz wants you to sign in with your Ethereum account:`,
       ADDR,
@@ -825,7 +803,9 @@ describe("caveats (Sol continuation contract)", () => {
     }
     const check = assertBaselineSubset(base, candidate);
     expect(check.ok).toBe(false);
-    expect(check.violations.some((v) => v.code === "broadened-caveat")).toBe(true);
+    expect(check.violations.some((v) => v.code === "broadened-caveat")).toBe(
+      true,
+    );
   });
 
   it("subset validator accepts identical caveats", () => {
@@ -856,7 +836,7 @@ describe("family label copy", () => {
 
   it("keeps the cross-user family label free of owner addresses and paths", () => {
     const label = FAMILY_LABEL["cross-app-data"];
-    expect(label).toBe("Cross-app data");
+    expect(label).toBe("Another user's data");
     expect(label).not.toMatch(/0x[0-9a-fA-F]{6,}/);
     expect(label).not.toContain("path=");
   });

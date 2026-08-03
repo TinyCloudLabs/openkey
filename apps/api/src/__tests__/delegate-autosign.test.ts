@@ -660,7 +660,7 @@ describe('delegateRouter Auto-Sign integration', () => {
     );
     if (!resource) throw new Error('Missing account bootstrap resource');
     const otherAddress = '0x0000000000000000000000000000000000000001';
-    const wrongResourceIdentities: Array<[string, number]> = [
+    const wrongResourceIdentities: Array<[`0x${string}`, number]> = [
       [otherAddress, chainId],
       [address, 137],
     ];

@@ -1,9 +1,17 @@
 import { sveltekit } from '@sveltejs/kit/vite';
 import tailwindcss from '@tailwindcss/vite';
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
   plugins: [tailwindcss(), sveltekit()],
+  resolve: {
+    alias: {
+      '@openkey/capability-review': fileURLToPath(
+        new URL('../../packages/capability-review/src/index.ts', import.meta.url),
+      ),
+    },
+  },
   server: {
     port: parseInt(process.env.WEB_PORT || '5173'),
     // `.localhost` enables portless (e.g. https://openkey.localhost) — see README.

@@ -8,7 +8,7 @@
   //      data. It surfaces the requester, a short list of understandable
   //      statements (from statements.ts), and a pinned sensitive callout
   //      when any grant reaches secret data or decryption.
-  //   2. A SINGLE `<details>` element labelled `Advanced details` contains:
+  //   2. A single top-level `<details>` labelled `Advanced details` contains:
   //      requester, verified browser origin, manifest name/appId/digest with
   //      HONEST trust/provenance label, reason (only when present), signing
   //      identity, categorized exact-grant list, Edit/Reset controls, the
@@ -71,6 +71,37 @@
   }: Props = $props();
 
   const renderPlan = $derived(buildRenderPlan(model.permissions));
+  const permissionSections = $derived.by(() => {
+    const reviewGrants = renderPlan
+      .filter((bucket) => bucket.severity !== "standard")
+      .flatMap((bucket) => bucket.grants);
+    const standardGrants = renderPlan.find(
+      (bucket) => bucket.severity === "standard",
+    )?.grants ?? [];
+
+    return [
+      ...(reviewGrants.length > 0
+        ? [{
+            key: "review",
+            severity: "review" as const,
+            heading: "Permissions",
+            hint: "Sensitive access is shown first.",
+            grants: reviewGrants,
+            defaultOpen: true,
+          }]
+        : []),
+      ...(standardGrants.length > 0
+        ? [{
+            key: "standard",
+            severity: "standard" as const,
+            heading: "Standard permissions",
+            hint: "Routine bootstrap access.",
+            grants: standardGrants,
+            defaultOpen: false,
+          }]
+        : []),
+    ];
+  });
   const isEditable = $derived(model.protocol === "tinycloud-siwe-recap");
   const isMalformedRecap = $derived(model.protocol === "malformed-recap");
   const headline = $derived(
@@ -97,13 +128,52 @@
     }),
   );
 
-  // Statements for the summary view. Derived structurally from selected grants.
-  const summaryStatements = $derived(
-    selectedGrants.map((grant) => ({
-      grant,
-      statement: buildStatement(grant),
-    })),
-  );
+  function isUnmappedStatement(primaryText: string): boolean {
+    return primaryText.startsWith("Perform ") || primaryText.startsWith("Access ");
+  }
+
+  // Statements for the summary view. Group by primary text so repeated
+  // statements collapse into one visible row while preserving the strongest
+  // severity. Counts, services, resources, and requester provenance belong in
+  // Advanced details; the approval view stays understandable at a glance.
+  const summaryStatements = $derived.by(() => {
+    const severityRank: Record<CapabilityGrant["severity"], number> = {
+      standard: 0,
+      attention: 1,
+      sensitive: 2,
+    };
+
+    const grouped = new Map<
+      string,
+      {
+        key: string;
+        primaryText: string;
+        severity: CapabilityGrant["severity"];
+        unmapped: boolean;
+      }
+    >();
+
+    for (const grant of selectedGrants) {
+      const statement = buildStatement(grant);
+      const existing = grouped.get(statement.primaryText);
+      if (existing) {
+        if (severityRank[grant.severity] > severityRank[existing.severity]) {
+          existing.severity = grant.severity;
+        }
+      } else {
+        grouped.set(statement.primaryText, {
+          key: grant.id,
+          primaryText: statement.primaryText,
+          severity: grant.severity,
+          unmapped: isUnmappedStatement(statement.primaryText),
+        });
+      }
+    }
+
+    return [...grouped.values()].sort(
+      (left, right) => Number(left.unmapped) - Number(right.unmapped),
+    );
+  });
 
   const sensitiveCount = $derived(
     selectedGrants.filter(grantReachesSecretDataOrDecryption).length,
@@ -131,6 +201,53 @@
     onSelectionChange(next);
   }
 
+  const SERVICE_LABELS: Record<string, string> = {
+    "tinycloud.kv": "Key Value",
+    kv: "Key Value",
+    "tinycloud.sql": "SQL",
+    sql: "SQL",
+    "tinycloud.capabilities": "Permissions",
+    capabilities: "Permissions",
+    "tinycloud.delegation": "Delegation",
+    delegation: "Delegation",
+    "tinycloud.encryption": "Encryption",
+    encryption: "Encryption",
+    "tinycloud.secrets": "Secrets",
+    secrets: "Secrets",
+  };
+
+  function compactService(service: string): string {
+    return SERVICE_LABELS[service] ?? service;
+  }
+
+  function exactGrantTarget(grant: CapabilityGrant): string {
+    const resourceService = grant.resourceService
+      ? `/${grant.resourceService}`
+      : "";
+    const path = grant.path ? `/${grant.path}` : "";
+    return `${grant.space}${resourceService}${path}`;
+  }
+
+  function compactSpace(space: string): string {
+    const pkhSpace = space.match(
+      /^tinycloud:pkh:eip155:\d+:0x[a-fA-F0-9]{40}:(.+)$/,
+    );
+    if (pkhSpace?.[1]) return pkhSpace[1];
+
+    const encryptionSpace = space.match(
+      /^urn:tinycloud:encryption:did:pkh:eip155:\d+:0x[a-fA-F0-9]{40}:(.+)$/,
+    );
+    return encryptionSpace?.[1] ?? space;
+  }
+
+  function compactGrantTarget(grant: CapabilityGrant): string {
+    const space = compactSpace(grant.space);
+    if (!grant.path) return space;
+    return grant.path.startsWith("/")
+      ? `${space}${grant.path}`
+      : `${space}/${grant.path}`;
+  }
+
   function handleKeydown(event: KeyboardEvent, action: CapabilityAction) {
     if (!action.editable) return;
     if (event.key === " " || event.key === "Enter") {
@@ -153,38 +270,71 @@
     "digest-mismatch": "Manifest digest does not match declared content",
   };
 
-  const severityLabel: Record<CapabilityGrant["severity"], string> = {
-    standard: "Standard",
-    attention: "Attention",
-    sensitive: "Sensitive",
-  };
-
   // Copy-to-clipboard for the raw message. Uses the Async Clipboard API
   // and falls back to a hidden textarea + execCommand for older browsers.
   // The clipboard receives `model.rawMessage` EXACTLY — no normalization.
   let copyState = $state<"idle" | "copied" | "failed">("idle");
+
+  function clipboardPolicyAllowsWrite(): boolean {
+    if (typeof document === "undefined") return false;
+    const policyDocument = document as Document & {
+      permissionsPolicy?: { allowsFeature: (feature: string) => boolean };
+      featurePolicy?: { allowsFeature: (feature: string) => boolean };
+    };
+    const policy =
+      policyDocument.permissionsPolicy ?? policyDocument.featurePolicy;
+    return policy?.allowsFeature
+      ? policy.allowsFeature("clipboard-write")
+      : true;
+  }
+
+  function copyWithExecCommand(text: string): boolean {
+    if (typeof document === "undefined") return false;
+    const activeElement =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.setAttribute("aria-hidden", "true");
+    ta.style.position = "fixed";
+    ta.style.inset = "0 auto auto -9999px";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    const copied = document.execCommand("copy");
+    ta.remove();
+    activeElement?.focus();
+    return copied;
+  }
+
   async function copyRawMessage() {
     const text = model.rawMessage;
-    try {
-      if (typeof navigator !== "undefined" && navigator.clipboard) {
+    let copied = false;
+    if (
+      typeof navigator !== "undefined" &&
+      navigator.clipboard?.writeText &&
+      clipboardPolicyAllowsWrite()
+    ) {
+      try {
         await navigator.clipboard.writeText(text);
-        copyState = "copied";
-      } else {
-        // Legacy fallback
-        const ta = document.createElement("textarea");
-        ta.value = text;
-        ta.setAttribute("readonly", "");
-        ta.style.position = "absolute";
-        ta.style.left = "-9999px";
-        document.body.appendChild(ta);
-        ta.select();
-        const ok = document.execCommand("copy");
-        document.body.removeChild(ta);
-        copyState = ok ? "copied" : "failed";
+        copied = true;
+      } catch {
+        // An iframe may expose Clipboard API while blocking it via
+        // Permissions Policy. Fall through to the user-gesture fallback.
       }
-    } catch {
-      copyState = "failed";
     }
+    if (!copied) {
+      try {
+        copied = copyWithExecCommand(text);
+      } catch {
+        copied = false;
+      }
+    }
+    copyState = copied ? "copied" : "failed";
     setTimeout(() => {
       copyState = "idle";
     }, 2000);
@@ -226,28 +376,24 @@
   {/if}
 
   <!--
-    Default summary: requester + short list of deterministic statements.
+    Default summary: short list of deterministic statements.
     Never invents friendly semantics for unknown shapes (see statements.ts).
+    Requester provenance and exact resource identifiers are deliberately kept
+    in Advanced details so the first viewport is useful to ordinary users.
   -->
   <section class="summary" aria-label="Requested access">
-    <div class="summary-requester">
-      <span class="summary-requester-label">Requester</span>
-      <span class="summary-requester-value">{model.requester.displayName}</span>
-    </div>
     {#if summaryStatements.length > 0}
       <ul class="summary-statements">
-        {#each summaryStatements as { grant, statement } (grant.id)}
+        {#each summaryStatements as statement (statement.key)}
           <li
             class="summary-statement"
-            data-severity={grant.severity}
-            data-family={grant.family}
+            data-severity={statement.severity}
           >
-            <span class="statement-primary">{statement.primaryText}</span>
-            <span class="statement-secondary">
-              <code class="mono">{statement.service}</code>
-              <span class="statement-resource" title={statement.resource}>
-                {statement.resource}
-              </span>
+            <span class="statement-line">
+              <span class="statement-primary">{statement.primaryText}</span>
+              {#if statement.severity === "sensitive"}
+                <span class="summary-sensitive-pill">Sensitive</span>
+              {/if}
             </span>
           </li>
         {/each}
@@ -270,7 +416,10 @@
   <details class="advanced-details">
     <summary class="advanced-summary">Advanced details</summary>
 
-    <section class="identity" aria-label="Requester identity">
+    <details class="request-details" open>
+      <summary class="request-details-summary">Requester and signing details</summary>
+
+      <section class="identity" aria-label="Requester identity">
       <div class="row">
         <span class="label">Requester</span>
         <span class="value">{model.requester.displayName}</span>
@@ -382,36 +531,37 @@
       {#if model.metadataTrust.reason}
         <p class="metadata-reason">{model.metadataTrust.reason}</p>
       {/if}
-    </section>
+      </section>
 
     <!-- Reason only when a reason actually exists. -->
-    {#if model.reason.source !== "none" && model.reason.text}
-      <section class="reason" aria-label="Reason for request">
+      {#if model.reason.source !== "none" && model.reason.text}
+        <section class="reason" aria-label="Reason for request">
+          <div class="row">
+            <span class="label">Reason provided by {model.reason.source}</span>
+          </div>
+          <p class="reason-body">{model.reason.text}</p>
+          {#if model.reason.source === "caller"}
+            <p class="reason-untrusted">
+              This reason comes from the caller and is not verified.
+            </p>
+          {/if}
+        </section>
+      {/if}
+
+      <section class="signer" aria-label="Signing identity">
         <div class="row">
-          <span class="label">Reason provided by {model.reason.source}</span>
+          <span class="label">Signing with</span>
+          <span class="value">{model.signer.label}</span>
+          <code class="value mono">{model.signer.address}</code>
         </div>
-        <p class="reason-body">{model.reason.text}</p>
-        {#if model.reason.source === "caller"}
-          <p class="reason-untrusted">
-            This reason comes from the caller and is not verified.
-          </p>
+        {#if model.expiry}
+          <div class="row">
+            <span class="label">Expires</span>
+            <span class="value">{model.expiry}</span>
+          </div>
         {/if}
       </section>
-    {/if}
-
-    <section class="signer" aria-label="Signing identity">
-      <div class="row">
-        <span class="label">Signing with</span>
-        <span class="value">{model.signer.label}</span>
-        <code class="value mono">{model.signer.address}</code>
-      </div>
-      {#if model.expiry}
-        <div class="row">
-          <span class="label">Expires</span>
-          <span class="value">{model.expiry}</span>
-        </div>
-      {/if}
-    </section>
+    </details>
 
     {#if model.permissions.length > 0}
       <section class="permissions" aria-label="Exact grants">
@@ -440,65 +590,87 @@
           {/if}
         </div>
 
-        {#each renderPlan as bucket}
-          <section
+        {#each permissionSections as bucket (bucket.key)}
+          <details
             class="severity-bucket"
             data-severity={bucket.severity}
             aria-label={bucket.heading}
+            open={bucket.defaultOpen}
           >
-            <h4 class="bucket-heading">{bucket.heading}</h4>
-            <p class="bucket-hint">{bucket.hint}</p>
-            <ul class="grant-list">
-              {#each bucket.grants as grant}
-                <li class="grant">
-                  <div class="grant-heading">
-                    <span class="grant-title">{grantHeading(grant)}</span>
-                    <span class="grant-severity" data-severity={grant.severity}>
-                      {severityLabel[grant.severity]}
-                    </span>
-                  </div>
-                  <code class="grant-path mono">
-                    {grant.service} · {grant.space}{grant.path
-                      ? "/" + grant.path
-                      : ""}
-                  </code>
-                  {#if grant.ownedBySelf === false}
-                    <p class="cross-app-warning">
-                      Cross-app data owned by {grant.owner}
-                    </p>
-                  {/if}
-                  <ul class="action-list">
-                    {#each grant.actions as action}
-                      <li class="action">
-                        {#if editing && action.editable}
-                          <label class="action-toggle">
-                            <input
-                              type="checkbox"
-                              checked={isSelected(action)}
-                              onchange={() => toggle(action)}
-                              onkeydown={(e) => handleKeydown(e, action)}
-                              disabled={approveDisabled}
-                            />
-                            <span class="verb">{action.verb}</span>
-                          </label>
-                        {:else}
-                          <span
-                            class="action-static"
-                            class:selected={isSelected(action)}
-                          >
-                            <span class="verb">{action.verb}</span>
-                            {#if action.required}
-                              <span class="required-flag">required</span>
-                            {/if}
-                          </span>
-                        {/if}
-                      </li>
-                    {/each}
-                  </ul>
-                </li>
-              {/each}
-            </ul>
-          </section>
+            <summary class="bucket-summary">
+              <span class="bucket-heading">{bucket.heading}</span>
+              <span class="bucket-hint">{bucket.hint}</span>
+            </summary>
+            <div class="bucket-content">
+              <ul class="grant-list">
+                {#each bucket.grants as grant}
+                  {@const unselectedActions = grant.actions.filter(
+                    (action) => !isSelected(action),
+                  )}
+                  <li class="grant">
+                    <div class="grant-heading">
+                      <span class="grant-title">{grantHeading(grant)}</span>
+                      {#if grant.severity === "sensitive"}
+                        <span class="grant-severity" data-severity="sensitive">
+                          Sensitive
+                        </span>
+                      {/if}
+                    </div>
+                    <code class="grant-path mono">
+                      <span
+                        class="grant-service"
+                        title={grant.service}
+                        aria-label={`Exact service: ${grant.service}`}
+                      >{compactService(grant.service)}</span>
+                      <span
+                        class="grant-target"
+                        title={exactGrantTarget(grant)}
+                        aria-label={`Exact resource: ${exactGrantTarget(grant)}`}
+                      >
+                        {compactGrantTarget(grant)}
+                      </span>
+                    </code>
+                    {#if grant.ownedBySelf === false}
+                      <p class="cross-app-warning">
+                        This data belongs to another user.
+                      </p>
+                    {/if}
+                    <ul class="action-list">
+                      {#each editing ? grant.actions : grant.actions.filter(isSelected) as action}
+                        <li class="action">
+                          {#if editing && action.editable}
+                            <label class="action-toggle">
+                              <input
+                                type="checkbox"
+                                checked={isSelected(action)}
+                                onchange={() => toggle(action)}
+                                onkeydown={(e) => handleKeydown(e, action)}
+                                disabled={approveDisabled}
+                              />
+                              <span class="verb">{action.verb}</span>
+                            </label>
+                          {:else}
+                            <span class="action-static">
+                              <span class="verb">{action.verb}</span>
+                              {#if action.required}
+                                <span class="required-flag">required</span>
+                              {/if}
+                            </span>
+                          {/if}
+                        </li>
+                      {/each}
+                    </ul>
+                    {#if unselectedActions.length > 0}
+                      <p class="not-granting">
+                        <span>Not granting:</span>
+                        {unselectedActions.map((action) => action.verb).join(", ")}
+                      </p>
+                    {/if}
+                  </li>
+                {/each}
+              </ul>
+            </div>
+          </details>
         {/each}
       </section>
     {/if}
@@ -566,58 +738,54 @@
   .signing-approval {
     display: flex;
     flex-direction: column;
-    gap: 16px;
-    padding: 20px;
-    background: #fafafa;
-    border-radius: 12px;
-    color: #111;
-    max-width: 480px;
+    gap: 14px;
+    width: min(100%, 560px);
+    max-width: 560px;
     margin: 0 auto;
+    padding: 18px;
+    box-sizing: border-box;
+    background: #fff;
+    border: 1px solid #dbe2ea;
+    border-radius: 16px;
+    color: #0f172a;
   }
   .header {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 6px;
   }
   .headline {
-    font-size: 18px;
-    font-weight: 600;
+    font-size: 20px;
+    font-weight: 700;
+    line-height: 1.2;
     margin: 0;
+    text-wrap: balance;
   }
   .hint {
-    font-size: 13px;
-    color: #555;
+    font-size: 14px;
+    line-height: 1.5;
+    color: #475569;
     margin: 0;
   }
   .sensitive-callout {
-    background: #fff5f5;
-    color: #9f2424;
-    border: 1px solid #d99b9b;
-    border-radius: 8px;
+    background: #fff7ed;
+    color: #9a3412;
+    border: 1px solid #fdba74;
+    border-radius: 12px;
     padding: 10px 12px;
     font-size: 13px;
+    line-height: 1.45;
     margin: 0;
-    font-weight: 500;
+    font-weight: 600;
   }
   .summary {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-  }
-  .summary-requester {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    gap: 8px;
-    font-size: 13px;
-  }
-  .summary-requester-label {
-    color: #666;
-    font-weight: 500;
-  }
-  .summary-requester-value {
-    color: #111;
-    font-weight: 600;
+    gap: 10px;
+    padding: 12px 14px;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 14px;
   }
   .summary-statements {
     list-style: none;
@@ -628,84 +796,143 @@
     gap: 6px;
   }
   .summary-statement {
-    background: #fff;
-    border: 1px solid #e5e5e5;
-    border-radius: 8px;
-    padding: 8px 10px;
+    padding: 7px 0;
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    border-bottom: 1px solid #e2e8f0;
+  }
+  .summary-statement:last-child {
+    border-bottom: 0;
   }
   .summary-statement[data-severity="sensitive"] {
-    border-color: #d99b9b;
-    background: #fff5f5;
+    color: #9f2424;
   }
   .summary-statement[data-severity="attention"] {
-    border-color: #d9c99b;
-    background: #fffaf0;
+    color: #7c4a03;
   }
   .statement-primary {
     font-size: 13px;
-    font-weight: 500;
-    color: #111;
+    line-height: 1.45;
+    font-weight: 600;
+    color: #0f172a;
   }
-  .statement-secondary {
+  .statement-line {
     display: flex;
-    gap: 6px;
-    align-items: baseline;
-    color: #666;
-    font-size: 11px;
-    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
   }
-  .statement-resource {
-    word-break: break-all;
-    color: #555;
+  .summary-sensitive-pill {
+    flex: 0 0 auto;
+    border: 1px solid #f2c0c0;
+    border-radius: 999px;
+    background: #fff7f7;
+    color: #9f2424;
+    padding: 2px 7px;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1.3;
   }
   .summary-empty {
-    color: #666;
-    font-size: 12px;
+    color: #475569;
+    font-size: 13px;
+    line-height: 1.45;
     margin: 0;
   }
   .advanced-details {
     background: #fff;
-    border: 1px solid #e5e5e5;
-    border-radius: 8px;
-    padding: 8px 12px;
+    border: 1px solid #dbe2ea;
+    border-radius: 14px;
+    padding: 12px 14px;
     font-size: 13px;
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 10px;
+  }
+  .advanced-details[open] {
+    background: #fbfdff;
+    border-color: #cfd8e3;
   }
   .advanced-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
     cursor: pointer;
+    font-weight: 700;
+    color: #0f172a;
+    padding: 2px 0 6px;
+    list-style: none;
+  }
+  .advanced-summary::-webkit-details-marker {
+    display: none;
+  }
+  .advanced-summary::after {
+    content: "▾";
+    color: #64748b;
+    transition: transform 160ms ease;
+  }
+  .advanced-details[open] .advanced-summary::after {
+    transform: rotate(180deg);
+  }
+  .request-details {
+    border-bottom: 1px solid #e2e8f0;
+    padding-bottom: 10px;
+  }
+  .request-details-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    cursor: pointer;
+    list-style: none;
+    color: #475569;
+    font-size: 12px;
     font-weight: 600;
-    color: #333;
-    padding: 4px 0;
+  }
+  .request-details-summary::-webkit-details-marker {
+    display: none;
+  }
+  .request-details-summary::after {
+    content: "▾";
+    color: #64748b;
+    transition: transform 160ms ease;
+  }
+  .request-details[open] > .request-details-summary::after {
+    transform: rotate(180deg);
+  }
+  .request-details[open] > .identity,
+  .request-details[open] > .reason,
+  .request-details[open] > .signer {
+    margin-top: 10px;
   }
   .row {
     display: flex;
-    gap: 8px;
-    align-items: center;
+    gap: 10px;
+    align-items: flex-start;
     flex-wrap: wrap;
     font-size: 13px;
-    padding: 4px 0;
+    line-height: 1.45;
+    padding: 3px 0;
   }
   .label {
-    color: #666;
-    font-weight: 500;
-    min-width: 140px;
+    color: #475569;
+    font-weight: 600;
+    min-width: 136px;
   }
   .value {
-    color: #111;
+    color: #0f172a;
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
   .mono {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 12px;
-    color: #333;
-    word-break: break-all;
+    color: #334155;
+    word-break: break-word;
   }
   .trust-value {
-    font-weight: 500;
+    font-weight: 600;
   }
   .trust-value[data-trust="verified"] {
     color: #14733b;
@@ -722,11 +949,13 @@
     color: #9f2424;
   }
   .warn {
-    background: #fff4d6;
-    color: #995000;
-    padding: 2px 6px;
-    border-radius: 4px;
+    background: #fef3c7;
+    color: #92400e;
+    border: 1px solid #fde68a;
+    padding: 3px 8px;
+    border-radius: 999px;
     font-size: 12px;
+    line-height: 1.35;
   }
   /*
     Sol MAJOR-4: provenance tags are attached to Advanced-details fields
@@ -738,87 +967,115 @@
   */
   .provenance-tag {
     font-size: 11px;
-    padding: 1px 6px;
-    border-radius: 4px;
+    padding: 2px 8px;
+    border-radius: 999px;
     line-height: 1.2;
+    border: 1px solid transparent;
   }
   .provenance-tag[data-provenance="verified"] {
-    background: #e6f7ea;
+    background: #eefbf3;
     color: #14733b;
   }
   .provenance-tag[data-provenance="origin-bound"] {
-    background: #eef1e6;
+    background: #f1f5eb;
     color: #4a6f2f;
   }
   .provenance-tag[data-provenance="caller"] {
-    background: #fff4d6;
-    color: #995000;
+    background: #fff7ed;
+    color: #9a3412;
+    border-color: #fdba74;
   }
   .metadata-reason,
   .reason-body,
   .reason-untrusted {
     margin: 4px 0 0;
     font-size: 12px;
-    color: #666;
+    line-height: 1.45;
+    color: #475569;
   }
   .reason-untrusted {
-    color: #995000;
+    color: #9a3412;
   }
   .permissions {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 10px;
   }
   .permissions-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
   }
   .permissions-heading {
-    font-size: 14px;
-    font-weight: 600;
+    font-size: 15px;
+    font-weight: 700;
     margin: 0;
+    color: #0f172a;
   }
   .permissions-actions {
     display: flex;
-    gap: 8px;
+    gap: 10px;
+    flex-wrap: wrap;
   }
   .link {
     background: none;
     border: none;
-    color: #555;
-    text-decoration: underline;
     cursor: pointer;
     font-size: 12px;
     padding: 0;
+    font-weight: 600;
+    color: #334155;
+    text-decoration: underline;
+    text-underline-offset: 2px;
   }
   .link:disabled {
     opacity: 0.5;
     cursor: not-allowed;
   }
   .severity-bucket {
-    background: #fff;
-    border: 1px solid #e5e5e5;
-    border-radius: 8px;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
     padding: 12px;
+    min-width: 0;
   }
-  .severity-bucket[data-severity="sensitive"] {
-    border-color: #d99b9b;
-    background: #fff5f5;
+  .bucket-summary {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px 12px;
+    cursor: pointer;
+    list-style: none;
   }
-  .severity-bucket[data-severity="attention"] {
-    border-color: #d9c99b;
-    background: #fffaf0;
+  .bucket-summary::-webkit-details-marker {
+    display: none;
+  }
+  .bucket-summary::after {
+    content: "▾";
+    color: #64748b;
+    flex: 0 0 auto;
+    transition: transform 160ms ease;
+  }
+  .severity-bucket[open] > .bucket-summary::after {
+    transform: rotate(180deg);
+  }
+  .bucket-content {
+    margin-top: 10px;
   }
   .bucket-heading {
     font-size: 13px;
-    font-weight: 600;
-    margin: 0 0 4px;
+    font-weight: 700;
+    margin: 0;
+    color: #0f172a;
   }
   .bucket-hint {
-    font-size: 12px;
-    color: #555;
-    margin: 0 0 8px;
+    font-size: 11px;
+    line-height: 1.35;
+    color: #475569;
+    margin: 0 0 0 auto;
+    text-align: right;
   }
   .grant-list,
   .action-list {
@@ -830,83 +1087,109 @@
     gap: 8px;
   }
   .grant {
-    background: #f8f8f8;
-    border-radius: 6px;
-    padding: 8px;
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    padding: 10px 12px;
+    min-width: 0;
   }
   .grant-heading {
     display: flex;
     justify-content: space-between;
-    align-items: baseline;
-    gap: 6px;
+    align-items: flex-start;
+    gap: 8px;
+    min-width: 0;
   }
   .grant-title {
     font-size: 13px;
-    font-weight: 500;
+    line-height: 1.45;
+    font-weight: 600;
+    color: #0f172a;
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
   .grant-severity[data-severity="sensitive"] {
     color: #9f2424;
     font-weight: 600;
     font-size: 11px;
   }
-  .grant-severity[data-severity="attention"] {
-    color: #995000;
-    font-weight: 600;
-    font-size: 11px;
-  }
-  .grant-severity[data-severity="standard"] {
-    color: #14733b;
-    font-weight: 500;
-    font-size: 11px;
-  }
   .grant-path {
-    display: block;
-    margin: 4px 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin: 6px 0 0;
+    min-width: 0;
+  }
+  .grant-service {
+    color: #64748b;
+    font-size: 11px;
+    line-height: 1.2;
+  }
+  .grant-service[title],
+  .grant-target[title] {
+    cursor: help;
+  }
+  .grant-target {
+    color: #334155;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
   .cross-app-warning {
-    color: #9f2424;
+    color: #9a3412;
     font-size: 12px;
-    margin: 4px 0;
+    line-height: 1.45;
+    margin: 6px 0 0;
+    font-weight: 600;
   }
   .action-list {
     flex-direction: row;
     flex-wrap: wrap;
-    gap: 6px;
-    margin-top: 6px;
+    gap: 8px;
+    margin-top: 8px;
   }
   .action-toggle,
   .action-static {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    padding: 2px 8px;
-    border-radius: 4px;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 999px;
     background: #fff;
-    border: 1px solid #ddd;
+    border: 1px solid #dbe2ea;
     font-size: 12px;
-  }
-  .action-static.selected {
-    background: #eef;
-    border-color: #99a;
+    line-height: 1.2;
   }
   .required-flag {
-    color: #666;
+    color: #64748b;
     font-size: 10px;
   }
+  .not-granting {
+    margin: 7px 0 0;
+    color: #64748b;
+    font-size: 11px;
+    line-height: 1.4;
+  }
+  .not-granting span {
+    color: #475569;
+    font-weight: 600;
+  }
   .warnings {
-    background: #fff4d6;
-    border-radius: 6px;
-    padding: 8px 12px;
+    background: #fff7ed;
+    border: 1px solid #fed7aa;
+    border-radius: 12px;
+    padding: 10px 12px;
     font-size: 12px;
-    color: #6e4b0f;
+    color: #9a3412;
   }
   .warnings-heading {
     margin: 0 0 4px;
     font-size: 12px;
-    font-weight: 600;
+    font-weight: 700;
   }
   .warning {
     margin: 2px 0;
+    line-height: 1.45;
   }
   .warning-code {
     background: #fff;
@@ -918,77 +1201,126 @@
   .raw {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 8px;
   }
   .raw-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
   }
   .raw-heading {
     font-size: 13px;
-    font-weight: 600;
+    font-weight: 700;
     margin: 0;
+    color: #0f172a;
   }
   .copy-btn {
     background: #fff;
-    border: 1px solid #ccc;
-    border-radius: 4px;
-    padding: 3px 8px;
+    border: 1px solid #cbd5e1;
+    border-radius: 999px;
+    padding: 6px 10px;
     font-size: 12px;
+    font-weight: 600;
+    line-height: 1.2;
     cursor: pointer;
-    color: #333;
+    color: #334155;
+    transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
   }
   .copy-btn:hover {
-    background: #eee;
+    background: #f8fafc;
+    border-color: #94a3b8;
+    color: #0f172a;
   }
   .raw-bytes {
-    background: #111;
-    color: #eee;
-    padding: 8px;
-    border-radius: 4px;
+    background: #0f172a;
+    color: #e2e8f0;
+    padding: 12px;
+    border-radius: 12px;
     overflow: auto;
-    max-height: 240px;
-    font-size: 11px;
+    max-height: 180px;
+    font-size: 12px;
+    line-height: 1.5;
     white-space: pre-wrap;
     word-break: break-word;
     user-select: text;
     -webkit-user-select: text;
   }
   .error {
-    background: #fff0f0;
+    background: #fff7f7;
     color: #9f2424;
-    padding: 6px 10px;
-    border-radius: 6px;
+    padding: 8px 10px;
+    border-radius: 10px;
     font-size: 12px;
+    line-height: 1.45;
     margin: 0;
+    border: 1px solid #f2c0c0;
   }
   .actions {
     display: flex;
-    gap: 8px;
+    gap: 10px;
   }
   .cancel,
   .approve {
     flex: 1;
-    padding: 10px;
-    border-radius: 8px;
+    padding: 10px 12px;
+    border-radius: 12px;
     font-size: 14px;
-    font-weight: 500;
+    font-weight: 700;
+    line-height: 1.2;
     cursor: pointer;
-    border: none;
+    border: 1px solid transparent;
   }
   .cancel {
-    background: #eee;
-    color: #333;
+    background: #fff;
+    color: #0f172a;
+    border-color: #cbd5e1;
   }
   .approve {
-    background: #111;
+    background: #0f172a;
     color: #fff;
+    border-color: #0f172a;
+  }
+  .cancel:hover {
+    background: #f8fafc;
+  }
+  .approve:hover {
+    background: #111827;
   }
   .cancel:disabled,
   .approve:disabled {
     opacity: 0.6;
     cursor: not-allowed;
+  }
+  @media (max-width: 520px) {
+    .signing-approval {
+      padding: 14px;
+      border-radius: 14px;
+    }
+
+    .row {
+      flex-direction: column;
+      align-items: flex-start;
+    }
+
+    .label {
+      min-width: 0;
+    }
+
+    .permissions-header,
+    .raw-header {
+      align-items: flex-start;
+    }
+
+    .actions {
+      flex-direction: column-reverse;
+    }
+
+    .cancel,
+    .approve {
+      width: 100%;
+    }
   }
   @media (prefers-reduced-motion: reduce) {
     .signing-approval * {

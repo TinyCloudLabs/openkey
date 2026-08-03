@@ -29,6 +29,7 @@ import {
 
 const ACCOUNT = "0x1111111111111111111111111111111111111111";
 const APPS_SPACE = `tinycloud:pkh:eip155:1:${ACCOUNT}:applications`;
+const ACCOUNT_SPACE = `tinycloud:pkh:eip155:1:${ACCOUNT}:account`;
 const DEFAULT_SPACE = `tinycloud:pkh:eip155:1:${ACCOUNT}:default`;
 const SECRETS_SPACE = `tinycloud:pkh:eip155:1:${ACCOUNT}:secrets`;
 
@@ -65,11 +66,13 @@ function makeGrant(input: GrantInput): CapabilityGrant {
     space,
     path,
     owner: ACCOUNT,
-    ownedBySelf: input.ownedBySelf ?? input.family === "own-app-data",
+    ownedBySelf: input.ownedBySelf ?? input.family !== "cross-app-data",
     displayLabel: path || input.service,
     metadataLabel: null,
     resourceService: null,
-    ...(input.appScopedSecret ? { appScopedSecret: input.appScopedSecret } : {}),
+    ...(input.appScopedSecret
+      ? { appScopedSecret: input.appScopedSecret }
+      : {}),
     actions,
   };
 }
@@ -166,9 +169,7 @@ describe("buildStatement — fail-closed on mixed known+unknown actions", () => 
     // because the path shape is secrets-variables — the ability is
     // still unknown.
     expect(stmt.primaryText).not.toBe("Manage secret variables");
-    expect(stmt.primaryText).not.toBe(
-      "View secret variable names and details",
-    );
+    expect(stmt.primaryText).not.toBe("View secret variable names and details");
   });
 
   it("KV apps path with [get, archive] falls back to literal", () => {
@@ -202,9 +203,7 @@ describe("buildStatement — fail-closed on mixed known+unknown actions", () => 
     // Must NOT get the friendly "Read your TinyCloud account" copy just
     // because `read` is a known verb.
     expect(stmt.primaryText).not.toBe("Read your TinyCloud account");
-    expect(stmt.primaryText).not.toBe(
-      "Read and update your TinyCloud account",
-    );
+    expect(stmt.primaryText).not.toBe("Read and update your TinyCloud account");
   });
 
   it("SQL grant on secrets space with mixed unknown falls back to literal", () => {
@@ -221,21 +220,19 @@ describe("buildStatement — fail-closed on mixed known+unknown actions", () => 
       "Perform tinycloud.sql/read, tinycloud.sql/dump on tinycloud.sql",
     );
     expect(stmt.primaryText).not.toBe("Read TinyCloud Secrets data");
-    expect(stmt.primaryText).not.toBe(
-      "Read and update TinyCloud Secrets data",
-    );
+    expect(stmt.primaryText).not.toBe("Read and update TinyCloud Secrets data");
   });
 });
 
 describe("buildStatement — happy-path friendly copy preserved", () => {
-  it("own-app-data with [get] still yields \"Read this app's data\"", () => {
+  it("own-app-data with [get] yields neutral application-data copy", () => {
     const grant = makeGrant({
       family: "own-app-data",
       service: "tinycloud.kv",
       path: "cycle/",
       abilities: ["tinycloud.kv/get"],
     });
-    expect(buildStatement(grant).primaryText).toBe("Read this app's data");
+    expect(buildStatement(grant).primaryText).toBe("Read application data");
   });
 
   it("own-app-data with [get, put] yields the combined copy", () => {
@@ -246,11 +243,11 @@ describe("buildStatement — happy-path friendly copy preserved", () => {
       abilities: ["tinycloud.kv/get", "tinycloud.kv/put"],
     });
     expect(buildStatement(grant).primaryText).toBe(
-      "Read and update this app's data",
+      "Read and update application data",
     );
   });
 
-  it("cross-app-data with [get, put] yields the combined outside-app copy", () => {
+  it("cross-app-data with [get, put] identifies another user's data", () => {
     const grant = makeGrant({
       family: "cross-app-data",
       service: "tinycloud.kv",
@@ -259,11 +256,11 @@ describe("buildStatement — happy-path friendly copy preserved", () => {
       ownedBySelf: false,
     });
     expect(buildStatement(grant).primaryText).toBe(
-      "Read and update data outside this app",
+      "Read and update another user's TinyCloud data",
     );
   });
 
-  it("encryption with [decrypt] alone yields \"Decrypt protected data\"", () => {
+  it('encryption with [decrypt] alone yields "Decrypt protected data"', () => {
     const grant = makeGrant({
       family: "encryption-decrypt",
       service: "tinycloud.encryption",
@@ -271,9 +268,7 @@ describe("buildStatement — happy-path friendly copy preserved", () => {
       abilities: ["tinycloud.encryption/decrypt"],
       severity: "sensitive",
     });
-    expect(buildStatement(grant).primaryText).toBe(
-      "Decrypt protected data",
-    );
+    expect(buildStatement(grant).primaryText).toBe("Decrypt protected data");
   });
 
   it("encryption with [network.create, decrypt] yields the combined copy", () => {
@@ -288,7 +283,7 @@ describe("buildStatement — happy-path friendly copy preserved", () => {
       severity: "sensitive",
     });
     expect(buildStatement(grant).primaryText).toBe(
-      "Create a decryption network and decrypt protected data",
+      "Set up encrypted data access and decrypt protected data",
     );
   });
 
@@ -342,30 +337,31 @@ describe("buildStatement — happy-path friendly copy preserved", () => {
     expect(stmt.primaryText).not.toBe("Create a decryption network");
   });
 
-  it("KV apps path with [get] yields \"View your connected apps\"", () => {
+  it("canonical account app registry folds into account management", () => {
     const grant = makeGrant({
       family: "bootstrap-kv",
       service: "tinycloud.kv",
-      space: APPS_SPACE,
-      path: "applications",
+      space: ACCOUNT_SPACE,
+      path: "applications/",
       abilities: ["tinycloud.kv/get"],
       severity: "standard",
     });
     expect(buildStatement(grant).primaryText).toBe(
-      "View your connected apps",
+      "Manage your TinyCloud account",
     );
   });
 
-  it("SQL account with [read] yields \"Read your TinyCloud account\"", () => {
+  it("canonical account SQL read folds into account management", () => {
     const grant = makeGrant({
       family: "bootstrap-sql",
       service: "tinycloud.sql",
-      path: "",
+      space: ACCOUNT_SPACE,
+      path: "account",
       abilities: ["tinycloud.sql/read"],
       severity: "standard",
     });
     expect(buildStatement(grant).primaryText).toBe(
-      "Read your TinyCloud account",
+      "Manage your TinyCloud account",
     );
   });
 
@@ -373,12 +369,13 @@ describe("buildStatement — happy-path friendly copy preserved", () => {
     const grant = makeGrant({
       family: "bootstrap-sql",
       service: "tinycloud.sql",
-      path: "",
+      space: ACCOUNT_SPACE,
+      path: "account",
       abilities: ["tinycloud.sql/read", "tinycloud.sql/write"],
       severity: "attention",
     });
     expect(buildStatement(grant).primaryText).toBe(
-      "Read and update your TinyCloud account",
+      "Manage your TinyCloud account",
     );
   });
 
@@ -386,12 +383,13 @@ describe("buildStatement — happy-path friendly copy preserved", () => {
     const grant = makeGrant({
       family: "bootstrap-sql",
       service: "tinycloud.sql",
-      path: "",
+      space: ACCOUNT_SPACE,
+      path: "account",
       abilities: ["tinycloud.sql/read", "tinycloud.sql/schema"],
       severity: "attention",
     });
     expect(buildStatement(grant).primaryText).toBe(
-      "Read and update your TinyCloud account",
+      "Manage your TinyCloud account",
     );
   });
 });

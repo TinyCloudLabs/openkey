@@ -401,31 +401,6 @@
     const displayManifestDigest =
       serverVerifiedManifest?.manifestDigest ?? envelopeManifestDigest;
     const displayName = requesterDisplayName(manifestNameFromServer, origin);
-    // Sol MAJOR-2: the widget MUST NOT infer a "verified requester"
-    // identity from data that is not the requester's own declaration.
-    // Prior code marked origin-bound requests as verified AND used
-    // `key.address` — the USER's signing identity — as the requester
-    // address for the classifier. That's wrong on two axes:
-    //   1. `key.address` is not the requester. It is the SIGNER. Using
-    //      it as the classifier's `requesterAddress` claims the
-    //      requesting app is the same principal as the signer, which
-    //      produces false "own-app" classifications for every grant
-    //      against the signer's spaces.
-    //   2. Origin-bind proves the manifest was served from a specific
-    //      origin. It does NOT prove that any declared identity
-    //      (address, DID, or otherwise) belongs to that origin.
-    //      Upgrading `requesterVerified` on origin-bind alone would let
-    //      the widget confidently render a caller's untrusted
-    //      `displayName` / identity as if OpenKey vouched for it.
-    //
-    // Correct semantics: leave `requesterVerified=false` and
-    // `requesterAddress=null` unless an identity has been explicitly
-    // declared by the manifest AND independently verified. The
-    // classifier then falls back to its safe path (treats grants on the
-    // signer's spaces as cross-app), which is the honest report. This
-    // matches the popup implementation in `widget/sign/+page.svelte`.
-    const requesterVerifiedNow = false;
-    const requesterAddressForClassifier: string | null = null;
     // Sol Blocker A (this iteration): derive the signer chain ID from the
     // actual SIWE bytes that will be signed, not from a hard-coded default.
     // The app-scoped-secret proof (expectedSignerSecretsSpace /
@@ -470,8 +445,6 @@
           domainWarning: domainMismatchForModel,
           originWarning: originIsWildcard,
         },
-        requesterAddress: requesterAddressForClassifier,
-        requesterVerified: requesterVerifiedNow,
       });
       // Sol MAJOR-2: app-scoped-secret trust rule. When the SERVER
       // origin-bound the manifest (`origin-bound` or `verified` trust

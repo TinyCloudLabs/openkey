@@ -28,7 +28,7 @@ function grant(
       "tinycloud:pkh:eip155:1:0x1111111111111111111111111111111111111111:applications",
     path: "cycle/",
     owner: "0x1111111111111111111111111111111111111111",
-    ownedBySelf: family === "own-app-data",
+    ownedBySelf: family !== "cross-app-data",
     displayLabel: "App data — cycle/",
     metadataLabel: null,
     // Test grants default to null: no wire-shape mismatch signal on
@@ -43,15 +43,15 @@ describe("buildStatement — generic app data", () => {
   it("describes read-only app data without inferring path semantics", () => {
     expect(
       buildStatement(grant("own-app-data", ["tinycloud.kv/get"])).primaryText,
-    ).toBe("Read this app's data");
+    ).toBe("Read application data");
   });
 
-  it("describes read/write data outside the app without a product name", () => {
+  it("describes another user's read/write data without a product name", () => {
     expect(
       buildStatement(
         grant("cross-app-data", ["tinycloud.kv/get", "tinycloud.kv/put"]),
       ).primaryText,
-    ).toBe("Read and update data outside this app");
+    ).toBe("Read and update another user's application data");
   });
 
   it("uses the exactly proven app-scoped secret name", () => {
@@ -62,7 +62,8 @@ describe("buildStatement — generic app data", () => {
         scope: "listen",
       }),
       service: "tinycloud.kv",
-      space: "tinycloud:pkh:eip155:1:0x1111111111111111111111111111111111111111:secrets",
+      space:
+        "tinycloud:pkh:eip155:1:0x1111111111111111111111111111111111111111:secrets",
       path: "vault/secrets/scoped/listen/GOOGLE_MEET_TOKENS",
     };
     expect(buildStatement(scopedGrant).primaryText).toBe(

@@ -192,6 +192,8 @@ export const REAL_RECAP_WITH_PATH = siwe([
   }),
 ]);
 
+export { EXPLORER_PERMISSION_POPUP_REQUEST } from "./explorer-permission-popup.js";
+
 // Two recap resources given in one order for determinism testing.
 export const REAL_RECAP_MIXED_A = siwe([
   makeRecapResource({
