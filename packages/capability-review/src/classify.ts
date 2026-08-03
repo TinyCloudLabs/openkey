@@ -30,6 +30,7 @@ import type {
   PermissionSeverity,
 } from "./model.js";
 import { isSecretsSpace } from "./app-scope.js";
+import { isMetadataOnlyAccess } from "./action-semantics.js";
 
 interface RecapEntryLike {
   service: string;
@@ -254,9 +255,14 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     (BOOTSTRAP_KV_SERVICES.has(service) || BOOTSTRAP_SQL_SERVICES.has(service))
   ) {
     const isMutation = entry.actions.some((a) => MUTATION_VERBS.has(verbOf(a)));
+    const metadataOnly = isMetadataOnlyAccess(entry.actions);
     return {
       family: isMutation ? "secret-mutation" : "secret-read",
-      displayLabel: `${isMutation ? "Secret data (mutate)" : "Secret data (read)"} — ${describeName(path)}`,
+      displayLabel: `${isMutation
+        ? "Secret values (update)"
+        : metadataOnly
+          ? "Secret names and metadata"
+          : "Secret values (read)"} — ${describeName(path)}`,
     };
   }
 
@@ -420,6 +426,7 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
   }
   if (SECRETS_SERVICES.has(service)) {
     const isMutation = entry.actions.some((a) => MUTATION_VERBS.has(verbOf(a)));
+    const metadataOnly = isMetadataOnlyAccess(entry.actions);
     // Fail-closed: an unknown verb on the secrets service could easily be
     // a mutation we do not yet recognize. Do not classify it as the
     // attention-level `secret-read` family and hide it in the standard
@@ -443,7 +450,9 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     }
     return {
       family: "secret-read",
-      displayLabel: `Named secret (read) — ${describeName(path)}`,
+      displayLabel: `${
+        metadataOnly ? "Secret names and metadata" : "Named secret (read)"
+      } — ${describeName(path)}`,
     };
   }
   if (ENCRYPTION_SERVICES.has(service)) {
@@ -493,8 +502,7 @@ export function classifySeverityFromActions(
     case "cross-app-data":
       return "attention";
     case "secret-read":
-    case "secret-namespace-list":
-      return "sensitive";
+      return isMetadataOnlyAccess(actions) ? "standard" : "sensitive";
     case "secret-mutation":
       return "sensitive";
     case "encryption-key":

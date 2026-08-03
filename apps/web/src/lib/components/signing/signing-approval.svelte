@@ -201,6 +201,53 @@
     onSelectionChange(next);
   }
 
+  const SERVICE_LABELS: Record<string, string> = {
+    "tinycloud.kv": "Key Value",
+    kv: "Key Value",
+    "tinycloud.sql": "SQL",
+    sql: "SQL",
+    "tinycloud.capabilities": "Permissions",
+    capabilities: "Permissions",
+    "tinycloud.delegation": "Delegation",
+    delegation: "Delegation",
+    "tinycloud.encryption": "Encryption",
+    encryption: "Encryption",
+    "tinycloud.secrets": "Secrets",
+    secrets: "Secrets",
+  };
+
+  function compactService(service: string): string {
+    return SERVICE_LABELS[service] ?? service;
+  }
+
+  function exactGrantTarget(grant: CapabilityGrant): string {
+    const resourceService = grant.resourceService
+      ? `/${grant.resourceService}`
+      : "";
+    const path = grant.path ? `/${grant.path}` : "";
+    return `${grant.space}${resourceService}${path}`;
+  }
+
+  function compactSpace(space: string): string {
+    const pkhSpace = space.match(
+      /^tinycloud:pkh:eip155:\d+:0x[a-fA-F0-9]{40}:(.+)$/,
+    );
+    if (pkhSpace?.[1]) return pkhSpace[1];
+
+    const encryptionSpace = space.match(
+      /^urn:tinycloud:encryption:did:pkh:eip155:\d+:0x[a-fA-F0-9]{40}:(.+)$/,
+    );
+    return encryptionSpace?.[1] ?? space;
+  }
+
+  function compactGrantTarget(grant: CapabilityGrant): string {
+    const space = compactSpace(grant.space);
+    if (!grant.path) return space;
+    return grant.path.startsWith("/")
+      ? `${space}${grant.path}`
+      : `${space}/${grant.path}`;
+  }
+
   function handleKeydown(event: KeyboardEvent, action: CapabilityAction) {
     if (!action.editable) return;
     if (event.key === " " || event.key === "Enter") {
@@ -570,9 +617,17 @@
                       {/if}
                     </div>
                     <code class="grant-path mono">
-                      <span class="grant-service">{grant.service}</span>
-                      <span class="grant-target">
-                        {grant.space}{grant.path ? "/" + grant.path : ""}
+                      <span
+                        class="grant-service"
+                        title={grant.service}
+                        aria-label={`Exact service: ${grant.service}`}
+                      >{compactService(grant.service)}</span>
+                      <span
+                        class="grant-target"
+                        title={exactGrantTarget(grant)}
+                        aria-label={`Exact resource: ${exactGrantTarget(grant)}`}
+                      >
+                        {compactGrantTarget(grant)}
                       </span>
                     </code>
                     {#if grant.ownedBySelf === false}
@@ -1069,6 +1124,10 @@
     color: #64748b;
     font-size: 11px;
     line-height: 1.2;
+  }
+  .grant-service[title],
+  .grant-target[title] {
+    cursor: help;
   }
   .grant-target {
     color: #334155;

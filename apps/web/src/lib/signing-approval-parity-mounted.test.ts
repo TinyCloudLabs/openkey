@@ -1063,9 +1063,15 @@ describe('signing-approval mounted parity across production surface adapters (So
 
       const grantPath = handle.container.querySelector('.grant-path');
       expect(grantPath).toBeTruthy();
-      expect(grantPath?.querySelector('.grant-service')?.textContent).toBe('tinycloud.kv');
-      expect(grantPath?.querySelector('.grant-target')?.textContent).toContain(
-        'tinycloud:pkh:eip155:1:0x1111111111111111111111111111111111111111:default/xyz.tinycloud.listen/conversations',
+      const service = grantPath?.querySelector('.grant-service');
+      const target = grantPath?.querySelector('.grant-target');
+      expect(service?.textContent).toBe('Key Value');
+      expect(service?.getAttribute('title')).toBe('tinycloud.kv');
+      expect(target?.textContent).toContain(
+        'default/xyz.tinycloud.listen/conversations',
+      );
+      expect(target?.getAttribute('title')).toBe(
+        'tinycloud:pkh:eip155:1:0x1111111111111111111111111111111111111111:default/sql/xyz.tinycloud.listen/conversations',
       );
 
       projections.push(collectSemantic(handle.container));

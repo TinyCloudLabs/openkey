@@ -202,6 +202,51 @@ describe("buildStatement — KV catalog is registry-scoped", () => {
   });
 });
 
+describe("buildStatement — TinyCloud Secrets value boundary", () => {
+  it("describes list/metadata without claiming secret-value access", () => {
+    const grant = makeGrant({
+      family: "secret-read",
+      service: "tinycloud.kv",
+      space: SECRETS_SPACE,
+      abilities: ["tinycloud.kv/list", "tinycloud.kv/metadata"],
+      severity: "standard",
+    });
+    expect(buildStatement(grant).primaryText).toBe(
+      "View secret names and details",
+    );
+  });
+
+  it("describes get as reading secret values", () => {
+    const grant = makeGrant({
+      family: "secret-read",
+      service: "tinycloud.kv",
+      space: SECRETS_SPACE,
+      path: "vault/secrets",
+      abilities: [
+        "tinycloud.kv/get",
+        "tinycloud.kv/list",
+        "tinycloud.kv/metadata",
+      ],
+      severity: "sensitive",
+    });
+    expect(buildStatement(grant).primaryText).toBe("Read secret values");
+  });
+
+  it("describes mixed reads and mutations without hiding either", () => {
+    const grant = makeGrant({
+      family: "secret-mutation",
+      service: "tinycloud.kv",
+      space: SECRETS_SPACE,
+      path: "variables",
+      abilities: ["tinycloud.kv/get", "tinycloud.kv/put"],
+      severity: "sensitive",
+    });
+    expect(buildStatement(grant).primaryText).toBe(
+      "Read and update secret values",
+    );
+  });
+});
+
 // ─── KV: registered abilities still earn friendly copy ──────────────────────
 describe("buildStatement — KV catalog: registered abilities preserved", () => {
   it("KV [get, put, del] all still yield combined friendly copy", () => {

@@ -36,6 +36,7 @@ import type {
   CapabilityReviewModel,
   SignerInfo,
 } from "./model.js";
+import { isMetadataOnlyAccess } from "./action-semantics.js";
 import { isVerified } from "./metadata.js";
 
 /**
@@ -490,6 +491,23 @@ export function annotateAppScopedGrants(
   const secrets = declaredAppScope.secrets ?? [];
   const signer = model.signer;
   const permissions = model.permissions.map((grant): CapabilityGrant => {
+    const metadataOnly = isMetadataOnlyAccess(
+      grant.actions.map((action) => action.ability),
+    );
+
+    // Listing names or viewing metadata does not read a secret value and is
+    // not eligible for the app-scoped value-access proof. Preserve its
+    // structural severity unless the wire service segments disagree, which
+    // must continue to fail closed below.
+    if (
+      metadataOnly &&
+      grant.serviceMismatch !== true &&
+      (isSecretsSpace(grant.space) ||
+        NAMED_SECRETS_SERVICES.has(grant.service))
+    ) {
+      return grant;
+    }
+
     // App-scope near-miss enforcement (Blocker 4, Sol follow-up).
     //
     // A grant is a "declared-shape candidate" (subject to near-miss

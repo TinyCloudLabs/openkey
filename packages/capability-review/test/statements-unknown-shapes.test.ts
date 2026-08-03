@@ -199,12 +199,13 @@ describe("classifyRecapEntry — unknown secrets verbs", () => {
       path: "",
       actions: ["tinycloud.secrets/list", "tinycloud.secrets/metadata"],
     });
-    expect(classification.family).toBe("secret-namespace-list");
+    expect(classification.family).toBe("secret-read");
     expect(
       classifySeverityFromActions(classification.family, [
         "tinycloud.secrets/list",
         "tinycloud.secrets/metadata",
       ]),
-    ).toBe("sensitive");
+    ).toBe("standard");
+    expect(classification.displayLabel).toContain("Secret names and metadata");
   });
 });

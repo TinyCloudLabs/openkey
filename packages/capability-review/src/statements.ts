@@ -16,6 +16,7 @@
 // sentence themselves.
 
 import type { CapabilityGrant } from "./model.js";
+import { isMetadataOnlyAccess } from "./action-semantics.js";
 import {
   CANONICAL_APP_SCOPE_SECRET_ABILITIES,
   KV_SECRET_SERVICES_PROOF,
@@ -296,12 +297,11 @@ function grantVerbSet(grant: CapabilityGrant): Set<string> {
 export function grantReachesSecretDataOrDecryption(
   grant: CapabilityGrant,
 ): boolean {
-  if (
-    grant.family === "secret-read" ||
-    grant.family === "secret-namespace-list" ||
-    grant.family === "secret-mutation"
-  ) {
-    return true;
+  if (grant.family === "secret-mutation") return true;
+  if (grant.family === "secret-read") {
+    return !isMetadataOnlyAccess(
+      grant.actions.map((action) => action.ability),
+    );
   }
 
   if (ENCRYPTION_SERVICES.has(grant.service)) {
@@ -309,21 +309,34 @@ export function grantReachesSecretDataOrDecryption(
     return verbs.has("decrypt") || verbs.has("unwrap");
   }
 
-  // Blocker 4 follow-up (Defect 3): ANY grant on a secrets-shaped space
-  // reaches secret data, regardless of which service the ability or
-  // resource segment names.
+  // Unknown or mismatched grants on a secrets-shaped space still fail closed.
+  // Known permission checks and list/metadata-only operations are excluded:
+  // they can inspect authority or names, but cannot read secret values.
   //
-  // Prior code only counted grants whose ability-derived service OR
-  // resource-derived short-service was `kv` / `sql`. That left a gap:
-  // a grant on the signer secrets space with an ability like
-  // `tinycloud.foo/read` (unknown service) was correctly marked
-  // sensitive and `serviceMismatch`, but the count predicate returned
-  // false — the operator saw a sensitive grant that touched their
-  // secret data but the top-level "N exact grants reach secret data
-  // or decryption" callout under-counted it. Any grant on a secrets-
-  // shaped space plausibly reaches secret bytes; count them all so
-  // the callout is a true upper-bound.
-  if (isSecretsSpace(grant.space)) return true;
+  // Preserve the earlier fail-closed behavior for unknown services: an
+  // unrecognized ability on the secrets space plausibly reaches secret bytes.
+  // Only byte-exact, understood permission and metadata shapes earn exclusion.
+  if (isSecretsSpace(grant.space)) {
+    if (grant.serviceMismatch === true) return true;
+    if (
+      CAPABILITY_SERVICES.has(grant.service) &&
+      grant.actions.length > 0 &&
+      grant.actions.every((action) =>
+        RECOGNIZED_CAPABILITY_ACTIONS.has(action.ability),
+      )
+    ) {
+      return false;
+    }
+    if (
+      (KV_SERVICES.has(grant.service) || SECRETS_SERVICES.has(grant.service)) &&
+      isMetadataOnlyAccess(
+        grant.actions.map((action) => action.ability),
+      )
+    ) {
+      return false;
+    }
+    return true;
+  }
   return false;
 }
 
@@ -690,17 +703,48 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
     return fallbackStatement(grant);
   }
 
+  // Secret-space list/metadata operations expose names and metadata, not
+  // secret values. Value reads and mutations retain explicit, sensitive
+  // copy. This mapping is structural and applies consistently to KV and SQL
+  // without relying on app-specific labels.
   if (
-    grant.family === "secret-mutation" &&
-    KV_SERVICES.has(service) &&
     isSecretsSpace(space) &&
-    path === ""
+    (KV_SERVICES.has(service) || SQL_SERVICES.has(service))
   ) {
-    return {
-      primaryText: "Manage all secrets stored in your vault",
-      service,
-      resource,
-    };
+    if (isMetadataOnlyAccess(abilityStrings)) {
+      return {
+        primaryText: "View secret names and details",
+        service,
+        resource,
+      };
+    }
+    const hasValueRead = abilityStrings.some((ability) => {
+      const verb = verbOf(ability);
+      return verb === "get" || verb === "read" || verb === "select";
+    });
+    const hasValueMutation = verbs.hasWrite || verbs.hasSchema;
+    if (hasValueRead && hasValueMutation) {
+      return {
+        primaryText: "Read and update secret values",
+        service,
+        resource,
+      };
+    }
+    if (hasValueMutation) {
+      return {
+        primaryText: "Update secret values",
+        service,
+        resource,
+      };
+    }
+    if (hasValueRead) {
+      return {
+        primaryText: "Read secret values",
+        service,
+        resource,
+      };
+    }
+    return fallbackStatement(grant);
   }
 
   // App-data ownership is already a structural classification. Keep the

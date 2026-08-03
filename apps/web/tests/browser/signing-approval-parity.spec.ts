@@ -266,14 +266,12 @@ test.describe('signing-approval browser parity — production adapters', () => {
       await expect(dialog).toContainText('Read and update data outside this app');
       await expect(dialog).toContainText('Check your TinyCloud account permissions');
       const summary = page.locator('[data-parity-harness] .summary');
-      await expect(summary.locator('.summary-statement')).toHaveCount(10);
-      await expect(summary.locator('.summary-sensitive-pill')).toHaveCount(4);
-      await expect(summary.locator('.summary-sensitive-pill')).toHaveText([
+      await expect(summary.locator('.summary-statement')).toHaveCount(8);
+      await expect(summary).toContainText('View secret names and details');
+      await expect(summary).toContainText('Read secret values');
+      await expect(summary.locator('.summary-sensitive-pill')).toHaveText(
         'Sensitive',
-        'Sensitive',
-        'Sensitive',
-        'Sensitive',
-      ]);
+      );
       await expect(summary).not.toContainText(model.requester.displayName);
       await expect(summary).not.toContainText('exact grant');
       await expect(summary).not.toContainText('service');
@@ -305,9 +303,21 @@ test.describe('signing-approval browser parity — production adapters', () => {
       ).toHaveCount(0);
       await expect(page.getByRole('button', { name: 'Copy text' })).toBeVisible();
       await expect(page.locator('[data-parity-harness] .grant')).toHaveCount(17);
-      await expect(details.locator('.grant-severity[data-severity="sensitive"]')).toHaveCount(4);
+      await expect(details.locator('.grant-severity[data-severity="sensitive"]')).toHaveCount(3);
       await expect(details.locator('.grant-severity[data-severity="attention"]')).toHaveCount(0);
       await expect(details.locator('.grant-severity[data-severity="standard"]')).toHaveCount(0);
+      const vaultGrant = details.locator('.grant').filter({
+        hasText: 'secrets/vault/secrets',
+      });
+      await expect(vaultGrant.locator('.grant-service')).toHaveText('Key Value');
+      await expect(vaultGrant.locator('.grant-service')).toHaveAttribute(
+        'title',
+        'tinycloud.kv',
+      );
+      await expect(vaultGrant.locator('.grant-target')).toHaveAttribute(
+        'title',
+        /:secrets\/kv\/vault\/secrets$/,
+      );
       const rawBytes = details.locator('.raw-bytes');
       const rawViewport = await rawBytes.evaluate((element) => ({
         clientHeight: element.clientHeight,

@@ -46,6 +46,21 @@ function grant(input: {
 }
 
 describe("grantReachesSecretDataOrDecryption", () => {
+  it("does not count list/metadata-only access as reading secret values", () => {
+    expect(
+      grantReachesSecretDataOrDecryption(
+        grant({
+          service: "tinycloud.kv",
+          space: `tinycloud:pkh:eip155:1:${ACCOUNT}:secrets`,
+          path: "",
+          ability: "tinycloud.kv/list",
+          family: "secret-read",
+          severity: "standard",
+        }),
+      ),
+    ).toBe(false);
+  });
+
   it("includes TinyCloud Secrets SQL even when ownership classification is cross-app", () => {
     expect(
       grantReachesSecretDataOrDecryption(
