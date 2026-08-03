@@ -33,6 +33,8 @@ npm-debug.log*
 
 # Test
 coverage/
+apps/web/test-results/
+apps/web/playwright-report/
 
 # Prisma
 packages/db/prisma/*.db

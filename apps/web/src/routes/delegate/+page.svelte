@@ -6,6 +6,12 @@
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import SiweMessage from '$lib/components/ui/siwe-message.svelte';
+  import CliSigningAdapter from '$lib/components/signing/cli-signing-adapter.svelte';
+  import {
+    parseCapabilityReview,
+    defaultSelection,
+    type CapabilityReviewModel,
+  } from '@openkey/capability-review';
 
   interface EIP6963ProviderInfo {
     uuid: string;
@@ -56,6 +62,16 @@
   let editingPermissions = $state(false);
   let updatingPermissions = $state(false);
   let permissionsEdited = $state(false);
+  let authorizationContextToken = $state<string | null>(null);
+  // Sol MAJOR-9: `reviewModel` is the STABLE baseline model built from
+  // the ORIGINAL prepared SIWE. It never gets re-derived from a later
+  // narrowed SIWE — otherwise removed optional actions would silently
+  // disappear from the review UI. `reviewSelection` is the effective
+  // subset the user picked; only that changes when the user narrows.
+  let reviewModel = $state<CapabilityReviewModel | null>(null);
+  let baselineSiweForReview = $state<string | null>(null);
+  let reviewSelection = $state(new Set<string>());
+  let reviewEditing = $state(false);
   const delegateReturnTo = $derived($page.url.pathname + $page.url.search + $page.url.hash);
   const registerHref = $derived(`/auth/register?returnTo=${encodeURIComponent(delegateReturnTo)}`);
   const emailSignInHref = $derived(`/auth/login?redirect=${encodeURIComponent(delegateReturnTo)}`);
@@ -348,6 +364,65 @@
       ? data.selectedActionKeys.filter((key: unknown): key is string => typeof key === 'string')
       : permissions.flatMap((permission) => permission.actions.map((action) => action.key));
     permissionsEdited = Boolean(data.edited);
+    // Versioned protocol: capture the opaque single-use token so /complete
+    // can re-validate every bound invariant server-side.
+    authorizationContextToken =
+      typeof data.authorizationContext?.token === 'string'
+        ? data.authorizationContext.token
+        : null;
+    // Sol MAJOR-9: build the STABLE baseline review model from the FIRST
+    // prepared SIWE only. Re-derivation on every narrowing would drop
+    // optional actions the user removed and make them un-selectable
+    // again — which silently changes the presented authority. Later
+    // /prepare responses are used only for `siweMessage`,
+    // `authorizationContextToken`, and `selectedActionKeys`; the review
+    // model itself is frozen at the first prepare so the user retains
+    // the full add/remove surface.
+    if (baselineSiweForReview === null && siweMessage && selectedKey) {
+      try {
+        const model = parseCapabilityReview({
+          message: siweMessage,
+          signer: {
+            label: selectedKey.label ?? `Key ${selectedKey.keyIndex}`,
+            address: selectedKey.address,
+            chainId: 1,
+            provenance: selectedKey.keyType === 'EXTERNAL' ? 'external' : 'managed',
+          },
+          editable: true,
+          metadataTrust: { status: 'unsigned', reason: 'no manifest supplied' },
+          reason: { text: requestReason, source: requestReason ? 'caller' : 'none' },
+          requester: {
+            displayName: 'TinyCloud CLI',
+            verifiedOrigin: null,
+            appId: null,
+            manifestName: null,
+            manifestNameProvenance: 'none',
+            manifestId: null,
+            manifestIdProvenance: 'none',
+            manifestDigest: null,
+            domainWarning: false,
+            originWarning: false,
+          },
+        });
+        reviewModel = model;
+        reviewSelection = defaultSelection(model);
+        baselineSiweForReview = siweMessage;
+      } catch {
+        reviewModel = null;
+      }
+    } else if (!siweMessage) {
+      reviewModel = null;
+    } else if (reviewModel && siweMessage && siweMessage !== reviewModel.rawMessage) {
+      // The stable baseline (grant selection surface) is kept from the
+      // first prepared SIWE. But the displayed raw bytes MUST reflect the
+      // CURRENT preparedData.siwe — after a narrowing round-trip the
+      // server returned new bytes, and those are the bytes the signer
+      // will produce a signature over. Rendering the stale first-prepare
+      // bytes here means the user reviews text that no longer matches
+      // what will be signed. Assign a fresh model object so Svelte
+      // reactivity picks up the change.
+      reviewModel = { ...reviewModel, rawMessage: siweMessage };
+    }
   }
 
   function resetDelegationState() {
@@ -358,6 +433,11 @@
     editingPermissions = false;
     updatingPermissions = false;
     permissionsEdited = false;
+    // Sol MAJOR-9: clear the stable baseline so the next selectKey()
+    // start-fresh flow rebuilds it from the new prepared SIWE.
+    baselineSiweForReview = null;
+    reviewModel = null;
+    reviewSelection = new Set<string>();
   }
 
   function showLinkWallet() {
@@ -495,6 +575,54 @@
     return permission.actions.filter((action) => isActionSelected(action.key));
   }
 
+  // Translate a capability-review selection (Set of client-side action IDs)
+  // into the server's actionKey strings.
+  //
+  // Sol MAJOR-5 fix: capability-review grant IDs and server permission keys
+  // are BOTH NUL-separated (`service\0space\0path`). The previous code
+  // stripped NULs to spaces before lookup, which caused every grant ID to
+  // miss and the selection to collapse to required-only actions.
+  //
+  // Correlation is done in two passes over the CANONICAL server keys — a
+  // server permission has already been canonicalized (`kv` → `tinycloud.kv`)
+  // and capability-review derives the same canonical service from the
+  // `tinycloud.kv/get` ability. So a direct id-to-id lookup is safe AND
+  // preserves independent selection when two paths share an ability
+  // (e.g. `chat` vs `feed` KV grants).
+  function mapReviewSelectionToActionKeys(selection: Set<string>): string[] {
+    if (!reviewModel) return [];
+
+    // Build map: canonical grant ID → Set<selected ability>.
+    const selectedAbilitiesByGrantId = new Map<string, Set<string>>();
+    for (const grant of reviewModel.permissions) {
+      for (const action of grant.actions) {
+        if (selection.has(action.id)) {
+          let abilities = selectedAbilitiesByGrantId.get(grant.id);
+          if (!abilities) {
+            abilities = new Set();
+            selectedAbilitiesByGrantId.set(grant.id, abilities);
+          }
+          abilities.add(action.ability);
+        }
+      }
+    }
+
+    const out: string[] = [];
+    for (const perm of permissionOptions) {
+      // Direct match: both sides are NUL-separated
+      // `service\0space\0path` after service canonicalization.
+      // Two paths sharing an ability (e.g. `chat` vs `feed`) keep
+      // distinct grant IDs so their action selections stay independent.
+      const selectedAbilities = selectedAbilitiesByGrantId.get(perm.key);
+      for (const action of perm.actions) {
+        if (action.required || selectedAbilities?.has(action.ability)) {
+          out.push(action.key);
+        }
+      }
+    }
+    return out;
+  }
+
   async function toggleAction(action: DelegatePermissionAction) {
     if (action.required) return;
 
@@ -555,12 +683,36 @@
     error = '';
 
     try {
+      // Blocker 1: the widget MUST forward the prepared SIWE bytes and the
+      // opaque /prepare token to the server so the managed-approval path
+      // signs the exact bytes the review UI displayed. Without them the
+      // server would regenerate a fresh preview with new
+      // issuedAt/expirationTime — different bytes than the user just
+      // reviewed. We entered this flow by way of applyPreparedDelegation
+      // (see step === 'consent'), so both fields MUST be present. Fail
+      // closed rather than silently degrading to the legacy regenerate path.
+      if (!preparedData) {
+        throw new Error('No prepared session data. Please go back and try again.');
+      }
+      if (!authorizationContextToken) {
+        throw new Error(
+          'Missing authorization context token from /prepare. Please restart the delegation.',
+        );
+      }
+
       const API_URL = import.meta.env.VITE_API_URL || '';
       const body: Record<string, unknown> = {
         keyId: selectedKey!.id,
         jwk,
         host,
         prefix: 'default',
+        // Blocker 1: bind the caller-echoed prepared block + selected
+        // action set + token so the server signs the exact preview bytes
+        // instead of regenerating a new SIWE.
+        prepared: preparedData,
+        authorizationContextToken,
+        selectedActionIds: selectedActionKeys,
+        protocolVersion: 1,
       };
       if (permissionsEdited) {
         body.actionKeys = selectedActionKeys;
@@ -684,6 +836,20 @@
           jwk,
           edited: permissionsEdited,
           reason: requestReason || undefined,
+          // Forward the CLI-supplied baseline so the server can validate the
+          // signed SIWE against the CLI request instead of DEFAULT_ABILITIES.
+          ...(requestedPermissions.length > 0
+            ? { permissions: requestedPermissions }
+            : {}),
+          // Versioned protocol: echo the /prepare token so the server can
+          // re-verify every bound invariant (user, key, JWK, host, immutable
+          // SIWE fields, allowed action set, required action set).
+          ...(authorizationContextToken
+            ? {
+                authorizationContextToken,
+                selectedActionIds: selectedActionKeys,
+              }
+            : {}),
         }),
       });
 
@@ -1027,129 +1193,69 @@
             </div>
           {/if}
 
-          <!-- SIWE message details (parsed from actual message) -->
-          {#if siweMessage}
+          <!--
+            Shared authorization view. When the /prepare response parses into
+            a CapabilityReviewModel we render SigningApproval so this CLI
+            surface shows the SAME content as the widget popup and iframe.
+            Toggling an action in SigningApproval maps back to the server's
+            actionKeys and re-issues /prepare so subset validation still runs
+            on the API. When parsing fails (legacy or malformed input), we
+            fall back to the raw SIWE view for byte-exact review.
+          -->
+          {#if reviewModel}
+            <div bind:this={actionRow}>
+              <!--
+                CliSigningAdapter is now a substantive adapter that owns
+                the review selection/editing state, the delegate approve
+                path, and the selection-change → prepare re-issue glue.
+                The route only builds the model and hands the adapter a
+                CLI-specific transport. This means the exact adapter used
+                in production is the exact adapter the parity test mounts
+                — including the map-selection-to-server-keys hand-off.
+              -->
+              <CliSigningAdapter
+                model={reviewModel}
+                initialSelection={reviewSelection}
+                transport={{
+                  approving: delegating || updatingPermissions,
+                  error,
+                  approveDelegate,
+                  goBack,
+                  updateSelection: (next) => {
+                    reviewSelection = next;
+                    const nextServerKeys = mapReviewSelectionToActionKeys(next);
+                    if (nextServerKeys.length === 0) {
+                      error = 'At least one permission is required.';
+                      return;
+                    }
+                    return updatePermissions(nextServerKeys);
+                  },
+                }}
+              />
+            </div>
+          {:else if siweMessage}
             <div class="flex flex-col gap-3">
-              {#if permissionOptions.length > 0}
-                <div>
-                  <div class="flex items-center justify-between mb-2">
-                    <div class="text-xs text-surface-400">Permissions requested</div>
-                    <div class="flex items-center gap-2">
-                      <button
-                        class="text-xs text-surface-500 hover:text-surface-900 transition-colors bg-transparent border-none cursor-pointer p-0 disabled:opacity-50"
-                        onclick={() => editingPermissions = !editingPermissions}
-                        disabled={updatingPermissions}
-                      >
-                        {editingPermissions ? 'Done' : 'Edit'}
-                      </button>
-                      {#if editingPermissions || permissionsEdited}
-                        <button
-                          class="text-xs text-surface-500 hover:text-surface-900 transition-colors bg-transparent border-none cursor-pointer p-0 disabled:opacity-50"
-                          onclick={resetPermissions}
-                          disabled={updatingPermissions || !permissionsEdited}
-                        >
-                          Reset
-                        </button>
-                      {/if}
-                    </div>
-                  </div>
-
-                  {#if editingPermissions}
-                    <div class="flex flex-col gap-2">
-                      <div class="bg-amber-50 border border-amber-200 text-amber-700 px-3 py-2 rounded-lg text-xs">
-                        Editing permissions may result in the application not working as expected.
-                      </div>
-
-                      {#each permissionOptions as permission}
-                        <div class="p-2.5 bg-surface-50 border border-surface-200 rounded-lg">
-                          <div class="min-w-0">
-                            <div class="text-sm font-medium text-surface-900">{permission.label}</div>
-                            {#if permission.resourcePath}
-                              <div class="text-xs text-surface-400 font-mono mt-0.5 break-all">{permission.resourcePath}</div>
-                            {/if}
-                            <div class="flex flex-wrap gap-2 mt-2">
-                              {#each permission.actions as action}
-                                <label
-                                  class="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded bg-white border border-surface-200 text-surface-600 cursor-pointer transition-opacity"
-                                  class:opacity-60={!isActionSelected(action.key)}
-                                  class:cursor-not-allowed={action.required || updatingPermissions}
-                                >
-                                  <input
-                                    type="checkbox"
-                                    class="h-3.5 w-3.5 rounded border-surface-300 text-surface-900"
-                                    checked={isActionSelected(action.key)}
-                                    disabled={updatingPermissions || action.required}
-                                    onchange={() => toggleAction(action)}
-                                  />
-                                  <span>{action.action}</span>
-                                  {#if action.required}
-                                    <span class="text-surface-400">required</span>
-                                  {/if}
-                                </label>
-                              {/each}
-                            </div>
-                          </div>
-                        </div>
-                      {/each}
-
-                      {#if updatingPermissions}
-                        <div class="text-xs text-surface-400">Updating permissions...</div>
-                      {/if}
-                    </div>
-                  {:else}
-                    <div class="flex flex-col gap-2">
-                      {#if permissionsEdited}
-                        <div class="bg-amber-50 border border-amber-200 text-amber-700 px-3 py-2 rounded-lg text-xs">
-                          Editing permissions may result in the application not working as expected.
-                        </div>
-                      {/if}
-
-                      {#each permissionOptions as permission}
-                        {#if selectedActions(permission).length > 0}
-                          <div class="flex items-start gap-2.5 p-2.5 bg-surface-50 border border-surface-200 rounded-lg">
-                            <svg class="w-4 h-4 text-surface-400 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                              <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                            </svg>
-                            <div class="min-w-0 flex-1">
-                              <div class="text-sm font-medium text-surface-900">{permission.label}</div>
-                              {#if permission.resourcePath}
-                                <div class="text-xs text-surface-400 font-mono mt-0.5 break-all">{permission.resourcePath}</div>
-                              {/if}
-                              <div class="flex flex-wrap gap-1 mt-1">
-                                {#each selectedActions(permission) as action}
-                                  <span class="text-xs px-1.5 py-0.5 rounded bg-surface-100 text-surface-500">{action.action}</span>
-                                {/each}
-                              </div>
-                            </div>
-                          </div>
-                        {/if}
-                      {/each}
-                    </div>
-                  {/if}
-                </div>
-              {/if}
-
               <SiweMessage message={siweMessage} theme="light" hidePermissions={permissionOptions.length > 0} />
             </div>
-          {/if}
 
-          <!-- Actions -->
-          <div class="flex gap-3 mt-1" bind:this={actionRow}>
-            <Button variant="secondary" onclick={goBack} disabled={delegating} class="flex-1 rounded-xl">
-              Back
-            </Button>
-            <Button onclick={approveDelegate} disabled={delegating || updatingPermissions || selectedActionKeys.length === 0 || (!selectedMatchesExpected && !overrideMismatch)} class="flex-1 rounded-xl">
-              {#if delegating}
-                Signing...
-              {:else if updatingPermissions}
-                Updating...
-              {:else if !selectedMatchesExpected && !overrideMismatch}
-                Wallet mismatch
-              {:else}
-                Approve
-              {/if}
-            </Button>
-          </div>
+            <!-- Actions (legacy raw-SIWE fallback) -->
+            <div class="flex gap-3 mt-1" bind:this={actionRow}>
+              <Button variant="secondary" onclick={goBack} disabled={delegating} class="flex-1 rounded-xl">
+                Back
+              </Button>
+              <Button onclick={approveDelegate} disabled={delegating || updatingPermissions || selectedActionKeys.length === 0 || (!selectedMatchesExpected && !overrideMismatch)} class="flex-1 rounded-xl">
+                {#if delegating}
+                  Signing...
+                {:else if updatingPermissions}
+                  Updating...
+                {:else if !selectedMatchesExpected && !overrideMismatch}
+                  Wallet mismatch
+                {:else}
+                  Approve
+                {/if}
+              </Button>
+            </div>
+          {/if}
         </div>
 
         {#if showScrollToApprove}

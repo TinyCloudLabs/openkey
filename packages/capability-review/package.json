@@ -1,0 +1,28 @@
+{
+  "name": "@openkey/capability-review",
+  "version": "0.1.0",
+  "description": "Shared capability review model used by every OpenKey authorization surface (CLI browser, popup, iframe). Parses SIWE/ReCap requests into a normalized presentation-safe model; enforces subset validation; classifies severity deterministically.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "private": true,
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.0"
+  }
+}

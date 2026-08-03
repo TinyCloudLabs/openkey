@@ -103,6 +103,91 @@ export interface OAuthTokenResponse {
   refresh_token?: string;
 }
 
+// ======= Versioned TinyCloud authorization protocol =======
+//
+// This protocol replaces the legacy `signMessage()` path for TinyCloud
+// SIWE-ReCap requests. It preserves the legacy exact-byte behavior for
+// existing callers: `signMessage()` continues to sign the caller's exact
+// bytes and OpenKey NEVER rewrites them. Callers who want to let the user
+// narrow the requested capabilities call `authorizeTinyCloud()` instead.
+//
+// The response carries `signedMessage` — the exact bytes the signature
+// verifies against. TinyCloud completes the session with these bytes, not
+// the caller's original request. See `NodeUserAuthorization` in the
+// js-sdk for the consumer side of this contract.
+
+export interface TinyCloudAuthorizationRequestV1 {
+  protocolVersion: 1;
+  /** Suggested SIWE (may be edited server-side before signing). */
+  siwe: string;
+  /** The keyId the user picked, if the caller has one in mind. */
+  keyId?: string;
+  /**
+   * The session-key JWK bound to `siwe`. Required so the server can
+   * regenerate a narrowed SIWE tied to the SAME session key when the
+   * user removes capabilities. Passing a mismatched jwk (or omitting it
+   * when the widget attempts to narrow) causes the /authorize-sign call
+   * to fail — never a silent fallback to the caller's exact bytes.
+   */
+  jwk?: Record<string, unknown>;
+  /**
+   * The TinyCloud host the resulting session will activate against.
+   * Bound into the /authorize-sign-prepare context so /authorize-sign
+   * cannot swap hosts server-side. Optional for callers that do not
+   * plan to activate a delegation (they should still forward it when
+   * known; the empty string is treated as "unknown").
+   */
+  host?: string;
+  /** Optional presentation envelope (name, reason, manifest). */
+  presentation?: CapabilityPresentationEnvelopeV1;
+}
+
+export interface TinyCloudAuthorizationResultV1 {
+  protocolVersion: 1;
+  /** EIP-55 signer address. */
+  address: string;
+  /** Signature over `signedMessage`. */
+  signature: string;
+  /** The EXACT bytes the signature verifies against. Never the caller's original. */
+  signedMessage: string;
+  /** The action IDs the user (or default consent) selected. */
+  selectedActionKeys: string[];
+  /** Effective grant set after any narrowing. */
+  permissions: Array<{
+    service: string;
+    space: string;
+    path: string;
+    actions: string[];
+  }>;
+}
+
+export interface CapabilityPresentationEnvelopeV1 {
+  protocolVersion: 1;
+  /** Human-readable requester name shown in the review. */
+  displayName?: string;
+  /**
+   * Reason string the requester supplied for the delegation. Rendered as
+   * caller-supplied (never as verified) unless a signed manifest carries
+   * the same reason string.
+   */
+  reason?: string;
+  /** Manifest ID + digest, when the app publishes a signed manifest. */
+  manifestId?: string;
+  manifestDigest?: string;
+  /**
+   * Full manifest payload(s) the caller wants surfaced in the review. The
+   * receiving route validates and size-bounds this before it is used. This
+   * is display-only: no metadata may expand authority beyond what the
+   * ReCap already grants. Bounded to a reasonable size at the transport
+   * boundary — oversized envelopes are dropped.
+   */
+  manifests?: Array<{
+    name?: string;
+    appId?: string;
+    payload?: Record<string, unknown>;
+  }>;
+}
+
 export type ManagedAccountState = 'PROVISIONED' | 'MANAGED' | 'DISABLED' | 'EJECTING' | 'USER_OWNED' | 'EXPIRED' | 'FAILED';
 
 export interface ManagedAccountSummary {
@@ -161,16 +246,64 @@ export type OpenKeyLifecycleEvent =
   | 'tenant_access.revoked'
   | 'managed_account.quota_changed';
 
+// Sol MAJOR-3: transport messages must carry `requestId` and
+// `protocolVersion` for the SDK to correlate concurrent flows. Legacy
+// (unversioned) messages are allowed for backward compatibility with
+// the plain signMessage path, but versioned flows (authorizeTinyCloud)
+// always carry both fields and the SDK matches them on response.
 type MessageType =
   | { type: 'openkey:auth:request'; appName: string }
-  | { type: 'openkey:auth:response'; success: true; address: string; keyId: string; keyType?: 'MANAGED' | 'EXTERNAL'; sessionToken?: string }
-  | { type: 'openkey:auth:response'; success: false; error: OpenKeyError }
-  | { type: 'openkey:sign:request'; message: string; keyId?: string; sessionToken?: string }
-  | { type: 'openkey:sign:response'; success: true; signature: string; address: string }
-  | { type: 'openkey:sign:response'; success: false; error: OpenKeyError }
-  | { type: 'openkey:signTypedData:request'; data: SignTypedDataRequest; sessionToken?: string }
-  | { type: 'openkey:signTypedData:response'; success: true; signature: string; address: string }
-  | { type: 'openkey:signTypedData:response'; success: false; error: OpenKeyError }
+  | { type: 'openkey:auth:response'; success: true; address: string; keyId: string; keyType?: 'MANAGED' | 'EXTERNAL'; sessionToken?: string; requestId?: string; protocolVersion?: number }
+  | { type: 'openkey:auth:response'; success: false; error: OpenKeyError; requestId?: string; protocolVersion?: number }
+  | { type: 'openkey:sign:request'; message: string; keyId?: string; sessionToken?: string; requestId?: string; protocolVersion?: number }
+  | { type: 'openkey:sign:response'; success: true; signature: string; address: string; requestId?: string; protocolVersion?: number }
+  | {
+      type: 'openkey:sign:response';
+      success: true;
+      signature: string;
+      address: string;
+      /** Versioned: exact bytes the signature verifies against. */
+      signedMessage?: string;
+      /** Versioned: action IDs selected by the user. */
+      selectedActionKeys?: string[];
+      /** Versioned: effective grants after narrowing. */
+      permissions?: Array<{
+        service: string;
+        space: string;
+        path: string;
+        actions: string[];
+      }>;
+      requestId?: string;
+      protocolVersion?: number;
+    }
+  | { type: 'openkey:sign:response'; success: false; error: OpenKeyError; requestId?: string; protocolVersion?: number }
+  // Sol MAJOR-3 (continuation): external-key review flow. The widget
+  // renders the shared SigningApproval UI, calls /authorize-sign-prepare
+  // and /authorize-sign-preview on the user's behalf, and — instead of
+  // signing server-side with a managed key — hands the SDK back the
+  // preview data so the SDK can invoke the user's wallet. The SDK then
+  // completes /authorize-sign with the resulting `externalSignature`.
+  | {
+      type: 'openkey:externalSign:approve';
+      success: true;
+      requestId: string;
+      protocolVersion: number;
+      authorizationContextToken: string;
+      previewApprovalToken: string;
+      signedMessage: string;
+      selectedActionIds: string[];
+      address: string;
+    }
+  | {
+      type: 'openkey:externalSign:approve';
+      success: false;
+      requestId: string;
+      protocolVersion: number;
+      error: OpenKeyError;
+    }
+  | { type: 'openkey:signTypedData:request'; data: SignTypedDataRequest; sessionToken?: string; requestId?: string; protocolVersion?: number }
+  | { type: 'openkey:signTypedData:response'; success: true; signature: string; address: string; requestId?: string; protocolVersion?: number }
+  | { type: 'openkey:signTypedData:response'; success: false; error: OpenKeyError; requestId?: string; protocolVersion?: number }
   | { type: 'openkey:link-wallet:request' }
   | { type: 'openkey:link-wallet:response'; success: true; address: string; keyId: string }
   | { type: 'openkey:link-wallet:response'; success: false; error: OpenKeyError }
@@ -178,8 +311,8 @@ type MessageType =
   | { type: 'openkey:link-wallet:result'; success: true; address: string; keyId: string }
   | { type: 'openkey:link-wallet:result'; success: false; error: OpenKeyError }
   | { type: 'openkey:auth:use-external-wallet' }
-  | { type: 'openkey:resize'; height: number }
-  | { type: 'openkey:ready' }
+  | { type: 'openkey:resize'; height: number; protocolVersion?: number }
+  | { type: 'openkey:ready'; protocolVersion?: number }
   | { type: 'openkey:close' };
 
 const DEFAULT_HOST = 'https://openkey.so';
@@ -189,6 +322,201 @@ const DEFAULT_TIMEOUT = 5 * 60 * 1000; // 5 minutes
 const IFRAME_READY_TIMEOUT = 3000; // 3 seconds
 const OAUTH_STORAGE_KEY = 'openkey_oauth';
 
+/**
+ * Sol final continuation contract requirement 5: pure validation of an
+ * incoming iframe resize message envelope. Exported so unit tests can
+ * exercise every rejection branch — wrong requestId, wrong version, no
+ * active request, malformed height — without booting the browser
+ * runtime that `IframeModal` requires.
+ *
+ * Returns the sanitized height when acceptable, or `null` when the
+ * message must be dropped.
+ */
+export function validateIframeResize(
+  incoming: unknown,
+  expected: {
+    requestId: string | null;
+    protocolVersion: number | null;
+    viewportHeight: number;
+  },
+): number | null {
+  if (!incoming || typeof incoming !== 'object') return null;
+  const data = incoming as Record<string, unknown>;
+  if (data.type !== 'openkey:resize') return null;
+  if (expected.requestId === null || expected.protocolVersion === null) return null;
+  if (typeof data.protocolVersion !== 'number' || data.protocolVersion !== expected.protocolVersion) {
+    return null;
+  }
+  if (typeof data.requestId !== 'string' || data.requestId !== expected.requestId) {
+    return null;
+  }
+  if (typeof data.height !== 'number' || !Number.isFinite(data.height) || data.height <= 0) {
+    return null;
+  }
+  return Math.min(data.height, Math.floor(expected.viewportHeight * 0.85));
+}
+
+/**
+ * Sol MAJOR-4 (final): pure routing helper — decides whether an
+ * `authorizeTinyCloud` call should route through the external-wallet
+ * preview→sign→finalize flow or the managed-key widget-signs-server-side
+ * flow. Exported so unit tests can exercise every branch
+ * (explicit-external + external-session, explicit-external + external-
+ * session with different keyId, no-explicit + external-session,
+ * explicit-managed + managed-session, no-session) without booting the
+ * browser runtime.
+ *
+ * The decision is authoritative from the ACTIVE session's keyType when
+ * no explicit `requestKeyId` was supplied.
+ *
+ * Kept as a thin wrapper for backwards compatibility. New callers should
+ * prefer `resolveAuthorizeTinyCloudRouting` which also considers the
+ * request's explicit `keyId`.
+ */
+export function shouldRouteAuthorizeTinyCloudExternal(state: {
+  lastAuth: { keyType?: 'MANAGED' | 'EXTERNAL' | null } | null;
+}): boolean {
+  return state.lastAuth?.keyType === 'EXTERNAL';
+}
+
+/**
+ * Sol MAJOR-4 (final continuation): resolve the target key's identity and
+ * route by that key's type — NOT by `lastAuth.keyType` alone.
+ *
+ * Sol's rejection: when the caller supplies an explicit `requestKeyId`
+ * that identifies a DIFFERENT key than `lastAuth.keyId` (address vs
+ * internal id, or a genuinely different key), the SDK must
+ *   - resolve THAT key's type,
+ *   - route by that resolved type (external ⇒ wallet path, managed ⇒
+ *     server-signing path), and
+ *   - reject an inconsistent explicit pin whose resolved type contradicts
+ *     the caller's other implicit assumptions (e.g. `lastAuth` is
+ *     external but the caller pinned a managed key).
+ *
+ * Inputs:
+ *   - `lastAuth`: the connected-session key metadata (may be null on
+ *     boot; the widget renders a connect flow first in that case).
+ *   - `requestKeyId`: the caller's explicit pin (may be absent).
+ *   - `knownKeys`: any keys we have metadata for; the SDK's higher-level
+ *     `authorizeTinyCloud` populates this from the server before calling
+ *     the resolver so the pure helper is fully synchronous and testable.
+ *
+ * Return shape:
+ *   { route: 'external' | 'managed', resolvedKeyId: string | null,
+ *     resolvedKeyType: 'EXTERNAL' | 'MANAGED' | null }
+ *
+ * `resolvedKeyId` is null only when neither `requestKeyId` nor
+ * `lastAuth.keyId` exists. When both exist and identify the same key
+ * (matching id OR matching known-key type), the resolver returns that
+ * shared identity. When both exist and identify different keys AND we
+ * know both types AND those types disagree, the resolver throws
+ * `KEY_ID_TYPE_MISMATCH` so no silent route coercion occurs.
+ */
+export interface AuthorizeTinyCloudRouting {
+  route: 'external' | 'managed';
+  resolvedKeyId: string | null;
+  resolvedKeyType: 'EXTERNAL' | 'MANAGED' | null;
+}
+
+export class KeyIdTypeMismatchError extends Error {
+  code: 'KEY_ID_TYPE_MISMATCH';
+  requestKeyId: string;
+  lastAuthKeyId: string | null;
+  requestKeyType: 'EXTERNAL' | 'MANAGED' | null;
+  lastAuthKeyType: 'EXTERNAL' | 'MANAGED' | null;
+  constructor(fields: {
+    message: string;
+    requestKeyId: string;
+    lastAuthKeyId: string | null;
+    requestKeyType: 'EXTERNAL' | 'MANAGED' | null;
+    lastAuthKeyType: 'EXTERNAL' | 'MANAGED' | null;
+  }) {
+    super(fields.message);
+    this.name = 'KeyIdTypeMismatchError';
+    this.code = 'KEY_ID_TYPE_MISMATCH';
+    this.requestKeyId = fields.requestKeyId;
+    this.lastAuthKeyId = fields.lastAuthKeyId;
+    this.requestKeyType = fields.requestKeyType;
+    this.lastAuthKeyType = fields.lastAuthKeyType;
+  }
+}
+
+export function resolveAuthorizeTinyCloudRouting(state: {
+  lastAuth: { keyId?: string | null; keyType?: 'MANAGED' | 'EXTERNAL' | null } | null;
+  requestKeyId?: string | null;
+  knownKeys?: ReadonlyArray<{ id: string; address?: string; keyType: 'MANAGED' | 'EXTERNAL' }>;
+}): AuthorizeTinyCloudRouting {
+  const lastAuthKeyId = state.lastAuth?.keyId ?? null;
+  const lastAuthKeyType = (state.lastAuth?.keyType ?? null) as
+    | 'EXTERNAL'
+    | 'MANAGED'
+    | null;
+
+  const rawRequestKeyId = state.requestKeyId ?? null;
+  const requestKeyId = rawRequestKeyId && rawRequestKeyId.length > 0 ? rawRequestKeyId : null;
+
+  const knownKeys = state.knownKeys ?? [];
+
+  // Helper: resolve a keyId string into its known type. Matches by id
+  // first, then by address (address is a valid public identifier the
+  // caller may pass in place of the internal record id).
+  const lookupType = (id: string): 'EXTERNAL' | 'MANAGED' | null => {
+    for (const k of knownKeys) {
+      if (k.id === id) return k.keyType;
+      if (k.address && k.address.toLowerCase() === id.toLowerCase()) return k.keyType;
+    }
+    // Convention: `external:<address>` is the SDK's synthetic id for a
+    // wallet-only session that never enrolled with OpenKey. Callers
+    // sometimes pass the bare address in requestKeyId; treat both
+    // forms as EXTERNAL.
+    if (id.startsWith('external:')) return 'EXTERNAL';
+    return null;
+  };
+
+  // Case A: no request pin — fall back to lastAuth.keyType.
+  if (!requestKeyId) {
+    const route: 'external' | 'managed' =
+      lastAuthKeyType === 'EXTERNAL' ? 'external' : 'managed';
+    return {
+      route,
+      resolvedKeyId: lastAuthKeyId,
+      resolvedKeyType: lastAuthKeyType,
+    };
+  }
+
+  // Case B: request pin present. Resolve its type.
+  let requestKeyType = lookupType(requestKeyId);
+  // If the pin string-matches lastAuth.keyId AND we did not find it in
+  // knownKeys, adopt lastAuth's type (they identify the same key).
+  if (!requestKeyType && lastAuthKeyId && requestKeyId === lastAuthKeyId) {
+    requestKeyType = lastAuthKeyType;
+  }
+
+  // If both sides tell us a type and they disagree, hard fail —
+  // conflicting pins.
+  if (requestKeyType && lastAuthKeyType && requestKeyType !== lastAuthKeyType) {
+    throw new KeyIdTypeMismatchError({
+      message: `authorizeTinyCloud: request.keyId ${requestKeyId} resolves to ${requestKeyType} but active session key ${lastAuthKeyId} is ${lastAuthKeyType}; refuse to route silently`,
+      requestKeyId,
+      lastAuthKeyId,
+      requestKeyType,
+      lastAuthKeyType,
+    });
+  }
+
+  // If we still do not know the request's type, fall back to
+  // lastAuth.keyType — the widget will surface a connect prompt if the
+  // key is unknown.
+  const effectiveType: 'EXTERNAL' | 'MANAGED' | null =
+    requestKeyType ?? lastAuthKeyType;
+
+  return {
+    route: effectiveType === 'EXTERNAL' ? 'external' : 'managed',
+    resolvedKeyId: requestKeyId,
+    resolvedKeyType: effectiveType,
+  };
+}
+
 class IframeModal {
   private root: HTMLDivElement;
   private shadow: ShadowRoot;
@@ -197,6 +525,13 @@ class IframeModal {
   private onMessage: (data: MessageType) => void;
   private messageHandler: (event: MessageEvent) => void;
   private host: string;
+  // Sol final continuation contract requirement 5: iframe resize traffic
+  // MUST correlate to the active request's requestId AND protocolVersion.
+  // Set by `setExpectedCorrelation` after the outer flow decides which
+  // request this modal is bound to. When both are null, resize messages
+  // are dropped (no active request → no resize authority).
+  private expectedRequestId: string | null = null;
+  private expectedProtocolVersion: number | null = null;
 
   constructor(opts: { url: string; host: string; onClose: () => void; onMessage: (data: MessageType) => void }) {
     this.host = opts.host;
@@ -263,9 +598,29 @@ class IframeModal {
       if (event.source !== this.iframe.contentWindow) return;
       const data = event.data as MessageType;
       if (data.type === 'openkey:resize') {
-        const h = Math.min(data.height, Math.floor(window.innerHeight * 0.85));
+        // Sol final continuation contract requirement 5: resize MUST
+        // carry the EXACT active requestId AND protocolVersion. Every
+        // rejection branch is covered by unit tests over
+        // `validateIframeResize`.
+        const h = validateIframeResize(event.data, {
+          requestId: this.expectedRequestId,
+          protocolVersion: this.expectedProtocolVersion,
+          viewportHeight: window.innerHeight,
+        });
+        if (h === null) return;
         this.iframe.style.height = `${h}px`;
         return;
+      }
+      // Sol MAJOR-9: openkey:close MUST also carry versioning when the
+      // request was versioned. The close message is the only other one
+      // that a stray frame could try to inject to abort a legitimate
+      // approval. For simplicity we drop unversioned close on messages
+      // arriving from an authenticated iframe source and let the SDK's
+      // timeout eventually fire.
+      if (data.type === 'openkey:close') {
+        // No protocol-version requirement enforced here because a
+        // versionless close is a legitimate cancel from any widget
+        // version; source+origin validation earlier is sufficient.
       }
       this.onMessage(data);
     };
@@ -275,6 +630,21 @@ class IframeModal {
 
   postMessage(message: object) {
     this.iframe.contentWindow?.postMessage(message, this.host);
+  }
+
+  /**
+   * Sol final continuation contract requirement 5: bind the active
+   * request correlation so subsequent resize (and future correlated)
+   * messages can be verified against `requestId` + `protocolVersion`.
+   *
+   * The outer flow calls this immediately BEFORE posting the sign
+   * request into the iframe, so a resize that arrives synchronously
+   * after ready is correlated correctly. Passing `null` for either
+   * argument disables correlation (resize is dropped).
+   */
+  setExpectedCorrelation(requestId: string | null, protocolVersion: number | null): void {
+    this.expectedRequestId = requestId;
+    this.expectedProtocolVersion = protocolVersion;
   }
 
   destroy() {
@@ -450,6 +820,44 @@ export class OpenKey {
   }
 
   /**
+   * Sol MAJOR-4 (final continuation): fetch the caller's registered keys
+   * so `resolveAuthorizeTinyCloudRouting` can resolve an explicit pin
+   * whose keyId does not match the active session key. Called only when
+   * the caller passes a `requestKeyId` we do not already recognise; the
+   * common no-pin path skips the network round-trip.
+   *
+   * Failures do NOT block routing — we fall through with `knownKeys=[]`
+   * so the resolver's lastAuth-based fallback still runs. If the caller
+   * pinned a genuinely unknown key that turns out to be external, the
+   * widget rejects the server-signing path and the SDK surfaces that
+   * error from the finalize call rather than silently routing wrong.
+   */
+  private async fetchKnownKeysIfNeeded(
+    requestKeyId: string | undefined,
+  ): Promise<Array<{ id: string; address?: string; keyType: 'MANAGED' | 'EXTERNAL' }>> {
+    if (!requestKeyId) return [];
+    // If lastAuth already identifies this key (id or address), we do not
+    // need a network round-trip — the resolver adopts lastAuth.keyType.
+    const la = this.lastAuth;
+    if (la?.keyId === requestKeyId) return [];
+    if (la?.address && la.address.toLowerCase() === requestKeyId.toLowerCase()) return [];
+    if (requestKeyId.startsWith('external:')) return [];
+    try {
+      const res = await fetch(`${this.oauthHost}/api/keys`, {
+        method: 'GET',
+        credentials: 'include',
+      });
+      if (!res.ok) return [];
+      const body = (await res.json()) as {
+        keys?: Array<{ id: string; address?: string; keyType: 'MANAGED' | 'EXTERNAL' }>;
+      };
+      return Array.isArray(body?.keys) ? body.keys : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /**
    * Connect to OpenKey and get user's wallet address
    * Opens auth flow for user to select/create a key
    */
@@ -502,6 +910,293 @@ export class OpenKey {
       return this.signWithExternalWallet(request);
     }
     return this.signWithOpenKey(request, opts?.mode);
+  }
+
+  /**
+   * Versioned TinyCloud authorization protocol (v1).
+   *
+   * Unlike `signMessage()` (which is contractually byte-exact — the returned
+   * signature always verifies against the caller's exact bytes), this method
+   * permits the user to narrow the requested capabilities before signing.
+   * OpenKey may therefore regenerate the SIWE. The response carries
+   * `signedMessage` — the exact bytes the signature actually verifies against.
+   *
+   * TinyCloud completes the session with `signedMessage`, not the original
+   * `siwe` passed in. Consumers MUST use the returned bytes and MUST NOT
+   * assume the returned grants are a superset of what they requested — the
+   * user is allowed to remove any grant that is not required.
+   *
+   * Legacy `signMessage()` callers are unaffected: their exact-byte contract
+   * remains preserved and OpenKey never rewrites their bytes.
+   */
+  async authorizeTinyCloud(
+    request: TinyCloudAuthorizationRequestV1,
+    opts?: { mode?: OpenKeyMode },
+  ): Promise<TinyCloudAuthorizationResultV1> {
+    if (request.protocolVersion !== 1) {
+      throw new Error(
+        `authorizeTinyCloud only supports protocolVersion 1; got ${request.protocolVersion}`,
+      );
+    }
+    if (typeof request.siwe !== 'string' || !request.siwe) {
+      throw new Error('authorizeTinyCloud requires a non-empty SIWE');
+    }
+    // Sol MAJOR-3 (continuation) + Sol MAJOR-4 (final): route to the
+    // external-wallet preview→sign→finalize flow whenever the ACTIVE
+    // authentication session is against an EXTERNAL key. External keys
+    // are held by the user's browser wallet — OpenKey does not have
+    // the private material, so it cannot execute the managed-key
+    // widget-signs-server-side path.
+    //
+    // Sol's final continuation rejection: the prior check
+    // `this.lastAuth?.keyId === explicitKeyId && ... === 'EXTERNAL'`
+    // let an explicitly-supplied external keyId enter the managed
+    // widget path whenever the caller's `explicitKeyId` did not match
+    // `lastAuth.keyId` string-for-string (for example: caller passes
+    // the address; lastAuth carries the internal key record id — same
+    // key, different identifier). A user cannot be authenticated with
+    // two different active session keys at once — the ONE active
+    // session's `keyType` is therefore authoritative for routing.
+    //
+    // Routing rules (revised):
+    //   1. If `lastAuth?.keyType === 'EXTERNAL'`, route to external
+    //      (the wallet holds the material; the widget cannot sign
+    //      server-side either way).
+    //   2. If `lastAuth?.keyType === 'MANAGED'`, route to managed.
+    //   3. If `lastAuth` is missing (no active session), route to
+    //      managed — the widget renders a connect flow first, and
+    //      once the user connects the widget resolves keyType from
+    //      the fresh session; if that turns out to be EXTERNAL the
+    //      widget itself refuses to server-sign and asks the SDK to
+    //      re-enter via the external path.
+    //
+    // This resolves the key type authoritatively from the ONE active
+    // session rather than relying on a fragile keyId string match.
+    // See `shouldRouteAuthorizeTinyCloudExternal` for the full
+    // routing-decision rationale and its unit tests for every branch.
+    // Sol MAJOR-4 (final continuation): resolve the target key first
+    // and route by ITS type, not by lastAuth.keyType alone. When the
+    // caller pins a request.keyId that differs from the active session
+    // key, we fetch the caller's key list from the server so the pure
+    // `resolveAuthorizeTinyCloudRouting` helper can decide by resolved
+    // type (or throw on conflicting pins).
+    let routing: AuthorizeTinyCloudRouting;
+    try {
+      const knownKeys = await this.fetchKnownKeysIfNeeded(request.keyId);
+      routing = resolveAuthorizeTinyCloudRouting({
+        lastAuth: this.lastAuth,
+        requestKeyId: request.keyId,
+        knownKeys,
+      });
+    } catch (e) {
+      if (e instanceof KeyIdTypeMismatchError) throw e;
+      throw e instanceof Error
+        ? e
+        : new Error('authorizeTinyCloud: failed to resolve target key type');
+    }
+    if (routing.route === 'external') {
+      return this.authorizeTinyCloudExternal(request, opts);
+    }
+    // Sol CRITICAL-1: Send a DISTINCT versioned sign request so the widget
+    // knows to route through the server-authoritative /authorize-sign
+    // endpoint. protocolVersion: 1 with the extended payload triggers the
+    // server-authoritative narrowing path — the widget refuses to fall
+    // back to legacy exact-byte signMessage() for a versioned request
+    // whose origin is real.
+    const requestId = `ok-auth-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    // Sol MAJOR-3: fall back to the connected key when the caller did not
+    // pass an explicit keyId. Without this fallback the widget renders
+    // 'Please connect first.' because it has no key context, and the
+    // NodeUserAuthorization bridge never carries a keyId when the caller
+    // only ran connect() — the widget path is otherwise unable to sign.
+    const resolvedKeyId = routing.resolvedKeyId ?? request.keyId ?? this.lastAuth?.keyId;
+    const raw = await this.openFlow<{
+      signature: string;
+      address: string;
+      signedMessage?: string;
+      selectedActionKeys?: string[];
+      permissions?: TinyCloudAuthorizationResultV1['permissions'];
+    }>(
+      'sign',
+      {
+        type: 'openkey:sign:request',
+        requestId,
+        protocolVersion: 1,
+        message: request.siwe,
+        keyId: resolvedKeyId,
+        // Forward JWK so the widget can pass it to /authorize-sign for
+        // narrowed-SIWE regeneration.
+        jwk: request.jwk,
+        // Forward the TinyCloud host so the widget can bind it into the
+        // /authorize-sign-prepare context (Sol MAJOR-2).
+        host: request.host,
+        // Sol MAJOR-2 (envelope): forward the caller-supplied presentation
+        // envelope so the widget can render honest provenance and the
+        // /authorize-sign-prepare route can bind it into the authorization
+        // context. The envelope is display-only; the widget transport
+        // validates and size-bounds it before use and NEVER treats it as
+        // verified unless the server actually origin-binds a manifest.
+        presentation: request.presentation,
+        sessionToken: this.sessionToken || undefined,
+      },
+      opts?.mode,
+    );
+    // Sol CRITICAL-1: NO silent fallback to `request.siwe`. If the widget
+    // returned an authorization response without `signedMessage`, that is
+    // a protocol violation and MUST fail — silently accepting the caller's
+    // original bytes as `signedMessage` while selectedActionKeys/permissions
+    // reflect a narrower set is exactly the bug this rewrite prevents.
+    if (typeof raw.signedMessage !== 'string' || !raw.signedMessage) {
+      throw new Error(
+        'authorizeTinyCloud: widget returned no signedMessage — signature would not correspond to the displayed authorization',
+      );
+    }
+    if (!Array.isArray(raw.selectedActionKeys)) {
+      throw new Error(
+        'authorizeTinyCloud: widget returned no selectedActionKeys — cannot verify displayed authorization matches the signed bytes',
+      );
+    }
+    if (!Array.isArray(raw.permissions)) {
+      throw new Error(
+        'authorizeTinyCloud: widget returned no permissions — cannot verify displayed authorization matches the signed bytes',
+      );
+    }
+    return {
+      protocolVersion: 1,
+      address: raw.address,
+      signature: raw.signature,
+      signedMessage: raw.signedMessage,
+      selectedActionKeys: raw.selectedActionKeys,
+      permissions: raw.permissions,
+    };
+  }
+
+  /**
+   * Sol MAJOR-3 (continuation): authorizeTinyCloud path for external keys.
+   * The wallet lives outside OpenKey, so the SDK opens the shared widget
+   * for review + preview, then invokes the user's wallet to sign the
+   * preview bytes, then finalizes server-side via /authorize-sign.
+   *
+   * Flow:
+   *   1. Open the widget with `externalSign: true` — the widget renders
+   *      the shared SigningApproval UI, calls /authorize-sign-prepare,
+   *      calls /authorize-sign-preview after the user approves a
+   *      selection, and hands back `{ previewApprovalToken,
+   *      signedMessage, selectedActionIds, address, authorizationContextToken }`.
+   *   2. SDK invokes the user's wallet on the returned signedMessage.
+   *   3. SDK POSTs /authorize-sign with `externalSignature`.
+   *
+   * Legacy exact-byte signMessage callers are unaffected — this path is
+   * only taken via authorizeTinyCloud (protocolVersion:1) when the target
+   * key is EXTERNAL. Sol's rejection required this path to go through
+   * the same review UI as managed keys.
+   */
+  private async authorizeTinyCloudExternal(
+    request: TinyCloudAuthorizationRequestV1,
+    opts?: { mode?: OpenKeyMode },
+  ): Promise<TinyCloudAuthorizationResultV1> {
+    const keyId = request.keyId ?? this.lastAuth?.keyId;
+    if (!keyId) {
+      throw new Error(
+        'authorizeTinyCloud (external) requires a keyId — call connect() first or pass request.keyId',
+      );
+    }
+    const walletAddress = this.lastAuth?.address;
+    if (!walletAddress) {
+      throw new Error(
+        'authorizeTinyCloud (external) requires a connected wallet — call connect() first',
+      );
+    }
+    // Sol MAJOR-3 (continuation): open the shared widget UI so the user
+    // sees and can narrow the review, identical to the managed-key flow.
+    const requestId = `ok-ext-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    const approval = await this.openFlow<{
+      authorizationContextToken: string;
+      previewApprovalToken: string;
+      signedMessage: string;
+      selectedActionIds: string[];
+      address: string;
+    }>(
+      'sign',
+      {
+        type: 'openkey:sign:request',
+        requestId,
+        protocolVersion: 1,
+        message: request.siwe,
+        keyId,
+        jwk: request.jwk,
+        host: request.host,
+        // Sol MAJOR-2 (envelope): forward the caller-supplied presentation
+        // envelope. Same rules as the managed path — display-only, size-
+        // bounded at the transport, never treated as verified without
+        // server-side origin-binding.
+        presentation: request.presentation,
+        sessionToken: this.sessionToken || undefined,
+        // Sol MAJOR-3 (continuation): tell the widget to hand us back
+        // the previewApproval instead of asking OpenKey to sign
+        // server-side with a managed key. The widget will still render
+        // the SAME SigningApproval component; it just diverges at the
+        // "sign" step and emits `openkey:externalSign:approve` back
+        // through the transport.
+        externalSign: true,
+      } as unknown as MessageType,
+      opts?.mode,
+    );
+    if (!approval?.previewApprovalToken || !approval?.signedMessage) {
+      throw new Error(
+        'authorizeTinyCloud (external): widget did not return a previewApprovalToken + signedMessage',
+      );
+    }
+    if (
+      approval.address &&
+      approval.address.toLowerCase() !== walletAddress.toLowerCase()
+    ) {
+      throw new Error(
+        `authorizeTinyCloud (external): widget preview address ${approval.address} does not match connected wallet ${walletAddress}`,
+      );
+    }
+    // Wallet signs the exact bytes the widget previewed.
+    const provider = await this.findWalletProvider(walletAddress);
+    const hexMessage = this.toHex(approval.signedMessage);
+    const walletSignature = (await provider.request({
+      method: 'personal_sign',
+      params: [hexMessage, walletAddress],
+    })) as string;
+    // Finalize — server verifies the wallet signature against the exact
+    // same bytes it emitted for the preview.
+    const finalizeRes = await fetch(
+      `${this.oauthHost}/api/delegate/authorize-sign`,
+      {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          authorizationContextToken: approval.authorizationContextToken,
+          previewApprovalToken: approval.previewApprovalToken,
+          selectedActionIds: approval.selectedActionIds,
+          protocolVersion: 1,
+          externalSignature: walletSignature,
+        }),
+      },
+    );
+    if (!finalizeRes.ok) {
+      const body = await finalizeRes.json().catch(() => ({ error: `HTTP ${finalizeRes.status}` }));
+      throw new Error(body.error || `authorize-sign failed (${finalizeRes.status})`);
+    }
+    const finalize = await finalizeRes.json();
+    if (finalize.signedMessage !== approval.signedMessage) {
+      throw new Error(
+        'authorizeTinyCloud (external): server signed different bytes than the preview showed',
+      );
+    }
+    return {
+      protocolVersion: 1,
+      address: finalize.address,
+      signature: finalize.signature,
+      signedMessage: finalize.signedMessage,
+      selectedActionKeys: finalize.selectedActionKeys ?? [],
+      permissions: finalize.permissions ?? [],
+    };
   }
 
   /**
@@ -911,6 +1606,15 @@ export class OpenKey {
   }
 
   private openIframeModal<T>(url: string, action: string, message: object, origin: string): Promise<T> {
+    // Sol MAJOR-3: capture the outgoing request's correlation IDs so
+    // response handlers can require them to match. Legacy unversioned
+    // requests carry neither and skip correlation.
+    const outgoingRequestId = (message as { requestId?: unknown }).requestId;
+    const outgoingProtocolVersion = (message as { protocolVersion?: unknown }).protocolVersion;
+    const isVersionedRequest =
+      typeof outgoingRequestId === 'string' &&
+      typeof outgoingProtocolVersion === 'number' &&
+      outgoingProtocolVersion >= 1;
     return new Promise((resolve, reject) => {
       let readyReceived = false;
       let settled = false;
@@ -943,8 +1647,28 @@ export class OpenKey {
         onMessage: (data: MessageType) => {
           if (data.type === 'openkey:ready') {
             readyReceived = true;
+            // Sol final continuation contract requirement 5: bind the
+            // correlation BEFORE posting the sign request so any resize
+            // that races the request into the parent is validated
+            // against the correct (requestId, protocolVersion) pair.
+            if (isVersionedRequest && modal) {
+              modal.setExpectedCorrelation(
+                outgoingRequestId as string,
+                outgoingProtocolVersion as number,
+              );
+            }
             modal?.postMessage(message);
             return;
+          }
+          // Sol MAJOR-3: correlate versioned responses. If the request
+          // was versioned, drop any response that doesn't match the
+          // outgoing requestId/protocolVersion. If the request was
+          // unversioned (legacy), accept any response.
+          if (isVersionedRequest) {
+            const respRequestId = (data as { requestId?: unknown }).requestId;
+            const respVersion = (data as { protocolVersion?: unknown }).protocolVersion;
+            if (respRequestId !== outgoingRequestId) return;
+            if (respVersion !== outgoingProtocolVersion) return;
           }
 
           if (data.type === 'openkey:close') {
@@ -970,7 +1694,8 @@ export class OpenKey {
             data.type === 'openkey:auth:response' ||
             data.type === 'openkey:sign:response' ||
             data.type === 'openkey:signTypedData:response' ||
-            data.type === 'openkey:link-wallet:response'
+            data.type === 'openkey:link-wallet:response' ||
+            data.type === 'openkey:externalSign:approve'
           ) {
             settle(() => {
               cleanup();
@@ -980,8 +1705,22 @@ export class OpenKey {
                   resolve({ address: data.address, keyId: data.keyId, keyType: data.keyType || 'MANAGED' } as T);
                 } else if (data.type === 'openkey:link-wallet:response') {
                   resolve({ address: data.address, keyId: data.keyId } as T);
+                } else if (data.type === 'openkey:externalSign:approve') {
+                  resolve({
+                    authorizationContextToken: (data as any).authorizationContextToken,
+                    previewApprovalToken: (data as any).previewApprovalToken,
+                    signedMessage: (data as any).signedMessage,
+                    selectedActionIds: (data as any).selectedActionIds,
+                    address: (data as any).address,
+                  } as T);
                 } else {
-                  resolve({ signature: data.signature, address: data.address } as T);
+                  resolve({
+                    signature: (data as any).signature,
+                    address: (data as any).address,
+                    signedMessage: (data as any).signedMessage,
+                    selectedActionKeys: (data as any).selectedActionKeys,
+                    permissions: (data as any).permissions,
+                  } as T);
                 }
               } else {
                 reject(data.error);
@@ -1137,6 +1876,13 @@ export class OpenKey {
       });
     }, DEFAULT_TIMEOUT);
 
+    // Sol MAJOR-3: correlation IDs for versioned popups.
+    const outgoingRequestId = (message as { requestId?: unknown }).requestId;
+    const outgoingProtocolVersion = (message as { protocolVersion?: unknown }).protocolVersion;
+    const isVersionedRequest =
+      typeof outgoingRequestId === 'string' &&
+      typeof outgoingProtocolVersion === 'number' &&
+      outgoingProtocolVersion >= 1;
     // Listen for messages
     const handleMessage = (event: MessageEvent) => {
       if (event.origin !== this.host) return;
@@ -1151,6 +1897,17 @@ export class OpenKey {
       }
 
       if (data.type === 'openkey:close') {
+        // Sol MAJOR-4: correlate close messages to the current versioned
+        // request. A same-origin, same-source stale close from a
+        // previous /widget/sign window MUST NOT tear down the active
+        // request. Unversioned close messages are only accepted on
+        // unversioned flows (legacy signMessage callers).
+        if (isVersionedRequest) {
+          const closeRequestId = (data as { requestId?: unknown }).requestId;
+          const closeVersion = (data as { protocolVersion?: unknown }).protocolVersion;
+          if (closeRequestId !== outgoingRequestId) return;
+          if (closeVersion !== outgoingProtocolVersion) return;
+        }
         cleanup();
         this.popup?.close();
         reject({
@@ -1172,8 +1929,16 @@ export class OpenKey {
         data.type === 'openkey:auth:response' ||
         data.type === 'openkey:sign:response' ||
         data.type === 'openkey:signTypedData:response' ||
-        data.type === 'openkey:link-wallet:response'
+        data.type === 'openkey:link-wallet:response' ||
+        data.type === 'openkey:externalSign:approve'
       ) {
+        // Sol MAJOR-3: drop cross-correlated responses on versioned flows.
+        if (isVersionedRequest) {
+          const respRequestId = (data as { requestId?: unknown }).requestId;
+          const respVersion = (data as { protocolVersion?: unknown }).protocolVersion;
+          if (respRequestId !== outgoingRequestId) return;
+          if (respVersion !== outgoingProtocolVersion) return;
+        }
         cleanup();
         this.popup?.close();
 
@@ -1183,8 +1948,24 @@ export class OpenKey {
             resolve({ address: data.address, keyId: data.keyId, keyType: data.keyType || 'MANAGED' } as T);
           } else if (data.type === 'openkey:link-wallet:response') {
             resolve({ address: data.address, keyId: data.keyId } as T);
+          } else if (data.type === 'openkey:externalSign:approve') {
+            // Sol MAJOR-3 (continuation): hand the preview payload back
+            // to authorizeTinyCloudExternal so it can invoke the wallet.
+            resolve({
+              authorizationContextToken: (data as any).authorizationContextToken,
+              previewApprovalToken: (data as any).previewApprovalToken,
+              signedMessage: (data as any).signedMessage,
+              selectedActionIds: (data as any).selectedActionIds,
+              address: (data as any).address,
+            } as T);
           } else {
-            resolve({ signature: data.signature, address: data.address } as T);
+            resolve({
+              signature: (data as any).signature,
+              address: (data as any).address,
+              signedMessage: (data as any).signedMessage,
+              selectedActionKeys: (data as any).selectedActionKeys,
+              permissions: (data as any).permissions,
+            } as T);
           }
         } else {
           reject(data.error);

@@ -1,0 +1,24 @@
+# Bun test discovery configuration.
+#
+# `bun test` (with no filter) walks the repo for *.test.ts and *.spec.ts.
+# Two files must be EXCLUDED from that walk:
+#
+#   - `apps/web/tests/browser/*.spec.ts` is a Playwright suite. It imports
+#     `@playwright/test`, which bun-test cannot load, and its bodies do
+#     browser interactions that only Playwright's test runner drives. It
+#     is executed via `bun run --cwd apps/web test:browser` (playwright).
+#
+#   - `scripts/authorize-sign-harness.test.ts` is a standalone Hono
+#     harness spawned as a subprocess by the js-sdk cross-repo contract
+#     test. It is written as a `.test.ts` so bun-test's `mock.module()`
+#     works, but it must not be picked up by a broad `bun test` walk.
+#
+# The harness also carries a runtime guard (`OPENKEY_RUN_HARNESS`) as a
+# defence-in-depth belt-and-suspenders; the exclusion here is the belt.
+[test]
+# Bun's exclusion glob for `bun test` discovery.
+ignore = [
+  "apps/web/tests/browser/**/*.spec.ts",
+  "scripts/authorize-sign-harness.test.ts",
+  "scripts/vertical-happy-path-harness.test.ts",
+]

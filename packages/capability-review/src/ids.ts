@@ -1,0 +1,66 @@
+// Stable IDs for capability grants and their contained actions.
+//
+// The IDs are NUL-separated tuples so they are exact-match safe and cannot
+// collide with any allowed identifier character. `service`, `space`, `path`,
+// and `action` all normally contain `.` `:` `/` and `-`; NUL is the only
+// byte that cannot occur naturally in a SIWE ReCap resource string.
+//
+// These IDs are the values the widget UI toggles and the server validates.
+// Never split them and reformat — they are opaque.
+
+import type { ActionId, PermissionId } from "./model.js";
+
+// NUL byte separator. Chosen because it cannot appear inside any valid
+// service, space, path, or action token in a SIWE ReCap resource string.
+export const ID_SEPARATOR = "\x00";
+
+export function permissionId(
+  service: string,
+  space: string,
+  path: string,
+): PermissionId {
+  return `${service}${ID_SEPARATOR}${space}${ID_SEPARATOR}${path}`;
+}
+
+export function actionId(
+  service: string,
+  space: string,
+  path: string,
+  action: string,
+): ActionId {
+  return `${service}${ID_SEPARATOR}${space}${ID_SEPARATOR}${path}${ID_SEPARATOR}${action}`;
+}
+
+export function parsePermissionId(id: PermissionId): {
+  service: string;
+  space: string;
+  path: string;
+} {
+  const parts = id.split(ID_SEPARATOR);
+  if (parts.length !== 3) {
+    throw new Error(
+      `invalid permissionId: expected 3 NUL-separated parts, got ${parts.length}`,
+    );
+  }
+  return { service: parts[0]!, space: parts[1]!, path: parts[2]! };
+}
+
+export function parseActionId(id: ActionId): {
+  service: string;
+  space: string;
+  path: string;
+  action: string;
+} {
+  const parts = id.split(ID_SEPARATOR);
+  if (parts.length !== 4) {
+    throw new Error(
+      `invalid actionId: expected 4 NUL-separated parts, got ${parts.length}`,
+    );
+  }
+  return {
+    service: parts[0]!,
+    space: parts[1]!,
+    path: parts[2]!,
+    action: parts[3]!,
+  };
+}
