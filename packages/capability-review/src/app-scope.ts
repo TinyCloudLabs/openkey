@@ -94,10 +94,42 @@ export function annotateAppScopedGrants(
     if (grant.family !== "secret-read" && grant.family !== "secret-mutation") {
       return grant;
     }
+    // Sol MAJOR (this iteration): before doing ANY app-scope match, fail
+    // closed on unknown action verbs. `annotateAppScopedGrants` transitions
+    // a grant from sensitive -> standard AND stamps `appScopedSecret` on
+    // it, which lets `buildStatement` render friendly copy such as
+    // "Read the app secret API_KEY". If we accept an arbitrary verb from
+    // the manifest / grant (e.g. `peek`, `admin`, some novel action), we
+    // would grant that friendly presentation to an action whose actual
+    // authority is not part of the read/write/delete vocabulary the copy
+    // implies. An origin-bound manifest MUST NOT be able to widen the
+    // recognized secret-action vocabulary.
+    //
+    // The canonical recognized verbs are exactly those `normalizeSecretVerb`
+    // maps to (`get` / `put` / `del`). Any grant verb whose normalized form
+    // is NOT one of these leaves the grant untouched (fail closed: retains
+    // its structural secret-mutation/sensitive classification and
+    // `buildStatement` renders the literal fallback).
+    const allVerbsRecognized = grant.actions.every((a) =>
+      RECOGNIZED_APP_SCOPE_SECRET_VERBS.has(
+        normalizeSecretVerb(a.verb.toLowerCase()),
+      ),
+    );
+    if (!allVerbsRecognized) return grant;
     const match = findMatchingDeclaredSecret(grant, secrets);
     // Only a genuinely scoped secret can receive app-scoped/normal
     // presentation. Global app-declared secrets remain sensitive.
     if (!match?.scope) return grant;
+    // Also fail closed if the DECLARED entry carries any verb outside the
+    // recognized set. A manifest that declares `peek` for a secret cannot
+    // be used to promote a matching grant from sensitive to standard, even
+    // if the grant itself only asks for recognized verbs.
+    const allDeclaredVerbsRecognized = match.actions.every((a) =>
+      RECOGNIZED_APP_SCOPE_SECRET_VERBS.has(
+        normalizeSecretVerb(a.toLowerCase()),
+      ),
+    );
+    if (!allDeclaredVerbsRecognized) return grant;
     // This is the one allowed sensitive -> standard presentation transition:
     // the server independently origin-bound the manifest and this pure gate
     // matched its exact secret/scope/action declaration to the signed grant.
@@ -115,6 +147,31 @@ export function annotateAppScopedGrants(
   });
   return { ...model, permissions };
 }
+
+/**
+ * Recognized action verbs for named-secret app-scope annotation.
+ *
+ * `annotateAppScopedGrants` is the ONE place presentation severity can move
+ * sensitive -> standard, and `buildStatement` then renders friendly copy for
+ * anything carrying `appScopedSecret`. To keep that friendly copy honest we
+ * only annotate grants whose verbs are inside this fixed, canonical set:
+ *
+ *   - `get` (aliases: `read`)
+ *   - `put` (aliases: `write`)
+ *   - `del` (aliases: `delete`)
+ *
+ * Both grant-side verbs and declared-manifest verbs are compared through
+ * `normalizeSecretVerb`, which folds the synonyms above into these three
+ * canonical entries. Anything outside (e.g. `peek`, `admin`, `list`,
+ * `metadata`, or any future/unknown verb) fails the gate; the grant keeps
+ * its structural secret-mutation/sensitive classification and
+ * `buildStatement` falls back to the literal service/resource/actions copy.
+ */
+export const RECOGNIZED_APP_SCOPE_SECRET_VERBS: ReadonlySet<string> = new Set([
+  "get",
+  "put",
+  "del",
+]);
 
 /**
  * Test-visible helper: return the matched declared entry, or null.

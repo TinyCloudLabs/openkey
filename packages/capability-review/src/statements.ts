@@ -16,6 +16,10 @@
 // sentence themselves.
 
 import type { CapabilityGrant } from "./model.js";
+import {
+  RECOGNIZED_APP_SCOPE_SECRET_VERBS,
+  normalizeSecretVerb,
+} from "./app-scope.js";
 
 export interface StatementEntry {
   /**
@@ -305,7 +309,28 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
   // An app-scoped secret reaches this branch only after the exact,
   // origin-bound manifest proof in app-scope.ts. The secret name is therefore
   // structural review state rather than an unverified friendly label.
+  //
+  // Sol MAJOR (this iteration): defense-in-depth against a compromised or
+  // future-buggy `annotateAppScopedGrants`. Even if a grant somehow reached
+  // this branch with an unrecognized verb (e.g. `peek`), we MUST NOT let
+  // the friendly "Read/Update the app secret" copy fire, because that copy
+  // implies a read/write/delete authority the wire verb may not carry. The
+  // broad `READ_VERBS`/`MUTATION_VERBS` sets used by `classifyVerbs`
+  // intentionally cover synonyms and cannot be relied on as the
+  // authoritative gate here. We re-check every action verb against the same
+  // canonical `RECOGNIZED_APP_SCOPE_SECRET_VERBS` allowlist used by the
+  // annotation gate; anything outside falls back to the literal fallback
+  // statement so the operator sees the raw ability string instead of
+  // borrowed friendly copy.
   if (grant.appScopedSecret) {
+    const allActionsRecognized = grant.actions.every((a) =>
+      RECOGNIZED_APP_SCOPE_SECRET_VERBS.has(
+        normalizeSecretVerb(a.verb.toLowerCase()),
+      ),
+    );
+    if (!allActionsRecognized) {
+      return fallbackStatement(grant);
+    }
     let primaryText: string;
     if (verbs.hasRead && verbs.hasWrite) {
       primaryText = `Read and update the app secret ${grant.appScopedSecret.secretName}`;

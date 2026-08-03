@@ -16,12 +16,14 @@ import {
   annotateAppScopedGrants,
   findMatchingDeclaredSecret,
   normalizeSecretVerb,
+  RECOGNIZED_APP_SCOPE_SECRET_VERBS,
   type DeclaredScopedSecret,
 } from "../src/app-scope.js";
 import type {
   CapabilityGrant,
   CapabilityReviewModel,
 } from "../src/model.js";
+import { buildStatement } from "../src/statements.js";
 
 const SPACE = "tinycloud:pkh:eip155:1:0x1111111111111111111111111111111111111111:default";
 
@@ -40,6 +42,35 @@ function kvGrant(path: string, verbs: string[]): CapabilityGrant {
     actions: verbs.map((verb) => ({
       id: `tinycloud.kv\x00${SPACE}\x00${path}\x00tinycloud.kv/${verb}`,
       ability: `tinycloud.kv/${verb}`,
+      verb,
+      required: false,
+      selected: true,
+      editable: true,
+      caveats: [{}],
+    })),
+  };
+}
+
+function secretsServiceGrant(
+  path: string,
+  verbs: string[],
+  family: CapabilityGrant["family"] = "secret-mutation",
+  severity: CapabilityGrant["severity"] = "sensitive",
+): CapabilityGrant {
+  return {
+    id: `tinycloud.secrets\x00${SPACE}\x00${path}`,
+    family,
+    severity,
+    service: "tinycloud.secrets",
+    space: SPACE,
+    path,
+    owner: null,
+    ownedBySelf: true,
+    displayLabel: "",
+    metadataLabel: null,
+    actions: verbs.map((verb) => ({
+      id: `tinycloud.secrets\x00${SPACE}\x00${path}\x00tinycloud.secrets/${verb}`,
+      ability: `tinycloud.secrets/${verb}`,
       verb,
       required: false,
       selected: true,
@@ -227,5 +258,181 @@ describe("annotateAppScopedGrants", () => {
     ];
     const out = annotateAppScopedGrants(m, { secrets: declared });
     expect(out.permissions[0]?.severity).toBe("standard");
+  });
+});
+
+describe("annotateAppScopedGrants — recognized-verb allowlist (Sol MAJOR)", () => {
+  // Sol MAJOR (this iteration): the merge-readiness contract says an
+  // origin-bound manifest may NOT expand the recognized named-secret
+  // action vocabulary. Only the canonical read/write/delete verbs
+  // (get/put/del and their synonyms) can carry the sensitive->standard
+  // presentation transition. Unknown verbs (peek, admin, rotate, and
+  // any future/novel action) MUST leave the grant untouched: severity
+  // stays sensitive, `appScopedSecret` is NOT stamped, and
+  // `buildStatement` renders the literal fallback copy — never the
+  // friendly "Read the app secret API_KEY" copy that implies a
+  // read/write/delete authority the wire verb may not carry.
+
+  it("exposes the canonical recognized-verb set", () => {
+    expect(RECOGNIZED_APP_SCOPE_SECRET_VERBS.has("get")).toBe(true);
+    expect(RECOGNIZED_APP_SCOPE_SECRET_VERBS.has("put")).toBe(true);
+    expect(RECOGNIZED_APP_SCOPE_SECRET_VERBS.has("del")).toBe(true);
+    // Unknown verbs are NOT in the set. These are the exact tokens that
+    // must fail the app-scope gate.
+    expect(RECOGNIZED_APP_SCOPE_SECRET_VERBS.has("peek")).toBe(false);
+    expect(RECOGNIZED_APP_SCOPE_SECRET_VERBS.has("admin")).toBe(false);
+    expect(RECOGNIZED_APP_SCOPE_SECRET_VERBS.has("list")).toBe(false);
+    expect(RECOGNIZED_APP_SCOPE_SECRET_VERBS.has("metadata")).toBe(false);
+    expect(RECOGNIZED_APP_SCOPE_SECRET_VERBS.has("rotate")).toBe(false);
+  });
+
+  it("does NOT annotate a KV secret grant with an unknown verb (peek)", () => {
+    // A grant asking `tinycloud.kv/peek` on a scoped secret path with a
+    // manifest declaring `peek` on the same secret must NOT flip to
+    // standard severity. `peek` is not in the recognized set, so the
+    // grant retains its `sensitive` classification and never carries
+    // `appScopedSecret`.
+    const grant = kvGrant("secrets/scoped/listen/API_KEY", ["peek"]);
+    const declared: DeclaredScopedSecret[] = [
+      { secretName: "API_KEY", scope: "listen", actions: ["peek"] },
+    ];
+    const out = annotateAppScopedGrants(model([grant]), { secrets: declared });
+    const out0 = out.permissions[0];
+    expect(out0?.severity).toBe("sensitive");
+    expect(out0?.appScopedSecret).toBeUndefined();
+    expect(out0?.metadataLabel).toBeNull();
+  });
+
+  it("does NOT annotate a named-secrets service grant with an unknown verb", () => {
+    // The direct `tinycloud.secrets/peek` shape Sol demonstrated must
+    // fail the gate too — otherwise `buildStatement` renders "Read the
+    // app secret API_KEY" for a `peek` grant. Path `secrets/scoped/...`
+    // is the shape `parseSecretPath` recognizes for scoped secrets on
+    // this service.
+    const grant = secretsServiceGrant(
+      "secrets/scoped/listen/API_KEY",
+      ["peek"],
+    );
+    const declared: DeclaredScopedSecret[] = [
+      { secretName: "API_KEY", scope: "listen", actions: ["peek"] },
+    ];
+    const out = annotateAppScopedGrants(model([grant]), { secrets: declared });
+    const out0 = out.permissions[0];
+    expect(out0?.severity).toBe("sensitive");
+    expect(out0?.appScopedSecret).toBeUndefined();
+  });
+
+  it("does NOT annotate when ANY grant verb is unrecognized (mixed set)", () => {
+    // Mixed recognized + unrecognized verbs must still fail closed. A
+    // caller cannot smuggle `admin` in alongside `get` to inherit the
+    // read-friendly copy for the whole grant.
+    const grant = kvGrant("secrets/scoped/listen/API_KEY", ["get", "admin"]);
+    const declared: DeclaredScopedSecret[] = [
+      { secretName: "API_KEY", scope: "listen", actions: ["read", "admin"] },
+    ];
+    const out = annotateAppScopedGrants(model([grant]), { secrets: declared });
+    const out0 = out.permissions[0];
+    expect(out0?.severity).toBe("sensitive");
+    expect(out0?.appScopedSecret).toBeUndefined();
+  });
+
+  it("does NOT annotate when the DECLARED manifest verb is unrecognized", () => {
+    // Even if the grant asks for a recognized verb, a manifest that
+    // declares an unknown verb (`peek`) alongside must fail closed.
+    // Otherwise a compromised manifest could widen future authority by
+    // stapling an unknown declared verb next to a recognized one.
+    const grant = kvGrant("secrets/scoped/listen/API_KEY", ["get"]);
+    const declared: DeclaredScopedSecret[] = [
+      { secretName: "API_KEY", scope: "listen", actions: ["read", "peek"] },
+    ];
+    const out = annotateAppScopedGrants(model([grant]), { secrets: declared });
+    const out0 = out.permissions[0];
+    expect(out0?.severity).toBe("sensitive");
+    expect(out0?.appScopedSecret).toBeUndefined();
+  });
+
+  it("still annotates a recognized-verb grant with a recognized declaration", () => {
+    // Regression guard: the allowlist gate must not break the happy
+    // path — read/write/delete (get/put/del) all remain eligible.
+    const grant = kvGrant("secrets/scoped/listen/API_KEY", ["get", "put"]);
+    const declared: DeclaredScopedSecret[] = [
+      { secretName: "API_KEY", scope: "listen", actions: ["read", "write"] },
+    ];
+    const out = annotateAppScopedGrants(model([grant]), { secrets: declared });
+    const out0 = out.permissions[0];
+    expect(out0?.severity).toBe("standard");
+    expect(out0?.appScopedSecret).toEqual({
+      secretName: "API_KEY",
+      scope: "listen",
+    });
+  });
+});
+
+describe("buildStatement — appScopedSecret branch verb gate (defense-in-depth)", () => {
+  // Sol MAJOR (this iteration): even if a grant somehow reached
+  // `buildStatement` carrying `appScopedSecret` with an unrecognized
+  // verb (compromised or future-buggy annotation code), the friendly
+  // "Read/Update the app secret X" copy MUST NOT fire. The exact
+  // literal fallback ("Perform tinycloud.secrets/peek on ...") is what
+  // the operator sees, so the wire verb is never dressed up in
+  // read/write/delete copy it does not carry.
+
+  it("falls back to literal copy when the annotated verb is unknown (peek)", () => {
+    const grant = secretsServiceGrant(
+      "secrets/scoped/listen/API_KEY",
+      ["peek"],
+      "secret-read",
+      "standard",
+    );
+    // Simulate a hypothetical broken annotator that stamped
+    // `appScopedSecret` on a peek-only grant.
+    const stamped: CapabilityGrant = {
+      ...grant,
+      appScopedSecret: { secretName: "API_KEY", scope: "listen" },
+      metadataLabel: "Secret: API_KEY · Scope: listen",
+    };
+    const statement = buildStatement(stamped);
+    expect(statement.primaryText).not.toBe("Read the app secret API_KEY");
+    expect(statement.primaryText).not.toContain("app secret");
+    // Falls through to the literal fallback: "Perform <ability> on <service>".
+    expect(statement.primaryText).toBe(
+      "Perform tinycloud.secrets/peek on tinycloud.secrets",
+    );
+  });
+
+  it("still renders friendly copy for a legitimately-stamped recognized grant", () => {
+    // Regression guard: the defense-in-depth gate must not break the
+    // happy path. A grant with recognized `get` verbs and a valid
+    // `appScopedSecret` continues to render the friendly copy.
+    const grant = kvGrant("secrets/scoped/listen/API_KEY", ["get"]);
+    const stamped: CapabilityGrant = {
+      ...grant,
+      appScopedSecret: { secretName: "API_KEY", scope: "listen" },
+      severity: "standard",
+    };
+    const statement = buildStatement(stamped);
+    expect(statement.primaryText).toBe("Read the app secret API_KEY");
+  });
+
+  it("end-to-end: unknown-verb peek grant on tinycloud.secrets never renders friendly copy", () => {
+    // Full production-path repro of the Sol probe: origin-bound
+    // manifest declares `peek`, grant asks `tinycloud.secrets/peek`.
+    // After `annotateAppScopedGrants`, the grant MUST retain
+    // sensitive severity and `buildStatement` MUST render the literal
+    // fallback — not "Read the app secret API_KEY".
+    const grant = secretsServiceGrant(
+      "secrets/scoped/listen/API_KEY",
+      ["peek"],
+    );
+    const m = model([grant]);
+    const declared: DeclaredScopedSecret[] = [
+      { secretName: "API_KEY", scope: "listen", actions: ["peek"] },
+    ];
+    const out = annotateAppScopedGrants(m, { secrets: declared });
+    const annotated = out.permissions[0]!;
+    expect(annotated.severity).toBe("sensitive");
+    expect(annotated.appScopedSecret).toBeUndefined();
+    const statement = buildStatement(annotated);
+    expect(statement.primaryText).not.toBe("Read the app secret API_KEY");
   });
 });
