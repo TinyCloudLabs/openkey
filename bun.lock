@@ -38,7 +38,7 @@
         "@better-auth/passkey": "^1.6.9",
         "@openkey/db": "workspace:*",
         "@openkey/tee": "workspace:*",
-        "@tinycloud/bootstrap": "2.6.0",
+        "@tinycloud/bootstrap": "2.7.0-beta.1",
         "@tinycloud/node-sdk": "2.6.1",
         "@tinycloud/node-sdk-wasm": "1.7.4",
         "@tinycloud/sdk-core": "2.6.1",
@@ -737,7 +737,7 @@
 
     "@tailwindcss/vite": ["@tailwindcss/vite@4.1.18", "", { "dependencies": { "@tailwindcss/node": "4.1.18", "@tailwindcss/oxide": "4.1.18", "tailwindcss": "4.1.18" }, "peerDependencies": { "vite": "^5.2.0 || ^6 || ^7" } }, "sha512-jVA+/UpKL1vRLg6Hkao5jldawNmRo7mQYrZtNHMIVpLfLhDml5nMRUo/8MwoX2vNXvnaXNNMedrMfMugAVX1nA=="],
 
-    "@tinycloud/bootstrap": ["@tinycloud/bootstrap@2.6.0", "", { "dependencies": { "viem": "^2.21.53" } }, "sha512-AlnCxYJDuJuLVmjLGqdecmlVtYaA8GHOAwJ58LjvC0s7bQXt9H9hrNiCdER1IcswIqX8A9dWEAfkD3dk9642Eg=="],
+    "@tinycloud/bootstrap": ["@tinycloud/bootstrap@2.7.0-beta.1", "", { "dependencies": { "viem": "^2.21.53" } }, "sha512-lX5ZomTfCR2s4e1X0bNhAQI0OLRtSSvylwDnyZIlInU4mCrVMPXtqLjUlTvzPJ+FYfDkXSPhGQyFfnzHQTVe3A=="],
 
     "@tinycloud/node-sdk": ["@tinycloud/node-sdk@2.6.1", "", { "dependencies": { "@tinycloud/node-sdk-wasm": "1.7.4", "@tinycloud/sdk-core": "2.6.1", "siwe": "^3.0.0" } }, "sha512-c5Au41VfKcVm6SZ4b5ItFEKv4zPe9rKwRlSNjC+OPoO8ZO5yg4cI3manfoWYER5/q2Jio+BbYqdToBAa2U8bjQ=="],
 
