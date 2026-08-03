@@ -58,23 +58,21 @@ describe("buildStatement — tinycloud.encryption/network.create", () => {
       "tinycloud.encryption/decrypt",
     ]);
     expect(buildStatement(grant).primaryText).toBe(
-      "Create a decryption network and decrypt protected data",
+      "Set up encrypted data access and decrypt protected data",
     );
   });
 
-  it("network.create alone selects 'Create a decryption network'", () => {
+  it("network.create alone selects 'Set up encrypted data access'", () => {
     const grant = encryptionGrant(["tinycloud.encryption/network.create"]);
     expect(buildStatement(grant).primaryText).toBe(
-      "Create a decryption network",
+      "Set up encrypted data access",
     );
     expect(grantReachesSecretDataOrDecryption(grant)).toBe(false);
   });
 
   it("decrypt alone still selects 'Decrypt protected data'", () => {
     const grant = encryptionGrant(["tinycloud.encryption/decrypt"]);
-    expect(buildStatement(grant).primaryText).toBe(
-      "Decrypt protected data",
-    );
+    expect(buildStatement(grant).primaryText).toBe("Decrypt protected data");
     expect(grantReachesSecretDataOrDecryption(grant)).toBe(true);
   });
 });
@@ -124,7 +122,7 @@ describe("parseCapabilityReview — encryption network.create", () => {
     expect(enc).toBeTruthy();
     const stmt = buildStatement(enc!);
     expect(stmt.primaryText).toBe(
-      "Create a decryption network and decrypt protected data",
+      "Set up encrypted data access and decrypt protected data",
     );
   });
 
@@ -137,6 +135,6 @@ describe("parseCapabilityReview — encryption network.create", () => {
     );
     expect(enc).toBeTruthy();
     const stmt = buildStatement(enc!);
-    expect(stmt.primaryText).toBe("Create a decryption network");
+    expect(stmt.primaryText).toBe("Set up encrypted data access");
   });
 });

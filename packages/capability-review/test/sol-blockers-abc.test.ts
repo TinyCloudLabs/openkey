@@ -7,14 +7,14 @@
 //     signed on chain 8453 with a resource space
 //     `tinycloud:pkh:eip155:8453:<signer>:secrets` was compared against
 //     the chain-1 identity in `expectedSignerSecretsSpace`, so the
-//     ownership proof passed for the wrong chain and the grant received
-//     standard severity. Fix: `parseSiweChainId` in @openkey/capability-review
+//     ownership proof passed for the wrong chain and the grant received a
+//     trusted app-scoped label. Fix: `parseSiweChainId` in @openkey/capability-review
 //     lets the widgets derive the chain ID from the signed bytes.
 //
 //   Blocker B: The app-scope proof gate lowered grant-side abilities and
 //     synonym-normalized them (`normalizeSecretVerb(a.verb.toLowerCase())`),
-//     so `tinycloud.kv/GET` and `tinycloud.kv/read` earned standard
-//     severity even though no js-sdk producer emits either shape.
+//     so `tinycloud.kv/GET` and `tinycloud.kv/read` earned trusted app-scoped
+//     copy even though no js-sdk producer emits either shape.
 //     Fix: grant-side abilities are compared BYTE-EXACTLY against a
 //     canonical URN allowlist (`tinycloud.kv/get`|`put`|`del`).
 //
@@ -179,7 +179,7 @@ describe("Sol Blocker A: wrong-chain ownership proof fails closed", () => {
     });
     // Model built with the WRONG (hard-coded) chain-1 signer identity.
     // The ownership proof must reject the mismatched space so the grant
-    // never demotes to standard.
+    // never receives trusted app-scoped annotation.
     const out = annotateAppScopedGrants(makeModel([grant], 1), {
       secrets: DECLARED,
     });
@@ -203,7 +203,7 @@ describe("Sol Blocker A: wrong-chain ownership proof fails closed", () => {
       secrets: DECLARED,
     });
     const g = out.permissions[0]!;
-    expect(g.severity).toBe("standard");
+    expect(g.severity).toBe("sensitive");
     expect(g.appScopedSecret).toEqual({
       secretName: "API_KEY",
       scope: "listen",
@@ -239,7 +239,7 @@ describe("Sol Blocker B: canonical grant-side ability allowlist", () => {
 
   it("tinycloud.kv/read (long-form synonym) does NOT annotate (Sol Blocker B probe)", () => {
     // The Sol probe: a grant with ability `tinycloud.kv/read` and a
-    // matching declared entry received standard severity because the
+    // matching declared entry received trusted app-scoped copy because the
     // prior gate folded `read` -> `get`. No js-sdk producer emits
     // `tinycloud.kv/read` on the wire; the exact-byte gate must reject.
     const grant = makeGrant({
@@ -311,7 +311,7 @@ describe("Sol Blocker B: canonical grant-side ability allowlist", () => {
       secrets: DECLARED,
     });
     const g = out.permissions[0]!;
-    expect(g.severity).toBe("standard");
+    expect(g.severity).toBe("sensitive");
     expect(g.appScopedSecret).toEqual({
       secretName: "API_KEY",
       scope: "listen",
@@ -377,8 +377,7 @@ describe("Sol Blocker C: canonicalized-scope near-miss fingerprint", () => {
     // plus a `tinycloud.capabilities/read` grant at the canonical
     // secret path. Prior code skipped the declaration in near-miss
     // fingerprinting because `"Listen App"` failed SECRET_SCOPE_RE,
-    // so the wrong-service grant remained at standard severity with
-    // friendly "Check permissions for your secrets" copy. Post-fix:
+    // so the wrong-service grant retained misleading friendly copy. Post-fix:
     // the fingerprint fires and near-miss stamping forces literal
     // fallback + sensitive severity.
     const declared: DeclaredScopedSecret[] = [

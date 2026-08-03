@@ -227,7 +227,7 @@ describe("findMatchingDeclaredSecret — js-sdk production shapes", () => {
   });
 
   it("does NOT match legacy scope-first `<scope>/secrets/<name>` shape (fail-closed)", () => {
-    // js-sdk never emits this shape; annotation loss is demote-only.
+    // js-sdk never emits this shape; rejecting annotation is fail-closed.
     const grant = kvGrant("listen/secrets/API_KEY", ["get"]);
     const declared: DeclaredScopedSecret[] = [
       { secretName: "API_KEY", scope: "listen", actions: ["read"] },
@@ -335,14 +335,14 @@ describe("annotateAppScopedGrants", () => {
     expect(out.permissions[0]?.appScopedSecret).toBeUndefined();
   });
 
-  it("presents an exactly proven app-scoped secret as standard", () => {
+  it("keeps an exactly proven app-scoped secret sensitive", () => {
     const grant = kvSecretsGrant("listen", "API_KEY", ["get"]);
     const m = model([grant]);
     const declared: DeclaredScopedSecret[] = [
       { secretName: "API_KEY", scope: "listen", actions: ["read"] },
     ];
     const out = annotateAppScopedGrants(m, { secrets: declared });
-    expect(out.permissions[0]?.severity).toBe("standard");
+    expect(out.permissions[0]?.severity).toBe("sensitive");
   });
 });
 
@@ -350,8 +350,8 @@ describe("annotateAppScopedGrants — recognized-verb allowlist (Sol MAJOR)", ()
   // Sol MAJOR (this iteration): the merge-readiness contract says an
   // origin-bound manifest may NOT expand the recognized named-secret
   // action vocabulary. Only the canonical read/write/delete verbs
-  // (get/put/del and their synonyms) can carry the sensitive->standard
-  // presentation transition. Unknown verbs (peek, admin, rotate, and
+  // (get/put/del and their synonyms) can earn app-scoped annotation.
+  // Unknown verbs (peek, admin, rotate, and
   // any future/novel action) MUST leave the grant untouched: severity
   // stays sensitive, `appScopedSecret` is NOT stamped, and
   // `buildStatement` renders the literal fallback copy — never the
@@ -373,8 +373,8 @@ describe("annotateAppScopedGrants — recognized-verb allowlist (Sol MAJOR)", ()
 
   it("does NOT annotate a KV secret grant with an unknown verb (peek)", () => {
     // A grant asking `tinycloud.kv/peek` on a scoped secret path with a
-    // manifest declaring `peek` on the same secret must NOT flip to
-    // standard severity. `peek` is not in the recognized set, so the
+    // manifest declaring `peek` on the same secret must NOT earn trusted
+    // app-scoped copy. `peek` is not in the recognized set, so the
     // grant retains its `sensitive` classification and never carries
     // `appScopedSecret`.
     const grant = kvSecretsGrant("listen", "API_KEY", ["peek"]);
@@ -445,7 +445,7 @@ describe("annotateAppScopedGrants — recognized-verb allowlist (Sol MAJOR)", ()
     ];
     const out = annotateAppScopedGrants(model([grant]), { secrets: declared });
     const out0 = out.permissions[0];
-    expect(out0?.severity).toBe("standard");
+    expect(out0?.severity).toBe("sensitive");
     expect(out0?.appScopedSecret).toEqual({
       secretName: "API_KEY",
       scope: "listen",
@@ -524,7 +524,7 @@ describe("buildStatement — appScopedSecret branch verb gate (defense-in-depth)
 
 // ─── Blocker 4 regression suite ───────────────────────────────────────────────
 // Proves the exact-resource proof gate: service, space, and path must all match
-// the manifest-derived canonical tuple for any sensitive → standard transition.
+// the manifest-derived canonical tuple for any trusted app-scoped annotation.
 
 describe("annotateAppScopedGrants — Blocker 4: exact-resource proof gate", () => {
   const DECLARED: DeclaredScopedSecret[] = [
@@ -604,7 +604,7 @@ describe("annotateAppScopedGrants — Blocker 4: exact-resource proof gate", () 
     // check accepted the literal string `"secrets"` even though the
     // js-sdk secrets resolver always targets the signer-owned canonical
     // form `tinycloud:pkh:eip155:<chainId>:<address>:secrets`. Accepting
-    // a bare `"secrets"` string would let a caller demote a grant on a
+    // a bare `"secrets"` string would let a caller attach trusted copy to a
     // space nobody demonstrably owns. After the fix the annotation gate
     // requires the exact signer-owned space, and this grant fails closed:
     // near-miss stamp + literal fallback + sensitive severity.
@@ -631,13 +631,13 @@ describe("annotateAppScopedGrants — Blocker 4: exact-resource proof gate", () 
       { secrets: DECLARED },
     );
     const g = out.permissions[0]!;
-    expect(g.severity).toBe("standard");
+    expect(g.severity).toBe("sensitive");
     expect(g.metadataLabel).toBe("Secret: API_KEY · Scope: listen");
   });
 
   it("happy path: scoped secret remains in the top-level secret-reach count (Blocker 2 invariant)", () => {
-    // Even after demotion to standard severity, the grant must still count
-    // as reaching secret data (grantReachesSecretDataOrDecryption = true).
+    // The grant remains sensitive and must still count as reaching secret
+    // data (grantReachesSecretDataOrDecryption = true).
     // This is verified via the sensitive-reach suite; here we confirm
     // appScopedSecret is set so the UI can still include it in the count.
     const out = annotateAppScopedGrants(
@@ -645,7 +645,7 @@ describe("annotateAppScopedGrants — Blocker 4: exact-resource proof gate", () 
       { secrets: DECLARED },
     );
     const g = out.permissions[0]!;
-    expect(g.severity).toBe("standard");
+    expect(g.severity).toBe("sensitive");
     expect(g.appScopedSecret).toBeDefined();
     // family remains secret-read, so grantReachesSecretDataOrDecryption
     // returns true regardless of severity.
@@ -698,7 +698,7 @@ describe("buildStatement — Blocker 4: defense-in-depth exact-resource checks",
 //
 //   Defect 1: `isSecretsSpace` accepted any string containing `:secrets`, so
 //     a probe signed by 0x1111…1111 targeting 0x2222…2222:secrets was
-//     incorrectly demoted to standard. The gate must instead prove that
+//     incorrectly received trusted app-scoped copy. The gate must prove that
 //     `grant.space` is the SIGNER's own canonical secrets space
 //     (`tinycloud:pkh:eip155:<chainId>:<address>:secrets`).
 //
@@ -949,12 +949,12 @@ describe("annotateAppScopedGrants — Defect 2: near-miss literal fallback", () 
   it("regression: happy path still renders friendly app-secret copy", () => {
     // The near-miss stamping must not affect the exact-match happy path:
     // KV service + signer-owned space + canonical path + declared name+
-    // scope + subset of declared recognized verbs → standard severity +
+    // scope + subset of declared recognized verbs → Sensitive plus the
     // "Read the app secret API_KEY" copy.
     const grant = kvSecretsGrant("listen", "API_KEY", ["get"]);
     const out = annotateAppScopedGrants(model([grant]), { secrets: DECLARED });
     const g = out.permissions[0]!;
-    expect(g.severity).toBe("standard");
+    expect(g.severity).toBe("sensitive");
     expect(g.appScopedSecret).toEqual({
       secretName: "API_KEY",
       scope: "listen",
@@ -1192,15 +1192,15 @@ describe("annotateAppScopedGrants — Sol follow-up probes (wrong-service / wron
   });
 
   it("happy path regression: canonical KV vault path still annotates + counts", () => {
-    // The widening must not break the sole permitted sensitive->standard
-    // transition. A canonical KV vault-path grant on the signer's own
+    // The widening must not break canonical app-scoped annotation. A
+    // canonical KV vault-path grant on the signer's own
     // secrets space with declared name/scope+subset verbs still annotates.
     const out = annotateAppScopedGrants(
       model([kvSecretsGrant("listen", "API_KEY", ["get"])]),
       { secrets: DECLARED },
     );
     const g = out.permissions[0]!;
-    expect(g.severity).toBe("standard");
+    expect(g.severity).toBe("sensitive");
     expect(g.appScopedSecret).toEqual({
       secretName: "API_KEY",
       scope: "listen",

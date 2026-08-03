@@ -185,7 +185,7 @@ function exactRecapFixtureModel(): any {
     },
     signer: {
       label: 'Managed key',
-      address: '0x1111111111111111111111111111111111111111',
+      address: '0xd559CCd9EB87c530A9a349262669386dE93cf412',
       chainId: 1,
       provenance: 'managed',
     },
@@ -263,22 +263,25 @@ test.describe('signing-approval browser parity — production adapters', () => {
       const dialog = page.locator('[data-parity-harness] [role="dialog"]');
       await expect(dialog).toBeVisible();
       await expect(dialog).toContainText('Authorize capabilities');
-      await expect(dialog).toContainText('Read and update data outside this app');
-      await expect(dialog).toContainText('Check your TinyCloud account permissions');
+      await expect(dialog).toContainText('Manage your TinyCloud account');
+      await expect(dialog).toContainText('Read and update application data');
+      await expect(dialog).toContainText('Check your TinyCloud permissions');
       const summary = page.locator('[data-parity-harness] .summary');
-      await expect(summary.locator('.summary-statement')).toHaveCount(8);
+      await expect(summary.locator('.summary-statement')).toHaveCount(7);
       await expect(summary).toContainText('View secret names and details');
       await expect(summary).toContainText('Read secret values');
-      await expect(summary.locator('.summary-sensitive-pill')).toHaveText(
+      await expect(summary.locator('.summary-sensitive-pill')).toHaveText([
         'Sensitive',
-      );
+        'Sensitive',
+        'Sensitive',
+      ]);
       await expect(summary).not.toContainText(model.requester.displayName);
       await expect(summary).not.toContainText('exact grant');
       await expect(summary).not.toContainText('service');
       await expect(summary).not.toContainText('tinycloud:pkh:');
       await expect(dialog).not.toContainText(`owner ${model.signer.address.toLowerCase()}`);
       await expect(dialog).not.toContainText('path=spaces/');
-      await expect(summary.locator('.summary-statement').last()).toContainText('Perform ');
+      await expect(summary).not.toContainText('Perform ');
       const details = page.locator('details.advanced-details').first();
       await details.locator(':scope > summary').click();
       await expect(details.locator(':scope > summary')).toHaveText('Advanced details');
@@ -305,7 +308,7 @@ test.describe('signing-approval browser parity — production adapters', () => {
       ).toHaveCount(0);
       await expect(page.getByRole('button', { name: 'Copy text' })).toBeVisible();
       await expect(page.locator('[data-parity-harness] .grant')).toHaveCount(17);
-      await expect(details.locator('.grant-severity[data-severity="sensitive"]')).toHaveCount(3);
+      await expect(details.locator('.grant-severity[data-severity="sensitive"]')).toHaveCount(4);
       await expect(details.locator('.grant-severity[data-severity="attention"]')).toHaveCount(0);
       await expect(details.locator('.grant-severity[data-severity="standard"]')).toHaveCount(0);
       const vaultGrant = details.locator('.grant').filter({
@@ -537,7 +540,9 @@ test.describe('signing-approval browser parity — production adapters', () => {
     });
 
     const summary = page.locator('[data-parity-harness] .summary');
-    await expect(summary).toContainText('Create a decryption network and decrypt protected data');
+    await expect(summary).toContainText(
+      'Set up encrypted data access and decrypt protected data',
+    );
     await expect(summary.locator('.summary-sensitive-pill')).toHaveText('Sensitive');
     const details = page.locator('details.advanced-details');
     await details.locator(':scope > summary').click();
@@ -645,7 +650,7 @@ test.describe('signing-approval browser parity — production adapters', () => {
       });
 
       const summary = page.locator('.summary');
-      await expect(summary).toContainText('Create a decryption network');
+      await expect(summary).toContainText('Set up encrypted data access');
       await expect(summary).not.toContainText('decrypt protected data');
       await expect(page.locator('.sensitive-callout')).toHaveCount(0);
       await expect(page.getByRole('button', { name: 'Approve exact bytes' })).toBeVisible();

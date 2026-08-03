@@ -1,34 +1,26 @@
 // Deterministic capability classification.
 //
 // Rules (order matters):
-//   1. KV/SQL entries touching a secrets space get secret-reach families
-//      before ownership classification. Secret reach and cross-owner access
-//      are independent risk axes; the display label preserves both facts.
-//   2. KV/SQL entries touching a KNOWN application-data path prefix get
-//      classified as own-app-data (severity: standard for read, attention for
-//      mutation). This covers Listen, Chat, Feed, Cycle-health etc. so a
-//      request targeting a real app's data no longer collapses to a generic
-//      "bootstrap-kv" grant.
-//   3. Same as (2) but when the space owner does NOT match the signer, the
-//      family becomes cross-app-data (severity: attention). Cross-app grants
-//      are the primary "the app is reading OTHER people's data" case.
-//   4. KV entries with a secret path (vault/secrets or secrets prefixes) get
+//   1. Canonical TinyCloud spaces (`account`, `applications`, `public`,
+//      `default`, `secrets`) and their registered actions map to their known
+//      product meaning. Missing requester metadata never erases those facts.
+//   2. Resource ownership is signer-relative. Only an owner that differs from
+//      the signer is another-user access; app identity comes from a manifest,
+//      not from an EVM resource owner.
+//   3. KV entries with a secret path (vault/secrets or secrets prefixes) get
 //      the secret-read/mutation family.
-//   5. Otherwise, KV/SQL/capabilities stay as their bootstrap family — this
+//   4. Otherwise, KV/SQL/capabilities stay as their bootstrap family — this
 //      is the default for whole-space grants without a recognizable path.
-//   6. Named secret services split into read vs mutation.
-//   7. Encryption services split into key material vs decrypt.
-//   8. Unknown services fall back to the "unknown" family and elevate
+//   5. Named secret services split into read vs mutation.
+//   6. Encryption services split into key material vs decrypt.
+//   7. Unknown services fall back to the "unknown" family and elevate
 //      severity.
 //
 // The classifier NEVER lowers severity based on metadata. Metadata may enrich
 // the display label (see metadata.ts) but cannot flip a "sensitive" grant to
 // "standard".
 
-import type {
-  CapabilityFamily,
-  PermissionSeverity,
-} from "./model.js";
+import type { CapabilityFamily, PermissionSeverity } from "./model.js";
 import { isSecretsSpace } from "./app-scope.js";
 import { isMetadataOnlyAccess } from "./action-semantics.js";
 
@@ -37,63 +29,25 @@ interface RecapEntryLike {
   space: string;
   path: string;
   actions: string[];
-  /**
-   * @deprecated Use `requesterAddress` when the classifier is asked to
-   * determine cross-app ownership. Kept only as a fall-through hint when
-   * verified requester metadata is unavailable. `signerAddress` is the
-   * OpenKey session signer — an implementation detail, not the requesting
-   * app's identity — and using it as the ownership axis mis-labels every
-   * cross-app request that shares a signer with the space owner.
-   */
   signerAddress?: string | null;
-  /**
-   * The requesting app's *verified* Ethereum address, lowercased. When
-   * supplied AND `requesterVerified === true`, the classifier compares the
-   * space owner (derived from `space`) against this identity so a grant
-   * on the requester's own space stays own-app-data while a grant on
-   * anyone else's space becomes cross-app-data.
-   *
-   * Callers MUST NOT pass unverified addresses here — that would let a
-   * malicious app claim ownership of another user's space and downgrade
-   * the severity. Fail-closed rule: when metadata is unverifiable, leave
-   * `requesterAddress` unset; the classifier then treats every non-empty
-   * space it can't attribute as cross-app-data.
-   */
-  requesterAddress?: string | null;
-  /**
-   * True only when `requesterAddress` was derived from a signed manifest
-   * whose digest matched, whose signature verified, and whose freshness
-   * is within the configured window. Any lower trust state MUST leave
-   * this false (or omit it), in which case the classifier fails closed
-   * on cross-app labelling.
-   */
-  requesterVerified?: boolean;
+  /** Ability-derived and resource-derived services disagree on the wire. */
+  serviceMismatch?: boolean;
 }
 
-const BOOTSTRAP_KV_SERVICES = new Set([
-  "tinycloud.kv",
-  "kv",
-]);
+const BOOTSTRAP_KV_SERVICES = new Set(["tinycloud.kv", "kv"]);
 
-const BOOTSTRAP_SQL_SERVICES = new Set([
-  "tinycloud.sql",
-  "sql",
-]);
+const BOOTSTRAP_SQL_SERVICES = new Set(["tinycloud.sql", "sql"]);
 
 const BOOTSTRAP_CAPABILITIES_SERVICES = new Set([
   "tinycloud.capabilities",
   "capabilities",
 ]);
 
-const SECRETS_SERVICES = new Set([
-  "tinycloud.secrets",
-  "secrets",
-]);
+const DELEGATION_SERVICES = new Set(["tinycloud.delegation", "delegation"]);
 
-const ENCRYPTION_SERVICES = new Set([
-  "tinycloud.encryption",
-  "encryption",
-]);
+const SECRETS_SERVICES = new Set(["tinycloud.secrets", "secrets"]);
+
+const ENCRYPTION_SERVICES = new Set(["tinycloud.encryption", "encryption"]);
 
 const MUTATION_VERBS = new Set([
   "put",
@@ -108,10 +62,7 @@ const MUTATION_VERBS = new Set([
   "create",
 ]);
 
-const DECRYPT_VERBS = new Set([
-  "decrypt",
-  "unwrap",
-]);
+const DECRYPT_VERBS = new Set(["decrypt"]);
 
 // The single read-shaped verb the capabilities service is expected to
 // carry. Sol MAJOR-1 re-fix: `get`, `peek`, and `list` are NOT
@@ -120,13 +71,23 @@ const DECRYPT_VERBS = new Set([
 // into the fail-closed `unknown` family (see BOOTSTRAP_CAPABILITIES_SERVICES
 // branch below), which elevates severity via `classifySeverityFromActions`.
 const CAPABILITY_READ_VERBS = new Set(["read"]);
+const KV_VERBS = new Set(["get", "list", "metadata", "put", "del"]);
+const ACCOUNT_REGISTRY_KV_VERBS = new Set(["get", "list", "put"]);
+const ACCOUNT_SETUP_KV_VERBS = new Set(["get", "put"]);
+const SQL_DATA_VERBS = new Set(["read", "write"]);
+const SQL_DATABASE_VERBS = new Set(["read", "write", "schema"]);
+const DELEGATION_VERBS = new Set(["list", "status"]);
+const ENCRYPTION_NETWORK_VERBS = new Set(["network.create", "network.revoke"]);
+const ENCRYPTION_VERBS = new Set([
+  ...ENCRYPTION_NETWORK_VERBS,
+  ...DECRYPT_VERBS,
+]);
 
 // The verbs the secrets service is expected to carry. Any grant on
 // `tinycloud.secrets` (or `secrets`) with a verb outside this union is
-// classified as `secret-mutation` — the fail-closed side of the
-// sensitive/standard split — so unknown verbs stay inside the
-// secret-access count and are surfaced at elevated severity rather than
-// silently defaulting to the standard read-shaped family.
+// classified as `secret-mutation` so unknown verbs stay inside the
+// secret-access count and are surfaced as sensitive rather than inheriting
+// friendly read copy.
 const SECRETS_KNOWN_READ_VERBS = new Set(["read", "get"]);
 const SECRETS_KNOWN_VERBS = new Set([
   ...SECRETS_KNOWN_READ_VERBS,
@@ -162,15 +123,18 @@ function verbOf(action: string): string {
  * ownership distinction is a real structural fact about the space URI vs
  * the signer). But the DISPLAY label is always the literal path.
  */
-interface AppFamilyMatch {
-  displayLabel: (path: string) => string;
-}
-
-function matchKvAppFamily(path: string): AppFamilyMatch | null {
+function isScopedDataPath(path: string): boolean {
   // Any non-empty path that is not the whole space counts as a
   // path-scoped app-data grant. We do NOT special-case any product name.
-  if (!path) return null;
-  return { displayLabel: (p: string) => `App data — ${p}` };
+  return path !== "" && path !== "/";
+}
+
+function isAccountApplicationsPath(path: string): boolean {
+  return path === "applications" || path.startsWith("applications/");
+}
+
+function isAccountSpacesPath(path: string): boolean {
+  return path === "spaces" || path.startsWith("spaces/");
 }
 
 /**
@@ -180,20 +144,35 @@ function matchKvAppFamily(path: string): AppFamilyMatch | null {
  */
 function ownerFromSpace(space: string): string | null {
   if (!space) return null;
-  const match = space.match(/^tinycloud:pkh:eip155:\d+:(0x[a-fA-F0-9]{40})(?::|\/|$)/);
+  const match = space.match(
+    /^tinycloud:pkh:eip155:\d+:(0x[a-fA-F0-9]{40})(?::|\/|$)/,
+  );
   if (!match || !match[1]) return null;
   return match[1].toLowerCase();
 }
 
-function isWholeSecretsNamespace(space: string, path: string): boolean {
-  const normalizedPath = path.replace(/^\/+|\/+$/g, "");
-  if (normalizedPath === "secrets" || normalizedPath === "vault/secrets") {
-    return true;
-  }
-  return (
-    normalizedPath === "" &&
-    (space === "secrets" || /:secrets(?:\/|$)/.test(space))
+function spaceNameFromSpace(space: string): string | null {
+  if (/^[a-z][a-z0-9-]*$/i.test(space)) return space.toLowerCase();
+  const match = space.match(
+    /^tinycloud:pkh:eip155:\d+:0x[a-fA-F0-9]{40}:([^/:]+)$/,
   );
+  return match?.[1]?.toLowerCase() ?? null;
+}
+
+function allVerbsIn(actions: string[], allowed: ReadonlySet<string>): boolean {
+  return (
+    actions.length > 0 && actions.every((action) => allowed.has(verbOf(action)))
+  );
+}
+
+function unknownActionLabel(service: string): {
+  family: CapabilityFamily;
+  displayLabel: string;
+} {
+  return {
+    family: "unknown",
+    displayLabel: `Unrecognized ${service} permission`,
+  };
 }
 
 function isNamespaceListing(actions: string[]): boolean {
@@ -210,40 +189,18 @@ function isSecretValueRead(actions: string[]): boolean {
   });
 }
 
-function withCrossUserSignal(isCrossApp: boolean, label: string): string {
-  return isCrossApp ? `Cross-user — ${label}` : label;
-}
-
 export function classifyRecapEntry(entry: RecapEntryLike): {
   family: CapabilityFamily;
   displayLabel: string;
 } {
   const { service, space, path } = entry;
-  // Sol MAJOR-7: with NO verified requester identity, we must NOT fall
-  // back to the signer address as the ownership axis. Doing so would
-  // classify every KV/SQL grant on the signer's own space as own-app-data
-  // even when the requesting app is completely unrelated to the signer's
-  // identity (a widget path where `requesterAddress: null` and
-  // `requesterVerified: false` are always passed). The correct fail-
-  // closed behaviour is: without a verified requester, treat any grant
-  // on a real space as cross-app-data (attention severity).
-  const requesterAddress =
-    entry.requesterVerified && entry.requesterAddress
-      ? entry.requesterAddress.toLowerCase()
-      : null;
-  // Retain `signerAddress` extraction so the deprecated field still
-  // reads correctly for callers that will migrate to `requesterAddress`
-  // in a future release. It is INTENTIONALLY NOT part of the ownership
-  // axis computation below.
-  void (entry.signerAddress ? entry.signerAddress.toLowerCase() : null);
-  const ownershipAxis = requesterAddress; // NO signer fallback (Sol MAJOR-7).
+  const signerAddress = entry.signerAddress?.toLowerCase() ?? null;
   const spaceOwner = ownerFromSpace(space);
-  // Fail-closed: if we have a spaceOwner but NO trusted ownership axis
-  // to compare against, treat the request as cross-app (attention).
-  // Otherwise compare against the verified requester.
-  const isCrossApp =
+  const spaceName = spaceNameFromSpace(space);
+  const isOtherUser =
     spaceOwner !== null &&
-    (ownershipAxis === null || spaceOwner !== ownershipAxis);
+    signerAddress !== null &&
+    spaceOwner !== signerAddress;
 
   // KV and SQL authority inside a TinyCloud secrets space reaches secret
   // data regardless of requester ownership. Classify it as a secret family
@@ -254,15 +211,39 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     isSecretsSpace(space) &&
     (BOOTSTRAP_KV_SERVICES.has(service) || BOOTSTRAP_SQL_SERVICES.has(service))
   ) {
-    const isMutation = entry.actions.some((a) => MUTATION_VERBS.has(verbOf(a)));
+    const knownActions = BOOTSTRAP_KV_SERVICES.has(service)
+      ? allVerbsIn(entry.actions, KV_VERBS)
+      : allVerbsIn(entry.actions, SQL_DATABASE_VERBS);
+    const isMutation =
+      !knownActions ||
+      entry.actions.some((action) => {
+        const verb = verbOf(action);
+        return MUTATION_VERBS.has(verb) || verb === "schema";
+      });
     const metadataOnly = isMetadataOnlyAccess(entry.actions);
+    if (path === "" && !isMutation) {
+      return {
+        family: "secret-namespace-list",
+        displayLabel: isSecretValueRead(entry.actions)
+          ? "Secret data — (entire secrets namespace)"
+          : "Secret names and metadata — (entire secrets namespace)",
+      };
+    }
+    if (BOOTSTRAP_SQL_SERVICES.has(service)) {
+      return {
+        family: isMutation ? "secret-mutation" : "secret-read",
+        displayLabel: `${isMutation ? "Secret catalog (manage)" : "Secret catalog (view)"} — ${describeName(path)}`,
+      };
+    }
     return {
       family: isMutation ? "secret-mutation" : "secret-read",
-      displayLabel: `${isMutation
-        ? "Secret values (update)"
-        : metadataOnly
-          ? "Secret names and metadata"
-          : "Secret values (read)"} — ${describeName(path)}`,
+      displayLabel: `${
+        isMutation
+          ? "Secret values (update)"
+          : metadataOnly
+            ? "Secret names and metadata"
+            : "Secret values (read)"
+      } — ${describeName(path)}`,
     };
   }
 
@@ -270,50 +251,9 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
   // not generic bootstrap-kv. Real CLI secret requests use tinycloud.kv with
   // paths like "vault/secrets/DEPLOY_KEY" or "secrets/MY_SECRET".
   if (BOOTSTRAP_KV_SERVICES.has(service)) {
-    const hasMutation = entry.actions.some((a) =>
-      MUTATION_VERBS.has(verbOf(a)),
-    );
-    const hasUnknownVerb = entry.actions.some(
-      (a) => !SECRETS_KNOWN_VERBS.has(verbOf(a)),
-    );
-    const isSecretsShapedSpace = isSecretsSpace(space);
-    const isWholeSecretNamespace = isWholeSecretsNamespace(space, path);
-
-    // A mutation or unknown action always wins over list/metadata. This is
-    // deliberately before the namespace-read branch so mixed grants cannot
-    // hide write or fail-closed authority behind a listing label.
-    if (
-      (isSecretsShapedSpace || isWholeSecretNamespace) &&
-      (hasMutation || hasUnknownVerb)
-    ) {
-      return {
-        family: "secret-mutation",
-        displayLabel: withCrossUserSignal(
-          isCrossApp,
-          `Secrets namespace (mutate) — ${path || "(entire namespace)"}`,
-        ),
-      };
+    if (!allVerbsIn(entry.actions, KV_VERBS)) {
+      return unknownActionLabel(service);
     }
-
-    // An empty path on a secrets-shaped space is whole-namespace authority.
-    // A read here reaches every secret value, so it is sensitive rather than
-    // the attention-level severity used for one named secret.
-    if (
-      (isSecretsShapedSpace || isWholeSecretNamespace) &&
-      entry.actions.length > 0 &&
-      (isWholeSecretNamespace || isNamespaceListing(entry.actions))
-    ) {
-      return {
-        family: "secret-namespace-list",
-        displayLabel: withCrossUserSignal(
-          isCrossApp,
-          isSecretValueRead(entry.actions)
-            ? "Secret data — (entire secrets namespace)"
-            : "Secret names and metadata — (entire secrets namespace)",
-        ),
-      };
-    }
-
     if (
       path &&
       (path.startsWith("vault/secrets/") ||
@@ -321,85 +261,179 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
         path === "vault/secrets" ||
         path === "secrets")
     ) {
-      const isMutation = hasMutation || hasUnknownVerb;
-      const secretName = path
-        .replace(/^vault\/secrets\/?/, "")
-        .replace(/^secrets\/?/, "") || "(entire secrets namespace)";
+      const isMutation = entry.actions.some((a) =>
+        MUTATION_VERBS.has(verbOf(a)),
+      );
+      const secretName =
+        path.replace(/^vault\/secrets\/?/, "").replace(/^secrets\/?/, "") ||
+        "(entire secrets namespace)";
+      const isWholeNamespace =
+        path === "vault/secrets" || path === "secrets";
       return {
-        family: isMutation ? "secret-mutation" : "secret-read",
-        displayLabel: withCrossUserSignal(
-          isCrossApp,
-          isMutation
-            ? `Named secret (mutate) — ${secretName}`
+        family: isMutation
+          ? "secret-mutation"
+          : isWholeNamespace
+            ? "secret-namespace-list"
+            : "secret-read",
+        displayLabel: isMutation
+          ? `Named secret (mutate) — ${secretName}`
+          : isWholeNamespace
+            ? isSecretValueRead(entry.actions)
+              ? "Secret data — (entire secrets namespace)"
+              : "Secret names and metadata — (entire secrets namespace)"
             : `Named secret (read) — ${secretName}`,
-        ),
+      };
+    }
+    // Ability-derived and resource-derived services disagree. Outside the
+    // structurally recognizable secret paths above, no friendly statement or
+    // routine severity is safe for a malformed wire tuple.
+    if (entry.serviceMismatch === true) {
+      return unknownActionLabel(service);
+    }
+    let knownTarget: { family: CapabilityFamily; displayLabel: string };
+    if (spaceName === "account") {
+      if (isAccountApplicationsPath(path)) {
+        if (!allVerbsIn(entry.actions, ACCOUNT_REGISTRY_KV_VERBS)) {
+          return unknownActionLabel(service);
+        }
+        knownTarget = {
+          family: "bootstrap-kv",
+          displayLabel: "Connected app registry",
+        };
+      } else if (isAccountSpacesPath(path)) {
+        if (!allVerbsIn(entry.actions, ACCOUNT_REGISTRY_KV_VERBS)) {
+          return unknownActionLabel(service);
+        }
+        knownTarget = {
+          family: "bootstrap-kv",
+          displayLabel: "Storage space registry",
+        };
+      } else if (path === "system/bootstrap/complete") {
+        if (!allVerbsIn(entry.actions, ACCOUNT_SETUP_KV_VERBS)) {
+          return unknownActionLabel(service);
+        }
+        knownTarget = {
+          family: "bootstrap-kv",
+          displayLabel: "Account setup status",
+        };
+      } else {
+        return { family: "unknown", displayLabel: "Unrecognized account data" };
+      }
+    } else if (spaceName === "applications") {
+      knownTarget = { family: "own-app-data", displayLabel: "Application data" };
+    } else if (spaceName === "public") {
+      knownTarget = { family: "public-data", displayLabel: "Public data" };
+    } else if (spaceName === "default") {
+      knownTarget = isScopedDataPath(path)
+        ? { family: "own-app-data", displayLabel: "Application data" }
+        : { family: "bootstrap-kv", displayLabel: "TinyCloud data" };
+    } else {
+      return {
+        family: "unknown",
+        displayLabel: "Unrecognized key-value data",
       };
     }
 
-    if (isSecretsShapedSpace) {
-      return {
-        family: "secret-read",
-        displayLabel: withCrossUserSignal(
-          isCrossApp,
-          `Secret data — ${path || "(entire secrets namespace)"}`,
-        ),
-      };
-    }
-    // A grant outside a verified requester identity remains cross-app and
-    // keeps attention severity. Do not call it cross-user here: resource
-    // ownership is a separate signer-relative fact computed by the parser.
-    if (isCrossApp) {
-      return {
-        family: "cross-app-data",
-        displayLabel: "Data outside this app",
-      };
-    }
-    // Own-space + recognized app path: label with the app family.
-    const appMatch = matchKvAppFamily(path);
-    if (appMatch) {
-      return { family: "own-app-data", displayLabel: appMatch.displayLabel(path) };
-    }
-    return { family: "bootstrap-kv", displayLabel: "Key-value storage" };
+    return isOtherUser
+      ? { family: "cross-app-data", displayLabel: "Another user's data" }
+      : knownTarget;
   }
   if (BOOTSTRAP_SQL_SERVICES.has(service)) {
-    // Same app-boundary logic for SQL. User ownership is shown separately.
-    if (isCrossApp) {
-      return {
-        family: "cross-app-data",
-        displayLabel: "Data outside this app",
-      };
+    if (entry.serviceMismatch === true) {
+      return unknownActionLabel(service);
     }
-    return { family: "bootstrap-sql", displayLabel: "SQL database" };
+    let knownTarget: { family: CapabilityFamily; displayLabel: string };
+    if (spaceName === "account" && path === "account") {
+      if (!allVerbsIn(entry.actions, SQL_DATABASE_VERBS)) {
+        return unknownActionLabel(service);
+      }
+      knownTarget = { family: "bootstrap-sql", displayLabel: "Account index" };
+    } else if (spaceName === "applications" || spaceName === "default") {
+      const scoped = isScopedDataPath(path);
+      const allowed = scoped ? SQL_DATABASE_VERBS : SQL_DATA_VERBS;
+      if (!allVerbsIn(entry.actions, allowed)) {
+        return unknownActionLabel(service);
+      }
+      knownTarget = spaceName === "applications" || scoped
+        ? { family: "own-app-data", displayLabel: "Application data" }
+        : { family: "bootstrap-sql", displayLabel: "TinyCloud data" };
+    } else if (spaceName === "public") {
+      return {
+        family: "unknown",
+        displayLabel: "Unrecognized public data permission",
+      };
+    } else {
+      return { family: "unknown", displayLabel: "Unrecognized SQL data" };
+    }
+
+    return isOtherUser
+      ? { family: "cross-app-data", displayLabel: "Another user's data" }
+      : knownTarget;
   }
   if (BOOTSTRAP_CAPABILITIES_SERVICES.has(service)) {
+    if (entry.serviceMismatch === true) {
+      return unknownActionLabel(service);
+    }
     // Fail-closed: a capabilities grant with an unknown verb is not a
     // known "read your permissions" shape. Downgrading it to
     // `bootstrap-capabilities` would silently classify it as standard
     // severity via `classifySeverityFromActions`. Route unknown verbs
     // through the `unknown` family so severity is elevated (attention
     // for reads, sensitive for mutations/decrypts).
-    const allRead = entry.actions.every((a) => CAPABILITY_READ_VERBS.has(verbOf(a)));
+    const allRead = allVerbsIn(entry.actions, CAPABILITY_READ_VERBS);
     if (!allRead) {
       return {
         family: "unknown",
         displayLabel: `Unknown capabilities action on ${space || "(no space)"}`,
       };
     }
+    if (isOtherUser) {
+      return {
+        family: "cross-app-data",
+        displayLabel: "Another user's permission settings",
+      };
+    }
     return {
       family: "bootstrap-capabilities",
-      displayLabel: "Capability metadata",
+      displayLabel: `Permission check${spaceName ? ` — ${spaceName}` : ""}`,
+    };
+  }
+  if (DELEGATION_SERVICES.has(service)) {
+    if (entry.serviceMismatch === true) {
+      return unknownActionLabel(service);
+    }
+    if (!allVerbsIn(entry.actions, DELEGATION_VERBS)) {
+      return unknownActionLabel(service);
+    }
+    if (spaceName !== "account") {
+      return {
+        family: "unknown",
+        displayLabel: "Unrecognized delegation target",
+      };
+    }
+    if (isOtherUser) {
+      return {
+        family: "cross-app-data",
+        displayLabel: "Another user's connected access",
+      };
+    }
+    return {
+      family: "bootstrap-delegation",
+      displayLabel: "Connected access and sharing",
     };
   }
   if (SECRETS_SERVICES.has(service)) {
+    if (entry.serviceMismatch === true) {
+      return unknownActionLabel(service);
+    }
     const isMutation = entry.actions.some((a) => MUTATION_VERBS.has(verbOf(a)));
     const metadataOnly = isMetadataOnlyAccess(entry.actions);
     // Fail-closed: an unknown verb on the secrets service could easily be
-    // a mutation we do not yet recognize. Do not classify it as the
-    // attention-level `secret-read` family and hide it in the standard
-    // read bucket — treat it as `secret-mutation` (sensitive) so the
-    // user sees the elevated severity and the grant remains inside the
-    // secret-reach count.
-    const hasUnknownVerb = entry.actions.some((a) => !SECRETS_KNOWN_VERBS.has(verbOf(a)));
+    // a mutation we do not yet recognize. Treat it as secret-mutation so
+    // it stays Sensitive and inside the secret-reach count.
+    const hasUnknownVerb = entry.actions.some(
+      (a) => !SECRETS_KNOWN_VERBS.has(verbOf(a)),
+    );
     if (isMutation || hasUnknownVerb) {
       return {
         family: "secret-mutation",
@@ -422,6 +456,15 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     };
   }
   if (ENCRYPTION_SERVICES.has(service)) {
+    if (entry.serviceMismatch === true) {
+      return unknownActionLabel(service);
+    }
+    if (!allVerbsIn(entry.actions, ENCRYPTION_VERBS)) {
+      return {
+        family: "encryption-key",
+        displayLabel: "Unrecognized encryption permission",
+      };
+    }
     const hasDecrypt = entry.actions.some((a) => DECRYPT_VERBS.has(verbOf(a)));
     return {
       family: hasDecrypt ? "encryption-decrypt" : "encryption-key",
@@ -432,7 +475,10 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
   }
 
   // Unknown, own vs cross-app data.
-  const spaceLabel = space && space.startsWith("tinycloud:") ? space.slice(space.lastIndexOf(":") + 1) : space;
+  const spaceLabel =
+    space && space.startsWith("tinycloud:")
+      ? space.slice(space.lastIndexOf(":") + 1)
+      : space;
   return {
     family: "unknown",
     displayLabel: `Unknown service ${service} on ${spaceLabel || "(no space)"}`,
@@ -460,19 +506,25 @@ export function classifySeverityFromActions(
   switch (family) {
     case "bootstrap-kv":
     case "bootstrap-sql":
-      return hasMutation ? "attention" : "standard";
+      return "standard";
     case "bootstrap-capabilities":
+    case "bootstrap-delegation":
       return "standard";
     case "own-app-data":
-      return hasMutation ? "attention" : "standard";
+      return "standard";
     case "cross-app-data":
       return "attention";
+    case "public-data":
+      return hasMutation ? "attention" : "standard";
     case "secret-read":
-      return isMetadataOnlyAccess(actions) ? "standard" : "sensitive";
+    case "secret-namespace-list":
+      return "sensitive";
     case "secret-mutation":
       return "sensitive";
     case "encryption-key":
-      return "sensitive";
+      return allVerbsIn(actions, ENCRYPTION_NETWORK_VERBS)
+        ? "attention"
+        : "sensitive";
     case "encryption-decrypt":
       return hasDecrypt ? "sensitive" : "attention";
     case "unknown":

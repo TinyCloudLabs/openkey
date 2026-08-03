@@ -1,19 +1,11 @@
 // Sol post-rejection follow-up: fail-closed regression tests for the two
 // friendly-statement gaps identified in the iteration-2 review.
 //
-// Behavior 1 (encryption/network.revoke) — the encryption family branch
-// only speaks about `decrypt` and `network.create`; `classifyVerbs` does
-// not classify the compound `network.revoke` verb. Prior to this fix,
-// `tinycloud.encryption/network.revoke` was in
-// ENCRYPTION_RECOGNIZED_ABILITIES, so the whole-grant gate accepted it
-// and the encryption branch rendered `[decrypt, network.revoke]` as
-// "Decrypt protected data", `[network.create, network.revoke]` as
-// "Create a decryption network", and `[decrypt, network.create,
-// network.revoke]` as the combined create+decrypt copy — silently
-// swallowing the revoke authority in every mixed grant. Removing
-// `network.revoke` from the recognized set forces the whole-grant gate
-// to fail and the grant falls back to the literal
-// service/resource/actions rendering, preserving every raw ability.
+// Behavior 1 (encryption/network.revoke) — a revoke-only grant has a
+// deterministic product consequence and earns the friendly statement
+// "Disable the decryption network". A grant that mixes revoke with any
+// other encryption action still fails closed to the literal rendering so
+// no authority is hidden by a partial summary.
 //
 // Behavior 2 (unknown-service app-data) — `buildStatement`'s app-data
 // family branch previously fired friendly "Read this app's data" /
@@ -68,7 +60,7 @@ function makeGrant(input: GrantInput): CapabilityGrant {
     space,
     path,
     owner: ACCOUNT,
-    ownedBySelf: input.ownedBySelf ?? input.family === "own-app-data",
+    ownedBySelf: input.ownedBySelf ?? input.family !== "cross-app-data",
     displayLabel: path || input.service,
     metadataLabel: null,
     resourceService: null,
@@ -76,13 +68,10 @@ function makeGrant(input: GrantInput): CapabilityGrant {
   };
 }
 
-// ─── Behavior 1: network.revoke drives whole-grant literal fallback ─────────
+// ─── Behavior 1: network.revoke has an exact, fail-closed mapping ──────
 
-describe("buildStatement — encryption network.revoke fails closed", () => {
-  it("[network.revoke] alone renders the literal fallback", () => {
-    // `network.revoke` is registered on the node but the encryption
-    // family branch has no friendly mapping for it. The whole-grant
-    // gate must fail so the raw ability appears verbatim.
+describe("buildStatement — encryption network.revoke", () => {
+  it("[network.revoke] alone explains the consequence", () => {
     const grant = makeGrant({
       family: "encryption-key",
       service: "tinycloud.encryption",
@@ -91,14 +80,8 @@ describe("buildStatement — encryption network.revoke fails closed", () => {
       severity: "sensitive",
     });
     const stmt = buildStatement(grant);
-    expect(stmt.primaryText).toBe(
-      "Perform tinycloud.encryption/network.revoke on tinycloud.encryption",
-    );
+    expect(stmt.primaryText).toBe("Disable the decryption network");
     expect(stmt.primaryText).not.toBe("Decrypt protected data");
-    expect(stmt.primaryText).not.toBe("Create a decryption network");
-    expect(stmt.primaryText).not.toBe(
-      "Create a decryption network and decrypt protected data",
-    );
     expect(stmt.service).toBe("tinycloud.encryption");
     // The resource must be preserved verbatim as well.
     expect(stmt.resource).toBe(`${DEFAULT_SPACE}/health-data`);
@@ -186,9 +169,7 @@ describe("buildStatement — encryption network.revoke fails closed", () => {
     expect(stmt.primaryText).toContain("tinycloud.encryption/network.revoke");
   });
 
-  it("also fails closed for the short-form `encryption/network.revoke` alias", () => {
-    // Whole-grant gate must reject the short-form alias as well —
-    // ENCRYPTION_RECOGNIZED_ABILITIES intentionally omits both forms.
+  it("also explains the short-form `encryption/network.revoke` alias", () => {
     const grant = makeGrant({
       family: "encryption-key",
       service: "encryption",
@@ -197,9 +178,7 @@ describe("buildStatement — encryption network.revoke fails closed", () => {
       severity: "sensitive",
     });
     const stmt = buildStatement(grant);
-    expect(stmt.primaryText).toBe(
-      "Perform encryption/network.revoke on encryption",
-    );
+    expect(stmt.primaryText).toBe("Disable the decryption network");
   });
 });
 
@@ -218,9 +197,7 @@ describe("buildStatement — unknown-service app-data fails closed", () => {
       abilities: ["tinycloud.foo/get"],
     });
     const stmt = buildStatement(grant);
-    expect(stmt.primaryText).toBe(
-      "Perform tinycloud.foo/get on tinycloud.foo",
-    );
+    expect(stmt.primaryText).toBe("Perform tinycloud.foo/get on tinycloud.foo");
     expect(stmt.primaryText).not.toBe("Read this app's data");
     expect(stmt.primaryText).not.toBe("Update this app's data");
     expect(stmt.primaryText).not.toBe("Read and update this app's data");
@@ -270,17 +247,17 @@ describe("buildStatement — unknown-service app-data fails closed", () => {
 // ─── Behavior 3 (preserve): known KV / SQL / encryption copy unchanged ──────
 
 describe("buildStatement — preserved known copy", () => {
-  it("own-app-data on tinycloud.kv still yields \"Read this app's data\"", () => {
+  it('own-app-data on tinycloud.kv yields "Read application data"', () => {
     const grant = makeGrant({
       family: "own-app-data",
       service: "tinycloud.kv",
       path: "cycle/",
       abilities: ["tinycloud.kv/get"],
     });
-    expect(buildStatement(grant).primaryText).toBe("Read this app's data");
+    expect(buildStatement(grant).primaryText).toBe("Read application data");
   });
 
-  it("cross-app-data on tinycloud.sql still yields \"Read and update data outside this app\"", () => {
+  it("another user's tinycloud.sql data is identified as such", () => {
     const grant = makeGrant({
       family: "cross-app-data",
       service: "tinycloud.sql",
@@ -289,11 +266,11 @@ describe("buildStatement — preserved known copy", () => {
       ownedBySelf: false,
     });
     expect(buildStatement(grant).primaryText).toBe(
-      "Read and update data outside this app",
+      "Read and update another user's TinyCloud data",
     );
   });
 
-  it("encryption [decrypt] alone still yields \"Decrypt protected data\"", () => {
+  it('encryption [decrypt] alone still yields "Decrypt protected data"', () => {
     const grant = makeGrant({
       family: "encryption-decrypt",
       service: "tinycloud.encryption",
@@ -301,12 +278,10 @@ describe("buildStatement — preserved known copy", () => {
       abilities: ["tinycloud.encryption/decrypt"],
       severity: "sensitive",
     });
-    expect(buildStatement(grant).primaryText).toBe(
-      "Decrypt protected data",
-    );
+    expect(buildStatement(grant).primaryText).toBe("Decrypt protected data");
   });
 
-  it("encryption [network.create] alone still yields \"Create a decryption network\"", () => {
+  it('encryption [network.create] yields "Set up encrypted data access"', () => {
     const grant = makeGrant({
       family: "encryption-decrypt",
       service: "tinycloud.encryption",
@@ -315,7 +290,7 @@ describe("buildStatement — preserved known copy", () => {
       severity: "sensitive",
     });
     expect(buildStatement(grant).primaryText).toBe(
-      "Create a decryption network",
+      "Set up encrypted data access",
     );
   });
 
@@ -331,7 +306,7 @@ describe("buildStatement — preserved known copy", () => {
       severity: "sensitive",
     });
     expect(buildStatement(grant).primaryText).toBe(
-      "Create a decryption network and decrypt protected data",
+      "Set up encrypted data access and decrypt protected data",
     );
   });
 });

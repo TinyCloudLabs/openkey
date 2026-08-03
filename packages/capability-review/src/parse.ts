@@ -61,19 +61,13 @@ export interface ParseContext {
   /** Requester (app) identity, verified by the caller before parse. */
   requester: RequesterIdentity;
   /**
-   * Sol MAJOR-8: the requesting app's verified Ethereum address, lowercased.
-   * When BOTH `requesterAddress` and `requesterVerified === true` are set,
-   * the classifier uses this identity to distinguish own-app vs cross-app
-   * grants — replacing the deprecated signer-address fallback that caused
-   * every cross-user grant sharing a signer with its owner to appear as
-   * own-app-data. Callers MUST NOT supply an unverified address here.
+   * @deprecated App boundaries are derived from an origin-bound manifest's
+   * app_id/prefix, never from an EVM resource owner. Retained for API
+   * compatibility; classification intentionally ignores it.
    */
   requesterAddress?: string | null;
   /**
-   * True only when `requesterAddress` was derived from a signed manifest
-   * whose digest matched, whose signature verified, and whose freshness
-   * is within the configured window. Any lower trust state MUST leave
-   * this false (or omit it).
+   * @deprecated Paired with requesterAddress and intentionally ignored.
    */
   requesterVerified?: boolean;
 }
@@ -725,25 +719,13 @@ function buildGrants(
   signer: SignerInfo,
 ): CapabilityGrant[] {
   const signerAddress = signer.address.toLowerCase();
-  // Sol MAJOR-8 (requester classification): derive the ownership axis from
-  // the verified requester identity when the parser was given one. `signer`
-  // is the OpenKey user account — using it as the ownership axis mis-labels
-  // every cross-app request that shares the SAME signer with the space
-  // owner (which is common: a user often signs into OpenKey with the same
-  // wallet that owns their TinyCloud space). Only a VERIFIED requester
-  // address (from a signed manifest that matched its expected digest) is
-  // trustworthy for cross-app classification.
-  const requesterAddress = ctx.requesterAddress ?? null;
-  const requesterVerified = ctx.requesterVerified === true;
   return entries.map((entry): CapabilityGrant => {
-    // Forward both the (deprecated) signer address and the verified
-    // requester identity so classifyRecapEntry can distinguish own-app
-    // vs cross-app grants correctly.
+    // Resource ownership is relative to the signer. Application identity is
+    // a separate manifest concern and must never be inferred from an EVM
+    // resource owner.
     const { family, displayLabel } = classifyRecapEntry({
       ...entry,
       signerAddress,
-      requesterAddress,
-      requesterVerified,
     });
     const severity = classifySeverityFromActions(family, entry.actions, {
       service: entry.service,
@@ -752,12 +734,9 @@ function buildGrants(
     });
     const actions = buildActions(entry, ctx);
     const ownership = ownerFromSpace(entry.space);
-    // Resource ownership and app identity are distinct. The family/severity
-    // above remains conservative when requester identity is unverified, but
-    // `ownedBySelf` answers the narrower user-facing question: does this
-    // TinyCloud space belong to the account that is signing? This prevents a
-    // same-user grant from being mislabeled as cross-user while preserving
-    // the cross-app attention classification.
+    // `ownedBySelf` answers the user-facing ownership question: does this
+    // TinyCloud space belong to the account that is signing? It does not
+    // identify which application requested the authority.
     const ownedBySelf =
       ownership.owner === null
         ? null

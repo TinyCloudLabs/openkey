@@ -1039,7 +1039,7 @@ describe('signing-approval mounted parity across production surface adapters (So
       const handle = await mountSurface(binding, built.props);
 
       const summary = handle.container.querySelector('.summary');
-      expect(summary?.textContent).toContain('Create a decryption network');
+      expect(summary?.textContent).toContain('Set up encrypted data access');
       expect(summary?.textContent).not.toContain('decrypt protected data');
       expect(handle.container.querySelector('.sensitive-callout')).toBeNull();
 

@@ -32,6 +32,7 @@ function makeGrant(input: {
   abilities: string[];
   family: CapabilityGrant["family"];
   severity: CapabilityGrant["severity"];
+  ownedBySelf?: boolean;
 }): CapabilityGrant {
   const space = input.space ?? SPACE;
   const path = input.path ?? "";
@@ -52,13 +53,63 @@ function makeGrant(input: {
     space,
     path,
     owner: ACCOUNT,
-    ownedBySelf: true,
+    ownedBySelf: input.ownedBySelf ?? true,
     displayLabel: path || input.service,
     metadataLabel: null,
     resourceService: null,
     actions,
   };
 }
+
+describe("buildStatement — unknown structural shapes", () => {
+  it("keeps an unknown cross-user KV target literal", () => {
+    const statement = buildStatement(
+      makeGrant({
+        service: "tinycloud.kv",
+        space: `tinycloud:pkh:eip155:1:${ACCOUNT}:custom`,
+        path: "locations/",
+        abilities: ["tinycloud.kv/get"],
+        family: "unknown",
+        severity: "attention",
+        ownedBySelf: false,
+      }),
+    );
+    expect(statement.primaryText).toBe(
+      "Perform tinycloud.kv/get on tinycloud.kv",
+    );
+  });
+
+  it("keeps an unknown delegation target literal", () => {
+    const statement = buildStatement(
+      makeGrant({
+        service: "tinycloud.delegation",
+        space: `tinycloud:pkh:eip155:1:${ACCOUNT}:custom`,
+        abilities: ["tinycloud.delegation/list"],
+        family: "unknown",
+        severity: "attention",
+      }),
+    );
+    expect(statement.primaryText).toBe(
+      "Perform tinycloud.delegation/list on tinycloud.delegation",
+    );
+  });
+
+  it("does not infer secret semantics from a variables-looking path", () => {
+    const statement = buildStatement(
+      makeGrant({
+        service: "tinycloud.kv",
+        space: `tinycloud:pkh:eip155:1:${ACCOUNT}:custom`,
+        path: "variables/",
+        abilities: ["tinycloud.kv/get"],
+        family: "unknown",
+        severity: "attention",
+      }),
+    );
+    expect(statement.primaryText).toBe(
+      "Perform tinycloud.kv/get on tinycloud.kv",
+    );
+  });
+});
 
 describe("buildStatement — capabilities service unknown verbs", () => {
   it("falls back to literal copy when a capabilities grant carries an unknown verb", () => {
@@ -98,12 +149,24 @@ describe("buildStatement — capabilities service unknown verbs", () => {
       severity: "standard",
     });
     expect(buildStatement(grant).primaryText).toBe(
-      "Check your TinyCloud account permissions",
+      "Check your TinyCloud permissions",
     );
   });
 });
 
 describe("buildStatement — secrets service unknown verbs", () => {
+  it("keeps the legacy named-secrets read service literal", () => {
+    const grant = makeGrant({
+      service: "tinycloud.secrets",
+      abilities: ["tinycloud.secrets/read"],
+      family: "secret-read",
+      severity: "sensitive",
+    });
+    expect(buildStatement(grant).primaryText).toBe(
+      "Perform tinycloud.secrets/read on tinycloud.secrets",
+    );
+  });
+
   it("falls back to literal copy when a secrets grant carries an unknown verb", () => {
     const grant = makeGrant({
       service: "tinycloud.secrets",
@@ -118,24 +181,18 @@ describe("buildStatement — secrets service unknown verbs", () => {
   });
 
   it("does not invent a vault-read statement when no shape matched", () => {
-    // A read-shaped verb that does not fit any of the enumerated
-    // secret shapes (capabilities-read, list/metadata, mutation) still
-    // qualifies as recognized — the contract carves out the vault-read
-    // sentence only for genuine vault reads. `peek` is a recognized
-    // read verb but no shape above matches, so the fallback applies.
+    // `peek` is not a manifest-defined secrets action, so it stays literal
+    // and must never inherit reassuring vault-read copy.
     const grant = makeGrant({
       service: "tinycloud.secrets",
       abilities: ["tinycloud.secrets/peek"],
       family: "secret-read",
-      severity: "attention",
+      severity: "sensitive",
     });
-    // With the recognized-verb path, "peek" is a read verb, so the
-    // capabilities-shape branch matches and yields the permissions
-    // check copy. This test simply pins that we never fall into the
-    // previous "View secrets stored in your vault" default for an
-    // unrelated read verb.
     const primary = buildStatement(grant).primaryText;
-    expect(primary).not.toBe("View secrets stored in your vault");
+    expect(primary).toBe(
+      "Perform tinycloud.secrets/peek on tinycloud.secrets",
+    );
   });
 });
 
@@ -157,10 +214,9 @@ describe("classifyRecapEntry — unknown capabilities verbs", () => {
       path: "",
       actions: ["tinycloud.capabilities/grant"],
     });
-    const severity = classifySeverityFromActions(
-      classification.family,
-      ["tinycloud.capabilities/grant"],
-    );
+    const severity = classifySeverityFromActions(classification.family, [
+      "tinycloud.capabilities/grant",
+    ]);
     expect(classification.family).toBe("unknown");
     expect(severity).toBe("sensitive");
   });
@@ -173,6 +229,211 @@ describe("classifyRecapEntry — unknown capabilities verbs", () => {
       actions: ["tinycloud.capabilities/read"],
     });
     expect(result.family).toBe("bootstrap-capabilities");
+  });
+
+  it("elevates a capabilities read on another user's space", () => {
+    const result = classifyRecapEntry({
+      service: "tinycloud.capabilities",
+      space: SPACE,
+      path: "",
+      actions: ["tinycloud.capabilities/read"],
+      signerAddress: "0x2222222222222222222222222222222222222222",
+    });
+    expect(result.family).toBe("cross-app-data");
+    expect(
+      classifySeverityFromActions(result.family, [
+        "tinycloud.capabilities/read",
+      ]),
+    ).toBe("attention");
+  });
+
+  it("maps the stable permissions-check meaning on a custom space", () => {
+    const result = classifyRecapEntry({
+      service: "tinycloud.capabilities",
+      space: `tinycloud:pkh:eip155:1:${ACCOUNT}:custom`,
+      path: "",
+      actions: ["tinycloud.capabilities/read"],
+      signerAddress: ACCOUNT,
+    });
+    expect(result.family).toBe("bootstrap-capabilities");
+  });
+});
+
+describe("classifyRecapEntry — unknown data targets", () => {
+  for (const [service, action] of [
+    ["tinycloud.kv", "tinycloud.kv/get"],
+    ["tinycloud.sql", "tinycloud.sql/read"],
+  ] as const) {
+    it(`fails closed for ${service} on an unrecognized space`, () => {
+      const result = classifyRecapEntry({
+        service,
+        space: `tinycloud:pkh:eip155:1:${ACCOUNT}:custom`,
+        path: "",
+        actions: [action],
+        signerAddress: ACCOUNT,
+      });
+      expect(result.family).toBe("unknown");
+      expect(classifySeverityFromActions(result.family, [action])).toBe(
+        "attention",
+      );
+    });
+  }
+
+  it("fails closed for a scoped path in an unrecognized custom space", () => {
+    const result = classifyRecapEntry({
+      service: "tinycloud.kv",
+      space: `tinycloud:pkh:eip155:1:${ACCOUNT}:health-records`,
+      path: "locations/",
+      actions: ["tinycloud.kv/get"],
+      signerAddress: ACCOUNT,
+    });
+    expect(result.family).toBe("unknown");
+  });
+
+  it("does not make a custom target friendly just because it belongs to another user", () => {
+    const result = classifyRecapEntry({
+      service: "tinycloud.kv",
+      space:
+        "tinycloud:pkh:eip155:1:0x2222222222222222222222222222222222222222:health-records",
+      path: "locations/",
+      actions: ["tinycloud.kv/get"],
+      signerAddress: ACCOUNT,
+    });
+    expect(result.family).toBe("unknown");
+    expect(
+      classifySeverityFromActions(result.family, ["tinycloud.kv/get"]),
+    ).toBe("attention");
+  });
+
+  it("validates account actions before overlaying another-user ownership", () => {
+    const action = "tinycloud.kv/del";
+    const result = classifyRecapEntry({
+      service: "tinycloud.kv",
+      space:
+        "tinycloud:pkh:eip155:1:0x2222222222222222222222222222222222222222:account",
+      path: "applications/",
+      actions: [action],
+      signerAddress: ACCOUNT,
+    });
+    expect(result.family).toBe("unknown");
+    expect(classifySeverityFromActions(result.family, [action])).toBe(
+      "sensitive",
+    );
+  });
+
+  it("keeps a canonical account read recognizable for another user", () => {
+    const result = classifyRecapEntry({
+      service: "tinycloud.kv",
+      space:
+        "tinycloud:pkh:eip155:1:0x2222222222222222222222222222222222222222:account",
+      path: "applications/",
+      actions: ["tinycloud.kv/get"],
+      signerAddress: ACCOUNT,
+    });
+    expect(result.family).toBe("cross-app-data");
+  });
+
+  it("rejects schema authority on a whole application SQL space", () => {
+    const action = "tinycloud.sql/schema";
+    const result = classifyRecapEntry({
+      service: "tinycloud.sql",
+      space: `tinycloud:pkh:eip155:1:${ACCOUNT}:applications`,
+      path: "",
+      actions: [action],
+      signerAddress: ACCOUNT,
+    });
+    expect(result.family).toBe("unknown");
+    expect(classifySeverityFromActions(result.family, [action])).toBe(
+      "attention",
+    );
+  });
+
+  it("allows schema authority on a named application database", () => {
+    const result = classifyRecapEntry({
+      service: "tinycloud.sql",
+      space: `tinycloud:pkh:eip155:1:${ACCOUNT}:applications`,
+      path: "default",
+      actions: ["tinycloud.sql/read", "tinycloud.sql/schema"],
+      signerAddress: ACCOUNT,
+    });
+    expect(result.family).toBe("own-app-data");
+  });
+
+  for (const entry of [
+    {
+      service: "tinycloud.kv",
+      space: `tinycloud:pkh:eip155:1:${ACCOUNT}:account`,
+      path: "applications/",
+      action: "tinycloud.kv/del",
+      target: "account app registry",
+    },
+    {
+      service: "tinycloud.sql",
+      space: `tinycloud:pkh:eip155:1:${ACCOUNT}:account`,
+      path: "account",
+      action: "tinycloud.sql/admin",
+      target: "account index",
+    },
+    {
+      service: "tinycloud.sql",
+      space: `tinycloud:pkh:eip155:1:${ACCOUNT}:applications`,
+      path: "",
+      action: "tinycloud.sql/admin",
+      target: "application data",
+    },
+  ] as const) {
+    it(`rejects excess authority on ${entry.target}: ${entry.action}`, () => {
+      const result = classifyRecapEntry({
+        service: entry.service,
+        space: entry.space,
+        path: entry.path,
+        actions: [entry.action],
+        signerAddress: ACCOUNT,
+      });
+      expect(result.family).toBe("unknown");
+      expect(
+        classifySeverityFromActions(result.family, [entry.action]),
+      ).toBe("sensitive");
+    });
+  }
+});
+
+describe("classifyRecapEntry — malformed wire tuples", () => {
+  for (const [service, action] of [
+    ["tinycloud.capabilities", "tinycloud.capabilities/read"],
+    ["tinycloud.delegation", "tinycloud.delegation/list"],
+  ] as const) {
+    it(`elevates a service-mismatched ${service} grant`, () => {
+      const result = classifyRecapEntry({
+        service,
+        space: SPACE,
+        path: "",
+        actions: [action],
+        signerAddress: ACCOUNT,
+        serviceMismatch: true,
+      });
+      expect(result.family).toBe("unknown");
+      expect(classifySeverityFromActions(result.family, [action])).toBe(
+        "attention",
+      );
+    });
+  }
+});
+
+describe("classifyRecapEntry — encryption severity", () => {
+  it("keeps unknown encryption authority sensitive", () => {
+    const actions = ["tinycloud.encryption/export-key"];
+    const result = classifyRecapEntry({
+      service: "tinycloud.encryption",
+      space: SPACE,
+      path: "",
+      actions,
+      signerAddress: ACCOUNT,
+    });
+    expect(result.displayLabel).toBe("Unrecognized encryption permission");
+    expect(classifySeverityFromActions(result.family, actions)).toBe(
+      "sensitive",
+    );
   });
 });
 
@@ -205,7 +466,7 @@ describe("classifyRecapEntry — unknown secrets verbs", () => {
         "tinycloud.secrets/list",
         "tinycloud.secrets/metadata",
       ]),
-    ).toBe("standard");
+    ).toBe("sensitive");
     expect(classification.displayLabel).toContain("Secret names and metadata");
   });
 });

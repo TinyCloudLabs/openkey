@@ -50,6 +50,7 @@ interface VerbSet {
   hasSchema: boolean;
   hasList: boolean;
   hasMetadata: boolean;
+  hasRevoke: boolean;
   onlyRead: boolean;
   onlyWrite: boolean;
   onlyDecrypt: boolean;
@@ -87,40 +88,9 @@ const RECOGNIZED_CAPABILITY_ACTIONS = new Set([
   "capabilities/read",
 ]);
 
-// The named-secrets service accepts the read / mutation / list / metadata
-// shapes below. Anything else must fall back to the literal actions.
-const RECOGNIZED_SECRETS_READ_ACTIONS = new Set([
-  "tinycloud.secrets/read",
-  "tinycloud.secrets/get",
-  "secrets/read",
-  "secrets/get",
-]);
-const RECOGNIZED_SECRETS_WRITE_ACTIONS = new Set([
-  "tinycloud.secrets/put",
-  "tinycloud.secrets/write",
-  "tinycloud.secrets/delete",
-  "tinycloud.secrets/del",
-  "tinycloud.secrets/update",
-  "secrets/put",
-  "secrets/write",
-  "secrets/delete",
-  "secrets/del",
-  "secrets/update",
-]);
-const RECOGNIZED_SECRETS_LIST_ACTIONS = new Set([
-  "tinycloud.secrets/list",
-  "secrets/list",
-]);
-const RECOGNIZED_SECRETS_METADATA_ACTIONS = new Set([
-  "tinycloud.secrets/metadata",
-  "secrets/metadata",
-]);
-const RECOGNIZED_SECRETS_ACTIONS = new Set<string>([
-  ...RECOGNIZED_SECRETS_READ_ACTIONS,
-  ...RECOGNIZED_SECRETS_WRITE_ACTIONS,
-  ...RECOGNIZED_SECRETS_LIST_ACTIONS,
-  ...RECOGNIZED_SECRETS_METADATA_ACTIONS,
-]);
+// Whole-namespace KV/SQL access has a distinct, known consequence. The
+// legacy named-secrets service is intentionally excluded because it is not a
+// current manifest service; those grants remain literal.
 const RECOGNIZED_KV_NAMESPACE_ACTIONS = new Set<string>([
   "tinycloud.kv/get",
   "kv/get",
@@ -132,14 +102,6 @@ const RECOGNIZED_KV_NAMESPACE_ACTIONS = new Set<string>([
 const RECOGNIZED_SQL_NAMESPACE_ACTIONS = new Set<string>([
   "tinycloud.sql/read",
   "sql/read",
-  "tinycloud.sql/select",
-  "sql/select",
-]);
-const RECOGNIZED_SECRETS_NAMESPACE_ACTIONS = new Set<string>([
-  "tinycloud.secrets/list",
-  "tinycloud.secrets/metadata",
-  "secrets/list",
-  "secrets/metadata",
 ]);
 // Sol MAJOR-3: `create` matches short-verb abilities (e.g. `foo/create`).
 // The production encryption service uses the compound verb
@@ -160,6 +122,7 @@ const CREATE_VERBS = new Set(["create", "network.create"]);
 const SCHEMA_VERBS = new Set(["schema"]);
 const LIST_VERBS = new Set(["list"]);
 const METADATA_VERBS = new Set(["metadata"]);
+const REVOKE_VERBS = new Set(["network.revoke"]);
 
 function verbOf(ability: string): string {
   if (ability.includes("/")) return ability.slice(ability.indexOf("/") + 1);
@@ -174,6 +137,7 @@ function classifyVerbs(actions: readonly string[]): VerbSet {
   let hasSchema = false;
   let hasList = false;
   let hasMetadata = false;
+  let hasRevoke = false;
   for (const a of actions) {
     const v = verbOf(a);
     if (READ_VERBS.has(v)) hasRead = true;
@@ -183,13 +147,23 @@ function classifyVerbs(actions: readonly string[]): VerbSet {
     if (SCHEMA_VERBS.has(v)) hasSchema = true;
     if (LIST_VERBS.has(v)) hasList = true;
     if (METADATA_VERBS.has(v)) hasMetadata = true;
+    if (REVOKE_VERBS.has(v)) hasRevoke = true;
   }
   // "only" variants gate action-aware phrasing so we never claim
   // "read and update" when the request is read-only.
-  const onlyRead = hasRead && !hasWrite && !hasDecrypt && !hasCreate && !hasSchema;
-  const onlyWrite = hasWrite && !hasRead && !hasDecrypt && !hasCreate;
-  const onlyDecrypt = hasDecrypt && !hasRead && !hasWrite && !hasCreate;
-  const onlyCreate = hasCreate && !hasRead && !hasWrite && !hasDecrypt;
+  const onlyRead =
+    hasRead &&
+    !hasWrite &&
+    !hasDecrypt &&
+    !hasCreate &&
+    !hasSchema &&
+    !hasRevoke;
+  const onlyWrite =
+    hasWrite && !hasRead && !hasDecrypt && !hasCreate && !hasRevoke;
+  const onlyDecrypt =
+    hasDecrypt && !hasRead && !hasWrite && !hasCreate && !hasRevoke;
+  const onlyCreate =
+    hasCreate && !hasRead && !hasWrite && !hasDecrypt && !hasRevoke;
   return {
     hasRead,
     hasWrite,
@@ -198,6 +172,7 @@ function classifyVerbs(actions: readonly string[]): VerbSet {
     hasSchema,
     hasList,
     hasMetadata,
+    hasRevoke,
     onlyRead,
     onlyWrite,
     onlyDecrypt,
@@ -217,7 +192,8 @@ function classifyVerbs(actions: readonly string[]): VerbSet {
  */
 function resourceOf(grant: CapabilityGrant): string {
   if (grant.resourceService !== null && grant.resourceService !== "") {
-    if (grant.path) return `${grant.space}/${grant.resourceService}/${grant.path}`;
+    if (grant.path)
+      return `${grant.space}/${grant.resourceService}/${grant.path}`;
     return `${grant.space}/${grant.resourceService}`;
   }
   if (grant.path) return `${grant.space}/${grant.path}`;
@@ -245,23 +221,6 @@ function fallbackStatement(grant: CapabilityGrant): StatementEntry {
  * Path-shape helpers. These match structural conventions in the wire path
  * (never a caller-supplied "friendly" name).
  */
-function isAccountAppsPath(path: string): boolean {
-  // e.g. `applications`, `applications/<something>`, `apps`
-  return (
-    path === "applications" ||
-    path.startsWith("applications/") ||
-    path === "apps" ||
-    path.startsWith("apps/")
-  );
-}
-function isAccountSpacesPath(path: string): boolean {
-  return (
-    path === "spaces" ||
-    path.startsWith("spaces/") ||
-    path === "space" ||
-    path.startsWith("space/")
-  );
-}
 function isSecretsVaultPath(path: string): boolean {
   return path.startsWith("vault/secrets") || path === "vault/secrets";
 }
@@ -286,11 +245,9 @@ function grantVerbSet(grant: CapabilityGrant): Set<string> {
  * the same structural definition as the copy it displays.
  *
  * App-scoped secrets that passed the dedicated origin-bound manifest proof
- * still reach secret data — they are just presented at `standard` severity
- * via `annotateAppScopedGrants` (see app-scope.ts). The count exposed by
- * `sensitiveCallout` describes every exact grant that reaches secret data
- * OR decryption regardless of presentation severity, so app-scoped secrets
- * remain in the count. Unknown sensitive mutations and create-only
+ * still reach secret data and remain Sensitive; the proof only enriches their
+ * label. The count exposed by `sensitiveCallout` describes every exact grant
+ * that reaches secret data or decryption. Unknown sensitive mutations and create-only
  * encryption grants do not enter the count: neither fact alone proves
  * access to secret data or decryption.
  */
@@ -299,9 +256,10 @@ export function grantReachesSecretDataOrDecryption(
 ): boolean {
   if (grant.family === "secret-mutation") return true;
   if (grant.family === "secret-read") {
-    return !isMetadataOnlyAccess(
-      grant.actions.map((action) => action.ability),
-    );
+    return !isMetadataOnlyAccess(grant.actions.map((action) => action.ability));
+  }
+  if (grant.family === "secret-namespace-list") {
+    return !isMetadataOnlyAccess(grant.actions.map((action) => action.ability));
   }
 
   if (ENCRYPTION_SERVICES.has(grant.service)) {
@@ -329,9 +287,7 @@ export function grantReachesSecretDataOrDecryption(
     }
     if (
       (KV_SERVICES.has(grant.service) || SECRETS_SERVICES.has(grant.service)) &&
-      isMetadataOnlyAccess(
-        grant.actions.map((action) => action.ability),
-      )
+      isMetadataOnlyAccess(grant.actions.map((action) => action.ability))
     ) {
       return false;
     }
@@ -343,8 +299,23 @@ export function grantReachesSecretDataOrDecryption(
 const KV_SERVICES = new Set(["tinycloud.kv", "kv"]);
 const SQL_SERVICES = new Set(["tinycloud.sql", "sql"]);
 const CAPABILITY_SERVICES = new Set(["tinycloud.capabilities", "capabilities"]);
+const DELEGATION_SERVICES = new Set(["tinycloud.delegation", "delegation"]);
 const SECRETS_SERVICES = new Set(["tinycloud.secrets", "secrets"]);
 const ENCRYPTION_SERVICES = new Set(["tinycloud.encryption", "encryption"]);
+const RECOGNIZED_DELEGATION_ACTIONS = new Set([
+  "tinycloud.delegation/list",
+  "delegation/list",
+  "tinycloud.delegation/status",
+  "delegation/status",
+]);
+
+function spaceNameOf(space: string): string | null {
+  if (/^[a-z][a-z0-9-]*$/i.test(space)) return space.toLowerCase();
+  const match = space.match(
+    /^tinycloud:pkh:eip155:\d+:0x[a-fA-F0-9]{40}:([^/:]+)$/,
+  );
+  return match?.[1]?.toLowerCase() ?? null;
+}
 
 // Sol/Fable follow-up: friendly copy for the KV / SQL / encryption service
 // branches (own-app-data, cross-app-data, KV account paths, KV secret paths,
@@ -375,9 +346,10 @@ const ENCRYPTION_SERVICES = new Set(["tinycloud.encryption", "encryption"]);
 // must be added here explicitly — silent inheritance of friendly copy is a
 // merge-readiness contract violation.
 
-// Sol MAJOR (post-rejection re-fix): the KV catalog now enumerates ONLY the
-// exact wire abilities the production js-sdk emits per the canonical
-// capability registry (`js-sdk/packages/bootstrap/src/generated/capabilities.ts`).
+// The KV catalog enumerates only the exact abilities emitted by current
+// manifests. Registered compatibility aliases do not earn friendly copy:
+// they remain visible literally because they are outside the predictable
+// happy path the user is consenting to.
 // The prior catalog listed synonyms and near-look-alikes (`peek`, `read`,
 // `update`, `post`, `write`, `admin`, `grant`, `revoke`) that no js-sdk
 // producer emits — treating them as recognized let novel unknown-verb
@@ -398,72 +370,39 @@ const KV_RECOGNIZED_ABILITIES = new Set<string>([
   "kv/put",
   "tinycloud.kv/del",
   "kv/del",
-  // `tinycloud.kv/delete` is a deprecated alias for `tinycloud.kv/del`
-  // that IS in the registered ACCEPTED_ACTIONS list — keep it so wire
-  // shapes emitted via the alias still earn friendly copy.
-  "tinycloud.kv/delete",
-  "kv/delete",
 ]);
 
-// SQL abilities. The registered wire shapes per the canonical capability
-// registry are `read`, `select` (alias for `read`), `write`, `schema`, and
-// `admin`. The prior catalog admitted `get`, `put`, `delete`, `del`,
-// `update`, `schema.apply`, `schema.drop`, `schema.migrate` — none of which
-// appear in the registry — and OMITTED `admin`, even though `admin` is
-// registered and previously earned friendly copy via the broad mutation
-// verb set. Restore parity with the registry.
+// SQL manifests emit read, write, and schema. Broader registered operations
+// such as admin and compatibility aliases such as select are intentionally
+// literal: they carry authority beyond the deterministic manifest mapping.
 const SQL_RECOGNIZED_ABILITIES = new Set<string>([
   "tinycloud.sql/read",
   "sql/read",
-  // `tinycloud.sql/select` is a deprecated alias for `tinycloud.sql/read`
-  // that IS in ACCEPTED_ACTIONS; keep it so wire shapes emitted via the
-  // alias still earn friendly copy.
-  "tinycloud.sql/select",
-  "sql/select",
   "tinycloud.sql/write",
   "sql/write",
   "tinycloud.sql/schema",
   "sql/schema",
-  // `tinycloud.sql/admin` is a registered action that previously
-  // rendered friendly "update" copy via the broad MUTATION_VERBS set
-  // (Sol rejection note: it MUST be included so parity with the prior
-  // recognized behavior is preserved).
-  "tinycloud.sql/admin",
-  "sql/admin",
 ]);
 
 // Encryption abilities. Per the canonical js-sdk capability registry
 // (`js-sdk/packages/bootstrap/src/generated/capabilities.ts`) the
 // registered wire shapes are `decrypt`, `network.create`, and
-// `network.revoke`. The bare `create` short-form is NOT registered and
-// no js-sdk producer emits it — admitting it here previously let a
-// novel `tinycloud.encryption/create` grant inherit the friendly
-// "Create a decryption network" copy (unknown-only) or the combined
-// "Create a decryption network and decrypt protected data" copy (mixed
-// with a registered `decrypt`) at attention/sensitive severity, even
-// though the wire shape is unregistered. Fail closed on it.
+// `network.revoke`. The bare `create` short-form is not registered and
+// therefore falls back literally rather than receiving friendly copy.
 //
 // The `unwrap` verb from earlier catalogs is likewise NOT registered
 // and no positive test exercises it — dropped.
 //
-// Sol post-rejection (Behavior 1): `tinycloud.encryption/network.revoke`
-// is a registered wire shape but the encryption family branch below
-// has no friendly statement mapping for it — `classifyVerbs` does not
-// classify the compound `network.revoke` verb, and the encryption
-// branch only speaks about `decrypt` / `network.create`. Prior code
-// admitted `network.revoke` to the recognized set, which passed the
-// whole-grant gate and let the branch render `[decrypt, network.revoke]`
-// as "Decrypt protected data", `[network.create, network.revoke]` as
-// "Create a decryption network", and all three actions as the combined
-// create+decrypt copy — silently swallowing the revoke authority in
-// every mixed grant. Removing `network.revoke` from this set forces
-// the whole-grant gate to fail and the grant falls back to the literal
-// service/resource/actions rendering, preserving every raw ability.
+// A revoke-only grant has an exact user-facing consequence. Revoke mixed
+// with other encryption actions falls back literally so no authority is
+// swallowed by a partial sentence.
 const ENCRYPTION_RECOGNIZED_ABILITIES = new Set<string>([
   "tinycloud.encryption/decrypt",
   "encryption/decrypt",
   "tinycloud.encryption/network.create",
   "encryption/network.create",
+  "tinycloud.encryption/network.revoke",
+  "encryption/network.revoke",
 ]);
 
 /**
@@ -473,10 +412,8 @@ const ENCRYPTION_RECOGNIZED_ABILITIES = new Set<string>([
  * copy for. Any unknown ability (or an empty action list) forces the
  * caller into `fallbackStatement(grant)`.
  *
- * Services with their own dedicated exact-ability allowlists inside the
- * branch (`CAPABILITY_SERVICES`, `SECRETS_SERVICES`) return `true` here so
- * the branch's own allowlist stays the sole authority. A blanket `false`
- * return would over-block their own recognized shapes.
+ * Capabilities uses its own dedicated exact-ability allowlist inside the
+ * branch. The legacy named-secrets service always falls back literally.
  *
  * Unknown services (anything not in KV / SQL / encryption / capabilities
  * / secrets) return `true` so `buildStatement` reaches its unknown-service
@@ -500,13 +437,10 @@ function allActionsRecognizedForService(grant: CapabilityGrant): boolean {
     return abilityStrings.every((a) => SQL_RECOGNIZED_ABILITIES.has(a));
   }
   if (ENCRYPTION_SERVICES.has(service)) {
-    return abilityStrings.every((a) =>
-      ENCRYPTION_RECOGNIZED_ABILITIES.has(a),
-    );
+    return abilityStrings.every((a) => ENCRYPTION_RECOGNIZED_ABILITIES.has(a));
   }
-  // Capabilities and named-secrets services keep their own dedicated
-  // allowlists inside the branch. Unknown services always route to
-  // fallbackStatement at the end of buildStatement.
+  // Capabilities keeps its own dedicated allowlist inside the branch.
+  // Unknown and legacy named-secrets services route to fallbackStatement.
   return true;
 }
 
@@ -516,11 +450,9 @@ function allActionsRecognizedForService(grant: CapabilityGrant): boolean {
  *      be handled by the caller — here we only produce the single-grant
  *      "network + decrypt" phrasing when a grant carries both `network`
  *      create and a decrypt verb).
- *   2. bootstrap-capabilities read → account capabilities check
- *   3. bootstrap-kv on account apps/spaces paths
- *   4. bootstrap-sql on account or secrets space
- *   5. secret-read / secret-mutation (with vault vs variables shapes)
- *   6. Anything else → literal fallback
+ *   2. Canonical TinyCloud account/application/public/default resources
+ *   3. Secret reads and mutations
+ *   4. Anything else → literal fallback
  */
 export function buildStatement(grant: CapabilityGrant): StatementEntry {
   const service = grant.service;
@@ -531,6 +463,7 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
   const abilityStrings = grant.actions.map((a) => a.ability);
   const verbs = classifyVerbs(abilityStrings);
   const resource = resourceOf(grant);
+  const spaceName = spaceNameOf(space);
 
   // Blocker 4 follow-up (Defect 5): serviceMismatch short-circuit.
   //
@@ -615,10 +548,7 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
     if (!KV_SECRET_SERVICES_PROOF.has(service)) {
       return fallbackStatement(grant);
     }
-    if (
-      grant.resourceService !== null &&
-      grant.resourceService !== "kv"
-    ) {
+    if (grant.resourceService !== null && grant.resourceService !== "kv") {
       return fallbackStatement(grant);
     }
     if (!isSecretsSpace(space)) {
@@ -647,12 +577,10 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
   }
 
   if (grant.family === "secret-namespace-list") {
-    const recognizedActions = SECRETS_SERVICES.has(service)
-      ? RECOGNIZED_SECRETS_NAMESPACE_ACTIONS
-      : KV_SERVICES.has(service)
-        ? RECOGNIZED_KV_NAMESPACE_ACTIONS
-        : SQL_SERVICES.has(service)
-          ? RECOGNIZED_SQL_NAMESPACE_ACTIONS
+    const recognizedActions = KV_SERVICES.has(service)
+      ? RECOGNIZED_KV_NAMESPACE_ACTIONS
+      : SQL_SERVICES.has(service)
+        ? RECOGNIZED_SQL_NAMESPACE_ACTIONS
         : null;
     if (
       grant.actions.length === 0 ||
@@ -703,6 +631,55 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
     return fallbackStatement(grant);
   }
 
+  // Classification is the authority for whether a structural shape is
+  // understood. Ownership or a familiar-looking path must never upgrade an
+  // unknown grant into reassuring copy.
+  if (grant.family === "unknown") {
+    return fallbackStatement(grant);
+  }
+
+  // Resource ownership is a different fact from application identity. Only
+  // an owner that differs from the signer earns another-user wording.
+  if (grant.ownedBySelf === false && CAPABILITY_SERVICES.has(service)) {
+    return {
+      primaryText: "Check another user's TinyCloud permissions",
+      service,
+      resource,
+    };
+  }
+  if (grant.ownedBySelf === false && DELEGATION_SERVICES.has(service)) {
+    return {
+      primaryText: "View another user's connected access",
+      service,
+      resource,
+    };
+  }
+  if (
+    grant.ownedBySelf === false &&
+    (KV_SERVICES.has(service) || SQL_SERVICES.has(service)) &&
+    !isSecretsSpace(space)
+  ) {
+    const knownSubject: Record<string, string> = {
+      account: "account data",
+      applications: "application data",
+      default: "TinyCloud data",
+      public: "public data",
+    };
+    const subject = spaceName
+      ? `another user's ${knownSubject[spaceName] ?? `${spaceName} data`}`
+      : "another user's TinyCloud data";
+    if (verbs.hasRead && (verbs.hasWrite || verbs.hasSchema)) {
+      return { primaryText: `Read and update ${subject}`, service, resource };
+    }
+    if (verbs.hasWrite || verbs.hasSchema) {
+      return { primaryText: `Update ${subject}`, service, resource };
+    }
+    if (verbs.hasRead || verbs.hasList || verbs.hasMetadata) {
+      return { primaryText: `Read ${subject}`, service, resource };
+    }
+    return fallbackStatement(grant);
+  }
+
   // Secret-space list/metadata operations expose names and metadata, not
   // secret values. Value reads and mutations retain explicit, sensitive
   // copy. This mapping is structural and applies consistently to KV and SQL
@@ -711,9 +688,40 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
     isSecretsSpace(space) &&
     (KV_SERVICES.has(service) || SQL_SERVICES.has(service))
   ) {
+    const secretOwner = grant.ownedBySelf === false ? "another user's" : "your";
+    // TinyCloud's secrets SQL database stores the secret catalog (scope,
+    // name, provider, notes, and test metadata). Secret values live in KV.
+    if (SQL_SERVICES.has(service)) {
+      const hasCatalogMutation = verbs.hasWrite || verbs.hasSchema;
+      if (verbs.hasRead && hasCatalogMutation) {
+        return {
+          primaryText: `View and manage ${secretOwner} secret catalog`,
+          service,
+          resource,
+        };
+      }
+      if (hasCatalogMutation) {
+        return {
+          primaryText: `Manage ${secretOwner} secret catalog`,
+          service,
+          resource,
+        };
+      }
+      if (verbs.hasRead) {
+        return {
+          primaryText: `View ${secretOwner} secret catalog`,
+          service,
+          resource,
+        };
+      }
+      return fallbackStatement(grant);
+    }
     if (isMetadataOnlyAccess(abilityStrings)) {
       return {
-        primaryText: "View secret names and details",
+        primaryText:
+          grant.ownedBySelf === false
+            ? "View another user's secret names and details"
+            : "View secret names and details",
         service,
         resource,
       };
@@ -725,24 +733,106 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
     const hasValueMutation = verbs.hasWrite || verbs.hasSchema;
     if (hasValueRead && hasValueMutation) {
       return {
-        primaryText: "Read and update secret values",
+        primaryText:
+          grant.ownedBySelf === false
+            ? "Read and update another user's secret values"
+            : "Read and update secret values",
         service,
         resource,
       };
     }
     if (hasValueMutation) {
       return {
-        primaryText: "Update secret values",
+        primaryText:
+          grant.ownedBySelf === false
+            ? "Update another user's secret values"
+            : "Update secret values",
         service,
         resource,
       };
     }
     if (hasValueRead) {
       return {
-        primaryText: "Read secret values",
+        primaryText:
+          grant.ownedBySelf === false
+            ? "Read another user's secret values"
+            : "Read secret values",
         service,
         resource,
       };
+    }
+    return fallbackStatement(grant);
+  }
+
+  // Canonical bootstrap resources have stable product meaning. These labels
+  // are derived from the signed resource structure, not caller-supplied copy.
+  if (
+    spaceName === "account" &&
+    (grant.family === "bootstrap-kv" ||
+      grant.family === "bootstrap-sql" ||
+      grant.family === "bootstrap-delegation")
+  ) {
+    return {
+      primaryText: "Manage your TinyCloud account",
+      service,
+      resource,
+    };
+  }
+
+  if (
+    spaceName === "applications" &&
+    grant.family === "own-app-data" &&
+    (KV_SERVICES.has(service) || SQL_SERVICES.has(service))
+  ) {
+    if (verbs.hasRead && (verbs.hasWrite || verbs.hasSchema)) {
+      return {
+        primaryText: "Read and update application data",
+        service,
+        resource,
+      };
+    }
+    if (verbs.hasWrite || verbs.hasSchema) {
+      return { primaryText: "Update application data", service, resource };
+    }
+    if (verbs.hasRead || verbs.hasList || verbs.hasMetadata) {
+      return { primaryText: "Read application data", service, resource };
+    }
+    return fallbackStatement(grant);
+  }
+
+  if (grant.family === "public-data" && KV_SERVICES.has(service)) {
+    if (verbs.hasWrite) {
+      return {
+        primaryText: verbs.hasRead
+          ? "Read and publish your public data"
+          : "Publish and update your public data",
+        service,
+        resource,
+      };
+    }
+    if (verbs.hasRead || verbs.hasList || verbs.hasMetadata) {
+      return { primaryText: "Read your public data", service, resource };
+    }
+    return fallbackStatement(grant);
+  }
+
+  if (
+    spaceName === "default" &&
+    (grant.family === "bootstrap-kv" || grant.family === "bootstrap-sql") &&
+    (KV_SERVICES.has(service) || SQL_SERVICES.has(service))
+  ) {
+    if (verbs.hasRead && (verbs.hasWrite || verbs.hasSchema)) {
+      return {
+        primaryText: "Read and update your TinyCloud data",
+        service,
+        resource,
+      };
+    }
+    if (verbs.hasWrite || verbs.hasSchema) {
+      return { primaryText: "Update your TinyCloud data", service, resource };
+    }
+    if (verbs.hasRead || verbs.hasList || verbs.hasMetadata) {
+      return { primaryText: "Read your TinyCloud data", service, resource };
     }
     return fallbackStatement(grant);
   }
@@ -758,7 +848,7 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
   // KV / SQL grants, but `buildStatement` itself must uphold that
   // invariant so a future classifier change (or a fixture built by a
   // caller) cannot smuggle an unknown-service grant into the friendly
-  // "Read this app's data" / "Update data outside this app" copy. Fail
+  // neutral application-data copy. Fail
   // closed for any service outside the KV / SQL recognized set — the
   // grant renders the literal service/resource/actions instead.
   //
@@ -770,10 +860,7 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
     if (!KV_SERVICES.has(service) && !SQL_SERVICES.has(service)) {
       return fallbackStatement(grant);
     }
-    const noun =
-      grant.family === "own-app-data"
-        ? "this app's data"
-        : "data outside this app";
+    const noun = "application data";
     let primaryText: string;
     if (verbs.hasRead && verbs.hasWrite) {
       primaryText = `Read and update ${noun}`;
@@ -789,9 +876,23 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
 
   // 1. Encryption: create + decrypt in the same grant.
   if (ENCRYPTION_SERVICES.has(service)) {
+    if (verbs.hasRevoke) {
+      if (
+        abilityStrings.length === 1 &&
+        (abilityStrings[0] === "tinycloud.encryption/network.revoke" ||
+          abilityStrings[0] === "encryption/network.revoke")
+      ) {
+        return {
+          primaryText: "Disable the decryption network",
+          service,
+          resource,
+        };
+      }
+      return fallbackStatement(grant);
+    }
     if (verbs.hasCreate && verbs.hasDecrypt) {
       return {
-        primaryText: "Create a decryption network and decrypt protected data",
+        primaryText: "Set up encrypted data access and decrypt protected data",
         service,
         resource,
       };
@@ -805,7 +906,7 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
     }
     if (verbs.onlyCreate) {
       return {
-        primaryText: "Create a decryption network",
+        primaryText: "Set up encrypted data access",
         service,
         resource,
       };
@@ -838,21 +939,25 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
     if (!allActionsRecognized) {
       return fallbackStatement(grant);
     }
-    // A capabilities grant on the secrets service is "check permissions
-    // for your secrets"; on any other space it is the generic account
-    // permissions check. Structurally, the secrets-permission variant
-    // sits inside a capabilities grant whose space names the secrets
-    // service — but per the contract the family is bootstrap-capabilities
-    // for both. We split on the space, which is a structural fact.
-    if (isSecretsSpace(space) || grant.family === "secret-read") {
-      return {
-        primaryText: "Check permissions for your secrets",
-        service,
-        resource,
-      };
-    }
     return {
-      primaryText: "Check your TinyCloud account permissions",
+      primaryText: "Check your TinyCloud permissions",
+      service,
+      resource,
+    };
+  }
+
+  if (DELEGATION_SERVICES.has(service)) {
+    const allActionsRecognized =
+      abilityStrings.length > 0 &&
+      abilityStrings.every((ability) =>
+        RECOGNIZED_DELEGATION_ACTIONS.has(ability),
+      );
+    if (!allActionsRecognized) return fallbackStatement(grant);
+    return {
+      primaryText:
+        spaceName === "account"
+          ? "Manage your TinyCloud account"
+          : "View connected access and sharing",
       service,
       resource,
     };
@@ -894,149 +999,19 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
         resource,
       };
     }
-    // 3c. Account apps / spaces — action-aware phrasing. Never claim
-    //     "view and update" unless both read and write actions are
-    //     present. Read-only maps to "View"; write-only to "Update".
-    if (isAccountAppsPath(path)) {
-      let primaryText: string;
-      if (verbs.hasRead && verbs.hasWrite) {
-        primaryText = "View and update your connected apps";
-      } else if (verbs.onlyWrite) {
-        primaryText = "Update your connected apps";
-      } else if (verbs.onlyRead) {
-        primaryText = "View your connected apps";
-      } else {
-        // Unknown/mixed verb combination — do not invent semantics.
-        return fallbackStatement(grant);
-      }
-      return { primaryText, service, resource };
-    }
-    if (isAccountSpacesPath(path)) {
-      let primaryText: string;
-      if (verbs.hasRead && verbs.hasWrite) {
-        primaryText = "View and update your storage spaces";
-      } else if (verbs.onlyWrite) {
-        primaryText = "Update your storage spaces";
-      } else if (verbs.onlyRead) {
-        primaryText = "View your storage spaces";
-      } else {
-        return fallbackStatement(grant);
-      }
-      return { primaryText, service, resource };
-    }
-    // 3d. Unknown KV path → fallback.
+    // 3c. Unknown KV path → fallback.
     return fallbackStatement(grant);
   }
 
-  // 4. SQL — account vs secrets.
+  // 4. Other SQL shapes are not part of the canonical bootstrap mapping.
   if (SQL_SERVICES.has(service)) {
-    // 4a. Named secret variables via SQL (list / metadata / mutation) —
-    //     structurally these are variables on the secrets space with a
-    //     variables path. Match before the generic secrets-SQL rule.
-    if (isSecretsVariablesPath(path)) {
-      if (verbs.hasWrite) {
-        return {
-          primaryText: "Manage secret variables",
-          service,
-          resource,
-        };
-      }
-      return {
-        primaryText: "View secret variable names and details",
-        service,
-        resource,
-      };
-    }
-    // Action-aware SQL phrasing. "Read and update" is only truthful when
-    // read AND write (or schema-mutation) actions are both present.
-    // Read-only maps to "Read"; write/schema-only maps to "Update".
-    const hasSqlMutation = verbs.hasWrite || verbs.hasSchema;
-    const sqlReadOnly = verbs.hasRead && !hasSqlMutation;
-    const sqlWriteOnly = hasSqlMutation && !verbs.hasRead;
-    if (isSecretsSpace(space)) {
-      let primaryText: string;
-      if (verbs.hasRead && hasSqlMutation) {
-        primaryText = "Read and update TinyCloud Secrets data";
-      } else if (sqlReadOnly) {
-        primaryText = "Read TinyCloud Secrets data";
-      } else if (sqlWriteOnly) {
-        primaryText = "Update TinyCloud Secrets data";
-      } else {
-        return fallbackStatement(grant);
-      }
-      return { primaryText, service, resource };
-    }
-    let primaryText: string;
-    if (verbs.hasRead && hasSqlMutation) {
-      primaryText = "Read and update your TinyCloud account";
-    } else if (sqlReadOnly) {
-      primaryText = "Read your TinyCloud account";
-    } else if (sqlWriteOnly) {
-      primaryText = "Update your TinyCloud account";
-    } else {
-      return fallbackStatement(grant);
-    }
-    return { primaryText, service, resource };
+    return fallbackStatement(grant);
   }
 
-  // 5. Named secrets service (not KV): read vs mutation family.
+  // 5. Current manifests represent secrets through KV vault resources.
+  // The named-secrets service has no authoritative current wire contract,
+  // so keep every action literal while its secret family retains Sensitive.
   if (SECRETS_SERVICES.has(service)) {
-    // Fail-closed (Sol MAJOR-1 re-fix): only render friendly copy when
-    // every action's ability is an EXACT registered secrets shape.
-    // Reusing broad verb sets (READ_VERBS/MUTATION_VERBS/…) would map
-    // novel verbs like `secrets/peek` to friendly "permissions" copy at
-    // standard severity even though `peek` is not a registered secrets
-    // action. Fall back to literal actions instead.
-    //
-    // Empty action lists must ALSO fall back — `every` on `[]` returns
-    // `true` which would let a zero-action grant inherit friendly copy
-    // despite carrying no authority.
-    if (abilityStrings.length === 0) {
-      return fallbackStatement(grant);
-    }
-    const allActionsRecognized = abilityStrings.every((a) =>
-      RECOGNIZED_SECRETS_ACTIONS.has(a),
-    );
-    if (!allActionsRecognized) {
-      return fallbackStatement(grant);
-    }
-    const hasRecognizedWrite = abilityStrings.some((a) =>
-      RECOGNIZED_SECRETS_WRITE_ACTIONS.has(a),
-    );
-    const hasRecognizedRead = abilityStrings.some((a) =>
-      RECOGNIZED_SECRETS_READ_ACTIONS.has(a),
-    );
-    const hasRecognizedList = abilityStrings.some((a) =>
-      RECOGNIZED_SECRETS_LIST_ACTIONS.has(a),
-    );
-    const hasRecognizedMetadata = abilityStrings.some((a) =>
-      RECOGNIZED_SECRETS_METADATA_ACTIONS.has(a),
-    );
-    if (grant.family === "secret-mutation" || hasRecognizedWrite) {
-      return {
-        primaryText: "Manage secret variables",
-        service,
-        resource,
-      };
-    }
-    // capabilities-shape secret reads: "secrets/read" or "secrets/get"
-    if (hasRecognizedRead && !hasRecognizedList && !hasRecognizedMetadata) {
-      return {
-        primaryText: "Check permissions for your secrets",
-        service,
-        resource,
-      };
-    }
-    // list/metadata → variable-shape read
-    if (hasRecognizedList || hasRecognizedMetadata) {
-      return {
-        primaryText: "View secret variable names and details",
-        service,
-        resource,
-      };
-    }
-    // Recognized actions but none of the shapes above matched — fall
-    // back to the literal actions rather than invent a statement.
     return fallbackStatement(grant);
   }
 

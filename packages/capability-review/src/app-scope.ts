@@ -2,7 +2,7 @@
 //
 // The merge-readiness contract says:
 //
-//   A scoped secret can be presented as normal/app-scoped only when a
+//   A scoped secret can be identified as app-scoped only when a
 //   trusted or independently origin-bound manifest declares that exact
 //   secret, scope, and requested actions and the signed resource carries
 //   the same scope. Otherwise it remains sensitive. No metadata may
@@ -23,13 +23,12 @@
 //        - grant verbs must be a subset of declared verbs within the
 //          recognized get/put/del allowlist
 //   2. When ALL conditions hold AND the metadata trust is at least origin-bound,
-//      records the proven app-scoped-secret identity, renders a compact label,
-//      and presents the grant at standard severity.
+//      records the proven app-scoped-secret identity and renders a compact
+//      label while retaining sensitive severity.
 //   3. Under ANY other condition leaves the grant untouched (fail closed).
 //
-// The severity change is intentionally confined to this proof gate. Generic
-// metadata helpers still cannot lower severity (see metadata.ts), and this
-// helper never changes the authority-bearing actions or resource.
+// Metadata helpers cannot lower severity (see metadata.ts), and this helper
+// never changes the authority-bearing actions or resource.
 
 import type {
   CapabilityGrant,
@@ -43,7 +42,7 @@ import { isVerified } from "./metadata.js";
  * Blocker 4 follow-up (Defect 1): PROOF-SIDE exact service allowlist.
  *
  * The sole ability-derived service that can pass the exact-resource proof
- * (and receive the sensitive → standard demotion) is the fully-qualified
+ * and receive app-scoped annotation is the fully-qualified
  * `tinycloud.kv`. Bare short-form abilities (`kv/get`, `kv/put`, `kv/del`)
  * were previously admitted, but no js-sdk producer emits them — treating
  * them as acceptable expands the proof surface without a matching wire
@@ -64,7 +63,7 @@ export const KV_SECRET_SERVICES_PROOF: ReadonlySet<string> = new Set([
  * short-form `kv/get` grant that references a declared secret name still
  * gets stamped `appScopeNearMiss` (literal fallback + sensitive) instead
  * of escaping to friendly copy. Presence in this set never grants
- * annotation on its own; the proof gate is the authoritative demotion path.
+ * annotation on its own; the proof gate is authoritative.
  */
 export const KV_SECRET_SERVICES_LOOSE: ReadonlySet<string> = new Set([
   "tinycloud.kv",
@@ -83,7 +82,7 @@ export const KV_SECRET_SERVICES: ReadonlySet<string> = KV_SECRET_SERVICES_LOOSE;
 /**
  * Named-secrets services. `tinycloud.secrets/*` grants are a DIFFERENT surface
  * from the KV vault path used by app-scoped secrets and CAN NEVER earn the
- * sensitive -> standard demotion. This set is used only for near-miss
+ * app-scoped annotation. This set is used only for near-miss
  * detection: a `tinycloud.secrets/*` grant whose path fingerprint references
  * a declared secret name/scope MUST be forced to sensitive severity + literal
  * fallback (Blocker 4, Sol follow-up probe A) — the friendly SECRETS_SERVICES
@@ -127,10 +126,9 @@ export function isSecretsSpace(space: string): boolean {
  * literal string `"secrets"` OR any space whose path contained `:secrets`.
  * That would happily accept a probe signed by 0x1111…1111 targeting a
  * space owned by 0x2222…2222, since the string still contains `:secrets`.
- * `annotateAppScopedGrants` would then demote the cross-signer grant to
- * standard severity, breaking the app-scope trust rule which requires the
- * signed grant's space to be the same one the manifest declaration
- * describes.
+ * `annotateAppScopedGrants` would then attach trusted app-scoped copy to a
+ * cross-signer grant, breaking the rule that the signed resource must be the
+ * same one the manifest declaration describes.
  *
  * `expectedSignerSecretsSpace` returns the canonical space string derived
  * from a signer identity. It always emits an EIP-55-independent form: the
@@ -281,7 +279,7 @@ export function isRecognizedManifestSecretAction(action: string): boolean {
  *
  * Any deviation from these three exact strings means the grant did not
  * originate from js-sdk's canonical wire form and cannot earn the
- * sensitive -> standard demotion. Near-miss stamping still fires so the
+ * app-scoped annotation. Near-miss stamping still fires so the
  * operator sees the literal fallback rendering of the raw ability.
  */
 export const CANONICAL_APP_SCOPE_SECRET_ABILITIES: ReadonlySet<string> = new Set([
@@ -384,8 +382,8 @@ export function pathContainsDeclaredSecretFragment(
  * This is the primary fingerprint used to force literal-fallback rendering
  * on wrong-scope / wrong-service paths that share only the declared name
  * with the trusted declaration. It is a fingerprint, NOT an authorization
- * signal — matching only demotes to sensitive + literal fallback, never
- * annotates. Only declared entries that pass SECRET_NAME_RE participate
+ * signal — matching forces sensitive literal fallback and never annotates.
+ * Only declared entries that pass SECRET_NAME_RE participate
  * so a manifest cannot smuggle arbitrary substrings into the fingerprint.
  */
 export function pathContainsDeclaredSecretName(
@@ -452,8 +450,8 @@ export interface DeclaredAppScope {
 
 /**
  * Sol MAJOR-2: annotate grants that match an app-declared scoped-secret
- * entry with a compact label and standard app-scoped presentation. Everything
- * else is left untouched and therefore remains structurally sensitive.
+ * entry with a compact label while retaining Sensitive. Everything else is
+ * left untouched.
  *
  * Trust gate:
  *   - `model.metadataTrust.status` must be `verified` or `origin-bound`.
@@ -594,7 +592,7 @@ export function annotateAppScopedGrants(
     // abilities BYTE-EXACTLY against the canonical URN allowlist. Prior
     // code called `normalizeSecretVerb(a.verb.toLowerCase())` and matched
     // against a case-folded synonym set, so grant abilities like
-    // `tinycloud.kv/GET` or `tinycloud.kv/read` earned standard severity
+    // `tinycloud.kv/GET` or `tinycloud.kv/read` earned trusted app-scoped copy
     // even though no js-sdk producer emits either shape — the wire form
     // is always exactly one of `tinycloud.kv/get`, `tinycloud.kv/put`, or
     // `tinycloud.kv/del`. Anything else is either a caller mangling the
@@ -617,7 +615,7 @@ export function annotateAppScopedGrants(
     // (no bare `kv` alias) AND whose resource-derived short-service
     // segment (when present on the wire) is exactly `kv` on the SIGNER's
     // own canonical secrets space (`tinycloud:pkh:eip155:<chainId>:<address>:secrets`)
-    // can demote.
+    // can receive trusted app-scoped annotation.
     //   - `tinycloud.secrets` service grants (a different surface) fail here.
     //   - Bare `kv` service grants fail here (no js-sdk producer emits them).
     //   - Grants whose resource-side short-service segment is anything
@@ -635,15 +633,15 @@ export function annotateAppScopedGrants(
     if (!isSignerOwnedSecretsSpace(grant.space, signer)) {
       return nearMissMark(grant);
     }
-    // Only a genuinely scoped secret can receive app-scoped/normal
-    // presentation. Global app-declared secrets remain sensitive.
+    // Only a genuinely scoped secret can receive app-scoped presentation.
+    // Manifest proof enriches the label; secret access remains sensitive.
     if (secrets.length === 0) return nearMissMark(grant);
     const match = findMatchingDeclaredSecret(grant, secrets);
     if (!match?.scope) return nearMissMark(grant);
     // Also fail closed if the DECLARED entry carries any verb outside the
     // recognized set. A manifest that declares `peek` for a secret cannot
-    // be used to promote a matching grant from sensitive to standard, even
-    // if the grant itself only asks for recognized verbs.
+    // be used to annotate a matching grant, even if the grant itself only
+    // asks for recognized verbs.
     //
     // Blocker 4 follow-up (Defect 1): also enforce js-sdk-parity
     // case-sensitive action spelling. `isRecognizedManifestSecretAction`
@@ -652,7 +650,7 @@ export function annotateAppScopedGrants(
     // must not be able to pass the OpenKey proof gate. The
     // `RECOGNIZED_APP_SCOPE_SECRET_VERBS` check is retained on top so a
     // recognized-but-not-KV-mapped verb (e.g. `list`, `metadata`) still
-    // fails the promotion, keeping the friendly copy honest.
+    // fails annotation, keeping the friendly copy honest.
     const allDeclaredVerbsRecognized = match.actions.every((a) => {
       if (!isRecognizedManifestSecretAction(a)) return false;
       return RECOGNIZED_APP_SCOPE_SECRET_VERBS.has(
@@ -660,15 +658,13 @@ export function annotateAppScopedGrants(
       );
     });
     if (!allDeclaredVerbsRecognized) return nearMissMark(grant);
-    // This is the one allowed sensitive -> standard presentation transition:
-    // the server independently origin-bound the manifest and this pure gate
-    // matched its exact secret/scope/action declaration to the signed grant
-    // that also sits inside the signer's own canonical secrets space.
-    // No authority is added or changed.
+    // The server independently origin-bound the manifest and this pure gate
+    // matched its exact secret/scope/action declaration to the signed grant.
+    // That proof earns a useful name and scope, never a lower risk label.
     const label = `Secret: ${match.secretName} · Scope: ${match.scope}`;
     return {
       ...grant,
-      severity: "standard",
+      severity: "sensitive",
       metadataLabel: label,
       appScopedSecret: {
         secretName: match.secretName,
@@ -682,9 +678,8 @@ export function annotateAppScopedGrants(
 /**
  * Recognized action verbs for named-secret app-scope annotation.
  *
- * `annotateAppScopedGrants` is the ONE place presentation severity can move
- * sensitive -> standard, and `buildStatement` then renders friendly copy for
- * anything carrying `appScopedSecret`. To keep that friendly copy honest we
+ * `annotateAppScopedGrants` enables friendly copy for a manifest-proven scoped
+ * secret while preserving sensitive severity. To keep that copy honest we
  * only annotate grants whose verbs are inside this fixed, canonical set:
  *
  *   - `get` (aliases: `read`)
@@ -715,7 +710,7 @@ export const RECOGNIZED_APP_SCOPE_SECRET_VERBS: ReadonlySet<string> = new Set([
  *      `vault/secrets/scoped/${scope}/${secretName}` — the sole canonical
  *      shape js-sdk packages/sdk-services/src/secrets/paths.ts ever emits.
  *      Legacy shapes (secrets/scoped/..., <scope>/secrets/...) do NOT
- *      annotate; losing annotation is demote-only (fail-closed direction).
+ *      annotate; losing annotation is the fail-closed direction.
  *   4. Every grant verb (normalized) is declared. Narrowing is allowed;
  *      any undeclared grant verb falsifies the match.
  */

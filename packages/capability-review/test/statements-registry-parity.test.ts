@@ -9,10 +9,9 @@
 // recognized let novel unknown-verb requests inherit friendly copy at
 // standard severity even though no js-sdk producer emits them.
 //
-// The catalogs now enumerate ONLY the exact wire abilities per the
-// registry, plus the explicitly-tested deprecated aliases that ARE
-// registered in ACCEPTED_ACTIONS (`tinycloud.kv/delete`,
-// `tinycloud.sql/select`). Anything else — including the
+// Friendly copy now covers only the exact abilities current manifests emit.
+// Registered compatibility aliases and broader authority remain literal
+// because they are outside the predictable consent happy path. Anything else — including the
 // unregistered `tinycloud.encryption/create` short-form previously
 // admitted as a compatibility path — falls back to the literal
 // `Perform <actions> on <service>` copy. See
@@ -34,6 +33,7 @@ import {
 
 const ACCOUNT = "0x1111111111111111111111111111111111111111";
 const APPS_SPACE = `tinycloud:pkh:eip155:1:${ACCOUNT}:applications`;
+const ACCOUNT_SPACE = `tinycloud:pkh:eip155:1:${ACCOUNT}:account`;
 const DEFAULT_SPACE = `tinycloud:pkh:eip155:1:${ACCOUNT}:default`;
 const SECRETS_SPACE = `tinycloud:pkh:eip155:1:${ACCOUNT}:secrets`;
 
@@ -70,11 +70,13 @@ function makeGrant(input: GrantInput): CapabilityGrant {
     space,
     path,
     owner: ACCOUNT,
-    ownedBySelf: input.ownedBySelf ?? input.family === "own-app-data",
+    ownedBySelf: input.ownedBySelf ?? input.family !== "cross-app-data",
     displayLabel: path || input.service,
     metadataLabel: null,
     resourceService: null,
-    ...(input.appScopedSecret ? { appScopedSecret: input.appScopedSecret } : {}),
+    ...(input.appScopedSecret
+      ? { appScopedSecret: input.appScopedSecret }
+      : {}),
     actions,
   };
 }
@@ -93,9 +95,7 @@ describe("buildStatement — KV catalog is registry-scoped", () => {
       abilities: ["tinycloud.kv/peek"],
     });
     const stmt = buildStatement(grant);
-    expect(stmt.primaryText).toBe(
-      "Perform tinycloud.kv/peek on tinycloud.kv",
-    );
+    expect(stmt.primaryText).toBe("Perform tinycloud.kv/peek on tinycloud.kv");
     expect(stmt.primaryText).not.toBe("Read this app's data");
   });
 
@@ -108,9 +108,7 @@ describe("buildStatement — KV catalog is registry-scoped", () => {
       abilities: ["tinycloud.kv/read"],
     });
     const stmt = buildStatement(grant);
-    expect(stmt.primaryText).toBe(
-      "Perform tinycloud.kv/read on tinycloud.kv",
-    );
+    expect(stmt.primaryText).toBe("Perform tinycloud.kv/read on tinycloud.kv");
     expect(stmt.primaryText).not.toBe("Read this app's data");
   });
 
@@ -137,9 +135,7 @@ describe("buildStatement — KV catalog is registry-scoped", () => {
       abilities: ["tinycloud.kv/write"],
     });
     const stmt = buildStatement(grant);
-    expect(stmt.primaryText).toBe(
-      "Perform tinycloud.kv/write on tinycloud.kv",
-    );
+    expect(stmt.primaryText).toBe("Perform tinycloud.kv/write on tinycloud.kv");
     expect(stmt.primaryText).not.toBe("Update this app's data");
   });
 
@@ -151,9 +147,7 @@ describe("buildStatement — KV catalog is registry-scoped", () => {
       abilities: ["tinycloud.kv/admin"],
     });
     const stmt = buildStatement(grant);
-    expect(stmt.primaryText).toBe(
-      "Perform tinycloud.kv/admin on tinycloud.kv",
-    );
+    expect(stmt.primaryText).toBe("Perform tinycloud.kv/admin on tinycloud.kv");
   });
 
   it("KV [tinycloud.kv/grant, tinycloud.kv/revoke] → literal fallback", () => {
@@ -195,9 +189,7 @@ describe("buildStatement — KV catalog is registry-scoped", () => {
       severity: "standard",
     });
     const stmt = buildStatement(grant);
-    expect(stmt.primaryText).toBe(
-      "Perform tinycloud.kv/peek on tinycloud.kv",
-    );
+    expect(stmt.primaryText).toBe("Perform tinycloud.kv/peek on tinycloud.kv");
     expect(stmt.primaryText).not.toBe("View your connected apps");
   });
 });
@@ -245,6 +237,21 @@ describe("buildStatement — TinyCloud Secrets value boundary", () => {
       "Read and update secret values",
     );
   });
+
+  it("keeps the secret-value meaning when the resource belongs to another user", () => {
+    const grant = makeGrant({
+      family: "secret-read",
+      service: "tinycloud.kv",
+      space: SECRETS_SPACE,
+      path: "vault/secrets",
+      abilities: ["tinycloud.kv/get"],
+      severity: "sensitive",
+      ownedBySelf: false,
+    });
+    expect(buildStatement(grant).primaryText).toBe(
+      "Read another user's secret values",
+    );
+  });
 });
 
 // ─── KV: registered abilities still earn friendly copy ──────────────────────
@@ -254,41 +261,37 @@ describe("buildStatement — KV catalog: registered abilities preserved", () => 
       family: "own-app-data",
       service: "tinycloud.kv",
       path: "cycle/",
-      abilities: [
-        "tinycloud.kv/get",
-        "tinycloud.kv/put",
-        "tinycloud.kv/del",
-      ],
+      abilities: ["tinycloud.kv/get", "tinycloud.kv/put", "tinycloud.kv/del"],
     });
     expect(buildStatement(grant).primaryText).toBe(
-      "Read and update this app's data",
+      "Read and update application data",
     );
   });
 
-  it("KV [delete] (deprecated alias) still earns friendly copy", () => {
+  it("KV [delete] (deprecated alias) stays literal", () => {
     const grant = makeGrant({
       family: "own-app-data",
       service: "tinycloud.kv",
       path: "cycle/",
       abilities: ["tinycloud.kv/delete"],
     });
-    expect(buildStatement(grant).primaryText).toBe("Update this app's data");
+    expect(buildStatement(grant).primaryText).toBe(
+      "Perform tinycloud.kv/delete on tinycloud.kv",
+    );
   });
 
   it("KV [list, metadata] still classified as read-only", () => {
     const grant = makeGrant({
       family: "bootstrap-kv",
       service: "tinycloud.kv",
-      space: APPS_SPACE,
-      path: "applications",
+      space: ACCOUNT_SPACE,
+      path: "applications/",
       abilities: ["tinycloud.kv/list", "tinycloud.kv/metadata"],
       severity: "standard",
     });
-    // Both are registered read-shaped verbs → the "view" copy fires.
-    // `list` sits in READ_VERBS, so the apps-path branch selects
-    // "View your connected apps".
+    // Account bootstrap details fold into one consequence-first summary.
     expect(buildStatement(grant).primaryText).toBe(
-      "View your connected apps",
+      "Manage your TinyCloud account",
     );
   });
 });
@@ -296,18 +299,15 @@ describe("buildStatement — KV catalog: registered abilities preserved", () => 
 // ─── SQL: unregistered abilities must NOT earn friendly copy ────────────────
 describe("buildStatement — SQL catalog is registry-scoped", () => {
   it("SQL [tinycloud.sql/get] → literal fallback (get is not registered)", () => {
-    // js-sdk emits `tinycloud.sql/read` (or the deprecated alias
-    // `tinycloud.sql/select`), never `tinycloud.sql/get`.
+    // Current manifests emit `tinycloud.sql/read`, never `tinycloud.sql/get`.
     const grant = makeGrant({
-      family: "bootstrap-sql",
+      family: "own-app-data",
       service: "tinycloud.sql",
       abilities: ["tinycloud.sql/get"],
       severity: "standard",
     });
     const stmt = buildStatement(grant);
-    expect(stmt.primaryText).toBe(
-      "Perform tinycloud.sql/get on tinycloud.sql",
-    );
+    expect(stmt.primaryText).toBe("Perform tinycloud.sql/get on tinycloud.sql");
     expect(stmt.primaryText).not.toBe("Read your TinyCloud account");
   });
 
@@ -319,9 +319,7 @@ describe("buildStatement — SQL catalog is registry-scoped", () => {
       severity: "attention",
     });
     const stmt = buildStatement(grant);
-    expect(stmt.primaryText).toBe(
-      "Perform tinycloud.sql/put on tinycloud.sql",
-    );
+    expect(stmt.primaryText).toBe("Perform tinycloud.sql/put on tinycloud.sql");
     expect(stmt.primaryText).not.toBe("Update your TinyCloud account");
   });
 
@@ -366,42 +364,37 @@ describe("buildStatement — SQL catalog is registry-scoped", () => {
   });
 });
 
-// ─── SQL: registered abilities including admin earn friendly copy ───────────
-describe("buildStatement — SQL catalog: registered abilities preserved", () => {
-  it("SQL [admin] earns friendly update copy (Sol rejection: admin IS registered)", () => {
-    // Sol rejection note: `tinycloud.sql/admin` is a registered action
-    // and previously rendered friendly copy via the broad mutation verb
-    // set. The re-fix MUST keep it in the catalog.
+// ─── SQL: broader/compatibility operations stay literal ────────────────────
+describe("buildStatement — SQL catalog: manifest abilities only", () => {
+  it("application SQL [admin] stays literal", () => {
     const grant = makeGrant({
-      family: "bootstrap-sql",
+      family: "own-app-data",
       service: "tinycloud.sql",
+      space: APPS_SPACE,
+      path: "app/records",
       abilities: ["tinycloud.sql/admin"],
       severity: "attention",
     });
     expect(buildStatement(grant).primaryText).toBe(
-      "Update your TinyCloud account",
+      "Perform tinycloud.sql/admin on tinycloud.sql",
     );
   });
 
-  it("SQL [read, admin] earns combined friendly copy", () => {
+  it("application SQL [read, admin] stays literal as a whole", () => {
     const grant = makeGrant({
-      family: "bootstrap-sql",
+      family: "own-app-data",
       service: "tinycloud.sql",
+      space: APPS_SPACE,
+      path: "app/records",
       abilities: ["tinycloud.sql/read", "tinycloud.sql/admin"],
       severity: "attention",
     });
     expect(buildStatement(grant).primaryText).toBe(
-      "Read and update your TinyCloud account",
+      "Perform tinycloud.sql/read, tinycloud.sql/admin on tinycloud.sql",
     );
   });
 
-  it("SQL [select] (deprecated alias) falls back to literal (classifyVerbs does not include `select`)", () => {
-    // `select` is admitted by the gate (it's a registered deprecated
-    // alias) but the downstream SQL branch reads `verbs.hasRead` from
-    // classifyVerbs, whose READ_VERBS set is {read, get, peek, list}.
-    // `select` is not in that set, so the friendly-copy branch does not
-    // fire and the grant falls back to literal — which is safe. The
-    // wire form js-sdk emits is the canonical `tinycloud.sql/read`.
+  it("SQL [select] (deprecated alias) stays literal", () => {
     const grant = makeGrant({
       family: "bootstrap-sql",
       service: "tinycloud.sql",
@@ -528,9 +521,7 @@ describe("buildStatement — appScopedSecret uses byte-exact ability check", () 
     };
     const stmt = buildStatement(grant);
     expect(stmt.primaryText).not.toContain("app secret");
-    expect(stmt.primaryText).toBe(
-      "Perform tinycloud.kv/read on tinycloud.kv",
-    );
+    expect(stmt.primaryText).toBe("Perform tinycloud.kv/read on tinycloud.kv");
   });
 
   it("stamped appScopedSecret with kv/get short-form → literal fallback", () => {
@@ -606,17 +597,7 @@ describe("buildStatement — appScopedSecret uses byte-exact ability check", () 
 
 // ─── Encryption: registered abilities still earn friendly copy ──────────────
 describe("buildStatement — encryption catalog: registered abilities preserved", () => {
-  it("encryption [network.revoke] alone → literal fallback (revoke has no friendly mapping)", () => {
-    // `network.revoke` is a registered wire shape on the node, but the
-    // encryption branch has no friendly statement mapping for it —
-    // `classifyVerbs` does not classify the compound `network.revoke`
-    // verb and the branch only speaks about `decrypt` / `network.create`.
-    // Sol post-rejection (Behavior 1): `network.revoke` is intentionally
-    // NOT in ENCRYPTION_RECOGNIZED_ABILITIES so the whole-grant gate
-    // forces any grant containing it — alone or mixed with decrypt /
-    // network.create — into the literal fallback, preserving every raw
-    // ability. See statements-network-revoke.test.ts for the mixed-grant
-    // regressions.
+  it("encryption [network.revoke] explains the known consequence", () => {
     const grant = makeGrant({
       family: "encryption-key",
       service: "tinycloud.encryption",
@@ -625,9 +606,7 @@ describe("buildStatement — encryption catalog: registered abilities preserved"
       severity: "sensitive",
     });
     const stmt = buildStatement(grant);
-    expect(stmt.primaryText).toBe(
-      "Perform tinycloud.encryption/network.revoke on tinycloud.encryption",
-    );
+    expect(stmt.primaryText).toBe("Disable the decryption network");
   });
 
   it("encryption [network.create, decrypt] → combined friendly copy", () => {
@@ -642,7 +621,7 @@ describe("buildStatement — encryption catalog: registered abilities preserved"
       severity: "sensitive",
     });
     expect(buildStatement(grant).primaryText).toBe(
-      "Create a decryption network and decrypt protected data",
+      "Set up encrypted data access and decrypt protected data",
     );
   });
 
@@ -654,8 +633,6 @@ describe("buildStatement — encryption catalog: registered abilities preserved"
       abilities: ["tinycloud.encryption/decrypt"],
       severity: "sensitive",
     });
-    expect(buildStatement(grant).primaryText).toBe(
-      "Decrypt protected data",
-    );
+    expect(buildStatement(grant).primaryText).toBe("Decrypt protected data");
   });
 });

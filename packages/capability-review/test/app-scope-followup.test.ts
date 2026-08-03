@@ -212,7 +212,7 @@ describe("Blocker 4 follow-up (Defect 1): service exactness", () => {
     });
     const out = annotateAppScopedGrants(makeModel([grant]), { secrets: DECLARED });
     const g = out.permissions[0]!;
-    expect(g.severity).toBe("standard");
+    expect(g.severity).toBe("sensitive");
     expect(g.appScopedSecret).toEqual({
       secretName: "API_KEY",
       scope: "listen",
