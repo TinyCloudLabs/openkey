@@ -4,6 +4,7 @@ import {
   buildRenderPlan,
   buildStatement,
   classifyRecapEntry,
+  FAMILY_LABEL,
   classifySeverityFromActions,
   assertBaselineSubset,
   restrictModel,
@@ -838,5 +839,25 @@ describe("caveats (Sol continuation contract)", () => {
     const cand = parseCapabilityReview(ctx({ message }));
     const check = assertBaselineSubset(base, cand);
     expect(check.ok).toBe(true);
+  });
+});
+
+describe("family label copy", () => {
+  // These strings are what a user actually reads on the consent screen, so a
+  // silent edit is a security-UX regression even when severity is unchanged.
+  // `secret-namespace-list` in particular must describe whole-namespace REACH
+  // (it covers value reads, not only name listings) — an earlier label,
+  // "Named secret (read)"-style wording, misdescribed a root `get`.
+  it("pins the labels for the secret families", () => {
+    expect(FAMILY_LABEL["secret-namespace-list"]).toBe("Secret namespace access");
+    expect(FAMILY_LABEL["secret-read"]).toBe("Named secret (read)");
+    expect(FAMILY_LABEL["secret-mutation"]).toBe("Named secret (mutate)");
+  });
+
+  it("keeps the cross-user family label free of owner addresses and paths", () => {
+    const label = FAMILY_LABEL["cross-app-data"];
+    expect(label).toBe("Cross-app data");
+    expect(label).not.toMatch(/0x[0-9a-fA-F]{6,}/);
+    expect(label).not.toContain("path=");
   });
 });
