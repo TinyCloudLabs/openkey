@@ -3,6 +3,7 @@ import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
 import { prepareSession } from '@tinycloud/node-sdk-wasm';
 import {
+  BOOTSTRAP_DEFAULT_ONLY_SESSION_REQUEST,
   BOOTSTRAP_SESSION_REQUESTS,
   bootstrapEncryptionNetworkId,
   bootstrapSpaceId,
@@ -126,6 +127,90 @@ function abilitiesFromBootstrapSession(space: BootstrapSpaceName) {
     abilities[shortService]![resource.path] = [...resource.actions];
   }
   return abilities;
+}
+
+function spaceAbilitiesFromResources(
+  resources: readonly {
+    service: string;
+    space: string;
+    path: string;
+    actions: readonly string[];
+  }[],
+  resourceAddress = address,
+  resourceChainId = chainId,
+) {
+  const spaceAbilities: Record<string, Record<string, Record<string, string[]>>> = {};
+  for (const resource of resources) {
+    const spaceName = bootstrapSpaceName(resource.space);
+    const spaceId = bootstrapSpaceId(resourceAddress, resourceChainId, spaceName);
+    const shortService = resource.service.startsWith('tinycloud.')
+      ? resource.service.slice('tinycloud.'.length)
+      : resource.service;
+    spaceAbilities[spaceId] ??= {};
+    spaceAbilities[spaceId]![shortService] ??= {};
+    spaceAbilities[spaceId]![shortService]![resource.path] = [...resource.actions];
+  }
+  return spaceAbilities;
+}
+
+function bootstrapSpaceName(space: string): BootstrapSpaceName {
+  switch (space) {
+    case 'default':
+    case 'applications':
+    case 'account':
+    case 'secrets':
+    case 'public':
+      return space;
+    default:
+      throw new Error(`Unexpected bootstrap resource space: ${space}`);
+  }
+}
+
+function bootstrapSessionSiweWithResources(
+  primarySpace: BootstrapSpaceName,
+  resources: readonly {
+    service: string;
+    space: string;
+    path: string;
+    actions: readonly string[];
+  }[],
+  rawAbilities?: Record<string, string[]>,
+  resourceAddress = address,
+  resourceChainId = chainId,
+) {
+  const spaceId = bootstrapSpaceId(address, chainId, primarySpace);
+  const spaceAbilities = spaceAbilitiesFromResources(
+    resources,
+    resourceAddress,
+    resourceChainId,
+  );
+  return prepareSession({
+    address,
+    chainId,
+    domain: 'cli.tinycloud.xyz',
+    issuedAt: new Date().toISOString(),
+    expirationTime: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    spaceId,
+    jwk,
+    abilities: spaceAbilities[spaceId] ?? {},
+    spaceAbilities,
+    ...(rawAbilities === undefined ? {} : { rawAbilities }),
+  }).siwe;
+}
+
+async function postBootstrapMessage(message: string) {
+  const router = await delegateRouter();
+  return router.request('/sign', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      address,
+      chainId,
+      message,
+      type: 'siwe',
+      keyId: keyRecord.id,
+    }),
+  });
 }
 
 function bootstrapSessionSiwe(space: BootstrapSpaceName) {
@@ -324,9 +409,16 @@ describe('evaluateAutoSignPolicy', () => {
 });
 
 describe('delegateRouter Auto-Sign integration', () => {
-  test('POST /api/delegate/sign accepts the SDK signing body for allowlisted bootstrap messages', async () => {
+  test('POST /api/delegate/sign accepts the widened default SIWE with account entries preceding default', async () => {
     const router = await delegateRouter();
-    const message = bootstrapSessionSiwe('default');
+    const resources = BOOTSTRAP_SESSION_REQUESTS.default.resources;
+    const message = bootstrapSessionSiweWithResources(
+      'default',
+      [...resources].sort((left, right) =>
+        left.space === 'account' && right.space !== 'account' ? -1 :
+          left.space !== 'account' && right.space === 'account' ? 1 : 0,
+      ),
+    );
 
     const response = await router.request('/sign', {
       method: 'POST',
@@ -346,6 +438,170 @@ describe('delegateRouter Auto-Sign integration', () => {
       signature: expect.stringMatching(/^0x[0-9a-f]+$/i),
     });
     expect(signedMessages).toEqual([message]);
+  });
+
+  test('POST /api/delegate/sign accepts BOOTSTRAP_DEFAULT_ONLY_SESSION_REQUEST', async () => {
+    const message = bootstrapSessionSiweWithResources(
+      'default',
+      BOOTSTRAP_DEFAULT_ONLY_SESSION_REQUEST.resources,
+    );
+
+    const response = await postBootstrapMessage(message);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      approved: true,
+      signature: expect.stringMatching(/^0x[0-9a-f]+$/i),
+    });
+    expect(signedMessages).toEqual([message]);
+  });
+
+  test('POST /api/delegate/sign accepts widened default SIWE in reversed and permuted resource orders', async () => {
+    const resources = BOOTSTRAP_SESSION_REQUESTS.default.resources;
+    const orders = [
+      [...resources].reverse(),
+      [...resources.slice(2).reverse(), ...resources.slice(0, 2).reverse()],
+    ];
+
+    for (const orderedResources of orders) {
+      const message = bootstrapSessionSiweWithResources('default', orderedResources);
+      const response = await postBootstrapMessage(message);
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        approved: true,
+        signature: expect.stringMatching(/^0x[0-9a-f]+$/i),
+      });
+    }
+    expect(signedMessages).toHaveLength(2);
+  });
+
+  test('POST /api/delegate/sign accepts an account-primary action subset', async () => {
+    const resource = BOOTSTRAP_SESSION_REQUESTS.account.resources.find(
+      (candidate) => candidate.service === 'tinycloud.capabilities' && candidate.path === '',
+    );
+    if (!resource) throw new Error('Missing account bootstrap anchor resource');
+    const message = bootstrapSessionSiweWithResources('account', [{
+      ...resource,
+      actions: [resource.actions[0]!],
+    }]);
+
+    const response = await postBootstrapMessage(message);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      approved: true,
+      signature: expect.stringMatching(/^0x[0-9a-f]+$/i),
+    });
+    expect(signedMessages).toEqual([message]);
+  });
+
+  test('POST /api/delegate/sign rejects an unanchored default account-marker subset', async () => {
+    const marker = BOOTSTRAP_SESSION_REQUESTS.default.resources.find(
+      (resource) => resource.space === 'account' && resource.path === 'system/bootstrap/complete',
+    );
+    if (!marker) throw new Error('Missing widened marker resource');
+    const message = bootstrapSessionSiweWithResources('default', [{
+      ...marker,
+      actions: [marker.actions[0]!],
+    }]);
+
+    const response = await postBootstrapMessage(message);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      approved: false,
+      needsApproval: true,
+      code: 'outside_bootstrap_allowlist',
+    });
+    expect(signedMessages).toEqual([]);
+  });
+
+  test('POST /api/delegate/sign rejects resources mixed across bootstrap candidates', async () => {
+    const defaultResource = BOOTSTRAP_SESSION_REQUESTS.default.resources.find(
+      (resource) => resource.space === 'default' && resource.path === '',
+    );
+    const accountResource = BOOTSTRAP_SESSION_REQUESTS.account.resources.find(
+      (resource) => resource.service === 'tinycloud.capabilities' && resource.path === '',
+    );
+    if (!defaultResource || !accountResource) throw new Error('Missing bootstrap test resources');
+    const message = bootstrapSessionSiweWithResources('default', [defaultResource, accountResource]);
+
+    const response = await postBootstrapMessage(message);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      approved: false,
+      needsApproval: true,
+      code: 'outside_bootstrap_allowlist',
+    });
+    expect(signedMessages).toEqual([]);
+  });
+
+  test('POST /api/delegate/sign rejects a default anchor combined with account raw encryption ability', async () => {
+    const defaultResource = BOOTSTRAP_SESSION_REQUESTS.default.resources.find(
+      (resource) => resource.space === 'default' && resource.path === '',
+    );
+    if (!defaultResource) throw new Error('Missing default bootstrap anchor resource');
+    const rawResource = bootstrapEncryptionNetworkId(address, chainId);
+    const message = bootstrapSessionSiweWithResources(
+      'default',
+      [defaultResource],
+      { [rawResource]: ['tinycloud.encryption/network.create'] },
+    );
+
+    const response = await postBootstrapMessage(message);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      approved: false,
+      needsApproval: true,
+      code: 'outside_bootstrap_allowlist',
+    });
+    expect(signedMessages).toEqual([]);
+  });
+
+  test('POST /api/delegate/sign rejects wrong-owner and wrong-chain account resources', async () => {
+    const resource = BOOTSTRAP_SESSION_REQUESTS.default.resources.find(
+      (candidate) => candidate.space === 'default' && candidate.path === '',
+    );
+    if (!resource) throw new Error('Missing default bootstrap resource');
+    const otherAddress = '0x0000000000000000000000000000000000000001';
+    const wrongResourceIdentities: Array<[string, number]> = [
+      [otherAddress, chainId],
+      [address, 137],
+    ];
+    for (const [resourceAddress, resourceChainId] of wrongResourceIdentities) {
+      const message = bootstrapSessionSiweWithResources(
+        'default',
+        [resource],
+        undefined,
+        resourceAddress,
+        resourceChainId,
+      );
+      const response = await postBootstrapMessage(message);
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        approved: false,
+        needsApproval: true,
+        code: 'outside_bootstrap_allowlist',
+      });
+    }
+    expect(signedMessages).toEqual([]);
+  });
+
+  test('POST /api/delegate/sign rejects an extra account action', async () => {
+    const marker = BOOTSTRAP_SESSION_REQUESTS.default.resources.find(
+      (resource) => resource.space === 'account' && resource.path === 'system/bootstrap/complete',
+    );
+    if (!marker) throw new Error('Missing widened marker resource');
+    const message = bootstrapSessionSiweWithResources('default', [{
+      ...marker,
+      actions: [...marker.actions, 'tinycloud.kv/del'],
+    }]);
+
+    const response = await postBootstrapMessage(message);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      approved: false,
+      needsApproval: true,
+      code: 'outside_bootstrap_allowlist',
+    });
+    expect(signedMessages).toEqual([]);
   });
 
   test('POST /api/delegate/sign returns an SDK-readable rejection when Auto-Sign is disabled', async () => {

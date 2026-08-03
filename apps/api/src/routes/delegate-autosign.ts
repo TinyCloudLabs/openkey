@@ -157,16 +157,108 @@ export function evaluateBootstrapSessionScope(input: ScopeEvaluationInput): Auto
 }
 
 export function evaluateBootstrapSigningScope(input: SigningScopeEvaluationInput): AutoSignPolicyDecision {
-  const spaceId = scopeSpaceId(input.entries);
-  if (!spaceId) {
-    return denied('Signed SIWE message does not target a bootstrap space');
-  }
-
   if (isHostSigningScope(input.entries)) {
+    const spaceId = scopeSpaceId(input.entries);
+    if (!spaceId) {
+      return denied('Signed SIWE message does not target a bootstrap space');
+    }
     return evaluateBootstrapHostScope({ ...input, spaceId });
   }
 
-  return evaluateBootstrapSessionScope({ ...input, spaceId });
+  return evaluateBootstrapSessionCandidates(input);
+}
+
+function evaluateBootstrapSessionCandidates(
+  input: SigningScopeEvaluationInput,
+): AutoSignPolicyDecision {
+  if (input.entries.length === 0) {
+    return denied('Signed SIWE message does not contain bootstrap capabilities');
+  }
+
+  const candidates = BOOTSTRAP_ALLOWLIST.filter(
+    (entry) => entry.kind === 'session',
+  );
+  const validCandidates = candidates.filter((candidate) => {
+    let hasPrimaryAnchor = false;
+
+    for (const entry of input.entries) {
+      const service = fullServiceName(entry.service);
+      if (service === 'tinycloud.encryption') {
+        if (entry.space !== 'encryption') {
+          return false;
+        }
+
+        const rawAbility = candidate.rawAbilities?.find((ability) => (
+          ability.service === service &&
+          expandRawResource(ability.resource, input.address, input.chainId) === entry.path &&
+          actionSubset(entry.actions, ability.actions)
+        ));
+        if (!rawAbility) {
+          return false;
+        }
+        continue;
+      }
+
+      const resource = candidate.resources?.find((allowedResource) => (
+        fullServiceName(allowedResource.service) === service &&
+        allowedResource.path === entry.path &&
+        actionSubset(entry.actions, allowedResource.actions) &&
+        entry.space === bootstrapSpaceId(input.address, input.chainId, allowedResource.space)
+      ));
+      if (!resource) {
+        return false;
+      }
+
+      if (
+        entry.space === bootstrapSpaceId(input.address, input.chainId, candidate.space)
+      ) {
+        hasPrimaryAnchor = true;
+      }
+    }
+
+    return hasPrimaryAnchor;
+  });
+
+  if (validCandidates.length === 1) {
+    return { allowed: true };
+  }
+  if (validCandidates.length > 1) {
+    return denied('Ambiguous bootstrap candidates');
+  }
+
+  const hasAnchorlessMatch = candidates.some((candidate) => {
+    let hasPrimaryAnchor = false;
+    for (const entry of input.entries) {
+      const service = fullServiceName(entry.service);
+      if (service === 'tinycloud.encryption') {
+        const rawAbility = candidate.rawAbilities?.find((ability) => (
+          ability.service === service &&
+          entry.space === 'encryption' &&
+          expandRawResource(ability.resource, input.address, input.chainId) === entry.path &&
+          actionSubset(entry.actions, ability.actions)
+        ));
+        if (!rawAbility) return false;
+        continue;
+      }
+      const resource = candidate.resources?.find((allowedResource) => (
+        fullServiceName(allowedResource.service) === service &&
+        allowedResource.path === entry.path &&
+        actionSubset(entry.actions, allowedResource.actions) &&
+        entry.space === bootstrapSpaceId(input.address, input.chainId, allowedResource.space)
+      ));
+      if (!resource) return false;
+      if (entry.space === bootstrapSpaceId(input.address, input.chainId, candidate.space)) {
+        hasPrimaryAnchor = true;
+      }
+    }
+    return !hasPrimaryAnchor;
+  });
+
+  return denied(
+    hasAnchorlessMatch
+      ? 'Missing primary-space anchor for bootstrap candidate'
+      : 'No bootstrap candidate explains the complete recap',
+  );
 }
 
 export function evaluateBootstrapHostScope(input: ScopeEvaluationInput): AutoSignPolicyDecision {
