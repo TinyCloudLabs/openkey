@@ -38,7 +38,7 @@
         "@better-auth/passkey": "^1.6.9",
         "@openkey/db": "workspace:*",
         "@openkey/tee": "workspace:*",
-        "@tinycloud/bootstrap": "2.5.1",
+        "@tinycloud/bootstrap": "2.7.0-beta.1",
         "@tinycloud/node-sdk": "2.6.1",
         "@tinycloud/node-sdk-wasm": "1.7.4",
         "@tinycloud/sdk-core": "2.6.1",
@@ -754,7 +754,7 @@
 
     "@tailwindcss/vite": ["@tailwindcss/vite@4.1.18", "", { "dependencies": { "@tailwindcss/node": "4.1.18", "@tailwindcss/oxide": "4.1.18", "tailwindcss": "4.1.18" }, "peerDependencies": { "vite": "^5.2.0 || ^6 || ^7" } }, "sha512-jVA+/UpKL1vRLg6Hkao5jldawNmRo7mQYrZtNHMIVpLfLhDml5nMRUo/8MwoX2vNXvnaXNNMedrMfMugAVX1nA=="],
 
-    "@tinycloud/bootstrap": ["@tinycloud/bootstrap@2.5.1", "", { "dependencies": { "viem": "^2.21.53" } }, "sha512-mJ5TFFIRyuRVeMeKyuxzi2wzXcuCAsVDhm6RPPH3QLjuGMz0Q0fvwWeFFYIhaK2eohPXixQCEQa2P0T5Fy6FNQ=="],
+    "@tinycloud/bootstrap": ["@tinycloud/bootstrap@2.7.0-beta.1", "", { "dependencies": { "viem": "^2.21.53" } }, "sha512-lX5ZomTfCR2s4e1X0bNhAQI0OLRtSSvylwDnyZIlInU4mCrVMPXtqLjUlTvzPJ+FYfDkXSPhGQyFfnzHQTVe3A=="],
 
     "@tinycloud/node-sdk": ["@tinycloud/node-sdk@2.6.1", "", { "dependencies": { "@tinycloud/node-sdk-wasm": "1.7.4", "@tinycloud/sdk-core": "2.6.1", "siwe": "^3.0.0" } }, "sha512-c5Au41VfKcVm6SZ4b5ItFEKv4zPe9rKwRlSNjC+OPoO8ZO5yg4cI3manfoWYER5/q2Jio+BbYqdToBAa2U8bjQ=="],
 
@@ -1914,7 +1914,11 @@
 
     "@tinycloud/sdk-core/@noble/curves": ["@noble/curves@1.9.7", "", { "dependencies": { "@noble/hashes": "1.8.0" } }, "sha512-gbKGcRUYIjA3/zCCNaWDciTMFI0dCkvou3TL8Zmy5Nc7sJ47a0jtOeZoTaMxkuqRo9cRhjOdZJXegxYE5FN/xw=="],
 
+    "@tinycloud/sdk-core/@tinycloud/bootstrap": ["@tinycloud/bootstrap@2.5.1", "", { "dependencies": { "viem": "^2.21.53" } }, "sha512-mJ5TFFIRyuRVeMeKyuxzi2wzXcuCAsVDhm6RPPH3QLjuGMz0Q0fvwWeFFYIhaK2eohPXixQCEQa2P0T5Fy6FNQ=="],
+
     "@tinycloud/sdk-core/zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
+
+    "@tinycloud/sdk-services/@tinycloud/bootstrap": ["@tinycloud/bootstrap@2.5.1", "", { "dependencies": { "viem": "^2.21.53" } }, "sha512-mJ5TFFIRyuRVeMeKyuxzi2wzXcuCAsVDhm6RPPH3QLjuGMz0Q0fvwWeFFYIhaK2eohPXixQCEQa2P0T5Fy6FNQ=="],
 
     "@tinycloud/sdk-services/zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
 
