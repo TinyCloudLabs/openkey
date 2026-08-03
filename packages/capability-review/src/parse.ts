@@ -346,6 +346,34 @@ function shortServiceOf(abilityService: string): string {
 }
 
 /**
+ * Blocker 4 follow-up (Defect 2): derive the "effective" service used to
+ * compute canonical grant/action IDs.
+ *
+ * The delegate route's `computeActionKey` builds its four-part key from
+ * the RESOURCE-derived short-service (`canonicalizeServiceName(entry.service)`
+ * where `entry.service` is the WASM-emitted short segment like `kv` /
+ * `sql`). Capability-review must produce the same IDs so preview/finalize
+ * correlation stays byte-identical and duplicate `<space>/<path>` tuples
+ * that carry the SAME ability across DIFFERENT resource services (e.g.
+ * `<space>/kv/<path>` and `<space>/sql/<path>` both with a
+ * `tinycloud.kv/get` ability) resolve to DISTINCT grant / action IDs.
+ *
+ * When the wire carries no short-service segment (e.g. a bare `<space>`
+ * resource URI or the legacy expanded form) we fall back to the ability-
+ * derived service so the ID is still well-formed. In that case both
+ * sides agree by construction so no divergence is possible.
+ */
+function effectiveServiceForId(
+  abilityService: string,
+  resourceService: string | null,
+): string {
+  if (resourceService !== null && resourceService !== "") {
+    return `tinycloud.${resourceService}`;
+  }
+  return abilityService;
+}
+
+/**
  * Decode a single `urn:recap:<b64>` resource into (service, space, path,
  * actions) tuples. Populates `grouped` in place and emits `warnings` for
  * anything that cannot be decoded.
@@ -609,11 +637,18 @@ function buildActions(
   const selected = ctx.selectedActionIds
     ? new Set(ctx.selectedActionIds)
     : null;
+  const idService = effectiveServiceForId(entry.service, entry.resourceService);
   return entry.actions.map((ability): CapabilityAction => {
     const verb = ability.includes("/")
       ? ability.slice(ability.indexOf("/") + 1)
       : ability;
-    const id = actionId(entry.service, entry.space, entry.path, ability);
+    // Blocker 4 follow-up (Defect 2): action ID service segment is the
+    // resource-derived service (canonicalized to `tinycloud.<short>`)
+    // when the wire carried one; falls back to the ability-derived
+    // service otherwise. Matches the delegate route's `computeActionKey`
+    // so preview/finalize correlation is byte-identical and duplicate
+    // grants across different resource services are distinguishable.
+    const id = actionId(idService, entry.space, entry.path, ability);
     // Structural requirement: the TinyCloud capabilities/read grant is
     // architecturally required for delegation activation.
     const structurallyRequired =
@@ -714,8 +749,18 @@ function buildGrants(
     // signerAddress is retained above only for potential downstream
     // display; it MUST NOT influence ownership classification.
     void signerAddress;
+    // Blocker 4 follow-up (Defect 2): grant ID service segment is the
+    // resource-derived service (canonicalized to `tinycloud.<short>`)
+    // when the wire carried one; falls back to the ability-derived
+    // service otherwise. This mirrors the delegate route's
+    // `permissionKey` which uses `canonicalizeServiceName(entry.service)`
+    // on the WASM-emitted resource-side short segment, so duplicate
+    // `<space>/<path>` tuples across different resource services (e.g.
+    // `<space>/kv/<path>` and `<space>/sql/<path>`) resolve to
+    // DISTINCT grant IDs.
+    const idService = effectiveServiceForId(entry.service, entry.resourceService);
     return {
-      id: permissionId(entry.service, entry.space, entry.path),
+      id: permissionId(idService, entry.space, entry.path),
       family,
       severity,
       service: entry.service,

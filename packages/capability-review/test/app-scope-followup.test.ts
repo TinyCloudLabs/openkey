@@ -29,6 +29,35 @@
 //     The parser now emits `resourceService` and a `serviceMismatch`
 //     flag; `annotateAppScopedGrants` never annotates mismatched grants,
 //     and `buildStatement` short-circuits them to literal fallback.
+//
+// Sol MAJOR-1..3 (final review after initial Blocker 4 pass):
+//
+//   Sol MAJOR-1: App-scoped proof must use js-sdk manifest normalization
+//     semantics. A manifest declaration with scope `listen--app` (double
+//     dash) resolves via js-sdk `canonicalizeSecretScope` to path
+//     segment `listen-app` (single dash). OpenKey previously compared
+//     the raw declared scope, so `listen--app` matched a caller path
+//     of `vault/secrets/scoped/listen--app/API_KEY` even though js-sdk
+//     itself would refuse to load the declaration in that spelling.
+//     Also: manifest action names are case-sensitive — `READ` is an
+//     invalid manifest declaration per js-sdk `normalizeSecretActions`
+//     but OpenKey previously lowercased and folded it to `get`, so a
+//     manifest with `actions: ["READ"]` was silently accepted.
+//
+//   Sol MAJOR-2: Grant IDs and action IDs used ability-derived service
+//     only, not the signed resource service. A SIWE with both
+//     `<space>/kv/<path>` and `<space>/sql/<path>` carrying
+//     `tinycloud.kv/get` produced two review grants with IDENTICAL
+//     grant/action IDs, and the SQL mismatch fallback statement
+//     omitted the `/sql/` segment making the two visually
+//     indistinguishable.
+//
+//   Sol MAJOR-3: `grantReachesSecretDataOrDecryption` only considered
+//     resourceService when it was `kv` or `sql`. A grant on the signer
+//     secrets space with an unknown/mismatched ability (e.g.
+//     `tinycloud.foo/read`) was correctly marked sensitive and
+//     `serviceMismatch`, but returned false from the count predicate.
+//     Any grant on a secrets-shaped space must now count.
 
 import { describe, expect, it } from "bun:test";
 
@@ -523,5 +552,337 @@ describe("Blocker 4 follow-up (Defect 5): serviceMismatch parser + gate", () => 
         .flatMap((p) => [p.id, ...p.actions.map((x) => x.id)])
         .sort();
     expect(ids(a)).toEqual(ids(b));
+  });
+});
+
+// ─── Sol MAJOR-1: js-sdk manifest normalization parity ─────────────────────
+describe("Sol MAJOR-1: js-sdk manifest normalization parity", () => {
+  it("non-canonical scope (double dash) never annotates even at the double-dash path", () => {
+    // A manifest that declares `scope: "listen--app"` (double dash) is
+    // NOT what js-sdk would produce — canonicalizeSecretScope collapses
+    // it to `listen-app`. OpenKey must reject the declaration outright,
+    // even if the caller's grant path is the matching double-dash form.
+    // Fail-closed: any signed grant path was produced with js-sdk
+    // canonicalization applied.
+    const declared: DeclaredScopedSecret[] = [
+      { secretName: "API_KEY", scope: "listen--app", actions: ["read"] },
+    ];
+    const grant = makeGrant({
+      service: "tinycloud.kv",
+      space: SECRETS_SPACE,
+      path: "vault/secrets/scoped/listen--app/API_KEY",
+      verbs: ["get"],
+      family: "secret-read",
+    });
+    expect(findMatchingDeclaredSecret(grant, declared)).toBeNull();
+    const out = annotateAppScopedGrants(makeModel([grant]), {
+      secrets: declared,
+    });
+    const g = out.permissions[0]!;
+    expect(g.appScopedSecret).toBeUndefined();
+    expect(g.severity).not.toBe("standard");
+  });
+
+  it("non-canonical scope declaration does not match its canonical grant path", () => {
+    // A manifest with scope `listen--app` (double dash) is invalid;
+    // it does NOT match a canonical grant path either.
+    const declared: DeclaredScopedSecret[] = [
+      { secretName: "API_KEY", scope: "listen--app", actions: ["read"] },
+    ];
+    const grant = makeGrant({
+      service: "tinycloud.kv",
+      space: SECRETS_SPACE,
+      path: "vault/secrets/scoped/listen-app/API_KEY",
+      verbs: ["get"],
+      family: "secret-read",
+    });
+    expect(findMatchingDeclaredSecret(grant, declared)).toBeNull();
+  });
+
+  it("canonical scope declaration matches its canonical grant path (regression)", () => {
+    // Sanity check: a legitimate canonical declaration still matches.
+    const declared: DeclaredScopedSecret[] = [
+      { secretName: "API_KEY", scope: "listen-app", actions: ["read"] },
+    ];
+    const grant = makeGrant({
+      service: "tinycloud.kv",
+      space: SECRETS_SPACE,
+      path: "vault/secrets/scoped/listen-app/API_KEY",
+      verbs: ["get"],
+      family: "secret-read",
+    });
+    expect(findMatchingDeclaredSecret(grant, declared)).not.toBeNull();
+  });
+
+  it("uppercase `READ` in declared actions is rejected (js-sdk parity)", () => {
+    // js-sdk `normalizeSecretActions` is case-sensitive and would
+    // throw ManifestValidationError on `READ`. OpenKey must apply the
+    // same strictness: an origin-bound manifest that declares `READ`
+    // MUST NOT be able to demote a matching `tinycloud.kv/get` grant.
+    const declared: DeclaredScopedSecret[] = [
+      { secretName: "API_KEY", scope: "listen", actions: ["READ"] },
+    ];
+    const grant = makeGrant({
+      service: "tinycloud.kv",
+      space: SECRETS_SPACE,
+      path: CANONICAL_PATH,
+      verbs: ["get"],
+      family: "secret-read",
+    });
+    expect(findMatchingDeclaredSecret(grant, declared)).toBeNull();
+    const out = annotateAppScopedGrants(makeModel([grant]), {
+      secrets: declared,
+    });
+    const g = out.permissions[0]!;
+    expect(g.appScopedSecret).toBeUndefined();
+    expect(g.severity).not.toBe("standard");
+    // near-miss still fires because the name fingerprint is present
+    expect(g.appScopeNearMiss).toBe(true);
+  });
+
+  it("mixed-case `Read` / `Write` / `DELETE` are rejected", () => {
+    const declared: DeclaredScopedSecret[] = [
+      {
+        secretName: "API_KEY",
+        scope: "listen",
+        actions: ["Read", "Write"],
+      },
+    ];
+    const grant = makeGrant({
+      service: "tinycloud.kv",
+      space: SECRETS_SPACE,
+      path: CANONICAL_PATH,
+      verbs: ["get"],
+      family: "secret-read",
+    });
+    expect(findMatchingDeclaredSecret(grant, declared)).toBeNull();
+  });
+
+  it("canonical lowercase `read` / `write` are accepted (regression)", () => {
+    // Sanity check: the standard js-sdk-canonical spelling still works.
+    const declared: DeclaredScopedSecret[] = [
+      {
+        secretName: "API_KEY",
+        scope: "listen",
+        actions: ["read", "write"],
+      },
+    ];
+    const grant = makeGrant({
+      service: "tinycloud.kv",
+      space: SECRETS_SPACE,
+      path: CANONICAL_PATH,
+      verbs: ["get"],
+      family: "secret-read",
+    });
+    expect(findMatchingDeclaredSecret(grant, declared)).not.toBeNull();
+  });
+
+});
+
+// ─── Sol MAJOR-2: resource service in IDs + literal fallback ──────────────
+describe("Sol MAJOR-2: resource service in IDs and literal fallback", () => {
+  const signer: SignerInfo = {
+    label: "Test signer",
+    address: ACCOUNT,
+    chainId: CHAIN,
+    provenance: "managed",
+  };
+
+  function makeCtx(message: string): ParseContext {
+    return {
+      message,
+      signer,
+      editable: true,
+      metadataTrust: { status: "origin-bound", reason: "test" },
+      reason: { text: "", source: "none" },
+      requester: {
+        displayName: "example.tinycloud.xyz",
+        verifiedOrigin: "https://example.tinycloud.xyz",
+        appId: null,
+        manifestName: null,
+        manifestNameProvenance: "none",
+        manifestId: null,
+        manifestIdProvenance: "none",
+        manifestDigest: null,
+        domainWarning: false,
+        originWarning: false,
+      },
+      requesterAddress: null,
+      requesterVerified: false,
+    };
+  }
+
+  // Build a SIWE with TWO ATT entries at the same space+path but
+  // DIFFERENT resource-side short services, both carrying the same
+  // ability. The parser must produce DISTINCT grant/action IDs (defect
+  // 2 root cause: prior code used ability-derived service only, so both
+  // grants collided).
+  function makeDuplicateServiceRecap(): string {
+    const spacePath = `${DEFAULT_SPACE}`; // use non-secrets space so no near-miss
+    const att = {
+      [`${spacePath}/kv/some/path`]: {
+        "tinycloud.kv/get": [{}],
+      },
+      [`${spacePath}/sql/some/path`]: {
+        "tinycloud.kv/get": [{}],
+      },
+      // bootstrap capabilities so protocol is tinycloud-siwe-recap
+      [DEFAULT_SPACE]: {
+        "tinycloud.capabilities/read": [{}],
+      },
+    };
+    const json = JSON.stringify({ att, prf: [] });
+    const b64 = Buffer.from(json, "utf8")
+      .toString("base64")
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/, "");
+    const recap = `urn:recap:${b64}`;
+    return [
+      "example.tinycloud.xyz wants you to sign in with your Ethereum account:",
+      ACCOUNT,
+      "",
+      "TinyCloud delegation",
+      "",
+      "URI: https://example.tinycloud.xyz",
+      "Version: 1",
+      `Chain ID: ${CHAIN}`,
+      "Nonce: abcdef123456",
+      "Issued At: 2026-01-01T00:00:00Z",
+      "Expiration Time: 2027-01-01T00:00:00Z",
+      "Resources:",
+      `- ${recap}`,
+    ].join("\n");
+  }
+
+  it("duplicate space+path across kv/sql resources produce DISTINCT grant IDs", () => {
+    const message = makeDuplicateServiceRecap();
+    const model = parseCapabilityReview(makeCtx(message));
+    // Find kv and sql grants
+    const kv = model.permissions.find((p) => p.resourceService === "kv");
+    const sql = model.permissions.find((p) => p.resourceService === "sql");
+    expect(kv).toBeDefined();
+    expect(sql).toBeDefined();
+    expect(kv!.id).not.toBe(sql!.id);
+    // The IDs must include the resource service so kv/sql are distinct.
+    expect(kv!.id).toContain("tinycloud.kv");
+    expect(sql!.id).toContain("tinycloud.sql");
+  });
+
+  it("duplicate space+path across kv/sql resources produce DISTINCT action IDs", () => {
+    const message = makeDuplicateServiceRecap();
+    const model = parseCapabilityReview(makeCtx(message));
+    const kv = model.permissions.find((p) => p.resourceService === "kv")!;
+    const sql = model.permissions.find((p) => p.resourceService === "sql")!;
+    const kvActionIds = kv.actions.map((a) => a.id);
+    const sqlActionIds = sql.actions.map((a) => a.id);
+    for (const id of kvActionIds) {
+      expect(sqlActionIds).not.toContain(id);
+    }
+  });
+
+  it("service-mismatched fallback statement includes the resource-side service segment", () => {
+    // The Sol defect: SQL-mismatched fallback rendered `${space}/${path}`
+    // and dropped the `/sql/` segment, making it indistinguishable from
+    // a KV grant on the same space/path. The literal fallback MUST now
+    // include `/sql/` verbatim.
+    const grant = makeGrant({
+      service: "tinycloud.kv",
+      space: DEFAULT_SPACE,
+      path: "some/path",
+      resourceService: "sql",
+      serviceMismatch: true,
+      family: "cross-app-data",
+      severity: "sensitive",
+      verbs: ["get"],
+    });
+    const stmt = buildStatement(grant);
+    // Literal fallback text is `Perform <abilities> on <service>`;
+    // the resource is available separately as stmt.resource. Both
+    // sides must reflect the wire form.
+    expect(stmt.resource).toContain("/sql/");
+    expect(stmt.resource).toBe(`${DEFAULT_SPACE}/sql/some/path`);
+  });
+
+  it("resourceService is preserved in literal fallback resource string for grants with no path", () => {
+    // A bare `<space>/<short>` resource URI (no sub-path) still needs
+    // to render its short-service segment so the operator sees it.
+    const grant = makeGrant({
+      service: "tinycloud.kv",
+      space: DEFAULT_SPACE,
+      path: "",
+      resourceService: "kv",
+      family: "bootstrap-kv",
+      severity: "standard",
+      verbs: ["get"],
+    });
+    const stmt = buildStatement(grant);
+    expect(stmt.resource).toBe(`${DEFAULT_SPACE}/kv`);
+  });
+});
+
+// ─── Sol MAJOR-3: any grant on secrets-shaped space counts ────────────────
+describe("Sol MAJOR-3: any grant on secrets-shaped space counts in reach", () => {
+  it("unknown-service ability on secrets space counts in the reach total", () => {
+    // A `tinycloud.foo/read` grant on the signer secrets space has no
+    // recognized service, but structurally reaches into the secrets
+    // space and MUST count in the top-level "N exact grants reach
+    // secret data or decryption" total.
+    const grant = makeGrant({
+      service: "tinycloud.foo",
+      space: SECRETS_SPACE,
+      path: "some/thing",
+      verbs: ["read"],
+      family: "unknown",
+      severity: "sensitive",
+    });
+    expect(grantReachesSecretDataOrDecryption(grant)).toBe(true);
+  });
+
+  it("capabilities/read on secrets space counts in the reach total", () => {
+    // The prior predicate missed capabilities grants on the secrets
+    // space entirely. Any grant on a secrets-shaped space is a
+    // plausible reach into secret bytes; count it.
+    const grant = makeGrant({
+      service: "tinycloud.capabilities",
+      space: SECRETS_SPACE,
+      path: "",
+      verbs: ["read"],
+      family: "bootstrap-capabilities",
+      severity: "standard",
+    });
+    expect(grantReachesSecretDataOrDecryption(grant)).toBe(true);
+  });
+
+  it("service-mismatched unknown-service grant on secrets space still counts", () => {
+    // Regression combined with defect 5: a serviceMismatch grant on
+    // the secrets space must count even when neither the ability nor
+    // the resource service is kv/sql.
+    const grant = makeGrant({
+      service: "tinycloud.foo",
+      space: SECRETS_SPACE,
+      path: "vault/secrets/scoped/listen/API_KEY",
+      resourceService: "bar",
+      serviceMismatch: true,
+      verbs: ["read"],
+      family: "unknown",
+      severity: "sensitive",
+    });
+    expect(grantReachesSecretDataOrDecryption(grant)).toBe(true);
+  });
+
+  it("grant on a non-secrets space with a non-KV/SQL service does NOT count", () => {
+    // Regression guard: only grants that STRUCTURALLY touch secrets
+    // count. A grant on the default space with an unknown service
+    // has no plausible reach into secret bytes.
+    const grant = makeGrant({
+      service: "example.unknown",
+      space: DEFAULT_SPACE,
+      path: "items",
+      verbs: ["write"],
+      family: "unknown",
+      severity: "sensitive",
+    });
+    expect(grantReachesSecretDataOrDecryption(grant)).toBe(false);
   });
 });

@@ -184,6 +184,85 @@ const SECRET_SCOPE_RE = /^[a-z0-9-]+$/;
 const RESERVED_SCOPES = new Set(["default", "global"]);
 
 /**
+ * Blocker 4 follow-up (Defect 1): js-sdk-parity scope canonicalization.
+ *
+ * Mirrors `canonicalizeSecretScope` in
+ * `js-sdk/packages/sdk-services/src/secrets/paths.ts`. The js-sdk secrets
+ * resolver ALWAYS runs the raw manifest scope through this canonicalization
+ * before building a vault path, so a manifest declaration of
+ * `scope: "listen--app"` resolves to path segment `listen-app` (single
+ * dash). Any signed grant path was produced with this same canonicalization
+ * applied.
+ *
+ * OpenKey must apply the SAME rule when matching declared entries: compare
+ * the CANONICALIZED scope against the grant path. If the declared scope
+ * differs from its canonicalization the declaration is not what js-sdk
+ * would have produced and the entry MUST NOT match a signed grant. Returns
+ * null when the scope is empty, contains no valid characters after
+ * canonicalization, or resolves to a reserved value.
+ *
+ * Kept in pure-JS TypeScript so this package stays platform-agnostic
+ * (no js-sdk dependency).
+ */
+function canonicalizeSecretScopeStrict(scope: string): string | null {
+  const trimmed = scope.trim();
+  if (trimmed === "") return null;
+  const canonical = trimmed
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  if (canonical === "") return null;
+  if (RESERVED_SCOPES.has(canonical)) return null;
+  return canonical;
+}
+
+/**
+ * Blocker 4 follow-up (Defect 1): js-sdk-parity manifest secret action
+ * validator.
+ *
+ * The js-sdk `normalizeSecretActions` (sdk-core/src/manifest.ts) accepts
+ * only the following EXACT (case-sensitive) strings from a manifest:
+ *   - short forms:   read, write, delete, get, put, del, list, metadata
+ *   - full URN forms: tinycloud.kv/get, tinycloud.kv/put, tinycloud.kv/del,
+ *                     tinycloud.kv/list, tinycloud.kv/metadata
+ * Anything else is rejected outright (throws ManifestValidationError).
+ *
+ * OpenKey must apply the SAME strictness when validating declared
+ * manifest actions. Previously `annotateAppScopedGrants` lowercased
+ * declared actions before normalization, so a manifest that declared
+ * `"READ"` was silently folded to `"get"` and matched the grant's
+ * `tinycloud.kv/get` ability — even though js-sdk would have rejected
+ * the same manifest at load time. Fail closed on any non-canonical
+ * spelling so the proof gate never trusts a declaration js-sdk would
+ * itself refuse.
+ */
+const CANONICAL_MANIFEST_SECRET_SHORT_ACTIONS: ReadonlySet<string> = new Set([
+  "read",
+  "write",
+  "delete",
+  "get",
+  "put",
+  "del",
+  "list",
+  "metadata",
+]);
+const CANONICAL_MANIFEST_SECRET_URN_ACTIONS: ReadonlySet<string> = new Set([
+  "tinycloud.kv/get",
+  "tinycloud.kv/put",
+  "tinycloud.kv/del",
+  "tinycloud.kv/list",
+  "tinycloud.kv/metadata",
+]);
+
+export function isRecognizedManifestSecretAction(action: string): boolean {
+  return (
+    CANONICAL_MANIFEST_SECRET_SHORT_ACTIONS.has(action) ||
+    CANONICAL_MANIFEST_SECRET_URN_ACTIONS.has(action)
+  );
+}
+
+/**
  * Near-miss fingerprint (Blocker 4, Sol follow-up).
  *
  * Returns true when the grant path contains a `<scope>/<secretName>` fragment
@@ -473,11 +552,21 @@ export function annotateAppScopedGrants(
     // recognized set. A manifest that declares `peek` for a secret cannot
     // be used to promote a matching grant from sensitive to standard, even
     // if the grant itself only asks for recognized verbs.
-    const allDeclaredVerbsRecognized = match.actions.every((a) =>
-      RECOGNIZED_APP_SCOPE_SECRET_VERBS.has(
+    //
+    // Blocker 4 follow-up (Defect 1): also enforce js-sdk-parity
+    // case-sensitive action spelling. `isRecognizedManifestSecretAction`
+    // mirrors js-sdk `normalizeSecretActions` exactly — anything the
+    // js-sdk would reject at manifest load time (e.g. `READ`, `Write`)
+    // must not be able to pass the OpenKey proof gate. The
+    // `RECOGNIZED_APP_SCOPE_SECRET_VERBS` check is retained on top so a
+    // recognized-but-not-KV-mapped verb (e.g. `list`, `metadata`) still
+    // fails the promotion, keeping the friendly copy honest.
+    const allDeclaredVerbsRecognized = match.actions.every((a) => {
+      if (!isRecognizedManifestSecretAction(a)) return false;
+      return RECOGNIZED_APP_SCOPE_SECRET_VERBS.has(
         normalizeSecretVerb(a.toLowerCase()),
-      ),
-    );
+      );
+    });
     if (!allDeclaredVerbsRecognized) return nearMissMark(grant);
     // This is the one allowed sensitive -> standard presentation transition:
     // the server independently origin-bound the manifest and this pure gate
@@ -548,6 +637,13 @@ export function findMatchingDeclaredSecret(
   // decorative slashes) and still hit the proof gate, even though the
   // js-sdk secrets resolver never emits such a path. Slash variants MUST
   // now fail the proof and be caught downstream by near-miss stamping.
+  //
+  // Blocker 4 follow-up (Defect 1): grant-side verb normalization uses
+  // `normalizeSecretVerb` which is case-insensitive (folds `READ` → `get`)
+  // and case-safe for the wire form of the grant's verb (which was
+  // extracted from the ability tail). That's fine here — the grant verb
+  // is a wire-derived string that already came from a canonical
+  // `tinycloud.kv/*` ability.
   const grantPath = grant.path;
   const grantVerbs = grant.actions.map((a) =>
     normalizeSecretVerb(a.verb.toLowerCase()),
@@ -559,8 +655,39 @@ export function findMatchingDeclaredSecret(
     if (!declared.scope) continue;
     if (!SECRET_SCOPE_RE.test(declared.scope)) continue;
     if (RESERVED_SCOPES.has(declared.scope)) continue;
-    // Exact manifest-derived path. This is the only shape js-sdk emits.
-    const expectedPath = `vault/secrets/scoped/${declared.scope}/${declared.secretName}`;
+    // Blocker 4 follow-up (Defect 1): js-sdk manifest-normalization parity.
+    // The js-sdk `canonicalizeSecretScope` collapses consecutive dashes and
+    // strips leading/trailing dashes, so a manifest declaration of
+    // `scope: "listen--app"` produces a vault path segment `listen-app`.
+    // If the declared scope is not already canonical, the manifest
+    // declaration DIFFERS from what js-sdk would have loaded — reject it
+    // rather than let a caller present a non-canonical spelling to hit a
+    // canonical path.
+    const canonicalScope = canonicalizeSecretScopeStrict(declared.scope);
+    if (canonicalScope === null) continue;
+    if (canonicalScope !== declared.scope) continue;
+    // Blocker 4 follow-up (Defect 1): js-sdk-parity action-name validation.
+    // Reject the declaration outright if it carries ANY spelling js-sdk's
+    // `normalizeSecretActions` would refuse to accept (e.g. `READ`,
+    // `WRITE`, `Read`, `peek`). Doing this BEFORE the verb-subset check
+    // means a manifest that declared `["READ", "WRITE"]` no longer matches
+    // a grant asking for `tinycloud.kv/get` + `tinycloud.kv/put` — even
+    // though the `normalizeSecretVerb` fold would otherwise collapse both
+    // sides to `get`/`put`, because js-sdk itself would have rejected the
+    // manifest at load time.
+    let declaredActionsCanonical = true;
+    for (const a of declared.actions) {
+      if (!isRecognizedManifestSecretAction(a)) {
+        declaredActionsCanonical = false;
+        break;
+      }
+    }
+    if (!declaredActionsCanonical) continue;
+    // Exact manifest-derived path. Uses the CANONICALIZED scope, which
+    // must equal the raw scope per the check above — so both paths
+    // resolve to the same string on a valid declaration. Kept explicit
+    // to underline that this is the js-sdk-parity shape.
+    const expectedPath = `vault/secrets/scoped/${canonicalScope}/${declared.secretName}`;
     if (grantPath !== expectedPath) continue;
     // Verb subset check: every grant verb must appear in the declared set.
     const declaredVerbs = new Set(

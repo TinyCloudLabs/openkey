@@ -178,8 +178,21 @@ function classifyVerbs(actions: readonly string[]): VerbSet {
   };
 }
 
-/** Compact resource string used as secondary context. */
+/** Compact resource string used as secondary context.
+ *
+ * Blocker 4 follow-up (Defect 2): when the wire carried a resource-side
+ * short-service segment (e.g. `kv` from `<space>/kv/vault/...`), the
+ * literal fallback rendering MUST include it verbatim. Prior code emitted
+ * `${grant.space}/${grant.path}` which dropped the `/<short>/` segment,
+ * so a `<space>/kv/<path>` and a `<space>/sql/<path>` grant with the
+ * same ability rendered as visually identical strings. The operator now
+ * sees the signed resource URI exactly as it appears on the wire.
+ */
 function resourceOf(grant: CapabilityGrant): string {
+  if (grant.resourceService !== null && grant.resourceService !== "") {
+    if (grant.path) return `${grant.space}/${grant.resourceService}/${grant.path}`;
+    return `${grant.space}/${grant.resourceService}`;
+  }
   if (grant.path) return `${grant.space}/${grant.path}`;
   return grant.space;
 }
@@ -266,24 +279,22 @@ export function grantReachesSecretDataOrDecryption(
     return verbs.has("decrypt") || verbs.has("unwrap");
   }
 
-  // KV and SQL entries in the structurally named secrets space can be
-  // classified as cross-app data before their domain-specific statement is
-  // projected. They still reach TinyCloud Secrets data and belong here.
+  // Blocker 4 follow-up (Defect 3): ANY grant on a secrets-shaped space
+  // reaches secret data, regardless of which service the ability or
+  // resource segment names.
   //
-  // Blocker 4 follow-up (Defect 5): count grants that STRUCTURALLY reach
-  // secret data via EITHER the ability-derived service OR the resource-
-  // derived short-service segment. A service-mismatched grant (e.g. a
-  // `tinycloud.kv/get` ability on a `<space>/sql/vault/secrets/...`
-  // resource URI) still reaches secret data through the sql surface, so
-  // it must remain in the count even after `appScopeNearMiss` / the
-  // `serviceMismatch` short-circuit demote it to literal fallback.
-  const reachesViaAbility =
-    (KV_SERVICES.has(grant.service) || SQL_SERVICES.has(grant.service)) &&
-    isSecretsSpace(grant.space);
-  const reachesViaResource =
-    (grant.resourceService === "kv" || grant.resourceService === "sql") &&
-    isSecretsSpace(grant.space);
-  return reachesViaAbility || reachesViaResource;
+  // Prior code only counted grants whose ability-derived service OR
+  // resource-derived short-service was `kv` / `sql`. That left a gap:
+  // a grant on the signer secrets space with an ability like
+  // `tinycloud.foo/read` (unknown service) was correctly marked
+  // sensitive and `serviceMismatch`, but the count predicate returned
+  // false — the operator saw a sensitive grant that touched their
+  // secret data but the top-level "N exact grants reach secret data
+  // or decryption" callout under-counted it. Any grant on a secrets-
+  // shaped space plausibly reaches secret bytes; count them all so
+  // the callout is a true upper-bound.
+  if (isSecretsSpace(grant.space)) return true;
+  return false;
 }
 
 const KV_SERVICES = new Set(["tinycloud.kv", "kv"]);
