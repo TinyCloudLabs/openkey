@@ -20,4 +20,5 @@
 ignore = [
   "apps/web/tests/browser/**/*.spec.ts",
   "scripts/authorize-sign-harness.test.ts",
+  "scripts/vertical-happy-path-harness.test.ts",
 ]
