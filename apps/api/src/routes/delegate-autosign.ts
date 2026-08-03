@@ -156,7 +156,10 @@ export function evaluateBootstrapSessionScope(input: ScopeEvaluationInput): Auto
   return { allowed: true };
 }
 
-export function evaluateBootstrapSigningScope(input: SigningScopeEvaluationInput): AutoSignPolicyDecision {
+export function evaluateBootstrapSigningScope(
+  input: SigningScopeEvaluationInput,
+  allowlist: readonly BootstrapAllowlistEntry[] = BOOTSTRAP_ALLOWLIST,
+): AutoSignPolicyDecision {
   if (isHostSigningScope(input.entries)) {
     const spaceId = scopeSpaceId(input.entries);
     if (!spaceId) {
@@ -165,17 +168,18 @@ export function evaluateBootstrapSigningScope(input: SigningScopeEvaluationInput
     return evaluateBootstrapHostScope({ ...input, spaceId });
   }
 
-  return evaluateBootstrapSessionCandidates(input);
+  return evaluateBootstrapSessionCandidates(input, allowlist);
 }
 
 function evaluateBootstrapSessionCandidates(
   input: SigningScopeEvaluationInput,
+  allowlist: readonly BootstrapAllowlistEntry[],
 ): AutoSignPolicyDecision {
   if (input.entries.length === 0) {
     return denied('Signed SIWE message does not contain bootstrap capabilities');
   }
 
-  const candidates = BOOTSTRAP_ALLOWLIST.filter(
+  const candidates = allowlist.filter(
     (entry) => entry.kind === 'session',
   );
   const validCandidates = candidates.filter((candidate) => {

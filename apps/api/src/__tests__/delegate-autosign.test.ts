@@ -5,6 +5,7 @@ import { prepareSession } from '@tinycloud/node-sdk-wasm';
 import {
   BOOTSTRAP_DEFAULT_ONLY_SESSION_REQUEST,
   BOOTSTRAP_SESSION_REQUESTS,
+  ACCOUNT_MANIFEST_PERMISSIONS,
   bootstrapEncryptionNetworkId,
   bootstrapSpaceId,
   makePkhSpaceId,
@@ -17,6 +18,7 @@ import {
   evaluateBootstrapSessionScope,
   type RecapEntry,
 } from '../routes/delegate-autosign';
+import type { BootstrapAllowlistEntry } from '@tinycloud/bootstrap';
 
 const privateKey = '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 const account = privateKeyToAccount(privateKey);
@@ -333,6 +335,11 @@ describe('evaluateBootstrapSessionScope', () => {
 });
 
 describe('evaluateBootstrapSigningScope', () => {
+  test('fails loudly when the resolved bootstrap package lacks the canonical account bundle', () => {
+    expect(ACCOUNT_MANIFEST_PERMISSIONS).toBeDefined();
+    expect(ACCOUNT_MANIFEST_PERMISSIONS).toHaveLength(6);
+  });
+
   test('classifies SDK callback SIWE messages as bootstrap session signing requests', () => {
     const spaceId = bootstrapSpaceId(address, chainId, 'default');
 
@@ -346,6 +353,99 @@ describe('evaluateBootstrapSigningScope', () => {
     });
 
     expect(decision).toEqual({ allowed: true });
+  });
+
+  test('accepts and rejects the same manually permuted recap entries in every order', () => {
+    const defaultSpaceId = bootstrapSpaceId(address, chainId, 'default');
+    const accountSpaceId = bootstrapSpaceId(address, chainId, 'account');
+    const defaultAnchor = entry('kv', defaultSpaceId, '', ['tinycloud.kv/get']);
+    const accountEntries: RecapEntry[] = [
+      entry('kv', accountSpaceId, 'applications/', [
+        'tinycloud.kv/get',
+        'tinycloud.kv/put',
+        'tinycloud.kv/list',
+      ]),
+      entry('kv', accountSpaceId, 'spaces/', [
+        'tinycloud.kv/get',
+        'tinycloud.kv/put',
+        'tinycloud.kv/list',
+      ]),
+      entry('kv', accountSpaceId, 'system/bootstrap/complete', [
+        'tinycloud.kv/get',
+        'tinycloud.kv/put',
+      ]),
+      entry('delegation', accountSpaceId, '', ['tinycloud.delegation/list']),
+      entry('sql', accountSpaceId, 'account', [
+        'tinycloud.sql/read',
+        'tinycloud.sql/write',
+        'tinycloud.sql/schema',
+      ]),
+      entry('capabilities', accountSpaceId, '', ['tinycloud.capabilities/read']),
+    ];
+    const acceptedOrders: RecapEntry[][] = [
+      [...accountEntries, defaultAnchor],
+      [defaultAnchor, ...accountEntries],
+      [accountEntries[0]!, defaultAnchor, ...accountEntries.slice(1)],
+    ];
+    const rejectedOrders: RecapEntry[][] = acceptedOrders.map((order) =>
+      order.map((recapEntry) =>
+        recapEntry.service === 'kv' && recapEntry.path === 'applications/'
+          ? { ...recapEntry, actions: [...recapEntry.actions, 'tinycloud.kv/del'] }
+          : recapEntry,
+      ),
+    );
+
+    for (const entries of acceptedOrders) {
+      expect(evaluateBootstrapSigningScope({ address, chainId, entries })).toEqual({
+        allowed: true,
+      });
+    }
+    for (const entries of rejectedOrders) {
+      expect(evaluateBootstrapSigningScope({ address, chainId, entries })).toMatchObject({
+        allowed: false,
+        code: 'outside_bootstrap_allowlist',
+      });
+    }
+  });
+
+  test('rejects an ambiguous set of otherwise valid bootstrap candidates', () => {
+    const ambiguousAllowlist: readonly BootstrapAllowlistEntry[] = [
+      {
+        kind: 'session',
+        service: 'tinycloud.session',
+        space: 'default',
+        actions: ['siwe'],
+        resources: [{
+          service: 'tinycloud.kv',
+          space: 'default',
+          path: '',
+          actions: ['tinycloud.kv/get'],
+        }],
+      },
+      {
+        kind: 'session',
+        service: 'tinycloud.session',
+        space: 'default',
+        actions: ['siwe'],
+        resources: [{
+          service: 'tinycloud.kv',
+          space: 'default',
+          path: '',
+          actions: ['tinycloud.kv/get'],
+        }],
+      },
+    ];
+    const spaceId = bootstrapSpaceId(address, chainId, 'default');
+
+    expect(evaluateBootstrapSigningScope({
+      address,
+      chainId,
+      entries: [entry('kv', spaceId, '', ['tinycloud.kv/get'])],
+    }, ambiguousAllowlist)).toMatchObject({
+      allowed: false,
+      code: 'outside_bootstrap_allowlist',
+      reason: 'Ambiguous bootstrap candidates',
+    });
   });
 
   test('classifies SDK callback host messages as bootstrap host signing requests', () => {
@@ -556,9 +656,9 @@ describe('delegateRouter Auto-Sign integration', () => {
 
   test('POST /api/delegate/sign rejects wrong-owner and wrong-chain account resources', async () => {
     const resource = BOOTSTRAP_SESSION_REQUESTS.default.resources.find(
-      (candidate) => candidate.space === 'default' && candidate.path === '',
+      (candidate) => candidate.space === 'account' && candidate.path === 'applications/',
     );
-    if (!resource) throw new Error('Missing default bootstrap resource');
+    if (!resource) throw new Error('Missing account bootstrap resource');
     const otherAddress = '0x0000000000000000000000000000000000000001';
     const wrongResourceIdentities: Array<[string, number]> = [
       [otherAddress, chainId],
@@ -566,7 +666,7 @@ describe('delegateRouter Auto-Sign integration', () => {
     ];
     for (const [resourceAddress, resourceChainId] of wrongResourceIdentities) {
       const message = bootstrapSessionSiweWithResources(
-        'default',
+        'account',
         [resource],
         undefined,
         resourceAddress,
