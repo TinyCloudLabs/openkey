@@ -303,6 +303,147 @@ const CAPABILITY_SERVICES = new Set(["tinycloud.capabilities", "capabilities"]);
 const SECRETS_SERVICES = new Set(["tinycloud.secrets", "secrets"]);
 const ENCRYPTION_SERVICES = new Set(["tinycloud.encryption", "encryption"]);
 
+// Sol/Fable follow-up: friendly copy for the KV / SQL / encryption service
+// branches (own-app-data, cross-app-data, KV account paths, KV secret paths,
+// SQL account, SQL secrets space, encryption decrypt/create) MUST only fire
+// when EVERY action in the grant is a byte-exact ability shape the wire is
+// known to carry. Reusing the broad `classifyVerbs` verb sets meant a grant
+// like `[tinycloud.kv/get, tinycloud.kv/exfiltrate]` inherited the friendly
+// "Read this app's data" copy: `hasRead` fired on the known `get`, and the
+// unknown `exfiltrate` was silently ignored. The operator saw a reassuring
+// sentence for a request that carried an unknown mutation-like verb.
+//
+// The gate below is placed AFTER the appScopedSecret branch (which has its
+// own dedicated proof + defense-in-depth checks) and BEFORE the
+// own-app-data/cross-app-data family branch, so it protects every friendly
+// KV/SQL/encryption family/service branch that reads `verbs.*` flags from
+// `classifyVerbs`. The capabilities and named-secrets branches keep their
+// own dedicated exact-ability allowlists inside the branch.
+//
+// Rules:
+//   - Empty action list → false (a friendly sentence would still speak
+//     about "read" or "update" authority the grant does not carry).
+//   - Any action outside the recognized catalog for the ability-derived
+//     service → false, whole grant falls back to literal.
+//   - All actions in the catalog → true, downstream branches run as before.
+//
+// The catalogs are UNION-of-both-service-forms (short + fully-qualified)
+// to match what the surrounding branches accept. Anything genuinely novel
+// must be added here explicitly — silent inheritance of friendly copy is a
+// merge-readiness contract violation.
+
+const KV_RECOGNIZED_ABILITIES = new Set<string>([
+  // Read verbs the KV branches speak "read" copy for.
+  "tinycloud.kv/get",
+  "kv/get",
+  "tinycloud.kv/read",
+  "kv/read",
+  "tinycloud.kv/list",
+  "kv/list",
+  "tinycloud.kv/metadata",
+  "kv/metadata",
+  "tinycloud.kv/peek",
+  "kv/peek",
+  // Mutation verbs the KV branches speak "update" copy for. Kept in lock-
+  // step with the MUTATION_VERBS set above.
+  "tinycloud.kv/put",
+  "kv/put",
+  "tinycloud.kv/post",
+  "kv/post",
+  "tinycloud.kv/write",
+  "kv/write",
+  "tinycloud.kv/delete",
+  "kv/delete",
+  "tinycloud.kv/del",
+  "kv/del",
+  "tinycloud.kv/admin",
+  "kv/admin",
+  "tinycloud.kv/grant",
+  "kv/grant",
+  "tinycloud.kv/revoke",
+  "kv/revoke",
+  "tinycloud.kv/update",
+  "kv/update",
+]);
+
+// SQL abilities. `schema` alone is the read/write-schema verb the branches
+// speak "update" copy for; compound `schema.*` variants (e.g.
+// `schema.apply`, `schema.drop`, `schema.migrate`) are DDL-shaped mutations
+// the branches also count as mutation via `verbs.hasSchema`. We enumerate
+// the concrete compound spellings the branches will treat as schema so a
+// caller cannot smuggle an unknown verb through the "schema" prefix.
+const SQL_RECOGNIZED_ABILITIES = new Set<string>([
+  "tinycloud.sql/read",
+  "sql/read",
+  "tinycloud.sql/get",
+  "sql/get",
+  "tinycloud.sql/write",
+  "sql/write",
+  "tinycloud.sql/put",
+  "sql/put",
+  "tinycloud.sql/delete",
+  "sql/delete",
+  "tinycloud.sql/del",
+  "sql/del",
+  "tinycloud.sql/update",
+  "sql/update",
+  "tinycloud.sql/schema",
+  "sql/schema",
+  "tinycloud.sql/schema.apply",
+  "sql/schema.apply",
+  "tinycloud.sql/schema.drop",
+  "sql/schema.drop",
+  "tinycloud.sql/schema.migrate",
+  "sql/schema.migrate",
+]);
+
+// Encryption abilities. The friendly branches speak "decrypt", "create a
+// decryption network", and the combined form only for these exact shapes.
+// `network.create` is the compound form the js-sdk emits on the wire (see
+// Sol MAJOR-3 note above CREATE_VERBS).
+const ENCRYPTION_RECOGNIZED_ABILITIES = new Set<string>([
+  "tinycloud.encryption/decrypt",
+  "encryption/decrypt",
+  "tinycloud.encryption/unwrap",
+  "encryption/unwrap",
+  "tinycloud.encryption/create",
+  "encryption/create",
+  "tinycloud.encryption/network.create",
+  "encryption/network.create",
+]);
+
+/**
+ * Fail-closed gate for the KV / SQL / encryption family/service branches
+ * below: return `true` only when EVERY action in the grant is a byte-exact
+ * ability shape the corresponding branch is prepared to speak friendly
+ * copy for. Any unknown ability (or an empty action list) forces the
+ * caller into `fallbackStatement(grant)`.
+ *
+ * Services outside this catalog (capabilities, named-secrets, unknown
+ * services) return `true` unchanged — those branches carry their own
+ * dedicated exact-ability allowlists (see the `RECOGNIZED_*_ACTIONS`
+ * sets above and the branch bodies below), so a blanket "recognized"
+ * answer here does not weaken them. A `false` return would over-block
+ * their own gates.
+ */
+function allActionsRecognizedForService(grant: CapabilityGrant): boolean {
+  const abilityStrings = grant.actions.map((a) => a.ability);
+  if (abilityStrings.length === 0) return false;
+  const service = grant.service;
+  if (KV_SERVICES.has(service)) {
+    return abilityStrings.every((a) => KV_RECOGNIZED_ABILITIES.has(a));
+  }
+  if (SQL_SERVICES.has(service)) {
+    return abilityStrings.every((a) => SQL_RECOGNIZED_ABILITIES.has(a));
+  }
+  if (ENCRYPTION_SERVICES.has(service)) {
+    return abilityStrings.every((a) =>
+      ENCRYPTION_RECOGNIZED_ABILITIES.has(a),
+    );
+  }
+  return true;
+}
+
 /**
  * Compute the deterministic statement for a grant. Match order:
  *   1. Encryption create + decrypt combined form (bundle across grants must
@@ -427,6 +568,27 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
       return fallbackStatement(grant);
     }
     return { primaryText, service, resource };
+  }
+
+  // Sol/Fable follow-up gate: for the KV / SQL / encryption family and
+  // service branches below, refuse friendly copy whenever ANY action in
+  // the grant is outside the byte-exact ability catalog for that service.
+  // Without this gate, a grant like
+  // `[tinycloud.kv/get, tinycloud.kv/exfiltrate]` would fall through the
+  // `verbs.hasRead && verbs.hasWrite` cases (because `get` is a known
+  // read verb and `exfiltrate` silently fails every classification check)
+  // and inherit friendly copy — implying read/update authority the
+  // operator has not seen the unknown verb attached to.
+  //
+  // Placed AFTER the appScopedSecret branch (whose defense-in-depth
+  // already re-checks its own canonical verb allowlist) and BEFORE the
+  // own-app-data / cross-app-data family branch, so it protects every
+  // friendly KV/SQL/encryption sentence downstream. The named-secrets
+  // and capabilities branches keep their own dedicated exact-ability
+  // allowlists inside the branch; this gate is a no-op for those
+  // services (see `allActionsRecognizedForService`).
+  if (!allActionsRecognizedForService(grant)) {
+    return fallbackStatement(grant);
   }
 
   // App-data ownership is already a structural classification. Keep the
