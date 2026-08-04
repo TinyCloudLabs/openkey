@@ -131,3 +131,13 @@ export { isProduction as isProductionTee };
 
 // Re-export wallet utilities
 export { createWalletFromPrivateKey, generatePrivateKey, getAddressFromPrivateKey } from './wallet';
+
+// Re-export Nostr identity utilities (secp256k1 Schnorr / BIP-340, NOT ECDSA)
+export {
+  generateNostrKeypair,
+  canonicalizeNip01,
+  computeEventId,
+  signNostrEvent,
+  SUPPORTED_NOSTR_KINDS,
+} from './nostr';
+export type { UnsignedNostrEvent, SignedNostrEvent, NostrKeypair, SealedNostrSecret } from './nostr';
