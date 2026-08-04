@@ -49,7 +49,7 @@
       <h2>Authentication continuity</h2>
       <section class="surface boundary">
         <p>A signed-out console visitor is sent to the account sign-in screen with the exact console destination as a constrained return URL. Only the configured console origin and the <code>/console</code> path family are accepted as cross-origin return targets.</p>
-        <p><strong>Non-production evidence (2026-08-03):</strong> the production-shaped auth-option test verifies that API-issued sessions use <code>Domain=.openkey.so</code> and that <code>https://console.openkey.so</code> is a trusted social-auth origin. The real compiled Cloudflare worker host matrix also proves the account-to-console redirect target. The dashboard image above is a signed-in fixture, not evidence of a live cross-subdomain cookie.</p>
+        <p><strong>Non-production runtime evidence (2026-08-03):</strong> a real Better Auth handler backed by an isolated in-memory database signs in from <code>openkey.so</code>, emits a secure <code>Domain=.openkey.so</code> session cookie, then accepts that cookie for <code>https://console.openkey.so</code> on the API session endpoint. The same test verifies the console is a trusted social-auth origin. The compiled Cloudflare worker matrix also proves the account-to-console redirect target. The dashboard image above is a signed-in fixture, not the session proof.</p>
         <p>Deployed cookie-domain behavior remains production-only: local development deliberately disables the domain attribute, and this change neither deploys nor inspects production.</p>
       </section>
 
