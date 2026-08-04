@@ -65,6 +65,18 @@ describe('Cloudflare Pages console host boundary', () => {
   });
 
   test('keeps the console and account redirect contracts at the worker boundary', async () => {
+    // Prove the public happy path at the same boundary that blocks account
+    // pages. A host guard regression must not turn the console into a 404.
+    for (const path of ['/console', '/console/org_123/apps?tab=active']) {
+      const response = await fetchHost('console.openkey.so', path);
+      expect(response.status).toBe(200);
+      expect(response.headers['content-type']).toContain('text/html');
+    }
+    await expect(fetchHost('openkey.so', '/dashboard')).resolves.toMatchObject({
+      status: 200,
+      headers: { 'content-type': expect.stringContaining('text/html') },
+    });
+
     await expect(fetchHost('console.openkey.so', '/')).resolves.toMatchObject({
       status: 308,
       headers: { location: 'https://console.openkey.so/console' },
