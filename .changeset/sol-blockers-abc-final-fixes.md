@@ -1,6 +1,5 @@
 ---
 "@openkey/capability-review": patch
-"@openkey/web": patch
 ---
 
 Sol final review (post-MAJOR-1..3 continuation): close three final blockers
