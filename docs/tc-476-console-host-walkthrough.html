@@ -18,6 +18,9 @@
       .number { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: #eef3ff; color: #1e42c8; font-weight: 700; }
       code { overflow-wrap: anywhere; color: #334155; }
       .boundary { border-color: #c4d3ff; background: #f7f9ff; }
+      figure { margin: 18px 0 0; }
+      figure img { display: block; width: 100%; height: auto; border: 1px solid #e2e8f0; border-radius: 10px; }
+      figcaption { margin-top: 10px; color: #475569; font-size: 0.875rem; }
       @media (max-width: 560px) { main { padding: 32px 16px 56px; } .surface { padding: 16px; } }
     </style>
   </head>
@@ -34,6 +37,15 @@
         <div class="step"><span class="number">3</span><div><strong>Tenant workspace</strong><br /><code>/console/:organizationId/apps</code> keeps the organization, role, and administrative navigation visible while work happens.</div></div>
       </section>
 
+      <h2>Visual verification</h2>
+      <section class="surface">
+        <p>The account dashboard keeps the administrative destination explicit and visually distinct. This is a browser capture of the built worker with the dashboard's API responses represented by a signed-in fixture.</p>
+        <figure>
+          <img src="tc-476-account-dashboard.png" alt="OpenKey Account dashboard showing a clearly readable dark Admin console button alongside Open personal view" />
+          <figcaption>The primary Admin console button resolves to the dedicated console origin and uses white text on the dark surface.</figcaption>
+        </figure>
+      </section>
+
       <h2>Authentication continuity</h2>
       <section class="surface boundary">
         <p>A signed-out console visitor is sent to the account sign-in screen with the exact console destination as a constrained return URL. After account sign-in, the shared <code>.openkey.so</code> session cookie returns the visitor to that console route. Only the configured console origin and the <code>/console</code> path family are accepted as cross-origin return targets.</p>
@@ -41,12 +53,12 @@
 
       <h2>Host boundary</h2>
       <section class="surface">
-        <p><code>openkey.so/console/:organizationId/apps?tab=active</code> responds with a permanent redirect to <code>console.openkey.so/console/:organizationId/apps?tab=active</code>. The console host serves only the console route tree; requests such as <code>console.openkey.so/dashboard</code> receive a clear 404 rather than the personal account app.</p>
+        <p><code>openkey.so/console/:organizationId/apps?tab=active</code> responds with a permanent redirect to <code>console.openkey.so/console/:organizationId/apps?tab=active</code>. The bare console hostname redirects to <code>/console</code>. Legacy console-host dashboard bookmarks return to the account host, while unrelated personal paths remain a 404 rather than rendering the personal account app.</p>
       </section>
 
       <h2>Local development</h2>
       <section class="surface">
-        <p>With no <code>VITE_CONSOLE_ORIGIN</code>, account and console links stay on the same local Vite host. Contributors can prove the journey at <code>http://localhost:5173/console</code> without local DNS. Production supplies <code>VITE_CONSOLE_ORIGIN=https://console.openkey.so</code> and includes the console origin in API CORS.</p>
+        <p>With no <code>VITE_CONSOLE_ORIGIN</code>, account and console links stay on the same local Vite host. Contributors can prove the journey at <code>http://localhost:5173/console</code> without local DNS. Production supplies <code>VITE_CONSOLE_ORIGIN=https://console.openkey.so</code>, <code>CONSOLE_ORIGIN=https://console.openkey.so</code>, and includes the console origin in API CORS.</p>
       </section>
     </main>
   </body>

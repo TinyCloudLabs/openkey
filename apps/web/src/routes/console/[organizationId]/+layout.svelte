@@ -446,6 +446,14 @@
                 </a>
               {/each}
             </nav>
+            <a
+              href={accountHref('/dashboard')}
+              onclick={() => closeMobileNav()}
+              class="flex items-center justify-between rounded-full border border-surface-200 bg-white px-3 py-2 text-sm font-semibold text-surface-700 no-underline transition-colors hover:border-primary-300 hover:bg-primary-50 hover:text-primary-700"
+            >
+              <span>OpenKey Account</span>
+              <span aria-hidden="true">↗</span>
+            </a>
           </div>
         </div>
       </div>

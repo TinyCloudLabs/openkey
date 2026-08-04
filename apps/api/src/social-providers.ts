@@ -151,7 +151,9 @@ export function socialProviderTrustedOrigins(
   webOrigin: string,
   env: ProviderEnvironment = process.env,
 ): string[] {
+  const browserOrigins = [webOrigin, env.CONSOLE_ORIGIN]
+    .filter((origin): origin is string => Boolean(origin));
   return hasAppleConfiguration(env)
-    ? [webOrigin, APPLE_AUDIENCE]
-    : [webOrigin];
+    ? [...browserOrigins, APPLE_AUDIENCE]
+    : browserOrigins;
 }

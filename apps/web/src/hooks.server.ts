@@ -1,5 +1,5 @@
 import type { Handle } from '@sveltejs/kit';
-import { accountHostname, consoleHostname, consoleOrigin } from '$lib/console-host';
+import { accountHostname, accountOrigin, consoleHostname, consoleOrigin } from '$lib/console-host';
 import { routeConsoleHost } from '$lib/console-routing';
 
 export const handle: Handle = async ({ event, resolve }) => {
@@ -8,6 +8,7 @@ export const handle: Handle = async ({ event, resolve }) => {
     pathname: event.url.pathname,
     search: event.url.search,
     accountHostname: accountHostname(),
+    accountOrigin: accountOrigin() || event.url.origin,
     consoleHostname: consoleHostname(),
     // Local development normally keeps both surfaces on one Vite origin. A
     // configured console origin is required only when exercising host routing.

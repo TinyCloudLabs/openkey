@@ -51,6 +51,15 @@ describe('social provider configuration', () => {
     ]);
   });
 
+  test('allows the explicitly configured console origin for session-bearing auth calls', () => {
+    expect(socialProviderTrustedOrigins('https://openkey.test', {
+      CONSOLE_ORIGIN: 'https://console.openkey.test',
+    })).toEqual([
+      'https://openkey.test',
+      'https://console.openkey.test',
+    ]);
+  });
+
   test('generates an ES256 Apple secret below the six-month maximum and accepts escaped newlines', async () => {
     const { privateKey } = await generateKeyPair('ES256', { extractable: true });
     const pem = await exportPKCS8(privateKey);

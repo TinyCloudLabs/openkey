@@ -10,6 +10,7 @@ type ConsoleHostRouteInput = {
   pathname: string;
   search: string;
   accountHostname: string;
+  accountOrigin: string;
   consoleHostname: string;
   consoleOrigin: string;
 };
@@ -22,6 +23,20 @@ type ConsoleHostRouteInput = {
 export function routeConsoleHost(input: ConsoleHostRouteInput): ConsoleHostRoute {
   const hostname = input.hostname.toLowerCase();
   if (hostname === input.consoleHostname.toLowerCase()) {
+    if (input.pathname === '/') {
+      return {
+        type: 'redirect',
+        location: new URL(`/console${input.search}`, input.consoleOrigin).href,
+      };
+    }
+    // Preserve the useful destination of account-host bookmarks without
+    // rendering an account page inside the console host boundary.
+    if (input.pathname === '/dashboard' || input.pathname.startsWith('/dashboard/')) {
+      return {
+        type: 'redirect',
+        location: new URL(`${input.pathname}${input.search}`, input.accountOrigin).href,
+      };
+    }
     return isConsolePath(input.pathname) ? { type: 'continue' } : { type: 'not-found' };
   }
 

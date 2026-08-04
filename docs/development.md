@@ -102,11 +102,14 @@ Optional (features degrade gracefully without these):
 | `TINYCLOUD_BOOTSTRAP_HOST` | TinyCloud node used to bootstrap managed accounts and their tenant-parent delegations |
 | `VITE_CONSOLE_ORIGIN` | Optional console origin. Leave unset locally to keep the account and console journey on one Vite host; set to `https://console.openkey.so` in production. |
 | `VITE_ACCOUNT_ORIGIN` | Set alongside `VITE_CONSOLE_ORIGIN` only when testing the split-host journey locally (the portless example supplies both). |
+| `CONSOLE_ORIGIN` | API better-auth allowlist for session-bearing calls from the console origin; the portless example sets it. |
 
 For production-shaped local host boundaries, copy `.env.portless.example` to
 `.env.portless` and run `bun dev:portless`. It enables wildcard routing for the
 single Vite server, so `openkey.localhost` and `console.openkey.localhost` both
 resolve locally; the example API CORS allowlist includes both origins.
+If a portless proxy is already running, restart it after enabling
+`PORTLESS_WILDCARD=1` so it picks up wildcard host routing.
 
 ### Social sign-in callbacks
 
