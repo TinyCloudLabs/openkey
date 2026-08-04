@@ -48,12 +48,16 @@
 
       <h2>Authentication continuity</h2>
       <section class="surface boundary">
-        <p>A signed-out console visitor is sent to the account sign-in screen with the exact console destination as a constrained return URL. After account sign-in, the shared <code>.openkey.so</code> session cookie returns the visitor to that console route. Only the configured console origin and the <code>/console</code> path family are accepted as cross-origin return targets.</p>
+        <p>A signed-out console visitor is sent to the account sign-in screen with the exact console destination as a constrained return URL. Only the configured console origin and the <code>/console</code> path family are accepted as cross-origin return targets.</p>
+        <p><strong>Non-production evidence (2026-08-03):</strong> the production-shaped auth-option test verifies that API-issued sessions use <code>Domain=.openkey.so</code> and that <code>https://console.openkey.so</code> is a trusted social-auth origin. The real compiled Cloudflare worker host matrix also proves the account-to-console redirect target. The dashboard image above is a signed-in fixture, not evidence of a live cross-subdomain cookie.</p>
+        <p>Deployed cookie-domain behavior remains production-only: local development deliberately disables the domain attribute, and this change neither deploys nor inspects production.</p>
       </section>
 
       <h2>Host boundary</h2>
       <section class="surface">
         <p><code>openkey.so/console/:organizationId/apps?tab=active</code> responds with a permanent redirect to <code>console.openkey.so/console/:organizationId/apps?tab=active</code>. The bare console hostname redirects to <code>/console</code>. Legacy console-host dashboard bookmarks return to the account host, while unrelated personal paths remain a 404 rather than rendering the personal account app.</p>
+        <p>The managed-account architecture and project documents used to be static HTML files. Cloudflare Pages excluded those paths in generated <code>_routes.json</code>, allowing the static-asset path to run before <code>hooks.server.ts</code>. They are now server-bundled endpoint templates, so they traverse the worker host guard.</p>
+        <p><strong>Built-worker matrix (2026-08-03):</strong> generated <code>_routes.json</code> includes <code>/*</code> and excludes only <code>/_app/version.json</code> and <code>/_app/immutable/*</code>. On <code>console.openkey.so</code>, each canonical managed-account document and its <code>/index.html</code> form returns the reserved-host 404 without a document marker; trailing-slash forms canonicalize to that same guarded URL. On <code>openkey.so</code>, both canonical documents return 200 with their original content. The automated artifact and Wrangler tests lock this behavior.</p>
       </section>
 
       <h2>Local development</h2>
