@@ -1,6 +1,7 @@
 <script lang="ts">
   import '../app.css';
   import { page } from '$app/stores';
+  import { consoleHref } from '$lib/console-host';
   import type { Snippet } from 'svelte';
 
   let { children }: { children: Snippet } = $props();
@@ -47,8 +48,8 @@
           <a href="/dashboard/organizations" class="rounded-full px-3 py-1.5 text-sm text-surface-500 no-underline transition-colors hover:bg-surface-100 hover:text-surface-900">
             Organizations
           </a>
-          <a href="/console" class="rounded-full border border-primary-200 bg-primary-50 px-3 py-1.5 text-sm font-semibold text-primary-700 no-underline transition-colors hover:bg-primary-100">
-            Console
+          <a href={consoleHref('/console')} class="rounded-full border border-primary-200 bg-primary-50 px-3 py-1.5 text-sm font-semibold text-primary-700 no-underline transition-colors hover:bg-primary-100">
+            Admin console
           </a>
         </div>
       </nav>
@@ -59,7 +60,7 @@
     </main>
 
     <footer class="border-t border-surface-200/80 px-6 py-6 text-center text-sm text-surface-500">
-      <p>OpenKey Account and OpenKey Console</p>
+      <p>OpenKey Account</p>
     </footer>
   </div>
 {/if}

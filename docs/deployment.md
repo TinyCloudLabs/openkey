@@ -106,7 +106,7 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `TEE_MODE` | `production` |
 | `RESEND_API_KEY` | Resend API key for emails |
 | `API_PORT` | `3001` |
-| `CORS_ORIGIN` | `https://openkey.so` |
+| `CORS_ORIGIN` | `https://openkey.so,https://console.openkey.so` |
 | `ADMIN_API_KEY` | Bearer token for organization plan fixtures, server credentials, and app registration |
 | `INTERNAL_METRICS_TOKEN` | Bearer token for internal metrics and the revocation/webhook workers |
 | `TINYCLOUD_BOOTSTRAP_HOST` | Trusted TinyCloud node used for account bootstrap and tenant-parent delegation revocation |
@@ -206,15 +206,21 @@ The SvelteKit frontend deploys to Cloudflare Pages using the `@sveltejs/adapter-
    - Root directory: `/`
 
 3. Set environment variables:
-   - `PUBLIC_API_URL`: URL of your deployed API (e.g., `https://api.openkey.so`)
+   - `VITE_API_URL`: URL of your deployed API (e.g., `https://api.openkey.so`)
+   - `VITE_CONSOLE_ORIGIN=https://console.openkey.so`
 
 4. Deploy
+
+Attach both `openkey.so` and `console.openkey.so` custom domains to this Pages
+deployment. The console hostname only serves the `/console` route tree, while
+account-host console URLs redirect permanently to the console hostname.
 
 ## DNS Configuration
 
 | Domain | Points To |
 |--------|-----------|
-| `openkey.so` | Cloudflare Pages (web) |
+| `openkey.so` | Cloudflare Pages (account web) |
+| `console.openkey.so` | Cloudflare Pages (same web deployment; `/console` routes only) |
 | `api.openkey.so` | Phala dstack (API) |
 | `auth.openkey.so` | CNAME to `openkey.so` (for WebAuthn RP ID) |
 

@@ -3,6 +3,7 @@
   import { page } from '$app/stores';
   import { onMount } from 'svelte';
   import { authClient, API_BASE, authErrorMessage } from '$lib/auth-client';
+  import { consoleOrigin } from '$lib/console-host';
   import { normalizeAuthReturnTo, safeOAuthAuthorizeQuery } from '$lib/auth-flow';
   import {
     loadConfiguredSocialProviders,
@@ -34,11 +35,17 @@
     const redirect = normalizeAuthReturnTo(
       $page.url.searchParams.get('redirect'),
       $page.url.origin,
+      undefined,
+      { consoleOrigin: consoleOrigin() || undefined },
     );
     if (oauthQuery) {
       window.location.href = API_BASE + '/api/auth/oauth2/authorize?' + oauthQuery;
     } else if (redirect) {
-      goto(redirect);
+      if (new URL(redirect, $page.url.origin).origin === $page.url.origin) {
+        goto(redirect);
+      } else {
+        window.location.assign(redirect);
+      }
     } else {
       goto('/dashboard');
     }

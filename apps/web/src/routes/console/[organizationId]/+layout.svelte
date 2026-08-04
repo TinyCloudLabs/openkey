@@ -3,6 +3,7 @@
   import { page } from '$app/stores';
   import { authClient } from '$lib/auth-client';
   import { api, type ConsoleOverview, type OrganizationSummary } from '$lib/api';
+  import { accountHref } from '$lib/console-host';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import { CONSOLE_SHELL, type ConsoleShellContext } from '$lib/console-shell';
@@ -214,7 +215,7 @@
         The organization console uses your OpenKey session. Sign in, then return to the console route you requested.
       </p>
       <div class="mt-6 flex flex-wrap justify-center gap-2">
-        <Button href={`/auth/login?redirect=${encodeURIComponent($page.url.pathname + $page.url.search)}`}>Sign in</Button>
+        <Button href={accountHref(`/auth/login?redirect=${encodeURIComponent($page.url.href)}`)}>Sign in on OpenKey Account</Button>
         <Button variant="secondary" href="/console">Back to console index</Button>
       </div>
     </Card>
@@ -229,7 +230,7 @@
       </p>
       <div class="mt-6 flex flex-wrap justify-center gap-2">
         <Button href="/console">Console index</Button>
-        <Button variant="secondary" href="/dashboard">Open account</Button>
+        <Button variant="secondary" href={accountHref('/dashboard')}>Open account</Button>
       </div>
     </Card>
   </div>
@@ -270,6 +271,9 @@
         </div>
 
         <div class="flex min-w-0 items-center gap-2">
+          <a href={accountHref('/dashboard')} class="hidden rounded-full px-3 py-1.5 text-xs font-semibold text-surface-600 no-underline transition-colors hover:bg-surface-100 hover:text-surface-900 sm:inline-flex">
+            OpenKey Account
+          </a>
           <span class="hidden rounded-full border border-surface-200 bg-white px-3 py-1.5 text-xs font-semibold text-surface-600 sm:inline-flex">
             {$overview?.organization.role ?? 'MEMBER'}
           </span>
@@ -363,7 +367,7 @@
               Members can read the console, but admin-only actions stay hidden in the section pages. One-time secrets are never persisted in the browser.
             </p>
             <div class="rounded-2xl border border-surface-200 bg-surface-50 px-3 py-3 text-xs leading-5 text-surface-600">
-              The user-owned eject path lives in the personal <a class="font-semibold text-primary-700 underline-offset-4 hover:underline" href="/dashboard/managed-accounts">OpenKey Account</a>.
+              The user-owned eject path lives in the personal <a class="font-semibold text-primary-700 underline-offset-4 hover:underline" href={accountHref('/dashboard/managed-accounts')}>OpenKey Account</a>.
             </div>
           </Card>
         </div>

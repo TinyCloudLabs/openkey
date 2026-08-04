@@ -2,6 +2,7 @@
   import { goto } from '$app/navigation';
   import { authClient } from '$lib/auth-client';
   import { api, type OwnerManagedAccount } from '$lib/api';
+  import { consoleHref } from '$lib/console-host';
   import { embedSignInPasskey } from '$lib/embed-passkey';
   import Button from '$lib/components/ui/button.svelte';
 
@@ -93,7 +94,7 @@
     </div>
     <div class="flex flex-wrap gap-2">
       <Button variant="secondary" href="/dashboard">Back to account</Button>
-      <Button href="/console">Open console</Button>
+      <Button href={consoleHref('/console')}>Admin console</Button>
     </div>
   </div>
 

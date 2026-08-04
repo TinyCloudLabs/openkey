@@ -94,9 +94,12 @@ bun db:push
 bun dev:portless
 ```
 
-This starts Web at `https://openkey.localhost` and API at
-`https://api.openkey.localhost`. The first run will prompt portless to install
-its trusted CA into your system keychain so the certificates validate.
+This starts Web at `https://openkey.localhost` (and its split-host console at
+`https://console.openkey.localhost`) and API at
+`https://api.openkey.localhost`. The web command enables portless wildcard
+routing so both browser hosts reach the same local Vite app. The first run will
+prompt portless to install its trusted CA into your system keychain so the
+certificates validate.
 
 ## Architecture
 

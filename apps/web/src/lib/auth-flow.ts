@@ -1,3 +1,5 @@
+import { isConsolePath } from './console-host';
+
 const OAUTH_AUTHORIZE_KEYS = new Set([
   'client_id',
   'redirect_uri',
@@ -29,22 +31,33 @@ const SAFE_RETURN_PREFIXES = [
   '/widget/',
 ];
 
+type AuthReturnToOptions = {
+  /** The separately hosted admin console is the sole allowed cross-origin return target. */
+  consoleOrigin?: string;
+};
+
 export function normalizeAuthReturnTo(
   value: string | null | undefined,
   origin: string,
   allowedPrefixes: readonly string[] = SAFE_RETURN_PREFIXES,
+  options: AuthReturnToOptions = {},
 ): string | null {
   if (!value) return null;
 
   try {
     const url = new URL(value, origin);
-    if (url.origin !== origin || url.username || url.password) return null;
+    if (url.username || url.password) return null;
     const allowed = allowedPrefixes.some((prefix) =>
       prefix.endsWith('/')
         ? url.pathname.startsWith(prefix)
         : url.pathname === prefix || url.pathname.startsWith(`${prefix}/`)
     );
-    return allowed ? `${url.pathname}${url.search}${url.hash}` : null;
+    if (!allowed) return null;
+    if (url.origin === origin) return `${url.pathname}${url.search}${url.hash}`;
+    if (options.consoleOrigin && url.origin === options.consoleOrigin && isConsolePath(url.pathname)) {
+      return url.href;
+    }
+    return null;
   } catch {
     return null;
   }
