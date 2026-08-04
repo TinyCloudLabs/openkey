@@ -184,6 +184,10 @@
 
 <svelte:window onkeydown={handleDrawerKeydown} />
 
+<svelte:head>
+  <title>OpenKey Console</title>
+</svelte:head>
+
 {#if loadState === 'loading'}
   <div class="min-h-[100vh] px-4 py-6 sm:px-6 lg:px-8">
     <div class="mx-auto max-w-7xl">
@@ -380,7 +384,11 @@
       </main>
     </div>
 
+    </div>
+
     {#if $mobileOpen}
+      <!-- Keep the dialog outside the inert application shell. Otherwise its
+           controls cannot receive touch, pointer, keyboard, or AT focus. -->
       <div class="fixed inset-0 z-30 lg:hidden">
         <button
           type="button"
@@ -458,6 +466,5 @@
         </div>
       </div>
     {/if}
-  </div>
   </div>
 {/if}

@@ -48,8 +48,13 @@
           <a href="/dashboard/organizations" class="rounded-full px-3 py-1.5 text-sm text-surface-500 no-underline transition-colors hover:bg-surface-100 hover:text-surface-900">
             Organizations
           </a>
-          <a href={consoleHref('/console')} class="rounded-full border border-primary-200 bg-primary-50 px-3 py-1.5 text-sm font-semibold text-primary-700 no-underline transition-colors hover:bg-primary-100">
+          <a
+            href={consoleHref('/console')}
+            class="inline-flex items-center gap-1.5 rounded-full border border-primary-200 bg-primary-50 px-3 py-1.5 text-sm font-semibold text-primary-700 no-underline transition-colors hover:bg-primary-100"
+            aria-label="OpenKey Admin console"
+          >
             Admin console
+            <span aria-hidden="true">↗</span>
           </a>
         </div>
       </nav>
