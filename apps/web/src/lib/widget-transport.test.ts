@@ -1,6 +1,6 @@
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { describe, expect, it, beforeEach, afterEach } from 'bun:test';
-import { createWidgetTransport } from './widget-transport';
+import { createVersionedIframeTransport, createWidgetTransport } from './widget-transport';
 
 // Minimal DOM-ish shim for the transport in a Node test environment.
 // We simulate window, window.opener, window.postMessage, and MessageEvent.
@@ -654,5 +654,74 @@ describe('widget-transport', () => {
     });
     expect(requested).toBe(1);
     expect(invalids).toContain('invalid-payload');
+  });
+});
+
+describe('versioned iframe transport', () => {
+  beforeEach(() => {
+    originalWindow = (globalThis as any).window;
+  });
+  afterEach(() => {
+    (globalThis as any).window = originalWindow;
+  });
+
+  it('binds Nostr request, response, and resize messages to one requestId', () => {
+    const { parent, child } = makeWindows();
+    const seen: unknown[] = [];
+    const transport = createVersionedIframeTransport({
+      origin: 'https://caller.example',
+      requestTypes: ['openkey:nostr:sign:request'],
+      onRequest: request => seen.push(request),
+      onClose: () => {},
+      validateRequest: request => typeof request.data.keyId === 'string',
+    });
+    transport.emitReady();
+    child.dispatch({
+      origin: 'https://caller.example',
+      source: parent as unknown as MessageEventSource,
+      data: {
+        type: 'openkey:nostr:sign:request',
+        requestId: 'nostr-1',
+        protocolVersion: 1,
+        keyId: 'key-1',
+      },
+    });
+    transport.emit('openkey:nostr:show');
+    transport.emitResize(240);
+    transport.respond('openkey:nostr:sign:response', 'nostr-1', true, { event: {} });
+
+    expect(seen).toHaveLength(1);
+    expect(parent.sent.map(entry => entry.data.requestId).filter(Boolean)).toEqual([
+      'nostr-1',
+      'nostr-1',
+      'nostr-1',
+    ]);
+    expect(parent.sent.every(entry => entry.target === 'https://caller.example')).toBe(true);
+  });
+
+  it('drops a stale close and a concurrent request', () => {
+    const { parent, child } = makeWindows();
+    const invalid: string[] = [];
+    let closed = 0;
+    createVersionedIframeTransport({
+      origin: 'https://caller.example',
+      requestTypes: ['openkey:nostr:connect:request'],
+      onRequest: () => {},
+      onClose: () => (closed += 1),
+      onInvalid: reason => invalid.push(reason),
+    });
+    for (const data of [
+      { type: 'openkey:nostr:connect:request', requestId: 'active', protocolVersion: 1 },
+      { type: 'openkey:nostr:connect:request', requestId: 'other', protocolVersion: 1 },
+      { type: 'openkey:close', requestId: 'stale', protocolVersion: 1 },
+    ]) {
+      child.dispatch({
+        origin: 'https://caller.example',
+        source: parent as unknown as MessageEventSource,
+        data,
+      });
+    }
+    expect(closed).toBe(0);
+    expect(invalid).toEqual(['invalid-payload', 'invalid-close']);
   });
 });
