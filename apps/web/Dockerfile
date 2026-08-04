@@ -16,12 +16,14 @@ FROM oven/bun:1.2-slim AS base
 WORKDIR /app
 
 FROM base AS deps
-COPY package.json bun.lock ./
+COPY package.json bun.lock tsconfig.json ./
 COPY apps/web/package.json ./apps/web/
-RUN bun install --ignore-scripts
+COPY packages/capability-review/package.json ./packages/capability-review/
+RUN bun install --ignore-scripts --force
 
 FROM deps AS builder
 COPY apps/web ./apps/web
+COPY packages/capability-review ./packages/capability-review
 # Baked into the client bundle at build time (see apps/web/src/lib/api.ts,
 # apps/web/src/lib/auth-client.ts). Must point at wherever the OpenKey API
 # container is reachable from the *browser*, not the Docker network.
