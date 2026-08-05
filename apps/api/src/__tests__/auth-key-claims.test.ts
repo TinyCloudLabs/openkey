@@ -190,6 +190,23 @@ describe('oauth key claims', () => {
     expect(tenant).toBeUndefined();
   });
 
+  test('canonical identity claims normalize a stored address to EIP-55', async () => {
+    prisma.ethereumKey.findFirst.mockImplementationOnce(async () => ({
+      id: 'canonical-key-2',
+      address: '0x31d40b62c395b9418c4198363619b11c65cd406f',
+    }));
+
+    await expect(buildCanonicalTinyCloudIdentityClaim(
+      { id: 'user-1' },
+      ['tinycloud:manage-key'],
+      { mode: 'PERSONAL', organizationId: null },
+    )).resolves.toMatchObject({
+      address: '0x31d40B62C395B9418C4198363619B11c65cD406F',
+      did: 'did:pkh:eip155:1:0x31d40B62C395B9418C4198363619B11c65cD406F',
+      spaceId: 'tinycloud:pkh:eip155:1:0x31d40B62C395B9418C4198363619B11c65cD406F:applications',
+    });
+  });
+
   test('tenant-managed consent returns only the managed key and provisions the account when missing', async () => {
     const claims = await buildKeyClaims(
       { id: 'user-1', email: 'Alice@Example.Test', emailVerified: true },

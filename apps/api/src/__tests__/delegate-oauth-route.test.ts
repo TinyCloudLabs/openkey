@@ -445,6 +445,38 @@ test('tinycloud:manage-key rejects tenant-managed clients before signing', async
   await expectRouteDenial(signingBody(), 403, 'client_misconfigured');
 });
 
+test.each([
+  ['public client', () => { client.public = true; }],
+  ['non-web client', () => { client.type = 'spa'; }],
+  ['wrong token endpoint authentication', () => { client.tokenEndpointAuthMethod = 'none'; }],
+  ['refresh-token grant', () => { client.grantTypes = ['authorization_code', 'refresh_token']; }],
+  ['implicit response type', () => { client.responseTypes = ['code', 'token']; }],
+])('tinycloud:manage-key rejects a %s before signing', async (_name, mutate) => {
+  token.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
+  client.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
+  mutate();
+
+  await expectRouteDenial(signingBody(), 403, 'client_misconfigured');
+});
+
+test('tinycloud:manage-key rejects an old token before signing', async () => {
+  token.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
+  client.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
+  token.createdAt = new Date(Date.now() - 300_001);
+
+  await expectRouteDenial(signingBody(), 401, 'token_too_old');
+});
+
+test('a CoordinationOS transition client with both scopes retains the session policy', async () => {
+  token.scopes = ['openid', 'email', 'keys', 'tinycloud:session', 'tinycloud:manage-key'];
+  client.scopes = ['openid', 'email', 'keys', 'tinycloud:session', 'tinycloud:manage-key'];
+
+  const response = await sign(signingBody());
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({ approved: true });
+  expect(signerCalls).toBe(1);
+});
+
 test('tinycloud:manage-key fails closed when the user disables that OAuth app', async () => {
   token.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
   client.scopes = ['openid', 'keys', 'tinycloud:manage-key'];

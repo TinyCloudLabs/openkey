@@ -11,11 +11,13 @@ import { oauthProvider } from '@better-auth/oauth-provider';
 import { Resend } from 'resend';
 import { createHash } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { getAddress } from 'viem';
 import { createPrismaClient, type PrismaClient } from '@openkey/db';
 import { createTeeClient, seal, generatePrivateKey, getAddressFromPrivateKey } from '@openkey/tee';
 import { buildEmailClaims } from './claims';
 import {
   DEFAULT_OAUTH_SCOPES,
+  DYNAMIC_CLIENT_REGISTRATION_ALLOWED_SCOPES,
   OAUTH_SCOPES,
   TINYCLOUD_CANONICAL_IDENTITY_CLAIM,
   TINYCLOUD_MANAGE_KEY_SCOPE,
@@ -225,13 +227,14 @@ export async function buildCanonicalTinyCloudIdentityClaim(
     select: { id: true, address: true },
   });
   if (!key) return undefined;
+  const address = getAddress(key.address);
   return {
     version: 'v1',
     keyId: key.id,
-    address: key.address,
+    address,
     chainId: 1,
-    did: `did:pkh:eip155:1:${key.address}`,
-    spaceId: `tinycloud:pkh:eip155:1:${key.address}:applications`,
+    did: `did:pkh:eip155:1:${address}`,
+    spaceId: `tinycloud:pkh:eip155:1:${address}:applications`,
   };
 }
 
@@ -625,7 +628,7 @@ export const auth = betterAuth({
       validAudiences: oauthValidAudiences(baseURL),
       scopes: [...OAUTH_SCOPES],
       clientRegistrationDefaultScopes: [...DEFAULT_OAUTH_SCOPES],
-      clientRegistrationAllowedScopes: [...OAUTH_SCOPES],
+      clientRegistrationAllowedScopes: [...DYNAMIC_CLIENT_REGISTRATION_ALLOWED_SCOPES],
       accessTokenExpiresIn: 300,
       refreshTokenExpiresIn: 60 * 60 * 24 * 7, // 7 days in seconds
       idTokenExpiresIn: 60 * 60, // 1 hour in seconds

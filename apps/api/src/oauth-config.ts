@@ -20,6 +20,13 @@ export const OAUTH_SCOPES = [
   TINYCLOUD_MANAGE_KEY_SCOPE,
 ] as const;
 
+// Dynamic registration only creates public clients. `tinycloud:manage-key`
+// requires a pre-registered confidential client, so it cannot be requested by
+// an unauthenticated dynamic registration.
+export const DYNAMIC_CLIENT_REGISTRATION_ALLOWED_SCOPES = OAUTH_SCOPES.filter(
+  (scope) => scope !== TINYCLOUD_MANAGE_KEY_SCOPE,
+);
+
 export function oauthValidAudiences(baseURL: string, configured = process.env.OAUTH_VALID_AUDIENCES): string[] {
   const values = configured?.split(',').map((value) => value.trim()).filter(Boolean) ?? [];
   return Array.from(new Set([baseURL, DEFAULT_TINYCLOUD_MCP_AUDIENCE, ...values]));

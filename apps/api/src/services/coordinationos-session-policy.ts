@@ -10,6 +10,10 @@ export const COORDINATIONOS_SESSION_TTL_SECONDS = 3_600;
 
 const REQUIRED_ACTIONS = ['tinycloud.kv/get', 'tinycloud.kv/put'] as const;
 const REQUIRED_CLIENT_SCOPES = ['openid', 'email', 'keys', 'tinycloud:session'] as const;
+const TRANSITION_CLIENT_SCOPES = [
+  ...REQUIRED_CLIENT_SCOPES,
+  'tinycloud:manage-key',
+] as const;
 const utf8 = new TextEncoder();
 
 export type CoordinationosPolicyCode =
@@ -330,7 +334,8 @@ export function evaluateCoordinationosSessionRequest(
     || input.client.tokenEndpointAuthMethod !== 'client_secret_basic'
     || !sameStringSet(input.client.grantTypes, ['authorization_code'])
     || !sameStringSet(input.client.responseTypes, ['code'])
-    || !sameStringSet(input.client.scopes, REQUIRED_CLIENT_SCOPES)) {
+    || (!sameStringSet(input.client.scopes, REQUIRED_CLIENT_SCOPES)
+      && !sameStringSet(input.client.scopes, TRANSITION_CLIENT_SCOPES))) {
     return deny('client_misconfigured');
   }
   const configuredOrigin = validateCoordinationosClientOrigin(input.client.tinycloudSessionOrigin);

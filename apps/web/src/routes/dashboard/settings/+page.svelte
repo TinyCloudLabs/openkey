@@ -29,6 +29,7 @@
   let tinyCloudManageKeyEnabled = $state(true);
   let loadingTinyCloudManageKey = $state(true);
   let savingTinyCloudManageKey = $state(false);
+  let tinyCloudManageKeyError = $state('');
   let tinyCloudApps = $state<TinyCloudManageKeyApp[]>([]);
   let loadingTinyCloudApps = $state(true);
   let savingTinyCloudAppId = $state<string | null>(null);
@@ -138,13 +139,13 @@
     const previous = tinyCloudManageKeyEnabled;
     tinyCloudManageKeyEnabled = enabled;
     savingTinyCloudManageKey = true;
-    error = '';
+    tinyCloudManageKeyError = '';
     try {
       const result = await api.updateTinyCloudManageKeyPreference(enabled);
       tinyCloudManageKeyEnabled = result.tinyCloudManageKeyEnabled;
     } catch (e: any) {
       tinyCloudManageKeyEnabled = previous;
-      error = e.message || 'Failed to update TinyCloud signing preference';
+      tinyCloudManageKeyError = e.message || 'Failed to update TinyCloud signing preference';
     } finally {
       savingTinyCloudManageKey = false;
     }
@@ -399,7 +400,7 @@
   <Card class="mt-6">
     <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
       <div class="max-w-xl">
-        <h2 class="text-xl font-semibold text-surface-900">Auto-Sign</h2>
+        <h2 class="text-xl font-semibold text-surface-900">Account bootstrap auto-sign</h2>
         <p class="text-sm text-surface-500 mt-1">
           Automatically signs TinyCloud account bootstrap requests that match the fixed bootstrap allowlist.
         </p>
@@ -452,6 +453,11 @@
         </button>
       </div>
     </div>
+    {#if tinyCloudManageKeyError}
+      <div class="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-600" role="alert">
+        {tinyCloudManageKeyError}
+      </div>
+    {/if}
   </Card>
 
   <Card class="mt-6">
@@ -477,7 +483,7 @@
       {/if}
       <div class="flex flex-col gap-3">
         {#each tinyCloudApps as app}
-          <div class="flex items-center justify-between gap-4 rounded-xl border border-surface-200 bg-surface-50 p-4">
+          <div class="flex flex-col gap-3 rounded-xl border border-surface-200 bg-surface-50 p-4 sm:flex-row sm:items-center sm:justify-between">
             <div class="min-w-0">
               <div class="flex items-center gap-2">
                 {#if app.icon}
@@ -489,11 +495,13 @@
                 <p class="mt-1 truncate text-sm text-surface-500">{app.uri}</p>
               {/if}
             </div>
+            <div class="flex shrink-0 items-center gap-2">
             <button
               type="button"
               role="switch"
               aria-checked={app.enabled}
               aria-label={`Toggle TinyCloud signing for ${app.name}`}
+              aria-describedby={app.disabled ? `tinycloud-app-disabled-${app.clientId}` : undefined}
               disabled={app.disabled || savingTinyCloudAppId === app.clientId}
               onclick={() => setTinyCloudManageKeyApp(app, !app.enabled)}
               class="relative h-7 w-12 shrink-0 rounded-full transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-surface-900 disabled:cursor-not-allowed disabled:opacity-60 {app.enabled ? 'bg-surface-900' : 'bg-surface-300'}"
@@ -503,8 +511,9 @@
               ></span>
             </button>
             {#if app.disabled}
-              <span class="shrink-0 text-xs text-surface-500">Disabled by the app owner</span>
+              <span id={`tinycloud-app-disabled-${app.clientId}`} class="text-xs text-surface-500">Disabled by the app owner</span>
             {/if}
+            </div>
           </div>
         {/each}
       </div>

@@ -116,6 +116,29 @@ function sameStringSet(actual: string[], expected: readonly string[]): boolean {
     && expected.every((item) => actual.includes(item));
 }
 
+function isConfidentialPersonalWebClient(client: NonNullable<CoordinationosOauthContext['client']>): boolean {
+  return client.mode === 'PERSONAL'
+    && client.type === 'web'
+    && !client.public
+    && client.tokenEndpointAuthMethod === 'client_secret_basic'
+    && sameStringSet(client.grantTypes, ['authorization_code'])
+    && sameStringSet(client.responseTypes, ['code']);
+}
+
+function hasCoordinationosSessionScopeSet(scopes: string[]): boolean {
+  return sameStringSet(scopes, ['openid', 'email', 'keys', TINYCLOUD_SESSION_SCOPE])
+    // This is a safe transition state for CoordinationOS: session requests
+    // still take the narrower session policy below even when its client has
+    // also been granted the generic manage-key scope.
+    || sameStringSet(scopes, [
+      'openid',
+      'email',
+      'keys',
+      TINYCLOUD_SESSION_SCOPE,
+      TINYCLOUD_MANAGE_KEY_SCOPE,
+    ]);
+}
+
 export function createDelegateSignerAuth(dependencies: DelegateSignerAuthDependencies) {
   const { database, resolveSession, now = () => new Date() } = dependencies;
   return createMiddleware<DelegateSignerContext>(async (c, next) => {
@@ -215,14 +238,41 @@ export function createDelegateSignerAuth(dependencies: DelegateSignerAuthDepende
   const nowMs = now().getTime();
 
   if (token.expiresAt.getTime() <= nowMs) c.set('delegateSignerAuthFailure', failure('token_expired'));
-  else if (token.scopes.includes(TINYCLOUD_MANAGE_KEY_SCOPE)) {
+  // Both signing paths use short-lived tokens. Check freshness before routing
+  // by scope so a combined session/manage-key token cannot bypass it.
+  else if (token.createdAt.getTime() + 300_000 <= nowMs) c.set('delegateSignerAuthFailure', failure('token_too_old'));
+  // A transition client holding both scopes must retain the narrower
+  // CoordinationOS session policy until it stops requesting this scope.
+  else if (token.scopes.includes(TINYCLOUD_SESSION_SCOPE)) {
+    if (!client || client.clientId !== token.clientId) {
+      c.set('delegateSignerAuthFailure', failure('wrong_client'));
+    } else if (client.disabled) c.set('delegateSignerAuthFailure', failure('client_disabled'));
+    else if (!client.scopes.includes(TINYCLOUD_SESSION_SCOPE)) {
+      c.set('delegateSignerAuthFailure', failure('missing_scope'));
+    }
+    else if (!isConfidentialPersonalWebClient(client)
+      || !hasCoordinationosSessionScopeSet(client.scopes)) {
+      c.set('delegateSignerAuthFailure', failure('client_misconfigured'));
+    } else if (!user) c.set('delegateSignerAuthFailure', failure('user_not_found'));
+    else if (!user.emailVerified) c.set('delegateSignerAuthFailure', failure('email_not_verified'));
+    else {
+      c.set('delegateSignerPrincipal', {
+        kind: 'coordinationos-oauth',
+        userId: token.userId,
+        clientId: token.clientId,
+        oauthAccessTokenId: token.id,
+        tokenDigest,
+      });
+    }
+  } else if (token.scopes.includes(TINYCLOUD_MANAGE_KEY_SCOPE)) {
     if (!client || client.clientId !== token.clientId) {
       c.set('delegateSignerAuthFailure', failure('wrong_client'));
     } else if (client.disabled) {
       c.set('delegateSignerAuthFailure', failure('client_disabled'));
-    } else if (client.mode !== 'PERSONAL') {
-      // Tenant-managed clients are organization administration clients, not
-      // custodians of a user's canonical personal TinyCloud identity.
+    } else if (!isConfidentialPersonalWebClient(client)) {
+      // Tenant-managed and public clients are not custodians of a user's
+      // canonical personal TinyCloud identity. This also prevents dynamic
+      // client registrations from using a manage-key consent grant.
       c.set('delegateSignerAuthFailure', failure('client_misconfigured'));
     } else if (!client.scopes.includes(TINYCLOUD_MANAGE_KEY_SCOPE)) {
       c.set('delegateSignerAuthFailure', failure('missing_scope'));
@@ -247,34 +297,7 @@ export function createDelegateSignerAuth(dependencies: DelegateSignerAuthDepende
         });
       }
     }
-  }
-  else if (token.createdAt.getTime() + 300_000 <= nowMs) c.set('delegateSignerAuthFailure', failure('token_too_old'));
-  else if (!token.scopes.includes(TINYCLOUD_SESSION_SCOPE)) c.set('delegateSignerAuthFailure', failure('missing_scope'));
-  else if (!client || client.clientId !== token.clientId) {
-    c.set('delegateSignerAuthFailure', failure('wrong_client'));
-  } else if (client.disabled) c.set('delegateSignerAuthFailure', failure('client_disabled'));
-  else if (!client.scopes.includes(TINYCLOUD_SESSION_SCOPE)) {
-    c.set('delegateSignerAuthFailure', failure('missing_scope'));
-  }
-  else if (client.mode !== 'PERSONAL'
-    || client.type !== 'web'
-    || client.public
-    || client.tokenEndpointAuthMethod !== 'client_secret_basic'
-    || !sameStringSet(client.grantTypes, ['authorization_code'])
-    || !sameStringSet(client.responseTypes, ['code'])
-    || !sameStringSet(client.scopes, ['openid', 'email', 'keys', 'tinycloud:session'])) {
-    c.set('delegateSignerAuthFailure', failure('client_misconfigured'));
-  } else if (!user) c.set('delegateSignerAuthFailure', failure('user_not_found'));
-  else if (!user.emailVerified) c.set('delegateSignerAuthFailure', failure('email_not_verified'));
-  else {
-    c.set('delegateSignerPrincipal', {
-      kind: 'coordinationos-oauth',
-      userId: token.userId,
-      clientId: token.clientId,
-      oauthAccessTokenId: token.id,
-      tokenDigest,
-    });
-  }
+  } else c.set('delegateSignerAuthFailure', failure('missing_scope'));
 
   await next();
   });
