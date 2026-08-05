@@ -26,7 +26,7 @@ describe('console host routing', () => {
     expect(routeConsoleHost({
       ...input,
       hostname: 'console.openkey.so',
-      pathname: '/console/org_123/credentials',
+      pathname: '/console/org_123/apps',
       search: '',
     })).toEqual({ type: 'continue' });
   });

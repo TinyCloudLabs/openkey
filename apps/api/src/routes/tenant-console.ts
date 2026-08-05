@@ -56,6 +56,17 @@ function parseAppInput(body: Record<string, unknown>, partial = false, current?:
   return partial && Object.keys(data).length === 0 ? null : data;
 }
 
+/** PostgreSQL can abort Serializable transactions under concurrent console writes. */
+async function retrySerializable<T>(operation: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await operation();
+    } catch (caught) {
+      if ((caught as { code?: string }).code !== 'P2034' || attempt === 2) throw caught;
+    }
+  }
+}
+
 export function createTenantConsoleRouter(db: PrismaClient, dependencies: TenantConsoleDependencies = {}) {
   const router = new Hono<TenantConsoleContext>();
   router.use('*', (dependencies.sessionMiddleware ?? requireSession) as unknown as MiddlewareHandler<TenantConsoleContext>);
@@ -81,7 +92,7 @@ export function createTenantConsoleRouter(db: PrismaClient, dependencies: Tenant
     let address: `0x${string}`; try { address = getAddress(body.address.trim()); } catch { return error(c, 400, 'INVALID_ADDRESS', 'A valid Ethereum address is required'); }
     const organizationId = c.req.param('organizationId');
     try {
-      const result = await db.$transaction(async (tx) => {
+      const result = await retrySerializable(() => db.$transaction(async (tx) => {
         const key = await tx.ethereumKey.findFirst({ where: { address: { equals: address, mode: 'insensitive' }, archivedAt: null, userId: { not: null } }, select: { userId: true, user: { select: { emailVerified: true } } } });
         if (!key?.userId || !key.user?.emailVerified) return null;
         const existing = await tx.organizationMembership.findFirst({ where: { ...activeMembershipWhere(organizationId, new Date()), userId: key.userId }, select: MEMBER_SELECT });
@@ -90,7 +101,7 @@ export function createTenantConsoleRouter(db: PrismaClient, dependencies: Tenant
         if (await tx.organizationMembership.count({ where: activeMembershipWhere(organizationId, new Date()) }) >= entitlements.maxOrganizationMembers) throw new ConsoleMemberLimitError();
         const member = await tx.organizationMembership.create({ data: { organizationId, userId: key.userId, role: 'ADMIN' }, select: MEMBER_SELECT });
         return { member: presentMember(member), created: true };
-      }, { isolationLevel: 'Serializable' });
+      }, { isolationLevel: 'Serializable' }));
       if (!result) return error(c, 404, 'OPENKEY_USER_NOT_FOUND', 'No verified OpenKey account has linked this active personal address');
       return c.json({ member: result.member }, result.created ? 201 : 200);
     } catch (caught) { if (caught instanceof ConsolePlanLimitError) return error(c, 429, 'PLAN_LIMIT_EXCEEDED', 'Organization member limit is exhausted'); if (caught instanceof ConsoleMemberAlreadyExistsError) return error(c, 409, 'MEMBER_ALREADY_EXISTS', 'This OpenKey user is already an organization member'); throw caught; }
@@ -114,7 +125,7 @@ export function createTenantConsoleRouter(db: PrismaClient, dependencies: Tenant
     const input = parseAppInput(await c.req.json<Record<string, unknown>>().catch(() => ({})));
     if (!input?.name || !input.redirectUris) return error(c, 400, 'INVALID_REQUEST', 'A valid name and redirectUris are required');
     try {
-      const client = await db.$transaction(async (tx) => { const organizationId = c.req.param('organizationId'); const entitlements = await resolvePlanEntitlements(tx, organizationId); if (!entitlements) return null; if (await tx.oauthClient.count({ where: { organizationId } }) >= entitlements.maxApps) throw new ConsolePlanLimitError(); return tx.oauthClient.create({ data: { id: randomBytes(16).toString('hex'), clientId: `ok_${randomBytes(16).toString('hex')}`, clientSecret: null, organizationId, userId: c.get('user').id, name: input.name!, uri: input.uri ?? null, icon: input.icon ?? null, redirectUris: input.redirectUris!, scopes: ['openid', 'email', 'keys', 'offline_access'], disabled: false, skipConsent: false, enableEndSession: false, tokenEndpointAuthMethod: 'none', grantTypes: ['authorization_code', 'refresh_token'], responseTypes: ['code'], type: input.type ?? 'spa', public: true, contacts: [] }, select: APP_SELECT }); }, { isolationLevel: 'Serializable' });
+      const client = await retrySerializable(() => db.$transaction(async (tx) => { const organizationId = c.req.param('organizationId'); const entitlements = await resolvePlanEntitlements(tx, organizationId); if (!entitlements) return null; if (await tx.oauthClient.count({ where: { organizationId } }) >= entitlements.maxApps) throw new ConsolePlanLimitError(); return tx.oauthClient.create({ data: { id: randomBytes(16).toString('hex'), clientId: `ok_${randomBytes(16).toString('hex')}`, clientSecret: null, organizationId, userId: c.get('user').id, name: input.name!, uri: input.uri ?? null, icon: input.icon ?? null, redirectUris: input.redirectUris!, scopes: ['openid', 'email', 'keys', 'offline_access'], disabled: false, skipConsent: false, enableEndSession: false, tokenEndpointAuthMethod: 'none', grantTypes: ['authorization_code', 'refresh_token'], responseTypes: ['code'], type: input.type ?? 'spa', public: true, contacts: [] }, select: APP_SELECT }); }, { isolationLevel: 'Serializable' }));
       if (!client) return error(c, 404, 'NOT_FOUND', 'Organization not found'); return c.json({ client }, 201);
     } catch (caught) { if (caught instanceof ConsolePlanLimitError) return error(c, 429, 'PLAN_LIMIT_EXCEEDED', 'Application limit is exhausted'); throw caught; }
   });
