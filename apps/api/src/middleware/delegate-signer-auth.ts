@@ -220,6 +220,10 @@ export function createDelegateSignerAuth(dependencies: DelegateSignerAuthDepende
       c.set('delegateSignerAuthFailure', failure('wrong_client'));
     } else if (client.disabled) {
       c.set('delegateSignerAuthFailure', failure('client_disabled'));
+    } else if (client.mode !== 'PERSONAL') {
+      // Tenant-managed clients are organization administration clients, not
+      // custodians of a user's canonical personal TinyCloud identity.
+      c.set('delegateSignerAuthFailure', failure('client_misconfigured'));
     } else if (!client.scopes.includes(TINYCLOUD_MANAGE_KEY_SCOPE)) {
       c.set('delegateSignerAuthFailure', failure('missing_scope'));
     } else if (!user) {

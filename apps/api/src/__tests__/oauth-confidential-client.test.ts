@@ -168,7 +168,7 @@ describe('confidential CoordinationOS OAuth client', () => {
     }
   });
 
-  test('tenant-managed, SPA, and native clients never receive tinycloud:session implicitly', async () => {
+  test('tenant-managed, SPA, and native clients never receive TinyCloud signing scopes implicitly', async () => {
     for (const type of ['spa', 'native'] as const) {
       stored = null;
       const redirectUris = type === 'native'
@@ -196,6 +196,7 @@ describe('confidential CoordinationOS OAuth client', () => {
         'tinycloud:mcp',
       ]);
       expect(stored.scopes).not.toContain('tinycloud:session');
+      expect(stored.scopes).not.toContain('tinycloud:manage-key');
     }
   });
 

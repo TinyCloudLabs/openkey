@@ -66,6 +66,9 @@ const migrationNames = [
   '20260728_0001_oauth_tenant_lifecycle_guard',
   '20260728_0002_coordinationos_session_grants',
   '20260730_0001_oauth_client_tinycloud_session_policy',
+  '20260805_0001_canonical_tinycloud_key',
+  '20260805_0002_tinycloud_manage_key_app_preferences',
+  '20260805_0003_tinycloud_manage_key_global_preference',
 ] as const;
 
 const migrationSql = new Map<string, Promise<string>>(
@@ -238,6 +241,29 @@ describe('managed-account migrations and executable constraints', () => {
     // NULL marker can never be converted into a new derivation context.
     await expectRejected(() => upgrade.exec(`UPDATE "ethereum_keys" SET "sealingContext" = '${contextA}' WHERE "id" = 'legacy-null'`));
     await exerciseConstraints(upgrade);
+    await upgrade.close();
+  });
+
+  test('canonical TinyCloud migration preserves the first active managed personal key', async () => {
+    const upgrade = new PGlite('memory://');
+    const canonicalMigration = migrationNames.indexOf('20260805_0001_canonical_tinycloud_key');
+    await applyMigrations(upgrade, canonicalMigration);
+    await upgrade.exec(`
+      INSERT INTO "user" ("id", "email", "updatedAt") VALUES ('canonical-user', 'canonical@example.test', '${timestamp}');
+      INSERT INTO "ethereum_keys" ("id", "userId", "address", "publicKey", "sealedBlob", "keyType", "keyPurpose", "keyIndex", "sealingContext") VALUES
+        ('canonical-first', 'canonical-user', '0x0000000000000000000000000000000000000041', '0x41', 'first-sealed', 'MANAGED', 'PERSONAL', 0, '${contextA}'),
+        ('canonical-second', 'canonical-user', '0x0000000000000000000000000000000000000042', '0x42', 'second-sealed', 'MANAGED', 'PERSONAL', 1, '${contextB}');
+    `);
+    await applyMigrationsFrom(upgrade, canonicalMigration);
+    const keys = await upgrade.query<{ id: string; address: string; sealedBlob: string; isCanonicalTinyCloud: boolean }>(`
+      SELECT "id", "address", "sealedBlob", "isCanonicalTinyCloud"
+      FROM "ethereum_keys" WHERE "userId" = 'canonical-user' ORDER BY "keyIndex"
+    `);
+    expect(keys.rows).toEqual([
+      { id: 'canonical-first', address: '0x0000000000000000000000000000000000000041', sealedBlob: 'first-sealed', isCanonicalTinyCloud: true },
+      { id: 'canonical-second', address: '0x0000000000000000000000000000000000000042', sealedBlob: 'second-sealed', isCanonicalTinyCloud: false },
+    ]);
+    await expectRejected(() => upgrade.exec(`UPDATE "ethereum_keys" SET "isCanonicalTinyCloud" = true WHERE "id" = 'canonical-second'`));
     await upgrade.close();
   });
 

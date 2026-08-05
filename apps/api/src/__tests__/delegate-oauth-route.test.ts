@@ -70,6 +70,7 @@ let bootstrapMode: 'fresh' | 'cached' | 'failed' = 'fresh';
 let bootstrapCalls: any[] = [];
 let executionOrder: string[] = [];
 let autoSignEnabled = true;
+let tinyCloudManageKeyEnabled = true;
 let manageKeyAppEnabled = true;
 let transactionTail: Promise<void> = Promise.resolve();
 let resolvedOauthUser: { id: string; emailVerified: boolean } | null = {
@@ -88,7 +89,9 @@ const prisma: any = {
   user: {
     findUnique: mock(async ({ select }: any) => select?.autoSignEnabled
       ? { autoSignEnabled }
-      : resolvedOauthUser),
+      : select?.tinyCloudManageKeyEnabled
+        ? { tinyCloudManageKeyEnabled }
+        : resolvedOauthUser),
   },
   tinyCloudManageKeyAppPreference: {
     findUnique: mock(async () => ({ enabled: manageKeyAppEnabled })),
@@ -230,6 +233,7 @@ beforeEach(() => {
   bootstrapCalls = [];
   executionOrder = [];
   autoSignEnabled = true;
+  tinyCloudManageKeyEnabled = true;
   manageKeyAppEnabled = true;
   ensureTinyCloudBootstrapForApprovedSign.mockClear();
   transactionTail = Promise.resolve();
@@ -419,10 +423,10 @@ test('tinycloud:manage-key silently signs a canonical TinyCloud SIWE/ReCap throu
   expect(decisions).toHaveLength(0);
 });
 
-test('tinycloud:manage-key fails closed when the account-wide signing control is disabled', async () => {
+test('tinycloud:manage-key fails closed when the global TinyCloud signing control is disabled', async () => {
   token.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
   client.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
-  autoSignEnabled = false;
+  tinyCloudManageKeyEnabled = false;
 
   const response = await sign(signingBody());
   expect(response.status).toBe(403);
@@ -431,6 +435,14 @@ test('tinycloud:manage-key fails closed when the account-wide signing control is
     code: 'signing_disabled',
   });
   expect(signerCalls).toBe(0);
+});
+
+test('tinycloud:manage-key rejects tenant-managed clients before signing', async () => {
+  token.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
+  client.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
+  client.mode = 'TENANT_MANAGED';
+
+  await expectRouteDenial(signingBody(), 403, 'client_misconfigured');
 });
 
 test('tinycloud:manage-key fails closed when the user disables that OAuth app', async () => {

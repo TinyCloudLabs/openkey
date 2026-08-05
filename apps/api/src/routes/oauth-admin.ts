@@ -1,7 +1,11 @@
 // OAuth Client Administration Routes
 // Protected by ADMIN_API_KEY - for registering OAuth clients
 import { Hono } from 'hono';
-import { OAUTH_SCOPES, TINYCLOUD_SESSION_SCOPE } from '../oauth-config';
+import {
+  OAUTH_SCOPES,
+  TINYCLOUD_MANAGE_KEY_SCOPE,
+  TINYCLOUD_SESSION_SCOPE,
+} from '../oauth-config';
 import { createPrismaClient } from '@openkey/db';
 import { createHash, randomBytes } from 'crypto';
 import { issueOrganizationCredential, OrganizationCredentialError } from '../services/organization-credentials';
@@ -58,7 +62,11 @@ function generateClientId(): string {
 
 const publicPlans = ['FREE', 'PRO', 'ENTERPRISE'] as const;
 const COORDINATIONOS_WEB_SCOPES = ['openid', 'email', 'keys', TINYCLOUD_SESSION_SCOPE] as const;
-const PUBLIC_CLIENT_SCOPES = OAUTH_SCOPES.filter((scope) => scope !== TINYCLOUD_SESSION_SCOPE);
+// Public and tenant-managed clients never receive either signing capability
+// implicitly. A personal client must explicitly request manage-key consent.
+const PUBLIC_CLIENT_SCOPES = OAUTH_SCOPES.filter(
+  (scope) => scope !== TINYCLOUD_SESSION_SCOPE && scope !== TINYCLOUD_MANAGE_KEY_SCOPE,
+);
 
 function hasExactCoordinationosScopes(scopes: unknown): scopes is string[] {
   if (!Array.isArray(scopes) || scopes.length !== COORDINATIONOS_WEB_SCOPES.length) return false;

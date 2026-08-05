@@ -26,9 +26,14 @@
   let autoSignEnabled = $state(true);
   let loadingAutoSign = $state(true);
   let savingAutoSign = $state(false);
+  let tinyCloudManageKeyEnabled = $state(true);
+  let loadingTinyCloudManageKey = $state(true);
+  let savingTinyCloudManageKey = $state(false);
   let tinyCloudApps = $state<TinyCloudManageKeyApp[]>([]);
   let loadingTinyCloudApps = $state(true);
   let savingTinyCloudAppId = $state<string | null>(null);
+  let tinyCloudAppsError = $state('');
+  let tinyCloudAppSaveError = $state('');
 
   // Edit state
   let editingId = $state<string | null>(null);
@@ -48,6 +53,7 @@
         loadPasskeys();
         loadArchivedKeys();
         loadAutoSignPreference();
+        loadTinyCloudManageKeyPreference();
         loadTinyCloudManageKeyApps();
       }
     }
@@ -115,12 +121,42 @@
     }
   }
 
+  async function loadTinyCloudManageKeyPreference() {
+    loadingTinyCloudManageKey = true;
+    try {
+      const result = await api.getTinyCloudManageKeyPreference();
+      tinyCloudManageKeyEnabled = result.tinyCloudManageKeyEnabled;
+    } catch (e: any) {
+      error = e.message || 'Failed to load TinyCloud signing preference';
+    } finally {
+      loadingTinyCloudManageKey = false;
+    }
+  }
+
+  async function setTinyCloudManageKeyPreference(enabled: boolean) {
+    if (loadingTinyCloudManageKey || savingTinyCloudManageKey) return;
+    const previous = tinyCloudManageKeyEnabled;
+    tinyCloudManageKeyEnabled = enabled;
+    savingTinyCloudManageKey = true;
+    error = '';
+    try {
+      const result = await api.updateTinyCloudManageKeyPreference(enabled);
+      tinyCloudManageKeyEnabled = result.tinyCloudManageKeyEnabled;
+    } catch (e: any) {
+      tinyCloudManageKeyEnabled = previous;
+      error = e.message || 'Failed to update TinyCloud signing preference';
+    } finally {
+      savingTinyCloudManageKey = false;
+    }
+  }
+
   async function loadTinyCloudManageKeyApps() {
     loadingTinyCloudApps = true;
+    tinyCloudAppsError = '';
     try {
       tinyCloudApps = (await api.listTinyCloudManageKeyApps()).apps;
     } catch (e: any) {
-      error = e.message || 'Failed to load TinyCloud app permissions';
+      tinyCloudAppsError = e.message || 'Failed to load TinyCloud app permissions';
     } finally {
       loadingTinyCloudApps = false;
     }
@@ -133,7 +169,7 @@
       ? { ...candidate, enabled }
       : candidate);
     savingTinyCloudAppId = app.clientId;
-    error = '';
+    tinyCloudAppSaveError = '';
     try {
       const result = await api.updateTinyCloudManageKeyApp(app.clientId, enabled);
       tinyCloudApps = tinyCloudApps.map((candidate) => candidate.clientId === result.clientId
@@ -143,7 +179,7 @@
       tinyCloudApps = tinyCloudApps.map((candidate) => candidate.clientId === app.clientId
         ? { ...candidate, enabled: previous }
         : candidate);
-      error = e.message || 'Failed to update TinyCloud app permission';
+      tinyCloudAppSaveError = e.message || 'Failed to update TinyCloud app permission';
     } finally {
       savingTinyCloudAppId = null;
     }
@@ -365,7 +401,7 @@
       <div class="max-w-xl">
         <h2 class="text-xl font-semibold text-surface-900">Auto-Sign</h2>
         <p class="text-sm text-surface-500 mt-1">
-          Stops all new automatic TinyCloud signatures, including signatures requested by connected apps.
+          Automatically signs TinyCloud account bootstrap requests that match the fixed bootstrap allowlist.
         </p>
       </div>
       <div class="flex shrink-0 items-center gap-3">
@@ -389,6 +425,35 @@
     </div>
   </Card>
 
+  <Card id="tinycloud-signing" class="mt-6">
+    <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+      <div class="max-w-xl">
+        <h2 class="text-xl font-semibold text-surface-900">TinyCloud signing</h2>
+        <p class="text-sm text-surface-500 mt-1">
+          Stops connected apps from requesting new TinyCloud signatures. This does not revoke delegations already issued to an app.
+        </p>
+      </div>
+      <div class="flex shrink-0 items-center gap-3">
+        <div class="min-w-16 text-right text-sm font-medium {tinyCloudManageKeyEnabled ? 'text-surface-900' : 'text-surface-500'}" aria-live="polite">
+          {loadingTinyCloudManageKey ? 'Loading' : savingTinyCloudManageKey ? 'Saving' : tinyCloudManageKeyEnabled ? 'Enabled' : 'Disabled'}
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={tinyCloudManageKeyEnabled}
+          aria-label="Toggle TinyCloud signing"
+          onclick={() => setTinyCloudManageKeyPreference(!tinyCloudManageKeyEnabled)}
+          disabled={loadingTinyCloudManageKey || savingTinyCloudManageKey}
+          class="relative h-7 w-12 shrink-0 rounded-full transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-surface-900 disabled:cursor-not-allowed disabled:opacity-60 {tinyCloudManageKeyEnabled ? 'bg-surface-900' : 'bg-surface-300'}"
+        >
+          <span
+            class="absolute left-1 top-1 h-5 w-5 rounded-full bg-white shadow-sm transition-transform {tinyCloudManageKeyEnabled ? 'translate-x-5' : 'translate-x-0'}"
+          ></span>
+        </button>
+      </div>
+    </div>
+  </Card>
+
   <Card class="mt-6">
     <div class="mb-5">
       <h2 class="text-xl font-semibold text-surface-900">Connected TinyCloud apps</h2>
@@ -399,9 +464,17 @@
 
     {#if loadingTinyCloudApps}
       <p class="py-4 text-sm text-surface-400">Loading connected apps...</p>
+    {:else if tinyCloudAppsError}
+      <div class="py-4 text-sm text-red-600" role="alert">
+        <p>{tinyCloudAppsError}</p>
+        <button onclick={loadTinyCloudManageKeyApps} class="mt-2 font-medium underline hover:text-red-700">Try again</button>
+      </div>
     {:else if tinyCloudApps.length === 0}
       <p class="py-4 text-sm text-surface-500">No connected apps can request TinyCloud signatures.</p>
     {:else}
+      {#if tinyCloudAppSaveError}
+        <p class="mb-3 text-sm text-red-600" role="alert">{tinyCloudAppSaveError}</p>
+      {/if}
       <div class="flex flex-col gap-3">
         {#each tinyCloudApps as app}
           <div class="flex items-center justify-between gap-4 rounded-xl border border-surface-200 bg-surface-50 p-4">
@@ -423,12 +496,15 @@
               aria-label={`Toggle TinyCloud signing for ${app.name}`}
               disabled={app.disabled || savingTinyCloudAppId === app.clientId}
               onclick={() => setTinyCloudManageKeyApp(app, !app.enabled)}
-              class="relative h-7 w-12 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60 {app.enabled ? 'bg-surface-900' : 'bg-surface-300'}"
+              class="relative h-7 w-12 shrink-0 rounded-full transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-surface-900 disabled:cursor-not-allowed disabled:opacity-60 {app.enabled ? 'bg-surface-900' : 'bg-surface-300'}"
             >
               <span
                 class="absolute left-1 top-1 h-5 w-5 rounded-full bg-white shadow-sm transition-transform {app.enabled ? 'translate-x-5' : 'translate-x-0'}"
               ></span>
             </button>
+            {#if app.disabled}
+              <span class="shrink-0 text-xs text-surface-500">Disabled by the app owner</span>
+            {/if}
           </div>
         {/each}
       </div>

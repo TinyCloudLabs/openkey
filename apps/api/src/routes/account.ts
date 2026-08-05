@@ -25,6 +25,7 @@ accountRouter.get('/', async (c) => {
       name: true,
       emailVerified: true,
       autoSignEnabled: true,
+      tinyCloudManageKeyEnabled: true,
       createdAt: true,
       _count: {
         select: {
@@ -36,6 +37,34 @@ accountRouter.get('/', async (c) => {
   });
 
   return c.json({ user: userData });
+});
+
+// Global stop control for OAuth tinycloud:manage-key signing. This is kept
+// separate from Auto-Sign, which controls the fixed bootstrap allowlist.
+accountRouter.get('/tinycloud-manage-key', async (c) => {
+  const user = c.get('user');
+  const preference = await prisma.user.findUnique({
+    where: { id: user.id },
+    select: { tinyCloudManageKeyEnabled: true },
+  });
+  if (!preference) return c.json({ error: 'User not found' }, 404);
+  return c.json({ tinyCloudManageKeyEnabled: preference.tinyCloudManageKeyEnabled });
+});
+
+accountRouter.patch('/tinycloud-manage-key', async (c) => {
+  const user = c.get('user');
+  let patch;
+  try {
+    patch = parseTinyCloudManageKeyAppPreferencePatch(await c.req.json());
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : 'Invalid request body' }, 400);
+  }
+  const preference = await prisma.user.update({
+    where: { id: user.id },
+    data: { tinyCloudManageKeyEnabled: patch.enabled },
+    select: { tinyCloudManageKeyEnabled: true },
+  });
+  return c.json({ tinyCloudManageKeyEnabled: preference.tinyCloudManageKeyEnabled });
 });
 
 // Get Auto-Sign preference

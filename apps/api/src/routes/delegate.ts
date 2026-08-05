@@ -664,9 +664,9 @@ delegateRouter.post('/sign', async (c) => {
 
     const preference = await prisma.user.findUnique({
       where: { id: principal.userId },
-      select: { autoSignEnabled: true },
+      select: { tinyCloudManageKeyEnabled: true },
     });
-    if (!preference?.autoSignEnabled) {
+    if (!preference?.tinyCloudManageKeyEnabled) {
       return c.json({
         approved: false,
         code: 'signing_disabled',

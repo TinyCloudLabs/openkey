@@ -48,6 +48,10 @@ export interface AutoSignPreference {
   autoSignEnabled: boolean;
 }
 
+export interface TinyCloudManageKeyPreference {
+  tinyCloudManageKeyEnabled: boolean;
+}
+
 export interface TinyCloudManageKeyApp {
   clientId: string;
   name: string;
@@ -268,6 +272,17 @@ export const api = {
     return fetchAPI('/api/account/auto-sign', {
       method: 'PATCH',
       body: JSON.stringify({ autoSignEnabled }),
+    });
+  },
+
+  async getTinyCloudManageKeyPreference(): Promise<TinyCloudManageKeyPreference> {
+    return fetchAPI('/api/account/tinycloud-manage-key');
+  },
+
+  async updateTinyCloudManageKeyPreference(enabled: boolean): Promise<TinyCloudManageKeyPreference> {
+    return fetchAPI('/api/account/tinycloud-manage-key', {
+      method: 'PATCH',
+      body: JSON.stringify({ enabled }),
     });
   },
 

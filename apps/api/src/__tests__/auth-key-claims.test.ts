@@ -41,6 +41,10 @@ const prisma = {
     }),
   },
   ethereumKey: {
+    findFirst: mock(async () => ({
+      id: 'canonical-key-1',
+      address: '0x3333333333333333333333333333333333333333',
+    })),
     findMany: mock(async ({ where }: any) => {
       if (where.userId !== 'user-1') return [];
       return [
@@ -82,6 +86,7 @@ mock.module('@openkey/tee', () => ({
 let buildKeyClaims: typeof import('../auth')['buildKeyClaims'];
 let buildOauthKeyClaims: typeof import('../auth')['buildOauthKeyClaims'];
 let buildUserInfoKeyClaims: typeof import('../auth')['buildUserInfoKeyClaims'];
+let buildCanonicalTinyCloudIdentityClaim: typeof import('../auth')['buildCanonicalTinyCloudIdentityClaim'];
 
 beforeAll(async () => {
   // Pre-load the real service module into Bun's module cache BEFORE mocking it.
@@ -113,7 +118,12 @@ beforeAll(async () => {
     restoreTenantManagedAccount: mock(async () => ({})),
     resolveManagementCredential: mock(async () => ({ credentialId: 'cred-1', organizationId: 'org-1', subjectUserId: null, kind: 'MANAGEMENT' as const })),
   }));
-  ({ buildKeyClaims, buildOauthKeyClaims, buildUserInfoKeyClaims } = await import('../auth'));
+  ({
+    buildKeyClaims,
+    buildOauthKeyClaims,
+    buildUserInfoKeyClaims,
+    buildCanonicalTinyCloudIdentityClaim,
+  } = await import('../auth'));
 });
 
 // Restore all module mocks after this file's tests complete so that subsequent
@@ -150,9 +160,36 @@ beforeEach(() => {
     return null;
   });
   prisma.ethereumKey.findMany.mockClear();
+  prisma.ethereumKey.findFirst.mockClear();
 });
 
 describe('oauth key claims', () => {
+  test('manage-key consent exposes one canonical identity only to a personal client', async () => {
+    const personal = await buildCanonicalTinyCloudIdentityClaim(
+      { id: 'user-1' },
+      ['openid', 'tinycloud:manage-key'],
+      { mode: 'PERSONAL', organizationId: null },
+    );
+    expect(personal).toEqual({
+      version: 'v1',
+      keyId: 'canonical-key-1',
+      address: '0x3333333333333333333333333333333333333333',
+      chainId: 1,
+      did: 'did:pkh:eip155:1:0x3333333333333333333333333333333333333333',
+      spaceId: 'tinycloud:pkh:eip155:1:0x3333333333333333333333333333333333333333:applications',
+    });
+    expect(prisma.ethereumKey.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ userId: 'user-1', isCanonicalTinyCloud: true }),
+    }));
+
+    const tenant = await buildCanonicalTinyCloudIdentityClaim(
+      { id: 'user-1' },
+      ['tinycloud:manage-key'],
+      { mode: 'TENANT_MANAGED', organizationId: 'org-1' },
+    );
+    expect(tenant).toBeUndefined();
+  });
+
   test('tenant-managed consent returns only the managed key and provisions the account when missing', async () => {
     const claims = await buildKeyClaims(
       { id: 'user-1', email: 'Alice@Example.Test', emailVerified: true },
