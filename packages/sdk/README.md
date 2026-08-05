@@ -125,6 +125,32 @@ Link an external wallet to the user's OpenKey account.
 const { address, keyId } = await openkey.linkWallet();
 ```
 
+### `openkey.nostr`
+
+Connect one managed Nostr identity and sign a bounded NIP-01 event. Nostr uses
+BIP-340 Schnorr keys and does not reuse the Ethereum signing path.
+
+```typescript
+const identity = await openkey.nostr.connect({
+  relayUrl: 'wss://relay.example',
+});
+
+const event = await openkey.nostr.signEvent(identity.keyId, {
+  pubkey: identity.pubkey,
+  created_at: Math.floor(Date.now() / 1000),
+  kind: 9,
+  tags: [['h', 'channel-id']],
+  content: 'Hello from OpenKey',
+});
+```
+
+`connect()` returns only public identity metadata. `signEvent()` can sign kind
+`9` channel messages and relay-bound kind `22242` NIP-42 events; OpenKey shows
+consent unless an active grant covers the exact origin, key, kind, and relay.
+Verify the returned event independently before publishing it. See the
+[managed Nostr signing guide](../../docs/nostr-signing.md) for limits and
+rollout requirements.
+
 ### `OpenKeyEIP1193Provider`
 
 A drop-in EIP-1193 provider that routes signing through OpenKey. Handles both managed and external keys transparently.

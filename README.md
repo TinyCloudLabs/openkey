@@ -10,6 +10,7 @@ OpenKey is an OAuth-compatible identity provider that manages Ethereum keys insi
 - **TEE-secured keys**: Private keys generated and stored in Phala dstack - inaccessible to operators
 - **OAuth 2.0 provider**: Third-party apps can use "Sign in with OpenKey"
 - **Message signing**: Raw and EIP-191 personal_sign, EIP-712 typed data
+- **Managed Nostr signing**: One TEE-sealed BIP-340 identity per user with origin-scoped grants
 - **Multi-key support**: Users can have multiple Ethereum addresses
 - **Attestation**: Clients can verify keys are in a real TEE
 
@@ -130,6 +131,8 @@ OpenKey uses [dstack](https://dstack.org/) to run inside a TEE (Trusted Executio
 The sealing key is derived deterministically from the TEE hardware and application identity. Even if someone copies the database, they cannot decrypt the keys without running the same code in an attested TEE.
 
 See [docs/tee-overview.md](docs/tee-overview.md) for a deep dive on TEE concepts and how dstack works.
+See [docs/nostr-signing.md](docs/nostr-signing.md) for the Nostr browser API,
+signing limits, grant model, and rollout checklist.
 
 ## Authentication Flow
 
