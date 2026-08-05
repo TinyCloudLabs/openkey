@@ -22,6 +22,7 @@
   // Get OAuth parameters from URL
   const clientId = $page.url.searchParams.get('client_id');
   const scope = $page.url.searchParams.get('scope') || 'openid';
+  const requestedScopes = new Set(scope.split(/\s+/).filter(Boolean));
 
   // Extract signed query params (up to and including sig) for consent endpoint
   function getOAuthQuery(): string | undefined {
@@ -181,6 +182,14 @@
               </svg>
               Verify your OpenKey identity
             </li>
+            {#if requestedScopes.has('tinycloud:manage-key')}
+            <li class="flex items-start gap-2 text-surface-700">
+              <svg class="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <span>Silently request TinyCloud delegation signatures from your canonical OpenKey key. You can stop new signatures later in OpenKey; existing delegations are not revoked by this permission.</span>
+            </li>
+            {/if}
             {#if clientInfo?.mode === 'TENANT_MANAGED'}
             <li class="flex items-center gap-2 text-surface-700">
               <svg class="w-4 h-4 text-primary-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">

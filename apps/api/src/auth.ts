@@ -17,6 +17,8 @@ import { buildEmailClaims } from './claims';
 import {
   DEFAULT_OAUTH_SCOPES,
   OAUTH_SCOPES,
+  TINYCLOUD_CANONICAL_IDENTITY_CLAIM,
+  TINYCLOUD_MANAGE_KEY_SCOPE,
   TINYCLOUD_MCP_SCOPE,
   TINYCLOUD_OWNER_DIDS_CLAIM,
   TINYCLOUD_SESSION_SCOPE,
@@ -196,6 +198,41 @@ export async function buildOauthKeyClaims(
     }
     throw error;
   }
+}
+
+/**
+ * The identity is deliberately resolved server-side from the canonical-key
+ * relation. OAuth clients receive no selector that could make a second
+ * personal key appear to be the user's TinyCloud identity.
+ */
+export async function buildCanonicalTinyCloudIdentityClaim(
+  user: { id: string },
+  scopes: string[],
+  client: AuthoritativeOauthClient | undefined,
+  database: PrismaClient = prisma,
+) {
+  if (!scopes.includes(TINYCLOUD_MANAGE_KEY_SCOPE) || client?.mode !== 'PERSONAL') {
+    return undefined;
+  }
+  const key = await database.ethereumKey.findFirst({
+    where: {
+      userId: user.id,
+      keyPurpose: 'PERSONAL',
+      keyType: 'MANAGED',
+      archivedAt: null,
+      isCanonicalTinyCloud: true,
+    },
+    select: { id: true, address: true },
+  });
+  if (!key) return undefined;
+  return {
+    version: 'v1',
+    keyId: key.id,
+    address: key.address,
+    chainId: 1,
+    did: `did:pkh:eip155:1:${key.address}`,
+    spaceId: `tinycloud:pkh:eip155:1:${key.address}:applications`,
+  };
 }
 
 /**
@@ -634,6 +671,12 @@ export const auth = betterAuth({
           ? await buildOauthKeyClaims(user, scopes, client)
           : [];
         if (keys) claims.keys = keys;
+        const canonicalIdentity = await buildCanonicalTinyCloudIdentityClaim(
+          user,
+          scopes,
+          client ?? undefined,
+        );
+        if (canonicalIdentity) claims[TINYCLOUD_CANONICAL_IDENTITY_CLAIM] = canonicalIdentity;
 
         return claims;
       },
@@ -647,6 +690,8 @@ export const auth = betterAuth({
           client ?? undefined,
         );
         if (keys) claims.keys = keys;
+        const canonicalIdentity = await buildCanonicalTinyCloudIdentityClaim(user, scopes, client ?? undefined);
+        if (canonicalIdentity) claims[TINYCLOUD_CANONICAL_IDENTITY_CLAIM] = canonicalIdentity;
         return claims;
       },
     }) as any,
@@ -704,6 +749,7 @@ export const auth = betterAuth({
                 sealedBlob,
                 sealingContext,
                 keyPurpose: 'PERSONAL',
+                isCanonicalTinyCloud: true,
                 keyIndex: 0,
                 label: 'Key 0',
               },

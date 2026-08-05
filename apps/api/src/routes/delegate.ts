@@ -88,6 +88,7 @@ import {
   sparseCoordinationosEvidence,
   type CoordinationosDenialCode,
 } from '../services/coordinationos-signing-audit';
+import { validateTinyCloudManageKeyRequest } from '../services/tinycloud-manage-key-policy';
 
 const prisma = createPrismaClient();
 const tee = createTeeClient();
@@ -640,6 +641,87 @@ delegateRouter.post('/sign', async (c) => {
       clientId: authFailure?.clientId,
       userId: authFailure?.userId,
     }));
+  }
+
+  if (principal.kind === 'oauth-manage-key') {
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({
+        approved: false,
+        code: 'message_rejected',
+        reason: 'The signing request must be a JSON object.',
+      }, 400);
+    }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return c.json({
+        approved: false,
+        code: 'message_rejected',
+        reason: 'The signing request must be a JSON object.',
+      }, 400);
+    }
+
+    // keyId and address, when supplied by older callback adapters, are
+    // intentionally ignored. The OAuth token's user binding selects exactly
+    // one canonical key at the database boundary.
+    const key = await prisma.ethereumKey.findFirst({
+      where: {
+        userId: principal.userId,
+        keyPurpose: 'PERSONAL',
+        keyType: 'MANAGED',
+        archivedAt: null,
+        isCanonicalTinyCloud: true,
+      },
+      select: {
+        id: true,
+        address: true,
+        sealedBlob: true,
+        sealingContext: true,
+        userId: true,
+      },
+    });
+    if (!key || !key.sealedBlob || !key.userId) {
+      return c.json({
+        approved: false,
+        code: 'canonical_key_unavailable',
+        reason: 'The canonical TinyCloud key is unavailable.',
+      }, 403);
+    }
+
+    const identity = {
+      version: 'v1' as const,
+      keyId: key.id,
+      address: ensureEip55(key.address),
+      chainId: 1 as const,
+      did: `did:pkh:eip155:1:${ensureEip55(key.address)}`,
+      spaceId: `tinycloud:pkh:eip155:1:${ensureEip55(key.address)}:applications`,
+    };
+    const candidate = body as Record<string, unknown>;
+    const policy = validateTinyCloudManageKeyRequest({
+      type: candidate.type,
+      chainId: candidate.chainId,
+      message: candidate.message,
+      identity,
+    });
+    if (!policy.allowed) {
+      return c.json({
+        approved: false,
+        code: 'message_rejected',
+        reason: policy.reason,
+      }, 400);
+    }
+
+    try {
+      const signature = await signManagedKey(key, key.sealedBlob, candidate.message as string);
+      return c.json({ approved: true, signature, canonicalIdentity: identity });
+    } catch {
+      return c.json({
+        approved: false,
+        code: 'signer_failed',
+        reason: 'The canonical TinyCloud signer is unavailable.',
+      }, 500);
+    }
   }
 
   if (principal.kind === 'coordinationos-oauth') {

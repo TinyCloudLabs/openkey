@@ -383,6 +383,32 @@ function sign(
   });
 }
 
+test('tinycloud:manage-key silently signs a canonical TinyCloud SIWE/ReCap through the public signer route', async () => {
+  token.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
+  client.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
+  const body = signingBody();
+  // The route must not use either caller-controlled selector.
+  body.address = '0x0000000000000000000000000000000000000000';
+  body.keyId = 'attacker-selected-key';
+
+  const response = await sign(body);
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({
+    approved: true,
+    signature: expect.stringMatching(/^0x[0-9a-f]+$/i),
+    canonicalIdentity: {
+      version: 'v1',
+      keyId: key.id,
+      address,
+      chainId: 1,
+      did: `did:pkh:eip155:1:${address}`,
+      spaceId: `tinycloud:pkh:eip155:1:${address}:applications`,
+    },
+  });
+  expect(signerCalls).toBe(1);
+  expect(decisions).toHaveLength(0);
+});
+
 async function expectDenied(
   responsePromise: Response | Promise<Response>,
   status: number,
@@ -601,6 +627,16 @@ describe('CoordinationOS OAuth signer route', () => {
   ])('%s is audited before signing', async (_name, authorization, code) => {
     const body = signingBody();
     await expectRouteDenial(body, 401, code, authorization);
+  });
+
+  test('an OAuth bearer never falls back to a first-party session', async () => {
+    betterAuthSession = true;
+    await expectRouteDenial(
+      bootstrapSigningBody(),
+      401,
+      'unknown_token',
+      'Bearer unknownOpaqueBearer123',
+    );
   });
 
   test.each([
@@ -940,7 +976,7 @@ describe('CoordinationOS OAuth signer route', () => {
 
   test('an OAuth client policy does not affect a real Better Auth session bootstrap', async () => {
     betterAuthSession = true;
-    const response = await sign(bootstrapSigningBody(), 'Bearer better_auth_session_token');
+    const response = await sign(bootstrapSigningBody(), null);
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
       approved: true,
@@ -961,7 +997,7 @@ describe('CoordinationOS OAuth signer route', () => {
   test('Better Auth session signing still honors disabled Auto-Sign', async () => {
     betterAuthSession = true;
     autoSignEnabled = false;
-    const response = await sign(bootstrapSigningBody(), 'Bearer better_auth_session_token');
+    const response = await sign(bootstrapSigningBody(), null);
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
       approved: false,

@@ -1,9 +1,17 @@
 import { createHash } from 'node:crypto';
 import { createMiddleware } from 'hono/factory';
 import type { SessionContext } from './session';
+import { TINYCLOUD_MANAGE_KEY_SCOPE, TINYCLOUD_SESSION_SCOPE } from '../oauth-config';
 
 export type DelegateSignerPrincipal =
   | { kind: 'session'; userId: string }
+  | {
+      kind: 'oauth-manage-key';
+      userId: string;
+      clientId: string;
+      oauthAccessTokenId: string;
+      tokenDigest: string;
+    }
   | {
       kind: 'coordinationos-oauth';
       userId: string;
@@ -158,17 +166,16 @@ export function createDelegateSignerAuth(dependencies: DelegateSignerAuthDepende
   });
 
   if (!token) {
-    if (await resolveSession(c)) {
-      c.set('delegateSignerPrincipal', { kind: 'session', userId: c.get('user').id });
-    } else {
-      c.set('delegateSignerAuthFailure', {
-        code: 'unknown_token',
-        oauthAccessTokenId: null,
-        tokenDigest,
-        clientId: null,
-        userId: null,
-      });
-    }
+    // A bearer credential is always interpreted as OAuth on this endpoint.
+    // Falling back to a first-party Better Auth session here would let an
+    // OAuth client bypass the client-bound manage-key consent boundary.
+    c.set('delegateSignerAuthFailure', {
+      code: 'unknown_token',
+      oauthAccessTokenId: null,
+      tokenDigest,
+      clientId: null,
+      userId: null,
+    });
     await next();
     return;
   }
@@ -207,12 +214,31 @@ export function createDelegateSignerAuth(dependencies: DelegateSignerAuthDepende
   const nowMs = now().getTime();
 
   if (token.expiresAt.getTime() <= nowMs) c.set('delegateSignerAuthFailure', failure('token_expired'));
+  else if (token.scopes.includes(TINYCLOUD_MANAGE_KEY_SCOPE)) {
+    if (!client || client.clientId !== token.clientId) {
+      c.set('delegateSignerAuthFailure', failure('wrong_client'));
+    } else if (client.disabled) {
+      c.set('delegateSignerAuthFailure', failure('client_disabled'));
+    } else if (!client.scopes.includes(TINYCLOUD_MANAGE_KEY_SCOPE)) {
+      c.set('delegateSignerAuthFailure', failure('missing_scope'));
+    } else if (!user) {
+      c.set('delegateSignerAuthFailure', failure('user_not_found'));
+    } else {
+      c.set('delegateSignerPrincipal', {
+        kind: 'oauth-manage-key',
+        userId: token.userId,
+        clientId: token.clientId,
+        oauthAccessTokenId: token.id,
+        tokenDigest,
+      });
+    }
+  }
   else if (token.createdAt.getTime() + 300_000 <= nowMs) c.set('delegateSignerAuthFailure', failure('token_too_old'));
-  else if (!token.scopes.includes('tinycloud:session')) c.set('delegateSignerAuthFailure', failure('missing_scope'));
+  else if (!token.scopes.includes(TINYCLOUD_SESSION_SCOPE)) c.set('delegateSignerAuthFailure', failure('missing_scope'));
   else if (!client || client.clientId !== token.clientId) {
     c.set('delegateSignerAuthFailure', failure('wrong_client'));
   } else if (client.disabled) c.set('delegateSignerAuthFailure', failure('client_disabled'));
-  else if (!client.scopes.includes('tinycloud:session')) {
+  else if (!client.scopes.includes(TINYCLOUD_SESSION_SCOPE)) {
     c.set('delegateSignerAuthFailure', failure('missing_scope'));
   }
   else if (client.mode !== 'PERSONAL'

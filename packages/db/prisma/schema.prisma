@@ -148,6 +148,10 @@ model EthereumKey {
   sealingContext String?    @unique(map: "ethereum_keys_sealingContext_key")
   keyType        KeyType    @default(MANAGED)
   keyPurpose     KeyPurpose @default(PERSONAL)
+  // The single TEE-managed identity exposed to OIDC applications through
+  // tinycloud:manage-key. A partial unique index in the migration enforces
+  // at most one active canonical key for each user.
+  isCanonicalTinyCloud Boolean @default(false)
   keyIndex       Int        @default(0)
   label          String?
   archivedAt     DateTime? // Soft delete - archived keys are hidden but not deleted
