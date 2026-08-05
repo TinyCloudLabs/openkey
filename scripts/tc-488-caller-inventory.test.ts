@@ -30,7 +30,12 @@ describe('TC-488 deleted-surface caller inventory', () => {
     for (const root of productionRoots) {
       for await (const relativePath of new Bun.Glob('**/*.{ts,svelte,yml,yaml}').scan(root)) {
         const path = `${root}/${relativePath}`;
-        if (path.includes('/__tests__/') || path.includes('.test.') || path.endsWith('verify-tc-488-cutover.ts')) continue;
+        if (
+          path.includes('/__tests__/')
+          || path.includes('.test.')
+          || path.endsWith('verify-tc-488-cutover.ts')
+          || path.endsWith('report-tc-492-canonical-cutover.ts')
+        ) continue;
         const source = await Bun.file(path).text();
         if (deletedSurface.some((pattern) => pattern.test(source))) matches.push(path);
       }

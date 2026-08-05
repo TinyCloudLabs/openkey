@@ -32,6 +32,11 @@ Normal production deploys require the reviewed
 `20260714_origin_main_schema_catchup` marker and no unresolved failed migration
 rows before Prisma may apply anything.
 
+The canonical-key/organization-custody cutover is governed by the
+[TC-492 release runbook](./tc-492-canonical-key-cutover.md). It requires a
+read-only deterministic pre/post report and separate deployment authority; it
+must not be inferred from approval or merge of the implementation PR.
+
 #### One-time migration baseline for the legacy production database
 
 Use this procedure only for the existing production database that was created
