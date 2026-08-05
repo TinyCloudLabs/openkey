@@ -173,7 +173,7 @@ accountRouter.get('/tinycloud-apps', async (c) => {
         icon: client?.icon || null,
         disabled: client?.disabled ?? true,
         enabled: userPreference?.tinyCloudManageKeyMode === 'APP_MANAGED'
-          ? consentIds.has(clientId)
+          ? consentIds.has(clientId) && !(preference?.enabled === false || preference?.status === 'DISABLED')
           : preference?.enabled === true && preference.status === 'ENABLED' && consentIds.has(clientId),
         status: consentIds.has(clientId) ? (preference?.status ?? 'PENDING_USER_APPROVAL') : 'CONSENT_WITHDRAWN',
       };

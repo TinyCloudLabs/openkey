@@ -1,5 +1,6 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
+  import { tick } from 'svelte';
   import { authClient, authErrorMessage } from '$lib/auth-client';
   import { api, type EthereumKey, type TinyCloudManageKeyActivity, type TinyCloudManageKeyApp, type TinyCloudManageKeyPreference } from '$lib/api';
   import Button from '$lib/components/ui/button.svelte';
@@ -47,6 +48,9 @@
     enabled: boolean;
   }>(null);
   let tinyCloudConfirmationText = $state('');
+  let tinyCloudConfirmationDialog = $state<HTMLDivElement | null>(null);
+  let tinyCloudConfirmationInput = $state<HTMLInputElement | null>(null);
+  let tinyCloudConfirmationReturnFocus = $state<HTMLElement | null>(null);
 
   // Edit state
   let editingId = $state<string | null>(null);
@@ -60,14 +64,14 @@
   $effect(() => {
     if (!$session.isPending) {
       if (!$session.data) {
-        goto('/auth/login');
+        const redirect = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+        goto(`/auth/login?redirect=${encodeURIComponent(redirect)}`);
       } else if (!settingsLoaded) {
         settingsLoaded = true;
         loadPasskeys();
         loadArchivedKeys();
         loadAutoSignPreference();
         loadTinyCloudManageKeyPreference();
-        loadTinyCloudManageKeyApps();
       }
     }
   });
@@ -151,21 +155,49 @@
 
   function requestTinyCloudManageKeyModeChange(mode: TinyCloudManageKeyPreference['mode']) {
     if (loadingTinyCloudManageKey || savingTinyCloudManageKey) return;
-    tinyCloudConfirmationText = '';
     tinyCloudManageKeyError = '';
-    tinyCloudConfirmation = { kind: 'mode', mode };
+    openTinyCloudConfirmation({ kind: 'mode', mode });
   }
 
   function requestTinyCloudManageKeyAppChange(app: TinyCloudManageKeyApp, enabled: boolean) {
     if (savingTinyCloudAppId || app.disabled) return;
-    tinyCloudConfirmationText = '';
     tinyCloudAppSaveError = '';
-    tinyCloudConfirmation = { kind: 'app', app, enabled };
+    openTinyCloudConfirmation({ kind: 'app', app, enabled });
+  }
+
+  function openTinyCloudConfirmation(confirmation: NonNullable<typeof tinyCloudConfirmation>) {
+    tinyCloudConfirmationReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    tinyCloudConfirmationText = '';
+    tinyCloudConfirmation = confirmation;
+    void tick().then(() => tinyCloudConfirmationInput?.focus());
   }
 
   function dismissTinyCloudConfirmation() {
+    const returnFocus = tinyCloudConfirmationReturnFocus;
     tinyCloudConfirmation = null;
     tinyCloudConfirmationText = '';
+    tinyCloudConfirmationReturnFocus = null;
+    void tick().then(() => returnFocus?.focus());
+  }
+
+  function handleTinyCloudConfirmationKeydown(event: KeyboardEvent) {
+    if (!tinyCloudConfirmation) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      dismissTinyCloudConfirmation();
+      return;
+    }
+    if (event.key !== 'Tab' || !tinyCloudConfirmationDialog) return;
+    const focusable = Array.from(tinyCloudConfirmationDialog.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled])',
+    ));
+    if (focusable.length === 0) return;
+    const currentIndex = focusable.indexOf(document.activeElement as HTMLElement);
+    const nextIndex = event.shiftKey
+      ? (currentIndex <= 0 ? focusable.length - 1 : currentIndex - 1)
+      : (currentIndex === focusable.length - 1 ? 0 : currentIndex + 1);
+    event.preventDefault();
+    focusable[nextIndex].focus();
   }
 
   async function setTinyCloudManageKeyPreference(mode: TinyCloudManageKeyPreference['mode']) {
@@ -347,6 +379,8 @@
     return `${address.slice(0, 6)}...${address.slice(-4)}`;
   }
 </script>
+
+<svelte:window onkeydown={handleTinyCloudConfirmationKeydown} />
 
 <div class="mx-auto max-w-3xl px-4 py-8">
   <div class="mb-6">
@@ -598,7 +632,7 @@
 
   {#if tinyCloudConfirmation}
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-surface-900/40 p-4" role="presentation">
-      <div class="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl" role="dialog" aria-modal="true" aria-labelledby="tinycloud-confirmation-title" aria-describedby="tinycloud-confirmation-description">
+      <div bind:this={tinyCloudConfirmationDialog} tabindex="-1" class="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl" role="dialog" aria-modal="true" aria-labelledby="tinycloud-confirmation-title" aria-describedby="tinycloud-confirmation-description">
         <h2 id="tinycloud-confirmation-title" class="text-xl font-semibold text-surface-900">
           {tinyCloudConfirmation.kind === 'mode'
             ? tinyCloudConfirmation.mode === 'USER_CONTROLLED_SHARED'
@@ -626,7 +660,14 @@
           {/if}
         </p>
         <label class="mt-5 block text-sm font-medium text-surface-800" for="tinycloud-confirmation-input">Type TAKE CONTROL to confirm</label>
-        <Input id="tinycloud-confirmation-input" bind:value={tinyCloudConfirmationText} autocomplete="off" spellcheck={false} />
+        <input
+          bind:this={tinyCloudConfirmationInput}
+          id="tinycloud-confirmation-input"
+          bind:value={tinyCloudConfirmationText}
+          autocomplete="off"
+          spellcheck={false}
+          class="flex h-10 w-full rounded-xl border border-surface-200 bg-white px-3 py-2 text-sm text-surface-900 placeholder:text-surface-400 focus-visible:outline-none focus-visible:border-primary-500 focus-visible:ring-2 focus-visible:ring-primary-200"
+        />
         <p class="mt-2 text-xs text-surface-500">This change is authorized by your signed-in OpenKey session. Passkeys remain available as optional account protection.</p>
         <div class="mt-6 flex justify-end gap-3">
           <Button variant="secondary" onclick={dismissTinyCloudConfirmation}>Cancel</Button>

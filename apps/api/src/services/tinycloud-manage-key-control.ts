@@ -46,7 +46,18 @@ export async function changeTinyCloudManageKeyMode(
     });
     if (!current) return { kind: 'not_found' as const };
     const epoch = Number(current.tinyCloudManageKeyPolicyEpoch);
-    if (epoch !== input.expectedEpoch) return { kind: 'stale' as const, epoch };
+    const digest = requestDigest(input.request);
+    if (epoch !== input.expectedEpoch) {
+      const replay = await tx.tinyCloudManageKeyControlEvent.findFirst({
+        where: { userId, action: 'MODE_CHANGED', requestDigest: digest },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (replay && replay.policyEpoch === current.tinyCloudManageKeyPolicyEpoch
+        && current.tinyCloudManageKeyMode === input.mode) {
+        return { kind: 'unchanged' as const, epoch, mode: input.mode };
+      }
+      return { kind: 'stale' as const, epoch };
+    }
     if (current.tinyCloudManageKeyMode === input.mode) return { kind: 'unchanged' as const, epoch, mode: input.mode };
     if (!isAllowedModeTransition(current.tinyCloudManageKeyMode as TinyCloudManageKeyMode, input.mode)) {
       return { kind: 'invalid_transition' as const, epoch, mode: current.tinyCloudManageKeyMode };
@@ -72,7 +83,7 @@ export async function changeTinyCloudManageKeyMode(
     await tx.tinyCloudManageKeyControlEvent.create({
       data: {
         id: randomUUID(), userId, policyEpoch: BigInt(nextEpoch), action: 'MODE_CHANGED',
-        mode: input.mode, requestDigest: requestDigest(input.request),
+        mode: input.mode, requestDigest: digest,
       },
     });
     return { kind: 'changed' as const, epoch: nextEpoch, mode: input.mode };
@@ -92,7 +103,24 @@ export async function changeTinyCloudManageKeyGrant(
     });
     if (!user) return { kind: 'not_found' as const };
     const epoch = Number(user.tinyCloudManageKeyPolicyEpoch);
-    if (epoch !== input.expectedEpoch) return { kind: 'stale' as const, epoch };
+    const digest = requestDigest(input.request);
+    if (epoch !== input.expectedEpoch) {
+      const replay = await tx.tinyCloudManageKeyControlEvent.findFirst({
+        where: { userId, clientId, action: 'GRANT_CHANGED', requestDigest: digest },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (replay && replay.policyEpoch === user.tinyCloudManageKeyPolicyEpoch) {
+        const replayGrant = await tx.tinyCloudManageKeyAppPreference.findUnique({
+          where: { userId_clientId: { userId, clientId } },
+          select: { enabled: true, status: true },
+        });
+        if (replayGrant && replayGrant.enabled === input.enabled
+          && replayGrant.status === (input.enabled ? 'ENABLED' : 'DISABLED')) {
+          return { kind: 'unchanged' as const, epoch, grant: replayGrant };
+        }
+      }
+      return { kind: 'stale' as const, epoch };
+    }
     const consent = await tx.oauthConsent.findFirst({
       where: { userId, clientId, scopes: { has: 'tinycloud:manage-key' } }, select: { clientId: true },
     });
@@ -118,7 +146,7 @@ export async function changeTinyCloudManageKeyGrant(
     });
     if (updated.count !== 1) return { kind: 'stale' as const, epoch };
     await tx.tinyCloudManageKeyControlEvent.create({
-      data: { id: randomUUID(), userId, policyEpoch: BigInt(nextEpoch), action: 'GRANT_CHANGED', mode: user.tinyCloudManageKeyMode, clientId, requestDigest: requestDigest(input.request) },
+      data: { id: randomUUID(), userId, policyEpoch: BigInt(nextEpoch), action: 'GRANT_CHANGED', mode: user.tinyCloudManageKeyMode, clientId, requestDigest: digest },
     });
     return { kind: 'changed' as const, epoch: nextEpoch, grant };
   });
@@ -146,13 +174,15 @@ export async function withTinyCloudManageKeySigningPolicy<T>(
     const activeConsent = !!consent;
     const appManaged = user?.tinyCloudManageKeyMode === 'APP_MANAGED';
     const explicitlyAllowed = grant?.enabled === true && grant.status === 'ENABLED';
-    // Consent is the application-owned approval boundary. Once the account
-    // moves to shared user control, only the durable per-client grant can
-    // authorize signing. Exclusive always wins, including while a client is
-    // racing a user control mutation.
+    const explicitlyBlocked = grant?.enabled === false || grant?.status === 'DISABLED';
+    // Consent is the application-owned approval boundary unless the user has
+    // explicitly blocked that app. Once the account moves to shared user
+    // control, only the durable per-client grant can authorize signing.
+    // Exclusive always wins, including while a client is racing a user control
+    // mutation.
     const allowed = !!user && user.tinyCloudManageKeyEnabled
       && user.tinyCloudManageKeyMode !== 'USER_CONTROLLED_EXCLUSIVE'
-      && activeConsent && (appManaged || explicitlyAllowed);
+      && activeConsent && (appManaged ? !explicitlyBlocked : explicitlyAllowed);
     const epoch = user?.tinyCloudManageKeyPolicyEpoch ?? BigInt(0);
     await tx.tinyCloudManageKeySigningDecision.create({
       data: { id: randomUUID(), userId: input.userId, clientId: input.clientId, policyEpoch: epoch, allowed, reason: allowed ? 'allowed' : 'policy_denied', requestDigest: requestDigest(input.request) },

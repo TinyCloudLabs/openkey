@@ -43,6 +43,13 @@ const migrationNames = [
   '20260720_0003_tenant_managed_account_guard_fixes',
   '20260720_0004_drop_registration_intent',
   '20260721_0001_better_auth_1_6_oauth_refresh_tokens',
+  '20260728_0001_oauth_tenant_lifecycle_guard',
+  '20260728_0002_coordinationos_session_grants',
+  '20260730_0001_oauth_client_tinycloud_session_policy',
+  '20260805_0001_canonical_tinycloud_key',
+  '20260805_0002_tinycloud_manage_key_app_preferences',
+  '20260805_0003_tinycloud_manage_key_global_preference',
+  '20260806_0001_tinycloud_manage_key_lifecycle',
 ];
 
 describe('tenant-managed-account provisioning (new API)', () => {

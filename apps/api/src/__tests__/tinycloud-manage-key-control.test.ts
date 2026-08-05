@@ -43,13 +43,57 @@ function controlDatabase() {
         return { count: grants.size };
       },
     },
-    tinyCloudManageKeyControlEvent: { create: async ({ data }: any) => (events.push(data), data) },
+    tinyCloudManageKeyControlEvent: {
+      create: async ({ data }: any) => (events.push(data), data),
+      findFirst: async ({ where }: any) => [...events].reverse().find((event) => (
+        event.userId === where.userId
+        && event.action === where.action
+        && event.clientId === where.clientId
+        && event.requestDigest === where.requestDigest
+      )) ?? null,
+    },
     tinyCloudManageKeySigningDecision: { create: async ({ data }: any) => (decisions.push(data), data) },
   };
   return { db, user, grants, events, decisions };
 }
 
 describe('TinyCloud manage-key lifecycle controls', () => {
+  test('an app-managed user can explicitly block and re-allow one consenting app', async () => {
+    const { db, user } = controlDatabase();
+    expect(await withTinyCloudManageKeySigningPolicy(db, { userId: user.id, clientId: 'client_1', request: { request: 'before-block' } }, async () => 'signed')).toEqual({ allowed: true, value: 'signed' });
+
+    const blocked = await changeTinyCloudManageKeyGrant(db, user.id, 'client_1', {
+      enabled: false, expectedEpoch: 0, request: { enabled: false },
+    });
+    expect(blocked).toMatchObject({ kind: 'changed', epoch: 1 });
+    expect(await withTinyCloudManageKeySigningPolicy(db, { userId: user.id, clientId: 'client_1', request: { request: 'blocked' } }, async () => 'signed')).toEqual({ allowed: false, reason: 'policy_denied' });
+
+    const reallowed = await changeTinyCloudManageKeyGrant(db, user.id, 'client_1', {
+      enabled: true, expectedEpoch: 1, request: { enabled: true },
+    });
+    expect(reallowed).toMatchObject({ kind: 'changed', epoch: 2 });
+    expect(await withTinyCloudManageKeySigningPolicy(db, { userId: user.id, clientId: 'client_1', request: { request: 'reallowed' } }, async () => 'signed')).toEqual({ allowed: true, value: 'signed' });
+  });
+
+  test('a lost mutation response retries as the original successful result', async () => {
+    const { db, user } = controlDatabase();
+    const modeRequest = { mode: 'USER_CONTROLLED_SHARED', expectedEpoch: 0 };
+    expect(await changeTinyCloudManageKeyMode(db, user.id, {
+      mode: 'USER_CONTROLLED_SHARED', expectedEpoch: 0, request: modeRequest,
+    })).toMatchObject({ kind: 'changed', epoch: 1 });
+    expect(await changeTinyCloudManageKeyMode(db, user.id, {
+      mode: 'USER_CONTROLLED_SHARED', expectedEpoch: 0, request: modeRequest,
+    })).toMatchObject({ kind: 'unchanged', epoch: 1 });
+
+    const grantRequest = { enabled: true, expectedEpoch: 1 };
+    expect(await changeTinyCloudManageKeyGrant(db, user.id, 'client_1', {
+      enabled: true, expectedEpoch: 1, request: grantRequest,
+    })).toMatchObject({ kind: 'changed', epoch: 2 });
+    expect(await changeTinyCloudManageKeyGrant(db, user.id, 'client_1', {
+      enabled: true, expectedEpoch: 1, request: grantRequest,
+    })).toMatchObject({ kind: 'unchanged', epoch: 2 });
+  });
+
   test('user control is one-way, shared requires a grant, and exclusive fails closed', async () => {
     const { db, user, events, decisions } = controlDatabase();
     const deniedInShared = await changeTinyCloudManageKeyMode(db, user.id, {
