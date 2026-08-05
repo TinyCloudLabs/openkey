@@ -74,8 +74,12 @@ body {
   font-family: var(--font-sans);
 }
 
-a {
-  color: inherit;
+@layer base {
+  /* Keep ordinary links aligned with surrounding copy without defeating a
+     component's Tailwind color utility (for example, Button anchors). */
+  a {
+    color: inherit;
+  }
 }
 
 button,

@@ -3,6 +3,7 @@
   import { page } from '$app/stores';
   import { authClient } from '$lib/auth-client';
   import { api, type ConsoleOverview, type OrganizationSummary } from '$lib/api';
+  import { accountHref } from '$lib/console-host';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import { CONSOLE_SHELL, type ConsoleShellContext } from '$lib/console-shell';
@@ -183,6 +184,10 @@
 
 <svelte:window onkeydown={handleDrawerKeydown} />
 
+<svelte:head>
+  <title>OpenKey Console</title>
+</svelte:head>
+
 {#if loadState === 'loading'}
   <div class="min-h-[100vh] px-4 py-6 sm:px-6 lg:px-8">
     <div class="mx-auto max-w-7xl">
@@ -214,7 +219,7 @@
         The organization console uses your OpenKey session. Sign in, then return to the console route you requested.
       </p>
       <div class="mt-6 flex flex-wrap justify-center gap-2">
-        <Button href={`/auth/login?redirect=${encodeURIComponent($page.url.pathname + $page.url.search)}`}>Sign in</Button>
+        <Button href={accountHref(`/auth/login?redirect=${encodeURIComponent($page.url.href)}`)}>Sign in on OpenKey Account</Button>
         <Button variant="secondary" href="/console">Back to console index</Button>
       </div>
     </Card>
@@ -229,7 +234,7 @@
       </p>
       <div class="mt-6 flex flex-wrap justify-center gap-2">
         <Button href="/console">Console index</Button>
-        <Button variant="secondary" href="/dashboard">Open account</Button>
+        <Button variant="secondary" href={accountHref('/dashboard')}>Open account</Button>
       </div>
     </Card>
   </div>
@@ -270,6 +275,9 @@
         </div>
 
         <div class="flex min-w-0 items-center gap-2">
+          <a href={accountHref('/dashboard')} class="hidden rounded-full px-3 py-1.5 text-xs font-semibold text-surface-600 no-underline transition-colors hover:bg-surface-100 hover:text-surface-900 sm:inline-flex">
+            OpenKey Account
+          </a>
           <span class="hidden rounded-full border border-surface-200 bg-white px-3 py-1.5 text-xs font-semibold text-surface-600 sm:inline-flex">
             {$overview?.organization.role ?? 'MEMBER'}
           </span>
@@ -363,7 +371,7 @@
               Members can read the console, but admin-only actions stay hidden in the section pages. One-time secrets are never persisted in the browser.
             </p>
             <div class="rounded-2xl border border-surface-200 bg-surface-50 px-3 py-3 text-xs leading-5 text-surface-600">
-              The user-owned eject path lives in the personal <a class="font-semibold text-primary-700 underline-offset-4 hover:underline" href="/dashboard/managed-accounts">OpenKey Account</a>.
+              The user-owned eject path lives in the personal <a class="font-semibold text-primary-700 underline-offset-4 hover:underline" href={accountHref('/dashboard/managed-accounts')}>OpenKey Account</a>.
             </div>
           </Card>
         </div>
@@ -376,7 +384,11 @@
       </main>
     </div>
 
+    </div>
+
     {#if $mobileOpen}
+      <!-- Keep the dialog outside the inert application shell. Otherwise its
+           controls cannot receive touch, pointer, keyboard, or AT focus. -->
       <div class="fixed inset-0 z-30 lg:hidden">
         <button
           type="button"
@@ -442,10 +454,17 @@
                 </a>
               {/each}
             </nav>
+            <a
+              href={accountHref('/dashboard')}
+              onclick={() => closeMobileNav()}
+              class="flex items-center justify-between rounded-full border border-surface-200 bg-white px-3 py-2 text-sm font-semibold text-surface-700 no-underline transition-colors hover:border-primary-300 hover:bg-primary-50 hover:text-primary-700"
+            >
+              <span>OpenKey Account</span>
+              <span aria-hidden="true">↗</span>
+            </a>
           </div>
         </div>
       </div>
     {/if}
-  </div>
   </div>
 {/if}

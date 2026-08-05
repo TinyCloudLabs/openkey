@@ -2,6 +2,7 @@
   import { goto } from '$app/navigation';
   import { authClient } from '$lib/auth-client';
   import { api, type OrganizationSummary } from '$lib/api';
+  import { accountHref } from '$lib/console-host';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
@@ -129,8 +130,8 @@
           The console uses your OpenKey session. After sign-in you can create an organization with the recommended broker DID from your current account key, or open the advanced broker path.
         </p>
         <div class="mt-6 flex flex-wrap justify-center gap-2">
-          <Button href={`/auth/login?redirect=${encodeURIComponent('/console')}`}>Sign in</Button>
-          <Button variant="secondary" href="/dashboard">Open account</Button>
+          <Button href={accountHref(`/auth/login?redirect=${encodeURIComponent(window.location.href)}`)}>Sign in on OpenKey Account</Button>
+          <Button variant="secondary" href={accountHref('/dashboard')}>Open account</Button>
         </div>
       </Card>
     </div>
@@ -235,7 +236,7 @@
               <Button type="submit" disabled={creating || (!recommendedBrokerDid && !useAdvancedBrokerDid)}>
                 {creating ? 'Creating...' : 'Create organization'}
               </Button>
-              <Button variant="secondary" href="/dashboard/organizations">Advanced legacy flow</Button>
+              <Button variant="secondary" href={accountHref('/dashboard/organizations')}>Advanced legacy flow</Button>
             </div>
           </form>
         </Card>

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getContext } from 'svelte';
   import { page } from '$app/stores';
+  import { accountHref } from '$lib/console-host';
   import { CONSOLE_SHELL, type ConsoleShellContext } from '$lib/console-shell';
   import { api, type ConsoleManagedAccount } from '$lib/api';
   import Button from '$lib/components/ui/button.svelte';
@@ -98,7 +99,7 @@
         <span class="rounded-full border border-surface-200 bg-surface-50 px-3 py-1 text-xs font-semibold text-surface-600">
           { $overview?.usage.managedAccounts ?? accounts.length } accounts
         </span>
-        <Button variant="secondary" href="/dashboard/managed-accounts">Open user eject path</Button>
+        <Button variant="secondary" href={accountHref('/dashboard/managed-accounts')}>Open user eject path</Button>
       </div>
     </div>
     <div class="flex flex-wrap gap-2">
@@ -234,7 +235,7 @@
           </dl>
 
           <div class="rounded-2xl border border-dotted border-surface-200 bg-white p-4 text-sm leading-6 text-surface-600">
-            The user-owned eject path is in the personal <a class="font-semibold text-primary-700 underline-offset-4 hover:underline" href="/dashboard/managed-accounts">OpenKey Account</a>. The console does not offer a tenant-triggered eject control.
+            The user-owned eject path is in the personal <a class="font-semibold text-primary-700 underline-offset-4 hover:underline" href={accountHref('/dashboard/managed-accounts')}>OpenKey Account</a>. The console does not offer a tenant-triggered eject control.
           </div>
         {:else}
           <div class="rounded-2xl border border-dotted border-surface-200 bg-surface-50 p-6 text-sm leading-6 text-surface-600">

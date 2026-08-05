@@ -3,6 +3,7 @@
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
   import { copyText } from '$lib/clipboard';
+  import { consoleHref } from '$lib/console-host';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
 
@@ -172,7 +173,7 @@
       </div>
       <div class="flex flex-wrap gap-2">
         <Button variant="secondary" href="/dashboard/managed-accounts">Open personal view</Button>
-        <Button href="/console">Open console</Button>
+        <Button href={consoleHref('/console')}>Admin console</Button>
       </div>
     </div>
   </Card>

@@ -5,10 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "vite dev",
-    "dev:portless": "portless run --name openkey vite dev",
+    "dev:portless": "PORTLESS_WILDCARD=1 portless run --name openkey vite dev",
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "test:cloudflare-artifact": "vite build && bun test tests/cloudflare-artifact.test.ts",
+    "test:cloudflare-runtime": "vite build && bun test tests/cloudflare-runtime.test.ts",
     "test:browser": "playwright test --config tests/browser/playwright.config.ts"
   },
   "dependencies": {

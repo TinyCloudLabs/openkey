@@ -36,6 +36,7 @@ import {
   createSocialProviders,
   socialProviderTrustedOrigins,
 } from './social-providers';
+import { crossSubDomainCookieOptions } from './auth-options';
 
 export const prisma: PrismaClient = createPrismaClient({
   log: ['error', 'warn'],
@@ -678,9 +679,7 @@ export const auth = betterAuth({
   // readable by openkey.so (e.g. after Google OAuth redirect back to the web app).
   // In dev (localhost), cookies share the domain naturally so this is only needed in prod.
   advanced: {
-    crossSubDomainCookies: isDev
-      ? { enabled: false }
-      : { enabled: true, domain: '.openkey.so' },
+    crossSubDomainCookies: crossSubDomainCookieOptions(isDev),
   },
 
   // Auto-generate an Ethereum key when a new user is created
