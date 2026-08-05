@@ -88,6 +88,7 @@ accountRouter.patch('/tinycloud-manage-key', async (c) => {
   });
   if (result.kind === 'not_found') return c.json({ error: 'User not found' }, 404);
   if (result.kind === 'stale') return c.json({ error: 'TinyCloud signing policy changed in another session', policyEpoch: result.epoch }, 409);
+  if (result.kind === 'invalid_transition') return c.json({ error: 'TinyCloud signing cannot return to app-managed after you take control', policyEpoch: result.epoch }, 409);
   return c.json({ mode: result.mode, policyEpoch: result.epoch, tinyCloudManageKeyEnabled: result.mode !== 'USER_CONTROLLED_EXCLUSIVE' });
 });
 
@@ -134,7 +135,7 @@ accountRouter.patch('/auto-sign', async (c) => {
 // callers cannot create preferences for arbitrary OAuth client IDs.
 accountRouter.get('/tinycloud-apps', async (c) => {
   const user = c.get('user');
-  const [consents, preferences, decisions] = await Promise.all([
+  const [consents, preferences, decisions, userPreference] = await Promise.all([
     prisma.oauthConsent.findMany({
       where: { userId: user.id, scopes: { has: TINYCLOUD_MANAGE_KEY_SCOPE } }, select: { clientId: true },
     }),
@@ -146,6 +147,9 @@ accountRouter.get('/tinycloud-apps', async (c) => {
       where: { userId: user.id }, orderBy: { createdAt: 'desc' }, take: 20,
       select: { clientId: true, allowed: true, reason: true, policyEpoch: true, createdAt: true },
     }),
+    prisma.user.findUnique({
+      where: { id: user.id }, select: { tinyCloudManageKeyMode: true, tinyCloudManageKeyPolicyEpoch: true },
+    }),
   ]);
   const clientIds = [...new Set([...consents.map((consent) => consent.clientId), ...preferences.map((preference) => preference.clientId)])];
   const clients = clientIds.length === 0 ? [] : await prisma.oauthClient.findMany({
@@ -155,19 +159,24 @@ accountRouter.get('/tinycloud-apps', async (c) => {
   const clientById = new Map(clients.map((client) => [client.clientId, client]));
   const consentIds = new Set(consents.map((consent) => consent.clientId));
   return c.json({
-    apps: preferences.map((preference) => {
-      const client = clientById.get(preference.clientId);
+    apps: clientIds.map((clientId) => {
+      const preference = preferences.find((candidate) => candidate.clientId === clientId);
+      const client = clientById.get(clientId);
       return {
-        clientId: preference.clientId,
-        name: client?.name || preference.clientNameSnapshot || preference.clientId,
-        uri: client?.uri || preference.clientUriSnapshot || null,
+        clientId,
+        name: client?.name || preference?.clientNameSnapshot || clientId,
+        uri: client?.uri || preference?.clientUriSnapshot || null,
         icon: client?.icon || null,
         disabled: client?.disabled ?? true,
-        enabled: preference.enabled && preference.status === 'ENABLED' && consentIds.has(preference.clientId),
-        status: consentIds.has(preference.clientId) ? preference.status : 'CONSENT_WITHDRAWN',
+        enabled: userPreference?.tinyCloudManageKeyMode === 'APP_MANAGED'
+          ? consentIds.has(clientId)
+          : preference?.enabled === true && preference.status === 'ENABLED' && consentIds.has(clientId),
+        status: consentIds.has(clientId) ? (preference?.status ?? 'PENDING_USER_APPROVAL') : 'CONSENT_WITHDRAWN',
       };
     }),
     activity: decisions.map((decision) => ({ ...decision, policyEpoch: Number(decision.policyEpoch) })),
+    mode: userPreference?.tinyCloudManageKeyMode ?? 'APP_MANAGED',
+    policyEpoch: Number(userPreference?.tinyCloudManageKeyPolicyEpoch ?? BigInt(0)),
   });
 });
 

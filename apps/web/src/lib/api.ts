@@ -61,7 +61,22 @@ export interface TinyCloudManageKeyApp {
   icon: string | null;
   disabled: boolean;
   enabled: boolean;
-  status?: 'ENABLED' | 'DISABLED' | 'CONSENT_WITHDRAWN';
+  status?: 'ENABLED' | 'DISABLED' | 'PENDING_USER_APPROVAL' | 'CONSENT_WITHDRAWN';
+}
+
+export interface TinyCloudManageKeyActivity {
+  clientId: string;
+  allowed: boolean;
+  reason: string;
+  policyEpoch: number;
+  createdAt: string;
+}
+
+export interface TinyCloudManageKeyAppsResponse {
+  apps: TinyCloudManageKeyApp[];
+  activity: TinyCloudManageKeyActivity[];
+  mode: TinyCloudManageKeyPreference['mode'];
+  policyEpoch: number;
 }
 
 export interface OwnerManagedAccount {
@@ -289,7 +304,7 @@ export const api = {
     });
   },
 
-  async listTinyCloudManageKeyApps(): Promise<{ apps: TinyCloudManageKeyApp[]; activity: Array<{ clientId: string; allowed: boolean; reason: string; policyEpoch: number; createdAt: string }> }> {
+  async listTinyCloudManageKeyApps(): Promise<TinyCloudManageKeyAppsResponse> {
     return fetchAPI('/api/account/tinycloud-apps');
   },
 

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
   import { authClient, authErrorMessage } from '$lib/auth-client';
-  import { api, type EthereumKey, type TinyCloudManageKeyApp, type TinyCloudManageKeyPreference } from '$lib/api';
+  import { api, type EthereumKey, type TinyCloudManageKeyActivity, type TinyCloudManageKeyApp, type TinyCloudManageKeyPreference } from '$lib/api';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
@@ -33,6 +33,7 @@
   let savingTinyCloudManageKey = $state(false);
   let tinyCloudManageKeyError = $state('');
   let tinyCloudApps = $state<TinyCloudManageKeyApp[]>([]);
+  let tinyCloudActivity = $state<TinyCloudManageKeyActivity[]>([]);
   let loadingTinyCloudApps = $state(true);
   let savingTinyCloudAppId = $state<string | null>(null);
   let tinyCloudAppsError = $state('');
@@ -131,6 +132,7 @@
       tinyCloudManageKeyEnabled = result.tinyCloudManageKeyEnabled;
       tinyCloudManageKeyMode = result.mode;
       tinyCloudManageKeyPolicyEpoch = result.policyEpoch;
+      await loadTinyCloudManageKeyApps();
     } catch (e: any) {
       error = e.message || 'Failed to load TinyCloud signing preference';
     } finally {
@@ -166,7 +168,9 @@
     loadingTinyCloudApps = true;
     tinyCloudAppsError = '';
     try {
-      tinyCloudApps = (await api.listTinyCloudManageKeyApps()).apps;
+      const result = await api.listTinyCloudManageKeyApps();
+      tinyCloudApps = result.apps;
+      tinyCloudActivity = result.activity;
     } catch (e: any) {
       tinyCloudAppsError = e.message || 'Failed to load TinyCloud app permissions';
     } finally {
@@ -190,6 +194,7 @@
         ? { ...candidate, enabled: result.enabled }
       : candidate);
       tinyCloudManageKeyPolicyEpoch = result.policyEpoch;
+      await loadTinyCloudManageKeyApps();
     } catch (e: any) {
       tinyCloudApps = tinyCloudApps.map((candidate) => candidate.clientId === app.clientId
         ? { ...candidate, enabled: previous }
@@ -452,19 +457,21 @@
         <div class="min-w-16 text-right text-sm font-medium {tinyCloudManageKeyEnabled ? 'text-surface-900' : 'text-surface-500'}" aria-live="polite">
           {loadingTinyCloudManageKey ? 'Loading' : savingTinyCloudManageKey ? 'Saving' : tinyCloudManageKeyMode === 'APP_MANAGED' ? 'App managed' : tinyCloudManageKeyMode === 'USER_CONTROLLED_SHARED' ? 'Shared' : 'Exclusive'}
         </div>
+        {#if tinyCloudManageKeyMode === 'APP_MANAGED'}
+          <button
+            type="button"
+            onclick={() => setTinyCloudManageKeyPreference('USER_CONTROLLED_SHARED')}
+            disabled={loadingTinyCloudManageKey || savingTinyCloudManageKey}
+            class="rounded-lg border border-surface-300 bg-white px-3 py-1.5 text-sm font-medium text-surface-700 transition-colors hover:border-surface-400 disabled:cursor-not-allowed disabled:opacity-60"
+          >Take shared control</button>
+        {/if}
         <button
           type="button"
-          role="switch"
-          aria-checked={tinyCloudManageKeyMode !== 'USER_CONTROLLED_EXCLUSIVE'}
           aria-label="Change TinyCloud signing mode"
           onclick={() => setTinyCloudManageKeyPreference(tinyCloudManageKeyMode === 'USER_CONTROLLED_EXCLUSIVE' ? 'USER_CONTROLLED_SHARED' : 'USER_CONTROLLED_EXCLUSIVE')}
           disabled={loadingTinyCloudManageKey || savingTinyCloudManageKey}
-          class="relative h-7 w-12 shrink-0 rounded-full transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-surface-900 disabled:cursor-not-allowed disabled:opacity-60 {tinyCloudManageKeyMode !== 'USER_CONTROLLED_EXCLUSIVE' ? 'bg-surface-900' : 'bg-surface-300'}"
-        >
-          <span
-            class="absolute left-1 top-1 h-5 w-5 rounded-full bg-white shadow-sm transition-transform {tinyCloudManageKeyMode !== 'USER_CONTROLLED_EXCLUSIVE' ? 'translate-x-5' : 'translate-x-0'}"
-          ></span>
-        </button>
+          class="rounded-lg border border-surface-300 bg-white px-3 py-1.5 text-sm font-medium text-surface-700 transition-colors hover:border-surface-400 disabled:cursor-not-allowed disabled:opacity-60"
+        >{tinyCloudManageKeyMode === 'USER_CONTROLLED_EXCLUSIVE' ? 'Enable selected apps' : 'Disable all apps'}</button>
       </div>
     </div>
     {#if tinyCloudManageKeyError}
@@ -515,7 +522,7 @@
               role="switch"
               aria-checked={app.enabled}
               aria-label={`Toggle TinyCloud signing for ${app.name}`}
-              aria-describedby={app.disabled ? `tinycloud-app-disabled-${app.clientId}` : undefined}
+              aria-describedby={`tinycloud-app-status-${app.clientId}`}
               disabled={app.disabled || savingTinyCloudAppId === app.clientId}
               onclick={() => setTinyCloudManageKeyApp(app, !app.enabled)}
               class="relative h-7 w-12 shrink-0 rounded-full transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-surface-900 disabled:cursor-not-allowed disabled:opacity-60 {app.enabled ? 'bg-surface-900' : 'bg-surface-300'}"
@@ -524,10 +531,29 @@
                 class="absolute left-1 top-1 h-5 w-5 rounded-full bg-white shadow-sm transition-transform {app.enabled ? 'translate-x-5' : 'translate-x-0'}"
               ></span>
             </button>
-            {#if app.disabled}
-              <span id={`tinycloud-app-disabled-${app.clientId}`} class="text-xs text-surface-500">Disabled by the app owner</span>
-            {/if}
+            <span id={`tinycloud-app-status-${app.clientId}`} class="text-xs text-surface-500">
+              {app.disabled ? 'Disabled by the app owner' : app.status === 'PENDING_USER_APPROVAL' ? 'Waiting for your approval' : app.status === 'CONSENT_WITHDRAWN' ? 'OAuth consent withdrawn' : app.enabled ? 'Allowed to request new signatures' : 'Blocked from new signatures'}
+            </span>
             </div>
+          </div>
+        {/each}
+      </div>
+    {/if}
+  </Card>
+
+  <Card class="mt-6">
+    <div class="mb-4">
+      <h2 class="text-xl font-semibold text-surface-900">TinyCloud signing activity</h2>
+      <p class="mt-1 text-sm text-surface-500">Recent allow and block decisions. Stopping an app does not revoke delegations it already received.</p>
+    </div>
+    {#if tinyCloudActivity.length === 0}
+      <p class="text-sm text-surface-500">No TinyCloud signing requests yet.</p>
+    {:else}
+      <div class="flex flex-col gap-2">
+        {#each tinyCloudActivity as event}
+          <div class="flex items-center justify-between gap-4 rounded-lg bg-surface-50 px-3 py-2 text-sm">
+            <span class="truncate text-surface-700">{event.clientId} {event.allowed ? 'was allowed' : 'was blocked'}</span>
+            <time class="shrink-0 text-surface-500" datetime={event.createdAt}>{formatDate(event.createdAt)}</time>
           </div>
         {/each}
       </div>

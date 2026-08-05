@@ -75,6 +75,9 @@ let manageKeyAppEnabled = true;
 let tinyCloudManageKeyMode = 'APP_MANAGED';
 let manageKeySigningDecisions: any[] = [];
 let transactionTail: Promise<void> = Promise.resolve();
+let storedOauthTokens = new Map<string, any>();
+let registeredOauthClients = new Map<string, any>();
+let consentedClientIds = new Set<string>();
 let resolvedOauthUser: { id: string; emailVerified: boolean } | null = {
   id: 'user_1',
   emailVerified: true,
@@ -83,10 +86,10 @@ let resolvedKey: any = { ...key };
 
 const prisma: any = {
   oauthAccessToken: {
-    findUnique: mock(async ({ where }: any) => where.token === tokenHash ? token : null),
+    findUnique: mock(async ({ where }: any) => storedOauthTokens.get(where.token) ?? null),
   },
   oauthClient: {
-    findUnique: mock(async () => client),
+    findUnique: mock(async ({ where }: any) => registeredOauthClients.get(where.clientId) ?? null),
   },
   user: {
     findUnique: mock(async ({ select }: any) => select?.autoSignEnabled
@@ -98,7 +101,7 @@ const prisma: any = {
         : resolvedOauthUser),
   },
   oauthConsent: {
-    findFirst: mock(async () => ({ clientId: configuredClientId })),
+    findFirst: mock(async ({ where }: any) => consentedClientIds.has(where.clientId) ? { clientId: where.clientId } : null),
   },
   tinyCloudManageKeyAppPreference: {
     findUnique: mock(async () => ({ enabled: manageKeyAppEnabled, status: manageKeyAppEnabled ? 'ENABLED' : 'DISABLED' })),
@@ -270,6 +273,9 @@ beforeEach(() => {
   client.scopes = ['openid', 'email', 'keys', 'tinycloud:session'];
   client.tinycloudSessionPolicy = 'coordinationos-kv-v1';
   client.tinycloudSessionOrigin = configuredOrigin;
+  storedOauthTokens = new Map([[tokenHash, token]]);
+  registeredOauthClients = new Map([[configuredClientId, client]]);
+  consentedClientIds = new Set([configuredClientId]);
   installSignerAuth();
 });
 
@@ -438,6 +444,16 @@ test('tinycloud:manage-key silently signs a canonical TinyCloud SIWE/ReCap throu
   expect(decisions).toHaveLength(0);
 });
 
+test('app-managed signing uses the OAuth consent before a user creates a durable grant', async () => {
+  token.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
+  client.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
+  prisma.tinyCloudManageKeyAppPreference.findUnique.mockResolvedValueOnce(null);
+
+  const response = await sign(signingBody());
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({ approved: true });
+});
+
 test('tinycloud:manage-key fails closed when the global TinyCloud signing control is disabled', async () => {
   token.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
   client.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
@@ -495,6 +511,7 @@ test('a CoordinationOS transition client with both scopes retains the session po
 test('tinycloud:manage-key fails closed when the user disables that OAuth app', async () => {
   token.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
   client.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
+  tinyCloudManageKeyMode = 'USER_CONTROLLED_SHARED';
   manageKeyAppEnabled = false;
 
   const response = await sign(signingBody());
@@ -504,6 +521,36 @@ test('tinycloud:manage-key fails closed when the user disables that OAuth app', 
     code: 'signing_disabled',
   });
   expect(signerCalls).toBe(0);
+});
+
+test('two independent confidential OAuth clients resolve one user to the same canonical TinyCloud identity', async () => {
+  const firstRawBearer = 'independent-confidential-client-one';
+  const secondRawBearer = 'independent-confidential-client-two';
+  const firstClientId = 'confidential-client-one';
+  const secondClientId = 'confidential-client-two';
+  const scopes = ['openid', 'keys', 'tinycloud:manage-key'];
+  const firstToken = { ...token, id: 'oauth_token_client_one', token: createHash('sha256').update(firstRawBearer).digest('base64url'), clientId: firstClientId, scopes };
+  const secondToken = { ...token, id: 'oauth_token_client_two', token: createHash('sha256').update(secondRawBearer).digest('base64url'), clientId: secondClientId, scopes };
+  const firstClient = { ...client, clientId: firstClientId, scopes, tinycloudSessionPolicy: null, tinycloudSessionOrigin: null };
+  const secondClient = { ...client, clientId: secondClientId, scopes, tinycloudSessionPolicy: null, tinycloudSessionOrigin: null };
+  storedOauthTokens = new Map([[firstToken.token, firstToken], [secondToken.token, secondToken]]);
+  registeredOauthClients = new Map([[firstClientId, firstClient], [secondClientId, secondClient]]);
+  consentedClientIds = new Set([firstClientId, secondClientId]);
+
+  const [first, second] = await Promise.all([
+    sign(signingBody(), `Bearer ${firstRawBearer}`),
+    sign(signingBody(), `Bearer ${secondRawBearer}`),
+  ]);
+  expect(first.status).toBe(200);
+  expect(second.status).toBe(200);
+  const firstIdentity = (await first.json() as any).canonicalIdentity;
+  const secondIdentity = (await second.json() as any).canonicalIdentity;
+  expect(firstIdentity).toEqual(secondIdentity);
+  expect(firstIdentity).toEqual({
+    version: 'v1', keyId: key.id, address, chainId: 1,
+    did: `did:pkh:eip155:1:${address}`,
+    spaceId: `tinycloud:pkh:eip155:1:${address}:applications`,
+  });
 });
 
 async function expectDenied(

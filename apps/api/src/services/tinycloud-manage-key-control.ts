@@ -25,6 +25,14 @@ export function controlMutationError(value: unknown): string | null {
   return null;
 }
 
+function isAllowedModeTransition(from: TinyCloudManageKeyMode, to: TinyCloudManageKeyMode): boolean {
+  // Taking control is one-way.  Returning a controlled key to application
+  // management would silently discard the user's custody decision.
+  return (from === 'APP_MANAGED' && to !== 'APP_MANAGED')
+    || (from === 'USER_CONTROLLED_SHARED' && to === 'USER_CONTROLLED_EXCLUSIVE')
+    || (from === 'USER_CONTROLLED_EXCLUSIVE' && to === 'USER_CONTROLLED_SHARED');
+}
+
 export async function changeTinyCloudManageKeyMode(
   prisma: any,
   userId: string,
@@ -40,6 +48,9 @@ export async function changeTinyCloudManageKeyMode(
     const epoch = Number(current.tinyCloudManageKeyPolicyEpoch);
     if (epoch !== input.expectedEpoch) return { kind: 'stale' as const, epoch };
     if (current.tinyCloudManageKeyMode === input.mode) return { kind: 'unchanged' as const, epoch, mode: input.mode };
+    if (!isAllowedModeTransition(current.tinyCloudManageKeyMode as TinyCloudManageKeyMode, input.mode)) {
+      return { kind: 'invalid_transition' as const, epoch, mode: current.tinyCloudManageKeyMode };
+    }
 
     const result = await tx.user.updateMany({
       where: { id: userId, tinyCloudManageKeyPolicyEpoch: current.tinyCloudManageKeyPolicyEpoch },
@@ -87,6 +98,14 @@ export async function changeTinyCloudManageKeyGrant(
     });
     if (!consent) return { kind: 'missing_consent' as const };
     const client = await tx.oauthClient.findUnique({ where: { clientId }, select: { name: true, uri: true } });
+    const existing = await tx.tinyCloudManageKeyAppPreference.findUnique({
+      where: { userId_clientId: { userId, clientId } },
+      select: { enabled: true, status: true },
+    });
+    if (existing && existing.enabled === input.enabled
+      && existing.status === (input.enabled ? 'ENABLED' : 'DISABLED')) {
+      return { kind: 'unchanged' as const, epoch, grant: existing };
+    }
     const grant = await tx.tinyCloudManageKeyAppPreference.upsert({
       where: { userId_clientId: { userId, clientId } },
       create: { userId, clientId, enabled: input.enabled, status: input.enabled ? 'ENABLED' : 'DISABLED', clientNameSnapshot: client?.name, clientUriSnapshot: client?.uri },
@@ -124,8 +143,16 @@ export async function withTinyCloudManageKeySigningPolicy<T>(
     const grant = await tx.tinyCloudManageKeyAppPreference.findUnique({
       where: { userId_clientId: { userId: input.userId, clientId: input.clientId } }, select: { enabled: true, status: true },
     });
-    const allowed = !!user && user.tinyCloudManageKeyEnabled && user.tinyCloudManageKeyMode !== 'USER_CONTROLLED_EXCLUSIVE'
-      && !!consent && grant?.enabled === true && grant.status === 'ENABLED';
+    const activeConsent = !!consent;
+    const appManaged = user?.tinyCloudManageKeyMode === 'APP_MANAGED';
+    const explicitlyAllowed = grant?.enabled === true && grant.status === 'ENABLED';
+    // Consent is the application-owned approval boundary. Once the account
+    // moves to shared user control, only the durable per-client grant can
+    // authorize signing. Exclusive always wins, including while a client is
+    // racing a user control mutation.
+    const allowed = !!user && user.tinyCloudManageKeyEnabled
+      && user.tinyCloudManageKeyMode !== 'USER_CONTROLLED_EXCLUSIVE'
+      && activeConsent && (appManaged || explicitlyAllowed);
     const epoch = user?.tinyCloudManageKeyPolicyEpoch ?? BigInt(0);
     await tx.tinyCloudManageKeySigningDecision.create({
       data: { id: randomUUID(), userId: input.userId, clientId: input.clientId, policyEpoch: epoch, allowed, reason: allowed ? 'allowed' : 'policy_denied', requestDigest: requestDigest(input.request) },
