@@ -57,7 +57,6 @@ function fixture(): CoordinationosSessionPolicyInput {
     client: {
       clientId,
       disabled: false,
-      mode: 'PERSONAL',
       type: 'web',
       public: false,
       tokenEndpointAuthMethod: 'client_secret_basic',
@@ -181,7 +180,6 @@ describe('CoordinationOS TinyCloud session policy', () => {
     ['disabled client', (input) => { input.client!.disabled = true; }, 'client_disabled'],
     ['public client', (input) => { input.client!.public = true; }, 'client_misconfigured'],
     ['non-web client', (input) => { input.client!.type = 'spa'; }, 'client_misconfigured'],
-    ['non-personal client', (input) => { input.client!.mode = 'TENANT_MANAGED'; }, 'client_misconfigured'],
     ['wrong auth method', (input) => {
       input.client!.tokenEndpointAuthMethod = 'none';
     }, 'client_misconfigured'],

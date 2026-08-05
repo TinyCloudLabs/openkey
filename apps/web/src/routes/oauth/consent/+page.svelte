@@ -12,7 +12,6 @@
     name: string;
     uri?: string;
     icon?: string;
-    mode?: string;
   } | null>(null);
   let loading = $state(true);
   let submitting = $state(false);
@@ -53,7 +52,6 @@
           name: data.client_name || data.name || 'Unknown',
           uri: data.client_uri || data.uri,
           icon: data.logo_uri || data.icon,
-          mode: data.metadata?.openkeyClientMode ?? data.mode,
         };
       } else {
         const data = await res.json().catch(() => null);
@@ -190,27 +188,11 @@
               <span>Silently request TinyCloud delegation signatures from your canonical OpenKey key. You can <a href="/dashboard/settings#tinycloud-signing" class="text-primary-600 underline hover:text-primary-700">stop new signatures later in OpenKey</a>; existing delegations are not revoked by this permission.</span>
             </li>
             {/if}
-            {#if clientInfo?.mode === 'TENANT_MANAGED'}
-            <li class="flex items-center gap-2 text-surface-700">
-              <svg class="w-4 h-4 text-primary-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
-              </svg>
-              Receive your verified email address
-            </li>
-            <li class="flex items-center gap-2 text-surface-700">
-              <svg class="w-4 h-4 text-amber-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              Sign on your behalf without prompting until you eject your account
-            </li>
-            {/if}
           </ul>
         </div>
-        {#if clientInfo?.mode === 'TENANT_MANAGED'}
         <p class="mt-3 text-xs text-surface-500">
-          This organization manages a key on your behalf. You can eject at any time from your OpenKey account dashboard to transfer custody to yourself.
+          This application may request access to your canonical OpenKey identity only through the scopes you approve.
         </p>
-        {/if}
       </div>
 
       {#if error}

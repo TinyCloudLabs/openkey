@@ -8,7 +8,6 @@ import {
 } from '../oauth-config';
 import { createPrismaClient } from '@openkey/db';
 import { createHash, randomBytes } from 'crypto';
-import { issueOrganizationCredential, OrganizationCredentialError } from '../services/organization-credentials';
 import { publicPlanDefaults } from '../services/plan-entitlements';
 import {
   oauthApplicationType,
@@ -62,8 +61,8 @@ function generateClientId(): string {
 
 const publicPlans = ['FREE', 'PRO', 'ENTERPRISE'] as const;
 const COORDINATIONOS_WEB_SCOPES = ['openid', 'email', 'keys', TINYCLOUD_SESSION_SCOPE] as const;
-// Public and tenant-managed clients never receive either signing capability
-// implicitly. A personal client must explicitly request manage-key consent.
+// Public clients never receive signing capabilities implicitly; clients must
+// explicitly request manage-key consent.
 const PUBLIC_CLIENT_SCOPES = OAUTH_SCOPES.filter(
   (scope) => scope !== TINYCLOUD_SESSION_SCOPE && scope !== TINYCLOUD_MANAGE_KEY_SCOPE,
 );
@@ -82,7 +81,6 @@ oauthAdminRouter.post('/organizations', async (c) => {
     name: string;
     ownerUserId: string;
     plan?: typeof publicPlans[number];
-    brokerDid?: string;
   }>();
   if (!body.name || !body.ownerUserId || (body.plan && !publicPlans.includes(body.plan))) {
     return c.json({ error: 'name, ownerUserId, and a public plan are required' }, 400);
@@ -92,7 +90,7 @@ oauthAdminRouter.post('/organizations', async (c) => {
   if (!owner) return c.json({ error: 'Owner user not found' }, 404);
   const organization = await prisma.$transaction(async (tx) => {
     const created = await tx.organization.create({
-      data: { name: body.name, plan, brokerDid: body.brokerDid ?? null },
+      data: { name: body.name, plan },
     });
     await tx.organizationMembership.create({
       data: { organizationId: created.id, userId: body.ownerUserId, role: 'ADMIN' },
@@ -122,43 +120,10 @@ oauthAdminRouter.patch('/organizations/:organizationId/plan', async (c) => {
       });
       return { organization, entitlements };
     });
-    return c.json({ ...result, entitlements: { ...result.entitlements, storageBytesPerManagedAccount: result.entitlements.storageBytesPerManagedAccount.toString() } });
+    return c.json(result);
   } catch (error: any) {
     if (error.code === 'P2025') return c.json({ error: 'Organization not found' }, 404);
     throw error;
-  }
-});
-
-oauthAdminRouter.post('/organizations/:organizationId/credentials', async (c) => {
-  const body = await c.req.json<{ name: string; subjectUserId: string }>();
-  if (!body.name || !body.subjectUserId) {
-    return c.json({ error: 'name and subjectUserId are required' }, 400);
-  }
-  const membership = await prisma.organizationMembership.findFirst({
-    where: {
-      organizationId: c.req.param('organizationId'),
-      userId: body.subjectUserId,
-      role: 'ADMIN',
-      status: 'ACTIVE',
-      revokedAt: null,
-      validFrom: { lte: new Date() },
-      OR: [{ validUntil: null }, { validUntil: { gt: new Date() } }],
-    },
-    select: { id: true },
-  });
-  if (!membership) return c.json({ error: 'Active organization administrator not found' }, 404);
-  try {
-    const issued = await issueOrganizationCredential(prisma, {
-      organizationId: c.req.param('organizationId'),
-      subjectUserId: body.subjectUserId,
-      name: body.name,
-    });
-    return c.json(issued, 201);
-  } catch (caught) {
-    if (caught instanceof OrganizationCredentialError && caught.code === 'ADMIN_REQUIRED') {
-      return c.json({ error: 'Active organization administrator not found' }, 404);
-    }
-    throw caught;
   }
 });
 
@@ -196,8 +161,6 @@ oauthAdminRouter.post('/organizations/:organizationId/clients', async (c) => {
       scopes: [...PUBLIC_CLIENT_SCOPES], disabled: false, skipConsent: false,
       enableEndSession: false, tokenEndpointAuthMethod: 'none', grantTypes: ['authorization_code', 'refresh_token'],
       responseTypes: ['code'], type: body.type ?? 'spa', public: true, contacts: [],
-      mode: 'TENANT_MANAGED',
-      metadata: { openkeyClientMode: 'TENANT_MANAGED', openkeyOrganizationId: organizationId },
     },
   });
   return c.json({ client }, 201);
@@ -287,8 +250,6 @@ oauthAdminRouter.post('/clients', async (c) => {
         type: applicationType,
         public: applicationType !== 'web',
         contacts: [],
-        mode: 'PERSONAL',
-        metadata: { openkeyClientMode: 'PERSONAL' },
       },
     });
 
@@ -390,9 +351,6 @@ oauthAdminRouter.delete('/clients/:clientId', async (c) => {
 });
 
 // PATCH /api/admin/oauth/clients/:clientId - Update a client
-// Note: `mode` is immutable. Once set at creation it cannot be changed because
-// existing access and refresh tokens were issued under the original mode. Any
-// attempt to include `mode` in the request body is rejected with 400.
 oauthAdminRouter.patch('/clients/:clientId', async (c) => {
   const clientId = c.req.param('clientId');
   const body = await c.req.json<{

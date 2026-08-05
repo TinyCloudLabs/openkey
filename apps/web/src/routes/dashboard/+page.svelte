@@ -172,7 +172,6 @@
         </p>
       </div>
       <div class="flex flex-wrap gap-2">
-        <Button variant="secondary" href="/dashboard/managed-accounts">Open personal view</Button>
         <Button href={consoleHref('/console')}>Admin console</Button>
       </div>
     </div>

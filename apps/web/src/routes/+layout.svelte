@@ -42,12 +42,6 @@
           <a href="/dashboard/api-keys" class="rounded-full px-3 py-1.5 text-sm text-surface-500 no-underline transition-colors hover:bg-surface-100 hover:text-surface-900">
             API keys
           </a>
-          <a href="/dashboard/managed-accounts" class="rounded-full px-3 py-1.5 text-sm text-surface-500 no-underline transition-colors hover:bg-surface-100 hover:text-surface-900">
-            Connected apps
-          </a>
-          <a href="/dashboard/organizations" class="rounded-full px-3 py-1.5 text-sm text-surface-500 no-underline transition-colors hover:bg-surface-100 hover:text-surface-900">
-            Organizations
-          </a>
           <a
             href={consoleHref('/console')}
             class="inline-flex items-center gap-1.5 rounded-full border border-primary-200 bg-primary-50 px-3 py-1.5 text-sm font-semibold text-primary-700 no-underline transition-colors hover:bg-primary-100"

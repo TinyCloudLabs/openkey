@@ -77,7 +77,6 @@ export interface CoordinationosSessionPolicyInput {
   client: {
     clientId: string;
     disabled: boolean;
-    mode: string;
     type: string | null;
     public: boolean;
     tokenEndpointAuthMethod: string | null;
@@ -329,7 +328,6 @@ export function evaluateCoordinationosSessionRequest(
   if (input.client.disabled) return deny('client_disabled');
   if (!input.client.scopes.includes('tinycloud:session')) return deny('missing_scope');
   if (input.client.public
-    || input.client.mode !== 'PERSONAL'
     || input.client.type !== 'web'
     || input.client.tokenEndpointAuthMethod !== 'client_secret_basic'
     || !sameStringSet(input.client.grantTypes, ['authorization_code'])

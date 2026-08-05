@@ -159,9 +159,6 @@
                 <p class="mt-1 truncate text-sm text-surface-600">{member.email}</p>
               </div>
               <div class="flex flex-wrap items-center gap-2 sm:justify-end">
-                <span title={member.address ?? undefined} class="font-mono text-xs text-surface-600">
-                  {shortAddress(member.address)}
-                </span>
                 <span class="rounded-full border border-surface-200 bg-surface-50 px-3 py-1 text-xs font-semibold text-surface-700">
                   {member.role}
                 </span>

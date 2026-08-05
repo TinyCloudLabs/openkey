@@ -46,7 +46,6 @@ export type CoordinationosOauthContext = {
   client: {
     clientId: string;
     disabled: boolean;
-    mode: string;
     type: string | null;
     public: boolean;
     tokenEndpointAuthMethod: string | null;
@@ -117,8 +116,7 @@ function sameStringSet(actual: string[], expected: readonly string[]): boolean {
 }
 
 function isConfidentialPersonalWebClient(client: NonNullable<CoordinationosOauthContext['client']>): boolean {
-  return client.mode === 'PERSONAL'
-    && client.type === 'web'
+  return client.type === 'web'
     && !client.public
     && client.tokenEndpointAuthMethod === 'client_secret_basic'
     && sameStringSet(client.grantTypes, ['authorization_code'])
@@ -210,7 +208,6 @@ export function createDelegateSignerAuth(dependencies: DelegateSignerAuthDepende
       select: {
         clientId: true,
         disabled: true,
-        mode: true,
         type: true,
         public: true,
         tokenEndpointAuthMethod: true,

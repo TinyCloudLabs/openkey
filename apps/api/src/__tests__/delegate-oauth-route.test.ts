@@ -468,14 +468,6 @@ test('tinycloud:manage-key fails closed when the global TinyCloud signing contro
   expect(signerCalls).toBe(0);
 });
 
-test('tinycloud:manage-key rejects tenant-managed clients before signing', async () => {
-  token.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
-  client.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
-  client.mode = 'TENANT_MANAGED';
-
-  await expectRouteDenial(signingBody(), 403, 'client_misconfigured');
-});
-
 test.each([
   ['public client', () => { client.public = true; }],
   ['non-web client', () => { client.type = 'spa'; }],
@@ -790,7 +782,6 @@ describe('CoordinationOS OAuth signer route', () => {
       token.scopes = ['openid', 'email', 'keys'];
     }, 'missing_scope'],
     ['non-web client', () => { client.type = 'spa'; }, 'client_misconfigured'],
-    ['non-personal client', () => { client.mode = 'TENANT_MANAGED'; }, 'client_misconfigured'],
     ['public client', () => { client.public = true; }, 'client_misconfigured'],
     ['wrong auth method', () => {
       client.tokenEndpointAuthMethod = 'none';
