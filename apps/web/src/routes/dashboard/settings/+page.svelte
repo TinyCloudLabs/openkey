@@ -551,7 +551,7 @@
     {/if}
   </Card>
 
-  <Card class="mt-6">
+  <Card id="connected-tinycloud-apps" class="mt-6">
     <div class="mb-5">
       <h2 class="text-xl font-semibold text-surface-900">Connected TinyCloud apps</h2>
       <p class="text-sm text-surface-500 mt-1">

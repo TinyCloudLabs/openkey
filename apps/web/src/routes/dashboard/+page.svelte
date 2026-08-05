@@ -3,7 +3,6 @@
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
   import { copyText } from '$lib/clipboard';
-  import { consoleHref } from '$lib/console-host';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
 
@@ -162,17 +161,17 @@
     {/if}
   </Card>
 
-  <!-- API Keys Card -->
+  <!-- Connected apps card -->
   <Card class="mt-6">
     <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
       <div>
         <h2 class="text-xl font-semibold text-surface-900">Connected apps</h2>
         <p class="text-sm text-surface-500 mt-1">
-          See which organizations and apps currently manage an account, then review the user-owned exit path.
+          Review the apps that can request TinyCloud signatures from your account. You control each app's access here.
         </p>
       </div>
       <div class="flex flex-wrap gap-2">
-        <Button href={consoleHref('/console')}>Admin console</Button>
+        <Button href="/dashboard/settings#connected-tinycloud-apps">Manage app access</Button>
       </div>
     </div>
   </Card>
