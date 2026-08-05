@@ -465,6 +465,20 @@ test('tinycloud:manage-key fails closed when the global TinyCloud signing contro
   expect(signerCalls).toBe(0);
 });
 
+test('tinycloud:manage-key reports exclusive user control distinctly', async () => {
+  token.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
+  client.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
+  tinyCloudManageKeyMode = 'USER_CONTROLLED_EXCLUSIVE';
+
+  const response = await sign(signingBody());
+  expect(response.status).toBe(403);
+  expect(await response.json()).toMatchObject({
+    approved: false,
+    code: 'user_exclusive',
+  });
+  expect(signerCalls).toBe(0);
+});
+
 test.each([
   ['public client', () => { client.public = true; }],
   ['non-web client', () => { client.type = 'spa'; }],
@@ -507,7 +521,7 @@ test('tinycloud:manage-key fails closed when the user disables that OAuth app', 
   expect(response.status).toBe(403);
   expect(await response.json()).toMatchObject({
     approved: false,
-    code: 'signing_disabled',
+    code: 'grant_disabled',
   });
   expect(signerCalls).toBe(0);
 });

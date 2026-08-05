@@ -686,7 +686,17 @@ delegateRouter.post('/sign', async (c) => {
         const signature = await signManagedKey(key, key.sealedBlob, candidate.message as string);
         return { signature, identity };
       });
-      if (!result.allowed) return c.json({ approved: false, code: 'signing_disabled', reason: 'TinyCloud signing is disabled for this OpenKey account or app.' }, 403);
+      if (!result.allowed) {
+        const code = result.reason === 'missing_consent' ? 'missing_scope' : result.reason;
+        const reason = result.reason === 'user_exclusive'
+          ? 'The user has disabled application signing in exclusive mode.'
+          : result.reason === 'grant_disabled'
+            ? 'TinyCloud signing is not enabled for this application.'
+            : result.reason === 'missing_consent'
+              ? 'The application does not have active TinyCloud manage-key consent.'
+              : 'TinyCloud signing is disabled for this OpenKey account.';
+        return c.json({ approved: false, code, reason }, 403);
+      }
       return c.json({ approved: true, signature: result.value.signature, canonicalIdentity: result.value.identity });
     } catch (error) {
       const message = error instanceof Error ? error.message : '';

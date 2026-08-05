@@ -159,7 +159,13 @@ export async function withTinyCloudManageKeySigningPolicy<T>(
   prisma: any,
   input: { userId: string; clientId: string; request: unknown },
   onAllow: (tx: any) => Promise<T>,
-): Promise<{ allowed: true; value: T } | { allowed: false; reason: string }> {
+): Promise<{
+  allowed: true;
+  value: T;
+} | {
+  allowed: false;
+  reason: 'signing_disabled' | 'user_exclusive' | 'missing_consent' | 'grant_disabled';
+}> {
   return prisma.$transaction(async (tx: any) => {
     await tx.$queryRawUnsafe('SELECT "id" FROM "user" WHERE "id" = $1 FOR UPDATE', input.userId);
     const user = await tx.user.findUnique({
@@ -180,14 +186,18 @@ export async function withTinyCloudManageKeySigningPolicy<T>(
     // control, only the durable per-client grant can authorize signing.
     // Exclusive always wins, including while a client is racing a user control
     // mutation.
-    const allowed = !!user && user.tinyCloudManageKeyEnabled
-      && user.tinyCloudManageKeyMode !== 'USER_CONTROLLED_EXCLUSIVE'
-      && activeConsent && (appManaged ? !explicitlyBlocked : explicitlyAllowed);
+    let denialReason: 'signing_disabled' | 'user_exclusive' | 'missing_consent' | 'grant_disabled' | undefined;
+    if (!user) denialReason = 'signing_disabled';
+    else if (user.tinyCloudManageKeyMode === 'USER_CONTROLLED_EXCLUSIVE') denialReason = 'user_exclusive';
+    else if (!user.tinyCloudManageKeyEnabled) denialReason = 'signing_disabled';
+    else if (!activeConsent) denialReason = 'missing_consent';
+    else if (appManaged ? explicitlyBlocked : !explicitlyAllowed) denialReason = 'grant_disabled';
+    const allowed = denialReason === undefined;
     const epoch = user?.tinyCloudManageKeyPolicyEpoch ?? BigInt(0);
     await tx.tinyCloudManageKeySigningDecision.create({
-      data: { id: randomUUID(), userId: input.userId, clientId: input.clientId, policyEpoch: epoch, allowed, reason: allowed ? 'allowed' : 'policy_denied', requestDigest: requestDigest(input.request) },
+      data: { id: randomUUID(), userId: input.userId, clientId: input.clientId, policyEpoch: epoch, allowed, reason: denialReason ?? 'allowed', requestDigest: requestDigest(input.request) },
     });
-    if (!allowed) return { allowed: false as const, reason: 'policy_denied' };
+    if (denialReason) return { allowed: false as const, reason: denialReason };
     return { allowed: true as const, value: await onAllow(tx) };
   }, { timeout: 10_000 });
 }

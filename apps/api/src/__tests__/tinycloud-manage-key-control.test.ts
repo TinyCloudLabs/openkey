@@ -66,7 +66,7 @@ describe('TinyCloud manage-key lifecycle controls', () => {
       enabled: false, expectedEpoch: 0, request: { enabled: false },
     });
     expect(blocked).toMatchObject({ kind: 'changed', epoch: 1 });
-    expect(await withTinyCloudManageKeySigningPolicy(db, { userId: user.id, clientId: 'client_1', request: { request: 'blocked' } }, async () => 'signed')).toEqual({ allowed: false, reason: 'policy_denied' });
+    expect(await withTinyCloudManageKeySigningPolicy(db, { userId: user.id, clientId: 'client_1', request: { request: 'blocked' } }, async () => 'signed')).toEqual({ allowed: false, reason: 'grant_disabled' });
 
     const reallowed = await changeTinyCloudManageKeyGrant(db, user.id, 'client_1', {
       enabled: true, expectedEpoch: 1, request: { enabled: true },
@@ -100,7 +100,7 @@ describe('TinyCloud manage-key lifecycle controls', () => {
       mode: 'USER_CONTROLLED_SHARED', expectedEpoch: 0, request: { mode: 'USER_CONTROLLED_SHARED' },
     });
     expect(deniedInShared).toMatchObject({ kind: 'changed', epoch: 1 });
-    expect(await withTinyCloudManageKeySigningPolicy(db, { userId: user.id, clientId: 'client_1', request: { request: 1 } }, async () => 'signed')).toEqual({ allowed: false, reason: 'policy_denied' });
+    expect(await withTinyCloudManageKeySigningPolicy(db, { userId: user.id, clientId: 'client_1', request: { request: 1 } }, async () => 'signed')).toEqual({ allowed: false, reason: 'grant_disabled' });
 
     const granted = await changeTinyCloudManageKeyGrant(db, user.id, 'client_1', {
       enabled: true, expectedEpoch: 1, request: { enabled: true },
@@ -112,7 +112,7 @@ describe('TinyCloud manage-key lifecycle controls', () => {
       mode: 'USER_CONTROLLED_EXCLUSIVE', expectedEpoch: 2, request: { mode: 'USER_CONTROLLED_EXCLUSIVE' },
     });
     expect(exclusive).toMatchObject({ kind: 'changed', epoch: 3 });
-    expect(await withTinyCloudManageKeySigningPolicy(db, { userId: user.id, clientId: 'client_1', request: { request: 3 } }, async () => 'signed')).toEqual({ allowed: false, reason: 'policy_denied' });
+    expect(await withTinyCloudManageKeySigningPolicy(db, { userId: user.id, clientId: 'client_1', request: { request: 3 } }, async () => 'signed')).toEqual({ allowed: false, reason: 'user_exclusive' });
 
     const invalidReturn = await changeTinyCloudManageKeyMode(db, user.id, {
       mode: 'APP_MANAGED', expectedEpoch: 3, request: { mode: 'APP_MANAGED' },
@@ -130,7 +130,7 @@ describe('TinyCloud manage-key lifecycle controls', () => {
     const replay = await changeTinyCloudManageKeyGrant(db, user.id, 'client_1', { enabled: true, expectedEpoch: 2, request: { enabled: true } });
     expect(replay).toMatchObject({ kind: 'unchanged', epoch: 2 });
     expect(events).toHaveLength(2);
-    expect(await withTinyCloudManageKeySigningPolicy(db, { userId: user.id, clientId: 'client_1', request: { request: 'exclusive' } }, async () => 'signed')).toEqual({ allowed: false, reason: 'policy_denied' });
+    expect(await withTinyCloudManageKeySigningPolicy(db, { userId: user.id, clientId: 'client_1', request: { request: 'exclusive' } }, async () => 'signed')).toEqual({ allowed: false, reason: 'user_exclusive' });
     await changeTinyCloudManageKeyMode(db, user.id, { mode: 'USER_CONTROLLED_SHARED', expectedEpoch: 2, request: { mode: 'USER_CONTROLLED_SHARED' } });
     expect(await withTinyCloudManageKeySigningPolicy(db, { userId: user.id, clientId: 'client_1', request: { request: 'shared' } }, async () => 'signed')).toEqual({ allowed: true, value: 'signed' });
   });
