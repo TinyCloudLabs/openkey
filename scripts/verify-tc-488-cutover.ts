@@ -7,7 +7,7 @@ const forbiddenRelations = [
   'organization_server_credential',
 ];
 const forbiddenTypes = [
-  'ManagedAccountState', 'CustodianType', 'RevocationStatus', 'NodeRole',
+  'KeyPurpose', 'ManagedAccountState', 'CustodianType', 'RevocationStatus', 'NodeRole',
   'RevocationReceiptStatus', 'EjectRequestStatus', 'OrganizationCredentialKind',
   'OauthClientMode',
 ];
@@ -25,10 +25,16 @@ async function main() {
       JOIN pg_namespace n ON n.oid = t.typnamespace
       WHERE n.nspname = 'public' AND t.typname = ANY(${forbiddenTypes})
     `;
-    if (relations.length || types.length) {
-      throw new Error(`TC-488 cutover is incomplete: relations=${relations.map((row) => row.name).join(',')} types=${types.map((row) => row.name).join(',')}`);
+    const keyPurposeColumn = await prisma.$queryRaw<Array<{ name: string }>>`
+      SELECT column_name AS name FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'ethereum_keys' AND column_name = 'keyPurpose'
+    `;
+    if (relations.length || types.length || keyPurposeColumn.length) {
+      throw new Error(
+        `TC-488 cutover is incomplete: relations=${relations.map((row) => row.name).join(',')} types=${types.map((row) => row.name).join(',')} columns=${keyPurposeColumn.map((row) => row.name).join(',')}`,
+      );
     }
-    console.log('Verified TC-488 organization custody cutover: no deleted relations or enum types remain.');
+    console.log('Verified TC-488 cutover: developer organizations retain OAuth administration without key custody.');
   } finally {
     await prisma.$disconnect();
   }

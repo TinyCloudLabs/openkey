@@ -37,7 +37,6 @@ const keyRecord = {
   userId: user.id,
   address,
   keyType: 'MANAGED',
-  keyPurpose: 'PERSONAL',
   archivedAt: null,
   sealedBlob: 'sealed-blob',
   sealingContext: null,
@@ -48,13 +47,11 @@ const prisma = {
     findFirst: mock(async ({ where }: { where: Record<string, unknown> }) => {
       if (where.userId !== currentUser.id) return null;
       if (where.id !== undefined && where.id !== keyRecord.id) return null;
-      if (where.keyPurpose !== undefined && where.keyPurpose !== keyRecord.keyPurpose) return null;
       if (where.archivedAt !== null) return null;
       return keyRecord;
     }),
     findMany: mock(async ({ where }: { where: Record<string, unknown> }) => {
       if (where.userId !== currentUser.id) return [];
-      if (where.keyPurpose !== undefined && where.keyPurpose !== keyRecord.keyPurpose) return [];
       if (where.archivedAt !== null) return [];
       return [keyRecord];
     }),

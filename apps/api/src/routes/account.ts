@@ -44,7 +44,7 @@ accountRouter.get('/', async (c) => {
       createdAt: true,
       _count: {
         select: {
-          ethereumKeys: { where: { archivedAt: null, keyPurpose: 'PERSONAL' } },
+          ethereumKeys: { where: { archivedAt: null } },
           passkeys: true,
         },
       },
@@ -235,16 +235,15 @@ accountRouter.post('/delete', async (c) => {
   }
 
 
-  // Count and delete only personal keys. Managed keys are never part of this
-  // personal deletion contract.
+  // Count and delete every user key. TC-488 removed tenant-managed keys.
   const keyCount = await prisma.ethereumKey.count({
-    where: { userId: user.id, keyPurpose: 'PERSONAL' },
+    where: { userId: user.id },
   });
 
   // Delete all user data in transaction
   await prisma.$transaction(async (tx) => {
     // Delete all ethereum keys (sealed blobs will be unrecoverable)
-    await tx.ethereumKey.deleteMany({ where: { userId: user.id, keyPurpose: 'PERSONAL' } });
+    await tx.ethereumKey.deleteMany({ where: { userId: user.id } });
 
     // Delete all passkeys
     await tx.passkey.deleteMany({ where: { userId: user.id } });

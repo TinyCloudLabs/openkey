@@ -26,8 +26,7 @@ Set these in your repo's **Settings > Secrets and variables > Actions**:
 The deploy fails closed when `DATABASE_URL` is absent or a migration or
 security-guard verification fails. The database is migrated before the Phala
 CVM is updated. Production deploys must not use `prisma db push`: schema push
-does not execute the raw SQL triggers and deferred custody checks in the
-managed-account migrations. Both manual deploys and the one-time baseline
+does not execute tracked cutover migrations. Both manual deploys and the one-time baseline
 workflow refuse non-`main` refs and use the protected `production` environment.
 Normal production deploys require the reviewed
 `20260714_origin_main_schema_catchup` marker and no unresolved failed migration
@@ -37,7 +36,7 @@ rows before Prisma may apply anything.
 
 Use this procedure only for the existing production database that was created
 with `prisma db push` and therefore has no Prisma migration history. Do not run
-it for a new database or one that already records managed-account migrations.
+it for a new database or one that already records the tracked migrations.
 
 1. Take and verify a production database backup.
 2. Confirm that no API deployment or schema change is running.
@@ -90,7 +89,6 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 |----------|-------------|
 | `DATABASE_URL` | PostgreSQL connection string |
 | `BETTER_AUTH_SECRET` | 32+ character random secret for session encryption |
-| `REGISTRATION_INTENT_SECRET` | Separate 32+ character secret for signing short-lived managed-registration intents |
 | `BETTER_AUTH_URL` | `https://api.openkey.so` |
 | `OAUTH_DYNAMIC_CLIENT_REGISTRATION` | Keep `true` for MCP clients that register automatically; set `false` only as an emergency disable |
 | `OAUTH_VALID_AUDIENCES` | Comma-separated additional OAuth resource URLs; production includes `https://mcp.tinycloud.xyz/mcp` |
@@ -108,9 +106,9 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `RESEND_API_KEY` | Resend API key for emails |
 | `API_PORT` | `3001` |
 | `CORS_ORIGIN` | `https://openkey.so,https://console.openkey.so` |
-| `ADMIN_API_KEY` | Bearer token for organization plan fixtures, server credentials, and app registration |
-| `INTERNAL_METRICS_TOKEN` | Bearer token for internal metrics and the revocation/webhook workers |
-| `TINYCLOUD_BOOTSTRAP_HOST` | Trusted TinyCloud node used for account bootstrap and tenant-parent delegation revocation |
+| `ADMIN_API_KEY` | Bearer token for organization plan fixtures and app registration |
+| `INTERNAL_METRICS_TOKEN` | Bearer token for internal metrics |
+| `TINYCLOUD_BOOTSTRAP_HOST` | Trusted TinyCloud node used for canonical user-key bootstrap |
 | `CLOUDFLARE_API_TOKEN` | For SSL certificate management |
 | `DSTACK_GATEWAY_DOMAIN` | Phala gateway domain |
 | `CERTBOT_EMAIL` | Email for Let's Encrypt |
@@ -131,18 +129,6 @@ account and linking rows so later callbacks resolve the existing user by the
 Apple provider account. Before production, register the outbound sender and
 envelope-sender domains used by Resend in Apple's private email relay settings,
 and publish matching SPF and DKIM records so mail reaches private-relay users.
-
-#### Managed-account workers
-
-Schedule authenticated POST requests to these internal endpoints. They are
-idempotent and may run repeatedly; without them, custody transfer still commits
-but TinyCloud revocation and lifecycle webhook delivery remain pending.
-
-- `/api/internal/metrics/managed-account-revocations/run`
-- `/api/internal/metrics/webhooks/run`
-
-Use `Authorization: Bearer $INTERNAL_METRICS_TOKEN` for both. Do not expose the
-token to tenant applications or the web frontend.
 
 #### Trigger Conditions
 

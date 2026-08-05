@@ -267,7 +267,7 @@ export function createDelegateSignerAuth(dependencies: DelegateSignerAuthDepende
     } else if (client.disabled) {
       c.set('delegateSignerAuthFailure', failure('client_disabled'));
     } else if (!isConfidentialPersonalWebClient(client)) {
-      // Tenant-managed and public clients are not custodians of a user's
+      // Public clients are not custodians of a user's
       // canonical personal TinyCloud identity. This also prevents dynamic
       // client registrations from using a manage-key consent grant.
       c.set('delegateSignerAuthFailure', failure('client_misconfigured'));

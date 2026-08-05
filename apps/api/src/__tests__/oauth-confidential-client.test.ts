@@ -89,7 +89,6 @@ describe('confidential CoordinationOS OAuth client', () => {
     expect(stored).toMatchObject({
       public: false,
       type: 'web',
-      mode: 'PERSONAL',
       tokenEndpointAuthMethod: 'client_secret_basic',
       grantTypes: ['authorization_code'],
       responseTypes: ['code'],
@@ -168,14 +167,14 @@ describe('confidential CoordinationOS OAuth client', () => {
     }
   });
 
-  test('tenant-managed, SPA, and native clients never receive TinyCloud signing scopes implicitly', async () => {
+  test('organization-owned SPA and native clients never receive TinyCloud signing scopes implicitly', async () => {
     for (const type of ['spa', 'native'] as const) {
       stored = null;
       const redirectUris = type === 'native'
         ? ['com.example.tenant:/oauth/callback']
         : ['https://tenant.example/callback'];
       const response = await request('/organizations/organization_1/clients', 'POST', {
-        name: `tenant ${type}`,
+        name: `organization ${type}`,
         type,
         redirectUris,
       });
@@ -183,7 +182,6 @@ describe('confidential CoordinationOS OAuth client', () => {
       expect(response.status).toBe(201);
       expect(stored).toMatchObject({
         organizationId: 'organization_1',
-        mode: 'TENANT_MANAGED',
         type,
         public: true,
         tokenEndpointAuthMethod: 'none',

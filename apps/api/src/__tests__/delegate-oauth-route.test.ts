@@ -32,7 +32,6 @@ const key = {
   userId: 'user_1',
   address,
   keyType: 'MANAGED',
-  keyPurpose: 'PERSONAL',
   archivedAt: null,
   sealedBlob: 'sealed',
   sealingContext: null,
@@ -49,7 +48,6 @@ const token = {
 const client = {
   clientId: configuredClientId,
   disabled: false,
-  mode: 'PERSONAL',
   type: 'web',
   public: false,
   tokenEndpointAuthMethod: 'client_secret_basic',
@@ -264,7 +262,6 @@ beforeEach(() => {
   token.expiresAt = new Date(Date.now() + 299_000);
   client.clientId = configuredClientId;
   client.disabled = false;
-  client.mode = 'PERSONAL';
   client.type = 'web';
   client.public = false;
   client.tokenEndpointAuthMethod = 'client_secret_basic';
@@ -673,7 +670,6 @@ describe('CoordinationOS OAuth signer route', () => {
         id: key.id,
         address,
         keyType: 'MANAGED',
-        keyPurpose: 'PERSONAL',
       },
       privateKey,
       format: 'personal_sign',
@@ -938,9 +934,6 @@ describe('CoordinationOS OAuth signer route', () => {
   test.each([
     ['missing key', () => { resolvedKey = null; }, 'key_not_found'],
     ['other-user key', () => { resolvedKey.userId = 'user_2'; }, 'wrong_user'],
-    ['non-personal key', () => {
-      resolvedKey.keyPurpose = 'MANAGED_ACCOUNT';
-    }, 'wrong_key_purpose'],
     ['external key', () => { resolvedKey.keyType = 'EXTERNAL'; }, 'external_key_denied'],
     ['archived key', () => { resolvedKey.archivedAt = new Date(); }, 'key_archived'],
     ['address-mismatched key', () => {
@@ -1164,7 +1157,6 @@ describe('CoordinationOS OAuth signer route', () => {
       email_not_verified: 403,
       key_not_found: 403,
       wrong_user: 403,
-      wrong_key_purpose: 403,
       external_key_denied: 403,
       key_archived: 403,
       key_address_mismatch: 403,

@@ -315,8 +315,6 @@ async function main() {
           type: 'web',
           public: false,
           contacts: [],
-          mode: 'PERSONAL',
-          metadata: { openkeyClientMode: 'PERSONAL' },
         },
       });
     }

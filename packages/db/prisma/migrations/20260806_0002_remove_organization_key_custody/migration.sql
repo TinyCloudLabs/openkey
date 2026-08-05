@@ -4,6 +4,9 @@
 -- for recovery.
 
 DROP TRIGGER IF EXISTS "oauth_tenant_lifecycle_guard" ON "oauth_client";
+DROP TRIGGER IF EXISTS "oauth_access_token_tenant_lifecycle_guard" ON "oauth_access_token";
+DROP TRIGGER IF EXISTS "oauth_refresh_token_tenant_lifecycle_guard" ON "oauth_refresh_token";
+DROP TRIGGER IF EXISTS "ethereum_keys_classification_guard" ON "ethereum_keys";
 DROP TRIGGER IF EXISTS "managed_account_custody_commit_guard" ON "managed_account";
 DROP TRIGGER IF EXISTS "managed_account_epoch_guard" ON "managed_account";
 DROP TRIGGER IF EXISTS "managed_account_identity_guard" ON "managed_account";
@@ -14,7 +17,12 @@ DROP TRIGGER IF EXISTS "key_custody_history_guard" ON "key_custody";
 DROP TRIGGER IF EXISTS "key_custody_insert_guard" ON "key_custody";
 DROP TRIGGER IF EXISTS "eject_request_guard" ON "eject_request";
 
+ALTER TABLE "managed_account" DROP CONSTRAINT IF EXISTS "managed_account_head_fkey";
+ALTER TABLE "key_custody" DROP CONSTRAINT IF EXISTS "key_custody_account_fkey";
+
 DROP FUNCTION IF EXISTS "openkey_oauth_tenant_lifecycle_guard"();
+DROP FUNCTION IF EXISTS "openkey_immutable_key_classification"();
+DROP FUNCTION IF EXISTS "openkey_managed_key_guard"();
 DROP FUNCTION IF EXISTS "openkey_managed_account_custody_commit_guard"();
 DROP FUNCTION IF EXISTS "openkey_custody_epoch_guard"();
 DROP FUNCTION IF EXISTS "openkey_managed_account_identity_guard"();
@@ -31,10 +39,17 @@ DROP TABLE IF EXISTS "eject_request";
 DROP TABLE IF EXISTS "webhook_delivery";
 DROP TABLE IF EXISTS "webhook_endpoint";
 DROP TABLE IF EXISTS "managed_account_policy";
-DROP TABLE IF EXISTS "key_custody";
 DROP TABLE IF EXISTS "managed_account_operation";
+DROP TABLE IF EXISTS "key_custody";
 DROP TABLE IF EXISTS "managed_account";
 DROP TABLE IF EXISTS "organization_server_credential";
+
+-- Tenant-generated keys and their bootstrap state are not a user canonical
+-- identity. Remove them before removing the discriminator so no sealed
+-- tenant key or tenant TinyCloud space survives this cutover.
+DELETE FROM "ethereum_keys" WHERE "keyPurpose" = 'MANAGED_ACCOUNT';
+DROP INDEX IF EXISTS "ethereum_keys_userId_keyPurpose_idx";
+ALTER TABLE "ethereum_keys" DROP COLUMN IF EXISTS "keyPurpose";
 
 ALTER TABLE "organization" DROP COLUMN IF EXISTS "brokerDid";
 ALTER TABLE "plan_entitlements"
@@ -57,3 +72,4 @@ DROP TYPE IF EXISTS "EjectRequestStatus";
 DROP TYPE IF EXISTS "ManagedAccountState";
 DROP TYPE IF EXISTS "OrganizationCredentialKind";
 DROP TYPE IF EXISTS "OauthClientMode";
+DROP TYPE IF EXISTS "KeyPurpose";

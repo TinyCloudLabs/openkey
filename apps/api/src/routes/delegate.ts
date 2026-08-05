@@ -672,7 +672,7 @@ delegateRouter.post('/sign', async (c) => {
         userId: principal.userId, clientId: principal.clientId, request: body,
       }, async (tx) => {
         const key = await tx.ethereumKey.findFirst({
-          where: { userId: principal.userId, keyPurpose: 'PERSONAL', keyType: 'MANAGED', archivedAt: null, isCanonicalTinyCloud: true },
+          where: { userId: principal.userId, keyType: 'MANAGED', archivedAt: null, isCanonicalTinyCloud: true },
           select: { id: true, address: true, sealedBlob: true, sealingContext: true, userId: true },
         });
         if (!key || !key.sealedBlob || !key.userId) throw new Error('canonical_key_unavailable');
@@ -745,7 +745,6 @@ delegateRouter.post('/sign', async (c) => {
             userId: true,
             address: true,
             keyType: true,
-            keyPurpose: true,
             archivedAt: true,
             sealedBlob: true,
             sealingContext: true,
@@ -817,7 +816,6 @@ delegateRouter.post('/sign', async (c) => {
           id: key.id,
           address: key.address,
           keyType: key.keyType,
-          keyPurpose: 'PERSONAL',
         },
         privateKey,
         message: coordinationosBootstrapTrigger(key.address),
@@ -882,7 +880,6 @@ delegateRouter.post('/sign', async (c) => {
   const key = await prisma.ethereumKey.findFirst({
     where: {
       userId: user.id,
-      keyPurpose: 'PERSONAL',
       archivedAt: null,
       ...(body.keyId
         ? { id: body.keyId }
@@ -977,7 +974,7 @@ delegateRouter.post('/host', async (c) => {
   }
 
   const key = await prisma.ethereumKey.findFirst({
-    where: { id: body.keyId, userId: user.id, keyPurpose: 'PERSONAL', archivedAt: null },
+    where: { id: body.keyId, userId: user.id, archivedAt: null },
   });
 
   if (!key) {
@@ -1063,7 +1060,7 @@ delegateRouter.post('/', async (c) => {
   }
 
   const key = await prisma.ethereumKey.findFirst({
-    where: { id: body.keyId, userId: user.id, keyPurpose: 'PERSONAL', archivedAt: null },
+    where: { id: body.keyId, userId: user.id, archivedAt: null },
   });
 
   if (!key) {
@@ -1461,7 +1458,7 @@ delegateRouter.post('/prepare', async (c) => {
   }
 
   const key = await prisma.ethereumKey.findFirst({
-    where: { id: body.keyId, userId: user.id, keyPurpose: 'PERSONAL', archivedAt: null },
+    where: { id: body.keyId, userId: user.id, archivedAt: null },
   });
 
   if (!key) {
@@ -1914,7 +1911,6 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     where: {
       id: body.keyId,
       userId: user.id,
-      keyPurpose: 'PERSONAL',
       archivedAt: null,
     },
     select: {
@@ -1922,7 +1918,6 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       userId: true,
       address: true,
       keyType: true,
-      keyPurpose: true,
       archivedAt: true,
       sealedBlob: true,
       sealingContext: true,
@@ -2375,7 +2370,6 @@ delegateRouter.post('/authorize-sign', async (c) => {
   const candidateKeys = await prisma.ethereumKey.findMany({
     where: {
       userId: user.id,
-      keyPurpose: 'PERSONAL',
       archivedAt: null,
     },
     select: {
@@ -2383,7 +2377,6 @@ delegateRouter.post('/authorize-sign', async (c) => {
       userId: true,
       address: true,
       keyType: true,
-      keyPurpose: true,
       archivedAt: true,
       sealedBlob: true,
       sealingContext: true,

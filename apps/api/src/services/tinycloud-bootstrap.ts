@@ -66,7 +66,6 @@ export interface TinyCloudBootstrapKey {
   id: string;
   address: string;
   keyType: string;
-  keyPurpose: 'PERSONAL';
 }
 
 export interface EnsureTinyCloudBootstrapInput {
@@ -256,14 +255,6 @@ function isSupportedTinyCloudChainId(chainId: number): boolean {
 export async function ensureTinyCloudBootstrapForApprovedSign(
   input: EnsureTinyCloudBootstrapInput,
 ): Promise<TinyCloudBootstrapOutcome> {
-  if (input.key.keyPurpose !== 'PERSONAL') {
-    return {
-      status: 'failed',
-      errorCode: 'managed_key_requires_managed_boundary',
-      errorMessage: 'Tenant-managed keys cannot use the personal bootstrap route.',
-    };
-  }
-
   // Kill-switch: clients on the SDK auto-sign strategy bootstrap through
   // POST /api/delegate/sign instead; this hook only compensates for older
   // clients. Disable once /delegate/sign traffic replaces widget signs.

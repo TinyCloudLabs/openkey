@@ -133,11 +133,6 @@ enum KeyType {
   EXTERNAL
 }
 
-enum KeyPurpose {
-  PERSONAL
-  MANAGED_ACCOUNT
-}
-
 // Ethereum keys - managed (sealed with TEE) or external (user-provided address)
 model EthereumKey {
   id             String     @id @default(cuid())
@@ -147,10 +142,9 @@ model EthereumKey {
   sealedBlob     String? // Encrypted with dstack KMS; null for external keys
   // Null is retained for pre-v1 rows. New keys use an opaque, immutable
   // per-key context; resolution falls back to openkey/user/{userId}/keys only
-  // for these legacy rows. See docs/managed-accounts-migration-note.md.
+  // for these legacy rows.
   sealingContext String?    @unique(map: "ethereum_keys_sealingContext_key")
   keyType        KeyType    @default(MANAGED)
-  keyPurpose     KeyPurpose @default(PERSONAL)
   // The single TEE-managed identity exposed to OIDC applications through
   // tinycloud:manage-key. A partial unique index in the migration enforces
   // at most one active canonical key for each user.
@@ -164,7 +158,6 @@ model EthereumKey {
   tinyCloudBootstrapState TinyCloudBootstrapState[]
 
   @@unique([id, userId], map: "ethereum_keys_id_userId_key")
-  @@index([userId, keyPurpose], map: "ethereum_keys_userId_keyPurpose_idx")
   @@map("ethereum_keys")
 }
 

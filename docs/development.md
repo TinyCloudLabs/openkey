@@ -77,9 +77,6 @@ WEBAUTHN_ORIGIN=http://localhost:5173
 BETTER_AUTH_SECRET=any-random-string-for-local-dev
 BETTER_AUTH_URL=http://localhost:3001
 
-# Managed-account registration (use a distinct random secret in production)
-REGISTRATION_INTENT_SECRET=another-random-string-for-local-dev
-
 # API
 API_PORT=3001
 CORS_ORIGIN=http://localhost:5173,http://localhost:5174
@@ -98,8 +95,8 @@ Optional (features degrade gracefully without these):
 | `APPLE_APP_BUNDLE_IDENTIFIER` | Optional native-app audience for Apple ID tokens |
 | `RESEND_API_KEY` | Email OTP delivery (without it, OTPs print to console) |
 | `ADMIN_API_KEY` | Protect admin endpoints (OAuth client registration) |
-| `INTERNAL_METRICS_TOKEN` | Protect internal metrics and the revocation/webhook worker endpoints |
-| `TINYCLOUD_BOOTSTRAP_HOST` | TinyCloud node used to bootstrap managed accounts and their tenant-parent delegations |
+| `INTERNAL_METRICS_TOKEN` | Protect internal metrics endpoints |
+| `TINYCLOUD_BOOTSTRAP_HOST` | TinyCloud node used to bootstrap a user's canonical signer space |
 | `VITE_CONSOLE_ORIGIN` | Optional console origin. Leave unset locally to keep the account and console journey on one Vite host; set to `https://console.openkey.so` in production. |
 | `VITE_ACCOUNT_ORIGIN` | Set alongside `VITE_CONSOLE_ORIGIN` only when testing the split-host journey locally (the portless example supplies both). |
 | `CONSOLE_ORIGIN` | API better-auth allowlist for session-bearing calls from the console origin; the portless example sets it. |

@@ -86,8 +86,6 @@ async function main() {
       type,
       public: true,
       contacts: [],
-      mode: 'PERSONAL',
-      metadata: { openkeyClientMode: 'PERSONAL' },
     },
   });
 

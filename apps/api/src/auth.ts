@@ -91,7 +91,6 @@ export async function buildKeyClaims(
   const keys = await database.ethereumKey.findMany({
     where: {
       userId: user.id,
-      keyPurpose: 'PERSONAL',
       archivedAt: null,
       ...(scopes.includes(TINYCLOUD_SESSION_SCOPE)
         ? { keyType: 'MANAGED' as const }
@@ -137,7 +136,6 @@ export async function buildCanonicalTinyCloudIdentityClaim(
   const key = await database.ethereumKey.findFirst({
     where: {
       userId: user.id,
-      keyPurpose: 'PERSONAL',
       keyType: 'MANAGED',
       archivedAt: null,
       isCanonicalTinyCloud: true,
@@ -311,7 +309,6 @@ export const auth = betterAuth({
         const keys = await prisma.ethereumKey.findMany({
           where: {
             userId: user.id,
-            keyPurpose: 'PERSONAL',
             archivedAt: null,
           },
           select: { address: true },
@@ -412,7 +409,6 @@ export const auth = betterAuth({
                 publicKey: address,
                 sealedBlob,
                 sealingContext,
-                keyPurpose: 'PERSONAL',
                 isCanonicalTinyCloud: true,
                 keyIndex: 0,
                 label: 'Key 0',

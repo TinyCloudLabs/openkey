@@ -82,7 +82,7 @@ export function createTenantConsoleRouter(db: PrismaClient, dependencies: Tenant
     const organizationId = c.req.param('organizationId');
     try {
       const result = await db.$transaction(async (tx) => {
-        const key = await tx.ethereumKey.findFirst({ where: { address: { equals: address, mode: 'insensitive' }, keyPurpose: 'PERSONAL', archivedAt: null, userId: { not: null } }, select: { userId: true, user: { select: { emailVerified: true } } } });
+        const key = await tx.ethereumKey.findFirst({ where: { address: { equals: address, mode: 'insensitive' }, archivedAt: null, userId: { not: null } }, select: { userId: true, user: { select: { emailVerified: true } } } });
         if (!key?.userId || !key.user?.emailVerified) return null;
         const existing = await tx.organizationMembership.findFirst({ where: { ...activeMembershipWhere(organizationId, new Date()), userId: key.userId }, select: MEMBER_SELECT });
         if (existing) { if (existing.role !== 'ADMIN') throw new ConsoleMemberAlreadyExistsError(); return { member: presentMember(existing), created: false }; }

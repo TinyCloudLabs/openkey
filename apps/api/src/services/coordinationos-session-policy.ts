@@ -25,7 +25,6 @@ export type CoordinationosPolicyCode =
   | 'email_not_verified'
   | 'key_not_found'
   | 'wrong_user'
-  | 'wrong_key_purpose'
   | 'external_key_denied'
   | 'key_archived'
   | 'key_address_mismatch'
@@ -92,7 +91,6 @@ export interface CoordinationosSessionPolicyInput {
     userId: string | null;
     address: string;
     keyType: string;
-    keyPurpose: string;
     archivedAt: Date | null;
     sealedBlob: string | null;
   } | null;
@@ -344,7 +342,6 @@ export function evaluateCoordinationosSessionRequest(
   if (!input.user.emailVerified) return deny('email_not_verified');
   if (!input.key) return deny('key_not_found');
   if (input.key.userId !== input.principal.userId) return deny('wrong_user');
-  if (input.key.keyPurpose !== 'PERSONAL') return deny('wrong_key_purpose');
   if (input.key.keyType !== 'MANAGED') return deny('external_key_denied');
   if (input.key.archivedAt) return deny('key_archived');
   if (!input.key.sealedBlob) return deny('key_unavailable');

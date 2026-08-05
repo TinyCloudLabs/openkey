@@ -27,7 +27,7 @@ Schema lives at `packages/db/prisma/schema.prisma`.
 | `bun run db:migrate:dev` | Create a new migration (local dev) |
 | `bun run db:migrate:prod` | Deploy and verify pending migrations in prod (uses `.env.prod`) |
 | `bun run db:migrate:deploy:production` | Require the reviewed baseline marker, then deploy and verify |
-| `bun run db:migrate:verify` | Verify managed-account migrations and raw SQL security guards |
+| `bun run db:migrate:verify` | Verify the TC-488 cutover and schema drift guards |
 | `bun run db:migrate:verify-schema` | Verify the deployed database matches the Prisma schema |
 | `bun run db:baseline:prod` | Verify and record the reviewed legacy baseline (one-time, explicit confirmation required) |
 | `bun run db:generate` | Regenerate Prisma client |

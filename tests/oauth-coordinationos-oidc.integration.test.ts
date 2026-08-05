@@ -44,12 +44,10 @@ await pglite.exec(`
     VALUES ('${userId}', 'alice@example.test', true, 'Alice', CURRENT_TIMESTAMP);
   INSERT INTO "session" ("id", "userId", "token", "expiresAt", "createdAt", "updatedAt")
     VALUES ('coordinationos-session', '${userId}', '${sessionToken}', '2099-01-01T00:00:00.000Z', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
-  INSERT INTO "ethereum_keys" ("id", "userId", "address", "publicKey", "sealedBlob", "keyType", "keyPurpose", "sealingContext")
-    VALUES ('personal-key', '${userId}', '0x31d40B62C395B9418C4198363619B11c65cD406F', '0x1', 'sealed', 'MANAGED', 'PERSONAL', 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
-  INSERT INTO "ethereum_keys" ("id", "userId", "address", "publicKey", "sealedBlob", "keyType", "keyPurpose", "sealingContext")
-    VALUES ('tenant-key', '${userId}', '0x1111111111111111111111111111111111111111', '0x2', 'sealed', 'MANAGED', 'MANAGED_ACCOUNT', 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA');
-  INSERT INTO "ethereum_keys" ("id", "userId", "address", "publicKey", "keyType", "keyPurpose")
-    VALUES ('external-key', '${userId}', '0x2222222222222222222222222222222222222222', '0x3', 'EXTERNAL', 'PERSONAL');
+  INSERT INTO "ethereum_keys" ("id", "userId", "address", "publicKey", "sealedBlob", "keyType", "sealingContext", "isCanonicalTinyCloud")
+    VALUES ('personal-key', '${userId}', '0x31d40B62C395B9418C4198363619B11c65cD406F', '0x1', 'sealed', 'MANAGED', 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', true);
+  INSERT INTO "ethereum_keys" ("id", "userId", "address", "publicKey", "keyType")
+    VALUES ('external-key', '${userId}', '0x2222222222222222222222222222222222222222', '0x3', 'EXTERNAL');
 `);
 
 const oauthAdmin = await import('../apps/api/src/routes/oauth-admin?coordinationos-oidc-admin');
@@ -58,17 +56,17 @@ oauthAdmin.setOauthAdminDatabaseForTests({
     create: async ({ data }: any) => {
       await pglite.query(`
         INSERT INTO "oauth_client" (
-          "id", "clientId", "clientSecret", "mode", "name", "uri", "icon",
+          "id", "clientId", "clientSecret", "name", "uri", "icon",
           "redirectUris", "scopes", "disabled", "skipConsent", "enableEndSession",
           "tokenEndpointAuthMethod", "grantTypes", "responseTypes", "type", "public",
           "contacts", "metadata", "updatedAt"
         ) VALUES (
-          $1, $2, $3, $4, $5, $6, $7, $8::TEXT[], $9::TEXT[], $10, $11, $12,
-          $13, $14::TEXT[], $15::TEXT[], $16, $17, $18::TEXT[], $19::JSONB,
+          $1, $2, $3, $4, $5, $6, $7::TEXT[], $8::TEXT[], $9, $10, $11,
+          $12, $13::TEXT[], $14::TEXT[], $15, $16, $17::TEXT[], $18::JSONB,
           CURRENT_TIMESTAMP
         )
       `, [
-        data.id, data.clientId, data.clientSecret, data.mode, data.name, data.uri, data.icon,
+        data.id, data.clientId, data.clientSecret, data.name, data.uri, data.icon,
         data.redirectUris, data.scopes, data.disabled, data.skipConsent, data.enableEndSession,
         data.tokenEndpointAuthMethod, data.grantTypes, data.responseTypes, data.type,
         data.public, data.contacts, JSON.stringify(data.metadata),
@@ -142,7 +140,6 @@ describe('CoordinationOS OIDC provider integration', () => {
       responseTypes: ['code'],
       type: 'web',
       public: false,
-      mode: 'PERSONAL',
     });
     expect(storedClient?.clientSecret).not.toBe(secret);
     expect(await prisma.coordinationosSessionGrant.count()).toBe(0);
