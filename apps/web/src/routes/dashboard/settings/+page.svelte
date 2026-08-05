@@ -1,7 +1,7 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
   import { authClient, authErrorMessage } from '$lib/auth-client';
-  import { api, type EthereumKey, type TinyCloudManageKeyApp } from '$lib/api';
+  import { api, type EthereumKey, type TinyCloudManageKeyApp, type TinyCloudManageKeyPreference } from '$lib/api';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
@@ -27,6 +27,8 @@
   let loadingAutoSign = $state(true);
   let savingAutoSign = $state(false);
   let tinyCloudManageKeyEnabled = $state(true);
+  let tinyCloudManageKeyMode = $state<TinyCloudManageKeyPreference['mode']>('APP_MANAGED');
+  let tinyCloudManageKeyPolicyEpoch = $state(0);
   let loadingTinyCloudManageKey = $state(true);
   let savingTinyCloudManageKey = $state(false);
   let tinyCloudManageKeyError = $state('');
@@ -127,6 +129,8 @@
     try {
       const result = await api.getTinyCloudManageKeyPreference();
       tinyCloudManageKeyEnabled = result.tinyCloudManageKeyEnabled;
+      tinyCloudManageKeyMode = result.mode;
+      tinyCloudManageKeyPolicyEpoch = result.policyEpoch;
     } catch (e: any) {
       error = e.message || 'Failed to load TinyCloud signing preference';
     } finally {
@@ -134,17 +138,24 @@
     }
   }
 
-  async function setTinyCloudManageKeyPreference(enabled: boolean) {
+  async function setTinyCloudManageKeyPreference(mode: TinyCloudManageKeyPreference['mode']) {
     if (loadingTinyCloudManageKey || savingTinyCloudManageKey) return;
+    const confirmation = window.prompt('Type TAKE CONTROL to confirm this TinyCloud signing change.');
+    if (confirmation !== 'TAKE CONTROL') return;
     const previous = tinyCloudManageKeyEnabled;
-    tinyCloudManageKeyEnabled = enabled;
+    const previousMode = tinyCloudManageKeyMode;
+    tinyCloudManageKeyEnabled = mode !== 'USER_CONTROLLED_EXCLUSIVE';
+    tinyCloudManageKeyMode = mode;
     savingTinyCloudManageKey = true;
     tinyCloudManageKeyError = '';
     try {
-      const result = await api.updateTinyCloudManageKeyPreference(enabled);
+      const result = await api.updateTinyCloudManageKeyPreference(mode, tinyCloudManageKeyPolicyEpoch, confirmation);
       tinyCloudManageKeyEnabled = result.tinyCloudManageKeyEnabled;
+      tinyCloudManageKeyMode = result.mode;
+      tinyCloudManageKeyPolicyEpoch = result.policyEpoch;
     } catch (e: any) {
       tinyCloudManageKeyEnabled = previous;
+      tinyCloudManageKeyMode = previousMode;
       tinyCloudManageKeyError = e.message || 'Failed to update TinyCloud signing preference';
     } finally {
       savingTinyCloudManageKey = false;
@@ -165,6 +176,8 @@
 
   async function setTinyCloudManageKeyApp(app: TinyCloudManageKeyApp, enabled: boolean) {
     if (savingTinyCloudAppId || app.disabled) return;
+    const confirmation = window.prompt(`Type TAKE CONTROL to ${enabled ? 'allow' : 'stop'} ${app.name} from requesting new TinyCloud signatures.`);
+    if (confirmation !== 'TAKE CONTROL') return;
     const previous = app.enabled;
     tinyCloudApps = tinyCloudApps.map((candidate) => candidate.clientId === app.clientId
       ? { ...candidate, enabled }
@@ -172,10 +185,11 @@
     savingTinyCloudAppId = app.clientId;
     tinyCloudAppSaveError = '';
     try {
-      const result = await api.updateTinyCloudManageKeyApp(app.clientId, enabled);
+      const result = await api.updateTinyCloudManageKeyApp(app.clientId, enabled, tinyCloudManageKeyPolicyEpoch, confirmation);
       tinyCloudApps = tinyCloudApps.map((candidate) => candidate.clientId === result.clientId
         ? { ...candidate, enabled: result.enabled }
-        : candidate);
+      : candidate);
+      tinyCloudManageKeyPolicyEpoch = result.policyEpoch;
     } catch (e: any) {
       tinyCloudApps = tinyCloudApps.map((candidate) => candidate.clientId === app.clientId
         ? { ...candidate, enabled: previous }
@@ -436,19 +450,19 @@
       </div>
       <div class="flex shrink-0 items-center gap-3">
         <div class="min-w-16 text-right text-sm font-medium {tinyCloudManageKeyEnabled ? 'text-surface-900' : 'text-surface-500'}" aria-live="polite">
-          {loadingTinyCloudManageKey ? 'Loading' : savingTinyCloudManageKey ? 'Saving' : tinyCloudManageKeyEnabled ? 'Enabled' : 'Disabled'}
+          {loadingTinyCloudManageKey ? 'Loading' : savingTinyCloudManageKey ? 'Saving' : tinyCloudManageKeyMode === 'APP_MANAGED' ? 'App managed' : tinyCloudManageKeyMode === 'USER_CONTROLLED_SHARED' ? 'Shared' : 'Exclusive'}
         </div>
         <button
           type="button"
           role="switch"
-          aria-checked={tinyCloudManageKeyEnabled}
-          aria-label="Toggle TinyCloud signing"
-          onclick={() => setTinyCloudManageKeyPreference(!tinyCloudManageKeyEnabled)}
+          aria-checked={tinyCloudManageKeyMode !== 'USER_CONTROLLED_EXCLUSIVE'}
+          aria-label="Change TinyCloud signing mode"
+          onclick={() => setTinyCloudManageKeyPreference(tinyCloudManageKeyMode === 'USER_CONTROLLED_EXCLUSIVE' ? 'USER_CONTROLLED_SHARED' : 'USER_CONTROLLED_EXCLUSIVE')}
           disabled={loadingTinyCloudManageKey || savingTinyCloudManageKey}
-          class="relative h-7 w-12 shrink-0 rounded-full transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-surface-900 disabled:cursor-not-allowed disabled:opacity-60 {tinyCloudManageKeyEnabled ? 'bg-surface-900' : 'bg-surface-300'}"
+          class="relative h-7 w-12 shrink-0 rounded-full transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-surface-900 disabled:cursor-not-allowed disabled:opacity-60 {tinyCloudManageKeyMode !== 'USER_CONTROLLED_EXCLUSIVE' ? 'bg-surface-900' : 'bg-surface-300'}"
         >
           <span
-            class="absolute left-1 top-1 h-5 w-5 rounded-full bg-white shadow-sm transition-transform {tinyCloudManageKeyEnabled ? 'translate-x-5' : 'translate-x-0'}"
+            class="absolute left-1 top-1 h-5 w-5 rounded-full bg-white shadow-sm transition-transform {tinyCloudManageKeyMode !== 'USER_CONTROLLED_EXCLUSIVE' ? 'translate-x-5' : 'translate-x-0'}"
           ></span>
         </button>
       </div>

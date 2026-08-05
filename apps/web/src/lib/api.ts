@@ -50,6 +50,8 @@ export interface AutoSignPreference {
 
 export interface TinyCloudManageKeyPreference {
   tinyCloudManageKeyEnabled: boolean;
+  mode: 'APP_MANAGED' | 'USER_CONTROLLED_SHARED' | 'USER_CONTROLLED_EXCLUSIVE';
+  policyEpoch: number;
 }
 
 export interface TinyCloudManageKeyApp {
@@ -59,6 +61,7 @@ export interface TinyCloudManageKeyApp {
   icon: string | null;
   disabled: boolean;
   enabled: boolean;
+  status?: 'ENABLED' | 'DISABLED' | 'CONSENT_WITHDRAWN';
 }
 
 export interface OwnerManagedAccount {
@@ -279,23 +282,23 @@ export const api = {
     return fetchAPI('/api/account/tinycloud-manage-key');
   },
 
-  async updateTinyCloudManageKeyPreference(enabled: boolean): Promise<TinyCloudManageKeyPreference> {
+  async updateTinyCloudManageKeyPreference(mode: TinyCloudManageKeyPreference['mode'], policyEpoch: number, confirmation: string): Promise<TinyCloudManageKeyPreference> {
     return fetchAPI('/api/account/tinycloud-manage-key', {
       method: 'PATCH',
-      body: JSON.stringify({ enabled }),
+      body: JSON.stringify({ mode, expectedEpoch: policyEpoch, confirmation }),
     });
   },
 
-  async listTinyCloudManageKeyApps(): Promise<{ apps: TinyCloudManageKeyApp[] }> {
+  async listTinyCloudManageKeyApps(): Promise<{ apps: TinyCloudManageKeyApp[]; activity: Array<{ clientId: string; allowed: boolean; reason: string; policyEpoch: number; createdAt: string }> }> {
     return fetchAPI('/api/account/tinycloud-apps');
   },
 
-  async updateTinyCloudManageKeyApp(clientId: string, enabled: boolean): Promise<{
-    clientId: string; enabled: boolean;
+  async updateTinyCloudManageKeyApp(clientId: string, enabled: boolean, policyEpoch: number, confirmation: string): Promise<{
+    clientId: string; enabled: boolean; status: string; policyEpoch: number;
   }> {
     return fetchAPI(`/api/account/tinycloud-apps/${encodeURIComponent(clientId)}`, {
       method: 'PATCH',
-      body: JSON.stringify({ enabled }),
+      body: JSON.stringify({ enabled, expectedEpoch: policyEpoch, confirmation }),
     });
   },
 

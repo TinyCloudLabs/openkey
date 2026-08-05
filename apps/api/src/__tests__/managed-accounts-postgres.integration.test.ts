@@ -69,6 +69,7 @@ const migrationNames = [
   '20260805_0001_canonical_tinycloud_key',
   '20260805_0002_tinycloud_manage_key_app_preferences',
   '20260805_0003_tinycloud_manage_key_global_preference',
+  '20260806_0001_tinycloud_manage_key_lifecycle',
 ] as const;
 
 const migrationSql = new Map<string, Promise<string>>(

@@ -1,0 +1,136 @@
+import { createHash, randomUUID } from 'node:crypto';
+
+export const TINYCLOUD_MANAGE_KEY_MODES = [
+  'APP_MANAGED',
+  'USER_CONTROLLED_SHARED',
+  'USER_CONTROLLED_EXCLUSIVE',
+] as const;
+
+export type TinyCloudManageKeyMode = typeof TINYCLOUD_MANAGE_KEY_MODES[number];
+
+export function isTinyCloudManageKeyMode(value: unknown): value is TinyCloudManageKeyMode {
+  return typeof value === 'string' && (TINYCLOUD_MANAGE_KEY_MODES as readonly string[]).includes(value);
+}
+
+export function requestDigest(value: unknown): string {
+  return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
+
+export function controlMutationError(value: unknown): string | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return 'Request body must be an object';
+  const body = value as Record<string, unknown>;
+  if (!isTinyCloudManageKeyMode(body.mode)) return 'mode must be a TinyCloud signing mode';
+  if (!Number.isSafeInteger(body.expectedEpoch) || (body.expectedEpoch as number) < 0) return 'expectedEpoch must be a non-negative integer';
+  if (body.confirmation !== 'TAKE CONTROL') return 'Please type "TAKE CONTROL" exactly to confirm';
+  return null;
+}
+
+export async function changeTinyCloudManageKeyMode(
+  prisma: any,
+  userId: string,
+  input: { mode: TinyCloudManageKeyMode; expectedEpoch: number; request: unknown },
+) {
+  return prisma.$transaction(async (tx: any) => {
+    await tx.$queryRawUnsafe('SELECT "id" FROM "user" WHERE "id" = $1 FOR UPDATE', userId);
+    const current = await tx.user.findUnique({
+      where: { id: userId },
+      select: { tinyCloudManageKeyMode: true, tinyCloudManageKeyPolicyEpoch: true },
+    });
+    if (!current) return { kind: 'not_found' as const };
+    const epoch = Number(current.tinyCloudManageKeyPolicyEpoch);
+    if (epoch !== input.expectedEpoch) return { kind: 'stale' as const, epoch };
+    if (current.tinyCloudManageKeyMode === input.mode) return { kind: 'unchanged' as const, epoch, mode: input.mode };
+
+    const result = await tx.user.updateMany({
+      where: { id: userId, tinyCloudManageKeyPolicyEpoch: current.tinyCloudManageKeyPolicyEpoch },
+      data: {
+        tinyCloudManageKeyMode: input.mode,
+        tinyCloudManageKeyPolicyEpoch: { increment: 1 },
+        // Preserve the legacy global switch as a derived compatibility value.
+        tinyCloudManageKeyEnabled: input.mode !== 'USER_CONTROLLED_EXCLUSIVE',
+      },
+    });
+    if (result.count !== 1) return { kind: 'stale' as const, epoch };
+    const nextEpoch = epoch + 1;
+    if (input.mode === 'USER_CONTROLLED_EXCLUSIVE') {
+      await tx.tinyCloudManageKeyAppPreference.updateMany({
+        where: { userId, status: 'ENABLED' },
+        data: { enabled: false, status: 'DISABLED' },
+      });
+    }
+    await tx.tinyCloudManageKeyControlEvent.create({
+      data: {
+        id: randomUUID(), userId, policyEpoch: BigInt(nextEpoch), action: 'MODE_CHANGED',
+        mode: input.mode, requestDigest: requestDigest(input.request),
+      },
+    });
+    return { kind: 'changed' as const, epoch: nextEpoch, mode: input.mode };
+  });
+}
+
+export async function changeTinyCloudManageKeyGrant(
+  prisma: any,
+  userId: string,
+  clientId: string,
+  input: { enabled: boolean; expectedEpoch: number; request: unknown },
+) {
+  return prisma.$transaction(async (tx: any) => {
+    await tx.$queryRawUnsafe('SELECT "id" FROM "user" WHERE "id" = $1 FOR UPDATE', userId);
+    const user = await tx.user.findUnique({
+      where: { id: userId }, select: { tinyCloudManageKeyMode: true, tinyCloudManageKeyPolicyEpoch: true },
+    });
+    if (!user) return { kind: 'not_found' as const };
+    const epoch = Number(user.tinyCloudManageKeyPolicyEpoch);
+    if (epoch !== input.expectedEpoch) return { kind: 'stale' as const, epoch };
+    const consent = await tx.oauthConsent.findFirst({
+      where: { userId, clientId, scopes: { has: 'tinycloud:manage-key' } }, select: { clientId: true },
+    });
+    if (!consent) return { kind: 'missing_consent' as const };
+    const client = await tx.oauthClient.findUnique({ where: { clientId }, select: { name: true, uri: true } });
+    const grant = await tx.tinyCloudManageKeyAppPreference.upsert({
+      where: { userId_clientId: { userId, clientId } },
+      create: { userId, clientId, enabled: input.enabled, status: input.enabled ? 'ENABLED' : 'DISABLED', clientNameSnapshot: client?.name, clientUriSnapshot: client?.uri },
+      update: { enabled: input.enabled, status: input.enabled ? 'ENABLED' : 'DISABLED' },
+    });
+    const nextEpoch = epoch + 1;
+    const updated = await tx.user.updateMany({
+      where: { id: userId, tinyCloudManageKeyPolicyEpoch: user.tinyCloudManageKeyPolicyEpoch },
+      data: { tinyCloudManageKeyPolicyEpoch: { increment: 1 } },
+    });
+    if (updated.count !== 1) return { kind: 'stale' as const, epoch };
+    await tx.tinyCloudManageKeyControlEvent.create({
+      data: { id: randomUUID(), userId, policyEpoch: BigInt(nextEpoch), action: 'GRANT_CHANGED', mode: user.tinyCloudManageKeyMode, clientId, requestDigest: requestDigest(input.request) },
+    });
+    return { kind: 'changed' as const, epoch: nextEpoch, grant };
+  });
+}
+
+// The policy is evaluated under the signing transaction. The callback is run
+// before the transaction commits, so a control mutation cannot interleave
+// between an ALLOW decision and signature production.
+export async function withTinyCloudManageKeySigningPolicy<T>(
+  prisma: any,
+  input: { userId: string; clientId: string; request: unknown },
+  onAllow: (tx: any) => Promise<T>,
+): Promise<{ allowed: true; value: T } | { allowed: false; reason: string }> {
+  return prisma.$transaction(async (tx: any) => {
+    await tx.$queryRawUnsafe('SELECT "id" FROM "user" WHERE "id" = $1 FOR UPDATE', input.userId);
+    const user = await tx.user.findUnique({
+      where: { id: input.userId }, select: { tinyCloudManageKeyEnabled: true, tinyCloudManageKeyMode: true, tinyCloudManageKeyPolicyEpoch: true },
+    });
+    const consent = await tx.oauthConsent.findFirst({
+      where: { userId: input.userId, clientId: input.clientId, scopes: { has: 'tinycloud:manage-key' } }, select: { clientId: true },
+    });
+    const grant = await tx.tinyCloudManageKeyAppPreference.findUnique({
+      where: { userId_clientId: { userId: input.userId, clientId: input.clientId } }, select: { enabled: true, status: true },
+    });
+    const allowed = !!user && user.tinyCloudManageKeyEnabled && user.tinyCloudManageKeyMode !== 'USER_CONTROLLED_EXCLUSIVE'
+      && !!consent && grant?.enabled === true && grant.status === 'ENABLED';
+    const epoch = user?.tinyCloudManageKeyPolicyEpoch ?? BigInt(0);
+    await tx.tinyCloudManageKeySigningDecision.create({
+      data: { id: randomUUID(), userId: input.userId, clientId: input.clientId, policyEpoch: epoch, allowed, reason: allowed ? 'allowed' : 'policy_denied', requestDigest: requestDigest(input.request) },
+    });
+    if (!allowed) return { allowed: false as const, reason: 'policy_denied' };
+    return { allowed: true as const, value: await onAllow(tx) };
+  }, { timeout: 10_000 });
+}

@@ -281,21 +281,16 @@ export function createDelegateSignerAuth(dependencies: DelegateSignerAuthDepende
     } else if (!user.emailVerified) {
       c.set('delegateSignerAuthFailure', failure('email_not_verified'));
     } else {
-      const preference = await database.tinyCloudManageKeyAppPreference.findUnique({
-        where: { userId_clientId: { userId: token.userId, clientId: token.clientId } },
-        select: { enabled: true },
+      // Authorization establishes identity only. The policy is deliberately
+      // evaluated inside the signing transaction so a settings mutation cannot
+      // race the check and signature production.
+      c.set('delegateSignerPrincipal', {
+        kind: 'oauth-manage-key',
+        userId: token.userId,
+        clientId: token.clientId,
+        oauthAccessTokenId: token.id,
+        tokenDigest,
       });
-      if (preference?.enabled === false) {
-        c.set('delegateSignerAuthFailure', failure('client_disabled'));
-      } else {
-        c.set('delegateSignerPrincipal', {
-          kind: 'oauth-manage-key',
-          userId: token.userId,
-          clientId: token.clientId,
-          oauthAccessTokenId: token.id,
-          tokenDigest,
-        });
-      }
     }
   } else c.set('delegateSignerAuthFailure', failure('missing_scope'));
 

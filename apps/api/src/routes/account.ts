@@ -4,7 +4,11 @@ import { createPrismaClient } from '@openkey/db';
 import { requireSession, type SessionContext } from '../middleware/session';
 import { parseAutoSignPreferencePatch } from './account-preferences';
 import { TINYCLOUD_MANAGE_KEY_SCOPE } from '../oauth-config';
-import { parseTinyCloudManageKeyAppPreferencePatch } from '../services/tinycloud-manage-key-preferences';
+import {
+  changeTinyCloudManageKeyGrant,
+  changeTinyCloudManageKeyMode,
+  controlMutationError,
+} from '../services/tinycloud-manage-key-control';
 
 const prisma = createPrismaClient();
 
@@ -12,6 +16,17 @@ export const accountRouter = new Hono<SessionContext>();
 
 // All routes require authentication
 accountRouter.use('*', requireSession);
+
+function rejectNonBrowserControlRequest(c: any) {
+  // Account controls are deliberately cookie-session-only. In particular, an
+  // OAuth bearer token that can call /delegate/sign must never change custody.
+  if (c.req.header('authorization')) return c.json({ error: 'Bearer tokens cannot change TinyCloud signing controls' }, 403);
+  const origin = c.req.header('origin');
+  const allowed = (process.env.CORS_ORIGIN || 'http://localhost:5173,http://localhost:3000')
+    .split(',').map((value) => value.trim()).filter(Boolean);
+  if (!origin || !allowed.includes(origin)) return c.json({ error: 'A same-site browser Origin is required' }, 403);
+  return null;
+}
 
 // Get account info
 accountRouter.get('/', async (c) => {
@@ -45,26 +60,35 @@ accountRouter.get('/tinycloud-manage-key', async (c) => {
   const user = c.get('user');
   const preference = await prisma.user.findUnique({
     where: { id: user.id },
-    select: { tinyCloudManageKeyEnabled: true },
+    select: { tinyCloudManageKeyEnabled: true, tinyCloudManageKeyMode: true, tinyCloudManageKeyPolicyEpoch: true },
   });
   if (!preference) return c.json({ error: 'User not found' }, 404);
-  return c.json({ tinyCloudManageKeyEnabled: preference.tinyCloudManageKeyEnabled });
+  return c.json({
+    tinyCloudManageKeyEnabled: preference.tinyCloudManageKeyEnabled,
+    mode: preference.tinyCloudManageKeyMode,
+    policyEpoch: Number(preference.tinyCloudManageKeyPolicyEpoch),
+  });
 });
 
 accountRouter.patch('/tinycloud-manage-key', async (c) => {
   const user = c.get('user');
-  let patch;
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
+  let body: unknown;
   try {
-    patch = parseTinyCloudManageKeyAppPreferencePatch(await c.req.json());
+    body = await c.req.json();
   } catch (error) {
     return c.json({ error: error instanceof Error ? error.message : 'Invalid request body' }, 400);
   }
-  const preference = await prisma.user.update({
-    where: { id: user.id },
-    data: { tinyCloudManageKeyEnabled: patch.enabled },
-    select: { tinyCloudManageKeyEnabled: true },
+  const error = controlMutationError(body);
+  if (error) return c.json({ error }, 400);
+  const patch = body as { mode: string; expectedEpoch: number };
+  const result = await changeTinyCloudManageKeyMode(prisma, user.id, {
+    mode: patch.mode as any, expectedEpoch: patch.expectedEpoch, request: body,
   });
-  return c.json({ tinyCloudManageKeyEnabled: preference.tinyCloudManageKeyEnabled });
+  if (result.kind === 'not_found') return c.json({ error: 'User not found' }, 404);
+  if (result.kind === 'stale') return c.json({ error: 'TinyCloud signing policy changed in another session', policyEpoch: result.epoch }, 409);
+  return c.json({ mode: result.mode, policyEpoch: result.epoch, tinyCloudManageKeyEnabled: result.mode !== 'USER_CONTROLLED_EXCLUSIVE' });
 });
 
 // Get Auto-Sign preference
@@ -110,54 +134,66 @@ accountRouter.patch('/auto-sign', async (c) => {
 // callers cannot create preferences for arbitrary OAuth client IDs.
 accountRouter.get('/tinycloud-apps', async (c) => {
   const user = c.get('user');
-  const consents = await prisma.oauthConsent.findMany({
-    where: { userId: user.id, scopes: { has: TINYCLOUD_MANAGE_KEY_SCOPE } },
-    select: { clientId: true },
-  });
-  const clientIds = [...new Set(consents.map((consent) => consent.clientId))];
-  if (clientIds.length === 0) return c.json({ apps: [] });
-
-  const [clients, preferences] = await Promise.all([
-    prisma.oauthClient.findMany({
-      where: { clientId: { in: clientIds } },
-      select: { clientId: true, name: true, uri: true, icon: true, disabled: true },
+  const [consents, preferences, decisions] = await Promise.all([
+    prisma.oauthConsent.findMany({
+      where: { userId: user.id, scopes: { has: TINYCLOUD_MANAGE_KEY_SCOPE } }, select: { clientId: true },
     }),
     prisma.tinyCloudManageKeyAppPreference.findMany({
-      where: { userId: user.id, clientId: { in: clientIds } },
-      select: { clientId: true, enabled: true },
+      where: { userId: user.id },
+      select: { clientId: true, enabled: true, status: true, clientNameSnapshot: true, clientUriSnapshot: true, consentWithdrawnAt: true },
+    }),
+    prisma.tinyCloudManageKeySigningDecision.findMany({
+      where: { userId: user.id }, orderBy: { createdAt: 'desc' }, take: 20,
+      select: { clientId: true, allowed: true, reason: true, policyEpoch: true, createdAt: true },
     }),
   ]);
-  const enabledByClient = new Map(preferences.map((preference) => [preference.clientId, preference.enabled]));
+  const clientIds = [...new Set([...consents.map((consent) => consent.clientId), ...preferences.map((preference) => preference.clientId)])];
+  const clients = clientIds.length === 0 ? [] : await prisma.oauthClient.findMany({
+    where: { clientId: { in: clientIds } },
+    select: { clientId: true, name: true, uri: true, icon: true, disabled: true },
+  });
+  const clientById = new Map(clients.map((client) => [client.clientId, client]));
+  const consentIds = new Set(consents.map((consent) => consent.clientId));
   return c.json({
-    apps: clients.map((client) => ({
-      ...client,
-      enabled: !client.disabled && enabledByClient.get(client.clientId) !== false,
-    })),
+    apps: preferences.map((preference) => {
+      const client = clientById.get(preference.clientId);
+      return {
+        clientId: preference.clientId,
+        name: client?.name || preference.clientNameSnapshot || preference.clientId,
+        uri: client?.uri || preference.clientUriSnapshot || null,
+        icon: client?.icon || null,
+        disabled: client?.disabled ?? true,
+        enabled: preference.enabled && preference.status === 'ENABLED' && consentIds.has(preference.clientId),
+        status: consentIds.has(preference.clientId) ? preference.status : 'CONSENT_WITHDRAWN',
+      };
+    }),
+    activity: decisions.map((decision) => ({ ...decision, policyEpoch: Number(decision.policyEpoch) })),
   });
 });
 
 accountRouter.patch('/tinycloud-apps/:clientId', async (c) => {
   const user = c.get('user');
-  let patch;
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
+  let body: unknown;
   try {
-    patch = parseTinyCloudManageKeyAppPreferencePatch(await c.req.json());
+    body = await c.req.json();
   } catch (error) {
     return c.json({ error: error instanceof Error ? error.message : 'Invalid request body' }, 400);
   }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return c.json({ error: 'Request body must be an object' }, 400);
+  const patch = body as { enabled?: unknown; expectedEpoch?: unknown; confirmation?: unknown };
+  if (typeof patch.enabled !== 'boolean' || !Number.isSafeInteger(patch.expectedEpoch) || (patch.expectedEpoch as number) < 0 || patch.confirmation !== 'TAKE CONTROL') {
+    return c.json({ error: 'enabled, expectedEpoch, and typed confirmation "TAKE CONTROL" are required' }, 400);
+  }
   const clientId = c.req.param('clientId');
-  const consent = await prisma.oauthConsent.findFirst({
-    where: { userId: user.id, clientId, scopes: { has: TINYCLOUD_MANAGE_KEY_SCOPE } },
-    select: { clientId: true },
+  const result = await changeTinyCloudManageKeyGrant(prisma, user.id, clientId, {
+    enabled: patch.enabled, expectedEpoch: patch.expectedEpoch as number, request: body,
   });
-  if (!consent) return c.json({ error: 'TinyCloud signing consent not found' }, 404);
-
-  const preference = await prisma.tinyCloudManageKeyAppPreference.upsert({
-    where: { userId_clientId: { userId: user.id, clientId } },
-    create: { userId: user.id, clientId, enabled: patch.enabled },
-    update: { enabled: patch.enabled },
-    select: { clientId: true, enabled: true },
-  });
-  return c.json(preference);
+  if (result.kind === 'not_found') return c.json({ error: 'User not found' }, 404);
+  if (result.kind === 'missing_consent') return c.json({ error: 'TinyCloud signing consent not found' }, 404);
+  if (result.kind === 'stale') return c.json({ error: 'TinyCloud signing policy changed in another session', policyEpoch: result.epoch }, 409);
+  return c.json({ clientId, enabled: result.grant.enabled, status: result.grant.status, policyEpoch: result.epoch });
 });
 
 // Delete account permanently

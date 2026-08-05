@@ -72,6 +72,8 @@ let executionOrder: string[] = [];
 let autoSignEnabled = true;
 let tinyCloudManageKeyEnabled = true;
 let manageKeyAppEnabled = true;
+let tinyCloudManageKeyMode = 'APP_MANAGED';
+let manageKeySigningDecisions: any[] = [];
 let transactionTail: Promise<void> = Promise.resolve();
 let resolvedOauthUser: { id: string; emailVerified: boolean } | null = {
   id: 'user_1',
@@ -89,12 +91,17 @@ const prisma: any = {
   user: {
     findUnique: mock(async ({ select }: any) => select?.autoSignEnabled
       ? { autoSignEnabled }
-      : select?.tinyCloudManageKeyEnabled
-        ? { tinyCloudManageKeyEnabled }
+      : select?.tinyCloudManageKeyMode
+        ? { tinyCloudManageKeyEnabled, tinyCloudManageKeyMode, tinyCloudManageKeyPolicyEpoch: BigInt(0) }
+        : select?.tinyCloudManageKeyEnabled
+          ? { tinyCloudManageKeyEnabled }
         : resolvedOauthUser),
   },
+  oauthConsent: {
+    findFirst: mock(async () => ({ clientId: configuredClientId })),
+  },
   tinyCloudManageKeyAppPreference: {
-    findUnique: mock(async () => ({ enabled: manageKeyAppEnabled })),
+    findUnique: mock(async () => ({ enabled: manageKeyAppEnabled, status: manageKeyAppEnabled ? 'ENABLED' : 'DISABLED' })),
   },
   ethereumKey: {
     findUnique: mock(async ({ where }: any) => where.id === key.id ? resolvedKey : null),
@@ -110,6 +117,10 @@ const prisma: any = {
       return data;
     }),
   },
+  tinyCloudManageKeySigningDecision: {
+    create: mock(async ({ data }: any) => { manageKeySigningDecisions.push(data); return data; }),
+  },
+  $queryRawUnsafe: mock(async () => []),
   coordinationosSessionGrant: {
     create: mock(async ({ data }: any) => {
       if (grants.some((grant) => grant.oauthAccessTokenId === data.oauthAccessTokenId
@@ -129,11 +140,13 @@ const prisma: any = {
     const run = transactionTail.then(async () => {
       const decisionLength = decisions.length;
       const grantLength = grants.length;
+      const manageKeyDecisionLength = manageKeySigningDecisions.length;
       try {
         return await callback(prisma);
       } catch (error) {
         decisions.splice(decisionLength);
         grants.splice(grantLength);
+        manageKeySigningDecisions.splice(manageKeyDecisionLength);
         throw error;
       }
     });
@@ -234,6 +247,8 @@ beforeEach(() => {
   executionOrder = [];
   autoSignEnabled = true;
   tinyCloudManageKeyEnabled = true;
+  tinyCloudManageKeyMode = 'APP_MANAGED';
+  manageKeySigningDecisions = [];
   manageKeyAppEnabled = true;
   ensureTinyCloudBootstrapForApprovedSign.mockClear();
   transactionTail = Promise.resolve();
@@ -486,7 +501,7 @@ test('tinycloud:manage-key fails closed when the user disables that OAuth app', 
   expect(response.status).toBe(403);
   expect(await response.json()).toMatchObject({
     approved: false,
-    code: 'client_disabled',
+    code: 'signing_disabled',
   });
   expect(signerCalls).toBe(0);
 });

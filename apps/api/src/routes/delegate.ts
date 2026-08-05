@@ -8,6 +8,7 @@ import {
   createDelegateSignerAuth,
   type DelegateSignerContext,
 } from '../middleware/delegate-signer-auth';
+import { withTinyCloudManageKeySigningPolicy } from '../services/tinycloud-manage-key-control';
 import type { Hex } from 'viem';
 import {
   prepareSession,
@@ -662,72 +663,35 @@ delegateRouter.post('/sign', async (c) => {
       }, 400);
     }
 
-    const preference = await prisma.user.findUnique({
-      where: { id: principal.userId },
-      select: { tinyCloudManageKeyEnabled: true },
-    });
-    if (!preference?.tinyCloudManageKeyEnabled) {
-      return c.json({
-        approved: false,
-        code: 'signing_disabled',
-        reason: 'TinyCloud signing is disabled for this OpenKey account.',
-      }, 403);
-    }
-
     // keyId and address, when supplied by older callback adapters, are
     // intentionally ignored. The OAuth token's user binding selects exactly
     // one canonical key at the database boundary.
-    const key = await prisma.ethereumKey.findFirst({
-      where: {
-        userId: principal.userId,
-        keyPurpose: 'PERSONAL',
-        keyType: 'MANAGED',
-        archivedAt: null,
-        isCanonicalTinyCloud: true,
-      },
-      select: {
-        id: true,
-        address: true,
-        sealedBlob: true,
-        sealingContext: true,
-        userId: true,
-      },
-    });
-    if (!key || !key.sealedBlob || !key.userId) {
-      return c.json({
-        approved: false,
-        code: 'canonical_key_unavailable',
-        reason: 'The canonical TinyCloud key is unavailable.',
-      }, 403);
-    }
-
-    const identity = {
-      version: 'v1' as const,
-      keyId: key.id,
-      address: ensureEip55(key.address),
-      chainId: 1 as const,
-      did: `did:pkh:eip155:1:${ensureEip55(key.address)}`,
-      spaceId: `tinycloud:pkh:eip155:1:${ensureEip55(key.address)}:applications`,
-    };
     const candidate = body as Record<string, unknown>;
-    const policy = validateTinyCloudManageKeyRequest({
-      type: candidate.type,
-      chainId: candidate.chainId,
-      message: candidate.message,
-      identity,
-    });
-    if (!policy.allowed) {
-      return c.json({
-        approved: false,
-        code: 'message_rejected',
-        reason: policy.reason,
-      }, 400);
-    }
-
     try {
-      const signature = await signManagedKey(key, key.sealedBlob, candidate.message as string);
-      return c.json({ approved: true, signature, canonicalIdentity: identity });
-    } catch {
+      const result = await withTinyCloudManageKeySigningPolicy(prisma, {
+        userId: principal.userId, clientId: principal.clientId, request: body,
+      }, async (tx) => {
+        const key = await tx.ethereumKey.findFirst({
+          where: { userId: principal.userId, keyPurpose: 'PERSONAL', keyType: 'MANAGED', archivedAt: null, isCanonicalTinyCloud: true },
+          select: { id: true, address: true, sealedBlob: true, sealingContext: true, userId: true },
+        });
+        if (!key || !key.sealedBlob || !key.userId) throw new Error('canonical_key_unavailable');
+        const identity = {
+          version: 'v1' as const, keyId: key.id, address: ensureEip55(key.address), chainId: 1 as const,
+          did: `did:pkh:eip155:1:${ensureEip55(key.address)}`,
+          spaceId: `tinycloud:pkh:eip155:1:${ensureEip55(key.address)}:applications`,
+        };
+        const policy = validateTinyCloudManageKeyRequest({ type: candidate.type, chainId: candidate.chainId, message: candidate.message, identity });
+        if (!policy.allowed) throw new Error(`message_rejected:${policy.reason}`);
+        const signature = await signManagedKey(key, key.sealedBlob, candidate.message as string);
+        return { signature, identity };
+      });
+      if (!result.allowed) return c.json({ approved: false, code: 'signing_disabled', reason: 'TinyCloud signing is disabled for this OpenKey account or app.' }, 403);
+      return c.json({ approved: true, signature: result.value.signature, canonicalIdentity: result.value.identity });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      if (message === 'canonical_key_unavailable') return c.json({ approved: false, code: 'canonical_key_unavailable', reason: 'The canonical TinyCloud key is unavailable.' }, 403);
+      if (message.startsWith('message_rejected:')) return c.json({ approved: false, code: 'message_rejected', reason: message.slice('message_rejected:'.length) }, 400);
       return c.json({
         approved: false,
         code: 'signer_failed',
