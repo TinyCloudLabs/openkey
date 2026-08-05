@@ -70,6 +70,7 @@ let bootstrapMode: 'fresh' | 'cached' | 'failed' = 'fresh';
 let bootstrapCalls: any[] = [];
 let executionOrder: string[] = [];
 let autoSignEnabled = true;
+let manageKeyAppEnabled = true;
 let transactionTail: Promise<void> = Promise.resolve();
 let resolvedOauthUser: { id: string; emailVerified: boolean } | null = {
   id: 'user_1',
@@ -88,6 +89,9 @@ const prisma: any = {
     findUnique: mock(async ({ select }: any) => select?.autoSignEnabled
       ? { autoSignEnabled }
       : resolvedOauthUser),
+  },
+  tinyCloudManageKeyAppPreference: {
+    findUnique: mock(async () => ({ enabled: manageKeyAppEnabled })),
   },
   ethereumKey: {
     findUnique: mock(async ({ where }: any) => where.id === key.id ? resolvedKey : null),
@@ -226,6 +230,7 @@ beforeEach(() => {
   bootstrapCalls = [];
   executionOrder = [];
   autoSignEnabled = true;
+  manageKeyAppEnabled = true;
   ensureTinyCloudBootstrapForApprovedSign.mockClear();
   transactionTail = Promise.resolve();
   resolvedOauthUser = { id: 'user_1', emailVerified: true };
@@ -343,7 +348,12 @@ function withSqlAndCanaryRecaps(
 
 function bootstrapSigningBody() {
   const abilities: Record<string, Record<string, string[]>> = {};
-  for (const resource of BOOTSTRAP_SESSION_REQUESTS.default.resources) {
+  // prepareSession has one spaceId, so this fixture must contain only the
+  // default-space half of the compound bootstrap catalog. Account resources
+  // are constructed in their own account-space session elsewhere.
+  for (const resource of BOOTSTRAP_SESSION_REQUESTS.default.resources.filter(
+    (resource) => resource.space === 'default',
+  )) {
     const service = resource.service.replace(/^tinycloud\./, '');
     abilities[service] ??= {};
     abilities[service]![resource.path] = [...resource.actions];
@@ -407,6 +417,34 @@ test('tinycloud:manage-key silently signs a canonical TinyCloud SIWE/ReCap throu
   });
   expect(signerCalls).toBe(1);
   expect(decisions).toHaveLength(0);
+});
+
+test('tinycloud:manage-key fails closed when the account-wide signing control is disabled', async () => {
+  token.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
+  client.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
+  autoSignEnabled = false;
+
+  const response = await sign(signingBody());
+  expect(response.status).toBe(403);
+  expect(await response.json()).toMatchObject({
+    approved: false,
+    code: 'signing_disabled',
+  });
+  expect(signerCalls).toBe(0);
+});
+
+test('tinycloud:manage-key fails closed when the user disables that OAuth app', async () => {
+  token.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
+  client.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
+  manageKeyAppEnabled = false;
+
+  const response = await sign(signingBody());
+  expect(response.status).toBe(403);
+  expect(await response.json()).toMatchObject({
+    approved: false,
+    code: 'client_disabled',
+  });
+  expect(signerCalls).toBe(0);
 });
 
 async function expectDenied(

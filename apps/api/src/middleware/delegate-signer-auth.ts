@@ -101,6 +101,7 @@ type DelegateSignerAuthDatabase = {
   oauthAccessToken: { findUnique: (args: any) => Promise<any> };
   oauthClient: { findUnique: (args: any) => Promise<any> };
   user: { findUnique: (args: any) => Promise<any> };
+  tinyCloudManageKeyAppPreference: { findUnique: (args: any) => Promise<any> };
 };
 
 export type DelegateSignerAuthDependencies = {
@@ -223,14 +224,24 @@ export function createDelegateSignerAuth(dependencies: DelegateSignerAuthDepende
       c.set('delegateSignerAuthFailure', failure('missing_scope'));
     } else if (!user) {
       c.set('delegateSignerAuthFailure', failure('user_not_found'));
+    } else if (!user.emailVerified) {
+      c.set('delegateSignerAuthFailure', failure('email_not_verified'));
     } else {
-      c.set('delegateSignerPrincipal', {
-        kind: 'oauth-manage-key',
-        userId: token.userId,
-        clientId: token.clientId,
-        oauthAccessTokenId: token.id,
-        tokenDigest,
+      const preference = await database.tinyCloudManageKeyAppPreference.findUnique({
+        where: { userId_clientId: { userId: token.userId, clientId: token.clientId } },
+        select: { enabled: true },
       });
+      if (preference?.enabled === false) {
+        c.set('delegateSignerAuthFailure', failure('client_disabled'));
+      } else {
+        c.set('delegateSignerPrincipal', {
+          kind: 'oauth-manage-key',
+          userId: token.userId,
+          clientId: token.clientId,
+          oauthAccessTokenId: token.id,
+          tokenDigest,
+        });
+      }
     }
   }
   else if (token.createdAt.getTime() + 300_000 <= nowMs) c.set('delegateSignerAuthFailure', failure('token_too_old'));

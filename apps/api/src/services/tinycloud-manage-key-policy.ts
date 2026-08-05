@@ -12,6 +12,9 @@ export type TinyCloudManageKeyDecision =
   | { allowed: true }
   | { allowed: false; reason: string };
 
+const MAX_SESSION_TTL_MS = 60 * 60 * 1000;
+const MAX_ISSUED_AT_SKEW_MS = 5 * 60 * 1000;
+
 /**
  * This is intentionally a structural gate, not an application permission
  * policy. The tinycloud:manage-key consent boundary is the signed SIWE/ReCap
@@ -41,6 +44,15 @@ export function validateTinyCloudManageKeyRequest(input: {
   if (parsed.version !== '1' || parsed.chainId !== input.identity.chainId) {
     return { allowed: false, reason: 'The SIWE message does not match the canonical chain.' };
   }
+  const issuedAt = parsed.issuedAt ? Date.parse(parsed.issuedAt) : Number.NaN;
+  const expirationTime = parsed.expirationTime ? Date.parse(parsed.expirationTime) : Number.NaN;
+  const now = Date.now();
+  if (!Number.isFinite(issuedAt) || !Number.isFinite(expirationTime)
+    || issuedAt > now + MAX_ISSUED_AT_SKEW_MS
+    || expirationTime <= now
+    || expirationTime - issuedAt > MAX_SESSION_TTL_MS) {
+    return { allowed: false, reason: 'The SIWE session lifetime is invalid.' };
+  }
   try {
     if (getAddress(parsed.address) !== getAddress(input.identity.address)) {
       return { allowed: false, reason: 'The SIWE address does not match the canonical identity.' };
@@ -59,7 +71,7 @@ export function validateTinyCloudManageKeyRequest(input: {
     return { allowed: false, reason: 'The SIWE message must contain TinyCloud ReCap capabilities.' };
   }
 
-  const expectedSpacePrefix = `tinycloud:pkh:eip155:${input.identity.chainId}:${getAddress(input.identity.address)}:`;
+  const expectedSpace = `tinycloud:pkh:eip155:${input.identity.chainId}:${getAddress(input.identity.address)}:applications`;
   for (const rawEntry of recap) {
     if (!rawEntry || typeof rawEntry !== 'object' || Array.isArray(rawEntry)) {
       return { allowed: false, reason: 'The TinyCloud ReCap has an invalid capability entry.' };
@@ -70,7 +82,7 @@ export function validateTinyCloudManageKeyRequest(input: {
     const path = entry.path;
     const actions = entry.actions;
     if (typeof service !== 'string' || service.length === 0
-      || typeof space !== 'string' || !space.startsWith(expectedSpacePrefix)
+      || typeof space !== 'string' || space !== expectedSpace
       || typeof path !== 'string'
       || !Array.isArray(actions) || actions.length === 0
       || !actions.every((action): action is string => typeof action === 'string' && action.startsWith('tinycloud.'))

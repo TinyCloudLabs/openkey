@@ -31,6 +31,7 @@ model User {
   oauthAccessTokens              OauthAccessToken[]
   oauthRefreshTokens             OauthRefreshToken[]
   oauthConsents                  OauthConsent[]
+  tinyCloudManageKeyAppPreferences TinyCloudManageKeyAppPreference[]
   developerAccount               DeveloperAccount?
   organizationMemberships        OrganizationMembership[]
   ownedManagedAccounts           ManagedAccount[]               @relation("ManagedAccountOwner")
@@ -293,6 +294,7 @@ model OauthClient {
 
   user                User?                @relation(fields: [userId], references: [id], onDelete: SetNull)
   organization        Organization?        @relation(fields: [organizationId], references: [id], onDelete: SetNull, map: "oauth_client_org_fkey")
+  tinyCloudManageKeyAppPreferences TinyCloudManageKeyAppPreference[]
 
   @@unique([clientId, organizationId], map: "oauth_client_clientId_organizationId_key")
   @@index([organizationId], map: "oauth_client_organizationId_idx")
@@ -403,6 +405,24 @@ model OauthConsent {
 
   @@unique([userId, clientId])
   @@map("oauth_consent")
+}
+
+// A user-owned, immediate stop control for an OAuth application's
+// tinycloud:manage-key consent. Missing rows mean the active OAuth consent is
+// enabled; explicit rows preserve a user's disabled choice across refreshes.
+model TinyCloudManageKeyAppPreference {
+  userId    String
+  clientId  String
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user   User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  client OauthClient @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+
+  @@id([userId, clientId])
+  @@index([clientId])
+  @@map("tinycloud_manage_key_app_preference")
 }
 
 // ======= Managed accounts and organization tenancy =======

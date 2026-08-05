@@ -50,4 +50,34 @@ describe('tinycloud:manage-key structural signing policy', () => {
       type: 'siwe', chainId: 1, message, identity,
     }).allowed).toBe(false);
   });
+
+  test('rejects an expired session and a non-canonical subspace', () => {
+    const expired = prepareSession({
+      address: account.address,
+      chainId: 1,
+      domain: 'app.example',
+      issuedAt: new Date(Date.now() - 120_000).toISOString(),
+      expirationTime: new Date(Date.now() - 60_000).toISOString(),
+      spaceId: `tinycloud:pkh:eip155:1:${account.address}:applications`,
+      jwk: { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' },
+      abilities: { kv: { marker: ['tinycloud.kv/get'] } },
+    }).siwe;
+    expect(validateTinyCloudManageKeyRequest({
+      type: 'siwe', chainId: 1, message: expired, identity,
+    }).allowed).toBe(false);
+
+    const otherSpace = prepareSession({
+      address: account.address,
+      chainId: 1,
+      domain: 'app.example',
+      issuedAt: new Date().toISOString(),
+      expirationTime: new Date(Date.now() + 60_000).toISOString(),
+      spaceId: `tinycloud:pkh:eip155:1:${account.address}:secrets`,
+      jwk: { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' },
+      abilities: { kv: { marker: ['tinycloud.kv/get'] } },
+    }).siwe;
+    expect(validateTinyCloudManageKeyRequest({
+      type: 'siwe', chainId: 1, message: otherSpace, identity,
+    }).allowed).toBe(false);
+  });
 });

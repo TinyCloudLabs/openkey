@@ -3,6 +3,8 @@ import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { requireSession, type SessionContext } from '../middleware/session';
 import { parseAutoSignPreferencePatch } from './account-preferences';
+import { TINYCLOUD_MANAGE_KEY_SCOPE } from '../oauth-config';
+import { parseTinyCloudManageKeyAppPreferencePatch } from '../services/tinycloud-manage-key-preferences';
 
 const prisma = createPrismaClient();
 
@@ -72,6 +74,61 @@ accountRouter.patch('/auto-sign', async (c) => {
   });
 
   return c.json({ autoSignEnabled: preference.autoSignEnabled });
+});
+
+// List the apps with an active TinyCloud signing consent and the user's
+// per-app stop control. The client is always resolved from the consent row;
+// callers cannot create preferences for arbitrary OAuth client IDs.
+accountRouter.get('/tinycloud-apps', async (c) => {
+  const user = c.get('user');
+  const consents = await prisma.oauthConsent.findMany({
+    where: { userId: user.id, scopes: { has: TINYCLOUD_MANAGE_KEY_SCOPE } },
+    select: { clientId: true },
+  });
+  const clientIds = [...new Set(consents.map((consent) => consent.clientId))];
+  if (clientIds.length === 0) return c.json({ apps: [] });
+
+  const [clients, preferences] = await Promise.all([
+    prisma.oauthClient.findMany({
+      where: { clientId: { in: clientIds } },
+      select: { clientId: true, name: true, uri: true, icon: true, disabled: true },
+    }),
+    prisma.tinyCloudManageKeyAppPreference.findMany({
+      where: { userId: user.id, clientId: { in: clientIds } },
+      select: { clientId: true, enabled: true },
+    }),
+  ]);
+  const enabledByClient = new Map(preferences.map((preference) => [preference.clientId, preference.enabled]));
+  return c.json({
+    apps: clients.map((client) => ({
+      ...client,
+      enabled: !client.disabled && enabledByClient.get(client.clientId) !== false,
+    })),
+  });
+});
+
+accountRouter.patch('/tinycloud-apps/:clientId', async (c) => {
+  const user = c.get('user');
+  let patch;
+  try {
+    patch = parseTinyCloudManageKeyAppPreferencePatch(await c.req.json());
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : 'Invalid request body' }, 400);
+  }
+  const clientId = c.req.param('clientId');
+  const consent = await prisma.oauthConsent.findFirst({
+    where: { userId: user.id, clientId, scopes: { has: TINYCLOUD_MANAGE_KEY_SCOPE } },
+    select: { clientId: true },
+  });
+  if (!consent) return c.json({ error: 'TinyCloud signing consent not found' }, 404);
+
+  const preference = await prisma.tinyCloudManageKeyAppPreference.upsert({
+    where: { userId_clientId: { userId: user.id, clientId } },
+    create: { userId: user.id, clientId, enabled: patch.enabled },
+    update: { enabled: patch.enabled },
+    select: { clientId: true, enabled: true },
+  });
+  return c.json(preference);
 });
 
 // Delete account permanently

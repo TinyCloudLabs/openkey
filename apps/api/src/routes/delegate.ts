@@ -662,6 +662,18 @@ delegateRouter.post('/sign', async (c) => {
       }, 400);
     }
 
+    const preference = await prisma.user.findUnique({
+      where: { id: principal.userId },
+      select: { autoSignEnabled: true },
+    });
+    if (!preference?.autoSignEnabled) {
+      return c.json({
+        approved: false,
+        code: 'signing_disabled',
+        reason: 'TinyCloud signing is disabled for this OpenKey account.',
+      }, 403);
+    }
+
     // keyId and address, when supplied by older callback adapters, are
     // intentionally ignored. The OAuth token's user binding selects exactly
     // one canonical key at the database boundary.

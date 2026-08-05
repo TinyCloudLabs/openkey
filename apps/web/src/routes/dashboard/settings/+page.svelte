@@ -1,7 +1,7 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
   import { authClient, authErrorMessage } from '$lib/auth-client';
-  import { api, type EthereumKey } from '$lib/api';
+  import { api, type EthereumKey, type TinyCloudManageKeyApp } from '$lib/api';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
@@ -26,6 +26,9 @@
   let autoSignEnabled = $state(true);
   let loadingAutoSign = $state(true);
   let savingAutoSign = $state(false);
+  let tinyCloudApps = $state<TinyCloudManageKeyApp[]>([]);
+  let loadingTinyCloudApps = $state(true);
+  let savingTinyCloudAppId = $state<string | null>(null);
 
   // Edit state
   let editingId = $state<string | null>(null);
@@ -45,6 +48,7 @@
         loadPasskeys();
         loadArchivedKeys();
         loadAutoSignPreference();
+        loadTinyCloudManageKeyApps();
       }
     }
   });
@@ -108,6 +112,40 @@
       error = e.message || 'Failed to update Auto-Sign preference';
     } finally {
       savingAutoSign = false;
+    }
+  }
+
+  async function loadTinyCloudManageKeyApps() {
+    loadingTinyCloudApps = true;
+    try {
+      tinyCloudApps = (await api.listTinyCloudManageKeyApps()).apps;
+    } catch (e: any) {
+      error = e.message || 'Failed to load TinyCloud app permissions';
+    } finally {
+      loadingTinyCloudApps = false;
+    }
+  }
+
+  async function setTinyCloudManageKeyApp(app: TinyCloudManageKeyApp, enabled: boolean) {
+    if (savingTinyCloudAppId || app.disabled) return;
+    const previous = app.enabled;
+    tinyCloudApps = tinyCloudApps.map((candidate) => candidate.clientId === app.clientId
+      ? { ...candidate, enabled }
+      : candidate);
+    savingTinyCloudAppId = app.clientId;
+    error = '';
+    try {
+      const result = await api.updateTinyCloudManageKeyApp(app.clientId, enabled);
+      tinyCloudApps = tinyCloudApps.map((candidate) => candidate.clientId === result.clientId
+        ? { ...candidate, enabled: result.enabled }
+        : candidate);
+    } catch (e: any) {
+      tinyCloudApps = tinyCloudApps.map((candidate) => candidate.clientId === app.clientId
+        ? { ...candidate, enabled: previous }
+        : candidate);
+      error = e.message || 'Failed to update TinyCloud app permission';
+    } finally {
+      savingTinyCloudAppId = null;
     }
   }
 
@@ -327,7 +365,7 @@
       <div class="max-w-xl">
         <h2 class="text-xl font-semibold text-surface-900">Auto-Sign</h2>
         <p class="text-sm text-surface-500 mt-1">
-          Automatically signs TinyCloud account bootstrap requests that match the fixed bootstrap allowlist.
+          Stops all new automatic TinyCloud signatures, including signatures requested by connected apps.
         </p>
       </div>
       <div class="flex shrink-0 items-center gap-3">
@@ -349,6 +387,52 @@
         </button>
       </div>
     </div>
+  </Card>
+
+  <Card class="mt-6">
+    <div class="mb-5">
+      <h2 class="text-xl font-semibold text-surface-900">Connected TinyCloud apps</h2>
+      <p class="text-sm text-surface-500 mt-1">
+        Turn off an app to stop it from requesting new TinyCloud signatures. Your OpenKey sign-in remains connected.
+      </p>
+    </div>
+
+    {#if loadingTinyCloudApps}
+      <p class="py-4 text-sm text-surface-400">Loading connected apps...</p>
+    {:else if tinyCloudApps.length === 0}
+      <p class="py-4 text-sm text-surface-500">No connected apps can request TinyCloud signatures.</p>
+    {:else}
+      <div class="flex flex-col gap-3">
+        {#each tinyCloudApps as app}
+          <div class="flex items-center justify-between gap-4 rounded-xl border border-surface-200 bg-surface-50 p-4">
+            <div class="min-w-0">
+              <div class="flex items-center gap-2">
+                {#if app.icon}
+                  <img src={app.icon} alt="" class="h-6 w-6 rounded" />
+                {/if}
+                <span class="truncate font-semibold text-surface-900">{app.name}</span>
+              </div>
+              {#if app.uri}
+                <p class="mt-1 truncate text-sm text-surface-500">{app.uri}</p>
+              {/if}
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={app.enabled}
+              aria-label={`Toggle TinyCloud signing for ${app.name}`}
+              disabled={app.disabled || savingTinyCloudAppId === app.clientId}
+              onclick={() => setTinyCloudManageKeyApp(app, !app.enabled)}
+              class="relative h-7 w-12 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60 {app.enabled ? 'bg-surface-900' : 'bg-surface-300'}"
+            >
+              <span
+                class="absolute left-1 top-1 h-5 w-5 rounded-full bg-white shadow-sm transition-transform {app.enabled ? 'translate-x-5' : 'translate-x-0'}"
+              ></span>
+            </button>
+          </div>
+        {/each}
+      </div>
+    {/if}
   </Card>
 
   <Card class="mt-6">
