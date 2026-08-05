@@ -26,6 +26,7 @@ const tee = createTeeClient();
 // two kinds, never a range.
 const MAX_CONTENT_LENGTH = 4096;
 const MAX_TAGS = 20;
+const MAX_TAG_VALUES = 20;
 const MAX_TAG_VALUE_LENGTH = 512;
 const MAX_TIMESTAMP_SKEW_SECONDS = 120;
 const DEFAULT_GRANT_TTL_SECONDS = 60 * 60 * 12; // 12h, local dev slice only
@@ -37,6 +38,16 @@ nostrKeysRouter.use('*', requireSession);
 
 function digestEvent(event: UnsignedNostrEvent): string {
   return createHash('sha256').update(JSON.stringify(event)).digest('hex');
+}
+
+function isBoundedNostrTags(value: unknown): value is string[][] {
+  if (!Array.isArray(value) || value.length > MAX_TAGS) return false;
+  return value.every((tag) =>
+    Array.isArray(tag)
+    && tag.length > 0
+    && tag.length <= MAX_TAG_VALUES
+    && tag.every((item) => typeof item === 'string' && item.length <= MAX_TAG_VALUE_LENGTH),
+  );
 }
 
 async function audit(entry: {
@@ -114,8 +125,14 @@ nostrKeysRouter.post('/', async (c) => {
   const sealingKey = await tee.deriveKey(`openkey/key/${sealingContext}`);
   const sealedSecret = await seal(keypair.secretKeyHex, sealingKey);
 
-  const key = await prisma.nostrKey.create({
-    data: {
+  // The userId unique constraint makes the database the arbiter when two
+  // first-connect requests race. Prisma emits a native upsert for this shape,
+  // so both callers receive the same durable identity and the losing generated
+  // key is never persisted.
+  const key = await prisma.nostrKey.upsert({
+    where: { userId: user.id },
+    update: {},
+    create: {
       userId: user.id,
       label: body.label || 'Nostr Identity',
       pubkeyHex: keypair.pubkeyHex,
@@ -242,10 +259,8 @@ nostrKeysRouter.post('/:keyId/sign-event', async (c) => {
   }
   const content = template.content ?? '';
   if (typeof content !== 'string' || content.length > MAX_CONTENT_LENGTH) return deny('content_too_large', 400);
-  const tags = Array.isArray(template.tags) ? template.tags : [];
-  if (tags.length > MAX_TAGS || tags.some((t) => !Array.isArray(t) || t.some((v) => String(v).length > MAX_TAG_VALUE_LENGTH))) {
-    return deny('tags_invalid', 400);
-  }
+  if (!isBoundedNostrTags(template.tags)) return deny('tags_invalid', 400);
+  const tags = template.tags;
   const skew = Math.abs(Math.floor(Date.now() / 1000) - template.created_at);
   if (skew > MAX_TIMESTAMP_SKEW_SECONDS) return deny('timestamp_out_of_window', 400);
 

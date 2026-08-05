@@ -54,7 +54,9 @@ CREATE UNIQUE INDEX "nostr_keys_npub_key" ON "nostr_keys"("npub");
 CREATE UNIQUE INDEX "nostr_keys_sealingContext_key" ON "nostr_keys"("sealingContext");
 
 -- CreateIndex
-CREATE INDEX "nostr_keys_userId_idx" ON "nostr_keys"("userId");
+-- A user owns exactly one durable Nostr identity. This constraint is also the
+-- conflict target used by the atomic get-or-create route.
+CREATE UNIQUE INDEX "nostr_keys_userId_key" ON "nostr_keys"("userId");
 
 -- CreateIndex
 CREATE INDEX "nostr_signing_grant_lookup_idx" ON "nostr_signing_grant"("userId", "keyId", "clientOrigin");

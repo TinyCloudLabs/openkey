@@ -169,7 +169,7 @@ model EthereumKey {
 // the same code path as Ethereum keys; see packages/tee/src/nostr.ts.
 model NostrKey {
   id             String    @id @default(cuid())
-  userId         String
+  userId         String    @unique(map: "nostr_keys_userId_key")
   label          String?
   pubkeyHex      String    @unique
   npub           String    @unique
@@ -181,7 +181,6 @@ model NostrKey {
   user   User                @relation(fields: [userId], references: [id], onDelete: Cascade)
   grants NostrSigningGrant[]
 
-  @@index([userId], map: "nostr_keys_userId_idx")
   @@map("nostr_keys")
 }
 

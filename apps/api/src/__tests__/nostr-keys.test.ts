@@ -50,6 +50,16 @@ function makeTable(rows: Row[]) {
       rows.push(row);
       return applySelect(row, select);
     }),
+    upsert: mock(async ({ where, create, update, select }: { where: Row; create: Row; update: Row; select?: Row }) => {
+      const existing = rows.find((r) => matchesWhere(r, where));
+      if (existing) {
+        Object.assign(existing, update);
+        return applySelect(existing, select);
+      }
+      const row = { id: create.id ?? `id_${rows.length + 1}`, createdAt: new Date(), ...create };
+      rows.push(row);
+      return applySelect(row, select);
+    }),
     updateMany: mock(async ({ where, data }: { where: Row; data: Row }) => {
       const matched = rows.filter((r) => matchesWhere(r, where));
       for (const r of matched) Object.assign(r, data);
@@ -130,6 +140,22 @@ describe('POST /api/keys/nostr - generate', () => {
     const res = await r.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
     const body = await res.json();
     expect(body.key.id).toBe(first.id);
+    expect(nostrKeyRows).toHaveLength(1);
+  });
+
+  test('concurrent first-connect calls resolve to one durable identity', async () => {
+    const r = await router();
+    const request = () => r.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+
+    const [first, second] = await Promise.all([request(), request()]);
+    const [firstBody, secondBody] = await Promise.all([first.json(), second.json()]);
+
+    expect(firstBody.key.id).toBe(secondBody.key.id);
+    expect(firstBody.key.pubkeyHex).toBe(secondBody.key.pubkeyHex);
     expect(nostrKeyRows).toHaveLength(1);
   });
 });
@@ -315,5 +341,38 @@ describe('sign-event grant enforcement', () => {
     });
     expect(res.status).toBe(400);
     expect((await res.json()).error).toBe('timestamp_out_of_window');
+  });
+
+  test('rejects malformed or unbounded tag structures before signing', async () => {
+    const key = await createKey();
+    const r = await router();
+    await grant(r, key.id, { clientOrigin: 'http://localhost:3000', kinds: [9] });
+
+    const invalidTags = [
+      'not-an-array',
+      [[]],
+      [['h', { nested: 'not a string' }]],
+      [['h', ...Array.from({ length: 20 }, (_, i) => `value-${i}`)]],
+      [['h', 'x'.repeat(513)]],
+    ];
+
+    for (const tags of invalidTags) {
+      const res = await r.request(`/${key.id}/sign-event`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          clientOrigin: 'http://localhost:3000',
+          event: {
+            pubkey: key.pubkeyHex,
+            created_at: Math.floor(Date.now() / 1000),
+            kind: 9,
+            tags,
+            content: 'x',
+          },
+        }),
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe('tags_invalid');
+    }
   });
 });
