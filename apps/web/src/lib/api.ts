@@ -26,7 +26,11 @@ async function fetchAPI<T>(path: string, options: RequestInit = {}): Promise<T> 
     const detail = error?.error;
     const message = typeof detail === 'string' ? detail : detail?.message;
     const failure = new Error(message || `HTTP ${res.status}`);
-    Object.assign(failure, { code: detail?.code, status: res.status });
+    Object.assign(failure, {
+      code: detail?.code,
+      status: res.status,
+      policyEpoch: typeof error?.policyEpoch === 'number' ? error.policyEpoch : undefined,
+    });
     throw failure;
   }
 
@@ -66,6 +70,7 @@ export interface TinyCloudManageKeyApp {
 
 export interface TinyCloudManageKeyActivity {
   clientId: string;
+  clientName: string;
   allowed: boolean;
   reason: string;
   policyEpoch: number;

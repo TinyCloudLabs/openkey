@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, mock, test } from 'bun:test';
 import { Client } from 'pg';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { generateCodeChallenge } from 'better-auth/oauth2';
 import { serializeSignedCookie } from 'better-call';
@@ -63,6 +63,12 @@ const migrationNames = [
   '20260720_0004_drop_registration_intent',
   '20260721_0001_better_auth_1_6_oauth_refresh_tokens',
   '20260728_0001_oauth_tenant_lifecycle_guard',
+  '20260728_0002_coordinationos_session_grants',
+  '20260730_0001_oauth_client_tinycloud_session_policy',
+  '20260805_0001_canonical_tinycloud_key',
+  '20260805_0002_tinycloud_manage_key_app_preferences',
+  '20260805_0003_tinycloud_manage_key_global_preference',
+  '20260806_0001_tinycloud_manage_key_lifecycle',
 ] as const;
 
 const verifier = 'postgres-race-code-verifier-123456789012345678901234567890';
@@ -191,7 +197,7 @@ async function setup() {
       }),
     });
   }
-  return { setupClient, db, schema, account, exchange, managementCredential };
+  return { setupClient, db, schema, account, exchange, managementCredential, request };
 }
 
 async function runBlockedTransition(
@@ -278,4 +284,107 @@ test.skipIf(!externalUrl)('ejectManagedAccount revokes access and refresh tokens
 
 test.skipIf(!externalUrl)('ejectManagedAccount revokes access and refresh tokens token-first', async () => {
   await runBlockedTransition('eject', 'token-first');
+}, 60_000);
+
+async function authorizationCodeIdentity(
+  fixture: Awaited<ReturnType<typeof setup>>,
+  input: { clientId: string; clientSecret: string; redirectUri: string; verifier: string },
+) {
+  const challenge = await generateCodeChallenge(input.verifier);
+  const authorization = await fixture.request(`/oauth2/authorize?${new URLSearchParams({
+    response_type: 'code',
+    client_id: input.clientId,
+    redirect_uri: input.redirectUri,
+    scope: 'openid keys tinycloud:manage-key',
+    code_challenge: challenge,
+    code_challenge_method: 'S256',
+    state: `state-${input.clientId}`,
+  })}`);
+  expect(authorization.status).toBe(302);
+  const location = authorization.headers.get('location');
+  expect(location).toBeTruthy();
+  const code = new URL(location!).searchParams.get('code');
+  expect(code).toBeTruthy();
+
+  const basic = Buffer.from(`${input.clientId}:${input.clientSecret}`).toString('base64');
+  const token = await fixture.request('/oauth2/token', {
+    method: 'POST',
+    headers: {
+      authorization: `Basic ${basic}`,
+      'content-type': 'application/x-www-form-urlencoded',
+    },
+    body: new URLSearchParams({
+      grant_type: 'authorization_code',
+      code: code!,
+      code_verifier: input.verifier,
+      redirect_uri: input.redirectUri,
+      client_id: input.clientId,
+    }),
+  });
+  expect(token.status).toBe(200);
+  const tokenBody = await token.json() as { access_token: string };
+  expect(tokenBody.access_token).toBeTruthy();
+
+  const userinfo = await fixture.request('/oauth2/userinfo', {
+    headers: { authorization: `Bearer ${tokenBody.access_token}` },
+  });
+  expect(userinfo.status).toBe(200);
+  const claims = await userinfo.json() as Record<string, unknown>;
+  return claims['https://tinycloud.xyz/canonical_identity'];
+}
+
+test.skipIf(!externalUrl)('two independent confidential authorization-code clients receive one user canonical identity', async () => {
+  const fixture = await setup();
+  const canonicalAddress = '0x1111111111111111111111111111111111111111';
+  const clients = [
+    {
+      id: 'canonical-client-one-row', clientId: 'canonical-client-one', clientSecret: 'canonical-client-one-secret',
+      redirectUri: 'https://client-one.example/callback', verifier: 'canonical-client-one-verifier-123456789012345678901234567890',
+    },
+    {
+      id: 'canonical-client-two-row', clientId: 'canonical-client-two', clientSecret: 'canonical-client-two-secret',
+      redirectUri: 'https://client-two.example/callback', verifier: 'canonical-client-two-verifier-123456789012345678901234567890',
+    },
+  ];
+  try {
+    await fixture.db.ethereumKey.create({
+      data: {
+        id: 'canonical-personal-key', userId: 'race-user', address: canonicalAddress, publicKey: '0x01',
+        sealedBlob: 'sealed', sealingContext: 'canonical-personal-key-context-00000000000Q', keyType: 'MANAGED',
+        keyPurpose: 'PERSONAL', isCanonicalTinyCloud: true,
+      },
+    });
+    await Promise.all(clients.map((client) => fixture.db.oauthClient.create({
+      data: {
+        id: client.id,
+        clientId: client.clientId,
+        clientSecret: createHash('sha256').update(client.clientSecret).digest('base64url'),
+        name: client.clientId,
+        redirectUris: [client.redirectUri],
+        scopes: ['openid', 'keys', 'tinycloud:manage-key'],
+        contacts: [],
+        mode: 'PERSONAL',
+        skipConsent: true,
+        tokenEndpointAuthMethod: 'client_secret_basic',
+        grantTypes: ['authorization_code'],
+        responseTypes: ['code'],
+        type: 'web',
+        public: false,
+      },
+    })));
+
+    const first = await authorizationCodeIdentity(fixture, clients[0]!);
+    const second = await authorizationCodeIdentity(fixture, clients[1]!);
+    const expected = {
+      version: 'v1', keyId: 'canonical-personal-key', address: canonicalAddress, chainId: 1,
+      did: `did:pkh:eip155:1:${canonicalAddress}`,
+      spaceId: `tinycloud:pkh:eip155:1:${canonicalAddress}:applications`,
+    };
+    expect(first).toEqual(expected);
+    expect(second).toEqual(expected);
+  } finally {
+    await fixture.db.$disconnect();
+    await fixture.setupClient.query(`DROP SCHEMA IF EXISTS "${fixture.schema}" CASCADE`).catch(() => undefined);
+    await fixture.setupClient.end();
+  }
 }, 60_000);

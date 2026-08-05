@@ -151,7 +151,11 @@ accountRouter.get('/tinycloud-apps', async (c) => {
       where: { id: user.id }, select: { tinyCloudManageKeyMode: true, tinyCloudManageKeyPolicyEpoch: true },
     }),
   ]);
-  const clientIds = [...new Set([...consents.map((consent) => consent.clientId), ...preferences.map((preference) => preference.clientId)])];
+  const clientIds = [...new Set([
+    ...consents.map((consent) => consent.clientId),
+    ...preferences.map((preference) => preference.clientId),
+    ...decisions.map((decision) => decision.clientId),
+  ])];
   const clients = clientIds.length === 0 ? [] : await prisma.oauthClient.findMany({
     where: { clientId: { in: clientIds } },
     select: { clientId: true, name: true, uri: true, icon: true, disabled: true },
@@ -174,7 +178,15 @@ accountRouter.get('/tinycloud-apps', async (c) => {
         status: consentIds.has(clientId) ? (preference?.status ?? 'PENDING_USER_APPROVAL') : 'CONSENT_WITHDRAWN',
       };
     }),
-    activity: decisions.map((decision) => ({ ...decision, policyEpoch: Number(decision.policyEpoch) })),
+    activity: decisions.map((decision) => {
+      const client = clientById.get(decision.clientId);
+      const preference = preferences.find((candidate) => candidate.clientId === decision.clientId);
+      return {
+        ...decision,
+        clientName: client?.name || preference?.clientNameSnapshot || decision.clientId,
+        policyEpoch: Number(decision.policyEpoch),
+      };
+    }),
     mode: userPreference?.tinyCloudManageKeyMode ?? 'APP_MANAGED',
     policyEpoch: Number(userPreference?.tinyCloudManageKeyPolicyEpoch ?? BigInt(0)),
   });

@@ -38,6 +38,15 @@
   let savingTinyCloudAppId = $state<string | null>(null);
   let tinyCloudAppsError = $state('');
   let tinyCloudAppSaveError = $state('');
+  let tinyCloudConfirmation = $state<null | {
+    kind: 'mode';
+    mode: TinyCloudManageKeyPreference['mode'];
+  } | {
+    kind: 'app';
+    app: TinyCloudManageKeyApp;
+    enabled: boolean;
+  }>(null);
+  let tinyCloudConfirmationText = $state('');
 
   // Edit state
   let editingId = $state<string | null>(null);
@@ -140,10 +149,27 @@
     }
   }
 
+  function requestTinyCloudManageKeyModeChange(mode: TinyCloudManageKeyPreference['mode']) {
+    if (loadingTinyCloudManageKey || savingTinyCloudManageKey) return;
+    tinyCloudConfirmationText = '';
+    tinyCloudManageKeyError = '';
+    tinyCloudConfirmation = { kind: 'mode', mode };
+  }
+
+  function requestTinyCloudManageKeyAppChange(app: TinyCloudManageKeyApp, enabled: boolean) {
+    if (savingTinyCloudAppId || app.disabled) return;
+    tinyCloudConfirmationText = '';
+    tinyCloudAppSaveError = '';
+    tinyCloudConfirmation = { kind: 'app', app, enabled };
+  }
+
+  function dismissTinyCloudConfirmation() {
+    tinyCloudConfirmation = null;
+    tinyCloudConfirmationText = '';
+  }
+
   async function setTinyCloudManageKeyPreference(mode: TinyCloudManageKeyPreference['mode']) {
     if (loadingTinyCloudManageKey || savingTinyCloudManageKey) return;
-    const confirmation = window.prompt('Type TAKE CONTROL to confirm this TinyCloud signing change.');
-    if (confirmation !== 'TAKE CONTROL') return;
     const previous = tinyCloudManageKeyEnabled;
     const previousMode = tinyCloudManageKeyMode;
     tinyCloudManageKeyEnabled = mode !== 'USER_CONTROLLED_EXCLUSIVE';
@@ -151,7 +177,7 @@
     savingTinyCloudManageKey = true;
     tinyCloudManageKeyError = '';
     try {
-      const result = await api.updateTinyCloudManageKeyPreference(mode, tinyCloudManageKeyPolicyEpoch, confirmation);
+      const result = await api.updateTinyCloudManageKeyPreference(mode, tinyCloudManageKeyPolicyEpoch, 'TAKE CONTROL');
       tinyCloudManageKeyEnabled = result.tinyCloudManageKeyEnabled;
       tinyCloudManageKeyMode = result.mode;
       tinyCloudManageKeyPolicyEpoch = result.policyEpoch;
@@ -159,6 +185,7 @@
       tinyCloudManageKeyEnabled = previous;
       tinyCloudManageKeyMode = previousMode;
       tinyCloudManageKeyError = e.message || 'Failed to update TinyCloud signing preference';
+      if (e.status === 409) await loadTinyCloudManageKeyPreference();
     } finally {
       savingTinyCloudManageKey = false;
     }
@@ -171,6 +198,9 @@
       const result = await api.listTinyCloudManageKeyApps();
       tinyCloudApps = result.apps;
       tinyCloudActivity = result.activity;
+      tinyCloudManageKeyMode = result.mode;
+      tinyCloudManageKeyPolicyEpoch = result.policyEpoch;
+      tinyCloudManageKeyEnabled = result.mode !== 'USER_CONTROLLED_EXCLUSIVE';
     } catch (e: any) {
       tinyCloudAppsError = e.message || 'Failed to load TinyCloud app permissions';
     } finally {
@@ -180,8 +210,6 @@
 
   async function setTinyCloudManageKeyApp(app: TinyCloudManageKeyApp, enabled: boolean) {
     if (savingTinyCloudAppId || app.disabled) return;
-    const confirmation = window.prompt(`Type TAKE CONTROL to ${enabled ? 'allow' : 'stop'} ${app.name} from requesting new TinyCloud signatures.`);
-    if (confirmation !== 'TAKE CONTROL') return;
     const previous = app.enabled;
     tinyCloudApps = tinyCloudApps.map((candidate) => candidate.clientId === app.clientId
       ? { ...candidate, enabled }
@@ -189,7 +217,7 @@
     savingTinyCloudAppId = app.clientId;
     tinyCloudAppSaveError = '';
     try {
-      const result = await api.updateTinyCloudManageKeyApp(app.clientId, enabled, tinyCloudManageKeyPolicyEpoch, confirmation);
+      const result = await api.updateTinyCloudManageKeyApp(app.clientId, enabled, tinyCloudManageKeyPolicyEpoch, 'TAKE CONTROL');
       tinyCloudApps = tinyCloudApps.map((candidate) => candidate.clientId === result.clientId
         ? { ...candidate, enabled: result.enabled }
       : candidate);
@@ -200,9 +228,18 @@
         ? { ...candidate, enabled: previous }
         : candidate);
       tinyCloudAppSaveError = e.message || 'Failed to update TinyCloud app permission';
+      if (e.status === 409) await loadTinyCloudManageKeyApps();
     } finally {
       savingTinyCloudAppId = null;
     }
+  }
+
+  async function confirmTinyCloudChange() {
+    if (!tinyCloudConfirmation || tinyCloudConfirmationText !== 'TAKE CONTROL') return;
+    const action = tinyCloudConfirmation;
+    dismissTinyCloudConfirmation();
+    if (action.kind === 'mode') await setTinyCloudManageKeyPreference(action.mode);
+    else await setTinyCloudManageKeyApp(action.app, action.enabled);
   }
 
   async function addPasskey() {
@@ -460,18 +497,17 @@
         {#if tinyCloudManageKeyMode === 'APP_MANAGED'}
           <button
             type="button"
-            onclick={() => setTinyCloudManageKeyPreference('USER_CONTROLLED_SHARED')}
+            onclick={() => requestTinyCloudManageKeyModeChange('USER_CONTROLLED_SHARED')}
             disabled={loadingTinyCloudManageKey || savingTinyCloudManageKey}
             class="rounded-lg border border-surface-300 bg-white px-3 py-1.5 text-sm font-medium text-surface-700 transition-colors hover:border-surface-400 disabled:cursor-not-allowed disabled:opacity-60"
           >Take shared control</button>
         {/if}
-        <button
-          type="button"
-          aria-label="Change TinyCloud signing mode"
-          onclick={() => setTinyCloudManageKeyPreference(tinyCloudManageKeyMode === 'USER_CONTROLLED_EXCLUSIVE' ? 'USER_CONTROLLED_SHARED' : 'USER_CONTROLLED_EXCLUSIVE')}
+          <button
+            type="button"
+          onclick={() => requestTinyCloudManageKeyModeChange(tinyCloudManageKeyMode === 'USER_CONTROLLED_EXCLUSIVE' ? 'USER_CONTROLLED_SHARED' : 'USER_CONTROLLED_EXCLUSIVE')}
           disabled={loadingTinyCloudManageKey || savingTinyCloudManageKey}
           class="rounded-lg border border-surface-300 bg-white px-3 py-1.5 text-sm font-medium text-surface-700 transition-colors hover:border-surface-400 disabled:cursor-not-allowed disabled:opacity-60"
-        >{tinyCloudManageKeyMode === 'USER_CONTROLLED_EXCLUSIVE' ? 'Enable selected apps' : 'Disable all apps'}</button>
+        >{tinyCloudManageKeyMode === 'USER_CONTROLLED_EXCLUSIVE' ? 'Return to shared control' : 'Block all apps'}</button>
       </div>
     </div>
     {#if tinyCloudManageKeyError}
@@ -521,10 +557,10 @@
               type="button"
               role="switch"
               aria-checked={app.enabled}
-              aria-label={`Toggle TinyCloud signing for ${app.name}`}
+              aria-label={`${app.enabled ? 'Block' : 'Allow'} ${app.name}`}
               aria-describedby={`tinycloud-app-status-${app.clientId}`}
               disabled={app.disabled || savingTinyCloudAppId === app.clientId}
-              onclick={() => setTinyCloudManageKeyApp(app, !app.enabled)}
+              onclick={() => requestTinyCloudManageKeyAppChange(app, !app.enabled)}
               class="relative h-7 w-12 shrink-0 rounded-full transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-surface-900 disabled:cursor-not-allowed disabled:opacity-60 {app.enabled ? 'bg-surface-900' : 'bg-surface-300'}"
             >
               <span
@@ -552,13 +588,55 @@
       <div class="flex flex-col gap-2">
         {#each tinyCloudActivity as event}
           <div class="flex items-center justify-between gap-4 rounded-lg bg-surface-50 px-3 py-2 text-sm">
-            <span class="truncate text-surface-700">{event.clientId} {event.allowed ? 'was allowed' : 'was blocked'}</span>
+            <span class="truncate text-surface-700">{event.clientName} {event.allowed ? 'was allowed' : 'was blocked'}: {event.reason}</span>
             <time class="shrink-0 text-surface-500" datetime={event.createdAt}>{formatDate(event.createdAt)}</time>
           </div>
         {/each}
       </div>
     {/if}
   </Card>
+
+  {#if tinyCloudConfirmation}
+    <div class="fixed inset-0 z-50 flex items-center justify-center bg-surface-900/40 p-4" role="presentation">
+      <div class="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl" role="dialog" aria-modal="true" aria-labelledby="tinycloud-confirmation-title" aria-describedby="tinycloud-confirmation-description">
+        <h2 id="tinycloud-confirmation-title" class="text-xl font-semibold text-surface-900">
+          {tinyCloudConfirmation.kind === 'mode'
+            ? tinyCloudConfirmation.mode === 'USER_CONTROLLED_SHARED'
+              ? tinyCloudManageKeyMode === 'USER_CONTROLLED_EXCLUSIVE'
+                ? 'Return to shared TinyCloud signing'
+                : 'Take shared control of TinyCloud signing'
+              : tinyCloudConfirmation.mode === 'USER_CONTROLLED_EXCLUSIVE'
+                ? 'Block every connected app'
+                : 'Return to shared TinyCloud signing'
+            : tinyCloudConfirmation.enabled
+              ? `Allow ${tinyCloudConfirmation.app.name}`
+              : `Block ${tinyCloudConfirmation.app.name}`}
+        </h2>
+        <p id="tinycloud-confirmation-description" class="mt-3 text-sm leading-6 text-surface-600">
+          {#if tinyCloudConfirmation.kind === 'mode' && tinyCloudManageKeyMode === 'APP_MANAGED'}
+            Taking control is permanent: you cannot return this signing key to app-managed mode. Connected apps will need your explicit approval before they can request new signatures.
+          {:else if tinyCloudConfirmation.kind === 'mode' && tinyCloudConfirmation.mode === 'USER_CONTROLLED_EXCLUSIVE'}
+            This immediately blocks every connected app from requesting new TinyCloud signatures. It does not revoke delegations already issued to an app.
+          {:else if tinyCloudConfirmation.kind === 'mode'}
+            This returns to shared control, but does not re-enable any app. Allow each app explicitly when you are ready.
+          {:else if tinyCloudConfirmation.enabled}
+            This app may request new TinyCloud signatures while shared control is active. It does not receive or renew any delegation automatically.
+          {:else}
+            This stops this app from requesting new TinyCloud signatures. It does not revoke delegations already issued to the app.
+          {/if}
+        </p>
+        <label class="mt-5 block text-sm font-medium text-surface-800" for="tinycloud-confirmation-input">Type TAKE CONTROL to confirm</label>
+        <Input id="tinycloud-confirmation-input" bind:value={tinyCloudConfirmationText} autocomplete="off" spellcheck={false} />
+        <p class="mt-2 text-xs text-surface-500">This change is authorized by your signed-in OpenKey session. Passkeys remain available as optional account protection.</p>
+        <div class="mt-6 flex justify-end gap-3">
+          <Button variant="secondary" onclick={dismissTinyCloudConfirmation}>Cancel</Button>
+          <Button onclick={confirmTinyCloudChange} disabled={tinyCloudConfirmationText !== 'TAKE CONTROL'}>
+            {tinyCloudConfirmation.kind === 'app' ? (tinyCloudConfirmation.enabled ? 'Allow app' : 'Block app') : 'Confirm change'}
+          </Button>
+        </div>
+      </div>
+    </div>
+  {/if}
 
   <Card class="mt-6">
     <div class="mb-6">
