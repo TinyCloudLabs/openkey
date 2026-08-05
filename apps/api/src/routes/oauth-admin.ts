@@ -175,6 +175,7 @@ oauthAdminRouter.post('/clients', async (c) => {
     icon?: string;
     type?: 'native' | 'spa' | 'web';
     scopes?: string[];
+    autoApprove?: unknown;
   }>();
 
   // Validation
@@ -191,6 +192,12 @@ oauthAdminRouter.post('/clients', async (c) => {
     return c.json({ error: `type must be one of: ${validTypes.join(', ')}` }, 400);
   }
   const applicationType = body.type ?? 'spa';
+  if (body.autoApprove !== undefined && typeof body.autoApprove !== 'boolean') {
+    return c.json({ error: 'autoApprove must be a boolean' }, 400);
+  }
+  if (body.autoApprove === true && applicationType !== 'web') {
+    return c.json({ error: 'autoApprove is only available for confidential web clients' }, 400);
+  }
   const redirectValidation = applicationType === 'web'
     ? validateCoordinationosWebRedirectUris(
         body.redirectUris,
@@ -240,7 +247,7 @@ oauthAdminRouter.post('/clients', async (c) => {
         redirectUris: body.redirectUris,
         scopes: applicationType === 'web' ? [...COORDINATIONOS_WEB_SCOPES] : [...PUBLIC_CLIENT_SCOPES],
         disabled: false,
-        skipConsent: false,
+        skipConsent: body.autoApprove === true,
         enableEndSession: false,
         tokenEndpointAuthMethod: applicationType === 'web' ? 'client_secret_basic' : 'none',
         grantTypes: applicationType === 'web'
@@ -261,6 +268,7 @@ oauthAdminRouter.post('/clients', async (c) => {
       uri: client.uri,
       type: client.type,
       public: client.public,
+      autoApprove: client.skipConsent,
       createdAt: client.createdAt,
     };
     return c.json({
@@ -297,12 +305,15 @@ oauthAdminRouter.get('/clients', async (c) => {
       redirectUris: true,
       type: true,
       disabled: true,
+      skipConsent: true,
       createdAt: true,
     },
     orderBy: { createdAt: 'desc' },
   });
 
-  return c.json({ clients });
+  return c.json({
+    clients: clients.map(({ skipConsent, ...client }) => ({ ...client, autoApprove: skipConsent })),
+  });
 });
 
 // GET /api/admin/oauth/clients/:clientId - Get a specific client
@@ -320,6 +331,7 @@ oauthAdminRouter.get('/clients/:clientId', async (c) => {
       redirectUris: true,
       type: true,
       disabled: true,
+      skipConsent: true,
       createdAt: true,
     },
   });
@@ -328,7 +340,8 @@ oauthAdminRouter.get('/clients/:clientId', async (c) => {
     return c.json({ error: 'Client not found' }, 404);
   }
 
-  return c.json({ client });
+  const { skipConsent, ...responseClient } = client;
+  return c.json({ client: { ...responseClient, autoApprove: skipConsent } });
 });
 
 // DELETE /api/admin/oauth/clients/:clientId - Delete a client
@@ -360,6 +373,7 @@ oauthAdminRouter.patch('/clients/:clientId', async (c) => {
     icon?: string;
     disabled?: boolean;
     scopes?: string[];
+    autoApprove?: unknown;
     mode?: unknown;
     type?: unknown;
   }>();
@@ -373,18 +387,31 @@ oauthAdminRouter.patch('/clients/:clientId', async (c) => {
     return c.json({ error: { code: 'IMMUTABLE_FIELD', message: 'type cannot be changed after client creation' } }, 400);
   }
 
-  let existing: { type: string | null } | null = null;
-  if ('redirectUris' in body || 'scopes' in body) {
+  if ('autoApprove' in body && body.autoApprove !== undefined && typeof body.autoApprove !== 'boolean') {
+    return c.json({ error: 'autoApprove must be a boolean' }, 400);
+  }
+  const autoApprove = typeof body.autoApprove === 'boolean' ? body.autoApprove : undefined;
+
+  let existing: { type: string | null; public: boolean } | null = null;
+  if ('redirectUris' in body || 'scopes' in body || autoApprove === true) {
     existing = await prisma.oauthClient.findUnique({
       where: { clientId },
-      select: { type: true },
+      select: { type: true, public: true },
     });
     if (!existing) return c.json({ error: 'Client not found' }, 404);
-    if (existing.type === 'web') {
+    if (existing.type === 'web' && ('redirectUris' in body || 'scopes' in body)) {
       return c.json({
         error: {
           code: 'IMMUTABLE_FIELD',
           message: 'redirectUris and scopes cannot be changed for web clients',
+        },
+      }, 400);
+    }
+    if ((existing.type !== 'web' || existing.public) && autoApprove === true) {
+      return c.json({
+        error: {
+          code: 'INVALID_FIELD',
+          message: 'autoApprove is only available for confidential web clients',
         },
       }, 400);
     }
@@ -423,6 +450,7 @@ oauthAdminRouter.patch('/clients/:clientId', async (c) => {
         ...(body.icon !== undefined && { icon: body.icon || null }),
         ...(body.disabled !== undefined && { disabled: body.disabled }),
         ...(body.scopes && { scopes: body.scopes }),
+        ...(autoApprove !== undefined && { skipConsent: autoApprove }),
       },
       select: {
         id: true,
@@ -433,11 +461,13 @@ oauthAdminRouter.patch('/clients/:clientId', async (c) => {
         redirectUris: true,
         type: true,
         disabled: true,
+        skipConsent: true,
         createdAt: true,
       },
     });
 
-    return c.json({ client });
+    const { skipConsent, ...responseClient } = client;
+    return c.json({ client: { ...responseClient, autoApprove: skipConsent } });
   } catch (error: any) {
     if (error.code === 'P2025') {
       return c.json({ error: 'Client not found' }, 404);

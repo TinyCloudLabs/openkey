@@ -170,6 +170,7 @@ async function main() {
     clientId: string;
     priorOrganizationId: string | null;
     priorSecretHash: string;
+    priorSkipConsent: boolean;
   } | null = null;
 
   try {
@@ -205,6 +206,7 @@ async function main() {
           organizationId,
           tinycloudSessionPolicy: TINYCLOUD_SESSION_POLICY,
           tinycloudSessionOrigin: config.coordinationosUri,
+          skipConsent: true,
         },
       });
       console.log(`Updated TinyCloud dashboard policy for existing client ${client.clientId}.`);
@@ -239,13 +241,15 @@ async function main() {
       await assertOrganizationCanOwnClient(prisma, organizationId, client.organizationId);
       if (client.organizationId !== organizationId
         || client.tinycloudSessionPolicy !== TINYCLOUD_SESSION_POLICY
-        || client.tinycloudSessionOrigin !== config.coordinationosUri) {
+        || client.tinycloudSessionOrigin !== config.coordinationosUri
+        || !client.skipConsent) {
         await prisma.oauthClient.update({
           where: { clientId: client.clientId },
           data: {
             organizationId,
             tinycloudSessionPolicy: TINYCLOUD_SESSION_POLICY,
             tinycloudSessionOrigin: config.coordinationosUri,
+            skipConsent: true,
           },
         });
       }
@@ -279,6 +283,7 @@ async function main() {
         clientId,
         priorOrganizationId: existing.organizationId,
         priorSecretHash: existing.clientSecret,
+        priorSkipConsent: existing.skipConsent,
       };
       await prisma.oauthClient.update({
         where: { clientId },
@@ -287,6 +292,7 @@ async function main() {
           organizationId,
           tinycloudSessionPolicy: TINYCLOUD_SESSION_POLICY,
           tinycloudSessionOrigin: config.coordinationosUri,
+          skipConsent: true,
         },
       });
     } else {
@@ -307,7 +313,7 @@ async function main() {
           tinycloudSessionPolicy: TINYCLOUD_SESSION_POLICY,
           tinycloudSessionOrigin: config.coordinationosUri,
           disabled: false,
-          skipConsent: false,
+          skipConsent: true,
           enableEndSession: false,
           tokenEndpointAuthMethod: 'client_secret_basic',
           grantTypes: ['authorization_code'],
@@ -344,6 +350,7 @@ async function main() {
         data: {
           clientSecret: rotatedClient.priorSecretHash,
           organizationId: rotatedClient.priorOrganizationId,
+          skipConsent: rotatedClient.priorSkipConsent,
         },
       }).catch(() => undefined);
     }

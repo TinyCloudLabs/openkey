@@ -93,6 +93,7 @@ describe('confidential CoordinationOS OAuth client', () => {
       grantTypes: ['authorization_code'],
       responseTypes: ['code'],
       scopes: ['openid', 'email', 'keys', 'tinycloud:session'],
+      skipConsent: false,
     });
 
     const listed = await request('/clients', 'GET');
@@ -153,6 +154,7 @@ describe('confidential CoordinationOS OAuth client', () => {
           uri: null,
           type,
           public: true,
+          autoApprove: false,
           createdAt: '2026-07-28T20:00:00.000Z',
         },
       });
@@ -225,6 +227,39 @@ describe('confidential CoordinationOS OAuth client', () => {
     expect(stored.redirectUris).toEqual(callback);
     expect(stored.scopes).toEqual(scopes);
     expect(await response.json()).not.toHaveProperty('client.clientSecret');
+  });
+
+  test('admin APIs expose and update confidential-client auto approval without returning secrets', async () => {
+    await request('/clients', 'POST', { ...valid, autoApprove: false });
+    const clientId = stored.clientId;
+
+    const initial = await request(`/clients/${clientId}`, 'GET');
+    expect((await initial.json() as any).client).toMatchObject({ autoApprove: false });
+
+    const updated = await request(`/clients/${clientId}`, 'PATCH', { autoApprove: true });
+    expect(updated.status).toBe(200);
+    expect((await updated.json() as any).client).toMatchObject({ autoApprove: true });
+    expect(stored.skipConsent).toBeTrue();
+
+    const listed = await request('/clients', 'GET');
+    const listedClient = (await listed.json() as any).clients[0];
+    expect(listedClient).toMatchObject({ autoApprove: true });
+    expect(JSON.stringify(listedClient)).not.toContain('clientSecret');
+  });
+
+  test('auto approval cannot be enabled for public clients', async () => {
+    await request('/clients', 'POST', {
+      name: 'public client', type: 'spa', redirectUris: ['https://app.example/callback'],
+    });
+    const response = await request(`/clients/${stored.clientId}`, 'PATCH', { autoApprove: true });
+    expect(response.status).toBe(400);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  test('auto approval input must be a boolean', async () => {
+    const response = await request('/clients', 'POST', { ...valid, autoApprove: 'true' });
+    expect(response.status).toBe(400);
+    expect(create).not.toHaveBeenCalled();
   });
 
   test('web registration fails closed when callback configuration is missing or invalid', async () => {
