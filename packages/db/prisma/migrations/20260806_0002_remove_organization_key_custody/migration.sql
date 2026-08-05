@@ -49,7 +49,17 @@ DROP TABLE IF EXISTS "organization_server_credential";
 -- tenant key or tenant TinyCloud space survives this cutover.
 DELETE FROM "ethereum_keys" WHERE "keyPurpose" = 'MANAGED_ACCOUNT';
 DROP INDEX IF EXISTS "ethereum_keys_userId_keyPurpose_idx";
+-- The expand migration's canonical-key index includes keyPurpose in its
+-- predicate, so PostgreSQL drops it with the column. Replace it with the
+-- post-cutover equivalent to keep the one-canonical-key invariant durable.
+DROP INDEX IF EXISTS "ethereum_keys_one_active_canonical_tinycloud_key";
 ALTER TABLE "ethereum_keys" DROP COLUMN IF EXISTS "keyPurpose";
+CREATE UNIQUE INDEX "ethereum_keys_one_active_canonical_tinycloud_key"
+  ON "ethereum_keys" ("userId")
+  WHERE "isCanonicalTinyCloud" = true
+    AND "userId" IS NOT NULL
+    AND "keyType" = 'MANAGED'
+    AND "archivedAt" IS NULL;
 
 ALTER TABLE "organization" DROP COLUMN IF EXISTS "brokerDid";
 ALTER TABLE "plan_entitlements"

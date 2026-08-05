@@ -29,12 +29,21 @@ async function main() {
       SELECT column_name AS name FROM information_schema.columns
       WHERE table_schema = 'public' AND table_name = 'ethereum_keys' AND column_name = 'keyPurpose'
     `;
-    if (relations.length || types.length || keyPurposeColumn.length) {
+    const canonicalIndex = await prisma.$queryRaw<Array<{ unique: boolean }>>`
+      SELECT i.indisunique AS unique
+      FROM pg_class index_class
+      JOIN pg_namespace namespace ON namespace.oid = index_class.relnamespace
+      JOIN pg_index i ON i.indexrelid = index_class.oid
+      WHERE namespace.nspname = 'public'
+        AND index_class.relname = 'ethereum_keys_one_active_canonical_tinycloud_key'
+    `;
+    const canonicalIndexInvalid = canonicalIndex.length !== 1 || canonicalIndex[0]?.unique !== true;
+    if (relations.length || types.length || keyPurposeColumn.length || canonicalIndexInvalid) {
       throw new Error(
-        `TC-488 cutover is incomplete: relations=${relations.map((row) => row.name).join(',')} types=${types.map((row) => row.name).join(',')} columns=${keyPurposeColumn.map((row) => row.name).join(',')}`,
+        `TC-488 cutover is incomplete: relations=${relations.map((row) => row.name).join(',')} types=${types.map((row) => row.name).join(',')} columns=${keyPurposeColumn.map((row) => row.name).join(',')} canonicalIndex=${canonicalIndexInvalid ? 'missing-or-non-unique' : 'valid'}`,
       );
     }
-    console.log('Verified TC-488 cutover: developer organizations retain OAuth administration without key custody.');
+    console.log('Verified TC-488 cutover: developer organizations retain OAuth administration without key custody, and canonical-key uniqueness remains enforced.');
   } finally {
     await prisma.$disconnect();
   }
