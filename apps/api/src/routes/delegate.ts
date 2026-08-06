@@ -8,6 +8,7 @@ import {
   createDelegateSignerAuth,
   type DelegateSignerContext,
 } from '../middleware/delegate-signer-auth';
+import { withTinyCloudManageKeySigningPolicy } from '../services/tinycloud-manage-key-control';
 import type { Hex } from 'viem';
 import {
   prepareSession,
@@ -88,6 +89,7 @@ import {
   sparseCoordinationosEvidence,
   type CoordinationosDenialCode,
 } from '../services/coordinationos-signing-audit';
+import { validateTinyCloudManageKeyRequest } from '../services/tinycloud-manage-key-policy';
 
 const prisma = createPrismaClient();
 const tee = createTeeClient();
@@ -642,6 +644,72 @@ delegateRouter.post('/sign', async (c) => {
     }));
   }
 
+  if (principal.kind === 'oauth-manage-key') {
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({
+        approved: false,
+        code: 'message_rejected',
+        reason: 'The signing request must be a JSON object.',
+      }, 400);
+    }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return c.json({
+        approved: false,
+        code: 'message_rejected',
+        reason: 'The signing request must be a JSON object.',
+      }, 400);
+    }
+
+    // keyId and address, when supplied by older callback adapters, are
+    // intentionally ignored. The OAuth token's user binding selects exactly
+    // one canonical key at the database boundary.
+    const candidate = body as Record<string, unknown>;
+    try {
+      const result = await withTinyCloudManageKeySigningPolicy(prisma, {
+        userId: principal.userId, clientId: principal.clientId, request: body,
+      }, async (tx) => {
+        const key = await tx.ethereumKey.findFirst({
+          where: { userId: principal.userId, keyType: 'MANAGED', archivedAt: null, isCanonicalTinyCloud: true },
+          select: { id: true, address: true, sealedBlob: true, sealingContext: true, userId: true },
+        });
+        if (!key || !key.sealedBlob || !key.userId) throw new Error('canonical_key_unavailable');
+        const identity = {
+          version: 'v1' as const, keyId: key.id, address: ensureEip55(key.address), chainId: 1 as const,
+          did: `did:pkh:eip155:1:${ensureEip55(key.address)}`,
+          spaceId: `tinycloud:pkh:eip155:1:${ensureEip55(key.address)}:applications`,
+        };
+        const policy = validateTinyCloudManageKeyRequest({ type: candidate.type, chainId: candidate.chainId, message: candidate.message, identity });
+        if (!policy.allowed) throw new Error(`message_rejected:${policy.reason}`);
+        const signature = await signManagedKey(key, key.sealedBlob, candidate.message as string);
+        return { signature, identity };
+      });
+      if (!result.allowed) {
+        const code = result.reason === 'missing_consent' ? 'missing_scope' : result.reason;
+        const reason = result.reason === 'user_exclusive'
+          ? 'The user has disabled application signing in exclusive mode.'
+          : result.reason === 'grant_disabled'
+            ? 'TinyCloud signing is not enabled for this application.'
+            : result.reason === 'missing_consent'
+              ? 'The application does not have active TinyCloud manage-key consent.'
+              : 'TinyCloud signing is disabled for this OpenKey account.';
+        return c.json({ approved: false, code, reason }, 403);
+      }
+      return c.json({ approved: true, signature: result.value.signature, canonicalIdentity: result.value.identity });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      if (message === 'canonical_key_unavailable') return c.json({ approved: false, code: 'canonical_key_unavailable', reason: 'The canonical TinyCloud key is unavailable.' }, 403);
+      if (message.startsWith('message_rejected:')) return c.json({ approved: false, code: 'message_rejected', reason: message.slice('message_rejected:'.length) }, 400);
+      return c.json({
+        approved: false,
+        code: 'signer_failed',
+        reason: 'The canonical TinyCloud signer is unavailable.',
+      }, 500);
+    }
+  }
+
   if (principal.kind === 'coordinationos-oauth') {
     let body: unknown;
     try {
@@ -687,7 +755,6 @@ delegateRouter.post('/sign', async (c) => {
             userId: true,
             address: true,
             keyType: true,
-            keyPurpose: true,
             archivedAt: true,
             sealedBlob: true,
             sealingContext: true,
@@ -759,7 +826,6 @@ delegateRouter.post('/sign', async (c) => {
           id: key.id,
           address: key.address,
           keyType: key.keyType,
-          keyPurpose: 'PERSONAL',
         },
         privateKey,
         message: coordinationosBootstrapTrigger(key.address),
@@ -824,7 +890,6 @@ delegateRouter.post('/sign', async (c) => {
   const key = await prisma.ethereumKey.findFirst({
     where: {
       userId: user.id,
-      keyPurpose: 'PERSONAL',
       archivedAt: null,
       ...(body.keyId
         ? { id: body.keyId }
@@ -919,7 +984,7 @@ delegateRouter.post('/host', async (c) => {
   }
 
   const key = await prisma.ethereumKey.findFirst({
-    where: { id: body.keyId, userId: user.id, keyPurpose: 'PERSONAL', archivedAt: null },
+    where: { id: body.keyId, userId: user.id, archivedAt: null },
   });
 
   if (!key) {
@@ -1005,7 +1070,7 @@ delegateRouter.post('/', async (c) => {
   }
 
   const key = await prisma.ethereumKey.findFirst({
-    where: { id: body.keyId, userId: user.id, keyPurpose: 'PERSONAL', archivedAt: null },
+    where: { id: body.keyId, userId: user.id, archivedAt: null },
   });
 
   if (!key) {
@@ -1403,7 +1468,7 @@ delegateRouter.post('/prepare', async (c) => {
   }
 
   const key = await prisma.ethereumKey.findFirst({
-    where: { id: body.keyId, userId: user.id, keyPurpose: 'PERSONAL', archivedAt: null },
+    where: { id: body.keyId, userId: user.id, archivedAt: null },
   });
 
   if (!key) {
@@ -1856,7 +1921,6 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     where: {
       id: body.keyId,
       userId: user.id,
-      keyPurpose: 'PERSONAL',
       archivedAt: null,
     },
     select: {
@@ -1864,7 +1928,6 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       userId: true,
       address: true,
       keyType: true,
-      keyPurpose: true,
       archivedAt: true,
       sealedBlob: true,
       sealingContext: true,
@@ -2317,7 +2380,6 @@ delegateRouter.post('/authorize-sign', async (c) => {
   const candidateKeys = await prisma.ethereumKey.findMany({
     where: {
       userId: user.id,
-      keyPurpose: 'PERSONAL',
       archivedAt: null,
     },
     select: {
@@ -2325,7 +2387,6 @@ delegateRouter.post('/authorize-sign', async (c) => {
       userId: true,
       address: true,
       keyType: true,
-      keyPurpose: true,
       archivedAt: true,
       sealedBlob: true,
       sealingContext: true,

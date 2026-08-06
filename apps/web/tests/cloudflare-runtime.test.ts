@@ -45,25 +45,6 @@ describe('Cloudflare Pages console host boundary', () => {
 
   afterAll(() => worker?.kill());
 
-  test('serves managed-account documents only through the account host', async () => {
-    for (const path of ['/managed-accounts-architecture', '/managed-accounts-project']) {
-      const consoleResponse = await fetchHost('console.openkey.so', path);
-      expect(consoleResponse.status).toBe(404);
-      expect(consoleResponse.body).toContain('Page not found');
-      expect(consoleResponse.body).not.toContain('OpenKey managed accounts');
-
-      const accountResponse = await fetchHost('openkey.so', path);
-      expect(accountResponse.status).toBe(200);
-      expect(accountResponse.headers['content-type']).toContain('text/html');
-      expect(accountResponse.body).toContain('OpenKey managed accounts');
-
-      // Static-era bookmarks are intentionally no longer documents on either
-      // host. They still traverse the worker and cannot bypass the guard.
-      await expect(fetchHost('console.openkey.so', `${path}/index.html`)).resolves.toMatchObject({ status: 404 });
-      await expect(fetchHost('openkey.so', `${path}/index.html`)).resolves.toMatchObject({ status: 404 });
-    }
-  });
-
   test('keeps the console and account redirect contracts at the worker boundary', async () => {
     // Prove the public happy path at the same boundary that blocks account
     // pages. A host guard regression must not turn the console into a 404.

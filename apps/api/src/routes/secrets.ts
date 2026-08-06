@@ -26,7 +26,7 @@ function validateName(name: string): string | null {
 
 async function getUserPrivateKey(userId: string): Promise<string | null> {
   const key = await prisma.ethereumKey.findFirst({
-    where: { userId, keyIndex: 0, keyType: 'MANAGED', keyPurpose: 'PERSONAL', archivedAt: null },
+    where: { userId, keyIndex: 0, keyType: 'MANAGED', archivedAt: null },
   });
 
   if (!key || !key.sealedBlob) {

@@ -10,6 +10,10 @@ export const COORDINATIONOS_SESSION_TTL_SECONDS = 3_600;
 
 const REQUIRED_ACTIONS = ['tinycloud.kv/get', 'tinycloud.kv/put'] as const;
 const REQUIRED_CLIENT_SCOPES = ['openid', 'email', 'keys', 'tinycloud:session'] as const;
+const TRANSITION_CLIENT_SCOPES = [
+  ...REQUIRED_CLIENT_SCOPES,
+  'tinycloud:manage-key',
+] as const;
 const utf8 = new TextEncoder();
 
 export type CoordinationosPolicyCode =
@@ -21,7 +25,6 @@ export type CoordinationosPolicyCode =
   | 'email_not_verified'
   | 'key_not_found'
   | 'wrong_user'
-  | 'wrong_key_purpose'
   | 'external_key_denied'
   | 'key_archived'
   | 'key_address_mismatch'
@@ -73,7 +76,6 @@ export interface CoordinationosSessionPolicyInput {
   client: {
     clientId: string;
     disabled: boolean;
-    mode: string;
     type: string | null;
     public: boolean;
     tokenEndpointAuthMethod: string | null;
@@ -89,7 +91,6 @@ export interface CoordinationosSessionPolicyInput {
     userId: string | null;
     address: string;
     keyType: string;
-    keyPurpose: string;
     archivedAt: Date | null;
     sealedBlob: string | null;
   } | null;
@@ -325,12 +326,12 @@ export function evaluateCoordinationosSessionRequest(
   if (input.client.disabled) return deny('client_disabled');
   if (!input.client.scopes.includes('tinycloud:session')) return deny('missing_scope');
   if (input.client.public
-    || input.client.mode !== 'PERSONAL'
     || input.client.type !== 'web'
     || input.client.tokenEndpointAuthMethod !== 'client_secret_basic'
     || !sameStringSet(input.client.grantTypes, ['authorization_code'])
     || !sameStringSet(input.client.responseTypes, ['code'])
-    || !sameStringSet(input.client.scopes, REQUIRED_CLIENT_SCOPES)) {
+    || (!sameStringSet(input.client.scopes, REQUIRED_CLIENT_SCOPES)
+      && !sameStringSet(input.client.scopes, TRANSITION_CLIENT_SCOPES))) {
     return deny('client_misconfigured');
   }
   const configuredOrigin = validateCoordinationosClientOrigin(input.client.tinycloudSessionOrigin);
@@ -341,7 +342,6 @@ export function evaluateCoordinationosSessionRequest(
   if (!input.user.emailVerified) return deny('email_not_verified');
   if (!input.key) return deny('key_not_found');
   if (input.key.userId !== input.principal.userId) return deny('wrong_user');
-  if (input.key.keyPurpose !== 'PERSONAL') return deny('wrong_key_purpose');
   if (input.key.keyType !== 'MANAGED') return deny('external_key_denied');
   if (input.key.archivedAt) return deny('key_archived');
   if (!input.key.sealedBlob) return deny('key_unavailable');

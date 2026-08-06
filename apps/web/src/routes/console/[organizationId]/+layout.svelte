@@ -32,9 +32,6 @@
     { href: '', label: 'Overview' },
     { href: '/apps', label: 'Apps' },
     { href: '/members', label: 'Members' },
-    { href: '/credentials', label: 'Credentials' },
-    { href: '/managed-accounts', label: 'Managed accounts' },
-    { href: '/webhooks', label: 'Webhooks' },
   ] as const;
 
   async function refresh() {
@@ -337,12 +334,6 @@
                 <span class="text-surface-500">Billing</span>
                 <span class="font-semibold text-surface-900">{$overview?.organization.billingState ?? 'FREE'}</span>
               </div>
-              <div class="flex items-center justify-between gap-3">
-                <span class="text-surface-500">Broker DID</span>
-                <span class="max-w-[170px] truncate font-mono text-xs text-surface-700" title={$overview?.organization.brokerDid ?? ''}>
-                  {$overview?.organization.brokerDid ?? 'Not configured'}
-                </span>
-              </div>
             </div>
           </Card>
 
@@ -368,11 +359,8 @@
           <Card class="space-y-3">
             <p class="text-xs font-semibold uppercase tracking-[0.12em] text-surface-500">Console note</p>
             <p class="text-sm leading-6 text-surface-600">
-              Members can read the console, but admin-only actions stay hidden in the section pages. One-time secrets are never persisted in the browser.
+              Members can read the console, but admin-only actions stay hidden in the section pages. Organizations manage app configuration, not user keys or data.
             </p>
-            <div class="rounded-2xl border border-surface-200 bg-surface-50 px-3 py-3 text-xs leading-5 text-surface-600">
-              The user-owned eject path lives in the personal <a class="font-semibold text-primary-700 underline-offset-4 hover:underline" href={accountHref('/dashboard/managed-accounts')}>OpenKey Account</a>.
-            </div>
           </Card>
         </div>
       </aside>

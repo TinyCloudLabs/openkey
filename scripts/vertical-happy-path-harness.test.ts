@@ -16,7 +16,7 @@
 //      being `undefined` (as `keysRouter.get('/:keyId')` sends it — it does not
 //      pass an `archivedAt` filter) does NOT falsely reject the query.
 //   3. Emits every key field the keysRouter response selects (id, userId,
-//      address, keyType, keyPurpose, publicKey, keyIndex, label, archivedAt,
+//      address, keyType, publicKey, keyIndex, label, archivedAt,
 //      sealedBlob, sealingContext, createdAt) so both `/api/keys/:keyId` and
 //      the delegate signing path find a fully-shaped record.
 //   4. Adds a stub `GET /api/auth/get-session` returning `{ session: null,
@@ -52,7 +52,6 @@ const keyRecord = {
   userId: user.id,
   address,
   keyType: 'MANAGED',
-  keyPurpose: 'PERSONAL',
   publicKey: address, // For Ethereum, address is derived from the public key.
   keyIndex: 0,
   label: 'Harness Key',
@@ -67,7 +66,6 @@ const prisma = {
     findFirst: mock(async ({ where }: { where: Record<string, unknown> }) => {
       if (where.userId !== user.id) return null;
       if (where.id !== undefined && where.id !== keyRecord.id) return null;
-      if (where.keyPurpose !== undefined && where.keyPurpose !== keyRecord.keyPurpose) return null;
       // Only reject when the query EXPLICITLY filters archivedAt to a non-null
       // value. `undefined` means "no filter on archivedAt", not "must equal
       // undefined" — the harness previously rejected the widget's GET which
@@ -77,7 +75,6 @@ const prisma = {
     }),
     findMany: mock(async ({ where }: { where: Record<string, unknown> }) => {
       if (where.userId !== user.id) return [];
-      if (where.keyPurpose !== undefined && where.keyPurpose !== keyRecord.keyPurpose) return [];
       if (where.archivedAt !== undefined && where.archivedAt !== null) return [];
       return [keyRecord];
     }),

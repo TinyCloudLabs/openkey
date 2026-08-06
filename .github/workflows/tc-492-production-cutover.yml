@@ -483,8 +483,15 @@ jobs:
           freeze_sql=$(psql "$DATABASE_URL" --no-psqlrc --tuples-only --no-align --command \
             "SELECT format('ALTER DATABASE %I SET default_transaction_read_only = on', current_database())")
           psql "$DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --command "$freeze_sql"
-          psql "$DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --command \
-            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid();"
+          freeze_cutoff_epoch=$(psql "$DATABASE_URL" --no-psqlrc --tuples-only --no-align --command \
+            'SELECT extract(epoch FROM clock_timestamp())')
+          [[ "$freeze_cutoff_epoch" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "invalid database freeze cutoff" >&2; exit 1; }
+          terminated=$(psql "$DATABASE_URL" --no-psqlrc --tuples-only --no-align --command \
+            "WITH targets AS (SELECT pid FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_start <= to_timestamp(${freeze_cutoff_epoch})) SELECT coalesce(bool_and(pg_terminate_backend(pid)), true) FROM targets;")
+          [ "$terminated" = "t" ] || { echo "one or more pre-freeze database sessions could not be terminated" >&2; exit 1; }
+          survivors=$(psql "$DATABASE_URL" --no-psqlrc --tuples-only --no-align --command \
+            "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_start <= to_timestamp(${freeze_cutoff_epoch});" | tr -d '[:space:]')
+          [ "$survivors" = "0" ] || { echo "a pre-freeze database session survived termination" >&2; exit 1; }
           read_only=$(psql "$DATABASE_URL" --no-psqlrc --tuples-only --no-align --command 'SHOW default_transaction_read_only' | tr -d '[:space:]')
           [ "$read_only" = "on" ] || { echo "database-level read-only freeze was not enforced" >&2; exit 1; }
           printf 'frozen-pre-destructive\n' > tc492-phase.txt
@@ -578,10 +585,12 @@ jobs:
           ACCEPTED_CANDIDATE_COUNT: ${{ inputs.accepted_candidate_count }}
         run: |
           set -euo pipefail
-          printf 'destructive-started\n' > tc492-phase.txt
           thaw_sql=$(psql "$DATABASE_URL" --no-psqlrc --tuples-only --no-align --command \
             "SELECT format('ALTER DATABASE %I SET default_transaction_read_only = off', current_database())")
           PGOPTIONS='-c default_transaction_read_only=off' psql "$DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --command "$thaw_sql"
+          read_only=$(psql "$DATABASE_URL" --no-psqlrc --tuples-only --no-align --command 'SHOW default_transaction_read_only' | tr -d '[:space:]')
+          [ "$read_only" = "off" ] || { echo "database thaw was not proven" >&2; exit 1; }
+          printf 'destructive-started\n' > tc492-phase.txt
           bun run db:migrate:apply
           bun scripts/verify-tc-492-migration-set.ts post > tc492-migration-post.json
           bun run db:migrate:verify-guards
@@ -617,6 +626,24 @@ jobs:
           NODE
           rm -f /tmp/containers-after.json
           printf 'candidate-deployed\n' > tc492-phase.txt
+
+      - name: Recover old API when apply failed before the destructive boundary
+        if: failure()
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+        run: |
+          set -euo pipefail
+          [ -f tc492-phase.txt ] || exit 0
+          phase=$(tr -d '\n' < tc492-phase.txt)
+          [ "$phase" = "frozen-pre-destructive" ] || exit 0
+          thaw_sql=$(psql "$DATABASE_URL" --no-psqlrc --tuples-only --no-align --command \
+            "SELECT format('ALTER DATABASE %I SET default_transaction_read_only = off', current_database())")
+          PGOPTIONS='-c default_transaction_read_only=off' psql "$DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --command "$thaw_sql"
+          phala cvms start openkey-api --api-token "$PHALA_CLOUD_API_KEY"
+          curl --fail --silent --show-error --retry 12 --retry-delay 5 \
+            "https://api.openkey.so/health?tc492=apply-recovery-${GITHUB_RUN_ID}" > /dev/null
+          printf 'old-api-restarted\n' > tc492-phase.txt
 
       - name: Verify production authorization metadata
         run: |

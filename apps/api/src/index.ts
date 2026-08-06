@@ -16,10 +16,6 @@ import { secretsRouter } from './routes/secrets';
 import { variablesRouter } from './routes/variables';
 import { delegateRouter } from './routes/delegate';
 import { internalMetricsRouter } from './routes/internal-metrics';
-import { hostedRegistrationRouter, managedAccountsRouter } from './routes/managed-accounts';
-import { tenantAccountsRouter } from './routes/tenant-accounts';
-import { managementCredentialsRouter } from './routes/management-credentials';
-import { personalManagedAccountsRouter } from './routes/personal-managed-accounts';
 import { organizationsRouter } from './routes/organizations';
 import { tenantConsoleRouter } from './routes/tenant-console';
 import { trackAuthorization, trackTokenExchange, trackUniqueUser } from './analytics';
@@ -172,12 +168,7 @@ app.route('/api/variables', variablesRouter);
 // Delegate route (CLI auth flow)
 app.route('/api/delegate', delegateRouter);
 
-// Organization-scoped managed-account API and OpenKey-owned registration ceremony.
-app.route('/v1', managedAccountsRouter);
-app.route('/v1/accounts', tenantAccountsRouter);
-app.route('/v1/credentials', managementCredentialsRouter);
-app.route('/api/managed-account-registration', hostedRegistrationRouter);
-app.route('/api/managed-accounts', personalManagedAccountsRouter);
+// Developer Organizations own OAuth application configuration and membership only.
 app.route('/api/organizations', organizationsRouter);
 app.route('/api/console/organizations', tenantConsoleRouter);
 

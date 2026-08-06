@@ -29,7 +29,5 @@ describe('Cloudflare Pages artifact', () => {
     expect(html.filter((path) => path.endsWith('.html')).map((path) => path.slice(artifact.length)))
       .toEqual(['/404.html']);
     expect(workerManifest).toContain('prerendered_routes: new Set([])');
-    expect(workerManifest).not.toContain('managed-accounts-architecture/index.html');
-    expect(workerManifest).not.toContain('managed-accounts-project/index.html');
   });
 });

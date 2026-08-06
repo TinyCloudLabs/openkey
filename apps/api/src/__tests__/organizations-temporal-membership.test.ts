@@ -19,8 +19,8 @@ test('organization selection excludes expired and not-yet-valid memberships', as
             role: 'ADMIN',
             organization: {
               id: `org-${membership.id}`, name: membership.id, plan: 'FREE', billingState: 'FREE',
-              brokerDid: null, planEntitlements: null,
-              _count: { oauthClients: 0, managedAccounts: 0, memberships: 1 },
+              planEntitlements: null,
+              _count: { oauthClients: 0, memberships: 1 },
             },
           }));
       },

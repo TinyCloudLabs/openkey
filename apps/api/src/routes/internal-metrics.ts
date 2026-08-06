@@ -1,10 +1,16 @@
 import { timingSafeEqual } from 'crypto';
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
-import { processPendingRevocations } from '../services/tenant-revocation';
-import { processPendingWebhooks } from '../services/lifecycle-webhooks';
 
 const prisma = createPrismaClient();
+
+type MetricsCounter = { count(options?: Record<string, unknown>): Promise<number> };
+export type MetricsDatabase = {
+  user: MetricsCounter;
+  ethereumKey: MetricsCounter;
+  tinyCloudManageKeySigningDecision: MetricsCounter;
+  tinyCloudManageKeyAppPreference: MetricsCounter;
+};
 
 export const internalMetricsRouter = new Hono();
 
@@ -20,6 +26,52 @@ function authorized(authHeader: string | undefined): boolean {
   return timingSafeEqual(expectedBytes, providedBytes);
 }
 
+export async function collectInternalMetrics(database: MetricsDatabase, now = new Date()) {
+  const since = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const [
+    totalAccounts, newAccounts24h, totalKeys, activeKeys, newKeys24h,
+    eligibleCanonicalUsers, missingCanonicalUsers, canonicalKeys,
+    signingDecisions24h, signingAllows24h, signingDenials24h,
+    enabledAppGrants, disabledAppGrants,
+  ] = await Promise.all([
+    database.user.count(),
+    database.user.count({ where: { createdAt: { gte: since } } }),
+    database.ethereumKey.count(),
+    database.ethereumKey.count({ where: { archivedAt: null } }),
+    database.ethereumKey.count({ where: { createdAt: { gte: since }, archivedAt: null } }),
+    database.user.count({ where: { ethereumKeys: { some: { keyType: 'MANAGED', archivedAt: null } } } }),
+    database.user.count({ where: {
+      ethereumKeys: { some: { keyType: 'MANAGED', archivedAt: null } },
+      NOT: { ethereumKeys: { some: { keyType: 'MANAGED', archivedAt: null, isCanonicalTinyCloud: true } } },
+    } }),
+    database.ethereumKey.count({ where: { keyType: 'MANAGED', archivedAt: null, isCanonicalTinyCloud: true } }),
+    database.tinyCloudManageKeySigningDecision.count({ where: { createdAt: { gte: since } } }),
+    database.tinyCloudManageKeySigningDecision.count({ where: { createdAt: { gte: since }, allowed: true } }),
+    database.tinyCloudManageKeySigningDecision.count({ where: { createdAt: { gte: since }, allowed: false } }),
+    database.tinyCloudManageKeyAppPreference.count({ where: { enabled: true, status: 'ENABLED' } }),
+    database.tinyCloudManageKeyAppPreference.count({ where: { OR: [{ enabled: false }, { status: 'DISABLED' }] } }),
+  ]);
+
+  return {
+    generatedAt: now.toISOString(),
+    accounts: { total: totalAccounts, new24h: newAccounts24h },
+    keys: { total: totalKeys, active: activeKeys, new24h: newKeys24h },
+    tinyCloudManageKey: {
+      canonicalResolution: {
+        eligibleUsers: eligibleCanonicalUsers,
+        canonicalKeys,
+        missingCanonicalUsers,
+      },
+      appGrants: { enabled: enabledAppGrants, disabled: disabledAppGrants },
+      signingDecisions24h: {
+        total: signingDecisions24h,
+        allowed: signingAllows24h,
+        denied: signingDenials24h,
+      },
+    },
+  };
+}
+
 internalMetricsRouter.get('/', async (c) => {
   if (!process.env.INTERNAL_METRICS_TOKEN) {
     return c.json({ error: 'Internal metrics are not configured' }, 503);
@@ -29,47 +81,5 @@ internalMetricsRouter.get('/', async (c) => {
     return c.json({ error: 'Unauthorized' }, 401);
   }
 
-  const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
-  const [totalAccounts, newAccounts24h, totalKeys, activeKeys, newKeys24h] = await Promise.all([
-    prisma.user.count(),
-    prisma.user.count({ where: { createdAt: { gte: since } } }),
-    prisma.ethereumKey.count(),
-    prisma.ethereumKey.count({ where: { archivedAt: null } }),
-    prisma.ethereumKey.count({ where: { createdAt: { gte: since }, archivedAt: null } })
-  ]);
-
-  return c.json({
-    generatedAt: new Date().toISOString(),
-    accounts: {
-      total: totalAccounts,
-      new24h: newAccounts24h
-    },
-    keys: {
-      total: totalKeys,
-      active: activeKeys,
-      new24h: newKeys24h
-    }
-  });
-});
-
-internalMetricsRouter.post('/managed-account-revocations/run', async (c) => {
-  if (!process.env.INTERNAL_METRICS_TOKEN) return c.json({ error: 'Internal worker is not configured' }, 503);
-  if (!authorized(c.req.header('Authorization'))) return c.json({ error: 'Unauthorized' }, 401);
-  const results = await processPendingRevocations(prisma);
-  return c.json({
-    processed: results.length,
-    confirmed: results.filter((result) => result.ok).length,
-    failed: results.filter((result) => !result.ok).length,
-  });
-});
-
-internalMetricsRouter.post('/webhooks/run', async (c) => {
-  if (!process.env.INTERNAL_METRICS_TOKEN) return c.json({ error: 'Internal worker is not configured' }, 503);
-  if (!authorized(c.req.header('Authorization'))) return c.json({ error: 'Unauthorized' }, 401);
-  const results = await processPendingWebhooks(prisma);
-  return c.json({
-    processed: results.length,
-    delivered: results.filter((result) => result.ok).length,
-    failed: results.filter((result) => !result.ok).length,
-  });
+  return c.json(await collectInternalMetrics(prisma as unknown as MetricsDatabase));
 });

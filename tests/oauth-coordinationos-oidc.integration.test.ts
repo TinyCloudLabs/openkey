@@ -44,12 +44,10 @@ await pglite.exec(`
     VALUES ('${userId}', 'alice@example.test', true, 'Alice', CURRENT_TIMESTAMP);
   INSERT INTO "session" ("id", "userId", "token", "expiresAt", "createdAt", "updatedAt")
     VALUES ('coordinationos-session', '${userId}', '${sessionToken}', '2099-01-01T00:00:00.000Z', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
-  INSERT INTO "ethereum_keys" ("id", "userId", "address", "publicKey", "sealedBlob", "keyType", "keyPurpose", "sealingContext")
-    VALUES ('personal-key', '${userId}', '0x31d40B62C395B9418C4198363619B11c65cD406F', '0x1', 'sealed', 'MANAGED', 'PERSONAL', 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
-  INSERT INTO "ethereum_keys" ("id", "userId", "address", "publicKey", "sealedBlob", "keyType", "keyPurpose", "sealingContext")
-    VALUES ('tenant-key', '${userId}', '0x1111111111111111111111111111111111111111', '0x2', 'sealed', 'MANAGED', 'MANAGED_ACCOUNT', 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA');
-  INSERT INTO "ethereum_keys" ("id", "userId", "address", "publicKey", "keyType", "keyPurpose")
-    VALUES ('external-key', '${userId}', '0x2222222222222222222222222222222222222222', '0x3', 'EXTERNAL', 'PERSONAL');
+  INSERT INTO "ethereum_keys" ("id", "userId", "address", "publicKey", "sealedBlob", "keyType", "sealingContext", "isCanonicalTinyCloud")
+    VALUES ('personal-key', '${userId}', '0x31d40B62C395B9418C4198363619B11c65cD406F', '0x1', 'sealed', 'MANAGED', 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', true);
+  INSERT INTO "ethereum_keys" ("id", "userId", "address", "publicKey", "keyType")
+    VALUES ('external-key', '${userId}', '0x2222222222222222222222222222222222222222', '0x3', 'EXTERNAL');
 `);
 
 const oauthAdmin = await import('../apps/api/src/routes/oauth-admin?coordinationos-oidc-admin');
@@ -58,17 +56,17 @@ oauthAdmin.setOauthAdminDatabaseForTests({
     create: async ({ data }: any) => {
       await pglite.query(`
         INSERT INTO "oauth_client" (
-          "id", "clientId", "clientSecret", "mode", "name", "uri", "icon",
+          "id", "clientId", "clientSecret", "name", "uri", "icon",
           "redirectUris", "scopes", "disabled", "skipConsent", "enableEndSession",
           "tokenEndpointAuthMethod", "grantTypes", "responseTypes", "type", "public",
           "contacts", "metadata", "updatedAt"
         ) VALUES (
-          $1, $2, $3, $4, $5, $6, $7, $8::TEXT[], $9::TEXT[], $10, $11, $12,
-          $13, $14::TEXT[], $15::TEXT[], $16, $17, $18::TEXT[], $19::JSONB,
+          $1, $2, $3, $4, $5, $6, $7::TEXT[], $8::TEXT[], $9, $10, $11,
+          $12, $13::TEXT[], $14::TEXT[], $15, $16, $17::TEXT[], $18::JSONB,
           CURRENT_TIMESTAMP
         )
       `, [
-        data.id, data.clientId, data.clientSecret, data.mode, data.name, data.uri, data.icon,
+        data.id, data.clientId, data.clientSecret, data.name, data.uri, data.icon,
         data.redirectUris, data.scopes, data.disabled, data.skipConsent, data.enableEndSession,
         data.tokenEndpointAuthMethod, data.grantTypes, data.responseTypes, data.type,
         data.public, data.contacts, JSON.stringify(data.metadata),
@@ -88,6 +86,7 @@ const registration = await oauthAdmin.oauthAdminRouter.request('/clients', {
     type: 'web',
     redirectUris: [callback],
     scopes,
+    autoApprove: true,
   }),
 });
 if (registration.status !== 201) throw new Error(`web client registration failed: ${registration.status}`);
@@ -98,10 +97,6 @@ const registered = await registration.json() as {
 const clientId = registered.client.clientId;
 const secret = registered.clientSecret;
 const secretHash = createHash('sha256').update(secret).digest('base64url');
-await pglite.query(`
-  INSERT INTO "oauth_consent" ("id", "userId", "clientId", "scopes", "updatedAt")
-    VALUES ('coordinationos-consent', $1, $2, $3::TEXT[], CURRENT_TIMESTAMP)
-`, [userId, clientId, scopes]);
 oauthAdmin.setOauthAdminDatabaseForTests();
 await pglite.close();
 
@@ -142,14 +137,14 @@ describe('CoordinationOS OIDC provider integration', () => {
       responseTypes: ['code'],
       type: 'web',
       public: false,
-      mode: 'PERSONAL',
+      skipConsent: true,
     });
     expect(storedClient?.clientSecret).not.toBe(secret);
     expect(await prisma.coordinationosSessionGrant.count()).toBe(0);
     expect(await prisma.coordinationosSigningDecision.count()).toBe(0);
   });
 
-  test('web create, allowed metadata PATCH, and code exchange retain the sole callback and exact scopes', async () => {
+  test('auto-approved confidential client redirects directly to its callback and exchanges a PKCE code without consent', async () => {
     oauthAdmin.setOauthAdminDatabaseForTests(prisma);
     const patch = await oauthAdmin.oauthAdminRouter.request(`/clients/${clientId}`, {
       method: 'PATCH',
@@ -196,8 +191,11 @@ describe('CoordinationOS OIDC provider integration', () => {
     const authorization = await requestAuth(`/oauth2/authorize?${query}`);
     expect(authorization.status).toBe(302);
     const location = new URL(authorization.headers.get('location')!);
+    expect(location.origin + location.pathname).toBe(callback);
     const code = location.searchParams.get('code');
     expect(code).toBeTruthy();
+    expect(location.searchParams.get('state')).toBe('coordinationos-state');
+    expect(await prisma.oauthConsent.count({ where: { clientId } })).toBe(0);
 
     const exchange = await requestAuth('/oauth2/token', {
       method: 'POST',
@@ -254,6 +252,46 @@ describe('CoordinationOS OIDC provider integration', () => {
     });
     expect(stored).toBeTruthy();
     expect(stored?.token).not.toBe(tokens.access_token);
+  });
+
+  test('normal confidential clients still redirect to consent when no consent exists', async () => {
+    oauthAdmin.setOauthAdminDatabaseForTests(prisma);
+    const registration = await oauthAdmin.oauthAdminRouter.request('/clients', {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer coordinationos-admin-key',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        name: 'Normal client',
+        type: 'web',
+        redirectUris: [callback],
+        scopes,
+        autoApprove: false,
+      }),
+    });
+    expect(registration.status).toBe(201);
+    const normal = await registration.json() as { client: { clientId: string; autoApprove: boolean } };
+    expect(normal.client.autoApprove).toBeFalse();
+    oauthAdmin.setOauthAdminDatabaseForTests();
+
+    const challenge = await generateCodeChallenge(verifier);
+    const query = new URLSearchParams({
+      response_type: 'code',
+      client_id: normal.client.clientId,
+      redirect_uri: callback,
+      scope: scopes.join(' '),
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+      state: 'normal-client-state',
+      nonce: 'normal-client-nonce',
+    });
+    const authorization = await requestAuth(`/oauth2/authorize?${query}`);
+    expect(authorization.status).toBe(302);
+    const location = new URL(authorization.headers.get('location')!);
+    expect(location.pathname).toBe('/oauth/consent');
+    expect(location.searchParams.get('code')).toBeNull();
+    expect(await prisma.oauthConsent.count({ where: { clientId: normal.client.clientId } })).toBe(0);
   });
 
   test('wrong secret and every non-identical callback fail real Basic-auth code exchange', async () => {

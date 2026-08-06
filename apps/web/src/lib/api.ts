@@ -26,7 +26,11 @@ async function fetchAPI<T>(path: string, options: RequestInit = {}): Promise<T> 
     const detail = error?.error;
     const message = typeof detail === 'string' ? detail : detail?.message;
     const failure = new Error(message || `HTTP ${res.status}`);
-    Object.assign(failure, { code: detail?.code, status: res.status });
+    Object.assign(failure, {
+      code: detail?.code,
+      status: res.status,
+      policyEpoch: typeof error?.policyEpoch === 'number' ? error.policyEpoch : undefined,
+    });
     throw failure;
   }
 
@@ -79,150 +83,49 @@ export interface AutoSignPreference {
   autoSignEnabled: boolean;
 }
 
-export interface OwnerManagedAccount {
-  managedAccountId: string;
-  managedBy: string;
-  state: 'MANAGED' | 'EJECTING' | 'USER_OWNED';
-  custodyEpoch: number;
-  custody: 'ORGANIZATION_MANAGED' | 'USER_OWNED';
-  tenantAccess: 'NOT_REQUIRED' | 'PENDING' | 'REVOKED';
-  tenantParentExpiresAt: string | null;
-  address: string;
-  ownerDid: string;
-  revocationReceipts: Array<{ status: 'PENDING' | 'SUBMITTED' | 'CONFIRMED' | 'FAILED' }>;
+export interface TinyCloudManageKeyPreference {
+  tinyCloudManageKeyEnabled: boolean;
+  mode: 'APP_MANAGED' | 'USER_CONTROLLED_SHARED' | 'USER_CONTROLLED_EXCLUSIVE';
+  policyEpoch: number;
 }
 
-export interface OrganizationSummary {
-  id: string;
-  name: string;
-  role: 'ADMIN' | 'MEMBER';
-  plan: 'FREE' | 'PRO' | 'ENTERPRISE';
-  billingState: 'FREE' | 'ACTIVE' | 'PAST_DUE' | 'CANCELLED';
-  brokerDid: string | null;
-  entitlements: null | {
-    version: number; maxApps: number; maxOrganizationMembers: number; maxManagedAccounts: number;
-    monthlyActiveManagedUsers: number; storageBytesPerManagedAccount: string; requestsPerMinute: number;
-    maxTenantDelegationTtlSeconds: number; maxTenantPolicyVersion: number; webhookDelivery: boolean;
-    auditRetentionDays: number;
-  };
-  usage: { apps: number; managedAccounts: number; members: number };
-}
-
-export interface ConsoleOverviewOrganization {
-  id: string;
-  name: string;
-  role: 'ADMIN' | 'MEMBER';
-  plan: 'FREE' | 'PRO' | 'ENTERPRISE';
-  billingState: 'FREE' | 'ACTIVE' | 'PAST_DUE' | 'CANCELLED';
-  brokerDid: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface ConsoleEntitlements {
-  version: number;
-  maxApps: number;
-  maxOrganizationMembers: number;
-  maxManagedAccounts: number;
-  monthlyActiveManagedUsers: number;
-  storageBytesPerManagedAccount: string;
-  requestsPerMinute: number;
-  maxTenantDelegationTtlSeconds: number;
-  maxTenantPolicyVersion: number;
-  webhookDelivery: boolean;
-  auditRetentionDays: number;
-  maxWebhookEndpoints: number;
-}
-
-export interface ConsoleOverview {
-  organization: ConsoleOverviewOrganization;
-  entitlements: ConsoleEntitlements | null;
-  usage: {
-    apps: number;
-    managedAccounts: number;
-    members: number;
-    credentials: number;
-    webhookEndpoints: number;
-  };
-}
-
-export interface ConsoleApp {
-  id: string;
+export interface TinyCloudManageKeyApp {
   clientId: string;
-  mode: 'PERSONAL' | 'TENANT_MANAGED';
   name: string;
   uri: string | null;
   icon: string | null;
-  redirectUris: string[];
-  scopes: string[];
-  type: 'web' | 'spa' | 'native';
-  public: boolean;
-  tokenEndpointAuthMethod: string | null;
-  grantTypes: string[];
-  responseTypes: string[];
-  tinycloudSessionPolicy: string | null;
-  tinycloudSessionOrigin: string | null;
   disabled: boolean;
-  createdAt: string;
-  updatedAt: string;
+  enabled: boolean;
+  status?: 'ENABLED' | 'DISABLED' | 'PENDING_USER_APPROVAL' | 'CONSENT_WITHDRAWN';
 }
 
-export interface ConsoleMember {
-  id: string;
-  userId: string;
-  email: string;
-  name: string | null;
-  address: string | null;
-  role: 'ADMIN' | 'MEMBER';
-  validFrom: string;
+export interface TinyCloudManageKeyActivity {
+  clientId: string;
+  clientName: string;
+  allowed: boolean;
+  reason: string;
+  policyEpoch: number;
   createdAt: string;
 }
 
-export interface ConsoleCredential {
-  id: string;
-  name: string;
-  kind: 'MANAGEMENT';
-  secretPrefix: string;
-  subjectUserId: string | null;
-  createdAt: string;
-  lastUsedAt: string | null;
-  revokedAt: string | null;
+export interface TinyCloudManageKeyAppsResponse {
+  apps: TinyCloudManageKeyApp[];
+  activity: TinyCloudManageKeyActivity[];
+  mode: TinyCloudManageKeyPreference['mode'];
+  policyEpoch: number;
 }
 
-export interface ConsoleManagedAccount {
-  id: string;
-  subjectEmail: string;
-  externalUserId: string | null;
-  address: string;
-  state: string;
-  custodyEpoch: number;
-  tenantAccess: string;
-  createdAt: string;
-  updatedAt: string;
+export interface OrganizationSummary {
+  id: string; name: string; role: "ADMIN" | "MEMBER"; plan: "FREE" | "PRO" | "ENTERPRISE"; billingState: string;
+  entitlements: null | { version: number; maxApps: number; maxOrganizationMembers: number; requestsPerMinute: number; auditRetentionDays: number };
+  usage: { apps: number; members: number };
 }
-
-export interface ConsoleManagedAccountDetail extends ConsoleManagedAccount {}
-
-export interface ConsoleWebhookEndpoint {
-  id: string;
-  url: string;
-  eventTypes: string[];
-  active: boolean;
-  createdAt: string;
-  updatedAt: string;
+export interface ConsoleOverview {
+  organization: OrganizationSummary & { createdAt: string; updatedAt: string };
+  entitlements: OrganizationSummary["entitlements"]; usage: { apps: number; members: number };
 }
-
-export interface ConsoleWebhookDelivery {
-  id: string;
-  managedAccountId: string;
-  eventType: string;
-  custodyEpoch: number;
-  status: 'PENDING' | 'FAILED' | 'DELIVERED';
-  attempts: number;
-  lastAttemptAt: string | null;
-  deliveredAt: string | null;
-  createdAt: string;
-}
+export interface ConsoleApp { id: string; clientId: string; name: string; uri: string | null; icon: string | null; redirectUris: string[]; scopes: string[]; type: "web" | "spa" | "native"; public: boolean; tokenEndpointAuthMethod: string | null; grantTypes: string[]; responseTypes: string[]; tinycloudSessionPolicy: string | null; tinycloudSessionOrigin: string | null; disabled: boolean; createdAt: string; updatedAt: string; }
+export interface ConsoleMember { id: string; userId: string; email: string; name: string | null; role: "ADMIN" | "MEMBER"; validFrom: string; createdAt: string; }
 
 export const api = {
   // Nostr identity + signing (secp256k1 Schnorr / BIP-340) - structurally
@@ -338,6 +241,30 @@ export const api = {
     });
   },
 
+  async getTinyCloudManageKeyPreference(): Promise<TinyCloudManageKeyPreference> {
+    return fetchAPI('/api/account/tinycloud-manage-key');
+  },
+
+  async updateTinyCloudManageKeyPreference(mode: TinyCloudManageKeyPreference['mode'], policyEpoch: number, confirmation: string): Promise<TinyCloudManageKeyPreference> {
+    return fetchAPI('/api/account/tinycloud-manage-key', {
+      method: 'PATCH',
+      body: JSON.stringify({ mode, expectedEpoch: policyEpoch, confirmation }),
+    });
+  },
+
+  async listTinyCloudManageKeyApps(): Promise<TinyCloudManageKeyAppsResponse> {
+    return fetchAPI('/api/account/tinycloud-apps');
+  },
+
+  async updateTinyCloudManageKeyApp(clientId: string, enabled: boolean, policyEpoch: number, confirmation: string): Promise<{
+    clientId: string; enabled: boolean; status: string; policyEpoch: number;
+  }> {
+    return fetchAPI(`/api/account/tinycloud-apps/${encodeURIComponent(clientId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ enabled, expectedEpoch: policyEpoch, confirmation }),
+    });
+  },
+
   async getLinkChallenge(): Promise<{ message: string; nonce: string }> {
     return fetchAPI('/api/keys/link/challenge', {
       method: 'POST',
@@ -351,36 +278,13 @@ export const api = {
     });
   },
 
-  async listManagedAccounts(): Promise<{ accounts: OwnerManagedAccount[] }> {
-    return fetchAPI('/api/managed-accounts');
-  },
-
-  async ejectManagedAccount(id: string, expectedEpoch: number, idempotencyKey: string): Promise<{
-    managedAccountId: string; custody: 'USER_OWNED'; custodyEpoch: number;
-    custodyResult: 'CUSTODY_TRANSFERRED'; tenantAccess: 'PENDING' | 'REVOKED';
-    address: string; ownerDid: string; eventHash: string;
-  }> {
-    return fetchAPI(`/api/managed-accounts/${encodeURIComponent(id)}/eject`, {
-      method: 'POST',
-      headers: { 'Idempotency-Key': idempotencyKey },
-      body: JSON.stringify({ expectedEpoch }),
-    });
-  },
-
-  async getManagedAccountRevocation(id: string) {
-    return fetchAPI<{
-      custody: string; custodyEpoch: number; tenantAccess: 'PENDING' | 'REVOKED';
-      nodes: Array<{ status: string; submittedAt: string | null; confirmedAt: string | null; node: { nodeId: string; baseUrl: string } }>;
-    }>(`/api/managed-accounts/${encodeURIComponent(id)}/revocation`);
-  },
-
   async listOrganizations(): Promise<{ organizations: OrganizationSummary[] }> {
     return fetchAPI('/api/organizations');
   },
 
-  async createOrganization(name: string, brokerDid: string) {
+  async createOrganization(name: string) {
     return fetchAPI<{ organization: { id: string; name: string; plan: 'FREE' } }>('/api/organizations', {
-      method: 'POST', body: JSON.stringify({ name, brokerDid }),
+      method: 'POST', body: JSON.stringify({ name }),
     });
   },
 
@@ -442,80 +346,4 @@ export const api = {
     });
   },
 
-  async listConsoleCredentials(organizationId: string): Promise<{ credentials: ConsoleCredential[] }> {
-    return fetchAPI(`/api/console/organizations/${encodeURIComponent(organizationId)}/credentials`);
-  },
-
-  async createConsoleCredential(
-    organizationId: string,
-    input: { name: string },
-  ): Promise<{ credential: ConsoleCredential; secret: string }> {
-    return fetchAPI(`/api/console/organizations/${encodeURIComponent(organizationId)}/credentials`, {
-      method: 'POST',
-      body: JSON.stringify(input),
-    });
-  },
-
-  async revokeConsoleCredential(organizationId: string, credentialId: string): Promise<{ success: boolean }> {
-    return fetchAPI(`/api/console/organizations/${encodeURIComponent(organizationId)}/credentials/${encodeURIComponent(credentialId)}`, {
-      method: 'DELETE',
-    });
-  },
-
-  async rotateConsoleCredential(
-    organizationId: string,
-    credentialId: string,
-  ): Promise<{ credential: ConsoleCredential; secret: string }> {
-    return fetchAPI(`/api/console/organizations/${encodeURIComponent(organizationId)}/credentials/${encodeURIComponent(credentialId)}/rotate`, {
-      method: 'POST',
-    });
-  },
-
-  async listConsoleManagedAccounts(
-    organizationId: string,
-    options?: { limit?: number; cursor?: string; externalUserId?: string; status?: 'active' | 'disabled' | 'history' | 'user_owned' },
-  ): Promise<{ accounts: ConsoleManagedAccount[]; nextCursor: string | null }> {
-    const params = new URLSearchParams();
-    if (options?.limit) params.set('limit', String(options.limit));
-    if (options?.cursor) params.set('cursor', options.cursor);
-    if (options?.externalUserId) params.set('externalUserId', options.externalUserId);
-    if (options?.status) params.set('status', options.status);
-    const query = params.toString();
-    return fetchAPI(`/api/console/organizations/${encodeURIComponent(organizationId)}/managed-accounts${query ? `?${query}` : ''}`);
-  },
-
-  async getConsoleManagedAccount(organizationId: string, accountId: string): Promise<{ account: ConsoleManagedAccountDetail }> {
-    return fetchAPI(`/api/console/organizations/${encodeURIComponent(organizationId)}/managed-accounts/${encodeURIComponent(accountId)}`);
-  },
-
-  async listConsoleWebhookEndpoints(organizationId: string): Promise<{ endpoints: ConsoleWebhookEndpoint[]; supportedEventTypes: string[] }> {
-    return fetchAPI(`/api/console/organizations/${encodeURIComponent(organizationId)}/webhook-endpoints`);
-  },
-
-  async createConsoleWebhookEndpoint(
-    organizationId: string,
-    input: { url: string; eventTypes: string[] },
-  ): Promise<{ endpoint: ConsoleWebhookEndpoint; secret: string }> {
-    return fetchAPI(`/api/console/organizations/${encodeURIComponent(organizationId)}/webhook-endpoints`, {
-      method: 'POST',
-      body: JSON.stringify(input),
-    });
-  },
-
-  async deleteConsoleWebhookEndpoint(organizationId: string, endpointId: string): Promise<{ success: boolean }> {
-    return fetchAPI(`/api/console/organizations/${encodeURIComponent(organizationId)}/webhook-endpoints/${encodeURIComponent(endpointId)}`, {
-      method: 'DELETE',
-    });
-  },
-
-  async listConsoleWebhookDeliveries(
-    organizationId: string,
-    endpointId: string,
-    options?: { limit?: number },
-  ): Promise<{ deliveries: ConsoleWebhookDelivery[] }> {
-    const params = new URLSearchParams();
-    if (options?.limit) params.set('limit', String(options.limit));
-    const query = params.toString();
-    return fetchAPI(`/api/console/organizations/${encodeURIComponent(organizationId)}/webhook-endpoints/${encodeURIComponent(endpointId)}/deliveries${query ? `?${query}` : ''}`);
-  },
 };

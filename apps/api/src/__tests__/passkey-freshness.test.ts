@@ -1,122 +1,47 @@
 import { expect, test } from 'bun:test';
 import {
-  assertFreshPasskeyUserVerification,
   beginPasskeyCeremony,
-  completePasskeyCeremony,
   issuePasskeyCeremony,
   pendingPasskeyCeremonyCount,
   recordPasskeyFreshnessAfterHook,
   recordVerifiedPasskeySession,
 } from '../services/passkey-freshness';
-import { authorizeKeyOperation } from '../services/managed-key-authorization';
 
-test('successful passkey verification records the exact issued session and enables EJECT', async () => {
-  const now = new Date('2026-07-15T12:00:00.000Z');
-  const sessions = new Map<string, { id: string; userId: string; expiresAt: Date; lastPasskeyAt: Date | null }>([['session-issued', {
-    id: 'session-issued', userId: 'owner', expiresAt: new Date(now.getTime() + 60_000), lastPasskeyAt: null,
-  }]]);
-  const db = {
-    session: {
-      updateMany: async ({ where, data }: { where: { id: string; userId: string }; data: { lastPasskeyAt: Date } }) => {
-        const session = sessions.get(where.id);
-        if (!session || session.userId !== where.userId) return { count: 0 };
-        session.lastPasskeyAt = data.lastPasskeyAt;
-        return { count: 1 };
-      },
-      findUnique: async ({ where }: { where: { id: string } }) => sessions.get(where.id) ?? null,
-    },
-    managedAccount: {
-      findFirst: async () => ({
-        id: 'account', ownerUserId: 'owner', organizationId: 'org', keyId: 'key', state: 'MANAGED', custodyEpoch: 1, policyVersion: 1,
-        key: { id: 'key', userId: 'owner', address: '0xFCAd0B19bB29D4674531d6f115237E16AfCE377c', keyType: 'MANAGED', keyPurpose: 'MANAGED_ACCOUNT', sealedBlob: 'sealed', sealingContext: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' },
-        custodyHead: { id: 'head', managedAccountId: 'account', custodianType: 'ORGANIZATION', custodianId: 'org', epoch: 1, revokedAt: null },
-        organization: { planEntitlements: null }, policies: [],
-      }),
-    },
-  } as any;
-
-  const ceremony = 'server-issued-ceremony';
-  expect(issuePasskeyCeremony(ceremony, now.getTime())).toBe(true);
-  expect(beginPasskeyCeremony(ceremony, now.getTime())).toBe(true);
-  const recorded = await recordVerifiedPasskeySession(db, new Response(JSON.stringify({ session: { id: 'session-issued', userId: 'owner' } }), { status: 200 }), ceremony, now);
-  expect(recorded).toBe(true);
+test('records freshness only for the exact unexpired session issued by a marked ceremony', async () => {
+  const now = new Date('2026-08-05T12:00:00.000Z');
+  let write: any;
+  const db = { session: { updateMany: async (input: any) => { write = input; return { count: 1 }; } } } as any;
+  expect(issuePasskeyCeremony('exact-session', now.getTime())).toBe(true);
+  expect(beginPasskeyCeremony('exact-session', now.getTime())).toBe(true);
+  expect(await recordVerifiedPasskeySession(db, { session: { id: 'session-1', userId: 'user-1' } }, 'exact-session', now)).toBe(true);
+  expect(write).toMatchObject({ where: { id: 'session-1', userId: 'user-1', expiresAt: { gt: now } }, data: { lastPasskeyAt: now } });
   expect(pendingPasskeyCeremonyCount(now.getTime())).toBe(0);
-  expect(completePasskeyCeremony(ceremony, now.getTime())).toBe(false);
-  expect(completePasskeyCeremony(ceremony, now.getTime())).toBe(false);
-  const authorization = await authorizeKeyOperation(db, {
-    type: 'user', sessionId: 'session-issued', managedAccountId: 'account', keyId: 'key', expectedEpoch: 1,
-    request: { operation: 'EJECT', reason: 'OWNER_REQUEST' },
-  }, { now });
-  expect(authorization.operation).toBe('EJECT');
 });
 
-test('failed verification and replayed ceremony cannot set freshness', async () => {
+test('rejects expired and replayed ceremonies without writing freshness', async () => {
   let writes = 0;
   const db = { session: { updateMany: async () => { writes += 1; return { count: 1 }; } } } as any;
-  const failed = await recordVerifiedPasskeySession(db, new Response('{}', { status: 401 }), null);
-  expect(failed).toBe(false);
-  expect(writes).toBe(0);
-  const ceremony = 'replayed-ceremony';
-  expect(issuePasskeyCeremony(ceremony)).toBe(true);
-  expect(beginPasskeyCeremony(ceremony)).toBe(true);
-  expect(completePasskeyCeremony(ceremony)).toBe(false);
-  const replay = await recordVerifiedPasskeySession(db, { session: { id: 's', userId: 'u' } }, ceremony);
-  expect(replay).toBe(false);
+  expect(issuePasskeyCeremony('expired-ceremony', 1_000)).toBe(true);
+  expect(beginPasskeyCeremony('expired-ceremony', 1_000)).toBe(true);
+  expect(await recordVerifiedPasskeySession(db, { session: { id: 's', userId: 'u' } }, 'expired-ceremony', new Date(301_000))).toBe(false);
+  expect(await recordVerifiedPasskeySession(db, { session: { id: 's', userId: 'u' } }, 'expired-ceremony')).toBe(false);
   expect(writes).toBe(0);
 });
 
-test('missing and expired markers cannot set freshness, and the marker store is bounded', async () => {
+test('single-claims concurrent hook attempts and always returns a hook result object', async () => {
   let writes = 0;
-  const db = { session: { updateMany: async () => { writes += 1; return { count: 1 }; } } } as any;
-  expect(await recordVerifiedPasskeySession(db, { session: { id: 's', userId: 'u' } }, null)).toBe(false);
-  const expired = 'expired-ceremony';
-  expect(issuePasskeyCeremony(expired, 1_000)).toBe(true);
-  expect(beginPasskeyCeremony(expired, 1_000)).toBe(true);
-  expect(await recordVerifiedPasskeySession(db, { session: { id: 's', userId: 'u' } }, expired, new Date(1_000 + 5 * 60 * 1000))).toBe(false);
-  expect(writes).toBe(0);
-  expect(pendingPasskeyCeremonyCount(1_000 + 5 * 60 * 1000)).toBe(0);
-});
-
-test('custody freshness requires UV only for the marked ceremony', () => {
-  expect(() => assertFreshPasskeyUserVerification({ authenticationInfo: { userVerified: false } })).toThrow();
-  expect(() => assertFreshPasskeyUserVerification({ authenticationInfo: { userVerified: true } })).not.toThrow();
-});
-
-test('Better Auth after hook always returns a result object', async () => {
-  const db = {
-    session: { updateMany: async () => ({ count: 0 }) },
-  } as any;
-
-  expect(await recordPasskeyFreshnessAfterHook(db, null, null)).toEqual({});
-});
-
-test('concurrent hook invocations single-claim one marker and write freshness once', async () => {
-  const ceremony = 'concurrent-ceremony';
-  expect(issuePasskeyCeremony(ceremony)).toBe(true);
-  expect(beginPasskeyCeremony(ceremony)).toBe(true);
-
-  let writes = 0;
-  let enteredResolve!: () => void;
-  const entered = new Promise<void>((resolve) => { enteredResolve = resolve; });
+  let entered!: () => void;
+  const enteredWrite = new Promise<void>((resolve) => { entered = resolve; });
   let release!: () => void;
-  const writeGate = new Promise<void>((resolve) => { release = resolve; });
-  const db = {
-    session: {
-      updateMany: async () => {
-        writes += 1;
-        enteredResolve();
-        await writeGate;
-        return { count: 1 };
-      },
-    },
-  } as any;
-
-  const first = recordVerifiedPasskeySession(db, { session: { id: 's', userId: 'u' } }, ceremony);
-  await entered;
-  const replay = recordVerifiedPasskeySession(db, { session: { id: 's', userId: 'u' } }, ceremony);
-  expect(await replay).toBe(false);
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const db = { session: { updateMany: async () => { writes += 1; entered(); await gate; return { count: 1 }; } } } as any;
+  expect(issuePasskeyCeremony('single-claim')).toBe(true);
+  expect(beginPasskeyCeremony('single-claim')).toBe(true);
+  const first = recordPasskeyFreshnessAfterHook(db, { session: { id: 's', userId: 'u' } }, 'single-claim');
+  await enteredWrite;
+  expect(await recordPasskeyFreshnessAfterHook(db, { session: { id: 's', userId: 'u' } }, 'single-claim')).toEqual({});
   release();
-  expect(await first).toBe(true);
+  expect(await first).toEqual({});
   expect(writes).toBe(1);
-  expect(pendingPasskeyCeremonyCount()).toBe(0);
+  expect(await recordPasskeyFreshnessAfterHook(db, null, null)).toEqual({});
 });

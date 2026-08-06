@@ -57,7 +57,6 @@ function fixture(): CoordinationosSessionPolicyInput {
     client: {
       clientId,
       disabled: false,
-      mode: 'PERSONAL',
       type: 'web',
       public: false,
       tokenEndpointAuthMethod: 'client_secret_basic',
@@ -73,7 +72,6 @@ function fixture(): CoordinationosSessionPolicyInput {
       userId: 'user_1',
       address,
       keyType: 'MANAGED',
-      keyPurpose: 'PERSONAL',
       archivedAt: null,
       sealedBlob: 'sealed',
     },
@@ -181,7 +179,6 @@ describe('CoordinationOS TinyCloud session policy', () => {
     ['disabled client', (input) => { input.client!.disabled = true; }, 'client_disabled'],
     ['public client', (input) => { input.client!.public = true; }, 'client_misconfigured'],
     ['non-web client', (input) => { input.client!.type = 'spa'; }, 'client_misconfigured'],
-    ['non-personal client', (input) => { input.client!.mode = 'TENANT_MANAGED'; }, 'client_misconfigured'],
     ['wrong auth method', (input) => {
       input.client!.tokenEndpointAuthMethod = 'none';
     }, 'client_misconfigured'],
@@ -211,7 +208,6 @@ describe('CoordinationOS TinyCloud session policy', () => {
     ['unverified user', (input) => { input.user!.emailVerified = false; }, 'email_not_verified'],
     ['missing key', (input) => { input.key = null; }, 'key_not_found'],
     ['other user key', (input) => { input.key!.userId = 'user_2'; }, 'wrong_user'],
-    ['tenant key', (input) => { input.key!.keyPurpose = 'MANAGED_ACCOUNT'; }, 'wrong_key_purpose'],
     ['external key', (input) => { input.key!.keyType = 'EXTERNAL'; }, 'external_key_denied'],
     ['archived key', (input) => { input.key!.archivedAt = now; }, 'key_archived'],
     ['unsealed key', (input) => { input.key!.sealedBlob = null; }, 'key_unavailable'],

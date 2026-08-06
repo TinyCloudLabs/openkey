@@ -3,7 +3,9 @@ import { describe, expect, test } from 'bun:test';
 import {
   DEFAULT_TINYCLOUD_MCP_AUDIENCE,
   DEFAULT_OAUTH_SCOPES,
+  DYNAMIC_CLIENT_REGISTRATION_ALLOWED_SCOPES,
   OAUTH_SCOPES,
+  TINYCLOUD_MANAGE_KEY_SCOPE,
   TINYCLOUD_SESSION_SCOPE,
   dynamicClientRegistrationEnabled,
   oauthValidAudiences,
@@ -28,6 +30,12 @@ describe('hosted MCP OAuth configuration', () => {
     expect(DEFAULT_OAUTH_SCOPES).not.toContain(TINYCLOUD_SESSION_SCOPE as never);
     expect(OAUTH_SCOPES).toContain('tinycloud:mcp');
     expect(DEFAULT_TINYCLOUD_MCP_AUDIENCE).toBe('https://mcp.tinycloud.xyz/mcp');
+  });
+
+  test('advertises canonical-key management without making it a default scope', () => {
+    expect(OAUTH_SCOPES).toContain(TINYCLOUD_MANAGE_KEY_SCOPE);
+    expect(DEFAULT_OAUTH_SCOPES).not.toContain(TINYCLOUD_MANAGE_KEY_SCOPE as never);
+    expect(DYNAMIC_CLIENT_REGISTRATION_ALLOWED_SCOPES).not.toContain(TINYCLOUD_MANAGE_KEY_SCOPE);
   });
 
   test('enables DCR by default and supports an explicit emergency disable', () => {

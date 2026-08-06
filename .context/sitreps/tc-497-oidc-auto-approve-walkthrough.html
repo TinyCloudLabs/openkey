@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TC-497 — OIDC auto-approval walkthrough</title>
+  <style>
+/* TinyCloud sitreps: dithered amber on dark. Inline this file. */
+:root { --ink:#0d0b08; --paper:#ede4d3; --paper-dim:#b8ab92; --amber:#f2a91c; --amber-dim:rgba(242,169,28,.13); --green:#6fbf73; --green-dim:rgba(111,191,115,.10); --red:#d96b5c; --red-dim:rgba(217,107,92,.10); --blue:#7aa7d9; --line:rgba(237,228,211,.16); --mono:"IBM Plex Mono",ui-monospace,monospace; --serif:"Fraunces",Georgia,serif; }
+* { box-sizing:border-box; margin:0; padding:0; } body { background:var(--ink); color:var(--paper); font:300 14.5px/1.55 var(--mono); overflow-x:hidden; } body::before { background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.05'/%3E%3C/svg%3E"); content:""; inset:0; pointer-events:none; position:fixed; z-index:999; } .wrap { margin:0 auto; max-width:1120px; padding:36px 32px 120px; } a { border-bottom:1px dotted var(--paper-dim); color:var(--paper); text-decoration:none; } .meta-row { border-bottom:1px solid var(--line); color:var(--paper-dim); display:flex; flex-wrap:wrap; font-size:11px; gap:8px; justify-content:space-between; letter-spacing:.14em; padding-bottom:14px; text-transform:uppercase; } h1 { font:900 clamp(46px,8vw,96px)/.95 var(--serif); letter-spacing:-.02em; margin-top:38px; } h1 em { color:var(--amber); font-weight:300; } .lede { font-size:15.5px; margin-top:30px; max-width:760px; } .lede strong { color:var(--amber); font-weight:500; } section { margin-top:76px; } .sec-head { align-items:baseline; border-bottom:1px solid var(--line); display:flex; gap:16px; margin-bottom:28px; padding-bottom:12px; } .sec-num { color:var(--amber); font-size:12px; letter-spacing:.2em; } .sec-head h2 { font:600 30px var(--serif); } .grid { display:grid; gap:14px; grid-template-columns:repeat(3,1fr); } .card { border:1px solid var(--line); min-width:0; padding:20px; } .card h3 { font:600 19px var(--serif); margin-bottom:8px; } .card p,.muted { color:var(--paper-dim); font-size:12.5px; } .pill { border:1px solid; display:inline-block; font-size:10px; letter-spacing:.12em; margin-top:10px; padding:3px 9px; text-transform:uppercase; } .pill.done { background:var(--green-dim); color:var(--green); } .pill.active { background:var(--amber-dim); color:var(--amber); } .pill.waiting { color:var(--blue); } table { border-collapse:collapse; font-size:13px; width:100%; } th { border-bottom:1px solid var(--line); color:var(--paper-dim); font-size:10px; font-weight:400; letter-spacing:.18em; padding:0 12px 10px 0; text-align:left; text-transform:uppercase; } td { border-bottom:1px solid rgba(237,228,211,.08); padding:12px 12px 12px 0; vertical-align:top; } .need { background:var(--amber-dim); border:1px solid var(--amber); margin-bottom:14px; padding:26px; position:relative; } .need::before { background:var(--ink); color:var(--amber); content:"YOUR MOVE"; font-size:10px; left:22px; letter-spacing:.28em; padding:0 10px; position:absolute; top:-9px; } .need h3 { font:600 19px var(--serif); margin-bottom:6px; } footer { border-top:1px solid var(--line); color:var(--paper-dim); display:flex; flex-wrap:wrap; font-size:11px; gap:8px; justify-content:space-between; letter-spacing:.12em; margin-top:70px; padding-top:16px; text-transform:uppercase; } @media (max-width:840px) { .grid { grid-template-columns:1fr; } .wrap { padding-inline:20px; } }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <header>
+      <div class="meta-row"><span>OpenKey / TC-497</span><span>Walkthrough · 2026-08-05 22:46 EDT</span></div>
+      <h1>Trusted OIDC<br><em>auto-approval.</em></h1>
+      <p class="lede"><strong>Thesis:</strong> a trusted confidential CoordinationOS client can complete the real Better Auth authorization flow directly to its exact callback, while every ordinary client remains consent-gated by default.</p>
+    </header>
+
+    <section>
+      <div class="sec-head"><span class="sec-num">01</span><h2>Public behavior</h2></div>
+      <div class="grid">
+        <article class="card"><h3>Trusted path</h3><p>The admin API stores <code>autoApprove: true</code> as Better Auth's per-client <code>skipConsent</code>. The real <code>/oauth2/authorize</code> handler returns the user to the registered CoordinationOS callback with code and state.</p><span class="pill done">Proven</span></article>
+        <article class="card"><h3>Normal path</h3><p>A second confidential web client with <code>autoApprove: false</code> receives a 302 to <code>/oauth/consent</code>, without a code and without a consent row.</p><span class="pill done">Proven</span></article>
+        <article class="card"><h3>Safety boundary</h3><p>Only the ADMIN_API_KEY control plane can set the property. Non-web/public clients cannot enable it; the persisted schema default stays false for ordinary and dynamic registrations.</p><span class="pill done">Proven</span></article>
+      </div>
+    </section>
+
+    <section>
+      <div class="sec-head"><span class="sec-num">02</span><h2>Evidence ledger</h2></div>
+      <table>
+        <thead><tr><th>Check</th><th>Result</th><th>What it proves</th></tr></thead>
+        <tbody>
+          <tr><td><code>bun test …oauth-confidential-client… ci-provision… oauth-coordinationos…</code></td><td><span class="pill done">46 pass · 0 fail</span></td><td>Admin response/update safety, provisioning configuration, real PGlite authorization, callback exactness, PKCE + Basic secret exchange, and normal-client consent regression.</td></tr>
+          <tr><td><code>bun run typecheck</code></td><td><span class="pill done">14/14 tasks</span></td><td>Generated Prisma client and all workspace typechecks are clean.</td></tr>
+          <tr><td><code>git diff --check</code></td><td><span class="pill done">pass</span></td><td>No whitespace errors in the scoped change.</td></tr>
+          <tr><td>Provisioner repair/reprovision/create</td><td><span class="pill done">idempotent</span></td><td>The CoordinationOS client receives <code>skipConsent: true</code> on each path; rollback restores the prior value after a secret-rotation failure.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <div class="sec-head"><span class="sec-num">03</span><h2>Scoped changes</h2></div>
+      <div class="grid">
+        <article class="card"><h3>Admin API</h3><p><code>oauth-admin.ts</code> accepts, validates, persists, and safely returns <code>autoApprove</code>; no list/detail/update response exposes the client secret.</p></article>
+        <article class="card"><h3>Provisioner</h3><p><code>ci-provision-coordinationos-oidc.ts</code> makes the trusted client auto-approved at creation and remediation without changing its client-auth, redirect, or scope requirements.</p></article>
+        <article class="card"><h3>Tests &amp; schema</h3><p>The Prisma default remains false. Integration tests use the actual provider endpoint, not a mocked consent decision.</p></article>
+      </div>
+    </section>
+
+    <section>
+      <div class="sec-head"><span class="sec-num">04</span><h2>Handoff</h2></div>
+      <div class="need"><h3>Review the dependent PR after it is opened</h3><p>The branch is intentionally stacked on TC-484 / OpenKey PR #170. No merge, deployment, credential change, or production data operation is part of this change.</p></div>
+      <p class="muted">Uncertainty: independent PR review and hosted CI are not yet available at this evidence timestamp. Local tests are the recorded basis for the implementation verdict.</p>
+    </section>
+    <footer><span>Source: TC-497 · OpenKey branch skgbafa/tc-497-oidc-auto-approve</span><span>Static, self-contained review artifact</span></footer>
+  </main>
+</body>
+</html>

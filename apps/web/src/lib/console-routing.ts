@@ -15,6 +15,13 @@ type ConsoleHostRouteInput = {
   consoleOrigin: string;
 };
 
+export function consoleOrganizationPath(
+  organizationId: string,
+  destination: 'apps' | 'members',
+): string {
+  return `/console/${encodeURIComponent(organizationId)}/${destination}`;
+}
+
 /**
  * Keep the account and administrative surfaces separate at the host boundary.
  * Fragment identifiers are not sent to an HTTP server; browsers retain an

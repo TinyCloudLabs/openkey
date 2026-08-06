@@ -25,7 +25,7 @@ export function createOrganizationsRouter(
         organization: {
           include: {
             planEntitlements: true,
-            _count: { select: { oauthClients: true, managedAccounts: true, memberships: true } },
+            _count: { select: { oauthClients: true, memberships: true } },
           },
         },
       },
@@ -38,11 +38,9 @@ export function createOrganizationsRouter(
         role,
         plan: organization.plan,
         billingState: organization.billingState,
-        brokerDid: organization.brokerDid,
         entitlements: organization.planEntitlements ? serializeEntitlements(organization.planEntitlements) : null,
         usage: {
           apps: organization._count.oauthClients,
-          managedAccounts: organization._count.managedAccounts,
           members: organization._count.memberships,
         },
       })),
@@ -50,16 +48,14 @@ export function createOrganizationsRouter(
   });
 
   organizationsRouter.post('/', async (c) => {
-    const body: { name?: unknown; brokerDid?: unknown } = await c.req.json().catch(() => ({}));
-    if (typeof body.name !== 'string' || !body.name.trim() || body.name.length > 100
-      || typeof body.brokerDid !== 'string' || !body.brokerDid.startsWith('did:')) {
-      return c.json({ error: { code: 'INVALID_REQUEST', message: 'name and a broker DID are required' } }, 400);
+    const body: { name?: unknown } = await c.req.json().catch(() => ({}));
+    if (typeof body.name !== 'string' || !body.name.trim() || body.name.length > 100) {
+      return c.json({ error: { code: 'INVALID_REQUEST', message: 'name is required' } }, 400);
     }
     const name = body.name.trim();
-    const brokerDid = body.brokerDid;
     const organization = await prisma.$transaction(async (tx) => {
       const created = await tx.organization.create({
-        data: { name, brokerDid, plan: 'FREE' },
+        data: { name, plan: 'FREE' },
       });
       await tx.organizationMembership.create({
         data: { organizationId: created.id, userId: c.get('user').id, role: 'ADMIN' },

@@ -1,6 +1,6 @@
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { describe, expect, test } from 'bun:test';
-import { routeConsoleHost } from './console-routing';
+import { consoleOrganizationPath, routeConsoleHost } from './console-routing';
 
 const input = {
   accountHostname: 'openkey.so',
@@ -10,6 +10,11 @@ const input = {
 };
 
 describe('console host routing', () => {
+  test('builds organization overview actions as canonical absolute paths', () => {
+    expect(consoleOrganizationPath('org_123', 'apps')).toBe('/console/org_123/apps');
+    expect(consoleOrganizationPath('org/unsafe', 'members')).toBe('/console/org%2Funsafe/members');
+  });
+
   test('moves a legacy deep link to the console host without changing its journey', () => {
     expect(routeConsoleHost({
       ...input,
@@ -26,7 +31,7 @@ describe('console host routing', () => {
     expect(routeConsoleHost({
       ...input,
       hostname: 'console.openkey.so',
-      pathname: '/console/org_123/credentials',
+      pathname: '/console/org_123/apps',
       search: '',
     })).toEqual({ type: 'continue' });
   });
