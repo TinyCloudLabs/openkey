@@ -445,3 +445,114 @@ export function createWidgetTransport(opts: WidgetTransportOptions): WidgetTrans
     },
   };
 }
+
+/**
+ * Versioned transport for widget protocols which share the same iframe
+ * security boundary as the Ethereum signer but have a different payload.
+ * Nostr uses this rather than growing its own uncorrelated postMessage path.
+ */
+export interface VersionedWidgetRequest {
+  type: string;
+  requestId: string;
+  protocolVersion: number;
+  data: Record<string, unknown>;
+}
+
+export interface VersionedWidgetTransportOptions {
+  origin: string;
+  requestTypes: readonly string[];
+  onRequest: (request: VersionedWidgetRequest) => void;
+  onClose: () => void;
+  onInvalid?: (reason: InvalidReason, event: MessageEvent) => void;
+  validateRequest?: (request: VersionedWidgetRequest) => boolean;
+  protocolVersion?: number;
+}
+
+export interface VersionedWidgetTransport {
+  emitReady: () => void;
+  emit: (type: string, data?: Record<string, unknown>) => void;
+  respond: (
+    type: string,
+    requestId: string,
+    success: boolean,
+    data?: Record<string, unknown>,
+  ) => void;
+  emitResize: (height: number) => void;
+  destroy: () => void;
+}
+
+export function createVersionedIframeTransport(
+  opts: VersionedWidgetTransportOptions,
+): VersionedWidgetTransport {
+  if (!opts.origin || opts.origin === '*' || opts.origin === 'null') {
+    throw new Error('A versioned widget transport requires an exact origin.');
+  }
+  if (typeof window === 'undefined' || !window.parent || window.parent === window) {
+    throw new Error('A versioned iframe transport requires a parent window.');
+  }
+
+  const protocolVersion = opts.protocolVersion ?? 1;
+  const parent = window.parent;
+  let activeRequestId: string | null = null;
+
+  const reject = (reason: InvalidReason, event: MessageEvent) => {
+    opts.onInvalid?.(reason, event);
+  };
+  const handler = (event: MessageEvent) => {
+    if (event.origin !== opts.origin) return reject('wrong-origin', event);
+    if (event.source !== parent) return reject('wrong-source', event);
+    if (!event.data || typeof event.data !== 'object') return reject('invalid-payload', event);
+    const data = event.data as Record<string, unknown>;
+    if (data.type === 'openkey:close') {
+      if (
+        data.protocolVersion !== protocolVersion ||
+        typeof data.requestId !== 'string' ||
+        data.requestId !== activeRequestId
+      ) return reject('invalid-close', event);
+      opts.onClose();
+      return;
+    }
+    if (typeof data.type !== 'string' || !opts.requestTypes.includes(data.type)) {
+      return reject('unknown-message-type', event);
+    }
+    if (typeof data.requestId !== 'string' || !data.requestId) return reject('missing-request-id', event);
+    if (data.protocolVersion !== protocolVersion) return reject('wrong-protocol-version', event);
+    if (activeRequestId !== null) return reject('invalid-payload', event);
+    const request: VersionedWidgetRequest = {
+      type: data.type,
+      requestId: data.requestId,
+      protocolVersion,
+      data,
+    };
+    if (opts.validateRequest && !opts.validateRequest(request)) return reject('invalid-payload', event);
+    activeRequestId = request.requestId;
+    opts.onRequest(request);
+  };
+  window.addEventListener('message', handler);
+
+  const emit = (type: string, data: Record<string, unknown> = {}) => {
+    if (activeRequestId === null) return;
+    parent.postMessage(
+      { ...data, type, requestId: activeRequestId, protocolVersion },
+      opts.origin,
+    );
+  };
+
+  return {
+    emitReady: () => parent.postMessage({ type: 'openkey:ready', protocolVersion }, opts.origin),
+    emit,
+    respond(type, requestId, success, data = {}) {
+      if (requestId !== activeRequestId) return;
+      parent.postMessage(
+        { ...data, type, requestId, protocolVersion, success },
+        opts.origin,
+      );
+      activeRequestId = null;
+    },
+    emitResize(height) {
+      if (!Number.isFinite(height) || height <= 0) return;
+      emit('openkey:resize', { height });
+    },
+    destroy: () => window.removeEventListener('message', handler),
+  };
+}

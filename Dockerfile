@@ -13,6 +13,12 @@ COPY packages/db/package.json ./packages/db/
 COPY packages/db/prisma ./packages/db/prisma
 COPY scripts/generate-prisma.ts ./scripts/generate-prisma.ts
 COPY packages/types/package.json ./packages/types/
+# prisma.config.ts (root + packages/db) supplies datasource.url from
+# DATABASE_URL for `prisma migrate deploy` — omitting them makes the
+# `deps` target unusable for `bun run db:migrate:apply` (openkey-migrate
+# in docker-compose.openkey.yml), which needs only this stage.
+COPY prisma.config.ts ./
+COPY packages/db/prisma.config.ts ./packages/db/
 RUN bun install --ignore-scripts
 # Generate Prisma client (skipped by --ignore-scripts)
 RUN bun run scripts/generate-prisma.ts

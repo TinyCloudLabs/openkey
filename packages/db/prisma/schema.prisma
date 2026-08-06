@@ -21,6 +21,8 @@ model User {
   // Relations
   passkeys                       Passkey[]
   ethereumKeys                   EthereumKey[]
+  nostrKeys                      NostrKey[]
+  nostrSigningGrants             NostrSigningGrant[]
   tinyCloudBootstrapState        TinyCloudBootstrapState[]
   sessions                       Session[]
   accounts                       Account[]
@@ -160,6 +162,68 @@ model EthereumKey {
   @@unique([id, userId], map: "ethereum_keys_id_userId_key")
   @@index([userId, keyPurpose], map: "ethereum_keys_userId_keyPurpose_idx")
   @@map("ethereum_keys")
+}
+
+// Nostr identities - secp256k1 Schnorr (BIP-340 / NIP-01), structurally
+// separate from EthereumKey (which is secp256k1 ECDSA). Never signed with
+// the same code path as Ethereum keys; see packages/tee/src/nostr.ts.
+model NostrKey {
+  id             String    @id @default(cuid())
+  userId         String    @unique(map: "nostr_keys_userId_key")
+  label          String?
+  pubkeyHex      String    @unique
+  npub           String    @unique
+  sealedSecret   String
+  sealingContext String    @unique(map: "nostr_keys_sealingContext_key")
+  revokedAt      DateTime?
+  createdAt      DateTime  @default(now())
+
+  user   User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  grants NostrSigningGrant[]
+
+  @@map("nostr_keys")
+}
+
+// A revocable, expirable, silent-signing authorization scoped to exactly one
+// client origin and key. NOT reused from CoordinationosSessionGrant, which is
+// single-consume by design and would break silent signing after one event.
+model NostrSigningGrant {
+  id           String    @id @default(cuid())
+  userId       String
+  keyId        String
+  clientOrigin String
+  allowedKinds Int[]
+  relayUrl     String?
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  createdAt    DateTime  @default(now())
+
+  user User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  key  NostrKey @relation(fields: [keyId], references: [id], onDelete: Cascade)
+
+  @@index([userId, keyId, clientOrigin], map: "nostr_signing_grant_lookup_idx")
+  @@map("nostr_signing_grant")
+}
+
+// Audit trail for every Nostr sign-event decision (allow AND deny). Never
+// stores secret material, sealed blobs, or session/grant bearer tokens.
+model NostrSigningDecision {
+  id             String   @id @default(cuid())
+  occurredAt     DateTime @default(now())
+  userId         String?
+  keyId          String?
+  clientOrigin   String?
+  kind           Int?
+  allowed        Boolean
+  reasonCode     String
+  requestDigest  String?
+  tags           Json?
+
+  @@index([occurredAt])
+  @@index([userId])
+  @@index([keyId])
+  @@index([allowed])
+  @@map("nostr_signing_decision")
 }
 
 model TinyCloudBootstrapState {
