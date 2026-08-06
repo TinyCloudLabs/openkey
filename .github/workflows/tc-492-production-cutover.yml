@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "Run the read-only backup preflight or the confirmed cutover"
+        description: "Run readiness preflight or the confirmed cutover"
         required: true
         type: choice
         options:
@@ -15,16 +15,20 @@ on:
         required: true
         type: string
       age_recipient:
-        description: "age public recipient for the encrypted backup (preflight only)"
+        description: "age public recipient for encrypted backups (preflight only)"
         required: false
         type: string
       telemetry_since:
-        description: "Phala log window, for example 168h (preflight only)"
+        description: "Required Phala log coverage, for example 168h (preflight only)"
         required: false
         default: "168h"
         type: string
       preflight_run_id:
         description: "Successful preflight workflow run ID (cutover only)"
+        required: false
+        type: string
+      operator_restore_challenge:
+        description: "64 hex characters recovered from the encrypted preflight bundle"
         required: false
         type: string
       accepted_candidate_digest:
@@ -39,8 +43,8 @@ on:
         description: "Accepted tenantCustodyKeyCount disposition (cutover only)"
         required: false
         type: string
-      route_telemetry_reference:
-        description: "Reviewed zero-hit evidence reference (cutover only)"
+      tenant_custody_disposition:
+        description: "delete-noncanonical-tenant-custody:<count>:<candidateDigest>"
         required: false
         type: string
       confirmation:
@@ -56,9 +60,12 @@ permissions:
   contents: read
   actions: read
 
+env:
+  PHALA_CLI_VERSION: 1.1.19
+
 jobs:
   preflight:
-    name: Backup, restore, report, and inspect route telemetry
+    name: Rehearse restore and prove release readiness
     if: github.ref == 'refs/heads/main' && inputs.mode == 'preflight'
     runs-on: ubuntu-latest
     environment: production
@@ -88,30 +95,31 @@ jobs:
           reviewed=$(git ls-remote https://github.com/TinyCloudLabs/openkey.git refs/pull/170/head | awk '{print $1}')
           [ "$CANDIDATE_SHA" = "$reviewed" ] || { echo "candidate_sha is not the current PR #170 head" >&2; exit 1; }
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ inputs.candidate_sha }}
           fetch-depth: 0
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
           bun-version: 1.3.14
 
-      - name: Install release and backup tools
+      - name: Install pinned release and backup tools
         run: |
           set -euo pipefail
           bun install --frozen-lockfile
           sudo apt-get update -qq
           sudo apt-get install -y age postgresql-client
-          npm install -g phala
+          npm install -g "phala@${PHALA_CLI_VERSION}"
+          [ "$(phala --version)" = "v${PHALA_CLI_VERSION}+d2300dd" ]
           bun run db:generate
 
-      - name: Capture and validate the production cutover report
+      - name: Validate exact migration set and production selection
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
           set -euo pipefail
-          [ -n "$DATABASE_URL" ] || { echo "DATABASE_URL is required" >&2; exit 1; }
+          bun scripts/verify-tc-492-migration-set.ts pre > tc492-migration-pre.json
           bun run db:cutover:report > tc492-pre.json
           node <<'NODE'
           const fs = require('node:fs');
@@ -123,7 +131,7 @@ jobs:
           }
           NODE
 
-      - name: Create and restore-rehearse the logical backup
+      - name: Rehearse backup restore and encrypt operator challenge
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           RESTORE_DATABASE_URL: postgresql://postgres:restore@127.0.0.1:5432/tc492_restore
@@ -131,21 +139,19 @@ jobs:
           CANDIDATE_SHA: ${{ inputs.candidate_sha }}
         run: |
           set -euo pipefail
+          cleanup() { rm -f tc492.dump tc492-restore-challenge tc492-backup.tar; }
+          trap cleanup EXIT
           pg_dump --format=custom --no-owner --no-privileges --file=tc492.dump "$DATABASE_URL"
           pg_restore --exit-on-error --no-owner --no-privileges --dbname="$RESTORE_DATABASE_URL" tc492.dump
           DATABASE_URL="$RESTORE_DATABASE_URL" bun run db:cutover:report > tc492-restored.json
-          node <<'NODE'
-          const fs = require('node:fs');
-          const before = JSON.parse(fs.readFileSync('tc492-pre.json', 'utf8'));
-          const restored = JSON.parse(fs.readFileSync('tc492-restored.json', 'utf8'));
-          if (JSON.stringify(before) !== JSON.stringify(restored)) throw new Error('restored database report differs from production report');
-          NODE
-          age --recipient "$AGE_RECIPIENT" --output "openkey-tc492-${CANDIDATE_SHA}.dump.age" tc492.dump
-          rm -f tc492.dump
+          cmp -s tc492-pre.json tc492-restored.json || { echo "restored database report differs from production report" >&2; exit 1; }
+          openssl rand -hex 32 > tc492-restore-challenge
+          challenge_sha=$(sha256sum tc492-restore-challenge | awk '{print $1}')
+          printf '%s\n' "$challenge_sha" > tc492-restore-challenge.sha256
+          tar -cf tc492-backup.tar tc492.dump tc492-restore-challenge
+          age --recipient "$AGE_RECIPIENT" --output "openkey-tc492-${CANDIDATE_SHA}.tar.age" tc492-backup.tar
 
-      - name: Inspect production logs for removed-route traffic
-        id: telemetry
-        continue-on-error: true
+      - name: Inspect complete production telemetry window
         env:
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
           TELEMETRY_SINCE: ${{ inputs.telemetry_since }}
@@ -153,62 +159,132 @@ jobs:
           set -euo pipefail
           [[ "$TELEMETRY_SINCE" =~ ^[0-9]+[mhd]$ ]] || { echo "invalid telemetry_since" >&2; exit 1; }
           phala logs --cvm-id openkey-api --api-token "$PHALA_CLOUD_API_KEY" --since "$TELEMETRY_SINCE" --timestamps > /tmp/openkey-api.log
-          http_lines=$(grep -Eic '(^|[[:space:]])(GET|POST|PUT|PATCH|DELETE|OPTIONS)([[:space:]]|\")' /tmp/openkey-api.log || true)
-          removed_hits=$(grep -Eic '(managed-accounts|tenant-accounts|management-credentials|personal-managed-accounts|/eject|tinycloud%3Asession|tinycloud:session)' /tmp/openkey-api.log || true)
+          TELEMETRY_SINCE="$TELEMETRY_SINCE" node <<'NODE'
+          const fs = require('node:fs');
+          const crypto = require('node:crypto');
+          const raw = fs.readFileSync('/tmp/openkey-api.log', 'utf8');
+          const duration = process.env.TELEMETRY_SINCE.match(/^(\d+)([mhd])$/);
+          const factor = {m: 60_000, h: 3_600_000, d: 86_400_000}[duration[2]];
+          const windowMs = Number(duration[1]) * factor;
+          const now = Date.now();
+          const timestamps = [...raw.matchAll(/\b\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z\b/g)]
+            .map((match) => Date.parse(match[0])).filter(Number.isFinite);
+          if (!timestamps.length) throw new Error('logs contain no RFC3339 timestamps');
+          const earliest = Math.min(...timestamps);
+          const latest = Math.max(...timestamps);
+          const startTolerance = Math.min(Math.max(windowMs * 0.02, 15 * 60_000), 2 * 3_600_000);
+          if (earliest > now - windowMs + startTolerance) throw new Error('log retention does not cover the requested window start');
+          if (latest < now - 30 * 60_000) throw new Error('log coverage is not current within 30 minutes');
+
+          const paths = [];
+          for (const line of raw.split('\n')) {
+            const match = line.match(/\b(?:GET|POST|PUT|PATCH|DELETE|OPTIONS)\s+(?:https?:\/\/[^/\s"]+)?(\/[^\s?"#]*)/i);
+            if (match) paths.push(match[1]);
+          }
+          if (!paths.length) throw new Error('logs contain no recognizable HTTP routes');
+          const removed = paths.filter((path) =>
+            /^\/v1\/(?:accounts|credentials|organization\/entitlements|webhook-endpoints)(?:\/|$)/.test(path)
+            || /^\/api\/(?:managed-account-registration|managed-accounts)(?:\/|$)/.test(path)
+            || /^\/api\/console\/organizations\/[^/]+\/(?:credentials|managed-accounts|webhook-endpoints)(?:\/|$)/.test(path)
+          );
+          const legacyScopeHits = (raw.match(/tinycloud(?::|%3A|%3a)session/g) || []).length;
+          const keysHits = paths.filter((path) => /^\/api\/keys(?:\/|$)/.test(path)).length;
+          const nostrKeysHits = paths.filter((path) => /^\/api\/keys\/nostr(?:\/|$)/.test(path)).length;
+          if (removed.length) throw new Error(`removed-route traffic remains active (${removed.length} hits)`);
+          if (legacyScopeHits) throw new Error(`legacy tinycloud:session traffic remains active (${legacyScopeHits} hits)`);
+          fs.writeFileSync('tc492-telemetry.json', JSON.stringify({
+            schema: 'openkey.tc492.telemetry.v2',
+            requestedWindow: process.env.TELEMETRY_SINCE,
+            earliestTimestamp: new Date(earliest).toISOString(),
+            latestTimestamp: new Date(latest).toISOString(),
+            logSha256: crypto.createHash('sha256').update(raw).digest('hex'),
+            httpLines: paths.length,
+            removedRouteHits: removed.length,
+            legacyScopeHits,
+            keysHits,
+            nostrKeysHits,
+          }));
+          NODE
           rm -f /tmp/openkey-api.log
-          echo "http_lines=$http_lines" >> "$GITHUB_OUTPUT"
-          echo "removed_hits=$removed_hits" >> "$GITHUB_OUTPUT"
-          [ "$http_lines" -gt 0 ] || { echo "Phala logs contain no recognizable HTTP route coverage" >&2; exit 1; }
-          [ "$removed_hits" -eq 0 ] || { echo "Removed-route traffic remains active" >&2; exit 1; }
+
+      - name: Capture body-free rollback runtime evidence
+        env:
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+        run: |
+          set -euo pipefail
+          phala runtime-config openkey-api --api-token "$PHALA_CLOUD_API_KEY" --json > /tmp/runtime.json
+          phala ps openkey-api --api-token "$PHALA_CLOUD_API_KEY" --json > /tmp/containers.json
+          node <<'NODE'
+          const fs = require('node:fs');
+          const crypto = require('node:crypto');
+          const files = ['/tmp/runtime.json', '/tmp/containers.json'];
+          const refs = new Set();
+          function visit(value) {
+            if (typeof value === 'string' && (/openkey-api/i.test(value) || /sha256:[0-9a-f]{64}/i.test(value))) refs.add(value);
+            else if (Array.isArray(value)) value.forEach(visit);
+            else if (value && typeof value === 'object') Object.values(value).forEach(visit);
+          }
+          for (const file of files) visit(JSON.parse(fs.readFileSync(file, 'utf8')));
+          if (!refs.size) throw new Error('could not identify the current OpenKey image/config reference');
+          fs.writeFileSync('tc492-runtime-before.json', JSON.stringify({
+            schema: 'openkey.tc492.runtime-before.v1',
+            runtimeConfigSha256: crypto.createHash('sha256').update(fs.readFileSync(files[0])).digest('hex'),
+            containerStateSha256: crypto.createHash('sha256').update(fs.readFileSync(files[1])).digest('hex'),
+            imageReferences: [...refs].sort(),
+          }));
+          NODE
+          rm -f /tmp/runtime.json /tmp/containers.json
 
       - name: Write body-free preflight evidence
         env:
           CANDIDATE_SHA: ${{ inputs.candidate_sha }}
-          TELEMETRY_SINCE: ${{ inputs.telemetry_since }}
-          TELEMETRY_OUTCOME: ${{ steps.telemetry.outcome }}
-          HTTP_LINES: ${{ steps.telemetry.outputs.http_lines }}
-          REMOVED_HITS: ${{ steps.telemetry.outputs.removed_hits }}
+          AGE_RECIPIENT: ${{ inputs.age_recipient }}
         run: |
           set -euo pipefail
-          backup="openkey-tc492-${CANDIDATE_SHA}.dump.age"
+          backup="openkey-tc492-${CANDIDATE_SHA}.tar.age"
           backup_sha=$(sha256sum "$backup" | awk '{print $1}')
+          challenge_sha=$(tr -d '\n' < tc492-restore-challenge.sha256)
           jq -n \
             --arg candidateSha "$CANDIDATE_SHA" \
             --arg workflowRunId "$GITHUB_RUN_ID" \
+            --arg createdAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg ageRecipient "$AGE_RECIPIENT" \
             --arg backupSha256 "$backup_sha" \
-            --arg telemetrySince "$TELEMETRY_SINCE" \
-            --arg telemetryOutcome "$TELEMETRY_OUTCOME" \
-            --argjson httpLines "${HTTP_LINES:-0}" \
-            --argjson removedHits "${REMOVED_HITS:-0}" \
+            --arg restoreChallengeSha256 "$challenge_sha" \
             --slurpfile report tc492-pre.json \
-            '{schema:"openkey.tc492.preflight.v1",candidateSha:$candidateSha,workflowRunId:$workflowRunId,backupSha256:$backupSha256,restoreReportMatched:true,telemetry:{since:$telemetrySince,outcome:$telemetryOutcome,httpLines:$httpLines,removedHits:$removedHits},report:$report[0]}' \
+            --slurpfile migrations tc492-migration-pre.json \
+            --slurpfile telemetry tc492-telemetry.json \
+            --slurpfile runtime tc492-runtime-before.json \
+            '{schema:"openkey.tc492.preflight.v2",candidateSha:$candidateSha,workflowRunId:$workflowRunId,createdAt:$createdAt,ageRecipient:$ageRecipient,backupSha256:$backupSha256,restoreChallengeSha256:$restoreChallengeSha256,restoreReportMatched:true,report:$report[0],migrationSet:$migrations[0],telemetry:$telemetry[0],runtimeBefore:$runtime[0]}' \
             > tc492-preflight-manifest.json
-          cat tc492-pre.json >> "$GITHUB_STEP_SUMMARY"
-          printf '\nTelemetry outcome: %s; HTTP lines: %s; removed-route hits: %s\n' "$TELEMETRY_OUTCOME" "${HTTP_LINES:-0}" "${REMOVED_HITS:-0}" >> "$GITHUB_STEP_SUMMARY"
+          jq '{report:.report,telemetry:.telemetry,runtimeBefore:.runtimeBefore}' tc492-preflight-manifest.json >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload encrypted backup
-        uses: actions/upload-artifact@v4
+      - name: Upload encrypted rehearsal backup
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: tc492-backup-${{ inputs.candidate_sha }}
           path: |
-            openkey-tc492-${{ inputs.candidate_sha }}.dump.age
+            openkey-tc492-${{ inputs.candidate_sha }}.tar.age
             tc492-preflight-manifest.json
           if-no-files-found: error
-          retention-days: 60
+          retention-days: 7
 
       - name: Upload aggregate preflight evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: tc492-evidence-${{ inputs.candidate_sha }}
           path: |
             tc492-pre.json
             tc492-restored.json
+            tc492-migration-pre.json
+            tc492-telemetry.json
+            tc492-runtime-before.json
             tc492-preflight-manifest.json
           if-no-files-found: error
           retention-days: 90
 
   cutover:
-    name: Freeze, migrate, verify, and deploy exact candidate
+    name: Freeze, back up, migrate, and deploy exact image
     if: github.ref == 'refs/heads/main' && inputs.mode == 'cutover'
     runs-on: ubuntu-latest
     environment: production
@@ -217,219 +293,303 @@ jobs:
         env:
           CANDIDATE_SHA: ${{ inputs.candidate_sha }}
           PREFLIGHT_RUN_ID: ${{ inputs.preflight_run_id }}
+          RESTORE_CHALLENGE: ${{ inputs.operator_restore_challenge }}
           ACCEPTED_DIGEST: ${{ inputs.accepted_candidate_digest }}
           ACCEPTED_CANDIDATE_COUNT: ${{ inputs.accepted_candidate_count }}
           ACCEPTED_TENANT_COUNT: ${{ inputs.accepted_tenant_custody_count }}
-          ROUTE_TELEMETRY_REFERENCE: ${{ inputs.route_telemetry_reference }}
+          TENANT_DISPOSITION: ${{ inputs.tenant_custody_disposition }}
           CONFIRMATION: ${{ inputs.confirmation }}
         run: |
           set -euo pipefail
           [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
           [[ "$PREFLIGHT_RUN_ID" =~ ^[0-9]+$ ]] || exit 1
+          [[ "$RESTORE_CHALLENGE" =~ ^[0-9a-f]{64}$ ]] || exit 1
           [[ "$ACCEPTED_DIGEST" =~ ^[0-9a-f]{64}$ ]] || exit 1
           [[ "$ACCEPTED_CANDIDATE_COUNT" =~ ^[0-9]+$ ]] || exit 1
           [[ "$ACCEPTED_TENANT_COUNT" =~ ^[0-9]+$ ]] || exit 1
-          [ -n "$ROUTE_TELEMETRY_REFERENCE" ] || { echo "route telemetry evidence reference is required" >&2; exit 1; }
+          [ "$TENANT_DISPOSITION" = "delete-noncanonical-tenant-custody:${ACCEPTED_TENANT_COUNT}:${ACCEPTED_DIGEST}" ] || {
+            echo "tenant-custody disposition is not bound to the accepted count and digest" >&2; exit 1;
+          }
           [ "$CONFIRMATION" = "tc492-apply-destructive-cutover" ] || { echo "confirmation did not match" >&2; exit 1; }
           reviewed=$(git ls-remote https://github.com/TinyCloudLabs/openkey.git refs/pull/170/head | awk '{print $1}')
           [ "$CANDIDATE_SHA" = "$reviewed" ] || { echo "candidate_sha is not the current PR #170 head" >&2; exit 1; }
 
       - name: Download preflight evidence
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           github-token: ${{ github.token }}
           run-id: ${{ inputs.preflight_run_id }}
           name: tc492-evidence-${{ inputs.candidate_sha }}
           path: preflight-evidence
 
-      - name: Confirm the encrypted backup is still recoverable
-        uses: actions/download-artifact@v4
+      - name: Download encrypted rehearsal backup
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           github-token: ${{ github.token }}
           run-id: ${{ inputs.preflight_run_id }}
           name: tc492-backup-${{ inputs.candidate_sha }}
           path: encrypted-backup
 
-      - name: Verify accepted preflight evidence
+      - name: Verify fresh, recoverable, telemetry-bound preflight
         env:
           CANDIDATE_SHA: ${{ inputs.candidate_sha }}
           PREFLIGHT_RUN_ID: ${{ inputs.preflight_run_id }}
+          RESTORE_CHALLENGE: ${{ inputs.operator_restore_challenge }}
           ACCEPTED_DIGEST: ${{ inputs.accepted_candidate_digest }}
           ACCEPTED_CANDIDATE_COUNT: ${{ inputs.accepted_candidate_count }}
           ACCEPTED_TENANT_COUNT: ${{ inputs.accepted_tenant_custody_count }}
-          ROUTE_TELEMETRY_REFERENCE: ${{ inputs.route_telemetry_reference }}
         run: |
           set -euo pipefail
+          manifest=preflight-evidence/tc492-preflight-manifest.json
           jq -e \
             --arg sha "$CANDIDATE_SHA" \
             --arg run "$PREFLIGHT_RUN_ID" \
             --arg digest "$ACCEPTED_DIGEST" \
             --argjson candidates "$ACCEPTED_CANDIDATE_COUNT" \
             --argjson tenant "$ACCEPTED_TENANT_COUNT" \
-            '.schema == "openkey.tc492.preflight.v1" and .candidateSha == $sha and .workflowRunId == $run and .restoreReportMatched == true and .report.candidateDigestSha256 == $digest and .report.deterministicCandidateCount == $candidates and .report.tenantCustodyKeyCount == $tenant' \
-            preflight-evidence/tc492-preflight-manifest.json >/dev/null
-          expected_backup_sha=$(jq -r '.backupSha256' preflight-evidence/tc492-preflight-manifest.json)
-          actual_backup_sha=$(sha256sum "encrypted-backup/openkey-tc492-${CANDIDATE_SHA}.dump.age" | awk '{print $1}')
-          [ "$actual_backup_sha" = "$expected_backup_sha" ] || { echo "encrypted backup checksum mismatch" >&2; exit 1; }
-          if [ "$ROUTE_TELEMETRY_REFERENCE" = "preflight:${PREFLIGHT_RUN_ID}" ]; then
-            jq -e '.telemetry.outcome == "success" and .telemetry.httpLines > 0 and .telemetry.removedHits == 0' \
-              preflight-evidence/tc492-preflight-manifest.json >/dev/null
-          else
-            [[ "$ROUTE_TELEMETRY_REFERENCE" =~ ^external:.+ ]] || {
-              echo "route telemetry reference must be the successful preflight or an external evidence reference" >&2
-              exit 1
-            }
-          fi
+            '.schema == "openkey.tc492.preflight.v2" and .candidateSha == $sha and .workflowRunId == $run and .restoreReportMatched == true and .report.candidateDigestSha256 == $digest and .report.deterministicCandidateCount == $candidates and .report.tenantCustodyKeyCount == $tenant and .telemetry.httpLines > 0 and .telemetry.removedRouteHits == 0 and .telemetry.legacyScopeHits == 0' \
+            "$manifest" >/dev/null
+          created=$(jq -r '.createdAt' "$manifest")
+          age_seconds=$(( $(date -u +%s) - $(date -u -d "$created" +%s) ))
+          [ "$age_seconds" -ge 0 ] && [ "$age_seconds" -le 21600 ] || { echo "preflight is older than six hours" >&2; exit 1; }
+          expected_backup_sha=$(jq -r '.backupSha256' "$manifest")
+          actual_backup_sha=$(sha256sum "encrypted-backup/openkey-tc492-${CANDIDATE_SHA}.tar.age" | awk '{print $1}')
+          [ "$actual_backup_sha" = "$expected_backup_sha" ] || { echo "encrypted rehearsal backup checksum mismatch" >&2; exit 1; }
+          actual_challenge_sha=$(printf '%s\n' "$RESTORE_CHALLENGE" | sha256sum | awk '{print $1}')
+          expected_challenge_sha=$(jq -r '.restoreChallengeSha256' "$manifest")
+          [ "$actual_challenge_sha" = "$expected_challenge_sha" ] || { echo "operator did not prove decryption of the retained backup bundle" >&2; exit 1; }
           rm -rf encrypted-backup
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ inputs.candidate_sha }}
           fetch-depth: 0
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
           bun-version: 1.3.14
 
-      - name: Install and revalidate unchanged production selection
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          ACCEPTED_DIGEST: ${{ inputs.accepted_candidate_digest }}
-          ACCEPTED_CANDIDATE_COUNT: ${{ inputs.accepted_candidate_count }}
-          ACCEPTED_TENANT_COUNT: ${{ inputs.accepted_tenant_custody_count }}
+      - name: Install pinned cutover tools
         run: |
           set -euo pipefail
           bun install --frozen-lockfile
           sudo apt-get update -qq
-          sudo apt-get install -y postgresql-client
+          sudo apt-get install -y age postgresql-client
+          npm install -g "phala@${PHALA_CLI_VERSION}"
+          [ "$(phala --version)" = "v${PHALA_CLI_VERSION}+d2300dd" ]
           bun run db:generate
-          bun run db:cutover:report > tc492-cutover-pre.json
-          jq -e \
-            --arg digest "$ACCEPTED_DIGEST" \
-            --argjson candidates "$ACCEPTED_CANDIDATE_COUNT" \
-            --argjson tenant "$ACCEPTED_TENANT_COUNT" \
-            '.phase == "pre-expand" and .candidateDigestSha256 == $digest and .deterministicCandidateCount == $candidates and .tenantCustodyKeyCount == $tenant and .selectionConflictCount == 0 and .predictedAddressChangeCount == 0 and .canonicalWithoutEligibleKeyCount == 0' \
-            tc492-cutover-pre.json >/dev/null
-          psql "$DATABASE_URL" --no-psqlrc --tuples-only --no-align --command "
-            SELECT json_build_object(
-              'oauthClientCount', (SELECT count(*) FROM oauth_client),
-              'oauthRedirectUriCount', (SELECT coalesce(sum(cardinality(\"redirectUris\")), 0) FROM oauth_client),
-              'oauthConsentCount', (SELECT count(*) FROM oauth_consent),
-              'developerAccountCount', (SELECT count(*) FROM developer_account),
-              'organizationCount', (SELECT count(*) FROM organization),
-              'organizationMembershipCount', (SELECT count(*) FROM organization_membership)
-            );
-          " > tc492-preservation-pre.json
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
           username: ${{ secrets.DOCKER_REGISTRY_USERNAME }}
           password: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
 
       - name: Build and push the exact reviewed API image
         id: build
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25
         with:
           context: .
           push: true
           no-cache: true
           tags: skgbafa/openkey-api:${{ inputs.candidate_sha }}
 
-      - name: Install Phala CLI
-        run: npm install -g phala
-
-      - name: Enforce freeze, migrate, verify, and deploy
+      - name: Freeze writes, revalidate, and create final rollback backup
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
           CANDIDATE_SHA: ${{ inputs.candidate_sha }}
           ACCEPTED_DIGEST: ${{ inputs.accepted_candidate_digest }}
           ACCEPTED_CANDIDATE_COUNT: ${{ inputs.accepted_candidate_count }}
+          ACCEPTED_TENANT_COUNT: ${{ inputs.accepted_tenant_custody_count }}
         run: |
           set -euo pipefail
-          sed -i "s|\${DOCKER_IMAGE}|skgbafa/openkey-api:${CANDIDATE_SHA}|g" docker-compose.prod.yml
+          printf 'freeze-requested\n' > tc492-phase.txt
           phala cvms stop openkey-api --api-token "$PHALA_CLOUD_API_KEY"
-          frozen=false
-          for _attempt in $(seq 1 24); do
+
+          consecutive=0
+          for attempt in $(seq 1 36); do
+            phala cvms get openkey-api --api-token "$PHALA_CLOUD_API_KEY" --json > /tmp/cvm-state.json
             status=$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 5 \
-              "https://api.openkey.so/health?tc492=${GITHUB_RUN_ID}-${_attempt}" || true)
-            if [ "$status" != "200" ]; then
-              frozen=true
-              break
+              "https://api.openkey.so/health?tc492=${GITHUB_RUN_ID}-${attempt}" || true)
+            if grep -Eiq '"(state|status)"[[:space:]]*:[[:space:]]*"stopped"' /tmp/cvm-state.json \
+              && [[ "$status" =~ ^(000|502|503|504)$ ]]; then
+              consecutive=$((consecutive + 1))
+            else
+              consecutive=0
             fi
+            [ "$consecutive" -ge 3 ] && break
             sleep 5
           done
-          [ "$frozen" = "true" ] || { echo "OpenKey API remained reachable; write freeze is not proven" >&2; exit 1; }
-          sleep 5
-          echo "OpenKey CVM stopped; old code must not be restarted after the destructive migration." >> "$GITHUB_STEP_SUMMARY"
+          rm -f /tmp/cvm-state.json
+          [ "$consecutive" -ge 3 ] || { echo "three consecutive stopped/down probes were not observed" >&2; exit 1; }
+
+          drained=0
+          for _attempt in $(seq 1 24); do
+            busy=$(psql "$DATABASE_URL" --no-psqlrc --tuples-only --no-align --command \
+              "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND (state = 'active' OR state LIKE 'idle in transaction%');" | tr -d '[:space:]')
+            if [ "$busy" = "0" ]; then drained=$((drained + 1)); else drained=0; fi
+            [ "$drained" -ge 3 ] && break
+            sleep 5
+          done
+          [ "$drained" -ge 3 ] || { echo "database sessions did not quiesce" >&2; exit 1; }
+          printf 'frozen-pre-destructive\n' > tc492-phase.txt
+
+          bun scripts/verify-tc-492-migration-set.ts pre > tc492-migration-frozen.json
+          bun run db:cutover:report > tc492-frozen.json
+          jq -e \
+            --arg digest "$ACCEPTED_DIGEST" \
+            --argjson candidates "$ACCEPTED_CANDIDATE_COUNT" \
+            --argjson tenant "$ACCEPTED_TENANT_COUNT" \
+            '.phase == "pre-expand" and .candidateDigestSha256 == $digest and .deterministicCandidateCount == $candidates and .tenantCustodyKeyCount == $tenant and .selectionConflictCount == 0 and .predictedAddressChangeCount == 0 and .canonicalWithoutEligibleKeyCount == 0' \
+            tc492-frozen.json >/dev/null
+          bun scripts/tc-492-preservation-digest.ts > tc492-preservation-pre.json
+
+          age_recipient=$(jq -r '.ageRecipient' preflight-evidence/tc492-preflight-manifest.json)
+          [[ "$age_recipient" =~ ^age1[0-9a-z]+$ ]] || exit 1
+          cleanup() { rm -f tc492-final.dump; }
+          trap cleanup EXIT
+          pg_dump --format=custom --no-owner --no-privileges --file=tc492-final.dump "$DATABASE_URL"
+          age --recipient "$age_recipient" --output "openkey-tc492-final-${CANDIDATE_SHA}.dump.age" tc492-final.dump
+          final_sha=$(sha256sum "openkey-tc492-final-${CANDIDATE_SHA}.dump.age" | awk '{print $1}')
+          jq -n \
+            --arg candidateSha "$CANDIDATE_SHA" \
+            --arg workflowRunId "$GITHUB_RUN_ID" \
+            --arg createdAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg backupSha256 "$final_sha" \
+            --slurpfile report tc492-frozen.json \
+            --slurpfile preservation tc492-preservation-pre.json \
+            '{schema:"openkey.tc492.frozen-backup.v1",candidateSha:$candidateSha,workflowRunId:$workflowRunId,createdAt:$createdAt,writeFreezeProven:true,backupSha256:$backupSha256,report:$report[0],preservation:$preservation[0]}' \
+            > tc492-final-backup-manifest.json
+
+      - name: Restart old API after a pre-destructive freeze failure
+        if: failure()
+        env:
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+        run: |
+          set -euo pipefail
+          [ -f tc492-phase.txt ] || exit 0
+          phase=$(tr -d '\n' < tc492-phase.txt)
+          case "$phase" in
+            freeze-requested|frozen-pre-destructive)
+              phala cvms start openkey-api --api-token "$PHALA_CLOUD_API_KEY"
+              curl --fail --silent --show-error --retry 12 --retry-delay 5 \
+                "https://api.openkey.so/health?tc492=recovery-${GITHUB_RUN_ID}" > /dev/null
+              printf 'old-api-restarted\n' > tc492-phase.txt
+              ;;
+          esac
+
+      - name: Upload frozen rollback backup before migration
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: tc492-frozen-backup-${{ inputs.candidate_sha }}-${{ github.run_id }}
+          path: |
+            openkey-tc492-final-${{ inputs.candidate_sha }}.dump.age
+            tc492-final-backup-manifest.json
+          if-no-files-found: error
+          retention-days: 60
+
+      - name: Restart old API if frozen-backup upload failed
+        if: failure()
+        env:
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+        run: |
+          set -euo pipefail
+          [ -f tc492-phase.txt ] || exit 0
+          phase=$(tr -d '\n' < tc492-phase.txt)
+          [ "$phase" = "frozen-pre-destructive" ] || exit 0
+          phala cvms start openkey-api --api-token "$PHALA_CLOUD_API_KEY"
+          curl --fail --silent --show-error --retry 12 --retry-delay 5 \
+            "https://api.openkey.so/health?tc492=backup-recovery-${GITHUB_RUN_ID}" > /dev/null
+          printf 'old-api-restarted\n' > tc492-phase.txt
+
+      - name: Apply reviewed migrations and deploy immutable image
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          ACCEPTED_DIGEST: ${{ inputs.accepted_candidate_digest }}
+          ACCEPTED_CANDIDATE_COUNT: ${{ inputs.accepted_candidate_count }}
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "build did not return an immutable digest" >&2; exit 1; }
+          printf 'destructive-started\n' > tc492-phase.txt
           bun run db:migrate:apply
+          bun scripts/verify-tc-492-migration-set.ts post > tc492-migration-post.json
           bun run db:migrate:verify-guards
           bun run db:cutover:report > tc492-post.json
           bun run db:migrate:verify-schema
-          psql "$DATABASE_URL" --no-psqlrc --tuples-only --no-align --command "
-            SELECT json_build_object(
-              'oauthClientCount', (SELECT count(*) FROM oauth_client),
-              'oauthRedirectUriCount', (SELECT coalesce(sum(cardinality(\"redirectUris\")), 0) FROM oauth_client),
-              'oauthConsentCount', (SELECT count(*) FROM oauth_consent),
-              'developerAccountCount', (SELECT count(*) FROM developer_account),
-              'organizationCount', (SELECT count(*) FROM organization),
-              'organizationMembershipCount', (SELECT count(*) FROM organization_membership)
-            );
-          " > tc492-preservation-post.json
+          bun scripts/tc-492-preservation-digest.ts > tc492-preservation-post.json
           cmp -s tc492-preservation-pre.json tc492-preservation-post.json || {
-            echo "OAuth/developer organization preservation counts changed during cutover" >&2
-            exit 1
+            echo "preserved OAuth/developer organization content changed during cutover" >&2; exit 1;
           }
           jq -e \
             --arg digest "$ACCEPTED_DIGEST" \
             --argjson candidates "$ACCEPTED_CANDIDATE_COUNT" \
             '.phase == "expanded" and .candidateDigestSha256 == $digest and .deterministicCandidateCount == $candidates and .existingCanonicalCount == $candidates and .unassignedCandidateCount == 0 and .selectionConflictCount == 0 and .predictedAddressChangeCount == 0 and .canonicalWithoutEligibleKeyCount == 0 and .tenantCustodyKeyCount == 0' \
             tc492-post.json >/dev/null
+          sed -i "s|\${DOCKER_IMAGE}|skgbafa/openkey-api@${IMAGE_DIGEST}|g" docker-compose.prod.yml
           phala deploy --api-token "$PHALA_CLOUD_API_KEY" --cvm-id openkey-api --compose docker-compose.prod.yml --wait
+          phala runtime-config openkey-api --api-token "$PHALA_CLOUD_API_KEY" --json > /tmp/runtime-after.json
+          phala ps openkey-api --api-token "$PHALA_CLOUD_API_KEY" --json > /tmp/containers-after.json
+          grep -F "$IMAGE_DIGEST" /tmp/runtime-after.json >/dev/null || { echo "runtime config is not digest-bound" >&2; exit 1; }
+          grep -F "$IMAGE_DIGEST" /tmp/containers-after.json >/dev/null || { echo "running container does not attest the deployed digest" >&2; exit 1; }
+          jq -n --arg imageDigest "$IMAGE_DIGEST" '{schema:"openkey.tc492.runtime-after.v1",imageDigest:$imageDigest,runtimeConfigMatched:true,runningContainerMatched:true}' > tc492-runtime-after.json
+          rm -f /tmp/runtime-after.json /tmp/containers-after.json
+          printf 'candidate-deployed\n' > tc492-phase.txt
 
       - name: Verify production authorization metadata
         run: |
           set -euo pipefail
           curl --fail --silent --show-error --retry 12 --retry-delay 5 \
-            "https://api.openkey.so/health?tc492=${GITHUB_RUN_ID}" \
-            > health.json
+            "https://api.openkey.so/health?tc492=${GITHUB_RUN_ID}" > health.json
           jq -e '.status == "ok"' health.json >/dev/null
           curl --fail --silent --show-error --retry 12 --retry-delay 5 \
-            https://api.openkey.so/api/auth/.well-known/openid-configuration \
-            > openid-configuration.json
+            https://api.openkey.so/api/auth/.well-known/openid-configuration > openid-configuration.json
           jq -e '.issuer == "https://api.openkey.so/api/auth"' openid-configuration.json >/dev/null
+          printf 'verified\n' > tc492-phase.txt
 
-      - name: Write and upload post-cutover evidence
+      - name: Record terminal cutover evidence
+        if: always()
         env:
           CANDIDATE_SHA: ${{ inputs.candidate_sha }}
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
           PREFLIGHT_RUN_ID: ${{ inputs.preflight_run_id }}
-          ROUTE_TELEMETRY_REFERENCE: ${{ inputs.route_telemetry_reference }}
         run: |
           set -euo pipefail
+          phase=not-started
+          [ ! -f tc492-phase.txt ] || phase=$(tr -d '\n' < tc492-phase.txt)
           jq -n \
             --arg candidateSha "$CANDIDATE_SHA" \
             --arg imageDigest "$IMAGE_DIGEST" \
             --arg preflightRunId "$PREFLIGHT_RUN_ID" \
-            --arg routeTelemetryReference "$ROUTE_TELEMETRY_REFERENCE" \
-            --slurpfile report tc492-post.json \
-            '{schema:"openkey.tc492.cutover.v1",candidateSha:$candidateSha,imageDigest:$imageDigest,preflightRunId:$preflightRunId,routeTelemetryReference:$routeTelemetryReference,report:$report[0],productionMetadataVerified:true}' \
+            --arg phase "$phase" \
+            '{schema:"openkey.tc492.cutover.v2",candidateSha:$candidateSha,imageDigest:$imageDigest,preflightRunId:$preflightRunId,phase:$phase,oldCodeRestartAllowed:($phase == "not-started" or $phase == "old-api-restarted")}' \
             > tc492-cutover-manifest.json
-          cat tc492-post.json >> "$GITHUB_STEP_SUMMARY"
+          printf 'Terminal phase: %s\n' "$phase" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$phase" = "destructive-started" ]; then
+            echo "Forward-fix boundary crossed: do not restart the old API." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload terminal evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: tc492-cutover-${{ inputs.candidate_sha }}
+          name: tc492-cutover-${{ inputs.candidate_sha }}-${{ github.run_id }}
           path: |
-            tc492-cutover-pre.json
+            tc492-cutover-manifest.json
+            tc492-phase.txt
+            tc492-migration-frozen.json
+            tc492-migration-post.json
+            tc492-frozen.json
             tc492-post.json
             tc492-preservation-pre.json
             tc492-preservation-post.json
-            tc492-cutover-manifest.json
+            tc492-final-backup-manifest.json
+            tc492-runtime-after.json
             health.json
             openid-configuration.json
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 90
