@@ -126,7 +126,8 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           sudo apt-get update -qq
           sudo apt-get install -y age postgresql-client-17
-          pg_dump --version | grep -E '^pg_dump \(PostgreSQL\) 17\.'
+          echo '/usr/lib/postgresql/17/bin' >> "$GITHUB_PATH"
+          /usr/lib/postgresql/17/bin/pg_dump --version | grep -E '^pg_dump \(PostgreSQL\) 17\.'
           npm install -g "phala@${PHALA_CLI_VERSION}"
           [ "$(phala --version)" = "v${PHALA_CLI_VERSION}+d2300dd" ]
           bun run db:generate
@@ -420,7 +421,8 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           sudo apt-get update -qq
           sudo apt-get install -y age postgresql-client-17
-          pg_dump --version | grep -E '^pg_dump \(PostgreSQL\) 17\.'
+          echo '/usr/lib/postgresql/17/bin' >> "$GITHUB_PATH"
+          /usr/lib/postgresql/17/bin/pg_dump --version | grep -E '^pg_dump \(PostgreSQL\) 17\.'
           npm install -g "phala@${PHALA_CLI_VERSION}"
           [ "$(phala --version)" = "v${PHALA_CLI_VERSION}+d2300dd" ]
           bun run db:generate
