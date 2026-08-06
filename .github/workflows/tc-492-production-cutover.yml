@@ -355,7 +355,7 @@ jobs:
           frozen=false
           for _attempt in $(seq 1 24); do
             status=$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 5 \
-              https://api.openkey.so/api/auth/.well-known/openid-configuration || true)
+              "https://api.openkey.so/health?tc492=${GITHUB_RUN_ID}-${_attempt}" || true)
             if [ "$status" != "200" ]; then
               frozen=true
               break
@@ -394,6 +394,10 @@ jobs:
         run: |
           set -euo pipefail
           curl --fail --silent --show-error --retry 12 --retry-delay 5 \
+            "https://api.openkey.so/health?tc492=${GITHUB_RUN_ID}" \
+            > health.json
+          jq -e '.status == "ok"' health.json >/dev/null
+          curl --fail --silent --show-error --retry 12 --retry-delay 5 \
             https://api.openkey.so/api/auth/.well-known/openid-configuration \
             > openid-configuration.json
           jq -e '.issuer == "https://api.openkey.so/api/auth"' openid-configuration.json >/dev/null
@@ -425,6 +429,7 @@ jobs:
             tc492-preservation-pre.json
             tc492-preservation-post.json
             tc492-cutover-manifest.json
+            health.json
             openid-configuration.json
           if-no-files-found: error
           retention-days: 90
