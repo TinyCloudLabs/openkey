@@ -39,9 +39,14 @@ async function main() {
     .map((entry) => entry.name)
     .sort();
 
-  for (const [name, checksum] of expected) {
+  const filesystemChecksums = new Map<string, string>();
+  for (const name of directories) {
     const sql = await readFile(path.join(migrationRoot, name, 'migration.sql'));
-    const actual = createHash('sha256').update(sql).digest('hex');
+    filesystemChecksums.set(name, createHash('sha256').update(sql).digest('hex'));
+  }
+
+  for (const [name, checksum] of expected) {
+    const actual = filesystemChecksums.get(name);
     if (actual !== checksum) throw new Error(`reviewed migration checksum mismatch: ${name}`);
   }
 
@@ -60,9 +65,17 @@ async function main() {
       throw new Error(`unresolved migration failures: ${unresolved.map((row) => row.migration_name).join(', ')}`);
     }
 
-    const applied = new Set(
-      migrations.filter((row) => row.finished_at && !row.rolled_back_at).map((row) => row.migration_name),
-    );
+    const successful = migrations.filter((row) => row.finished_at && !row.rolled_back_at);
+    const unknown = successful.filter((row) => !filesystemChecksums.has(row.migration_name));
+    if (unknown.length) {
+      throw new Error(`database contains migrations absent from the candidate: ${unknown.map((row) => row.migration_name).join(', ')}`);
+    }
+    for (const row of successful) {
+      if (row.checksum !== filesystemChecksums.get(row.migration_name)) {
+        throw new Error(`stored migration checksum differs from the candidate: ${row.migration_name}`);
+      }
+    }
+    const applied = new Set(successful.map((row) => row.migration_name));
     const pending = directories.filter((name) => !applied.has(name));
     const expectedNames = expected.map(([name]) => name);
     const wanted = phase === 'pre' ? expectedNames : [];

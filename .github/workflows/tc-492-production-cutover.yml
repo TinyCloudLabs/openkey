@@ -43,8 +43,12 @@ on:
         description: "Accepted tenantCustodyKeyCount disposition (cutover only)"
         required: false
         type: string
+      accepted_tenant_custody_digest:
+        description: "Accepted tenant-custody aggregate SHA-256 (cutover only)"
+        required: false
+        type: string
       tenant_custody_disposition:
-        description: "delete-noncanonical-tenant-custody:<count>:<candidateDigest>"
+        description: "delete-noncanonical-tenant-custody:<count>:<custodyDigest>:<candidateDigest>"
         required: false
         type: string
       confirmation:
@@ -121,6 +125,7 @@ jobs:
           set -euo pipefail
           bun scripts/verify-tc-492-migration-set.ts pre > tc492-migration-pre.json
           bun run db:cutover:report > tc492-pre.json
+          bun scripts/tc-492-tenant-custody-digest.ts > tc492-tenant-custody-pre.json
           node <<'NODE'
           const fs = require('node:fs');
           const report = JSON.parse(fs.readFileSync('tc492-pre.json', 'utf8'));
@@ -183,7 +188,7 @@ jobs:
           }
           if (!paths.length) throw new Error('logs contain no recognizable HTTP routes');
           const removed = paths.filter((path) =>
-            /^\/v1\/(?:accounts|credentials|organization\/entitlements|webhook-endpoints)(?:\/|$)/.test(path)
+            /^\/v1\/(?:accounts|credentials|managed-accounts|managed-account-registration-intents|organization\/entitlements|webhook-endpoints)(?:\/|$)/.test(path)
             || /^\/api\/(?:managed-account-registration|managed-accounts)(?:\/|$)/.test(path)
             || /^\/api\/console\/organizations\/[^/]+\/(?:credentials|managed-accounts|webhook-endpoints)(?:\/|$)/.test(path)
           );
@@ -207,33 +212,41 @@ jobs:
           NODE
           rm -f /tmp/openkey-api.log
 
+      - name: Log in for immutable rollback-image resolution
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          username: ${{ secrets.DOCKER_REGISTRY_USERNAME }}
+          password: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+
       - name: Capture body-free rollback runtime evidence
         env:
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
         run: |
           set -euo pipefail
-          phala runtime-config openkey-api --api-token "$PHALA_CLOUD_API_KEY" --json > /tmp/runtime.json
           phala ps openkey-api --api-token "$PHALA_CLOUD_API_KEY" --json > /tmp/containers.json
           node <<'NODE'
           const fs = require('node:fs');
-          const crypto = require('node:crypto');
-          const files = ['/tmp/runtime.json', '/tmp/containers.json'];
-          const refs = new Set();
-          function visit(value) {
-            if (typeof value === 'string' && (/openkey-api/i.test(value) || /sha256:[0-9a-f]{64}/i.test(value))) refs.add(value);
-            else if (Array.isArray(value)) value.forEach(visit);
-            else if (value && typeof value === 'object') Object.values(value).forEach(visit);
+          const data = JSON.parse(fs.readFileSync('/tmp/containers.json', 'utf8'));
+          const api = data.containers?.find((container) =>
+            Array.isArray(container.names) && container.names.some((name) => name.replace(/^\//, '') === 'api'));
+          if (!api || typeof api.image !== 'string' || !/^skgbafa\/openkey-api(?::[A-Za-z0-9._-]+|@sha256:[0-9a-f]{64})$/.test(api.image)) {
+            throw new Error('could not identify the running api container image');
           }
-          for (const file of files) visit(JSON.parse(fs.readFileSync(file, 'utf8')));
-          if (!refs.size) throw new Error('could not identify the current OpenKey image/config reference');
-          fs.writeFileSync('tc492-runtime-before.json', JSON.stringify({
-            schema: 'openkey.tc492.runtime-before.v1',
-            runtimeConfigSha256: crypto.createHash('sha256').update(fs.readFileSync(files[0])).digest('hex'),
-            containerStateSha256: crypto.createHash('sha256').update(fs.readFileSync(files[1])).digest('hex'),
-            imageReferences: [...refs].sort(),
-          }));
+          fs.writeFileSync('/tmp/current-api-image.txt', `${api.image}\n`);
           NODE
-          rm -f /tmp/runtime.json /tmp/containers.json
+          image_ref=$(tr -d '\n' < /tmp/current-api-image.txt)
+          if [[ "$image_ref" == *@sha256:* ]]; then
+            image_digest=${image_ref##*@}
+          else
+            image_digest=$(docker buildx imagetools inspect "$image_ref" --format '{{json .Manifest.Digest}}' | jq -r .)
+          fi
+          [[ "$image_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "could not resolve old API image digest" >&2; exit 1; }
+          jq -n --arg imageReference "$image_ref" --arg imageDigest "$image_digest" \
+            '{schema:"openkey.tc492.runtime-before.v2",apiContainer:"api",imageReference:$imageReference,imageDigest:$imageDigest}' \
+            > tc492-runtime-before.json
+          rm -f /tmp/current-api-image.txt /tmp/containers.json
 
       - name: Write body-free preflight evidence
         env:
@@ -253,9 +266,10 @@ jobs:
             --arg restoreChallengeSha256 "$challenge_sha" \
             --slurpfile report tc492-pre.json \
             --slurpfile migrations tc492-migration-pre.json \
+            --slurpfile tenantCustody tc492-tenant-custody-pre.json \
             --slurpfile telemetry tc492-telemetry.json \
             --slurpfile runtime tc492-runtime-before.json \
-            '{schema:"openkey.tc492.preflight.v2",candidateSha:$candidateSha,workflowRunId:$workflowRunId,createdAt:$createdAt,ageRecipient:$ageRecipient,backupSha256:$backupSha256,restoreChallengeSha256:$restoreChallengeSha256,restoreReportMatched:true,report:$report[0],migrationSet:$migrations[0],telemetry:$telemetry[0],runtimeBefore:$runtime[0]}' \
+            '{schema:"openkey.tc492.preflight.v3",candidateSha:$candidateSha,workflowRunId:$workflowRunId,createdAt:$createdAt,ageRecipient:$ageRecipient,backupSha256:$backupSha256,restoreChallengeSha256:$restoreChallengeSha256,restoreReportMatched:true,report:$report[0],migrationSet:$migrations[0],tenantCustody:$tenantCustody[0],telemetry:$telemetry[0],runtimeBefore:$runtime[0]}' \
             > tc492-preflight-manifest.json
           jq '{report:.report,telemetry:.telemetry,runtimeBefore:.runtimeBefore}' tc492-preflight-manifest.json >> "$GITHUB_STEP_SUMMARY"
 
@@ -277,6 +291,7 @@ jobs:
             tc492-pre.json
             tc492-restored.json
             tc492-migration-pre.json
+            tc492-tenant-custody-pre.json
             tc492-telemetry.json
             tc492-runtime-before.json
             tc492-preflight-manifest.json
@@ -297,6 +312,7 @@ jobs:
           ACCEPTED_DIGEST: ${{ inputs.accepted_candidate_digest }}
           ACCEPTED_CANDIDATE_COUNT: ${{ inputs.accepted_candidate_count }}
           ACCEPTED_TENANT_COUNT: ${{ inputs.accepted_tenant_custody_count }}
+          ACCEPTED_TENANT_DIGEST: ${{ inputs.accepted_tenant_custody_digest }}
           TENANT_DISPOSITION: ${{ inputs.tenant_custody_disposition }}
           CONFIRMATION: ${{ inputs.confirmation }}
         run: |
@@ -307,12 +323,18 @@ jobs:
           [[ "$ACCEPTED_DIGEST" =~ ^[0-9a-f]{64}$ ]] || exit 1
           [[ "$ACCEPTED_CANDIDATE_COUNT" =~ ^[0-9]+$ ]] || exit 1
           [[ "$ACCEPTED_TENANT_COUNT" =~ ^[0-9]+$ ]] || exit 1
-          [ "$TENANT_DISPOSITION" = "delete-noncanonical-tenant-custody:${ACCEPTED_TENANT_COUNT}:${ACCEPTED_DIGEST}" ] || {
+          [[ "$ACCEPTED_TENANT_DIGEST" =~ ^[0-9a-f]{64}$ ]] || exit 1
+          [ "$TENANT_DISPOSITION" = "delete-noncanonical-tenant-custody:${ACCEPTED_TENANT_COUNT}:${ACCEPTED_TENANT_DIGEST}:${ACCEPTED_DIGEST}" ] || {
             echo "tenant-custody disposition is not bound to the accepted count and digest" >&2; exit 1;
           }
           [ "$CONFIRMATION" = "tc492-apply-destructive-cutover" ] || { echo "confirmation did not match" >&2; exit 1; }
           reviewed=$(git ls-remote https://github.com/TinyCloudLabs/openkey.git refs/pull/170/head | awk '{print $1}')
           [ "$CANDIDATE_SHA" = "$reviewed" ] || { echo "candidate_sha is not the current PR #170 head" >&2; exit 1; }
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          fetch-depth: 0
 
       - name: Download preflight evidence
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
@@ -338,6 +360,7 @@ jobs:
           ACCEPTED_DIGEST: ${{ inputs.accepted_candidate_digest }}
           ACCEPTED_CANDIDATE_COUNT: ${{ inputs.accepted_candidate_count }}
           ACCEPTED_TENANT_COUNT: ${{ inputs.accepted_tenant_custody_count }}
+          ACCEPTED_TENANT_DIGEST: ${{ inputs.accepted_tenant_custody_digest }}
         run: |
           set -euo pipefail
           manifest=preflight-evidence/tc492-preflight-manifest.json
@@ -347,7 +370,8 @@ jobs:
             --arg digest "$ACCEPTED_DIGEST" \
             --argjson candidates "$ACCEPTED_CANDIDATE_COUNT" \
             --argjson tenant "$ACCEPTED_TENANT_COUNT" \
-            '.schema == "openkey.tc492.preflight.v2" and .candidateSha == $sha and .workflowRunId == $run and .restoreReportMatched == true and .report.candidateDigestSha256 == $digest and .report.deterministicCandidateCount == $candidates and .report.tenantCustodyKeyCount == $tenant and .telemetry.httpLines > 0 and .telemetry.removedRouteHits == 0 and .telemetry.legacyScopeHits == 0' \
+            --arg tenantDigest "$ACCEPTED_TENANT_DIGEST" \
+            '.schema == "openkey.tc492.preflight.v3" and .candidateSha == $sha and .workflowRunId == $run and .restoreReportMatched == true and .report.candidateDigestSha256 == $digest and .report.deterministicCandidateCount == $candidates and .report.tenantCustodyKeyCount == $tenant and .tenantCustody.aggregateSha256 == $tenantDigest and .telemetry.httpLines > 0 and .telemetry.removedRouteHits == 0 and .telemetry.legacyScopeHits == 0' \
             "$manifest" >/dev/null
           created=$(jq -r '.createdAt' "$manifest")
           age_seconds=$(( $(date -u +%s) - $(date -u -d "$created" +%s) ))
@@ -359,11 +383,6 @@ jobs:
           expected_challenge_sha=$(jq -r '.restoreChallengeSha256' "$manifest")
           [ "$actual_challenge_sha" = "$expected_challenge_sha" ] || { echo "operator did not prove decryption of the retained backup bundle" >&2; exit 1; }
           rm -rf encrypted-backup
-
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          ref: ${{ inputs.candidate_sha }}
-          fetch-depth: 0
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
@@ -404,8 +423,32 @@ jobs:
           ACCEPTED_DIGEST: ${{ inputs.accepted_candidate_digest }}
           ACCEPTED_CANDIDATE_COUNT: ${{ inputs.accepted_candidate_count }}
           ACCEPTED_TENANT_COUNT: ${{ inputs.accepted_tenant_custody_count }}
+          ACCEPTED_TENANT_DIGEST: ${{ inputs.accepted_tenant_custody_digest }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           set -euo pipefail
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "build did not return an immutable digest" >&2; exit 1; }
+          phala ps openkey-api --api-token "$PHALA_CLOUD_API_KEY" --json > /tmp/containers-before-freeze.json
+          node <<'NODE'
+          const fs = require('node:fs');
+          const data = JSON.parse(fs.readFileSync('/tmp/containers-before-freeze.json', 'utf8'));
+          const api = data.containers?.find((container) =>
+            Array.isArray(container.names) && container.names.some((name) => name.replace(/^\//, '') === 'api'));
+          if (!api || typeof api.image !== 'string' || !/^skgbafa\/openkey-api(?::[A-Za-z0-9._-]+|@sha256:[0-9a-f]{64})$/.test(api.image)) {
+            throw new Error('could not identify the running pre-freeze api image');
+          }
+          fs.writeFileSync('/tmp/current-api-image.txt', `${api.image}\n`);
+          NODE
+          old_image_ref=$(tr -d '\n' < /tmp/current-api-image.txt)
+          if [[ "$old_image_ref" == *@sha256:* ]]; then
+            old_image_digest=${old_image_ref##*@}
+          else
+            old_image_digest=$(docker buildx imagetools inspect "$old_image_ref" --format '{{json .Manifest.Digest}}' | jq -r .)
+          fi
+          expected_old_digest=$(jq -r '.runtimeBefore.imageDigest' preflight-evidence/tc492-preflight-manifest.json)
+          [ "$old_image_digest" = "$expected_old_digest" ] || { echo "running API image changed since preflight" >&2; exit 1; }
+          rm -f /tmp/containers-before-freeze.json /tmp/current-api-image.txt
+
           printf 'freeze-requested\n' > tc492-phase.txt
           phala cvms stop openkey-api --api-token "$PHALA_CLOUD_API_KEY"
 
@@ -435,16 +478,26 @@ jobs:
             sleep 5
           done
           [ "$drained" -ge 3 ] || { echo "database sessions did not quiesce" >&2; exit 1; }
+          freeze_sql=$(psql "$DATABASE_URL" --no-psqlrc --tuples-only --no-align --command \
+            "SELECT format('ALTER DATABASE %I SET default_transaction_read_only = on', current_database())")
+          psql "$DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --command "$freeze_sql"
+          psql "$DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --command \
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid();"
+          read_only=$(psql "$DATABASE_URL" --no-psqlrc --tuples-only --no-align --command 'SHOW default_transaction_read_only' | tr -d '[:space:]')
+          [ "$read_only" = "on" ] || { echo "database-level read-only freeze was not enforced" >&2; exit 1; }
           printf 'frozen-pre-destructive\n' > tc492-phase.txt
 
           bun scripts/verify-tc-492-migration-set.ts pre > tc492-migration-frozen.json
           bun run db:cutover:report > tc492-frozen.json
+          bun scripts/tc-492-tenant-custody-digest.ts > tc492-tenant-custody-frozen.json
           jq -e \
             --arg digest "$ACCEPTED_DIGEST" \
             --argjson candidates "$ACCEPTED_CANDIDATE_COUNT" \
             --argjson tenant "$ACCEPTED_TENANT_COUNT" \
             '.phase == "pre-expand" and .candidateDigestSha256 == $digest and .deterministicCandidateCount == $candidates and .tenantCustodyKeyCount == $tenant and .selectionConflictCount == 0 and .predictedAddressChangeCount == 0 and .canonicalWithoutEligibleKeyCount == 0' \
             tc492-frozen.json >/dev/null
+          jq -e --arg digest "$ACCEPTED_TENANT_DIGEST" '.aggregateSha256 == $digest' \
+            tc492-tenant-custody-frozen.json >/dev/null
           bun scripts/tc-492-preservation-digest.ts > tc492-preservation-pre.json
 
           age_recipient=$(jq -r '.ageRecipient' preflight-evidence/tc492-preflight-manifest.json)
@@ -460,13 +513,15 @@ jobs:
             --arg createdAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --arg backupSha256 "$final_sha" \
             --slurpfile report tc492-frozen.json \
+            --slurpfile tenantCustody tc492-tenant-custody-frozen.json \
             --slurpfile preservation tc492-preservation-pre.json \
-            '{schema:"openkey.tc492.frozen-backup.v1",candidateSha:$candidateSha,workflowRunId:$workflowRunId,createdAt:$createdAt,writeFreezeProven:true,backupSha256:$backupSha256,report:$report[0],preservation:$preservation[0]}' \
+            '{schema:"openkey.tc492.frozen-backup.v2",candidateSha:$candidateSha,workflowRunId:$workflowRunId,createdAt:$createdAt,writeFreezeProven:true,backupSha256:$backupSha256,report:$report[0],tenantCustody:$tenantCustody[0],preservation:$preservation[0]}' \
             > tc492-final-backup-manifest.json
 
       - name: Restart old API after a pre-destructive freeze failure
         if: failure()
         env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
         run: |
           set -euo pipefail
@@ -474,6 +529,9 @@ jobs:
           phase=$(tr -d '\n' < tc492-phase.txt)
           case "$phase" in
             freeze-requested|frozen-pre-destructive)
+              thaw_sql=$(psql "$DATABASE_URL" --no-psqlrc --tuples-only --no-align --command \
+                "SELECT format('ALTER DATABASE %I SET default_transaction_read_only = off', current_database())")
+              PGOPTIONS='-c default_transaction_read_only=off' psql "$DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --command "$thaw_sql"
               phala cvms start openkey-api --api-token "$PHALA_CLOUD_API_KEY"
               curl --fail --silent --show-error --retry 12 --retry-delay 5 \
                 "https://api.openkey.so/health?tc492=recovery-${GITHUB_RUN_ID}" > /dev/null
@@ -494,12 +552,16 @@ jobs:
       - name: Restart old API if frozen-backup upload failed
         if: failure()
         env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
         run: |
           set -euo pipefail
           [ -f tc492-phase.txt ] || exit 0
           phase=$(tr -d '\n' < tc492-phase.txt)
-          [ "$phase" = "frozen-pre-destructive" ] || exit 0
+          [[ "$phase" =~ ^(freeze-requested|frozen-pre-destructive)$ ]] || exit 0
+          thaw_sql=$(psql "$DATABASE_URL" --no-psqlrc --tuples-only --no-align --command \
+            "SELECT format('ALTER DATABASE %I SET default_transaction_read_only = off', current_database())")
+          PGOPTIONS='-c default_transaction_read_only=off' psql "$DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --command "$thaw_sql"
           phala cvms start openkey-api --api-token "$PHALA_CLOUD_API_KEY"
           curl --fail --silent --show-error --retry 12 --retry-delay 5 \
             "https://api.openkey.so/health?tc492=backup-recovery-${GITHUB_RUN_ID}" > /dev/null
@@ -514,8 +576,10 @@ jobs:
           ACCEPTED_CANDIDATE_COUNT: ${{ inputs.accepted_candidate_count }}
         run: |
           set -euo pipefail
-          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "build did not return an immutable digest" >&2; exit 1; }
           printf 'destructive-started\n' > tc492-phase.txt
+          thaw_sql=$(psql "$DATABASE_URL" --no-psqlrc --tuples-only --no-align --command \
+            "SELECT format('ALTER DATABASE %I SET default_transaction_read_only = off', current_database())")
+          PGOPTIONS='-c default_transaction_read_only=off' psql "$DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --command "$thaw_sql"
           bun run db:migrate:apply
           bun scripts/verify-tc-492-migration-set.ts post > tc492-migration-post.json
           bun run db:migrate:verify-guards
@@ -532,12 +596,24 @@ jobs:
             tc492-post.json >/dev/null
           sed -i "s|\${DOCKER_IMAGE}|skgbafa/openkey-api@${IMAGE_DIGEST}|g" docker-compose.prod.yml
           phala deploy --api-token "$PHALA_CLOUD_API_KEY" --cvm-id openkey-api --compose docker-compose.prod.yml --wait
-          phala runtime-config openkey-api --api-token "$PHALA_CLOUD_API_KEY" --json > /tmp/runtime-after.json
           phala ps openkey-api --api-token "$PHALA_CLOUD_API_KEY" --json > /tmp/containers-after.json
-          grep -F "$IMAGE_DIGEST" /tmp/runtime-after.json >/dev/null || { echo "runtime config is not digest-bound" >&2; exit 1; }
-          grep -F "$IMAGE_DIGEST" /tmp/containers-after.json >/dev/null || { echo "running container does not attest the deployed digest" >&2; exit 1; }
-          jq -n --arg imageDigest "$IMAGE_DIGEST" '{schema:"openkey.tc492.runtime-after.v1",imageDigest:$imageDigest,runtimeConfigMatched:true,runningContainerMatched:true}' > tc492-runtime-after.json
-          rm -f /tmp/runtime-after.json /tmp/containers-after.json
+          EXPECTED_IMAGE="skgbafa/openkey-api@${IMAGE_DIGEST}" node <<'NODE'
+          const fs = require('node:fs');
+          const data = JSON.parse(fs.readFileSync('/tmp/containers-after.json', 'utf8'));
+          const api = data.containers?.find((container) =>
+            Array.isArray(container.names) && container.names.some((name) => name.replace(/^\//, '') === 'api'));
+          if (!api || api.image !== process.env.EXPECTED_IMAGE || api.state !== 'running') {
+            throw new Error('running api container does not attest the deployed digest');
+          }
+          fs.writeFileSync('tc492-runtime-after.json', JSON.stringify({
+            schema: 'openkey.tc492.runtime-after.v2',
+            apiContainer: 'api',
+            imageReference: api.image,
+            imageDigest: process.env.EXPECTED_IMAGE.split('@')[1],
+            state: api.state,
+          }));
+          NODE
+          rm -f /tmp/containers-after.json
           printf 'candidate-deployed\n' > tc492-phase.txt
 
       - name: Verify production authorization metadata
@@ -585,6 +661,7 @@ jobs:
             tc492-migration-post.json
             tc492-frozen.json
             tc492-post.json
+            tc492-tenant-custody-frozen.json
             tc492-preservation-pre.json
             tc492-preservation-post.json
             tc492-final-backup-manifest.json

@@ -15,7 +15,8 @@ const queries = {
       'responseTypes', "responseTypes", 'type', type, 'public', public, 'contacts', contacts,
       'tos', tos, 'policy', policy, 'softwareId', "softwareId", 'softwareVersion', "softwareVersion",
       'softwareStatement', "softwareStatement", 'userId', "userId", 'referenceId', "referenceId",
-      'organizationId', "organizationId", 'createdAt', "createdAt", 'updatedAt', "updatedAt"
+      'organizationId', "organizationId", 'metadata', COALESCE(metadata, '{}'::jsonb) - 'openkeyClientMode' - 'openkeyOrganizationId',
+      'createdAt', "createdAt", 'updatedAt', "updatedAt"
     )::text AS value FROM oauth_client ORDER BY id`,
   oauthConsents: `
     SELECT jsonb_build_object(
@@ -41,6 +42,12 @@ const queries = {
       'status', status, 'validFrom', "validFrom", 'validUntil', "validUntil",
       'revokedAt', "revokedAt", 'createdAt', "createdAt"
     )::text AS value FROM organization_membership ORDER BY id`,
+  planEntitlements: `
+    SELECT jsonb_build_object(
+      'id', id, 'organizationId', "organizationId", 'version', version, 'maxApps', "maxApps",
+      'maxOrganizationMembers', "maxOrganizationMembers", 'requestsPerMinute', "requestsPerMinute",
+      'auditRetentionDays', "auditRetentionDays", 'createdAt', "createdAt", 'updatedAt', "updatedAt"
+    )::text AS value FROM plan_entitlements ORDER BY id`,
 } as const;
 
 async function main() {
