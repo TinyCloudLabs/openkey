@@ -265,7 +265,7 @@ model OauthClient {
   tinycloudSessionPolicy  String?  // Dashboard-managed automatic signing policy
   tinycloudSessionOrigin  String?  // Exact browser origin allowed by that policy
   disabled                Boolean  @default(false)
-  skipConsent             Boolean  @default(false) // Always false for OpenKey
+  skipConsent             Boolean  @default(false) // Admin-controlled trusted-client auto-approval; false by default
   enableEndSession        Boolean  @default(false)
   tokenEndpointAuthMethod String? // "client_secret_basic", "client_secret_post", "none"
   grantTypes              String[] @default(["authorization_code", "refresh_token"])
