@@ -7,6 +7,15 @@ import {
   generateState,
   buildAuthorizationUrl,
 } from '@openkey/core';
+import { OpenKeyNostr } from './nostr';
+
+export { OpenKeyNostr } from './nostr';
+export type {
+  UnsignedNostrEvent,
+  SignedNostrEvent,
+  NostrIdentity,
+  NostrError,
+} from './nostr';
 
 export interface EIP1193Provider {
   request(args: { method: string; params?: any[] }): Promise<any>;
@@ -725,6 +734,14 @@ export class OpenKey {
   private lastAuth: AuthResult | null = null;
   private discoveredProviders: EIP6963ProviderDetail[] = [];
   private sessionToken: string | null = null;
+  /**
+   * Nostr identity custody + signing (secp256k1 Schnorr / BIP-340). Kept
+   * fully separate from the Ethereum flows above: it never reuses
+   * `lastAuth`/`sessionToken`, and its widget messages never carry a
+   * sessionToken - the OpenKey session and any signing grants stay inside
+   * the OpenKey-origin iframe for the whole lifetime of this client.
+   */
+  readonly nostr: OpenKeyNostr;
 
   constructor(config: OpenKeyConfig = {}) {
     this.config = config;
@@ -732,6 +749,7 @@ export class OpenKey {
     this.oauthHost = config.oauthHost || this.deriveOAuthHost(this.host);
     this.appName = config.appName || window.location.hostname;
     this.mode = config.mode ?? 'iframe';
+    this.nostr = new OpenKeyNostr(this.host);
 
     // Listen for EIP-6963 wallet announcements
     if (typeof window !== 'undefined') {

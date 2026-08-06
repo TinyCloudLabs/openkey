@@ -37,6 +37,37 @@ async function fetchAPI<T>(path: string, options: RequestInit = {}): Promise<T> 
   return res.json();
 }
 
+// Nostr identity + signing types (secp256k1 Schnorr / BIP-340) - structurally
+// separate from EthereumKey above; see apps/api/src/routes/nostr-keys.ts.
+export interface NostrKey {
+  id: string;
+  pubkeyHex: string;
+  npub: string;
+  label: string | null;
+  createdAt: string;
+}
+
+export interface NostrGrant {
+  id: string;
+  clientOrigin: string;
+  allowedKinds: number[];
+  relayUrl: string | null;
+  expiresAt: string;
+}
+
+export interface UnsignedNostrEvent {
+  pubkey: string;
+  created_at: number;
+  kind: number;
+  tags: string[][];
+  content: string;
+}
+
+export interface SignedNostrEvent extends UnsignedNostrEvent {
+  id: string;
+  sig: string;
+}
+
 export interface EthereumKey {
   id: string;
   address: string;
@@ -97,6 +128,51 @@ export interface ConsoleApp { id: string; clientId: string; name: string; uri: s
 export interface ConsoleMember { id: string; userId: string; email: string; name: string | null; role: "ADMIN" | "MEMBER"; validFrom: string; createdAt: string; }
 
 export const api = {
+  // Nostr identity + signing (secp256k1 Schnorr / BIP-340) - structurally
+  // separate from the Ethereum key methods below; see
+  // apps/api/src/routes/nostr-keys.ts. Consumed only from the OpenKey-origin
+  // widget page (apps/web/src/routes/widget/embed/nostr/approve); never
+  // returns or accepts secret key material.
+  nostr: {
+    async getOrCreateKey(label?: string): Promise<{ key: NostrKey }> {
+      return fetchAPI('/api/keys/nostr', {
+        method: 'POST',
+        body: JSON.stringify(label ? { label } : {}),
+      });
+    },
+
+    async listKeys(): Promise<{ keys: NostrKey[] }> {
+      return fetchAPI('/api/keys/nostr');
+    },
+
+    async createGrant(
+      keyId: string,
+      input: { clientOrigin: string; kinds: number[]; relayUrl?: string; ttlSeconds?: number },
+    ): Promise<{ grant: NostrGrant }> {
+      return fetchAPI(`/api/keys/nostr/${encodeURIComponent(keyId)}/grants`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      });
+    },
+
+    async revokeGrant(grantId: string): Promise<{ success: boolean }> {
+      return fetchAPI(`/api/keys/nostr/grants/${encodeURIComponent(grantId)}`, {
+        method: 'DELETE',
+      });
+    },
+
+    async signEvent(
+      keyId: string,
+      event: UnsignedNostrEvent,
+      clientOrigin: string,
+    ): Promise<{ event: SignedNostrEvent }> {
+      return fetchAPI(`/api/keys/nostr/${encodeURIComponent(keyId)}/sign-event`, {
+        method: 'POST',
+        body: JSON.stringify({ event, clientOrigin }),
+      });
+    },
+  },
+
   // Key management
   async listKeys(options?: { includeArchived?: boolean }): Promise<{ keys: EthereumKey[] }> {
     const query = options?.includeArchived ? '?archived=true' : '';

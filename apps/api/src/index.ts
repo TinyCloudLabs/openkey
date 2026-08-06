@@ -8,6 +8,7 @@ import {
 } from '@better-auth/oauth-provider';
 import { auth } from './auth';
 import { keysRouter } from './routes/keys';
+import { nostrKeysRouter } from './routes/nostr-keys';
 import { accountRouter } from './routes/account';
 import { oauthAdminRouter } from './routes/oauth-admin';
 import { passkeyProxyRouter } from './routes/passkey-proxy';
@@ -143,6 +144,10 @@ app.on(['POST', 'GET'], '/api/auth/*', (c) => {
 
 // Key management routes
 app.route('/api/keys', keysRouter);
+
+// Nostr key custody + signing routes (secp256k1 Schnorr, structurally
+// separate from the Ethereum/ECDSA routes above)
+app.route('/api/keys/nostr', nostrKeysRouter);
 
 // Account management routes
 app.route('/api/account', accountRouter);
