@@ -75,7 +75,7 @@ jobs:
     environment: production
     services:
       postgres:
-        image: postgres:16
+        image: postgres:17
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: restore
@@ -112,8 +112,21 @@ jobs:
         run: |
           set -euo pipefail
           bun install --frozen-lockfile
+          pgdg_key=$(mktemp)
+          curl --fail --silent --show-error --location \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            --output "$pgdg_key"
+          pgdg_fingerprint=$(gpg --show-keys --with-colons "$pgdg_key" | awk -F: '$1 == "fpr" { print $10; exit }')
+          [ "$pgdg_fingerprint" = "B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8" ]
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo install -m 0644 "$pgdg_key" /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+          rm -f "$pgdg_key"
+          . /etc/os-release
+          printf 'deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt %s-pgdg main\n' "$VERSION_CODENAME" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           sudo apt-get update -qq
-          sudo apt-get install -y age postgresql-client
+          sudo apt-get install -y age postgresql-client-17
+          pg_dump --version | grep -E '^pg_dump \(PostgreSQL\) 17\.'
           npm install -g "phala@${PHALA_CLI_VERSION}"
           [ "$(phala --version)" = "v${PHALA_CLI_VERSION}+d2300dd" ]
           bun run db:generate
@@ -393,8 +406,21 @@ jobs:
         run: |
           set -euo pipefail
           bun install --frozen-lockfile
+          pgdg_key=$(mktemp)
+          curl --fail --silent --show-error --location \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            --output "$pgdg_key"
+          pgdg_fingerprint=$(gpg --show-keys --with-colons "$pgdg_key" | awk -F: '$1 == "fpr" { print $10; exit }')
+          [ "$pgdg_fingerprint" = "B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8" ]
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo install -m 0644 "$pgdg_key" /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+          rm -f "$pgdg_key"
+          . /etc/os-release
+          printf 'deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt %s-pgdg main\n' "$VERSION_CODENAME" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           sudo apt-get update -qq
-          sudo apt-get install -y age postgresql-client
+          sudo apt-get install -y age postgresql-client-17
+          pg_dump --version | grep -E '^pg_dump \(PostgreSQL\) 17\.'
           npm install -g "phala@${PHALA_CLI_VERSION}"
           [ "$(phala --version)" = "v${PHALA_CLI_VERSION}+d2300dd" ]
           bun run db:generate
