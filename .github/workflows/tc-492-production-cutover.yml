@@ -352,6 +352,18 @@ jobs:
           set -euo pipefail
           sed -i "s|\${DOCKER_IMAGE}|skgbafa/openkey-api:${CANDIDATE_SHA}|g" docker-compose.prod.yml
           phala cvms stop openkey-api --api-token "$PHALA_CLOUD_API_KEY"
+          frozen=false
+          for _attempt in $(seq 1 24); do
+            status=$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 5 \
+              https://api.openkey.so/api/auth/.well-known/openid-configuration || true)
+            if [ "$status" != "200" ]; then
+              frozen=true
+              break
+            fi
+            sleep 5
+          done
+          [ "$frozen" = "true" ] || { echo "OpenKey API remained reachable; write freeze is not proven" >&2; exit 1; }
+          sleep 5
           echo "OpenKey CVM stopped; old code must not be restarted after the destructive migration." >> "$GITHUB_STEP_SUMMARY"
           bun run db:migrate:apply
           bun run db:migrate:verify-guards
