@@ -480,11 +480,11 @@ jobs:
             sleep 5
           done
           [ "$drained" -ge 3 ] || { echo "database sessions did not quiesce" >&2; exit 1; }
-          freeze_cutoff=$(psql "$DATABASE_URL" --no-psqlrc --tuples-only --no-align --command \
-            'SELECT clock_timestamp()')
           freeze_sql=$(psql "$DATABASE_URL" --no-psqlrc --tuples-only --no-align --command \
             "SELECT format('ALTER DATABASE %I SET default_transaction_read_only = on', current_database())")
           psql "$DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --command "$freeze_sql"
+          freeze_cutoff=$(psql "$DATABASE_URL" --no-psqlrc --tuples-only --no-align --command \
+            'SELECT clock_timestamp()')
           terminated=$(psql "$DATABASE_URL" --no-psqlrc --tuples-only --no-align --set cutoff="$freeze_cutoff" --command \
             "WITH targets AS (SELECT pid FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_start <= :'cutoff'::timestamptz) SELECT coalesce(bool_and(pg_terminate_backend(pid)), true) FROM targets;")
           [ "$terminated" = "t" ] || { echo "one or more pre-freeze database sessions could not be terminated" >&2; exit 1; }
