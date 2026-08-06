@@ -138,11 +138,11 @@ jobs:
         run: |
           set -euo pipefail
           bun scripts/verify-tc-492-migration-set.ts pre > tc492-migration-pre.json
-          bun run db:cutover:report > tc492-pre.json
-          bun scripts/tc-492-tenant-custody-digest.ts > tc492-tenant-custody-pre.json
+          bun run db:cutover:report > tc492-live-pre.json
+          bun scripts/tc-492-tenant-custody-digest.ts > tc492-tenant-custody-live-pre.json
           node <<'NODE'
           const fs = require('node:fs');
-          const report = JSON.parse(fs.readFileSync('tc492-pre.json', 'utf8'));
+          const report = JSON.parse(fs.readFileSync('tc492-live-pre.json', 'utf8'));
           if (report.schema !== 'openkey.tc492.canonical-cutover-report.v1') throw new Error('unexpected report schema');
           if (report.phase !== 'pre-expand') throw new Error(`expected pre-expand production, got ${report.phase}`);
           for (const field of ['selectionConflictCount', 'predictedAddressChangeCount', 'canonicalWithoutEligibleKeyCount']) {
@@ -163,7 +163,23 @@ jobs:
           pg_dump --format=custom --no-owner --no-privileges --file=tc492.dump "$DATABASE_URL"
           pg_restore --exit-on-error --no-owner --no-privileges --dbname="$RESTORE_DATABASE_URL" tc492.dump
           DATABASE_URL="$RESTORE_DATABASE_URL" bun run db:cutover:report > tc492-restored.json
-          cmp -s tc492-pre.json tc492-restored.json || { echo "restored database report differs from production report" >&2; exit 1; }
+          DATABASE_URL="$RESTORE_DATABASE_URL" bun scripts/tc-492-tenant-custody-digest.ts > tc492-tenant-custody-restored.json
+          node <<'NODE'
+          const fs = require('node:fs');
+          const report = JSON.parse(fs.readFileSync('tc492-restored.json', 'utf8'));
+          const custody = JSON.parse(fs.readFileSync('tc492-tenant-custody-restored.json', 'utf8'));
+          if (report.schema !== 'openkey.tc492.canonical-cutover-report.v1') throw new Error('unexpected restored report schema');
+          if (report.phase !== 'pre-expand') throw new Error(`expected pre-expand backup, got ${report.phase}`);
+          for (const field of ['selectionConflictCount', 'predictedAddressChangeCount', 'canonicalWithoutEligibleKeyCount']) {
+            if (report[field] !== 0) throw new Error(`restored ${field} must be zero, got ${report[field]}`);
+          }
+          if (custody.schema !== 'openkey.tc492.tenant-custody.v1') throw new Error('unexpected restored custody schema');
+          if (custody.tables?.tenantEthereumKeys?.count !== report.tenantCustodyKeyCount) {
+            throw new Error('restored report and custody key counts differ');
+          }
+          NODE
+          cp tc492-restored.json tc492-pre.json
+          cp tc492-tenant-custody-restored.json tc492-tenant-custody-pre.json
           openssl rand -hex 32 > tc492-restore-challenge
           challenge_sha=$(sha256sum tc492-restore-challenge | awk '{print $1}')
           printf '%s\n' "$challenge_sha" > tc492-restore-challenge.sha256
@@ -284,7 +300,7 @@ jobs:
             --slurpfile tenantCustody tc492-tenant-custody-pre.json \
             --slurpfile telemetry tc492-telemetry.json \
             --slurpfile runtime tc492-runtime-before.json \
-            '{schema:"openkey.tc492.preflight.v3",candidateSha:$candidateSha,workflowRunId:$workflowRunId,createdAt:$createdAt,ageRecipient:$ageRecipient,backupSha256:$backupSha256,restoreChallengeSha256:$restoreChallengeSha256,restoreReportMatched:true,report:$report[0],migrationSet:$migrations[0],tenantCustody:$tenantCustody[0],telemetry:$telemetry[0],runtimeBefore:$runtime[0]}' \
+            '{schema:"openkey.tc492.preflight.v4",candidateSha:$candidateSha,workflowRunId:$workflowRunId,createdAt:$createdAt,ageRecipient:$ageRecipient,backupSha256:$backupSha256,restoreChallengeSha256:$restoreChallengeSha256,restoreSnapshotVerified:true,reportSource:"restored-backup",report:$report[0],migrationSet:$migrations[0],tenantCustody:$tenantCustody[0],telemetry:$telemetry[0],runtimeBefore:$runtime[0]}' \
             > tc492-preflight-manifest.json
           jq '{report:.report,telemetry:.telemetry,runtimeBefore:.runtimeBefore}' tc492-preflight-manifest.json >> "$GITHUB_STEP_SUMMARY"
 
@@ -304,9 +320,12 @@ jobs:
           name: tc492-evidence-${{ inputs.candidate_sha }}
           path: |
             tc492-pre.json
+            tc492-live-pre.json
             tc492-restored.json
             tc492-migration-pre.json
             tc492-tenant-custody-pre.json
+            tc492-tenant-custody-live-pre.json
+            tc492-tenant-custody-restored.json
             tc492-telemetry.json
             tc492-runtime-before.json
             tc492-preflight-manifest.json
@@ -386,7 +405,7 @@ jobs:
             --argjson candidates "$ACCEPTED_CANDIDATE_COUNT" \
             --argjson tenant "$ACCEPTED_TENANT_COUNT" \
             --arg tenantDigest "$ACCEPTED_TENANT_DIGEST" \
-            '.schema == "openkey.tc492.preflight.v3" and .candidateSha == $sha and .workflowRunId == $run and .restoreReportMatched == true and .report.candidateDigestSha256 == $digest and .report.deterministicCandidateCount == $candidates and .report.tenantCustodyKeyCount == $tenant and .tenantCustody.aggregateSha256 == $tenantDigest and .telemetry.httpLines > 0 and .telemetry.removedRouteHits == 0 and .telemetry.legacyScopeHits == 0' \
+            '.schema == "openkey.tc492.preflight.v4" and .candidateSha == $sha and .workflowRunId == $run and .restoreSnapshotVerified == true and .reportSource == "restored-backup" and .report.candidateDigestSha256 == $digest and .report.deterministicCandidateCount == $candidates and .report.tenantCustodyKeyCount == $tenant and .tenantCustody.aggregateSha256 == $tenantDigest and .telemetry.httpLines > 0 and .telemetry.removedRouteHits == 0 and .telemetry.legacyScopeHits == 0' \
             "$manifest" >/dev/null
           created=$(jq -r '.createdAt' "$manifest")
           age_seconds=$(( $(date -u +%s) - $(date -u -d "$created" +%s) ))
