@@ -1,0 +1,418 @@
+name: TC-492 Production Cutover
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Run the read-only backup preflight or the confirmed cutover"
+        required: true
+        type: choice
+        options:
+          - preflight
+          - cutover
+      candidate_sha:
+        description: "Exact reviewed OpenKey PR #170 commit"
+        required: true
+        type: string
+      age_recipient:
+        description: "age public recipient for the encrypted backup (preflight only)"
+        required: false
+        type: string
+      telemetry_since:
+        description: "Phala log window, for example 168h (preflight only)"
+        required: false
+        default: "168h"
+        type: string
+      preflight_run_id:
+        description: "Successful preflight workflow run ID (cutover only)"
+        required: false
+        type: string
+      accepted_candidate_digest:
+        description: "Accepted candidateDigestSha256 from preflight (cutover only)"
+        required: false
+        type: string
+      accepted_candidate_count:
+        description: "Accepted deterministicCandidateCount (cutover only)"
+        required: false
+        type: string
+      accepted_tenant_custody_count:
+        description: "Accepted tenantCustodyKeyCount disposition (cutover only)"
+        required: false
+        type: string
+      route_telemetry_reference:
+        description: "Reviewed zero-hit evidence reference (cutover only)"
+        required: false
+        type: string
+      confirmation:
+        description: "Type tc492-apply-destructive-cutover (cutover only)"
+        required: false
+        type: string
+
+concurrency:
+  group: production-api
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  preflight:
+    name: Backup, restore, report, and inspect route telemetry
+    if: github.ref == 'refs/heads/main' && inputs.mode == 'preflight'
+    runs-on: ubuntu-latest
+    environment: production
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: restore
+          POSTGRES_DB: tc492_restore
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d tc492_restore"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - name: Validate reviewed candidate and backup recipient
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          AGE_RECIPIENT: ${{ inputs.age_recipient }}
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "candidate_sha must be a full commit" >&2; exit 1; }
+          [[ "$AGE_RECIPIENT" =~ ^age1[0-9a-z]+$ ]] || { echo "a valid age recipient is required" >&2; exit 1; }
+          reviewed=$(git ls-remote https://github.com/TinyCloudLabs/openkey.git refs/pull/170/head | awk '{print $1}')
+          [ "$CANDIDATE_SHA" = "$reviewed" ] || { echo "candidate_sha is not the current PR #170 head" >&2; exit 1; }
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install release and backup tools
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          sudo apt-get update -qq
+          sudo apt-get install -y age postgresql-client
+          npm install -g phala
+          bun run db:generate
+
+      - name: Capture and validate the production cutover report
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          [ -n "$DATABASE_URL" ] || { echo "DATABASE_URL is required" >&2; exit 1; }
+          bun run db:cutover:report > tc492-pre.json
+          node <<'NODE'
+          const fs = require('node:fs');
+          const report = JSON.parse(fs.readFileSync('tc492-pre.json', 'utf8'));
+          if (report.schema !== 'openkey.tc492.canonical-cutover-report.v1') throw new Error('unexpected report schema');
+          if (report.phase !== 'pre-expand') throw new Error(`expected pre-expand production, got ${report.phase}`);
+          for (const field of ['selectionConflictCount', 'predictedAddressChangeCount', 'canonicalWithoutEligibleKeyCount']) {
+            if (report[field] !== 0) throw new Error(`${field} must be zero, got ${report[field]}`);
+          }
+          NODE
+
+      - name: Create and restore-rehearse the logical backup
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          RESTORE_DATABASE_URL: postgresql://postgres:restore@127.0.0.1:5432/tc492_restore
+          AGE_RECIPIENT: ${{ inputs.age_recipient }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        run: |
+          set -euo pipefail
+          pg_dump --format=custom --no-owner --no-privileges --file=tc492.dump "$DATABASE_URL"
+          pg_restore --exit-on-error --no-owner --no-privileges --dbname="$RESTORE_DATABASE_URL" tc492.dump
+          DATABASE_URL="$RESTORE_DATABASE_URL" bun run db:cutover:report > tc492-restored.json
+          node <<'NODE'
+          const fs = require('node:fs');
+          const before = JSON.parse(fs.readFileSync('tc492-pre.json', 'utf8'));
+          const restored = JSON.parse(fs.readFileSync('tc492-restored.json', 'utf8'));
+          if (JSON.stringify(before) !== JSON.stringify(restored)) throw new Error('restored database report differs from production report');
+          NODE
+          age --recipient "$AGE_RECIPIENT" --output "openkey-tc492-${CANDIDATE_SHA}.dump.age" tc492.dump
+          rm -f tc492.dump
+
+      - name: Inspect production logs for removed-route traffic
+        id: telemetry
+        continue-on-error: true
+        env:
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+          TELEMETRY_SINCE: ${{ inputs.telemetry_since }}
+        run: |
+          set -euo pipefail
+          [[ "$TELEMETRY_SINCE" =~ ^[0-9]+[mhd]$ ]] || { echo "invalid telemetry_since" >&2; exit 1; }
+          phala logs --cvm-id openkey-api --api-token "$PHALA_CLOUD_API_KEY" --since "$TELEMETRY_SINCE" --timestamps > /tmp/openkey-api.log
+          http_lines=$(grep -Eic '(^|[[:space:]])(GET|POST|PUT|PATCH|DELETE|OPTIONS)([[:space:]]|\")' /tmp/openkey-api.log || true)
+          removed_hits=$(grep -Eic '(managed-accounts|tenant-accounts|management-credentials|personal-managed-accounts|/eject|tinycloud%3Asession|tinycloud:session)' /tmp/openkey-api.log || true)
+          rm -f /tmp/openkey-api.log
+          echo "http_lines=$http_lines" >> "$GITHUB_OUTPUT"
+          echo "removed_hits=$removed_hits" >> "$GITHUB_OUTPUT"
+          [ "$http_lines" -gt 0 ] || { echo "Phala logs contain no recognizable HTTP route coverage" >&2; exit 1; }
+          [ "$removed_hits" -eq 0 ] || { echo "Removed-route traffic remains active" >&2; exit 1; }
+
+      - name: Write body-free preflight evidence
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          TELEMETRY_SINCE: ${{ inputs.telemetry_since }}
+          TELEMETRY_OUTCOME: ${{ steps.telemetry.outcome }}
+          HTTP_LINES: ${{ steps.telemetry.outputs.http_lines }}
+          REMOVED_HITS: ${{ steps.telemetry.outputs.removed_hits }}
+        run: |
+          set -euo pipefail
+          backup="openkey-tc492-${CANDIDATE_SHA}.dump.age"
+          backup_sha=$(sha256sum "$backup" | awk '{print $1}')
+          jq -n \
+            --arg candidateSha "$CANDIDATE_SHA" \
+            --arg workflowRunId "$GITHUB_RUN_ID" \
+            --arg backupSha256 "$backup_sha" \
+            --arg telemetrySince "$TELEMETRY_SINCE" \
+            --arg telemetryOutcome "$TELEMETRY_OUTCOME" \
+            --argjson httpLines "${HTTP_LINES:-0}" \
+            --argjson removedHits "${REMOVED_HITS:-0}" \
+            --slurpfile report tc492-pre.json \
+            '{schema:"openkey.tc492.preflight.v1",candidateSha:$candidateSha,workflowRunId:$workflowRunId,backupSha256:$backupSha256,restoreReportMatched:true,telemetry:{since:$telemetrySince,outcome:$telemetryOutcome,httpLines:$httpLines,removedHits:$removedHits},report:$report[0]}' \
+            > tc492-preflight-manifest.json
+          cat tc492-pre.json >> "$GITHUB_STEP_SUMMARY"
+          printf '\nTelemetry outcome: %s; HTTP lines: %s; removed-route hits: %s\n' "$TELEMETRY_OUTCOME" "${HTTP_LINES:-0}" "${REMOVED_HITS:-0}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload encrypted backup
+        uses: actions/upload-artifact@v4
+        with:
+          name: tc492-backup-${{ inputs.candidate_sha }}
+          path: |
+            openkey-tc492-${{ inputs.candidate_sha }}.dump.age
+            tc492-preflight-manifest.json
+          if-no-files-found: error
+          retention-days: 60
+
+      - name: Upload aggregate preflight evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: tc492-evidence-${{ inputs.candidate_sha }}
+          path: |
+            tc492-pre.json
+            tc492-restored.json
+            tc492-preflight-manifest.json
+          if-no-files-found: error
+          retention-days: 90
+
+  cutover:
+    name: Freeze, migrate, verify, and deploy exact candidate
+    if: github.ref == 'refs/heads/main' && inputs.mode == 'cutover'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Validate destructive-cutover confirmation
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          PREFLIGHT_RUN_ID: ${{ inputs.preflight_run_id }}
+          ACCEPTED_DIGEST: ${{ inputs.accepted_candidate_digest }}
+          ACCEPTED_CANDIDATE_COUNT: ${{ inputs.accepted_candidate_count }}
+          ACCEPTED_TENANT_COUNT: ${{ inputs.accepted_tenant_custody_count }}
+          ROUTE_TELEMETRY_REFERENCE: ${{ inputs.route_telemetry_reference }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$PREFLIGHT_RUN_ID" =~ ^[0-9]+$ ]] || exit 1
+          [[ "$ACCEPTED_DIGEST" =~ ^[0-9a-f]{64}$ ]] || exit 1
+          [[ "$ACCEPTED_CANDIDATE_COUNT" =~ ^[0-9]+$ ]] || exit 1
+          [[ "$ACCEPTED_TENANT_COUNT" =~ ^[0-9]+$ ]] || exit 1
+          [ -n "$ROUTE_TELEMETRY_REFERENCE" ] || { echo "route telemetry evidence reference is required" >&2; exit 1; }
+          [ "$CONFIRMATION" = "tc492-apply-destructive-cutover" ] || { echo "confirmation did not match" >&2; exit 1; }
+          reviewed=$(git ls-remote https://github.com/TinyCloudLabs/openkey.git refs/pull/170/head | awk '{print $1}')
+          [ "$CANDIDATE_SHA" = "$reviewed" ] || { echo "candidate_sha is not the current PR #170 head" >&2; exit 1; }
+
+      - name: Download preflight evidence
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.preflight_run_id }}
+          name: tc492-evidence-${{ inputs.candidate_sha }}
+          path: preflight-evidence
+
+      - name: Confirm the encrypted backup is still recoverable
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.preflight_run_id }}
+          name: tc492-backup-${{ inputs.candidate_sha }}
+          path: encrypted-backup
+
+      - name: Verify accepted preflight evidence
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          PREFLIGHT_RUN_ID: ${{ inputs.preflight_run_id }}
+          ACCEPTED_DIGEST: ${{ inputs.accepted_candidate_digest }}
+          ACCEPTED_CANDIDATE_COUNT: ${{ inputs.accepted_candidate_count }}
+          ACCEPTED_TENANT_COUNT: ${{ inputs.accepted_tenant_custody_count }}
+          ROUTE_TELEMETRY_REFERENCE: ${{ inputs.route_telemetry_reference }}
+        run: |
+          set -euo pipefail
+          jq -e \
+            --arg sha "$CANDIDATE_SHA" \
+            --arg run "$PREFLIGHT_RUN_ID" \
+            --arg digest "$ACCEPTED_DIGEST" \
+            --argjson candidates "$ACCEPTED_CANDIDATE_COUNT" \
+            --argjson tenant "$ACCEPTED_TENANT_COUNT" \
+            '.schema == "openkey.tc492.preflight.v1" and .candidateSha == $sha and .workflowRunId == $run and .restoreReportMatched == true and .report.candidateDigestSha256 == $digest and .report.deterministicCandidateCount == $candidates and .report.tenantCustodyKeyCount == $tenant' \
+            preflight-evidence/tc492-preflight-manifest.json >/dev/null
+          expected_backup_sha=$(jq -r '.backupSha256' preflight-evidence/tc492-preflight-manifest.json)
+          actual_backup_sha=$(sha256sum "encrypted-backup/openkey-tc492-${CANDIDATE_SHA}.dump.age" | awk '{print $1}')
+          [ "$actual_backup_sha" = "$expected_backup_sha" ] || { echo "encrypted backup checksum mismatch" >&2; exit 1; }
+          if [ "$ROUTE_TELEMETRY_REFERENCE" = "preflight:${PREFLIGHT_RUN_ID}" ]; then
+            jq -e '.telemetry.outcome == "success" and .telemetry.httpLines > 0 and .telemetry.removedHits == 0' \
+              preflight-evidence/tc492-preflight-manifest.json >/dev/null
+          else
+            [[ "$ROUTE_TELEMETRY_REFERENCE" =~ ^external:.+ ]] || {
+              echo "route telemetry reference must be the successful preflight or an external evidence reference" >&2
+              exit 1
+            }
+          fi
+          rm -rf encrypted-backup
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install and revalidate unchanged production selection
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ACCEPTED_DIGEST: ${{ inputs.accepted_candidate_digest }}
+          ACCEPTED_CANDIDATE_COUNT: ${{ inputs.accepted_candidate_count }}
+          ACCEPTED_TENANT_COUNT: ${{ inputs.accepted_tenant_custody_count }}
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          sudo apt-get update -qq
+          sudo apt-get install -y postgresql-client
+          bun run db:generate
+          bun run db:cutover:report > tc492-cutover-pre.json
+          jq -e \
+            --arg digest "$ACCEPTED_DIGEST" \
+            --argjson candidates "$ACCEPTED_CANDIDATE_COUNT" \
+            --argjson tenant "$ACCEPTED_TENANT_COUNT" \
+            '.phase == "pre-expand" and .candidateDigestSha256 == $digest and .deterministicCandidateCount == $candidates and .tenantCustodyKeyCount == $tenant and .selectionConflictCount == 0 and .predictedAddressChangeCount == 0 and .canonicalWithoutEligibleKeyCount == 0' \
+            tc492-cutover-pre.json >/dev/null
+          psql "$DATABASE_URL" --no-psqlrc --tuples-only --no-align --command "
+            SELECT json_build_object(
+              'oauthClientCount', (SELECT count(*) FROM oauth_client),
+              'oauthRedirectUriCount', (SELECT coalesce(sum(cardinality(\"redirectUris\")), 0) FROM oauth_client),
+              'oauthConsentCount', (SELECT count(*) FROM oauth_consent),
+              'developerAccountCount', (SELECT count(*) FROM developer_account),
+              'organizationCount', (SELECT count(*) FROM organization),
+              'organizationMembershipCount', (SELECT count(*) FROM organization_membership)
+            );
+          " > tc492-preservation-pre.json
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_REGISTRY_USERNAME }}
+          password: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push the exact reviewed API image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          no-cache: true
+          tags: skgbafa/openkey-api:${{ inputs.candidate_sha }}
+
+      - name: Install Phala CLI
+        run: npm install -g phala
+
+      - name: Enforce freeze, migrate, verify, and deploy
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          ACCEPTED_DIGEST: ${{ inputs.accepted_candidate_digest }}
+          ACCEPTED_CANDIDATE_COUNT: ${{ inputs.accepted_candidate_count }}
+        run: |
+          set -euo pipefail
+          sed -i "s|\${DOCKER_IMAGE}|skgbafa/openkey-api:${CANDIDATE_SHA}|g" docker-compose.prod.yml
+          phala cvms stop openkey-api --api-token "$PHALA_CLOUD_API_KEY"
+          echo "OpenKey CVM stopped; old code must not be restarted after the destructive migration." >> "$GITHUB_STEP_SUMMARY"
+          bun run db:migrate:apply
+          bun run db:migrate:verify-guards
+          bun run db:cutover:report > tc492-post.json
+          bun run db:migrate:verify-schema
+          psql "$DATABASE_URL" --no-psqlrc --tuples-only --no-align --command "
+            SELECT json_build_object(
+              'oauthClientCount', (SELECT count(*) FROM oauth_client),
+              'oauthRedirectUriCount', (SELECT coalesce(sum(cardinality(\"redirectUris\")), 0) FROM oauth_client),
+              'oauthConsentCount', (SELECT count(*) FROM oauth_consent),
+              'developerAccountCount', (SELECT count(*) FROM developer_account),
+              'organizationCount', (SELECT count(*) FROM organization),
+              'organizationMembershipCount', (SELECT count(*) FROM organization_membership)
+            );
+          " > tc492-preservation-post.json
+          cmp -s tc492-preservation-pre.json tc492-preservation-post.json || {
+            echo "OAuth/developer organization preservation counts changed during cutover" >&2
+            exit 1
+          }
+          jq -e \
+            --arg digest "$ACCEPTED_DIGEST" \
+            --argjson candidates "$ACCEPTED_CANDIDATE_COUNT" \
+            '.phase == "expanded" and .candidateDigestSha256 == $digest and .deterministicCandidateCount == $candidates and .existingCanonicalCount == $candidates and .unassignedCandidateCount == 0 and .selectionConflictCount == 0 and .predictedAddressChangeCount == 0 and .canonicalWithoutEligibleKeyCount == 0 and .tenantCustodyKeyCount == 0' \
+            tc492-post.json >/dev/null
+          phala deploy --api-token "$PHALA_CLOUD_API_KEY" --cvm-id openkey-api --compose docker-compose.prod.yml --wait
+
+      - name: Verify production authorization metadata
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --retry 12 --retry-delay 5 \
+            https://api.openkey.so/api/auth/.well-known/openid-configuration \
+            > openid-configuration.json
+          jq -e '.issuer == "https://api.openkey.so/api/auth"' openid-configuration.json >/dev/null
+
+      - name: Write and upload post-cutover evidence
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          PREFLIGHT_RUN_ID: ${{ inputs.preflight_run_id }}
+          ROUTE_TELEMETRY_REFERENCE: ${{ inputs.route_telemetry_reference }}
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg candidateSha "$CANDIDATE_SHA" \
+            --arg imageDigest "$IMAGE_DIGEST" \
+            --arg preflightRunId "$PREFLIGHT_RUN_ID" \
+            --arg routeTelemetryReference "$ROUTE_TELEMETRY_REFERENCE" \
+            --slurpfile report tc492-post.json \
+            '{schema:"openkey.tc492.cutover.v1",candidateSha:$candidateSha,imageDigest:$imageDigest,preflightRunId:$preflightRunId,routeTelemetryReference:$routeTelemetryReference,report:$report[0],productionMetadataVerified:true}' \
+            > tc492-cutover-manifest.json
+          cat tc492-post.json >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tc492-cutover-${{ inputs.candidate_sha }}
+          path: |
+            tc492-cutover-pre.json
+            tc492-post.json
+            tc492-preservation-pre.json
+            tc492-preservation-post.json
+            tc492-cutover-manifest.json
+            openid-configuration.json
+          if-no-files-found: error
+          retention-days: 90
