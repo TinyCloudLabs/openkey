@@ -1,5 +1,152 @@
 # @openkey/sdk
 
+## 0.10.0
+
+### Minor Changes
+
+- 715b892: Consolidate the OpenKey authorization surfaces onto a single shared review
+  model and add a versioned `authorizeTinyCloud()` protocol (v1) that returns
+  `{ signature, address, signedMessage, selectedActionKeys, permissions }`.
+  The legacy `signMessage()` remains byte-exact — OpenKey continues to sign
+  the caller's original bytes for that entry point. TinyCloud consumers can
+  switch to `authorizeTinyCloud()` for editable capability review flows and
+  complete sessions with the returned `signedMessage`.
+
+  SDK guarantees delivered:
+  - `authorizeTinyCloud` no longer silently falls back to `request.siwe`
+    when the widget omits `signedMessage`; protocol violations throw.
+  - `authorizeTinyCloud` routing resolves the target key by identity before
+    choosing between the managed and external branches. An explicitly
+    supplied external `keyId` routes externally; an explicitly supplied
+    managed `keyId` routes to the managed path; conflicting pins are
+    rejected with `KEY_ID_TYPE_MISMATCH` rather than being silently
+    coerced into whichever branch `lastAuth.keyType` implied.
+  - External-key `authorizeTinyCloud` opens the shared widget in preview
+    mode, obtains the exact bytes to sign via `/authorize-sign-preview`,
+    hands them to the wallet, and finalizes with an `externalSignature`
+    the server verifies against those exact bytes.
+  - Iframe resize traffic is correlated by `requestId` + `protocolVersion`.
+    `IframeModal.setExpectedCorrelation(requestId, protocolVersion)` binds
+    the expected pair before the request is posted; incoming resizes with
+    a wrong requestId, wrong protocolVersion, missing correlation, or no
+    active request are dropped.
+
+  `capability-review` guarantees delivered:
+  - `splitResourceUri` returns a WASM-aligned `{ space, path }` for
+    path-scoped ReCap resources; the parser matches the on-wire structure
+    `<space>/<short-service>[/<sub-path>]` used by `parseRecapFromSiwe`.
+  - `canonicalMultisetEqual` compares caveats by canonical-JSON multiset
+    equality: object keys are sorted recursively before comparison,
+    duplicates are respected, and array element order is preserved.
+  - `assertBaselineSubset` enforces exact multiset equality of caveats
+    for every surviving (resource, ability) pair; whole-ability and
+    whole-resource removals remain allowed.
+  - `classifyRecapEntry` and `buildGrants` never fall back to the signer
+    address as the ownership axis. Unverified requester identity
+    classifies as `cross-app-data` and `ownedBySelf` reports `null`
+    rather than silently claiming own-app-data.
+
+  What this changeset does not claim:
+  - Cross-repo consumption of the js-sdk `signInWithOpenKeyResult` from
+    the OpenKey test graph. That consumer's acceptance is exercised
+    independently in the js-sdk repo against the exact wire shape the
+    OpenKey routes emit.
+  - Any change to the internal `@openkey/api` or `@openkey/web` packages
+    (ignored in the release config). Route- and widget-level changes are
+    described in the internal changelog and covered by their own tests.
+
+- 9039854: Add organization-scoped managed-account registration, lifecycle, entitlement,
+  and webhook management contracts.
+- 6850fb9: Add the OpenKeyNostr browser API for managed identity discovery and consent-based event signing.
+
+### Patch Changes
+
+- 4439c7f: Continuation-review v2 hardening on the OpenKey authorization consolidation.
+
+  `@openkey/sdk`:
+  - `authorizeTinyCloud` resolves the caller-supplied `keyId` and routes
+    by the resolved key's type, not by `lastAuth.keyType` alone. An
+    explicitly supplied external `keyId` routes externally; an
+    explicitly supplied managed `keyId` routes to the managed path.
+    Conflicting pins (`lastAuth` type disagrees with the resolved
+    target-key type) are rejected with `KEY_ID_TYPE_MISMATCH`.
+  - Popup close-message correlation requires exact `requestId` +
+    `protocolVersion` on `openkey:close` messages for versioned flows.
+    Overlapping second requests are refused; wrong-requestId close
+    messages are dropped.
+
+  `@openkey/capability-review`:
+  - `assertBaselineSubset` enforces exact multiset equality on caveats
+    for every surviving (resource, ability) pair. Whole-ability and
+    whole-resource removal remain allowed. Every other transformation
+    surfaces as `candidate-broadens-baseline` with a message citing the
+    specific change.
+
+  The internal `@openkey/api` and `@openkey/web` packages (ignored in
+  the release config) received the matching server-side narrowing-splice
+  helper, the preview-approval token consume path, and the widget-transport
+  correlation checks. Those are documented in the internal changelog and
+  covered by their own tests.
+
+- 0d2463b: Final Sol continuation-review hardening on the OpenKey authorization
+  consolidation.
+
+  `@openkey/capability-review`:
+  - `splitResourceUri` is a module-private helper in `parse.ts` that strips
+    the `<short-service>` segment from a TinyCloud resource URI and returns
+    a WASM-aligned `{ space, path }`. It is used by the ReCap decoder
+    (`decodeRecapUri`) in `parse.ts` so the parser matches the on-wire
+    structure `<space>/<short-service>[/<sub-path>]` used by WASM's
+    `parseRecapFromSiwe`. `subset.ts` does not use this helper — it operates
+    on the already-parsed `CapabilityReviewModel` and uses
+    `canonicalMultisetEqual` for caveat-multiset comparison.
+  - `canonicalMultisetEqual` compares caveats by canonical-JSON multiset
+    equality: object keys are sorted recursively before comparison,
+    duplicates are respected, and array element order is preserved.
+    Prior code used `JSON.stringify(caveats)` and rejected structurally
+    identical baselines whose keys serialized in a different order.
+
+  `@openkey/sdk`:
+  - `authorizeTinyCloud` resolves the target key before routing and
+    rejects pins whose type disagrees with the resolved key. The
+    external branch is entered whenever the resolved target key is
+    `EXTERNAL`, regardless of what `lastAuth.keyType` is; the managed
+    branch is entered whenever the resolved target key is `MANAGED`.
+  - Iframe resize correlation is exercised through the parent-side
+    handler for wrong `requestId`, wrong `protocolVersion`, missing
+    correlation, no active request bound, and sequential-request
+    rebinding.
+
+  What this changeset does not claim:
+  - Cross-repo import of the js-sdk `signInWithOpenKeyResult` from the
+    OpenKey test graph. The wire-format contract is asserted from both
+    sides (mirrored validator on the OpenKey side, real consumer on the
+    js-sdk side against a byte-for-byte Hono-route-shaped body).
+  - Any change to the internal `@openkey/api` or `@openkey/web` packages
+    (ignored in the release config). Matching server-side narrowing,
+    caveat-preservation, widget-transport correlation, and preview-
+    approval-token changes are documented in the internal changelog and
+    covered by their own tests.
+
+- 08c58ec: Follow-up hardening on the OpenKey authorization consolidation review.
+
+  `@openkey/sdk`:
+  - `authorizeTinyCloud` falls back to `lastAuth.keyId` when the caller
+    did not pass an explicit `keyId`, so the widget receives the
+    connected-key context instead of rendering `Please connect first.`
+
+  `@openkey/capability-review`:
+  - `classifyRecapEntry` no longer falls back to the signer address as
+    the ownership axis when `requesterAddress` is null and
+    `requesterVerified` is false. Widget-issued classifications
+    fail-closed to `cross-app-data` when the requester identity is
+    unverifiable.
+
+  The internal `@openkey/api` and `@openkey/web` packages (ignored in the
+  release config) received matching route, widget-transport, and preview-
+  approval-token changes described in the internal changelog and covered
+  by their own tests.
+
 ## 0.9.0
 
 ### Minor Changes
