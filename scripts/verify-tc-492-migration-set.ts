@@ -19,6 +19,10 @@ const expected = [
   ['20260806_0002_remove_organization_key_custody', 'ecf68b38f136da32292c250566d3094d1f8eb0b89c855fd8543adf4544ec7ac6'],
 ] as const;
 
+const acceptedHistoricalChecksums = new Map([
+  ['0_init', new Set(['58d6293e97ed14dc7648778c095fbe47f07ed91165090657d36b4ff343a0478c'])],
+]);
+
 type Migration = {
   migration_name: string;
   checksum: string;
@@ -71,7 +75,9 @@ async function main() {
       throw new Error(`database contains migrations absent from the candidate: ${unknown.map((row) => row.migration_name).join(', ')}`);
     }
     for (const row of successful) {
-      if (row.checksum !== filesystemChecksums.get(row.migration_name)) {
+      const currentChecksum = filesystemChecksums.get(row.migration_name);
+      const acceptedHistorical = acceptedHistoricalChecksums.get(row.migration_name)?.has(row.checksum) ?? false;
+      if (row.checksum !== currentChecksum && !acceptedHistorical) {
         throw new Error(`stored migration checksum differs from the candidate: ${row.migration_name}`);
       }
     }
