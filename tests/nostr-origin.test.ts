@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import { extractRelayTag, parseCanonicalOrigin, parseNostrRelayUrl } from '../apps/web/src/lib/nostr-origin';
+import {
+  deriveRelayUrlForGrant,
+  extractRelayTag,
+  parseCanonicalOrigin,
+  parseNostrRelayUrl,
+} from '../apps/web/src/lib/nostr-origin';
 
 describe('Nostr widget origin validation (parseCanonicalOrigin)', () => {
   test('accepts exact http(s) origins with no path/query/credentials/fragment', () => {
@@ -57,5 +62,62 @@ describe('extractRelayTag', () => {
   test('returns null when no relay tag is present', () => {
     expect(extractRelayTag({ tags: [] })).toBeNull();
     expect(extractRelayTag({ tags: [['challenge', 'abc']] })).toBeNull();
+  });
+});
+
+describe('deriveRelayUrlForGrant (destination-bound consent binding)', () => {
+  const UUID = '01234567-89ab-cdef-0123-456789abcdef';
+  const SHA = 'd'.repeat(64);
+
+  test('22242 always uses the relay tag and ignores any hint', () => {
+    const event = { kind: 22242, tags: [['relay', 'ws://localhost:8080'], ['challenge', 'a']] };
+    expect(deriveRelayUrlForGrant(event)).toBe('ws://localhost:8080');
+    expect(deriveRelayUrlForGrant(event, 'wss://evil.example.com')).toBe('ws://localhost:8080');
+    expect(deriveRelayUrlForGrant({ kind: 22242, tags: [['challenge', 'a']] })).toBeNull();
+    expect(deriveRelayUrlForGrant({ kind: 22242, tags: [['relay', 'https://not-ws.example']] })).toBeNull();
+  });
+
+  test('a valid ws(s) hint wins for 24242 and 27235', () => {
+    const blossom = { kind: 24242, tags: [['t', 'get'], ['expiration', '1'], ['server', 'localhost:3000']] };
+    expect(deriveRelayUrlForGrant(blossom, 'ws://localhost:3000')).toBe('ws://localhost:3000');
+    expect(deriveRelayUrlForGrant(blossom, 'not a url')).toBeNull();
+    // 24242 has no scheme information of its own: no hint means fail closed.
+    expect(deriveRelayUrlForGrant(blossom)).toBeNull();
+  });
+
+  test('27235 derives the relay from the u URL when no hint is given', () => {
+    const get = {
+      kind: 27235,
+      tags: [['u', 'https://relay.example.com/moderation/restricted'], ['method', 'GET'], ['nonce', UUID]],
+    };
+    expect(deriveRelayUrlForGrant(get)).toBe('wss://relay.example.com');
+
+    const post = {
+      kind: 27235,
+      tags: [['u', 'http://localhost:3000/api/invites'], ['method', 'POST'], ['payload', SHA], ['nonce', UUID]],
+    };
+    expect(deriveRelayUrlForGrant(post)).toBe('ws://localhost:3000');
+
+    const postNested = {
+      kind: 27235,
+      tags: [['u', 'https://relay.example.com/nested/api/invites/claim'], ['method', 'POST'], ['payload', SHA], ['nonce', UUID]],
+    };
+    expect(deriveRelayUrlForGrant(postNested)).toBe('wss://relay.example.com/nested');
+
+    const postWrongPath = {
+      kind: 27235,
+      tags: [['u', 'https://relay.example.com/api/other'], ['method', 'POST'], ['payload', SHA], ['nonce', UUID]],
+    };
+    expect(deriveRelayUrlForGrant(postWrongPath)).toBeNull();
+
+    expect(deriveRelayUrlForGrant({ kind: 27235, tags: [['method', 'GET'], ['nonce', UUID]] })).toBeNull();
+    expect(deriveRelayUrlForGrant({
+      kind: 27235,
+      tags: [['u', 'ftp://relay.example.com/x'], ['method', 'GET'], ['nonce', UUID]],
+    })).toBeNull();
+  });
+
+  test('non-destination kinds derive nothing', () => {
+    expect(deriveRelayUrlForGrant({ kind: 9, tags: [] })).toBeNull();
   });
 });

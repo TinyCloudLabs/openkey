@@ -15,6 +15,9 @@ export type {
   SignedNostrEvent,
   NostrIdentity,
   NostrError,
+  NostrOperation,
+  NostrRumor,
+  NostrConnectOptions,
 } from './nostr';
 
 export interface EIP1193Provider {

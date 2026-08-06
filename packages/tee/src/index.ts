@@ -138,6 +138,36 @@ export {
   canonicalizeNip01,
   computeEventId,
   signNostrEvent,
+  verifyNostrEvent,
+  withUnsealedNostrSecret,
   SUPPORTED_NOSTR_KINDS,
 } from './nostr';
 export type { UnsignedNostrEvent, SignedNostrEvent, NostrKeypair, SealedNostrSecret } from './nostr';
+
+// Versioned Nostr capability model (event kinds + named crypto operations)
+export {
+  NOSTR_CAPABILITY_VERSION,
+  SUPPORTED_NOSTR_OPERATIONS,
+  DESTINATION_BOUND_NOSTR_KINDS,
+  isNostrOperation,
+} from './nostr-capabilities';
+export type { NostrOperation } from './nostr-capabilities';
+
+// NIP-44 v2 encryption inside the custody boundary
+export {
+  nip44EncryptWithSealedKey,
+  nip44DecryptWithSealedKey,
+  isValidNip44PayloadShape,
+  NIP44_MAX_PLAINTEXT_BYTES,
+} from './nip44';
+
+// NIP-59 gift wrap (Buzz DMs) inside the custody boundary
+export {
+  nip59WrapDm,
+  nip59UnwrapDm,
+  DM_RUMOR_KIND,
+  SEAL_KIND,
+  GIFT_WRAP_KIND,
+  MAX_NIP59_RECIPIENTS,
+} from './nip59';
+export type { NostrRumor } from './nip59';
