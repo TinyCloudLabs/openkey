@@ -229,11 +229,12 @@ jobs:
           node <<'NODE'
           const fs = require('node:fs');
           const data = JSON.parse(fs.readFileSync('/tmp/containers.json', 'utf8'));
-          const api = data.containers?.find((container) =>
-            Array.isArray(container.names) && container.names.some((name) => name.replace(/^\//, '') === 'api'));
-          if (!api || typeof api.image !== 'string' || !/^skgbafa\/openkey-api(?::[A-Za-z0-9._-]+|@sha256:[0-9a-f]{64})$/.test(api.image)) {
+          const matches = data.containers?.filter((container) =>
+            typeof container.image === 'string' && /^skgbafa\/openkey-api(?::[A-Za-z0-9._-]+|@sha256:[0-9a-f]{64})$/.test(container.image)) ?? [];
+          if (matches.length !== 1) {
             throw new Error('could not identify the running api container image');
           }
+          const api = matches[0];
           fs.writeFileSync('/tmp/current-api-image.txt', `${api.image}\n`);
           NODE
           image_ref=$(tr -d '\n' < /tmp/current-api-image.txt)
@@ -244,7 +245,7 @@ jobs:
           fi
           [[ "$image_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "could not resolve old API image digest" >&2; exit 1; }
           jq -n --arg imageReference "$image_ref" --arg imageDigest "$image_digest" \
-            '{schema:"openkey.tc492.runtime-before.v2",apiContainer:"api",imageReference:$imageReference,imageDigest:$imageDigest}' \
+            '{schema:"openkey.tc492.runtime-before.v2",imageRepository:"skgbafa/openkey-api",imageReference:$imageReference,imageDigest:$imageDigest}' \
             > tc492-runtime-before.json
           rm -f /tmp/current-api-image.txt /tmp/containers.json
 
@@ -432,11 +433,12 @@ jobs:
           node <<'NODE'
           const fs = require('node:fs');
           const data = JSON.parse(fs.readFileSync('/tmp/containers-before-freeze.json', 'utf8'));
-          const api = data.containers?.find((container) =>
-            Array.isArray(container.names) && container.names.some((name) => name.replace(/^\//, '') === 'api'));
-          if (!api || typeof api.image !== 'string' || !/^skgbafa\/openkey-api(?::[A-Za-z0-9._-]+|@sha256:[0-9a-f]{64})$/.test(api.image)) {
+          const matches = data.containers?.filter((container) =>
+            typeof container.image === 'string' && /^skgbafa\/openkey-api(?::[A-Za-z0-9._-]+|@sha256:[0-9a-f]{64})$/.test(container.image)) ?? [];
+          if (matches.length !== 1) {
             throw new Error('could not identify the running pre-freeze api image');
           }
+          const api = matches[0];
           fs.writeFileSync('/tmp/current-api-image.txt', `${api.image}\n`);
           NODE
           old_image_ref=$(tr -d '\n' < /tmp/current-api-image.txt)
@@ -600,14 +602,14 @@ jobs:
           EXPECTED_IMAGE="skgbafa/openkey-api@${IMAGE_DIGEST}" node <<'NODE'
           const fs = require('node:fs');
           const data = JSON.parse(fs.readFileSync('/tmp/containers-after.json', 'utf8'));
-          const api = data.containers?.find((container) =>
-            Array.isArray(container.names) && container.names.some((name) => name.replace(/^\//, '') === 'api'));
-          if (!api || api.image !== process.env.EXPECTED_IMAGE || api.state !== 'running') {
+          const matches = data.containers?.filter((container) => container.image === process.env.EXPECTED_IMAGE) ?? [];
+          if (matches.length !== 1 || matches[0].state !== 'running') {
             throw new Error('running api container does not attest the deployed digest');
           }
+          const api = matches[0];
           fs.writeFileSync('tc492-runtime-after.json', JSON.stringify({
             schema: 'openkey.tc492.runtime-after.v2',
-            apiContainer: 'api',
+            apiContainer: Array.isArray(api.names) ? api.names[0] : null,
             imageReference: api.image,
             imageDigest: process.env.EXPECTED_IMAGE.split('@')[1],
             state: api.state,
