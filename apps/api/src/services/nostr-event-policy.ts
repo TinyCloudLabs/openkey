@@ -40,6 +40,8 @@ const PROFILE_KEYS = new Set(['name', 'display_name', 'picture', 'about', 'nip05
 const REPORT_TYPES = new Set(['illegal', 'nudity', 'malware', 'spam', 'impersonation', 'profanity', 'other']);
 const PRESENCE_STATUSES = new Set(['online', 'away', 'offline']);
 const MEMBER_ROLES = new Set(['owner', 'admin', 'member']);
+const CHANNEL_VISIBILITIES = new Set(['open', 'private']);
+const CHANNEL_TYPES = new Set(['stream', 'forum']);
 const RESOLVE_STATUSES = new Set(['resolved', 'dismissed']);
 const RESOLVE_ACTIONS = new Set(['delete', 'kick', 'ban', 'timeout', 'dismiss', 'escalate']);
 const IMETA_KEYS = new Set(['url', 'm', 'x', 'size', 'dim', 'blurhash', 'thumb', 'duration', 'image', 'filename']);
@@ -65,6 +67,14 @@ function isPubkeyTag(tag: string[], name = 'p'): boolean {
 
 function isChannelIdValue(value: string | undefined): value is string {
   return typeof value === 'string' && value.length >= 1 && value.length <= 512;
+}
+
+function isChannelNameValue(value: string | undefined): value is string {
+  return typeof value === 'string' && value.length >= 1 && value.length <= 256;
+}
+
+function isChannelAboutValue(value: string | undefined): value is string {
+  return typeof value === 'string' && value.length <= 1024;
 }
 
 // kind 0 - profile metadata. Buzz signs `buildProfileContent` output: a JSON
@@ -293,6 +303,83 @@ function validateMembershipRemove(t: NostrEventTemplate): KindPolicyResult {
   return OK;
 }
 
+// kind 9007 - NIP-29 create channel. Buzz sends ["h", <new channel id>],
+// ["name"], ["visibility"], ["channel_type"], then an optional ["about"].
+// The relay provisions the kind-39000/39002 metadata from this event, so the
+// signed payload is the whole channel definition and is validated strictly.
+function validateCreateChannel(t: NostrEventTemplate): KindPolicyResult {
+  if (t.content !== '') return fail('channel_create_content_must_be_empty');
+  if (t.tags.length < 4 || t.tags.length > 5) return fail('channel_create_tags_invalid');
+  const [h, name, visibility, channelType, about] = t.tags;
+  if (!(h!.length === 2 && h![0] === 'h' && isChannelIdValue(h![1]))) return fail('channel_create_tags_invalid');
+  if (!(name!.length === 2 && name![0] === 'name' && isChannelNameValue(name![1]))) {
+    return fail('channel_create_tags_invalid');
+  }
+  if (!(visibility!.length === 2 && visibility![0] === 'visibility' && CHANNEL_VISIBILITIES.has(visibility![1]!))) {
+    return fail('channel_create_tags_invalid');
+  }
+  if (!(channelType!.length === 2 && channelType![0] === 'channel_type' && CHANNEL_TYPES.has(channelType![1]!))) {
+    return fail('channel_create_tags_invalid');
+  }
+  if (about !== undefined && !(about.length === 2 && about[0] === 'about' && isChannelAboutValue(about[1]))) {
+    return fail('channel_create_tags_invalid');
+  }
+  return OK;
+}
+
+// kind 9002 - NIP-29 edit channel metadata: ["h", <channel id>] followed by
+// at least one, and at most one each, of name/about/visibility. A patch with
+// no field is meaningless and is rejected rather than signed.
+function validateEditChannelMetadata(t: NostrEventTemplate): KindPolicyResult {
+  if (t.content !== '') return fail('channel_edit_content_must_be_empty');
+  if (t.tags.length < 2 || t.tags.length > 4) return fail('channel_edit_tags_invalid');
+  const [h, ...patch] = t.tags;
+  if (!(h!.length === 2 && h![0] === 'h' && isChannelIdValue(h![1]))) return fail('channel_edit_tags_invalid');
+
+  const seen = new Set<string>();
+  for (const tag of patch) {
+    if (tag.length !== 2) return fail('channel_edit_tags_invalid');
+    const [key, value] = tag as [string, string];
+    if (seen.has(key)) return fail('channel_edit_tags_duplicated');
+    seen.add(key);
+    switch (key) {
+      case 'name':
+        if (!isChannelNameValue(value)) return fail('channel_edit_tags_invalid');
+        break;
+      case 'about':
+        // An empty `about` clears the topic, so only the ceiling applies.
+        if (!isChannelAboutValue(value)) return fail('channel_edit_tags_invalid');
+        break;
+      case 'visibility':
+        if (!CHANNEL_VISIBILITIES.has(value)) return fail('channel_edit_tags_invalid');
+        break;
+      default:
+        return fail('channel_edit_tags_invalid');
+    }
+  }
+  return OK;
+}
+
+// kind 9021 - NIP-29 join request: the channel being joined and nothing else.
+function validateJoinChannel(t: NostrEventTemplate): KindPolicyResult {
+  if (t.content !== '') return fail('channel_join_content_must_be_empty');
+  if (t.tags.length !== 1) return fail('channel_join_tags_invalid');
+  const [h] = t.tags;
+  if (!(h!.length === 2 && h![0] === 'h' && isChannelIdValue(h![1]))) return fail('channel_join_tags_invalid');
+  return OK;
+}
+
+// kind 9001 - NIP-29 remove member: ["h", <channel id>], ["p", <pubkey>].
+// Distinct from kind 9031, which is relay-level membership without a channel.
+function validateRemoveChannelMember(t: NostrEventTemplate): KindPolicyResult {
+  if (t.content !== '') return fail('channel_member_content_must_be_empty');
+  if (t.tags.length !== 2) return fail('channel_member_tags_invalid');
+  const [h, p] = t.tags;
+  if (!(h!.length === 2 && h![0] === 'h' && isChannelIdValue(h![1]))) return fail('channel_member_tags_invalid');
+  if (!isPubkeyTag(p!)) return fail('channel_member_tags_invalid');
+  return OK;
+}
+
 // kinds 9040-9043 - ban/unban/timeout/untimeout: ["p"] then optional
 // ["expiration", epoch] then optional ["reason", note], in that order.
 function validateModerationCommand(t: NostrEventTemplate): KindPolicyResult {
@@ -347,6 +434,10 @@ const KIND_VALIDATORS: Record<number, (t: NostrEventTemplate) => KindPolicyResul
   7: validateReaction,
   9: validateLegacyChannelMessage,
   1984: validateReport,
+  9001: validateRemoveChannelMember,
+  9002: validateEditChannelMetadata,
+  9007: validateCreateChannel,
+  9021: validateJoinChannel,
   9030: validateMembershipWithRole,
   9031: validateMembershipRemove,
   9032: validateMembershipWithRole,

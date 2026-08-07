@@ -59,6 +59,17 @@ const CANONICAL_FIXTURES: Record<number, NostrEventTemplate[]> = {
     tpl(1984, [['p', PK2], ['e', ID, 'spam']], 'this is spam'),
     tpl(1984, [['p', PK2], ['e', ID, 'other']], ''),
   ],
+  9001: [tpl(9001, [['h', 'chan-general'], ['p', PK2]], '')],
+  9002: [
+    tpl(9002, [['h', 'chan-general'], ['name', 'general']], ''),
+    tpl(9002, [['h', 'chan-general'], ['name', 'general'], ['about', 'daily chatter'], ['visibility', 'private']], ''),
+    tpl(9002, [['h', 'chan-general'], ['about', '']], ''),
+  ],
+  9007: [
+    tpl(9007, [['h', UUID], ['name', 'general'], ['visibility', 'open'], ['channel_type', 'stream']], ''),
+    tpl(9007, [['h', UUID], ['name', 'design'], ['visibility', 'private'], ['channel_type', 'forum'], ['about', 'design talk']], ''),
+  ],
+  9021: [tpl(9021, [['h', 'chan-general']], '')],
   9030: [tpl(9030, [['p', PK2], ['role', 'member']], '')],
   9031: [tpl(9031, [['p', PK2]], '')],
   9032: [tpl(9032, [['p', PK2], ['role', 'admin']], '')],
@@ -246,6 +257,49 @@ describe('kinds 9030-9032 - membership', () => {
     bad(tpl(9031, [['p', PK2], ['role', 'member']], ''), 'membership_tags_invalid');
     bad(tpl(9032, [['role', 'admin'], ['p', PK2]], ''), 'membership_tags_invalid');
     bad(tpl(9030, [['p', PK2], ['role', 'member']], 'x'), 'membership_content_must_be_empty');
+  });
+});
+
+describe('kinds 9001/9002/9007/9021 - NIP-29 channel administration', () => {
+  test('kind 9007 rejects malformed or out-of-order channel definitions', () => {
+    bad(tpl(9007, [['h', UUID], ['name', 'general'], ['visibility', 'open']], ''), 'channel_create_tags_invalid');
+    bad(tpl(9007, [['name', 'general'], ['h', UUID], ['visibility', 'open'], ['channel_type', 'stream']], ''), 'channel_create_tags_invalid');
+    bad(tpl(9007, [['h', UUID], ['name', ''], ['visibility', 'open'], ['channel_type', 'stream']], ''), 'channel_create_tags_invalid');
+    bad(tpl(9007, [['h', UUID], ['name', 'general'], ['visibility', 'secret'], ['channel_type', 'stream']], ''), 'channel_create_tags_invalid');
+    bad(tpl(9007, [['h', UUID], ['name', 'general'], ['visibility', 'open'], ['channel_type', 'huddle']], ''), 'channel_create_tags_invalid');
+    bad(tpl(9007, [['h', ''], ['name', 'general'], ['visibility', 'open'], ['channel_type', 'stream']], ''), 'channel_create_tags_invalid');
+    bad(
+      tpl(9007, [['h', UUID], ['name', 'general'], ['visibility', 'open'], ['channel_type', 'stream'], ['about', 'x'.repeat(1025)]], ''),
+      'channel_create_tags_invalid',
+    );
+    bad(
+      tpl(9007, [['h', UUID], ['name', 'general'], ['visibility', 'open'], ['channel_type', 'stream'], ['topic', 'nope']], ''),
+      'channel_create_tags_invalid',
+    );
+    bad(tpl(9007, [['h', UUID], ['name', 'general'], ['visibility', 'open'], ['channel_type', 'stream']], 'x'), 'channel_create_content_must_be_empty');
+  });
+
+  test('kind 9002 requires a channel plus at least one non-duplicated field', () => {
+    bad(tpl(9002, [['h', 'chan-general']], ''), 'channel_edit_tags_invalid');
+    bad(tpl(9002, [['h', 'chan-general'], ['name', 'a'], ['name', 'b']], ''), 'channel_edit_tags_duplicated');
+    bad(tpl(9002, [['h', 'chan-general'], ['visibility', 'secret']], ''), 'channel_edit_tags_invalid');
+    bad(tpl(9002, [['h', 'chan-general'], ['channel_type', 'forum']], ''), 'channel_edit_tags_invalid');
+    bad(tpl(9002, [['name', 'general'], ['h', 'chan-general']], ''), 'channel_edit_tags_invalid');
+    bad(tpl(9002, [['h', 'chan-general'], ['name', 'general']], 'x'), 'channel_edit_content_must_be_empty');
+  });
+
+  test('kind 9021 carries only the channel being joined', () => {
+    bad(tpl(9021, [['h', 'chan-general'], ['p', PK2]], ''), 'channel_join_tags_invalid');
+    bad(tpl(9021, [['p', PK2]], ''), 'channel_join_tags_invalid');
+    bad(tpl(9021, [], ''), 'channel_join_tags_invalid');
+    bad(tpl(9021, [['h', 'chan-general']], 'x'), 'channel_join_content_must_be_empty');
+  });
+
+  test('kind 9001 is channel-scoped, unlike relay-level kind 9031', () => {
+    bad(tpl(9001, [['p', PK2]], ''), 'channel_member_tags_invalid');
+    bad(tpl(9001, [['p', PK2], ['h', 'chan-general']], ''), 'channel_member_tags_invalid');
+    bad(tpl(9001, [['h', 'chan-general'], ['p', 'nothex']], ''), 'channel_member_tags_invalid');
+    bad(tpl(9001, [['h', 'chan-general'], ['p', PK2]], 'x'), 'channel_member_content_must_be_empty');
   });
 });
 

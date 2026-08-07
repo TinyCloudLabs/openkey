@@ -57,6 +57,7 @@ const BUZZ_JOURNEYS: Record<string, { kinds?: number[]; operations?: NostrOperat
   'DM open': { kinds: [41010] },
   'direct messages (NIP-59 gift wrap)': { operations: ['nip59_wrap', 'nip59_unwrap'] },
   'agent observer frames (decrypt-only)': { operations: ['nip44_decrypt'] },
+  'channel administration (NIP-29: create, edit, join, remove member)': { kinds: [9001, 9002, 9007, 9021] },
   'relay membership administration': { kinds: [9030, 9031, 9032] },
   'moderation commands': { kinds: [9040, 9041, 9042, 9043, 9044] },
 };
@@ -84,7 +85,7 @@ describe('Buzz journey coverage', () => {
 
   test('the exact kind list is the reviewed Buzz matrix', () => {
     expect([...SUPPORTED_NOSTR_KINDS].sort((a, b) => a - b)).toEqual([
-      0, 7, 9, 1984, 9030, 9031, 9032, 9040, 9041, 9042, 9043, 9044,
+      0, 7, 9, 1984, 9001, 9002, 9007, 9021, 9030, 9031, 9032, 9040, 9041, 9042, 9043, 9044,
       20001, 22242, 24242, 27235, 30300, 40002, 41010,
     ]);
     expect([...SUPPORTED_NOSTR_OPERATIONS].sort()).toEqual([

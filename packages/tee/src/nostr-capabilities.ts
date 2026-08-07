@@ -25,6 +25,10 @@ export const SUPPORTED_NOSTR_KINDS: ReadonlySet<number> = new Set([
   7, // reaction (NIP-25)
   9, // legacy channel message (kept for existing integrations)
   1984, // content report (NIP-56)
+  9001, // channel membership: remove a member from a channel (NIP-29)
+  9002, // channel metadata: edit name/about/visibility (NIP-29)
+  9007, // channel creation: the relay provisions kind-39000 from this (NIP-29)
+  9021, // channel join request (NIP-29)
   9030, // relay membership: add member
   9031, // relay membership: remove member
   9032, // relay membership: change role
