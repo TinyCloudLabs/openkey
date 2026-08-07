@@ -47,8 +47,22 @@ export interface NostrGrant {
   id: string;
   clientOrigin: string;
   allowedKinds: number[];
+  allowedOperations: string[];
   relayUrl: string | null;
   expiresAt: string;
+}
+
+/** Named custody crypto operations a grant can authorize alongside kinds. */
+export type NostrOperation = 'nip44_encrypt' | 'nip44_decrypt' | 'nip59_wrap' | 'nip59_unwrap';
+
+/** An unsigned kind-14 DM rumor returned by the custody unwrap endpoint. */
+export interface NostrRumor {
+  id: string;
+  pubkey: string;
+  created_at: number;
+  kind: number;
+  tags: string[][];
+  content: string;
 }
 
 export interface UnsignedNostrEvent {
@@ -244,7 +258,13 @@ export const api = {
 
     async createGrant(
       keyId: string,
-      input: { clientOrigin: string; kinds: number[]; relayUrl?: string; ttlSeconds?: number },
+      input: {
+        clientOrigin: string;
+        kinds?: number[];
+        operations?: NostrOperation[];
+        relayUrl?: string;
+        ttlSeconds?: number;
+      },
     ): Promise<{ grant: NostrGrant }> {
       return fetchAPI(`/api/keys/nostr/${encodeURIComponent(keyId)}/grants`, {
         method: 'POST',
@@ -266,6 +286,49 @@ export const api = {
       return fetchAPI(`/api/keys/nostr/${encodeURIComponent(keyId)}/sign-event`, {
         method: 'POST',
         body: JSON.stringify({ event, clientOrigin }),
+      });
+    },
+
+    // Named custody crypto operations. Same authorization shape as signing:
+    // exact client origin + an active grant naming the operation; the API
+    // returns only ciphertext/plaintext/wraps/rumor, never key material.
+    async nip44Encrypt(
+      keyId: string,
+      input: { clientOrigin: string; peerPubkey: string; plaintext: string },
+    ): Promise<{ ciphertext: string }> {
+      return fetchAPI(`/api/keys/nostr/${encodeURIComponent(keyId)}/nip44/encrypt`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      });
+    },
+
+    async nip44Decrypt(
+      keyId: string,
+      input: { clientOrigin: string; peerPubkey: string; payload: string },
+    ): Promise<{ plaintext: string }> {
+      return fetchAPI(`/api/keys/nostr/${encodeURIComponent(keyId)}/nip44/decrypt`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      });
+    },
+
+    async nip59Wrap(
+      keyId: string,
+      input: { clientOrigin: string; content: string; recipients: string[]; createdAt?: number },
+    ): Promise<{ wraps: SignedNostrEvent[] }> {
+      return fetchAPI(`/api/keys/nostr/${encodeURIComponent(keyId)}/nip59/wrap`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      });
+    },
+
+    async nip59Unwrap(
+      keyId: string,
+      input: { clientOrigin: string; wrap: SignedNostrEvent },
+    ): Promise<{ rumor: NostrRumor }> {
+      return fetchAPI(`/api/keys/nostr/${encodeURIComponent(keyId)}/nip59/unwrap`, {
+        method: 'POST',
+        body: JSON.stringify(input),
       });
     },
   },

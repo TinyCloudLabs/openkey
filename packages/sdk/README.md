@@ -127,29 +127,52 @@ const { address, keyId } = await openkey.linkWallet();
 
 ### `openkey.nostr`
 
-Connect one managed Nostr identity and sign a bounded NIP-01 event. Nostr uses
-BIP-340 Schnorr keys and does not reuse the Ethereum signing path.
+Connect one managed Nostr identity, sign a bounded set of NIP-01 event kinds,
+and perform NIP-44 encryption/decryption and NIP-59 gift wrapping inside
+OpenKey custody. Nostr uses BIP-340 Schnorr keys and does not reuse the
+Ethereum signing path. The secret key never reaches the page.
 
 ```typescript
+// Request the full capability set for a client in one consent card:
 const identity = await openkey.nostr.connect({
   relayUrl: 'wss://relay.example',
+  kinds: [0, 7, 9, 40002, 22242],
+  operations: ['nip44_encrypt', 'nip44_decrypt', 'nip59_wrap', 'nip59_unwrap'],
 });
 
 const event = await openkey.nostr.signEvent(identity.keyId, {
   pubkey: identity.pubkey,
   created_at: Math.floor(Date.now() / 1000),
-  kind: 9,
+  kind: 40002,
   tags: [['h', 'channel-id']],
   content: 'Hello from OpenKey',
 });
+
+const ciphertext = await openkey.nostr.nip44Encrypt(identity.keyId, {
+  peerPubkey: identity.pubkey, // encrypt-to-self only
+  plaintext: 'private note',
+});
+const plaintext = await openkey.nostr.nip44Decrypt(identity.keyId, {
+  peerPubkey: senderPubkey,
+  payload: ciphertext,
+});
+const wraps = await openkey.nostr.nip59Wrap(identity.keyId, {
+  content: 'hello in private',
+  recipients: [peerPubkey], // self-wrap emitted first
+});
+const rumor = await openkey.nostr.nip59Unwrap(identity.keyId, incomingWrap);
 ```
 
-`connect()` returns only public identity metadata. `signEvent()` can sign kind
-`9` channel messages and relay-bound kind `22242` NIP-42 events; OpenKey shows
-consent unless an active grant covers the exact origin, key, kind, and relay.
-Verify the returned event independently before publishing it. See the
-[managed Nostr signing guide](../../docs/nostr-signing.md) for limits and
-rollout requirements.
+`connect()` returns only public identity metadata. `signEvent()` covers the
+Buzz web client's event-kind matrix (profile, reactions, channel messages,
+reports, relay/Blossom/HTTP auth, presence, encrypted reminders, DM open,
+membership, moderation), each kind with a purpose-specific payload validator;
+destination-bound kinds (`22242`, `24242`, `27235`) additionally bind to the
+granted relay. OpenKey shows consent unless an active grant covers the exact
+origin, key, capability, and destination. Verify returned events
+independently before publishing them. See the
+[managed Nostr signing guide](../../docs/nostr-signing.md) for the full
+capability model, limits, and rollout requirements.
 
 ### `OpenKeyEIP1193Provider`
 

@@ -51,3 +51,62 @@ export function extractRelayTag(event: NostrEventTagsLike): string | null {
   const relayTag = event.tags.find((t) => Array.isArray(t) && t[0] === 'relay');
   return relayTag?.[1] ?? null;
 }
+
+/** Event shape for relay derivation - tags plus the kind that scopes them. */
+export interface NostrEventKindTagsLike extends NostrEventTagsLike {
+  kind: number;
+}
+
+function tagValue(event: NostrEventTagsLike, name: string): string | null {
+  const tag = event.tags.find((t) => Array.isArray(t) && t[0] === name);
+  return typeof tag?.[1] === 'string' ? tag[1] : null;
+}
+
+/**
+ * The ws(s) relay URL a grant for this destination-bound event should be
+ * bound to. Prefers the client's `relayUrl` hint (validated, never trusted
+ * to widen anything - the API independently checks the signed event's own
+ * destination against the grant). Falls back to deriving from the event:
+ *
+ *  - 22242: the `relay` tag is the relay URL itself (hint ignored - the
+ *    event names its destination exactly).
+ *  - 27235: the `u` URL maps deterministically back (https->wss, http->ws);
+ *    POST journeys strip the fixed invite suffix, GET journeys use the
+ *    origin.
+ *  - 24242: the `server` tag is a bare authority with no scheme, so the
+ *    hint is required; returns null without one.
+ *
+ * Returns null when no trustworthy relay URL can be determined - the
+ * approval fails closed rather than guessing a destination.
+ */
+export function deriveRelayUrlForGrant(
+  event: NostrEventKindTagsLike,
+  relayUrlHint?: unknown,
+): string | null {
+  if (event.kind === 22242) {
+    return parseNostrRelayUrl(extractRelayTag(event));
+  }
+  const hint = parseNostrRelayUrl(relayUrlHint);
+  if (hint) return hint;
+  if (event.kind === 27235) {
+    const u = tagValue(event, 'u');
+    const method = tagValue(event, 'method');
+    if (!u) return null;
+    let url: URL;
+    try {
+      url = new URL(u);
+    } catch {
+      return null;
+    }
+    if (url.protocol === 'https:') url.protocol = 'wss:';
+    else if (url.protocol === 'http:') url.protocol = 'ws:';
+    else return null;
+    if (method === 'GET') return parseNostrRelayUrl(url.origin);
+    url.search = '';
+    url.hash = '';
+    const withoutSuffix = url.toString().replace(/\/api\/invites(\/claim)?$/, '');
+    if (withoutSuffix === url.toString()) return null;
+    return parseNostrRelayUrl(withoutSuffix.replace(/\/$/, '') || null);
+  }
+  return null;
+}

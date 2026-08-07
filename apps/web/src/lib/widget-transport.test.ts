@@ -724,4 +724,320 @@ describe('versioned iframe transport', () => {
     expect(closed).toBe(0);
     expect(invalid).toEqual(['invalid-payload', 'invalid-close']);
   });
+
+  // Full Nostr custody request surface (TC-421 growth): six request types,
+  // all on protocolVersion 1. The transport itself stays payload-dumb; these
+  // tests pin the envelope rules for every new type.
+  const NOSTR_REQUEST_TYPES = [
+    'openkey:nostr:connect:request',
+    'openkey:nostr:sign:request',
+    'openkey:nostr:encrypt:request',
+    'openkey:nostr:decrypt:request',
+    'openkey:nostr:wrap:request',
+    'openkey:nostr:unwrap:request',
+  ] as const;
+
+  const PEER = 'cd'.repeat(32);
+  const SAMPLE_FIELDS: Record<string, Record<string, unknown>> = {
+    'openkey:nostr:connect:request': {
+      kinds: [1, 14, 22242],
+      operations: ['nip44_encrypt', 'nip59_wrap'],
+      relayUrl: 'wss://relay.example',
+    },
+    'openkey:nostr:sign:request': {
+      keyId: 'key-1',
+      event: { pubkey: 'ab'.repeat(32), created_at: 1754000000, kind: 22242, tags: [], content: '' },
+      relayUrl: 'wss://relay.example',
+    },
+    'openkey:nostr:encrypt:request': { keyId: 'key-1', peerPubkey: PEER, plaintext: 'remember the milk' },
+    'openkey:nostr:decrypt:request': { keyId: 'key-1', peerPubkey: PEER, payload: 'AqZzb2R1bQ==' },
+    'openkey:nostr:wrap:request': {
+      keyId: 'key-1',
+      content: 'hi there',
+      recipients: ['ef'.repeat(32)],
+      createdAt: 1754000000,
+    },
+    'openkey:nostr:unwrap:request': {
+      keyId: 'key-1',
+      wrap: {
+        id: '1'.repeat(64),
+        pubkey: 'a'.repeat(64),
+        created_at: 1754000000,
+        kind: 1059,
+        tags: [['p', 'b'.repeat(64)]],
+        content: 'sealed',
+        sig: 'c'.repeat(128),
+      },
+    },
+  };
+
+  const RESPONSE_CASES: Array<{
+    requestType: string;
+    responseType: string;
+    payload: Record<string, unknown>;
+  }> = [
+    {
+      requestType: 'openkey:nostr:encrypt:request',
+      responseType: 'openkey:nostr:encrypt:response',
+      payload: { ciphertext: 'AqCiphertext==' },
+    },
+    {
+      requestType: 'openkey:nostr:decrypt:request',
+      responseType: 'openkey:nostr:decrypt:response',
+      payload: { plaintext: 'remember the milk' },
+    },
+    {
+      requestType: 'openkey:nostr:wrap:request',
+      responseType: 'openkey:nostr:wrap:response',
+      payload: {
+        wraps: [
+          {
+            id: '2'.repeat(64),
+            pubkey: 'd'.repeat(64),
+            created_at: 1754000001,
+            kind: 1059,
+            tags: [],
+            content: 'wrapped',
+            sig: 'e'.repeat(128),
+          },
+        ],
+      },
+    },
+    {
+      requestType: 'openkey:nostr:unwrap:request',
+      responseType: 'openkey:nostr:unwrap:response',
+      payload: {
+        rumor: {
+          id: '3'.repeat(64),
+          pubkey: 'f'.repeat(64),
+          created_at: 1754000002,
+          kind: 14,
+          tags: [],
+          content: 'the rumor',
+        },
+      },
+    },
+  ];
+
+  function makeNostrTransport(overrides: {
+    onRequest?: (request: unknown) => void;
+    onClose?: () => void;
+    onInvalid?: (reason: string) => void;
+  } = {}) {
+    return createVersionedIframeTransport({
+      origin: 'https://caller.example',
+      requestTypes: NOSTR_REQUEST_TYPES,
+      onRequest: overrides.onRequest ?? (() => {}),
+      onClose: overrides.onClose ?? (() => {}),
+      onInvalid: overrides.onInvalid ? reason => overrides.onInvalid!(reason) : undefined,
+    });
+  }
+
+  it('delivers each of the six Nostr request types to onRequest with correct requestId/protocolVersion', () => {
+    for (const type of NOSTR_REQUEST_TYPES) {
+      const { parent, child } = makeWindows();
+      const seen: any[] = [];
+      makeNostrTransport({ onRequest: request => seen.push(request) });
+      const requestId = `rid-${type}`;
+      child.dispatch({
+        origin: 'https://caller.example',
+        source: parent as unknown as MessageEventSource,
+        data: { type, requestId, protocolVersion: 1, ...SAMPLE_FIELDS[type] },
+      });
+      expect(seen).toHaveLength(1);
+      expect(seen[0].type).toBe(type);
+      expect(seen[0].requestId).toBe(requestId);
+      expect(seen[0].protocolVersion).toBe(1);
+      // The full envelope is surfaced so the approve page can validate
+      // application fields (keyId, peerPubkey, kinds, wrap, ...).
+      for (const [field, value] of Object.entries(SAMPLE_FIELDS[type]!)) {
+        expect(seen[0].data[field]).toEqual(value);
+      }
+    }
+  });
+
+  it('still rejects an unknown message type when all six request types are registered', () => {
+    const { parent, child } = makeWindows();
+    const seen: unknown[] = [];
+    const invalid: string[] = [];
+    makeNostrTransport({ onRequest: request => seen.push(request), onInvalid: r => invalid.push(r) });
+    child.dispatch({
+      origin: 'https://caller.example',
+      source: parent as unknown as MessageEventSource,
+      data: { type: 'openkey:nostr:export-secret:request', requestId: 'r1', protocolVersion: 1 },
+    });
+    expect(seen).toHaveLength(0);
+    expect(invalid).toEqual(['unknown-message-type']);
+  });
+
+  it('rejects wrong-origin / wrong-source / missing requestId / wrong protocolVersion for every new type', () => {
+    const newTypes = [
+      'openkey:nostr:encrypt:request',
+      'openkey:nostr:decrypt:request',
+      'openkey:nostr:wrap:request',
+      'openkey:nostr:unwrap:request',
+    ] as const;
+    for (const type of newTypes) {
+      const { parent, child } = makeWindows();
+      const impostor = new FakeWindow();
+      const seen: unknown[] = [];
+      const invalid: string[] = [];
+      makeNostrTransport({ onRequest: request => seen.push(request), onInvalid: r => invalid.push(r) });
+      const fields = SAMPLE_FIELDS[type]!;
+      // Wrong origin.
+      child.dispatch({
+        origin: 'https://evil.example',
+        source: parent as unknown as MessageEventSource,
+        data: { type, requestId: 'r1', protocolVersion: 1, ...fields },
+      });
+      // Wrong source (same origin, sibling window).
+      child.dispatch({
+        origin: 'https://caller.example',
+        source: impostor as unknown as MessageEventSource,
+        data: { type, requestId: 'r1', protocolVersion: 1, ...fields },
+      });
+      // Missing requestId.
+      child.dispatch({
+        origin: 'https://caller.example',
+        source: parent as unknown as MessageEventSource,
+        data: { type, protocolVersion: 1, ...fields },
+      });
+      // Wrong protocol version.
+      child.dispatch({
+        origin: 'https://caller.example',
+        source: parent as unknown as MessageEventSource,
+        data: { type, requestId: 'r1', protocolVersion: 2, ...fields },
+      });
+      expect(seen).toHaveLength(0);
+      expect(invalid).toEqual([
+        'wrong-origin',
+        'wrong-source',
+        'missing-request-id',
+        'wrong-protocol-version',
+      ]);
+    }
+  });
+
+  it('respond() for each new response type echoes requestId + protocolVersion 1, flattens the payload, and clears the active request', () => {
+    for (const { requestType, responseType, payload } of RESPONSE_CASES) {
+      const { parent, child } = makeWindows();
+      const seen: any[] = [];
+      const transport = makeNostrTransport({ onRequest: request => seen.push(request) });
+      child.dispatch({
+        origin: 'https://caller.example',
+        source: parent as unknown as MessageEventSource,
+        data: { type: requestType, requestId: 'live-1', protocolVersion: 1, ...SAMPLE_FIELDS[requestType] },
+      });
+      expect(seen).toHaveLength(1);
+
+      parent.sent = [];
+      transport.respond(responseType, 'live-1', true, payload);
+      expect(parent.sent).toHaveLength(1);
+      const message = parent.sent[0]!;
+      expect(message.target).toBe('https://caller.example');
+      expect(message.data.type).toBe(responseType);
+      expect(message.data.requestId).toBe('live-1');
+      expect(message.data.protocolVersion).toBe(1);
+      expect(message.data.success).toBe(true);
+      // Application payload flattened to the top level (ciphertext /
+      // plaintext / wraps / rumor), exactly what the SDK reads.
+      for (const [field, value] of Object.entries(payload)) {
+        expect(message.data[field]).toEqual(value);
+      }
+
+      // Active request cleared: a follow-up request with a NEW id lands.
+      child.dispatch({
+        origin: 'https://caller.example',
+        source: parent as unknown as MessageEventSource,
+        data: { type: requestType, requestId: 'live-2', protocolVersion: 1, ...SAMPLE_FIELDS[requestType] },
+      });
+      expect(seen).toHaveLength(2);
+      expect(seen[1].requestId).toBe('live-2');
+    }
+  });
+
+  it('respond() flattens a failure envelope for the new types', () => {
+    const { parent, child } = makeWindows();
+    const transport = makeNostrTransport();
+    child.dispatch({
+      origin: 'https://caller.example',
+      source: parent as unknown as MessageEventSource,
+      data: {
+        type: 'openkey:nostr:encrypt:request',
+        requestId: 'fail-1',
+        protocolVersion: 1,
+        ...SAMPLE_FIELDS['openkey:nostr:encrypt:request'],
+      },
+    });
+    parent.sent = [];
+    transport.respond('openkey:nostr:encrypt:response', 'fail-1', false, {
+      error: { code: 'UNAUTHORIZED', message: 'No grant covers nip44_encrypt' },
+    });
+    expect(parent.sent).toHaveLength(1);
+    expect(parent.sent[0]!.data.success).toBe(false);
+    expect(parent.sent[0]!.data.requestId).toBe('fail-1');
+    expect(parent.sent[0]!.data.protocolVersion).toBe(1);
+    expect(parent.sent[0]!.data.error).toEqual({
+      code: 'UNAUTHORIZED',
+      message: 'No grant covers nip44_encrypt',
+    });
+  });
+
+  it('respond() with a stale/mismatched requestId is a no-op and keeps the live request active', () => {
+    const { parent, child } = makeWindows();
+    const transport = makeNostrTransport();
+    child.dispatch({
+      origin: 'https://caller.example',
+      source: parent as unknown as MessageEventSource,
+      data: {
+        type: 'openkey:nostr:decrypt:request',
+        requestId: 'live-1',
+        protocolVersion: 1,
+        ...SAMPLE_FIELDS['openkey:nostr:decrypt:request'],
+      },
+    });
+    parent.sent = [];
+    // Stale id: nothing posted, active request NOT cleared.
+    transport.respond('openkey:nostr:decrypt:response', 'stale-9', true, { plaintext: 'nope' });
+    expect(parent.sent).toHaveLength(0);
+    // The live request is still active: correlated emits still flow...
+    transport.emit('openkey:nostr:show');
+    expect(parent.sent).toHaveLength(1);
+    expect(parent.sent[0]!.data.requestId).toBe('live-1');
+    // ...and the correlated respond still succeeds afterwards.
+    parent.sent = [];
+    transport.respond('openkey:nostr:decrypt:response', 'live-1', true, { plaintext: 'the real one' });
+    expect(parent.sent).toHaveLength(1);
+    expect(parent.sent[0]!.data.requestId).toBe('live-1');
+    expect(parent.sent[0]!.data.plaintext).toBe('the real one');
+  });
+
+  it('rejects a second in-flight request across different Nostr types (invalid-payload)', () => {
+    const { parent, child } = makeWindows();
+    const seen: unknown[] = [];
+    const invalid: string[] = [];
+    makeNostrTransport({ onRequest: request => seen.push(request), onInvalid: r => invalid.push(r) });
+    child.dispatch({
+      origin: 'https://caller.example',
+      source: parent as unknown as MessageEventSource,
+      data: {
+        type: 'openkey:nostr:encrypt:request',
+        requestId: 'first',
+        protocolVersion: 1,
+        ...SAMPLE_FIELDS['openkey:nostr:encrypt:request'],
+      },
+    });
+    child.dispatch({
+      origin: 'https://caller.example',
+      source: parent as unknown as MessageEventSource,
+      data: {
+        type: 'openkey:nostr:wrap:request',
+        requestId: 'second',
+        protocolVersion: 1,
+        ...SAMPLE_FIELDS['openkey:nostr:wrap:request'],
+      },
+    });
+    expect(seen).toHaveLength(1);
+    expect(invalid).toEqual(['invalid-payload']);
+  });
 });

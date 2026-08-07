@@ -193,6 +193,10 @@ model NostrSigningGrant {
   keyId        String
   clientOrigin String
   allowedKinds Int[]
+  // Named crypto operations (nip44_encrypt/nip44_decrypt/nip59_wrap/
+  // nip59_unwrap) this grant authorizes, alongside the signable kinds above.
+  // Validated against @openkey/tee SUPPORTED_NOSTR_OPERATIONS at the route.
+  allowedOperations String[] @default([])
   relayUrl     String?
   expiresAt    DateTime
   revokedAt    DateTime?
@@ -214,6 +218,9 @@ model NostrSigningDecision {
   keyId          String?
   clientOrigin   String?
   kind           Int?
+  // Set for named crypto operations (which have no event kind); null for
+  // sign-event decisions.
+  operation      String?
   allowed        Boolean
   reasonCode     String
   requestDigest  String?

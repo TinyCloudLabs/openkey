@@ -32,6 +32,35 @@ export interface NostrIdentity {
   npub: string;
 }
 
+/**
+ * Named crypto operations OpenKey custody can perform for a client, on top
+ * of event-kind signing. Each is purpose-bound and individually granted;
+ * none ever exposes the secret key or a reusable conversation key.
+ */
+export type NostrOperation = 'nip44_encrypt' | 'nip44_decrypt' | 'nip59_wrap' | 'nip59_unwrap';
+
+/** An unsigned kind-14 DM rumor returned by `nip59Unwrap` - id-addressed but deliberately unsigned. */
+export interface NostrRumor {
+  id: string;
+  pubkey: string;
+  created_at: number;
+  kind: number;
+  tags: string[][];
+  content: string;
+}
+
+/**
+ * Capabilities requested up front during `connect`, so the user can approve
+ * a client's full working set in one consent card instead of one card per
+ * kind. `relayUrl` is required when `kinds` includes a destination-bound
+ * kind (22242 relay auth, 24242 Blossom auth, 27235 HTTP auth).
+ */
+export interface NostrConnectOptions {
+  relayUrl?: string;
+  kinds?: number[];
+  operations?: NostrOperation[];
+}
+
 export interface NostrError {
   code: 'USER_CANCELLED' | 'TIMEOUT' | 'INTERACTION_REQUIRED' | 'UNAUTHORIZED' | 'UNKNOWN';
   message: string;
@@ -45,7 +74,15 @@ type NostrFrameMessage =
   | { type: 'openkey:nostr:connect:response'; requestId: string; protocolVersion: number; success: true; keyId: string; pubkey: string; npub: string }
   | { type: 'openkey:nostr:connect:response'; requestId: string; protocolVersion: number; success: false; error: NostrError }
   | { type: 'openkey:nostr:sign:response'; requestId: string; protocolVersion: number; success: true; event: SignedNostrEvent }
-  | { type: 'openkey:nostr:sign:response'; requestId: string; protocolVersion: number; success: false; error: NostrError };
+  | { type: 'openkey:nostr:sign:response'; requestId: string; protocolVersion: number; success: false; error: NostrError }
+  | { type: 'openkey:nostr:encrypt:response'; requestId: string; protocolVersion: number; success: true; ciphertext: string }
+  | { type: 'openkey:nostr:encrypt:response'; requestId: string; protocolVersion: number; success: false; error: NostrError }
+  | { type: 'openkey:nostr:decrypt:response'; requestId: string; protocolVersion: number; success: true; plaintext: string }
+  | { type: 'openkey:nostr:decrypt:response'; requestId: string; protocolVersion: number; success: false; error: NostrError }
+  | { type: 'openkey:nostr:wrap:response'; requestId: string; protocolVersion: number; success: true; wraps: SignedNostrEvent[] }
+  | { type: 'openkey:nostr:wrap:response'; requestId: string; protocolVersion: number; success: false; error: NostrError }
+  | { type: 'openkey:nostr:unwrap:response'; requestId: string; protocolVersion: number; success: true; rumor: NostrRumor }
+  | { type: 'openkey:nostr:unwrap:response'; requestId: string; protocolVersion: number; success: false; error: NostrError };
 
 const NOSTR_FRAME_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes, matches the Ethereum widget flow
 const NOSTR_PROTOCOL_VERSION = 1;
@@ -196,15 +233,23 @@ export class OpenKeyNostr {
 
   /**
    * Get-or-create the user's OpenKey-custodied Nostr identity. Always shows
-   * a visible consent card (identity creation, or - when `relayUrl` is
-   * given - a relay-scoped kind:22242/NIP-42 grant for that exact relay).
-   * Never resolves with the secret key; only `keyId`/`pubkey`/`npub`.
+   * a visible consent card. When `relayUrl`, `kinds`, and/or `operations`
+   * are given, the card describes the full requested capability set and a
+   * single approval creates one grant covering it - so a client like Buzz
+   * can be authorized for its complete working set up front instead of one
+   * consent per kind. Never resolves with the secret key; only
+   * `keyId`/`pubkey`/`npub`.
    */
-  async connect(opts?: { relayUrl?: string }): Promise<NostrIdentity> {
+  async connect(opts?: NostrConnectOptions): Promise<NostrIdentity> {
     const url = this.widgetUrl();
     return this.run<NostrIdentity>(
       url,
-      { type: 'openkey:nostr:connect:request', relayUrl: opts?.relayUrl },
+      {
+        type: 'openkey:nostr:connect:request',
+        relayUrl: opts?.relayUrl,
+        kinds: opts?.kinds,
+        operations: opts?.operations,
+      },
       (data, resolve, reject) => {
         if (data.type !== 'openkey:nostr:connect:response') return false;
         if (data.success) resolve({ keyId: data.keyId, pubkey: data.pubkey, npub: data.npub });
@@ -217,18 +262,115 @@ export class OpenKeyNostr {
   /**
    * Sign a NIP-01 event template with the user's OpenKey Nostr key. Silent
    * (no visible UI) when an active grant already covers this client origin
-   * + key + kind (+ exact relay, for kind 22242). Otherwise shows a visible
-   * consent card before signing - required for every first kind:9 message to
-   * a new origin, per NIP-29 channel-message policy.
+   * + key + kind (+ the event's destination, for relay/Blossom/HTTP auth
+   * kinds). Otherwise shows a visible consent card before signing.
+   *
+   * `opts.relayUrl` is a consent hint for destination-bound kinds (22242,
+   * 24242, 27235): it tells the approval card which relay the resulting
+   * grant should be bound to. It never widens what gets signed - the API
+   * independently checks the event's own destination against the grant.
    */
-  async signEvent(keyId: string, event: UnsignedNostrEvent): Promise<SignedNostrEvent> {
+  async signEvent(
+    keyId: string,
+    event: UnsignedNostrEvent,
+    opts?: { relayUrl?: string },
+  ): Promise<SignedNostrEvent> {
     const url = this.widgetUrl();
     return this.run<SignedNostrEvent>(
       url,
-      { type: 'openkey:nostr:sign:request', keyId, event },
+      { type: 'openkey:nostr:sign:request', keyId, event, relayUrl: opts?.relayUrl },
       (data, resolve, reject) => {
         if (data.type !== 'openkey:nostr:sign:response') return false;
         if (data.success) resolve(data.event);
+        else reject(data.error);
+        return true;
+      },
+    );
+  }
+
+  /**
+   * NIP-44 v2 encrypt-to-self inside OpenKey custody (Buzz encrypted
+   * reminders). `peerPubkey` must be the key's own pubkey - the custody API
+   * refuses to encrypt to third parties outside a gift wrap. Returns only
+   * the ciphertext payload; the conversation key never leaves custody.
+   */
+  async nip44Encrypt(keyId: string, opts: { peerPubkey: string; plaintext: string }): Promise<string> {
+    const url = this.widgetUrl();
+    return this.run<string>(
+      url,
+      { type: 'openkey:nostr:encrypt:request', keyId, peerPubkey: opts.peerPubkey, plaintext: opts.plaintext },
+      (data, resolve, reject) => {
+        if (data.type !== 'openkey:nostr:encrypt:response') return false;
+        if (data.success) resolve(data.ciphertext);
+        else reject(data.error);
+        return true;
+      },
+    );
+  }
+
+  /**
+   * NIP-44 v2 decrypt inside OpenKey custody, from self (reminders) or a
+   * peer such as an agent observer (`peerPubkey` = the sender's pubkey).
+   * Returns only the bounded plaintext.
+   */
+  async nip44Decrypt(keyId: string, opts: { peerPubkey: string; payload: string }): Promise<string> {
+    const url = this.widgetUrl();
+    return this.run<string>(
+      url,
+      { type: 'openkey:nostr:decrypt:request', keyId, peerPubkey: opts.peerPubkey, payload: opts.payload },
+      (data, resolve, reject) => {
+        if (data.type !== 'openkey:nostr:decrypt:response') return false;
+        if (data.success) resolve(data.plaintext);
+        else reject(data.error);
+        return true;
+      },
+    );
+  }
+
+  /**
+   * NIP-59 gift-wrap a direct message inside OpenKey custody: kind-14
+   * rumor, per-target kind-13 seals, kind-1059 wraps signed by fresh
+   * ephemeral keys, with the sender's self-wrap first
+   * (`wraps.length === recipients.length + 1`). Publish the returned wraps
+   * as-is; they are already signed.
+   */
+  async nip59Wrap(
+    keyId: string,
+    opts: { content: string; recipients: string[]; createdAt?: number },
+  ): Promise<SignedNostrEvent[]> {
+    const url = this.widgetUrl();
+    return this.run<SignedNostrEvent[]>(
+      url,
+      {
+        type: 'openkey:nostr:wrap:request',
+        keyId,
+        content: opts.content,
+        recipients: opts.recipients,
+        createdAt: opts.createdAt,
+      },
+      (data, resolve, reject) => {
+        if (data.type !== 'openkey:nostr:wrap:response') return false;
+        if (data.success) resolve(data.wraps);
+        else reject(data.error);
+        return true;
+      },
+    );
+  }
+
+  /**
+   * NIP-59 unwrap a kind-1059 gift wrap addressed to this key. Custody
+   * verifies the wrap and seal signatures, recipient binding, sender
+   * consistency, and the rumor id before returning the validated kind-14
+   * rumor - nothing else ever leaves.
+   */
+  async nip59Unwrap(keyId: string, wrap: SignedNostrEvent): Promise<NostrRumor> {
+    const url = this.widgetUrl();
+    return this.run<NostrRumor>(
+      url,
+      { type: 'openkey:nostr:unwrap:request', keyId, wrap },
+      (data, resolve, reject) => {
+        if (data.type !== 'openkey:nostr:unwrap:response') return false;
+        if (data.success) resolve(data.rumor);
         else reject(data.error);
         return true;
       },

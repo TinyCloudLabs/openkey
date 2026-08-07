@@ -137,7 +137,63 @@ export async function signNostrEvent(
   }
 }
 
-// The exact kind allowlist this signing slice supports: 22242 (NIP-42 relay
-// auth) and 9 (channel message). Callers (API routes) enforce this against
-// incoming requests; this module only signs whatever event it is given.
-export const SUPPORTED_NOSTR_KINDS: ReadonlySet<number> = new Set([22242, 9]);
+/**
+ * Unseal a custodied Nostr secret for exactly one operation.
+ *
+ * Shares `signNostrEvent`'s guarantees: the unsealed secret is converted to
+ * bytes as the very first step, verified to derive `expectedPubkeyHex`
+ * (fail closed on any mismatch), handed to `fn` for the duration of the
+ * call only, and zeroed in a `finally` block. `fn` must not retain a
+ * reference to the buffer past its own return. NIP-44/NIP-59 operations
+ * build on this so no code path ever holds an unzeroed secret.
+ */
+export async function withUnsealedNostrSecret<T>(
+  sealed: SealedNostrSecret,
+  fn: (secretBytes: Uint8Array) => T | Promise<T>,
+): Promise<T> {
+  const expectedPubkeyHex = normalizeHex(sealed.expectedPubkeyHex);
+  const secretHex = await unseal(sealed.sealedSecret, sealed.sealingKey);
+
+  let secretBytes: Uint8Array | null = null;
+  try {
+    secretBytes = hexToBytes(secretHex);
+    const derivedPubkeyHex = normalizeHex(bytesToHex(schnorr.getPublicKey(secretBytes)));
+    if (derivedPubkeyHex !== expectedPubkeyHex) {
+      throw new Error('nostr_key_mismatch: unsealed secret does not derive the expected pubkey');
+    }
+    return await fn(secretBytes);
+  } finally {
+    secretBytes?.fill(0);
+  }
+}
+
+/**
+ * Sign an event template with raw secret bytes already inside the custody
+ * boundary. Internal building block for NIP-59 seals (custodied key) and
+ * gift wraps (ephemeral keys); external callers use `signNostrEvent`.
+ */
+export function signEventWithSecretBytes(
+  secretBytes: Uint8Array,
+  unsignedEvent: UnsignedNostrEvent,
+): SignedNostrEvent {
+  const id = computeEventId(unsignedEvent);
+  const sig = bytesToHex(schnorr.sign(hexToBytes(id), secretBytes));
+  return { ...unsignedEvent, id, sig };
+}
+
+/** BIP-340 verification of a signed NIP-01 event: recomputed id + Schnorr signature. */
+export function verifyNostrEvent(event: SignedNostrEvent): boolean {
+  try {
+    const id = computeEventId(event);
+    if (normalizeHex(event.id) !== id) return false;
+    return schnorr.verify(hexToBytes(event.sig), hexToBytes(id), hexToBytes(normalizeHex(event.pubkey)));
+  } catch {
+    return false;
+  }
+}
+
+// The kind allowlist and operation set live in the versioned capability
+// model; re-exported here so existing `from './nostr'` imports keep working.
+// Callers (API routes) enforce these against incoming requests; this module
+// only signs whatever event it is given.
+export { SUPPORTED_NOSTR_KINDS } from './nostr-capabilities';
