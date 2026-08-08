@@ -5,14 +5,11 @@
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import { safeExternalHttpUrl, safeOAuthNavigationUrl } from '$lib/safe-oauth-url';
+  import { loadOAuthClientBrand, type OAuthClientBrand } from '$lib/oauth-client-brand';
 
   const session = authClient.useSession();
 
-  let clientInfo = $state<{
-    name: string;
-    uri?: string;
-    icon?: string;
-  } | null>(null);
+  let clientInfo = $state<OAuthClientBrand | null>(null);
   let loading = $state(true);
   let submitting = $state(false);
   let error = $state('');
@@ -42,22 +39,9 @@
       return;
     }
     try {
-      const res = await fetch(
-        `${API_BASE}/api/auth/oauth2/public-client?client_id=${encodeURIComponent(clientId)}`,
-        { credentials: 'include' }
-      );
-      if (res.ok) {
-        const data = await res.json();
-        clientInfo = {
-          name: data.client_name || data.name || 'Unknown',
-          uri: data.client_uri || data.uri,
-          icon: data.logo_uri || data.icon,
-        };
-      } else {
-        const data = await res.json().catch(() => null);
-        error = data?.message || `Failed to load application (${res.status})`;
-      }
-    } catch (e: unknown) {
+      clientInfo = await loadOAuthClientBrand(clientId);
+      if (!clientInfo) error = 'Failed to load application info';
+    } catch {
       error = 'Failed to load application info';
     }
     loading = false;
@@ -149,7 +133,7 @@
         {/if}
 
         <h1 class="text-xl font-bold text-surface-900 mb-2">
-          {clientInfo.name}
+          Continue to {clientInfo.name}
         </h1>
 
         {#if safeExternalHttpUrl(clientInfo.uri)}
