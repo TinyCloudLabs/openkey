@@ -55,7 +55,7 @@
       <div class="need"><h3>Merge and deploy are still separate authority.</h3><p>The code is locally proven but live console-to-API continuity remains red until this PR is reviewed, merged with explicit <code>automerge</code> authorization, and deployed through normal automation. Cloudflare custom-domain provisioning is external to this change.</p></div>
       <p class="muted">Known drift risk: <code>apps/api/src/routes/account.ts</code> has a separate CORS-origin guard and is intentionally outside this minimal session/API-origin slice.</p>
     </section>
-    <footer><span>TC-476 / OpenKey API production origin fallback</span><span>Commit and PR identifiers added after push</span></footer>
+    <footer><span>TC-476 / OpenKey API production origin fallback</span><span>PR #177 / implementation commit 60b8682</span></footer>
   </main>
 </body>
 </html>
