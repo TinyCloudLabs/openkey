@@ -14,7 +14,7 @@
     <header>
       <div class="meta-row"><span>OpenKey / TC-476</span><span>Evidence captured 2026-08-08</span><span>Walkthrough</span></div>
       <h1>Console origin <em>continuity</em></h1>
-      <p class="lede">The production API now derives the literal console host from the existing sealed production shape, so credentialed browser preflight and Better Auth use one policy without changing local development or explicit overrides.</p>
+      <p class="lede">The production API now derives the literal console host from the existing sealed production shape, so credentialed browser preflight and Better Auth both include it without changing local development or explicit overrides.</p>
     </header>
 
     <section>
@@ -33,7 +33,7 @@
         <tbody>
           <tr><td><code>origin-policy.ts</code></td><td>Parses configured CORS origins, adds only <code>https://console.openkey.so</code> when <code>NODE_ENV</code> or <code>TEE_MODE</code> is production and no console override exists, then deduplicates.</td><td>No generic subdomain derivation and no credentialed wildcard.</td></tr>
           <tr><td>Hono CORS and account controls</td><td>Consume that shared policy for restricted API routes and cookie-session control mutations.</td><td>OAuth token and delegate-sign wildcard policies are unchanged; bearer tokens remain rejected for account controls.</td></tr>
-          <tr><td>Better Auth</td><td>Uses the same policy for <code>trustedOrigins</code> at initialization.</td><td>Apple’s required audience remains additive when configured.</td></tr>
+          <tr><td>Better Auth</td><td>Adds the same production console fallback to <code>trustedOrigins</code> at initialization.</td><td>Its redirect/CSRF boundary remains limited to the account and console hosts, not the broader CORS list; Apple’s required audience remains additive when configured.</td></tr>
         </tbody>
       </table>
     </section>
@@ -44,7 +44,7 @@
         <thead><tr><th>Check</th><th>Result</th><th>What it proves</th></tr></thead>
         <tbody>
           <tr><td>Live <code>OPTIONS https://api.openkey.so/api/auth/get-session</code></td><td class="error">Console Origin currently has no <code>Access-Control-Allow-Origin</code>; account Origin is allowed.</td><td>Pre-deploy public red baseline. DNS/TLS for the console host now resolves, but the deployed API has not yet received this code.</td></tr>
-          <tr><td><code>bun test origin-policy social-providers auth-options account-tinycloud-control-auth</code></td><td class="done">17 passing tests</td><td>Real Hono OPTIONS fetch returns 204, the console allow-origin, and credentials for the sealed TEE production shape; an unrelated origin receives no allow-origin; Better Auth accepts the shared session journey; console account controls retain the cookie-session and bearer-token boundary.</td></tr>
+          <tr><td><code>bun test account-tinycloud-control-auth tinycloud-manage-key-control origin-policy social-providers auth-options</code></td><td class="done">22 passing tests</td><td>Real Hono OPTIONS fetch returns 204, the console allow-origin, and credentials for the sealed TEE production shape; an unrelated origin receives no allow-origin; Better Auth accepts the shared session journey without trusting an unrelated CORS origin; console account controls retain the cookie-session and bearer-token boundary.</td></tr>
           <tr><td><code>bun run --cwd packages/db db:generate</code> + <code>packages/tee build</code> + API typecheck</td><td class="done">Passed</td><td>The API source is type-safe with current generated workspace dependencies.</td></tr>
         </tbody>
       </table>
@@ -55,7 +55,7 @@
       <div class="need"><h3>Merge and deploy are still separate authority.</h3><p>The code is locally proven but live console-to-API continuity remains red until this PR is reviewed, merged with explicit <code>automerge</code> authorization, and deployed through normal automation. Cloudflare custom-domain provisioning is external to this change.</p></div>
       <p class="muted">The separate account-control origin guard now consumes the same shared policy, preserving its cookie-session and bearer-token protections.</p>
     </section>
-    <footer><span>TC-476 / OpenKey API production origin fallback</span><span>PR #177 / implementation commit 60b8682</span></footer>
+    <footer><span>TC-476 / OpenKey API production origin fallback</span><span>PR #177 / hardening commit a799f25</span></footer>
   </main>
 </body>
 </html>
