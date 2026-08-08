@@ -1,6 +1,6 @@
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { describe, expect, test } from 'bun:test';
-import { normalizeAuthReturnTo } from './auth-flow';
+import { normalizeAuthReturnTo, safeOAuthAuthorizeQuery } from './auth-flow';
 
 describe('normalizeAuthReturnTo', () => {
   test('keeps an approved console-host return URL for the account sign-in handoff', () => {
@@ -28,5 +28,12 @@ describe('normalizeAuthReturnTo', () => {
       undefined,
       { consoleOrigin: 'https://console.openkey.so' },
     )).toBeNull();
+  });
+});
+
+describe('safeOAuthAuthorizeQuery', () => {
+  test('recovers the signed OAuth envelope from the consent sign-in bounce', () => {
+    const oauthQuery = 'client_id=shape-rotator&redirect_uri=https%3A%2F%2Fshape.example%2Fcallback&response_type=code&sig=signed';
+    expect(safeOAuthAuthorizeQuery(new URLSearchParams({ oauth_query: oauthQuery }))).toBe(oauthQuery);
   });
 });

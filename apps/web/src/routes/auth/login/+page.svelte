@@ -15,6 +15,8 @@
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
+  import { safeExternalHttpUrl } from '$lib/safe-oauth-url';
+  import { loadPreloginOAuthClientBrand, type OAuthClientBrand } from '$lib/oauth-client-brand';
 
   type Step = 'email' | 'otp' | 'passkey';
 
@@ -25,6 +27,10 @@
   let error = $state('');
   let providers = $state<SocialProviderId[]>([]);
   let loadingProvider = $state<SocialProviderId | null>(null);
+  let clientBrand = $state<OAuthClientBrand | null>(null);
+  let loadingClientBrand = $state(false);
+  let clientBrandRequest = 0;
+  let clientIconFailed = $state(false);
 
   function getOAuthQuery(): string | undefined {
     return safeOAuthAuthorizeQuery($page.url.searchParams);
@@ -53,6 +59,21 @@
 
   onMount(async () => {
     providers = await loadConfiguredSocialProviders().catch(() => []);
+  });
+
+  $effect(() => {
+    const oauthQuery = getOAuthQuery();
+    const request = ++clientBrandRequest;
+    clientBrand = null;
+    clientIconFailed = false;
+    loadingClientBrand = Boolean(oauthQuery);
+    if (!oauthQuery) return;
+
+    void loadPreloginOAuthClientBrand(oauthQuery).then((brand) => {
+      if (request === clientBrandRequest) clientBrand = brand;
+    }).finally(() => {
+      if (request === clientBrandRequest) loadingClientBrand = false;
+    });
   });
 
   async function sendOTP() {
@@ -176,17 +197,40 @@
 <div class="flex min-h-screen items-center justify-center bg-surface-50 px-4 py-12">
   <div class="w-full max-w-md">
     <div class="mb-8 flex justify-center">
+      {#if clientBrand}
+        {#if safeExternalHttpUrl(clientBrand.icon) && !clientIconFailed}
+          <img
+            src={safeExternalHttpUrl(clientBrand.icon)!}
+            alt=""
+            class="h-12 w-12 rounded-2xl object-cover"
+            onerror={() => { clientIconFailed = true; }}
+          />
+        {:else}
+          <div class="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-primary-100 text-lg font-semibold text-primary-700" role="img" aria-label={`${clientBrand.name} icon`}>
+            {clientBrand.name.charAt(0).toUpperCase()}
+          </div>
+        {/if}
+      {:else}
       <div class="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-surface-900">
         <svg class="h-6 w-6 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
         </svg>
       </div>
+      {/if}
     </div>
 
     <Card class="w-full p-8 sm:p-10">
       {#if step === 'email'}
-        <h1 class="mb-2 text-center text-2xl font-bold text-surface-900">Welcome to OpenKey</h1>
-        <p class="mb-7 text-center text-sm text-surface-500">Sign in or create an account with your email</p>
+        {#if loadingClientBrand}
+          <h1 class="mb-2 text-center text-2xl font-bold text-surface-900" aria-live="polite">Loading sign-in…</h1>
+          <p class="mb-7 text-center text-sm text-surface-500">Use OpenKey to continue securely</p>
+        {:else if clientBrand}
+          <h1 class="mb-2 text-center text-2xl font-bold text-surface-900" aria-live="polite">Sign in to {clientBrand.name}</h1>
+          <p class="mb-7 text-center text-sm text-surface-500">Use OpenKey to continue securely</p>
+        {:else}
+          <h1 class="mb-2 text-center text-2xl font-bold text-surface-900">Welcome to OpenKey</h1>
+          <p class="mb-7 text-center text-sm text-surface-500">Sign in or create an account with your email</p>
+        {/if}
 
         {#if error}
           <div class="mb-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" role="alert">
@@ -243,6 +287,7 @@
         <h1 class="mb-2 text-center text-2xl font-bold text-surface-900">Check your email</h1>
         <p class="mb-7 text-center text-sm text-surface-500">
           Enter the 6-digit code sent to <span class="font-medium text-surface-900">{email}</span>
+          {#if clientBrand}<span class="block mt-2">Continue to {clientBrand.name}</span>{/if}
         </p>
 
         {#if error}
@@ -292,6 +337,7 @@
         <h1 class="mb-2 text-center text-2xl font-bold text-surface-900">Secure your account</h1>
         <p class="mb-7 text-center text-sm text-surface-500">
           Create a passkey for faster, phishing-resistant sign-in. You can skip this and keep using email codes.
+          {#if clientBrand}<span class="block mt-2">Continue to {clientBrand.name}</span>{/if}
         </p>
 
         {#if error}
