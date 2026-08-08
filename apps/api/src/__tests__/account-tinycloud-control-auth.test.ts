@@ -11,12 +11,23 @@ beforeAll(() => {
       return next();
     }),
   }));
+  mock.module('../services/tinycloud-manage-key-control', () => ({
+    controlMutationError: () => null,
+    changeTinyCloudManageKeyMode: async () => ({
+      kind: 'changed', epoch: 1, mode: 'USER_CONTROLLED_SHARED',
+    }),
+    changeTinyCloudManageKeyGrant: async () => ({
+      kind: 'changed', epoch: 1, grant: { enabled: true, status: 'ENABLED' },
+    }),
+  }));
   process.env.CORS_ORIGIN = 'https://openkey.test';
+  process.env.TEE_MODE = 'production';
 });
 
 afterAll(() => {
   mock.restore();
   delete process.env.CORS_ORIGIN;
+  delete process.env.TEE_MODE;
 });
 
 async function request(path: string, headers: Record<string, string>) {
@@ -49,5 +60,12 @@ describe('TinyCloud signing control authentication boundary', () => {
     const response = await request('/tinycloud-manage-key', {});
     expect(response.status).toBe(403);
     expect(await response.json()).toEqual({ error: 'A same-site browser Origin is required' });
+  });
+
+  test('allows a console control mutation in the sealed production origin shape', async () => {
+    const response = await request('/tinycloud-manage-key', {
+      origin: 'https://console.openkey.so',
+    });
+    expect(response.status).toBe(200);
   });
 });
