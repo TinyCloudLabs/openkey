@@ -8,7 +8,10 @@ test('renders the OAuth client name and initial on the signed-out login page', a
       oauth_query: 'client_id=shape-rotator&response_type=code&sig=signed',
     });
     await route.fulfill({
-      contentType: 'application/json',
+      headers: {
+        'access-control-allow-origin': 'http://localhost:5779',
+        'content-type': 'application/json',
+      },
       body: JSON.stringify({
         client_name: 'Shape Rotator',
         client_uri: 'https://shape.example',
