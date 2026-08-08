@@ -1,8 +1,9 @@
 import { decodeJwt, importPKCS8, SignJWT } from 'jose';
+import { resolveOriginPolicy, type OriginPolicyEnvironment } from './origin-policy';
 
 export type SocialProviderId = 'google' | 'apple';
 
-type ProviderEnvironment = Record<string, string | undefined>;
+type ProviderEnvironment = OriginPolicyEnvironment;
 type PersistedAppleUser = {
   email: string;
   name: string | null;
@@ -151,9 +152,8 @@ export function socialProviderTrustedOrigins(
   webOrigin: string,
   env: ProviderEnvironment = process.env,
 ): string[] {
-  const browserOrigins = [webOrigin, env.CONSOLE_ORIGIN]
-    .filter((origin): origin is string => Boolean(origin));
+  const browserOrigins = resolveOriginPolicy(webOrigin, env);
   return hasAppleConfiguration(env)
-    ? [...browserOrigins, APPLE_AUDIENCE]
+    ? [...new Set([...browserOrigins, APPLE_AUDIENCE])]
     : browserOrigins;
 }
