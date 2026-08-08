@@ -6,6 +6,13 @@ export type OAuthClientBrand = {
   icon: string | null;
 };
 
+export class OAuthClientBrandLoadError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'OAuthClientBrandLoadError';
+  }
+}
+
 type PublicClient = Record<string, unknown>;
 
 function optionalString(value: unknown): string | null {
@@ -35,6 +42,19 @@ function responseBrand(value: unknown): OAuthClientBrand | null {
   return normalizeOAuthClientBrand((value as PublicClient).client);
 }
 
+async function responseError(response: Response): Promise<OAuthClientBrandLoadError> {
+  let message: string | null = null;
+  try {
+    const body = await response.json();
+    if (body && typeof body === 'object' && typeof (body as PublicClient).message === 'string') {
+      message = (body as PublicClient).message;
+    }
+  } catch {
+    // Fall back to the status below when the error response is not JSON.
+  }
+  return new OAuthClientBrandLoadError(message || `Failed to load application (${response.status})`);
+}
+
 export async function loadOAuthClientBrand(clientId: string): Promise<OAuthClientBrand | null> {
   if (!clientId) return null;
   try {
@@ -42,7 +62,8 @@ export async function loadOAuthClientBrand(clientId: string): Promise<OAuthClien
       `${API_BASE}/api/auth/oauth2/public-client?client_id=${encodeURIComponent(clientId)}`,
       { credentials: 'include' },
     );
-    return response.ok ? responseBrand(await response.json()) : null;
+    if (!response.ok) throw await responseError(response);
+    return responseBrand(await response.json());
   } catch {
     return null;
   }

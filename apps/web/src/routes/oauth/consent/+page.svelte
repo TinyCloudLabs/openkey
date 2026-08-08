@@ -41,8 +41,8 @@
     try {
       clientInfo = await loadOAuthClientBrand(clientId);
       if (!clientInfo) error = 'Failed to load application info';
-    } catch {
-      error = 'Failed to load application info';
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : 'Failed to load application info';
     }
     loading = false;
   }
@@ -52,8 +52,11 @@
     if ($session.isPending || fetched) return;
 
     if (!$session.data) {
-      const returnUrl = encodeURIComponent($page.url.pathname + $page.url.search);
-      goto(`/auth/login?redirect=${returnUrl}`);
+      const returnUrl = $page.url.pathname + $page.url.search;
+      const loginParams = new URLSearchParams({ redirect: returnUrl });
+      const oauthQuery = getOAuthQuery();
+      if (oauthQuery) loginParams.set('oauth_query', oauthQuery);
+      goto(`/auth/login?${loginParams}`);
       return;
     }
 
@@ -121,11 +124,11 @@
         {#if safeExternalHttpUrl(clientInfo.icon)}
           <img
             src={safeExternalHttpUrl(clientInfo.icon)!}
-            alt={clientInfo.name}
+            alt=""
             class="w-16 h-16 rounded-lg mx-auto mb-4"
           />
         {:else}
-          <div class="w-16 h-16 rounded-lg bg-surface-100 mx-auto mb-4 flex items-center justify-center">
+          <div class="w-16 h-16 rounded-lg bg-surface-100 mx-auto mb-4 flex items-center justify-center" role="img" aria-label={`${clientInfo.name} icon`}>
             <span class="text-2xl text-surface-500">
               {clientInfo.name.charAt(0).toUpperCase()}
             </span>

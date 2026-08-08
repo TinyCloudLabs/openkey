@@ -201,12 +201,12 @@
         {#if safeExternalHttpUrl(clientBrand.icon) && !clientIconFailed}
           <img
             src={safeExternalHttpUrl(clientBrand.icon)!}
-            alt={clientBrand.name}
+            alt=""
             class="h-12 w-12 rounded-2xl object-cover"
             onerror={() => { clientIconFailed = true; }}
           />
         {:else}
-          <div class="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-primary-100 text-lg font-semibold text-primary-700" aria-label={`${clientBrand.name} icon`}>
+          <div class="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-primary-100 text-lg font-semibold text-primary-700" role="img" aria-label={`${clientBrand.name} icon`}>
             {clientBrand.name.charAt(0).toUpperCase()}
           </div>
         {/if}
@@ -222,10 +222,10 @@
     <Card class="w-full p-8 sm:p-10">
       {#if step === 'email'}
         {#if loadingClientBrand}
-          <h1 class="mb-2 text-center text-2xl font-bold text-surface-900">Loading sign-in…</h1>
+          <h1 class="mb-2 text-center text-2xl font-bold text-surface-900" aria-live="polite">Loading sign-in…</h1>
           <p class="mb-7 text-center text-sm text-surface-500">Use OpenKey to continue securely</p>
         {:else if clientBrand}
-          <h1 class="mb-2 text-center text-2xl font-bold text-surface-900">Sign in to {clientBrand.name}</h1>
+          <h1 class="mb-2 text-center text-2xl font-bold text-surface-900" aria-live="polite">Sign in to {clientBrand.name}</h1>
           <p class="mb-7 text-center text-sm text-surface-500">Use OpenKey to continue securely</p>
         {:else}
           <h1 class="mb-2 text-center text-2xl font-bold text-surface-900">Welcome to OpenKey</h1>
