@@ -60,6 +60,16 @@ describe('social provider configuration', () => {
     ]);
   });
 
+  test('does not widen auth trust to unrelated CORS origins', () => {
+    expect(socialProviderTrustedOrigins('https://openkey.test', {
+      CORS_ORIGIN: 'https://openkey.test,https://preview.openkey.test',
+      TEE_MODE: 'production',
+    })).toEqual([
+      'https://openkey.test',
+      'https://console.openkey.so',
+    ]);
+  });
+
   test('generates an ES256 Apple secret below the six-month maximum and accepts escaped newlines', async () => {
     const { privateKey } = await generateKeyPair('ES256', { extractable: true });
     const pem = await exportPKCS8(privateKey);

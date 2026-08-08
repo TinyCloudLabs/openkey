@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TC-476 API console origin walkthrough</title>
+  <style>
+    :root { --ink:#0d0b08; --paper:#ede4d3; --paper-dim:#b8ab92; --amber:#f2a91c; --amber-dim:rgba(242,169,28,.13); --green:#6fbf73; --green-dim:rgba(111,191,115,.1); --red:#d96b5c; --red-dim:rgba(217,107,92,.1); --blue:#7aa7d9; --line:rgba(237,228,211,.16); --mono:"IBM Plex Mono",ui-monospace,monospace; --serif:Fraunces,Georgia,serif; }
+    * { box-sizing:border-box; margin:0; padding:0; } body { background:var(--ink); color:var(--paper); font:300 14.5px/1.55 var(--mono); overflow-x:hidden; } body::before { background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.05'/%3E%3C/svg%3E"); content:""; inset:0; pointer-events:none; position:fixed; z-index:999; } .wrap { margin:0 auto; max-width:1120px; padding:36px 32px 120px; } a { border-bottom:1px dotted var(--paper-dim); color:var(--paper); text-decoration:none; } code { color:var(--paper); font-size:.92em; } .meta-row { border-bottom:1px solid var(--line); color:var(--paper-dim); display:flex; flex-wrap:wrap; font-size:11px; gap:8px; justify-content:space-between; letter-spacing:.14em; padding-bottom:14px; text-transform:uppercase; } h1 { font:900 clamp(46px,8vw,96px)/.95 var(--serif); letter-spacing:-.02em; margin-top:38px; } h1 em { color:var(--amber); font-weight:300; } .lede { font-size:15.5px; margin-top:30px; max-width:760px; } .lede strong { color:var(--amber); font-weight:500; } section { margin-top:76px; } .sec-head { align-items:baseline; border-bottom:1px solid var(--line); display:flex; gap:16px; margin-bottom:28px; padding-bottom:12px; } .sec-num { color:var(--amber); font-size:12px; letter-spacing:.2em; } .sec-head h2 { font:600 30px var(--serif); } .grid { display:grid; gap:14px; grid-template-columns:repeat(3,1fr); } .card { border:1px solid var(--line); min-width:0; padding:20px; } .card h3 { font:600 19px var(--serif); margin-bottom:8px; } .card p,.muted { color:var(--paper-dim); font-size:12.5px; } .pill { border:1px solid; display:inline-block; font-size:10px; letter-spacing:.12em; margin-top:10px; padding:3px 9px; text-transform:uppercase; } .done { background:var(--green-dim); color:var(--green); } .active { background:var(--amber-dim); color:var(--amber); } .waiting { color:var(--blue); } .blocked { background:var(--red-dim); color:var(--red); } .need { background:var(--amber-dim); border:1px solid var(--amber); margin-bottom:14px; padding:26px; position:relative; } .need::before { background:var(--ink); color:var(--amber); content:"YOUR MOVE"; font-size:10px; left:22px; letter-spacing:.28em; padding:0 10px; position:absolute; top:-9px; } .need h3 { font:600 19px var(--serif); margin-bottom:6px; } table { border-collapse:collapse; font-size:13px; width:100%; } th { border-bottom:1px solid var(--line); color:var(--paper-dim); font-size:10px; font-weight:400; letter-spacing:.18em; padding:0 12px 10px 0; text-align:left; text-transform:uppercase; } td { border-bottom:1px solid rgba(237,228,211,.08); padding:12px 12px 12px 0; vertical-align:top; } footer { border-top:1px solid var(--line); color:var(--paper-dim); display:flex; flex-wrap:wrap; font-size:11px; gap:8px; justify-content:space-between; letter-spacing:.12em; margin-top:70px; padding-top:16px; text-transform:uppercase; } @media(max-width:840px) { .grid { grid-template-columns:1fr; } .wrap { padding-inline:20px; } }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <header>
+      <div class="meta-row"><span>OpenKey / TC-476</span><span>Evidence captured 2026-08-08</span><span>Walkthrough</span></div>
+      <h1>Console origin <em>continuity</em></h1>
+      <p class="lede">The production API now derives the literal console host from the existing sealed production shape, so credentialed browser preflight and Better Auth both include it without changing local development or explicit overrides.</p>
+    </header>
+
+    <section>
+      <div class="sec-head"><span class="sec-num">01</span><h2>One user journey</h2></div>
+      <div class="grid">
+        <article class="card"><h3>Account host</h3><p>A signed-in user has the shared <code>.openkey.so</code> session cookie.</p></article>
+        <article class="card"><h3>Console host</h3><p>The user opens <code>https://console.openkey.so</code> and calls the API session endpoint.</p></article>
+        <article class="card"><h3>API decision</h3><p>With only <code>CORS_ORIGIN=https://openkey.so</code> and <code>TEE_MODE=production</code>, preflight allows the console origin with credentials and Better Auth trusts it.</p><span class="pill done">Local happy path proven</span></article>
+      </div>
+    </section>
+
+    <section>
+      <div class="sec-head"><span class="sec-num">02</span><h2>Smallest production-safe change</h2></div>
+      <table>
+        <thead><tr><th>Surface</th><th>Behavior</th><th>Boundary</th></tr></thead>
+        <tbody>
+          <tr><td><code>origin-policy.ts</code></td><td>Parses configured CORS origins, adds only <code>https://console.openkey.so</code> when <code>NODE_ENV</code> or <code>TEE_MODE</code> is production and no console override exists, then deduplicates.</td><td>No generic subdomain derivation and no credentialed wildcard.</td></tr>
+          <tr><td>Hono CORS and account controls</td><td>Consume that shared policy for restricted API routes and cookie-session control mutations.</td><td>OAuth token and delegate-sign wildcard policies are unchanged; bearer tokens remain rejected for account controls.</td></tr>
+          <tr><td>Better Auth</td><td>Adds the same production console fallback to <code>trustedOrigins</code> at initialization.</td><td>Its redirect/CSRF boundary remains limited to the account and console hosts, not the broader CORS list; Apple’s required audience remains additive when configured.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <div class="sec-head"><span class="sec-num">03</span><h2>Evidence ledger</h2></div>
+      <table>
+        <thead><tr><th>Check</th><th>Result</th><th>What it proves</th></tr></thead>
+        <tbody>
+          <tr><td>Live <code>OPTIONS https://api.openkey.so/api/auth/get-session</code></td><td class="error">Console Origin currently has no <code>Access-Control-Allow-Origin</code>; account Origin is allowed.</td><td>Pre-deploy public red baseline. DNS/TLS for the console host now resolves, but the deployed API has not yet received this code.</td></tr>
+          <tr><td><code>bun test account-tinycloud-control-auth tinycloud-manage-key-control origin-policy social-providers auth-options</code></td><td class="done">22 passing tests</td><td>Real Hono OPTIONS fetch returns 204, the console allow-origin, and credentials for the sealed TEE production shape; an unrelated origin receives no allow-origin; Better Auth accepts the shared session journey without trusting an unrelated CORS origin; console account controls retain the cookie-session and bearer-token boundary.</td></tr>
+          <tr><td><code>bun run --cwd packages/db db:generate</code> + <code>packages/tee build</code> + API typecheck</td><td class="done">Passed</td><td>The API source is type-safe with current generated workspace dependencies.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <div class="sec-head"><span class="sec-num">04</span><h2>Release boundary</h2></div>
+      <div class="need"><h3>Merge and deploy are still separate authority.</h3><p>The code is locally proven but live console-to-API continuity remains red until this PR is reviewed, merged with explicit <code>automerge</code> authorization, and deployed through normal automation. Cloudflare custom-domain provisioning is external to this change.</p></div>
+      <p class="muted">The separate account-control origin guard now consumes the same shared policy, preserving its cookie-session and bearer-token protections.</p>
+    </section>
+    <footer><span>TC-476 / OpenKey API production origin fallback</span><span>PR #177 / hardening commit a799f25</span></footer>
+  </main>
+</body>
+</html>

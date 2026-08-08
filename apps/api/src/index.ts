@@ -20,17 +20,13 @@ import { organizationsRouter } from './routes/organizations';
 import { tenantConsoleRouter } from './routes/tenant-console';
 import { trackAuthorization, trackTokenExchange, trackUniqueUser } from './analytics';
 import { configuredSocialProviderIds } from './social-providers';
+import { corsOriginPolicy } from './origin-policy';
 
 // Create Hono app
 const app = new Hono();
 
 // Middleware
 app.use('*', logger());
-
-// Parse CORS_ORIGIN - supports comma-separated list or single origin
-const corsOrigins = (process.env.CORS_ORIGIN || 'http://localhost:5173')
-  .split(',')
-  .map(o => o.trim());
 
 // OAuth token endpoint: allow any origin (PKCE provides security for public clients)
 app.use('/api/auth/oauth2/token', cors({
@@ -49,7 +45,7 @@ app.use('/api/delegate/sign', cors({
 
 // All other routes: restricted to whitelisted origins
 app.use('*', cors({
-  origin: corsOrigins.length === 1 ? corsOrigins[0]! : corsOrigins,
+  origin: corsOriginPolicy('http://localhost:5173'),
   credentials: true,
   exposeHeaders: ['set-auth-token'],
 }));

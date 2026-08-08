@@ -1,7 +1,23 @@
 import { afterAll, beforeAll, describe, expect, mock, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
 
-const prisma = {};
+const prisma = {
+  $transaction: async (callback: (tx: any) => Promise<unknown>) => callback(prisma),
+  $queryRawUnsafe: async () => [],
+  user: {
+    findUnique: async () => ({
+      tinyCloudManageKeyMode: 'APP_MANAGED',
+      tinyCloudManageKeyPolicyEpoch: BigInt(0),
+    }),
+    updateMany: async () => ({ count: 1 }),
+  },
+  tinyCloudManageKeyAppPreference: {
+    updateMany: async () => ({ count: 0 }),
+  },
+  tinyCloudManageKeyControlEvent: {
+    create: async () => ({}),
+  },
+};
 
 beforeAll(() => {
   mock.module('@openkey/db', () => ({ createPrismaClient: () => prisma }));
@@ -12,11 +28,13 @@ beforeAll(() => {
     }),
   }));
   process.env.CORS_ORIGIN = 'https://openkey.test';
+  process.env.TEE_MODE = 'production';
 });
 
 afterAll(() => {
   mock.restore();
   delete process.env.CORS_ORIGIN;
+  delete process.env.TEE_MODE;
 });
 
 async function request(path: string, headers: Record<string, string>) {
@@ -49,5 +67,12 @@ describe('TinyCloud signing control authentication boundary', () => {
     const response = await request('/tinycloud-manage-key', {});
     expect(response.status).toBe(403);
     expect(await response.json()).toEqual({ error: 'A same-site browser Origin is required' });
+  });
+
+  test('allows a console control mutation in the sealed production origin shape', async () => {
+    const response = await request('/tinycloud-manage-key', {
+      origin: 'https://console.openkey.so',
+    });
+    expect(response.status).toBe(200);
   });
 });
