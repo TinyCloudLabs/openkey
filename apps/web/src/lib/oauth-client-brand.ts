@@ -46,9 +46,8 @@ async function responseError(response: Response): Promise<OAuthClientBrandLoadEr
   let message: string | null = null;
   try {
     const body = await response.json();
-    if (body && typeof body === 'object' && typeof (body as PublicClient).message === 'string') {
-      message = (body as PublicClient).message;
-    }
+    const detail = body && typeof body === 'object' ? (body as PublicClient).message : null;
+    if (typeof detail === 'string') message = detail;
   } catch {
     // Fall back to the status below when the error response is not JSON.
   }
@@ -64,7 +63,8 @@ export async function loadOAuthClientBrand(clientId: string): Promise<OAuthClien
     );
     if (!response.ok) throw await responseError(response);
     return responseBrand(await response.json());
-  } catch {
+  } catch (error) {
+    if (error instanceof OAuthClientBrandLoadError) throw error;
     return null;
   }
 }
