@@ -1,7 +1,23 @@
 import { afterAll, beforeAll, describe, expect, mock, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
 
-const prisma = {};
+const prisma = {
+  $transaction: async (callback: (tx: any) => Promise<unknown>) => callback(prisma),
+  $queryRawUnsafe: async () => [],
+  user: {
+    findUnique: async () => ({
+      tinyCloudManageKeyMode: 'APP_MANAGED',
+      tinyCloudManageKeyPolicyEpoch: BigInt(0),
+    }),
+    updateMany: async () => ({ count: 1 }),
+  },
+  tinyCloudManageKeyAppPreference: {
+    updateMany: async () => ({ count: 0 }),
+  },
+  tinyCloudManageKeyControlEvent: {
+    create: async () => ({}),
+  },
+};
 
 beforeAll(() => {
   mock.module('@openkey/db', () => ({ createPrismaClient: () => prisma }));
@@ -9,15 +25,6 @@ beforeAll(() => {
     requireSession: createMiddleware(async (c, next) => {
       c.set('user', { id: 'user_1' });
       return next();
-    }),
-  }));
-  mock.module('../services/tinycloud-manage-key-control', () => ({
-    controlMutationError: () => null,
-    changeTinyCloudManageKeyMode: async () => ({
-      kind: 'changed', epoch: 1, mode: 'USER_CONTROLLED_SHARED',
-    }),
-    changeTinyCloudManageKeyGrant: async () => ({
-      kind: 'changed', epoch: 1, grant: { enabled: true, status: 'ENABLED' },
     }),
   }));
   process.env.CORS_ORIGIN = 'https://openkey.test';

@@ -6,6 +6,13 @@ function isProduction(env: OriginPolicyEnvironment): boolean {
   return env.NODE_ENV === 'production' || env.TEE_MODE === 'production';
 }
 
+export function resolveConsoleOrigin(
+  env: OriginPolicyEnvironment = process.env,
+): string | undefined {
+  return env.CONSOLE_ORIGIN
+    || (isProduction(env) ? DEFAULT_CONSOLE_ORIGIN : undefined);
+}
+
 /**
  * Resolves the browser origins shared by credentialed API CORS and Better Auth.
  * Explicit origins remain authoritative; the production console host is only a
@@ -18,8 +25,7 @@ export function resolveOriginPolicy(
   const origins = (env.CORS_ORIGIN || defaultOrigin)
     .split(',')
     .map((origin) => origin.trim());
-  const consoleOrigin = env.CONSOLE_ORIGIN
-    || (isProduction(env) ? DEFAULT_CONSOLE_ORIGIN : undefined);
+  const consoleOrigin = resolveConsoleOrigin(env);
 
   if (consoleOrigin) origins.push(consoleOrigin);
   return [...new Set(origins)];

@@ -1,5 +1,5 @@
 import { decodeJwt, importPKCS8, SignJWT } from 'jose';
-import { resolveOriginPolicy, type OriginPolicyEnvironment } from './origin-policy';
+import { resolveConsoleOrigin, type OriginPolicyEnvironment } from './origin-policy';
 
 export type SocialProviderId = 'google' | 'apple';
 
@@ -152,7 +152,10 @@ export function socialProviderTrustedOrigins(
   webOrigin: string,
   env: ProviderEnvironment = process.env,
 ): string[] {
-  const browserOrigins = resolveOriginPolicy(webOrigin, env);
+  // Better Auth's redirect/CSRF trust boundary follows the web origin and its
+  // console counterpart, rather than the broader API CORS allowlist.
+  const browserOrigins = [webOrigin, resolveConsoleOrigin(env)]
+    .filter((origin): origin is string => Boolean(origin));
   return hasAppleConfiguration(env)
     ? [...new Set([...browserOrigins, APPLE_AUDIENCE])]
     : browserOrigins;
