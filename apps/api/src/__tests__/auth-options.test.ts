@@ -12,7 +12,8 @@ describe('production console session options', () => {
       domain: '.openkey.so',
     });
     expect(socialProviderTrustedOrigins('https://openkey.so', {
-      CONSOLE_ORIGIN: 'https://console.openkey.so',
+      CORS_ORIGIN: 'https://openkey.so',
+      TEE_MODE: 'production',
     })).toContain('https://console.openkey.so');
   });
 
@@ -27,7 +28,8 @@ describe('production console session options', () => {
       database: memoryAdapter({ user: [], session: [], account: [], verification: [] }),
       emailAndPassword: { enabled: true },
       trustedOrigins: socialProviderTrustedOrigins('https://openkey.so', {
-        CONSOLE_ORIGIN: 'https://console.openkey.so',
+        CORS_ORIGIN: 'https://openkey.so',
+        TEE_MODE: 'production',
       }),
       advanced: {
         crossSubDomainCookies: crossSubDomainCookieOptions(false),
