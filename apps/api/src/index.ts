@@ -18,6 +18,7 @@ import { delegateRouter } from './routes/delegate';
 import { internalMetricsRouter } from './routes/internal-metrics';
 import { organizationsRouter } from './routes/organizations';
 import { tenantConsoleRouter } from './routes/tenant-console';
+import { deviceAuthorizationRouter } from './routes/device-authorization';
 import { trackAuthorization, trackTokenExchange, trackUniqueUser } from './analytics';
 import { configuredSocialProviderIds } from './social-providers';
 import { corsOriginPolicy } from './origin-policy';
@@ -163,6 +164,7 @@ app.route('/api/variables', variablesRouter);
 
 // Delegate route (CLI auth flow)
 app.route('/api/delegate', delegateRouter);
+app.route('/api/device-authorizations', deviceAuthorizationRouter);
 
 // Developer Organizations own OAuth application configuration and membership only.
 app.route('/api/organizations', organizationsRouter);

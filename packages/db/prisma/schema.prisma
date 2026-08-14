@@ -41,8 +41,42 @@ model User {
   tinyCloudManageKeySigningDecisions TinyCloudManageKeySigningDecision[]
   developerAccount               DeveloperAccount?
   organizationMemberships        OrganizationMembership[]
+  deviceAuthorizations           DeviceAuthorization[]
 
   @@map("user")
+}
+
+// OpenKey-owned, short-lived RFC 8628-style transaction state for CLI
+// authorization. Delegation results are encrypted before persistence and are
+// consumed exactly once; this table never stores a CLI private key.
+model DeviceAuthorization {
+  id                      String    @id
+  userCode                String    @unique
+  deviceSecretHash        String
+  codeChallenge           String
+  sessionDid              String
+  publicJwk               Json
+  permissions             Json
+  nodeOrigin              String
+  shareOrigin             String
+  delegationExpiresAt     DateTime
+  transactionExpiresAt    DateTime
+  requestedAt             DateTime  @default(now())
+  requestIpHash           String
+  nextPollAt              DateTime
+  pollIntervalSeconds     Int
+  status                  String    @default("PENDING")
+  approvedByUserId        String?
+  encryptedResult         String?
+  resultNonce             String?
+  consumedAt              DateTime?
+  updatedAt               DateTime  @updatedAt
+
+  approvedBy User? @relation(fields: [approvedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([requestIpHash, requestedAt])
+  @@index([status, transactionExpiresAt])
+  @@map("device_authorization")
 }
 
 // better-auth Session

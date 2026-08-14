@@ -95,6 +95,8 @@
   // and clamping are owned by the API to keep the source of truth in one
   // place; we just forward it.
   const expiryParam = $page.url.searchParams.get('expiry') || '';
+  const deviceTransactionId = $page.url.searchParams.get('deviceTransactionId') || '';
+  const deviceShareOrigin = $page.url.searchParams.get('deviceShareOrigin') || '';
 
   // Decode JWK from base64url
   let jwk: object | null = null;
@@ -876,6 +878,32 @@
 
   async function finishDelegate(data: any) {
     const payload = permissionsEdited ? { ...data, edited: true } : data;
+
+    if (deviceTransactionId) {
+      const API_URL = import.meta.env.VITE_API_URL || '';
+      const response = await fetch(`${API_URL}/api/device-authorizations/${encodeURIComponent(deviceTransactionId)}/approve`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...payload,
+          deviceBinding: {
+            transactionId: deviceTransactionId,
+            sessionDid: did,
+            nodeOrigin: host,
+            shareOrigin: deviceShareOrigin,
+            permissions: requestedPermissions,
+          },
+        }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({ errorDescription: 'Could not deliver the approved delegation to the CLI.' }));
+        throw new Error(body.errorDescription || 'Could not deliver the approved delegation to the CLI.');
+      }
+      done = true;
+      step = 'done';
+      return;
+    }
 
     if (callback) {
       try {
