@@ -1,5 +1,5 @@
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import { createCipheriv, createPublicKey, diffieHellman, generateKeyPairSync, hkdfSync, randomBytes } from 'node:crypto';
+import { createCipheriv, createHmac, createPublicKey, diffieHellman, generateKeyPairSync, randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { privateKeyToAccount } from 'viem/accounts';
@@ -80,13 +80,11 @@ function encryptApprovedDelegation(record: DeviceAuthorizationRecord, delegation
     privateKey: ephemeral.privateKey,
     publicKey: createPublicKey({ key: record.relayPublicJwk, format: 'jwk' }),
   });
-  const key = Buffer.from(hkdfSync(
-    'sha256',
-    sharedSecret,
-    Buffer.from(record.id),
-    Buffer.from('openkey-device-relay-v1'),
-    32,
-  ));
+  const extracted = createHmac('sha256', Buffer.from(record.id)).update(sharedSecret).digest();
+  const key = createHmac('sha256', extracted)
+    .update(Buffer.from('openkey-device-relay-v1'))
+    .update(Buffer.from([1]))
+    .digest();
   const nonce = randomBytes(12);
   const cipher = createCipheriv('aes-256-gcm', key, nonce);
   cipher.setAAD(Buffer.from(record.id));
