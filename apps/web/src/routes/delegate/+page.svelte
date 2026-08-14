@@ -95,6 +95,9 @@
   // and clamping are owned by the API to keep the source of truth in one
   // place; we just forward it.
   const expiryParam = $page.url.searchParams.get('expiry') || '';
+  const deviceTransactionId = $page.url.searchParams.get('deviceTransactionId') || '';
+  const deviceShareOrigin = $page.url.searchParams.get('deviceShareOrigin') || '';
+  const relayJwkB64 = $page.url.searchParams.get('relayJwk') || '';
 
   // Decode JWK from base64url
   let jwk: object | null = null;
@@ -104,6 +107,69 @@
     } catch {
       // Will show error in UI
     }
+  }
+
+  let relayPublicJwk: JsonWebKey | null = null;
+  if (relayJwkB64) {
+    try {
+      relayPublicJwk = JSON.parse(atob(relayJwkB64.replace(/-/g, '+').replace(/_/g, '/'))) as JsonWebKey;
+    } catch {
+      error = 'Could not decode the CLI relay encryption key.';
+    }
+  }
+
+  function encodeBase64Url(bytes: ArrayBuffer | Uint8Array): string {
+    const value = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    let binary = '';
+    for (const byte of value) binary += String.fromCharCode(byte);
+    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+
+  async function encryptDeviceRelay(payload: unknown) {
+    if (!relayPublicJwk || !deviceTransactionId) throw new Error('The CLI relay encryption binding is missing.');
+    const recipient = await crypto.subtle.importKey(
+      'jwk',
+      relayPublicJwk,
+      { name: 'ECDH', namedCurve: 'P-256' },
+      false,
+      [],
+    );
+    const ephemeral = await crypto.subtle.generateKey(
+      { name: 'ECDH', namedCurve: 'P-256' },
+      true,
+      ['deriveBits'],
+    );
+    const sharedSecret = await crypto.subtle.deriveBits(
+      { name: 'ECDH', public: recipient },
+      ephemeral.privateKey,
+      256,
+    );
+    const material = await crypto.subtle.importKey('raw', sharedSecret, 'HKDF', false, ['deriveKey']);
+    const key = await crypto.subtle.deriveKey(
+      {
+        name: 'HKDF',
+        hash: 'SHA-256',
+        salt: new TextEncoder().encode(deviceTransactionId),
+        info: new TextEncoder().encode('openkey-device-relay-v1'),
+      },
+      material,
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['encrypt'],
+    );
+    const nonce = crypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = await crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv: nonce, additionalData: new TextEncoder().encode(deviceTransactionId) },
+      key,
+      new TextEncoder().encode(JSON.stringify(payload)),
+    );
+    return {
+      version: 1,
+      algorithm: 'ECDH-P256-A256GCM',
+      ephemeralPublicJwk: await crypto.subtle.exportKey('jwk', ephemeral.publicKey),
+      nonce: encodeBase64Url(nonce),
+      ciphertext: encodeBase64Url(ciphertext),
+    };
   }
 
   // Decode the optional permissions request from base64url JSON. The CLI's
@@ -876,6 +942,36 @@
 
   async function finishDelegate(data: any) {
     const payload = permissionsEdited ? { ...data, edited: true } : data;
+
+    if (deviceTransactionId) {
+      const API_URL = import.meta.env.VITE_API_URL || '';
+      const delegationExpiresAt = payload.expiresAt ?? payload.expirationTime ?? payload.expiry;
+      if (typeof delegationExpiresAt !== 'string') throw new Error('The approved delegation has no expiry binding.');
+      const relay = await encryptDeviceRelay(payload);
+      const response = await fetch(`${API_URL}/api/device-authorizations/${encodeURIComponent(deviceTransactionId)}/approve`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          relay,
+          binding: {
+            transactionId: deviceTransactionId,
+            sessionDid: did,
+            nodeOrigin: host,
+            shareOrigin: deviceShareOrigin,
+            permissions: requestedPermissions,
+            delegationExpiresAt,
+          },
+        }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({ errorDescription: 'Could not deliver the approved delegation to the CLI.' }));
+        throw new Error(body.errorDescription || 'Could not deliver the approved delegation to the CLI.');
+      }
+      done = true;
+      step = 'done';
+      return;
+    }
 
     if (callback) {
       try {

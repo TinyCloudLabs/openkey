@@ -1351,6 +1351,7 @@ delegateRouter.post('/', async (c) => {
       expiresAt: expirationTime,
       expiry: expirationTime,
       siwe: bound.originalSiwe,
+      signature,
       signedMessage: bound.originalSiwe,
       permissions: effectiveGrants,
     });
@@ -1433,6 +1434,7 @@ delegateRouter.post('/', async (c) => {
     // this string at session-restore time; without it, restored sessions
     // are treated as expired-at-epoch-zero.
     siwe: preparedResult.prepared.siwe,
+    signature,
     // Versioned protocol: `signedMessage` is the exact bytes signed,
     // `permissions` is the effective grant set. Callers should prefer
     // these fields over reconstructing from the SIWE string.
