@@ -56,6 +56,7 @@ model DeviceAuthorization {
   codeChallenge           String
   sessionDid              String
   publicJwk               Json
+  relayPublicJwk          Json
   permissions             Json
   nodeOrigin              String
   shareOrigin             String
@@ -68,7 +69,6 @@ model DeviceAuthorization {
   status                  String    @default("PENDING")
   approvedByUserId        String?
   encryptedResult         String?
-  resultNonce             String?
   consumedAt              DateTime?
   updatedAt               DateTime  @updatedAt
 

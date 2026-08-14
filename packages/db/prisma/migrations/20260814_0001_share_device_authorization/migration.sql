@@ -5,6 +5,7 @@ CREATE TABLE "device_authorization" (
     "codeChallenge" TEXT NOT NULL,
     "sessionDid" TEXT NOT NULL,
     "publicJwk" JSONB NOT NULL,
+    "relayPublicJwk" JSONB NOT NULL,
     "permissions" JSONB NOT NULL,
     "nodeOrigin" TEXT NOT NULL,
     "shareOrigin" TEXT NOT NULL,
@@ -17,7 +18,6 @@ CREATE TABLE "device_authorization" (
     "status" TEXT NOT NULL DEFAULT 'PENDING',
     "approvedByUserId" TEXT,
     "encryptedResult" TEXT,
-    "resultNonce" TEXT,
     "consumedAt" TIMESTAMP(3),
     "updatedAt" TIMESTAMP(3) NOT NULL,
 

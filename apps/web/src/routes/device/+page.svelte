@@ -9,6 +9,7 @@
     userCode: string;
     sessionDid: string;
     publicJwk: Record<string, unknown>;
+    relayPublicJwk: Record<string, unknown>;
     permissions: Array<{ service: string; space: string; path: string; actions: string[] }>;
     nodeOrigin: string;
     shareOrigin: string;
@@ -45,6 +46,7 @@
     const params = new URLSearchParams({
       did: request.sessionDid,
       jwk: base64Url(request.publicJwk),
+      relayJwk: base64Url(request.relayPublicJwk),
       host: request.nodeOrigin,
       permissions: base64Url({
         permissions: request.permissions,

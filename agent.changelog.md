@@ -7,8 +7,8 @@ Track changes to agent-facing development guidance for OpenKey. Add a concise en
 
 - Added the OpenKey-owned Share device authorization contract and public cross-repository smoke.
   Agents changing it must preserve one-time consumption, ten-minute transaction expiry, rate
-  limits, device-secret plus PKCE binding, encrypted relay storage, and the existing delegation
-  approval path.
+  limits, device-secret plus PKCE binding, end-to-end encryption to the CLI relay key, and the
+  existing delegation approval path. Relay-side encryption of plaintext is not sufficient.
 
 ## 2026-05-17
 

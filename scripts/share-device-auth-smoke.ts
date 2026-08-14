@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import { randomBytes } from 'node:crypto';
+import { createCipheriv, createPublicKey, diffieHellman, generateKeyPairSync, hkdfSync, randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { privateKeyToAccount } from 'viem/accounts';
 import { completeSessionSetup, makeSpaceId, prepareSession } from '@tinycloud/node-sdk-wasm';
 import { CAPABILITIES } from '@tinycloud/bootstrap';
@@ -18,6 +18,7 @@ if (cliFlag < 0 || !process.argv[cliFlag + 1]) {
 const cliPath = isAbsolute(process.argv[cliFlag + 1]!)
   ? process.argv[cliFlag + 1]!
   : resolve(process.cwd(), process.argv[cliFlag + 1]!);
+const nodeExecutable = Bun.which('node') ?? 'node';
 
 const store = new MemoryDeviceAuthorizationStore();
 let service: DeviceAuthorizationService;
@@ -28,7 +29,10 @@ const requestPaths: string[] = [];
 
 async function createApprovedDelegation(record: DeviceAuthorizationRecord) {
   const account = privateKeyToAccount(`0x${randomBytes(32).toString('hex')}`);
-  const expirationTime = record.delegationExpiresAt.toISOString();
+  const expirationTime = new Date(Math.min(
+    record.delegationExpiresAt.getTime(),
+    Date.now() + 30 * 24 * 60 * 60 * 1000 - 1000,
+  )).toISOString();
   const spaceId = makeSpaceId(account.address, 1, 'applications');
   const prepared = prepareSession({
     address: account.address,
@@ -70,6 +74,46 @@ async function createApprovedDelegation(record: DeviceAuthorizationRecord) {
   };
 }
 
+function encryptApprovedDelegation(record: DeviceAuthorizationRecord, delegation: Record<string, unknown>) {
+  const ephemeral = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  const sharedSecret = diffieHellman({
+    privateKey: ephemeral.privateKey,
+    publicKey: createPublicKey({ key: record.relayPublicJwk, format: 'jwk' }),
+  });
+  const key = Buffer.from(hkdfSync(
+    'sha256',
+    sharedSecret,
+    Buffer.from(record.id),
+    Buffer.from('openkey-device-relay-v1'),
+    32,
+  ));
+  const nonce = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', key, nonce);
+  cipher.setAAD(Buffer.from(record.id));
+  const ciphertext = Buffer.concat([
+    cipher.update(JSON.stringify(delegation)),
+    cipher.final(),
+    cipher.getAuthTag(),
+  ]);
+  return {
+    relay: {
+      version: 1,
+      algorithm: 'ECDH-P256-A256GCM',
+      ephemeralPublicJwk: ephemeral.publicKey.export({ format: 'jwk' }),
+      nonce: nonce.toString('base64url'),
+      ciphertext: ciphertext.toString('base64url'),
+    },
+    binding: {
+      transactionId: record.id,
+      sessionDid: record.sessionDid,
+      nodeOrigin: record.nodeOrigin,
+      shareOrigin: record.shareOrigin,
+      permissions: record.permissions,
+      delegationExpiresAt: String(delegation.expiresAt),
+    },
+  };
+}
+
 const server = Bun.serve({
   port: 0,
   async fetch(request) {
@@ -79,7 +123,8 @@ const server = Bun.serve({
       const started = await service.start(await request.json(), '127.0.0.1');
       const record = await store.findById(started.transactionId);
       if (!record) return Response.json({ error: 'missing_transaction' }, { status: 500 });
-      await service.approve(record.id, 'smoke-passkey-user', await createApprovedDelegation(record));
+      const delegation = await createApprovedDelegation(record);
+      await service.approve(record.id, 'smoke-passkey-user', encryptApprovedDelegation(record, delegation));
       return Response.json(started, { status: 201 });
     }
     if (request.method === 'POST' && url.pathname === '/api/device-authorizations/token') {
@@ -140,7 +185,7 @@ try {
   const report = join(root, 'report.md');
   await writeFile(report, '# Share-first device auth smoke\n', 'utf8');
   const command = [
-    process.execPath,
+    nodeExecutable,
     cliPath,
     'share',
     'publish',
@@ -168,19 +213,8 @@ try {
   ]);
   const link = stdout.trim();
   if (exitCode !== 0) {
-    const sdkProbe = Bun.spawn([
-      process.execPath,
-      '-e',
-      `import { ensureAuthenticated } from './packages/cli/src/lib/sdk.ts'; await ensureAuthenticated({profile:'default',host:${JSON.stringify(origin)},verbose:false,noCache:false,quiet:true}); console.log('restore-ok')`,
-    ], {
-      cwd: resolve(dirname(cliPath), '../../..'),
-      env: { ...process.env, TC_HOME: root, TC_HOST: origin },
-      stdout: 'pipe',
-      stderr: 'pipe',
-    });
-    const [probeOut, probeErr] = await Promise.all([new Response(sdkProbe.stdout).text(), new Response(sdkProbe.stderr).text(), sdkProbe.exited]);
     const files = await readdir(root, { recursive: true });
-    throw new Error(`CLI exited ${exitCode}: ${stderr}\nrequests=${requestPaths.join(',')}\nfiles=${files.join(',')}\nrestore=${probeOut}${probeErr}`);
+    throw new Error(`CLI exited ${exitCode}: ${stderr}\nrequests=${requestPaths.join(',')}\nfiles=${files.join(',')}`);
   }
   if (!/^https:\/\/share\.tinycloud\.xyz\/s\/[A-Za-z0-9_-]+#k=/.test(link)) throw new Error(`CLI did not return a complete Share URL: ${link}`);
   if (!/Visit:\s+http:\/\/127\.0\.0\.1:\d+\/device/.test(stderr) || !/Code:\s+[A-Z2-9]{4}-[A-Z2-9]{4}/.test(stderr)) {

@@ -22,6 +22,7 @@ function fromDatabase(value: any): DeviceAuthorizationRecord {
     codeChallenge: value.codeChallenge,
     sessionDid: value.sessionDid,
     publicJwk: value.publicJwk,
+    relayPublicJwk: value.relayPublicJwk,
     permissions: value.permissions,
     nodeOrigin: value.nodeOrigin,
     shareOrigin: value.shareOrigin,
@@ -34,7 +35,6 @@ function fromDatabase(value: any): DeviceAuthorizationRecord {
     status: value.status.toLowerCase(),
     ...(value.approvedByUserId ? { approvedByUserId: value.approvedByUserId } : {}),
     ...(value.encryptedResult ? { encryptedResult: value.encryptedResult } : {}),
-    ...(value.resultNonce ? { resultNonce: value.resultNonce } : {}),
     ...(value.consumedAt ? { consumedAt: value.consumedAt } : {}),
   };
 }
@@ -72,7 +72,7 @@ export function createPrismaDeviceAuthorizationStore(database: any): DeviceAutho
           status: 'APPROVED',
           approvedByUserId: input.userId,
           encryptedResult: input.encryptedResult,
-          resultNonce: input.resultNonce,
+          delegationExpiresAt: input.delegationExpiresAt,
         },
       });
       return result.count === 1;
@@ -89,7 +89,6 @@ export function createPrismaDeviceAuthorizationStore(database: any): DeviceAutho
             status: 'CONSUMED',
             consumedAt: new Date(),
             encryptedResult: null,
-            resultNonce: null,
           },
         });
         if (updated.count !== 1) return null;

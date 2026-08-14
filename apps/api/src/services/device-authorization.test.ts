@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomBytes } from 'node:crypto';
 import {
   DEVICE_AUTH_DEFAULT_DELEGATION_TTL_MS,
+  type DeviceRelayEnvelope,
   DeviceAuthorizationError,
   DeviceAuthorizationService,
   MemoryDeviceAuthorizationStore,
@@ -23,11 +24,14 @@ function fixture() {
     crv: 'Ed25519',
     x: randomBytes(32).toString('base64url'),
   };
+  const relayKeys = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  const relayPublicJwk = relayKeys.publicKey.export({ format: 'jwk' });
   const request = {
     deviceSecretHash: digest('device-secret-with-at-least-256-bits-of-entropy'),
     codeChallenge: digest('pkce-verifier-with-at-least-256-bits-of-entropy'),
     sessionDid: sessionDidForPublicJwk(publicJwk),
     publicJwk,
+    relayPublicJwk,
     permissions: [{
       service: 'tinycloud.capabilities',
       space: 'applications',
@@ -41,32 +45,30 @@ function fixture() {
   return { store, service, request, publicJwk, advance, now: () => new Date(nowMs) };
 }
 
-function approvedResult(input: ReturnType<typeof fixture>, transaction: Awaited<ReturnType<DeviceAuthorizationService['start']>>) {
+function encryptedApproval(input: ReturnType<typeof fixture>, transaction: Awaited<ReturnType<DeviceAuthorizationService['start']>>) {
+  const ephemeral = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  const delegationExpiresAt = new Date(input.now().getTime() + DEVICE_AUTH_DEFAULT_DELEGATION_TTL_MS - 1000).toISOString();
   return {
-    delegationHeader: { Authorization: 'Bearer plaintext-delegation-must-not-be-stored' },
-    delegationCid: 'bafy-device-delegation',
-    spaceId: 'tinycloud:pkh:eip155:1:0x1111111111111111111111111111111111111111:applications',
-    verificationMethod: input.request.sessionDid,
-    jwk: input.publicJwk,
-    permissions: [{
-      service: 'capabilities',
-      space: 'tinycloud:pkh:eip155:1:0x1111111111111111111111111111111111111111:applications',
-      path: '',
-      actions: ['tinycloud.capabilities/read'],
-    }],
-    expiresAt: new Date(input.now().getTime() + DEVICE_AUTH_DEFAULT_DELEGATION_TTL_MS - 1000).toISOString(),
-    deviceBinding: {
+    relay: {
+      version: 1 as const,
+      algorithm: 'ECDH-P256-A256GCM' as const,
+      ephemeralPublicJwk: ephemeral.publicKey.export({ format: 'jwk' }) as DeviceRelayEnvelope['ephemeralPublicJwk'],
+      nonce: randomBytes(12).toString('base64url'),
+      ciphertext: randomBytes(128).toString('base64url'),
+    },
+    binding: {
       sessionDid: input.request.sessionDid,
       nodeOrigin: input.request.nodeOrigin,
       shareOrigin: input.request.shareOrigin,
       permissions: input.request.permissions,
       transactionId: transaction.transactionId,
+      delegationExpiresAt,
     },
   };
 }
 
 describe('OpenKey device authorization service', () => {
-  test('delivers an approved Share delegation exactly once without plaintext at rest', async () => {
+  test('delivers an end-to-end encrypted relay result exactly once without plaintext disclosure', async () => {
     const input = fixture();
     const transaction = await input.service.start(input.request, '203.0.113.9');
     expect(transaction.userCode).toMatch(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
@@ -79,10 +81,11 @@ describe('OpenKey device authorization service', () => {
       codeVerifier: 'pkce-verifier-with-at-least-256-bits-of-entropy',
     })).toEqual({ status: 'pending', interval: 2 });
 
-    await input.service.approve(transaction.transactionId, 'user-1', approvedResult(input, transaction));
+    const approval = encryptedApproval(input, transaction);
+    await input.service.approve(transaction.transactionId, 'user-1', approval);
     const stored = await input.store.findById(transaction.transactionId);
-    expect(stored?.encryptedResult).not.toContain('plaintext-delegation');
-    expect(JSON.stringify(stored)).not.toContain('Bearer plaintext');
+    expect(JSON.parse(stored?.encryptedResult ?? 'null')).toEqual(approval.relay);
+    expect(JSON.stringify(stored)).not.toContain('delegationHeader');
 
     input.advance(2000);
     const approved = await input.service.poll({
@@ -92,8 +95,7 @@ describe('OpenKey device authorization service', () => {
     });
     expect(approved.status).toBe('approved');
     if (approved.status === 'approved') {
-      expect(approved.delegation.delegationCid).toBe('bafy-device-delegation');
-      expect(approved.delegation).not.toHaveProperty('deviceBinding');
+      expect(approved.relay).toEqual(approval.relay);
       expect(approved.binding).toMatchObject({
         transactionId: transaction.transactionId,
         sessionDid: input.request.sessionDid,
@@ -139,8 +141,8 @@ describe('OpenKey device authorization service', () => {
       codeVerifier: 'pkce-verifier-with-at-least-256-bits-of-entropy',
     })).rejects.toMatchObject({ code: 'slow_down', status: 429 });
 
-    const widened = approvedResult(input, transaction);
-    widened.deviceBinding.transactionId = 'another-transaction';
+    const widened = encryptedApproval(input, transaction);
+    widened.binding.transactionId = 'another-transaction';
     await expect(input.service.approve(transaction.transactionId, 'user-1', widened))
       .rejects.toMatchObject({ code: 'invalid_result' });
 

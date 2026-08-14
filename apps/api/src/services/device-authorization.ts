@@ -1,10 +1,4 @@
-import {
-  createCipheriv,
-  createDecipheriv,
-  createHash,
-  randomBytes,
-  timingSafeEqual,
-} from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 
 export const DEVICE_AUTH_TRANSACTION_TTL_MS = 10 * 60 * 1000;
 export const DEVICE_AUTH_DEFAULT_DELEGATION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -27,6 +21,7 @@ export interface DeviceAuthorizationRecord {
   codeChallenge: string;
   sessionDid: string;
   publicJwk: Record<string, unknown>;
+  relayPublicJwk: Record<string, unknown>;
   permissions: DevicePermission[];
   nodeOrigin: string;
   shareOrigin: string;
@@ -39,7 +34,6 @@ export interface DeviceAuthorizationRecord {
   status: 'pending' | 'approved' | 'denied' | 'consumed';
   approvedByUserId?: string;
   encryptedResult?: string;
-  resultNonce?: string;
   consumedAt?: Date;
 }
 
@@ -52,7 +46,7 @@ export interface DeviceAuthorizationStore {
   approve(id: string, input: {
     userId: string;
     encryptedResult: string;
-    resultNonce: string;
+    delegationExpiresAt: Date;
   }): Promise<boolean>;
   consumeApproved(id: string): Promise<DeviceAuthorizationRecord | null>;
 }
@@ -86,7 +80,7 @@ export class MemoryDeviceAuthorizationStore implements DeviceAuthorizationStore 
   async approve(id: string, input: {
     userId: string;
     encryptedResult: string;
-    resultNonce: string;
+    delegationExpiresAt: Date;
   }): Promise<boolean> {
     const record = this.records.get(id);
     if (!record || record.status !== 'pending') return false;
@@ -94,7 +88,7 @@ export class MemoryDeviceAuthorizationStore implements DeviceAuthorizationStore 
       status: 'approved' as const,
       approvedByUserId: input.userId,
       encryptedResult: input.encryptedResult,
-      resultNonce: input.resultNonce,
+      delegationExpiresAt: input.delegationExpiresAt,
     });
     return true;
   }
@@ -106,7 +100,6 @@ export class MemoryDeviceAuthorizationStore implements DeviceAuthorizationStore 
     record.consumedAt = new Date();
     const consumed = { ...record };
     delete record.encryptedResult;
-    delete record.resultNonce;
     return consumed;
   }
 }
@@ -116,6 +109,7 @@ export type DeviceAuthorizationStart = {
   codeChallenge: string;
   sessionDid: string;
   publicJwk: Record<string, unknown>;
+  relayPublicJwk: Record<string, unknown>;
   permissions: DevicePermission[];
   nodeOrigin: string;
   shareOrigin: string;
@@ -128,6 +122,14 @@ export type DeviceAuthorizationResult = Record<string, unknown> & {
   spaceId: string;
   verificationMethod: string;
 };
+
+export interface DeviceRelayEnvelope {
+  version: 1;
+  algorithm: 'ECDH-P256-A256GCM';
+  ephemeralPublicJwk: { kty: 'EC'; crv: 'P-256'; x: string; y: string };
+  nonce: string;
+  ciphertext: string;
+}
 
 export class DeviceAuthorizationError extends Error {
   constructor(
@@ -185,6 +187,26 @@ function publicSessionJwk(value: unknown): Record<string, unknown> {
     x: jwk.x,
     ...(typeof jwk.kid === 'string' && jwk.kid.length > 0 ? { kid: jwk.kid } : {}),
   };
+}
+
+function publicRelayJwk(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new DeviceAuthorizationError('invalid_request', 'relayPublicJwk must be an object', 400);
+  }
+  const jwk = value as Record<string, unknown>;
+  if (
+    jwk.kty !== 'EC' || jwk.crv !== 'P-256' ||
+    typeof jwk.x !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(jwk.x) ||
+    typeof jwk.y !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(jwk.y) ||
+    'd' in jwk
+  ) throw new DeviceAuthorizationError('invalid_request', 'relayPublicJwk must be a public P-256 JWK', 400);
+  for (const coordinate of [jwk.x, jwk.y]) {
+    const decoded = Buffer.from(coordinate as string, 'base64url');
+    if (decoded.length !== 32 || decoded.toString('base64url') !== coordinate) {
+      throw new DeviceAuthorizationError('invalid_request', 'relayPublicJwk coordinates must encode 32 canonical bytes', 400);
+    }
+  }
+  return { kty: 'EC', crv: 'P-256', x: jwk.x, y: jwk.y };
 }
 
 function base58btc(bytes: Uint8Array): string {
@@ -277,39 +299,32 @@ function jsonEqual(left: unknown, right: unknown): boolean {
   return JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
 }
 
-function validateApprovedDelegation(record: DeviceAuthorizationRecord, value: unknown, now: Date): DeviceAuthorizationResult {
+function canonicalRelayBytes(value: unknown, label: string): Buffer {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]+$/.test(value)) {
+    throw new DeviceAuthorizationError('invalid_result', `${label} must be canonical base64url`, 400);
+  }
+  const decoded = Buffer.from(value, 'base64url');
+  if (decoded.toString('base64url') !== value) {
+    throw new DeviceAuthorizationError('invalid_result', `${label} must be canonical base64url`, 400);
+  }
+  return decoded;
+}
+
+function validateRelayApproval(record: DeviceAuthorizationRecord, value: unknown, now: Date): {
+  relay: DeviceRelayEnvelope;
+  delegationExpiresAt: Date;
+} {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new DeviceAuthorizationError('invalid_result', 'delegation result must be an object', 400);
+    throw new DeviceAuthorizationError('invalid_result', 'encrypted relay approval must be an object', 400);
   }
-  const result = value as DeviceAuthorizationResult;
-  const authorization = result.delegationHeader?.Authorization;
+  const approval = value as Record<string, unknown>;
+  const relay = approval.relay as Partial<DeviceRelayEnvelope> | undefined;
+  const binding = approval.binding;
   if (
-    typeof authorization !== 'string' || authorization.length === 0 ||
-    typeof result.delegationCid !== 'string' || result.delegationCid.length === 0 ||
-    typeof result.spaceId !== 'string' || !result.spaceId.endsWith(':applications') ||
-    result.verificationMethod !== record.sessionDid
+    !relay || relay.version !== 1 || relay.algorithm !== 'ECDH-P256-A256GCM' ||
+    !binding || typeof binding !== 'object' || Array.isArray(binding)
   ) {
-    throw new DeviceAuthorizationError('invalid_result', 'delegation is not bound to the requested CLI session', 400);
-  }
-  if (!jsonEqual(publicSessionJwk(result.jwk), record.publicJwk)) {
-    throw new DeviceAuthorizationError('invalid_result', 'delegation JWK does not match the requested CLI session key', 400);
-  }
-  const permissions = sharePermissions(result.permissions);
-  if (!jsonEqual(permissions, record.permissions)) {
-    throw new DeviceAuthorizationError('invalid_result', 'delegation permissions exceed the approved Share scope', 400);
-  }
-  const expiresAtValue = result.expiresAt ?? result.expirationTime ?? result.expiry;
-  const expiresAt = typeof expiresAtValue === 'string' ? new Date(expiresAtValue) : new Date(Number.NaN);
-  if (
-    Number.isNaN(expiresAt.getTime()) ||
-    expiresAt <= now ||
-    expiresAt > record.delegationExpiresAt
-  ) {
-    throw new DeviceAuthorizationError('invalid_result', 'delegation expiry exceeds the approved window', 400);
-  }
-  const binding = result.deviceBinding;
-  if (!binding || typeof binding !== 'object' || Array.isArray(binding)) {
-    throw new DeviceAuthorizationError('invalid_result', 'delegation result is missing its device binding', 400);
+    throw new DeviceAuthorizationError('invalid_result', 'encrypted relay approval is malformed', 400);
   }
   const bound = binding as Record<string, unknown>;
   if (
@@ -319,11 +334,30 @@ function validateApprovedDelegation(record: DeviceAuthorizationRecord, value: un
     bound.shareOrigin !== record.shareOrigin ||
     !jsonEqual(bound.permissions, record.permissions)
   ) {
-    throw new DeviceAuthorizationError('invalid_result', 'delegation result binding does not match the device request', 400);
+    throw new DeviceAuthorizationError('invalid_result', 'relay binding does not match the device request', 400);
   }
-  const output = { ...result };
-  delete output.deviceBinding;
-  return output;
+  const delegationExpiresAt = typeof bound.delegationExpiresAt === 'string'
+    ? new Date(bound.delegationExpiresAt)
+    : new Date(Number.NaN);
+  if (Number.isNaN(delegationExpiresAt.getTime()) || delegationExpiresAt <= now || delegationExpiresAt > record.delegationExpiresAt) {
+    throw new DeviceAuthorizationError('invalid_result', 'delegation expiry exceeds the approved window', 400);
+  }
+  const ephemeralPublicJwk = publicRelayJwk(relay.ephemeralPublicJwk) as DeviceRelayEnvelope['ephemeralPublicJwk'];
+  const nonce = canonicalRelayBytes(relay.nonce, 'relay nonce');
+  const ciphertext = canonicalRelayBytes(relay.ciphertext, 'relay ciphertext');
+  if (nonce.length !== 12 || ciphertext.length <= 16 || ciphertext.length > 1024 * 1024) {
+    throw new DeviceAuthorizationError('invalid_result', 'encrypted relay result has an invalid size', 400);
+  }
+  return {
+    relay: {
+      version: 1,
+      algorithm: 'ECDH-P256-A256GCM',
+      ephemeralPublicJwk,
+      nonce: nonce.toString('base64url'),
+      ciphertext: ciphertext.toString('base64url'),
+    },
+    delegationExpiresAt,
+  };
 }
 
 export class DeviceAuthorizationService {
@@ -342,36 +376,6 @@ export class DeviceAuthorizationService {
     return this.options.now?.() ?? new Date();
   }
 
-  private key(record: Pick<DeviceAuthorizationRecord, 'id' | 'deviceSecretHash'>): Buffer {
-    return createHash('sha256')
-      .update('openkey-device-authorization-v1\0')
-      .update(this.options.encryptionSecret)
-      .update('\0')
-      .update(record.id)
-      .update('\0')
-      .update(record.deviceSecretHash)
-      .digest();
-  }
-
-  private encrypt(record: DeviceAuthorizationRecord, result: DeviceAuthorizationResult): { ciphertext: string; nonce: string } {
-    const nonce = randomBytes(12);
-    const cipher = createCipheriv('aes-256-gcm', this.key(record), nonce);
-    cipher.setAAD(Buffer.from(record.id));
-    const ciphertext = Buffer.concat([cipher.update(JSON.stringify(result), 'utf8'), cipher.final(), cipher.getAuthTag()]);
-    return { ciphertext: ciphertext.toString('base64url'), nonce: nonce.toString('base64url') };
-  }
-
-  private decrypt(record: DeviceAuthorizationRecord): DeviceAuthorizationResult {
-    if (!record.encryptedResult || !record.resultNonce) throw new DeviceAuthorizationError('invalid_result', 'approved result is unavailable', 500);
-    const encoded = Buffer.from(record.encryptedResult, 'base64url');
-    const nonce = Buffer.from(record.resultNonce, 'base64url');
-    if (nonce.length !== 12 || encoded.length <= 16) throw new DeviceAuthorizationError('invalid_result', 'approved result is unavailable', 500);
-    const decipher = createDecipheriv('aes-256-gcm', this.key(record), nonce);
-    decipher.setAAD(Buffer.from(record.id));
-    decipher.setAuthTag(encoded.subarray(encoded.length - 16));
-    return JSON.parse(Buffer.concat([decipher.update(encoded.subarray(0, -16)), decipher.final()]).toString('utf8')) as DeviceAuthorizationResult;
-  }
-
   async start(input: DeviceAuthorizationStart, requestIp: string): Promise<{
     transactionId: string;
     userCode: string;
@@ -385,6 +389,7 @@ export class DeviceAuthorizationService {
       throw new DeviceAuthorizationError('invalid_request', 'device secret hash and PKCE challenge must be SHA-256 base64url values', 400);
     }
     const publicJwk = publicSessionJwk(input.publicJwk);
+    const relayPublicJwk = publicRelayJwk(input.relayPublicJwk);
     if (input.sessionDid !== sessionDidForPublicJwk(publicJwk)) {
       throw new DeviceAuthorizationError('invalid_request', 'sessionDid does not match publicJwk', 400);
     }
@@ -408,10 +413,15 @@ export class DeviceAuthorizationService {
       codeChallenge: input.codeChallenge,
       sessionDid: input.sessionDid,
       publicJwk,
+      relayPublicJwk,
       permissions,
       nodeOrigin,
       shareOrigin,
-      delegationExpiresAt: delegationExpiry(input.delegationTtlSeconds, now),
+      // The requested lifetime begins when the person approves, not when the
+      // CLI first prints the code. Adding the transaction window here keeps a
+      // deliberate 30-day choice valid after passkey interaction while still
+      // enforcing a finite absolute upper bound.
+      delegationExpiresAt: delegationExpiry(input.delegationTtlSeconds, transactionExpiresAt),
       transactionExpiresAt,
       requestedAt: now,
       requestIpHash,
@@ -431,10 +441,10 @@ export class DeviceAuthorizationService {
     };
   }
 
-  async lookup(userCode: string): Promise<Omit<DeviceAuthorizationRecord, 'deviceSecretHash' | 'codeChallenge' | 'requestIpHash' | 'encryptedResult' | 'resultNonce'> | null> {
+  async lookup(userCode: string): Promise<Omit<DeviceAuthorizationRecord, 'deviceSecretHash' | 'codeChallenge' | 'requestIpHash' | 'encryptedResult'> | null> {
     const record = await this.store.findByUserCode(normalizeUserCode(userCode));
     if (!record || record.transactionExpiresAt <= this.now() || record.status !== 'pending') return null;
-    const { deviceSecretHash: _secret, codeChallenge: _challenge, requestIpHash: _ip, encryptedResult: _result, resultNonce: _nonce, ...safe } = record;
+    const { deviceSecretHash: _secret, codeChallenge: _challenge, requestIpHash: _ip, encryptedResult: _result, ...safe } = record;
     return safe;
   }
 
@@ -443,12 +453,11 @@ export class DeviceAuthorizationService {
     if (!record || record.status !== 'pending' || record.transactionExpiresAt <= this.now()) {
       throw new DeviceAuthorizationError('expired_token', 'device authorization is no longer pending', 410);
     }
-    const result = validateApprovedDelegation(record, value, this.now());
-    const encrypted = this.encrypt(record, result);
+    const approval = validateRelayApproval(record, value, this.now());
     const approved = await this.store.approve(record.id, {
       userId,
-      encryptedResult: encrypted.ciphertext,
-      resultNonce: encrypted.nonce,
+      encryptedResult: JSON.stringify(approval.relay),
+      delegationExpiresAt: approval.delegationExpiresAt,
     });
     if (!approved) throw new DeviceAuthorizationError('expired_token', 'device authorization is no longer pending', 410);
   }
@@ -457,7 +466,7 @@ export class DeviceAuthorizationService {
     | { status: 'pending'; interval: number }
     | {
         status: 'approved';
-        delegation: DeviceAuthorizationResult;
+        relay: DeviceRelayEnvelope;
         binding: {
           transactionId: string;
           sessionDid: string;
@@ -489,7 +498,13 @@ export class DeviceAuthorizationService {
     if (!consumed) throw new DeviceAuthorizationError('invalid_grant', 'device authorization was already consumed', 409);
     return {
       status: 'approved',
-      delegation: this.decrypt(consumed),
+      relay: (() => {
+        try {
+          return JSON.parse(consumed.encryptedResult ?? '') as DeviceRelayEnvelope;
+        } catch {
+          throw new DeviceAuthorizationError('invalid_result', 'approved relay result is unavailable', 500);
+        }
+      })(),
       binding: {
         transactionId: consumed.id,
         sessionDid: consumed.sessionDid,
