@@ -385,6 +385,9 @@ export class DeviceAuthorizationService {
     interval: number;
   }> {
     const now = this.now();
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      throw new DeviceAuthorizationError('invalid_request', 'device authorization request must be an object', 400);
+    }
     if (!/^[A-Za-z0-9_-]{43}$/.test(input.deviceSecretHash) || !/^[A-Za-z0-9_-]{43}$/.test(input.codeChallenge)) {
       throw new DeviceAuthorizationError('invalid_request', 'device secret hash and PKCE challenge must be SHA-256 base64url values', 400);
     }
@@ -477,6 +480,9 @@ export class DeviceAuthorizationService {
         };
       }
   > {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      throw new DeviceAuthorizationError('invalid_request', 'device token request must be an object', 400);
+    }
     const record = await this.store.findById(input.transactionId);
     if (!record || record.transactionExpiresAt <= this.now()) {
       throw new DeviceAuthorizationError('expired_token', 'device authorization expired', 410);

@@ -173,4 +173,12 @@ describe('OpenKey device authorization service', () => {
     await expect(input.service.start({ ...input.request, sessionDid: 'did:key:z6Mismatched' }, '203.0.113.12'))
       .rejects.toMatchObject({ code: 'invalid_request' });
   });
+
+  test('returns structured validation errors for non-object request bodies', async () => {
+    const input = fixture();
+    await expect(input.service.start(null as never, '203.0.113.13'))
+      .rejects.toMatchObject({ code: 'invalid_request', status: 400 });
+    await expect(input.service.poll(null as never))
+      .rejects.toMatchObject({ code: 'invalid_request', status: 400 });
+  });
 });

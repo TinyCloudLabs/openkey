@@ -32,6 +32,17 @@ Normal production deploys require the reviewed
 `20260714_origin_main_schema_catchup` marker and no unresolved failed migration
 rows before Prisma may apply anything.
 
+While the separately authorized TC-488 destructive custody cutover remains
+pending, the production deploy permits exactly one later migration:
+`20260814_0001_share_device_authorization`. The deploy verifies the frozen SQL
+checksums, the exact pending set, the baseline marker, and the physical
+pre-cutover custody table before temporarily excluding the still-pending
+TC-492 migration set from a normal `prisma migrate deploy`. It then verifies
+the recorded checksum and the device table's columns, indexes, and foreign
+key. Any additional pending migration fails closed. Once TC-488 is applied,
+deployments return to the full migration and schema-drift verification path
+automatically.
+
 The canonical-key/organization-custody cutover is governed by the
 [TC-492 release runbook](./tc-492-canonical-key-cutover.md). It requires a
 read-only deterministic pre/post report and separate deployment authority; it

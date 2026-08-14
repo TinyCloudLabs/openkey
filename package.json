@@ -24,7 +24,7 @@
     "db:migrate:prod": "bun --env-file=.env.prod run db:migrate:deploy:production",
     "db:migrate:apply": "bun node_modules/.bin/prisma migrate deploy --schema=./packages/db/prisma/schema.prisma",
     "db:migrate:deploy": "bun run db:generate && bun run db:migrate:apply && bun run db:migrate:verify",
-    "db:migrate:deploy:production": "bun run db:generate && bun run scripts/assert-production-migration-ready.ts && bun run db:migrate:apply && bun run db:migrate:verify",
+    "db:migrate:deploy:production": "bun run db:generate && bun run scripts/deploy-production-migrations.ts",
     "db:migrate:verify": "bun run db:migrate:verify-guards && bun run db:migrate:verify-schema",
     "db:migrate:verify-guards": "bun run scripts/verify-tc-488-cutover.ts",
     "db:migrate:verify-schema": "bun node_modules/.bin/prisma migrate diff --from-schema=./packages/db/prisma/schema.prisma --to-config-datasource --exit-code",
