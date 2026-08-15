@@ -3,7 +3,8 @@
 ## Prerequisites
 
 - [Bun](https://bun.sh) 1.1.0+
-- [Docker](https://docs.docker.com/get-docker/) (for PostgreSQL and local API)
+- PostgreSQL client/server binaries only for the optional isolated
+  migration-deploy parity check (`pg_config`, `initdb`, `pg_ctl`, `createdb`)
 
 ## Quick Start
 
@@ -15,50 +16,45 @@ bun install
 cp .env.example .env
 # Edit .env with your values (see Environment Variables below)
 
-# 3. Start PostgreSQL + API via Docker
-bun docker:up
-
-# 4. Push database schema
+# 3. Push the persistent local PGlite schema
 bun db:push
 
-# 5. Start web frontend
-bun dev:web
+# 4. Start API + web frontend
+bun dev
 ```
 
-- **API** runs at `http://localhost:3001` (Docker)
-- **Web** runs at `http://localhost:5173` (local Vite dev server)
+- **API** runs at `http://localhost:3001`
+- **Web** runs at `http://localhost:5173`
 
 ## Running the API
 
-### Option 1: Docker (recommended)
-
-Docker Compose starts both PostgreSQL and the API:
+Run the API directly with Bun against the default persistent PGlite database:
 
 ```bash
-bun docker:up        # Start db + api
-bun docker:logs      # Watch logs
-bun docker:restart   # Rebuild and restart
-```
-
-To rebuild the API image after code changes:
-
-```bash
-bun docker:rebuild
-```
-
-### Option 2: Local (without Docker API)
-
-Run the API directly with Bun (still needs PostgreSQL):
-
-```bash
-bun docker:up        # Start just db (api will fail to connect to db host, but that's fine)
-bun dev:api          # Run API locally with watch mode
+bun db:push
+bun dev:api
 ```
 
 Or start everything together:
 
 ```bash
-bun dev              # Starts API + Web via Turbo (requires local PostgreSQL)
+bun dev              # Starts API + Web via Turbo
+```
+
+The public local acceptance smoke starts from a fresh disposable PGlite
+database and exercises API, OTP/session, device authorization, and the public
+TinyCloud CLI artifact:
+
+```bash
+bun run smoke:local:pglite
+```
+
+PostgreSQL is reserved for migration-deploy parity only. The isolated command
+creates and removes a current-user cluster; it does not require Docker, a
+`postgres` OS-user switch, or filesystem ACL changes:
+
+```bash
+bun run smoke:postgres:migration-parity
 ```
 
 ## Environment Variables
@@ -66,8 +62,8 @@ bun dev              # Starts API + Web via Turbo (requires local PostgreSQL)
 Copy `.env.example` to `.env`. The minimum for local dev:
 
 ```env
-# Database - matches docker-compose.yml defaults
-DATABASE_URL=postgresql://openkey:openkey@localhost:5432/openkey
+# Database - persistent local PGlite default
+DATABASE_URL=pglite:
 
 # WebAuthn / Passkey
 WEBAUTHN_RP_ID=localhost
@@ -155,7 +151,7 @@ configure matching SPF and DKIM records.
 
 | Command | Description |
 |---------|-------------|
-| `bun docker:up` | Start PostgreSQL + API containers |
+| `bun docker:up` | Start optional PostgreSQL + API containers (not needed for local development or smoke tests) |
 | `bun docker:down` | Stop containers |
 | `bun docker:restart` | Restart containers |
 | `bun docker:logs` | Tail container logs |
@@ -222,9 +218,9 @@ The demo app (`demo/`) is a sample third-party app that authenticates users via 
 ### 1. Start all services
 
 ```bash
-# Terminal 1: PostgreSQL + API
-bun docker:up
+# Terminal 1: PGlite-backed API
 bun db:push
+bun dev:api
 
 # Terminal 2: OpenKey web frontend
 bun dev:web
@@ -295,10 +291,6 @@ Demo (5174)                    OpenKey Web (5173)            API (3001)
 ### `bunx prisma` fails with P1012 / datasource error
 
 `bunx prisma` pulls the latest Prisma (v7+) which is incompatible. All `db:*` scripts use the project's local Prisma binary. Always use `bun db:push` instead of `bunx prisma db push`.
-
-### Port 5432 conflict
-
-If Docker can't bind port 5432, you likely have a local PostgreSQL running. Either stop it or point `DATABASE_URL` at it directly and skip `bun docker:up`.
 
 ### API crashes with AsyncLocalStorage / "No request state found"
 

@@ -73,13 +73,12 @@ bun db:push
 bun dev
 ```
 
-API runs at `http://localhost:3000`, Web at `http://localhost:5173`.
+API runs at `http://localhost:3001`, Web at `http://localhost:5173`.
 
 Local development uses PGlite by default, so no Postgres or Docker process is
 required. The default local database lives at
-`~/.local/share/openkey/dev.pglite`. To test against a real Postgres container,
-run `bun docker:up` and set `DATABASE_URL` to
-`postgresql://openkey:openkey@localhost:5432/openkey`.
+`~/.local/share/openkey/dev.pglite`. Keep `DATABASE_URL=pglite:` in `.env`
+for the supported local API path.
 
 The reproducible local API/auth/device/Share smoke also uses a fresh disposable
 PGlite directory and installs the pinned public TinyCloud CLI artifact unless
