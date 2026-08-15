@@ -4,7 +4,7 @@
  * Fresh local acceptance check: PGlite-backed API, published TinyCloud CLI,
  * real device transaction, OTP session, approval, and Share upload.
  */
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -54,10 +54,21 @@ try {
   if (!requestedCli) {
     await run(['npm', 'install', '--prefix', artifactDir, '--no-package-lock', '--ignore-scripts', '@tinycloud/cli@0.9.1-beta.7']);
   }
+  const artifact = await stat(cliPath).catch(() => undefined);
+  if (!artifact?.isFile()) throw new Error(`TinyCloud CLI artifact is not an executable file: ${cliPath}`);
+  const packageJsonPath = requestedCli
+    ? undefined
+    : join(artifactDir, 'node_modules/@tinycloud/cli/package.json');
+  const packageVersion = packageJsonPath
+    ? (JSON.parse(await readFile(packageJsonPath, 'utf8')) as { version?: string }).version
+    : 'custom artifact';
+  if (!packageVersion) throw new Error(`TinyCloud CLI artifact has no package version: ${cliPath}`);
+  console.log(`TinyCloud CLI artifact: ${cliPath} (${packageVersion})`);
   server = Bun.spawn(['bun', 'run', 'apps/api/src/index.ts'], { cwd: repoRoot, env, stdout: 'inherit', stderr: 'inherit' });
   await waitForApi();
   await run(['bun', 'scripts/candidate-device-authorization-smoke.ts', api, '--cli', cliPath]);
 } finally {
   server?.kill(9);
+  await server?.exited.catch(() => undefined);
   await rm(root, { recursive: true, force: true });
 }

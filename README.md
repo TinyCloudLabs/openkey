@@ -57,7 +57,8 @@ Register your app at [openkey.so/admin](https://openkey.so/admin) to get a clien
 
 Prerequisites:
 - [Bun](https://bun.sh) 1.1+
-- Docker, optional for Postgres prod-parity testing
+- PostgreSQL client/server binaries (`pg_config`, `initdb`, `pg_ctl`, and
+  `createdb`) only for the isolated migration-deploy parity check
 
 ```bash
 # Clone and install
@@ -92,7 +93,7 @@ This is the supported local path for API, OTP/session, device authorization,
 and public CLI testing. PostgreSQL is reserved for the separate production
 migration-deploy parity check; do not use it for ordinary local smoke tests.
 That disposable check creates and removes its own cluster as the invoking user,
-so it requires no `postgres` OS user switch or filesystem ACL grant:
+so it requires no Docker, `postgres` OS user switch, or filesystem ACL grant:
 
 ```bash
 bun run smoke:postgres:migration-parity
