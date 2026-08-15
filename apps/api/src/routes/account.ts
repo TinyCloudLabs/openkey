@@ -67,6 +67,8 @@ accountRouter.get('/tinycloud-manage-key', async (c) => {
 });
 
 accountRouter.patch('/tinycloud-manage-key', async (c) => {
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
   return preCutoverFeatureUnavailable(c);
 });
 
@@ -116,6 +118,8 @@ accountRouter.get('/tinycloud-apps', async (c) => {
 });
 
 accountRouter.patch('/tinycloud-apps/:clientId', async (c) => {
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
   return preCutoverFeatureUnavailable(c);
 });
 
