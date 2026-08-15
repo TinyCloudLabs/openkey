@@ -80,6 +80,24 @@ required. The default local database lives at
 run `bun docker:up` and set `DATABASE_URL` to
 `postgresql://openkey:openkey@localhost:5432/openkey`.
 
+The reproducible local API/auth/device/Share smoke also uses a fresh disposable
+PGlite directory and installs the pinned public TinyCloud CLI artifact unless
+`--cli /absolute/path/to/dist/index.js` is supplied:
+
+```bash
+bun run smoke:local:pglite
+```
+
+This is the supported local path for API, OTP/session, device authorization,
+and public CLI testing. PostgreSQL is reserved for the separate production
+migration-deploy parity check; do not use it for ordinary local smoke tests.
+That disposable check creates and removes its own cluster as the invoking user,
+so it requires no `postgres` OS user switch or filesystem ACL grant:
+
+```bash
+bun run smoke:postgres:migration-parity
+```
+
 #### HTTPS dev with portless
 
 WebAuthn refuses non-secure origins (other than `http://localhost`). When you

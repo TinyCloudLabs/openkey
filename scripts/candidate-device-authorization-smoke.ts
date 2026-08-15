@@ -5,7 +5,7 @@
  * browser identity is a real Better Auth development OTP session; only the
  * TinyCloud Node/registry service is a local fixture.
  */
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createCipheriv, createHmac, createPublicKey, diffieHellman, generateKeyPairSync, randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
@@ -13,7 +13,6 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { completeSessionSetup, makeSpaceId, prepareSession } from '@tinycloud/node-sdk-wasm';
 import { CAPABILITIES } from '@tinycloud/bootstrap';
 import { deviceAuthorizationDescriptorDigest, type DeviceAuthorizationRecord } from '../apps/api/src/services/device-authorization';
-import { createPrismaClient } from '@openkey/db';
 
 const [api, ...args] = process.argv.slice(2);
 const flag = args.indexOf('--cli');
@@ -21,8 +20,6 @@ if (!api || flag < 0 || !args[flag + 1]) throw new Error('Usage: bun scripts/can
 const cliPath = isAbsolute(args[flag + 1]!) ? args[flag + 1]! : resolve(args[flag + 1]!);
 const nodeExecutable = Bun.which('node') ?? 'node';
 const email = 'test@openkey.dev';
-const database = createPrismaClient();
-
 type Lookup = DeviceAuthorizationRecord & { descriptor: unknown; descriptorDigest: string };
 let approvedSessionDid = '';
 let uploadCount = 0;
@@ -91,23 +88,22 @@ try {
   await writeFile(join(root, 'report.md'), '# Candidate device authorization smoke\n');
   const token = await sessionToken();
   child = Bun.spawn([nodeExecutable, cliPath, 'share', 'publish', 'report.md', '--registry', `${nodeOrigin}/registry`, '--insecure-registry'], { cwd: root, env: { ...process.env, TC_HOME: root, TC_OPENKEY_HOST: api, TC_HOST: nodeOrigin, TC_AUTH_NO_POPUP: '1' }, stdout: 'pipe', stderr: 'pipe' });
-  const stderrPromise = new Response(child.stderr).text();
-  const stdoutPromise = new Response(child.stdout).text();
-  const record = await waitFor('CLI transaction', async () => {
-    // The API deliberately has no enumeration endpoint. The candidate database is
-    // inspected only to discover the opaque transaction created by the CLI; the
-    // public lookup, authenticated approval, and one-time token consumption stay HTTP.
-    const result = await database.deviceAuthorization.findFirst({ where: { status: 'PENDING', nodeOrigin }, orderBy: { requestedAt: 'desc' } });
-    return result as Lookup | null;
+  let stdout = '';
+  let stderr = '';
+  const stdoutPromise = (async () => { for await (const chunk of child!.stdout) stdout += Buffer.from(chunk).toString(); })();
+  const stderrPromise = (async () => { for await (const chunk of child!.stderr) stderr += Buffer.from(chunk).toString(); })();
+  const userCode = await waitFor('CLI transaction code', async () => {
+    const match = stderr.match(/Code:\s*([A-Z2-9]{4}-[A-Z2-9]{4})/);
+    return match?.[1] ?? null;
   });
-  const lookupResponse = await fetch(`${api}/api/device-authorizations/lookup?user_code=${encodeURIComponent(record.userCode)}`);
+  const lookupResponse = await fetch(`${api}/api/device-authorizations/lookup?user_code=${encodeURIComponent(userCode)}`);
   const lookup = await lookupResponse.json() as Lookup;
-  if (!lookupResponse.ok || lookup.id !== record.id || lookup.descriptorDigest !== deviceAuthorizationDescriptorDigest(record)) {
+  if (!lookupResponse.ok || lookup.descriptorDigest !== deviceAuthorizationDescriptorDigest(lookup)) {
     throw new Error('public device lookup did not return the server-owned descriptor');
   }
-  const approved = await fetch(`${api}/api/device-authorizations/${record.id}/approve`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: JSON.stringify(relay(lookup, await delegation(lookup))) });
+  const approved = await fetch(`${api}/api/device-authorizations/${lookup.id}/approve`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: JSON.stringify(relay(lookup, await delegation(lookup))) });
   if (!approved.ok || (await approved.json() as { approved?: boolean }).approved !== true) throw new Error(`authenticated approval failed: ${approved.status}`);
-  const [stdout, stderr, exitCode] = await Promise.all([stdoutPromise, stderrPromise, child.exited]);
+  const [, , exitCode] = await Promise.all([stdoutPromise, stderrPromise, child.exited]);
   if (exitCode !== 0) throw new Error(`CLI exited ${exitCode}: ${stderr}`);
   const result = stdout.trim();
   if (!/^https:\/\/share\.tinycloud\.xyz\/s\/[A-Za-z0-9_-]+#k=/.test(result) || uploadCount !== 2) throw new Error('CLI did not complete the one-shot Share upload');
@@ -115,5 +111,5 @@ try {
   if (profile.authMethod !== 'openkey') throw new Error('CLI did not persist the authenticated device delegation');
   process.stdout.write(JSON.stringify({ publicCliProcess: true, apiTransactionStart: true, renderedDescriptor: true, authenticatedApproval: true, descriptorBoundConsumption: true, shareAuthorityVerified: true, oneShotUpload: true, finalShareUrl: true }) + '\n');
 } finally {
-  child?.kill(9); server.stop(true); await database.$disconnect(); await rm(root, { recursive: true, force: true });
+  child?.kill(9); server.stop(true); await rm(root, { recursive: true, force: true });
 }
