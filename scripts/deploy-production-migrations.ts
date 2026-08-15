@@ -32,6 +32,42 @@ export type MigrationRow = {
   rolled_back_at: Date | null;
 };
 
+const deviceColumns: Readonly<Record<string, { type: string; nullable: boolean; default?: string }>> = {
+  id: { type: 'text', nullable: false }, userCode: { type: 'text', nullable: false }, deviceSecretHash: { type: 'text', nullable: false },
+  codeChallenge: { type: 'text', nullable: false }, sessionDid: { type: 'text', nullable: false }, publicJwk: { type: 'jsonb', nullable: false },
+  relayPublicJwk: { type: 'jsonb', nullable: false }, permissions: { type: 'jsonb', nullable: false }, nodeOrigin: { type: 'text', nullable: false },
+  shareOrigin: { type: 'text', nullable: false }, delegationExpiresAt: { type: 'timestamp(3) without time zone', nullable: false },
+  transactionExpiresAt: { type: 'timestamp(3) without time zone', nullable: false }, requestedAt: { type: 'timestamp(3) without time zone', nullable: false, default: 'CURRENT_TIMESTAMP' },
+  requestIpHash: { type: 'text', nullable: false }, nextPollAt: { type: 'timestamp(3) without time zone', nullable: false },
+  pollIntervalSeconds: { type: 'integer', nullable: false }, status: { type: 'text', nullable: false, default: "'PENDING'::text" },
+  approvedByUserId: { type: 'text', nullable: true }, encryptedResult: { type: 'text', nullable: true }, consumedAt: { type: 'timestamp(3) without time zone', nullable: true },
+  updatedAt: { type: 'timestamp(3) without time zone', nullable: false },
+};
+
+export function assertDeviceAuthorizationPhysicalSchema(physical: {
+  columns: Array<{ name: string; type: string; nullable: boolean; default: string | null }>;
+  indexes: string[];
+  foreignKey: string | null;
+}) {
+  if (physical.columns.length !== Object.keys(deviceColumns).length) throw new Error('device authorization column count differs from runtime contract');
+  for (const [name, expected] of Object.entries(deviceColumns)) {
+    const actual = physical.columns.find((column) => column.name === name);
+    if (!actual || actual.type !== expected.type || actual.nullable !== expected.nullable ||
+      (expected.default && actual.default !== expected.default) || (!expected.default && actual.default !== null)) {
+      throw new Error(`device authorization column contract differs: ${name}`);
+    }
+  }
+  const requiredIndexes = [
+    'UNIQUE INDEX "device_authorization_userCode_key" ON public.device_authorization USING btree ("userCode")',
+    'INDEX "device_authorization_requestIpHash_requestedAt_idx" ON public.device_authorization USING btree ("requestIpHash", "requestedAt")',
+    'INDEX "device_authorization_status_transactionExpiresAt_idx" ON public.device_authorization USING btree (status, "transactionExpiresAt")',
+  ];
+  if (!requiredIndexes.every((index) => physical.indexes.some((actual) => actual.includes(index)))) throw new Error('device authorization index contract differs');
+  if (physical.foreignKey !== 'FOREIGN KEY ("approvedByUserId") REFERENCES "user"(id) ON UPDATE CASCADE ON DELETE SET NULL') {
+    throw new Error('device authorization foreign-key contract differs');
+  }
+}
+
 export function selectProductionMigrationMode(input: {
   migrations: MigrationRow[];
   migrationDirectories: string[];
@@ -184,38 +220,20 @@ async function deployDeviceMigrationBeforeTc488(
     throw new Error(`${deviceMigration} was not recorded with the reviewed checksum`);
   }
 
-  const physical = await database.$queryRawUnsafe<Array<{
-    column_count: number;
-    user_code_index: boolean;
-    rate_index: boolean;
-    expiry_index: boolean;
-    user_foreign_key: boolean;
-  }>>(`
+  const physical = await database.$queryRawUnsafe<Array<{ columns: Array<{ name: string; type: string; nullable: boolean; default: string | null }>; indexes: string[]; foreignKey: string | null }>>(`
     SELECT
-      (SELECT COUNT(*)::int FROM information_schema.columns
-        WHERE table_schema = 'public' AND table_name = 'device_authorization') AS column_count,
-      to_regclass('public."device_authorization_userCode_key"') IS NOT NULL AS user_code_index,
-      to_regclass('public."device_authorization_requestIpHash_requestedAt_idx"') IS NOT NULL AS rate_index,
-      to_regclass('public."device_authorization_status_transactionExpiresAt_idx"') IS NOT NULL AS expiry_index,
-      EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'device_authorization_approvedByUserId_fkey'
-          AND contype = 'f'
-      ) AS user_foreign_key
+      (SELECT jsonb_agg(jsonb_build_object('name', a.attname, 'type', format_type(a.atttypid, a.atttypmod), 'nullable', NOT a.attnotnull, 'default', pg_get_expr(d.adbin, d.adrelid)) ORDER BY a.attnum)
+       FROM pg_attribute a LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+       WHERE a.attrelid = 'public.device_authorization'::regclass AND a.attnum > 0 AND NOT a.attisdropped) AS columns,
+      (SELECT array_agg(pg_get_indexdef(i.indexrelid) ORDER BY c.relname) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE i.indrelid = 'public.device_authorization'::regclass) AS indexes,
+      (SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'device_authorization_approvedByUserId_fkey' AND contype = 'f') AS "foreignKey"
   `);
   const verified = physical[0];
-  if (
-    verified?.column_count !== 21 ||
-    !verified.user_code_index ||
-    !verified.rate_index ||
-    !verified.expiry_index ||
-    !verified.user_foreign_key
-  ) {
-    throw new Error(`${deviceMigration} physical schema verification failed`);
-  }
+  if (!verified) throw new Error(`${deviceMigration} physical schema verification failed`);
+  assertDeviceAuthorizationPhysicalSchema(verified);
 
   console.log(
-    `Production additive migration verified: ${deviceMigration} checksum=${deviceChecksum} columns=21 indexes=3 foreignKeys=1; ${tc488Migration} remains deliberately pending`,
+    `Production additive migration verified: ${deviceMigration} checksum=${deviceChecksum} physical runtime contract passed; ${tc488Migration} remains deliberately pending`,
   );
 }
 

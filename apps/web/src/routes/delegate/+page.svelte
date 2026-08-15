@@ -97,6 +97,7 @@
   const expiryParam = $page.url.searchParams.get('expiry') || '';
   const deviceTransactionId = $page.url.searchParams.get('deviceTransactionId') || '';
   const deviceShareOrigin = $page.url.searchParams.get('deviceShareOrigin') || '';
+  const deviceDescriptorDigest = $page.url.searchParams.get('deviceDescriptorDigest') || '';
   const relayJwkB64 = $page.url.searchParams.get('relayJwk') || '';
 
   // Decode JWK from base64url
@@ -960,6 +961,7 @@
             nodeOrigin: host,
             shareOrigin: deviceShareOrigin,
             permissions: requestedPermissions,
+            descriptorDigest: deviceDescriptorDigest,
             delegationExpiresAt,
           },
         }),

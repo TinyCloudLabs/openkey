@@ -8,6 +8,7 @@ import { CAPABILITIES } from '@tinycloud/bootstrap';
 import {
   DeviceAuthorizationService,
   MemoryDeviceAuthorizationStore,
+  deviceAuthorizationDescriptorDigest,
   type DeviceAuthorizationRecord,
 } from '../apps/api/src/services/device-authorization';
 
@@ -70,6 +71,7 @@ async function createApprovedDelegation(record: DeviceAuthorizationRecord) {
       nodeOrigin: record.nodeOrigin,
       shareOrigin: record.shareOrigin,
       permissions: record.permissions,
+      descriptorDigest: deviceAuthorizationDescriptorDigest(record),
     },
   };
 }
@@ -107,6 +109,7 @@ function encryptApprovedDelegation(record: DeviceAuthorizationRecord, delegation
       nodeOrigin: record.nodeOrigin,
       shareOrigin: record.shareOrigin,
       permissions: record.permissions,
+      descriptorDigest: deviceAuthorizationDescriptorDigest(record),
       delegationExpiresAt: String(delegation.expiresAt),
     },
   };
