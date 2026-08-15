@@ -21,6 +21,8 @@
     "docker:rebuild": "docker compose up -d --build api",
     "docker:logs": "docker compose logs -f",
     "db:push": "bun run scripts/db-push.ts",
+    "smoke:local:pglite": "bun run scripts/local-pglite-device-smoke.ts",
+    "smoke:postgres:migration-parity": "bun run scripts/isolated-postgres-migration-parity.ts",
     "db:migrate:prod": "bun --env-file=.env.prod run db:migrate:deploy:production",
     "db:migrate:apply": "bun node_modules/.bin/prisma migrate deploy --schema=./packages/db/prisma/schema.prisma",
     "db:migrate:deploy": "bun run db:generate && bun run db:migrate:apply && bun run db:migrate:verify",

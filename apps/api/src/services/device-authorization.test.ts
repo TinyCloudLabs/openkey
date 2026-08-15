@@ -5,6 +5,7 @@ import {
   type DeviceRelayEnvelope,
   DeviceAuthorizationError,
   DeviceAuthorizationService,
+  deviceAuthorizationDescriptorDigest,
   MemoryDeviceAuthorizationStore,
   sessionDidForPublicJwk,
 } from './device-authorization';
@@ -61,6 +62,11 @@ function encryptedApproval(input: ReturnType<typeof fixture>, transaction: Await
       nodeOrigin: input.request.nodeOrigin,
       shareOrigin: input.request.shareOrigin,
       permissions: input.request.permissions,
+      descriptorDigest: deviceAuthorizationDescriptorDigest({
+        permissions: input.request.permissions,
+        nodeOrigin: input.request.nodeOrigin,
+        shareOrigin: input.request.shareOrigin,
+      }),
       transactionId: transaction.transactionId,
       delegationExpiresAt,
     },
@@ -73,7 +79,14 @@ describe('OpenKey device authorization service', () => {
     const transaction = await input.service.start(input.request, '203.0.113.9');
     expect(transaction.userCode).toMatch(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
     expect(transaction.verificationUri).toBe('https://openkey.so/device');
-    expect((await input.service.lookup(transaction.userCode))?.sessionDid).toBe(input.request.sessionDid);
+    const lookup = await input.service.lookup(transaction.userCode);
+    expect(lookup?.sessionDid).toBe(input.request.sessionDid);
+    expect(lookup?.descriptor).toEqual(expect.objectContaining({
+      version: 1,
+      requester: { id: 'tinycloud-cli', displayLabel: 'TinyCloud CLI' },
+      templateId: 'tinycloud.share.publish.v1',
+      resources: { nodeOrigin: input.request.nodeOrigin, shareOrigin: input.request.shareOrigin },
+    }));
 
     expect(await input.service.poll({
       transactionId: transaction.transactionId,
@@ -101,6 +114,7 @@ describe('OpenKey device authorization service', () => {
         sessionDid: input.request.sessionDid,
         nodeOrigin: input.request.nodeOrigin,
         shareOrigin: input.request.shareOrigin,
+        descriptorDigest: lookup?.descriptorDigest,
       });
     }
     expect(await input.store.findById(transaction.transactionId)).not.toHaveProperty('encryptedResult');
@@ -172,6 +186,17 @@ describe('OpenKey device authorization service', () => {
     const input = fixture();
     await expect(input.service.start({ ...input.request, sessionDid: 'did:key:z6Mismatched' }, '203.0.113.12'))
       .rejects.toMatchObject({ code: 'invalid_request' });
+  });
+
+  test('accepts the beta.7 implicit Share template but rejects unknown templates and descriptor substitution', async () => {
+    const input = fixture();
+    await expect(input.service.start({ ...input.request, templateId: 'other.template.v1' }, '203.0.113.14'))
+      .rejects.toMatchObject({ code: 'invalid_scope' });
+    const transaction = await input.service.start({ ...input.request, templateId: 'tinycloud.share.publish.v1' }, '203.0.113.14');
+    const substituted = encryptedApproval(input, transaction);
+    substituted.binding.descriptorDigest = 'A'.repeat(43);
+    await expect(input.service.approve(transaction.transactionId, 'user-1', substituted))
+      .rejects.toMatchObject({ code: 'invalid_result' });
   });
 
   test('returns structured validation errors for non-object request bodies', async () => {

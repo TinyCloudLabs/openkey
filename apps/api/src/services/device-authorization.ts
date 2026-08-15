@@ -14,6 +14,21 @@ export interface DevicePermission {
   actions: string[];
 }
 
+/** The public, non-secret authority contract rendered by the verification UI. */
+export interface DeviceAuthorizationDescriptor {
+  version: 1;
+  requester: { id: 'tinycloud-cli'; displayLabel: 'TinyCloud CLI' };
+  templateId: 'tinycloud.share.publish.v1';
+  policyId: 'tinycloud.share.publish.v1';
+  capabilities: DevicePermission[];
+  resources: { nodeOrigin: string; shareOrigin: string };
+  reason: 'Publish encrypted files through TinyCloud Share using one-shot Node upload attestations.';
+  expiryPolicy: { adjustment: 'narrow-only'; minimumSeconds: 60; defaultSeconds: number; maximumSeconds: number };
+}
+
+export const SHARE_TEMPLATE_ID = 'tinycloud.share.publish.v1' as const;
+const SHARE_REASON = 'Publish encrypted files through TinyCloud Share using one-shot Node upload attestations.' as const;
+
 export interface DeviceAuthorizationRecord {
   id: string;
   userCode: string;
@@ -114,6 +129,8 @@ export type DeviceAuthorizationStart = {
   nodeOrigin: string;
   shareOrigin: string;
   delegationTtlSeconds?: number;
+  /** beta.7 omitted this field; the server treats omission as the Share template. */
+  templateId?: string;
 };
 
 export type DeviceAuthorizationResult = Record<string, unknown> & {
@@ -267,6 +284,33 @@ function sharePermissions(value: unknown): DevicePermission[] {
   }];
 }
 
+function shareDescriptor(record: Pick<DeviceAuthorizationRecord, 'permissions' | 'nodeOrigin' | 'shareOrigin'>): DeviceAuthorizationDescriptor {
+  return {
+    version: 1,
+    requester: { id: 'tinycloud-cli', displayLabel: 'TinyCloud CLI' },
+    templateId: SHARE_TEMPLATE_ID,
+    policyId: SHARE_TEMPLATE_ID,
+    capabilities: record.permissions,
+    resources: { nodeOrigin: record.nodeOrigin, shareOrigin: record.shareOrigin },
+    reason: SHARE_REASON,
+    expiryPolicy: {
+      adjustment: 'narrow-only',
+      minimumSeconds: 60,
+      defaultSeconds: DEVICE_AUTH_DEFAULT_DELEGATION_TTL_MS / 1000,
+      maximumSeconds: DEVICE_AUTH_MAX_DELEGATION_TTL_MS / 1000,
+    },
+  };
+}
+
+/** A stable binding for display, approval, relay, and token consumption. */
+export function deviceAuthorizationDescriptor(record: Pick<DeviceAuthorizationRecord, 'permissions' | 'nodeOrigin' | 'shareOrigin'>): DeviceAuthorizationDescriptor {
+  return shareDescriptor(record);
+}
+
+export function deviceAuthorizationDescriptorDigest(record: Pick<DeviceAuthorizationRecord, 'permissions' | 'nodeOrigin' | 'shareOrigin'>): string {
+  return sha256(JSON.stringify(deviceAuthorizationDescriptor(record)));
+}
+
 function normalizeUserCode(value: string): string {
   return value.toUpperCase().replace(/[^A-Z0-9]/g, '');
 }
@@ -332,7 +376,8 @@ function validateRelayApproval(record: DeviceAuthorizationRecord, value: unknown
     bound.sessionDid !== record.sessionDid ||
     bound.nodeOrigin !== record.nodeOrigin ||
     bound.shareOrigin !== record.shareOrigin ||
-    !jsonEqual(bound.permissions, record.permissions)
+    !jsonEqual(bound.permissions, record.permissions) ||
+    bound.descriptorDigest !== deviceAuthorizationDescriptorDigest(record)
   ) {
     throw new DeviceAuthorizationError('invalid_result', 'relay binding does not match the device request', 400);
   }
@@ -396,6 +441,12 @@ export class DeviceAuthorizationService {
     if (input.sessionDid !== sessionDidForPublicJwk(publicJwk)) {
       throw new DeviceAuthorizationError('invalid_request', 'sessionDid does not match publicJwk', 400);
     }
+    if (input.templateId !== undefined && input.templateId !== SHARE_TEMPLATE_ID) {
+      throw new DeviceAuthorizationError('invalid_scope', 'unknown device authorization template', 400);
+    }
+    // This is intentionally an exact server template. The beta.7 request has
+    // no template id, so omission remains compatible without trusting caller
+    // labels, reasons, policy ids, or resource metadata.
     const permissions = sharePermissions(input.permissions);
     const nodeOrigin = canonicalOrigin(input.nodeOrigin, 'nodeOrigin');
     const shareOrigin = canonicalOrigin(input.shareOrigin, 'shareOrigin');
@@ -444,11 +495,11 @@ export class DeviceAuthorizationService {
     };
   }
 
-  async lookup(userCode: string): Promise<Omit<DeviceAuthorizationRecord, 'deviceSecretHash' | 'codeChallenge' | 'requestIpHash' | 'encryptedResult'> | null> {
+  async lookup(userCode: string): Promise<(Omit<DeviceAuthorizationRecord, 'deviceSecretHash' | 'codeChallenge' | 'requestIpHash' | 'encryptedResult'> & { descriptor: DeviceAuthorizationDescriptor; descriptorDigest: string }) | null> {
     const record = await this.store.findByUserCode(normalizeUserCode(userCode));
     if (!record || record.transactionExpiresAt <= this.now() || record.status !== 'pending') return null;
     const { deviceSecretHash: _secret, codeChallenge: _challenge, requestIpHash: _ip, encryptedResult: _result, ...safe } = record;
-    return safe;
+    return { ...safe, descriptor: deviceAuthorizationDescriptor(record), descriptorDigest: deviceAuthorizationDescriptorDigest(record) };
   }
 
   async approve(transactionId: string, userId: string, value: unknown): Promise<void> {
@@ -476,6 +527,8 @@ export class DeviceAuthorizationService {
           nodeOrigin: string;
           shareOrigin: string;
           permissions: DevicePermission[];
+          descriptor: DeviceAuthorizationDescriptor;
+          descriptorDigest: string;
           delegationExpiresAt: string;
         };
       }
@@ -517,6 +570,8 @@ export class DeviceAuthorizationService {
         nodeOrigin: consumed.nodeOrigin,
         shareOrigin: consumed.shareOrigin,
         permissions: consumed.permissions,
+        descriptor: deviceAuthorizationDescriptor(consumed),
+        descriptorDigest: deviceAuthorizationDescriptorDigest(consumed),
         delegationExpiresAt: consumed.delegationExpiresAt.toISOString(),
       },
     };

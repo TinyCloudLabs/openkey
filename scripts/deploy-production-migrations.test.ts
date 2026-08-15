@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  assertDeviceAuthorizationPhysicalSchema,
   selectProductionMigrationMode,
   type MigrationRow,
 } from './deploy-production-migrations';
@@ -20,7 +21,37 @@ const tc492 = [
   tc488,
 ];
 
+const physicalDeviceAuthorizationSchema = () => ({
+  columns: [
+    ['id', 'text', false], ['userCode', 'text', false], ['deviceSecretHash', 'text', false],
+    ['codeChallenge', 'text', false], ['sessionDid', 'text', false], ['publicJwk', 'jsonb', false],
+    ['relayPublicJwk', 'jsonb', false], ['permissions', 'jsonb', false], ['nodeOrigin', 'text', false],
+    ['shareOrigin', 'text', false], ['delegationExpiresAt', 'timestamp(3) without time zone', false],
+    ['transactionExpiresAt', 'timestamp(3) without time zone', false], ['requestedAt', 'timestamp(3) without time zone', false, 'CURRENT_TIMESTAMP'],
+    ['requestIpHash', 'text', false], ['nextPollAt', 'timestamp(3) without time zone', false],
+    ['pollIntervalSeconds', 'integer', false], ['status', 'text', false, "'PENDING'::text"],
+    ['approvedByUserId', 'text', true], ['encryptedResult', 'text', true], ['consumedAt', 'timestamp(3) without time zone', true],
+    ['updatedAt', 'timestamp(3) without time zone', false],
+  ].map(([name, type, nullable, defaultValue]) => ({ name, type, nullable, default: defaultValue ?? null })),
+  indexes: [
+    'UNIQUE INDEX "device_authorization_userCode_key" ON public.device_authorization USING btree ("userCode")',
+    'INDEX "device_authorization_requestIpHash_requestedAt_idx" ON public.device_authorization USING btree ("requestIpHash", "requestedAt")',
+    'INDEX "device_authorization_status_transactionExpiresAt_idx" ON public.device_authorization USING btree (status, "transactionExpiresAt")',
+  ],
+  foreignKey: 'FOREIGN KEY ("approvedByUserId") REFERENCES "user"(id) ON UPDATE CASCADE ON DELETE SET NULL',
+});
+
 describe('production migration deployment mode', () => {
+  test('accepts the exact additive device-authorization physical runtime contract', () => {
+    expect(() => assertDeviceAuthorizationPhysicalSchema(physicalDeviceAuthorizationSchema())).not.toThrow();
+  });
+
+  test('rejects a physical schema missing a runtime-required device column', () => {
+    const physical = physicalDeviceAuthorizationSchema();
+    physical.columns = physical.columns.filter((column) => column.name !== 'relayPublicJwk');
+    expect(() => assertDeviceAuthorizationPhysicalSchema(physical)).toThrow('column count differs');
+  });
+
   test('uses the normal full deployment after the authorized TC-488 cutover', () => {
     expect(selectProductionMigrationMode({
       migrations: [baseline, {

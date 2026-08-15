@@ -57,7 +57,8 @@ Register your app at [openkey.so/admin](https://openkey.so/admin) to get a clien
 
 Prerequisites:
 - [Bun](https://bun.sh) 1.1+
-- Docker, optional for Postgres prod-parity testing
+- PostgreSQL client/server binaries (`pg_config`, `initdb`, `pg_ctl`, and
+  `createdb`) only for the isolated migration-deploy parity check
 
 ```bash
 # Clone and install
@@ -72,13 +73,30 @@ bun db:push
 bun dev
 ```
 
-API runs at `http://localhost:3000`, Web at `http://localhost:5173`.
+API runs at `http://localhost:3001`, Web at `http://localhost:5173`.
 
 Local development uses PGlite by default, so no Postgres or Docker process is
 required. The default local database lives at
-`~/.local/share/openkey/dev.pglite`. To test against a real Postgres container,
-run `bun docker:up` and set `DATABASE_URL` to
-`postgresql://openkey:openkey@localhost:5432/openkey`.
+`~/.local/share/openkey/dev.pglite`. Keep `DATABASE_URL=pglite:` in `.env`
+for the supported local API path.
+
+The reproducible local API/auth/device/Share smoke also uses a fresh disposable
+PGlite directory and installs the pinned public TinyCloud CLI artifact unless
+`--cli /absolute/path/to/dist/index.js` is supplied:
+
+```bash
+bun run smoke:local:pglite
+```
+
+This is the supported local path for API, OTP/session, device authorization,
+and public CLI testing. PostgreSQL is reserved for the separate production
+migration-deploy parity check; do not use it for ordinary local smoke tests.
+That disposable check creates and removes its own cluster as the invoking user,
+so it requires no Docker, `postgres` OS user switch, or filesystem ACL grant:
+
+```bash
+bun run smoke:postgres:migration-parity
+```
 
 #### HTTPS dev with portless
 

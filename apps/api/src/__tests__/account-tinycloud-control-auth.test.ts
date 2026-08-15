@@ -69,10 +69,13 @@ describe('TinyCloud signing control authentication boundary', () => {
     expect(await response.json()).toEqual({ error: 'A same-site browser Origin is required' });
   });
 
-  test('allows a console control mutation in the sealed production origin shape', async () => {
+  test('keeps a same-site console control mutation unavailable before cutover', async () => {
     const response = await request('/tinycloud-manage-key', {
       origin: 'https://console.openkey.so',
     });
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      error: 'TinyCloud manage-key controls require the separately authorized schema cutover',
+    });
   });
 });

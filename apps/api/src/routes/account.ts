@@ -28,6 +28,13 @@ function rejectNonBrowserControlRequest(c: any) {
   return null;
 }
 
+// This recovery image deliberately uses the pre-TC-488/TC-492 Prisma shape.
+// Do not let a request reach tables or columns that are absent from the
+// production database while the destructive cutover remains unapplied.
+function preCutoverFeatureUnavailable(c: any) {
+  return c.json({ error: 'TinyCloud manage-key controls require the separately authorized schema cutover' }, 503);
+}
+
 // Get account info
 accountRouter.get('/', async (c) => {
   const user = c.get('user');
@@ -40,7 +47,6 @@ accountRouter.get('/', async (c) => {
       name: true,
       emailVerified: true,
       autoSignEnabled: true,
-      tinyCloudManageKeyEnabled: true,
       createdAt: true,
       _count: {
         select: {
@@ -57,39 +63,13 @@ accountRouter.get('/', async (c) => {
 // Global stop control for OAuth tinycloud:manage-key signing. This is kept
 // separate from Auto-Sign, which controls the fixed bootstrap allowlist.
 accountRouter.get('/tinycloud-manage-key', async (c) => {
-  const user = c.get('user');
-  const preference = await prisma.user.findUnique({
-    where: { id: user.id },
-    select: { tinyCloudManageKeyEnabled: true, tinyCloudManageKeyMode: true, tinyCloudManageKeyPolicyEpoch: true },
-  });
-  if (!preference) return c.json({ error: 'User not found' }, 404);
-  return c.json({
-    tinyCloudManageKeyEnabled: preference.tinyCloudManageKeyEnabled,
-    mode: preference.tinyCloudManageKeyMode,
-    policyEpoch: Number(preference.tinyCloudManageKeyPolicyEpoch),
-  });
+  return preCutoverFeatureUnavailable(c);
 });
 
 accountRouter.patch('/tinycloud-manage-key', async (c) => {
-  const user = c.get('user');
   const rejected = rejectNonBrowserControlRequest(c);
   if (rejected) return rejected;
-  let body: unknown;
-  try {
-    body = await c.req.json();
-  } catch (error) {
-    return c.json({ error: error instanceof Error ? error.message : 'Invalid request body' }, 400);
-  }
-  const error = controlMutationError(body);
-  if (error) return c.json({ error }, 400);
-  const patch = body as { mode: string; expectedEpoch: number };
-  const result = await changeTinyCloudManageKeyMode(prisma, user.id, {
-    mode: patch.mode as any, expectedEpoch: patch.expectedEpoch, request: body,
-  });
-  if (result.kind === 'not_found') return c.json({ error: 'User not found' }, 404);
-  if (result.kind === 'stale') return c.json({ error: 'TinyCloud signing policy changed in another session', policyEpoch: result.epoch }, 409);
-  if (result.kind === 'invalid_transition') return c.json({ error: 'TinyCloud signing cannot return to app-managed after you take control', policyEpoch: result.epoch }, 409);
-  return c.json({ mode: result.mode, policyEpoch: result.epoch, tinyCloudManageKeyEnabled: result.mode !== 'USER_CONTROLLED_EXCLUSIVE' });
+  return preCutoverFeatureUnavailable(c);
 });
 
 // Get Auto-Sign preference
@@ -134,87 +114,13 @@ accountRouter.patch('/auto-sign', async (c) => {
 // per-app stop control. The client is always resolved from the consent row;
 // callers cannot create preferences for arbitrary OAuth client IDs.
 accountRouter.get('/tinycloud-apps', async (c) => {
-  const user = c.get('user');
-  const [consents, preferences, decisions, userPreference] = await Promise.all([
-    prisma.oauthConsent.findMany({
-      where: { userId: user.id, scopes: { has: TINYCLOUD_MANAGE_KEY_SCOPE } }, select: { clientId: true },
-    }),
-    prisma.tinyCloudManageKeyAppPreference.findMany({
-      where: { userId: user.id },
-      select: { clientId: true, enabled: true, status: true, clientNameSnapshot: true, clientUriSnapshot: true, consentWithdrawnAt: true },
-    }),
-    prisma.tinyCloudManageKeySigningDecision.findMany({
-      where: { userId: user.id }, orderBy: { createdAt: 'desc' }, take: 20,
-      select: { clientId: true, allowed: true, reason: true, policyEpoch: true, createdAt: true },
-    }),
-    prisma.user.findUnique({
-      where: { id: user.id }, select: { tinyCloudManageKeyMode: true, tinyCloudManageKeyPolicyEpoch: true },
-    }),
-  ]);
-  const clientIds = [...new Set([
-    ...consents.map((consent) => consent.clientId),
-    ...preferences.map((preference) => preference.clientId),
-    ...decisions.map((decision) => decision.clientId),
-  ])];
-  const clients = clientIds.length === 0 ? [] : await prisma.oauthClient.findMany({
-    where: { clientId: { in: clientIds } },
-    select: { clientId: true, name: true, uri: true, icon: true, disabled: true },
-  });
-  const clientById = new Map(clients.map((client) => [client.clientId, client]));
-  const consentIds = new Set(consents.map((consent) => consent.clientId));
-  return c.json({
-    apps: clientIds.map((clientId) => {
-      const preference = preferences.find((candidate) => candidate.clientId === clientId);
-      const client = clientById.get(clientId);
-      return {
-        clientId,
-        name: client?.name || preference?.clientNameSnapshot || clientId,
-        uri: client?.uri || preference?.clientUriSnapshot || null,
-        icon: client?.icon || null,
-        disabled: client?.disabled ?? true,
-        enabled: userPreference?.tinyCloudManageKeyMode === 'APP_MANAGED'
-          ? consentIds.has(clientId) && !(preference?.enabled === false || preference?.status === 'DISABLED')
-          : preference?.enabled === true && preference.status === 'ENABLED' && consentIds.has(clientId),
-        status: consentIds.has(clientId) ? (preference?.status ?? 'PENDING_USER_APPROVAL') : 'CONSENT_WITHDRAWN',
-      };
-    }),
-    activity: decisions.map((decision) => {
-      const client = clientById.get(decision.clientId);
-      const preference = preferences.find((candidate) => candidate.clientId === decision.clientId);
-      return {
-        ...decision,
-        clientName: client?.name || preference?.clientNameSnapshot || decision.clientId,
-        policyEpoch: Number(decision.policyEpoch),
-      };
-    }),
-    mode: userPreference?.tinyCloudManageKeyMode ?? 'APP_MANAGED',
-    policyEpoch: Number(userPreference?.tinyCloudManageKeyPolicyEpoch ?? BigInt(0)),
-  });
+  return preCutoverFeatureUnavailable(c);
 });
 
 accountRouter.patch('/tinycloud-apps/:clientId', async (c) => {
-  const user = c.get('user');
   const rejected = rejectNonBrowserControlRequest(c);
   if (rejected) return rejected;
-  let body: unknown;
-  try {
-    body = await c.req.json();
-  } catch (error) {
-    return c.json({ error: error instanceof Error ? error.message : 'Invalid request body' }, 400);
-  }
-  if (!body || typeof body !== 'object' || Array.isArray(body)) return c.json({ error: 'Request body must be an object' }, 400);
-  const patch = body as { enabled?: unknown; expectedEpoch?: unknown; confirmation?: unknown };
-  if (typeof patch.enabled !== 'boolean' || !Number.isSafeInteger(patch.expectedEpoch) || (patch.expectedEpoch as number) < 0 || patch.confirmation !== 'TAKE CONTROL') {
-    return c.json({ error: 'enabled, expectedEpoch, and typed confirmation "TAKE CONTROL" are required' }, 400);
-  }
-  const clientId = c.req.param('clientId');
-  const result = await changeTinyCloudManageKeyGrant(prisma, user.id, clientId, {
-    enabled: patch.enabled, expectedEpoch: patch.expectedEpoch as number, request: body,
-  });
-  if (result.kind === 'not_found') return c.json({ error: 'User not found' }, 404);
-  if (result.kind === 'missing_consent') return c.json({ error: 'TinyCloud signing consent not found' }, 404);
-  if (result.kind === 'stale') return c.json({ error: 'TinyCloud signing policy changed in another session', policyEpoch: result.epoch }, 409);
-  return c.json({ clientId, enabled: result.grant.enabled, status: result.grant.status, policyEpoch: result.epoch });
+  return preCutoverFeatureUnavailable(c);
 });
 
 // Delete account permanently

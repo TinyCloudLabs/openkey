@@ -15,6 +15,17 @@
     shareOrigin: string;
     delegationExpiresAt: string;
     transactionExpiresAt: string;
+    descriptorDigest: string;
+    descriptor: {
+      version: 1;
+      requester: { id: string; displayLabel: string };
+      templateId: string;
+      policyId: string;
+      capabilities: Array<{ service: string; space: string; path: string; actions: string[] }>;
+      resources: { nodeOrigin: string; shareOrigin: string };
+      reason: string;
+      expiryPolicy: { adjustment: 'narrow-only'; minimumSeconds: number; defaultSeconds: number; maximumSeconds: number };
+    };
   };
 
   let userCode = $state($page.url.searchParams.get('user_code') ?? '');
@@ -41,22 +52,23 @@
 
   const delegateHref = $derived.by(() => {
     if (!request) return '';
-    const remainingSeconds = Math.max(60, Math.floor((Date.parse(request.delegationExpiresAt) - Date.now()) / 1000));
+    const remainingSeconds = Math.max(request.descriptor.expiryPolicy.minimumSeconds, Math.floor((Date.parse(request.delegationExpiresAt) - Date.now()) / 1000));
     const selectedSeconds = Number(delegationDays) * 24 * 60 * 60;
     const params = new URLSearchParams({
       did: request.sessionDid,
       jwk: base64Url(request.publicJwk),
       relayJwk: base64Url(request.relayPublicJwk),
-      host: request.nodeOrigin,
+      host: request.descriptor.resources.nodeOrigin,
       permissions: base64Url({
-        permissions: request.permissions,
-        reason: 'Publish encrypted files through TinyCloud Share using one-shot Node upload attestations.',
+        permissions: request.descriptor.capabilities,
+        reason: request.descriptor.reason,
       }),
-      reason: 'Publish encrypted files through TinyCloud Share using one-shot Node upload attestations.',
-      expiry: `${Math.min(remainingSeconds, selectedSeconds)}s`,
-      protocolVersion: '1',
+      reason: request.descriptor.reason,
+      expiry: `${Math.min(remainingSeconds, request.descriptor.expiryPolicy.maximumSeconds, selectedSeconds)}s`,
+      protocolVersion: `${request.descriptor.version}`,
       deviceTransactionId: request.id,
-      deviceShareOrigin: request.shareOrigin,
+      deviceShareOrigin: request.descriptor.resources.shareOrigin,
+      deviceDescriptorDigest: request.descriptorDigest,
     });
     return `/delegate?${params.toString()}`;
   });
@@ -86,14 +98,14 @@
 </script>
 
 <svelte:head>
-  <title>Approve TinyCloud CLI — OpenKey</title>
+  <title>Approve device authorization — OpenKey</title>
 </svelte:head>
 
 <main class="mx-auto flex min-h-screen max-w-2xl items-center px-4 py-12">
   <Card class="w-full p-6 sm:p-8">
-    <p class="mb-2 text-sm font-medium text-primary-600">TinyCloud CLI</p>
-    <h1 class="mb-3 text-2xl font-semibold text-surface-900">Approve a Share publishing session</h1>
-    <p class="mb-6 text-surface-600">Enter the code shown in your terminal. OpenKey will ask you to sign in, review the exact Share-only scope, and choose the delegation lifetime.</p>
+    <p class="mb-2 text-sm font-medium text-primary-600">Device authorization</p>
+    <h1 class="mb-3 text-2xl font-semibold text-surface-900">Approve a session</h1>
+    <p class="mb-6 text-surface-600">Enter the code shown in your terminal. OpenKey will ask you to sign in and review the server-authorized request.</p>
 
     <form class="flex flex-col gap-3 sm:flex-row" onsubmit={(event) => { event.preventDefault(); void findRequest(); }}>
       <input
@@ -116,21 +128,23 @@
     {#if request}
       <section class="mt-8 border-t border-surface-200 pt-6">
         <dl class="grid gap-4 text-sm sm:grid-cols-2">
-          <div><dt class="text-surface-500">Permission</dt><dd class="font-medium text-surface-900">Publish via Share</dd></div>
+          <div><dt class="text-surface-500">Requester</dt><dd class="font-medium text-surface-900">{request.descriptor.requester.displayLabel}</dd></div>
+          <div><dt class="text-surface-500">Policy</dt><dd class="font-mono text-xs text-surface-900">{request.descriptor.policyId}</dd></div>
           <div>
             <dt><label class="text-surface-500" for="delegation-lifetime">Delegation lifetime</label></dt>
             <dd class="mt-1">
               <select id="delegation-lifetime" bind:value={delegationDays} class="rounded-md border border-surface-300 bg-white px-2 py-1 font-medium text-surface-900">
-                <option value="1">1 day</option>
-                <option value="7">7 days</option>
-                <option value="30">30 days (default)</option>
+                {#if request.descriptor.expiryPolicy.maximumSeconds >= 86400}<option value="1">1 day</option>{/if}
+                {#if request.descriptor.expiryPolicy.maximumSeconds >= 604800}<option value="7">7 days</option>{/if}
+                {#if request.descriptor.expiryPolicy.maximumSeconds >= 2592000}<option value="30">30 days (default)</option>{/if}
               </select>
             </dd>
           </div>
-          <div><dt class="text-surface-500">Share origin</dt><dd class="break-all font-mono text-xs text-surface-900">{request.shareOrigin}</dd></div>
-          <div><dt class="text-surface-500">Node origin</dt><dd class="break-all font-mono text-xs text-surface-900">{request.nodeOrigin}</dd></div>
+          <div><dt class="text-surface-500">Capabilities</dt><dd class="break-all font-mono text-xs text-surface-900">{request.descriptor.capabilities.map((capability) => capability.actions.join(', ')).join(', ')}</dd></div>
+          <div><dt class="text-surface-500">Share origin</dt><dd class="break-all font-mono text-xs text-surface-900">{request.descriptor.resources.shareOrigin}</dd></div>
+          <div><dt class="text-surface-500">Node origin</dt><dd class="break-all font-mono text-xs text-surface-900">{request.descriptor.resources.nodeOrigin}</dd></div>
         </dl>
-        <p class="my-5 text-sm text-surface-600">The CLI private key never leaves the device. Approval returns one delegation bound to its public session key and these origins.</p>
+        <p class="my-5 text-sm text-surface-600">{request.descriptor.reason}</p>
         <Button href={delegateHref} class="w-full">Sign in and review delegation</Button>
       </section>
     {/if}
