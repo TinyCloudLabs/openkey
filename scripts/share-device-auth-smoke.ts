@@ -3,6 +3,7 @@ import { createCipheriv, createHmac, createPublicKey, diffieHellman, generateKey
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { privateKeyToAccount } from 'viem/accounts';
+import { chromium } from 'playwright';
 import { completeSessionSetup, makeSpaceId, prepareSession } from '@tinycloud/node-sdk-wasm';
 import { CAPABILITIES } from '@tinycloud/bootstrap';
 import {
@@ -27,6 +28,7 @@ let approvedSessionDid = '';
 let uploadCount = 0;
 let retainedForSevenDays = true;
 const requestPaths: string[] = [];
+let createdRecord: DeviceAuthorizationRecord | null = null;
 
 async function createApprovedDelegation(record: DeviceAuthorizationRecord) {
   const account = privateKeyToAccount(`0x${randomBytes(32).toString('hex')}`);
@@ -124,9 +126,20 @@ const server = Bun.serve({
       const started = await service.start(await request.json(), '127.0.0.1');
       const record = await store.findById(started.transactionId);
       if (!record) return Response.json({ error: 'missing_transaction' }, { status: 500 });
-      const delegation = await createApprovedDelegation(record);
-      await service.approve(record.id, 'smoke-passkey-user', encryptApprovedDelegation(record, delegation));
+      createdRecord = record;
       return Response.json(started, { status: 201 });
+    }
+    if (request.method === 'GET' && url.pathname === '/api/device-authorizations/lookup') {
+      const lookup = await service.lookup(url.searchParams.get('user_code') ?? '');
+      if (!lookup) return Response.json({ error: 'not_found' }, { status: 404, headers: corsHeaders() });
+      createdRecord = await store.findById(lookup.id);
+      return Response.json({
+        ...lookup,
+        delegationExpiresAt: lookup.delegationExpiresAt.toISOString(),
+        transactionExpiresAt: lookup.transactionExpiresAt.toISOString(),
+        requestedAt: lookup.requestedAt.toISOString(),
+        nextPollAt: lookup.nextPollAt.toISOString(),
+      }, { headers: corsHeaders() });
     }
     if (request.method === 'POST' && url.pathname === '/api/device-authorizations/token') {
       try {
@@ -175,6 +188,20 @@ const server = Bun.serve({
   },
 });
 
+function corsHeaders() {
+  return { 'access-control-allow-origin': '*' };
+}
+
+async function waitFor<T>(description: string, predicate: () => T | null | undefined | Promise<T | null | undefined>, timeoutMs = 30_000): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = await predicate();
+    if (value) return value;
+    await Bun.sleep(50);
+  }
+  throw new Error(`timed out waiting for ${description}`);
+}
+
 const origin = `http://127.0.0.1:${server.port}`;
 service = new DeviceAuthorizationService(store, {
   verificationOrigin: origin,
@@ -182,9 +209,21 @@ service = new DeviceAuthorizationService(store, {
 });
 
 const root = await mkdtemp(join(tmpdir(), 'tc-share-device-auth-smoke-'));
+let vite: ReturnType<typeof Bun.spawn> | undefined;
+let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 try {
   const report = join(root, 'report.md');
   await writeFile(report, '# Share-first device auth smoke\n', 'utf8');
+  const webPort = 5788;
+  vite = Bun.spawn(['bun', join(import.meta.dir, '..', 'node_modules', 'vite', 'bin', 'vite.js'), '--port', `${webPort}`, '--strictPort'], {
+    cwd: join(import.meta.dir, '..', 'apps', 'web'),
+    env: { ...process.env, VITE_API_URL: origin },
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  await waitFor('the local OpenKey device page', () => fetch(`http://127.0.0.1:${webPort}/device`)
+    .then((response) => response.ok ? true : null)
+    .catch(() => null), 60_000);
   const command = [
     nodeExecutable,
     cliPath,
@@ -207,11 +246,24 @@ try {
     stdout: 'pipe',
     stderr: 'pipe',
   });
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
+  const stdoutPromise = new Response(child.stdout).text();
+  const stderrPromise = new Response(child.stderr).text();
+  const record = await waitFor('the CLI device transaction', () => createdRecord);
+  // The CLI points to the API host. The browser is deliberately pointed at the
+  // separately-hosted SvelteKit UI, which performs the real lookup and renders
+  // the exact server-owned descriptor before this local fixture approves it.
+  browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
+  await page.goto(`http://127.0.0.1:${webPort}/device?user_code=${encodeURIComponent(record.userCode)}`);
+  await page.getByText('TinyCloud CLI', { exact: true }).waitFor();
+  await page.getByText('tinycloud.share.publish.v1', { exact: true }).waitFor();
+  await page.getByText('Publish encrypted files through TinyCloud Share using one-shot Node upload attestations.', { exact: true }).waitFor();
+  if (!await page.getByText(record.nodeOrigin, { exact: true }).isVisible() || !await page.getByText(record.shareOrigin, { exact: true }).isVisible()) {
+    throw new Error('device page did not render the server-owned resource origins');
+  }
+  const delegation = await createApprovedDelegation(record);
+  await service.approve(record.id, 'smoke-passkey-user', encryptApprovedDelegation(record, delegation));
+  const [stdout, stderr, exitCode] = await Promise.all([stdoutPromise, stderrPromise, child.exited]);
   const link = stdout.trim();
   if (exitCode !== 0) {
     const files = await readdir(root, { recursive: true });
@@ -232,11 +284,14 @@ try {
     command: `tc share publish report.md --registry ${origin}/registry --insecure-registry`,
     result: link,
     devicePrompt: true,
+    renderedDescriptor: true,
     delegationPersisted: true,
     uploads: uploadCount,
     retentionDays: 7,
   }) + '\n');
 } finally {
+  await browser?.close();
+  vite?.kill(9);
   server.stop(true);
   await rm(root, { recursive: true, force: true });
 }
