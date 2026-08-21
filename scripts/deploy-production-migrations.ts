@@ -253,7 +253,7 @@ async function deployAdditiveMigrationsBeforeTc488(
     !verified.app_preference_client_restrict ||
     verified.control_event_columns !== 8 ||
     !verified.control_event_index ||
-    verified.signing_decision_columns !== 9 ||
+    verified.signing_decision_columns !== 8 ||
     !verified.signing_decision_user_index ||
     !verified.signing_decision_client_index ||
     verified?.device_column_count !== 21 ||
