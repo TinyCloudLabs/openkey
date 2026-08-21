@@ -77,6 +77,17 @@ export interface AuthResult {
   keyType: 'MANAGED' | 'EXTERNAL';
 }
 
+/**
+ * Confirmation returned by {@link OpenKey.signOut}. `requestId` is generated
+ * by the SDK and echoed by the OpenKey-owned widget, so callers can associate
+ * the acknowledgement with the sign-out they initiated.
+ */
+export interface SignOutAcknowledgement {
+  requestId: string;
+  /** Whether the widget successfully revoked the active Better Auth session. */
+  revoked: boolean;
+}
+
 export interface OpenKeyError {
   code: 'USER_CANCELLED' | 'POPUP_BLOCKED' | 'TIMEOUT' | 'NO_KEY' | 'UNAUTHORIZED' | 'UNKNOWN' | 'STATE_MISMATCH';
   message: string;
@@ -262,9 +273,14 @@ type MessageType =
   | { type: 'openkey:link-wallet:result'; success: true; address: string; keyId: string }
   | { type: 'openkey:link-wallet:result'; success: false; error: OpenKeyError }
   | { type: 'openkey:auth:use-external-wallet' }
+  | { type: 'openkey:sign-out:request'; requestId: string; protocolVersion: 1; sessionToken?: string }
+  | { type: 'openkey:sign-out:response'; success: true; requestId: string; protocolVersion: 1; revoked: boolean }
+  | { type: 'openkey:sign-out:response'; success: false; requestId: string; protocolVersion: 1; error: OpenKeyError }
   | { type: 'openkey:resize'; height: number; protocolVersion?: number }
   | { type: 'openkey:ready'; protocolVersion?: number }
   | { type: 'openkey:close' };
+
+type WidgetResponseMessage = Extract<MessageType, { success: boolean }>;
 
 const DEFAULT_HOST = 'https://openkey.so';
 const POPUP_WIDTH = 400;
@@ -734,6 +750,8 @@ export class OpenKey {
   private lastAuth: AuthResult | null = null;
   private discoveredProviders: EIP6963ProviderDetail[] = [];
   private sessionToken: string | null = null;
+  /** Cancels the one widget flow that can update this instance's auth state. */
+  private cancelActiveFlow: (() => void) | null = null;
   /**
    * Nostr identity custody + signing (secp256k1 Schnorr / BIP-340). Kept
    * fully separate from the Ethereum flows above: it never reuses
@@ -828,6 +846,44 @@ export class OpenKey {
     }, opts?.mode);
     this.lastAuth = result;
     return result;
+  }
+
+  /**
+   * Signs the active OpenKey account out through the OpenKey-owned widget.
+   *
+   * The widget can revoke the Better Auth bearer session without exposing it
+   * to the consuming application. Local SDK session state is cleared before
+   * opening the widget, including when the remote revocation is unavailable.
+   */
+  async signOut(opts?: { mode?: OpenKeyMode }): Promise<SignOutAcknowledgement> {
+    const requestId = `ok-signout-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    const sessionToken = this.sessionToken || undefined;
+    // Redirect flows intentionally never resolve. Sign-out needs to return a
+    // correlated acknowledgement, so use the OpenKey popup boundary instead.
+    const mode = this.resolveMode(opts?.mode) === 'redirect' ? 'popup' : opts?.mode;
+
+    // A stale connect/sign popup must not later overwrite this signed-out
+    // instance with its response.
+    this.cancelActiveFlow?.();
+    // A failed/blocked widget must never leave this SDK instance authenticated.
+    this.lastAuth = null;
+    this.sessionToken = null;
+
+    const acknowledgement = await this.openFlow<SignOutAcknowledgement>(
+      'sign-out',
+      {
+        type: 'openkey:sign-out:request',
+        requestId,
+        protocolVersion: 1,
+        sessionToken,
+      },
+      mode,
+    );
+
+    if (acknowledgement.requestId !== requestId) {
+      throw new Error('OpenKey signOut received an acknowledgement for a different request');
+    }
+    return acknowledgement;
   }
 
   /**
@@ -1551,7 +1607,7 @@ export class OpenKey {
 
     if (mode === 'popup') {
       const url = `${this.host}/widget/${action}?origin=${origin}${eoaFlag}`;
-      return new Promise((resolve, reject) => this.openPopup(url, message, resolve, reject));
+      return new Promise((resolve, reject) => this.openPopup(action, url, message, resolve, reject));
     }
 
     if (mode === 'redirect') {
@@ -1579,6 +1635,7 @@ export class OpenKey {
       let readyReceived = false;
       let settled = false;
       let modal: IframeModal | null = null;
+      let cancel: () => void;
 
       const settle = (fn: () => void) => {
         if (settled) return;
@@ -1591,6 +1648,7 @@ export class OpenKey {
         clearTimeout(overallTimeout);
         modal?.destroy();
         modal = null;
+        if (this.cancelActiveFlow === cancel) this.cancelActiveFlow = null;
       };
 
       modal = new IframeModal({
@@ -1650,13 +1708,7 @@ export class OpenKey {
             return;
           }
 
-          if (
-            data.type === 'openkey:auth:response' ||
-            data.type === 'openkey:sign:response' ||
-            data.type === 'openkey:signTypedData:response' ||
-            data.type === 'openkey:link-wallet:response' ||
-            data.type === 'openkey:externalSign:approve'
-          ) {
+          if (this.isResponseForAction(action, data)) {
             settle(() => {
               cleanup();
               if (data.success) {
@@ -1665,6 +1717,8 @@ export class OpenKey {
                   resolve({ address: data.address, keyId: data.keyId, keyType: data.keyType || 'MANAGED' } as T);
                 } else if (data.type === 'openkey:link-wallet:response') {
                   resolve({ address: data.address, keyId: data.keyId } as T);
+                } else if (data.type === 'openkey:sign-out:response') {
+                  resolve({ requestId: data.requestId, revoked: data.revoked } as T);
                 } else if (data.type === 'openkey:externalSign:approve') {
                   resolve({
                     authorizationContextToken: (data as any).authorizationContextToken,
@@ -1697,7 +1751,7 @@ export class OpenKey {
         console.warn('OpenKey: iframe blocked by CSP, falling back to popup. Add frame-src https://openkey.so to your CSP.');
         showToast();
         const popupUrl = `${this.host}/widget/${action}?origin=${origin}`;
-        this.openPopup(popupUrl, message, (val: any) => settle(() => resolve(val)), (err: any) => settle(() => reject(err)));
+        this.openPopup(action, popupUrl, message, (val: any) => settle(() => resolve(val)), (err: any) => settle(() => reject(err)));
       }, IFRAME_READY_TIMEOUT);
 
       // Overall 5-minute timeout
@@ -1707,7 +1761,25 @@ export class OpenKey {
           reject({ code: 'TIMEOUT', message: 'Request timed out' } as OpenKeyError);
         });
       }, DEFAULT_TIMEOUT);
+
+      cancel = () => {
+        settle(() => {
+          cleanup();
+          reject({ code: 'USER_CANCELLED', message: 'Superseded by sign-out' } as OpenKeyError);
+        });
+      };
+      this.cancelActiveFlow = cancel;
     });
+  }
+
+  private isResponseForAction(action: string, data: MessageType): data is WidgetResponseMessage {
+    const type = data.type;
+    if (action === 'connect') return type === 'openkey:auth:response';
+    if (action === 'sign') return type === 'openkey:sign:response' || type === 'openkey:externalSign:approve';
+    if (action === 'sign-typed-data') return type === 'openkey:signTypedData:response';
+    if (action === 'link-wallet') return type === 'openkey:link-wallet:response';
+    if (action === 'sign-out') return type === 'openkey:sign-out:response';
+    return false;
   }
 
   private handleWalletLinkDelegation(modal: IframeModal) {
@@ -1785,6 +1857,7 @@ export class OpenKey {
   }
 
   private openPopup<T>(
+    action: string,
     url: string,
     message: object,
     resolve: (value: T) => void,
@@ -1794,13 +1867,14 @@ export class OpenKey {
     const left = window.screenX + (window.outerWidth - POPUP_WIDTH) / 2;
     const top = window.screenY + (window.outerHeight - POPUP_HEIGHT) / 2;
 
-    this.popup = window.open(
+    const popup = window.open(
       url,
-      'openkey',
+      `openkey-${action}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
       `width=${POPUP_WIDTH},height=${POPUP_HEIGHT},left=${left},top=${top},popup=true`
     );
+    this.popup = popup;
 
-    if (!this.popup) {
+    if (!popup) {
       showToast('Popup was blocked. Please allow popups for this site.', 'error');
       reject({
         code: 'POPUP_BLOCKED',
@@ -1809,30 +1883,41 @@ export class OpenKey {
       return;
     }
 
+    let settled = false;
+    let cancel: () => void;
     const cleanup = () => {
       window.removeEventListener('message', handleMessage);
       clearInterval(pollClosed);
       clearTimeout(timeout);
+      if (this.cancelActiveFlow === cancel) this.cancelActiveFlow = null;
+      if (this.popup === popup) this.popup = null;
+    };
+
+    const settle = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      fn();
     };
 
     // Poll to detect popup close
     const pollClosed = setInterval(() => {
-      if (this.popup?.closed) {
-        cleanup();
-        reject({
+      if (popup.closed) {
+        settle(() => reject({
           code: 'USER_CANCELLED',
           message: 'User closed the popup',
-        });
+        }));
       }
     }, 500);
 
     // Timeout
     const timeout = setTimeout(() => {
-      cleanup();
-      this.popup?.close();
-      reject({
-        code: 'TIMEOUT',
-        message: 'Request timed out',
+      settle(() => {
+        popup.close();
+        reject({
+          code: 'TIMEOUT',
+          message: 'Request timed out',
+        });
       });
     }, DEFAULT_TIMEOUT);
 
@@ -1846,13 +1931,13 @@ export class OpenKey {
     // Listen for messages
     const handleMessage = (event: MessageEvent) => {
       if (event.origin !== this.host) return;
-      if (event.source !== this.popup) return;
+      if (event.source !== popup) return;
 
       const data = event.data as MessageType;
 
       if (data.type === 'openkey:ready') {
         // Widget is ready, send our request
-        this.popup?.postMessage(message, this.host);
+        popup.postMessage(message, this.host);
         return;
       }
 
@@ -1868,30 +1953,26 @@ export class OpenKey {
           if (closeRequestId !== outgoingRequestId) return;
           if (closeVersion !== outgoingProtocolVersion) return;
         }
-        cleanup();
-        this.popup?.close();
-        reject({
+        settle(() => {
+          popup.close();
+          reject({
           code: 'USER_CANCELLED',
           message: 'User cancelled the request',
+          });
         });
         return;
       }
 
       if (data.type === 'openkey:auth:use-external-wallet') {
-        cleanup();
-        this.popup?.close();
-        this.handleExternalWalletConnect<T>(resolve, reject);
+        settle(() => {
+          popup.close();
+          this.handleExternalWalletConnect<T>(resolve, reject);
+        });
         return;
       }
 
       // Handle responses
-      if (
-        data.type === 'openkey:auth:response' ||
-        data.type === 'openkey:sign:response' ||
-        data.type === 'openkey:signTypedData:response' ||
-        data.type === 'openkey:link-wallet:response' ||
-        data.type === 'openkey:externalSign:approve'
-      ) {
+      if (this.isResponseForAction(action, data)) {
         // Sol MAJOR-3: drop cross-correlated responses on versioned flows.
         if (isVersionedRequest) {
           const respRequestId = (data as { requestId?: unknown }).requestId;
@@ -1899,15 +1980,16 @@ export class OpenKey {
           if (respRequestId !== outgoingRequestId) return;
           if (respVersion !== outgoingProtocolVersion) return;
         }
-        cleanup();
-        this.popup?.close();
-
-        if (data.success) {
+        settle(() => {
+          popup.close();
+          if (data.success) {
           if (data.type === 'openkey:auth:response') {
             if (data.sessionToken) this.sessionToken = data.sessionToken;
             resolve({ address: data.address, keyId: data.keyId, keyType: data.keyType || 'MANAGED' } as T);
           } else if (data.type === 'openkey:link-wallet:response') {
             resolve({ address: data.address, keyId: data.keyId } as T);
+          } else if (data.type === 'openkey:sign-out:response') {
+            resolve({ requestId: data.requestId, revoked: data.revoked } as T);
           } else if (data.type === 'openkey:externalSign:approve') {
             // Sol MAJOR-3 (continuation): hand the preview payload back
             // to authorizeTinyCloudExternal so it can invoke the wallet.
@@ -1927,19 +2009,28 @@ export class OpenKey {
               permissions: (data as any).permissions,
             } as T);
           }
-        } else {
-          reject(data.error);
-        }
+          } else {
+            reject(data.error);
+          }
+        });
       }
     };
 
     window.addEventListener('message', handleMessage);
+    cancel = () => {
+      settle(() => {
+        popup.close();
+        reject({ code: 'USER_CANCELLED', message: 'Superseded by sign-out' });
+      });
+    };
+    this.cancelActiveFlow = cancel;
   }
 
   /**
    * Disconnect and close any open flows
    */
   disconnect() {
+    this.cancelActiveFlow?.();
     this.popup?.close();
     this.popup = null;
   }

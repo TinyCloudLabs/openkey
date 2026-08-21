@@ -13,6 +13,7 @@ import {
   shouldRouteAuthorizeTinyCloudExternal,
   resolveAuthorizeTinyCloudRouting,
   KeyIdTypeMismatchError,
+  OpenKey,
 } from './index';
 
 describe('validateIframeResize (Sol continuation req 5)', () => {
@@ -251,6 +252,97 @@ describe('validateIframeResize (Sol continuation req 5)', () => {
         newExpected,
       ),
     ).toBe(500);
+  });
+});
+
+describe('OpenKey.signOut', () => {
+  test('clears the current SDK session before the correlated widget acknowledgement', async () => {
+    const openkey = Object.create(OpenKey.prototype) as OpenKey;
+    (openkey as any).lastAuth = { address: '0xfirst', keyId: 'key-first', keyType: 'MANAGED' };
+    (openkey as any).sessionToken = 'first-session-token';
+    let signOutRequest: any;
+    (openkey as any).openFlow = async (_action: string, request: any) => {
+      signOutRequest = request;
+      expect((openkey as any).lastAuth).toBeNull();
+      expect((openkey as any).sessionToken).toBeNull();
+      return { requestId: request.requestId, revoked: true };
+    };
+
+    const acknowledgement = await openkey.signOut();
+
+    expect(signOutRequest).toMatchObject({
+      type: 'openkey:sign-out:request',
+      protocolVersion: 1,
+      sessionToken: 'first-session-token',
+    });
+    expect(acknowledgement).toEqual({ requestId: signOutRequest.requestId, revoked: true });
+    expect(openkey.getSessionToken()).toBeNull();
+  });
+
+  test('allows a fresh public connect flow to select another account after sign-out', async () => {
+    const openkey = Object.create(OpenKey.prototype) as OpenKey;
+    (openkey as any).lastAuth = { address: '0xfirst', keyId: 'key-first', keyType: 'MANAGED' };
+    (openkey as any).sessionToken = 'first-session-token';
+    const requests: any[] = [];
+    (openkey as any).openFlow = async (_action: string, request: any) => {
+      requests.push(request);
+      if (request.type === 'openkey:sign-out:request') {
+        return { requestId: request.requestId, revoked: true };
+      }
+      return { address: '0xsecond', keyId: 'key-second', keyType: 'MANAGED' };
+    };
+
+    await openkey.signOut();
+    const secondAccount = await openkey.connect();
+
+    expect(requests.map((request) => request.type)).toEqual([
+      'openkey:sign-out:request',
+      'openkey:auth:request',
+    ]);
+    expect(secondAccount).toEqual({
+      address: '0xsecond',
+      keyId: 'key-second',
+      keyType: 'MANAGED',
+    });
+    expect((openkey as any).lastAuth).toEqual(secondAccount);
+  });
+
+  test('uses a widget that can acknowledge sign-out when configured for redirect auth', async () => {
+    const openkey = Object.create(OpenKey.prototype) as OpenKey;
+    (openkey as any).mode = 'redirect';
+    let mode: unknown;
+    (openkey as any).openFlow = async (_action: string, request: any, requestedMode: unknown) => {
+      mode = requestedMode;
+      return { requestId: request.requestId, revoked: false };
+    };
+
+    await openkey.signOut();
+
+    expect(mode).toBe('popup');
+  });
+
+  test('cancels an in-flight popup connect before sign-out can receive its response', async () => {
+    const openkey = Object.create(OpenKey.prototype) as OpenKey;
+    let connectCancelled = false;
+    (openkey as any).cancelActiveFlow = () => { connectCancelled = true; };
+    (openkey as any).lastAuth = { address: '0xfirst', keyId: 'key-first', keyType: 'MANAGED' };
+    (openkey as any).sessionToken = 'first-session-token';
+    (openkey as any).openFlow = async (_action: string, request: any) => {
+      expect(connectCancelled).toBe(true);
+      return { requestId: request.requestId, revoked: true };
+    };
+
+    await openkey.signOut({ mode: 'popup' });
+
+    expect((openkey as any).lastAuth).toBeNull();
+    expect(openkey.getSessionToken()).toBeNull();
+    expect((openkey as any).isResponseForAction('connect', {
+      type: 'openkey:sign-out:response',
+      success: true,
+      requestId: 'sign-out-1',
+      protocolVersion: 1,
+      revoked: true,
+    })).toBe(false);
   });
 });
 
