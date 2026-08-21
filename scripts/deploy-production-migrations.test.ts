@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  partitionPreTc488Migrations,
   selectProductionMigrationMode,
   type MigrationRow,
 } from './deploy-production-migrations';
@@ -34,12 +35,25 @@ describe('production migration deployment mode', () => {
     })).toBe('full');
   });
 
-  test('allows only the additive device migration before TC-488', () => {
+  test('allows the four reviewed additive TC-492 migrations before TC-488', () => {
     expect(selectProductionMigrationMode({
       migrations: [baseline],
       migrationDirectories: [baseline.migration_name, ...tc492, device],
       managedAccountTableExists: true,
     })).toBe('pre-tc488-device-only');
+  });
+
+  test('parks only the destructive TC-488 migration and applies every reviewed additive migration', () => {
+    const { apply, park } = partitionPreTc488Migrations([...tc492, device]);
+
+    expect(apply).toEqual([
+      '20260805_0001_canonical_tinycloud_key',
+      '20260805_0002_tinycloud_manage_key_app_preferences',
+      '20260805_0003_tinycloud_manage_key_global_preference',
+      '20260806_0001_tinycloud_manage_key_lifecycle',
+      device,
+    ]);
+    expect(park).toEqual([tc488]);
   });
 
   test('fails closed if another migration is pending before TC-488', () => {
