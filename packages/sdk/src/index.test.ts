@@ -258,6 +258,7 @@ describe('validateIframeResize (Sol continuation req 5)', () => {
 describe('OpenKey.signOut', () => {
   test('clears the current SDK session before the correlated widget acknowledgement', async () => {
     const openkey = Object.create(OpenKey.prototype) as OpenKey;
+    (openkey as any).activeFlowCancellations = new Set();
     (openkey as any).lastAuth = { address: '0xfirst', keyId: 'key-first', keyType: 'MANAGED' };
     (openkey as any).sessionToken = 'first-session-token';
     let signOutRequest: any;
@@ -281,6 +282,7 @@ describe('OpenKey.signOut', () => {
 
   test('allows a fresh public connect flow to select another account after sign-out', async () => {
     const openkey = Object.create(OpenKey.prototype) as OpenKey;
+    (openkey as any).activeFlowCancellations = new Set();
     (openkey as any).lastAuth = { address: '0xfirst', keyId: 'key-first', keyType: 'MANAGED' };
     (openkey as any).sessionToken = 'first-session-token';
     const requests: any[] = [];
@@ -309,6 +311,7 @@ describe('OpenKey.signOut', () => {
 
   test('uses a widget that can acknowledge sign-out when configured for redirect auth', async () => {
     const openkey = Object.create(OpenKey.prototype) as OpenKey;
+    (openkey as any).activeFlowCancellations = new Set();
     (openkey as any).mode = 'redirect';
     let mode: unknown;
     (openkey as any).openFlow = async (_action: string, request: any, requestedMode: unknown) => {
@@ -321,14 +324,17 @@ describe('OpenKey.signOut', () => {
     expect(mode).toBe('popup');
   });
 
-  test('cancels an in-flight popup connect before sign-out can receive its response', async () => {
+  test('cancels every in-flight widget flow before sign-out can receive its response', async () => {
     const openkey = Object.create(OpenKey.prototype) as OpenKey;
-    let connectCancelled = false;
-    (openkey as any).cancelActiveFlow = () => { connectCancelled = true; };
+    const cancellations: string[] = [];
+    (openkey as any).activeFlowCancellations = new Set([
+      () => { cancellations.push('first'); },
+      () => { cancellations.push('second'); },
+    ]);
     (openkey as any).lastAuth = { address: '0xfirst', keyId: 'key-first', keyType: 'MANAGED' };
     (openkey as any).sessionToken = 'first-session-token';
     (openkey as any).openFlow = async (_action: string, request: any) => {
-      expect(connectCancelled).toBe(true);
+      expect(cancellations).toEqual(['first', 'second']);
       return { requestId: request.requestId, revoked: true };
     };
 
