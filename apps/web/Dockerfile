@@ -17,9 +17,19 @@ WORKDIR /app
 
 FROM base AS deps
 COPY package.json bun.lock tsconfig.json ./
+COPY apps/api/package.json ./apps/api/
 COPY apps/web/package.json ./apps/web/
 COPY packages/capability-review/package.json ./packages/capability-review/
-RUN bun install --ignore-scripts --force
+COPY packages/cli/package.json ./packages/cli/
+COPY packages/core/package.json ./packages/core/
+COPY packages/db/package.json ./packages/db/
+COPY packages/sdk-react-native/package.json ./packages/sdk-react-native/
+COPY packages/sdk/package.json ./packages/sdk/
+COPY packages/tee/package.json ./packages/tee/
+COPY packages/types/package.json ./packages/types/
+# Match the API image's deterministic, serialized Docker install. `--force`
+# would discard Bun's lockfile resolution guarantee without fixing extraction.
+RUN bun install --frozen-lockfile --ignore-scripts --network-concurrency 1
 
 FROM deps AS builder
 COPY apps/web ./apps/web

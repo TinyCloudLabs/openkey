@@ -8,8 +8,14 @@ FROM base AS deps
 RUN apk add --no-cache python3 make g++
 COPY package.json bun.lock ./
 COPY apps/api/package.json ./apps/api/
+COPY apps/web/package.json ./apps/web/
+COPY packages/capability-review/package.json ./packages/capability-review/
+COPY packages/cli/package.json ./packages/cli/
+COPY packages/core/package.json ./packages/core/
 COPY packages/tee/package.json ./packages/tee/
 COPY packages/db/package.json ./packages/db/
+COPY packages/sdk-react-native/package.json ./packages/sdk-react-native/
+COPY packages/sdk/package.json ./packages/sdk/
 COPY packages/db/prisma ./packages/db/prisma
 COPY scripts/generate-prisma.ts ./scripts/generate-prisma.ts
 COPY packages/types/package.json ./packages/types/
@@ -19,7 +25,11 @@ COPY packages/types/package.json ./packages/types/
 # in docker-compose.openkey.yml), which needs only this stage.
 COPY prisma.config.ts ./
 COPY packages/db/prisma.config.ts ./packages/db/
-RUN bun install --ignore-scripts
+# Docker Desktop / BuildKit has intermittently failed while extracting several
+# packages in parallel even though the same lockfile succeeds on the host.
+# Keep installation locked and serialize registry downloads so this layer is
+# reproducible from an empty builder cache.
+RUN bun install --frozen-lockfile --ignore-scripts --network-concurrency 1
 # Generate Prisma client (skipped by --ignore-scripts)
 RUN bun run scripts/generate-prisma.ts
 
@@ -45,6 +55,8 @@ COPY --from=builder /app/packages/db/dist ./packages/db/dist
 COPY --from=builder /app/packages/db/src/generated ./packages/db/src/generated
 COPY --from=builder /app/packages/db/prisma ./packages/db/prisma
 COPY --from=builder /app/packages/db/package.json ./packages/db/
+COPY --from=builder /app/prisma.config.ts ./
+COPY --from=builder /app/packages/db/prisma.config.ts ./packages/db/
 COPY --from=builder /app/package.json ./
 
 EXPOSE 3001
