@@ -71,6 +71,28 @@ export function clearSessionToken(): void {
   sessionStorage.removeItem(SESSION_TOKEN_KEY);
 }
 
+/**
+ * Revoke the bearer session used by embedded widgets, then remove its local
+ * copy regardless of whether a network or server failure prevented revocation.
+ */
+export async function revokeEmbeddedSession(
+  sessionToken: string | null = getSessionToken(),
+  fetchImpl: typeof fetch = fetch,
+): Promise<boolean> {
+  try {
+    const response = await fetchImpl(`${API_BASE}/api/auth/sign-out`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: sessionToken ? { Authorization: `Bearer ${sessionToken}` } : undefined,
+    });
+    return response.ok;
+  } catch {
+    return false;
+  } finally {
+    clearSessionToken();
+  }
+}
+
 export async function embedSignInPasskey(): Promise<{ session: any; user: any; sessionToken: string }> {
   // 1. Get authentication options + challengeToken
   const optionsRes = await fetch(`${API_BASE}/api/passkey/generate-authenticate-options`, {
