@@ -23,7 +23,9 @@ Set these in your repo's **Settings > Secrets and variables > Actions**:
 | `PHALA_CLOUD_API_KEY` | From [Phala Cloud Dashboard](https://cloud.phala.network/dashboard) > Avatar > API Tokens |
 | `DATABASE_URL` | Production PostgreSQL connection string used by the migration job |
 
-The deploy fails closed when `DATABASE_URL` is absent or a migration or
+Every push to `main` is eligible for the serialized production API workflow;
+there is intentionally no path filter that can skip a migration or runtime
+contract change. The deploy fails closed when `DATABASE_URL` is absent or a migration or
 security-guard verification fails. The database is migrated before the Phala
 CVM is updated. Production deploys must not use `prisma db push`: schema push
 does not execute tracked cutover migrations. Both manual deploys and the one-time baseline
@@ -31,6 +33,20 @@ workflow refuse non-`main` refs and use the protected `production` environment.
 Normal production deploys require the reviewed
 `20260714_origin_main_schema_catchup` marker and no unresolved failed migration
 rows before Prisma may apply anything.
+
+The API container's `/health` endpoint is also its Docker health check. The
+probe uses the container's `API_PORT` (default `3001`), so it checks the
+actual configured listener rather than a hard-coded alternate port. Before
+returning HTTP 200 it independently verifies every checksum-pinned committed
+migration from the reviewed `20260714_origin_main_schema_catchup` baseline
+through the candidate Prisma client, excluding only the explicitly parked
+destructive TC-488 migration. A missing, unfinished, rolled-back, or
+checksum-mismatched required record returns HTTP 503 with only
+`{ "status": "not_ready" }`; it never exposes migration names, checksums,
+database URLs, or error details. The destructive
+`20260806_0002_remove_organization_key_custody` TC-488 migration is
+deliberately not part of this runtime prerequisite and remains governed by its
+existing explicit operator gate.
 
 While the separately authorized TC-488 destructive custody cutover remains
 pending, the production deploy permits exactly one later migration:
@@ -148,14 +164,8 @@ and publish matching SPF and DKIM records so mail reaches private-relay users.
 
 #### Trigger Conditions
 
-Deployments trigger on pushes to `main` that modify:
-- `apps/api/**`
-- `packages/**`
-- `Dockerfile`
-- `docker-compose.prod.yml`
-- the production migration scripts
-
-Or manually via **Actions > Deploy API to Phala Cloud > Run workflow**.
+Deployments trigger on every push to `main` (serialized by the
+`production-api` concurrency group), or manually via **Actions > Deploy API to Phala Cloud > Run workflow**.
 
 ### Manual Deploy
 
