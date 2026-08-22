@@ -10,6 +10,7 @@ export type MigrationRecord = {
 // is a separately authorized destructive custody cutover, not a prerequisite
 // for this API image to serve traffic safely.
 export const requiredRuntimeMigrationChecksums = new Map<string, string>([
+  ['20260714_origin_main_schema_catchup', '0d55069dce6b6d51b42ab95bd813a8698261d4de32e64a0c702f4d4a17263a09'],
   ['20260805_0001_canonical_tinycloud_key', '65b81dce28ab9dc8847defa78f986abe000243cfd027879238f55efee825cfae'],
   ['20260805_0002_tinycloud_manage_key_app_preferences', '035b642532adfc98351141a578ff675c5f67fbde41da6e208e8d3bbbc336d972'],
   ['20260805_0003_tinycloud_manage_key_global_preference', '4cf2225e80626f98b826225fbed45f6166b10ec7c3999dcb7b272ae2da06ab0e'],
