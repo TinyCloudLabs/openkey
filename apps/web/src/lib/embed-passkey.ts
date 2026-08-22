@@ -72,20 +72,61 @@ export function clearSessionToken(): void {
 }
 
 /**
- * Revoke the bearer session used by embedded widgets, then remove its local
- * copy regardless of whether a network or server failure prevented revocation.
+ * Revoke the session used by popup or embedded widgets, then remove the local
+ * bearer copy regardless of whether a network or server failure prevented
+ * revocation.
  */
 export async function revokeEmbeddedSession(
   sessionToken: string | null = getSessionToken(),
   fetchImpl: typeof fetch = fetch,
 ): Promise<boolean> {
+  let tokenToVerify = sessionToken;
+
   try {
+    // Popup-mode clients authenticate with a cookie and do not have a bearer
+    // token to relay. Capture that session's token before sign-out so the
+    // post-sign-out check can prove that the same server-side session was
+    // deleted after the browser cookie has been cleared.
+    if (!tokenToVerify) {
+      try {
+        const currentSession = await fetchImpl(
+          `${API_BASE}/api/auth/get-session?disableRefresh=true`,
+          { credentials: 'include' },
+        );
+        if (currentSession.ok) {
+          const current = await currentSession.json().catch(() => undefined);
+          tokenToVerify = current?.session?.token ?? null;
+        }
+      } catch {
+        // Still attempt sign-out so local cookie cleanup is not blocked by a
+        // failed preflight. Without the old token, revocation stays unverified.
+      }
+    }
+
     const response = await fetchImpl(`${API_BASE}/api/auth/sign-out`, {
       method: 'POST',
       credentials: 'include',
-      headers: sessionToken ? { Authorization: `Bearer ${sessionToken}` } : undefined,
+      headers: tokenToVerify ? { Authorization: `Bearer ${tokenToVerify}` } : undefined,
     });
-    return response.ok;
+    if (!response.ok) return false;
+
+    // A null cookie-session response is not proof of revocation in a
+    // cross-site iframe, where SameSite policy may simply omit the cookie.
+    if (!tokenToVerify) return false;
+
+    // Better Auth clears cookies and returns 200 even when deleting the
+    // database session fails. Re-check the previous bearer without cookies or
+    // session refresh so `revoked: true` means that exact old session can no
+    // longer authenticate, not merely that sign-out was accepted.
+    const verification = await fetchImpl(
+      `${API_BASE}/api/auth/get-session?disableRefresh=true`,
+      {
+        credentials: 'omit',
+        headers: { Authorization: `Bearer ${tokenToVerify}` },
+      },
+    );
+    if (!verification.ok) return false;
+    return (await verification.json().catch(() => undefined)) === null;
   } catch {
     return false;
   } finally {

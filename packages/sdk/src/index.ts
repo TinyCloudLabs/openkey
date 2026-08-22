@@ -84,7 +84,11 @@ export interface AuthResult {
  */
 export interface SignOutAcknowledgement {
   requestId: string;
-  /** Whether the widget successfully revoked the active Better Auth session. */
+  /**
+   * Whether the widget confirmed that the previous bearer no longer
+   * authenticates. `false` means the SDK is locally signed out, but remote
+   * revocation could not be verified.
+   */
   revoked: boolean;
 }
 
@@ -750,8 +754,8 @@ export class OpenKey {
   private lastAuth: AuthResult | null = null;
   private discoveredProviders: EIP6963ProviderDetail[] = [];
   private sessionToken: string | null = null;
-  /** Cancels the one widget flow that can update this instance's auth state. */
-  private cancelActiveFlow: (() => void) | null = null;
+  /** Cancels widget flows that could outlive a sign-out on this instance. */
+  private activeFlowCancellations = new Set<() => void>();
   /**
    * Nostr identity custody + signing (secp256k1 Schnorr / BIP-340). Kept
    * fully separate from the Ethereum flows above: it never reuses
@@ -851,9 +855,10 @@ export class OpenKey {
   /**
    * Signs the active OpenKey account out through the OpenKey-owned widget.
    *
-   * The widget can revoke the Better Auth bearer session without exposing it
-   * to the consuming application. Local SDK session state is cleared before
-   * opening the widget, including when the remote revocation is unavailable.
+   * The SDK passes its Better Auth bearer through the OpenKey-owned widget
+   * protocol so applications do not have to implement revocation themselves.
+   * Local SDK session state is cleared before opening the widget, including
+   * when remote revocation is unavailable.
    */
   async signOut(opts?: { mode?: OpenKeyMode }): Promise<SignOutAcknowledgement> {
     const requestId = `ok-signout-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -862,9 +867,9 @@ export class OpenKey {
     // correlated acknowledgement, so use the OpenKey popup boundary instead.
     const mode = this.resolveMode(opts?.mode) === 'redirect' ? 'popup' : opts?.mode;
 
-    // A stale connect/sign popup must not later overwrite this signed-out
-    // instance with its response.
-    this.cancelActiveFlow?.();
+    // Stale connect/sign widgets must not later overwrite this signed-out
+    // instance with their responses.
+    this.cancelActiveFlows();
     // A failed/blocked widget must never leave this SDK instance authenticated.
     this.lastAuth = null;
     this.sessionToken = null;
@@ -1648,7 +1653,7 @@ export class OpenKey {
         clearTimeout(overallTimeout);
         modal?.destroy();
         modal = null;
-        if (this.cancelActiveFlow === cancel) this.cancelActiveFlow = null;
+        this.activeFlowCancellations.delete(cancel);
       };
 
       modal = new IframeModal({
@@ -1656,9 +1661,7 @@ export class OpenKey {
         host: this.host,
         onClose: () => {
           settle(() => {
-            clearTimeout(readyTimeout);
-            clearTimeout(overallTimeout);
-            modal = null;
+            cleanup();
             reject({ code: 'USER_CANCELLED', message: 'User cancelled the request' } as OpenKeyError);
           });
         },
@@ -1768,7 +1771,7 @@ export class OpenKey {
           reject({ code: 'USER_CANCELLED', message: 'Superseded by sign-out' } as OpenKeyError);
         });
       };
-      this.cancelActiveFlow = cancel;
+      this.activeFlowCancellations.add(cancel);
     });
   }
 
@@ -1889,7 +1892,7 @@ export class OpenKey {
       window.removeEventListener('message', handleMessage);
       clearInterval(pollClosed);
       clearTimeout(timeout);
-      if (this.cancelActiveFlow === cancel) this.cancelActiveFlow = null;
+      this.activeFlowCancellations.delete(cancel);
       if (this.popup === popup) this.popup = null;
     };
 
@@ -2023,14 +2026,18 @@ export class OpenKey {
         reject({ code: 'USER_CANCELLED', message: 'Superseded by sign-out' });
       });
     };
-    this.cancelActiveFlow = cancel;
+    this.activeFlowCancellations.add(cancel);
+  }
+
+  private cancelActiveFlows() {
+    for (const cancel of [...this.activeFlowCancellations]) cancel();
   }
 
   /**
    * Disconnect and close any open flows
    */
   disconnect() {
-    this.cancelActiveFlow?.();
+    this.cancelActiveFlows();
     this.popup?.close();
     this.popup = null;
   }
