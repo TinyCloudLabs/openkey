@@ -35,12 +35,13 @@ Normal production deploys require the reviewed
 rows before Prisma may apply anything.
 
 The API container's `/health` endpoint is also its Docker health check. Before
-returning HTTP 200 it independently verifies that the checksum-pinned additive
-TC-492 migrations and the device-authorization migration required by the
-candidate Prisma client are present, finished, and not rolled back. A missing,
-unfinished, rolled-back, or checksum-mismatched required record returns HTTP
-503 with only `{ "status": "not_ready" }`; it never exposes migration names,
-checksums, database URLs, or error details. The destructive
+returning HTTP 200 it independently verifies every checksum-pinned committed
+migration from the reviewed `20260714_origin_main_schema_catchup` baseline
+through the candidate Prisma client, excluding only the explicitly parked
+destructive TC-488 migration. A missing, unfinished, rolled-back, or
+checksum-mismatched required record returns HTTP 503 with only
+`{ "status": "not_ready" }`; it never exposes migration names, checksums,
+database URLs, or error details. The destructive
 `20260806_0002_remove_organization_key_custody` TC-488 migration is
 deliberately not part of this runtime prerequisite and remains governed by its
 existing explicit operator gate.

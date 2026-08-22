@@ -1,15 +1,10 @@
 import type { Context } from 'hono';
-import { checkRuntimeSchemaContract, createPrismaClient } from '@openkey/db';
+import { checkRuntimeSchemaContract, getPrisma, type SchemaContractDatabase } from '@openkey/db';
 
 export type ReadinessCheck = () => Promise<{ ready: boolean }>;
 
-export async function checkApiReadiness() {
-  const database = createPrismaClient();
-  try {
-    return await checkRuntimeSchemaContract(database);
-  } finally {
-    await database.$disconnect();
-  }
+export async function checkApiReadiness(database: SchemaContractDatabase = getPrisma()) {
+  return checkRuntimeSchemaContract(database);
 }
 
 export function readinessHandler(check: ReadinessCheck = checkApiReadiness) {

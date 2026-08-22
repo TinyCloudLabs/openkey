@@ -1,6 +1,9 @@
 import { expect, test } from 'bun:test';
+import { readdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import {
   checkRuntimeSchemaContract,
+  allowedPendingDestructiveMigrations,
   requiredRuntimeMigrationChecksums,
   type MigrationRecord,
 } from './schema-contract';
@@ -38,6 +41,22 @@ test('fails for unfinished, rolled-back, and checksum-mismatched required migrat
   });
 });
 
+test('fails closed when the migration query cannot run', async () => {
+  const unavailable = { $queryRawUnsafe: async <T>() => { throw new Error('database unavailable') as T; } };
+  expect(await checkRuntimeSchemaContract(unavailable)).toEqual({ ready: false, reason: 'migration-query-failed' });
+});
+
 test('accepts the required contract while destructive TC-488 remains pending', async () => {
   expect(await checkRuntimeSchemaContract(database(validRows))).toEqual({ ready: true });
+});
+
+test('covers every committed post-baseline migration except the explicit TC-488 gate', async () => {
+  const migrationDirectory = join(import.meta.dir, '../prisma/migrations');
+  const committed = (await readdir(migrationDirectory, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory() && entry.name >= '20260714_origin_main_schema_catchup')
+    .map((entry) => entry.name)
+    .filter((name) => !allowedPendingDestructiveMigrations.has(name))
+    .sort();
+
+  expect([...requiredRuntimeMigrationChecksums.keys()].sort()).toEqual(committed);
 });
