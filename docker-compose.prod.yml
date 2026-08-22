@@ -28,6 +28,12 @@ services:
       - ADMIN_API_KEY=${ADMIN_API_KEY}
       - INTERNAL_METRICS_TOKEN=${INTERNAL_METRICS_TOKEN}
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -T 5 -O /dev/null http://127.0.0.1:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
 
   dstack-ingress:
     image: dstacktee/dstack-ingress:20250924@sha256:40429d78060ef3066b5f93676bf3ba7c2e9ac47d4648440febfdda558aed4b32
