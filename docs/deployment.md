@@ -34,7 +34,9 @@ Normal production deploys require the reviewed
 `20260714_origin_main_schema_catchup` marker and no unresolved failed migration
 rows before Prisma may apply anything.
 
-The API container's `/health` endpoint is also its Docker health check. Before
+The API container's `/health` endpoint is also its Docker health check. The
+probe uses the container's `API_PORT` (default `3001`), so it checks the
+actual configured listener rather than a hard-coded alternate port. Before
 returning HTTP 200 it independently verifies every checksum-pinned committed
 migration from the reviewed `20260714_origin_main_schema_catchup` baseline
 through the candidate Prisma client, excluding only the explicitly parked

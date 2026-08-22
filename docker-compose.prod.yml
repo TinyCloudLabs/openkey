@@ -2,7 +2,7 @@ services:
   api:
     image: ${DOCKER_IMAGE}
     ports:
-      - "3001:3001"
+      - "${API_PORT:-3001}:${API_PORT:-3001}"
     volumes:
       - /var/run/dstack.sock:/var/run/dstack.sock
     environment:
@@ -29,7 +29,9 @@ services:
       - INTERNAL_METRICS_TOKEN=${INTERNAL_METRICS_TOKEN}
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -T 5 -O /dev/null http://127.0.0.1:3001/health"]
+      # Keep this aligned with the API's configurable listener. `$$` defers
+      # expansion to the container so the probe exercises the running API.
+      test: ["CMD-SHELL", "wget -q -T 5 -O /dev/null http://127.0.0.1:$${API_PORT:-3001}/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -43,7 +45,7 @@ services:
       - api
     environment:
       - DOMAIN=api.openkey.so
-      - TARGET_ENDPOINT=http://api:3001
+      - TARGET_ENDPOINT=http://api:${API_PORT:-3001}
       - CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN}
       - GATEWAY_DOMAIN=_.${DSTACK_GATEWAY_DOMAIN}
       - CERTBOT_EMAIL=${CERTBOT_EMAIL}
