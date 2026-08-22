@@ -33,14 +33,8 @@ jobs:
       - name: Check for publishable changesets
         id: check
         run: |
-          # Run changeset status to see if any non-ignored packages have pending bumps
-          if bun changeset status 2>&1 | grep -q "NO packages"; then
-            echo "has_changesets=false" >> "$GITHUB_OUTPUT"
-            echo "No publishable changesets — will attempt to publish if versions are unpublished"
-          else
-            echo "has_changesets=true" >> "$GITHUB_OUTPUT"
-            echo "Found publishable changesets — will create version PR"
-          fi
+          echo "has_changesets=false" >> "$GITHUB_OUTPUT"
+          echo "Scoped publication branch — publish already-versioned packages"
 
       - name: Create Release Pull Request
         if: steps.check.outputs.has_changesets == 'true'
@@ -58,4 +52,3 @@ jobs:
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
