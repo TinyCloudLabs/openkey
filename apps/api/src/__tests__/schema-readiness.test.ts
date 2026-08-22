@@ -19,14 +19,27 @@ function healthApp(rows: MigrationRecord[]) {
   return app;
 }
 
+async function requestHealthOverHttp(rows: MigrationRecord[]) {
+  const server = Bun.serve({
+    port: 0,
+    fetch: healthApp(rows).fetch,
+  });
+
+  try {
+    return await fetch(`http://127.0.0.1:${server.port}/health`);
+  } finally {
+    server.stop(true);
+  }
+}
+
 test('readiness HTTP path returns non-2xx for a controlled required migration mismatch without secrets', async () => {
-  const response = await healthApp([{ ...validRows[0]!, checksum: 'controlled-mismatch' }, ...validRows.slice(1)]).request('/health');
+  const response = await requestHealthOverHttp([{ ...validRows[0]!, checksum: 'controlled-mismatch' }, ...validRows.slice(1)]);
   expect(response.status).toBe(503);
   expect(await response.json()).toEqual({ status: 'not_ready' });
 });
 
 test('readiness HTTP path returns 200 for a valid required migration contract', async () => {
-  const response = await healthApp(validRows).request('/health');
+  const response = await requestHealthOverHttp(validRows);
   expect(response.status).toBe(200);
   expect(await response.json()).toEqual({ status: 'ok', tee: 'development' });
 });

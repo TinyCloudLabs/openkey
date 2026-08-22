@@ -60,11 +60,16 @@ export async function checkRuntimeSchemaContract(
   }
 
   for (const [name, checksum] of requiredRuntimeMigrationChecksums) {
-    const migration = migrations.find((candidate) => candidate.migration_name === name);
-    if (!migration) return { ready: false, reason: 'migration-missing' };
-    if (!migration.finished_at) return { ready: false, reason: 'migration-unfinished' };
-    if (migration.rolled_back_at) return { ready: false, reason: 'migration-rolled-back' };
-    if (migration.checksum !== checksum) return { ready: false, reason: 'migration-checksum-mismatch' };
+    const records = migrations.filter((candidate) => candidate.migration_name === name);
+    if (records.length === 0) return { ready: false, reason: 'migration-missing' };
+
+    // Prisma can retain more than one row after an interrupted attempt and a
+    // later retry. Do not let an unordered query hide the failed attempt.
+    for (const migration of records) {
+      if (!migration.finished_at) return { ready: false, reason: 'migration-unfinished' };
+      if (migration.rolled_back_at) return { ready: false, reason: 'migration-rolled-back' };
+      if (migration.checksum !== checksum) return { ready: false, reason: 'migration-checksum-mismatch' };
+    }
   }
 
   return { ready: true };

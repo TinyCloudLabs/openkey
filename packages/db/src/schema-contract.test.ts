@@ -41,6 +41,13 @@ test('fails for unfinished, rolled-back, and checksum-mismatched required migrat
   });
 });
 
+test('fails when a required migration retains an unresolved earlier attempt', async () => {
+  expect(await checkRuntimeSchemaContract(database([...validRows, { ...validRows[0], finished_at: null }]))).toEqual({
+    ready: false,
+    reason: 'migration-unfinished',
+  });
+});
+
 test('fails closed when the migration query cannot run', async () => {
   const unavailable = { $queryRawUnsafe: async <T>() => { throw new Error('database unavailable') as T; } };
   expect(await checkRuntimeSchemaContract(unavailable)).toEqual({ ready: false, reason: 'migration-query-failed' });
