@@ -5,14 +5,11 @@
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import { safeExternalHttpUrl, safeOAuthNavigationUrl } from '$lib/safe-oauth-url';
+  import { loadOAuthClientBrand, type OAuthClientBrand } from '$lib/oauth-client-brand';
 
   const session = authClient.useSession();
 
-  let clientInfo = $state<{
-    name: string;
-    uri?: string;
-    icon?: string;
-  } | null>(null);
+  let clientInfo = $state<OAuthClientBrand | null>(null);
   let loading = $state(true);
   let submitting = $state(false);
   let error = $state('');
@@ -42,23 +39,10 @@
       return;
     }
     try {
-      const res = await fetch(
-        `${API_BASE}/api/auth/oauth2/public-client?client_id=${encodeURIComponent(clientId)}`,
-        { credentials: 'include' }
-      );
-      if (res.ok) {
-        const data = await res.json();
-        clientInfo = {
-          name: data.client_name || data.name || 'Unknown',
-          uri: data.client_uri || data.uri,
-          icon: data.logo_uri || data.icon,
-        };
-      } else {
-        const data = await res.json().catch(() => null);
-        error = data?.message || `Failed to load application (${res.status})`;
-      }
+      clientInfo = await loadOAuthClientBrand(clientId);
+      if (!clientInfo) error = 'Failed to load application info';
     } catch (e: unknown) {
-      error = 'Failed to load application info';
+      error = e instanceof Error ? e.message : 'Failed to load application info';
     }
     loading = false;
   }
@@ -68,8 +52,11 @@
     if ($session.isPending || fetched) return;
 
     if (!$session.data) {
-      const returnUrl = encodeURIComponent($page.url.pathname + $page.url.search);
-      goto(`/auth/login?redirect=${returnUrl}`);
+      const returnUrl = $page.url.pathname + $page.url.search;
+      const loginParams = new URLSearchParams({ redirect: returnUrl });
+      const oauthQuery = getOAuthQuery();
+      if (oauthQuery) loginParams.set('oauth_query', oauthQuery);
+      goto(`/auth/login?${loginParams}`);
       return;
     }
 
@@ -137,11 +124,11 @@
         {#if safeExternalHttpUrl(clientInfo.icon)}
           <img
             src={safeExternalHttpUrl(clientInfo.icon)!}
-            alt={clientInfo.name}
+            alt=""
             class="w-16 h-16 rounded-lg mx-auto mb-4"
           />
         {:else}
-          <div class="w-16 h-16 rounded-lg bg-surface-100 mx-auto mb-4 flex items-center justify-center">
+          <div class="w-16 h-16 rounded-lg bg-surface-100 mx-auto mb-4 flex items-center justify-center" role="img" aria-label={`${clientInfo.name} icon`}>
             <span class="text-2xl text-surface-500">
               {clientInfo.name.charAt(0).toUpperCase()}
             </span>
@@ -149,7 +136,7 @@
         {/if}
 
         <h1 class="text-xl font-bold text-surface-900 mb-2">
-          {clientInfo.name}
+          Continue to {clientInfo.name}
         </h1>
 
         {#if safeExternalHttpUrl(clientInfo.uri)}
