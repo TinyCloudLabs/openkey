@@ -41,7 +41,7 @@
     "npm-pub": "npm config set registry https://registry.npmjs.org/"
   },
   "devDependencies": {
-    "@changesets/cli": "^2.27.1",
+    "@changesets/cli": "^3.0.0",
     "@rollup/rollup-darwin-x64": "^4.57.1",
     "@tailwindcss/vite": "^4.1.18",
     "portless": "^0.14.0",
