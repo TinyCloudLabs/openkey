@@ -1,5 +1,4 @@
 ---
-"@openkey/sdk": minor
 "@openkey/capability-review": minor
 ---
 

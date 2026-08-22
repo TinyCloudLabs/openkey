@@ -1,5 +1,4 @@
 ---
-"@openkey/sdk": patch
 "@openkey/capability-review": patch
 ---
 
