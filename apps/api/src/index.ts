@@ -22,6 +22,7 @@ import { deviceAuthorizationRouter } from './routes/device-authorization';
 import { trackAuthorization, trackTokenExchange, trackUniqueUser } from './analytics';
 import { configuredSocialProviderIds } from './social-providers';
 import { corsOriginPolicy } from './origin-policy';
+import { readinessHandler } from './readiness';
 
 // Create Hono app
 const app = new Hono();
@@ -51,8 +52,9 @@ app.use('*', cors({
   exposeHeaders: ['set-auth-token'],
 }));
 
-// Health check
-app.get('/health', (c) => c.json({ status: 'ok', tee: process.env.TEE_MODE || 'development' }));
+// Health check: traffic is accepted only when the database migration contract
+// required by this Prisma client is present and checksum-verified.
+app.get('/health', readinessHandler());
 
 // Analytics middleware - runs BEFORE auth handler, uses next() to capture response
 // POST /api/auth/oauth2/token → track token exchange + unique user

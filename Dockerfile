@@ -26,6 +26,8 @@ RUN bun run scripts/generate-prisma.ts
 # Build packages
 FROM deps AS builder
 COPY . .
+# Keep the runtime fingerprint synchronized with committed migration files.
+RUN bun test packages/db/src/schema-contract.test.ts
 RUN bun run build --filter @openkey/db
 RUN bun run build --filter @openkey/tee
 RUN bun run build --filter @openkey/api

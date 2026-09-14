@@ -89,3 +89,4 @@ export function getPrisma() {
 
 export { PrismaClient };
 export * from './generated/prisma/client';
+export * from './schema-contract';
