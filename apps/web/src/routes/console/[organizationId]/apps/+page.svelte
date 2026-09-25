@@ -8,6 +8,7 @@
     validateConsoleRedirectUris,
   } from '$lib/console-validation';
   import { api, type ConsoleApp } from '$lib/api';
+  import { safeExternalHttpUrl } from '$lib/safe-oauth-url';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
@@ -47,6 +48,10 @@
 
   function validateOptionalMetadataUrl(value: string) {
     return value.trim() ? validateConsoleMetadataUrl(value) : { valid: true } as const;
+  }
+
+  function previewInitial(name: string) {
+    return name.trim().charAt(0).toUpperCase() || 'A';
   }
 
   function isTinyCloudSessionEligible(app: ConsoleApp) {
@@ -110,7 +115,7 @@
     const redirectResult = validateConsoleRedirectUris(redirectUris, newType);
     const metadataResult = validateOptionalMetadataUrl(newUri);
     const iconResult = validateOptionalMetadataUrl(newIcon);
-    if (!newName.trim()) createError = 'Enter an app name.';
+    if (!newName.trim()) createError = 'Enter a sign-in name.';
     else if (!redirectResult.valid) createError = redirectResult.reason;
     else if (!metadataResult.valid) createError = metadataResult.reason;
     else if (!iconResult.valid) createError = iconResult.reason;
@@ -145,7 +150,7 @@
     const originResult = editTinyCloudSessionEnabled
       ? validateConsoleApplicationOrigin(editTinyCloudSessionOrigin.trim())
       : { valid: true } as const;
-    if (!editName.trim()) editError = 'Enter an app name.';
+    if (!editName.trim()) editError = 'Enter a sign-in name.';
     else if (!redirectResult.valid) editError = redirectResult.reason;
     else if (!metadataResult.valid) editError = metadataResult.reason;
     else if (!iconResult.valid) editError = iconResult.reason;
@@ -237,7 +242,7 @@
 
       <form class="grid gap-4 lg:grid-cols-2" onsubmit={(event) => { event.preventDefault(); void createApp(); }}>
         <div class="space-y-2">
-          <label class="text-sm font-semibold text-surface-900" for="app-name">App name</label>
+          <label class="text-sm font-semibold text-surface-900" for="app-name">Sign-in name</label>
           <Input id="app-name" bind:value={newName} placeholder="Dashboard for Acme" required />
         </div>
         <div class="space-y-2">
@@ -265,12 +270,29 @@
           </p>
         </div>
         <div class="space-y-2">
-          <label class="text-sm font-semibold text-surface-900" for="app-uri">Metadata URL</label>
+          <label class="text-sm font-semibold text-surface-900" for="app-uri">Application website</label>
           <Input id="app-uri" bind:value={newUri} placeholder="https://app.example.com" />
         </div>
         <div class="space-y-2">
           <label class="text-sm font-semibold text-surface-900" for="app-icon">Icon URL</label>
           <Input id="app-icon" bind:value={newIcon} placeholder="https://app.example.com/icon.png" />
+          <p class="text-xs leading-5 text-surface-500">Shown on OpenKey sign-in and consent pages.</p>
+        </div>
+        <div class="lg:col-span-2 rounded-2xl border border-surface-200 bg-surface-50 p-4">
+          <p class="text-xs font-semibold uppercase tracking-[0.08em] text-surface-500">Sign-in preview</p>
+          <div class="mt-3 flex items-center gap-3">
+            {#if safeExternalHttpUrl(newIcon.trim())}
+              <img class="h-10 w-10 rounded-xl object-cover" src={safeExternalHttpUrl(newIcon.trim())!} alt="" />
+            {:else}
+              <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-primary-100 font-semibold text-primary-700" aria-hidden="true">{previewInitial(newName)}</div>
+            {/if}
+            <div class="min-w-0">
+              <p class="font-semibold text-surface-900">Sign in to {newName.trim() || 'Your app'}</p>
+              {#if safeExternalHttpUrl(newUri.trim())}
+                <p class="truncate text-sm text-surface-500">{newUri.trim()}</p>
+              {/if}
+            </div>
+          </div>
         </div>
         <div class="lg:col-span-2 flex flex-wrap gap-2">
           <Button type="submit" disabled={createLoading || ($overview && $overview.usage.apps >= ($overview.entitlements?.maxApps ?? $overview.usage.apps))}>
@@ -329,7 +351,7 @@
                 </div>
                 <p class="mt-2 font-mono text-xs text-surface-500 break-all">{app.clientId}</p>
                 <p class="mt-2 text-sm leading-6 text-surface-600">
-                  {app.uri ?? 'No metadata URL'}
+                  {app.uri ?? 'No application website'}
                 </p>
               </div>
 
@@ -369,7 +391,7 @@
               <form class="mt-4 space-y-4 border-t border-dotted border-surface-200 pt-4" onsubmit={(event) => { event.preventDefault(); void saveEdit(app); }}>
                 <div class="grid gap-4 lg:grid-cols-2">
                   <div class="space-y-2">
-                    <label class="text-sm font-semibold text-surface-900" for={`edit-name-${app.id}`}>App name</label>
+                    <label class="text-sm font-semibold text-surface-900" for={`edit-name-${app.id}`}>Sign-in name</label>
                     <Input id={`edit-name-${app.id}`} bind:value={editName} required />
                   </div>
                   <div class="space-y-2">
@@ -403,12 +425,30 @@
                     {/if}
                   </div>
                   <div class="space-y-2">
-                    <label class="text-sm font-semibold text-surface-900" for={`edit-uri-${app.id}`}>Metadata URL</label>
+                    <label class="text-sm font-semibold text-surface-900" for={`edit-uri-${app.id}`}>Application website</label>
                     <Input id={`edit-uri-${app.id}`} bind:value={editUri} />
                   </div>
                   <div class="space-y-2">
                     <label class="text-sm font-semibold text-surface-900" for={`edit-icon-${app.id}`}>Icon URL</label>
                     <Input id={`edit-icon-${app.id}`} bind:value={editIcon} />
+                    <p class="text-xs leading-5 text-surface-500">Shown on OpenKey sign-in and consent pages.</p>
+                  </div>
+                </div>
+
+                <div class="rounded-2xl border border-surface-200 bg-surface-50 p-4">
+                  <p class="text-xs font-semibold uppercase tracking-[0.08em] text-surface-500">Sign-in preview</p>
+                  <div class="mt-3 flex items-center gap-3">
+                    {#if safeExternalHttpUrl(editIcon.trim())}
+                      <img class="h-10 w-10 rounded-xl object-cover" src={safeExternalHttpUrl(editIcon.trim())!} alt="" />
+                    {:else}
+                      <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-primary-100 font-semibold text-primary-700" aria-hidden="true">{previewInitial(editName)}</div>
+                    {/if}
+                    <div class="min-w-0">
+                      <p class="font-semibold text-surface-900">Sign in to {editName.trim() || 'Your app'}</p>
+                      {#if safeExternalHttpUrl(editUri.trim())}
+                        <p class="truncate text-sm text-surface-500">{editUri.trim()}</p>
+                      {/if}
+                    </div>
                   </div>
                 </div>
 

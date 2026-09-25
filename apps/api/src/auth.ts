@@ -283,6 +283,7 @@ export const auth = betterAuth({
     oauthProvider({
       loginPage: `${origin}/auth/login`,
       consentPage: `${origin}/oauth/consent`,
+      allowPublicClientPrelogin: true,
       allowDynamicClientRegistration: dynamicClientRegistrationEnabled(),
       allowUnauthenticatedClientRegistration: dynamicClientRegistrationEnabled(),
       validAudiences: oauthValidAudiences(baseURL),
