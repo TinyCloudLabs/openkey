@@ -3,6 +3,7 @@
   import { authClient, authErrorMessage } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
   import { copyText } from '$lib/clipboard';
+  import { discoverApplicationReads, selectApplicationRead, type AppReadDiscovery, type ReadableApplication } from '$lib/app-read-discovery';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import SiweMessage from '$lib/components/ui/siwe-message.svelte';
@@ -53,7 +54,10 @@
   let pasteCode = $state('');
   let callbackFailed = $state(false);
   let copied = $state(false);
-  let step = $state<'select-key' | 'link-wallet' | 'consent' | 'choose-wallet' | 'done'>('select-key');
+  let step = $state<'select-key' | 'select-app' | 'link-wallet' | 'consent' | 'choose-wallet' | 'done'>('select-key');
+  let appDiscovery = $state<AppReadDiscovery | null>(null);
+  let selectedApplication = $state<ReadableApplication | null>(null);
+  let discovering = $state(false);
   let preparedData = $state<any>(null);
   let siweMessage = $state('');
   let preparing = $state(false);
@@ -88,6 +92,10 @@
   const jwkB64 = $page.url.searchParams.get('jwk') || '';
   const callback = $page.url.searchParams.get('callback') || '';
   const host = $page.url.searchParams.get('host') || 'https://node.tinycloud.xyz';
+  const discoveryMode = $page.url.searchParams.get('discovery') || '';
+  const discoveryOwner = $page.url.searchParams.get('owner') || '';
+  const discoveryOwnerMatch = /^did:pkh:eip155:[1-9][0-9]*:(0x[a-fA-F0-9]{40})$/.exec(discoveryOwner);
+  const invalidDiscoveryOwner = discoveryMode === 'app-read' && Boolean(discoveryOwner) && !discoveryOwnerMatch;
   const permissionsB64 = $page.url.searchParams.get('permissions') || '';
   const reasonParam = $page.url.searchParams.get('reason') || '';
   // Optional caller-supplied delegation lifetime. The CLI encodes this as
@@ -118,11 +126,15 @@
     }
   }
 
-  function encodeBase64Url(bytes: ArrayBuffer | Uint8Array): string {
+  function encodeBase64(bytes: ArrayBuffer | Uint8Array): string {
     const value = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
     let binary = '';
     for (const byte of value) binary += String.fromCharCode(byte);
-    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    return btoa(binary);
+  }
+
+  function encodeBase64Url(bytes: ArrayBuffer | Uint8Array): string {
+    return encodeBase64(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   }
 
   async function encryptDeviceRelay(payload: unknown) {
@@ -182,7 +194,7 @@
     path: string;
     actions: string[];
   }
-  let requestedPermissions: RequestedPermission[] = [];
+  let requestedPermissions = $state<RequestedPermission[]>([]);
   let requestReason = $state(normalizeReason(reasonParam));
   if (permissionsB64) {
     try {
@@ -220,7 +232,8 @@
     return addresses.size === 1 ? [...addresses][0] : null;
   }
 
-  const expectedAddress = extractExpectedAddress(requestedPermissions);
+  const expectedAddress = $derived(discoveryMode === 'app-read' ? discoveryOwnerMatch?.[1].toLowerCase() ?? null : extractExpectedAddress(requestedPermissions));
+  const visibleKeys = $derived(discoveryMode === 'app-read' && expectedAddress ? keys.filter(key => key.address.toLowerCase() === expectedAddress) : keys);
   const expectedAddressShort = $derived(
     expectedAddress
       ? `${expectedAddress.slice(0, 6)}...${expectedAddress.slice(-4)}`
@@ -367,16 +380,60 @@
     preparing = true;
 
     try {
-      const data = await prepareDelegation(key);
-      applyPreparedDelegation(data);
-      editingPermissions = false;
-      step = 'consent';
+      if (discoveryMode) {
+        if (invalidDiscoveryOwner || (expectedAddress && key.address.toLowerCase() !== expectedAddress)) {
+          throw new Error('This request is bound to a different or invalid account. Return to your agent without approving access.');
+        }
+        if (discoveryMode !== 'app-read' || permissionsB64) {
+          throw new Error('This application lookup request is not supported. Return to your agent without approving access.');
+        }
+        discovering = true;
+        appDiscovery = await discoverApplicationReads({ keyId: key.id, keyType: key.keyType, jwk, host, reason: requestReason }, fetch, import.meta.env.VITE_API_URL || '');
+        if (discoveryOwner && appDiscovery.ownerDid.toLowerCase() !== discoveryOwner.toLowerCase()) {
+          throw new Error('The selected account does not match the owner requested by your agent. No access has been approved.');
+        }
+        step = 'select-app';
+        if (appDiscovery.applications.length === 1) await onApplicationSelect(appDiscovery.applications[0]);
+      } else {
+        const data = await prepareDelegation(key);
+        applyPreparedDelegation(data);
+        editingPermissions = false;
+        step = 'consent';
+      }
     } catch (e: any) {
       error = e.message || 'Failed to prepare delegation';
       selectedKey = null;
+      appDiscovery = null;
+      step = 'select-key';
+    } finally {
+      preparing = false;
+      discovering = false;
+    }
+  }
+
+  async function onApplicationSelect(application: ReadableApplication) {
+    if (!selectedKey || !appDiscovery) return;
+    preparing = true;
+    discovering = false;
+    error = '';
+    resetDelegationState();
+    selectedApplication = application;
+    requestedPermissions = application.permissions;
+    try {
+      const data = await prepareDelegation(selectedKey);
+      applyPreparedDelegation(data);
+      step = 'consent';
+    } catch (e: any) {
+      error = e.message || 'Failed to prepare application access';
+      step = 'select-app';
     } finally {
       preparing = false;
     }
+  }
+
+  function appReadBinding() {
+    if (!appDiscovery || !selectedApplication) throw new Error('Choose an application before approving access.');
+    return selectApplicationRead(appDiscovery, selectedApplication.appId);
   }
 
   async function prepareDelegation(key: EthereumKey, actionKeys?: string[]) {
@@ -393,7 +450,9 @@
     // CLI-driven flow (e.g. tc auth request): forward the requested caps
     // verbatim. The API uses these instead of the default abilities, so the
     // baseline-edit UI surface is bypassed for CLI requests.
-    if (requestedPermissions.length > 0) {
+    if (discoveryMode === 'app-read') {
+      Object.assign(body, appReadBinding());
+    } else if (requestedPermissions.length > 0) {
       body.permissions = requestedPermissions;
     }
     if (requestReason) {
@@ -454,7 +513,7 @@
             chainId: 1,
             provenance: selectedKey.keyType === 'EXTERNAL' ? 'external' : 'managed',
           },
-          editable: true,
+          editable: discoveryMode !== 'app-read',
           metadataTrust: { status: 'unsigned', reason: 'no manifest supplied' },
           reason: { text: requestReason, source: requestReason ? 'caller' : 'none' },
           requester: {
@@ -513,8 +572,16 @@
   }
 
   function goBack() {
-    selectedKey = null;
-    step = 'select-key';
+    const returnToApps = discoveryMode === 'app-read' && step === 'consent' && appDiscovery;
+    if (!returnToApps) {
+      selectedKey = null;
+      appDiscovery = null;
+    }
+    if (discoveryMode === 'app-read') {
+      selectedApplication = null;
+      requestedPermissions = [];
+    }
+    step = returnToApps ? 'select-app' : 'select-key';
     error = '';
     resetDelegationState();
   }
@@ -705,6 +772,7 @@
   }
 
   async function updatePermissions(nextKeys: string[]) {
+    if (discoveryMode === 'app-read') return;
     if (!selectedKey || !jwk) {
       error = 'Missing key or JWK parameter.';
       return;
@@ -725,6 +793,7 @@
   }
 
   async function resetPermissions() {
+    if (discoveryMode === 'app-read') return;
     if (!selectedKey || !jwk) {
       error = 'Missing key or JWK parameter.';
       return;
@@ -783,7 +852,9 @@
       if (permissionsEdited) {
         body.actionKeys = selectedActionKeys;
       }
-      if (requestedPermissions.length > 0) {
+      if (discoveryMode === 'app-read') {
+        Object.assign(body, appReadBinding());
+      } else if (requestedPermissions.length > 0) {
         body.permissions = requestedPermissions;
       }
       if (requestReason) {
@@ -990,12 +1061,12 @@
       } catch {
         // Callback unreachable (e.g. CLI on remote machine) — fall back to paste code
         callbackFailed = true;
-        pasteCode = btoa(JSON.stringify(payload));
+        pasteCode = encodeBase64(new TextEncoder().encode(JSON.stringify(payload)));
         done = true;
         step = 'done';
       }
     } else {
-      pasteCode = btoa(JSON.stringify(payload));
+      pasteCode = encodeBase64(new TextEncoder().encode(JSON.stringify(payload)));
       done = true;
       step = 'done';
     }
@@ -1072,7 +1143,7 @@
             {#if callbackFailed}
               <p class="text-surface-500 text-sm mb-4">Could not reach the CLI automatically. Copy this code and paste it into the CLI to complete authentication.</p>
             {:else}
-              <p class="text-surface-500 text-sm mb-4">Copy this code and paste it into the CLI:</p>
+              <p class="text-surface-500 text-sm mb-4">{discoveryMode === 'app-read' ? 'Copy this code and paste it into your agent conversation:' : 'Copy this code and paste it into the CLI:'}</p>
             {/if}
             <textarea
               readonly
@@ -1130,8 +1201,37 @@
             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
             <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
           </svg>
-          <span class="text-sm text-surface-500">{preparing ? 'Preparing delegation...' : 'Loading your keys...'}</span>
+          <span class="text-sm text-surface-500">{discovering ? 'Finding your applications...' : preparing ? 'Preparing delegation...' : 'Loading your keys...'}</span>
         </div>
+
+      {:else if step === 'select-app' && appDiscovery && selectedKey}
+        <header class="mb-5">
+          <h1 class="text-lg font-semibold text-surface-900">Choose an application</h1>
+          <p class="text-surface-500 text-sm mt-1">Choose which application's records your agent can read. You will review access before approving.</p>
+        </header>
+        {#if error}
+          <div class="bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl mb-4 text-sm" role="alert">{error}</div>
+        {/if}
+        <div class="p-3 bg-surface-50 border border-surface-200 rounded-xl mb-4">
+          <div class="text-xs text-surface-400 mb-1">Your agent's request</div>
+          <p class="text-sm text-surface-700">{requestReason || 'Read selected application data'}</p>
+        </div>
+        {#if !appDiscovery.complete || appDiscovery.issues.length > 0}
+          <p class="text-sm text-amber-800 mb-4" role="status">Some application registrations could not be read or do not declare supported read access. Only applications with validated read permissions appear below.</p>
+        {/if}
+        {#if appDiscovery.applications.length === 0}
+          <p class="text-sm text-surface-600 mb-4">{appDiscovery.complete && appDiscovery.issues.length === 0 ? 'No registered applications were found for this account.' : 'No application could be prepared for reading. Return to your agent with this registry issue; no access has been approved.'}</p>
+        {:else}
+          <div class="flex flex-col gap-2 mb-4">
+            {#each appDiscovery.applications as application (application.appId)}
+              <button type="button" onclick={() => onApplicationSelect(application)} class="w-full text-left p-3 border border-surface-200 rounded-xl hover:bg-surface-50 transition-colors">
+                <span class="block font-medium text-sm text-surface-900">{application.name || application.appId}</span>
+                {#if application.description}<span class="block text-sm text-surface-500 mt-1">{application.description}</span>{/if}
+              </button>
+            {/each}
+          </div>
+        {/if}
+        <Button variant="secondary" onclick={goBack} class="w-full rounded-xl">Choose a different key</Button>
 
       {:else if step === 'link-wallet'}
         <!-- Link external wallet -->
@@ -1269,6 +1369,17 @@
             </p>
           </div>
 
+          {#if selectedApplication}
+            <div class="p-3 bg-surface-50 border border-surface-200 rounded-xl">
+              <div class="text-xs text-surface-400 mb-1">Selected application</div>
+              <p class="font-medium text-sm text-surface-900">{selectedApplication.name || selectedApplication.appId}</p>
+              <p class="text-sm text-surface-500 mt-1">Read access to this application's declared resources and your application registry.</p>
+              {#if appDiscovery && (!appDiscovery.complete || appDiscovery.issues.length > 0)}
+                <p class="text-sm text-amber-800 mt-2" role="status">Some registrations are unavailable or lack supported read access. This approval covers the selected application.</p>
+              {/if}
+            </div>
+          {/if}
+
           <!-- Signing key -->
           <div class="p-3 bg-surface-50 border border-surface-200 rounded-xl">
             <div class="text-xs text-surface-400 mb-1">Signing key</div>
@@ -1318,6 +1429,7 @@
                   approveDelegate,
                   goBack,
                   updateSelection: (next) => {
+                    if (discoveryMode === 'app-read') return;
                     reviewSelection = next;
                     const nextServerKeys = mapReviewSelectionToActionKeys(next);
                     if (nextServerKeys.length === 0) {
@@ -1386,13 +1498,19 @@
             <p class="leading-relaxed">
               This request is for wallet
               <code class="font-mono text-xs">{expectedAddressShort}</code>.
-              That wallet isn't currently connected. Link it below, or switch
-              to a profile that uses a wallet you have here.
+              {#if discoveryMode === 'app-read'}
+                Sign in to the OpenKey account that holds this key. This request cannot authorize another account.
+              {:else}
+                That wallet isn't currently connected. Link it below, or switch
+                to a profile that uses a wallet you have here.
+              {/if}
             </p>
           </div>
         {/if}
 
-        {#if keys.length === 0}
+        {#if discoveryMode === 'app-read' && expectedAddress && visibleKeys.length === 0}
+          <p class="text-sm text-surface-500">Your existing selection is preserved. No new key or permission has been created.</p>
+        {:else if keys.length === 0}
           <div class="flex flex-col items-center justify-center text-center py-4">
             <p class="text-surface-500 text-sm mb-5">No keys found. Generate your first key to connect.</p>
             <Button onclick={generateAndSelect} class="w-full rounded-xl">
@@ -1405,7 +1523,7 @@
         {:else}
           <div class="flex flex-col gap-3">
             <p class="text-surface-500 text-sm">Select a key to authorize:</p>
-            {#each keys as key}
+            {#each visibleKeys as key}
               {@const isExpected = !!expectedAddress && key.address.toLowerCase() === expectedAddress}
               {@const isMismatch = !!expectedAddress && !isExpected}
               <button
@@ -1431,7 +1549,7 @@
                 <code class="font-mono text-surface-400 text-sm">{formatAddress(key.address)}</code>
               </button>
             {/each}
-            {#if expectedAddress && !overrideMismatch && !keys.some((k) => k.address.toLowerCase() === expectedAddress)}
+            {#if discoveryMode !== 'app-read' && expectedAddress && !overrideMismatch && !keys.some((k) => k.address.toLowerCase() === expectedAddress)}
               <button
                 type="button"
                 class="text-xs text-surface-500 hover:text-surface-900 transition-colors bg-transparent border-none cursor-pointer underline self-start"
@@ -1440,12 +1558,14 @@
                 Continue with a different wallet anyway
               </button>
             {/if}
-            <Button variant="secondary" onclick={generateAndSelect} class="rounded-xl">
-              + Generate New Key
-            </Button>
-            <Button variant="secondary" onclick={showLinkWallet} class="rounded-xl">
-              Link External Wallet
-            </Button>
+            {#if discoveryMode !== 'app-read' || !expectedAddress}
+              <Button variant="secondary" onclick={generateAndSelect} class="rounded-xl">
+                + Generate New Key
+              </Button>
+              <Button variant="secondary" onclick={showLinkWallet} class="rounded-xl">
+                Link External Wallet
+              </Button>
+            {/if}
           </div>
         {/if}
       {/if}

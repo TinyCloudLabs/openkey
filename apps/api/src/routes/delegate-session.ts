@@ -20,6 +20,7 @@ import {
 
 export type DelegationJwk = { kty: string; crv: string; x: string };
 export type AbilitiesMap = Record<string, Record<string, string[]>>;
+export type SpaceAbilitiesMap = Record<string, AbilitiesMap>;
 
 export interface RecapEntry {
   service: string;
@@ -140,6 +141,39 @@ export function entriesToAbilities(entries: RecapEntry[]): AbilitiesMap {
   }
 
   return abilities;
+}
+
+export function entriesToSpaceAbilities(entries: RecapEntry[]): SpaceAbilitiesMap {
+  const spaces: SpaceAbilitiesMap = {};
+  for (const entry of entries) {
+    const abilities = spaces[entry.space] ??= {};
+    const service = abilities[shortServiceName(entry.service)] ??= {};
+    service[entry.path] = [...new Set([...(service[entry.path] ?? []), ...entry.actions])];
+  }
+  return spaces;
+}
+
+export function resolvePermissionEntries(permissions: DelegationPermissionEntry[], address: string, chainId: number): RecapEntry[] {
+  const owner = makeSpaceId(address, chainId, 'account').slice(0, -'account'.length);
+  return permissions.map(entry => {
+    if (isRawEncryptionPermission(entry)) throw new Error('Raw encryption permissions are not supported by scoped CLI delegation');
+    const requested = entry.space ?? '';
+    let space: string;
+    if (requested.startsWith('tinycloud:')) {
+      const name = requested.slice(requested.lastIndexOf(':') + 1);
+      if (!/^[A-Za-z0-9_-]+$/.test(name) || requested.slice(0, -name.length).toLowerCase() !== owner.toLowerCase()) throw new Error('Requested space does not belong to the signing identity');
+      space = owner + name;
+    } else {
+      if (!/^[A-Za-z0-9_-]+$/.test(requested)) throw new Error('Requested space does not belong to the signing identity');
+      space = owner + requested;
+    }
+    return { ...entry, service: shortServiceName(entry.service), space };
+  });
+}
+
+export function assertPermissionSubset(entries: RecapEntry[], permissions: DelegationPermissionEntry[], address: string, chainId: number) {
+  const allowed = new Set(resolvePermissionEntries(permissions, address, chainId).flatMap(entry => entry.actions.map(action => actionKey(entry, action))));
+  if (!entries.length || entries.some(entry => entry.actions.some(action => !allowed.has(actionKey(entry, action))))) throw new Error('Edited permissions must be a subset of the original per-space delegation request');
 }
 
 export function assertBaselineSubset(entries: RecapEntry[], baseline: AbilitiesMap) {
@@ -314,10 +348,8 @@ export function prepareDelegationSession({
   expiryMs,
 }: PrepareDelegationSessionInput): PrepareDelegationSessionResult {
   const isCliBaseline = permissions !== undefined;
-  const effectivePrefix = isCliBaseline
-    ? spacePrefixFromPermissions(permissions!)
-    : prefix;
-  const spaceId = makeSpaceId(address, chainId, effectivePrefix);
+  const requestedEntries = isCliBaseline ? resolvePermissionEntries(permissions!, address, chainId) : undefined;
+  const spaceId = requestedEntries?.[0]?.space ?? makeSpaceId(address, chainId, prefix);
 
   const now = new Date();
   const expirationTime = new Date(now.getTime() + expiryMs);
@@ -331,13 +363,9 @@ export function prepareDelegationSession({
     jwk,
   };
 
-  const baselineAbilities = isCliBaseline
-    ? abilitiesFromPermissions(permissions!)
-    : DEFAULT_ABILITIES;
-
   const baselinePrepared = prepareSession({
     ...baseConfig,
-    abilities: baselineAbilities,
+    ...(requestedEntries ? { abilities: {}, spaceAbilities: entriesToSpaceAbilities(requestedEntries) } : { abilities: DEFAULT_ABILITIES }),
   });
   const baselineEntries = parsePreparedRecap(baselinePrepared.siwe);
 
@@ -388,7 +416,8 @@ export function prepareDelegationSession({
   const prepared = edited
     ? prepareSession({
         ...baseConfig,
-        abilities: entriesToAbilities(selectedEntries),
+        abilities: {},
+        spaceAbilities: entriesToSpaceAbilities(selectedEntries),
       })
     : baselinePrepared;
 

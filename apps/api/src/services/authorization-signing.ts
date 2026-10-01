@@ -56,6 +56,8 @@ export interface VerifiedManifestFields {
 }
 
 export interface AuthorizationContextIssueInput {
+  /** Exact owner-registry app selection reviewed before scoped CLI approval. */
+  appReadSelectionDigest?: string;
   userId: string;
   keyId: string;
   keyAddress: string;
@@ -99,6 +101,7 @@ export interface AuthorizationContextIssueInput {
 }
 
 interface StoredContext {
+  appReadSelectionDigest?: string;
   token: string;
   createdAt: number;
   expiresAt: number;
@@ -309,6 +312,7 @@ export function issueAuthorizationContext(
   };
 
   const stored: StoredContext = {
+    appReadSelectionDigest: input.appReadSelectionDigest,
     token,
     createdAt: now,
     expiresAt: now + CONTEXT_TTL_MS,
@@ -685,6 +689,7 @@ export function consumeAuthorizationContext(
 export interface PeekSuccess {
   ok: true;
   value: {
+    appReadSelectionDigest?: string;
     userId: string;
     keyId: string;
     keyAddress: string;
@@ -729,6 +734,7 @@ export function peekAuthorizationContext(token: string): PeekSuccess | PeekFailu
   return {
     ok: true,
     value: {
+      appReadSelectionDigest: stored.appReadSelectionDigest,
       userId: stored.userId,
       keyId: stored.keyId,
       keyAddress: stored.keyAddress,

@@ -36,11 +36,14 @@ import {
   abilitiesFromPermissions,
   actionKey as computeActionKey,
   assertBaselineSubset,
+  assertPermissionSubset,
   assertRequiredActions,
   isRequiredAction,
   normalizeStringArray,
   parsePreparedRecap,
   prepareDelegationSession,
+  resolvePermissionEntries,
+  entriesToSpaceAbilities,
   type DelegationJwk,
   type DelegationPermissionEntry,
   type RecapEntry,
@@ -93,6 +96,22 @@ import { validateTinyCloudManageKeyRequest } from '../services/tinycloud-manage-
 
 const prisma = createPrismaClient();
 const tee = createTeeClient();
+let appReadDiscovery: ReturnType<typeof import('../services/app-read-discovery').createAppReadDiscovery> | undefined;
+async function getAppReadDiscovery() {
+  if (!appReadDiscovery) {
+    const { createAppReadDiscovery } = await import('../services/app-read-discovery');
+    appReadDiscovery = createAppReadDiscovery({
+      getKey: (userId, keyId) => prisma.ethereumKey.findFirst({ where: { id: keyId, userId, archivedAt: null } }),
+      signMessage: (key, message) => signManagedKey(key, key.sealedBlob!, message),
+    });
+  }
+  return appReadDiscovery;
+}
+interface AppReadSelectionBody { discoveryToken?: unknown; appId?: unknown; selectionDigest?: unknown }
+function appReadError(error: unknown) {
+  const code = (error as { code?: unknown })?.code;
+  return { error: 'The requested app read authorization could not be prepared.', code: typeof code === 'string' && /^app_read_[a-z_]+$/.test(code) ? code : 'app_read_discovery_failed' };
+}
 
 async function resolveBetterAuthSession(c: any): Promise<boolean> {
   let resolved = false;
@@ -123,6 +142,16 @@ delegateRouter.use('*', async (c, next) => {
     return activeDelegateSignerAuth(c, next);
   }
   return (requireSession as any)(c, next);
+});
+
+// Discover with the authenticated owner's managed key before the CLI's single
+// consent. No app data, registry writes, hosting or bootstrap are performed.
+delegateRouter.post('/app-read-discovery', async c => {
+  try {
+    const body = await c.req.json<{ keyId: string; jwk: unknown; host: string; reason?: unknown }>();
+    const result = await (await getAppReadDiscovery()).discover({ ...body, userId: c.get('user').id });
+    return c.json(result);
+  } catch (error) { return c.json(appReadError(error), 400); }
 });
 
 // Route-layer alias for the CLI permission entry shape. Keeps existing route
@@ -1037,7 +1066,7 @@ delegateRouter.post('/host', async (c) => {
  */
 delegateRouter.post('/', async (c) => {
   const user = c.get('user');
-  const body = await c.req.json<{
+  const body = await c.req.json<AppReadSelectionBody & {
     keyId: string;
     jwk: DelegationJwk;
     host: string;
@@ -1098,6 +1127,14 @@ delegateRouter.post('/', async (c) => {
       return c.json(delegateErrorResponse(err, 'Invalid permissions', 'invalid_permissions'), 400);
     }
   }
+  let appReadSelection;
+  if (body.discoveryToken !== undefined) {
+    try {
+      const selection = (await getAppReadDiscovery()).select({ ...body, userId: user.id });
+      permissions = selection.permissions;
+      appReadSelection = selection.appReadSelection;
+    } catch (error) { return c.json(appReadError(error), 400); }
+  }
   let expiryMs: number;
   try {
     expiryMs = resolveDelegationExpiryMs(body.expiry);
@@ -1117,6 +1154,7 @@ delegateRouter.post('/', async (c) => {
   const hasToken =
     typeof body.authorizationContextToken === 'string' &&
     body.authorizationContextToken.length > 0;
+  if (appReadSelection && !hasToken) return c.json({ error: 'App read approval requires its prepared context.', code: 'app_read_prepared_context_required' }, 400);
   if (isVersionedCaller && !hasToken) {
     return c.json(
       { error: 'protocolVersion >= 1 requires an authorizationContextToken', code: 'missing_authorization_context_token' },
@@ -1150,6 +1188,7 @@ delegateRouter.post('/', async (c) => {
       return c.json({ error: preview.message, code: preview.error }, 400);
     }
     const bound = preview.value;
+    if (bound.appReadSelectionDigest !== appReadSelection?.selectionDigest) return c.json({ error: 'App selection differs from its prepared context.', code: 'app_read_selection_changed' }, 400);
 
     // The stored context MUST have bound originalSiwe. Older /prepare
     // invocations that predate Blocker 1 did not set this field — those
@@ -1214,10 +1253,9 @@ delegateRouter.post('/', async (c) => {
       );
     }
     try {
-      const baseline = permissions
-        ? abilitiesFromPermissions(permissions)
-        : DEFAULT_ABILITIES;
-      assertBaselineSubset(preparedEntries, baseline);
+      if (permissions) assertPermissionSubset(preparedEntries, permissions, address, chainId);
+      else assertBaselineSubset(preparedEntries, DEFAULT_ABILITIES);
+      if (appReadSelection && permissions) assertPermissionSubset(resolvePermissionEntries(permissions, address, chainId), preparedEntries, address, chainId);
       assertRequiredActions(preparedEntries);
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'Invalid delegation' }, 400);
@@ -1331,6 +1369,7 @@ delegateRouter.post('/', async (c) => {
     }));
 
     return c.json({
+      ...(appReadSelection ? { appReadSelection } : {}),
       delegationHeader: session.delegationHeader,
       delegationCid: session.delegationCid,
       spaceId: bound.spaceId,
@@ -1453,7 +1492,7 @@ delegateRouter.post('/', async (c) => {
  */
 delegateRouter.post('/prepare', async (c) => {
   const user = c.get('user');
-  const body = await c.req.json<{
+  const body = await c.req.json<AppReadSelectionBody & {
     keyId: string;
     jwk: DelegationJwk;
     host: string;
@@ -1490,6 +1529,14 @@ delegateRouter.post('/prepare', async (c) => {
       return c.json(delegateErrorResponse(err, 'Invalid permissions', 'invalid_permissions'), 400);
     }
   }
+  let appReadSelection;
+  if (body.discoveryToken !== undefined) {
+    try {
+      const selection = (await getAppReadDiscovery()).select({ ...body, userId: user.id });
+      permissions = selection.permissions;
+      appReadSelection = selection.appReadSelection;
+    } catch (error) { return c.json(appReadError(error), 400); }
+  }
   let expiryMs: number;
   try {
     expiryMs = resolveDelegationExpiryMs(body.expiry);
@@ -1511,6 +1558,8 @@ delegateRouter.post('/prepare', async (c) => {
   } catch (e) {
     return c.json(delegateErrorResponse(e, 'Failed to prepare delegation', 'delegation_prepare_failed'), 400);
   }
+
+  if (appReadSelection && preparedResult.edited) return c.json({ error: 'App read approval must retain the selected app scope.', code: 'app_read_scope_changed' }, 400);
 
   const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
 
@@ -1538,10 +1587,11 @@ delegateRouter.post('/prepare', async (c) => {
     const baselineAbilitiesDigest = digestAbilities(
       // Use the exact abilities map that would be re-derived at /complete.
       permissions
-        ? abilitiesFromPermissions(permissions)
+        ? entriesToSpaceAbilities(resolvePermissionEntries(permissions, address, chainId))
         : DEFAULT_ABILITIES,
     );
     authorizationContext = issueAuthorizationContext({
+      appReadSelectionDigest: appReadSelection?.selectionDigest,
       userId: user.id,
       keyId: key.id,
       keyAddress: address,
@@ -1573,6 +1623,7 @@ delegateRouter.post('/prepare', async (c) => {
   }
 
   return c.json({
+    ...(appReadSelection ? { appReadSelection } : {}),
     prepared: preparedData,
     spaceId: preparedResult.spaceId,
     ownerDid,
@@ -1678,10 +1729,8 @@ delegateRouter.post('/complete', async (c) => {
   // strict subset+required validation over the SIWE bytes here.
   try {
     const entries = parsePreparedRecap(body.prepared.siwe || '');
-    const baseline = baselinePermissions
-      ? abilitiesFromPermissions(baselinePermissions)
-      : DEFAULT_ABILITIES;
-    assertBaselineSubset(entries, baseline);
+    if (baselinePermissions) assertPermissionSubset(entries, baselinePermissions, String(body.prepared.address || ''), Number(body.prepared.chainId) || 1);
+    else assertBaselineSubset(entries, DEFAULT_ABILITIES);
     assertRequiredActions(entries);
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'Invalid delegation' }, 400);
