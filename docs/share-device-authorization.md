@@ -27,14 +27,31 @@ through `/device`:
 - Approve refuses until the owner ticks "I started this request myself, on a
   device I control" next to the same-device warning.
 
-The API enforces the lifetime as well. `/delegate` sends `deviceTransactionId`
-to `/api/delegate/prepare`, `/api/delegate`, and `/api/delegate/complete`;
-those routes then refuse (`invalid_request`, or `expired_token` once the
-transaction is no longer pending) a delegation whose session key or Node
-origin differs from the pending request, or whose expiry is later than the
-requested TTL from now (5 s clock tolerance) or the transaction deadline plus
-the TTL. The check runs before signing and before the delegation header is
-sent to any host, so an overlong delegation is never created or activated.
+On any `/delegate` link, a `permissions` parameter that is present but not a
+readable, non-empty UTF-8 JSON list (including `?permissions=` and a bare
+`?permissions`) refuses the request; the default abilities apply only when the
+parameter is absent. Paste codes are standard base64 of UTF-8 JSON.
+
+The API enforces device constraints for requests that name a device
+transaction. `/delegate` sends `deviceTransactionId` to
+`/api/delegate/prepare`, `/api/delegate`, and `/api/delegate/complete`; when
+that field is present, those three routes refuse the request before signing
+and before the delegation header is sent to any host unless:
+
+- the transaction is pending (unknown, expired, or already approved ids get
+  `expired_token`);
+- the Node origin is the transaction's;
+- the session key is the transaction's. It is read from `jwk`, which must be
+  exactly `{ kty, crv, x[, kid] }` (private, unknown, or `null` fields and
+  padded coordinates are refused), and from the `URI` of the SIWE being
+  signed, or for `/complete` the SIWE the wallet signed; both must match;
+- the expiry is no later than the requested TTL from now (5 s clock
+  tolerance) and the transaction deadline plus the TTL.
+
+Refusals other than `expired_token` are `invalid_request`. Requests that
+name no device transaction follow ordinary `/delegate` behaviour, without
+these limits (tracked separately in TC-547). `/api/delegate/authorize-sign-prepare`
+and `/api/delegate/authorize-sign` do not apply these checks.
 
 The default and maximum lifetime is 30 days, counted from approval.
 
@@ -44,10 +61,10 @@ The default and maximum lifetime is 30 days, counted from approval.
 scoped CLI login uses: `{ service, space, path, actions }` with fully qualified
 services and abilities. `reason` is optional (at most 200 characters after
 whitespace normalization; control characters become spaces and bidirectional
-overrides and invisible or filler characters (U+00AD, U+034F, U+061C,
-U+115F, U+1160, U+180E, U+200B–U+200F, U+202A–U+202E, U+2060–U+2064,
-U+2066–U+2069, U+3164, U+FEFF, U+FFA0, and the tag characters
-U+E0000–U+E007F) are removed; `/delegate` applies the same cleaning to any
+overrides, every format (`\p{Cf}`) and default-ignorable
+(`\p{Default_Ignorable_Code_Point}`) character, and the fillers U+00AD,
+U+034F, U+061C, U+115F, U+1160, U+180E, U+3164, U+FFA0 and tag characters
+U+E0000–U+E007F are removed; `/delegate` applies the same cleaning to any
 reason it shows).
 `delegationTtlSeconds` must be between 60 seconds and 30 days. The
 approved delegation may expire at most `delegationTtlSeconds` after approval,

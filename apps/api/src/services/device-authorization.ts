@@ -305,6 +305,24 @@ export function sessionDidForPublicJwk(value: unknown): string {
   return `did:key:${identifier}#${identifier}`;
 }
 
+const DEVICE_SESSION_JWK_FIELDS: Record<string, true> = { kty: true, crv: true, x: true, kid: true };
+
+/**
+ * Session DID of a delegation request's JWK, refusing anything but the exact
+ * public Ed25519 shape a device request stores (`kty`, `crv`, canonical `x`,
+ * optional `kid`): private, unknown, or `null`-valued extra fields and padded
+ * coordinates are alternate spellings that must not be accepted silently.
+ */
+function strictSessionDid(value: unknown): string {
+  if (
+    !value || typeof value !== 'object' || Array.isArray(value) ||
+    Object.keys(value).some((field) => !Object.hasOwn(DEVICE_SESSION_JWK_FIELDS, field))
+  ) {
+    throw new DeviceAuthorizationError('invalid_request', 'jwk must be a public Ed25519 JWK with only kty, crv, x, and kid', 400);
+  }
+  return sessionDidForPublicJwk(value);
+}
+
 function scopeError(message: string): DeviceAuthorizationError {
   return new DeviceAuthorizationError('invalid_scope', message, 400);
 }
@@ -423,7 +441,7 @@ function requestReason(value: unknown): string | undefined {
   // Control, bidirectional-override, and invisible format characters could
   // disguise the consent text; strip them before measuring and storing.
   const normalized = value
-    .replace(/[\u00ad\u034f\u061c\u115f\u1160\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\u3164\ufeff\uffa0\u{e0000}-\u{e007f}]/gu, '')
+    .replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}\u00ad\u034f\u061c\u115f\u1160\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\u3164\ufeff\uffa0\u{e0000}-\u{e007f}]/gu, '')
     .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -663,22 +681,27 @@ export class DeviceAuthorizationService {
   }
 
   /**
-   * Guard for the delegate signing routes. A delegation prepared or signed
-   * for a device transaction must be for that pending transaction's session
-   * key and Node origin, and expire within its lifetime (requested TTL from
-   * now, and the transaction deadline plus TTL). Checked before signing and
-   * before any host activation, so an overlong delegation never exists.
+   * Guard for the delegate signing routes when a request names a device
+   * transaction (`deviceTransactionId`). The delegation must be for that
+   * pending transaction's session key and Node origin, and expire within
+   * its lifetime (requested TTL from now, and the transaction deadline plus
+   * TTL). The session key is taken from the strictly parsed JWK and, when a
+   * SIWE has been prepared, from the SIWE `URI` that is (or was) actually
+   * signed; they must agree. Checked before signing and before any host
+   * activation, so a delegation outside the transaction never exists.
    */
   async assertDelegationWindow(
     transactionId: unknown,
-    input: { expiresAt: Date; nodeOrigin: unknown; jwk: unknown },
+    input: { expiresAt: Date; nodeOrigin: unknown; jwk: unknown; signedSiwe?: string },
   ): Promise<void> {
     const record = typeof transactionId === 'string' ? await this.store.findById(transactionId) : null;
     const now = this.now();
     if (!record || record.status !== 'pending' || record.transactionExpiresAt <= now) {
       throw new DeviceAuthorizationError('expired_token', 'device authorization is no longer pending', 410);
     }
-    if (input.nodeOrigin !== record.nodeOrigin || sessionDidForPublicJwk(input.jwk) !== record.sessionDid) {
+    const jwkDid = strictSessionDid(input.jwk);
+    const signedDid = input.signedSiwe === undefined ? jwkDid : /^URI:\s*(.+)$/m.exec(input.signedSiwe)?.[1]?.trim();
+    if (input.nodeOrigin !== record.nodeOrigin || jwkDid !== record.sessionDid || signedDid !== record.sessionDid) {
       throw new DeviceAuthorizationError('invalid_request', 'delegation does not match the device request', 400);
     }
     const expiresAt = input.expiresAt.getTime();

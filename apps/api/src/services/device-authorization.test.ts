@@ -207,7 +207,9 @@ describe('OpenKey device authorization service', () => {
     const transaction = await input.service.start({
       ...input.request,
       permissions: requested,
-      reason: '  Publish  notes\u202e from\u200b my\u2060 agent\u061c\u180e\ufeff\u00ad\u034f\u115f\u1160\u3164\uffa0\u{e0041}\u{e007f} ',
+      // Listed fillers plus other format / default-ignorable characters
+      // (U+FFF9, U+1D173, U+180B, U+FE00).
+      reason: '  Publish  notes\u202e from\u200b my\u2060 agent\u061c\u180e\ufeff\u00ad\u034f\u115f\u1160\u3164\uffa0\u{e0041}\u{e007f}\ufff9\u{1d173}\u180b\ufe00 ',
     }, '203.0.113.20');
     const pending = await input.service.lookup(transaction.userCode);
     expect(pending).toMatchObject({ permissions: requested, reason: 'Publish notes from my agent', shareOnly: false });
@@ -433,5 +435,36 @@ describe('OpenKey device authorization service', () => {
       .rejects.toMatchObject({ code: 'expired_token', status: 410 });
     input.advance(5 * 60 * 1000);
     await expect(window(30)).rejects.toMatchObject({ code: 'expired_token', status: 410 });
+  });
+
+  test('takes the session key only from a strict JWK and the signed SIWE, and refuses settled transactions', async () => {
+    const input = fixture();
+    const transaction = await input.service.start({ ...input.request, delegationTtlSeconds: 60 }, '203.0.113.90');
+    const did = input.request.sessionDid;
+    const check = (jwk: unknown, signedSiwe?: string) => input.service.assertDelegationWindow(transaction.transactionId, {
+      expiresAt: new Date(input.now().getTime() + 30_000),
+      nodeOrigin: input.request.nodeOrigin,
+      jwk,
+      ...(signedSiwe !== undefined ? { signedSiwe } : {}),
+    });
+    // Alternate spellings of the same key are refused, not looked past.
+    for (const reshaped of [
+      { ...input.publicJwk, d: null },
+      { ...input.publicJwk, p: 'x' },
+      { ...input.publicJwk, use: 'sig' },
+      { ...input.publicJwk, x: `${input.publicJwk.x}=` },
+    ]) {
+      await expect(check(reshaped)).rejects.toMatchObject({ code: 'invalid_request', status: 400 });
+    }
+    await check({ ...input.publicJwk, kid: 'session' });
+    // The signed SIWE URI must be the transaction's key, whatever the jwk says.
+    const otherDid = sessionDidForPublicJwk({ kty: 'OKP', crv: 'Ed25519', x: randomBytes(32).toString('base64url') });
+    await check(input.publicJwk, `example wants you to sign in\n\nURI: ${did}\nVersion: 1`);
+    await expect(check(input.publicJwk, `example wants you to sign in\n\nURI: ${otherDid}\nVersion: 1`))
+      .rejects.toMatchObject({ code: 'invalid_request' });
+    await expect(check(input.publicJwk, '')).rejects.toMatchObject({ code: 'invalid_request' });
+
+    await input.service.approve(transaction.transactionId, 'user-1', encryptedApproval(input, transaction, input.request.permissions, new Date(input.now().getTime() + 30_000)));
+    await expect(check(input.publicJwk)).rejects.toMatchObject({ code: 'expired_token', status: 410 });
   });
 });

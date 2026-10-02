@@ -1294,7 +1294,7 @@ delegateRouter.post('/', async (c) => {
     if (!expirationTime) {
       return c.json({ error: 'prepared session must include a valid expirationTime or SIWE Expiration Time' }, 400);
     }
-    const deviceWindow = await deviceDelegationWindowError(body, { expirationTime, host });
+    const deviceWindow = await deviceDelegationWindowError(body, { expirationTime, host, signedSiwe: bound.originalSiwe });
     if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
 
     // Sign the STORED originalSiwe verbatim. This is the entire point of
@@ -1383,7 +1383,7 @@ delegateRouter.post('/', async (c) => {
   if (!expirationTime) {
     return c.json({ error: 'prepared session must include a valid expirationTime or SIWE Expiration Time' }, 400);
   }
-  const deviceWindow = await deviceDelegationWindowError(body, { expirationTime, host });
+  const deviceWindow = await deviceDelegationWindowError(body, { expirationTime, host, signedSiwe: preparedResult.prepared.siwe });
   if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
 
   const signature = await signManagedKey(key, key.sealedBlob, preparedResult.prepared.siwe);
@@ -1783,10 +1783,12 @@ delegateRouter.post('/complete', async (c) => {
   if (!expirationTime) {
     return c.json({ error: 'prepared session must include a valid expirationTime or SIWE Expiration Time' }, 400);
   }
-  // Device approvals: judge the lifetime by the bytes the wallet signed.
+  // Device approvals: judge the session key and lifetime by the bytes the
+  // wallet signed, not only the caller-supplied jwk.
   const deviceWindow = await deviceDelegationWindowError(body, {
     expirationTime: resolvePreparedExpirationTime({ siwe: body.prepared?.siwe }) ?? '',
     host: body.host,
+    signedSiwe: String(body.prepared?.siwe ?? ''),
   });
   if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
 
