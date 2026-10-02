@@ -31,7 +31,7 @@ async function createApprovedDelegation(record: DeviceAuthorizationRecord) {
   const account = privateKeyToAccount(`0x${randomBytes(32).toString('hex')}`);
   const expirationTime = new Date(Math.min(
     record.delegationExpiresAt.getTime(),
-    Date.now() + 30 * 24 * 60 * 60 * 1000 - 1000,
+    Date.now() + record.delegationTtlSeconds * 1000 - 1000,
   )).toISOString();
   const spaceId = makeSpaceId(account.address, 1, 'applications');
   const prepared = prepareSession({

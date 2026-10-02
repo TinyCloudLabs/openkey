@@ -90,6 +90,7 @@ import {
   type CoordinationosDenialCode,
 } from '../services/coordinationos-signing-audit';
 import { validateTinyCloudManageKeyRequest } from '../services/tinycloud-manage-key-policy';
+import { deviceDelegationWindowError } from './device-delegation-window';
 
 const prisma = createPrismaClient();
 const tee = createTeeClient();
@@ -1293,6 +1294,8 @@ delegateRouter.post('/', async (c) => {
     if (!expirationTime) {
       return c.json({ error: 'prepared session must include a valid expirationTime or SIWE Expiration Time' }, 400);
     }
+    const deviceWindow = await deviceDelegationWindowError(body, { expirationTime, host });
+    if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
 
     // Sign the STORED originalSiwe verbatim. This is the entire point of
     // Blocker 1: never regenerate the SIWE at approval time.
@@ -1380,6 +1383,8 @@ delegateRouter.post('/', async (c) => {
   if (!expirationTime) {
     return c.json({ error: 'prepared session must include a valid expirationTime or SIWE Expiration Time' }, 400);
   }
+  const deviceWindow = await deviceDelegationWindowError(body, { expirationTime, host });
+  if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
 
   const signature = await signManagedKey(key, key.sealedBlob, preparedResult.prepared.siwe);
 
@@ -1496,6 +1501,11 @@ delegateRouter.post('/prepare', async (c) => {
   } catch (err) {
     return c.json(delegateErrorResponse(err, 'Invalid expiry', 'invalid_expiry'), 400);
   }
+  const deviceWindow = await deviceDelegationWindowError(body, {
+    expirationTime: new Date(Date.now() + expiryMs).toISOString(),
+    host,
+  });
+  if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
   let preparedResult: ReturnType<typeof prepareDelegationSession>;
   try {
     preparedResult = prepareDelegationSession({
@@ -1773,6 +1783,12 @@ delegateRouter.post('/complete', async (c) => {
   if (!expirationTime) {
     return c.json({ error: 'prepared session must include a valid expirationTime or SIWE Expiration Time' }, 400);
   }
+  // Device approvals: judge the lifetime by the bytes the wallet signed.
+  const deviceWindow = await deviceDelegationWindowError(body, {
+    expirationTime: resolvePreparedExpirationTime({ siwe: body.prepared?.siwe }) ?? '',
+    host: body.host,
+  });
+  if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
 
   // Ensure JWK is a proper object with kty for WASM deserialization
   const session = completeSessionSetup({

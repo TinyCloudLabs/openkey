@@ -179,10 +179,11 @@ export function narrowSiwePreservingImmutable(input: NarrowInput): NarrowOutcome
       message: 'Original SIWE does not conform to the expected grammar (header/address/URI).',
     };
   }
-  // Convert the narrowed entries to the abilities map WASM expects.
-  const narrowedAbilities: Record<string, Record<string, string[]>> = {};
+  // Convert the narrowed entries to the abilities map WASM expects. Keys are
+  // request-supplied services and paths, so the maps have no prototype.
+  const narrowedAbilities: Record<string, Record<string, string[]>> = Object.create(null);
   for (const entry of input.narrowedEntries) {
-    narrowedAbilities[entry.service] ??= {};
+    if (!Object.hasOwn(narrowedAbilities, entry.service)) narrowedAbilities[entry.service] = Object.create(null);
     narrowedAbilities[entry.service]![entry.path] = [...entry.actions];
   }
 

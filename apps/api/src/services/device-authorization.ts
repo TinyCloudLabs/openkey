@@ -2,10 +2,14 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 
 export const DEVICE_AUTH_TRANSACTION_TTL_MS = 10 * 60 * 1000;
 export const DEVICE_AUTH_DEFAULT_DELEGATION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-export const DEVICE_AUTH_MAX_DELEGATION_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+export const DEVICE_AUTH_MAX_DELEGATION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const DEVICE_AUTH_POLL_INTERVAL_SECONDS = 2;
 export const DEVICE_AUTH_START_LIMIT = 5;
 export const DEVICE_AUTH_START_WINDOW_MS = 10 * 60 * 1000;
+export const DEVICE_AUTH_MAX_PERMISSIONS = 16;
+export const DEVICE_AUTH_MAX_REASON_LENGTH = 200;
+/** Tolerance for clock differences between API instances when signing. */
+export const DEVICE_AUTH_CLOCK_SKEW_MS = 5_000;
 
 export interface DevicePermission {
   service: string;
@@ -13,6 +17,50 @@ export interface DevicePermission {
   path: string;
   actions: string[];
 }
+
+/**
+ * The retired one-shot Share upload request. It is accepted (and normalized)
+ * exactly as before TC-539 so existing CLIs keep working.
+ */
+export const SHARE_DEVICE_PERMISSIONS: readonly DevicePermission[] = Object.freeze([Object.freeze({
+  service: 'tinycloud.capabilities',
+  space: 'applications',
+  path: '',
+  actions: Object.freeze(['tinycloud.capabilities/read']) as string[],
+})]);
+
+/**
+ * Device-flow scope policy (TC-539). A device approval is phishable: anyone
+ * can start a request and send its code to a victim. Requests are therefore
+ * limited to an explicit allowlist of data abilities on one ordinary space:
+ *
+ * - services: `tinycloud.kv` and `tinycloud.capabilities` only, always fully
+ *   qualified. `tinycloud.sql` is deferred: Node authorizes SQL descendant
+ *   paths but selects the database by the final path segment, so a grant for
+ *   `notes` could reach database `private` through `notes/private`;
+ * - abilities: KV get/list/metadata/put/del and capabilities read. SQL,
+ *   delegation, space, hooks, encryption, secrets, DuckDB, VFS, and wildcard
+ *   abilities are rejected;
+ * - spaces: one per request; `account` (account registry), `applications`
+ *   (application registry) and `secrets` are rejected;
+ * - paths: KV grants name an explicit relative path (no whole-space grants,
+ *   no `.`/`..` segments, no `secrets/` or `vault/` roots) and no KV path may
+ *   cover another (Node grants cover every path beneath a granted path);
+ *   capabilities grants are space-wide (empty path);
+ * - `tinycloud.capabilities/read` is required: every OpenKey delegation
+ *   carries it, so it is never optional at consent.
+ */
+export const DEVICE_FLOW_ABILITIES: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  'tinycloud.kv': ['tinycloud.kv/get', 'tinycloud.kv/list', 'tinycloud.kv/metadata', 'tinycloud.kv/put', 'tinycloud.kv/del'],
+  'tinycloud.capabilities': ['tinycloud.capabilities/read'],
+});
+const DEVICE_FLOW_DENIED_SPACES: Record<string, true> = { account: true, applications: true, secrets: true };
+const DEVICE_FLOW_DENIED_PATH_ROOTS: Record<string, true> = { secrets: true, vault: true };
+const DEVICE_PERMISSION_FIELDS: Record<string, true> = { service: true, space: true, path: true, actions: true };
+const DEVICE_SPACE_NAME = '[A-Za-z0-9][A-Za-z0-9._-]{0,63}';
+const DEVICE_SHORT_SPACE = new RegExp(`^${DEVICE_SPACE_NAME}$`);
+const DEVICE_PKH_SPACE = new RegExp(`^tinycloud:pkh:eip155:([1-9][0-9]{0,19}):(0x[0-9a-fA-F]{40}):(${DEVICE_SPACE_NAME})$`);
+const DEVICE_PATH = /^[A-Za-z0-9._~@+=,:-]+(?:\/[A-Za-z0-9._~@+=,:-]+)*\/?$/;
 
 export interface DeviceAuthorizationRecord {
   id: string;
@@ -22,10 +70,20 @@ export interface DeviceAuthorizationRecord {
   sessionDid: string;
   publicJwk: Record<string, unknown>;
   relayPublicJwk: Record<string, unknown>;
+  /** Requested permissions, already validated against the device-flow policy. */
   permissions: DevicePermission[];
+  /** Approved subset of `permissions`; set when the owner approves. */
+  approvedPermissions?: DevicePermission[];
+  reason?: string;
   nodeOrigin: string;
   shareOrigin: string;
+  /**
+   * Upper bound for the delegation expiry: transaction deadline plus the
+   * requested lifetime while pending, the approved expiry afterwards.
+   */
   delegationExpiresAt: Date;
+  /** Requested lifetime; an approval may grant at most approval time + this. */
+  delegationTtlSeconds: number;
   transactionExpiresAt: Date;
   requestedAt: Date;
   requestIpHash: string;
@@ -47,6 +105,7 @@ export interface DeviceAuthorizationStore {
     userId: string;
     encryptedResult: string;
     delegationExpiresAt: Date;
+    approvedPermissions: DevicePermission[];
   }): Promise<boolean>;
   consumeApproved(id: string): Promise<DeviceAuthorizationRecord | null>;
 }
@@ -81,6 +140,7 @@ export class MemoryDeviceAuthorizationStore implements DeviceAuthorizationStore 
     userId: string;
     encryptedResult: string;
     delegationExpiresAt: Date;
+    approvedPermissions: DevicePermission[];
   }): Promise<boolean> {
     const record = this.records.get(id);
     if (!record || record.status !== 'pending') return false;
@@ -89,6 +149,7 @@ export class MemoryDeviceAuthorizationStore implements DeviceAuthorizationStore 
       approvedByUserId: input.userId,
       encryptedResult: input.encryptedResult,
       delegationExpiresAt: input.delegationExpiresAt,
+      approvedPermissions: input.approvedPermissions,
     });
     return true;
   }
@@ -114,6 +175,7 @@ export type DeviceAuthorizationStart = {
   nodeOrigin: string;
   shareOrigin: string;
   delegationTtlSeconds?: number;
+  reason?: string;
 };
 
 export type DeviceAuthorizationResult = Record<string, unknown> & {
@@ -243,28 +305,172 @@ export function sessionDidForPublicJwk(value: unknown): string {
   return `did:key:${identifier}#${identifier}`;
 }
 
-function sharePermissions(value: unknown): DevicePermission[] {
-  if (!Array.isArray(value) || value.length !== 1) {
-    throw new DeviceAuthorizationError('invalid_scope', 'device authorization accepts one Share upload capability', 400);
+function scopeError(message: string): DeviceAuthorizationError {
+  return new DeviceAuthorizationError('invalid_scope', message, 400);
+}
+
+function isLegacyShareRequest(value: unknown): boolean {
+  if (!Array.isArray(value) || value.length !== 1) return false;
+  const permission = value[0] as Record<string, unknown> | null;
+  return Boolean(
+    permission &&
+    (permission.service === 'tinycloud.capabilities' || permission.service === 'capabilities') &&
+    (permission.space === 'applications' || (typeof permission.space === 'string' && permission.space.endsWith(':applications'))) &&
+    permission.path === '' &&
+    Array.isArray(permission.actions) &&
+    permission.actions.length === 1 &&
+    permission.actions[0] === 'tinycloud.capabilities/read',
+  );
+}
+
+export function isShareDevicePermissionSet(permissions: readonly DevicePermission[]): boolean {
+  return jsonEqual(permissions, SHARE_DEVICE_PERMISSIONS);
+}
+
+/**
+ * Comparable identity of a device-request space. Ethereum addresses are
+ * case-insensitive (the signed ReCap uses EIP-55), so only the address is
+ * lowercased; the chain and space name stay exact. A bare space name and a
+ * full URI never compare equal.
+ */
+function deviceSpaceIdentity(space: unknown): { key: string; name: string } | null {
+  if (typeof space !== 'string') return null;
+  if (DEVICE_SHORT_SPACE.test(space)) return { key: space, name: space };
+  const match = DEVICE_PKH_SPACE.exec(space);
+  return match ? { key: `tinycloud:pkh:eip155:${match[1]}:${match[2]!.toLowerCase()}:${match[3]}`, name: match[3]! } : null;
+}
+
+function assertDevicePath(service: string, path: string, label: string): void {
+  if (service === 'tinycloud.capabilities') {
+    if (path !== '') throw scopeError(`${label} must be empty for tinycloud.capabilities`);
+    return;
   }
-  const permission = value[0] as Record<string, unknown>;
-  if (
-    !permission ||
-    (permission.service !== 'tinycloud.capabilities' && permission.service !== 'capabilities') ||
-    (permission.space !== 'applications' && !(typeof permission.space === 'string' && permission.space.endsWith(':applications'))) ||
-    permission.path !== '' ||
-    !Array.isArray(permission.actions) ||
-    permission.actions.length !== 1 ||
-    permission.actions[0] !== 'tinycloud.capabilities/read'
-  ) {
-    throw new DeviceAuthorizationError('invalid_scope', 'only the one-shot Share upload capability may be requested', 400);
+  if (path.length === 0) throw scopeError(`${label} must name an explicit path; whole-space grants are not available over device authorization`);
+  if (path.length > 256 || !DEVICE_PATH.test(path)) throw scopeError(`${label} must be a relative path without wildcards or empty segments`);
+  const segments = path.split('/').filter(Boolean);
+  if (segments.some((segment) => segment === '.' || segment === '..')) throw scopeError(`${label} must not contain . or .. segments`);
+  if (Object.hasOwn(DEVICE_FLOW_DENIED_PATH_ROOTS, segments[0]!.toLowerCase())) throw scopeError(`${label} must not address secrets`);
+}
+
+/**
+ * Validate a device authorization permission request. Returns the canonical
+ * Share-only permission for the legacy request, otherwise the explicit
+ * manifest permissions after the device-flow policy above.
+ */
+export function deviceRequestPermissions(value: unknown): DevicePermission[] {
+  if (isLegacyShareRequest(value)) {
+    return SHARE_DEVICE_PERMISSIONS.map((permission) => ({ ...permission, actions: [...permission.actions] }));
   }
-  return [{
-    service: 'tinycloud.capabilities',
-    space: 'applications',
-    path: '',
-    actions: ['tinycloud.capabilities/read'],
-  }];
+  if (!Array.isArray(value) || value.length === 0 || value.length > DEVICE_AUTH_MAX_PERMISSIONS) {
+    throw scopeError(`permissions must list between 1 and ${DEVICE_AUTH_MAX_PERMISSIONS} explicit capabilities`);
+  }
+  let requestSpace: string | undefined;
+  const granted: Array<{ service: string; segments: string[]; index: number }> = [];
+  const permissions = value.map((raw, index) => {
+    const label = `permissions[${index}]`;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw scopeError(`${label} must be an object`);
+    const entry = raw as Record<string, unknown>;
+    const unknownField = Object.keys(entry).find((field) => !Object.hasOwn(DEVICE_PERMISSION_FIELDS, field));
+    if (unknownField) throw scopeError(`${label}.${unknownField} is not a permission field`);
+    const { service, space, path, actions } = entry;
+    if (typeof service !== 'string' || !Object.hasOwn(DEVICE_FLOW_ABILITIES, service)) {
+      throw scopeError(`${label}.service is not available over device authorization`);
+    }
+    if (typeof space !== 'string') throw scopeError(`${label}.space is required`);
+    const spaceIdentity = deviceSpaceIdentity(space);
+    if (!spaceIdentity) throw scopeError(`${label}.space must be a space name or tinycloud:pkh space URI`);
+    if (Object.hasOwn(DEVICE_FLOW_DENIED_SPACES, spaceIdentity.name.toLowerCase())) {
+      throw scopeError(`${label}.space ${spaceIdentity.name} is not available over device authorization`);
+    }
+    if (requestSpace === undefined) requestSpace = spaceIdentity.key;
+    else if (spaceIdentity.key !== requestSpace) throw scopeError('device authorization accepts one space per request');
+    if (typeof path !== 'string') throw scopeError(`${label}.path is required`);
+    assertDevicePath(service, path, `${label}.path`);
+    // Node grants cover every path beneath a granted path (segment prefix),
+    // so an entry covered by another of the same service could not really
+    // be unchecked on its own.
+    const segments = path.split('/').filter(Boolean);
+    const covering = granted.find((other) => {
+      if (other.service !== service) return false;
+      const [shorter, longer] = other.segments.length <= segments.length ? [other.segments, segments] : [segments, other.segments];
+      return shorter.every((segment, position) => segment === longer[position]);
+    });
+    if (covering) throw scopeError(`${label}.path overlaps permissions[${covering.index}].path; a granted path covers every path beneath it`);
+    granted.push({ service, segments, index });
+    const allowed = DEVICE_FLOW_ABILITIES[service]!;
+    if (!Array.isArray(actions) || actions.length === 0) throw scopeError(`${label}.actions must be a non-empty list`);
+    const unique = new Set<string>();
+    for (const action of actions) {
+      if (typeof action !== 'string' || !allowed.includes(action)) {
+        throw scopeError(`${label}.actions contains an ability that is not available over device authorization`);
+      }
+      if (unique.has(action)) throw scopeError(`${label}.actions repeats ${action}`);
+      unique.add(action);
+    }
+    return { service, space, path, actions: [...unique] };
+  });
+  if (!permissions.some((permission) => permission.service === 'tinycloud.capabilities')) {
+    throw scopeError(
+      'permissions must include tinycloud.capabilities/read with path "" in the requested space; every OpenKey delegation carries it and it cannot be unchecked',
+    );
+  }
+  return permissions;
+}
+
+function requestReason(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string') throw new DeviceAuthorizationError('invalid_request', 'reason must be a string', 400);
+  // Control, bidirectional-override, and invisible format characters could
+  // disguise the consent text; strip them before measuring and storing.
+  const normalized = value
+    .replace(/[\u00ad\u034f\u061c\u115f\u1160\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\u3164\ufeff\uffa0\u{e0000}-\u{e007f}]/gu, '')
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (normalized.length > DEVICE_AUTH_MAX_REASON_LENGTH) {
+    throw new DeviceAuthorizationError('invalid_request', `reason must be at most ${DEVICE_AUTH_MAX_REASON_LENGTH} characters`, 400);
+  }
+  return normalized || undefined;
+}
+
+/**
+ * The owner may uncheck optional capabilities, so the approved set is any
+ * subset of the request that keeps `tinycloud.capabilities/read`. It must be
+ * stated in the request's spelling and order (entries and actions) so the
+ * binding and the relayed delegation compare byte-for-byte.
+ */
+function approvedPermissionSubset(requested: DevicePermission[], value: unknown): DevicePermission[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new DeviceAuthorizationError('invalid_result', 'approved permissions must be a non-empty list', 400);
+  }
+  const resourceKey = (permission: { service?: unknown; space?: unknown; path?: unknown }) =>
+    `${permission.service}\0${deviceSpaceIdentity(permission.space)?.key}\0${permission.path}`;
+  const requestedByResource = new Map(requested.map((permission) => [resourceKey(permission), permission]));
+  const approvedByResource = new Map<string, Set<string>>();
+  for (const raw of value) {
+    const entry = (raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}) as Record<string, unknown>;
+    const resource = resourceKey(entry);
+    const source = requestedByResource.get(resource);
+    if (
+      !source || approvedByResource.has(resource) ||
+      !Array.isArray(entry.actions) || entry.actions.length === 0 ||
+      entry.actions.some((action) => typeof action !== 'string' || !source.actions.includes(action))
+    ) {
+      throw new DeviceAuthorizationError('invalid_result', 'approved permissions exceed the device request', 400);
+    }
+    approvedByResource.set(resource, new Set(entry.actions as string[]));
+  }
+  const canonical = requested.flatMap((permission) => {
+    const actions = approvedByResource.get(resourceKey(permission));
+    return actions ? [{ ...permission, actions: permission.actions.filter((action) => actions.has(action)) }] : [];
+  });
+  if (!canonical.some((permission) => permission.service === 'tinycloud.capabilities')) {
+    throw new DeviceAuthorizationError('invalid_result', 'approved permissions must keep tinycloud.capabilities/read', 400);
+  }
+  if (!jsonEqual(canonical, value)) {
+    throw new DeviceAuthorizationError('invalid_result', 'approved permissions must list each capability once in request spelling and order', 400);
+  }
+  return canonical;
 }
 
 function normalizeUserCode(value: string): string {
@@ -282,12 +488,12 @@ function randomUserCode(): string {
   return [...bytes].map((value) => alphabet[value % alphabet.length]).join('');
 }
 
-function delegationExpiry(input: unknown, now: Date): Date {
+function requestedTtlSeconds(input: unknown): number {
   const seconds = input === undefined ? DEVICE_AUTH_DEFAULT_DELEGATION_TTL_MS / 1000 : Number(input);
   if (!Number.isSafeInteger(seconds) || seconds < 60 || seconds > DEVICE_AUTH_MAX_DELEGATION_TTL_MS / 1000) {
-    throw new DeviceAuthorizationError('invalid_request', 'delegationTtlSeconds must be between 60 seconds and 90 days', 400);
+    throw new DeviceAuthorizationError('invalid_request', 'delegationTtlSeconds must be between 60 seconds and 30 days', 400);
   }
-  return new Date(now.getTime() + seconds * 1000);
+  return seconds;
 }
 
 function jsonEqual(left: unknown, right: unknown): boolean {
@@ -313,6 +519,7 @@ function canonicalRelayBytes(value: unknown, label: string): Buffer {
 function validateRelayApproval(record: DeviceAuthorizationRecord, value: unknown, now: Date): {
   relay: DeviceRelayEnvelope;
   delegationExpiresAt: Date;
+  approvedPermissions: DevicePermission[];
 } {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new DeviceAuthorizationError('invalid_result', 'encrypted relay approval must be an object', 400);
@@ -331,15 +538,21 @@ function validateRelayApproval(record: DeviceAuthorizationRecord, value: unknown
     bound.transactionId !== record.id ||
     bound.sessionDid !== record.sessionDid ||
     bound.nodeOrigin !== record.nodeOrigin ||
-    bound.shareOrigin !== record.shareOrigin ||
-    !jsonEqual(bound.permissions, record.permissions)
+    bound.shareOrigin !== record.shareOrigin
   ) {
     throw new DeviceAuthorizationError('invalid_result', 'relay binding does not match the device request', 400);
   }
+  const approvedPermissions = approvedPermissionSubset(record.permissions, bound.permissions);
   const delegationExpiresAt = typeof bound.delegationExpiresAt === 'string'
     ? new Date(bound.delegationExpiresAt)
     : new Date(Number.NaN);
-  if (Number.isNaN(delegationExpiresAt.getTime()) || delegationExpiresAt <= now || delegationExpiresAt > record.delegationExpiresAt) {
+  // The lifetime starts at approval: never longer than the requested TTL
+  // from now, and never past the transaction deadline plus that TTL.
+  if (
+    Number.isNaN(delegationExpiresAt.getTime()) || delegationExpiresAt <= now ||
+    delegationExpiresAt.getTime() > now.getTime() + record.delegationTtlSeconds * 1000 ||
+    delegationExpiresAt > record.delegationExpiresAt
+  ) {
     throw new DeviceAuthorizationError('invalid_result', 'delegation expiry exceeds the approved window', 400);
   }
   const ephemeralPublicJwk = publicRelayJwk(relay.ephemeralPublicJwk) as DeviceRelayEnvelope['ephemeralPublicJwk'];
@@ -357,6 +570,7 @@ function validateRelayApproval(record: DeviceAuthorizationRecord, value: unknown
       ciphertext: ciphertext.toString('base64url'),
     },
     delegationExpiresAt,
+    approvedPermissions,
   };
 }
 
@@ -396,7 +610,9 @@ export class DeviceAuthorizationService {
     if (input.sessionDid !== sessionDidForPublicJwk(publicJwk)) {
       throw new DeviceAuthorizationError('invalid_request', 'sessionDid does not match publicJwk', 400);
     }
-    const permissions = sharePermissions(input.permissions);
+    const permissions = deviceRequestPermissions(input.permissions);
+    const reason = requestReason(input.reason);
+    const delegationTtlSeconds = requestedTtlSeconds(input.delegationTtlSeconds);
     const nodeOrigin = canonicalOrigin(input.nodeOrigin, 'nodeOrigin');
     const shareOrigin = canonicalOrigin(input.shareOrigin, 'shareOrigin');
     const requestIpHash = sha256(`device-auth-ip\0${this.options.encryptionSecret}\0${requestIp}`);
@@ -418,13 +634,15 @@ export class DeviceAuthorizationService {
       publicJwk,
       relayPublicJwk,
       permissions,
+      ...(reason ? { reason } : {}),
       nodeOrigin,
       shareOrigin,
       // The requested lifetime begins when the person approves, not when the
-      // CLI first prints the code. Adding the transaction window here keeps a
-      // deliberate 30-day choice valid after passkey interaction while still
-      // enforcing a finite absolute upper bound.
-      delegationExpiresAt: delegationExpiry(input.delegationTtlSeconds, transactionExpiresAt),
+      // CLI first prints the code: approval may grant at most approval time
+      // plus the TTL, so the absolute bound is the transaction deadline plus
+      // the TTL.
+      delegationExpiresAt: new Date(transactionExpiresAt.getTime() + delegationTtlSeconds * 1000),
+      delegationTtlSeconds,
       transactionExpiresAt,
       requestedAt: now,
       requestIpHash,
@@ -444,11 +662,43 @@ export class DeviceAuthorizationService {
     };
   }
 
-  async lookup(userCode: string): Promise<Omit<DeviceAuthorizationRecord, 'deviceSecretHash' | 'codeChallenge' | 'requestIpHash' | 'encryptedResult'> | null> {
+  /**
+   * Guard for the delegate signing routes. A delegation prepared or signed
+   * for a device transaction must be for that pending transaction's session
+   * key and Node origin, and expire within its lifetime (requested TTL from
+   * now, and the transaction deadline plus TTL). Checked before signing and
+   * before any host activation, so an overlong delegation never exists.
+   */
+  async assertDelegationWindow(
+    transactionId: unknown,
+    input: { expiresAt: Date; nodeOrigin: unknown; jwk: unknown },
+  ): Promise<void> {
+    const record = typeof transactionId === 'string' ? await this.store.findById(transactionId) : null;
+    const now = this.now();
+    if (!record || record.status !== 'pending' || record.transactionExpiresAt <= now) {
+      throw new DeviceAuthorizationError('expired_token', 'device authorization is no longer pending', 410);
+    }
+    if (input.nodeOrigin !== record.nodeOrigin || sessionDidForPublicJwk(input.jwk) !== record.sessionDid) {
+      throw new DeviceAuthorizationError('invalid_request', 'delegation does not match the device request', 400);
+    }
+    const expiresAt = input.expiresAt.getTime();
+    if (
+      Number.isNaN(expiresAt) ||
+      expiresAt > now.getTime() + record.delegationTtlSeconds * 1000 + DEVICE_AUTH_CLOCK_SKEW_MS ||
+      expiresAt > record.delegationExpiresAt.getTime()
+    ) {
+      throw new DeviceAuthorizationError('invalid_request', 'delegation lifetime exceeds the device request', 400);
+    }
+  }
+
+  async lookup(userCode: string): Promise<(Omit<DeviceAuthorizationRecord, 'deviceSecretHash' | 'codeChallenge' | 'requestIpHash' | 'encryptedResult'> & {
+    /** True for the retired one-shot Share upload request (legacy CLIs). */
+    shareOnly: boolean;
+  }) | null> {
     const record = await this.store.findByUserCode(normalizeUserCode(userCode));
     if (!record || record.transactionExpiresAt <= this.now() || record.status !== 'pending') return null;
     const { deviceSecretHash: _secret, codeChallenge: _challenge, requestIpHash: _ip, encryptedResult: _result, ...safe } = record;
-    return safe;
+    return { ...safe, shareOnly: isShareDevicePermissionSet(record.permissions) };
   }
 
   async approve(transactionId: string, userId: string, value: unknown): Promise<void> {
@@ -461,6 +711,7 @@ export class DeviceAuthorizationService {
       userId,
       encryptedResult: JSON.stringify(approval.relay),
       delegationExpiresAt: approval.delegationExpiresAt,
+      approvedPermissions: approval.approvedPermissions,
     });
     if (!approved) throw new DeviceAuthorizationError('expired_token', 'device authorization is no longer pending', 410);
   }
@@ -516,7 +767,9 @@ export class DeviceAuthorizationService {
         sessionDid: consumed.sessionDid,
         nodeOrigin: consumed.nodeOrigin,
         shareOrigin: consumed.shareOrigin,
-        permissions: consumed.permissions,
+        // Rows approved before TC-539 carry no separate approved set; their
+        // approval was validated as equal to the request.
+        permissions: consumed.approvedPermissions ?? consumed.permissions,
         delegationExpiresAt: consumed.delegationExpiresAt.toISOString(),
       },
     };
