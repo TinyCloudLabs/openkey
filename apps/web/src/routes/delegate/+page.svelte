@@ -8,7 +8,7 @@
   import SiweMessage from '$lib/components/ui/siwe-message.svelte';
   import CliSigningAdapter from '$lib/components/signing/cli-signing-adapter.svelte';
   import DeviceRequestNotice from '$lib/components/device/device-request-notice.svelte';
-  import { approvedDevicePermissions, cleanConsentText, decodeBase64UrlJson, deviceRequestReason, loadVerifiedDeviceRequest } from '$lib/device-authorization';
+  import { approvedDevicePermissions, cleanConsentText, decodeDelegatePermissionsParam, delegationPasteCode, deviceRequestReason, loadVerifiedDeviceRequest } from '$lib/device-authorization';
   import {
     parseCapabilityReview,
     defaultSelection,
@@ -188,20 +188,21 @@
   }
   let requestedPermissions: RequestedPermission[] = [];
   let requestReason = $state(normalizeReason(reasonParam));
+  // Set when a `permissions` parameter is present but unreadable: the request
+  // is refused rather than falling back to the default abilities.
+  let permissionsParamError = '';
   if (permissionsB64) {
     try {
       // UTF-8 JSON: `atob` alone would mangle non-ASCII reasons.
-      const payload = decodeBase64UrlJson(permissionsB64) as { permissions?: unknown; reason?: unknown } | null;
-      if (payload && Array.isArray(payload.permissions)) {
-        requestedPermissions = payload.permissions as RequestedPermission[];
-      }
-      const payloadReason = normalizeReason(payload?.reason);
+      const payload = decodeDelegatePermissionsParam(permissionsB64);
+      requestedPermissions = payload.permissions;
+      const payloadReason = normalizeReason(payload.reason);
       if (payloadReason) {
         requestReason = payloadReason;
       }
     } catch {
-      // Surface as a user-visible error during consent rendering.
-      error = 'Could not decode the requested permissions parameter.';
+      permissionsParamError = 'Could not decode the requested permissions. Restart the CLI command to get a new link.';
+      error = permissionsParamError;
     }
   }
 
@@ -402,6 +403,9 @@
   }
 
   async function prepareDelegation(key: EthereumKey, actionKeys?: string[]) {
+    // Every signing path starts here: never prepare the default abilities
+    // for a request whose permissions could not be read.
+    if (permissionsParamError) throw new Error(permissionsParamError);
     const API_URL = import.meta.env.VITE_API_URL || '';
     const body: Record<string, unknown> = {
       keyId: key.id,
@@ -1023,12 +1027,12 @@
       } catch {
         // Callback unreachable (e.g. CLI on remote machine) — fall back to paste code
         callbackFailed = true;
-        pasteCode = btoa(JSON.stringify(payload));
+        pasteCode = delegationPasteCode(payload);
         done = true;
         step = 'done';
       }
     } else {
-      pasteCode = btoa(JSON.stringify(payload));
+      pasteCode = delegationPasteCode(payload);
       done = true;
       step = 'done';
     }

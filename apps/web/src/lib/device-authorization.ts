@@ -46,13 +46,13 @@ export interface DeviceDelegateLink {
 }
 
 /**
- * Consent text as shown to the owner: invisible format and bidirectional
- * override characters removed, control characters as spaces, whitespace
- * collapsed. Mirrors the API's reason cleaning.
+ * Consent text as shown to the owner: format (`Cf`), default-ignorable, and
+ * listed filler characters removed, control characters as spaces,
+ * whitespace collapsed. Mirrors the API's reason cleaning.
  */
 export function cleanConsentText(value: string): string {
   return value
-    .replace(/[\u00ad\u034f\u061c\u115f\u1160\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\u3164\ufeff\uffa0\u{e0000}-\u{e007f}]/gu, '')
+    .replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}\u00ad\u034f\u061c\u115f\u1160\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\u3164\ufeff\uffa0\u{e0000}-\u{e007f}]/gu, '')
     .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -149,17 +149,47 @@ function isRequestedSpace(requested: string, granted: string): boolean {
   return request[1] === grant[1] && request[2]!.toLowerCase() === grant[2]!.toLowerCase() && request[3] === grant[3];
 }
 
-/** Base64url of the UTF-8 JSON encoding, as the CLI and `/device` send it. */
-export function encodeBase64UrlJson(value: unknown): string {
+/** Standard padded base64 of the UTF-8 JSON encoding. */
+function utf8JsonBase64(value: unknown): string {
   let binary = '';
   for (const byte of new TextEncoder().encode(JSON.stringify(value))) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return btoa(binary);
+}
+
+/** Base64url of the UTF-8 JSON encoding, as the CLI and `/device` send it. */
+export function encodeBase64UrlJson(value: unknown): string {
+  return utf8JsonBase64(value).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+/**
+ * The code a person pastes into the CLI when the browser cannot reach its
+ * callback: standard base64 of UTF-8 JSON, which the CLI decodes with
+ * `Buffer.from(code, "base64").toString("utf-8")`. `btoa(JSON.stringify())`
+ * throws on characters outside Latin-1 (and mis-encodes the rest).
+ */
+export function delegationPasteCode(payload: unknown): string {
+  return utf8JsonBase64(payload);
 }
 
 /** Inverse of `encodeBase64UrlJson`: the bytes are UTF-8, not Latin-1. */
 export function decodeBase64UrlJson(value: string): unknown {
   const binary = atob(value.replace(/-/g, '+').replace(/_/g, '/'));
   return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Uint8Array.from(binary, (char) => char.charCodeAt(0))));
+}
+
+/**
+ * The `/delegate` `permissions` parameter (`{ permissions, reason? }`). Throws
+ * unless it decodes to a non-empty permission list: a request whose
+ * permissions cannot be read must be refused, never widened to the default
+ * abilities.
+ */
+export function decodeDelegatePermissionsParam(value: string): { permissions: DevicePermission[]; reason?: unknown } {
+  const payload = decodeBase64UrlJson(value);
+  const { permissions, reason } = (payload && typeof payload === 'object' ? payload : {}) as { permissions?: unknown; reason?: unknown };
+  if (!Array.isArray(permissions) || permissions.length === 0) {
+    throw new Error('The requested permissions are missing or malformed.');
+  }
+  return { permissions: permissions as DevicePermission[], reason };
 }
 
 /**

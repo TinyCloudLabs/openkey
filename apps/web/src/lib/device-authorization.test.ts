@@ -4,6 +4,8 @@ import {
   approvedDevicePermissions,
   cleanConsentText,
   decodeBase64UrlJson,
+  decodeDelegatePermissionsParam,
+  delegationPasteCode,
   deviceLifetimeOptions,
   deviceRequestReason,
   deviceRequestTtlSeconds,
@@ -94,6 +96,33 @@ describe('base64url JSON parameters', () => {
     // What a Node CLI sends: Buffer UTF-8 base64url.
     expect(decodeBase64UrlJson(Buffer.from(JSON.stringify(payload)).toString('base64url'))).toEqual(payload);
   });
+
+  test('paste codes carry non-Latin-1 reasons in the form the CLI decodes', () => {
+    const payload = { delegationHeader: { Authorization: 'Bearer x' }, reason: '公開 Publier le résumé à José' };
+    // btoa(JSON.stringify(payload)) throws InvalidCharacterError here.
+    expect(() => btoa(JSON.stringify(payload))).toThrow();
+    // js-sdk CLI (master, 0.10.0, 1.0.0-beta.14): Buffer.from(code, "base64").toString("utf-8").
+    expect(JSON.parse(Buffer.from(delegationPasteCode(payload), 'base64').toString('utf-8'))).toEqual(payload);
+    // ASCII payloads keep the exact pre-TC-539 encoding.
+    const ascii = { delegationHeader: { Authorization: 'Bearer x' }, reason: 'Publish notes' };
+    expect(delegationPasteCode(ascii)).toBe(btoa(JSON.stringify(ascii)));
+  });
+
+  test('refuses permissions parameters that are not a readable, non-empty list', () => {
+    const invalidUtf8 = Buffer.from([0x7b, 0x22, 0xff, 0xfe, 0x22, 0x7d]).toString('base64url');
+    for (const value of [
+      invalidUtf8,
+      'not base64 JSON',
+      encodeBase64UrlJson({ reason: 'only a reason' }),
+      encodeBase64UrlJson({ permissions: [] }),
+      encodeBase64UrlJson({ permissions: { service: 'tinycloud.kv' } }),
+      encodeBase64UrlJson(null),
+    ]) {
+      expect(() => decodeDelegatePermissionsParam(value)).toThrow();
+    }
+    expect(decodeDelegatePermissionsParam(encodeBase64UrlJson({ permissions: requested, reason: '公開' })))
+      .toEqual({ permissions: requested, reason: '公開' });
+  });
 });
 
 const day = 86_400;
@@ -138,6 +167,9 @@ describe('device consent text', () => {
 
   test('strips bidirectional and invisible characters', () => {
     expect(cleanConsentText(' Pay\u202e me\u200b\u2060\u061c\u180e\ufeff\u00ad\u034f\u115f\u1160\u3164\uffa0\u{e0041}\u{e007f}\n now ')).toBe('Pay me now');
+    // Any other format or default-ignorable character: U+FFF9, U+1D173, U+180B, U+FE00.
+    expect(cleanConsentText('Pay\ufff9\u{1d173}\u180b\ufe00 me')).toBe('Pay me');
+    expect(cleanConsentText('公開 résumé')).toBe('公開 résumé');
   });
 });
 
