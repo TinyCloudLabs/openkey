@@ -1,4 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { SiweMessage } from 'siwe';
 
 export const DEVICE_AUTH_TRANSACTION_TTL_MS = 10 * 60 * 1000;
 export const DEVICE_AUTH_DEFAULT_DELEGATION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -310,17 +311,42 @@ const DEVICE_SESSION_JWK_FIELDS: Record<string, true> = { kty: true, crv: true, 
 /**
  * Session DID of a delegation request's JWK, refusing anything but the exact
  * public Ed25519 shape a device request stores (`kty`, `crv`, canonical `x`,
- * optional `kid`): private, unknown, or `null`-valued extra fields and padded
- * coordinates are alternate spellings that must not be accepted silently.
+ * and `kid` only when it is a non-empty string): private, unknown, or
+ * `null`-valued fields, a non-string or empty `kid`, and padded coordinates
+ * are alternate spellings that must not be accepted silently.
  */
 function strictSessionDid(value: unknown): string {
   if (
     !value || typeof value !== 'object' || Array.isArray(value) ||
-    Object.keys(value).some((field) => !Object.hasOwn(DEVICE_SESSION_JWK_FIELDS, field))
+    Object.keys(value).some((field) => !Object.hasOwn(DEVICE_SESSION_JWK_FIELDS, field)) ||
+    ('kid' in value && (typeof value.kid !== 'string' || value.kid.length === 0))
   ) {
-    throw new DeviceAuthorizationError('invalid_request', 'jwk must be a public Ed25519 JWK with only kty, crv, x, and kid', 400);
+    throw new DeviceAuthorizationError(
+      'invalid_request',
+      'jwk must be a public Ed25519 JWK with only kty, crv, x, and an optional non-empty string kid',
+      400,
+    );
   }
   return sessionDidForPublicJwk(value);
+}
+
+/**
+ * The delegate (`URI`, the CACAO audience) and expiry of a SIWE message,
+ * read by the EIP-4361 grammar rather than by searching for lines. Only
+ * canonical messages are accepted: the parse must re-serialize to exactly
+ * the given bytes. Otherwise a message could carry a decoy `URI:` or
+ * `Expiration Time:` line where the positional Rust parser that builds the
+ * delegation expects a separator, so a line search and the signed
+ * delegation would disagree.
+ */
+function canonicalSiweFields(message: string): { uri: string; expirationTime: string } | null {
+  try {
+    const parsed = new SiweMessage(message);
+    if (parsed.prepareMessage() !== message || !parsed.expirationTime) return null;
+    return { uri: parsed.uri, expirationTime: parsed.expirationTime };
+  } catch {
+    return null;
+  }
 }
 
 function scopeError(message: string): DeviceAuthorizationError {
@@ -685,14 +711,15 @@ export class DeviceAuthorizationService {
    * transaction (`deviceTransactionId`). The delegation must be for that
    * pending transaction's session key and Node origin, and expire within
    * its lifetime (requested TTL from now, and the transaction deadline plus
-   * TTL). The session key is taken from the strictly parsed JWK and, when a
-   * SIWE has been prepared, from the SIWE `URI` that is (or was) actually
-   * signed; they must agree. Checked before signing and before any host
-   * activation, so a delegation outside the transaction never exists.
+   * TTL). The session key is taken from the strictly parsed JWK and, once a
+   * SIWE exists, from the canonical SIWE that is (or was) actually signed,
+   * which also supplies the expiry; they must agree. Checked before signing
+   * and before any host activation, so a delegation outside the transaction
+   * never exists.
    */
   async assertDelegationWindow(
     transactionId: unknown,
-    input: { expiresAt: Date; nodeOrigin: unknown; jwk: unknown; signedSiwe?: string },
+    input: { nodeOrigin: unknown; jwk: unknown } & ({ signedSiwe: string } | { expiresAt: Date }),
   ): Promise<void> {
     const record = typeof transactionId === 'string' ? await this.store.findById(transactionId) : null;
     const now = this.now();
@@ -700,11 +727,21 @@ export class DeviceAuthorizationService {
       throw new DeviceAuthorizationError('expired_token', 'device authorization is no longer pending', 410);
     }
     const jwkDid = strictSessionDid(input.jwk);
-    const signedDid = input.signedSiwe === undefined ? jwkDid : /^URI:\s*(.+)$/m.exec(input.signedSiwe)?.[1]?.trim();
+    let signedDid = jwkDid;
+    let expiresAt: number;
+    if ('signedSiwe' in input) {
+      const fields = canonicalSiweFields(input.signedSiwe);
+      if (!fields) {
+        throw new DeviceAuthorizationError('invalid_request', 'the signed message must be a canonical SIWE message with an expiration time', 400);
+      }
+      signedDid = fields.uri;
+      expiresAt = Date.parse(fields.expirationTime);
+    } else {
+      expiresAt = input.expiresAt.getTime();
+    }
     if (input.nodeOrigin !== record.nodeOrigin || jwkDid !== record.sessionDid || signedDid !== record.sessionDid) {
       throw new DeviceAuthorizationError('invalid_request', 'delegation does not match the device request', 400);
     }
-    const expiresAt = input.expiresAt.getTime();
     if (
       Number.isNaN(expiresAt) ||
       expiresAt > now.getTime() + record.delegationTtlSeconds * 1000 + DEVICE_AUTH_CLOCK_SKEW_MS ||

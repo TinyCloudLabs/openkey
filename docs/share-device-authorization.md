@@ -41,17 +41,32 @@ and before the delegation header is sent to any host unless:
 - the transaction is pending (unknown, expired, or already approved ids get
   `expired_token`);
 - the Node origin is the transaction's;
-- the session key is the transaction's. It is read from `jwk`, which must be
-  exactly `{ kty, crv, x[, kid] }` (private, unknown, or `null` fields and
-  padded coordinates are refused), and from the `URI` of the SIWE being
-  signed, or for `/complete` the SIWE the wallet signed; both must match;
+- the session key is the transaction's. It is read from `jwk`, which must
+  contain only `kty`, `crv`, `x`, and optionally `kid`; `kid`, when present,
+  must be a non-empty string. Private, unknown, or `null`-valued fields, any
+  other `kid` value, and padded coordinates are refused. For sign and
+  `/complete` it is also read from the SIWE being signed (for `/complete`,
+  the SIWE the wallet signed), and both must match;
 - the expiry is no later than the requested TTL from now (5 s clock
-  tolerance) and the transaction deadline plus the TTL.
+  tolerance) and the transaction deadline plus the TTL. For sign and
+  `/complete` the expiry comes from the signed SIWE; on `/prepare` it is the
+  requested `expiry`.
+
+The signed SIWE is read with the EIP-4361 grammar, not by searching for
+`URI:` or `Expiration Time:` lines, and must be canonical: parsing and
+re-serializing it must give back exactly the submitted bytes (LF line
+endings, no extra or missing lines). Otherwise a decoy line in a separator
+slot could disagree with what the positional parser behind the delegation
+reads, so non-canonical messages are refused.
 
 Refusals other than `expired_token` are `invalid_request`. Requests that
 name no device transaction follow ordinary `/delegate` behaviour, without
-these limits (tracked separately in TC-547). `/api/delegate/authorize-sign-prepare`
-and `/api/delegate/authorize-sign` do not apply these checks.
+these limits (tracked separately in TC-547).
+`/api/delegate/authorize-sign-prepare`, `/api/delegate/authorize-sign`, and
+`/api/delegate/authorize-sign-preview` do not support device transactions:
+any request to them that carries `deviceTransactionId` (whatever its value)
+is refused with 400 `device_transaction_unsupported`, and requests without it
+behave as before.
 
 The default and maximum lifetime is 30 days, counted from approval.
 

@@ -10,6 +10,7 @@ import {
   sessionDidForPublicJwk,
 } from './device-authorization';
 import { parsePreparedRecap, prepareDelegationSession } from '../routes/delegate-session';
+import { SiweMessage } from 'siwe';
 
 const digest = (value: string) => createHash('sha256').update(value).digest('base64url');
 const deviceSecret = 'device-secret-with-at-least-256-bits-of-entropy';
@@ -437,15 +438,15 @@ describe('OpenKey device authorization service', () => {
     await expect(window(30)).rejects.toMatchObject({ code: 'expired_token', status: 410 });
   });
 
-  test('takes the session key only from a strict JWK and the signed SIWE, and refuses settled transactions', async () => {
+  test('takes the session key only from a strict JWK and the canonical signed SIWE, and refuses settled transactions', async () => {
     const input = fixture();
     const transaction = await input.service.start({ ...input.request, delegationTtlSeconds: 60 }, '203.0.113.90');
     const did = input.request.sessionDid;
+    const otherDid = sessionDidForPublicJwk({ kty: 'OKP', crv: 'Ed25519', x: randomBytes(32).toString('base64url') });
     const check = (jwk: unknown, signedSiwe?: string) => input.service.assertDelegationWindow(transaction.transactionId, {
-      expiresAt: new Date(input.now().getTime() + 30_000),
       nodeOrigin: input.request.nodeOrigin,
       jwk,
-      ...(signedSiwe !== undefined ? { signedSiwe } : {}),
+      ...(signedSiwe !== undefined ? { signedSiwe } : { expiresAt: new Date(input.now().getTime() + 30_000) }),
     });
     // Alternate spellings of the same key are refused, not looked past.
     for (const reshaped of [
@@ -453,16 +454,47 @@ describe('OpenKey device authorization service', () => {
       { ...input.publicJwk, p: 'x' },
       { ...input.publicJwk, use: 'sig' },
       { ...input.publicJwk, x: `${input.publicJwk.x}=` },
+      { ...input.publicJwk, kid: null },
+      { ...input.publicJwk, kid: 7 },
+      { ...input.publicJwk, kid: '' },
     ]) {
       await expect(check(reshaped)).rejects.toMatchObject({ code: 'invalid_request', status: 400 });
     }
     await check({ ...input.publicJwk, kid: 'session' });
-    // The signed SIWE URI must be the transaction's key, whatever the jwk says.
-    const otherDid = sessionDidForPublicJwk({ kty: 'OKP', crv: 'Ed25519', x: randomBytes(32).toString('base64url') });
-    await check(input.publicJwk, `example wants you to sign in\n\nURI: ${did}\nVersion: 1`);
-    await expect(check(input.publicJwk, `example wants you to sign in\n\nURI: ${otherDid}\nVersion: 1`))
-      .rejects.toMatchObject({ code: 'invalid_request' });
-    await expect(check(input.publicJwk, '')).rejects.toMatchObject({ code: 'invalid_request' });
+
+    const siwe = (uri: string, lifetimeMs: number) => new SiweMessage({
+      domain: 'cli.tinycloud.xyz',
+      address: '0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed',
+      statement: "I further authorize the stated URI to perform the following actions on my behalf: (1) 'tinycloud.capabilities': 'read'.",
+      uri,
+      version: '1',
+      chainId: 1,
+      nonce: 'O3qbGI8ZF5AMKEyoD',
+      issuedAt: input.now().toISOString(),
+      expirationTime: new Date(input.now().getTime() + lifetimeMs).toISOString(),
+      resources: ['urn:recap:eyJhdHQiOnt9LCJwcmYiOltdfQ'],
+    }).prepareMessage();
+    const canonical = siwe(did, 30_000);
+    await check(input.publicJwk, canonical);
+    // The signed URI must be the transaction's key, whatever the jwk says.
+    await expect(check(input.publicJwk, siwe(otherDid, 30_000))).rejects.toMatchObject({ code: 'invalid_request' });
+    await expect(check(input.publicJwk, siwe(did, 90 * 24 * 60 * 60 * 1000))).rejects.toMatchObject({ code: 'invalid_request' });
+    // Astra's repro: another key's 90-day SIWE with decoy URI / Expiration
+    // Time lines in the two separator slots the positional parser skips.
+    const decoy = siwe(otherDid, 90 * 24 * 60 * 60 * 1000).split('\n');
+    decoy[2] = `URI: ${did}`;
+    decoy[4] = `Expiration Time: ${new Date(input.now().getTime() + 30_000).toISOString()}`;
+    for (const variant of [
+      decoy.join('\n'),
+      canonical.replace(/\n/g, '\r\n'),
+      `${canonical}\n`,
+      ` ${canonical}`,
+      canonical.replace('\nVersion: 1', `\nURI: ${did}\nVersion: 1`),
+      canonical.replace(/\nExpiration Time: .*/, ''),
+      '',
+    ]) {
+      await expect(check(input.publicJwk, variant)).rejects.toMatchObject({ code: 'invalid_request', status: 400 });
+    }
 
     await input.service.approve(transaction.transactionId, 'user-1', encryptedApproval(input, transaction, input.request.permissions, new Date(input.now().getTime() + 30_000)));
     await expect(check(input.publicJwk)).rejects.toMatchObject({ code: 'expired_token', status: 410 });

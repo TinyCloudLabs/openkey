@@ -179,9 +179,14 @@ describe('device delegation window on /api/delegate', () => {
   });
 
   test('refuses reshaped spellings of the session JWK for a named transaction', async () => {
-    for (const reshaped of [{ ...jwk, d: null }, { ...jwk, p: 'x' }, { ...jwk, use: 'sig' }, { ...jwk, x: `${jwk.x}=` }]) {
+    const reshapedKeys = [
+      { ...jwk, d: null }, { ...jwk, p: 'x' }, { ...jwk, use: 'sig' }, { ...jwk, x: `${jwk.x}=` },
+      { ...jwk, kid: null }, { ...jwk, kid: 7 }, { ...jwk, kid: '' },
+    ];
+    for (const reshaped of reshapedKeys) {
       const prepared = await post('/prepare', { keyId: keyRecord.id, jwk: reshaped, host, expiry: '60s', deviceTransactionId: transactionId });
       expect(prepared.status).toBe(400);
+      expect(prepared.body.code).toBe('invalid_request');
       const signed = await post('/', { keyId: keyRecord.id, jwk: reshaped, host, expiry: '60s', deviceTransactionId: transactionId });
       expect(signed.status).toBe(400);
     }
@@ -197,17 +202,6 @@ describe('device delegation window on /api/delegate', () => {
     const attackerSignature = await account.signMessage({ message: attacker.body.prepared.siwe });
     const legacy = await post('/complete', { prepared: attacker.body.prepared, signature: attackerSignature, host, jwk, deviceTransactionId: transactionId });
     expect(legacy.status).toBe(400);
-    const versioned = await post('/complete', {
-      prepared: attacker.body.prepared,
-      signature: attackerSignature,
-      host,
-      jwk,
-      protocolVersion: 1,
-      authorizationContextToken: attacker.body.authorizationContext.token,
-      selectedActionIds: attacker.body.selectedActionKeys,
-      deviceTransactionId: transactionId,
-    });
-    expect(versioned.status).toBe(400);
 
     // The device SIWE with another key swapped into body.jwk.
     const device = await prepare('60s', true);
@@ -220,5 +214,71 @@ describe('device delegation window on /api/delegate', () => {
     const ok = await post('/complete', { prepared: device.body.prepared, signature, host, jwk, deviceTransactionId: transactionId });
     expect(ok.status).toBe(200);
     expect(activateSessionWithHost).toHaveBeenCalledTimes(1);
+  });
+
+  test('versioned /complete reaches the device guard and refuses an overlong signed SIWE', async () => {
+    // An ordinary (unnamed) 90-day prepare for the device key, then a
+    // versioned /complete that names the transaction. `address` lets the
+    // authorization context bind, so only the device guard can refuse it.
+    const prepared = await prepare('90d', false);
+    expect(prepared.status).toBe(200);
+    const signature = await account.signMessage({ message: prepared.body.prepared.siwe });
+    const res = await post('/complete', {
+      prepared: { ...prepared.body.prepared, address: account.address },
+      signature,
+      host,
+      jwk,
+      protocolVersion: 1,
+      authorizationContextToken: prepared.body.authorizationContext.token,
+      selectedActionIds: prepared.body.selectedActionKeys,
+      deviceTransactionId: transactionId,
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('delegation lifetime exceeds the device request');
+    expect(activateSessionWithHost).not.toHaveBeenCalled();
+  });
+
+  test('legacy /complete refuses decoy URI and Expiration Time lines in the SIWE separator slots', async () => {
+    // Astra's repro: key B's canonical 90-day SIWE with the two separator
+    // lines replaced by `URI: <device key>` and a 30 s `Expiration Time:`.
+    // The positional parser behind the delegation still reads B and 90 days.
+    const keyB = { kty: 'OKP', crv: 'Ed25519', x: randomBytes(32).toString('base64url') };
+    const b = await post('/prepare', { keyId: keyRecord.id, jwk: keyB, host, expiry: '90d' });
+    expect(b.status).toBe(200);
+    const lines = (b.body.prepared.siwe as string).split('\n');
+    expect(lines[2]).toBe('');
+    expect(lines[4]).toBe('');
+    lines[2] = `URI: ${sessionDidForPublicJwk(jwk)}`;
+    lines[4] = `Expiration Time: ${new Date(Date.now() + 30_000).toISOString()}`;
+    const decoy = lines.join('\n');
+    const signature = await account.signMessage({ message: decoy });
+    const res = await post('/complete', { prepared: { ...b.body.prepared, siwe: decoy }, signature, host, jwk, deviceTransactionId: transactionId });
+    expect(res.status).toBe(400);
+    expect(res.body.delegationHeader).toBeUndefined();
+    const crlf = (b.body.prepared.siwe as string).replace(/\n/g, '\r\n');
+    const crlfRes = await post('/complete', {
+      prepared: { ...b.body.prepared, siwe: crlf },
+      signature: await account.signMessage({ message: crlf }),
+      host,
+      jwk,
+      deviceTransactionId: transactionId,
+    });
+    expect(crlfRes.status).toBe(400);
+    expect(activateSessionWithHost).not.toHaveBeenCalled();
+  });
+
+  test('authorize-sign routes refuse any request carrying deviceTransactionId', async () => {
+    for (const id of [transactionId, 'unknown-transaction', null]) {
+      for (const path of ['/authorize-sign-prepare', '/authorize-sign', '/authorize-sign-preview']) {
+        const res = await post(path, { keyId: keyRecord.id, jwk, host: 'https://other.example', siwe: 'x', authorizationContextToken: 't', deviceTransactionId: id });
+        expect(res.status).toBe(400);
+        expect(res.body.code).toBe('device_transaction_unsupported');
+      }
+    }
+    // Without the field the routes behave as before (their own validation).
+    expect((await post('/authorize-sign-prepare', { keyId: keyRecord.id })).body.code).toBe('missing_authorize_sign_prepare_fields');
+    expect((await post('/authorize-sign', {})).body.code).toBe('missing_authorization_context_token');
+    expect((await post('/authorize-sign-preview', {})).body.code).toBe('missing_authorization_context_token');
+    expect(activateSessionWithHost).not.toHaveBeenCalled();
   });
 });

@@ -90,7 +90,7 @@ import {
   type CoordinationosDenialCode,
 } from '../services/coordinationos-signing-audit';
 import { validateTinyCloudManageKeyRequest } from '../services/tinycloud-manage-key-policy';
-import { deviceDelegationWindowError } from './device-delegation-window';
+import { deviceDelegationWindowError, deviceTransactionUnsupportedError } from './device-delegation-window';
 
 const prisma = createPrismaClient();
 const tee = createTeeClient();
@@ -1294,7 +1294,7 @@ delegateRouter.post('/', async (c) => {
     if (!expirationTime) {
       return c.json({ error: 'prepared session must include a valid expirationTime or SIWE Expiration Time' }, 400);
     }
-    const deviceWindow = await deviceDelegationWindowError(body, { expirationTime, host, signedSiwe: bound.originalSiwe });
+    const deviceWindow = await deviceDelegationWindowError(body, { host, signedSiwe: bound.originalSiwe });
     if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
 
     // Sign the STORED originalSiwe verbatim. This is the entire point of
@@ -1383,7 +1383,7 @@ delegateRouter.post('/', async (c) => {
   if (!expirationTime) {
     return c.json({ error: 'prepared session must include a valid expirationTime or SIWE Expiration Time' }, 400);
   }
-  const deviceWindow = await deviceDelegationWindowError(body, { expirationTime, host, signedSiwe: preparedResult.prepared.siwe });
+  const deviceWindow = await deviceDelegationWindowError(body, { host, signedSiwe: preparedResult.prepared.siwe });
   if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
 
   const signature = await signManagedKey(key, key.sealedBlob, preparedResult.prepared.siwe);
@@ -1783,10 +1783,9 @@ delegateRouter.post('/complete', async (c) => {
   if (!expirationTime) {
     return c.json({ error: 'prepared session must include a valid expirationTime or SIWE Expiration Time' }, 400);
   }
-  // Device approvals: judge the session key and lifetime by the bytes the
-  // wallet signed, not only the caller-supplied jwk.
+  // Device approvals: judge the session key and lifetime by the canonical
+  // bytes the wallet signed, not the caller-supplied jwk or a line search.
   const deviceWindow = await deviceDelegationWindowError(body, {
-    expirationTime: resolvePreparedExpirationTime({ siwe: body.prepared?.siwe }) ?? '',
     host: body.host,
     signedSiwe: String(body.prepared?.siwe ?? ''),
   });
@@ -1929,6 +1928,8 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
      */
     reportedOrigin?: string;
   }>();
+  const deviceUnsupported = deviceTransactionUnsupportedError(body);
+  if (deviceUnsupported) return c.json(deviceUnsupported, 400);
 
   if (!body.keyId || !body.siwe || !body.jwk || typeof body.jwk !== 'object') {
     return c.json(
@@ -2288,6 +2289,8 @@ delegateRouter.post('/authorize-sign', async (c) => {
      */
     externalSignature?: string;
   }>();
+  const deviceUnsupported = deviceTransactionUnsupportedError(body);
+  if (deviceUnsupported) return c.json(deviceUnsupported, 400);
 
   if (typeof body.authorizationContextToken !== 'string' || !body.authorizationContextToken) {
     return c.json(
@@ -2743,6 +2746,8 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     authorizationContextToken?: string;
     selectedActionIds?: unknown;
   }>();
+  const deviceUnsupported = deviceTransactionUnsupportedError(body);
+  if (deviceUnsupported) return c.json(deviceUnsupported, 400);
 
   if (typeof body.authorizationContextToken !== 'string' || !body.authorizationContextToken) {
     return c.json(
