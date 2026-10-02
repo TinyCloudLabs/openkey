@@ -4,99 +4,14 @@ import { requireSession } from '../middleware/session';
 import {
   DeviceAuthorizationError,
   DeviceAuthorizationService,
-  type DeviceAuthorizationRecord,
-  type DeviceAuthorizationStore,
 } from '../services/device-authorization';
+import { createPrismaDeviceAuthorizationStore } from '../services/device-authorization-store';
 
 type DeviceAuthorizationVariables = {
   Variables: {
     user: { id: string };
   };
 };
-
-function fromDatabase(value: any): DeviceAuthorizationRecord {
-  return {
-    id: value.id,
-    userCode: value.userCode,
-    deviceSecretHash: value.deviceSecretHash,
-    codeChallenge: value.codeChallenge,
-    sessionDid: value.sessionDid,
-    publicJwk: value.publicJwk,
-    relayPublicJwk: value.relayPublicJwk,
-    permissions: value.permissions,
-    nodeOrigin: value.nodeOrigin,
-    shareOrigin: value.shareOrigin,
-    delegationExpiresAt: value.delegationExpiresAt,
-    transactionExpiresAt: value.transactionExpiresAt,
-    requestedAt: value.requestedAt,
-    requestIpHash: value.requestIpHash,
-    nextPollAt: value.nextPollAt,
-    pollIntervalSeconds: value.pollIntervalSeconds,
-    status: value.status.toLowerCase(),
-    ...(value.approvedByUserId ? { approvedByUserId: value.approvedByUserId } : {}),
-    ...(value.encryptedResult ? { encryptedResult: value.encryptedResult } : {}),
-    ...(value.consumedAt ? { consumedAt: value.consumedAt } : {}),
-  };
-}
-
-export function createPrismaDeviceAuthorizationStore(database: any): DeviceAuthorizationStore {
-  return {
-    async create(record) {
-      await database.deviceAuthorization.create({
-        data: {
-          ...record,
-          status: record.status.toUpperCase(),
-          publicJwk: record.publicJwk,
-          permissions: record.permissions,
-        },
-      });
-    },
-    async findById(id) {
-      const value = await database.deviceAuthorization.findUnique({ where: { id } });
-      return value ? fromDatabase(value) : null;
-    },
-    async findByUserCode(userCode) {
-      const value = await database.deviceAuthorization.findUnique({ where: { userCode } });
-      return value ? fromDatabase(value) : null;
-    },
-    countRecentByIpHash(requestIpHash, since) {
-      return database.deviceAuthorization.count({ where: { requestIpHash, requestedAt: { gte: since } } });
-    },
-    async updatePoll(id, nextPollAt) {
-      await database.deviceAuthorization.updateMany({ where: { id }, data: { nextPollAt } });
-    },
-    async approve(id, input) {
-      const result = await database.deviceAuthorization.updateMany({
-        where: { id, status: 'PENDING', transactionExpiresAt: { gt: new Date() } },
-        data: {
-          status: 'APPROVED',
-          approvedByUserId: input.userId,
-          encryptedResult: input.encryptedResult,
-          delegationExpiresAt: input.delegationExpiresAt,
-        },
-      });
-      return result.count === 1;
-    },
-    async consumeApproved(id) {
-      return database.$transaction(async (tx: any) => {
-        const value = await tx.deviceAuthorization.findFirst({
-          where: { id, status: 'APPROVED', consumedAt: null },
-        });
-        if (!value) return null;
-        const updated = await tx.deviceAuthorization.updateMany({
-          where: { id, status: 'APPROVED', consumedAt: null },
-          data: {
-            status: 'CONSUMED',
-            consumedAt: new Date(),
-            encryptedResult: null,
-          },
-        });
-        if (updated.count !== 1) return null;
-        return fromDatabase(value);
-      });
-    },
-  };
-}
 
 function routeError(c: any, error: unknown) {
   if (error instanceof DeviceAuthorizationError) {
@@ -166,9 +81,10 @@ function encryptionSecret(): string {
 const prisma = createPrismaClient();
 const verificationOrigin = process.env.WEBAUTHN_ORIGIN ?? 'http://localhost:5173';
 
-export const deviceAuthorizationRouter = createDeviceAuthorizationRouter({
-  service: new DeviceAuthorizationService(createPrismaDeviceAuthorizationStore(prisma), {
-    verificationOrigin,
-    encryptionSecret: encryptionSecret(),
-  }),
+/** Shared with the delegate signing routes, which enforce device lifetimes. */
+export const deviceAuthorizationService = new DeviceAuthorizationService(createPrismaDeviceAuthorizationStore(prisma), {
+  verificationOrigin,
+  encryptionSecret: encryptionSecret(),
 });
+
+export const deviceAuthorizationRouter = createDeviceAuthorizationRouter({ service: deviceAuthorizationService });
