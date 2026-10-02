@@ -2,6 +2,7 @@ import { afterAll, beforeAll, expect, mock, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
 import { parseRecapFromSiwe } from '@tinycloud/node-sdk-wasm';
+import { _resetAuthorizationContextStoreForTests } from '../services/authorization-signing';
 const privateKey = '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 const account = privateKeyToAccount(privateKey);
 let signatures = 0;
@@ -30,8 +31,16 @@ beforeAll(async () => {
   router = (await import('../routes/delegate')).delegateRouter;
 });
 afterAll(() => { globalThis.fetch = originalFetch; });
-const request = { keyId: key.id, host: 'https://node.tinycloud.xyz', jwk: { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' } };
+const request = { discoveryProtocolVersion: 1, keyId: key.id, host: 'https://node.tinycloud.xyz', jwk: { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' } };
 const post = (path: string, body: any, user = 'user-1') => router.request(path, { method: 'POST', headers: { 'content-type': 'application/json', 'x-test-user': user }, body: JSON.stringify(body) });
+test('public capabilities identify the running discovery API protocol without owner access', async () => {
+  const before = signatures;
+  const response = await router.request('/app-read-capabilities');
+  expect(response.status).toBe(200);
+  expect(response.headers.get('cache-control')).toBe('no-store');
+  expect(await response.json()).toEqual({ schemaVersion: 1, protocolVersion: 1, implementationVersion: '1', discovery: 'app-read', scope: 'registry-and-selected-app', transport: 'paste' });
+  expect(signatures).toBe(before);
+});
 test('real managed routes discover then approve one exact multi-space proof', async () => {
   const found = await post('/app-read-discovery', request);
   expect(found.status).toBe(200);
@@ -74,4 +83,19 @@ test('discovery is session-authenticated and ownership-bound', async () => {
   expect((await post('/app-read-discovery', request, '')).status).toBe(401);
   expect((await post('/app-read-discovery', request, 'other')).status).toBe(400);
   expect((await post('/app-read-discovery', { ...request, host: 'https://attacker.example' })).status).toBe(400);
+});
+test('lost discovery and prepared contexts fail closed with a fresh-review remedy', async () => {
+  const discovery = await (await post('/app-read-discovery', request)).json();
+  const application = discovery.applications[0];
+  const selection = { discoveryToken: discovery.discoveryToken, appId: application.appId, selectionDigest: application.selectionDigest };
+  const missingDiscovery = await post('/prepare', { ...request, ...selection, discoveryToken: 'unknown-worker-token' });
+  expect(missingDiscovery.status).toBe(400);
+  expect(await missingDiscovery.json()).toMatchObject({ code: 'app_read_discovery_expired', error: expect.stringContaining('Choose your key and application again') });
+  const prepared = await (await post('/prepare', { ...request, ...selection })).json();
+  _resetAuthorizationContextStoreForTests();
+  const before = signatures;
+  const approved = await post('/', { ...request, ...selection, prepared: prepared.prepared, authorizationContextToken: prepared.authorizationContext.token, selectedActionIds: prepared.selectedActionKeys, protocolVersion: 1 });
+  expect(approved.status).toBe(400);
+  expect(await approved.json()).toMatchObject({ code: 'app_read_prepared_context_expired', error: expect.stringContaining('Choose your key and application again') });
+  expect(signatures).toBe(before);
 });

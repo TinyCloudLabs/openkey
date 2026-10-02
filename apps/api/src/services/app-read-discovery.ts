@@ -2,10 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { TCWSessionManager, prepareSession, completeSessionSetup, invoke, ensureEip55 } from '@tinycloud/node-sdk-wasm';
 import { activateSessionWithHost } from '@tinycloud/sdk-core';
 import { decodeApplicationRecord } from './app-read-records';
-import { appReadSelection, canonicalJson, canonicalPermissions, ownerSpace, policyError, publicClientKey, registryReadPermissions, sha256, type AppReadPermission } from './app-read-policy';
+import { APP_READ_PROTOCOL_VERSION, appReadSelection, canonicalJson, canonicalPermissions, ownerSpace, policyError, publicClientKey, registryReadPermissions, sha256, type AppReadPermission } from './app-read-policy';
 
 interface ManagedKey { id: string; userId: string | null; address: string; keyType: string; sealedBlob?: string | null }
-interface DiscoveryRequest { userId: string; keyId: string; host: string; jwk: unknown; reason?: unknown }
+interface DiscoveryRequest { discoveryProtocolVersion?: unknown; userId: string; keyId: string; host: string; jwk: unknown; reason?: unknown }
 interface SelectionRequest extends DiscoveryRequest { discoveryToken?: unknown; appId?: unknown; selectionDigest?: unknown; permissions?: unknown }
 interface RegistryResult { records: Array<{ key: string; value: unknown }>; truncated: boolean }
 type Issue = { key: string; code: string; category: string; field: string };
@@ -84,9 +84,13 @@ export function createAppReadDiscovery({ getKey, signMessage, readRegistry = rea
   readRegistry?: typeof readManagedRegistry;
   now?: () => number;
 }) {
+  // Like prepared signing contexts, snapshots are process-local and short-lived.
+  // Another worker or a restart must fail closed and require discovery again;
+  // never rebuild authority from caller-supplied permissions or a stale token.
   const pending = new Map<string, { expires: number; userId: string; keyId: string; ownerDid: string; host: string; clientKeyDigest: string; applications: ReturnType<typeof appReadSelection>[] }>();
   return {
     async discover(input: DiscoveryRequest) {
+      if (input.discoveryProtocolVersion !== APP_READ_PROTOCOL_VERSION) throw policyError('app_read_protocol_incompatible');
       const host = discoveryHost(input.host);
       const jwk = publicClientKey(input.jwk);
       if (typeof input.userId !== 'string' || !input.userId || typeof input.keyId !== 'string' || !input.keyId) throw policyError('app_read_invalid_request');
@@ -117,9 +121,10 @@ export function createAppReadDiscovery({ getKey, signMessage, readRegistry = rea
       const expires = now() + TTL;
       const clientKeyDigest = sha256(jwk);
       pending.set(discoveryToken, { expires, userId: input.userId, keyId: key.id, ownerDid, host, clientKeyDigest, applications });
-      return { schemaVersion: 1, discoveryToken, ownerDid, host, clientKeyDigest, expiresAt: new Date(expires).toISOString(), registryPermissions: registryReadPermissions(ownerDid), applications, issues, complete: issues.length === 0 };
+      return { schemaVersion: 1, protocolVersion: APP_READ_PROTOCOL_VERSION, discoveryToken, ownerDid, host, clientKeyDigest, expiresAt: new Date(expires).toISOString(), registryPermissions: registryReadPermissions(ownerDid), applications, issues, complete: issues.length === 0 };
     },
     select(input: SelectionRequest) {
+      if (input.discoveryProtocolVersion !== APP_READ_PROTOCOL_VERSION) throw policyError('app_read_protocol_incompatible');
       if (typeof input.discoveryToken !== 'string') throw policyError('app_read_discovery_required');
       const bound = pending.get(input.discoveryToken);
       if (!bound || bound.expires <= now()) { pending.delete(input.discoveryToken); throw policyError('app_read_discovery_expired'); }
@@ -127,7 +132,7 @@ export function createAppReadDiscovery({ getKey, signMessage, readRegistry = rea
       const selected = bound.applications.find(app => app.appId === input.appId && app.selectionDigest === input.selectionDigest);
       if (!selected) throw policyError('app_read_selection_changed');
       if (input.permissions !== undefined && (!Array.isArray(input.permissions) || canonicalJson(canonicalPermissions(input.permissions as AppReadPermission[])) !== canonicalJson(selected.permissions))) throw policyError('app_read_scope_changed');
-      return { permissions: structuredClone(selected.permissions), appReadSelection: { schemaVersion: 1, appId: selected.appId, manifestHash: selected.manifestHash, selectionDigest: selected.selectionDigest, ownerDid: bound.ownerDid, host: bound.host, clientKeyDigest: bound.clientKeyDigest, permissions: structuredClone(selected.permissions) } };
+      return { permissions: structuredClone(selected.permissions), appReadSelection: { schemaVersion: 1, protocolVersion: APP_READ_PROTOCOL_VERSION, appId: selected.appId, manifestHash: selected.manifestHash, selectionDigest: selected.selectionDigest, ownerDid: bound.ownerDid, host: bound.host, clientKeyDigest: bound.clientKeyDigest, permissions: structuredClone(selected.permissions) } };
     },
   };
 }

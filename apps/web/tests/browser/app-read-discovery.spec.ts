@@ -8,7 +8,7 @@ const permissions = [{ service: 'tinycloud.sql', space: `tinycloud:${ownerDid.sl
 const jwk = { kty: 'OKP', crv: 'Ed25519', x: 'synthetic-public-key' };
 const app = (appId: string, name: string, scope = permissions) => ({ appId, name, description: `${name} records`, manifests: [], manifestHash: `hash-${appId}`, selectionDigest: `digest-${appId}`, permissions: scope });
 
-async function setup(page: Page, options: { external?: boolean; fixed?: boolean; single?: boolean; owner?: string; parsed?: boolean; missingDiscovery?: boolean; unicode?: boolean; incomplete?: boolean } = {}) {
+async function setup(page: Page, options: { external?: boolean; fixed?: boolean; single?: boolean; owner?: string; parsed?: boolean; missingDiscovery?: boolean; incompatibleApi?: boolean; discoveryProtocolVersion?: string; unicode?: boolean; incomplete?: boolean } = {}) {
   const calls: Array<{ path: string; body: any }> = [];
   const scope = options.unicode ? permissions.map(entry => ({ ...entry, path: '測定/体重' })) : permissions;
   await page.route('**/api/**', async route => {
@@ -18,11 +18,12 @@ async function setup(page: Page, options: { external?: boolean; fixed?: boolean;
       user: { id: 'user', name: 'Test user', email: 'test@example.invalid', emailVerified: true, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' },
     } });
     if (path === '/api/keys') return route.fulfill({ json: { keys: [{ id: 'key', address: ownerDid.split(':').at(-1), publicKey: 'public', keyIndex: 0, keyType: options.external ? 'EXTERNAL' : 'MANAGED', label: 'Test account', createdAt: '2026-01-01T00:00:00Z' }] } });
+    if (path === '/api/delegate/app-read-capabilities') return route.fulfill(options.incompatibleApi ? { status: 404, body: 'Not found' } : { json: { schemaVersion: 1, protocolVersion: 1, implementationVersion: '1', discovery: 'app-read', scope: 'registry-and-selected-app', transport: 'paste' } });
     const body = route.request().postDataJSON();
     calls.push({ path, body });
     if (path === '/api/delegate/app-read-discovery' && options.missingDiscovery) return route.fulfill({ status: 404, body: 'Not found' });
     if (path === '/api/delegate/app-read-discovery') return route.fulfill({ json: {
-      schemaVersion: 1, discoveryToken: 'discovery-context', ownerDid, host: 'https://node.tinycloud.xyz', clientKeyDigest: 'jwk-digest', expiresAt: '2099-01-01T00:00:00Z', complete: !options.incomplete, issues: options.incomplete ? [{ key: 'applications/legacy', code: 'LEGACY_RECORD', category: 'legacy', field: 'record' }] : [],
+      schemaVersion: 1, protocolVersion: 1, discoveryToken: 'discovery-context', ownerDid, host: 'https://node.tinycloud.xyz', clientKeyDigest: 'jwk-digest', expiresAt: '2099-01-01T00:00:00Z', complete: !options.incomplete, issues: options.incomplete ? [{ key: 'applications/legacy', code: 'LEGACY_RECORD', category: 'legacy', field: 'record' }] : [],
       applications: options.single ? [app('health', 'Health', scope)] : [app('health', 'Health', scope), app('notes', 'Notes', scope)],
     } });
     if (path === '/api/delegate/prepare') return route.fulfill({ json: {
@@ -35,7 +36,10 @@ async function setup(page: Page, options: { external?: boolean; fixed?: boolean;
   });
   const query = new URLSearchParams({ jwk: Buffer.from(JSON.stringify(jwk)).toString('base64url'), reason: options.unicode ? 'Qual foi a minha última pesagem? ⚖️' : 'When was my last recorded weight-in?' });
   if (options.owner) query.set('owner', options.owner);
-  if (!options.fixed) query.set('discovery', 'app-read');
+  if (!options.fixed) {
+    query.set('discovery', 'app-read');
+    query.set('discoveryProtocolVersion', options.discoveryProtocolVersion ?? '1');
+  }
   else query.set('permissions', Buffer.from(JSON.stringify({ permissions })).toString('base64url'));
   await page.goto(`/delegate?${query}`);
   if (!options.fixed && !options.owner) await page.getByRole('button', { name: /Test account/ }).click();
@@ -62,6 +66,7 @@ test('selects an app before one approval and one paste result in the same browse
 test('one discovered app goes directly to consent without a second browser approval', async ({ page }) => {
   const calls = await setup(page, { single: true });
   await expect(page.getByRole('heading', { name: 'Authorize CLI Access' })).toBeVisible();
+  await expect(page.getByText('SQL read access covers all records in each listed database.')).toBeVisible();
   expect(calls.map(call => call.path)).toEqual(['/api/delegate/app-read-discovery', '/api/delegate/prepare']);
 });
 
@@ -114,10 +119,18 @@ test('a missing discovery API never prepares default access', async ({ page }) =
   await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
 });
 
-test('advertises the exact one-approval paste capability', async ({ request }) => {
-  const response = await request.get('/.well-known/tinycloud-app-read.json');
-  expect(response.ok()).toBe(true);
-  expect(await response.json()).toEqual({ schemaVersion: 1, discovery: 'app-read', scope: 'registry-and-selected-app', transport: 'paste' });
+test('a new frontend paired with an old API fails before discovery and approval', async ({ page }) => {
+  const calls = await setup(page, { incompatibleApi: true });
+  await expect(page.getByRole('alert')).toContainText('Update the OpenKey web and API deployments together');
+  expect(calls).toEqual([]);
+  await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
+});
+
+test('an incompatible discovery protocol cannot prepare or sign', async ({ page }) => {
+  const calls = await setup(page, { discoveryProtocolVersion: '2' });
+  await expect(page.getByRole('alert')).toContainText('This application-read protocol is incompatible');
+  expect(calls).toEqual([]);
+  await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
 });
 
 

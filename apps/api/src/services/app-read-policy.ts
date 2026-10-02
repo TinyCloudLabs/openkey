@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import { resolveManifest, type Manifest } from '@tinycloud/sdk-core';
 import { ensureEip55 } from '@tinycloud/node-sdk-wasm';
+import { APP_READ_PROTOCOL_VERSION } from './app-read-protocol';
+export { APP_READ_PROTOCOL_VERSION } from './app-read-protocol';
 
 export interface AppReadPermission { service: string; space: string; path: string; actions: string[] }
 export interface RegisteredReadApp { appId: string; manifests: Manifest[]; manifestHash?: string; name?: string; description?: string }
@@ -72,7 +74,7 @@ export function deriveAppReadPermissions(application: RegisteredReadApp, { owner
       const actions = resource.actions.filter(action => allowed[service]!.includes(action.replace(`${service}/`, ''))).map(action => action.startsWith(`${service}/`) ? action : `${service}/${action}`);
       if (!actions.length) continue;
       const space = ownerSpace(ownerDid, resource.space);
-      if (['account', 'secrets', 'public'].some(name => space.endsWith(`:${name}`)) || !resource.path || resource.path === '/' || resource.path.includes('*') || resource.path.includes('\0') || resource.path.split('/').some(p => p === '..' || p === '.')) throw policyError('app_read_scope_unsupported');
+      if (['account', 'secrets', 'public'].some(name => space.endsWith(`:${name}`)) || !resource.path || resource.path.length > 4096 || resource.path === '/' || resource.path.includes('*') || resource.path.includes('\0') || resource.path.split('/').some(p => p === '..' || p === '.')) throw policyError('app_read_scope_unsupported');
       const constraints = resource as unknown as Record<string, unknown>;
       if (constraints.caveats || constraints.constraints || constraints.conditions) throw policyError('app_read_scope_unsupported');
       permissions.push({ service, space, path: resource.path, actions });
@@ -87,6 +89,6 @@ export function deriveAppReadPermissions(application: RegisteredReadApp, { owner
 export function appReadSelection(application: RegisteredReadApp, binding: { ownerDid: string; host: string; jwk: unknown }) {
   const clientKeyDigest = sha256(publicClientKey(binding.jwk));
   const permissions = deriveAppReadPermissions(application, binding);
-  const details = { schemaVersion: 1, ownerDid: binding.ownerDid, host: binding.host, clientKeyDigest, appId: application.appId, manifestHash: application.manifestHash, permissions };
+  const details = { schemaVersion: 1, protocolVersion: APP_READ_PROTOCOL_VERSION, ownerDid: binding.ownerDid, host: binding.host, clientKeyDigest, appId: application.appId, manifestHash: application.manifestHash, permissions };
   return { ...details, selectionDigest: sha256(details) };
 }

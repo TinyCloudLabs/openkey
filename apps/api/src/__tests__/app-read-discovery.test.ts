@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test';
 const service = await import('../services/app-read-discovery').catch(() => ({} as any));
 const ownerAddress = '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266';
-const request = { userId: 'user-1', keyId: 'key-1', host: 'https://node.tinycloud.xyz', jwk: { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' }, reason: 'Read my latest weight' };
+const request = { discoveryProtocolVersion: 1, userId: 'user-1', keyId: 'key-1', host: 'https://node.tinycloud.xyz', jwk: { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' }, reason: 'Read my latest weight' };
 const record = { app_id: 'fitness', manifests: [{ app_id: 'fitness', name: 'Fitness', space: 'applications', defaults: false, includePublicSpace: false, permissions: [{ service: 'tinycloud.sql', path: 'fitness', skipPrefix: true, actions: ['read', 'write'] }] }] };
 function fixture() {
   expect(typeof service.createAppReadDiscovery).toBe('function');
@@ -55,4 +55,31 @@ test('discovery reports legacy records and rejects missing ownership, external w
   expect(reads).toBe(1);
   const external = service.createAppReadDiscovery({ ...f.dependencies, getKey: async () => ({ id: 'key-1', userId: 'user-1', address: ownerAddress, keyType: 'EXTERNAL' }) });
   await expect(external.discover(request)).rejects.toThrow('app_read_managed_key_required');
+});
+
+test('protocol mismatch rejects before reading the registry or selecting a scope', async () => {
+  const f = fixture(), discovery = f.create();
+  let reads = 0;
+  const read = f.dependencies.readRegistry;
+  f.dependencies.readRegistry = async () => { reads++; return read(); };
+  const checked = f.create();
+  for (const discoveryProtocolVersion of [undefined, 0, 2, '1']) {
+    await expect(checked.discover({ ...request, discoveryProtocolVersion })).rejects.toThrow('app_read_protocol_incompatible');
+  }
+  expect(reads).toBe(0);
+  const result = await discovery.discover(request);
+  expect(result.protocolVersion).toBe(1);
+  const selected = { ...request, discoveryToken: result.discoveryToken, appId: 'fitness', selectionDigest: result.applications[0].selectionDigest };
+  expect(discovery.select(selected).appReadSelection.protocolVersion).toBe(1);
+  expect(() => discovery.select({ ...selected, discoveryProtocolVersion: 2 })).toThrow('app_read_protocol_incompatible');
+});
+test('a restart or another API worker cannot reconstruct authority from an old discovery token', async () => {
+  const f = fixture(), original = f.create(), otherWorker = f.create();
+  const result = await original.discover(request);
+  const selected = { ...request, discoveryToken: result.discoveryToken, appId: 'fitness', selectionDigest: result.applications[0].selectionDigest };
+  expect(() => otherWorker.select(selected)).toThrow('app_read_discovery_expired');
+  expect(original.select(selected).permissions).toEqual(result.applications[0].permissions);
+  const refreshed = await otherWorker.discover(request);
+  expect(refreshed.discoveryToken).not.toBe(result.discoveryToken);
+  expect(otherWorker.select({ ...selected, discoveryToken: refreshed.discoveryToken }).permissions).toEqual(refreshed.applications[0].permissions);
 });

@@ -1,5 +1,6 @@
 // Delegate route - creates TinyCloud delegation for CLI auth flow
 import { randomUUID } from 'node:crypto';
+import { APP_READ_CAPABILITIES } from '../services/app-read-protocol';
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { createTeeClient, unseal } from '@openkey/tee';
@@ -107,10 +108,16 @@ async function getAppReadDiscovery() {
   }
   return appReadDiscovery;
 }
-interface AppReadSelectionBody { discoveryToken?: unknown; appId?: unknown; selectionDigest?: unknown }
+interface AppReadSelectionBody { discoveryProtocolVersion?: unknown; discoveryToken?: unknown; appId?: unknown; selectionDigest?: unknown }
 function appReadError(error: unknown) {
   const code = (error as { code?: unknown })?.code;
-  return { error: 'The requested app read authorization could not be prepared.', code: typeof code === 'string' && /^app_read_[a-z_]+$/.test(code) ? code : 'app_read_discovery_failed' };
+  const safeCode = typeof code === 'string' && /^app_read_[a-z_]+$/.test(code) ? code : 'app_read_discovery_failed';
+  const messages: Record<string, string> = {
+    app_read_discovery_expired: 'Application selection expired or the API restarted. Choose your key and application again to review a fresh request. No access was approved.',
+    app_read_prepared_context_expired: 'The prepared approval expired or the API restarted. Choose your key and application again to review a fresh request. No access was approved.',
+    app_read_protocol_incompatible: 'This API does not support the requested application-read protocol. Update the TinyCloud CLI and OpenKey release together before retrying.',
+  };
+  return { error: messages[safeCode] ?? 'The requested app read authorization could not be prepared.', code: safeCode };
 }
 
 async function resolveBetterAuthSession(c: any): Promise<boolean> {
@@ -134,6 +141,12 @@ export function setDelegateSignerAuthMiddlewareForTests(
 }
 
 export const delegateRouter = new Hono<DelegateSignerContext>();
+
+// Public compatibility evidence only; owner discovery remains session gated.
+delegateRouter.get('/app-read-capabilities', c => {
+  c.header('Cache-Control', 'no-store');
+  return c.json(APP_READ_CAPABILITIES);
+});
 
 // Only the signer route accepts the narrow CoordinationOS OAuth principal.
 // Every other delegate endpoint retains the existing Better Auth session gate.
@@ -1185,6 +1198,9 @@ delegateRouter.post('/', async (c) => {
     // so a caller cannot use it to burn the token by sending garbage.
     const preview = peekAuthorizationContext(token);
     if (!preview.ok) {
+      if (appReadSelection && ['context-not-found', 'context-expired'].includes(preview.error)) {
+        return c.json(appReadError({ code: 'app_read_prepared_context_expired' }), 400);
+      }
       return c.json({ error: preview.message, code: preview.error }, 400);
     }
     const bound = preview.value;

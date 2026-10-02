@@ -93,6 +93,7 @@
   const callback = $page.url.searchParams.get('callback') || '';
   const host = $page.url.searchParams.get('host') || 'https://node.tinycloud.xyz';
   const discoveryMode = $page.url.searchParams.get('discovery') || '';
+  const discoveryProtocolVersion = Number($page.url.searchParams.get('discoveryProtocolVersion'));
   const discoveryOwner = $page.url.searchParams.get('owner') || '';
   const discoveryOwnerMatch = /^did:pkh:eip155:[1-9][0-9]*:(0x[a-fA-F0-9]{40})$/.exec(discoveryOwner);
   const invalidDiscoveryOwner = discoveryMode === 'app-read' && Boolean(discoveryOwner) && !discoveryOwnerMatch;
@@ -388,7 +389,7 @@
           throw new Error('This application lookup request is not supported. Return to your agent without approving access.');
         }
         discovering = true;
-        appDiscovery = await discoverApplicationReads({ keyId: key.id, keyType: key.keyType, jwk, host, reason: requestReason }, fetch, import.meta.env.VITE_API_URL || '');
+        appDiscovery = await discoverApplicationReads({ discoveryProtocolVersion, keyId: key.id, keyType: key.keyType, jwk, host, reason: requestReason }, fetch, import.meta.env.VITE_API_URL || '');
         if (discoveryOwner && appDiscovery.ownerDid.toLowerCase() !== discoveryOwner.toLowerCase()) {
           throw new Error('The selected account does not match the owner requested by your agent. No access has been approved.');
         }
@@ -1374,6 +1375,9 @@
               <div class="text-xs text-surface-400 mb-1">Selected application</div>
               <p class="font-medium text-sm text-surface-900">{selectedApplication.name || selectedApplication.appId}</p>
               <p class="text-sm text-surface-500 mt-1">Read access to this application's declared resources and your application registry.</p>
+              {#if selectedApplication.permissions.some(permission => permission.service === 'tinycloud.sql')}
+                <p class="text-sm text-surface-500 mt-1">SQL read access covers all records in each listed database.</p>
+              {/if}
               {#if appDiscovery && (!appDiscovery.complete || appDiscovery.issues.length > 0)}
                 <p class="text-sm text-amber-800 mt-2" role="status">Some registrations are unavailable or lack supported read access. This approval covers the selected application.</p>
               {/if}

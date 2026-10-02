@@ -26,6 +26,7 @@ test('selection binding changes for owner, host, public client key, app, manifes
   expect(typeof policy.appReadSelection).toBe('function');
   const bound = { ownerDid, host: 'https://node.tinycloud.xyz', jwk: { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' } };
   const first = policy.appReadSelection(app, bound);
+  expect(first.protocolVersion).toBe(1);
   expect(first.selectionDigest).toMatch(/^[a-f0-9]{64}$/);
   for (const changed of [{ host: 'https://tee.node.tinycloud.xyz' }, { jwk: { ...bound.jwk, x: 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB' } }]) expect(policy.appReadSelection(app, { ...bound, ...changed }).selectionDigest).not.toBe(first.selectionDigest);
   expect(policy.appReadSelection({ ...app, manifestHash: 'changed' }, bound).selectionDigest).not.toBe(first.selectionDigest);
