@@ -5,6 +5,7 @@ import {
   cleanConsentText,
   decodeBase64UrlJson,
   decodeDelegatePermissionsParam,
+  readDelegatePermissionsParam,
   delegationPasteCode,
   deviceLifetimeOptions,
   deviceRequestReason,
@@ -122,6 +123,15 @@ describe('base64url JSON parameters', () => {
     }
     expect(decodeDelegatePermissionsParam(encodeBase64UrlJson({ permissions: requested, reason: '公開' })))
       .toEqual({ permissions: requested, reason: '公開' });
+  });
+
+  test('reads the permissions parameter by presence: only an absent one means default abilities', () => {
+    expect(readDelegatePermissionsParam(new URLSearchParams('did=x&host=h'))).toBeNull();
+    for (const query of ['permissions=', 'permissions', 'did=x&permissions=&host=h']) {
+      expect(() => readDelegatePermissionsParam(new URLSearchParams(query)), query).toThrow();
+    }
+    expect(readDelegatePermissionsParam(new URLSearchParams({ permissions: encodeBase64UrlJson({ permissions: requested }) })))
+      .toEqual({ permissions: requested, reason: undefined });
   });
 });
 

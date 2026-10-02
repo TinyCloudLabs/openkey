@@ -8,7 +8,7 @@
   import SiweMessage from '$lib/components/ui/siwe-message.svelte';
   import CliSigningAdapter from '$lib/components/signing/cli-signing-adapter.svelte';
   import DeviceRequestNotice from '$lib/components/device/device-request-notice.svelte';
-  import { approvedDevicePermissions, cleanConsentText, decodeDelegatePermissionsParam, delegationPasteCode, deviceRequestReason, loadVerifiedDeviceRequest } from '$lib/device-authorization';
+  import { approvedDevicePermissions, cleanConsentText, delegationPasteCode, readDelegatePermissionsParam, deviceRequestReason, loadVerifiedDeviceRequest } from '$lib/device-authorization';
   import {
     parseCapabilityReview,
     defaultSelection,
@@ -90,7 +90,6 @@
   const jwkB64 = $page.url.searchParams.get('jwk') || '';
   const callback = $page.url.searchParams.get('callback') || '';
   const host = $page.url.searchParams.get('host') || 'https://node.tinycloud.xyz';
-  const permissionsB64 = $page.url.searchParams.get('permissions') || '';
   const reasonParam = $page.url.searchParams.get('reason') || '';
   // Optional caller-supplied delegation lifetime. The CLI encodes this as
   // an ms-format string ("7d", "30m") or a millisecond integer. Validation
@@ -188,22 +187,23 @@
   }
   let requestedPermissions: RequestedPermission[] = [];
   let requestReason = $state(normalizeReason(reasonParam));
-  // Set when a `permissions` parameter is present but unreadable: the request
-  // is refused rather than falling back to the default abilities.
+  // Set when a `permissions` parameter is present (even empty) but
+  // unreadable: the request is refused rather than falling back to the
+  // default abilities, which apply only when the parameter is absent.
   let permissionsParamError = '';
-  if (permissionsB64) {
-    try {
-      // UTF-8 JSON: `atob` alone would mangle non-ASCII reasons.
-      const payload = decodeDelegatePermissionsParam(permissionsB64);
+  try {
+    // UTF-8 JSON: `atob` alone would mangle non-ASCII reasons.
+    const payload = readDelegatePermissionsParam($page.url.searchParams);
+    if (payload) {
       requestedPermissions = payload.permissions;
       const payloadReason = normalizeReason(payload.reason);
       if (payloadReason) {
         requestReason = payloadReason;
       }
-    } catch {
-      permissionsParamError = 'Could not decode the requested permissions. Restart the CLI command to get a new link.';
-      error = permissionsParamError;
     }
+  } catch {
+    permissionsParamError = 'Could not decode the requested permissions. Restart the CLI command to get a new link.';
+    error = permissionsParamError;
   }
 
   // Device approvals never trust the link: the reason and every binding it

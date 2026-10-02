@@ -193,6 +193,17 @@ export function decodeDelegatePermissionsParam(value: string): { permissions: De
 }
 
 /**
+ * Read `/delegate`'s `permissions` parameter by presence: null only when it is
+ * absent (the ordinary default abilities apply). A present parameter, even
+ * `?permissions=` or a bare `?permissions`, must decode to a non-empty list
+ * or the request is refused.
+ */
+export function readDelegatePermissionsParam(params: URLSearchParams): { permissions: DevicePermission[]; reason?: unknown } | null {
+  const value = params.get('permissions');
+  return value === null ? null : decodeDelegatePermissionsParam(value);
+}
+
+/**
  * Map the grants of a signed delegation (`/api/delegate` `permissions`,
  * ReCap form: short service names and full space URIs) back onto the
  * requested manifest permissions, keeping the request's spelling. Throws
