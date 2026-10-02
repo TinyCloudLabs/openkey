@@ -32,3 +32,9 @@ test('requested permissions cannot name another owner or chain', () => {
     expect(() => prepareDelegationSession({ ...base, permissions: [{ ...permissions[0]!, space }] })).toThrow('signing identity');
   }
 });
+test('device-compatible dotted space names retain their exact owner and name', () => {
+  for (const requested of ['notes.v1', `tinycloud:pkh:eip155:1:${address.toLowerCase()}:notes.v1`]) {
+    const result = prepareDelegationSession({ ...base, permissions: permissions.slice(0, 2).map(entry => ({ ...entry, space: requested })) });
+    expect(parseRecapFromSiwe(result.prepared.siwe).every((entry: any) => entry.space === `tinycloud:pkh:eip155:1:${address}:notes.v1`)).toBe(true);
+  }
+});

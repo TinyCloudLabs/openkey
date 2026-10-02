@@ -136,7 +136,8 @@ test('an incompatible discovery protocol cannot prepare or sign', async ({ page 
 
 test('one approval produces a UTF-8 paste code for Unicode task and resource paths', async ({ page }) => {
   const calls = await setup(page, { single: true, unicode: true });
-  await expect(page.getByText('Qual foi a minha última pesagem? ⚖️').first()).toBeVisible();
+  // TC-539 removes invisible variation selectors from displayed consent text.
+  await expect(page.getByText('Qual foi a minha última pesagem? ⚖').first()).toBeVisible();
   await page.getByRole('button', { name: 'Approve', exact: true }).click();
   await expect(page.getByText('Copy this code and paste it into your agent conversation:')).toBeVisible();
   const encoded = await page.locator('textarea').inputValue();

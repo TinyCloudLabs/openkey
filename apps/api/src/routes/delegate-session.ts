@@ -119,7 +119,7 @@ export function permissionOption(entry: RecapEntry): PermissionOption {
     key: permissionKey(entry),
     service: entry.service,
     path: entry.path,
-    label: SERVICE_LABELS[entry.service] || entry.service,
+    label: (Object.hasOwn(SERVICE_LABELS, entry.service) ? SERVICE_LABELS[entry.service] : undefined) || entry.service,
     resourcePath,
     actions: entry.actions.map((action) => ({
       key: actionKey(entry, action),
@@ -130,24 +130,24 @@ export function permissionOption(entry: RecapEntry): PermissionOption {
   };
 }
 
+// Ability maps are keyed by request-supplied services and paths (`constructor`,
+// `__proto__`, ...), so they never inherit from Object.prototype.
 export function entriesToAbilities(entries: RecapEntry[]): AbilitiesMap {
-  const abilities: AbilitiesMap = {};
+  const abilities: AbilitiesMap = Object.create(null);
 
   for (const entry of entries) {
-    abilities[entry.service] ??= {};
-    const serviceAbilities = abilities[entry.service];
-    if (!serviceAbilities) continue;
-    serviceAbilities[entry.path] = entry.actions;
+    if (!Object.hasOwn(abilities, entry.service)) abilities[entry.service] = Object.create(null);
+    abilities[entry.service]![entry.path] = entry.actions;
   }
 
   return abilities;
 }
 
 export function entriesToSpaceAbilities(entries: RecapEntry[]): SpaceAbilitiesMap {
-  const spaces: SpaceAbilitiesMap = {};
+  const spaces: SpaceAbilitiesMap = Object.create(null);
   for (const entry of entries) {
-    const abilities = spaces[entry.space] ??= {};
-    const service = abilities[shortServiceName(entry.service)] ??= {};
+    const abilities = spaces[entry.space] ??= Object.create(null);
+    const service = abilities[shortServiceName(entry.service)] ??= Object.create(null);
     service[entry.path] = [...new Set([...(service[entry.path] ?? []), ...entry.actions])];
   }
   return spaces;
@@ -161,10 +161,10 @@ export function resolvePermissionEntries(permissions: DelegationPermissionEntry[
     let space: string;
     if (requested.startsWith('tinycloud:')) {
       const name = requested.slice(requested.lastIndexOf(':') + 1);
-      if (!/^[A-Za-z0-9_-]+$/.test(name) || requested.slice(0, -name.length).toLowerCase() !== owner.toLowerCase()) throw new Error('Requested space does not belong to the signing identity');
+      if (!/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(name) || requested.slice(0, -name.length).toLowerCase() !== owner.toLowerCase()) throw new Error('Requested space does not belong to the signing identity');
       space = owner + name;
     } else {
-      if (!/^[A-Za-z0-9_-]+$/.test(requested)) throw new Error('Requested space does not belong to the signing identity');
+      if (!/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(requested)) throw new Error('Requested space does not belong to the signing identity');
       space = owner + requested;
     }
     return { ...entry, service: shortServiceName(entry.service), space };
@@ -182,8 +182,8 @@ export function assertBaselineSubset(entries: RecapEntry[], baseline: AbilitiesM
   }
 
   for (const entry of entries) {
-    const serviceAbilities = baseline[entry.service];
-    const allowedActions = serviceAbilities?.[entry.path];
+    const serviceAbilities = Object.hasOwn(baseline, entry.service) ? baseline[entry.service] : undefined;
+    const allowedActions = serviceAbilities && Object.hasOwn(serviceAbilities, entry.path) ? serviceAbilities[entry.path] : undefined;
 
     if (!allowedActions) {
       throw new Error('Edited permissions must be a subset of the original delegation request');
@@ -264,12 +264,14 @@ function isRawEncryptionPermission(
 export function abilitiesFromPermissions(
   permissions: DelegationPermissionEntry[],
 ): AbilitiesMap {
-  const abilities: AbilitiesMap = {};
+  const abilities: AbilitiesMap = Object.create(null);
   for (const entry of permissions) {
     const short = shortServiceName(entry.service);
     if (!short) continue;
-    const byPath = abilities[short] ?? (abilities[short] = {});
-    const list = byPath[entry.path] ?? (byPath[entry.path] = []);
+    if (!Object.hasOwn(abilities, short)) abilities[short] = Object.create(null);
+    const byPath = abilities[short]!;
+    if (!Object.hasOwn(byPath, entry.path)) byPath[entry.path] = [];
+    const list = byPath[entry.path]!;
     for (const action of entry.actions) {
       if (!list.includes(action)) list.push(action);
     }
@@ -286,13 +288,16 @@ export function abilitiesFromPermissions(
 export function spacePrefixFromPermissions(
   permissions: DelegationPermissionEntry[],
 ): string {
+  // Ethereum addresses in `tinycloud:pkh` URIs are case-insensitive; chain
+  // and space name stay exact (same rule as device authorization).
   const spaces = new Set<string>();
   for (const permission of permissions) {
     if (isRawEncryptionPermission(permission)) continue;
     if (!permission.space) {
       throw new Error('non-raw permissions must include a space');
     }
-    spaces.add(permission.space);
+    const pkh = /^tinycloud:pkh:eip155:([^:]+):(0x[0-9a-fA-F]{40}):(.+)$/.exec(permission.space);
+    spaces.add(pkh ? `tinycloud:pkh:eip155:${pkh[1]}:${pkh[2]!.toLowerCase()}:${pkh[3]}` : permission.space);
   }
   if (spaces.size !== 1) {
     throw new DelegateRequestError(
