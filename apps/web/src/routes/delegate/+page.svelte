@@ -7,6 +7,8 @@
   import Card from '$lib/components/ui/card.svelte';
   import SiweMessage from '$lib/components/ui/siwe-message.svelte';
   import CliSigningAdapter from '$lib/components/signing/cli-signing-adapter.svelte';
+  import DeviceRequestNotice from '$lib/components/device/device-request-notice.svelte';
+  import { approvedDevicePermissions, cleanConsentText, delegationPasteCode, readDelegatePermissionsParam, deviceRequestReason, loadVerifiedDeviceRequest } from '$lib/device-authorization';
   import {
     parseCapabilityReview,
     defaultSelection,
@@ -88,7 +90,6 @@
   const jwkB64 = $page.url.searchParams.get('jwk') || '';
   const callback = $page.url.searchParams.get('callback') || '';
   const host = $page.url.searchParams.get('host') || 'https://node.tinycloud.xyz';
-  const permissionsB64 = $page.url.searchParams.get('permissions') || '';
   const reasonParam = $page.url.searchParams.get('reason') || '';
   // Optional caller-supplied delegation lifetime. The CLI encodes this as
   // an ms-format string ("7d", "30m") or a millisecond integer. Validation
@@ -97,6 +98,8 @@
   const expiryParam = $page.url.searchParams.get('expiry') || '';
   const deviceTransactionId = $page.url.searchParams.get('deviceTransactionId') || '';
   const deviceShareOrigin = $page.url.searchParams.get('deviceShareOrigin') || '';
+  const deviceUserCode = $page.url.searchParams.get('deviceUserCode') || '';
+  let deviceAcknowledged = $state(false);
   const relayJwkB64 = $page.url.searchParams.get('relayJwk') || '';
 
   // Decode JWK from base64url
@@ -184,23 +187,42 @@
   }
   let requestedPermissions: RequestedPermission[] = [];
   let requestReason = $state(normalizeReason(reasonParam));
-  if (permissionsB64) {
-    try {
-      const payload = JSON.parse(
-        atob(permissionsB64.replace(/-/g, '+').replace(/_/g, '/')),
-      );
-      if (payload && Array.isArray(payload.permissions)) {
-        requestedPermissions = payload.permissions as RequestedPermission[];
-      }
-      const payloadReason = normalizeReason(payload?.reason);
+  // Set when a `permissions` parameter is present (even empty) but
+  // unreadable: the request is refused rather than falling back to the
+  // default abilities, which apply only when the parameter is absent.
+  let permissionsParamError = '';
+  try {
+    // UTF-8 JSON: `atob` alone would mangle non-ASCII reasons.
+    const payload = readDelegatePermissionsParam($page.url.searchParams);
+    if (payload) {
+      requestedPermissions = payload.permissions;
+      const payloadReason = normalizeReason(payload.reason);
       if (payloadReason) {
         requestReason = payloadReason;
       }
-    } catch {
-      // Surface as a user-visible error during consent rendering.
-      error = 'Could not decode the requested permissions parameter.';
     }
+  } catch {
+    permissionsParamError = 'Could not decode the requested permissions. Restart the CLI command to get a new link.';
+    error = permissionsParamError;
   }
+
+  // Device approvals never trust the link: the reason and every binding it
+  // carries must come from (or equal) the server's pending request. Key
+  // selection waits for this check.
+  if (deviceTransactionId) requestReason = '';
+  const deviceRequestVerified = deviceTransactionId
+    ? loadVerifiedDeviceRequest(import.meta.env.VITE_API_URL || '', deviceUserCode, {
+        transactionId: deviceTransactionId,
+        sessionDid: did,
+        publicJwk: jwk,
+        relayPublicJwk,
+        nodeOrigin: host,
+        shareOrigin: deviceShareOrigin,
+        permissions: requestedPermissions,
+        expiry: expiryParam,
+      }).then((record) => { requestReason = normalizeReason(deviceRequestReason(record)); })
+    : Promise.resolve();
+  deviceRequestVerified.catch((cause: Error) => { error = cause.message; });
 
   // Extract the expected owner address from a `tinycloud:pkh:eip155:<chain>:<addr>:<name>`
   // space URI. Returns the address only when every permission resolves to the
@@ -239,7 +261,7 @@
 
   function normalizeReason(value: unknown): string {
     if (typeof value !== 'string') return '';
-    return value.replace(/\s+/g, ' ').trim().slice(0, 500);
+    return cleanConsentText(value).slice(0, 500);
   }
 
   function shortService(service: string): string {
@@ -367,6 +389,7 @@
     preparing = true;
 
     try {
+      await deviceRequestVerified;
       const data = await prepareDelegation(key);
       applyPreparedDelegation(data);
       editingPermissions = false;
@@ -380,6 +403,9 @@
   }
 
   async function prepareDelegation(key: EthereumKey, actionKeys?: string[]) {
+    // Every signing path starts here: never prepare the default abilities
+    // for a request whose permissions could not be read.
+    if (permissionsParamError) throw new Error(permissionsParamError);
     const API_URL = import.meta.env.VITE_API_URL || '';
     const body: Record<string, unknown> = {
       keyId: key.id,
@@ -402,6 +428,8 @@
     if (expiryParam) {
       body.expiry = expiryParam;
     }
+    // The API refuses a device delegation outside the transaction's lifetime.
+    if (deviceTransactionId) body.deviceTransactionId = deviceTransactionId;
 
     const res = await fetch(`${API_URL}/api/delegate/prepare`, {
       method: 'POST',
@@ -582,6 +610,10 @@
   }
 
   function approveDelegate() {
+    if (deviceTransactionId && !deviceAcknowledged) {
+      error = 'Confirm that you started this request yourself, on a device you control.';
+      return;
+    }
     if (!selectedKey || !jwk) {
       error = 'Missing key or JWK parameter.';
       return;
@@ -792,6 +824,7 @@
       if (expiryParam) {
         body.expiry = expiryParam;
       }
+      if (deviceTransactionId) body.deviceTransactionId = deviceTransactionId;
 
       const res = await fetch(`${API_URL}/api/delegate`, {
         method: 'POST',
@@ -916,6 +949,7 @@
                 selectedActionIds: selectedActionKeys,
               }
             : {}),
+          ...(deviceTransactionId ? { deviceTransactionId } : {}),
         }),
       });
 
@@ -947,7 +981,10 @@
       const API_URL = import.meta.env.VITE_API_URL || '';
       const delegationExpiresAt = payload.expiresAt ?? payload.expirationTime ?? payload.expiry;
       if (typeof delegationExpiresAt !== 'string') throw new Error('The approved delegation has no expiry binding.');
-      const relay = await encryptDeviceRelay(payload);
+      // The owner may have unchecked capabilities: bind and relay exactly
+      // what the signed delegation grants, in the request's manifest form.
+      const approvedPermissions = approvedDevicePermissions(requestedPermissions, payload.permissions);
+      const relay = await encryptDeviceRelay({ ...payload, permissions: approvedPermissions });
       const response = await fetch(`${API_URL}/api/device-authorizations/${encodeURIComponent(deviceTransactionId)}/approve`, {
         method: 'POST',
         credentials: 'include',
@@ -959,7 +996,7 @@
             sessionDid: did,
             nodeOrigin: host,
             shareOrigin: deviceShareOrigin,
-            permissions: requestedPermissions,
+            permissions: approvedPermissions,
             delegationExpiresAt,
           },
         }),
@@ -990,12 +1027,12 @@
       } catch {
         // Callback unreachable (e.g. CLI on remote machine) — fall back to paste code
         callbackFailed = true;
-        pasteCode = btoa(JSON.stringify(payload));
+        pasteCode = delegationPasteCode(payload);
         done = true;
         step = 'done';
       }
     } else {
-      pasteCode = btoa(JSON.stringify(payload));
+      pasteCode = delegationPasteCode(payload);
       done = true;
       step = 'done';
     }
@@ -1258,6 +1295,12 @@
             >
               Choose a different wallet
             </button>
+          </div>
+        {/if}
+
+        {#if deviceTransactionId}
+          <div class="mb-4">
+            <DeviceRequestNotice nodeOrigin={host} shareOrigin={deviceShareOrigin} expiry={expiryParam} bind:acknowledged={deviceAcknowledged} />
           </div>
         {/if}
 
