@@ -60,15 +60,39 @@ slot could disagree with what the positional parser behind the delegation
 reads, so non-canonical messages are refused.
 
 Refusals other than `expired_token` are `invalid_request`. Requests that
-name no device transaction follow ordinary `/delegate` behaviour, without
-these limits (tracked separately in TC-547).
-`/api/delegate/authorize-sign-prepare`, `/api/delegate/authorize-sign`, and
-`/api/delegate/authorize-sign-preview` do not support device transactions:
-any request to them that carries `deviceTransactionId` (whatever its value)
-is refused with 400 `device_transaction_unsupported`, and requests without it
-behave as before.
+name no device transaction follow ordinary `/delegate` behaviour (see
+"Ordinary `/delegate` links" below).
+`/api/delegate/authorize-sign-prepare`, `/api/delegate/authorize-sign`,
+`/api/delegate/authorize-sign-preview`, `/api/delegate/sign` (session and
+manage-key OAuth callers), `/api/delegate/host`, and `/api/keys/:keyId/sign`
+do not support device transactions: any request to them that carries
+`deviceTransactionId` (whatever its value) is refused with 400
+`device_transaction_unsupported`, and requests without it behave as before.
 
 The default and maximum lifetime is 30 days, counted from approval.
+
+## Ordinary `/delegate` links
+
+A `/delegate` link without `deviceTransactionId` can be made by anyone, so
+the page limits what it does with one:
+
+- `callback` must be a loopback URL (`localhost`, `127.0.0.1`, or `[::1]`,
+  as the TinyCloud CLI uses) or an HTTPS URL on a registered app origin
+  (`REGISTERED_CALLBACK_ORIGINS` in `apps/web/src/lib/delegate-link-policy.ts`,
+  plus `VITE_DELEGATE_CALLBACK_ORIGINS` for other deployments). Any other
+  callback refuses the request before a key is prepared. Without a callback
+  the page shows a paste code.
+- `host` must be HTTPS, or HTTP on a loopback host. The consent screen shows
+  the node, where the delegation is returned, and its expiry. A node that is
+  neither a known TinyCloud node (`KNOWN_NODE_ORIGINS`, plus
+  `VITE_DELEGATE_NODE_ORIGINS`) nor on this device is flagged, and Approve
+  refuses until the owner confirms they run or trust it.
+- `/api/delegate/prepare` and `/api/delegate` cap the requested `expiry` at
+  30 days; a longer request is clamped.
+
+Wallet-key approvals on `/api/delegate/complete` bind the authorization
+context to the address in the signed SIWE. A `prepared.address`, when
+supplied, must equal it.
 
 ## Request
 

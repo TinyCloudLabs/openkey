@@ -150,6 +150,21 @@ describe('keysRouter managed signing', () => {
     expect(calls).toEqual([]);
   });
 
+  test('POST /:keyId/sign refuses a deviceTransactionId it cannot enforce, before unsealing', async () => {
+    const router = await keysRouter();
+
+    const response = await router.request('/key_1/sign', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'hello', deviceTransactionId: 'unknown-transaction' }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ code: 'device_transaction_unsupported' });
+    expect(unseal).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
+  });
+
   test('POST /:keyId/sign returns 404 for a missing key before unsealing', async () => {
     keyRecord = { ...keyRecord, id: 'other_key' };
     const router = await keysRouter();

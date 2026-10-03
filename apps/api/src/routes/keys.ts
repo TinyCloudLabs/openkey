@@ -9,6 +9,7 @@ import {
   ensureTinyCloudBootstrapForApprovedSign,
 } from '../services/tinycloud-bootstrap';
 import { createSealingContext, deriveKeyForRecord } from '../services/key-sealing';
+import { deviceTransactionUnsupportedError } from './device-delegation-window';
 
 const prisma = createPrismaClient();
 const tee = createTeeClient();
@@ -264,6 +265,8 @@ keysRouter.post('/:keyId/sign', async (c) => {
     message: string;
     format?: 'raw' | 'personal_sign'; // default: personal_sign
   }>();
+  const deviceUnsupported = deviceTransactionUnsupportedError(body);
+  if (deviceUnsupported) return c.json(deviceUnsupported, 400);
 
   const key = await prisma.ethereumKey.findFirst({
     where: { id: keyId, userId: user.id, archivedAt: null },

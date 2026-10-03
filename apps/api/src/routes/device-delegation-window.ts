@@ -32,9 +32,10 @@ export async function deviceDelegationWindowError(
 }
 
 /**
- * The authorize-sign routes do not support device transactions; a request
- * carrying `deviceTransactionId` is refused rather than silently signed
- * without the device constraints.
+ * Signing routes that do not enforce device transactions (the authorize-sign
+ * routes, `/api/delegate/sign`, `/api/delegate/host`, and
+ * `/api/keys/:keyId/sign`) refuse a request carrying `deviceTransactionId`
+ * rather than silently signing it without the device constraints.
  */
 export function deviceTransactionUnsupportedError(body: unknown): { error: string; code: string } | null {
   return body && typeof body === 'object' && Object.hasOwn(body, 'deviceTransactionId')
