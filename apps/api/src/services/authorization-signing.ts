@@ -376,9 +376,11 @@ export interface ConsumeInput {
    */
   candidateImmutableFieldsDigest: string;
   /**
-   * DEPRECATED (kept for backward-compat with existing tests): equality-only
-   * digest check. Prefer `candidateAttenuation` which enables a proper
-   * subset check including caveats.
+   * Equality-only check against the digest bound at /prepare. The
+   * `/api/delegate` completions (`/complete` and the managed approval) pass
+   * the digest of the request baseline they recomputed from the forwarded
+   * `permissions`, so completion cannot validate against a different
+   * request than the one prepared.
    *
    * When BOTH `candidateAbilitiesDigest` and `candidateAttenuation` are
    * supplied, the attenuation subset check takes precedence.
@@ -625,9 +627,9 @@ export function consumeAuthorizationContext(
     input.candidateAbilitiesDigest !== null &&
     !constantTimeEqual(stored.baselineAbilitiesDigest, input.candidateAbilitiesDigest)
   ) {
-    // Legacy equality-only path: kept for tests that predate the
-    // attenuation-based subset check. Production callers always send
-    // `candidateAttenuation` + `baselineAttenuation`.
+    // Equality-only path: the /api/delegate completions bind the request
+    // baseline this way; /authorize-sign sends `candidateAttenuation` +
+    // `baselineAttenuation` instead.
     return {
       ok: false,
       error: "baseline-digest-mismatch",

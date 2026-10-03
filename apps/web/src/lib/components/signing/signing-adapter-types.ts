@@ -46,6 +46,14 @@ export interface CliSigningTransport {
 
   /** Latest error string, or null. */
   error: string | null;
+
+  /**
+   * Set while the prepared authorization does not match the visible
+   * selection (a narrowing `/prepare` failed or never ran). Approve stays
+   * disabled and shows this reason; the selection stays editable so the
+   * user can retry.
+   */
+  approveBlockedReason?: string | null;
 }
 
 /** Transport injected by the widget popup and iframe routes. */

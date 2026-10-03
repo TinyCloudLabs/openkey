@@ -50,6 +50,12 @@
     editing: boolean;
     approving?: boolean;
     error?: string | null;
+    /**
+     * When set, Approve is disabled and this reason is shown; unlike
+     * `approving`, the selection controls stay usable so the caller can
+     * re-prepare.
+     */
+    approveBlockedReason?: string | null;
     finalPreview?: boolean;
     onApprove: () => void;
     onCancel: () => void;
@@ -63,6 +69,7 @@
     editing,
     approving = false,
     error = null,
+    approveBlockedReason = null,
     finalPreview = false,
     onApprove,
     onCancel,
@@ -341,6 +348,7 @@
   }
 
   const approveDisabled = $derived(approving || isMalformedRecap);
+  const approveButtonDisabled = $derived(approveDisabled || Boolean(approveBlockedReason));
   const approveLabel = $derived(
     isMalformedRecap
       ? "Cannot approve"
@@ -712,6 +720,9 @@
   {#if error}
     <p class="error" role="alert" aria-live="polite">{error}</p>
   {/if}
+  {#if approveBlockedReason}
+    <p class="approve-blocked" role="status" aria-live="polite">{approveBlockedReason}</p>
+  {/if}
 
   <footer class="actions">
     <button
@@ -726,8 +737,8 @@
       type="button"
       class="approve"
       onclick={onApprove}
-      disabled={approveDisabled}
-      aria-disabled={approveDisabled}
+      disabled={approveButtonDisabled}
+      aria-disabled={approveButtonDisabled}
     >
       {approveLabel}
     </button>
@@ -1256,6 +1267,12 @@
     line-height: 1.45;
     margin: 0;
     border: 1px solid #f2c0c0;
+  }
+  .approve-blocked {
+    color: #7c4a03;
+    font-size: 12px;
+    line-height: 1.45;
+    margin: 0;
   }
   .actions {
     display: flex;

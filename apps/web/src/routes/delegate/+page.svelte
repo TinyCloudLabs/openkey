@@ -19,6 +19,8 @@
     isCanonicalHttpsOrigin,
     withConfiguredEntries,
   } from '$lib/delegate-link-policy';
+  import { preparedMatchesSelection, reviewSelectionToActionKeys } from '$lib/delegate-review-selection';
+  import { expectedSigner } from '$lib/delegate-expected-signer';
   import {
     parseCapabilityReview,
     defaultSelection,
@@ -253,25 +255,16 @@
     : Promise.resolve();
   deviceRequestVerified.catch((cause: Error) => { error = cause.message; });
 
-  // Extract the expected owner address from a `tinycloud:pkh:eip155:<chain>:<addr>:<name>`
-  // space URI. Returns the address only when every permission resolves to the
-  // SAME owner via the pkh form. If any permission's space is missing, malformed,
-  // or non-pkh, or addresses disagree, we return null and fall back to the
-  // previous unconstrained behavior. This avoids pinning the UI to an address
-  // when the request is genuinely unscoped or only partially scoped.
-  function extractExpectedAddress(perms: RequestedPermission[]): string | null {
-    if (perms.length === 0) return null;
-    const addresses = new Set<string>();
-    for (const p of perms) {
-      if (typeof p.space !== 'string') return null;
-      const match = p.space.match(/^tinycloud:pkh:eip155:\d+:(0x[a-fA-F0-9]{40}):/);
-      if (!match) return null;
-      addresses.add(match[1].toLowerCase());
-    }
-    return addresses.size === 1 ? [...addresses][0] : null;
-  }
-
-  const expectedAddress = extractExpectedAddress(requestedPermissions);
+  // The wallet the CLI requested: the one owner (chain and address) every
+  // requested space and raw encryption network resolves to. Owners that
+  // disagree make the request unsignable for any wallet, so it is refused
+  // like an unreadable one (see expectedSigner).
+  const requestSigner = expectedSigner(requestedPermissions);
+  const expectedAddress = requestSigner.kind === 'owner' ? requestSigner.address : null;
+  const requestOwnerError = requestSigner.kind === 'conflict'
+    ? `This request names more than one account (${requestSigner.owners.join(', ')}). Restart the CLI command to get a new link.`
+    : '';
+  if (requestOwnerError && !linkPolicyError) error = requestOwnerError;
   const expectedAddressShort = $derived(
     expectedAddress
       ? `${expectedAddress.slice(0, 6)}...${expectedAddress.slice(-4)}`
@@ -436,6 +429,7 @@
     // for a request whose permissions could not be read.
     if (permissionsParamError) throw new Error(permissionsParamError);
     if (linkPolicyError) throw new Error(linkPolicyError);
+    if (requestOwnerError) throw new Error(requestOwnerError);
     const API_URL = import.meta.env.VITE_API_URL || '';
     const body: Record<string, unknown> = {
       keyId: key.id,
@@ -656,6 +650,10 @@
       error = 'Permissions are still updating.';
       return;
     }
+    if (approveBlockedReason) {
+      error = approveBlockedReason;
+      return;
+    }
     if (permissionOptions.length > 0 && selectedActionKeys.length === 0) {
       error = 'At least one permission is required.';
       return;
@@ -707,53 +705,22 @@
     return permission.actions.filter((action) => isActionSelected(action.key));
   }
 
-  // Translate a capability-review selection (Set of client-side action IDs)
-  // into the server's actionKey strings.
-  //
-  // Sol MAJOR-5 fix: capability-review grant IDs and server permission keys
-  // are BOTH NUL-separated (`service\0space\0path`). The previous code
-  // stripped NULs to spaces before lookup, which caused every grant ID to
-  // miss and the selection to collapse to required-only actions.
-  //
-  // Correlation is done in two passes over the CANONICAL server keys — a
-  // server permission has already been canonicalized (`kv` → `tinycloud.kv`)
-  // and capability-review derives the same canonical service from the
-  // `tinycloud.kv/get` ability. So a direct id-to-id lookup is safe AND
-  // preserves independent selection when two paths share an ability
-  // (e.g. `chat` vs `feed` KV grants).
+  // Translate a capability-review selection into the server's actionKey
+  // strings (see reviewSelectionToActionKeys for the ID correlation).
   function mapReviewSelectionToActionKeys(selection: Set<string>): string[] {
-    if (!reviewModel) return [];
-
-    // Build map: canonical grant ID → Set<selected ability>.
-    const selectedAbilitiesByGrantId = new Map<string, Set<string>>();
-    for (const grant of reviewModel.permissions) {
-      for (const action of grant.actions) {
-        if (selection.has(action.id)) {
-          let abilities = selectedAbilitiesByGrantId.get(grant.id);
-          if (!abilities) {
-            abilities = new Set();
-            selectedAbilitiesByGrantId.set(grant.id, abilities);
-          }
-          abilities.add(action.ability);
-        }
-      }
-    }
-
-    const out: string[] = [];
-    for (const perm of permissionOptions) {
-      // Direct match: both sides are NUL-separated
-      // `service\0space\0path` after service canonicalization.
-      // Two paths sharing an ability (e.g. `chat` vs `feed`) keep
-      // distinct grant IDs so their action selections stay independent.
-      const selectedAbilities = selectedAbilitiesByGrantId.get(perm.key);
-      for (const action of perm.actions) {
-        if (action.required || selectedAbilities?.has(action.ability)) {
-          out.push(action.key);
-        }
-      }
-    }
-    return out;
+    return reviewModel ? reviewSelectionToActionKeys(reviewModel, permissionOptions, selection) : [];
   }
+
+  // Approve signs the last prepared SIWE. If the visible selection differs
+  // from it (a narrowing /prepare failed or never ran), block approval until
+  // a /prepare for the visible selection succeeds. While one is in flight,
+  // `approving` already disables Approve.
+  const approveBlockedReason = $derived(
+    reviewModel && !updatingPermissions &&
+      !preparedMatchesSelection(reviewModel, permissionOptions, reviewSelection, selectedActionKeys)
+      ? 'The permissions shown have not been prepared for signing. Change a permission or Reset to try again.'
+      : null,
+  );
 
   async function toggleAction(action: DelegatePermissionAction) {
     if (action.required) return;
@@ -889,6 +856,17 @@
       error = 'No prepared session data. Please go back and try again.';
       return;
     }
+    if (approveBlockedReason) {
+      error = approveBlockedReason;
+      return;
+    }
+    // Sign and complete exactly what is prepared now: a /prepare response
+    // landing during the wallet prompts must not change the signed bytes or
+    // the selection reported with them.
+    const prepared = preparedData;
+    const contextToken = authorizationContextToken;
+    const selectedActionIds = [...selectedActionKeys];
+    const edited = permissionsEdited;
 
     delegating = true;
     error = '';
@@ -954,7 +932,7 @@
 
       const signature: string = await matchingProvider.request({
         method: 'personal_sign',
-        params: [preparedData.siwe, matchingAccount],
+        params: [prepared.siwe, matchingAccount],
       });
 
       const API_URL = import.meta.env.VITE_API_URL || '';
@@ -963,11 +941,11 @@
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          prepared: preparedData,
+          prepared,
           signature,
           host,
           jwk,
-          edited: permissionsEdited,
+          edited,
           reason: requestReason || undefined,
           // Forward the CLI-supplied baseline so the server can validate the
           // signed SIWE against the CLI request instead of DEFAULT_ABILITIES.
@@ -977,10 +955,10 @@
           // Versioned protocol: echo the /prepare token so the server can
           // re-verify every bound invariant (user, key, JWK, host, immutable
           // SIWE fields, allowed action set, required action set).
-          ...(authorizationContextToken
+          ...(contextToken
             ? {
-                authorizationContextToken,
-                selectedActionIds: selectedActionKeys,
+                authorizationContextToken: contextToken,
+                selectedActionIds,
               }
             : {}),
           ...(deviceTransactionId ? { deviceTransactionId } : {}),
@@ -1401,6 +1379,7 @@
                 transport={{
                   approving: delegating || updatingPermissions,
                   error,
+                  approveBlockedReason,
                   approveDelegate,
                   goBack,
                   updateSelection: (next) => {

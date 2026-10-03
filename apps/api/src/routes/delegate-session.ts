@@ -12,7 +12,7 @@ import {
   makeSpaceId,
   parseRecapFromSiwe,
 } from '@tinycloud/node-sdk-wasm';
-import { CAPABILITIES, KV, SQL } from '@tinycloud/bootstrap';
+import { CAPABILITIES, ENCRYPTION, KV, SQL } from '@tinycloud/bootstrap';
 import {
   DelegateRequestError,
   shortServiceName,
@@ -20,6 +20,24 @@ import {
 
 export type DelegationJwk = { kty: string; crv: string; x: string };
 export type AbilitiesMap = Record<string, Record<string, string[]>>;
+/** Top-level ReCap resources (not under the session space): `resource → actions[]`. */
+export type RawAbilitiesMap = Record<string, string[]>;
+
+/**
+ * The two ability maps `prepareSession` signs: `abilities` nests under the
+ * session space, `rawAbilities` are top-level ReCap resources (raw
+ * encryption networks, `urn:tinycloud:encryption:<ownerDid>:<name>`).
+ */
+export interface SessionAbilities {
+  abilities: AbilitiesMap;
+  rawAbilities: RawAbilitiesMap;
+}
+
+// `parseRecapFromSiwe` reports a top-level encryption resource with this
+// space and the full network URN as its path.
+export const RAW_ENCRYPTION_SPACE = 'encryption';
+const RAW_ENCRYPTION_SERVICE = 'tinycloud.encryption';
+const RAW_ENCRYPTION_PREFIX = 'urn:tinycloud:encryption:';
 
 export interface RecapEntry {
   service: string;
@@ -77,6 +95,11 @@ export const DEFAULT_ABILITIES: AbilitiesMap = {
   },
 };
 
+export const DEFAULT_SESSION_ABILITIES: SessionAbilities = {
+  abilities: DEFAULT_ABILITIES,
+  rawAbilities: Object.create(null),
+};
+
 const SERVICE_LABELS: Record<string, string> = {
   kv: 'Key-Value Storage',
   sql: 'SQL Database',
@@ -131,25 +154,66 @@ export function permissionOption(entry: RecapEntry): PermissionOption {
 
 // Ability maps are keyed by request-supplied services and paths (`constructor`,
 // `__proto__`, ...), so they never inherit from Object.prototype.
-export function entriesToAbilities(entries: RecapEntry[]): AbilitiesMap {
+function addActions(byResource: Record<string, string[]>, resource: string, actions: string[]) {
+  if (!Object.hasOwn(byResource, resource)) byResource[resource] = [];
+  const list = byResource[resource]!;
+  for (const action of actions) {
+    if (!list.includes(action)) list.push(action);
+  }
+}
+
+/** A parsed ReCap entry for a top-level raw encryption resource. */
+export function isRawRecapEntry(entry: RecapEntry): boolean {
+  return (
+    entry.space === RAW_ENCRYPTION_SPACE &&
+    canonicalizeServiceName(entry.service) === RAW_ENCRYPTION_SERVICE &&
+    entry.path.startsWith(RAW_ENCRYPTION_PREFIX)
+  );
+}
+
+export function entriesToSessionAbilities(entries: RecapEntry[]): SessionAbilities {
   const abilities: AbilitiesMap = Object.create(null);
+  const rawAbilities: RawAbilitiesMap = Object.create(null);
 
   for (const entry of entries) {
+    if (isRawRecapEntry(entry)) {
+      rawAbilities[entry.path] = entry.actions;
+      continue;
+    }
     if (!Object.hasOwn(abilities, entry.service)) abilities[entry.service] = Object.create(null);
     abilities[entry.service]![entry.path] = entry.actions;
   }
 
-  return abilities;
+  return { abilities, rawAbilities };
 }
 
-export function assertBaselineSubset(entries: RecapEntry[], baseline: AbilitiesMap) {
+/** `prepareSession` config fields; `rawAbilities` only when there are any. */
+export function sessionAbilitiesConfig({ abilities, rawAbilities }: SessionAbilities): {
+  abilities: AbilitiesMap;
+  rawAbilities?: RawAbilitiesMap;
+} {
+  return Object.keys(rawAbilities).length > 0 ? { abilities, rawAbilities } : { abilities };
+}
+
+/**
+ * Refuse any parsed ReCap entry the baseline does not grant. A raw entry is
+ * matched only against the baseline's raw resources, so a request for a raw
+ * network never admits the same URN nested under the session space (or the
+ * reverse).
+ */
+export function assertBaselineSubset(entries: RecapEntry[], baseline: SessionAbilities) {
   if (entries.length === 0) {
     throw new Error('Only SIWE ReCap messages can be edited');
   }
 
   for (const entry of entries) {
-    const serviceAbilities = Object.hasOwn(baseline, entry.service) ? baseline[entry.service] : undefined;
-    const allowedActions = serviceAbilities && Object.hasOwn(serviceAbilities, entry.path) ? serviceAbilities[entry.path] : undefined;
+    let allowedActions: string[] | undefined;
+    if (isRawRecapEntry(entry)) {
+      allowedActions = Object.hasOwn(baseline.rawAbilities, entry.path) ? baseline.rawAbilities[entry.path] : undefined;
+    } else {
+      const serviceAbilities = Object.hasOwn(baseline.abilities, entry.service) ? baseline.abilities[entry.service] : undefined;
+      allowedActions = serviceAbilities && Object.hasOwn(serviceAbilities, entry.path) ? serviceAbilities[entry.path] : undefined;
+    }
 
     if (!allowedActions) {
       throw new Error('Edited permissions must be a subset of the original delegation request');
@@ -164,7 +228,7 @@ export function assertBaselineSubset(entries: RecapEntry[], baseline: AbilitiesM
 }
 
 export function assertDefaultSubset(entries: RecapEntry[]) {
-  assertBaselineSubset(entries, DEFAULT_ABILITIES);
+  assertBaselineSubset(entries, DEFAULT_SESSION_ABILITIES);
 }
 
 export function assertRequiredActions(entries: RecapEntry[]) {
@@ -212,37 +276,128 @@ export function entriesForSelectedActions(
   return selectedEntries;
 }
 
-function isRawEncryptionPermission(
-  entry: Pick<DelegationPermissionEntry, 'service' | 'path'>,
+/**
+ * A CLI permission for a top-level encryption network. The short service
+ * name `encryption` is the same service, so it gets the same validation
+ * rather than being nested under the session space.
+ */
+export function isRawEncryptionPermission(
+  entry: { service?: unknown; path?: unknown },
 ): boolean {
   return (
-    entry.service === 'tinycloud.encryption' &&
-    entry.path.startsWith('urn:tinycloud:encryption:')
+    typeof entry.service === 'string' &&
+    canonicalizeServiceName(entry.service) === RAW_ENCRYPTION_SERVICE &&
+    typeof entry.path === 'string' &&
+    entry.path.startsWith(RAW_ENCRYPTION_PREFIX)
   );
 }
 
+const RAW_ENCRYPTION_NETWORK = /^urn:tinycloud:encryption:did:pkh:eip155:(\d+):(0x[0-9a-fA-F]{40}):([^:]*)$/;
+// The network-name rule of the TinyCloud SDK (`sdk-services` NETWORK_NAME_RE).
+const ENCRYPTION_NETWORK_NAME = /^[a-z0-9][a-z0-9-]*$/;
+
 /**
- * Translate a list of permission entries into the `abilities` map shape that
- * `prepareSession()` expects. Keys are short service names (`kv`, `sql`,
- * `hooks`, …), values are `path → actions[]`. Actions are kept fully-qualified
- * (`tinycloud.sql/read`) because the SIWE recap stores them that way.
+ * A raw encryption entry carries no space (`space` absent or `encryption`),
+ * grants only `tinycloud.encryption/decrypt`, and names a network the signer
+ * owns: the URN's owner DID must be the signer's
+ * `did:pkh:eip155:<chainId>:<address>` (address case-insensitive) and the
+ * network name must follow the SDK's naming rule.
  */
-export function abilitiesFromPermissions(
-  permissions: DelegationPermissionEntry[],
-): AbilitiesMap {
-  const abilities: AbilitiesMap = Object.create(null);
-  for (const entry of permissions) {
-    const short = shortServiceName(entry.service);
-    if (!short) continue;
-    if (!Object.hasOwn(abilities, short)) abilities[short] = Object.create(null);
-    const byPath = abilities[short]!;
-    if (!Object.hasOwn(byPath, entry.path)) byPath[entry.path] = [];
-    const list = byPath[entry.path]!;
-    for (const action of entry.actions) {
-      if (!list.includes(action)) list.push(action);
-    }
+function assertRawEncryptionPermission(
+  entry: DelegationPermissionEntry,
+  index: number,
+  signer: { address: string; chainId: number },
+) {
+  if (entry.space !== undefined && entry.space !== RAW_ENCRYPTION_SPACE) {
+    throw new DelegateRequestError(
+      'invalid_permissions',
+      `permissions[${index}].space must be "${RAW_ENCRYPTION_SPACE}" or absent for a raw encryption network`,
+      [{
+        path: `permissions[${index}].space`,
+        message: 'Raw encryption networks are not inside a space',
+        value: entry.space,
+        expected: RAW_ENCRYPTION_SPACE,
+      }],
+    );
   }
-  return abilities;
+  if (entry.actions.length === 0) {
+    throw new DelegateRequestError(
+      'invalid_permissions',
+      `permissions[${index}].actions must be ["${ENCRYPTION.DECRYPT}"] for a raw encryption network`,
+      [{ path: `permissions[${index}].actions`, message: 'Expected the decrypt action', expected: ENCRYPTION.DECRYPT }],
+    );
+  }
+  entry.actions.forEach((action, actionIndex) => {
+    if (action !== ENCRYPTION.DECRYPT) {
+      throw new DelegateRequestError(
+        'invalid_permissions',
+        `permissions[${index}].actions[${actionIndex}] is not available on a raw encryption network; only ${ENCRYPTION.DECRYPT} is`,
+        [{
+          path: `permissions[${index}].actions[${actionIndex}]`,
+          message: 'Raw encryption networks grant decrypt only',
+          value: action,
+          expected: ENCRYPTION.DECRYPT,
+        }],
+      );
+    }
+  });
+  const network = RAW_ENCRYPTION_NETWORK.exec(entry.path);
+  if (
+    !network ||
+    network[1] !== String(signer.chainId) ||
+    network[2]!.toLowerCase() !== signer.address.toLowerCase()
+  ) {
+    const signerDid = `did:pkh:eip155:${signer.chainId}:${signer.address}`;
+    throw new DelegateRequestError(
+      'invalid_permissions',
+      `permissions[${index}].path must be an encryption network owned by the signer ${signerDid}`,
+      [{
+        path: `permissions[${index}].path`,
+        message: 'The encryption network owner must be the signing account',
+        value: entry.path,
+        expectedPrefix: `${RAW_ENCRYPTION_PREFIX}${signerDid}:`,
+      }],
+    );
+  }
+  if (!ENCRYPTION_NETWORK_NAME.test(network[3]!)) {
+    throw new DelegateRequestError(
+      'invalid_permissions',
+      `permissions[${index}].path names an invalid encryption network; the name must match ${ENCRYPTION_NETWORK_NAME.source}`,
+      [{
+        path: `permissions[${index}].path`,
+        message: `The network name must match ${ENCRYPTION_NETWORK_NAME.source}`,
+        value: entry.path,
+      }],
+    );
+  }
+}
+
+/**
+ * Translate CLI permission entries into the ability maps `prepareSession()`
+ * signs. Space abilities are keyed by short service name (`kv`, `sql`, …),
+ * then `path → actions[]`; raw encryption entries become top-level
+ * `rawAbilities` keyed by network URN, after checking the signer owns the
+ * network. Actions stay fully-qualified (`tinycloud.sql/read`) because the
+ * SIWE recap stores them that way.
+ */
+export function sessionAbilitiesFromPermissions(
+  permissions: DelegationPermissionEntry[],
+  signer: { address: string; chainId: number },
+): SessionAbilities {
+  const abilities: AbilitiesMap = Object.create(null);
+  const rawAbilities: RawAbilitiesMap = Object.create(null);
+  permissions.forEach((entry, index) => {
+    if (isRawEncryptionPermission(entry)) {
+      assertRawEncryptionPermission(entry, index, signer);
+      addActions(rawAbilities, entry.path, entry.actions);
+      return;
+    }
+    const short = shortServiceName(entry.service);
+    if (!short) return;
+    if (!Object.hasOwn(abilities, short)) abilities[short] = Object.create(null);
+    addActions(abilities[short]!, entry.path, entry.actions);
+  });
+  return { abilities, rawAbilities };
 }
 
 /**
@@ -290,7 +445,8 @@ export interface PrepareDelegationSessionInput {
   /**
    * CLI-driven explicit capability request. When set, the prefix is derived
    * from the entries' space URI and abilities are built directly from the
-   * entries rather than the DEFAULT_ABILITIES baseline. The CLI-supplied
+   * entries rather than the DEFAULT_ABILITIES baseline; raw encryption
+   * entries are signed as top-level ReCap resources. The CLI-supplied
    * permissions become the *baseline* for the same actionKeys/permissionKeys
    * narrowing the standard consent UI uses, so users can still trim a CLI
    * request before signing.
@@ -305,6 +461,8 @@ export interface PrepareDelegationSessionResult {
   permissions: PermissionOption[];
   selectedActionKeys: string[];
   edited: boolean;
+  /** The request baseline the session was prepared from (before narrowing). */
+  baselineAbilities: SessionAbilities;
   spaceId: string;
 }
 
@@ -337,12 +495,12 @@ export function prepareDelegationSession({
   };
 
   const baselineAbilities = isCliBaseline
-    ? abilitiesFromPermissions(permissions!)
-    : DEFAULT_ABILITIES;
+    ? sessionAbilitiesFromPermissions(permissions!, { address, chainId })
+    : DEFAULT_SESSION_ABILITIES;
 
   const baselinePrepared = prepareSession({
     ...baseConfig,
-    abilities: baselineAbilities,
+    ...sessionAbilitiesConfig(baselineAbilities),
   });
   const baselineEntries = parsePreparedRecap(baselinePrepared.siwe);
 
@@ -393,7 +551,7 @@ export function prepareDelegationSession({
   const prepared = edited
     ? prepareSession({
         ...baseConfig,
-        abilities: entriesToAbilities(selectedEntries),
+        ...sessionAbilitiesConfig(entriesToSessionAbilities(selectedEntries)),
       })
     : baselinePrepared;
 
@@ -405,5 +563,6 @@ export function prepareDelegationSession({
     ),
     edited,
     spaceId,
+    baselineAbilities,
   };
 }

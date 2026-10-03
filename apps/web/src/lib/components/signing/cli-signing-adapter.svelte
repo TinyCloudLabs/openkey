@@ -60,6 +60,9 @@
   }
 
   function onApprove() {
+    // Never approve a prepared authorization that differs from the visible
+    // selection; SigningApproval also disables the button.
+    if (transport.approveBlockedReason) return;
     // The CLI's approve is the delegate-submission path. The transport
     // handles managed vs external signing and delegation-token capture.
     void transport.approveDelegate();
@@ -76,6 +79,7 @@
   {editing}
   approving={transport.approving}
   error={transport.error}
+  approveBlockedReason={transport.approveBlockedReason ?? null}
   {onApprove}
   {onCancel}
   {onSelectionChange}

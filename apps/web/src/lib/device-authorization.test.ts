@@ -117,6 +117,12 @@ describe('base64url JSON parameters', () => {
       encodeBase64UrlJson({ reason: 'only a reason' }),
       encodeBase64UrlJson({ permissions: [] }),
       encodeBase64UrlJson({ permissions: { service: 'tinycloud.kv' } }),
+      // A malformed entry (no path, non-string space, non-string actions)
+      // must be refused as unreadable rather than reach the page.
+      encodeBase64UrlJson({ permissions: [{ service: 'tinycloud.encryption', space: 'encryption', actions: ['tinycloud.encryption/decrypt'] }] }),
+      encodeBase64UrlJson({ permissions: [{ ...requested[0], space: 7 }] }),
+      encodeBase64UrlJson({ permissions: [{ ...requested[0], actions: [1] }] }),
+      encodeBase64UrlJson({ permissions: [null] }),
       encodeBase64UrlJson(null),
     ]) {
       expect(() => decodeDelegatePermissionsParam(value)).toThrow();

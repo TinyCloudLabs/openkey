@@ -282,6 +282,17 @@ describe('OpenKey device authorization service', () => {
     }
   });
 
+  test('rejects a raw encryption decrypt grant, with or without a space (TC-598)', async () => {
+    const input = fixture();
+    const network = 'urn:tinycloud:encryption:did:pkh:eip155:1:0x00000000000000000000000000000000000000ab:default';
+    const raw = { service: 'tinycloud.encryption', space: 'encryption', path: network, actions: ['tinycloud.encryption/decrypt'] };
+    const { space: _omitted, ...rawWithoutSpace } = raw;
+    for (const entry of [raw, rawWithoutSpace]) {
+      await expect(input.service.start({ ...input.request, permissions: [...publishingPermissions(), entry] } as never, '198.51.100.8'))
+        .rejects.toMatchObject({ code: 'invalid_scope', status: 400, message: expect.stringContaining('service is not available over device authorization') });
+    }
+  });
+
   test('requires tinycloud.capabilities/read on path "" instead of adding it silently', async () => {
     const input = fixture();
     const kvOnly = publishingPermissions().slice(0, 2);
