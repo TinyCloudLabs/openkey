@@ -10,6 +10,7 @@ import {
 } from '../middleware/delegate-signer-auth';
 import { withTinyCloudManageKeySigningPolicy } from '../services/tinycloud-manage-key-control';
 import type { Hex } from 'viem';
+import { verifyMessage } from 'ethers';
 import {
   prepareSession,
   completeSessionSetup,
@@ -28,7 +29,7 @@ import { CAPABILITIES } from '@tinycloud/bootstrap';
 import {
   delegateErrorResponse,
   normalizeDelegateReason,
-  resolvePreparedExpirationTime,
+  signedSiweExpirationTime,
 } from './delegate-validation';
 import {
   DEFAULT_ABILITIES,
@@ -148,13 +149,14 @@ interface OpenKeySigningRequestBody {
  */
 const DEFAULT_DELEGATION_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
 /**
- * Upper bound on caller-supplied expiry. Ten years is effectively "forever"
- * — calls that ask for more get clamped here. The constant exists primarily
- * to guard against integer overflow / silly inputs, not as a security policy
- * lever. Long-lived agents and API-token-style delegations are first-class
- * use cases; revocation, not expiry, is the right control for them.
+ * Upper bound on caller-supplied expiry for `/api/delegate` and
+ * `/api/delegate/prepare` (TC-547). These routes back the `/delegate` page,
+ * whose link parameters (including `expiry`) come from whoever made the link,
+ * so a longer request is clamped to this ceiling. It matches the device-flow
+ * ceiling (`DEVICE_AUTH_MAX_DELEGATION_TTL_MS`); longer-lived access is
+ * renewed by approving a new link.
  */
-const MAX_DELEGATION_EXPIRY_MS = 10 * 365 * 24 * 60 * 60 * 1000;
+const MAX_DELEGATION_EXPIRY_MS = 30 * 24 * 60 * 60 * 1000;
 const MIN_DELEGATION_EXPIRY_MS = 60 * 1000; // 1 minute
 
 const MS_UNIT_FACTORS: Record<string, number> = {
@@ -663,6 +665,10 @@ delegateRouter.post('/sign', async (c) => {
         reason: 'The signing request must be a JSON object.',
       }, 400);
     }
+    const manageKeyDeviceUnsupported = deviceTransactionUnsupportedError(body);
+    if (manageKeyDeviceUnsupported) {
+      return c.json({ approved: false, code: manageKeyDeviceUnsupported.code, reason: manageKeyDeviceUnsupported.error }, 400);
+    }
 
     // keyId and address, when supplied by older callback adapters, are
     // intentionally ignored. The OAuth token's user binding selects exactly
@@ -863,6 +869,10 @@ delegateRouter.post('/sign', async (c) => {
 
   const user = c.get('user');
   const body = await c.req.json();
+  const deviceUnsupported = deviceTransactionUnsupportedError(body);
+  if (deviceUnsupported) {
+    return c.json({ approved: false, code: deviceUnsupported.code, reason: deviceUnsupported.error }, 400);
+  }
 
   if (!isOpenKeySigningRequestBody(body)) {
     return c.json({
@@ -974,6 +984,8 @@ delegateRouter.post('/host', async (c) => {
     space?: string;
     prefix?: string;
   }>();
+  const deviceUnsupported = deviceTransactionUnsupportedError(body);
+  if (deviceUnsupported) return c.json(deviceUnsupported, 400);
 
   if (!body.keyId || !body.peerId) {
     return c.json({ error: 'keyId and peerId are required' }, 400);
@@ -1290,7 +1302,7 @@ delegateRouter.post('/', async (c) => {
       return c.json({ error: consume.message, code: consume.error }, 400);
     }
 
-    const expirationTime = resolvePreparedExpirationTime({ siwe: bound.originalSiwe });
+    const expirationTime = signedSiweExpirationTime(bound.originalSiwe);
     if (!expirationTime) {
       return c.json({ error: 'prepared session must include a valid expirationTime or SIWE Expiration Time' }, 400);
     }
@@ -1379,7 +1391,7 @@ delegateRouter.post('/', async (c) => {
     return c.json(delegateErrorResponse(e, 'Failed to prepare delegation', 'delegation_prepare_failed'), 400);
   }
 
-  const expirationTime = resolvePreparedExpirationTime(preparedResult.prepared);
+  const expirationTime = signedSiweExpirationTime(preparedResult.prepared.siwe);
   if (!expirationTime) {
     return c.json({ error: 'prepared session must include a valid expirationTime or SIWE Expiration Time' }, 400);
   }
@@ -1697,9 +1709,41 @@ delegateRouter.post('/complete', async (c) => {
     return c.json({ error: e instanceof Error ? e.message : 'Invalid delegation' }, 400);
   }
 
-  const preparedAddress = String(body.prepared.address || '');
-  const preparedChainId = Number(body.prepared.chainId) || 1;
+  // TC-547: the signer is the address in the signed SIWE. The prepared
+  // object `/prepare` returns (and the web echoes back) carries no
+  // `address`, so reading it from there bound versioned approvals to an
+  // empty key address. A caller-supplied `address` must agree with the SIWE.
   const preparedSpaceId = String(body.prepared.spaceId || '');
+  const signedFields = extractImmutableSiweFields(body.prepared.siwe || '', {
+    address: '',
+    chainId: Number(body.prepared.chainId) || 1,
+    spaceId: preparedSpaceId,
+  });
+  const preparedAddress = signedFields.address;
+  if (
+    body.prepared.address !== undefined
+    && String(body.prepared.address).toLowerCase() !== preparedAddress.toLowerCase()
+  ) {
+    return c.json(
+      { error: 'prepared.address does not match the address in the signed SIWE.', code: 'key-mismatch' },
+      400,
+    );
+  }
+  // The wallet must have signed exactly these SIWE bytes as that address.
+  // Checked before the single-use context is consumed and before any host
+  // activation, so a wrong-wallet signature has no effect.
+  let recoveredAddress = '';
+  try {
+    recoveredAddress = verifyMessage(String(body.prepared.siwe ?? ''), String(body.signature));
+  } catch {
+    // An unparseable signature is refused below like a mismatched one.
+  }
+  if (!preparedAddress || recoveredAddress.toLowerCase() !== preparedAddress.toLowerCase()) {
+    return c.json(
+      { error: 'The signature was not made by the address in the signed SIWE.', code: 'signature-mismatch' },
+      400,
+    );
+  }
 
   if (body.authorizationContextToken) {
     if (typeof body.authorizationContextToken !== 'string') {
@@ -1709,11 +1753,7 @@ delegateRouter.post('/complete', async (c) => {
       return c.json({ error: 'selectedActionIds must be a string[] when authorizationContextToken is provided' }, 400);
     }
     const preparedEntries = parsePreparedRecap(body.prepared.siwe || '');
-    const immutable = extractImmutableSiweFields(body.prepared.siwe || '', {
-      address: preparedAddress,
-      chainId: preparedChainId,
-      spaceId: preparedSpaceId,
-    });
+    const immutable = signedFields;
 
     // Sol MAJOR-5: derive the exact set of action IDs encoded in the SIGNED
     // SIWE and require selectedActionIds to EXACTLY match. The old code
@@ -1779,9 +1819,10 @@ delegateRouter.post('/complete', async (c) => {
     }
   }
 
-  const expirationTime = resolvePreparedExpirationTime(body.prepared);
+  // Report the lifetime the wallet signed, never caller-supplied metadata.
+  const expirationTime = signedSiweExpirationTime(body.prepared.siwe);
   if (!expirationTime) {
-    return c.json({ error: 'prepared session must include a valid expirationTime or SIWE Expiration Time' }, 400);
+    return c.json({ error: 'The signed SIWE must include a valid Expiration Time' }, 400);
   }
   // Device approvals: judge the session key and lifetime by the canonical
   // bytes the wallet signed, not the caller-supplied jwk or a line search.
@@ -1809,10 +1850,9 @@ delegateRouter.post('/complete', async (c) => {
     console.warn(`[Delegate] Session activation failed (host unreachable):`, e);
   }
 
-  // Extract address/chainId from the prepared data
-  const address = body.prepared.address || '';
-  const chainId = body.prepared.chainId || 1;
-  const spaceId = body.prepared.spaceId || '';
+  const address = preparedAddress;
+  const chainId = signedFields.chainId;
+  const spaceId = preparedSpaceId;
   const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
   const reason = normalizeDelegateReason(body.reason);
 
@@ -2658,7 +2698,6 @@ delegateRouter.post('/authorize-sign', async (c) => {
     // to be the bytes we'll return. Verify it against `signedMessage`
     // and `boundAddress` — if the wallet signed different bytes, refuse.
     try {
-      const { verifyMessage } = await import('ethers');
       const recovered = verifyMessage(signedMessage, body.externalSignature!);
       if (recovered.toLowerCase() !== boundAddress.toLowerCase()) {
         return c.json(

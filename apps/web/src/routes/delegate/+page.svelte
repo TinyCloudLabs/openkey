@@ -9,6 +9,16 @@
   import CliSigningAdapter from '$lib/components/signing/cli-signing-adapter.svelte';
   import DeviceRequestNotice from '$lib/components/device/device-request-notice.svelte';
   import { approvedDevicePermissions, cleanConsentText, delegationPasteCode, readDelegatePermissionsParam, deviceRequestReason, loadVerifiedDeviceRequest } from '$lib/device-authorization';
+  import DelegateLinkNotice from '$lib/components/delegate/delegate-link-notice.svelte';
+  import {
+    KNOWN_NODE_ORIGINS,
+    REGISTERED_CALLBACK_ENDPOINTS,
+    checkDelegateCallback,
+    checkDelegateHost,
+    isCanonicalHttpsEndpoint,
+    isCanonicalHttpsOrigin,
+    withConfiguredEntries,
+  } from '$lib/delegate-link-policy';
   import {
     parseCapabilityReview,
     defaultSelection,
@@ -93,8 +103,8 @@
   const reasonParam = $page.url.searchParams.get('reason') || '';
   // Optional caller-supplied delegation lifetime. The CLI encodes this as
   // an ms-format string ("7d", "30m") or a millisecond integer. Validation
-  // and clamping are owned by the API to keep the source of truth in one
-  // place; we just forward it.
+  // and clamping (30 days at most) are owned by the API to keep the source
+  // of truth in one place; we just forward it.
   const expiryParam = $page.url.searchParams.get('expiry') || '';
   const deviceTransactionId = $page.url.searchParams.get('deviceTransactionId') || '';
   const deviceShareOrigin = $page.url.searchParams.get('deviceShareOrigin') || '';
@@ -205,6 +215,25 @@
     permissionsParamError = 'Could not decode the requested permissions. Restart the CLI command to get a new link.';
     error = permissionsParamError;
   }
+
+  // TC-547: an ordinary link (no device transaction) may only return the
+  // delegation to this device or a registered app, and a node OpenKey does
+  // not recognize must be acknowledged. Device links are bound by the
+  // server-verified device request instead.
+  const callbackCheck = deviceTransactionId
+    ? null
+    : checkDelegateCallback(callback, withConfiguredEntries(REGISTERED_CALLBACK_ENDPOINTS, import.meta.env.VITE_DELEGATE_CALLBACK_URLS, isCanonicalHttpsEndpoint));
+  const hostCheck = deviceTransactionId
+    ? null
+    : checkDelegateHost(host, withConfiguredEntries(KNOWN_NODE_ORIGINS, import.meta.env.VITE_DELEGATE_NODE_ORIGINS, isCanonicalHttpsOrigin));
+  const linkPolicyError = callbackCheck?.ok === false
+    ? callbackCheck.reason
+    : hostCheck?.ok === false ? hostCheck.reason : '';
+  if (linkPolicyError) error = linkPolicyError;
+  const approvedCallback = callbackCheck?.ok ? callbackCheck.callback : null;
+  const hostNeedsAcknowledgment = hostCheck?.ok === true && !hostCheck.recognized;
+  let hostAcknowledged = $state(false);
+  const delegationExpiresAt = $derived(/^Expiration Time:\s*(.+)$/m.exec(siweMessage)?.[1]?.trim() ?? '');
 
   // Device approvals never trust the link: the reason and every binding it
   // carries must come from (or equal) the server's pending request. Key
@@ -406,6 +435,7 @@
     // Every signing path starts here: never prepare the default abilities
     // for a request whose permissions could not be read.
     if (permissionsParamError) throw new Error(permissionsParamError);
+    if (linkPolicyError) throw new Error(linkPolicyError);
     const API_URL = import.meta.env.VITE_API_URL || '';
     const body: Record<string, unknown> = {
       keyId: key.id,
@@ -612,6 +642,10 @@
   function approveDelegate() {
     if (deviceTransactionId && !deviceAcknowledged) {
       error = 'Confirm that you started this request yourself, on a device you control.';
+      return;
+    }
+    if (hostNeedsAcknowledgment && !hostAcknowledged) {
+      error = 'Confirm that you run or trust this TinyCloud node.';
       return;
     }
     if (!selectedKey || !jwk) {
@@ -1010,10 +1044,12 @@
       return;
     }
 
-    if (callback) {
+    if (approvedCallback) {
       try {
-        const cbRes = await fetch(callback, {
+        const cbRes = await fetch(approvedCallback, {
           method: 'POST',
+          // A redirect must not carry the delegation to another address.
+          redirect: 'error',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         });
@@ -1111,6 +1147,9 @@
             {:else}
               <p class="text-surface-500 text-sm mb-4">Copy this code and paste it into the CLI:</p>
             {/if}
+            <p class="w-full rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-900 mb-3" role="note">
+              Only paste this code into a terminal you started yourself.
+            </p>
             <textarea
               readonly
               class="w-full h-24 p-3 bg-surface-50 border border-surface-200 rounded-xl text-xs font-mono resize-none"
@@ -1302,6 +1341,10 @@
           <div class="mb-4">
             <DeviceRequestNotice nodeOrigin={host} shareOrigin={deviceShareOrigin} expiry={expiryParam} bind:acknowledged={deviceAcknowledged} />
           </div>
+        {:else}
+          <div class="mb-4">
+            <DelegateLinkNotice {host} hostRecognized={!hostNeedsAcknowledgment} callback={approvedCallback} expiresAt={delegationExpiresAt} bind:acknowledged={hostAcknowledged} />
+          </div>
         {/if}
 
         <div class="flex flex-col gap-4">
@@ -1382,7 +1425,7 @@
               <Button variant="secondary" onclick={goBack} disabled={delegating} class="flex-1 rounded-xl">
                 Back
               </Button>
-              <Button onclick={approveDelegate} disabled={delegating || updatingPermissions || selectedActionKeys.length === 0 || (!selectedMatchesExpected && !overrideMismatch)} class="flex-1 rounded-xl">
+              <Button onclick={approveDelegate} disabled={delegating || updatingPermissions || selectedActionKeys.length === 0 || (!selectedMatchesExpected && !overrideMismatch) || (hostNeedsAcknowledgment && !hostAcknowledged)} class="flex-1 rounded-xl">
                 {#if delegating}
                   Signing...
                 {:else if updatingPermissions}

@@ -218,13 +218,13 @@ describe('device delegation window on /api/delegate', () => {
 
   test('versioned /complete reaches the device guard and refuses an overlong signed SIWE', async () => {
     // An ordinary (unnamed) 90-day prepare for the device key, then a
-    // versioned /complete that names the transaction. `address` lets the
-    // authorization context bind, so only the device guard can refuse it.
+    // versioned /complete that names the transaction, echoing the prepared
+    // object exactly as the web does. Only the device guard can refuse it.
     const prepared = await prepare('90d', false);
     expect(prepared.status).toBe(200);
     const signature = await account.signMessage({ message: prepared.body.prepared.siwe });
     const res = await post('/complete', {
-      prepared: { ...prepared.body.prepared, address: account.address },
+      prepared: prepared.body.prepared,
       signature,
       host,
       jwk,

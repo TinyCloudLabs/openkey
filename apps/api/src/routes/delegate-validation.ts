@@ -190,18 +190,12 @@ export function normalizeDelegateReason(reason: unknown): string | undefined {
   return normalized.slice(0, 500);
 }
 
-export function resolvePreparedExpirationTime(prepared: any): string | undefined {
-  if (typeof prepared?.expirationTime === 'string' && !Number.isNaN(Date.parse(prepared.expirationTime))) {
-    return prepared.expirationTime;
-  }
-
-  if (typeof prepared?.siwe === 'string') {
-    const match = prepared.siwe.match(/^Expiration Time:\s*(.+)$/im);
-    const expirationTime = match?.[1]?.trim();
-    if (expirationTime && !Number.isNaN(Date.parse(expirationTime))) {
-      return expirationTime;
-    }
-  }
-
-  return undefined;
+/**
+ * The Expiration Time of a SIWE message. Response expiry fields come only
+ * from the signed bytes, never from caller-supplied metadata (TC-547).
+ */
+export function signedSiweExpirationTime(siwe: unknown): string | undefined {
+  if (typeof siwe !== 'string') return undefined;
+  const expirationTime = siwe.match(/^Expiration Time:\s*(.+)$/im)?.[1]?.trim();
+  return expirationTime && !Number.isNaN(Date.parse(expirationTime)) ? expirationTime : undefined;
 }

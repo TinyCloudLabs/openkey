@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   delegateErrorResponse,
   normalizeDelegateReason,
-  resolvePreparedExpirationTime,
+  signedSiweExpirationTime,
   validatePermissions,
 } from '../routes/delegate-validation';
 
@@ -111,14 +111,8 @@ describe('normalizeDelegateReason', () => {
   });
 });
 
-describe('resolvePreparedExpirationTime', () => {
-  test('uses explicit prepared expirationTime when present', () => {
-    const expirationTime = '2026-07-01T00:00:00.000Z';
-
-    expect(resolvePreparedExpirationTime({ expirationTime })).toBe(expirationTime);
-  });
-
-  test('falls back to SIWE Expiration Time', () => {
+describe('signedSiweExpirationTime', () => {
+  test('reads the SIWE Expiration Time', () => {
     const expirationTime = '2026-07-01T00:00:00.000Z';
     const siwe = [
       'cli.tinycloud.xyz wants you to sign in',
@@ -126,12 +120,12 @@ describe('resolvePreparedExpirationTime', () => {
       `Expiration Time: ${expirationTime}`,
     ].join('\n');
 
-    expect(resolvePreparedExpirationTime({ siwe })).toBe(expirationTime);
+    expect(signedSiweExpirationTime(siwe)).toBe(expirationTime);
   });
 
   test('rejects missing or invalid expiry values', () => {
-    expect(resolvePreparedExpirationTime({})).toBeUndefined();
-    expect(resolvePreparedExpirationTime({ expirationTime: 'not-a-date' })).toBeUndefined();
-    expect(resolvePreparedExpirationTime({ siwe: 'Expiration Time: not-a-date' })).toBeUndefined();
+    expect(signedSiweExpirationTime(undefined)).toBeUndefined();
+    expect(signedSiweExpirationTime('no expiry here')).toBeUndefined();
+    expect(signedSiweExpirationTime('Expiration Time: not-a-date')).toBeUndefined();
   });
 });
