@@ -34,6 +34,7 @@ import {
   DEFAULT_SESSION_ABILITIES,
   SIWE_DOMAIN,
   sessionAbilitiesFromPermissions,
+  isRawEncryptionPermission,
   actionKey as computeActionKey,
   assertBaselineSubset,
   assertRequiredActions,
@@ -44,6 +45,7 @@ import {
   type DelegationJwk,
   type DelegationPermissionEntry,
   type RecapEntry,
+  type SessionAbilities,
 } from './delegate-session';
 
 // Re-export the pure delegation helpers so existing external test files
@@ -223,9 +225,7 @@ function validatePermissions(permissions: unknown): PermissionEntry[] {
     if (typeof e.service !== 'string' || !e.service) {
       throw new Error(`permissions[${index}].service is required`);
     }
-    const isRawEncryption = e.service === 'tinycloud.encryption' &&
-      typeof e.path === 'string' &&
-      e.path.startsWith('urn:tinycloud:encryption:');
+    const isRawEncryption = isRawEncryptionPermission(e);
     if (!isRawEncryption && (typeof e.space !== 'string' || !e.space)) {
       throw new Error(`permissions[${index}].space is required`);
     }
@@ -366,6 +366,20 @@ function requiredActionIdSet(entries: RecapEntry[]): Set<string> {
     }
   }
   return set;
+}
+
+/**
+ * Digest of a delegation's request baseline: the ability maps derived from
+ * the CLI `permissions` (or the defaults). `/prepare` binds it to the
+ * authorization context; `/complete` and the managed approval recompute it
+ * from the `permissions` they receive and consume refuses a mismatch, so the
+ * subset check at completion runs against the request that was prepared.
+ * Requests without raw encryption entries digest the space abilities alone.
+ */
+function digestDelegationBaseline(baseline: SessionAbilities): string {
+  return digestAbilities(
+    Object.keys(baseline.rawAbilities).length > 0 ? baseline : baseline.abilities,
+  );
 }
 
 /**
@@ -1225,8 +1239,9 @@ delegateRouter.post('/', async (c) => {
         500,
       );
     }
+    let baseline: SessionAbilities;
     try {
-      const baseline = permissions
+      baseline = permissions
         ? sessionAbilitiesFromPermissions(permissions, { address, chainId })
         : DEFAULT_SESSION_ABILITIES;
       assertBaselineSubset(preparedEntries, baseline);
@@ -1295,6 +1310,7 @@ delegateRouter.post('/', async (c) => {
       spaceId: bound.spaceId,
       selectedActionIds: clientSelected,
       candidateImmutableFieldsDigest: digestImmutableFields(immutable),
+      candidateAbilitiesDigest: digestDelegationBaseline(baseline),
       requiredActionIds: requiredActionIdSet(preparedEntries),
     });
     if (!consume.ok) {
@@ -1556,15 +1572,12 @@ delegateRouter.post('/prepare', async (c) => {
       preparedResult.prepared.siwe,
       { address, chainId, spaceId: preparedResult.spaceId },
     );
-    // Use the exact ability maps that would be re-derived at /complete.
-    // Requests without raw encryption entries keep the space-only digest.
-    const baselineAbilities = permissions
-      ? sessionAbilitiesFromPermissions(permissions, { address, chainId })
-      : DEFAULT_SESSION_ABILITIES;
-    const baselineAbilitiesDigest = digestAbilities(
-      Object.keys(baselineAbilities.rawAbilities).length > 0
-        ? baselineAbilities
-        : baselineAbilities.abilities,
+    // Bound here and enforced at /complete and the managed approval: the
+    // `permissions` a caller forwards at completion must be this request.
+    const baselineAbilitiesDigest = digestDelegationBaseline(
+      permissions
+        ? sessionAbilitiesFromPermissions(permissions, { address, chainId })
+        : DEFAULT_SESSION_ABILITIES,
     );
     authorizationContext = issueAuthorizationContext({
       userId: user.id,
@@ -1698,12 +1711,15 @@ delegateRouter.post('/complete', async (c) => {
     }
   }
 
+  if (typeof body.prepared.siwe !== 'string') {
+    return c.json({ error: 'prepared.siwe must be a string' }, 400);
+  }
   // TC-547: the signer is the address in the signed SIWE. The prepared
   // object `/prepare` returns (and the web echoes back) carries no
   // `address`, so reading it from there bound versioned approvals to an
   // empty key address. A caller-supplied `address` must agree with the SIWE.
   const preparedSpaceId = String(body.prepared.spaceId || '');
-  const signedFields = extractImmutableSiweFields(body.prepared.siwe || '', {
+  const signedFields = extractImmutableSiweFields(body.prepared.siwe, {
     address: '',
     chainId: Number(body.prepared.chainId) || 1,
     spaceId: preparedSpaceId,
@@ -1713,9 +1729,10 @@ delegateRouter.post('/complete', async (c) => {
   // never trusted as an authority gate. Older callers omit both the
   // context token and the selectedActionIds field; those paths still get
   // strict subset+required validation over the SIWE bytes here.
+  let baseline: SessionAbilities;
   try {
-    const entries = parsePreparedRecap(body.prepared.siwe || '');
-    const baseline = baselinePermissions
+    const entries = parsePreparedRecap(body.prepared.siwe);
+    baseline = baselinePermissions
       ? sessionAbilitiesFromPermissions(baselinePermissions, {
           address: signedFields.address,
           chainId: signedFields.chainId,
@@ -1820,6 +1837,7 @@ delegateRouter.post('/complete', async (c) => {
       spaceId: preparedSpaceId,
       selectedActionIds: clientSelected,
       candidateImmutableFieldsDigest: digestImmutableFields(immutable),
+      candidateAbilitiesDigest: digestDelegationBaseline(baseline),
       requiredActionIds: requiredActionIdSet(preparedEntries),
     });
     if (!consume.ok) {

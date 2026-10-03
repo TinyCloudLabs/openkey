@@ -12,7 +12,7 @@ import {
   makeSpaceId,
   parseRecapFromSiwe,
 } from '@tinycloud/node-sdk-wasm';
-import { CAPABILITIES, KV, SQL } from '@tinycloud/bootstrap';
+import { CAPABILITIES, ENCRYPTION, KV, SQL } from '@tinycloud/bootstrap';
 import {
   DelegateRequestError,
   shortServiceName,
@@ -276,21 +276,32 @@ export function entriesForSelectedActions(
   return selectedEntries;
 }
 
-function isRawEncryptionPermission(
-  entry: Pick<DelegationPermissionEntry, 'service' | 'path'>,
+/**
+ * A CLI permission for a top-level encryption network. The short service
+ * name `encryption` is the same service, so it gets the same validation
+ * rather than being nested under the session space.
+ */
+export function isRawEncryptionPermission(
+  entry: { service?: unknown; path?: unknown },
 ): boolean {
   return (
-    entry.service === RAW_ENCRYPTION_SERVICE &&
+    typeof entry.service === 'string' &&
+    canonicalizeServiceName(entry.service) === RAW_ENCRYPTION_SERVICE &&
+    typeof entry.path === 'string' &&
     entry.path.startsWith(RAW_ENCRYPTION_PREFIX)
   );
 }
 
-const RAW_ENCRYPTION_NETWORK = /^urn:tinycloud:encryption:did:pkh:eip155:(\d+):(0x[0-9a-fA-F]{40}):(.+)$/;
+const RAW_ENCRYPTION_NETWORK = /^urn:tinycloud:encryption:did:pkh:eip155:(\d+):(0x[0-9a-fA-F]{40}):([^:]*)$/;
+// The network-name rule of the TinyCloud SDK (`sdk-services` NETWORK_NAME_RE).
+const ENCRYPTION_NETWORK_NAME = /^[a-z0-9][a-z0-9-]*$/;
 
 /**
- * A raw encryption entry carries no space (`space` absent or `encryption`)
- * and names a network the signer owns: the URN's owner DID must be the
- * signer's `did:pkh:eip155:<chainId>:<address>` (address case-insensitive).
+ * A raw encryption entry carries no space (`space` absent or `encryption`),
+ * grants only `tinycloud.encryption/decrypt`, and names a network the signer
+ * owns: the URN's owner DID must be the signer's
+ * `did:pkh:eip155:<chainId>:<address>` (address case-insensitive) and the
+ * network name must follow the SDK's naming rule.
  */
 function assertRawEncryptionPermission(
   entry: DelegationPermissionEntry,
@@ -309,6 +320,27 @@ function assertRawEncryptionPermission(
       }],
     );
   }
+  if (entry.actions.length === 0) {
+    throw new DelegateRequestError(
+      'invalid_permissions',
+      `permissions[${index}].actions must be ["${ENCRYPTION.DECRYPT}"] for a raw encryption network`,
+      [{ path: `permissions[${index}].actions`, message: 'Expected the decrypt action', expected: ENCRYPTION.DECRYPT }],
+    );
+  }
+  entry.actions.forEach((action, actionIndex) => {
+    if (action !== ENCRYPTION.DECRYPT) {
+      throw new DelegateRequestError(
+        'invalid_permissions',
+        `permissions[${index}].actions[${actionIndex}] is not available on a raw encryption network; only ${ENCRYPTION.DECRYPT} is`,
+        [{
+          path: `permissions[${index}].actions[${actionIndex}]`,
+          message: 'Raw encryption networks grant decrypt only',
+          value: action,
+          expected: ENCRYPTION.DECRYPT,
+        }],
+      );
+    }
+  });
   const network = RAW_ENCRYPTION_NETWORK.exec(entry.path);
   if (
     !network ||
@@ -324,6 +356,17 @@ function assertRawEncryptionPermission(
         message: 'The encryption network owner must be the signing account',
         value: entry.path,
         expectedPrefix: `${RAW_ENCRYPTION_PREFIX}${signerDid}:`,
+      }],
+    );
+  }
+  if (!ENCRYPTION_NETWORK_NAME.test(network[3]!)) {
+    throw new DelegateRequestError(
+      'invalid_permissions',
+      `permissions[${index}].path names an invalid encryption network; the name must match ${ENCRYPTION_NETWORK_NAME.source}`,
+      [{
+        path: `permissions[${index}].path`,
+        message: `The network name must match ${ENCRYPTION_NETWORK_NAME.source}`,
+        value: entry.path,
       }],
     );
   }

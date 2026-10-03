@@ -149,6 +149,27 @@ describe('wallet keys: /prepare + /complete', () => {
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('invalid_permissions');
   });
+
+  test('/complete refuses forwarded permissions that differ from the prepared request', async () => {
+    const prepared = await post('/prepare', { keyId: externalKey.id, jwk, host, permissions: request });
+    const broader = [{ ...kvGet, actions: ['tinycloud.kv/get', 'tinycloud.kv/put'] }, decrypt, capabilitiesRead];
+    const res = await walletComplete(prepared.body, broader);
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('baseline-digest-mismatch');
+    expect(activateSessionWithHost).not.toHaveBeenCalled();
+  });
+
+  test('/complete refuses a non-string prepared.siwe with 400', async () => {
+    const prepared = await post('/prepare', { keyId: externalKey.id, jwk, host, permissions: request });
+    const res = await post('/complete', {
+      prepared: { ...prepared.body.prepared, siwe: 123 },
+      signature: '0x00',
+      host,
+      jwk,
+      permissions: request,
+    });
+    expect(res.status).toBe(400);
+  });
 });
 
 describe('managed keys: POST /', () => {
@@ -169,6 +190,23 @@ describe('managed keys: POST /', () => {
     expect(res.status).toBe(200);
     expect(res.body.signedMessage).toContain(`'tinycloud.encryption': 'decrypt' for '${network}'`);
     expect(res.body.permissions).toContainEqual(relayedDecrypt);
+  });
+
+  test('the versioned approval refuses forwarded permissions that differ from the prepared request', async () => {
+    const prepared = await post('/prepare', { keyId: managedKey.id, jwk, host, permissions: request });
+    const res = await post('/', {
+      keyId: managedKey.id,
+      jwk,
+      host,
+      permissions: [kvGet, decrypt, { ...capabilitiesRead }, { ...kvGet, path: 'vault/secrets/OTHER' }],
+      prepared: prepared.body.prepared,
+      authorizationContextToken: prepared.body.authorizationContext.token,
+      selectedActionIds: prepared.body.selectedActionKeys,
+      protocolVersion: 1,
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('baseline-digest-mismatch');
+    expect(activateSessionWithHost).not.toHaveBeenCalled();
   });
 
   test('the legacy approval accepts a raw entry without a space', async () => {

@@ -1,0 +1,6 @@
+---
+"@openkey/api": minor
+"@openkey/web": minor
+---
+
+`/delegate` signs a CLI's raw encryption decrypt grant (`service` `tinycloud.encryption` or `encryption`, `path` `urn:tinycloud:encryption:<ownerDid>:<name>`, `space` `encryption` or absent) as a top-level ReCap resource instead of nesting it under the session space, so the delegated session can decrypt. The grant is limited to `tinycloud.encryption/decrypt` on a network the signer owns (`did:pkh:eip155:<chainId>:<address>`) whose name matches `^[a-z0-9][a-z0-9-]*$`; anything else is refused with `invalid_permissions` before signing. The relayed `permissions` report it with `space: "encryption"`, and an owner who unchecks it gets a delegation without it. `/api/delegate/complete` and the managed `/api/delegate` approval now refuse forwarded `permissions` that differ from the request prepared at `/api/delegate/prepare` (`baseline-digest-mismatch`), and `/complete` answers a non-string `prepared.siwe` with 400. On the consent page, unchecking a grant maps correctly for raw networks, Approve stays disabled while the prepared authorization differs from the visible selection (for example after a failed narrowing), and a request carrying a raw network still preselects and checks the requested wallet. Device authorization still rejects encryption grants.

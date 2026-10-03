@@ -98,6 +98,18 @@ describe('prepareDelegationSession — raw encryption grants (TC-598)', () => {
     });
   });
 
+  function refusal(permissions: DelegationPermissionEntry[]): DelegateRequestError {
+    let error: unknown;
+    try {
+      prepare(permissions);
+    } catch (caught) {
+      error = caught;
+    }
+    if (!(error instanceof DelegateRequestError)) throw new Error(`expected a DelegateRequestError, got ${String(error)}`);
+    expect(error.code).toBe('invalid_permissions');
+    return error;
+  }
+
   test('refuses an encryption network the signer does not own before signing', () => {
     const foreign = [
       `urn:tinycloud:encryption:did:pkh:eip155:1:0x0000000000000000000000000000000000000001:default`,
@@ -106,16 +118,37 @@ describe('prepareDelegationSession — raw encryption grants (TC-598)', () => {
       `urn:tinycloud:encryption:${ownerDid}`,
     ];
     for (const path of foreign) {
-      let error: unknown;
-      try {
-        prepare(secretRequest({ path }));
-      } catch (caught) {
-        error = caught;
-      }
-      expect(error, path).toBeInstanceOf(DelegateRequestError);
-      expect((error as DelegateRequestError).code).toBe('invalid_permissions');
-      expect((error as DelegateRequestError).details?.[0]?.path).toBe('permissions[1].path');
+      expect(refusal(secretRequest({ path })).details?.[0]?.path, path).toBe('permissions[1].path');
     }
+  });
+
+  test('grants only decrypt on a raw network', () => {
+    const refused = [
+      ['tinycloud.encryption/network.revoke'],
+      ['tinycloud.encryption/network.create'],
+      ['tinycloud.kv/put'],
+      [DECRYPT, 'tinycloud.encryption/network.revoke'],
+    ];
+    for (const actions of refused) {
+      expect(refusal(secretRequest({ actions })).details?.[0]?.path, actions.join()).toMatch(/^permissions\[1\]\.actions\[\d\]$/);
+    }
+    expect(refusal(secretRequest({ actions: [] })).details?.[0]?.path).toBe('permissions[1].actions');
+  });
+
+  test('requires the SDK network-name rule', () => {
+    for (const name of ['*', 'a/b', 'Default', '-default', 'de fault', 'a:b', '']) {
+      const error = refusal(secretRequest({ path: `urn:tinycloud:encryption:${ownerDid}:${name}` }));
+      expect(error.details?.[0]?.path, name).toBe('permissions[1].path');
+    }
+    const named = `urn:tinycloud:encryption:${ownerDid}:team-2`;
+    expect(Object.keys(recapAtt(prepare(secretRequest({ path: named })).prepared.siwe))).toContain(named);
+  });
+
+  test('treats the short service name "encryption" as the same raw network', () => {
+    const short = prepare(secretRequest({ service: 'encryption' }));
+    expect(recapAtt(short.prepared.siwe)).toEqual(recapAtt(prepare(secretRequest()).prepared.siwe));
+    const foreign = `urn:tinycloud:encryption:did:pkh:eip155:1:0x0000000000000000000000000000000000000001:default`;
+    expect(refusal(secretRequest({ service: 'encryption', path: foreign })).details?.[0]?.path).toBe('permissions[1].path');
   });
 
   test('refuses a raw entry that claims a space other than encryption', () => {

@@ -70,3 +70,20 @@ export function reviewSelectionToActionKeys(
   }
   return out;
 }
+
+/**
+ * Whether the prepared authorization (the `/prepare` response's
+ * `selectedActionKeys`, i.e. the SIWE Approve would sign) grants exactly the
+ * visible review selection. False after a narrowing `/prepare` failed, or
+ * when a selection change was never sent; Approve must stay disabled then.
+ */
+export function preparedMatchesSelection(
+  model: CapabilityReviewModel,
+  permissions: readonly ServerPermissionOption[],
+  selection: ReadonlySet<string>,
+  preparedActionKeys: readonly string[],
+): boolean {
+  const visible = new Set(reviewSelectionToActionKeys(model, permissions, selection));
+  const prepared = new Set(preparedActionKeys);
+  return visible.size === prepared.size && [...visible].every((key) => prepared.has(key));
+}

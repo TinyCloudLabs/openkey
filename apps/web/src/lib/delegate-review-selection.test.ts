@@ -2,7 +2,7 @@
 import { describe, expect, test } from 'bun:test';
 import { actionId, parseCapabilityReview } from '../../../../packages/capability-review/src/index';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
-import { reviewSelectionToActionKeys, type ServerPermissionOption } from './delegate-review-selection';
+import { preparedMatchesSelection, reviewSelectionToActionKeys, type ServerPermissionOption } from './delegate-review-selection';
 
 // TC-598: a CLI secret request signs its decrypt grant as a top-level
 // encryption network. capability-review reports that resource as the grant's
@@ -66,5 +66,21 @@ describe('reviewSelectionToActionKeys — raw encryption network', () => {
   test('drops decrypt when the owner unchecks it', () => {
     const keys = reviewSelectionToActionKeys(model, serverPermissions, new Set([reviewActionId(KV_GET)]));
     expect(keys.sort()).toEqual([`${capsKey}\0${CAPS_READ}`, `${kvKey}\0${KV_GET}`].sort());
+  });
+});
+
+describe('preparedMatchesSelection', () => {
+  const allKeys = serverPermissions.flatMap((permission) => permission.actions.map((action) => action.key));
+  const allReview = new Set(model.permissions.flatMap((grant) => grant.actions.map((action) => action.id)));
+  const withoutDecrypt = new Set([...allReview].filter((id) => id !== reviewActionId(DECRYPT)));
+
+  test('matches when the prepared SIWE grants the visible selection', () => {
+    expect(preparedMatchesSelection(model, serverPermissions, allReview, allKeys)).toBe(true);
+    const narrowedKeys = allKeys.filter((key) => !key.endsWith(`\0${DECRYPT}`));
+    expect(preparedMatchesSelection(model, serverPermissions, withoutDecrypt, narrowedKeys)).toBe(true);
+  });
+
+  test('does not match after a failed narrowing left the broader SIWE prepared', () => {
+    expect(preparedMatchesSelection(model, serverPermissions, withoutDecrypt, allKeys)).toBe(false);
   });
 });
