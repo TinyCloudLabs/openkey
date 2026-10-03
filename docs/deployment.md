@@ -142,7 +142,7 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `INTERNAL_METRICS_TOKEN` | Bearer token for internal metrics |
 | `TINYCLOUD_BOOTSTRAP_HOST` | Trusted TinyCloud node used for canonical user-key bootstrap |
 | `CLOUDFLARE_API_TOKEN` | For SSL certificate management |
-| `DSTACK_GATEWAY_DOMAIN` | Phala gateway domain |
+| `DSTACK_GATEWAY_DOMAIN` | Phala gateway base domain (e.g. `dstack-pha-prod5.phala.network`); the ingress CNAMEs `api.openkey.so` to `gateway.<base>` (never `_.<base>`, which Android cannot resolve) |
 | `CERTBOT_EMAIL` | Email for Let's Encrypt |
 
 Google and Apple must be configured with these exact production return URLs:
