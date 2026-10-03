@@ -1,33 +1,44 @@
-/** A `/delegate` request permission as the CLI encodes it. */
-export interface DelegateRequestPermission {
-  service: string;
-  space?: string;
-  path: string;
-}
+/**
+ * The account a `/delegate` request names:
+ * - `owner`: every permission resolves to one `did:pkh:eip155:<chainId>:<address>`
+ *   owner (address lowercase), so the UI pins that wallet;
+ * - `conflict`: every permission resolves to an owner, but they differ (in
+ *   address or chain); OpenKey cannot sign such a request for any wallet;
+ * - `none`: some permission names no pkh owner (a short space name, or a
+ *   malformed entry), so nothing is pinned.
+ */
+export type ExpectedSigner =
+  | { kind: 'none' }
+  | { kind: 'owner'; chainId: string; address: string }
+  | { kind: 'conflict'; owners: string[] };
 
-const SPACE_OWNER = /^tinycloud:pkh:eip155:\d+:(0x[a-fA-F0-9]{40}):/;
-const RAW_ENCRYPTION_OWNER = /^urn:tinycloud:encryption:did:pkh:eip155:\d+:(0x[a-fA-F0-9]{40}):/;
+const SPACE_OWNER = /^tinycloud:pkh:eip155:(\d+):(0x[a-fA-F0-9]{40}):/;
+const RAW_ENCRYPTION_OWNER = /^urn:tinycloud:encryption:did:pkh:eip155:(\d+):(0x[a-fA-F0-9]{40}):/;
 
 /**
- * The (lowercase) owner address every permission of the request resolves to,
- * or null. A space permission resolves through its
+ * Resolve each permission's owner: a space permission through its
  * `tinycloud:pkh:eip155:<chain>:<addr>:<name>` space URI, a raw encryption
  * network through its `urn:tinycloud:encryption:did:pkh:eip155:<chain>:<addr>:<name>`
- * owner. Any permission without a pkh owner, or owners that disagree, yield
- * null so the UI does not pin a wallet for an unscoped or mixed request.
+ * owner DID.
  */
-export function expectedSignerAddress(permissions: readonly DelegateRequestPermission[]): string | null {
-  if (permissions.length === 0) return null;
-  const addresses = new Set<string>();
+export function expectedSigner(permissions: readonly unknown[]): ExpectedSigner {
+  if (permissions.length === 0) return { kind: 'none' };
+  const owners = new Map<string, { chainId: string; address: string }>();
   for (const permission of permissions) {
+    if (!permission || typeof permission !== 'object') return { kind: 'none' };
+    const { service, space, path } = permission as Record<string, unknown>;
+    if (typeof service !== 'string' || typeof path !== 'string') return { kind: 'none' };
     const isRawEncryption =
-      (permission.service === 'tinycloud.encryption' || permission.service === 'encryption') &&
-      permission.path.startsWith('urn:tinycloud:encryption:');
+      (service === 'tinycloud.encryption' || service === 'encryption') &&
+      path.startsWith('urn:tinycloud:encryption:');
     const owner = isRawEncryption
-      ? RAW_ENCRYPTION_OWNER.exec(permission.path)
-      : typeof permission.space === 'string' ? SPACE_OWNER.exec(permission.space) : null;
-    if (!owner) return null;
-    addresses.add(owner[1]!.toLowerCase());
+      ? RAW_ENCRYPTION_OWNER.exec(path)
+      : typeof space === 'string' ? SPACE_OWNER.exec(space) : null;
+    if (!owner) return { kind: 'none' };
+    const chainId = owner[1]!;
+    const address = owner[2]!.toLowerCase();
+    owners.set(`did:pkh:eip155:${chainId}:${address}`, { chainId, address });
   }
-  return addresses.size === 1 ? [...addresses][0]! : null;
+  if (owners.size === 1) return { kind: 'owner', ...[...owners.values()][0]! };
+  return { kind: 'conflict', owners: [...owners.keys()] };
 }

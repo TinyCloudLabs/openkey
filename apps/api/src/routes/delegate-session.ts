@@ -461,6 +461,8 @@ export interface PrepareDelegationSessionResult {
   permissions: PermissionOption[];
   selectedActionKeys: string[];
   edited: boolean;
+  /** The request baseline the session was prepared from (before narrowing). */
+  baselineAbilities: SessionAbilities;
   spaceId: string;
 }
 
@@ -561,5 +563,6 @@ export function prepareDelegationSession({
     ),
     edited,
     spaceId,
+    baselineAbilities,
   };
 }

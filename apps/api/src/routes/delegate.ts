@@ -374,11 +374,22 @@ function requiredActionIdSet(entries: RecapEntry[]): Set<string> {
  * authorization context; `/complete` and the managed approval recompute it
  * from the `permissions` they receive and consume refuses a mismatch, so the
  * subset check at completion runs against the request that was prepared.
- * Requests without raw encryption entries digest the space abilities alone.
+ * Each resource's actions are sorted and deduplicated first, so the same
+ * grants in another order (or split across entries) digest the same. The
+ * session space is not part of it; the prepared SIWE binds that. Requests
+ * without raw encryption entries digest the space abilities alone.
  */
-function digestDelegationBaseline(baseline: SessionAbilities): string {
+function digestDelegationBaseline({ abilities, rawAbilities }: SessionAbilities): string {
+  const canonical = (byResource: Record<string, string[]>) => Object.fromEntries(
+    Object.entries(byResource).map(([resource, actions]) => [resource, [...new Set(actions)].sort()]),
+  );
+  const canonicalAbilities = Object.fromEntries(
+    Object.entries(abilities).map(([service, byPath]) => [service, canonical(byPath)]),
+  );
   return digestAbilities(
-    Object.keys(baseline.rawAbilities).length > 0 ? baseline : baseline.abilities,
+    Object.keys(rawAbilities).length > 0
+      ? { abilities: canonicalAbilities, rawAbilities: canonical(rawAbilities) }
+      : canonicalAbilities,
   );
 }
 
@@ -1573,12 +1584,9 @@ delegateRouter.post('/prepare', async (c) => {
       { address, chainId, spaceId: preparedResult.spaceId },
     );
     // Bound here and enforced at /complete and the managed approval: the
-    // `permissions` a caller forwards at completion must be this request.
-    const baselineAbilitiesDigest = digestDelegationBaseline(
-      permissions
-        ? sessionAbilitiesFromPermissions(permissions, { address, chainId })
-        : DEFAULT_SESSION_ABILITIES,
-    );
+    // `permissions` a caller forwards at completion must grant what this
+    // request did.
+    const baselineAbilitiesDigest = digestDelegationBaseline(preparedResult.baselineAbilities);
     authorizationContext = issueAuthorizationContext({
       userId: user.id,
       keyId: key.id,

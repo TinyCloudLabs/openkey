@@ -86,6 +86,12 @@ const decrypt = { service: 'tinycloud.encryption', space: 'encryption', path: ne
 const capabilitiesRead = { service: 'tinycloud.capabilities', space, path: '', actions: ['tinycloud.capabilities/read'] };
 const request = [kvGet, decrypt, capabilitiesRead];
 const relayedDecrypt = { service: 'encryption', space: 'encryption', path: network, actions: [DECRYPT] };
+// The same grants as `kvReadWrite`, spelled differently: actions reversed, or
+// split across entries on the same resource (raw network included).
+const KV_PUT = 'tinycloud.kv/put';
+const kvReadWrite = [{ ...kvGet, actions: ['tinycloud.kv/get', KV_PUT] }, decrypt, capabilitiesRead];
+const reordered = [{ ...kvGet, actions: [KV_PUT, 'tinycloud.kv/get'] }, { ...decrypt, actions: [DECRYPT, DECRYPT] }, capabilitiesRead];
+const split = [kvGet, { ...kvGet, actions: [KV_PUT] }, decrypt, { ...decrypt, space: undefined }, capabilitiesRead];
 
 async function post(path: string, body: Record<string, unknown>) {
   const res = await router.request(path, {
@@ -170,6 +176,15 @@ describe('wallet keys: /prepare + /complete', () => {
     });
     expect(res.status).toBe(400);
   });
+
+  test('/complete accepts forwarded permissions that grant the same actions in another order or split', async () => {
+    for (const forwarded of [reordered, split]) {
+      const prepared = await post('/prepare', { keyId: externalKey.id, jwk, host, permissions: kvReadWrite });
+      expect(prepared.status).toBe(200);
+      const res = await walletComplete(prepared.body, forwarded);
+      expect(res.status).toBe(200);
+    }
+  });
 });
 
 describe('managed keys: POST /', () => {
@@ -207,6 +222,23 @@ describe('managed keys: POST /', () => {
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('baseline-digest-mismatch');
     expect(activateSessionWithHost).not.toHaveBeenCalled();
+  });
+
+  test('the versioned approval accepts forwarded permissions that grant the same actions in another order or split', async () => {
+    for (const forwarded of [reordered, split]) {
+      const prepared = await post('/prepare', { keyId: managedKey.id, jwk, host, permissions: kvReadWrite });
+      const res = await post('/', {
+        keyId: managedKey.id,
+        jwk,
+        host,
+        permissions: forwarded,
+        prepared: prepared.body.prepared,
+        authorizationContextToken: prepared.body.authorizationContext.token,
+        selectedActionIds: prepared.body.selectedActionKeys,
+        protocolVersion: 1,
+      });
+      expect(res.status).toBe(200);
+    }
   });
 
   test('the legacy approval accepts a raw entry without a space', async () => {

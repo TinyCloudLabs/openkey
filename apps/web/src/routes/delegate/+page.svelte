@@ -20,7 +20,7 @@
     withConfiguredEntries,
   } from '$lib/delegate-link-policy';
   import { preparedMatchesSelection, reviewSelectionToActionKeys } from '$lib/delegate-review-selection';
-  import { expectedSignerAddress } from '$lib/delegate-expected-signer';
+  import { expectedSigner } from '$lib/delegate-expected-signer';
   import {
     parseCapabilityReview,
     defaultSelection,
@@ -255,10 +255,16 @@
     : Promise.resolve();
   deviceRequestVerified.catch((cause: Error) => { error = cause.message; });
 
-  // The wallet the CLI requested: the one owner every requested space (and
-  // raw encryption network) resolves to, or null for an unscoped or mixed
-  // request (see expectedSignerAddress).
-  const expectedAddress = expectedSignerAddress(requestedPermissions);
+  // The wallet the CLI requested: the one owner (chain and address) every
+  // requested space and raw encryption network resolves to. Owners that
+  // disagree make the request unsignable for any wallet, so it is refused
+  // like an unreadable one (see expectedSigner).
+  const requestSigner = expectedSigner(requestedPermissions);
+  const expectedAddress = requestSigner.kind === 'owner' ? requestSigner.address : null;
+  const requestOwnerError = requestSigner.kind === 'conflict'
+    ? `This request names more than one account (${requestSigner.owners.join(', ')}). Restart the CLI command to get a new link.`
+    : '';
+  if (requestOwnerError && !linkPolicyError) error = requestOwnerError;
   const expectedAddressShort = $derived(
     expectedAddress
       ? `${expectedAddress.slice(0, 6)}...${expectedAddress.slice(-4)}`
@@ -423,6 +429,7 @@
     // for a request whose permissions could not be read.
     if (permissionsParamError) throw new Error(permissionsParamError);
     if (linkPolicyError) throw new Error(linkPolicyError);
+    if (requestOwnerError) throw new Error(requestOwnerError);
     const API_URL = import.meta.env.VITE_API_URL || '';
     const body: Record<string, unknown> = {
       keyId: key.id,
@@ -849,6 +856,17 @@
       error = 'No prepared session data. Please go back and try again.';
       return;
     }
+    if (approveBlockedReason) {
+      error = approveBlockedReason;
+      return;
+    }
+    // Sign and complete exactly what is prepared now: a /prepare response
+    // landing during the wallet prompts must not change the signed bytes or
+    // the selection reported with them.
+    const prepared = preparedData;
+    const contextToken = authorizationContextToken;
+    const selectedActionIds = [...selectedActionKeys];
+    const edited = permissionsEdited;
 
     delegating = true;
     error = '';
@@ -914,7 +932,7 @@
 
       const signature: string = await matchingProvider.request({
         method: 'personal_sign',
-        params: [preparedData.siwe, matchingAccount],
+        params: [prepared.siwe, matchingAccount],
       });
 
       const API_URL = import.meta.env.VITE_API_URL || '';
@@ -923,11 +941,11 @@
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          prepared: preparedData,
+          prepared,
           signature,
           host,
           jwk,
-          edited: permissionsEdited,
+          edited,
           reason: requestReason || undefined,
           // Forward the CLI-supplied baseline so the server can validate the
           // signed SIWE against the CLI request instead of DEFAULT_ABILITIES.
@@ -937,10 +955,10 @@
           // Versioned protocol: echo the /prepare token so the server can
           // re-verify every bound invariant (user, key, JWK, host, immutable
           // SIWE fields, allowed action set, required action set).
-          ...(authorizationContextToken
+          ...(contextToken
             ? {
-                authorizationContextToken,
-                selectedActionIds: selectedActionKeys,
+                authorizationContextToken: contextToken,
+                selectedActionIds,
               }
             : {}),
           ...(deviceTransactionId ? { deviceTransactionId } : {}),

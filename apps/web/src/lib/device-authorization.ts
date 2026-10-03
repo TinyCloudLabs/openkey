@@ -179,15 +179,29 @@ export function decodeBase64UrlJson(value: string): unknown {
 
 /**
  * The `/delegate` `permissions` parameter (`{ permissions, reason? }`). Throws
- * unless it decodes to a non-empty permission list: a request whose
- * permissions cannot be read must be refused, never widened to the default
- * abilities.
+ * unless it decodes to a non-empty list of permission entries (string
+ * `service` and `path`, a string `space` when present, string `actions`): a
+ * request whose permissions cannot be read must be refused, never widened to
+ * the default abilities. A raw encryption network carries no space.
  */
 export function decodeDelegatePermissionsParam(value: string): { permissions: DevicePermission[]; reason?: unknown } {
   const payload = decodeBase64UrlJson(value);
   const { permissions, reason } = (payload && typeof payload === 'object' ? payload : {}) as { permissions?: unknown; reason?: unknown };
   if (!Array.isArray(permissions) || permissions.length === 0) {
     throw new Error('The requested permissions are missing or malformed.');
+  }
+  for (const permission of permissions) {
+    const entry = (permission && typeof permission === 'object' ? permission : null) as Record<string, unknown> | null;
+    if (
+      !entry ||
+      typeof entry.service !== 'string' ||
+      typeof entry.path !== 'string' ||
+      (entry.space !== undefined && typeof entry.space !== 'string') ||
+      !Array.isArray(entry.actions) ||
+      !entry.actions.every((action) => typeof action === 'string')
+    ) {
+      throw new Error('The requested permissions are missing or malformed.');
+    }
   }
   return { permissions: permissions as DevicePermission[], reason };
 }

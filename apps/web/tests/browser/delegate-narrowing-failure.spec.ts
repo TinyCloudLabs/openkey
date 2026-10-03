@@ -73,7 +73,7 @@ const preparedResponse = {
 const json = (route: Route, status: number, body: unknown) =>
   route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 
-async function openConsent(page: Page, approvals: unknown[]) {
+async function mockApi(page: Page, calls: { prepares: unknown[]; approvals: unknown[] }) {
   await page.route('**/api/**', (route) => {
     const url = new URL(route.request().url());
     if (url.pathname === '/api/auth/get-session') {
@@ -89,21 +89,28 @@ async function openConsent(page: Page, approvals: unknown[]) {
     }
     if (url.pathname === '/api/delegate/prepare') {
       const body = route.request().postDataJSON() as { actionKeys?: unknown };
+      calls.prepares.push(body);
       // The first preparation succeeds; any narrowing fails.
       return body.actionKeys === undefined
         ? json(route, 200, preparedResponse)
         : json(route, 503, { error: 'Service unavailable' });
     }
     if (url.pathname === '/api/delegate') {
-      approvals.push(route.request().postDataJSON());
+      calls.approvals.push(route.request().postDataJSON());
       return json(route, 500, { error: 'approval should not be sent' });
     }
     return json(route, 404, { error: `unmocked ${url.pathname}` });
   });
+}
 
+async function openDelegate(page: Page, permissions: unknown[]) {
   const jwk = encodeBase64UrlJson({ kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' });
-  const permissions = encodeBase64UrlJson({ permissions: request });
-  await page.goto(`/delegate?did=did:key:z6Mk&jwk=${jwk}&permissions=${permissions}`);
+  await page.goto(`/delegate?did=did:key:z6Mk&jwk=${jwk}&permissions=${encodeBase64UrlJson({ permissions })}`);
+}
+
+async function openConsent(page: Page, approvals: unknown[]) {
+  await mockApi(page, { prepares: [], approvals });
+  await openDelegate(page, request);
   await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
 }
 
@@ -127,4 +134,29 @@ test('a failed narrowing keeps Approve disabled and sends no approval', async ({
   // Re-selecting decrypt restores the prepared selection: Approve works again.
   await decrypt.check();
   await expect(approve).toBeEnabled();
+});
+
+test('a malformed encryption entry shows the invalid-request error instead of crashing', async ({ page }) => {
+  const pageErrors: Error[] = [];
+  page.on('pageerror', (cause) => pageErrors.push(cause));
+  const calls = { prepares: [] as unknown[], approvals: [] as unknown[] };
+  await mockApi(page, calls);
+  const { path: _omitted, ...withoutPath } = request[1]!;
+  await openDelegate(page, [request[0], withoutPath, request[2]]);
+
+  await expect(page.getByText('Could not decode the requested permissions').first()).toBeVisible();
+  expect(pageErrors).toEqual([]);
+  expect(calls.prepares).toEqual([]);
+});
+
+test('a raw network owned by another account is refused before preparing', async ({ page }) => {
+  const calls = { prepares: [] as unknown[], approvals: [] as unknown[] };
+  await mockApi(page, calls);
+  const foreign = `urn:tinycloud:encryption:did:pkh:eip155:10:${address}:default`;
+  await openDelegate(page, [request[0], { ...request[1], path: foreign }, request[2]]);
+
+  await expect(page.getByText('This request names more than one account').first()).toBeVisible();
+  await page.getByRole('button', { name: /Main/ }).first().click();
+  await expect(page.getByText('This request names more than one account').first()).toBeVisible();
+  expect(calls.prepares).toEqual([]);
 });
