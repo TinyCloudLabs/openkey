@@ -3,6 +3,12 @@
 Track changes to agent-facing development guidance for OpenKey. Add a concise entry when
 `agent.dev.md` or related agent workflow expectations change.
 
+## 2026-10-03
+
+- Agents never bump a major version (TC-615). Changesets are `minor` or `patch`; a maintainer
+  approves a major with an empty `approve-major-release: <package>` commit, enforced by the
+  `Major release guard` PR check. Manual Release no longer offers `major`.
+
 ## 2026-08-14
 
 - Added the OpenKey-owned Share device authorization contract and public cross-repository smoke.
