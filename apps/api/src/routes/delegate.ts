@@ -20,7 +20,6 @@ import {
 } from '@tinycloud/node-sdk-wasm';
 import {
   canonicalizeServiceName,
-  entriesToAbilities,
   entriesForSelectedActions,
   permissionKey as computePermissionKey,
 } from './delegate-session';
@@ -32,9 +31,9 @@ import {
   signedSiweExpirationTime,
 } from './delegate-validation';
 import {
-  DEFAULT_ABILITIES,
+  DEFAULT_SESSION_ABILITIES,
   SIWE_DOMAIN,
-  abilitiesFromPermissions,
+  sessionAbilitiesFromPermissions,
   actionKey as computeActionKey,
   assertBaselineSubset,
   assertRequiredActions,
@@ -1228,8 +1227,8 @@ delegateRouter.post('/', async (c) => {
     }
     try {
       const baseline = permissions
-        ? abilitiesFromPermissions(permissions)
-        : DEFAULT_ABILITIES;
+        ? sessionAbilitiesFromPermissions(permissions, { address, chainId })
+        : DEFAULT_SESSION_ABILITIES;
       assertBaselineSubset(preparedEntries, baseline);
       assertRequiredActions(preparedEntries);
     } catch (e) {
@@ -1557,11 +1556,15 @@ delegateRouter.post('/prepare', async (c) => {
       preparedResult.prepared.siwe,
       { address, chainId, spaceId: preparedResult.spaceId },
     );
+    // Use the exact ability maps that would be re-derived at /complete.
+    // Requests without raw encryption entries keep the space-only digest.
+    const baselineAbilities = permissions
+      ? sessionAbilitiesFromPermissions(permissions, { address, chainId })
+      : DEFAULT_SESSION_ABILITIES;
     const baselineAbilitiesDigest = digestAbilities(
-      // Use the exact abilities map that would be re-derived at /complete.
-      permissions
-        ? abilitiesFromPermissions(permissions)
-        : DEFAULT_ABILITIES,
+      Object.keys(baselineAbilities.rawAbilities).length > 0
+        ? baselineAbilities
+        : baselineAbilities.abilities,
     );
     authorizationContext = issueAuthorizationContext({
       userId: user.id,
@@ -1637,6 +1640,7 @@ delegateRouter.post('/complete', async (c) => {
      * When present, this is used instead of DEFAULT_ABILITIES for the
      * subset check that guards against a compromised frontend crafting a
      * broader SIWE. Optional; falls back to DEFAULT_ABILITIES when absent.
+     * Raw encryption entries must name a network owned by the SIWE signer.
      */
     permissions?: unknown;
     /**
@@ -1694,21 +1698,6 @@ delegateRouter.post('/complete', async (c) => {
     }
   }
 
-  // Authority-side validation always runs; the `edited` request field is
-  // never trusted as an authority gate. Older callers omit both the
-  // context token and the selectedActionIds field; those paths still get
-  // strict subset+required validation over the SIWE bytes here.
-  try {
-    const entries = parsePreparedRecap(body.prepared.siwe || '');
-    const baseline = baselinePermissions
-      ? abilitiesFromPermissions(baselinePermissions)
-      : DEFAULT_ABILITIES;
-    assertBaselineSubset(entries, baseline);
-    assertRequiredActions(entries);
-  } catch (e) {
-    return c.json({ error: e instanceof Error ? e.message : 'Invalid delegation' }, 400);
-  }
-
   // TC-547: the signer is the address in the signed SIWE. The prepared
   // object `/prepare` returns (and the web echoes back) carries no
   // `address`, so reading it from there bound versioned approvals to an
@@ -1719,6 +1708,25 @@ delegateRouter.post('/complete', async (c) => {
     chainId: Number(body.prepared.chainId) || 1,
     spaceId: preparedSpaceId,
   });
+
+  // Authority-side validation always runs; the `edited` request field is
+  // never trusted as an authority gate. Older callers omit both the
+  // context token and the selectedActionIds field; those paths still get
+  // strict subset+required validation over the SIWE bytes here.
+  try {
+    const entries = parsePreparedRecap(body.prepared.siwe || '');
+    const baseline = baselinePermissions
+      ? sessionAbilitiesFromPermissions(baselinePermissions, {
+          address: signedFields.address,
+          chainId: signedFields.chainId,
+        })
+      : DEFAULT_SESSION_ABILITIES;
+    assertBaselineSubset(entries, baseline);
+    assertRequiredActions(entries);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'Invalid delegation' }, 400);
+  }
+
   const preparedAddress = signedFields.address;
   if (
     body.prepared.address !== undefined

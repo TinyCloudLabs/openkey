@@ -19,6 +19,7 @@
     isCanonicalHttpsOrigin,
     withConfiguredEntries,
   } from '$lib/delegate-link-policy';
+  import { reviewSelectionToActionKeys } from '$lib/delegate-review-selection';
   import {
     parseCapabilityReview,
     defaultSelection,
@@ -707,52 +708,10 @@
     return permission.actions.filter((action) => isActionSelected(action.key));
   }
 
-  // Translate a capability-review selection (Set of client-side action IDs)
-  // into the server's actionKey strings.
-  //
-  // Sol MAJOR-5 fix: capability-review grant IDs and server permission keys
-  // are BOTH NUL-separated (`service\0space\0path`). The previous code
-  // stripped NULs to spaces before lookup, which caused every grant ID to
-  // miss and the selection to collapse to required-only actions.
-  //
-  // Correlation is done in two passes over the CANONICAL server keys — a
-  // server permission has already been canonicalized (`kv` → `tinycloud.kv`)
-  // and capability-review derives the same canonical service from the
-  // `tinycloud.kv/get` ability. So a direct id-to-id lookup is safe AND
-  // preserves independent selection when two paths share an ability
-  // (e.g. `chat` vs `feed` KV grants).
+  // Translate a capability-review selection into the server's actionKey
+  // strings (see reviewSelectionToActionKeys for the ID correlation).
   function mapReviewSelectionToActionKeys(selection: Set<string>): string[] {
-    if (!reviewModel) return [];
-
-    // Build map: canonical grant ID → Set<selected ability>.
-    const selectedAbilitiesByGrantId = new Map<string, Set<string>>();
-    for (const grant of reviewModel.permissions) {
-      for (const action of grant.actions) {
-        if (selection.has(action.id)) {
-          let abilities = selectedAbilitiesByGrantId.get(grant.id);
-          if (!abilities) {
-            abilities = new Set();
-            selectedAbilitiesByGrantId.set(grant.id, abilities);
-          }
-          abilities.add(action.ability);
-        }
-      }
-    }
-
-    const out: string[] = [];
-    for (const perm of permissionOptions) {
-      // Direct match: both sides are NUL-separated
-      // `service\0space\0path` after service canonicalization.
-      // Two paths sharing an ability (e.g. `chat` vs `feed`) keep
-      // distinct grant IDs so their action selections stay independent.
-      const selectedAbilities = selectedAbilitiesByGrantId.get(perm.key);
-      for (const action of perm.actions) {
-        if (action.required || selectedAbilities?.has(action.ability)) {
-          out.push(action.key);
-        }
-      }
-    }
-    return out;
+    return reviewModel ? reviewSelectionToActionKeys(reviewModel, permissionOptions, selection) : [];
   }
 
   async function toggleAction(action: DelegatePermissionAction) {
