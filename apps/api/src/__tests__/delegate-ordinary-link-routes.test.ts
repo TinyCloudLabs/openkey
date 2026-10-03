@@ -147,6 +147,37 @@ describe('versioned /complete for wallet keys', () => {
     expect(res.status).toBe(400);
     expect(activateSessionWithHost).not.toHaveBeenCalled();
   });
+
+  test('refuses a signature from another wallet without consuming the context or activating', async () => {
+    const prepared = await post('/prepare', { keyId: externalKey.id, jwk, host });
+    const wrongWallet = await post('/complete', await webCompleteBody(prepared, other));
+    expect(wrongWallet.status).toBe(400);
+    expect(wrongWallet.body.code).toBe('signature-mismatch');
+    expect(wrongWallet.body.delegationHeader).toBeUndefined();
+    const garbage = await post('/complete', { ...(await webCompleteBody(prepared)), signature: '0x1234' });
+    expect(garbage.status).toBe(400);
+    expect(activateSessionWithHost).not.toHaveBeenCalled();
+
+    // The context is still unused: the right wallet can complete it.
+    const ok = await post('/complete', await webCompleteBody(prepared));
+    expect(ok.status).toBe(200);
+    expect(activateSessionWithHost).toHaveBeenCalledTimes(1);
+  });
+
+  test('reports the signed SIWE expiry, ignoring caller-supplied expiry metadata', async () => {
+    const prepared = await post('/prepare', { keyId: externalKey.id, jwk, host, expiry: '1h' });
+    const signedExpiry = /^Expiration Time: (.+)$/m.exec(prepared.body.prepared.siwe)?.[1];
+    const body = await webCompleteBody(prepared);
+    const res = await post('/complete', {
+      ...body,
+      prepared: { ...body.prepared, expirationTime: '2099-01-01T00:00:00.000Z' },
+    });
+    expect(res.status).toBe(200);
+    expect(signedExpiry).toBeString();
+    expect(res.body.expirationTime).toBe(signedExpiry);
+    expect(res.body.expiresAt).toBe(signedExpiry);
+    expect(res.body.expiry).toBe(signedExpiry);
+  });
 });
 
 describe('ordinary delegation lifetime', () => {

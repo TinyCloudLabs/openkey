@@ -14,7 +14,11 @@
 
   let { host, hostRecognized, callback, expiresAt, acknowledged = $bindable(false) }: Props = $props();
 
-  const returnsTo = $derived(callback ? new URL(callback).origin : 'This page, as a code to paste');
+  const returnsTo = $derived.by(() => {
+    if (!callback) return 'This page, as a code to paste';
+    const url = new URL(callback);
+    return `${url.origin}${url.pathname}`;
+  });
   const expires = $derived.by(() => {
     const time = Date.parse(expiresAt);
     if (Number.isNaN(time)) return 'Not specified';
@@ -52,4 +56,9 @@
       <dd class="text-right font-medium text-surface-900">{expires}</dd>
     </div>
   </dl>
+  {#if !callback}
+    <p class="text-xs font-medium leading-relaxed text-amber-900">
+      Only paste this code into a terminal you started yourself.
+    </p>
+  {/if}
 </section>

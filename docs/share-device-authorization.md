@@ -77,14 +77,20 @@ A `/delegate` link without `deviceTransactionId` can be made by anyone, so
 the page limits what it does with one:
 
 - `callback` must be a loopback URL (`localhost`, `127.0.0.1`, or `[::1]`,
-  as the TinyCloud CLI uses) or an HTTPS URL on a registered app origin
-  (`REGISTERED_CALLBACK_ORIGINS` in `apps/web/src/lib/delegate-link-policy.ts`,
-  plus `VITE_DELEGATE_CALLBACK_ORIGINS` for other deployments). Any other
-  callback refuses the request before a key is prepared. Without a callback
-  the page shows a paste code.
+  as the TinyCloud CLI uses) or a registered app callback endpoint: an
+  HTTPS origin plus exact path, with any query
+  (`REGISTERED_CALLBACK_ENDPOINTS` in
+  `apps/web/src/lib/delegate-link-policy.ts`, currently
+  `https://mcp.tinycloud.xyz/connect/callback`, plus
+  `VITE_DELEGATE_CALLBACK_URLS` for other deployments). Any other callback
+  refuses the request before a key is prepared. The page POSTs with
+  `redirect: 'error'`, so a redirect cannot forward the delegation. Without a
+  callback the page shows a paste code and the caution "Only paste this code
+  into a terminal you started yourself."
 - `host` must be HTTPS, or HTTP on a loopback host. The consent screen shows
   the node, where the delegation is returned, and its expiry. A node that is
-  neither a known TinyCloud node (`KNOWN_NODE_ORIGINS`, plus
+  neither a known TinyCloud node (`KNOWN_NODE_ORIGINS`: the bootstrap-trusted
+  `https://node.tinycloud.xyz` and `https://tee.node.tinycloud.xyz`, plus
   `VITE_DELEGATE_NODE_ORIGINS`) nor on this device is flagged, and Approve
   refuses until the owner confirms they run or trust it.
 - `/api/delegate/prepare` and `/api/delegate` cap the requested `expiry` at
@@ -92,7 +98,11 @@ the page limits what it does with one:
 
 Wallet-key approvals on `/api/delegate/complete` bind the authorization
 context to the address in the signed SIWE. A `prepared.address`, when
-supplied, must equal it.
+supplied, must equal it, and the signature must recover to that address
+(`signature-mismatch` otherwise). Both checks run before the single-use
+context is consumed and before host activation. The reported
+`expirationTime`, `expiresAt`, and `expiry` come from the signed SIWE, never
+from caller-supplied fields.
 
 ## Request
 

@@ -10,6 +10,7 @@ import {
 } from '../middleware/delegate-signer-auth';
 import { withTinyCloudManageKeySigningPolicy } from '../services/tinycloud-manage-key-control';
 import type { Hex } from 'viem';
+import { verifyMessage } from 'ethers';
 import {
   prepareSession,
   completeSessionSetup,
@@ -28,7 +29,7 @@ import { CAPABILITIES } from '@tinycloud/bootstrap';
 import {
   delegateErrorResponse,
   normalizeDelegateReason,
-  resolvePreparedExpirationTime,
+  signedSiweExpirationTime,
 } from './delegate-validation';
 import {
   DEFAULT_ABILITIES,
@@ -1301,7 +1302,7 @@ delegateRouter.post('/', async (c) => {
       return c.json({ error: consume.message, code: consume.error }, 400);
     }
 
-    const expirationTime = resolvePreparedExpirationTime({ siwe: bound.originalSiwe });
+    const expirationTime = signedSiweExpirationTime(bound.originalSiwe);
     if (!expirationTime) {
       return c.json({ error: 'prepared session must include a valid expirationTime or SIWE Expiration Time' }, 400);
     }
@@ -1390,7 +1391,7 @@ delegateRouter.post('/', async (c) => {
     return c.json(delegateErrorResponse(e, 'Failed to prepare delegation', 'delegation_prepare_failed'), 400);
   }
 
-  const expirationTime = resolvePreparedExpirationTime(preparedResult.prepared);
+  const expirationTime = signedSiweExpirationTime(preparedResult.prepared.siwe);
   if (!expirationTime) {
     return c.json({ error: 'prepared session must include a valid expirationTime or SIWE Expiration Time' }, 400);
   }
@@ -1728,6 +1729,21 @@ delegateRouter.post('/complete', async (c) => {
       400,
     );
   }
+  // The wallet must have signed exactly these SIWE bytes as that address.
+  // Checked before the single-use context is consumed and before any host
+  // activation, so a wrong-wallet signature has no effect.
+  let recoveredAddress = '';
+  try {
+    recoveredAddress = verifyMessage(String(body.prepared.siwe ?? ''), String(body.signature));
+  } catch {
+    // An unparseable signature is refused below like a mismatched one.
+  }
+  if (!preparedAddress || recoveredAddress.toLowerCase() !== preparedAddress.toLowerCase()) {
+    return c.json(
+      { error: 'The signature was not made by the address in the signed SIWE.', code: 'signature-mismatch' },
+      400,
+    );
+  }
 
   if (body.authorizationContextToken) {
     if (typeof body.authorizationContextToken !== 'string') {
@@ -1803,9 +1819,10 @@ delegateRouter.post('/complete', async (c) => {
     }
   }
 
-  const expirationTime = resolvePreparedExpirationTime(body.prepared);
+  // Report the lifetime the wallet signed, never caller-supplied metadata.
+  const expirationTime = signedSiweExpirationTime(body.prepared.siwe);
   if (!expirationTime) {
-    return c.json({ error: 'prepared session must include a valid expirationTime or SIWE Expiration Time' }, 400);
+    return c.json({ error: 'The signed SIWE must include a valid Expiration Time' }, 400);
   }
   // Device approvals: judge the session key and lifetime by the canonical
   // bytes the wallet signed, not the caller-supplied jwk or a line search.
@@ -2681,7 +2698,6 @@ delegateRouter.post('/authorize-sign', async (c) => {
     // to be the bytes we'll return. Verify it against `signedMessage`
     // and `boundAddress` — if the wallet signed different bytes, refuse.
     try {
-      const { verifyMessage } = await import('ethers');
       const recovered = verifyMessage(signedMessage, body.externalSignature!);
       if (recovered.toLowerCase() !== boundAddress.toLowerCase()) {
         return c.json(

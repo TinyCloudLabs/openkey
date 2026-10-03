@@ -2,25 +2,28 @@
  * TC-547: what an ordinary `/delegate` link (one without a device
  * transaction) may ask for. Anyone can make such a link, so the page only
  * returns a signed delegation to this device (a loopback callback, as the
- * TinyCloud CLI uses) or to a registered app origin, and it flags a TinyCloud
- * node it does not recognize. Device links are bound by the server-verified
- * device request instead and do not use this policy.
+ * TinyCloud CLI uses) or to a registered app callback endpoint, and it flags
+ * a TinyCloud node it does not recognize. Device links are bound by the
+ * server-verified device request instead and do not use this policy.
  */
 
 /**
- * App origins that may receive a delegation through a `/delegate` callback.
- * Register an app by adding its canonical HTTPS origin here (or, for a
- * non-production deployment, to `VITE_DELEGATE_CALLBACK_ORIGINS`).
- *  - https://mcp.tinycloud.xyz: hosted TinyCloud MCP (`/connect/callback`).
+ * App callback endpoints (HTTPS origin plus exact path; any query is allowed)
+ * that may receive a delegation through a `/delegate` callback. Register an
+ * app by adding its endpoint here, or, for another deployment, to
+ * `VITE_DELEGATE_CALLBACK_URLS`.
+ *  - Hosted TinyCloud MCP.
  */
-export const REGISTERED_CALLBACK_ORIGINS: readonly string[] = ['https://mcp.tinycloud.xyz'];
+export const REGISTERED_CALLBACK_ENDPOINTS: readonly string[] = ['https://mcp.tinycloud.xyz/connect/callback'];
 
 /**
- * TinyCloud nodes shown without a warning. Extra deployments can be listed in
+ * TinyCloud nodes shown without a warning: the nodes OpenKey already trusts
+ * for bootstrap (`TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS` in the API). The CLI and
+ * hosted MCP default to the TEE node. Extra deployments can be listed in
  * `VITE_DELEGATE_NODE_ORIGINS`. Loopback nodes run on this device and are
  * also recognized.
  */
-export const KNOWN_NODE_ORIGINS: readonly string[] = ['https://node.tinycloud.xyz'];
+export const KNOWN_NODE_ORIGINS: readonly string[] = ['https://node.tinycloud.xyz', 'https://tee.node.tinycloud.xyz'];
 
 const LOOPBACK_HOSTNAMES: Record<string, true> = { localhost: true, '127.0.0.1': true, '[::1]': true };
 
@@ -42,18 +45,33 @@ function isSafeTransport(url: URL): boolean {
   return url.protocol === 'https:' || (url.protocol === 'http:' && isLoopbackHostname(url.hostname));
 }
 
+/** A configured origin: canonical HTTPS origin, e.g. `https://node.example`. */
+export function isCanonicalHttpsOrigin(entry: string): boolean {
+  const url = parseUrl(entry);
+  return url !== null && url.protocol === 'https:' && url.origin === entry;
+}
+
 /**
- * The built-in origins plus a comma-separated configured list. Configured
- * entries that are not canonical HTTPS origins are ignored.
+ * A configured callback endpoint: canonical HTTPS URL with a path and no
+ * credentials, query, or fragment, e.g. `https://app.example/callback`.
  */
-export function withConfiguredOrigins(builtIn: readonly string[], configured: string | undefined): string[] {
-  const extra = (configured ?? '')
-    .split(',')
-    .map((entry) => entry.trim())
-    .filter((entry) => {
-      const url = parseUrl(entry);
-      return url !== null && url.protocol === 'https:' && url.origin === entry;
-    });
+export function isCanonicalHttpsEndpoint(entry: string): boolean {
+  const url = parseUrl(entry);
+  // href equal to origin + path rules out credentials, query, and fragment.
+  return url !== null && url.protocol === 'https:' && url.pathname !== '/'
+    && url.href === `${url.origin}${url.pathname}` && url.href === entry;
+}
+
+/**
+ * The built-in entries plus a comma-separated configured list. Configured
+ * entries that fail `isValid` are ignored.
+ */
+export function withConfiguredEntries(
+  builtIn: readonly string[],
+  configured: string | undefined,
+  isValid: (entry: string) => boolean,
+): string[] {
+  const extra = (configured ?? '').split(',').map((entry) => entry.trim()).filter(isValid);
   return [...new Set([...builtIn, ...extra])];
 }
 
@@ -64,20 +82,20 @@ export type DelegateCallbackCheck =
 /**
  * Where the page may POST the signed delegation. No callback means the page
  * shows a paste code instead. Anything other than a loopback URL or a
- * registered app origin is refused.
+ * registered app callback endpoint is refused.
  */
-export function checkDelegateCallback(raw: string, registeredOrigins: readonly string[]): DelegateCallbackCheck {
+export function checkDelegateCallback(raw: string, registeredEndpoints: readonly string[]): DelegateCallbackCheck {
   if (!raw) return { ok: true, callback: null };
   const url = parseUrl(raw);
   if (!url || !isSafeTransport(url)) {
     return { ok: false, reason: 'This link asks OpenKey to send your delegation to an invalid callback address. Restart the command or app that opened this page.' };
   }
-  if (isLoopbackHostname(url.hostname) || registeredOrigins.includes(url.origin)) {
+  if (isLoopbackHostname(url.hostname) || registeredEndpoints.includes(`${url.origin}${url.pathname}`)) {
     return { ok: true, callback: url.href };
   }
   return {
     ok: false,
-    reason: `This link asks OpenKey to send your delegation to ${url.origin}, which is not a registered TinyCloud app. OpenKey only returns delegations to this device or to registered apps, so this request was refused.`,
+    reason: `This link asks OpenKey to send your delegation to ${url.origin}${url.pathname}, which is not a registered TinyCloud app. OpenKey only returns delegations to this device or to registered apps, so this request was refused.`,
   };
 }
 

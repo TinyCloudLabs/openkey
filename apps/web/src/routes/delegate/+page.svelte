@@ -12,10 +12,12 @@
   import DelegateLinkNotice from '$lib/components/delegate/delegate-link-notice.svelte';
   import {
     KNOWN_NODE_ORIGINS,
-    REGISTERED_CALLBACK_ORIGINS,
+    REGISTERED_CALLBACK_ENDPOINTS,
     checkDelegateCallback,
     checkDelegateHost,
-    withConfiguredOrigins,
+    isCanonicalHttpsEndpoint,
+    isCanonicalHttpsOrigin,
+    withConfiguredEntries,
   } from '$lib/delegate-link-policy';
   import {
     parseCapabilityReview,
@@ -220,10 +222,10 @@
   // server-verified device request instead.
   const callbackCheck = deviceTransactionId
     ? null
-    : checkDelegateCallback(callback, withConfiguredOrigins(REGISTERED_CALLBACK_ORIGINS, import.meta.env.VITE_DELEGATE_CALLBACK_ORIGINS));
+    : checkDelegateCallback(callback, withConfiguredEntries(REGISTERED_CALLBACK_ENDPOINTS, import.meta.env.VITE_DELEGATE_CALLBACK_URLS, isCanonicalHttpsEndpoint));
   const hostCheck = deviceTransactionId
     ? null
-    : checkDelegateHost(host, withConfiguredOrigins(KNOWN_NODE_ORIGINS, import.meta.env.VITE_DELEGATE_NODE_ORIGINS));
+    : checkDelegateHost(host, withConfiguredEntries(KNOWN_NODE_ORIGINS, import.meta.env.VITE_DELEGATE_NODE_ORIGINS, isCanonicalHttpsOrigin));
   const linkPolicyError = callbackCheck?.ok === false
     ? callbackCheck.reason
     : hostCheck?.ok === false ? hostCheck.reason : '';
@@ -1046,6 +1048,8 @@
       try {
         const cbRes = await fetch(approvedCallback, {
           method: 'POST',
+          // A redirect must not carry the delegation to another address.
+          redirect: 'error',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         });
@@ -1143,6 +1147,9 @@
             {:else}
               <p class="text-surface-500 text-sm mb-4">Copy this code and paste it into the CLI:</p>
             {/if}
+            <p class="w-full rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-900 mb-3" role="note">
+              Only paste this code into a terminal you started yourself.
+            </p>
             <textarea
               readonly
               class="w-full h-24 p-3 bg-surface-50 border border-surface-200 rounded-xl text-xs font-mono resize-none"
