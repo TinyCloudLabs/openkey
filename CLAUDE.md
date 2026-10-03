@@ -106,3 +106,7 @@ bun run dev:web          # Web only
 bun run oauth:register   # Register an OAuth client
 bun run oauth:list       # List OAuth clients
 ```
+
+## Versioning
+
+Never write a `major` changeset or raise a package's major version. Use `minor` for features and `patch` for fixes, even when a change breaks compatibility, and say what breaks in the changeset. A major release is a human decision: a maintainer approves it with an empty `approve-major-release: <package>` commit, which agents never write. CI enforces this (TC-615); see `agent.dev.md`.
