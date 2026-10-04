@@ -16,6 +16,11 @@
 // validateIframeResize`. Both sides of the correlation channel are
 // therefore under test: the widget side (source-shape here) and the
 // parent side (exhaustive validator branches there).
+//
+// TC-647: when no versioned request is bound (an unversioned
+// `signMessage`), the page sends a plain `{ type, height }` resize to the
+// configured origin. The SDK accepts it only on a modal that carries no
+// versioned request.
 
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { describe, expect, it } from 'bun:test';
@@ -45,7 +50,7 @@ describe('embed sign page fallback resize (Sol MAJOR-5 final)', () => {
     // state (currentRequestId + messageProtocolVersion) so a stale
     // sibling frame's resize cannot escape.
     const fallbackMatch = src.match(
-      /else\s*\{[\s\S]*?openkey:resize[\s\S]*?\}\s*\)\s*;\s*\n\s*\}/,
+      /if\s*\(\s*transport\s*\)\s*\{\s*transport\.emitResize\(height\);\s*\}\s*else\s*\{[\s\S]*?openkey:resize[\s\S]*?\}\s*,\s*origin\s*,?\s*\)\s*;/,
     );
     expect(fallbackMatch, 'fallback resize branch not found').not.toBeNull();
     const branchText = fallbackMatch?.[0] ?? '';
@@ -53,19 +58,25 @@ describe('embed sign page fallback resize (Sol MAJOR-5 final)', () => {
     expect(branchText).toMatch(/protocolVersion\s*:\s*messageProtocolVersion/);
   });
 
-  it('suppresses fallback resize when NO active request has been bound yet', () => {
-    // The pre-fix code posted a resize on every ResizeObserver tick,
-    // even during widget bootstrap when no request was in flight. The
-    // fix short-circuits when currentRequestId is null or
-    // messageProtocolVersion is null; verify that guard exists in the
-    // fallback branch.
+  it('sends correlated resizes only while a versioned request is bound', () => {
+    // The transport and the correlated fallback both sit behind this guard,
+    // so a versioned request never sends an uncorrelated resize once bound.
     const src = readFileSync(EMBED_SIGN_PAGE, 'utf8');
-    // Match the guard immediately preceding the postMessage call in
-    // the fallback branch — this exact conditional is what suppresses
-    // uncorrelated bootstrap resizes.
     expect(src).toMatch(
-      /if\s*\(\s*!currentRequestId\s*\|\|\s*messageProtocolVersion\s*===\s*null\s*\)\s*return\s*;/,
+      /if\s*\(\s*currentRequestId\s*&&\s*messageProtocolVersion\s*!==\s*null\s*\)\s*\{\s*(\/\/[^\n]*\n\s*)*if\s*\(\s*transport\s*\)/,
     );
+  });
+
+  it('sends a plain resize to the configured origin when no versioned request is bound (TC-647)', () => {
+    // An unversioned `signMessage` binds no correlation in the SDK, which
+    // then accepts only a plain resize from this iframe. Without it the
+    // modal stays at its 400px default and hides Approve.
+    const src = readFileSync(EMBED_SIGN_PAGE, 'utf8');
+    expect(src).toMatch(
+      /window\.parent\.postMessage\(\s*\{\s*type:\s*'openkey:resize',\s*height\s*\}\s*,\s*origin\s*\)/,
+    );
+    // Never to a wildcard target.
+    expect(src).not.toMatch(/type:\s*'openkey:resize',\s*height\s*\}\s*,\s*'\*'/);
   });
 
   it('does not emit resize under wildcard origin (defense in depth)', () => {

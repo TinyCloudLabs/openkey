@@ -100,7 +100,7 @@ describe('validateIframeResize (Sol continuation req 5)', () => {
     expect(h).toBeNull();
   });
 
-  test('drops resize when NO active request has been bound yet', () => {
+  test('drops a correlated resize when the modal has no versioned request', () => {
     const h = validateIframeResize(
       {
         type: 'openkey:resize',
@@ -111,6 +111,11 @@ describe('validateIframeResize (Sol continuation req 5)', () => {
       { requestId: null, protocolVersion: null, viewportHeight: 900 },
     );
     expect(h).toBeNull();
+  });
+
+  test('drops an uncorrelated resize while a versioned request is bound', () => {
+    // TC-647: the unversioned branch must not weaken versioned flows.
+    expect(validateIframeResize({ type: 'openkey:resize', height: 500 }, expectedActive)).toBeNull();
   });
 
   test('drops resize when only requestId is bound (missing protocolVersion)', () => {
@@ -252,6 +257,59 @@ describe('validateIframeResize (Sol continuation req 5)', () => {
         newExpected,
       ),
     ).toBe(500);
+  });
+});
+
+describe('validateIframeResize for unversioned flows (TC-647)', () => {
+  // connect, signMessage and signTypedData post unversioned requests, so the
+  // modal binds no correlation and the widget sends a plain resize.
+  const unversioned = { requestId: null, protocolVersion: null, viewportHeight: 900 };
+
+  test('accepts a plain resize from the widget', () => {
+    expect(validateIframeResize({ type: 'openkey:resize', height: 620 }, unversioned)).toBe(620);
+  });
+
+  test('accepts a resize that carries only a protocolVersion', () => {
+    expect(
+      validateIframeResize({ type: 'openkey:resize', height: 620, protocolVersion: 1 }, unversioned),
+    ).toBe(620);
+  });
+
+  test('clamps an oversized height to 85% of the viewport', () => {
+    expect(validateIframeResize({ type: 'openkey:resize', height: 10_000 }, unversioned)).toBe(
+      Math.floor(900 * 0.85),
+    );
+  });
+
+  test('drops a malformed height', () => {
+    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 'tall', null, undefined]) {
+      expect(validateIframeResize({ type: 'openkey:resize', height: bad }, unversioned)).toBeNull();
+    }
+  });
+
+  test('drops non-resize messages and non-object payloads', () => {
+    expect(validateIframeResize({ type: 'openkey:close', height: 500 }, unversioned)).toBeNull();
+    expect(validateIframeResize(null, unversioned)).toBeNull();
+    expect(validateIframeResize('openkey:resize', unversioned)).toBeNull();
+  });
+
+  test('drops a resize carrying any requestId', () => {
+    for (const requestId of ['req-abc', '', null, 7]) {
+      expect(
+        validateIframeResize({ type: 'openkey:resize', height: 500, requestId }, unversioned),
+      ).toBeNull();
+    }
+  });
+
+  test('drops everything when only protocolVersion is bound', () => {
+    const halfBound = { requestId: null, protocolVersion: 1, viewportHeight: 900 };
+    expect(validateIframeResize({ type: 'openkey:resize', height: 500 }, halfBound)).toBeNull();
+    expect(
+      validateIframeResize(
+        { type: 'openkey:resize', height: 500, requestId: 'req-abc', protocolVersion: 1 },
+        halfBound,
+      ),
+    ).toBeNull();
   });
 });
 

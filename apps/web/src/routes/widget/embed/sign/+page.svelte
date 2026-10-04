@@ -198,35 +198,35 @@
     const observer = new ResizeObserver(() => {
       if (origin === '*') return;
       const height = contentEl!.scrollHeight;
-      // Route through transport (which enforces origin + validated source)
-      // when available; legacy fallback for wildcard-origin compat path.
-      // Sol MAJOR-9: legacy resize also carries protocolVersion=1 so the
-      // SDK's strict resize check accepts it. (Legacy is only used under
-      // the wildcard-origin compat path, which is refused above anyway.)
-      if (transport) {
-        transport.emitResize(height);
-      } else {
-        // Sol MAJOR-5 (final): the fallback resize (used only when the
-        // shared transport hasn't been created — legacy wildcard-origin
-        // compat path) MUST carry the same correlation the transport
-        // enforces: `requestId` bound to the active request AND the
-        // negotiated `protocolVersion`. Missing correlation lets a
-        // sibling frame's resize be accepted or accepted after a newer
-        // request has already superseded this one. When no request has
-        // been bound yet (widget bootstrap), we SUPPRESS the resize
-        // rather than emitting an uncorrelated one — the parent
-        // rejects any resize without a matching active request anyway.
-        if (!currentRequestId || messageProtocolVersion === null) return;
-        window.parent.postMessage(
-          {
-            type: 'openkey:resize',
-            height,
-            protocolVersion: messageProtocolVersion,
-            requestId: currentRequestId,
-          },
-          origin,
-        );
+      if (currentRequestId && messageProtocolVersion !== null) {
+        // Versioned request: the resize carries its correlation. Route
+        // through the transport (which enforces origin + validated source)
+        // when available.
+        if (transport) {
+          transport.emitResize(height);
+        } else {
+          // Sol MAJOR-5 (final): the fallback resize (used only when the
+          // shared transport failed to construct) MUST carry the same
+          // correlation the transport enforces: `requestId` bound to the
+          // active request AND the negotiated `protocolVersion`.
+          window.parent.postMessage(
+            {
+              type: 'openkey:resize',
+              height,
+              protocolVersion: messageProtocolVersion,
+              requestId: currentRequestId,
+            },
+            origin,
+          );
+        }
+        return;
       }
+      // TC-647: no versioned request is bound (an unversioned
+      // `signMessage`, or bootstrap before the request arrives). Send a
+      // plain resize to the configured origin. The SDK applies it only on
+      // a modal with no versioned request and only from this iframe; a
+      // modal bound to a versioned request drops it.
+      window.parent.postMessage({ type: 'openkey:resize', height }, origin);
     });
     observer.observe(contentEl);
     return () => observer.disconnect();
