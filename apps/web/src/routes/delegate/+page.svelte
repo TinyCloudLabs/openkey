@@ -21,6 +21,7 @@
   } from '$lib/delegate-link-policy';
   import { preparedMatchesSelection, reviewSelectionToActionKeys } from '$lib/delegate-review-selection';
   import { expectedSigner } from '$lib/delegate-expected-signer';
+  import { autoSelectKey } from '$lib/delegate-key-selection';
   import {
     parseCapabilityReview,
     defaultSelection,
@@ -368,20 +369,15 @@
     }
   }
 
-  // Auto-select the CLI-requested wallet once keys are loaded. Only runs on
-  // the initial 'select-key' step so revisiting the picker (Back, link-wallet
-  // round-trip) doesn't trap the user in an auto-advance loop.
+  // Auto-select the CLI-requested wallet, or the user's only key, once keys
+  // are loaded. Only runs on the initial 'select-key' step so revisiting the
+  // picker (Back, link-wallet round-trip) doesn't trap the user in an
+  // auto-advance loop.
   $effect(() => {
     if (loading || preselectAttempted) return;
     if (step !== 'select-key') return;
-    if (!expectedAddress) {
-      preselectAttempted = true;
-      return;
-    }
-    const match = keys.find(
-      (k) => k.address.toLowerCase() === expectedAddress,
-    );
     preselectAttempted = true;
+    const match = autoSelectKey(keys, expectedAddress);
     if (match) {
       onKeySelect(match);
     }
@@ -1283,20 +1279,15 @@
         </div>
 
       {:else if step === 'consent' && selectedKey}
-        <!-- Consent screen -->
-        <header class="mb-5">
-          <h1 class="text-lg font-semibold text-surface-900">Authorize CLI Access</h1>
-          <p class="text-surface-500 text-sm mt-1">Review what the CLI will be able to do</p>
-        </header>
-
-        {#if error}
-          <div class="w-full bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl mb-4 text-sm" role="alert">
-            {error}
-          </div>
-        {/if}
-
+        <!--
+          CLI-only facts. With a review model they render in the shared
+          SigningApproval context slot, which also owns the header, reason,
+          signer line and the single error display (TC-659).
+        -->
+        {#snippet cliContext()}
+        {#if selectedKey}
         {#if expectedAddress && !selectedMatchesExpected}
-          <div class="w-full bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-xl mb-4 text-sm" role="alert">
+          <div class="w-full bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-xl text-sm" role="alert">
             <div class="font-medium mb-1">Wallet mismatch</div>
             <p class="leading-relaxed">
               This CLI requested a delegation from
@@ -1316,14 +1307,68 @@
         {/if}
 
         {#if deviceTransactionId}
-          <div class="mb-4">
-            <DeviceRequestNotice nodeOrigin={host} shareOrigin={deviceShareOrigin} expiry={expiryParam} bind:acknowledged={deviceAcknowledged} />
-          </div>
+          <DeviceRequestNotice nodeOrigin={host} shareOrigin={deviceShareOrigin} expiry={expiryParam} bind:acknowledged={deviceAcknowledged} />
         {:else}
-          <div class="mb-4">
-            <DelegateLinkNotice {host} hostRecognized={!hostNeedsAcknowledgment} callback={approvedCallback} expiresAt={delegationExpiresAt} bind:acknowledged={hostAcknowledged} />
+          <DelegateLinkNotice {host} hostRecognized={!hostNeedsAcknowledgment} callback={approvedCallback} expiresAt={delegationExpiresAt} bind:acknowledged={hostAcknowledged} />
+        {/if}
+
+        {#if selectedKey.keyType === 'EXTERNAL'}
+          <div class="p-3 bg-blue-50 border border-blue-200 rounded-xl text-sm text-blue-700">
+            Your browser wallet will prompt you to sign a message to authorize this delegation.
           </div>
         {/if}
+        {/if}
+        {/snippet}
+
+        {#if reviewModel}
+          <!--
+            Shared authorization view: the same SigningApproval content as the
+            widget popup and iframe. CliSigningAdapter owns the review
+            selection/editing state, the delegate approve path, and the
+            selection-change → prepare re-issue glue; toggling an action maps
+            back to the server's actionKeys and re-issues /prepare so subset
+            validation still runs on the API.
+          -->
+          <div bind:this={actionRow}>
+            <CliSigningAdapter
+              model={reviewModel}
+              initialSelection={reviewSelection}
+              context={cliContext}
+              showSigner={keys.length > 1}
+              transport={{
+                approving: delegating || updatingPermissions,
+                error,
+                approveBlockedReason,
+                approveDelegate,
+                goBack,
+                updateSelection: (next) => {
+                  reviewSelection = next;
+                  const nextServerKeys = mapReviewSelectionToActionKeys(next);
+                  if (nextServerKeys.length === 0) {
+                    error = 'At least one permission is required.';
+                    return;
+                  }
+                  return updatePermissions(nextServerKeys);
+                },
+              }}
+            />
+          </div>
+        {:else}
+        <!-- Legacy raw-SIWE fallback when the request does not parse into a review model. -->
+        <header class="mb-5">
+          <h1 class="text-lg font-semibold text-surface-900">Authorize CLI Access</h1>
+          <p class="text-surface-500 text-sm mt-1">Review what the CLI will be able to do</p>
+        </header>
+
+        {#if error}
+          <div class="w-full bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl mb-4 text-sm" role="alert">
+            {error}
+          </div>
+        {/if}
+
+        <div class="mb-4 flex flex-col gap-4">
+          {@render cliContext()}
+        </div>
 
         <div class="flex flex-col gap-4">
           <div class="p-3 bg-surface-50 border border-surface-200 rounded-xl">
@@ -1347,54 +1392,7 @@
             </div>
           </div>
 
-          {#if selectedKey.keyType === 'EXTERNAL'}
-            <div class="p-3 bg-blue-50 border border-blue-200 rounded-xl text-sm text-blue-700">
-              Your browser wallet will prompt you to sign a message to authorize this delegation.
-            </div>
-          {/if}
-
-          <!--
-            Shared authorization view. When the /prepare response parses into
-            a CapabilityReviewModel we render SigningApproval so this CLI
-            surface shows the SAME content as the widget popup and iframe.
-            Toggling an action in SigningApproval maps back to the server's
-            actionKeys and re-issues /prepare so subset validation still runs
-            on the API. When parsing fails (legacy or malformed input), we
-            fall back to the raw SIWE view for byte-exact review.
-          -->
-          {#if reviewModel}
-            <div bind:this={actionRow}>
-              <!--
-                CliSigningAdapter is now a substantive adapter that owns
-                the review selection/editing state, the delegate approve
-                path, and the selection-change → prepare re-issue glue.
-                The route only builds the model and hands the adapter a
-                CLI-specific transport. This means the exact adapter used
-                in production is the exact adapter the parity test mounts
-                — including the map-selection-to-server-keys hand-off.
-              -->
-              <CliSigningAdapter
-                model={reviewModel}
-                initialSelection={reviewSelection}
-                transport={{
-                  approving: delegating || updatingPermissions,
-                  error,
-                  approveBlockedReason,
-                  approveDelegate,
-                  goBack,
-                  updateSelection: (next) => {
-                    reviewSelection = next;
-                    const nextServerKeys = mapReviewSelectionToActionKeys(next);
-                    if (nextServerKeys.length === 0) {
-                      error = 'At least one permission is required.';
-                      return;
-                    }
-                    return updatePermissions(nextServerKeys);
-                  },
-                }}
-              />
-            </div>
-          {:else if siweMessage}
+          {#if siweMessage}
             <div class="flex flex-col gap-3">
               <SiweMessage message={siweMessage} theme="light" hidePermissions={permissionOptions.length > 0} />
             </div>
@@ -1418,6 +1416,7 @@
             </div>
           {/if}
         </div>
+        {/if}
 
         {#if showScrollToApprove}
           <button

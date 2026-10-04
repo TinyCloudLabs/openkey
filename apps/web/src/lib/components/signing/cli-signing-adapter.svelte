@@ -18,6 +18,7 @@
   // DOM Space/Enter keyboard events; a wiring bug (e.g. dropping
   // `updateSelection` from the selection handler) surfaces there.
 
+  import type { Snippet } from "svelte";
   import type { CapabilityReviewModel } from "@openkey/capability-review";
   import SigningApproval from "$lib/components/signing/signing-approval.svelte";
   import type { CliSigningTransport } from "./signing-adapter-types";
@@ -34,9 +35,13 @@
     initialSelection: Set<string>;
     /** Transport for CLI-specific completion. */
     transport: CliSigningTransport;
+    /** CLI facts (node, return target, acknowledgements) for the shared context slot. */
+    context?: Snippet;
+    /** True when the user chose one of several keys. */
+    showSigner?: boolean;
   }
 
-  let { model, initialSelection, transport }: Props = $props();
+  let { model, initialSelection, transport, context, showSigner = false }: Props = $props();
 
   // Internal review state. The adapter owns this because it is per-surface
   // presentational state — the route no longer touches it. We intentionally
@@ -80,6 +85,8 @@
   approving={transport.approving}
   error={transport.error}
   approveBlockedReason={transport.approveBlockedReason ?? null}
+  {context}
+  {showSigner}
   {onApprove}
   {onCancel}
   {onSelectionChange}
