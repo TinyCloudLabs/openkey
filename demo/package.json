@@ -10,7 +10,7 @@
     "typecheck": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json"
   },
   "dependencies": {
-    "@openkey/sdk": "^0.10.0"
+    "@openkey/sdk": "^0.10.1"
   },
   "devDependencies": {
     "@sveltejs/adapter-static": "^3.0.10",
