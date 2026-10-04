@@ -296,12 +296,23 @@ const OAUTH_STORAGE_KEY = 'openkey_oauth';
 /**
  * Sol final continuation contract requirement 5: pure validation of an
  * incoming iframe resize message envelope. Exported so unit tests can
- * exercise every rejection branch — wrong requestId, wrong version, no
- * active request, malformed height — without booting the browser
- * runtime that `IframeModal` requires.
+ * exercise every rejection branch — wrong requestId, wrong version,
+ * malformed height — without booting the browser runtime that
+ * `IframeModal` requires.
  *
- * Returns the sanitized height when acceptable, or `null` when the
- * message must be dropped.
+ * Two modes, chosen by the modal's bound correlation:
+ * - Versioned request bound (`requestId` AND `protocolVersion` set): the
+ *   resize MUST carry that exact pair.
+ * - No versioned request (both null — `connect`, `signMessage`, and the
+ *   other unversioned flows): the widget sends a plain
+ *   `{ type, height }`. It is accepted only when it carries no
+ *   `requestId`. The caller has already checked that the message came
+ *   from this modal's iframe (`event.source`) on the OpenKey origin
+ *   (TC-647).
+ * A half-bound correlation (only one of the two set) drops everything.
+ *
+ * Returns the height clamped to 85% of the viewport when acceptable, or
+ * `null` when the message must be dropped.
  */
 export function validateIframeResize(
   incoming: unknown,
@@ -314,12 +325,18 @@ export function validateIframeResize(
   if (!incoming || typeof incoming !== 'object') return null;
   const data = incoming as Record<string, unknown>;
   if (data.type !== 'openkey:resize') return null;
-  if (expected.requestId === null || expected.protocolVersion === null) return null;
-  if (typeof data.protocolVersion !== 'number' || data.protocolVersion !== expected.protocolVersion) {
-    return null;
-  }
-  if (typeof data.requestId !== 'string' || data.requestId !== expected.requestId) {
-    return null;
+  if (expected.requestId === null && expected.protocolVersion === null) {
+    // No versioned request on this modal: a correlated resize cannot
+    // belong to it.
+    if (data.requestId !== undefined) return null;
+  } else {
+    if (expected.requestId === null || expected.protocolVersion === null) return null;
+    if (typeof data.protocolVersion !== 'number' || data.protocolVersion !== expected.protocolVersion) {
+      return null;
+    }
+    if (typeof data.requestId !== 'string' || data.requestId !== expected.requestId) {
+      return null;
+    }
   }
   if (typeof data.height !== 'number' || !Number.isFinite(data.height) || data.height <= 0) {
     return null;
@@ -496,11 +513,11 @@ class IframeModal {
   private onMessage: (data: MessageType) => void;
   private messageHandler: (event: MessageEvent) => void;
   private host: string;
-  // Sol final continuation contract requirement 5: iframe resize traffic
-  // MUST correlate to the active request's requestId AND protocolVersion.
-  // Set by `setExpectedCorrelation` after the outer flow decides which
-  // request this modal is bound to. When both are null, resize messages
-  // are dropped (no active request → no resize authority).
+  // Sol final continuation contract requirement 5: when the modal carries a
+  // versioned request, iframe resize traffic MUST correlate to its
+  // requestId AND protocolVersion. Set by `setExpectedCorrelation` as soon
+  // as the modal is created. When both are null the flow is unversioned and
+  // only uncorrelated resizes from this iframe are accepted (TC-647).
   private expectedRequestId: string | null = null;
   private expectedProtocolVersion: number | null = null;
 
@@ -569,10 +586,11 @@ class IframeModal {
       if (event.source !== this.iframe.contentWindow) return;
       const data = event.data as MessageType;
       if (data.type === 'openkey:resize') {
-        // Sol final continuation contract requirement 5: resize MUST
-        // carry the EXACT active requestId AND protocolVersion. Every
-        // rejection branch is covered by unit tests over
-        // `validateIframeResize`.
+        // Sol final continuation contract requirement 5: a versioned
+        // request's resize MUST carry its EXACT requestId AND
+        // protocolVersion; an unversioned flow accepts only uncorrelated
+        // resizes (TC-647). Origin and source were checked above. Every
+        // branch is covered by unit tests over `validateIframeResize`.
         const h = validateIframeResize(event.data, {
           requestId: this.expectedRequestId,
           protocolVersion: this.expectedProtocolVersion,
@@ -608,10 +626,11 @@ class IframeModal {
    * request correlation so subsequent resize (and future correlated)
    * messages can be verified against `requestId` + `protocolVersion`.
    *
-   * The outer flow calls this immediately BEFORE posting the sign
-   * request into the iframe, so a resize that arrives synchronously
-   * after ready is correlated correctly. Passing `null` for either
-   * argument disables correlation (resize is dropped).
+   * The outer flow calls this right after creating the modal for a
+   * versioned request, before the iframe can send anything, so no
+   * uncorrelated resize is ever accepted for that request. Passing `null`
+   * for both arguments means the flow is unversioned; passing `null` for
+   * only one drops every resize.
    */
   setExpectedCorrelation(requestId: string | null, protocolVersion: number | null): void {
     this.expectedRequestId = requestId;
@@ -1668,16 +1687,6 @@ export class OpenKey {
         onMessage: (data: MessageType) => {
           if (data.type === 'openkey:ready') {
             readyReceived = true;
-            // Sol final continuation contract requirement 5: bind the
-            // correlation BEFORE posting the sign request so any resize
-            // that races the request into the parent is validated
-            // against the correct (requestId, protocolVersion) pair.
-            if (isVersionedRequest && modal) {
-              modal.setExpectedCorrelation(
-                outgoingRequestId as string,
-                outgoingProtocolVersion as number,
-              );
-            }
             modal?.postMessage(message);
             return;
           }
@@ -1746,6 +1755,18 @@ export class OpenKey {
           }
         },
       });
+
+      // Sol final continuation contract requirement 5: bind a versioned
+      // request's correlation before the iframe can deliver any message,
+      // so every resize for it must carry the exact (requestId,
+      // protocolVersion) pair. Unversioned flows stay unbound and accept
+      // only uncorrelated resizes from this iframe (TC-647).
+      if (isVersionedRequest) {
+        modal.setExpectedCorrelation(
+          outgoingRequestId as string,
+          outgoingProtocolVersion as number,
+        );
+      }
 
       // Auto-fallback: if no openkey:ready within 3s, fall back to popup
       const readyTimeout = setTimeout(() => {
