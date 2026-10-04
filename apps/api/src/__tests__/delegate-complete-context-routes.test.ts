@@ -353,6 +353,7 @@ describe('managed approval checks everything caller-controlled before consuming 
       const ok = await post('/', valid);
       expect(ok.status).toBe(200);
       expect(ok.body.delegationHeader).toBeDefined();
+      expect(ok.body.verificationMethod).toBe(/^URI: (.+)$/m.exec(valid.prepared.siwe)?.[1]);
       expect(unseal).toHaveBeenCalledTimes(1);
       expect(activateSessionWithHost).toHaveBeenCalledTimes(1);
     });

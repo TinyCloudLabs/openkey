@@ -103,15 +103,22 @@ supplied, must equal it, and the signature must recover to that address
 context is consumed and before host activation: the address and signature,
 the signed SIWE expiry (`missing_expiration_time`), the context bindings
 (user, key address, session key, host, space, immutable SIWE fields, request
-baseline, and action selection), an echoed `prepared.spaceId` or
-`prepared.verificationMethod` that disagrees with the bound space or the signed
-SIWE's URI (`prepared_metadata_mismatch`), and the device-transaction window. A
-refused request leaves the approval usable. The session is built from the
-signed SIWE and the bound context, never from the echoed `prepared` block. The
-context is consumed by an atomic compare-and-delete just before activation: of
-two concurrent completions one wins, and the other, like any later replay, gets
-`context-not-found`. The managed approval on `/api/delegate` likewise refuses
-mismatched echoed metadata, builds its session from the bound context, and
+baseline, and action selection; a `prepared.spaceId` whose string form is not
+the bound space, `null` included, is refused here with `space-mismatch`), the
+echoed session metadata, and the device-transaction window. On versioned
+completions (an `authorizationContextToken` is present),
+`prepared_metadata_mismatch` refuses a `prepared.verificationMethod` that is
+not the signed SIWE's URI and a non-string `prepared.spaceId` whose string form
+passes the binding check (for example the space wrapped in an array), which a
+strict comparison after the binding check catches, and the session is built
+from the signed SIWE and the bound context, never from the echoed `prepared`
+block. A refused request leaves the
+approval usable. The context is consumed by an atomic compare-and-delete just
+before activation: of two concurrent completions one wins, and the other, like
+any later replay, gets `context-not-found`. The managed approval on
+`/api/delegate` refuses any echoed `prepared.spaceId` or
+`prepared.verificationMethod` that disagrees with the bound context with
+`prepared_metadata_mismatch`, builds its session from the bound context, and
 consumes its context only after the signed-expiry and device-window checks,
 just before signing. Token-less legacy `/complete` calls still pass the echoed
 `prepared` block to the session setup. The reported `expirationTime`,
