@@ -231,7 +231,22 @@ export function assertDefaultSubset(entries: RecapEntry[]) {
   assertBaselineSubset(entries, DEFAULT_SESSION_ABILITIES);
 }
 
-export function assertRequiredActions(entries: RecapEntry[]) {
+/**
+ * capabilities/read is required only when the request baseline grants it:
+ * the user may not uncheck it from the default consent set or from a CLI
+ * request that asked for it. A CLI request that did not ask for it (for
+ * example `tc secrets list`, TC-658) must not need it; the CLI refuses any
+ * grant it did not request, and the node does not need it to activate a
+ * session.
+ */
+export function assertRequiredActions(entries: RecapEntry[], baseline: SessionAbilities) {
+  const baselineCapabilities = Object.hasOwn(baseline.abilities, 'capabilities')
+    ? baseline.abilities.capabilities!
+    : undefined;
+  const baselineGrantsCapabilitiesRead = baselineCapabilities !== undefined &&
+    Object.values(baselineCapabilities).some((actions) => actions.includes(CAPABILITIES.READ));
+  if (!baselineGrantsCapabilitiesRead) return;
+
   const hasRequiredCapabilitiesRead = entries.some(
     (entry) =>
       entry.service === 'capabilities' &&

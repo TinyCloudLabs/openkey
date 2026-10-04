@@ -1,6 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 import { parseRecapFromSiwe } from '@tinycloud/node-sdk-wasm';
-import { prepareDelegationSession } from '../routes/delegate-session';
+import {
+  assertRequiredActions,
+  DEFAULT_SESSION_ABILITIES,
+  prepareDelegationSession,
+  sessionAbilitiesFromPermissions,
+  type RecapEntry,
+} from '../routes/delegate-session';
 
 // Regression tests for the CLI explicit-permission narrowing bug.
 //
@@ -145,5 +151,50 @@ describe('prepareDelegationSession — CLI explicit permission narrowing', () =>
         expiryMs,
       }),
     ).toThrow('Requested permissions are not available for this delegation');
+  });
+});
+
+// TC-658: capabilities/read is required only when the baseline grants it.
+describe('assertRequiredActions follows the request baseline', () => {
+  const space = `tinycloud:pkh:eip155:${chainId}:${address.toLowerCase()}:secrets`;
+  const kvList: RecapEntry = { service: 'kv', space, path: 'vault/secrets/', actions: ['tinycloud.kv/list'] };
+  const capsRead: RecapEntry = { service: 'capabilities', space, path: '', actions: ['tinycloud.capabilities/read'] };
+  const signer = { address, chainId };
+
+  test('a CLI baseline without capabilities/read does not require it', () => {
+    const baseline = sessionAbilitiesFromPermissions(
+      [{ service: 'tinycloud.kv', space: 'secrets', path: 'vault/secrets/', actions: ['tinycloud.kv/list'] }],
+      signer,
+    );
+    expect(() => assertRequiredActions([kvList], baseline)).not.toThrow();
+  });
+
+  test('a CLI baseline that asks for capabilities/read still requires it', () => {
+    const baseline = sessionAbilitiesFromPermissions(
+      [
+        { service: 'tinycloud.kv', space: 'secrets', path: 'vault/secrets/', actions: ['tinycloud.kv/list'] },
+        { service: 'tinycloud.capabilities', space: 'secrets', path: '', actions: ['tinycloud.capabilities/read'] },
+      ],
+      signer,
+    );
+    expect(() => assertRequiredActions([kvList], baseline)).toThrow('capabilities/read is required for this delegation');
+    expect(() => assertRequiredActions([kvList, capsRead], baseline)).not.toThrow();
+  });
+
+  test('the default consent baseline still requires it', () => {
+    expect(() => assertRequiredActions([kvList], DEFAULT_SESSION_ABILITIES)).toThrow('capabilities/read is required for this delegation');
+  });
+
+  test('prepare marks nothing required for the TC-658 secrets-list request', () => {
+    const result = prepareDelegationSession({
+      address,
+      chainId,
+      prefix: 'default',
+      jwk,
+      permissions: [{ service: 'tinycloud.kv', space: 'secrets', path: 'vault/secrets/', actions: ['tinycloud.kv/list'] }],
+      expiryMs,
+    });
+    expect(result.permissions.flatMap((p) => p.actions.map((a) => [a.ability, a.required]))).toEqual([['tinycloud.kv/list', false]]);
+    expect(result.edited).toBe(false);
   });
 });
