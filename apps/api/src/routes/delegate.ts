@@ -1822,6 +1822,9 @@ delegateRouter.post('/complete', async (c) => {
   }
 
   let contextClaim: AuthorizationContextClaim | undefined;
+  // Versioned callers: the `completeSessionSetup` input, built only from the
+  // signed SIWE and the bound context (see below).
+  let versionedSessionInput: Record<string, unknown> | undefined;
 
   if (body.authorizationContextToken) {
     if (typeof body.authorizationContextToken !== 'string') {
@@ -1898,7 +1901,33 @@ delegateRouter.post('/complete', async (c) => {
     if (!check.ok) {
       return c.json({ error: check.message, code: check.error }, 400);
     }
+    // TC-587: an echoed spaceId or verificationMethod that disagrees with
+    // the bound space or the signed SIWE's URI (the session key's
+    // verificationMethod) is refused here, before the context is consumed.
+    if (
+      (body.prepared.spaceId !== undefined && body.prepared.spaceId !== check.spaceId)
+      || (body.prepared.verificationMethod !== undefined && body.prepared.verificationMethod !== signedFields.uri)
+    ) {
+      return c.json(
+        {
+          error: 'prepared.spaceId or prepared.verificationMethod does not match the signed SIWE and the context bound at /prepare',
+          code: 'prepared_metadata_mismatch',
+        },
+        400,
+      );
+    }
     contextClaim = check.claim;
+    // No echoed prepared field reaches WASM: the signed SIWE bytes, the
+    // bound space and JWK (digest-equal to body.jwk per the check), and the
+    // signed SIWE's URI as verificationMethod.
+    versionedSessionInput = {
+      siwe: body.prepared.siwe,
+      jwk: check.jwk,
+      spaceId: check.spaceId,
+      verificationMethod: signedFields.uri,
+      // The exact string the signature check above verified.
+      signature: String(body.signature),
+    };
   }
 
   // Device approvals: judge the session key and lifetime by the canonical
@@ -1909,12 +1938,15 @@ delegateRouter.post('/complete', async (c) => {
   });
   if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
 
-  // Ensure JWK is a proper object with kty for WASM deserialization
-  const session = completeSessionSetup({
-    ...body.prepared,
-    jwk: body.jwk,
-    signature: body.signature,
-  });
+  // Token-less legacy callers still pass the echoed prepared block (with
+  // the caller's JWK, a proper object with kty for WASM deserialization).
+  const session = completeSessionSetup(
+    versionedSessionInput ?? {
+      ...body.prepared,
+      jwk: body.jwk,
+      signature: body.signature,
+    },
+  );
 
   // Completion is about to succeed: consume the context atomically, only if
   // it is still the exact one checked above. A concurrent completion that

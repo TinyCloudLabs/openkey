@@ -103,14 +103,20 @@ supplied, must equal it, and the signature must recover to that address
 context is consumed and before host activation: the address and signature,
 the signed SIWE expiry (`missing_expiration_time`), the context bindings
 (user, key address, session key, host, space, immutable SIWE fields, request
-baseline, and action selection), and the device-transaction window. A refused
-request leaves the approval usable. The context is consumed by an atomic
-compare-and-delete just before activation: of two concurrent completions one
-wins, and the other, like any later replay, gets `context-not-found`. The
-managed approval on `/api/delegate` likewise consumes its context only after
-the signed-expiry and device-window checks, just before signing. The reported
-`expirationTime`, `expiresAt`, and `expiry` come from the signed SIWE, never
-from caller-supplied fields.
+baseline, and action selection), an echoed `prepared.spaceId` or
+`prepared.verificationMethod` that disagrees with the bound space or the signed
+SIWE's URI (`prepared_metadata_mismatch`), and the device-transaction window. A
+refused request leaves the approval usable. The session is built from the
+signed SIWE and the bound context, never from the echoed `prepared` block. The
+context is consumed by an atomic compare-and-delete just before activation: of
+two concurrent completions one wins, and the other, like any later replay, gets
+`context-not-found`. The managed approval on `/api/delegate` likewise refuses
+mismatched echoed metadata, builds its session from the bound context, and
+consumes its context only after the signed-expiry and device-window checks,
+just before signing. Token-less legacy `/complete` calls still pass the echoed
+`prepared` block to the session setup. The reported `expirationTime`,
+`expiresAt`, and `expiry` come from the signed SIWE, never from caller-supplied
+fields.
 
 ## Request
 

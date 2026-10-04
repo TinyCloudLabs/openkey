@@ -153,6 +153,8 @@ const space = `tinycloud:pkh:eip155:1:${account.address}:secrets`;
 const kvGet = { service: 'tinycloud.kv', space, path: 'vault/secrets/TOKEN', actions: ['tinycloud.kv/get'] };
 const capabilitiesRead = { service: 'tinycloud.capabilities', space, path: '', actions: ['tinycloud.capabilities/read'] };
 const requested = [kvGet, capabilitiesRead];
+// A valid session-key verificationMethod that is not the prepared one.
+const otherVerificationMethod = 'did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH#z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH';
 
 interface RefusalCase {
   name: string;
@@ -275,6 +277,30 @@ describe('versioned /complete validates every binding before consuming the conte
     expect(results.find((r) => r.status === 400)?.body.code).toBe('context-not-found');
     expect(activateSessionWithHost).toHaveBeenCalledTimes(1);
   });
+
+  const malformed: Array<[string, (p: Record<string, any>) => Record<string, unknown>]> = [
+    ['another verificationMethod', () => ({ verificationMethod: otherVerificationMethod })],
+    ['a null verificationMethod', () => ({ verificationMethod: null })],
+    // `String([spaceId])` equals the bound space, so only a strict check
+    // keeps the array away from WASM.
+    ['a spaceId wrapped in an array', (p) => ({ spaceId: [p.prepared.spaceId] })],
+  ];
+  for (const [name, fields] of malformed) {
+    test(`refuses ${name} in the prepared block, and a corrected retry succeeds once`, async () => {
+      const prepared = await prepare();
+      const body = await completeBody(prepared);
+      const refused = await post('/complete', { ...body, prepared: { ...body.prepared, ...fields(prepared) } });
+      expect(refused.status).toBe(400);
+      expect(refused.body.code).toBe('prepared_metadata_mismatch');
+      expect(activateSessionWithHost).not.toHaveBeenCalled();
+
+      const ok = await post('/complete', body);
+      expect(ok.status).toBe(200);
+      expect(ok.body.verificationMethod).toBe(/^URI: (.+)$/m.exec(prepared.prepared.siwe)?.[1]);
+      expect(activateSessionWithHost).toHaveBeenCalledTimes(1);
+      expect((await post('/complete', body)).status).toBe(400);
+    });
+  }
 });
 
 describe('managed approval checks everything caller-controlled before consuming the context', () => {
@@ -313,7 +339,7 @@ describe('managed approval checks everything caller-controlled before consuming 
     ['a null spaceId', { spaceId: null }],
     ['another spaceId', { spaceId: 'tinycloud:pkh:eip155:1:0x0000000000000000000000000000000000000000:default' }],
     ['a null verificationMethod', { verificationMethod: null }],
-    ['another verificationMethod', { verificationMethod: 'did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH#z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH' }],
+    ['another verificationMethod', { verificationMethod: otherVerificationMethod }],
   ];
   for (const [name, fields] of malformed) {
     test(`refuses ${name} in the prepared block before signing, and a corrected retry succeeds once`, async () => {
