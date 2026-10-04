@@ -99,10 +99,31 @@ the page limits what it does with one:
 Wallet-key approvals on `/api/delegate/complete` bind the authorization
 context to the address in the signed SIWE. A `prepared.address`, when
 supplied, must equal it, and the signature must recover to that address
-(`signature-mismatch` otherwise). Both checks run before the single-use
-context is consumed and before host activation. The reported
-`expirationTime`, `expiresAt`, and `expiry` come from the signed SIWE, never
-from caller-supplied fields.
+(`signature-mismatch` otherwise). Every check runs before the single-use
+context is consumed and before host activation: the address and signature,
+the signed SIWE expiry (`missing_expiration_time`), the context bindings
+(user, key address, session key, host, space, immutable SIWE fields, request
+baseline, and action selection; a `prepared.spaceId` whose string form is not
+the bound space, `null` included, is refused here with `space-mismatch`), the
+echoed session metadata, and the device-transaction window. On versioned
+completions (an `authorizationContextToken` is present),
+`prepared_metadata_mismatch` refuses a `prepared.verificationMethod` that is
+not the signed SIWE's URI and a non-string `prepared.spaceId` whose string form
+passes the binding check (for example the space wrapped in an array), which a
+strict comparison after the binding check catches, and the session is built
+from the signed SIWE and the bound context, never from the echoed `prepared`
+block. A refused request leaves the
+approval usable. The context is consumed by an atomic compare-and-delete just
+before activation: of two concurrent completions one wins, and the other, like
+any later replay, gets `context-not-found`. The managed approval on
+`/api/delegate` refuses any echoed `prepared.spaceId` or
+`prepared.verificationMethod` that disagrees with the bound context with
+`prepared_metadata_mismatch`, builds its session from the bound context, and
+consumes its context only after the signed-expiry and device-window checks,
+just before signing. Token-less legacy `/complete` calls still pass the echoed
+`prepared` block to the session setup. The reported `expirationTime`,
+`expiresAt`, and `expiry` come from the signed SIWE, never from caller-supplied
+fields.
 
 ## Request
 
