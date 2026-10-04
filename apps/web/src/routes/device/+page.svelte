@@ -14,6 +14,10 @@
   } from '$lib/device-authorization';
 
   let userCode = $state($page.url.searchParams.get('user_code') ?? '');
+  // TC-660: a complete code from the link is shown read-only, leaving sign-in
+  // as the only action. The editable form returns if that code fails.
+  // svelte-ignore state_referenced_locally
+  let codeFromLink = $state(normalizedCode(userCode).length === 8);
   let request = $state<DeviceRequestRecord | null>(null);
   let loading = $state(false);
   let error = $state('');
@@ -73,6 +77,7 @@
       userCode = displayedCode(found.userCode);
     } catch (cause) {
       error = cause instanceof Error ? cause.message : 'Could not load the device request.';
+      codeFromLink = false;
     } finally {
       loading = false;
     }
@@ -91,6 +96,14 @@
   <Card class="w-full p-6 sm:p-8">
     <p class="mb-2 text-sm font-medium text-primary-600">TinyCloud CLI</p>
     <h1 class="mb-3 text-2xl font-semibold text-surface-900">{request && isShareOnlyDeviceRequest(request) ? 'Approve a Share publishing session' : 'Approve TinyCloud CLI access'}</h1>
+    {#if codeFromLink}
+    <p class="mb-4 text-surface-600">Check that this code matches the one in your terminal. After you sign in you can uncheck optional capabilities, confirm the request is yours, and approve.</p>
+    <p class="flex items-center gap-3 text-sm text-surface-500" aria-label="Device code">
+      Code
+      <code class="rounded-md border border-surface-200 bg-surface-50 px-2 py-1 font-mono text-base tracking-widest text-surface-900">{displayedCode(userCode)}</code>
+      {#if loading}<span>Checking…</span>{/if}
+    </p>
+    {:else}
     <p class="mb-6 text-surface-600">Enter the code shown in your terminal. OpenKey lists every capability the CLI asks for; after you sign in you can uncheck optional ones, confirm the request is yours, and approve.</p>
 
     <form class="flex flex-col gap-3 sm:flex-row" onsubmit={(event) => { event.preventDefault(); void findRequest(); }}>
@@ -106,6 +119,7 @@
         {loading ? 'Checking…' : 'Continue'}
       </Button>
     </form>
+    {/if}
 
     {#if error}
       <p class="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-700" role="alert">{error}</p>
