@@ -4,12 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version strategy (patch, minor, major)'
+        # No `major`: a major goes through a changeset PR with a maintainer's
+        # sign-off (TC-615).
+        description: 'Version strategy (patch, minor)'
         type: choice
         options:
           - patch
           - minor
-          - major
         default: 'patch'
         required: true
 
