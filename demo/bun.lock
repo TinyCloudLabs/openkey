@@ -4,7 +4,7 @@
     "": {
       "name": "@openkey/demo",
       "dependencies": {
-        "@openkey/sdk": "^0.10.0",
+        "@openkey/sdk": "^0.10.1",
       },
       "devDependencies": {
         "@sveltejs/adapter-static": "^3.0.10",
@@ -30,7 +30,7 @@
 
     "@openkey/core": ["@openkey/core@0.8.8", "", {}, "sha512-aeGiQ2SK5lMTaJMkLZJ/HKMTym/AlrWLHeKHNZmuV6pTbAgIi9uTTO+IaF11V7+htFHO0kD6XUosNVGCGRWr3w=="],
 
-    "@openkey/sdk": ["@openkey/sdk@0.10.0", "", { "dependencies": { "@openkey/core": "^0.8.8" } }, "sha512-ClkYu7YrCUQ898VysOP9mflt5nOUMUIA8SOkwGqTgpBo7bLuLYPK/VzskdtWw5qElTab+l13nbdukGEHY8j8PQ=="],
+    "@openkey/sdk": ["@openkey/sdk@0.10.1", "", { "dependencies": { "@openkey/core": "^0.8.8" } }, "sha512-NQ7QDsA0v7UHnVx0vwR9D6DSFg9+/NoBMyFDUq4rprU8YdzbL4DVC0r4Snk7fRtXqxDK7V6wIm9KwG5OF8oHCQ=="],
 
     "@oxc-project/types": ["@oxc-project/types@0.152.0", "", {}, "sha512-oM/5rLBm2tPkg0iBgkH/FOeR3PCDpY19GTgAZjMFM8h9WI9VW7cLgzp6nwtarYKmovavIQZ+Fe/RKX/8C8O/Rw=="],
 
