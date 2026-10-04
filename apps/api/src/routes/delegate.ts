@@ -62,7 +62,9 @@ import {
   evaluateBootstrapSigningScope,
 } from './delegate-autosign';
 import {
+  checkAuthorizationContext,
   consumeAuthorizationContext,
+  consumeCheckedAuthorizationContext,
   consumePreviewApproval,
   digestAbilities,
   digestFullRecapAttenuation,
@@ -72,6 +74,7 @@ import {
   issuePreviewApproval,
   peekAuthorizationContext,
   type AuthorizationContextToken,
+  type AuthorizationContextClaim,
 } from '../services/authorization-signing';
 import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
 import { fetchAndBindWellKnownManifest } from '../services/manifest-origin-fetch';
@@ -1311,7 +1314,9 @@ delegateRouter.post('/', async (c) => {
       spaceId: bound.spaceId,
     });
 
-    const consume = consumeAuthorizationContext({
+    // Validate every binding without consuming (TC-587): the expiry and
+    // device-window refusals below leave the pending approval usable.
+    const check = checkAuthorizationContext({
       token,
       userId: user.id,
       keyId: key.id,
@@ -1324,8 +1329,8 @@ delegateRouter.post('/', async (c) => {
       candidateAbilitiesDigest: digestDelegationBaseline(baseline),
       requiredActionIds: requiredActionIdSet(preparedEntries),
     });
-    if (!consume.ok) {
-      return c.json({ error: consume.message, code: consume.error }, 400);
+    if (!check.ok) {
+      return c.json({ error: check.message, code: check.error }, 400);
     }
 
     const expirationTime = signedSiweExpirationTime(bound.originalSiwe);
@@ -1334,6 +1339,14 @@ delegateRouter.post('/', async (c) => {
     }
     const deviceWindow = await deviceDelegationWindowError(body, { host, signedSiwe: bound.originalSiwe });
     if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
+
+    // About to sign: consume the context atomically, only if it is still
+    // the exact one checked above, so a concurrent approval or a replay
+    // cannot sign it a second time.
+    const consumed = consumeCheckedAuthorizationContext(check.claim);
+    if (!consumed.ok) {
+      return c.json({ error: consumed.message, code: consumed.error }, 400);
+    }
 
     // Sign the STORED originalSiwe verbatim. This is the entire point of
     // Blocker 1: never regenerate the SIWE at approval time.
@@ -1763,8 +1776,10 @@ delegateRouter.post('/complete', async (c) => {
     );
   }
   // The wallet must have signed exactly these SIWE bytes as that address.
-  // Checked before the single-use context is consumed and before any host
-  // activation, so a wrong-wallet signature has no effect.
+  // Every refusal in this route (signature, signed expiry, context
+  // bindings, device window) happens before the single-use context is
+  // consumed and before any host activation, so a refused request has no
+  // effect and leaves the pending approval usable (TC-587).
   let recoveredAddress = '';
   try {
     recoveredAddress = verifyMessage(String(body.prepared.siwe ?? ''), String(body.signature));
@@ -1777,6 +1792,14 @@ delegateRouter.post('/complete', async (c) => {
       400,
     );
   }
+
+  // Report the lifetime the wallet signed, never caller-supplied metadata.
+  const expirationTime = signedSiweExpirationTime(body.prepared.siwe);
+  if (!expirationTime) {
+    return c.json({ error: 'The signed SIWE must include a valid Expiration Time' }, 400);
+  }
+
+  let contextClaim: AuthorizationContextClaim | undefined;
 
   if (body.authorizationContextToken) {
     if (typeof body.authorizationContextToken !== 'string') {
@@ -1833,7 +1856,9 @@ delegateRouter.post('/complete', async (c) => {
       );
     }
 
-    const consume = consumeAuthorizationContext({
+    // Validate every binding without consuming; the context is consumed
+    // below, only once the whole request has passed.
+    const check = checkAuthorizationContext({
       token: body.authorizationContextToken,
       userId: user.id,
       // Key identity is enforced via keyAddress (which the /complete SIWE
@@ -1848,16 +1873,12 @@ delegateRouter.post('/complete', async (c) => {
       candidateAbilitiesDigest: digestDelegationBaseline(baseline),
       requiredActionIds: requiredActionIdSet(preparedEntries),
     });
-    if (!consume.ok) {
-      return c.json({ error: consume.message, code: consume.error }, 400);
+    if (!check.ok) {
+      return c.json({ error: check.message, code: check.error }, 400);
     }
+    contextClaim = check.claim;
   }
 
-  // Report the lifetime the wallet signed, never caller-supplied metadata.
-  const expirationTime = signedSiweExpirationTime(body.prepared.siwe);
-  if (!expirationTime) {
-    return c.json({ error: 'The signed SIWE must include a valid Expiration Time' }, 400);
-  }
   // Device approvals: judge the session key and lifetime by the canonical
   // bytes the wallet signed, not the caller-supplied jwk or a line search.
   const deviceWindow = await deviceDelegationWindowError(body, {
@@ -1872,6 +1893,16 @@ delegateRouter.post('/complete', async (c) => {
     jwk: body.jwk,
     signature: body.signature,
   });
+
+  // Completion is about to succeed: consume the context atomically, only if
+  // it is still the exact one checked above. A concurrent completion that
+  // consumed it first, or a replay, is refused here.
+  if (contextClaim) {
+    const consumed = consumeCheckedAuthorizationContext(contextClaim);
+    if (!consumed.ok) {
+      return c.json({ error: consumed.message, code: consumed.error }, 400);
+    }
+  }
 
   let hostActivated = false;
   try {

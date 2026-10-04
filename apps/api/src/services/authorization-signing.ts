@@ -546,6 +546,13 @@ function attenuationSubsetFailure(
   return null;
 }
 
+/**
+ * Consume the context and validate it in one step. The context is deleted
+ * as soon as it is found, so a refused call also uses it up. `/complete`
+ * and the managed approval use `checkAuthorizationContext` +
+ * `consumeCheckedAuthorizationContext` instead, so a refusal leaves the
+ * pending approval usable.
+ */
 export function consumeAuthorizationContext(
   input: ConsumeInput,
 ): ConsumeSuccess | ConsumeFailure {
@@ -557,7 +564,66 @@ export function consumeAuthorizationContext(
   }
   // Single-use: consume immediately so replay attempts miss.
   store.delete(input.token);
+  return evaluateContext(stored, input, now);
+}
 
+/**
+ * The exact stored context a successful `checkAuthorizationContext`
+ * validated. Pass it to `consumeCheckedAuthorizationContext`.
+ */
+export interface AuthorizationContextClaim {
+  readonly token: string;
+  /** The stored record, compared by identity when consuming. */
+  readonly record: object;
+}
+
+export type CheckSuccess = ConsumeSuccess & { claim: AuthorizationContextClaim };
+
+/**
+ * TC-587: run every binding check of `consumeAuthorizationContext` without
+ * consuming the context. A refusal leaves the context usable. Call
+ * `consumeCheckedAuthorizationContext(result.claim)` once every other check
+ * of the request has passed and completion is about to succeed.
+ */
+export function checkAuthorizationContext(
+  input: ConsumeInput,
+): CheckSuccess | ConsumeFailure {
+  const now = Date.now();
+  pruneExpired(now);
+  const stored = store.get(input.token);
+  if (!stored) {
+    return { ok: false, error: "context-not-found", message: "Authorization context not found." };
+  }
+  const result = evaluateContext(stored, input, now);
+  return result.ok ? { ...result, claim: { token: input.token, record: stored } } : result;
+}
+
+/**
+ * TC-587: atomic compare-and-delete. Deletes the context only if the store
+ * still holds the exact record the check validated (stored records are
+ * never mutated). Synchronous, so nothing can run between the compare and
+ * the delete: of two completions that both passed the check, exactly one
+ * consumes the context and the other is refused, as is any later replay.
+ */
+export function consumeCheckedAuthorizationContext(
+  claim: AuthorizationContextClaim,
+): { ok: true } | ConsumeFailure {
+  const current = store.get(claim.token);
+  if (current === undefined || current !== claim.record) {
+    return { ok: false, error: "context-not-found", message: "Authorization context not found." };
+  }
+  store.delete(claim.token);
+  if (current.expiresAt <= Date.now()) {
+    return { ok: false, error: "context-expired", message: "Authorization context expired." };
+  }
+  return { ok: true };
+}
+
+function evaluateContext(
+  stored: StoredContext,
+  input: ConsumeInput,
+  now: number,
+): ConsumeSuccess | ConsumeFailure {
   if (stored.expiresAt <= now) {
     return { ok: false, error: "context-expired", message: "Authorization context expired." };
   }
@@ -715,8 +781,9 @@ export interface PeekFailure {
  *
  * Peek DOES NOT extend the token TTL and DOES NOT reveal the token itself.
  * It only surfaces the bound facts that the caller supplied at issue time.
- * Callers MUST follow up with `consumeAuthorizationContext` — the peek is
- * purely a lookup, never an authority.
+ * Callers MUST follow up with `consumeAuthorizationContext` (or
+ * `checkAuthorizationContext` + `consumeCheckedAuthorizationContext`) —
+ * the peek is purely a lookup, never an authority.
  */
 export function peekAuthorizationContext(token: string): PeekSuccess | PeekFailure {
   const now = Date.now();
