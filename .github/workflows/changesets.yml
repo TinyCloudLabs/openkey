@@ -32,9 +32,23 @@ jobs:
 
       - name: Check for publishable changesets
         id: check
+        env:
+          # On CI the status text is colored ("\e[32mNO\e[39m packages"), so a
+          # plain-text grep never matched and every push tried to open a
+          # version PR instead of publishing (TC-647).
+          NO_COLOR: "1"
         run: |
-          # Run changeset status to see if any non-ignored packages have pending bumps
-          if bun changeset status 2>&1 | grep -q "NO packages"; then
+          echo "Changeset files:"
+          ls .changeset/*.md | grep -v '/README.md$' || echo "  (none)"
+          bun changeset status
+          # Decide from the release plan, not the text: ignored packages
+          # (api, web, db, tee) are left out of `releases`.
+          bun changeset status --output=changeset-status.json
+          echo "Planned releases:"
+          jq -r '.releases[] | "  \(.name) \(.oldVersion) -> \(.newVersion) (\(.type))"' changeset-status.json
+          releases=$(jq '.releases | length' changeset-status.json)
+          rm -f changeset-status.json
+          if [ "$releases" -eq 0 ]; then
             echo "has_changesets=false" >> "$GITHUB_OUTPUT"
             echo "No publishable changesets — will attempt to publish if versions are unpublished"
           else
