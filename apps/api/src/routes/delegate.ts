@@ -1261,7 +1261,7 @@ delegateRouter.post('/', async (c) => {
         ? sessionAbilitiesFromPermissions(permissions, { address, chainId })
         : DEFAULT_SESSION_ABILITIES;
       assertBaselineSubset(preparedEntries, baseline);
-      assertRequiredActions(preparedEntries);
+      assertRequiredActions(preparedEntries, baseline);
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : 'Invalid delegation' }, 400);
     }
@@ -1782,7 +1782,7 @@ delegateRouter.post('/complete', async (c) => {
         })
       : DEFAULT_SESSION_ABILITIES;
     assertBaselineSubset(entries, baseline);
-    assertRequiredActions(entries);
+    assertRequiredActions(entries, baseline);
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : 'Invalid delegation' }, 400);
   }

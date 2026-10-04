@@ -359,3 +359,63 @@ describe('managed approval checks everything caller-controlled before consuming 
     });
   }
 });
+
+// TC-658: `tc secrets list` asks for kv/list alone. capabilities/read is
+// required only when the request baseline grants it, so this request is
+// approvable and the signed delegation carries exactly what was asked for.
+describe('a CLI request without capabilities/read (TC-658)', () => {
+  const secretsList = [{
+    service: 'tinycloud.kv',
+    space: 'secrets',
+    path: 'vault/secrets/',
+    actions: ['tinycloud.kv/list'],
+    skipPrefix: true,
+  }];
+
+  test('/complete approves it and signs only kv/list', async () => {
+    const prepared = await prepare({ permissions: secretsList });
+    expect(prepared.permissions.flatMap((p: any) => p.actions.map((a: any) => a.required))).toEqual([false]);
+    const ok = await post('/complete', { ...(await completeBody(prepared)), permissions: secretsList });
+    expect(ok.status).toBe(200);
+    expect(ok.body.delegationHeader).toBeDefined();
+    expect(ok.body.permissions).toEqual([{
+      service: 'kv',
+      space: prepared.prepared.spaceId,
+      path: 'vault/secrets/',
+      actions: ['tinycloud.kv/list'],
+    }]);
+    expect(activateSessionWithHost).toHaveBeenCalledTimes(1);
+  });
+
+  test('the managed approval approves it', async () => {
+    const prepared = await prepare({ permissions: secretsList });
+    const ok = await post('/', {
+      keyId: keyRecord.id,
+      jwk,
+      host,
+      permissions: secretsList,
+      prepared: prepared.prepared,
+      authorizationContextToken: prepared.authorizationContext.token,
+      selectedActionIds: prepared.selectedActionKeys,
+      protocolVersion: 1,
+    });
+    expect(ok.status).toBe(200);
+    expect(ok.body.delegationHeader).toBeDefined();
+    expect(activateSessionWithHost).toHaveBeenCalledTimes(1);
+  });
+
+  test('the subset check against the request still refuses a broadened SIWE', async () => {
+    // A SIWE for the default consent set (kv, sql, capabilities) completed
+    // against the secrets-list request is not a subset of it.
+    const defaults = await prepare();
+    const prepared = await prepare({ permissions: secretsList });
+    const refused = await post('/complete', {
+      ...(await completeBody(prepared, defaults.prepared.siwe)),
+      permissions: secretsList,
+    });
+    expect(refused.status).toBe(400);
+    expect(refused.body.delegationHeader).toBeUndefined();
+    expect(refused.body.error).toBe('Edited permissions must be a subset of the original delegation request');
+    expect(activateSessionWithHost).not.toHaveBeenCalled();
+  });
+});
