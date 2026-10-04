@@ -50,6 +50,8 @@ const deviceService = new DeviceAuthorizationService(new MemoryDeviceAuthorizati
   encryptionSecret: 'test-device-authorization-secret-is-long-enough',
 });
 
+const unseal = mock(async () => privateKey);
+
 mock.module('@openkey/db', () => ({ createPrismaClient: () => prisma }));
 mock.module('@openkey/tee', () => ({
   createTeeClient: () => ({
@@ -57,7 +59,7 @@ mock.module('@openkey/tee', () => ({
     getQuote: mock(async () => 'quote'),
     isInTee: () => false,
   }),
-  unseal: mock(async () => privateKey),
+  unseal,
   createWalletFromPrivateKey: (key: string) => privateKeyToAccount(key as `0x${string}`),
   generatePrivateKey: () => privateKey,
   getAddressFromPrivateKey: () => account.address,
@@ -98,6 +100,7 @@ beforeEach(() => {
   resetContexts?.();
   currentUser = user;
   activateSessionWithHost.mockClear();
+  unseal.mockClear();
 });
 
 async function post(path: string, body: Record<string, unknown>) {
@@ -169,10 +172,12 @@ const refusals: RefusalCase[] = [
   {
     name: 'a correctly signed replacement SIWE address',
     refuse: async (p) => completeBody(p, p.prepared.siwe.replace(account.address, other.address), other),
+    code: 'key-mismatch',
   },
   {
     name: 'a missing signed expiry',
     refuse: async (p) => completeBody(p, p.prepared.siwe.replace(/^Expiration Time: .*\n/m, '')),
+    code: 'missing_expiration_time',
     error: 'The signed SIWE must include a valid Expiration Time',
   },
   {
@@ -272,10 +277,10 @@ describe('versioned /complete validates every binding before consuming the conte
   });
 });
 
-describe('managed approval validates the device window before consuming the context', () => {
-  test('refuses a device-window violation and leaves the context usable', async () => {
-    const prepared = await prepare({ expiry: '90d' });
-    const approval = {
+describe('managed approval checks everything caller-controlled before consuming the context', () => {
+  async function approval(extra: Record<string, unknown> = {}) {
+    const prepared = await prepare(extra);
+    return {
       keyId: keyRecord.id,
       jwk,
       host,
@@ -284,17 +289,46 @@ describe('managed approval validates the device window before consuming the cont
       selectedActionIds: prepared.selectedActionKeys,
       protocolVersion: 1,
     };
+  }
+
+  test('refuses a device-window violation and leaves the context usable', async () => {
+    const valid = await approval({ expiry: '90d' });
     const deviceTransactionId = await startDeviceTransaction();
-    const refused = await post('/', { ...approval, deviceTransactionId });
+    const refused = await post('/', { ...valid, deviceTransactionId });
     expect(refused.status).toBe(400);
     expect(refused.body.delegationHeader).toBeUndefined();
+    expect(unseal).not.toHaveBeenCalled();
 
-    const ok = await post('/', approval);
+    const ok = await post('/', valid);
     expect(ok.status).toBe(200);
     expect(ok.body.delegationHeader).toBeDefined();
-    const replay = await post('/', approval);
+    const replay = await post('/', valid);
     expect(replay.status).toBe(400);
     expect(replay.body.code).toBe('context-not-found');
+    expect(unseal).toHaveBeenCalledTimes(1);
     expect(activateSessionWithHost).toHaveBeenCalledTimes(1);
   });
+
+  const malformed: Array<[string, Record<string, unknown>]> = [
+    ['a null spaceId', { spaceId: null }],
+    ['another spaceId', { spaceId: 'tinycloud:pkh:eip155:1:0x0000000000000000000000000000000000000000:default' }],
+    ['a null verificationMethod', { verificationMethod: null }],
+    ['another verificationMethod', { verificationMethod: 'did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH#z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH' }],
+  ];
+  for (const [name, fields] of malformed) {
+    test(`refuses ${name} in the prepared block before signing, and a corrected retry succeeds once`, async () => {
+      const valid = await approval();
+      const refused = await post('/', { ...valid, prepared: { ...valid.prepared, ...fields } });
+      expect(refused.status).toBe(400);
+      expect(refused.body.code).toBe('prepared_metadata_mismatch');
+      expect(unseal).not.toHaveBeenCalled();
+      expect(activateSessionWithHost).not.toHaveBeenCalled();
+
+      const ok = await post('/', valid);
+      expect(ok.status).toBe(200);
+      expect(ok.body.delegationHeader).toBeDefined();
+      expect(unseal).toHaveBeenCalledTimes(1);
+      expect(activateSessionWithHost).toHaveBeenCalledTimes(1);
+    });
+  }
 });

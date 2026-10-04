@@ -99,8 +99,16 @@ the page limits what it does with one:
 Wallet-key approvals on `/api/delegate/complete` bind the authorization
 context to the address in the signed SIWE. A `prepared.address`, when
 supplied, must equal it, and the signature must recover to that address
-(`signature-mismatch` otherwise). Both checks run before the single-use
-context is consumed and before host activation. The reported
+(`signature-mismatch` otherwise). Every check runs before the single-use
+context is consumed and before host activation: the address and signature,
+the signed SIWE expiry (`missing_expiration_time`), the context bindings
+(user, key address, session key, host, space, immutable SIWE fields, request
+baseline, and action selection), and the device-transaction window. A refused
+request leaves the approval usable. The context is consumed by an atomic
+compare-and-delete just before activation: of two concurrent completions one
+wins, and the other, like any later replay, gets `context-not-found`. The
+managed approval on `/api/delegate` likewise consumes its context only after
+the signed-expiry and device-window checks, just before signing. The reported
 `expirationTime`, `expiresAt`, and `expiry` come from the signed SIWE, never
 from caller-supplied fields.
 
