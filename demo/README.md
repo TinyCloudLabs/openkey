@@ -1,92 +1,34 @@
-# OpenKey OAuth Demo
+# OpenKey Demo
 
-A minimal SvelteKit app demonstrating OpenKey's OAuth 2.1 flow and message signing.
+A one-page SvelteKit app that shows the [`@openkey/sdk`](https://www.npmjs.com/package/@openkey/sdk) flow a third-party app uses:
 
-## Features
+1. **Sign in with OpenKey.** `openkey.connect()` opens OpenKey on the page. The user signs in with a passkey or an email code (or creates an account), and the app gets the address of their key.
+2. **Sign a message.** `openkey.signMessage({ message, keyId })` asks the user to approve, then returns the signature and the signing address.
+3. **Sign out.** `openkey.signOut()` asks OpenKey to revoke the session.
 
-- **OAuth 2.1 Login**: Authenticate users via OpenKey with PKCE
-- **Identity Verification**: Display user's ID (sub claim from ID token)
-- **Message Signing**: Sign arbitrary messages using OpenKey's widget
+The app needs no OAuth client registration, API keys, or server. All of the OpenKey code is in [`src/routes/+page.svelte`](src/routes/+page.svelte).
 
-## Quick Start
+Live: https://openkey-demo.pages.dev
+
+## Run locally
 
 ```bash
-# Install dependencies
 bun install
-
-# Start dev server
 bun run dev
 ```
 
-Visit http://localhost:5174
+Open http://localhost:5174. The demo uses production OpenKey (`https://openkey.so`). To use a local OpenKey web app instead, copy `.env.example` to `.env` and set `VITE_OPENKEY_URL`.
 
-## Configuration
+`bun run typecheck` runs `svelte-check`.
 
-Environment variables (set in `.env` or Cloudflare dashboard):
+## Deploy
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `VITE_OPENKEY_HOST` | `https://openkey.so` | OpenKey API host |
-| `VITE_CLIENT_ID` | `demo_client` | OAuth client ID |
+The `openkey-demo` Cloudflare Pages project builds this directory on every push:
 
-## Deploying to Cloudflare Pages
+| Setting | Value |
+|---|---|
+| Root directory | `demo` |
+| Build command | `bun run build` |
+| Output directory | `.svelte-kit/cloudflare` (`pages_build_output_dir` in `wrangler.toml`) |
 
-### Option 1: Wrangler CLI
-
-```bash
-# Build the app
-bun run build
-
-# Deploy to Cloudflare Pages
-bunx wrangler pages deploy .svelte-kit/cloudflare
-```
-
-### Option 2: Git Integration
-
-1. Push to GitHub
-2. Connect repo to Cloudflare Pages
-3. Set build command: `bun run build`
-4. Set output directory: `.svelte-kit/cloudflare`
-
-## Registering as OAuth Client
-
-Before the demo works, register it as an OAuth client in OpenKey:
-
-```bash
-# From OpenKey repo root
-DATABASE_URL=<your-db-url> bun run packages/db/prisma/seed-oauth-clients.ts register
-```
-
-Update the script to use your demo's redirect URI:
-- Local: `http://localhost:5174/callback`
-- Production: `https://your-demo.pages.dev/callback`
-
-## OAuth Flow
-
-```
-1. User clicks "Sign in with OpenKey"
-2. App generates PKCE code_verifier + code_challenge
-3. Redirects to OpenKey /api/auth/oauth2/authorize
-4. User logs in and consents
-5. OpenKey redirects to /callback with code
-6. App exchanges code for tokens
-7. App displays user info from ID token
-```
-
-## Message Signing Flow
-
-```
-1. User enters message text
-2. Clicks "Sign with OpenKey"
-3. OpenKey widget popup opens
-4. User approves signing
-5. App receives signature via postMessage
-6. Displays signature and signing address
-```
-
-## Tech Stack
-
-- [SvelteKit](https://kit.svelte.dev/) - Full-stack framework
-- [Cloudflare Pages](https://pages.cloudflare.com/) - Edge deployment
-- [Tailwind CSS v4](https://tailwindcss.com/) - Styling
-- [OpenKey OAuth 2.1](https://openkey.so) - Authentication
+Pages installs dependencies with `bun install --frozen-lockfile`, so commit `bun.lock` whenever `package.json` changes. The build is a static site (`@sveltejs/adapter-static`).
