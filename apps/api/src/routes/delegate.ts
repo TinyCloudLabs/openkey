@@ -62,7 +62,9 @@ import {
   evaluateBootstrapSigningScope,
 } from './delegate-autosign';
 import {
+  checkAuthorizationContext,
   consumeAuthorizationContext,
+  consumeCheckedAuthorizationContext,
   consumePreviewApproval,
   digestAbilities,
   digestFullRecapAttenuation,
@@ -72,6 +74,7 @@ import {
   issuePreviewApproval,
   peekAuthorizationContext,
   type AuthorizationContextToken,
+  type AuthorizationContextClaim,
 } from '../services/authorization-signing';
 import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
 import { fetchAndBindWellKnownManifest } from '../services/manifest-origin-fetch';
@@ -1179,9 +1182,11 @@ delegateRouter.post('/', async (c) => {
       );
     }
 
-    // Peek the token so we can pull the server-bound originalSiwe. Any
-    // downstream mismatch will fail consume; peek itself is non-consuming
-    // so a caller cannot use it to burn the token by sending garbage.
+    // Peek the token so we can pull the server-bound originalSiwe. The
+    // bindings are validated by `checkAuthorizationContext` below; the
+    // context is consumed only after that check, the signed-expiry check,
+    // and the device-window check have all passed. Peek itself is
+    // non-consuming, so a caller cannot use it to burn the token.
     const preview = peekAuthorizationContext(token);
     if (!preview.ok) {
       return c.json({ error: preview.message, code: preview.error }, 400);
@@ -1202,8 +1207,8 @@ delegateRouter.post('/', async (c) => {
     }
 
     // Structural cross-checks against the stored context. These duplicate
-    // consumeAuthorizationContext's checks, but running them here surfaces
-    // clearer error codes and lets us fail before we do any real work.
+    // checks `checkAuthorizationContext` makes below, but running them here
+    // surfaces clearer error codes and fails before we do any real work.
     if (bound.keyAddress !== address.toLowerCase()) {
       return c.json(
         {
@@ -1311,7 +1316,28 @@ delegateRouter.post('/', async (c) => {
       spaceId: bound.spaceId,
     });
 
-    const consume = consumeAuthorizationContext({
+    // TC-587: the session handed to WASM after signing is built only from
+    // the bound context (see `completeSessionSetup` below), never from the
+    // caller-echoed prepared block. An echoed spaceId or verificationMethod
+    // that disagrees with the bound values is refused here, before the
+    // context is consumed, instead of reaching WASM after signing.
+    const boundVerificationMethod = immutable.uri;
+    if (
+      (body.prepared.spaceId !== undefined && body.prepared.spaceId !== bound.spaceId)
+      || (body.prepared.verificationMethod !== undefined && body.prepared.verificationMethod !== boundVerificationMethod)
+    ) {
+      return c.json(
+        {
+          error: 'prepared.spaceId or prepared.verificationMethod does not match the context bound at /prepare — refusing to sign',
+          code: 'prepared_metadata_mismatch',
+        },
+        400,
+      );
+    }
+
+    // Validate every binding without consuming (TC-587): the expiry and
+    // device-window refusals below leave the pending approval usable.
+    const check = checkAuthorizationContext({
       token,
       userId: user.id,
       keyId: key.id,
@@ -1324,8 +1350,8 @@ delegateRouter.post('/', async (c) => {
       candidateAbilitiesDigest: digestDelegationBaseline(baseline),
       requiredActionIds: requiredActionIdSet(preparedEntries),
     });
-    if (!consume.ok) {
-      return c.json({ error: consume.message, code: consume.error }, 400);
+    if (!check.ok) {
+      return c.json({ error: check.message, code: check.error }, 400);
     }
 
     const expirationTime = signedSiweExpirationTime(bound.originalSiwe);
@@ -1335,20 +1361,29 @@ delegateRouter.post('/', async (c) => {
     const deviceWindow = await deviceDelegationWindowError(body, { host, signedSiwe: bound.originalSiwe });
     if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
 
+    // About to sign: consume the context atomically, only if it is still
+    // the exact one checked above, so a concurrent approval or a replay
+    // cannot sign it a second time.
+    const consumed = consumeCheckedAuthorizationContext(check.claim);
+    if (!consumed.ok) {
+      return c.json({ error: consumed.message, code: consumed.error }, 400);
+    }
+
     // Sign the STORED originalSiwe verbatim. This is the entire point of
     // Blocker 1: never regenerate the SIWE at approval time.
     const signature = await signManagedKey(key, key.sealedBlob, bound.originalSiwe);
 
-    // Rebuild the session using the caller-echoed prepared block (already
-    // byte-verified) plus the signature. `completeSessionSetup` uses the
-    // fields off `prepared` (spaceId/jwk/address/nonce/etc) — we
-    // additionally overlay `siwe: bound.originalSiwe` and the JWK so a
-    // subtly different echoed block cannot deviate from what we actually
-    // signed.
+    // Rebuild the session from the bound context only: the bound SIWE, its
+    // space, its session key (the SIWE URI is the session key's
+    // verificationMethod), and the bound JWK (digest-equal to body.jwk per
+    // the check above). These are the inputs a successful /prepare already
+    // produced, so a failure past this point is operational (TEE signing or
+    // WASM), not caused by caller input.
     const session = completeSessionSetup({
-      ...body.prepared,
       siwe: bound.originalSiwe,
-      jwk: body.jwk,
+      jwk: bound.jwk,
+      spaceId: bound.spaceId,
+      verificationMethod: boundVerificationMethod,
       signature,
     });
 
@@ -1763,8 +1798,10 @@ delegateRouter.post('/complete', async (c) => {
     );
   }
   // The wallet must have signed exactly these SIWE bytes as that address.
-  // Checked before the single-use context is consumed and before any host
-  // activation, so a wrong-wallet signature has no effect.
+  // Every refusal in this route (signature, signed expiry, context
+  // bindings, device window) happens before the single-use context is
+  // consumed and before any host activation, so a refused request has no
+  // effect and leaves the pending approval usable (TC-587).
   let recoveredAddress = '';
   try {
     recoveredAddress = verifyMessage(String(body.prepared.siwe ?? ''), String(body.signature));
@@ -1777,6 +1814,17 @@ delegateRouter.post('/complete', async (c) => {
       400,
     );
   }
+
+  // Report the lifetime the wallet signed, never caller-supplied metadata.
+  const expirationTime = signedSiweExpirationTime(body.prepared.siwe);
+  if (!expirationTime) {
+    return c.json({ error: 'The signed SIWE must include a valid Expiration Time', code: 'missing_expiration_time' }, 400);
+  }
+
+  let contextClaim: AuthorizationContextClaim | undefined;
+  // Versioned callers: the `completeSessionSetup` input, built only from the
+  // signed SIWE and the bound context (see below).
+  let versionedSessionInput: Record<string, unknown> | undefined;
 
   if (body.authorizationContextToken) {
     if (typeof body.authorizationContextToken !== 'string') {
@@ -1833,7 +1881,9 @@ delegateRouter.post('/complete', async (c) => {
       );
     }
 
-    const consume = consumeAuthorizationContext({
+    // Validate every binding without consuming; the context is consumed
+    // below, only once the whole request has passed.
+    const check = checkAuthorizationContext({
       token: body.authorizationContextToken,
       userId: user.id,
       // Key identity is enforced via keyAddress (which the /complete SIWE
@@ -1848,16 +1898,38 @@ delegateRouter.post('/complete', async (c) => {
       candidateAbilitiesDigest: digestDelegationBaseline(baseline),
       requiredActionIds: requiredActionIdSet(preparedEntries),
     });
-    if (!consume.ok) {
-      return c.json({ error: consume.message, code: consume.error }, 400);
+    if (!check.ok) {
+      return c.json({ error: check.message, code: check.error }, 400);
     }
+    // TC-587: an echoed spaceId or verificationMethod that disagrees with
+    // the bound space or the signed SIWE's URI (the session key's
+    // verificationMethod) is refused here, before the context is consumed.
+    if (
+      (body.prepared.spaceId !== undefined && body.prepared.spaceId !== check.spaceId)
+      || (body.prepared.verificationMethod !== undefined && body.prepared.verificationMethod !== signedFields.uri)
+    ) {
+      return c.json(
+        {
+          error: 'prepared.spaceId or prepared.verificationMethod does not match the signed SIWE and the context bound at /prepare',
+          code: 'prepared_metadata_mismatch',
+        },
+        400,
+      );
+    }
+    contextClaim = check.claim;
+    // No echoed prepared field reaches WASM: the signed SIWE bytes, the
+    // bound space and JWK (digest-equal to body.jwk per the check), and the
+    // signed SIWE's URI as verificationMethod.
+    versionedSessionInput = {
+      siwe: body.prepared.siwe,
+      jwk: check.jwk,
+      spaceId: check.spaceId,
+      verificationMethod: signedFields.uri,
+      // The exact string the signature check above verified.
+      signature: String(body.signature),
+    };
   }
 
-  // Report the lifetime the wallet signed, never caller-supplied metadata.
-  const expirationTime = signedSiweExpirationTime(body.prepared.siwe);
-  if (!expirationTime) {
-    return c.json({ error: 'The signed SIWE must include a valid Expiration Time' }, 400);
-  }
   // Device approvals: judge the session key and lifetime by the canonical
   // bytes the wallet signed, not the caller-supplied jwk or a line search.
   const deviceWindow = await deviceDelegationWindowError(body, {
@@ -1866,12 +1938,25 @@ delegateRouter.post('/complete', async (c) => {
   });
   if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
 
-  // Ensure JWK is a proper object with kty for WASM deserialization
-  const session = completeSessionSetup({
-    ...body.prepared,
-    jwk: body.jwk,
-    signature: body.signature,
-  });
+  // Token-less legacy callers still pass the echoed prepared block (with
+  // the caller's JWK, a proper object with kty for WASM deserialization).
+  const session = completeSessionSetup(
+    versionedSessionInput ?? {
+      ...body.prepared,
+      jwk: body.jwk,
+      signature: body.signature,
+    },
+  );
+
+  // Completion is about to succeed: consume the context atomically, only if
+  // it is still the exact one checked above. A concurrent completion that
+  // consumed it first, or a replay, is refused here.
+  if (contextClaim) {
+    const consumed = consumeCheckedAuthorizationContext(contextClaim);
+    if (!consumed.ok) {
+      return c.json({ error: consumed.message, code: consumed.error }, 400);
+    }
+  }
 
   let hostActivated = false;
   try {

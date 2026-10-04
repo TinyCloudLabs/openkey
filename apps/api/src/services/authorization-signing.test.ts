@@ -1,7 +1,9 @@
-import { describe, expect, it, beforeEach } from 'bun:test';
+import { describe, expect, it, beforeEach, setSystemTime } from 'bun:test';
 import {
   _resetAuthorizationContextStoreForTests,
+  checkAuthorizationContext,
   consumeAuthorizationContext,
+  consumeCheckedAuthorizationContext,
   consumePreviewApproval,
   digestAbilities,
   digestFullRecapAttenuation,
@@ -190,6 +192,57 @@ describe('authorization-signing', () => {
     });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toBe('action-not-in-initial-selection');
+  });
+
+  // TC-587: check validates without consuming; the checked consume is an
+  // atomic compare-and-delete.
+  it('check refuses a mismatched binding without consuming the context', () => {
+    const { token } = issueAuthorizationContext(baseIssueInput());
+    const mismatches = [
+      { userId: 'user-2' },
+      { keyId: 'key-2' },
+      { keyAddress: '0x2222222222222222222222222222222222222222' },
+      { jwk: { ...jwk, x: 'BBB' } },
+      { host: 'https://evil.example' },
+      { spaceId: 'tinycloud:other' },
+      { candidateImmutableFieldsDigest: digestImmutableFields({ ...immutable, nonce: 'tampered' }) },
+      { candidateAbilitiesDigest: digestAbilities({ kv: { '': ['tinycloud.kv/del'] } }) },
+      { selectedActionIds: new Set(['not-in-baseline', 'req']) },
+      { selectedActionIds: new Set(['a1']) },
+    ];
+    for (const mismatch of mismatches) {
+      expect(checkAuthorizationContext({ ...baseConsumeInput(token), ...mismatch }).ok).toBe(false);
+    }
+    const check = checkAuthorizationContext(baseConsumeInput(token));
+    expect(check.ok).toBe(true);
+    if (check.ok) expect(consumeCheckedAuthorizationContext(check.claim).ok).toBe(true);
+  });
+
+  it('checked consume succeeds once for two passed checks, then refuses replays', () => {
+    const { token } = issueAuthorizationContext(baseIssueInput());
+    const first = checkAuthorizationContext(baseConsumeInput(token));
+    const second = checkAuthorizationContext(baseConsumeInput(token));
+    if (!first.ok || !second.ok) throw new Error('both checks should pass');
+    expect(consumeCheckedAuthorizationContext(first.claim).ok).toBe(true);
+    const loser = consumeCheckedAuthorizationContext(second.claim);
+    expect(loser.ok).toBe(false);
+    if (!loser.ok) expect(loser.error).toBe('context-not-found');
+    expect(consumeCheckedAuthorizationContext(first.claim).ok).toBe(false);
+    expect(checkAuthorizationContext(baseConsumeInput(token)).ok).toBe(false);
+  });
+
+  it('checked consume refuses a context that expired after the check', () => {
+    const { token } = issueAuthorizationContext(baseIssueInput());
+    const check = checkAuthorizationContext(baseConsumeInput(token));
+    if (!check.ok) throw new Error('check should pass');
+    setSystemTime(new Date(Date.now() + 6 * 60 * 1000));
+    try {
+      const consumed = consumeCheckedAuthorizationContext(check.claim);
+      expect(consumed.ok).toBe(false);
+      if (!consumed.ok) expect(consumed.error).toBe('context-expired');
+    } finally {
+      setSystemTime();
+    }
   });
 });
 

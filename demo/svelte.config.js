@@ -1,15 +1,11 @@
-import adapter from '@sveltejs/adapter-cloudflare';
-import { vitePreprocess } from '@sveltejs/vite-plugin-svelte';
+import adapter from '@sveltejs/adapter-static';
 
 /** @type {import('@sveltejs/kit').Config} */
 const config = {
-  preprocess: vitePreprocess(),
-
   kit: {
-    adapter: adapter(),
-    alias: {
-      $lib: './src/lib',
-    },
+    // Static site. The openkey-demo Cloudflare Pages project serves this
+    // directory (pages_build_output_dir in wrangler.toml).
+    adapter: adapter({ pages: '.svelte-kit/cloudflare' }),
   },
 };
 
