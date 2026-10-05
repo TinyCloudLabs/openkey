@@ -119,14 +119,14 @@
       </div>
     {:else}
       <div class="flex flex-col gap-3">
-        {#each keys as key, i}
+        {#each keys as key}
           <div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-surface-200 bg-white p-4">
             <div class="min-w-0 flex-1">
               <div class="flex items-center gap-2">
                 <span class="font-medium text-surface-900">
                   {key.label || `Key ${key.keyIndex}`}
                 </span>
-                {#if i === 0}
+                {#if key.isPrimary}
                   <span class="rounded-full bg-surface-100 px-2 py-0.5 text-xs font-medium text-surface-500">
                     Primary
                   </span>

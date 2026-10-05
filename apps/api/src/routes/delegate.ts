@@ -97,7 +97,7 @@ import {
 } from '../services/coordinationos-signing-audit';
 import { validateTinyCloudManageKeyRequest } from '../services/tinycloud-manage-key-policy';
 import { deviceDelegationWindowError, deviceTransactionUnsupportedError } from './device-delegation-window';
-import { isPrimaryKey } from '../services/primary-key';
+import { isPrimaryKey, primaryKeyWhere } from '../services/primary-key';
 
 const prisma = createPrismaClient();
 const tee = createTeeClient();
@@ -709,7 +709,7 @@ delegateRouter.post('/sign', async (c) => {
         userId: principal.userId, clientId: principal.clientId, request: body,
       }, async (tx) => {
         const key = await tx.ethereumKey.findFirst({
-          where: { userId: principal.userId, keyType: 'MANAGED', archivedAt: null, isCanonicalTinyCloud: true },
+          where: primaryKeyWhere(principal.userId),
           select: { id: true, address: true, sealedBlob: true, sealingContext: true, userId: true },
         });
         if (!key || !key.sealedBlob || !key.userId) throw new Error('canonical_key_unavailable');

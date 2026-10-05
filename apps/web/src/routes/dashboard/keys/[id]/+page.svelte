@@ -25,6 +25,7 @@
   let savingLabel = $state(false);
   let archiving = $state(false);
   let restoring = $state(false);
+  let settingPrimary = $state(false);
 
   // Load key when session is ready
   $effect(() => {
@@ -119,6 +120,28 @@
     }
   }
 
+  async function makePrimary() {
+    if (!key || key.archivedAt || key.keyType !== 'MANAGED' || key.isPrimary || settingPrimary) return;
+
+    const confirmed = window.confirm(
+      `Make ${key.label || `Key ${key.keyIndex}`} (${key.address}) your primary key?\n\n` +
+      'Apps using tinycloud:manage-key for canonical sessions, such as coordinationOS and web-sdk, will switch to this owner and its spaces from their next token.\n\n' +
+      'Old data stays with the previous owner. No data moves. Existing sessions may still reference the old owner.'
+    );
+    if (!confirmed) return;
+
+    settingPrimary = true;
+    error = '';
+    try {
+      await api.setPrimaryKey(key.id);
+      await loadKey();
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : 'Failed to change primary key. Try again.';
+    } finally {
+      settingPrimary = false;
+    }
+  }
+
   async function copyToClipboard(text: string) {
     if (!(await copyText(text))) {
       error = 'Failed to copy value. Select the value and copy it manually.';
@@ -137,7 +160,7 @@
   </div>
 
   {#if error}
-    <div class="mb-6 rounded-xl border border-red-200 bg-red-50 p-4 text-red-600 text-sm">
+    <div role="alert" class="mb-6 rounded-xl border border-red-200 bg-red-50 p-4 text-red-600 text-sm">
       {error}
     </div>
   {/if}
@@ -171,6 +194,11 @@
               {key.label || `Key ${key.keyIndex}`}
             </h1>
             <div class="flex flex-wrap items-center gap-2">
+              {#if key.isPrimary}
+                <span class="rounded-full bg-surface-100 px-2 py-1 text-xs font-medium text-surface-500">
+                  Primary
+                </span>
+              {/if}
               {#if key.archivedAt}
                 <span class="rounded-full bg-surface-100 px-2 py-1 text-xs font-medium text-surface-500">
                   Archived
@@ -181,13 +209,18 @@
                   {restoring ? 'Restoring...' : 'Restore Key'}
                 </Button>
               {:else}
-                <Button variant="secondary" onclick={() => editingLabel = true}>
+                {#if key.keyType === 'MANAGED' && !key.isPrimary}
+                  <Button variant="secondary" onclick={makePrimary} disabled={settingPrimary || archiving}>
+                    {settingPrimary ? 'Making primary...' : 'Make primary'}
+                  </Button>
+                {/if}
+                <Button variant="secondary" onclick={() => editingLabel = true} disabled={settingPrimary}>
                   Edit Label
                 </Button>
                 <Button
                   variant="secondary"
                   onclick={archiveKey}
-                  disabled={archiving}
+                  disabled={archiving || settingPrimary}
                   class="border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700"
                 >
                   {archiving ? 'Archiving...' : 'Archive Key'}
@@ -202,7 +235,7 @@
         <div>
           <p class="mb-1 block text-sm text-surface-500">Address</p>
           <div class="flex items-center gap-2">
-            <code class="flex-1 rounded-xl bg-surface-50 border border-surface-200 p-3 font-mono text-sm text-surface-900">
+            <code class="min-w-0 flex-1 break-all rounded-xl bg-surface-50 border border-surface-200 p-3 font-mono text-sm text-surface-900">
               {key.address}
             </code>
             <Button variant="secondary" onclick={() => copyToClipboard(key!.address)}>

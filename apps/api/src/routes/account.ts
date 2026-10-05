@@ -9,9 +9,9 @@ import {
   changeTinyCloudManageKeyMode,
   controlMutationError,
 } from '../services/tinycloud-manage-key-control';
-import { resolveOriginPolicy } from '../origin-policy';
 import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
 import { requireFreshPasskey } from '../services/passkey-freshness';
+import { rejectNonBrowserControlRequest } from '../middleware/browser-control';
 
 const prisma = createPrismaClient();
 
@@ -25,16 +25,6 @@ accountRouter.use('*', requireSession);
 // Account deletion needs a passkey verification on this session within the
 // last five minutes (TC-689).
 const ACCOUNT_DELETE_PASSKEY_MAX_AGE_MS = 5 * 60 * 1000;
-
-function rejectNonBrowserControlRequest(c: any) {
-  // Account controls are deliberately cookie-session-only. In particular, an
-  // OAuth bearer token that can call /delegate/sign must never change custody.
-  if (c.req.header('authorization')) return c.json({ error: 'Bearer tokens cannot change TinyCloud signing controls' }, 403);
-  const origin = c.req.header('origin');
-  const allowed = resolveOriginPolicy('http://localhost:5173,http://localhost:3000');
-  if (!origin || !allowed.includes(origin)) return c.json({ error: 'A same-site browser Origin is required' }, 403);
-  return null;
-}
 
 // Get account info
 accountRouter.get('/', async (c) => {

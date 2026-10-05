@@ -106,6 +106,40 @@ redirect URIs, authorization codes, tokens, and session stores. Confirm:
 - CoordinationOS reads existing canary and invite paths after login and after a
   reload, with no signer call during a valid restore.
 
+## User-selected primary key (TC-704)
+
+After the cutover, the user may select another active managed personal key in
+Dashboard → key details → **Make primary**. Personal ownership is represented
+by the key's `userId`; organization key custody no longer exists. External,
+archived, and unavailable keys are not eligible.
+
+The cookie-session-only `POST /api/keys/:keyId/primary` control requires an
+allowed OpenKey browser Origin and refuses bearer credentials. It moves the
+canonical flag and records the control event in one transaction, using the
+same user-row lock as canonical signing. It preserves the key material,
+application grants, and signing-control mode. An archived primary can be
+replaced; restoring it later does not restore its primary flag.
+
+Fresh canonical identity claims identify the selected key's owner and
+`applications` space. Canonical apps switch from their next token; existing
+TinyCloud sessions and data remain with their original owner. No data moves.
+`/api/delegate/sign` resolves the current primary and rejects an old-owner SIWE
+message rather than silently substituting the new owner's signature. An app
+with stale identity metadata must refresh it before requesting a new session.
+
+Run the isolated regression against both PGlite and PostgreSQL:
+
+```bash
+OPENKEY_TEST_POSTGRES_URL=postgresql://test-user@localhost/test-maintenance \
+  bun test scripts/tc-704-primary-key.test.ts
+```
+
+The PostgreSQL role needs `CREATEDB`; the test creates and drops its own
+temporary database, never migrates the supplied maintenance database, and
+exercises real competing connections. Without that variable, PGlite still
+checks transaction rollback, eligibility, browser authorization, OAuth
+UserInfo identity, and signature recovery; the concurrent lock test is skipped.
+
 ## Rollback boundary
 
 Before the destructive contract migration, roll back application commits and
