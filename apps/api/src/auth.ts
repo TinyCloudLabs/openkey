@@ -26,6 +26,7 @@ import {
   oauthValidAudiences,
 } from './oauth-config';
 import { createSealingContext } from './services/key-sealing';
+import { primaryKeyWhere } from './services/primary-key';
 import {
   assertFreshPasskeyUserVerification,
   recordPasskeyFreshnessAfterHook,
@@ -134,12 +135,7 @@ export async function buildCanonicalTinyCloudIdentityClaim(
     return undefined;
   }
   const key = await database.ethereumKey.findFirst({
-    where: {
-      userId: user.id,
-      keyType: 'MANAGED',
-      archivedAt: null,
-      isCanonicalTinyCloud: true,
-    },
+    where: primaryKeyWhere(user.id),
     select: { id: true, address: true },
   });
   if (!key) return undefined;

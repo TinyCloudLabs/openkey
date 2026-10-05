@@ -79,7 +79,7 @@ export interface EthereumKey {
   createdAt: string;
   /**
    * The user's primary key: their canonical TinyCloud key, the account owner
-   * TinyCloud uses by default. Set by `listKeys`; other key endpoints omit it.
+   * TinyCloud uses by default. Included by key list, detail, and primary endpoints.
    */
   isPrimary?: boolean;
 }
@@ -193,6 +193,12 @@ export const api = {
 
   async getKey(keyId: string): Promise<{ key: EthereumKey }> {
     return fetchAPI(`/api/keys/${keyId}`);
+  },
+
+  async setPrimaryKey(keyId: string): Promise<{ changed: boolean; key: EthereumKey | null; keys: EthereumKey[] }> {
+    return fetchAPI(`/api/keys/${encodeURIComponent(keyId)}/primary`, {
+      method: 'POST',
+    });
   },
 
   async updateKey(keyId: string, label: string): Promise<{ success: boolean }> {
