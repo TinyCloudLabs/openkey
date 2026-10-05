@@ -116,13 +116,20 @@ archived, and unavailable keys are not eligible.
 The cookie-session-only `POST /api/keys/:keyId/primary` control requires an
 allowed OpenKey browser Origin and refuses bearer credentials. It moves the
 canonical flag and records the control event in one transaction, using the
-same user-row lock as canonical signing. It preserves the key material,
-application grants, and signing-control mode. An archived primary can be
-replaced; restoring it later does not restore its primary flag.
+same user-row lock as canonical signing. Before changing the flag it resolves
+the stored sealing context (including the legacy null-context path), unseals
+the private key, and verifies that its derived address matches the record.
+It preserves the key material, application grants, and signing-control mode.
+An archived primary can be replaced; restoring it later does not restore its
+primary flag. The response is `{ changed, key }`, with the public key returned
+by the transaction; the UI applies this committed result without a follow-up
+GET that could misreport a successful change during a read outage.
 
 Fresh canonical identity claims identify the selected key's owner and
-`applications` space. Canonical apps switch from their next token; existing
-TinyCloud sessions and data remain with their original owner. No data moves.
+`applications` space. This includes ID tokens minted by the refresh-token
+grant, using the authenticated OAuth client from body or Basic credentials.
+Canonical apps switch from their next token; existing TinyCloud sessions and
+data remain with their original owner. No data moves.
 `/api/delegate/sign` resolves the current primary and rejects an old-owner SIWE
 message rather than silently substituting the new owner's signature. An app
 with stale identity metadata must refresh it before requesting a new session.

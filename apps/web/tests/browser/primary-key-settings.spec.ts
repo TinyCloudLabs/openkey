@@ -21,6 +21,7 @@ async function mock(page: Page, options: {
   keys?: EthereumKey[];
   fail?: boolean;
   beforeChange?: () => Promise<void>;
+  failReadsAfterChange?: boolean;
 } = {}) {
   let keys = (options.keys ?? [formerPrimary, target]).map((key) => ({ ...key }));
   const mutations: string[] = [];
@@ -32,6 +33,9 @@ async function mock(page: Page, options: {
         session: { id: 's', userId: 'u', expiresAt: new Date(Date.now() + 3_600_000).toISOString() },
         user: { id: 'u', email: 'sam@example.test', name: 'Sam' },
       });
+    }
+    if (options.failReadsAfterChange && mutations.length && request.method() === 'GET' && path.startsWith('/api/keys')) {
+      return json(route, 503, { error: 'Key reads temporarily unavailable' });
     }
     if (path === '/api/keys' && request.method() === 'GET') {
       return json(route, 200, { keys: keys.filter((key) => !key.archivedAt) });
@@ -48,7 +52,6 @@ async function mock(page: Page, options: {
       return json(route, 200, {
         changed: true,
         key: keys.find((key) => key.isPrimary),
-        keys: keys.filter((key) => !key.archivedAt),
       });
     }
     return json(route, 404, { error: `unmocked ${request.method()} ${path}` });
@@ -97,6 +100,20 @@ test.describe('TC-704 primary key settings', () => {
     const originalRow = page.locator('div.rounded-xl').filter({ has: page.getByText(formerPrimary.label!, { exact: true }) });
     await expect(targetRow.getByText('Primary', { exact: true })).toBeVisible();
     await expect(originalRow.getByText('Primary', { exact: true })).toHaveCount(0);
+  });
+
+  test('a committed switch stays successful when subsequent key GETs fail', async ({ page }) => {
+    const mutations = await mock(page, { failReadsAfterChange: true });
+    await page.goto(`/dashboard/keys/${target.id}`);
+    page.once('dialog', (dialog) => dialog.accept());
+    await makePrimary(page).click();
+    await expect(primaryBadge(page)).toBeVisible();
+    await expect(makePrimary(page)).toHaveCount(0);
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    expect(mutations).toEqual([target.id]);
+    // The read outage is real, but cannot undo or misreport the committed POST.
+    expect(await page.evaluate(async (id) => (await fetch(`/api/keys/${id}`)).status, target.id)).toBe(503);
+    await expect(primaryBadge(page)).toBeVisible();
   });
 
   test('another key can become primary when the old primary is archived', async ({ page }) => {

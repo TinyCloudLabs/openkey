@@ -1,6 +1,16 @@
 import { randomUUID } from 'node:crypto';
-import type { PrismaClient } from '@openkey/db';
+import type { EthereumKey, PrismaClient } from '@openkey/db';
+import { createTeeClient, getAddressFromPrivateKey, unseal } from '@openkey/tee';
+import { getAddress, type Hex } from 'viem';
+import { deriveKeyForRecord } from './key-sealing';
 import { requestDigest } from './tinycloud-manage-key-control';
+
+const tee = createTeeClient();
+const publicKeySelect = {
+  id: true, address: true, publicKey: true, keyType: true, keyIndex: true,
+  label: true, archivedAt: true, createdAt: true,
+} as const;
+type PrimaryKey = Pick<EthereumKey, keyof typeof publicKeySelect> & { isPrimary: true };
 
 /**
  * A user's primary key is their canonical TinyCloud key: the one active
@@ -31,8 +41,8 @@ export function primaryKeyWhere(userId: string) {
 }
 
 export type SetPrimaryKeyResult =
-  | { kind: 'changed'; keyId: string; previousKeyId: string | null }
-  | { kind: 'unchanged'; keyId: string }
+  | { kind: 'changed'; keyId: string; previousKeyId: string | null; key: PrimaryKey }
+  | { kind: 'unchanged'; keyId: string; key: PrimaryKey }
   | { kind: 'not_found' }
   | { kind: 'external_key' }
   | { kind: 'archived' }
@@ -79,33 +89,45 @@ export async function setPrimaryKey(
 
       const target = await tx.ethereumKey.findFirst({
         where: { id: keyId, userId },
-        select: { id: true, keyType: true, archivedAt: true, sealedBlob: true },
+        select: { ...publicKeySelect, userId: true, sealedBlob: true, sealingContext: true },
       });
       if (!target) return { kind: 'not_found' as const };
       if (target.keyType !== 'MANAGED') return { kind: 'external_key' as const };
       if (target.archivedAt !== null) return { kind: 'archived' as const };
       if (!target.sealedBlob) return { kind: 'unavailable' as const };
+      // Resolve exactly the signing path used by delegate/sign. A nonempty
+      // blob alone does not prove it can be decrypted or owns this address.
+      try {
+        const privateKey = await unseal(target.sealedBlob, await deriveKeyForRecord(tee, target));
+        if (getAddressFromPrivateKey(privateKey as Hex) !== getAddress(target.address)) {
+          return { kind: 'unavailable' as const };
+        }
+      } catch {
+        return { kind: 'unavailable' as const };
+      }
 
       const previous = await tx.ethereumKey.findFirst({
         where: primaryKeyWhere(userId),
         select: { id: true },
       });
       if (previous?.id === target.id) {
-        return { kind: 'unchanged' as const, keyId: target.id };
+        const { userId: _owner, sealedBlob: _blob, sealingContext: _context, ...key } = target;
+        return { kind: 'unchanged' as const, keyId: target.id, key: { ...key, isPrimary: true as const } };
       }
 
       await tx.ethereumKey.updateMany({
         where: { userId, isCanonicalTinyCloud: true, id: { not: target.id } },
         data: { isCanonicalTinyCloud: false },
       });
-      const updated = await tx.ethereumKey.updateMany({
+      const updated = await tx.ethereumKey.updateManyAndReturn({
         where: { id: target.id, userId, keyType: 'MANAGED', archivedAt: null },
         data: { isCanonicalTinyCloud: true },
+        select: publicKeySelect,
       });
       // The row was read under the user lock; a concurrent archive is the only
       // way it can stop matching. Abort rather than leave the user without a
       // primary key.
-      if (updated.count !== 1) throw new PrimaryKeyConflictError();
+      if (updated.length !== 1) throw new PrimaryKeyConflictError();
 
       const previousKeyId = previous?.id ?? null;
       await tx.tinyCloudManageKeyControlEvent.create({
@@ -118,8 +140,8 @@ export async function setPrimaryKey(
           requestDigest: requestDigest({ action: 'PRIMARY_KEY_CHANGED', keyId: target.id, previousKeyId }),
         },
       });
-      return { kind: 'changed' as const, keyId: target.id, previousKeyId };
-    });
+      return { kind: 'changed' as const, keyId: target.id, previousKeyId, key: { ...updated[0]!, isPrimary: true as const } };
+    }, { timeout: 10_000 });
   } catch (error) {
     if (isUniqueViolation(error)) throw new PrimaryKeyConflictError();
     throw error;

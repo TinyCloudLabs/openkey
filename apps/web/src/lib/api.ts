@@ -195,7 +195,7 @@ export const api = {
     return fetchAPI(`/api/keys/${keyId}`);
   },
 
-  async setPrimaryKey(keyId: string): Promise<{ changed: boolean; key: EthereumKey | null; keys: EthereumKey[] }> {
+  async setPrimaryKey(keyId: string): Promise<{ changed: boolean; key: EthereumKey }> {
     return fetchAPI(`/api/keys/${encodeURIComponent(keyId)}/primary`, {
       method: 'POST',
     });
