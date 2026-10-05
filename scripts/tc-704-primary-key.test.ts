@@ -10,6 +10,7 @@ import { recoverMessageAddress, type Hex } from 'viem';
 import { serializeSignedCookie } from 'better-call';
 import { prepareSession } from '@tinycloud/node-sdk-wasm';
 import { z } from 'zod';
+import { createLocalJWKSet, jwtVerify } from 'jose';
 import type * as DatabaseModule from '@openkey/db';
 import type * as PrimaryModule from '../apps/api/src/services/primary-key';
 import type * as AuthModule from '../apps/api/src/auth';
@@ -92,7 +93,6 @@ if (!backend) {
   const primaryResponseSchema = z.object({
     changed: z.boolean().optional(),
     key: keyResponseSchema.nullable().optional(),
-    keys: z.array(keyResponseSchema).optional(),
     error: z.unknown().optional(),
   });
   const errorSchema = z.object({ code: z.string(), message: z.string() });
@@ -250,12 +250,12 @@ if (!backend) {
         .rejects.toMatchObject({ code: 'P2002' });
       const policy = await policySnapshot();
       const keyMaterial = await prisma.ethereumKey.findMany({ select: { id: true, address: true, sealedBlob: true, sealingContext: true }, orderBy: { id: 'asc' } });
-      expect(await setPrimaryKey(prisma, userId, 'next')).toEqual({ kind: 'changed', keyId: 'next', previousKeyId: 'old' });
+      expect(await setPrimaryKey(prisma, userId, 'next')).toMatchObject({ kind: 'changed', keyId: 'next', previousKeyId: 'old', key: { id: 'next', isPrimary: true } });
       expect(await primaries()).toEqual([{ id: 'next' }]);
       expect(await prisma.ethereumKey.findMany({ select: { id: true, address: true, sealedBlob: true, sealingContext: true }, orderBy: { id: 'asc' } })).toEqual(keyMaterial);
       expect(await policySnapshot()).toEqual(policy);
       expect(await events()).toMatchObject([{ action: 'PRIMARY_KEY_CHANGED', policyEpoch: 7n, mode: 'USER_CONTROLLED_SHARED' }]);
-      expect(await setPrimaryKey(prisma, userId, 'next')).toEqual({ kind: 'unchanged', keyId: 'next' });
+      expect(await setPrimaryKey(prisma, userId, 'next')).toMatchObject({ kind: 'unchanged', keyId: 'next', key: { id: 'next', isPrimary: true } });
       expect(await primaries()).toEqual([{ id: 'next' }]);
       expect(await events()).toHaveLength(1);
     });
@@ -269,11 +269,48 @@ if (!backend) {
       expect(await events()).toEqual([]);
     });
 
+    test('rejects malformed non-null sealing context from a legacy database without moving primary', async () => {
+      const target = await prisma.ethereumKey.findUniqueOrThrow({ where: { id: 'next' } });
+      // Model legacy/db-push data independently of the newer SQL format guard.
+      // This is only the disposable test database; restore its guard afterward.
+      await prisma.$executeRawUnsafe('ALTER TABLE "ethereum_keys" DROP CONSTRAINT "ethereum_keys_sealing_context_format_check"');
+      try {
+        await prisma.ethereumKey.update({ where: { id: 'next' }, data: { sealingContext: 'malformed-context' } });
+        const response = await postPrimary('next');
+        expect(response.status).toBe(400);
+        expect(errorSchema.parse(response.body.error).code).toBe('key_unavailable');
+        expect(await primaries()).toEqual([{ id: 'old' }]);
+        expect(await events()).toEqual([]);
+      } finally {
+        await prisma.ethereumKey.update({ where: { id: 'next' }, data: { sealingContext: target.sealingContext } });
+        await prisma.$executeRawUnsafe(`ALTER TABLE "ethereum_keys" ADD CONSTRAINT "ethereum_keys_sealing_context_format_check"
+          CHECK ("sealingContext" IS NULL OR "sealingContext" ~ '^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$')`);
+      }
+    });
+
+    test.each([
+      ['corrupt ciphertext', { sealedBlob: 'not-a-sealed-key' }],
+      ['invalid address', { address: 'not-an-address' }],
+      ['different signing address', { address: '0x9999999999999999999999999999999999999999' }],
+    ])('rejects %s without changing the primary', async (_name, data) => {
+      await prisma.ethereumKey.update({ where: { id: 'next' }, data });
+      expect(await setPrimaryKey(prisma, userId, 'next')).toEqual({ kind: 'unavailable' });
+      expect(await primaries()).toEqual([{ id: 'old' }]);
+      expect(await events()).toEqual([]);
+    });
+
+    test('retains the null-context legacy signing path when its material matches the address', async () => {
+      const sealedBlob = await seal(`0x${'2'.repeat(64)}`, await tee.deriveKey(`openkey/user/${userId}/keys`));
+      await prisma.ethereumKey.update({ where: { id: 'next' }, data: { sealingContext: null, sealedBlob } });
+      expect((await postPrimary('next')).status).toBe(200);
+      expect(await primaries()).toEqual([{ id: 'next' }]);
+    });
+
     test('replaces an archived primary and allows restoring it without a second primary', async () => {
       const archived = await keysRouter.request('/old/archive', { method: 'POST', headers: { cookie, origin } });
       expect(archived.status).toBe(200);
       expect(await primaries()).toEqual([]);
-      expect(await setPrimaryKey(prisma, userId, 'next')).toEqual({ kind: 'changed', keyId: 'next', previousKeyId: null });
+      expect(await setPrimaryKey(prisma, userId, 'next')).toMatchObject({ kind: 'changed', keyId: 'next', previousKeyId: null });
       const restored = await keysRouter.request('/old/unarchive', { method: 'POST', headers: { cookie, origin } });
       expect(restored.status).toBe(200);
       expect(await primaries()).toEqual([{ id: 'next' }]);
@@ -340,9 +377,8 @@ if (!backend) {
       expect(response.status).toBe(200);
       expect(response.body.changed).toBe(true);
       expect(response.body.key).toMatchObject({ id: 'next', isPrimary: true });
-      expect(response.body.keys!.filter((key) => key.isPrimary).map((key) => key.id)).toEqual(['next']);
-      expect(response.body.keys!.some((key) => key.id === 'archived')).toBe(false);
-      expect(response.body.keys!.some((key) => key.sealedBlob !== undefined)).toBe(false);
+      expect(response.body.key).not.toHaveProperty('sealedBlob');
+      expect(await primaries()).toEqual([{ id: 'next' }]);
       const repeat = await postPrimary('next');
       expect(repeat.status).toBe(200);
       expect(repeat.body.changed).toBe(false);
@@ -423,6 +459,60 @@ if (!backend) {
     expect(signed.body).toMatchObject({ approved: true, canonicalIdentity: after });
     expect(await recoverMessageAddress({ message: newRequest.message, signature: signed.body.signature! })).toBe(accounts.next!.address);
     expect(await policySnapshot()).toEqual(policy);
+  });
+
+  test.each(['body', 'basic'] as const)('a real %s-authenticated refresh ID token follows the newly selected primary', async (method) => {
+    const clientSecret = 'tc704-confidential-client-secret';
+    const refreshScopes = [...scopes, 'offline_access'];
+    await prisma.oauthClient.update({ where: { clientId }, data: {
+      clientSecret: new Bun.CryptoHasher('sha256').update(clientSecret).digest('base64url'),
+      scopes: refreshScopes, grantTypes: ['authorization_code', 'refresh_token'],
+      tokenEndpointAuthMethod: method === 'basic' ? 'client_secret_basic' : 'client_secret_post',
+    } });
+    await prisma.oauthConsent.update({ where: { id: 'consent' }, data: { scopes: refreshScopes } });
+    const verifier = randomUUID() + randomUUID();
+    const query = new URLSearchParams({
+      client_id: clientId, response_type: 'code', redirect_uri: 'https://app.example.test/callback',
+      scope: refreshScopes.join(' '), state: randomUUID(),
+      code_challenge: new Bun.CryptoHasher('sha256').update(verifier).digest('base64url'),
+      code_challenge_method: 'S256',
+    });
+    const authorize = await auth.handler(new Request(`http://localhost:3000/api/auth/oauth2/authorize?${query}`, { headers: { cookie } }));
+    const location = authorize.headers.get('location');
+    expect(location, await authorize.text()).toStartWith('https://app.example.test/callback');
+    const code = new URL(location!).searchParams.get('code');
+    expect(code).toBeTruthy();
+    async function exchange(fields: Record<string, string>) {
+      const headers: Record<string, string> = { 'content-type': 'application/x-www-form-urlencoded' };
+      const body = new URLSearchParams(fields);
+      if (method === 'basic') {
+        headers.authorization = `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`;
+        // The provider authenticates the header, not this conflicting body ID.
+        body.set('client_id', 'not-the-authenticated-client');
+      } else {
+        body.set('client_id', clientId);
+        body.set('client_secret', clientSecret);
+      }
+      const response = await auth.handler(new Request('http://localhost:3000/api/auth/oauth2/token', { method: 'POST', headers, body }));
+      const payload = await response.json();
+      expect(response.status, JSON.stringify(payload)).toBe(200);
+      return z.object({ id_token: z.string(), refresh_token: z.string() }).parse(payload);
+    }
+    const initial = await exchange({ grant_type: 'authorization_code', code: code!, code_verifier: verifier, redirect_uri: 'https://app.example.test/callback' });
+    const jwksResponse = await auth.handler(new Request('http://localhost:3000/api/auth/jwks'));
+    const jwks = createLocalJWKSet(await jwksResponse.json() as Parameters<typeof createLocalJWKSet>[0]);
+    async function identity(idToken: string) {
+      const { payload } = await jwtVerify(idToken, jwks, { audience: clientId, issuer: (await auth.$context).baseURL });
+      return payload['https://tinycloud.xyz/canonical_identity'];
+    }
+    expect(await identity(initial.id_token)).toMatchObject({ keyId: 'old', address: accounts.old!.address });
+    expect((await postPrimary('next')).status).toBe(200);
+    const refreshed = await exchange({ grant_type: 'refresh_token', refresh_token: initial.refresh_token });
+    expect(await identity(refreshed.id_token)).toEqual({
+      version: 'v1', keyId: 'next', address: accounts.next!.address, chainId: 1,
+      did: `did:pkh:eip155:1:${accounts.next!.address}`,
+      spaceId: `tinycloud:pkh:eip155:1:${accounts.next!.address}:applications`,
+    });
   });
 
   test.skipIf(backend !== 'postgres')('competing switches wait for the user lock and commit exactly one primary', async () => {

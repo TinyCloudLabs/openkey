@@ -486,11 +486,9 @@ keysRouter.post('/:keyId/primary', async (c) => {
     });
   }
 
-  const keys = await listKeysWithPrimary(user.id, false);
   return c.json({
     changed: result.kind === 'changed',
-    key: keys.find((key) => key.id === result.keyId) ?? null,
-    keys,
+    key: result.key,
   });
 });
 

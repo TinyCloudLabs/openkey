@@ -133,8 +133,9 @@
     settingPrimary = true;
     error = '';
     try {
-      await api.setPrimaryKey(key.id);
-      await loadKey();
+      const result = await api.setPrimaryKey(key.id);
+      key = result.key;
+      newLabel = key.label || '';
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to change primary key. Try again.';
     } finally {
