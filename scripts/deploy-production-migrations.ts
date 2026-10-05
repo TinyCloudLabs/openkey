@@ -23,6 +23,8 @@ const tc492AdditiveMigrations: ReadonlyMap<string, string> = new Map([
 ]);
 const deviceMigration = '20260814_0001_share_device_authorization';
 const deviceChecksum = '81bc814a59b2d7604c5d40490e1c96290a7532b70751c60b44b60e3e4b1e199a';
+const brokerMigration = '20261005_0001_delegation_code_broker';
+const brokerChecksum = 'cc7dcc5365251f6b7c14caf38a892c998a28eb7c998531b7c3b669f4744744df';
 
 export type MigrationRow = {
   migration_name: string;
@@ -35,7 +37,7 @@ export function selectProductionMigrationMode(input: {
   migrations: MigrationRow[];
   migrationDirectories: string[];
   managedAccountTableExists: boolean;
-}): 'full' | 'pre-tc488-device-only' {
+}): 'full' | 'pre-tc488-additive' {
   const { migrations, migrationDirectories, managedAccountTableExists } = input;
   const baseline = migrations.find((row) => row.migration_name === baselineMigration);
   if (!baseline?.finished_at || baseline.rolled_back_at || baseline.checksum !== baselineChecksum) {
@@ -65,11 +67,11 @@ export function selectProductionMigrationMode(input: {
   }
 
   const pending = migrationDirectories.filter((name) => !successful.has(name));
-  const unexpectedPending = pending.filter((name) => !tc492AdditiveMigrations.has(name) && name !== tc488Migration && name !== deviceMigration);
+  const unexpectedPending = pending.filter((name) => !tc492AdditiveMigrations.has(name) && name !== tc488Migration && name !== deviceMigration && name !== brokerMigration);
   if (
     unexpectedPending.length > 0 ||
     !pending.includes(tc488Migration) ||
-    !pending.every((name) => tc492AdditiveMigrations.has(name) || name === tc488Migration || name === deviceMigration)
+    !pending.every((name) => tc492AdditiveMigrations.has(name) || name === tc488Migration || name === deviceMigration || name === brokerMigration)
   ) {
     throw new Error(`Pre-TC-488 production has an unreviewed pending migration set: ${pending.join(', ')}`);
   }
@@ -89,7 +91,13 @@ export function selectProductionMigrationMode(input: {
   if (appliedDevice && appliedDevice.checksum !== deviceChecksum) {
     throw new Error(`Stored migration checksum differs from the reviewed ${deviceMigration}`);
   }
-  return 'pre-tc488-device-only';
+  const appliedBroker = migrations.find(
+    (row) => row.migration_name === brokerMigration && row.finished_at && !row.rolled_back_at,
+  );
+  if (appliedBroker && appliedBroker.checksum !== brokerChecksum) {
+    throw new Error(`Stored migration checksum differs from the reviewed ${brokerMigration}`);
+  }
+  return 'pre-tc488-additive';
 }
 
 export function partitionPreTc488Migrations(pendingMigrations: string[]) {
@@ -131,6 +139,7 @@ async function assertReviewedMigrationFiles() {
     ...tc492AdditiveMigrations,
     [tc488Migration, 'ecf68b38f136da32292c250566d3094d1f8eb0b89c855fd8543adf4544ec7ac6'],
     [deviceMigration, deviceChecksum],
+    [brokerMigration, brokerChecksum],
   ] as const;
   for (const [name, expected] of reviewed) {
     const actual = await sha256(join(migrationsDir, name, 'migration.sql'));
@@ -183,9 +192,9 @@ async function deployAdditiveMigrationsBeforeTc488(
 
   const rows = await database.$queryRawUnsafe<MigrationRow[]>(
     'SELECT migration_name, checksum, finished_at, rolled_back_at FROM "_prisma_migrations" WHERE migration_name = ANY($1::text[])',
-    [...tc492AdditiveMigrations.keys(), deviceMigration],
+    [...tc492AdditiveMigrations.keys(), deviceMigration, brokerMigration],
   );
-  const expected = new Map([...tc492AdditiveMigrations, [deviceMigration, deviceChecksum]]);
+  const expected = new Map([...tc492AdditiveMigrations, [deviceMigration, deviceChecksum], [brokerMigration, brokerChecksum]]);
   for (const [name, checksum] of expected) {
     const row = rows.find((candidate) => candidate.migration_name === name);
     if (!row?.finished_at || row.rolled_back_at || row.checksum !== checksum) {
@@ -211,6 +220,9 @@ async function deployAdditiveMigrationsBeforeTc488(
     rate_index: boolean;
     expiry_index: boolean;
     user_foreign_key: boolean;
+    broker_column_count: number;
+    broker_expiry_index: boolean;
+    broker_primary_key: boolean;
   }>>(`
     SELECT
       (SELECT COUNT(*)::int FROM information_schema.columns
@@ -240,7 +252,14 @@ async function deployAdditiveMigrationsBeforeTc488(
         SELECT 1 FROM pg_constraint
         WHERE conname = 'device_authorization_approvedByUserId_fkey'
           AND contype = 'f'
-      ) AS user_foreign_key
+      ) AS user_foreign_key,
+      (SELECT COUNT(*)::int FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'delegation_code') AS broker_column_count,
+      to_regclass('public."delegation_code_expiresAt_idx"') IS NOT NULL AS broker_expiry_index,
+      EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'delegation_code_pkey' AND contype = 'p'
+      ) AS broker_primary_key
   `);
   const verified = physical[0];
   if (
@@ -260,9 +279,12 @@ async function deployAdditiveMigrationsBeforeTc488(
     !verified.user_code_index ||
     !verified.rate_index ||
     !verified.expiry_index ||
-    !verified.user_foreign_key
+    !verified.user_foreign_key ||
+    verified.broker_column_count !== 4 ||
+    !verified.broker_expiry_index ||
+    !verified.broker_primary_key
   ) {
-    throw new Error('TC-492 additive physical schema verification failed');
+    throw new Error('Pre-TC-488 additive physical schema verification failed');
   }
 
   const destructiveRows = await database.$queryRawUnsafe<MigrationRow[]>(
@@ -274,7 +296,7 @@ async function deployAdditiveMigrationsBeforeTc488(
   }
 
   console.log(
-    `Production additive migrations verified: ${[...tc492AdditiveMigrations.keys()].join(', ')}; ${deviceMigration}; ${tc488Migration} remains deliberately pending`,
+    `Production additive migrations verified: ${[...tc492AdditiveMigrations.keys()].join(', ')}; ${deviceMigration}; ${brokerMigration}; ${tc488Migration} remains deliberately pending`,
   );
 }
 

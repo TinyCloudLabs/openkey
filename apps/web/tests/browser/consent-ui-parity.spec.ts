@@ -95,6 +95,29 @@ test.describe('TC-659 CLI /delegate consent parity', () => {
   });
 });
 
+test('manual OpenKey login shows a short retrieval code and keeps the paste fallback', async ({ page }) => {
+  await mock(page);
+  const delegation = {
+    delegationHeader: { Authorization: 'Bearer signed' },
+    delegationCid: 'bafy-signed',
+    spaceId: space,
+    verificationMethod: 'did:key:z6Mk',
+    jwk: { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' },
+    expirationTime: '2026-11-03T01:00:00.000Z',
+    hostActivated: true,
+  };
+  await page.route('**/api/delegate', (route) => json(route, 200, delegation));
+  await page.route('**/api/delegation-codes', (route) => {
+    expect(route.request().postDataJSON()).toEqual({ delegation });
+    return json(route, 201, { code: 'sf23-22cs', expiresAt: '2026-10-05T00:10:00.000Z' });
+  });
+  await page.goto(`/delegate?did=did:key:z6Mk&jwk=${jwk}`);
+  await page.getByRole('button', { name: 'Approve', exact: true }).click();
+  await expect(page.getByText('sf23-22cs')).toBeVisible();
+  await page.getByText('Use full delegation code instead').click();
+  await expect(page.getByRole('textbox', { name: 'Full delegation code' })).toBeVisible();
+});
+
 test.describe('TC-660 /device prefilled code', () => {
   test('a code from the link is read-only and sign-in is the only button', async ({ page }) => {
     await mock(page);

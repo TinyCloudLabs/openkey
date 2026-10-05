@@ -49,15 +49,15 @@ deliberately not part of this runtime prerequisite and remains governed by its
 existing explicit operator gate.
 
 While the separately authorized TC-488 destructive custody cutover remains
-pending, the production deploy permits exactly one later migration:
-`20260814_0001_share_device_authorization`. The deploy verifies the frozen SQL
+pending, production deploy permits two later additive migrations:
+`20260814_0001_share_device_authorization` and
+`20261005_0001_delegation_code_broker`. The deploy verifies their frozen SQL
 checksums, the exact pending set, the baseline marker, and the physical
-pre-cutover custody table before temporarily excluding the still-pending
-TC-492 migration set from a normal `prisma migrate deploy`. It then verifies
-the recorded checksum and the device table's columns, indexes, and foreign
-key. Any additional pending migration fails closed. Once TC-488 is applied,
-deployments return to the full migration and schema-drift verification path
-automatically.
+pre-cutover custody table before temporarily excluding only the destructive
+TC-488 migration from a normal `prisma migrate deploy`. It then verifies
+the recorded checksums and the device and delegation-code tables' columns and
+indexes. Any other pending migration fails closed. Once TC-488 is applied,
+deployments return to the full migration and schema-drift verification path.
 
 The canonical-key/organization-custody cutover is governed by the
 [TC-492 release runbook](./tc-492-canonical-key-cutover.md). It requires a

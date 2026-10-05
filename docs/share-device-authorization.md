@@ -85,8 +85,10 @@ the page limits what it does with one:
   `VITE_DELEGATE_CALLBACK_URLS` for other deployments). Any other callback
   refuses the request before a key is prepared. The page POSTs with
   `redirect: 'error'`, so a redirect cannot forward the delegation. Without a
-  callback the page shows a paste code and the caution "Only paste this code
-  into a terminal you started yourself."
+  callback the page offers a short lookup code with the full base64 delegation
+  available as a fallback and cautions "Only paste this code into a terminal you
+  started yourself." An unreachable callback uses the same fallback.
+
 - `host` must be HTTPS, or HTTP on a loopback host. The consent screen shows
   the node, where the delegation is returned, and its expiry. A node that is
   neither a known TinyCloud node (`KNOWN_NODE_ORIGINS`: the bootstrap-trusted
@@ -95,6 +97,17 @@ the page limits what it does with one:
   refuses until the owner confirms they run or trust it.
 - `/api/delegate/prepare` and `/api/delegate` cap the requested `expiry` at
   30 days; a longer request is clamped.
+
+The ordinary manual handoff is separate from device authorization. After the
+delegation is signed, the authenticated page posts the public delegation to
+`POST /api/delegation-codes`; the response contains eight random base32
+characters formatted `xxxx-xxxx`. `GET /api/delegation-codes/:code` is public
+and returns that delegation for ten minutes (including repeat lookups), then
+404. Expired rows are removed on subsequent publishes. Publishing requires a
+session and accepts only expected delegation fields and public JWK parameters;
+it does not store the CLI signing key. A broker failure leaves the full paste
+code available on the page. This endpoint is not the
+encrypted, one-time device relay described above.
 
 Wallet-key approvals on `/api/delegate/complete` bind the authorization
 context to the address in the signed SIWE. A `prepared.address`, when

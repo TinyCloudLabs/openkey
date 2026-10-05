@@ -46,6 +46,17 @@ model User {
   @@map("user")
 }
 
+// Public, short-lived manual handoff of an already-signed CLI delegation.
+model DelegationCode {
+  code       String   @id
+  delegation Json
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  @@index([expiresAt])
+  @@map("delegation_code")
+}
+
 // OpenKey-owned, short-lived RFC 8628-style transaction state for CLI
 // authorization. Delegation results are encrypted before persistence and are
 // consumed exactly once; this table never stores a CLI private key.

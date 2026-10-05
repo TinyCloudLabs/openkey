@@ -13,6 +13,7 @@ const baseline: MigrationRow = {
 };
 const tc488 = '20260806_0002_remove_organization_key_custody';
 const device = '20260814_0001_share_device_authorization';
+const broker = '20261005_0001_delegation_code_broker';
 const tc492 = [
   '20260805_0001_canonical_tinycloud_key',
   '20260805_0002_tinycloud_manage_key_app_preferences',
@@ -40,7 +41,7 @@ describe('production migration deployment mode', () => {
       migrations: [baseline],
       migrationDirectories: [baseline.migration_name, ...tc492, device],
       managedAccountTableExists: true,
-    })).toBe('pre-tc488-device-only');
+    })).toBe('pre-tc488-additive');
   });
 
   test('parks only the destructive TC-488 migration and applies every reviewed additive migration', () => {
@@ -54,6 +55,29 @@ describe('production migration deployment mode', () => {
       device,
     ]);
     expect(park).toEqual([tc488]);
+  });
+
+  test('permits the reviewed broker table while TC-488 remains parked', () => {
+    const directories = [baseline.migration_name, ...tc492, device, broker];
+    expect(selectProductionMigrationMode({
+      migrations: [baseline],
+      migrationDirectories: directories,
+      managedAccountTableExists: true,
+    })).toBe('pre-tc488-additive');
+    expect(partitionPreTc488Migrations([...tc492, device, broker])).toEqual({
+      apply: [...tc492.filter((name) => name !== tc488), device, broker],
+      park: [tc488],
+    });
+    expect(() => selectProductionMigrationMode({
+      migrations: [baseline, {
+        migration_name: broker,
+        checksum: 'unreviewed',
+        finished_at: new Date(),
+        rolled_back_at: null,
+      }],
+      migrationDirectories: directories,
+      managedAccountTableExists: true,
+    })).toThrow(`Stored migration checksum differs from the reviewed ${broker}`);
   });
 
   test('fails closed if another migration is pending before TC-488', () => {
