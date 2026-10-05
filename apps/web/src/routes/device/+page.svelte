@@ -83,55 +83,17 @@
     }
   }
 
-  $effect(() => {
-    if (userCode && !request && !loading && !error) void findRequest();
-  });
+  // Look up a code from the link once on load; a typed code only on submit,
+  // so partial codes never hit the API or show an error (TC-660).
+  // svelte-ignore state_referenced_locally
+  if (codeFromLink) void findRequest();
 </script>
 
 <svelte:head>
   <title>Approve TinyCloud CLI — OpenKey</title>
 </svelte:head>
 
-<main class="mx-auto flex min-h-screen max-w-2xl items-center px-4 py-12">
-  <Card class="w-full p-6 sm:p-8">
-    <p class="mb-2 text-sm font-medium text-primary-600">TinyCloud CLI</p>
-    <h1 class="mb-3 text-2xl font-semibold text-surface-900">{request && isShareOnlyDeviceRequest(request) ? 'Approve a Share publishing session' : 'Approve TinyCloud CLI access'}</h1>
-    {#if codeFromLink}
-    <p class="mb-4 text-surface-600">Check that this code matches the one in your terminal. After you sign in you can uncheck optional capabilities, confirm the request is yours, and approve.</p>
-    <p class="flex items-center gap-3 text-sm text-surface-500" aria-label="Device code">
-      Code
-      <code class="rounded-md border border-surface-200 bg-surface-50 px-2 py-1 font-mono text-base tracking-widest text-surface-900">{displayedCode(userCode)}</code>
-      {#if loading}<span>Checking…</span>{/if}
-    </p>
-    {:else}
-    <p class="mb-6 text-surface-600">Enter the code shown in your terminal. OpenKey lists every capability the CLI asks for; after you sign in you can uncheck optional ones, confirm the request is yours, and approve.</p>
-
-    <form class="flex flex-col gap-3 sm:flex-row" onsubmit={(event) => { event.preventDefault(); void findRequest(); }}>
-      <input
-        class="min-w-0 flex-1 rounded-lg border border-surface-300 bg-white px-4 py-3 font-mono text-lg uppercase tracking-widest text-surface-900"
-        aria-label="Device code"
-        autocomplete="one-time-code"
-        placeholder="ABCD-EFGH"
-        value={displayedCode(userCode)}
-        oninput={(event) => { userCode = displayedCode(event.currentTarget.value); error = ''; request = null; }}
-      />
-      <Button type="submit" disabled={loading || normalizedCode(userCode).length !== 8}>
-        {loading ? 'Checking…' : 'Continue'}
-      </Button>
-    </form>
-    {/if}
-
-    {#if error}
-      <p class="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-700" role="alert">{error}</p>
-    {/if}
-
-    {#if request}
-      <section class="mt-8 flex flex-col gap-5 border-t border-surface-200 pt-6">
-        <div class="rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900" role="note">
-          <p class="font-semibold">Only approve if you started this on your own device.</p>
-          <p class="mt-1">Approving hands this access to the terminal that showed you the code. If someone else sent you this code or link, stop here.</p>
-        </div>
-
+{#snippet requestDetails(request: DeviceRequestRecord)}
         <div>
           <h2 class="text-sm text-surface-500">Reason given by the CLI</h2>
           <p class="mt-1 text-sm text-surface-900">{requestReason || 'No reason was provided.'}</p>
@@ -174,9 +136,66 @@
           <div><dt class="text-surface-500">Share origin</dt><dd class="break-all font-mono text-xs text-surface-900">{request.shareOrigin}</dd></div>
           <div><dt class="text-surface-500">Node origin</dt><dd class="break-all font-mono text-xs text-surface-900">{request.nodeOrigin}</dd></div>
         </dl>
-        <p class="text-sm text-surface-600">The CLI private key never leaves its device. Approval returns one delegation bound to its public session key, these origins, and exactly the capabilities you approve. Reading the space's capability list is required for every delegation.</p>
+        <p class="text-sm text-surface-600">The CLI private key never leaves its device. Approval returns one delegation bound to its public session key, these origins, and exactly the capabilities you approve.</p>
+{/snippet}
+
+<main class="mx-auto flex min-h-screen max-w-2xl items-center px-4 py-12">
+  <Card class="w-full p-6 sm:p-8">
+    <p class="mb-2 text-sm font-medium text-primary-600">TinyCloud CLI</p>
+    <h1 class="mb-3 text-2xl font-semibold text-surface-900">{request && isShareOnlyDeviceRequest(request) ? 'Approve a Share publishing session' : 'Approve TinyCloud CLI access'}</h1>
+    {#if codeFromLink}
+    <p class="mb-4 text-surface-600">Check that this code matches your terminal.</p>
+    <p class="flex items-center gap-3 text-sm text-surface-500" aria-label="Device code">
+      Code
+      <code class="rounded-md border border-surface-200 bg-surface-50 px-2 py-1 font-mono text-base tracking-widest text-surface-900">{displayedCode(userCode)}</code>
+      {#if loading}<span>Checking…</span>{/if}
+    </p>
+    {:else}
+    <p class="mb-6 text-surface-600">Enter the code shown in your terminal. OpenKey lists every capability the CLI asks for; after you sign in you can uncheck optional ones, confirm the request is yours, and approve.</p>
+
+    <form class="flex flex-col gap-3 sm:flex-row" onsubmit={(event) => { event.preventDefault(); void findRequest(); }}>
+      <input
+        class="min-w-0 flex-1 rounded-lg border border-surface-300 bg-white px-4 py-3 font-mono text-lg uppercase tracking-widest text-surface-900"
+        aria-label="Device code"
+        autocomplete="one-time-code"
+        placeholder="ABCD-EFGH"
+        value={displayedCode(userCode)}
+        oninput={(event) => { userCode = displayedCode(event.currentTarget.value); error = ''; request = null; }}
+      />
+      <Button type="submit" disabled={loading || normalizedCode(userCode).length !== 8}>
+        {loading ? 'Checking…' : 'Continue'}
+      </Button>
+    </form>
+    {/if}
+
+    {#if error}
+      <p class="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-700" role="alert">{error}</p>
+    {/if}
+
+    {#if request}
+      {#if codeFromLink}
+        <!-- TC-660: the code came from the link; sign-in is the only action and the request is reviewed after it. -->
+        <section class="mt-6 flex flex-col gap-4">
+          <p class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm font-medium text-amber-900" role="note">Only approve if you started this on your own device.</p>
+          <Button href={delegateHref} class="w-full">Sign in and review delegation</Button>
+          <details class="text-sm">
+            <summary class="cursor-pointer text-surface-500">Details</summary>
+            <div class="mt-4 flex flex-col gap-5">
+              {@render requestDetails(request)}
+            </div>
+          </details>
+        </section>
+      {:else}
+      <section class="mt-8 flex flex-col gap-5 border-t border-surface-200 pt-6">
+        <div class="rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900" role="note">
+          <p class="font-semibold">Only approve if you started this on your own device.</p>
+          <p class="mt-1">Approving hands this access to the terminal that showed you the code. If someone else sent you this code or link, stop here.</p>
+        </div>
+
+        {@render requestDetails(request)}
         <Button href={delegateHref} class="w-full">Sign in and review delegation</Button>
       </section>
+      {/if}
     {/if}
   </Card>
 </main>
