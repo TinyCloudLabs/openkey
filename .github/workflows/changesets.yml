@@ -71,7 +71,11 @@ jobs:
         # `changeset publish` tags each package it publishes but leaves the
         # tags local; push them so every npm release has a git tag (TC-681).
         # Existing tags were fetched at checkout, so only new ones are sent.
+        # The tags are annotated, which needs a committer identity; without one
+        # `git tag` fails and changesets still logs "New tag" (TC-723).
         run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           bun run publish
           git push origin --tags
         env:
