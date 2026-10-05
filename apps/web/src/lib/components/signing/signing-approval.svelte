@@ -28,7 +28,15 @@
   //   - talk to the API
   //   - size itself for a specific transport
   //   - branch on "CLI" / "popup" / "iframe" — those are container-only
+  //
+  // Surface context (TC-659): every surface gets the same header, reason,
+  // summary, Advanced details, error line and buttons. A surface passes
+  // only its own facts through `context` (the CLI's node, return target and
+  // acknowledgements), rendered in one fixed slot under the header, and
+  // `showSigner` when the user picked one of several keys. Surfaces must not
+  // render their own copy of `error`: it is shown once, above the buttons.
 
+  import type { Snippet } from "svelte";
   import type {
     CapabilityAction,
     CapabilityGrant,
@@ -57,6 +65,10 @@
      */
     approveBlockedReason?: string | null;
     finalPreview?: boolean;
+    /** Surface-specific context rendered in a fixed slot under the header. */
+    context?: Snippet;
+    /** Show which key signs; for users who chose one of several keys. */
+    showSigner?: boolean;
     onApprove: () => void;
     onCancel: () => void;
     onSelectionChange: (next: Set<string>) => void;
@@ -71,12 +83,17 @@
     error = null,
     approveBlockedReason = null,
     finalPreview = false,
+    context,
+    showSigner = false,
     onApprove,
     onCancel,
     onSelectionChange,
     onEditingChange,
   }: Props = $props();
 
+  const shortSignerAddress = $derived(
+    `${model.signer.address.slice(0, 6)}...${model.signer.address.slice(-4)}`,
+  );
   const renderPlan = $derived(buildRenderPlan(model.permissions));
   const permissionSections = $derived.by(() => {
     const reviewGrants = renderPlan
@@ -370,8 +387,36 @@
 >
   <header class="header">
     <h2 id="signing-approval-headline" class="headline">{headline}</h2>
+    <p class="requester-line">
+      Requested by <span class="requester-name">{model.requester.displayName}</span>
+    </p>
     <p id="signing-approval-hint" class="hint">{hint}</p>
   </header>
+
+  {#if context}
+    <div class="context">{@render context()}</div>
+  {/if}
+
+  <!-- Reason only when a reason actually exists. -->
+  {#if model.reason.source !== "none" && model.reason.text}
+    <section class="reason" aria-label="Reason for request">
+      <div class="reason-label">Reason provided by {model.reason.source === "caller" ? "the requester" : model.requester.displayName}</div>
+      <p class="reason-body">{model.reason.text}</p>
+      {#if model.reason.source === "caller"}
+        <p class="reason-untrusted">
+          This reason comes from the caller and is not verified.
+        </p>
+      {/if}
+    </section>
+  {/if}
+
+  {#if showSigner}
+    <p class="signer-line" aria-label="Signing key">
+      <span class="signer-line-label">Signing with</span>
+      <span class="signer-line-name">{model.signer.label}</span>
+      <code class="mono" title={model.signer.address}>{shortSignerAddress}</code>
+    </p>
+  {/if}
 
   <!--
     Sensitive callout pinned at the top. Exact copy from the contract.
@@ -540,21 +585,6 @@
         <p class="metadata-reason">{model.metadataTrust.reason}</p>
       {/if}
       </section>
-
-    <!-- Reason only when a reason actually exists. -->
-      {#if model.reason.source !== "none" && model.reason.text}
-        <section class="reason" aria-label="Reason for request">
-          <div class="row">
-            <span class="label">Reason provided by {model.reason.source}</span>
-          </div>
-          <p class="reason-body">{model.reason.text}</p>
-          {#if model.reason.source === "caller"}
-            <p class="reason-untrusted">
-              This reason comes from the caller and is not verified.
-            </p>
-          {/if}
-        </section>
-      {/if}
 
       <section class="signer" aria-label="Signing identity">
         <div class="row">
@@ -778,6 +808,51 @@
     color: #475569;
     margin: 0;
   }
+  .requester-line {
+    font-size: 13px;
+    line-height: 1.45;
+    color: #475569;
+    margin: 0;
+  }
+  .requester-name {
+    font-weight: 600;
+    color: #0f172a;
+  }
+  .context {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .reason {
+    padding: 10px 12px;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+  }
+  .reason-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: #475569;
+  }
+  .reason .reason-body {
+    font-size: 13px;
+    color: #0f172a;
+  }
+  .signer-line {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.45;
+  }
+  .signer-line-label {
+    color: #475569;
+  }
+  .signer-line-name {
+    font-weight: 600;
+  }
   .sensitive-callout {
     background: #fff7ed;
     color: #9a3412;
@@ -913,7 +988,6 @@
     transform: rotate(180deg);
   }
   .request-details[open] > .identity,
-  .request-details[open] > .reason,
   .request-details[open] > .signer {
     margin-top: 10px;
   }

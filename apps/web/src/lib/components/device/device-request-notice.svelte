@@ -45,6 +45,6 @@
   </dl>
   <p class="text-xs leading-relaxed text-surface-500">
     Every requested capability is listed below. Uncheck any optional one you do not want to grant; the CLI receives exactly what you approve.
-    Reading the space's capability list is required for every delegation and cannot be unchecked.
+    Capabilities marked required cannot be unchecked.
   </p>
 </section>

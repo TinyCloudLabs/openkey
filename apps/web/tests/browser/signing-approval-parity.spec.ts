@@ -268,7 +268,7 @@ test.describe('signing-approval browser parity — production adapters', () => {
       await expect(dialog).toContainText('Check your TinyCloud permissions');
       const summary = page.locator('[data-parity-harness] .summary');
       await expect(summary.locator('.summary-statement')).toHaveCount(7);
-      await expect(summary).toContainText('View secret names and details');
+      await expect(summary).toContainText('View your secret names and details');
       await expect(summary).toContainText('Read secret values');
       await expect(summary.locator('.summary-sensitive-pill')).toHaveText([
         'Sensitive',
