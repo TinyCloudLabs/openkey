@@ -3,12 +3,12 @@
 import { betterAuth, type BetterAuthPlugin } from 'better-auth';
 import { APIError } from 'better-auth/api';
 import type { AuthMiddleware } from '@better-auth/core/api';
+import { defineRequestState, getCurrentAuthContext } from '@better-auth/core/context';
 import { prismaAdapter } from 'better-auth/adapters/prisma';
 import { passkey } from '@better-auth/passkey';
 import { bearer, emailOTP, jwt } from 'better-auth/plugins';
 import { oauthProvider } from '@better-auth/oauth-provider';
 import { Resend } from 'resend';
-import { AsyncLocalStorage } from 'node:async_hooks';
 import { getAddress } from 'viem';
 import { createPrismaClient, type PrismaClient } from '@openkey/db';
 import { createTeeClient, seal, generatePrivateKey, getAddressFromPrivateKey } from '@openkey/tee';
@@ -26,6 +26,7 @@ import {
   oauthValidAudiences,
 } from './oauth-config';
 import { createSealingContext } from './services/key-sealing';
+import { primaryKeyWhere } from './services/primary-key';
 import {
   assertFreshPasskeyUserVerification,
   recordPasskeyFreshnessAfterHook,
@@ -58,15 +59,7 @@ type AuthoritativeOauthClient = {
   id: string;
 };
 
-const oauthRequestContext = new AsyncLocalStorage<{ clientId?: string }>();
-
-function setOauthClientContext(clientId: string | undefined) {
-  oauthRequestContext.enterWith(clientId ? { clientId } : {});
-}
-
-function currentOauthClientId() {
-  return oauthRequestContext.getStore()?.clientId;
-}
+const oauthClientContext = defineRequestState<string | undefined>(() => undefined);
 
 async function loadAuthoritativeOauthClient(
   database: PrismaClient,
@@ -134,12 +127,7 @@ export async function buildCanonicalTinyCloudIdentityClaim(
     return undefined;
   }
   const key = await database.ethereumKey.findFirst({
-    where: {
-      userId: user.id,
-      keyType: 'MANAGED',
-      archivedAt: null,
-      isCanonicalTinyCloud: true,
-    },
+    where: primaryKeyWhere(user.id),
     select: { id: true, address: true },
   });
   if (!key) return undefined;
@@ -294,17 +282,25 @@ export const auth = betterAuth({
       idTokenExpiresIn: 60 * 60, // 1 hour in seconds
       storeClientSecret: 'hashed',
       storeTokens: 'hashed',
-      async customTokenResponseFields({ user, verificationValue }) {
-        // This callback is invoked for every user token response before the
-        // provider creates access/refresh tokens. Unlike customAccessTokenClaims,
-        // it also runs for the provider's default opaque access-token path.
-        const clientId = verificationValue?.query?.client_id;
-        if (clientId) setOauthClientContext(clientId);
+      async customTokenResponseFields({ grantType, verificationValue }) {
+        // Runs after the provider authenticates the client, before either
+        // opaque/JWT access tokens or the ID token are created. Refresh has no
+        // verificationValue: resolve the same request credentials the provider
+        // validated, including Basic-header precedence over body client_id.
+        let clientId = verificationValue?.query?.client_id;
+        if (grantType === 'refresh_token') {
+          const ctx = await getCurrentAuthContext();
+          const authorization = ctx.request?.headers.get('authorization');
+          clientId = authorization?.startsWith('Basic ')
+            ? Buffer.from(authorization.slice(6), 'base64').toString('utf8').split(':', 1)[0]
+            : ctx.body?.client_id;
+        }
+        await oauthClientContext.set(clientId);
         return {};
       },
       async customAccessTokenClaims({ user, scopes }) {
         if (!user || !scopes.includes(TINYCLOUD_MCP_SCOPE)) return {};
-        const client = await loadAuthoritativeOauthClient(prisma, currentOauthClientId());
+        const client = await loadAuthoritativeOauthClient(prisma, await oauthClientContext.get());
         if (!client) return {};
         const keys = await prisma.ethereumKey.findMany({
           where: {
@@ -327,7 +323,7 @@ export const auth = betterAuth({
         const emailClaims = buildEmailClaims(user, scopes);
         Object.assign(claims, emailClaims);
 
-        const client = await loadAuthoritativeOauthClient(prisma, currentOauthClientId());
+        const client = await loadAuthoritativeOauthClient(prisma, await oauthClientContext.get());
         const keys = client
           ? await buildOauthKeyClaims(user, scopes, client)
           : [];

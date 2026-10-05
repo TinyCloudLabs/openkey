@@ -11,7 +11,8 @@ import {
 } from '../services/tinycloud-bootstrap';
 import { createSealingContext, deriveKeyForRecord } from '../services/key-sealing';
 import { deviceTransactionUnsupportedError } from './device-delegation-window';
-import { isPrimaryKey } from '../services/primary-key';
+import { isPrimaryKey, PrimaryKeyConflictError, setPrimaryKey } from '../services/primary-key';
+import { rejectNonBrowserControlRequest } from '../middleware/browser-control';
 
 const prisma = createPrismaClient();
 const tee = createTeeClient();
@@ -144,14 +145,10 @@ keysRouter.post('/link', async (c) => {
   return c.json({ key }, 201);
 });
 
-// List user's keys (excludes archived by default)
-keysRouter.get('/', async (c) => {
-  const user = c.get('user');
-  const includeArchived = c.req.query('archived') === 'true';
-
+async function listKeysWithPrimary(userId: string, includeArchived: boolean) {
   const keys = await prisma.ethereumKey.findMany({
     where: {
-      userId: user.id,
+      userId,
       ...(includeArchived ? {} : { archivedAt: null }),
     },
     select: {
@@ -168,12 +165,18 @@ keysRouter.get('/', async (c) => {
     orderBy: { keyIndex: 'asc' },
   });
 
-  return c.json({
-    keys: keys.map(({ isCanonicalTinyCloud, ...key }) => ({
-      ...key,
-      isPrimary: isPrimaryKey({ ...key, isCanonicalTinyCloud }),
-    })),
-  });
+  return keys.map(({ isCanonicalTinyCloud, ...key }) => ({
+    ...key,
+    isPrimary: isPrimaryKey({ ...key, isCanonicalTinyCloud }),
+  }));
+}
+
+// List user's keys (excludes archived by default)
+keysRouter.get('/', async (c) => {
+  const user = c.get('user');
+  const includeArchived = c.req.query('archived') === 'true';
+
+  return c.json({ keys: await listKeysWithPrimary(user.id, includeArchived) });
 });
 
 // Generate a new key
@@ -238,6 +241,7 @@ keysRouter.get('/:keyId', async (c) => {
       label: true,
       archivedAt: true,
       createdAt: true,
+      isCanonicalTinyCloud: true,
     },
   });
 
@@ -245,7 +249,8 @@ keysRouter.get('/:keyId', async (c) => {
     return c.json({ error: 'Key not found' }, 404);
   }
 
-  return c.json({ key });
+  const { isCanonicalTinyCloud, ...publicKey } = key;
+  return c.json({ key: { ...publicKey, isPrimary: isPrimaryKey(key) } });
 });
 
 // Update key label
@@ -427,6 +432,63 @@ keysRouter.get('/:keyId/quote', async (c) => {
     quote,
     address: key.address,
     inTee: tee.isInTee(),
+  });
+});
+
+// Make a key the user's primary key: the canonical TinyCloud key that
+// `tinycloud:manage-key` signs with and the OAuth canonical identity claim
+// names. A TinyCloud signing control, so it takes the same cookie-session,
+// OpenKey-origin boundary as the account signing controls.
+const PRIMARY_KEY_ERRORS = {
+  not_found: { status: 404, message: 'Key not found' },
+  external_key: {
+    status: 400,
+    message: 'An external wallet cannot be your primary key because OpenKey cannot sign with it',
+  },
+  archived: { status: 400, message: 'Restore this key before making it your primary key' },
+  unavailable: { status: 400, message: 'OpenKey cannot sign with this key, so it cannot be your primary key' },
+} as const;
+const PRIMARY_KEY_ERROR_CODES = {
+  not_found: 'key_not_found',
+  external_key: 'external_key_not_eligible',
+  archived: 'key_archived',
+  unavailable: 'key_unavailable',
+} as const;
+
+keysRouter.post('/:keyId/primary', async (c) => {
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
+  const user = c.get('user');
+  const keyId = c.req.param('keyId');
+
+  let result;
+  try {
+    result = await setPrimaryKey(prisma, user.id, keyId);
+  } catch (error) {
+    if (error instanceof PrimaryKeyConflictError) {
+      return c.json({
+        error: { code: 'primary_key_conflict', message: 'Your primary key changed at the same time. Reload and try again.' },
+      }, 409);
+    }
+    throw error;
+  }
+
+  if (result.kind !== 'changed' && result.kind !== 'unchanged') {
+    const failure = PRIMARY_KEY_ERRORS[result.kind];
+    return c.json({ error: { code: PRIMARY_KEY_ERROR_CODES[result.kind], message: failure.message } }, failure.status);
+  }
+
+  if (result.kind === 'changed') {
+    console.log('[Keys] Primary key changed', {
+      userId: user.id,
+      keyId: result.keyId,
+      previousKeyId: result.previousKeyId,
+    });
+  }
+
+  return c.json({
+    changed: result.kind === 'changed',
+    key: result.key,
   });
 });
 
