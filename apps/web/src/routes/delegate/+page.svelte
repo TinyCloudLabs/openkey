@@ -66,6 +66,7 @@
   let delegating = $state(false);
   let done = $state(false);
   let pasteCode = $state('');
+  let shortCode = $state('');
   let callbackFailed = $state(false);
   let copied = $state(false);
   let step = $state<'select-key' | 'link-wallet' | 'consent' | 'choose-wallet' | 'done'>('select-key');
@@ -1038,18 +1039,30 @@
 
         done = true;
         step = 'done';
+        return;
       } catch {
-        // Callback unreachable (e.g. CLI on remote machine) — fall back to paste code
         callbackFailed = true;
-        pasteCode = delegationPasteCode(payload);
-        done = true;
-        step = 'done';
       }
-    } else {
-      pasteCode = delegationPasteCode(payload);
-      done = true;
-      step = 'done';
     }
+
+    pasteCode = delegationPasteCode(payload);
+    try {
+      const API_URL = import.meta.env.VITE_API_URL || '';
+      const response = await fetch(`${API_URL}/api/delegation-codes`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ delegation: payload }),
+      });
+      if (response.ok) {
+        const result = await response.json();
+        if (/^[a-z2-7]{4}-[a-z2-7]{4}$/.test(result.code)) shortCode = result.code;
+      }
+    } catch {
+      // The full delegation remains available when the broker is unreachable.
+    }
+    done = true;
+    step = 'done';
   }
 
   async function signInWithPasskey() {
@@ -1085,8 +1098,8 @@
     }
   }
 
-  async function copyPasteCode() {
-    if (!(await copyText(pasteCode))) {
+  async function copyCode(value: string) {
+    if (!(await copyText(value))) {
       error = 'Failed to copy code. Select the code and copy it manually.';
       return;
     }
@@ -1121,34 +1134,41 @@
           {#if pasteCode}
             <h2 class="text-lg font-semibold text-surface-900 mb-2">Delegation Created</h2>
             {#if callbackFailed}
-              <p class="text-surface-500 text-sm mb-4">Could not reach the CLI automatically. Copy this code and paste it into the CLI to complete authentication.</p>
+              <p class="text-surface-500 text-sm mb-4">Could not reach the CLI automatically. Enter the code below in your CLI to finish signing in.</p>
             {:else}
-              <p class="text-surface-500 text-sm mb-4">Copy this code and paste it into the CLI:</p>
+              <p class="text-surface-500 text-sm mb-4">Enter this code in the CLI to finish signing in:</p>
             {/if}
-            <p class="w-full rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-900 mb-3" role="note">
+            {#if shortCode}
+              <div class="w-full rounded-xl bg-surface-50 border border-surface-200 px-3 py-4">
+                <div class="font-mono text-2xl font-semibold tracking-widest text-surface-900 select-all">{shortCode}</div>
+                <p class="text-surface-500 text-xs mt-2">Valid for 10 minutes</p>
+              </div>
+              <button
+                class="mt-3 rounded-lg border border-surface-200 bg-surface-50 px-4 py-2 text-sm font-medium text-surface-900 hover:bg-surface-100"
+                onclick={() => copyCode(shortCode)}
+                aria-label="Copy short code"
+              >{copied ? 'Copied' : 'Copy code'}</button>
+            {:else}
+              <p class="text-surface-500 text-sm mb-3">Short code unavailable. Use the full delegation code instead.</p>
+            {/if}
+            <p class="w-full rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-900 mt-4" role="note">
               Only paste this code into a terminal you started yourself.
             </p>
-            <textarea
-              readonly
-              class="w-full h-24 p-3 bg-surface-50 border border-surface-200 rounded-xl text-xs font-mono resize-none"
-              value={pasteCode}
-              onfocus={(e) => (e.target as HTMLTextAreaElement).select()}
-            ></textarea>
-            <button
-              class="mt-2 p-1.5 bg-surface-50 border border-surface-200 rounded-lg cursor-pointer hover:opacity-80 transition-opacity"
-              onclick={copyPasteCode}
-              title="Copy to clipboard"
-            >
-              {#if copied}
-                <svg class="w-4 h-4 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" />
-                </svg>
-              {:else}
-                <svg class="w-4 h-4 text-surface-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M15.666 3.888A2.25 2.25 0 0013.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 01-.75.75H9.75a.75.75 0 01-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 01-2.25 2.25H6.75A2.25 2.25 0 014.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 011.927-.184" />
-                </svg>
-              {/if}
-            </button>
+            <details class="w-full mt-4 text-left" open={!shortCode}>
+              <summary class="cursor-pointer text-sm font-medium text-surface-700">Use full delegation code instead</summary>
+              <textarea
+                readonly
+                aria-label="Full delegation code"
+                class="w-full h-24 mt-2 p-3 bg-surface-50 border border-surface-200 rounded-xl text-xs font-mono resize-none"
+                value={pasteCode}
+                onfocus={(e) => (e.target as HTMLTextAreaElement).select()}
+              ></textarea>
+              <button
+                class="mt-2 rounded-lg border border-surface-200 bg-surface-50 px-3 py-1.5 text-sm text-surface-900 hover:bg-surface-100"
+                onclick={() => copyCode(pasteCode)}
+                aria-label="Copy full delegation code"
+              >{copied ? 'Copied' : 'Copy full code'}</button>
+            </details>
           {:else}
             <h2 class="text-lg font-semibold text-surface-900 mb-2">Authenticated</h2>
             <p class="text-surface-500 text-sm">You can close this window and return to the CLI.</p>
