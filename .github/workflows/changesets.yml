@@ -68,7 +68,12 @@ jobs:
 
       - name: Publish to npm
         if: steps.check.outputs.has_changesets == 'false'
-        run: bun run publish
+        # `changeset publish` tags each package it publishes but leaves the
+        # tags local; push them so every npm release has a git tag (TC-681).
+        # Existing tags were fetched at checkout, so only new ones are sent.
+        run: |
+          bun run publish
+          git push origin --tags
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
