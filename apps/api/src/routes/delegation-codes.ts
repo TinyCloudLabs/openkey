@@ -14,6 +14,7 @@ const PUBLIC_DELEGATION_FIELDS: Record<string, true> = {
   address: true,
   chainId: true,
   hostActivated: true,
+  primary: true,
   edited: true,
   reason: true,
   expirationTime: true,
@@ -57,6 +58,7 @@ export function createDelegationCodeRouter(input: {
       !jwk || typeof jwk !== 'object' || Array.isArray(jwk) ||
       jwk.kty !== 'OKP' || jwk.crv !== 'Ed25519' || typeof jwk.x !== 'string' ||
       Object.keys(jwk).some((field) => !PUBLIC_JWK_FIELDS[field]) ||
+      (delegation.primary !== undefined && typeof delegation.primary !== 'boolean') ||
       serialized.length > 128 * 1024
     ) {
       return c.json({ error: 'Invalid public delegation' }, 400);

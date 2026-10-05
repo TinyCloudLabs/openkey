@@ -8,6 +8,7 @@ const delegation = {
   spaceId: 'tinycloud:pkh:eip155:1:0x123:default',
   verificationMethod: 'did:key:zSession',
   jwk: { kty: 'OKP', crv: 'Ed25519', x: 'public-key' },
+  primary: true,
   expirationTime: '2099-01-01T00:00:00.000Z',
 };
 
@@ -73,5 +74,10 @@ describe('delegation short-code broker', () => {
       body: JSON.stringify({ delegation: { ...delegation, jwk: { ...delegation.jwk, secret: 'never-public' } } }),
     });
     expect(nested.status).toBe(400);
+    const disguised = await app.request('/api/delegation-codes', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ delegation: { ...delegation, primary: { privateKey: 'never-public' } } }),
+    });
+    expect(disguised.status).toBe(400);
   });
 });
