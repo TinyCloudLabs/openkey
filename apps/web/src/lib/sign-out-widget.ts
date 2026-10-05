@@ -1,10 +1,13 @@
 export interface SignOutWidgetRequest {
   requestId: string;
   protocolVersion: 1;
-  sessionToken?: string;
 }
 
-/** Only accept a sign-out request from the exact SDK parent/opener origin. */
+/**
+ * Only accept a sign-out request from the exact SDK parent/opener origin.
+ * A `sessionToken` sent by older SDKs is ignored: the widget revokes the
+ * session it holds in OpenKey-origin storage or cookies (TC-688).
+ */
 export function readSignOutWidgetRequest(
   event: Pick<MessageEvent, 'origin' | 'source' | 'data'>,
   origin: string | null,
@@ -18,13 +21,11 @@ export function readSignOutWidgetRequest(
     request?.type !== 'openkey:sign-out:request' ||
     typeof request.requestId !== 'string' ||
     request.requestId.length === 0 ||
-    request.protocolVersion !== 1 ||
-    (request.sessionToken !== undefined && typeof request.sessionToken !== 'string')
+    request.protocolVersion !== 1
   ) return null;
 
   return {
     requestId: request.requestId,
     protocolVersion: 1,
-    sessionToken: request.sessionToken,
   };
 }

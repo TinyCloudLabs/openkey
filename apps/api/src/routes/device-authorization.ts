@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { requireSession } from '../middleware/session';
+import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
 import {
   DeviceAuthorizationError,
   DeviceAuthorizationService,
@@ -56,7 +57,9 @@ export function createDeviceAuthorizationRouter(input: {
     });
   });
 
-  router.post('/:transactionId/approve', input.sessionMiddleware ?? requireSession as any, async (c) => {
+  // Approval is a signed-in user action from the OpenKey /delegate page. A
+  // bearer session token is accepted only from an OpenKey web origin (TC-688).
+  router.post('/:transactionId/approve', requireOpenKeyOriginForBearer as any, input.sessionMiddleware ?? requireSession as any, async (c) => {
     try {
       const user = c.get('user');
       await input.service.approve(c.req.param('transactionId'), user.id, await c.req.json());

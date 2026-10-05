@@ -2,7 +2,7 @@
   import { page } from '$app/stores';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
-  import { getSessionToken, isEmbedContext, setSessionToken } from '$lib/embed-passkey';
+  import { getSessionToken, isEmbedContext } from '$lib/embed-passkey';
   import EmbeddedSignIn from '$lib/components/auth/embedded-sign-in.svelte';
   import Button from '$lib/components/ui/button.svelte';
   import IframeSigningAdapter from '$lib/components/signing/iframe-signing-adapter.svelte';
@@ -173,10 +173,8 @@
     reviewSourceMessage = null;
     reviewSelection = new Set();
     keyFetched = false;
-    if (data.sessionToken && inIframe && typeof data.sessionToken === 'string') {
-      setSessionToken(data.sessionToken);
-      embedAuthenticated = true;
-    }
+    // A sessionToken in the request is ignored: the session comes only from
+    // OpenKey-origin storage or cookies (TC-688).
     // Reset preview state on a fresh request.
     previewSignedMessage = null;
     previewToken = null;
@@ -294,12 +292,6 @@
       serverVerifiedManifest = null;
       keyFetched = false;
       requestSealed = true;
-
-      // Receive session token from SDK (relayed from connect flow)
-      if (event.data.sessionToken && inIframe) {
-        setSessionToken(event.data.sessionToken);
-        embedAuthenticated = true;
-      }
 
       if (keyId && isAuthenticated) {
         try {

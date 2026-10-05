@@ -1,6 +1,7 @@
 import { Hono, type MiddlewareHandler } from 'hono';
 import { createPrismaClient, type PrismaClient } from '@openkey/db';
 import { requireSession, type SessionContext } from '../middleware/session';
+import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
 import { PUBLIC_PLAN_ENTITLEMENTS, serializeEntitlements } from '../services/plan-entitlements';
 
 export function createOrganizationsRouter(
@@ -8,6 +9,8 @@ export function createOrganizationsRouter(
   sessionMiddleware: MiddlewareHandler<SessionContext> = requireSession,
 ) {
   const organizationsRouter = new Hono<SessionContext>();
+  // A bearer session token is accepted only from an OpenKey web origin (TC-688).
+  organizationsRouter.use('*', requireOpenKeyOriginForBearer);
   organizationsRouter.use('*', sessionMiddleware);
 
   organizationsRouter.get('/', async (c) => {

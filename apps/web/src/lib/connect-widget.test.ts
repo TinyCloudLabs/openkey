@@ -19,16 +19,19 @@ describe('connect widget response (TC-688)', () => {
     expect(response).not.toHaveProperty('sessionToken');
   });
 
-  it('is what the embedded connect widget posts to the embedding page', () => {
-    const page = source('embed/connect/+page.svelte');
-    expect(page).toContain('sendResponse(connectAuthResponse(key))');
-    expect(page).not.toMatch(/response\.sessionToken|sessionToken:\s*token/);
-  });
+  for (const path of ['embed/connect/+page.svelte', 'connect/+page.svelte']) {
+    it(`is what ${path} posts to the requesting page`, () => {
+      const page = source(path);
+      expect(page).toContain('sendResponse(connectAuthResponse(key))');
+      expect(page).not.toMatch(/response\.sessionToken|sessionToken:\s*token/);
+    });
+  }
 });
 
 describe('widget targets (TC-688, TC-690)', () => {
   for (const path of [
     'embed/connect/+page.svelte',
+    'connect/+page.svelte',
     'embed/sign-typed-data/+page.svelte',
     'sign-typed-data/+page.svelte',
   ]) {
@@ -41,7 +44,17 @@ describe('widget targets (TC-688, TC-690)', () => {
     });
   }
 
-  it('the embedded sign-typed-data widget does not adopt a message session token', () => {
-    expect(source('embed/sign-typed-data/+page.svelte')).not.toContain('setSessionToken');
-  });
+  for (const path of ['embed/sign-typed-data/+page.svelte', 'embed/sign/+page.svelte']) {
+    it(`${path} does not adopt a session token from a message`, () => {
+      expect(source(path)).not.toContain('setSessionToken');
+    });
+  }
+
+  for (const path of ['embed/sign-out/+page.svelte', 'sign-out/+page.svelte']) {
+    it(`${path} revokes OpenKey's own session, not one from the request`, () => {
+      const page = source(path);
+      expect(page).toContain('revokeEmbeddedSession()');
+      expect(page).not.toContain('request.sessionToken');
+    });
+  }
 });

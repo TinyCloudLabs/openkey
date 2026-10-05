@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { createTeeClient, unseal } from '@openkey/tee';
 import { requireSession, type SessionContext } from '../middleware/session';
+import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
 import { tinyCloudService } from '../services/tinycloud-service';
 import { deriveKeyForRecord } from '../services/key-sealing';
 
@@ -41,7 +42,9 @@ async function getUserPrivateKey(userId: string): Promise<string | null> {
 
 export const secretsRouter = new Hono<SessionContext>();
 
-// All routes require authentication
+// All routes require authentication. A bearer session token is accepted only
+// from an OpenKey web origin (TC-688).
+secretsRouter.use('*', requireOpenKeyOriginForBearer);
 secretsRouter.use('*', requireSession);
 
 // POST /enable - Enable TinyCloud for the user

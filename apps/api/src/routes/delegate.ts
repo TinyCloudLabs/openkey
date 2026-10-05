@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { createTeeClient, unseal } from '@openkey/tee';
+import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
 import { requireSession } from '../middleware/session';
 import {
   createDelegateSignerAuth,
@@ -123,12 +124,13 @@ export function setDelegateSignerAuthMiddlewareForTests(
 export const delegateRouter = new Hono<DelegateSignerContext>();
 
 // Only the signer route accepts the narrow CoordinationOS OAuth principal.
-// Every other delegate endpoint retains the existing Better Auth session gate.
+// Every other delegate endpoint retains the existing Better Auth session gate,
+// and accepts a bearer session token only from an OpenKey web origin (TC-688).
 delegateRouter.use('*', async (c, next) => {
   if (c.req.path.endsWith('/sign')) {
     return activeDelegateSignerAuth(c, next);
   }
-  return (requireSession as any)(c, next);
+  return (requireOpenKeyOriginForBearer as any)(c, () => (requireSession as any)(c, next));
 });
 
 // Route-layer alias for the CLI permission entry shape. Keeps existing route

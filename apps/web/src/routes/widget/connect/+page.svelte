@@ -4,6 +4,8 @@
   import { api, type EthereumKey } from '$lib/api';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
+  import { isFromWidgetCounterparty, resolveWidgetOrigin } from '$lib/widget-transport';
+  import { connectAuthResponse } from '$lib/connect-widget';
 
   const session = authClient.useSession();
 
@@ -16,7 +18,13 @@
   let initialized = $state(false);
   let signingIn = $state(false);
 
-  const origin = $page.url.searchParams.get('origin') || '*';
+  // Exact requesting origin; never '*' (TC-690).
+  const origin = resolveWidgetOrigin($page.url.searchParams.get('origin'));
+  // The window that opened this widget: the opener for a popup, otherwise
+  // the parent frame.
+  const counterparty: Window | null = typeof window === 'undefined'
+    ? null
+    : window.opener ?? (window.parent !== window ? window.parent : null);
   const hasEoa = $page.url.searchParams.get('hasEoa') === 'true';
 
   // Use $effect instead of onMount for Svelte 5 compatibility with SSR disabled
@@ -29,12 +37,7 @@
       window.addEventListener('message', handleMessage);
 
       // Notify parent that widget is ready (AFTER listener is set up)
-      const targetOrigin = new URL(window.location.href).searchParams.get('origin') || '*';
-      if (window.opener) {
-        window.opener.postMessage({ type: 'openkey:ready' }, targetOrigin);
-      } else if (window.parent !== window) {
-        window.parent.postMessage({ type: 'openkey:ready' }, targetOrigin);
-      }
+      if (origin) counterparty?.postMessage({ type: 'openkey:ready' }, origin);
     }
   });
 
@@ -47,6 +50,7 @@
   });
 
   function handleMessage(event: MessageEvent) {
+    if (!isFromWidgetCounterparty(event, origin, counterparty)) return;
     if (event.data?.type === 'openkey:auth:request') {
       appName = event.data.appName || 'Unknown App';
     }
@@ -82,17 +86,11 @@
 
   function selectKey(key: EthereumKey) {
     selectedKey = key;
-    sendResponse({
-      type: 'openkey:auth:response',
-      success: true,
-      address: key.address,
-      keyId: key.id,
-      keyType: key.keyType,
-    });
+    sendResponse(connectAuthResponse(key));
   }
 
   function linkWallet() {
-    window.location.href = '/widget/link-wallet?origin=' + encodeURIComponent(origin);
+    window.location.href = '/widget/link-wallet?origin=' + encodeURIComponent(origin ?? '');
   }
 
   function recover() {
@@ -117,21 +115,12 @@
   }
 
   function sendResponse(data: object) {
-    if (window.opener) {
-      window.opener.postMessage(data, origin);
-    } else if (window.parent !== window) {
-      window.parent.postMessage(data, origin);
-    }
+    if (origin) counterparty?.postMessage(data, origin);
   }
 
   function sendClose() {
-    const closeMsg = { type: 'openkey:close' };
-    if (window.opener) {
-      window.opener.postMessage(closeMsg, origin);
-      window.close();
-    } else if (window.parent !== window) {
-      window.parent.postMessage(closeMsg, origin);
-    }
+    if (origin) counterparty?.postMessage({ type: 'openkey:close' }, origin);
+    if (window.opener) window.close();
   }
 
   function formatAddress(address: string): string {

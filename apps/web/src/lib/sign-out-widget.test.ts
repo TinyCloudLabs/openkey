@@ -16,7 +16,7 @@ describe('sign-out widget transport', () => {
       { origin: 'https://app.example', source, data: request },
       'https://app.example',
       source,
-    )).toEqual({ requestId: 'sign-out-1', protocolVersion: 1, sessionToken: 'bearer' });
+    )).toEqual({ requestId: 'sign-out-1', protocolVersion: 1 });
   });
 
   test('refuses wildcard, foreign-origin, foreign-source, and malformed requests', () => {
@@ -34,5 +34,15 @@ describe('sign-out widget transport', () => {
       { origin: 'https://app.example', source, data: { ...request, requestId: '' } },
       'https://app.example', source,
     )).toBeNull();
+  });
+
+  test('ignores a parent-supplied session token (TC-688)', () => {
+    const accepted = readSignOutWidgetRequest(
+      { origin: 'https://app.example', source, data: { ...request, sessionToken: 42 } },
+      'https://app.example',
+      source,
+    );
+    expect(accepted).toEqual({ requestId: 'sign-out-1', protocolVersion: 1 });
+    expect(accepted).not.toHaveProperty('sessionToken');
   });
 });
