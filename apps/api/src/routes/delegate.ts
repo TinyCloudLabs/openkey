@@ -97,6 +97,7 @@ import {
 } from '../services/coordinationos-signing-audit';
 import { validateTinyCloudManageKeyRequest } from '../services/tinycloud-manage-key-policy';
 import { deviceDelegationWindowError, deviceTransactionUnsupportedError } from './device-delegation-window';
+import { isPrimaryKey } from '../services/primary-key';
 
 const prisma = createPrismaClient();
 const tee = createTeeClient();
@@ -1417,6 +1418,9 @@ delegateRouter.post('/', async (c) => {
       jwk: body.jwk,
       address,
       chainId,
+      // Whether the signing key is the user's primary key, from the DB
+      // record. Unsigned metadata for the CLI; the SIWE stays the authority.
+      primary: isPrimaryKey(key),
       hostActivated,
       // `edited` is a hint for the UI response payload; the authority
       // gate is the token itself. The stored context was issued from a
@@ -1503,6 +1507,7 @@ delegateRouter.post('/', async (c) => {
     jwk: body.jwk,
     address,
     chainId,
+    primary: isPrimaryKey(key),
     hostActivated,
     edited: preparedResult.edited,
     reason,
@@ -1817,6 +1822,15 @@ delegateRouter.post('/complete', async (c) => {
     );
   }
 
+  // Whether the signer is the user's primary key, read from this user's
+  // record for the signing address. External wallets, and addresses this
+  // user does not hold, are never primary.
+  const signerKey = await prisma.ethereumKey.findFirst({
+    where: { userId: user.id, address: { equals: preparedAddress, mode: 'insensitive' }, archivedAt: null },
+    select: { keyType: true, isCanonicalTinyCloud: true, archivedAt: true },
+  });
+  const primary = signerKey ? isPrimaryKey(signerKey) : false;
+
   // Report the lifetime the wallet signed, never caller-supplied metadata.
   const expirationTime = signedSiweExpirationTime(body.prepared.siwe);
   if (!expirationTime) {
@@ -2002,6 +2016,7 @@ delegateRouter.post('/complete', async (c) => {
     jwk: body.jwk,
     address,
     chainId,
+    primary,
     hostActivated,
     edited: Boolean(body.edited),
     reason,

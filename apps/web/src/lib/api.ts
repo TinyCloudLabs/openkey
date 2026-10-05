@@ -77,6 +77,11 @@ export interface EthereumKey {
   keyType: 'MANAGED' | 'EXTERNAL';
   archivedAt?: string | null;
   createdAt: string;
+  /**
+   * The user's primary key: their canonical TinyCloud key, the account owner
+   * TinyCloud uses by default. Set by `listKeys`; other key endpoints omit it.
+   */
+  isPrimary?: boolean;
 }
 
 export interface AutoSignPreference {
