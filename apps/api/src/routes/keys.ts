@@ -11,6 +11,7 @@ import {
 } from '../services/tinycloud-bootstrap';
 import { createSealingContext, deriveKeyForRecord } from '../services/key-sealing';
 import { deviceTransactionUnsupportedError } from './device-delegation-window';
+import { isPrimaryKey } from '../services/primary-key';
 
 const prisma = createPrismaClient();
 const tee = createTeeClient();
@@ -162,11 +163,17 @@ keysRouter.get('/', async (c) => {
       label: true,
       archivedAt: true,
       createdAt: true,
+      isCanonicalTinyCloud: true,
     },
     orderBy: { keyIndex: 'asc' },
   });
 
-  return c.json({ keys });
+  return c.json({
+    keys: keys.map(({ isCanonicalTinyCloud, ...key }) => ({
+      ...key,
+      isPrimary: isPrimaryKey({ ...key, isCanonicalTinyCloud }),
+    })),
+  });
 });
 
 // Generate a new key
