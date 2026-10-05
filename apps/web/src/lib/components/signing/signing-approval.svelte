@@ -400,7 +400,7 @@
   <!-- Reason only when a reason actually exists. -->
   {#if model.reason.source !== "none" && model.reason.text}
     <section class="reason" aria-label="Reason for request">
-      <div class="reason-label">Reason provided by {model.requester.displayName}</div>
+      <div class="reason-label">Reason provided by {model.reason.source === "caller" ? "the requester" : model.requester.displayName}</div>
       <p class="reason-body">{model.reason.text}</p>
       {#if model.reason.source === "caller"}
         <p class="reason-untrusted">
