@@ -61,7 +61,7 @@ it detects drift. `db:push` remains a local-development command only.
 
 ### API (Phala Cloud / dstack TEE)
 - Docker image: `skgbafa/openkey-api`
-- CI: `.github/workflows/deploy-api.yml` triggers on push to `main` (paths: `apps/api/**`, `packages/**`, `Dockerfile`)
+- CI: `.github/workflows/deploy-api.yml` triggers on push to `main` only when the API image or deploy can change (paths: `apps/api/**`, `packages/{db,tee,types}/**`, `Dockerfile`, `.dockerignore`, root `package.json`/`bun.lock`/`bunfig.toml`/`turbo.json`/`tsconfig.json`/`prisma.config.ts`, the production migration scripts, `docker-compose.prod.yml`, and the workflow itself); run it by hand with `workflow_dispatch`. Keep the list in sync with the `Dockerfile`.
 - Image tagged with git SHA and `latest`
 - Deployed to Phala Cloud CVM named `openkey-api`
 - Manual deploy: `bun run phala:env` (uses `.env.prod`)

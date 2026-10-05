@@ -3,6 +3,29 @@ name: Deploy API to Phala Cloud
 on:
   push:
     branches: [main]
+    # Deploy only when the API image or the deploy itself can change. Keep
+    # this list in sync with the Dockerfile and the steps below.
+    paths:
+      # Image: Dockerfile build context and dependency install
+      - Dockerfile
+      - .dockerignore
+      - package.json
+      - bun.lock
+      - bunfig.toml # read by the schema-contract test in the build stage
+      - turbo.json
+      - tsconfig.json # extended by the api, db and tee tsconfigs
+      - prisma.config.ts
+      - apps/api/**
+      - packages/db/**
+      - packages/tee/**
+      - packages/types/** # its package.json is part of the image install
+      # Deploy: production migrations and the compose file shipped to Phala
+      - scripts/generate-prisma.ts
+      - scripts/deploy-production-migrations.ts
+      - scripts/assert-production-migration-ready.ts
+      - scripts/verify-tc-488-cutover.ts
+      - docker-compose.prod.yml
+      - .github/workflows/deploy-api.yml
   workflow_dispatch:
 
 concurrency:
