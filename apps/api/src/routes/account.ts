@@ -10,13 +10,21 @@ import {
   controlMutationError,
 } from '../services/tinycloud-manage-key-control';
 import { resolveOriginPolicy } from '../origin-policy';
+import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
+import { requireFreshPasskey } from '../services/passkey-freshness';
 
 const prisma = createPrismaClient();
 
 export const accountRouter = new Hono<SessionContext>();
 
-// All routes require authentication
+// All routes require authentication. A bearer session token is accepted only
+// from an OpenKey web origin (TC-688).
+accountRouter.use('*', requireOpenKeyOriginForBearer);
 accountRouter.use('*', requireSession);
+
+// Account deletion needs a passkey verification on this session within the
+// last five minutes (TC-689).
+const ACCOUNT_DELETE_PASSKEY_MAX_AGE_MS = 5 * 60 * 1000;
 
 function rejectNonBrowserControlRequest(c: any) {
   // Account controls are deliberately cookie-session-only. In particular, an
@@ -111,6 +119,8 @@ accountRouter.get('/auto-sign', async (c) => {
 // Update Auto-Sign preference
 accountRouter.patch('/auto-sign', async (c) => {
   const user = c.get('user');
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
   let patch;
 
   try {
@@ -218,12 +228,16 @@ accountRouter.patch('/tinycloud-apps/:clientId', async (c) => {
 });
 
 // Delete account permanently
-// Requires: typed confirmation + passkey verification
+// Requires: cookie session from an OpenKey origin, a passkey verification on
+// this session within the last five minutes, and typed confirmation.
 accountRouter.post('/delete', async (c) => {
   const user = c.get('user');
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
+  const stale = await requireFreshPasskey(c, ACCOUNT_DELETE_PASSKEY_MAX_AGE_MS, prisma);
+  if (stale) return stale;
   const body = await c.req.json<{
     confirmation: string; // Must be "DELETE MY ACCOUNT"
-    passkeyChallenge?: string; // Passkey challenge response (if available)
   }>();
 
   // Verify typed confirmation
@@ -268,18 +282,8 @@ accountRouter.post('/delete', async (c) => {
   });
 });
 
-// Request account deletion (sends confirmation email, returns challenge)
-accountRouter.post('/delete/request', async (c) => {
-  const user = c.get('user');
-
-  // In a full implementation, this would:
-  // 1. Send email with deletion confirmation link
-  // 2. Generate a time-limited deletion token
-  // 3. Require the user to verify via both email AND passkey
-
-  return c.json({
-    success: true,
-    message: 'Deletion confirmation sent to your email',
-    expiresIn: 3600, // 1 hour
-  });
+// Email-confirmed account deletion is not implemented. Say so rather than
+// claiming an email was sent (TC-689).
+accountRouter.post('/delete/request', (c) => {
+  return c.json({ error: 'Email-confirmed account deletion is not implemented' }, 501);
 });

@@ -556,3 +556,30 @@ export function createVersionedIframeTransport(
     destroy: () => window.removeEventListener('message', handler),
   };
 }
+
+/**
+ * Resolves the `?origin=` a widget was opened with. Returns null for a
+ * missing, wildcard, opaque, or non-canonical origin, so legacy widgets
+ * that do not use the full transport still never post to "*" (TC-690).
+ */
+export function resolveWidgetOrigin(raw: string | null | undefined): string | null {
+  if (!raw || raw === '*' || raw === 'null') return null;
+  try {
+    return new URL(raw).origin === raw ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The same ingress check `createWidgetTransport` applies: a message counts
+ * only when it comes from the configured origin AND from the expected
+ * counterparty window (opener for popups, parent for iframes).
+ */
+export function isFromWidgetCounterparty(
+  event: Pick<MessageEvent, 'origin' | 'source'>,
+  origin: string | null,
+  counterparty: Window | null,
+): boolean {
+  return origin !== null && counterparty !== null && event.origin === origin && event.source === counterparty;
+}

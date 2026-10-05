@@ -3,6 +3,7 @@ import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import { createPrismaClient, type PrismaClient } from '@openkey/db';
 import { getAddress } from 'viem';
 import { requireSession, type SessionContext } from '../middleware/session';
+import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
 import { resolvePlanEntitlements, serializeEntitlements } from '../services/plan-entitlements';
 import {
   oauthApplicationType,
@@ -69,6 +70,8 @@ async function retrySerializable<T>(operation: () => Promise<T>): Promise<T> {
 
 export function createTenantConsoleRouter(db: PrismaClient, dependencies: TenantConsoleDependencies = {}) {
   const router = new Hono<TenantConsoleContext>();
+  // A bearer session token is accepted only from an OpenKey web origin (TC-688).
+  router.use('*', requireOpenKeyOriginForBearer as unknown as MiddlewareHandler<TenantConsoleContext>);
   router.use('*', (dependencies.sessionMiddleware ?? requireSession) as unknown as MiddlewareHandler<TenantConsoleContext>);
   router.use('/:organizationId/*', async (c, next) => {
     const membership = await db.organizationMembership.findFirst({ where: { ...activeMembershipWhere(c.req.param('organizationId'), new Date()), userId: c.get('user').id }, select: { id: true, organizationId: true, userId: true, role: true } });

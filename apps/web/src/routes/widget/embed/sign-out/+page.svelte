@@ -23,7 +23,7 @@
   async function confirm() {
     if (!request || !origin || complete) return;
     complete = true;
-    const revoked = await revokeEmbeddedSession(request.sessionToken);
+    const revoked = await revokeEmbeddedSession();
     window.parent.postMessage(
       {
         type: 'openkey:sign-out:response',

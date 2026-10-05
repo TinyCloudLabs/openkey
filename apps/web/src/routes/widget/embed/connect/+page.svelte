@@ -3,6 +3,8 @@
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
   import { isEmbedContext, clearSessionToken, getSessionToken, setSessionToken } from '$lib/embed-passkey';
+  import { isFromWidgetCounterparty, resolveWidgetOrigin } from '$lib/widget-transport';
+  import { connectAuthResponse } from '$lib/connect-widget';
   import EmbeddedSignIn from '$lib/components/auth/embedded-sign-in.svelte';
   import Button from '$lib/components/ui/button.svelte';
 
@@ -23,7 +25,8 @@
   // Derived: whether user is authenticated (either via cookies or embed token)
   const isAuthenticated = $derived(inIframe ? embedAuthenticated : !!$session.data);
 
-  const origin = $page.url.searchParams.get('origin') || '*';
+  // Every message goes to the exact embedding origin; never '*' (TC-688).
+  const origin = resolveWidgetOrigin($page.url.searchParams.get('origin'));
   const hasEoa = $page.url.searchParams.get('hasEoa') === 'true';
 
   $effect(() => {
@@ -32,8 +35,7 @@
 
       window.addEventListener('message', handleMessage);
 
-      const targetOrigin = new URL(window.location.href).searchParams.get('origin') || '*';
-      window.parent.postMessage({ type: 'openkey:ready' }, targetOrigin);
+      if (origin) window.parent.postMessage({ type: 'openkey:ready' }, origin);
     }
   });
 
@@ -42,7 +44,7 @@
     if (!contentEl) return;
     const observer = new ResizeObserver(() => {
       const height = contentEl!.scrollHeight;
-      window.parent.postMessage({ type: 'openkey:resize', height }, '*');
+      if (origin) window.parent.postMessage({ type: 'openkey:resize', height }, origin);
     });
     observer.observe(contentEl);
     return () => observer.disconnect();
@@ -57,6 +59,7 @@
   });
 
   function handleMessage(event: MessageEvent) {
+    if (!isFromWidgetCounterparty(event, origin, window.parent)) return;
     if (event.data?.type === 'openkey:auth:request') {
       appName = event.data.appName || 'Unknown App';
     }
@@ -99,22 +102,12 @@
 
   function selectKey(key: EthereumKey) {
     selectedKey = key;
-    const response: Record<string, any> = {
-      type: 'openkey:auth:response',
-      success: true,
-      address: key.address,
-      keyId: key.id,
-      keyType: key.keyType,
-    };
-    // Pass session token so SDK can relay it to subsequent iframes
-    const token = getSessionToken();
-    if (token) response.sessionToken = token;
-    sendResponse(response);
+    sendResponse(connectAuthResponse(key));
   }
 
   function linkWallet() {
     // In embed mode, delegate wallet linking to parent SDK
-    window.parent.postMessage({ type: 'openkey:link-wallet:delegate' }, origin);
+    if (origin) window.parent.postMessage({ type: 'openkey:link-wallet:delegate' }, origin);
   }
 
   function register() {
@@ -204,11 +197,11 @@
   }
 
   function sendResponse(data: object) {
-    window.parent.postMessage(data, origin);
+    if (origin) window.parent.postMessage(data, origin);
   }
 
   function sendClose() {
-    window.parent.postMessage({ type: 'openkey:close' }, origin);
+    if (origin) window.parent.postMessage({ type: 'openkey:close' }, origin);
   }
 
   function formatAddress(address: string): string {

@@ -135,6 +135,9 @@ mock.module('../apps/api/src/middleware/session', () => ({
 test(
   'vertical-happy-path harness — HTTP server for cross-repo browser tests (blocks until SIGTERM)',
   async () => {
+    // The widget's bearer session token is accepted only from an OpenKey web
+    // origin (TC-688); here that is the widget's dev origin.
+    process.env.CORS_ORIGIN ??= 'http://localhost:5778';
     const { delegateRouter } = await import('../apps/api/src/routes/delegate');
     const { keysRouter } = await import('../apps/api/src/routes/keys');
     const { Hono } = await import('hono');

@@ -145,3 +145,35 @@ export async function recordPasskeyFreshnessAfterHook(
   await recordVerifiedPasskeySession(db, returned, ceremonyId);
   return {};
 }
+
+/**
+ * Step-up check for custody-destroying operations (TC-689). The current
+ * session must carry a passkey verification recorded within `maxAgeMs` by
+ * `recordVerifiedPasskeySession`. Returns a 403 response when it does not,
+ * or null when the caller may proceed.
+ */
+export async function requireFreshPasskey(
+  c: {
+    get: (key: 'session' | 'user') => any;
+    json: (body: unknown, status: 403) => Response;
+  },
+  maxAgeMs: number,
+  db: Pick<PrismaClient, 'session'>,
+  now = new Date(),
+): Promise<Response | null> {
+  const sessionId = c.get('session')?.id;
+  const userId = c.get('user')?.id;
+  const row = typeof sessionId === 'string' && typeof userId === 'string'
+    ? await db.session.findFirst({
+      where: { id: sessionId, userId, expiresAt: { gt: now } },
+      select: { lastPasskeyAt: true },
+    })
+    : null;
+  const verifiedAt = row?.lastPasskeyAt?.getTime();
+  const age = verifiedAt === undefined ? Number.NaN : now.getTime() - verifiedAt;
+  if (age >= 0 && age <= maxAgeMs) return null;
+  return c.json({
+    error: 'Verify with your passkey again to continue',
+    code: 'passkey_step_up_required',
+  }, 403);
+}
