@@ -2,7 +2,8 @@
   import { page } from '$app/stores';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
-  import { getSessionToken, isEmbedContext, setSessionToken } from '$lib/embed-passkey';
+  import { getSessionToken, isEmbedContext } from '$lib/embed-passkey';
+  import { isFromWidgetCounterparty, resolveWidgetOrigin } from '$lib/widget-transport';
   import EmbeddedSignIn from '$lib/components/auth/embedded-sign-in.svelte';
   import Button from '$lib/components/ui/button.svelte';
 
@@ -28,7 +29,8 @@
 
   const isAuthenticated = $derived(inIframe ? embedAuthenticated : !!$session.data);
 
-  const origin = $page.url.searchParams.get('origin') || '*';
+  // Exact embedding origin; never '*' (TC-690).
+  const origin = resolveWidgetOrigin($page.url.searchParams.get('origin'));
 
   $effect(() => {
     if (typeof window !== 'undefined' && !initialized) {
@@ -36,8 +38,7 @@
 
       window.addEventListener('message', handleMessage);
 
-      const targetOrigin = new URL(window.location.href).searchParams.get('origin') || '*';
-      window.parent.postMessage({ type: 'openkey:ready' }, targetOrigin);
+      if (origin) window.parent.postMessage({ type: 'openkey:ready' }, origin);
     }
   });
 
@@ -46,7 +47,7 @@
     if (!contentEl) return;
     const observer = new ResizeObserver(() => {
       const height = contentEl!.scrollHeight;
-      window.parent.postMessage({ type: 'openkey:resize', height }, '*');
+      if (origin) window.parent.postMessage({ type: 'openkey:resize', height }, origin);
     });
     observer.observe(contentEl);
     return () => observer.disconnect();
@@ -73,16 +74,13 @@
   });
 
   async function handleMessage(event: MessageEvent) {
+    if (!isFromWidgetCounterparty(event, origin, window.parent)) return;
     if (event.data?.type === 'openkey:signTypedData:request') {
       typedData = event.data.data;
       keyId = event.data.data?.keyId || null;
       keyFetched = false;
-
-      // Receive session token from SDK (relayed from connect flow)
-      if (event.data.sessionToken && inIframe) {
-        setSessionToken(event.data.sessionToken);
-        embedAuthenticated = true;
-      }
+      // A sessionToken in the message is ignored: the session comes only
+      // from OpenKey-origin storage or cookies (TC-690).
 
       if (keyId && isAuthenticated) {
         try {
@@ -128,11 +126,11 @@
   }
 
   function sendResponse(data: object) {
-    window.parent.postMessage(data, origin);
+    if (origin) window.parent.postMessage(data, origin);
   }
 
   function sendClose() {
-    window.parent.postMessage({ type: 'openkey:close' }, origin);
+    if (origin) window.parent.postMessage({ type: 'openkey:close' }, origin);
   }
 
   function formatAddress(address: string): string {

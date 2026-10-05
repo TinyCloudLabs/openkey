@@ -1,6 +1,11 @@
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { describe, expect, it, beforeEach, afterEach } from 'bun:test';
-import { createVersionedIframeTransport, createWidgetTransport } from './widget-transport';
+import {
+  createVersionedIframeTransport,
+  createWidgetTransport,
+  isFromWidgetCounterparty,
+  resolveWidgetOrigin,
+} from './widget-transport';
 
 // Minimal DOM-ish shim for the transport in a Node test environment.
 // We simulate window, window.opener, window.postMessage, and MessageEvent.
@@ -723,5 +728,26 @@ describe('versioned iframe transport', () => {
     }
     expect(closed).toBe(0);
     expect(invalid).toEqual(['invalid-payload', 'invalid-close']);
+  });
+});
+
+describe('legacy widget origin checks (TC-690)', () => {
+  it('accepts only an exact, canonical origin', () => {
+    expect(resolveWidgetOrigin('https://app.example')).toBe('https://app.example');
+    expect(resolveWidgetOrigin('http://localhost:5173')).toBe('http://localhost:5173');
+    for (const bad of [null, undefined, '', '*', 'null', 'app.example', 'https://app.example/', 'https://app.example/path', 'javascript:alert(1)']) {
+      expect(resolveWidgetOrigin(bad)).toBeNull();
+    }
+  });
+
+  it('accepts a message only from the configured origin and counterparty window', () => {
+    const parent = {} as Window;
+    const sibling = {} as Window;
+    const origin = 'https://app.example';
+    expect(isFromWidgetCounterparty({ origin, source: parent }, origin, parent)).toBe(true);
+    expect(isFromWidgetCounterparty({ origin: 'https://evil.example', source: parent }, origin, parent)).toBe(false);
+    expect(isFromWidgetCounterparty({ origin, source: sibling }, origin, parent)).toBe(false);
+    expect(isFromWidgetCounterparty({ origin, source: parent }, null, parent)).toBe(false);
+    expect(isFromWidgetCounterparty({ origin, source: null }, origin, null)).toBe(false);
   });
 });

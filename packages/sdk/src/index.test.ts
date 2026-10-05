@@ -318,12 +318,10 @@ describe('OpenKey.signOut', () => {
     const openkey = Object.create(OpenKey.prototype) as OpenKey;
     (openkey as any).activeFlowCancellations = new Set();
     (openkey as any).lastAuth = { address: '0xfirst', keyId: 'key-first', keyType: 'MANAGED' };
-    (openkey as any).sessionToken = 'first-session-token';
     let signOutRequest: any;
     (openkey as any).openFlow = async (_action: string, request: any) => {
       signOutRequest = request;
       expect((openkey as any).lastAuth).toBeNull();
-      expect((openkey as any).sessionToken).toBeNull();
       return { requestId: request.requestId, revoked: true };
     };
 
@@ -332,8 +330,8 @@ describe('OpenKey.signOut', () => {
     expect(signOutRequest).toMatchObject({
       type: 'openkey:sign-out:request',
       protocolVersion: 1,
-      sessionToken: 'first-session-token',
     });
+    expect(signOutRequest).not.toHaveProperty('sessionToken');
     expect(acknowledgement).toEqual({ requestId: signOutRequest.requestId, revoked: true });
     expect(openkey.getSessionToken()).toBeNull();
   });
@@ -342,7 +340,6 @@ describe('OpenKey.signOut', () => {
     const openkey = Object.create(OpenKey.prototype) as OpenKey;
     (openkey as any).activeFlowCancellations = new Set();
     (openkey as any).lastAuth = { address: '0xfirst', keyId: 'key-first', keyType: 'MANAGED' };
-    (openkey as any).sessionToken = 'first-session-token';
     const requests: any[] = [];
     (openkey as any).openFlow = async (_action: string, request: any) => {
       requests.push(request);
@@ -390,7 +387,6 @@ describe('OpenKey.signOut', () => {
       () => { cancellations.push('second'); },
     ]);
     (openkey as any).lastAuth = { address: '0xfirst', keyId: 'key-first', keyType: 'MANAGED' };
-    (openkey as any).sessionToken = 'first-session-token';
     (openkey as any).openFlow = async (_action: string, request: any) => {
       expect(cancellations).toEqual(['first', 'second']);
       return { requestId: request.requestId, revoked: true };
@@ -571,5 +567,80 @@ describe('resolveAuthorizeTinyCloudRouting (Sol MAJOR-4 final continuation)', ()
     });
     expect(r.route).toBe('external');
     expect(r.resolvedKeyType).toBe('EXTERNAL');
+  });
+});
+
+describe('OpenKey session token isolation (TC-688)', () => {
+  function connectedOpenKey() {
+    const openkey = Object.create(OpenKey.prototype) as OpenKey;
+    (openkey as any).activeFlowCancellations = new Set();
+    (openkey as any).host = 'https://openkey.test';
+    (openkey as any).oauthHost = 'https://api.openkey.test';
+    (openkey as any).lastAuth = { address: '0xfirst', keyId: 'key-first', keyType: 'MANAGED' };
+    return openkey;
+  }
+
+  test('ignores a session token in a connect response and never exposes one', async () => {
+    const openkey = connectedOpenKey();
+    let listener: ((event: any) => void) | undefined;
+    const popup = { closed: false, close() { this.closed = true; }, postMessage() {} };
+    const previousWindow = (globalThis as any).window;
+    (globalThis as any).window = {
+      screenX: 0, screenY: 0, outerWidth: 1024, outerHeight: 768,
+      open: () => popup,
+      addEventListener: (type: string, fn: (event: any) => void) => { if (type === 'message') listener = fn; },
+      removeEventListener: () => {},
+    };
+    try {
+      const result = new Promise((resolve, reject) => {
+        (openkey as any).openPopup(
+          'connect',
+          'https://openkey.test/widget/connect?origin=https%3A%2F%2Fapp.test',
+          { type: 'openkey:auth:request', appName: 'App' },
+          resolve,
+          reject,
+        );
+      });
+      listener!({
+        origin: 'https://openkey.test',
+        source: popup,
+        data: {
+          type: 'openkey:auth:response',
+          success: true,
+          address: '0xsecond',
+          keyId: 'key-second',
+          keyType: 'MANAGED',
+          sessionToken: 'legacy-widget-session-token',
+        },
+      });
+      expect(await result).toEqual({ address: '0xsecond', keyId: 'key-second', keyType: 'MANAGED' });
+    } finally {
+      (globalThis as any).window = previousWindow;
+    }
+    expect(openkey.getSessionToken()).toBeNull();
+    expect(openkey.tinycloudSigningOptions()).toEqual({
+      endpoint: 'https://api.openkey.test/api/delegate/sign',
+      token: null,
+    });
+  });
+
+  test('sends no session token in sign or sign-typed-data widget requests', async () => {
+    const openkey = connectedOpenKey();
+    const requests: any[] = [];
+    (openkey as any).openFlow = async (_action: string, request: any) => {
+      requests.push(request);
+      return { signature: '0xsig', address: '0xfirst' };
+    };
+
+    await openkey.signMessage({ message: 'hello', keyId: 'key-first' });
+    await openkey.signTypedData({
+      domain: {}, types: {}, primaryType: 'Mail', message: {}, keyId: 'key-first',
+    } as any);
+
+    expect(requests.map((request) => request.type)).toEqual([
+      'openkey:sign:request',
+      'openkey:signTypedData:request',
+    ]);
+    for (const request of requests) expect(request).not.toHaveProperty('sessionToken');
   });
 });

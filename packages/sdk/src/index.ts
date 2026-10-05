@@ -219,9 +219,9 @@ export interface CapabilityPresentationEnvelopeV1 {
 // always carry both fields and the SDK matches them on response.
 type MessageType =
   | { type: 'openkey:auth:request'; appName: string }
-  | { type: 'openkey:auth:response'; success: true; address: string; keyId: string; keyType?: 'MANAGED' | 'EXTERNAL'; sessionToken?: string; requestId?: string; protocolVersion?: number }
+  | { type: 'openkey:auth:response'; success: true; address: string; keyId: string; keyType?: 'MANAGED' | 'EXTERNAL'; requestId?: string; protocolVersion?: number }
   | { type: 'openkey:auth:response'; success: false; error: OpenKeyError; requestId?: string; protocolVersion?: number }
-  | { type: 'openkey:sign:request'; message: string; keyId?: string; sessionToken?: string; requestId?: string; protocolVersion?: number }
+  | { type: 'openkey:sign:request'; message: string; keyId?: string; requestId?: string; protocolVersion?: number }
   | { type: 'openkey:sign:response'; success: true; signature: string; address: string; requestId?: string; protocolVersion?: number }
   | {
       type: 'openkey:sign:response';
@@ -267,7 +267,7 @@ type MessageType =
       protocolVersion: number;
       error: OpenKeyError;
     }
-  | { type: 'openkey:signTypedData:request'; data: SignTypedDataRequest; sessionToken?: string; requestId?: string; protocolVersion?: number }
+  | { type: 'openkey:signTypedData:request'; data: SignTypedDataRequest; requestId?: string; protocolVersion?: number }
   | { type: 'openkey:signTypedData:response'; success: true; signature: string; address: string; requestId?: string; protocolVersion?: number }
   | { type: 'openkey:signTypedData:response'; success: false; error: OpenKeyError; requestId?: string; protocolVersion?: number }
   | { type: 'openkey:link-wallet:request' }
@@ -277,7 +277,7 @@ type MessageType =
   | { type: 'openkey:link-wallet:result'; success: true; address: string; keyId: string }
   | { type: 'openkey:link-wallet:result'; success: false; error: OpenKeyError }
   | { type: 'openkey:auth:use-external-wallet' }
-  | { type: 'openkey:sign-out:request'; requestId: string; protocolVersion: 1; sessionToken?: string }
+  | { type: 'openkey:sign-out:request'; requestId: string; protocolVersion: 1 }
   | { type: 'openkey:sign-out:response'; success: true; requestId: string; protocolVersion: 1; revoked: boolean }
   | { type: 'openkey:sign-out:response'; success: false; requestId: string; protocolVersion: 1; error: OpenKeyError }
   | { type: 'openkey:resize'; height: number; protocolVersion?: number }
@@ -772,14 +772,13 @@ export class OpenKey {
   private popup: Window | null = null;
   private lastAuth: AuthResult | null = null;
   private discoveredProviders: EIP6963ProviderDetail[] = [];
-  private sessionToken: string | null = null;
   /** Cancels widget flows that could outlive a sign-out on this instance. */
   private activeFlowCancellations = new Set<() => void>();
   /**
    * Nostr identity custody + signing (secp256k1 Schnorr / BIP-340). Kept
    * fully separate from the Ethereum flows above: it never reuses
-   * `lastAuth`/`sessionToken`, and its widget messages never carry a
-   * sessionToken - the OpenKey session and any signing grants stay inside
+   * `lastAuth`, and its widget messages never carry a session token -
+   * the OpenKey session and any signing grants stay inside
    * the OpenKey-origin iframe for the whole lifetime of this client.
    */
   readonly nostr: OpenKeyNostr;
@@ -874,14 +873,13 @@ export class OpenKey {
   /**
    * Signs the active OpenKey account out through the OpenKey-owned widget.
    *
-   * The SDK passes its Better Auth bearer through the OpenKey-owned widget
-   * protocol so applications do not have to implement revocation themselves.
-   * Local SDK session state is cleared before opening the widget, including
-   * when remote revocation is unavailable.
+   * The OpenKey-owned widget revokes the OpenKey session it holds itself;
+   * the SDK never holds an OpenKey session token. Local SDK state is cleared
+   * before opening the widget, including when remote revocation is
+   * unavailable.
    */
   async signOut(opts?: { mode?: OpenKeyMode }): Promise<SignOutAcknowledgement> {
     const requestId = `ok-signout-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-    const sessionToken = this.sessionToken || undefined;
     // Redirect flows intentionally never resolve. Sign-out needs to return a
     // correlated acknowledgement, so use the OpenKey popup boundary instead.
     const mode = this.resolveMode(opts?.mode) === 'redirect' ? 'popup' : opts?.mode;
@@ -891,7 +889,6 @@ export class OpenKey {
     this.cancelActiveFlows();
     // A failed/blocked widget must never leave this SDK instance authenticated.
     this.lastAuth = null;
-    this.sessionToken = null;
 
     const acknowledgement = await this.openFlow<SignOutAcknowledgement>(
       'sign-out',
@@ -899,7 +896,6 @@ export class OpenKey {
         type: 'openkey:sign-out:request',
         requestId,
         protocolVersion: 1,
-        sessionToken,
       },
       mode,
     );
@@ -911,23 +907,27 @@ export class OpenKey {
   }
 
   /**
-   * Better-auth session token relayed during connect(), or null if the
-   * flow did not provide one. Use as a bearer token for API calls made
-   * on the user's behalf (e.g. TinyCloud auto-sign bootstrap signing).
+   * Always null. OpenKey no longer gives its session token to the embedding
+   * page (TC-688): the token unlocked OpenKey's key and account APIs, not
+   * just the requesting app's flows.
+   *
+   * @deprecated Kept so existing callers compile. Third-party server-side
+   * signing uses an OAuth access token from the OpenKey OAuth flow.
    */
   getSessionToken(): string | null {
-    return this.sessionToken;
+    return null;
   }
 
   /**
-   * Endpoint + bearer token for a TinyCloud auto-sign signing strategy.
-   * The endpoint is on the OpenKey API host and only signs requests the
-   * server-side bootstrap allowlist permits.
+   * Endpoint for a TinyCloud auto-sign signing strategy. `token` is always
+   * null; see {@link OpenKey.getSessionToken}.
+   *
+   * @deprecated The endpoint accepts an OAuth access token as its bearer.
    */
   tinycloudSigningOptions(): { endpoint: string; token: string | null } {
     return {
       endpoint: `${this.oauthHost}/api/delegate/sign`,
-      token: this.sessionToken,
+      token: null,
     };
   }
 
@@ -1077,7 +1077,6 @@ export class OpenKey {
         // validates and size-bounds it before use and NEVER treats it as
         // verified unless the server actually origin-binds a manifest.
         presentation: request.presentation,
-        sessionToken: this.sessionToken || undefined,
       },
       opts?.mode,
     );
@@ -1171,7 +1170,6 @@ export class OpenKey {
         // bounded at the transport, never treated as verified without
         // server-side origin-binding.
         presentation: request.presentation,
-        sessionToken: this.sessionToken || undefined,
         // Sol MAJOR-3 (continuation): tell the widget to hand us back
         // the previewApproval instead of asking OpenKey to sign
         // server-side with a managed key. The widget will still render
@@ -1350,7 +1348,6 @@ export class OpenKey {
       type: 'openkey:sign:request',
       message: request.message,
       keyId: request.keyId,
-      sessionToken: this.sessionToken || undefined,
     }, mode);
   }
 
@@ -1358,7 +1355,6 @@ export class OpenKey {
     return this.openFlow<SignResult>('sign-typed-data', {
       type: 'openkey:signTypedData:request',
       data: request,
-      sessionToken: this.sessionToken || undefined,
     }, mode);
   }
 
@@ -1725,7 +1721,6 @@ export class OpenKey {
               cleanup();
               if (data.success) {
                 if (data.type === 'openkey:auth:response') {
-                  if (data.sessionToken) this.sessionToken = data.sessionToken;
                   resolve({ address: data.address, keyId: data.keyId, keyType: data.keyType || 'MANAGED' } as T);
                 } else if (data.type === 'openkey:link-wallet:response') {
                   resolve({ address: data.address, keyId: data.keyId } as T);
@@ -2008,7 +2003,6 @@ export class OpenKey {
           popup.close();
           if (data.success) {
           if (data.type === 'openkey:auth:response') {
-            if (data.sessionToken) this.sessionToken = data.sessionToken;
             resolve({ address: data.address, keyId: data.keyId, keyType: data.keyType || 'MANAGED' } as T);
           } else if (data.type === 'openkey:link-wallet:response') {
             resolve({ address: data.address, keyId: data.keyId } as T);

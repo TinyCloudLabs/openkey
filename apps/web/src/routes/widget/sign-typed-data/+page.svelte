@@ -4,6 +4,7 @@
   import { api, type EthereumKey } from '$lib/api';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
+  import { isFromWidgetCounterparty, resolveWidgetOrigin } from '$lib/widget-transport';
 
   const session = authClient.useSession();
 
@@ -19,7 +20,13 @@
   let signing = $state(false);
   let error = $state('');
 
-  const origin = $page.url.searchParams.get('origin') || '*';
+  // Exact requesting origin; never '*' (TC-690).
+  const origin = resolveWidgetOrigin($page.url.searchParams.get('origin'));
+  // The window that opened this widget: the opener for a popup, otherwise
+  // the parent frame.
+  const counterparty: Window | null = typeof window === 'undefined'
+    ? null
+    : window.opener ?? (window.parent !== window ? window.parent : null);
   let sessionChecked = $state(false);
   let keyFetched = $state(false);
   let initialized = $state(false);
@@ -34,12 +41,7 @@
       window.addEventListener('message', handleMessage);
 
       // Notify parent that widget is ready (AFTER listener is set up)
-      const targetOrigin = new URL(window.location.href).searchParams.get('origin') || '*';
-      if (window.opener) {
-        window.opener.postMessage({ type: 'openkey:ready' }, targetOrigin);
-      } else if (window.parent !== window) {
-        window.parent.postMessage({ type: 'openkey:ready' }, targetOrigin);
-      }
+      if (origin) counterparty?.postMessage({ type: 'openkey:ready' }, origin);
     }
   });
 
@@ -64,6 +66,7 @@
   });
 
   async function handleMessage(event: MessageEvent) {
+    if (!isFromWidgetCounterparty(event, origin, counterparty)) return;
     if (event.data?.type === 'openkey:signTypedData:request') {
       typedData = event.data.data;
       keyId = event.data.data?.keyId || null;
@@ -114,21 +117,12 @@
   }
 
   function sendResponse(data: object) {
-    if (window.opener) {
-      window.opener.postMessage(data, origin);
-    } else if (window.parent !== window) {
-      window.parent.postMessage(data, origin);
-    }
+    if (origin) counterparty?.postMessage(data, origin);
   }
 
   function sendClose() {
-    const closeMsg = { type: 'openkey:close' };
-    if (window.opener) {
-      window.opener.postMessage(closeMsg, origin);
-      window.close();
-    } else if (window.parent !== window) {
-      window.parent.postMessage(closeMsg, origin);
-    }
+    if (origin) counterparty?.postMessage({ type: 'openkey:close' }, origin);
+    if (window.opener) window.close();
   }
 
   function formatAddress(address: string): string {
@@ -150,7 +144,7 @@
   {#if !$session.data}
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
       <p class="mb-4">Sign in to sign data</p>
-      <Button href="/auth/login?redirect=/widget/sign-typed-data?origin={encodeURIComponent(origin)}">Sign In</Button>
+      <Button href="/auth/login?redirect=/widget/sign-typed-data?origin={encodeURIComponent(origin ?? '')}">Sign In</Button>
     </div>
   {:else if loading}
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
