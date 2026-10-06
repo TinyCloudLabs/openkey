@@ -5,6 +5,7 @@
   import { getSessionToken, isEmbedContext } from '$lib/embed-passkey';
   import { isFromWidgetCounterparty, resolveWidgetOrigin } from '$lib/widget-transport';
   import EmbeddedSignIn from '$lib/components/auth/embedded-sign-in.svelte';
+  import { passkeysSupportedFromParams } from '$lib/passkey-support';
   import Button from '$lib/components/ui/button.svelte';
 
   const session = authClient.useSession();
@@ -31,6 +32,7 @@
 
   // Exact embedding origin; never '*' (TC-690).
   const origin = resolveWidgetOrigin($page.url.searchParams.get('origin'));
+  const passkeysSupported = passkeysSupportedFromParams($page.url.searchParams);
 
   $effect(() => {
     if (typeof window !== 'undefined' && !initialized) {
@@ -156,6 +158,7 @@
       <EmbeddedSignIn
         prompt="Sign in to review and sign this data"
         onauthenticated={() => { embedAuthenticated = true; }}
+        {passkeysSupported}
       />
     {:else if loading}
       <div class="flex flex-col items-center justify-center text-center text-surface-400 py-6">

@@ -4,6 +4,7 @@
   import { api, type EthereumKey } from '$lib/api';
   import { getSessionToken, isEmbedContext } from '$lib/embed-passkey';
   import EmbeddedSignIn from '$lib/components/auth/embedded-sign-in.svelte';
+  import { passkeysSupportedFromParams } from '$lib/passkey-support';
   import Button from '$lib/components/ui/button.svelte';
   import IframeSigningAdapter from '$lib/components/signing/iframe-signing-adapter.svelte';
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
@@ -87,6 +88,7 @@
   const isAuthenticated = $derived(inIframe ? embedAuthenticated : !!$session.data);
 
   const origin = $page.url.searchParams.get('origin') || '*';
+  const passkeysSupported = passkeysSupportedFromParams($page.url.searchParams);
 
   $effect(() => {
     if (typeof window !== 'undefined' && !initialized) {
@@ -834,6 +836,7 @@
       <EmbeddedSignIn
         prompt="Sign in to review and sign this message"
         onauthenticated={() => { embedAuthenticated = true; }}
+        {passkeysSupported}
       />
     {:else if loading}
       <div class="flex flex-col items-center justify-center text-center text-surface-400 py-6">

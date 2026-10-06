@@ -192,7 +192,10 @@ class NostrFrame {
  * instance from `OpenKey#nostr` rather than constructing this directly.
  */
 export class OpenKeyNostr {
-  constructor(private host: string) {}
+  constructor(
+    private host: string,
+    private passkeysSupported: boolean = true,
+  ) {}
 
   /**
    * Get-or-create the user's OpenKey-custodied Nostr identity. Always shows
@@ -237,7 +240,8 @@ export class OpenKeyNostr {
 
   private widgetUrl(): string {
     const origin = encodeURIComponent(window.location.origin);
-    return `${this.host}/widget/embed/nostr/approve?origin=${origin}`;
+    const passkeysFlag = this.passkeysSupported ? '' : '&passkeys=false';
+    return `${this.host}/widget/embed/nostr/approve?origin=${origin}${passkeysFlag}`;
   }
 
   private run<T>(

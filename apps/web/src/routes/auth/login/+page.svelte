@@ -12,6 +12,7 @@
   } from '$lib/social-auth';
   import { api } from '$lib/api';
   import SocialButtons from '$lib/components/auth/social-buttons.svelte';
+  import { passkeysSupportedFromParams } from '$lib/passkey-support';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
@@ -25,6 +26,8 @@
   let error = $state('');
   let providers = $state<SocialProviderId[]>([]);
   let loadingProvider = $state<SocialProviderId | null>(null);
+  // `passkeys=false` comes from clients that cannot use WebAuthn.
+  const passkeysSupported = passkeysSupportedFromParams($page.url.searchParams);
 
   function getOAuthQuery(): string | undefined {
     return safeOAuthAuthorizeQuery($page.url.searchParams);
@@ -100,14 +103,17 @@
       // make it a condition of continuing. Passkey discovery is best-effort:
       // any failure (network, API unavailable) falls through to handlePostSignIn()
       // so that OTP sign-in works independently of passkey availability.
-      try {
-        const passkeys = await authClient.passkey.listUserPasskeys();
-        if (!passkeys.error && Array.isArray(passkeys.data) && passkeys.data.length === 0) {
-          step = 'passkey';
-          return;
+      // Clients without WebAuthn skip the prompt entirely.
+      if (passkeysSupported) {
+        try {
+          const passkeys = await authClient.passkey.listUserPasskeys();
+          if (!passkeys.error && Array.isArray(passkeys.data) && passkeys.data.length === 0) {
+            step = 'passkey';
+            return;
+          }
+        } catch (passkeyError) {
+          console.error('[Login] Failed to check passkeys, continuing without prompt:', passkeyError);
         }
-      } catch (passkeyError) {
-        console.error('[Login] Failed to check passkeys, continuing without prompt:', passkeyError);
       }
       handlePostSignIn();
     } catch (e: any) {
@@ -226,6 +232,7 @@
           </div>
         {/if}
 
+        {#if passkeysSupported}
         <div class="my-6 flex items-center gap-4 text-surface-400" aria-hidden="true">
           <div class="h-px flex-1 bg-surface-200"></div>
           <span class="text-sm">or</span>
@@ -239,6 +246,7 @@
           </svg>
           {loading ? 'Waiting for passkey…' : 'Use a passkey instead'}
         </Button>
+        {/if}
       {:else if step === 'otp'}
         <h1 class="mb-2 text-center text-2xl font-bold text-surface-900">Check your email</h1>
         <p class="mb-7 text-center text-sm text-surface-500">

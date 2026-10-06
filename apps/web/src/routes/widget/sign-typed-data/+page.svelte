@@ -4,6 +4,7 @@
   import { api, type EthereumKey } from '$lib/api';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
+  import { passkeysSupportedFromParams, withPasskeysFlag } from '$lib/passkey-support';
   import { isFromWidgetCounterparty, resolveWidgetOrigin } from '$lib/widget-transport';
 
   const session = authClient.useSession();
@@ -22,6 +23,7 @@
 
   // Exact requesting origin; never '*' (TC-690).
   const origin = resolveWidgetOrigin($page.url.searchParams.get('origin'));
+  const passkeysSupported = passkeysSupportedFromParams($page.url.searchParams);
   // The window that opened this widget: the opener for a popup, otherwise
   // the parent frame.
   const counterparty: Window | null = typeof window === 'undefined'
@@ -144,7 +146,7 @@
   {#if !$session.data}
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
       <p class="mb-4">Sign in to sign data</p>
-      <Button href="/auth/login?redirect=/widget/sign-typed-data?origin={encodeURIComponent(origin ?? '')}">Sign In</Button>
+      <Button href={withPasskeysFlag(`/auth/login?redirect=/widget/sign-typed-data?origin=${encodeURIComponent(origin ?? '')}`, passkeysSupported)}>Sign In</Button>
     </div>
   {:else if loading}
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">

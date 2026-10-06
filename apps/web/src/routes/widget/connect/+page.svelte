@@ -6,6 +6,7 @@
   import Card from '$lib/components/ui/card.svelte';
   import { isFromWidgetCounterparty, resolveWidgetOrigin } from '$lib/widget-transport';
   import { connectAuthResponse } from '$lib/connect-widget';
+  import { passkeysSupportedFromParams, withPasskeysFlag } from '$lib/passkey-support';
 
   const session = authClient.useSession();
 
@@ -26,6 +27,7 @@
     ? null
     : window.opener ?? (window.parent !== window ? window.parent : null);
   const hasEoa = $page.url.searchParams.get('hasEoa') === 'true';
+  const passkeysSupported = passkeysSupportedFromParams($page.url.searchParams);
 
   // Use $effect instead of onMount for Svelte 5 compatibility with SSR disabled
   // onMount doesn't fire when ssr=false in SvelteKit, but $effect does
@@ -98,7 +100,10 @@
   }
 
   function signInWithEmail() {
-    window.location.href = `/auth/login?redirect=${encodeURIComponent(window.location.href)}`;
+    window.location.href = withPasskeysFlag(
+      `/auth/login?redirect=${encodeURIComponent(window.location.href)}`,
+      passkeysSupported,
+    );
   }
 
   function cancel() {
@@ -180,9 +185,11 @@
           <Button onclick={signInWithEmail} disabled={signingIn} class="w-full rounded-xl">
             Continue with email
           </Button>
-          <Button onclick={signInWithPasskey} variant="secondary" disabled={signingIn} class="mt-3 w-full rounded-xl">
-            {signingIn ? 'Signing in…' : 'Use a passkey instead'}
-          </Button>
+          {#if passkeysSupported}
+            <Button onclick={signInWithPasskey} variant="secondary" disabled={signingIn} class="mt-3 w-full rounded-xl">
+              {signingIn ? 'Signing in…' : 'Use a passkey instead'}
+            </Button>
+          {/if}
 
           {#if hasEoa}
             <button
@@ -255,6 +262,12 @@
       >
         Sign out
       </button>
+    {:else if !passkeysSupported}
+      <!-- Register and Recover set up passkeys. Email sign-in already creates
+           accounts and recovers existing ones, so point there instead. -->
+      <p class="text-center text-xs text-surface-400" data-testid="passkeys-unavailable">
+        Passkeys aren't available in this app. Email sign-in creates new accounts and recovers existing ones.
+      </p>
     {:else}
       <div class="flex items-center gap-3 text-sm">
         <a href="/auth/register" class="text-surface-500 hover:text-surface-700 transition-colors">Register</a>

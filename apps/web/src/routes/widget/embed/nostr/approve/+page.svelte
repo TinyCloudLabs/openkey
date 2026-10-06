@@ -27,6 +27,7 @@
     type VersionedWidgetTransport,
   } from '$lib/widget-transport';
   import EmbeddedSignIn from '$lib/components/auth/embedded-sign-in.svelte';
+  import { passkeysSupportedFromParams } from '$lib/passkey-support';
   import Button from '$lib/components/ui/button.svelte';
 
   type NostrErrorCode = 'USER_CANCELLED' | 'TIMEOUT' | 'INTERACTION_REQUIRED' | 'UNAUTHORIZED' | 'UNKNOWN';
@@ -41,6 +42,8 @@
   const targetOrigin: string | null = typeof window !== 'undefined'
     ? parseCanonicalOrigin(new URL(window.location.href).searchParams.get('origin'))
     : null;
+  const passkeysSupported = typeof window === 'undefined'
+    || passkeysSupportedFromParams(new URL(window.location.href).searchParams);
 
   let embedAuthenticated = $state(typeof window !== 'undefined' && !!getSessionToken());
   const isAuthenticated = $derived(inIframe ? embedAuthenticated : !!$session.data);
@@ -312,6 +315,7 @@
       <EmbeddedSignIn
         prompt={mode === 'sign' ? 'Sign in to approve this signing request' : 'Sign in or create an account to connect'}
         onauthenticated={onAuthenticated}
+        {passkeysSupported}
       />
     {:else if step === 'consent' && mode === 'connect'}
       <div class="flex flex-col gap-3">
