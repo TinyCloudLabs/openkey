@@ -21,6 +21,8 @@
     onauthenticated: () => void;
     hasEoa?: boolean;
     onuseexternalwallet?: () => void;
+    /** False when the client opened OpenKey with `passkeys=false`. */
+    passkeysSupported?: boolean;
   }
 
   let {
@@ -28,6 +30,7 @@
     onauthenticated,
     hasEoa = false,
     onuseexternalwallet,
+    passkeysSupported = true,
   }: Props = $props();
 
   type BusyAction = 'send-email' | 'verify-email' | 'passkey' | SocialProviderId;
@@ -135,6 +138,7 @@
       </div>
     {/if}
 
+    {#if passkeysSupported}
     <div class="my-4 flex w-full items-center gap-3 text-surface-400" aria-hidden="true">
       <div class="h-px flex-1 bg-surface-200"></div>
       <span class="text-xs">or</span>
@@ -159,6 +163,7 @@
       </svg>
       {busy === 'passkey' ? 'Waiting for passkey…' : 'Passkey'}
     </Button>
+    {/if}
 
     {#if hasEoa && onuseexternalwallet}
       <button

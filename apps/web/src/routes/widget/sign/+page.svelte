@@ -4,6 +4,7 @@
   import { api, type EthereumKey } from '$lib/api';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
+  import { passkeysSupportedFromParams, withPasskeysFlag } from '$lib/passkey-support';
   import PopupSigningAdapter from '$lib/components/signing/popup-signing-adapter.svelte';
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
   import { validatePreviewSelection } from '$lib/preview-review';
@@ -115,6 +116,7 @@
   // path (Sol MAJOR-4). Versioned callers (protocolVersion >= 1) MUST use
   // a real origin — '*' is refused for editing/rewriting flows.
   const origin = $page.url.searchParams.get('origin') || '*';
+  const passkeysSupported = passkeysSupportedFromParams($page.url.searchParams);
 
   // Use $effect instead of onMount for Svelte 5 compatibility with SSR disabled
   // onMount doesn't fire when ssr=false in SvelteKit, but $effect does
@@ -962,7 +964,7 @@
   {#if !$session.data}
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
       <p class="mb-4">Sign in to sign messages</p>
-      <Button href="/auth/login?redirect=/widget/sign?origin={encodeURIComponent(origin)}">Sign In</Button>
+      <Button href={withPasskeysFlag(`/auth/login?redirect=/widget/sign?origin=${encodeURIComponent(origin)}`, passkeysSupported)}>Sign In</Button>
     </div>
   {:else if loading}
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">

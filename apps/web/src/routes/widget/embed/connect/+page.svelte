@@ -6,6 +6,7 @@
   import { isFromWidgetCounterparty, resolveWidgetOrigin } from '$lib/widget-transport';
   import { connectAuthResponse } from '$lib/connect-widget';
   import EmbeddedSignIn from '$lib/components/auth/embedded-sign-in.svelte';
+  import { passkeysSupportedFromParams } from '$lib/passkey-support';
   import Button from '$lib/components/ui/button.svelte';
 
   const session = authClient.useSession();
@@ -28,6 +29,7 @@
   // Every message goes to the exact embedding origin; never '*' (TC-688).
   const origin = resolveWidgetOrigin($page.url.searchParams.get('origin'));
   const hasEoa = $page.url.searchParams.get('hasEoa') === 'true';
+  const passkeysSupported = passkeysSupportedFromParams($page.url.searchParams);
 
   $effect(() => {
     if (typeof window !== 'undefined' && !initialized) {
@@ -234,6 +236,7 @@
         onauthenticated={() => { embedAuthenticated = true; }}
         {hasEoa}
         onuseexternalwallet={useExternalWallet}
+        {passkeysSupported}
       />
     {:else if loading}
       <div class="flex flex-col items-center justify-center text-center text-surface-400 py-6">
@@ -306,6 +309,12 @@
     >
       Sign out
     </button>
+  {:else if !passkeysSupported}
+    <!-- Register and Recover set up passkeys. Email sign-in already creates
+         accounts and recovers existing ones, so point there instead. -->
+    <p class="text-center text-xs text-surface-400" data-testid="passkeys-unavailable">
+      Passkeys aren't available in this app. Email sign-in creates new accounts and recovers existing ones.
+    </p>
   {:else}
     <div class="flex items-center justify-center gap-3 text-sm">
       <button onclick={register} class="text-surface-500 hover:text-surface-700 transition-colors bg-transparent border-none cursor-pointer text-sm">Register</button>

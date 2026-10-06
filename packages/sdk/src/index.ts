@@ -46,6 +46,21 @@ export interface OpenKeyConfig {
   mode?: OpenKeyMode;
   /** App-provided wallet provider for external key signing */
   externalProvider?: EIP1193Provider;
+  /**
+   * Whether the client can use passkeys (WebAuthn). Default: true. Pass
+   * false from clients where WebAuthn does not work (for example an
+   * ad-hoc-signed desktop webview); the OpenKey UI then offers only email
+   * and social sign-in.
+   */
+  passkeysSupported?: boolean;
+}
+
+/**
+ * Query suffix telling the OpenKey widget that passkeys are unavailable.
+ * Empty when passkeys are supported, so default URLs are unchanged.
+ */
+export function passkeysQueryFlag(passkeysSupported: boolean): string {
+  return passkeysSupported ? '' : '&passkeys=false';
 }
 
 export interface SignMessageRequest {
@@ -768,6 +783,7 @@ export class OpenKey {
   private oauthHost: string;
   private appName: string;
   private mode: OpenKeyMode;
+  private passkeysSupported: boolean;
   private config: OpenKeyConfig;
   private popup: Window | null = null;
   private lastAuth: AuthResult | null = null;
@@ -789,7 +805,8 @@ export class OpenKey {
     this.oauthHost = config.oauthHost || this.deriveOAuthHost(this.host);
     this.appName = config.appName || window.location.hostname;
     this.mode = config.mode ?? 'iframe';
-    this.nostr = new OpenKeyNostr(this.host);
+    this.passkeysSupported = config.passkeysSupported ?? true;
+    this.nostr = new OpenKeyNostr(this.host, this.passkeysSupported);
 
     // Listen for EIP-6963 wallet announcements
     if (typeof window !== 'undefined') {
@@ -1624,20 +1641,21 @@ export class OpenKey {
     const mode = this.resolveMode(modeOverride);
     const origin = encodeURIComponent(window.location.origin);
     const eoaFlag = action === 'connect' && this.hasDetectedEoa() ? '&hasEoa=true' : '';
+    const passkeysFlag = passkeysQueryFlag(this.passkeysSupported);
 
     if (mode === 'popup') {
-      const url = `${this.host}/widget/${action}?origin=${origin}${eoaFlag}`;
+      const url = `${this.host}/widget/${action}?origin=${origin}${eoaFlag}${passkeysFlag}`;
       return new Promise((resolve, reject) => this.openPopup(action, url, message, resolve, reject));
     }
 
     if (mode === 'redirect') {
-      const url = `${this.host}/widget/${action}?origin=${origin}${eoaFlag}`;
+      const url = `${this.host}/widget/${action}?origin=${origin}${eoaFlag}${passkeysFlag}`;
       window.location.href = url;
       return new Promise(() => {}); // never resolves, page navigates
     }
 
     // iframe mode with auto-fallback
-    const url = `${this.host}/widget/embed/${action}?origin=${origin}${eoaFlag}`;
+    const url = `${this.host}/widget/embed/${action}?origin=${origin}${eoaFlag}${passkeysFlag}`;
     return this.openIframeModal<T>(url, action, message, origin);
   }
 
@@ -1769,7 +1787,7 @@ export class OpenKey {
         cleanup();
         console.warn('OpenKey: iframe blocked by CSP, falling back to popup. Add frame-src https://openkey.so to your CSP.');
         showToast();
-        const popupUrl = `${this.host}/widget/${action}?origin=${origin}`;
+        const popupUrl = `${this.host}/widget/${action}?origin=${origin}${passkeysQueryFlag(this.passkeysSupported)}`;
         this.openPopup(action, popupUrl, message, (val: any) => settle(() => resolve(val)), (err: any) => settle(() => reject(err)));
       }, IFRAME_READY_TIMEOUT);
 

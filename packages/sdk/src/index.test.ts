@@ -644,3 +644,55 @@ describe('OpenKey session token isolation (TC-688)', () => {
     for (const request of requests) expect(request).not.toHaveProperty('sessionToken');
   });
 });
+
+describe('passkeysSupported option', () => {
+  function redirectUrlFor(config: Record<string, unknown>): string {
+    const previousWindow = (globalThis as any).window;
+    const location = { origin: 'https://app.test', hostname: 'app.test', href: '' };
+    (globalThis as any).window = {
+      location,
+      addEventListener: () => {},
+      dispatchEvent: () => true,
+    };
+    try {
+      const openkey = new OpenKey({ host: 'https://openkey.test', mode: 'redirect', ...config });
+      void openkey.connect();
+      return location.href;
+    } finally {
+      (globalThis as any).window = previousWindow;
+    }
+  }
+
+  test('leaves widget URLs unchanged when absent or true', () => {
+    const expected = 'https://openkey.test/widget/connect?origin=https%3A%2F%2Fapp.test';
+    expect(redirectUrlFor({})).toBe(expected);
+    expect(redirectUrlFor({ passkeysSupported: true })).toBe(expected);
+  });
+
+  test('tells the widget passkeys are unavailable when false', () => {
+    expect(redirectUrlFor({ passkeysSupported: false })).toBe(
+      'https://openkey.test/widget/connect?origin=https%3A%2F%2Fapp.test&passkeys=false',
+    );
+  });
+
+  test('carries the flag to the nostr widget', () => {
+    const previousWindow = (globalThis as any).window;
+    (globalThis as any).window = {
+      location: { origin: 'https://app.test', hostname: 'app.test' },
+      addEventListener: () => {},
+      dispatchEvent: () => true,
+    };
+    try {
+      const withPasskeys = new OpenKey({ host: 'https://openkey.test' });
+      const withoutPasskeys = new OpenKey({ host: 'https://openkey.test', passkeysSupported: false });
+      expect((withPasskeys.nostr as any).widgetUrl()).toBe(
+        'https://openkey.test/widget/embed/nostr/approve?origin=https%3A%2F%2Fapp.test',
+      );
+      expect((withoutPasskeys.nostr as any).widgetUrl()).toBe(
+        'https://openkey.test/widget/embed/nostr/approve?origin=https%3A%2F%2Fapp.test&passkeys=false',
+      );
+    } finally {
+      (globalThis as any).window = previousWindow;
+    }
+  });
+});
