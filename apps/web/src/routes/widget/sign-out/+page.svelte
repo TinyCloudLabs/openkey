@@ -1,10 +1,10 @@
 <script lang="ts">
   import { page } from '$app/stores';
   import { revokeEmbeddedSession } from '$lib/embed-passkey';
-  import { parseCanonicalOrigin } from '$lib/nostr-origin';
+  import { resolveWidgetOrigin } from '$lib/widget-transport';
   import { readSignOutWidgetRequest, type SignOutWidgetRequest } from '$lib/sign-out-widget';
 
-  const origin = parseCanonicalOrigin($page.url.searchParams.get('origin'));
+  const origin = resolveWidgetOrigin($page.url.searchParams.get('origin'));
   let complete = $state(false);
   let request = $state<SignOutWidgetRequest | null>(null);
 
