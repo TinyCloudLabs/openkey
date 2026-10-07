@@ -765,18 +765,18 @@ if (!backend) {
       return body;
     }
 
-    test('an exchange or refresh with resource is refused before the provider issues anything', async () => {
-      const flow = await approvedCode();
+    test('an exchange with resource is refused and spends the code; a refresh with resource is refused', async () => {
       for (const resource of [API, ISSUER, `${ISSUER}/oauth2/userinfo`, '']) {
-        const response = await exchange(flow.code, flow.verifier, proof(flow.key, flow.code), { resource });
+        const refused = await approvedCode();
+        const response = await exchange(refused.code, refused.verifier, proof(refused.key, refused.code), { resource });
         expect(response.status, resource).toBe(400);
         expect(await oauthError(response), resource).toEqual(resourceRefused);
+        // Like any failed exchange: nothing issued, and the retry without
+        // resource finds no code.
+        await expectSpentWithoutRedemption(refused);
       }
-      expect(await requestStatus(flow.requestId)).toBe('APPROVED');
-      expect(await prisma.tinyCloudNativeGrant.count()).toBe(0);
-      expect(await prisma.oauthRefreshToken.count()).toBe(0);
-      expect(await prisma.oauthAccessToken.count()).toBe(0);
 
+      const flow = await approvedCode();
       const issued = await expectOpaqueAccessToken(await exchange(flow.code, flow.verifier, proof(flow.key, flow.code)));
       const refresh = await form('/api/auth/oauth2/token', new URLSearchParams({
         grant_type: 'refresh_token', client_id: nativeClient, refresh_token: issued.refresh_token, resource: API,
@@ -784,6 +784,34 @@ if (!backend) {
       expect(refresh.status).toBe(400);
       expect(await oauthError(refresh)).toEqual({ error: 'invalid_grant', error_description: 'use the renew endpoint' });
       expect(await prisma.oauthAccessToken.count()).toBe(1);
+    }, 120_000);
+
+    test('a resource refusal never spends a code issued to another client', async () => {
+      const created = await call('/api/admin/oauth/clients', {
+        method: 'POST',
+        headers: { authorization: 'Bearer tc773-admin-key', 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Other native', type: 'native', redirectUris: [NATIVE_REDIRECT], tinycloudNativeDelegation: ceiling }),
+      });
+      expect(created.status).toBe(201);
+      const otherClient = (await created.json() as { client: { clientId: string } }).client.clientId;
+
+      // Another native client presents this client's code.
+      const flow = await approvedCode();
+      const foreign = await exchange(flow.code, flow.verifier, proof(flow.key, flow.code), { client_id: otherClient, resource: API });
+      expect(foreign.status).toBe(400);
+      expect(await oauthError(foreign)).toEqual(resourceRefused);
+      expect(await prisma.verification.count({ where: { identifier: hash(flow.code) } })).toBe(1);
+
+      // This client presents a code stored for another client.
+      const stored = await approvedCode();
+      const forged = await forgeCode(stored.code, (query) => { query.client_id = otherClient; });
+      const notOwned = await exchange(forged, stored.verifier, proof(stored.key, forged), { resource: API });
+      expect(notOwned.status).toBe(400);
+      expect(await oauthError(notOwned)).toEqual(resourceRefused);
+      expect(await prisma.verification.count({ where: { identifier: hash(forged) } })).toBe(1);
+
+      // The owner still redeems its code.
+      await expectOpaqueAccessToken(await exchange(flow.code, flow.verifier, proof(flow.key, flow.code)));
     }, 60_000);
 
     test('the exchange hook refuses resource on a path around the interceptor', async () => {
@@ -821,9 +849,10 @@ if (!backend) {
         received.push(body.access_token);
       }
       // The JWT route stays closed for a still-approved code.
-      const pending = await approvedCode();
-      const jwt = await exchange(pending.code, pending.verifier, proof(pending.key, pending.code), { resource: API });
+      const refused = await approvedCode();
+      const jwt = await exchange(refused.code, refused.verifier, proof(refused.key, refused.code), { resource: API });
       expect(await oauthError(jwt)).toEqual(resourceRefused);
+      const pending = await approvedCode();
       for (const accessToken of received) {
         const live = await userinfo(accessToken);
         expect(live.status, await live.clone().text()).toBe(200);
@@ -840,10 +869,11 @@ if (!backend) {
       }
       expect(await prisma.oauthAccessToken.count({ where: { clientId: nativeClient } })).toBe(0);
       expect(await requestStatus(pending.requestId)).toBe('WITHDRAWN');
-      for (const overrides of [{ resource: API }, {}]) {
-        const late = await exchange(pending.code, pending.verifier, proof(pending.key, pending.code), overrides);
-        expect(late.status).toBe(400);
-      }
+      const late = await exchange(pending.code, pending.verifier, proof(pending.key, pending.code), { resource: API });
+      expect(await oauthError(late)).toEqual(resourceRefused);
+      const retry = await exchange(pending.code, pending.verifier, proof(pending.key, pending.code));
+      expect(retry.status).toBe(401);
+      expect((await oauthError(retry)).error).toBe('invalid_verification');
       expect(await prisma.oauthAccessToken.count({ where: { clientId: nativeClient } })).toBe(0);
     }, 120_000);
   });

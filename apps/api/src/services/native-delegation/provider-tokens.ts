@@ -10,7 +10,7 @@ import { createHash } from 'node:crypto';
  * that every token the provider finds is found here too.
  */
 
-type StoredTokenType = 'refresh_token' | 'access_token';
+type StoredTokenType = 'refresh_token' | 'access_token' | 'authorization_code';
 
 export interface ProviderTokenOptions {
   prefix?: { refreshToken?: string; opaqueAccessToken?: string };

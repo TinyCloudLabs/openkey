@@ -3,7 +3,7 @@ import type { PrismaClient } from '@openkey/db';
 import { ADMIN_MANAGED_SCOPES, TINYCLOUD_DELEGATION_SCOPE } from '../../oauth-config';
 import { isNativeDelegationClient } from './policy';
 import { NATIVE_DELEGATION_ENDPOINT_PATHS } from './public-protocol';
-import { storedOpaqueAccessToken, storedRefreshToken, type ProviderTokenOptions } from './provider-tokens';
+import { storedOpaqueAccessToken, storedRefreshToken, storedToken, type ProviderTokenOptions } from './provider-tokens';
 import { authoritativeQuery, matchesAuthoritativeQuery } from './par';
 import { nativeUserRetryAfter } from './user-rate-limit';
 
@@ -18,7 +18,8 @@ import { nativeUserRetryAfter } from './user-rate-limit';
  *   native-capable client.
  * - Token, any other grant: a `resource` parameter is refused for a
  *   native-capable client, so the provider never issues it a JWT access
- *   token.
+ *   token. Like any failed exchange, the refusal spends the authorization
+ *   code, but only a code issued to the client presenting it.
  * - Revoke: refused for a `Bearer `-prefixed token; for a native-capable
  *   client, anything but its own access token; a native refresh token; and a
  *   token issued to another client (plan amendment A2). No side effects. An
@@ -154,12 +155,21 @@ export interface ProviderInterceptorOptions {
   /** better-auth's request handler, for an unknown token's rewritten revoke. */
   provider: (request: Request) => Response | Promise<Response>;
   getSessionUserId: (headers: Headers) => Promise<string | null>;
+  /**
+   * better-auth's verification storage, where the provider keeps
+   * authorization codes: `internalAdapter.findVerificationValue` and
+   * `deleteVerificationByIdentifier`, called with the stored code value.
+   */
+  authorizationCodes: {
+    find: (identifier: string) => Promise<{ value: string } | null>;
+    delete: (identifier: string) => Promise<void>;
+  };
 }
 
 type RefreshTokenMatch = { clientId: string; native: boolean };
 type AccessTokenMatch = { clientId: string };
 
-export function createProviderInterceptors({ database, tokens, provider, getSessionUserId }: ProviderInterceptorOptions): MiddlewareHandler {
+export function createProviderInterceptors({ database, tokens, provider, getSessionUserId, authorizationCodes }: ProviderInterceptorOptions): MiddlewareHandler {
   async function anyDelegationClient(clientIds: string[]): Promise<boolean> {
     if (clientIds.length === 0) return false;
     const clients = await database.oauthClient.findMany({
@@ -220,6 +230,28 @@ export function createProviderInterceptors({ database, tokens, provider, getSess
     return database.oauthAccessToken.findUnique({ where: { token: stored }, select: { clientId: true } });
   }
 
+  /**
+   * Spends an authorization code the way the provider's exchange does
+   * (find, then delete by the stored value), but only when the code was
+   * issued to `clientId`: a code presented by any other client stays
+   * redeemable by its own client. A value that does not parse as an
+   * authorization code is not this client's, and is left alone.
+   */
+  async function spendOwnAuthorizationCode(code: string | null, clientId: string | null): Promise<void> {
+    if (!code || !clientId) return;
+    const identifier = await storedToken(tokens, code, 'authorization_code');
+    const verification = await authorizationCodes.find(identifier);
+    if (!verification) return;
+    let value: { type?: unknown; query?: { client_id?: unknown } } | null;
+    try {
+      value = JSON.parse(verification.value) as typeof value;
+    } catch {
+      return;
+    }
+    if (value?.type !== 'authorization_code' || value.query?.client_id !== clientId) return;
+    await authorizationCodes.delete(identifier);
+  }
+
   async function guardAuthorize(c: Context): Promise<Decision> {
     const params = new URL(c.req.url).searchParams;
     const duplicate = duplicateKey(params);
@@ -265,11 +297,15 @@ export function createProviderInterceptors({ database, tokens, provider, getSess
       // A `resource` makes the provider issue a JWT access token, which has
       // no token row: consent withdrawal could not revoke it. A native-capable
       // client only ever receives opaque, row-backed access tokens.
-      return await anyNativeCapableClient(clients.candidates) ? {
+      if (!await anyNativeCapableClient(clients.candidates)) return null;
+      // Any failed exchange spends the code (spec "Code exchange and token
+      // response"), this refusal included.
+      if (grantType === 'authorization_code') await spendOwnAuthorizationCode(params.get('code'), clients.effective);
+      return {
         status: 400,
         error: 'invalid_request',
         description: 'resource is not supported for native delegation clients',
-      } : null;
+      };
     }
     // The refresh grant decodes the token without stripping `Bearer `.
     const token = params.get('refresh_token');

@@ -18,6 +18,10 @@ function revokeThrough(providerResponse: () => Response) {
   app.use('/api/auth/*', createProviderInterceptors({
     database: emptyDatabase,
     tokens: {},
+    authorizationCodes: {
+      find: async () => { throw new Error('revoke never reads authorization codes'); },
+      delete: async () => { throw new Error('revoke never spends authorization codes'); },
+    },
     provider: async (request) => {
       seen.push(new URLSearchParams(await request.text()));
       return providerResponse();
