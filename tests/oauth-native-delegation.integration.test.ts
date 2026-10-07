@@ -939,9 +939,15 @@ if (!backend) {
     }
     const resolved = await nativePar();
     await prisma.tinyCloudNativeRequest.update({ where: { id: resolved.id }, data: { requestUriExpiresAt: new Date(Date.now() - 1_000) } });
+    const anonymousExpired = await nativePar();
+    await prisma.tinyCloudNativeRequest.update({ where: { id: anonymousExpired.id }, data: { expiresAt: new Date(Date.now() - 1_000) } });
+    const userBoundExpired = await nativePar();
+    await prisma.tinyCloudNativeRequest.update({ where: { id: userBoundExpired.id }, data: { userId: alice, expiresAt: new Date(Date.now() - 1_000) } });
     await Bun.sleep(10_100);
     expect(await prisma.tinyCloudNativeRequest.findUnique({ where: { id: oldId } })).toBeNull();
     expect(await prisma.tinyCloudNativeRequest.findUnique({ where: { id: resolved.id } })).not.toBeNull();
+    expect(await prisma.tinyCloudNativeRequest.findUnique({ where: { id: anonymousExpired.id } })).toBeNull();
+    expect(await prisma.tinyCloudNativeRequest.findUnique({ where: { id: userBoundExpired.id } })).not.toBeNull();
     const otherClient = await createClient('Different client behind the same spoofed IP');
     expect((await request(otherClient, '203.0.113.7')).status).toBe(201);
   }, 120_000);

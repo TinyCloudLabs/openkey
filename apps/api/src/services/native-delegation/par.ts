@@ -12,36 +12,35 @@ const JWK_KEYS = new Set(['kty', 'crv', 'x', 'kid']);
 const PERMISSION_KEYS = new Set(['service', 'space', 'path', 'actions']);
 const OPTIONAL_SCOPES = new Set(['openid', 'email', 'keys']);
 const PAR_WINDOW_MS = 60_000;
-const PAR_GLOBAL_BACKSTOP = 10_000;
+const PAR_GLOBAL_ALERT_THRESHOLD = 10_000;
 const PAR_SWEEP_INTERVAL_MS = 10_000;
 const parSweepStarts = new WeakMap<PrismaClient, Promise<void>>();
 
-/** Volume-only backstop after complete validation. There is no per-client
- * budget: client_id is public, so it cannot provide caller fairness. The
- * dstack ingress path does not authenticate an HTTP client-IP header. */
-export function createParBackstop(limit = PAR_GLOBAL_BACKSTOP, alert: (limit: number) => void =
-  (value) => console.warn('[Native PAR] global storage safety cap reached', { limit: value })) {
+/** Observe valid PAR volume without denying sign-in. Every PAR input is public,
+ * so neither client ID nor this process-wide count can provide caller fairness.
+ * The dstack ingress path does not authenticate an HTTP client-IP header. */
+export function createParVolumeAlert(threshold = PAR_GLOBAL_ALERT_THRESHOLD, alert: (threshold: number) => void =
+  (value) => console.warn('[Native PAR] valid request volume threshold reached', { threshold: value })) {
   let count = 0;
   let resetAt = 0;
   let alerted = false;
-  return (now = Date.now()): number => {
+  return (now = Date.now()): void => {
     if (resetAt <= now) { count = 0; resetAt = now + PAR_WINDOW_MS; alerted = false; }
-    if (count >= limit) {
-      if (!alerted) { alert(limit); alerted = true; }
-      return Math.max(1, Math.ceil((resetAt - now) / 1_000));
-    }
     count++;
-    return 0;
+    if (count >= threshold && !alerted) { alert(threshold); alerted = true; }
   };
 }
-const parRetryAfter = createParBackstop();
+const reportParVolume = createParVolumeAlert();
 
-/** PENDING rows have no user, consent, or audit value after request_uri expiry.
+/** Unused PENDING rows can go after request_uri expiry. Anonymous RESOLVED
+ * rows can go after request expiry; rows tied to a user retain audit value.
  * Sweep immediately on the first valid PAR and every ten seconds thereafter. */
 async function sweepNativeRequests(db: PrismaClient): Promise<void> {
+  const now = new Date();
   await db.tinyCloudNativeRequest.deleteMany({ where: { OR: [
-    { status: 'PENDING', requestUriExpiresAt: { lt: new Date() } },
-    { expiresAt: { lt: new Date(Date.now() - 86_400_000) } },
+    { status: 'PENDING', userId: null, requestUriExpiresAt: { lt: now } },
+    { status: { in: ['PENDING', 'RESOLVED'] }, userId: null, expiresAt: { lt: now } },
+    { expiresAt: { lt: new Date(now.getTime() - 86_400_000) } },
   ] } });
 }
 async function startNativeRequestSweep(db: PrismaClient): Promise<void> {
@@ -158,8 +157,7 @@ export async function handlePar(request: Request, db: PrismaClient): Promise<Res
     const ttl = detail.ttl_seconds === undefined ? ceiling.maxDelegationTtlSeconds : detail.ttl_seconds;
     if (!Number.isInteger(ttl) || (ttl as number) < 300 || (ttl as number) > ceiling.maxDelegationTtlSeconds) invalid('invalid_authorization_details', 'invalid ttl_seconds');
     if (detail.siwe_nonce !== undefined && (typeof detail.siwe_nonce !== 'string' || !/^[A-Za-z0-9]{8,64}$/.test(detail.siwe_nonce))) invalid('invalid_authorization_details', 'invalid siwe_nonce');
-    const retryAfter = parRetryAfter();
-    if (retryAfter) return Response.json({ error: 'slow_down' }, { status: 429, headers: { 'Retry-After': String(retryAfter), 'Cache-Control': 'no-store' } });
+    reportParVolume();
     await startNativeRequestSweep(db);
     const id = randomBytes(24).toString('base64url');
     const now = Date.now();

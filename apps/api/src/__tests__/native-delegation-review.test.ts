@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import { nativeDelegationLockResponse, nativeDelegationSqlState } from '../services/native-delegation/errors';
-import { createParBackstop } from '../services/native-delegation/par';
+import { createParVolumeAlert } from '../services/native-delegation/par';
 import { createNativeUserLimiter } from '../services/native-delegation/user-rate-limit';
 
 test('Prisma driver adapter lock SQLSTATE maps to 503 with retry', async () => {
@@ -15,15 +15,17 @@ test('Prisma driver adapter lock SQLSTATE maps to 503 with retry', async () => {
   expect(nativeDelegationLockResponse({ code: 'P2002' })).toBeNull();
 });
 
-test('PAR global storage backstop alerts once and resets without a client budget', () => {
+test('PAR volume alert never rejects a request, including after the threshold', () => {
   const alerts: number[] = [];
-  const retryAfter = createParBackstop(3, limit => alerts.push(limit));
+  const report = createParVolumeAlert(3, threshold => alerts.push(threshold));
   const now = 1_000_000;
-  for (let i = 0; i < 3; i++) expect(retryAfter(now)).toBe(0);
-  expect(retryAfter(now)).toBe(60);
-  expect(retryAfter(now)).toBe(60);
+  for (let i = 0; i < 5; i++) expect(report(now)).toBeUndefined();
   expect(alerts).toEqual([3]);
-  expect(retryAfter(now + 60_000)).toBe(0);
+  expect(report(now + 60_000)).toBeUndefined();
+  expect(alerts).toEqual([3]);
+  expect(report(now + 60_000)).toBeUndefined();
+  expect(report(now + 60_000)).toBeUndefined();
+  expect(alerts).toEqual([3, 3]);
 });
 
 test('authenticated native steps have separate per-user budgets', () => {

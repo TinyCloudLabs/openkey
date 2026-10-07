@@ -62,11 +62,13 @@ host column and consent-withdrawal triggers. Any other pending migration fails c
 deployments return to the full migration and schema-drift verification path.
 
 The public native PAR endpoint validates the full request before allocating a
-row or touching its volume-only backstop (10,000 valid requests per minute per
-API process, with an alert when reached). It has no per-client rate limit:
+row. An alert records when valid PAR volume reaches 10,000 requests per minute
+per API process; it never rejects a PAR request. There is no per-client rate limit:
 `client_id` is public and could let an anonymous caller deny sign-in to that
 client. Unresolved PAR rows are deleted shortly after their 90-second
-`request_uri` window closes. Authorize re-entry and consent prepare, approve,
+`request_uri` window closes. Anonymous resolved rows are deleted after their
+10-minute request expiry; user-bound rows remain available for consent and
+audit. Authorize re-entry and consent prepare, approve,
 and deny instead have separate per-process budgets keyed by the verified OpenKey
 session's user ID. The Phala gateway and ingress path has no authenticated HTTP client-IP
 header in this deployment; `CF-Connecting-IP` and `X-Forwarded-For` can be
