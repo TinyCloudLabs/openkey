@@ -679,11 +679,20 @@ model TinyCloudManageKeySigningDecision {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, createdAt])
-  @@index([userId, clientId, createdAt])
+  // PostgreSQL truncated the original migration's index name to 63 bytes.
+  @@index([userId, clientId, createdAt], map: "tinycloud_manage_key_signing_decision_userId_clientId_createdAt")
   @@map("tinycloud_manage_key_signing_decision")
 }
 
 // ======= Developer Organizations =======
+
+// TC-488 removed the webhook tables but left their enum in PostgreSQL.
+// Keep that physical type represented so migration verification has no drift.
+enum WebhookDeliveryStatus {
+  PENDING
+  DELIVERED
+  FAILED
+}
 
 enum OrganizationRole {
   ADMIN

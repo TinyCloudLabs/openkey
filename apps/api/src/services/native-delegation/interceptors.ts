@@ -321,9 +321,13 @@ export function createProviderInterceptors({ database, tokens, provider }: Provi
     const params = typeof query === 'string' ? new URLSearchParams(query) : null;
     const object = query && typeof query === 'object' && !Array.isArray(query) ? query as Record<string, unknown> : null;
     const scope = params?.get('scope') ?? object?.scope;
+    const hasScope = params?.has('scope') ?? (object ? 'scope' in object : false);
+    const hasRequestUri = params?.has('request_uri') ?? (object ? 'request_uri' in object : false);
+    const clientId = params?.get('client_id') ?? object?.client_id;
     if (params?.has('tinycloud_request') || (object && 'tinycloud_request' in object) ||
       (typeof scope === 'string' && scopeList(scope).includes(TINYCLOUD_DELEGATION_SCOPE)) ||
-      (Array.isArray(scope) && scope.includes(TINYCLOUD_DELEGATION_SCOPE))) {
+      (Array.isArray(scope) && scope.includes(TINYCLOUD_DELEGATION_SCOPE)) ||
+      (!hasScope && !hasRequestUri && typeof clientId === 'string' && await anyDelegationClient([clientId]))) {
       return { status: 400, error: 'invalid_request', description: 'native delegation requires a pushed authorization request' };
     }
     return null;

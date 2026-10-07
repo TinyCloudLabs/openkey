@@ -49,15 +49,26 @@ deliberately not part of this runtime prerequisite and remains governed by its
 existing explicit operator gate.
 
 While the separately authorized TC-488 destructive custody cutover remains
-pending, production deploy permits two later additive migrations:
-`20260814_0001_share_device_authorization` and
-`20261005_0001_delegation_code_broker`. The deploy verifies their frozen SQL
+pending, production deploy permits four later additive migrations:
+`20260814_0001_share_device_authorization`,
+`20261005_0001_delegation_code_broker`,
+`20261007_0001_tinycloud_native_foundation`, and
+`20261007_0002_native_preparation_host`. The deploy verifies their frozen SQL
 checksums, the exact pending set, the baseline marker, and the physical
 pre-cutover custody table before temporarily excluding only the destructive
 TC-488 migration from a normal `prisma migrate deploy`. It then verifies
-the recorded checksums and the device and delegation-code tables' columns and
-indexes. Any other pending migration fails closed. Once TC-488 is applied,
+the recorded checksums and physical schema, including the native preparation
+host column and consent-withdrawal triggers. Any other pending migration fails closed. Once TC-488 is applied,
 deployments return to the full migration and schema-drift verification path.
+
+The public native PAR endpoint allows 120 requests per validated native client
+and 1,000 validated requests globally per minute, per API process. Unknown or
+ineligible client IDs do not enter the limiter. Client buckets expire and the
+least recently used buckets are evicted at the memory bound. The Phala gateway
+and ingress path has no authenticated HTTP client-IP header in this deployment;
+`CF-Connecting-IP` and `X-Forwarded-For` can be supplied by a caller, so PAR
+does not use either for rate limiting. Cloudflare manages DNS and certificates
+for this API domain but is not an HTTP proxy in this path.
 
 The canonical-key/organization-custody cutover is governed by the
 [TC-492 release runbook](./tc-492-canonical-key-cutover.md). It requires a

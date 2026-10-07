@@ -1,9 +1,11 @@
-// Physical checks for 20261007_0001_tinycloud_native_foundation (TC-773).
+// Physical checks for the TC-773 native foundation and preparation-host migrations.
 // `prisma migrate diff` cannot see triggers or CHECK constraints, and the
 // consent-withdrawal triggers are what revoke native grants and tokens.
 
 export const nativeDelegationMigration = '20261007_0001_tinycloud_native_foundation';
 export const nativeDelegationChecksum = '09bd49921bb76911d9218f20866c88f47bcd88552bffec1b124d71e571ef9a02';
+export const nativePreparationHostMigration = '20261007_0002_native_preparation_host';
+export const nativePreparationHostChecksum = '32b154ed94aeda7c3e40d8392ea3bc118b83b890c6843b9b9f9be34ce2d20bc8';
 
 type GuardDatabase = {
   $queryRawUnsafe<T>(query: string, ...values: unknown[]): Promise<T>;
@@ -16,6 +18,7 @@ export async function assertNativeDelegationSchema(database: GuardDatabase): Pro
     generation_primary_key: boolean;
     request_columns: number;
     preparation_columns: number;
+    preparation_host_column: boolean;
     grant_columns: number;
     status_checks: number;
     grant_refresh_index: boolean;
@@ -36,6 +39,9 @@ export async function assertNativeDelegationSchema(database: GuardDatabase): Pro
         WHERE table_schema = 'public' AND table_name = 'tinycloud_native_request') AS request_columns,
       (SELECT COUNT(*)::int FROM information_schema.columns
         WHERE table_schema = 'public' AND table_name = 'tinycloud_native_preparation') AS preparation_columns,
+      EXISTS (SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'tinycloud_native_preparation'
+          AND column_name = 'tinycloudHost' AND data_type = 'text') AS preparation_host_column,
       (SELECT COUNT(*)::int FROM information_schema.columns
         WHERE table_schema = 'public' AND table_name = 'tinycloud_native_grant') AS grant_columns,
       (SELECT COUNT(*)::int FROM pg_constraint WHERE contype = 'c' AND conname IN (
@@ -67,7 +73,8 @@ export async function assertNativeDelegationSchema(database: GuardDatabase): Pro
     verified.generation_columns !== 3 ||
     !verified.generation_primary_key ||
     verified.request_columns !== 25 ||
-    verified.preparation_columns !== 11 ||
+    verified.preparation_columns !== 12 ||
+    !verified.preparation_host_column ||
     verified.grant_columns !== 24 ||
     verified.status_checks !== 4 ||
     !verified.grant_refresh_index ||

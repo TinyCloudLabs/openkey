@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import { nativeDelegationLockResponse, nativeDelegationSqlState } from '../services/native-delegation/errors';
-import { parRetryAfter } from '../services/native-delegation/par';
+import { createParLimiter } from '../services/native-delegation/par';
 
 test('Prisma driver adapter lock SQLSTATE maps to 503 with retry', async () => {
   const error = { code: 'P2010', meta: { driverAdapterError: { cause: { code: '55P03' } } } };
@@ -14,14 +14,16 @@ test('Prisma driver adapter lock SQLSTATE maps to 503 with retry', async () => {
   expect(nativeDelegationLockResponse({ code: 'P2002' })).toBeNull();
 });
 
-test('PAR limits each client and IP independently', () => {
+test('PAR limits validated clients and the global flow without IP headers', () => {
   const id = randomUUID();
+  const limiter = createParLimiter(3, 5, 2);
   const now = 1_000_000;
-  for (let i = 0; i < 60; i++) expect(parRetryAfter(`client-a-${id}`, `ip-${id}`, now)).toBe(0);
-  expect(parRetryAfter(`client-a-${id}`, `ip-${id}`, now)).toBe(60);
-  expect(parRetryAfter(`client-b-${id}`, `other-ip-${id}`, now)).toBe(0);
-  for (let i = 0; i < 119; i++) expect(parRetryAfter(`client-c-${id}`, `new-ip-${id}-${i}`, now)).toBe(0);
-  expect(parRetryAfter(`client-c-${id}`, `last-ip-${id}`, now)).toBe(0);
-  expect(parRetryAfter(`client-c-${id}`, `overflow-ip-${id}`, now)).toBe(60);
-  expect(parRetryAfter(`client-a-${id}`, `ip-${id}`, now + 60_000)).toBe(0);
+  for (let i = 0; i < 3; i++) expect(limiter.retryAfter(`client-a-${id}`, now)).toBe(0);
+  expect(limiter.retryAfter(`client-a-${id}`, now)).toBe(60);
+  expect(limiter.retryAfter(`client-b-${id}`, now)).toBe(0);
+  expect(limiter.retryAfter(`client-c-${id}`, now)).toBe(0);
+  expect(limiter.clientBucketCount()).toBe(2);
+  expect(limiter.retryAfter(`client-d-${id}`, now)).toBe(60);
+  expect(limiter.retryAfter(`client-d-${id}`, now + 60_000)).toBe(0);
+  expect(limiter.clientBucketCount()).toBeLessThanOrEqual(2);
 });

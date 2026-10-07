@@ -10,6 +10,8 @@ import {
   assertNativeDelegationSchema,
   nativeDelegationChecksum,
   nativeDelegationMigration,
+  nativePreparationHostChecksum,
+  nativePreparationHostMigration,
 } from './native-delegation-schema-guards';
 
 const repoRoot = resolve(import.meta.dir, '..');
@@ -35,6 +37,7 @@ const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
   [deviceMigration, deviceChecksum],
   [brokerMigration, brokerChecksum],
   [nativeDelegationMigration, nativeDelegationChecksum],
+  [nativePreparationHostMigration, nativePreparationHostChecksum],
 ]);
 
 export type MigrationRow = {
@@ -159,7 +162,7 @@ async function readState(database: ReturnType<typeof createPrismaClient>) {
   const migrations = await database.$queryRawUnsafe<MigrationRow[]>(
     'SELECT migration_name, checksum, finished_at, rolled_back_at FROM "_prisma_migrations" ORDER BY migration_name',
   );
-  const managedAccount = await database.$queryRaw<Array<{ exists: boolean }>>`
+  const custodyTable = await database.$queryRaw<Array<{ exists: boolean }>>`
     SELECT to_regclass('public.managed_account') IS NOT NULL AS "exists"
   `;
   const migrationDirectories = (await readdir(migrationsDir, { withFileTypes: true }))
@@ -169,7 +172,7 @@ async function readState(database: ReturnType<typeof createPrismaClient>) {
   return {
     migrations,
     migrationDirectories,
-    managedAccountTableExists: managedAccount[0]?.exists === true,
+    managedAccountTableExists: custodyTable[0]?.exists === true,
   };
 }
 

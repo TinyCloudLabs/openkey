@@ -15,7 +15,7 @@ import { ParError, validatePermissions, type NativePermission } from '../service
 import { prepareDelegationSession, actionKey } from './delegate-session';
 
 export class NativeConsentError extends Error {
-  constructor(readonly status: 401 | 403 | 404 | 409 | 503, readonly code: string, readonly description?: string) { super(code); }
+  constructor(readonly status: 401 | 403 | 404 | 409 | 500 | 503, readonly code: string, readonly description?: string) { super(code); }
 }
 function fail(status: NativeConsentError['status'], code: string): never { throw new NativeConsentError(status, code); }
 const active = (row: { status: string; expiresAt: Date }) => {
@@ -82,9 +82,12 @@ async function fetchPeerId(host: string, spaceId: string): Promise<string> {
   if (!value.startsWith('did:key:')) throw new Error(`unexpected peer ID response: ${value.slice(0, 100)}`);
   return value;
 }
+class NativeOperationTimeoutError extends Error {
+  constructor(ms: number) { super(`operation timed out after ${ms} ms`); this.name = 'NativeOperationTimeoutError'; }
+}
 async function withinTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  try { return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`timed out after ${ms} ms`)), ms); })]); }
+  try { return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new NativeOperationTimeoutError(ms)), ms); })]); }
   finally { if (timer) clearTimeout(timer); }
 }
 const defaultHostOps: NativeConsentHostOps = { fetchPeerId, activateSessionWithHost, submitHostDelegation };
@@ -182,8 +185,20 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
     // TEE key derivation can perform I/O. Unseal before the database locks;
     // the canonical key and approved bytes are checked again under the lock.
     const preKey = pending.status === 'APPROVED' ? null : await keyFor(db, userId);
-    const privateKey = preKey ? await withinTimeout(unsealManagedKey(preKey, preKey.sealedBlob), 5_000)
-      .catch(() => fail(503, 'temporarily_unavailable')) : null;
+    let privateKey: Awaited<ReturnType<typeof unsealManagedKey>> | null = null;
+    if (preKey) {
+      try { privateKey = await withinTimeout(unsealManagedKey(preKey, preKey.sealedBlob), 5_000); }
+      catch (error) {
+        // The blob and TEE error text may contain sensitive material. Log only
+        // the error kind; a corrupt blob or sealing-context mismatch is not a
+        // transient outage and must not receive Retry-After.
+        console.error('Native delegation key unseal failed', {
+          keyId: preKey.id, kind: error instanceof NativeOperationTimeoutError ? 'timeout' : error instanceof Error ? error.name : 'unknown',
+        });
+        if (error instanceof NativeOperationTimeoutError) fail(503, 'temporarily_unavailable');
+        fail(500, 'key_unavailable');
+      }
+    }
     const result = await db.$transaction(async tx => {
       const { row, generation } = await lockRequest(tx, c.req.param('id'), userId, true);
       if (row.userId !== userId) fail(403, 'request_user_mismatch');

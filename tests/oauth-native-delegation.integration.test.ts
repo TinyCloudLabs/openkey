@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -509,7 +509,8 @@ if (!backend) {
       const empty = await call(`/api/auth/oauth2/authorize?client_id=${nativeClient}&tinycloud_request=`, { headers: { cookie } });
       expect(empty.status).toBe(302);
       expect(new URL(empty.headers.get('location')!, API).searchParams.get('error')).toBe('invalid_request');
-      for (const query of [{ scope: `openid ${DELEGATION}` }, { tinycloud_request: '' }, `scope=openid%20${encodeURIComponent(DELEGATION)}`]) {
+      for (const query of [{ scope: `openid ${DELEGATION}` }, { tinycloud_request: '' }, `scope=openid%20${encodeURIComponent(DELEGATION)}`,
+        { client_id: nativeClient }, `client_id=${encodeURIComponent(nativeClient)}`]) {
         const social = await call('/api/auth/sign-in/social', { method: 'POST', headers: { origin: WEB_ORIGIN, 'content-type': 'application/json' },
           body: JSON.stringify({ provider: 'google', additionalData: { query } }) });
         expect(social.status, await social.clone().text()).toBe(400);
@@ -635,7 +636,7 @@ if (!backend) {
   }, 120_000);
 
   test(`native consent revisions, binding, TTL, expiry and deny (${backend})`, async () => {
-    await ensureNativeKey();
+    const key = await ensureNativeKey();
     const originalFetch = globalThis.fetch;
     globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -676,6 +677,16 @@ if (!backend) {
       expect((await wrongDigest.json() as { error: string }).error).toBe('preparation_mismatch');
       const changedBytes = await nativeConsent(id, 'approve', { revision: 2, digest: p2.digest, sessionSiwe: p2.sessionSiwe + ' ', hostSiwe: p2.hostPlan?.hostSiwe });
       expect(changedBytes.status).toBe(409);
+      await prisma.ethereumKey.update({ where: { id: key.id }, data: { sealingContext: randomBytes(32).toString('base64url') } });
+      try {
+        const permanentUnseal = await nativeConsent(id, 'approve', { revision: 2, digest: p2.digest, sessionSiwe: p2.sessionSiwe, hostSiwe: p2.hostPlan?.hostSiwe });
+        expect(permanentUnseal.status).toBe(500);
+        expect(permanentUnseal.headers.has('Retry-After')).toBe(false);
+        expect((await permanentUnseal.json() as { error: string }).error).toBe('key_unavailable');
+        expect((await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id } })).signature).toBeNull();
+      } finally {
+        await prisma.ethereumKey.update({ where: { id: key.id }, data: { sealingContext: key.sealingContext } });
+      }
       await prisma.oauthClient.update({ where: { clientId: nativeClient }, data: { tinycloudNativeDelegation: { ...ceiling, tinycloudHost: 'http://127.0.0.1:18080' } } });
       const movedHost = await nativeConsent(id, 'approve', { revision: 2, digest: p2.digest, sessionSiwe: p2.sessionSiwe, hostSiwe: p2.hostPlan?.hostSiwe });
       expect(movedHost.status).toBe(409);
@@ -892,7 +903,7 @@ if (!backend) {
       } finally { await prisma.oauthClient.update({ where: { clientId: nativeClient }, data: { tinycloudNativeDelegation: ceiling } }); }
     }, 900_000);
 
-  test(`public PAR limits client and IP and sweeps old requests (${backend})`, async () => {
+  test(`public PAR limits validated clients, ignores spoofed IP headers, and sweeps old requests (${backend})`, async () => {
     const createClient = async (name: string) => {
       const response = await adminRequest('POST', '/clients', { name, type: 'native', redirectUris: [NATIVE_REDIRECT], tinycloudNativeDelegation: ceiling });
       expect(response.status).toBe(201);
@@ -906,6 +917,10 @@ if (!backend) {
       code_challenge_method: 'S256', scope: `openid offline_access ${DELEGATION}`, authorization_details: JSON.stringify(detail),
     }).toString(), { 'x-forwarded-for': ip });
     const clientId = await createClient('Rate limit client');
+    for (let i = 0; i < 20; i++) {
+      const unknown = await request(`unknown-${i}-${randomUUID()}`, `198.51.100.${i + 1}`);
+      expect(unknown.status).toBe(401);
+    }
     const old = await request(clientId, '198.51.100.1');
     expect(old.status).toBe(201);
     const oldId = ((await old.json() as { request_uri: string }).request_uri).split(':').at(-1)!;
@@ -918,14 +933,11 @@ if (!backend) {
     const clientLimited = await request(clientId, '198.51.101.1');
     expect(clientLimited.status).toBe(429);
     expect(clientLimited.headers.get('Retry-After')).toBeTruthy();
-    const otherClient = await createClient('IP limit client');
-    for (let i = 0; i < 60; i++) {
+    const otherClient = await createClient('Different client behind the same spoofed IP');
+    for (let i = 0; i < 61; i++) {
       const response = await request(otherClient, '203.0.113.7');
       expect(response.status, await response.clone().text()).toBe(201);
     }
-    const ipLimited = await request(otherClient, '203.0.113.7');
-    expect(ipLimited.status).toBe(429);
-    expect(ipLimited.headers.get('Retry-After')).toBeTruthy();
   }, 120_000);
 
   test(`PAR rejects malformed details and request URIs are single use (${backend})`, async () => {
