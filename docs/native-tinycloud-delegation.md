@@ -16,7 +16,10 @@ isolation fix (TC-780; see [TinyCloud node dependency](#tinycloud-node-dependenc
 Conventions:
 
 - `b64url` is unpadded base64url (RFC 4648 §5).
-- Times in JSON bodies are ISO-8601 UTC strings; JWT claims are Unix seconds.
+- Times in OpenKey-defined JSON members (`issuedAt`, `expiresAt`,
+  `renewableUntil` and the like) are ISO-8601 UTC strings. JWT claims and the
+  provider's token-response `expires_at` are Unix seconds as JSON numbers.
+  Every `expires_in` is a number of seconds.
 - Every error body is `{"error": "<code>", "error_description"?: "<text>"}`.
   Clients branch on `error`, never on `error_description`.
 
@@ -337,10 +340,34 @@ tinycloud_request=<row.id>
 The incoming query must contain every one of these keys exactly once, with
 exactly these values. The only other keys allowed are the provider's
 signed-query envelope (`exp`, `ba_iat`, `ba_pl`, `sig`), which the guard
-ignores and never trusts. A missing key (for example a replay without
-`prompt=consent`), a changed value (for example a different `state`), a
-duplicated key or any extra key is refused. The guard redirects to the same
-error page with `error=invalid_request`, never to the app. An authorize
+never trusts. A missing key (for example a replay without `prompt=consent`),
+a changed value (for example a different `state`), a duplicated key or any
+extra key is refused. The guard redirects to the same error page with
+`error=invalid_request`, never to the app.
+
+**The guard replaces the query; it doesn't just compare it.** When the check
+passes, the guard hands `auth.handler` a request whose URL query is
+**exactly the rebuilt query above**, in that order, with `exp`, `ba_iat`,
+`ba_pl` and `sig` removed. The envelope must be removed: the provider's
+`signParams` serializes the whole incoming query and then *appends* a new
+`sig`. If the old `sig` survived, the consent-page query would carry two
+`sig` values, and consent verification (`verifyOAuthQueryParams`) would fail.
+The envelope stays intact up to this point: the login page passes it to
+sign-in verification unchanged and forwards it on the `GET` re-entry. Only
+the guard strips it.
+
+Required end-to-end test of the whole path, signed out at the start:
+
+1. PAR, then `GET` authorize with `request_uri`;
+2. redirect to `/auth/login` and sign in, with the envelope verified;
+3. `GET` re-entry with the forwarded query;
+4. the guard replaces the query;
+5. redirect to `/oauth/consent` with one fresh `sig`;
+6. prepare and approve;
+7. `POST /oauth2/consent` with `accept: true` verifies and issues a code.
+
+The same test, with `prompt` removed or `state` changed at step 3, must end
+on the error page. An authorize
 request that has `tinycloud:delegation` in its scope but neither a
 `request_uri` nor a passing binding is refused the same way. Because
 `prompt=consent` cannot be dropped, saved provider consent can never skip the
@@ -714,6 +741,10 @@ Before using the delegation, the client checks that:
 - `permissions` is a subset of what it requested;
 - `tinycloudHost` is the host it expects;
 - `siwe` and `signature` reproduce `delegationHeader` and `delegationCid`.
+  This needs TinyCloud's serialization and CID code, so **`@openkey/core`
+  does not do it**. `@openkey/sdk-capacitor` (S2) does it, using the
+  TinyCloud web SDK, before it persists a delegation from sign-in or renewal.
+  Core checks only the DID, expiry, permission subset and host.
 
 Code-exchange errors:
 
@@ -734,10 +765,13 @@ OpenKey-Session-Proof: <proof over the refresh token, htu = renew endpoint>
 client_id=exo-native&refresh_token=<current refresh token>[&siwe_nonce=<nonce>][&authorization_details=<JSON>]
 ```
 
-- The optional `authorization_details` has the PAR shape. Its `session_key`
-  must equal the grant's key, and its `permissions` must be a subset of the
-  approved set. It cannot set `ttl_seconds`.
-- The optional `siwe_nonce` follows the PAR rules.
+- The optional `authorization_details` is a JSON array holding one object
+  with exactly the members `type` (`"tinycloud_delegation"`), `session_key`
+  and `permissions`. `session_key` must equal the grant's key, and
+  `permissions` must be a subset of the approved set. `ttl_seconds` and
+  `siwe_nonce` are refused inside it (`invalid_authorization_details`).
+- `siwe_nonce` is sent **only** as a top-level form field and follows the PAR
+  rules (`[A-Za-z0-9]{8,64}`). If absent, OpenKey generates one.
 - Duplicate form keys are refused.
 
 Processing:
@@ -1025,19 +1059,43 @@ holds:
 - it is an access token whose scopes include `tinycloud:delegation`, or
   whose `refreshId` points at a native refresh-token row.
 
-A client is a **delegation client** if delegation is currently enabled for
-it. This only matters for the requesting side of the ownership check.
+A client is **native-capable** if delegation is currently enabled for it,
+**or** at least one `TinyCloudNativeGrant` row exists for it, in any status.
+Grant rows are never deleted except by the client or user cascade, so a
+client that has ever issued a native grant stays native-capable after
+delegation is disabled. Any of the client ids the request names (Basic
+header or body) counts.
+
 Disabling delegation on a client, or removing its `tinycloud:delegation`
-scope, does **not** reopen the provider's refresh path for tokens it already
-issued. Those tokens stay native, and renewal refuses them with
+scope, does **not** reopen the provider's refresh or revoke paths for it.
+Its native tokens stay native, and renewal refuses them with
 `consent_required` because the client is no longer enabled.
+
+Classifying tokens alone is not enough. The provider's revoked-token branch
+deletes every refresh token for the **requesting** client and the token's
+user, so even a non-native token can do damage. Say Exo has an ordinary
+refresh token issued before delegation was enabled, now revoked. It is owned
+by Exo, so it passes the ownership check, and the provider would then delete
+every Exo refresh token for that user, native ones included. The provider's
+`refresh_token` grant has the same branch, reached once the client matches.
+So a native-capable requesting client is refused **outright** on both
+provider paths, whatever token it presents. Native refresh tokens are renewed
+and revoked only through the tinycloud endpoints. A native-capable client
+therefore can never use the provider's refresh grant or refresh-token
+revocation. Native clients are native-only; an app that also needs ordinary
+refresh registers a separate client.
 
 ### `POST /api/auth/oauth2/token`, `grant_type=refresh_token`
 
-If the presented token is native, the request gets 400 `invalid_grant` with
-`error_description` "use the renew endpoint", whatever the client's current
-configuration and whatever `scope` the request asks for. The provider never
-rotates or exchanges a native token.
+The request gets 400 `invalid_grant` with `error_description` "use the renew
+endpoint" if **either**:
+
+- the presented token is native; or
+- the requesting client is native-capable.
+
+This holds whatever the client's current configuration and whatever `scope`
+the request asks for. The provider never rotates or exchanges a native token,
+and never reaches its revoked-token branch for a native-capable client.
 
 ### `POST /api/auth/oauth2/revoke` (A2)
 
@@ -1053,6 +1111,8 @@ The interceptor decides before the provider runs:
 | Presented token | Requesting client | Result |
 |---|---|---|
 | `token` starting with `Bearer ` | any | 400 `invalid_request`, no side effects. |
+| An access token found in `oauth_access_token`, owned by the requesting client | native-capable | Passed to the provider, which deletes only that access token. |
+| Anything else: a refresh token in any state, native or not; an access token owned by another client; a token not found | native-capable | 400 `unsupported_token_type`, no side effects. Use the native revoke endpoint. |
 | Native refresh token (any state; classified as above) | any | 400 `unsupported_token_type`, no side effects. Use the native revoke endpoint. |
 | Refresh token (any state) owned by client A | client B ≠ A | 400 `invalid_request` ("token was not issued to this client"), no side effects. |
 | Non-native refresh token | the client that owns it | Passed to the provider. |
@@ -1060,12 +1120,20 @@ The interceptor decides before the provider runs:
 | Access token owned by another client | — | 400 `invalid_request`, no side effects. |
 | Not found | — | Passed to the provider, which returns 200 with no side effects (RFC 7009). |
 
-The first matching row applies. Native classification protects tokens
-issued to a native client; the ownership check protects a delegation client
-when it is named as the requesting client. Regression cases:
+The first matching row applies. The requesting-client rows protect every
+token of a native-capable client against the revoked-token branch, including
+tokens that aren't native and tokens the interceptor can't find, which are
+refused rather than passed through. Native classification protects native
+tokens whatever client is named. The ownership check covers the remaining
+ordinary-client cases. Regression cases:
 
 - An ordinary client's revoked refresh token, sent with a native client's
   `client_id`, leaves both of that user's native devices' tokens intact.
+- **Same client:** Exo's own ordinary refresh token, issued before
+  delegation was enabled and since revoked, sent with Exo's `client_id` to
+  `/oauth2/revoke`, gets 400 `unsupported_token_type`. Sent to the provider
+  refresh grant, it gets 400 `invalid_grant`. In both cases both native
+  devices' tokens stay intact and both devices can still renew.
 - The same revoked ordinary-client token, sent as `token=Bearer <token>`
   with Exo's `client_id`, gets 400 and leaves every Exo token intact.
 - Device A's rotated (revoked) native token, sent to the provider endpoint,
@@ -1121,8 +1189,8 @@ routes, and the provider's `/api/auth/oauth2/revoke`.
 | Renew | 409 | `renewal_conflict` (a previous token within 30 s of rotation) |
 | Renew | 429 | `renewal_too_soon` (`Retry-After` in seconds) |
 | Native revoke | 401 | `invalid_session_proof` (bad proof, or unknown token) |
-| Provider refresh | 400 | `invalid_grant` (native token, whatever the client's current configuration) |
-| Provider revoke | 400 | `unsupported_token_type` (native token), `invalid_request` (ownership mismatch, or `Bearer `-prefixed token) |
+| Provider refresh | 400 | `invalid_grant` (native token, or native-capable requesting client) |
+| Provider revoke | 400 | `unsupported_token_type` (native token, or a native-capable client presenting anything but its own access token), `invalid_request` (ownership mismatch, or `Bearer `-prefixed token) |
 | Any locked operation | 503 | `temporarily_unavailable` (`Retry-After: 2`). For code exchange the code is already spent and cannot be retried. |
 
 ### SDK mapping
@@ -1148,9 +1216,16 @@ The SDK (TC-774) error codes are `USER_CANCELLED`, `ACCESS_DENIED`,
 | `temporarily_unavailable` (503) from code exchange | `TEMPORARILY_UNAVAILABLE` | Never resend the code; a new `signIn` starts a fresh authorization. |
 | `hosting: "failed"` in a successful response | `SPACE_UNAVAILABLE` | Terminal for this session. |
 | Fetch failure | `NETWORK` | Retryable. |
+| PAR `invalid_client`, `unauthorized_client`, `invalid_request`, `invalid_scope` or `invalid_authorization_details` | `SERVER` | Terminal, no retry. These are app or client-configuration errors, not user-recoverable states; the SDK includes `error` and `error_description` in the error for diagnostics. |
 | Any other non-2xx or malformed response | `SERVER` | Not retried automatically. |
 | No stored session | `NOT_SIGNED_IN` | — |
 | Platform without the native plugin | `UNAVAILABLE` | — |
+
+The consent-route errors (`unauthorized`, `request_user_mismatch`,
+`request_not_found`, `request_not_pending`, `preparation_superseded`,
+`preparation_mismatch`) never reach the SDK. They are returned to OpenKey's
+own consent page in the browser, which shows them or prepares again. The app
+sees only the callback, or a sheet closed without one (`USER_CANCELLED`).
 
 "Terminal" from renew means a local sign-out. From native revoke, it means the
 server-side grant is already unusable, so `signOut` still wipes the local key
@@ -1212,7 +1287,7 @@ client, so OpenKey cannot authenticate it.
 | Stale or swapped consent preview | Immutable revisions, the digest, exact byte echo, user binding and a canonical-key recheck under lock. A tab can approve only the bytes it displayed. |
 | Old code or grant after consent withdrawal | Generation binding: withdrawal revokes grants and pending requests in the same transaction, and re-consent cannot revive them. |
 | Replay | Single-use `request_uri`, single-use code (atomic redemption), proofs bound to one credential and endpoint and consumed under lock, refresh rotation with one-step reuse detection, `iss`, `state`, SIWE nonce. |
-| Cross-device logout through the provider revoke endpoint | Closed by the A2 ownership check and refusal of delegation tokens. |
+| Cross-device logout through the provider's revoked-token branch (revoke or refresh grant) | Closed: native tokens are refused, a native-capable requesting client is refused outright on both provider paths, and the A2 ownership check covers ordinary clients. |
 | Hosting authority to a hostile node | Host comes only from the admin ceiling and the trusted allowlist; separately disclosed; digest-bound; signed at most once and only if the space is missing. |
 | Cross-app SQL access on the node | Closed only on TC-780-fixed nodes; enforced by `TINYCLOUD_SQL_ISOLATED_HOSTS`. |
 
