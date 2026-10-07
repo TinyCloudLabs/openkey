@@ -12,6 +12,7 @@ export class NativeSessionStorage implements ISessionStorage {
     private readonly namespace: string,
     private readonly serializeWrite?: (session: PersistedSessionData, write: () => Promise<void>) => Promise<void>,
     private readonly isVisible: () => boolean = () => true,
+    private readonly generation: () => number = () => 0,
   ) {}
 
   // One active TinyCloud session per OpenKey client. A fixed key lets signOut
@@ -19,6 +20,7 @@ export class NativeSessionStorage implements ISessionStorage {
   private get key(): string { return `${this.namespace}:tinycloud:session`; }
 
   async save(address: string, session: PersistedSessionData): Promise<void> {
+    const generation = this.generation();
     try {
       if (!this.isVisible()) throw new OpenKeyNativeError('NOT_SIGNED_IN', 'No active OpenKey session');
       const write = () => this.plugin.secureStoreSet({ key: this.key, value: JSON.stringify(session) });
@@ -29,6 +31,7 @@ export class NativeSessionStorage implements ISessionStorage {
       if (error instanceof OpenKeyNativeError && error.code === 'NOT_SIGNED_IN') throw error;
       throw new OpenKeyNativeError('SERVER', 'TinyCloud secure store write failed');
     }
+    if (!this.isVisible() || this.generation() !== generation) return;
     this.present.clear();
     this.present.add(address.toLowerCase());
     this.active = address;
@@ -36,9 +39,11 @@ export class NativeSessionStorage implements ISessionStorage {
 
   async load(address: string): Promise<PersistedSessionData | null> {
     if (!this.isVisible()) return null;
+    const generation = this.generation();
     let value: string | null;
     try { ({ value } = await this.plugin.secureStoreGet({ key: this.key })); }
     catch { throw new OpenKeyNativeError('SERVER', 'TinyCloud secure store read failed'); }
+    if (!this.isVisible() || this.generation() !== generation) return null;
     if (value === null) {
       this.present.delete(address.toLowerCase());
       return null;

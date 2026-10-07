@@ -43,6 +43,12 @@ function fixture(approved = capabilities) {
   let tokenReply: () => NativeFetchResponse = () => response(200, { access_token: 'access', refresh_token: 'initial', tinycloud_delegation: delegation() });
   let renewReply: (call: number) => NativeFetchResponse = () => response(200, renewal('next'));
   let revokeReply: () => NativeFetchResponse | Promise<NativeFetchResponse> = () => response(200, {});
+  let discoveryReply: () => NativeFetchResponse = () => response(200, {
+    issuer, authorization_endpoint: `${issuer}/oauth2/authorize`, token_endpoint: `${issuer}/oauth2/token`,
+    pushed_authorization_request_endpoint: `${issuer}/oauth2/par`,
+    tinycloud_delegation_renew_endpoint: `${issuer}/oauth2/tinycloud/renew`,
+    tinycloud_delegation_revocation_endpoint: `${issuer}/oauth2/tinycloud/revoke`,
+  });
   const delegation = (granted = approved) => ({
     verificationMethod: keyId, expiresAt: new Date(Date.now() + (immediateRenewal ? 30_000 : 3_600_000)).toISOString(),
     issuedAt: new Date(Date.now() - (immediateRenewal ? 3_600_000 : 0)).toISOString(), permissions: [
@@ -54,12 +60,7 @@ function fixture(approved = capabilities) {
   const renewal = (refreshToken: string, granted = approved) => ({ refresh_token: refreshToken, tinycloud_delegation: delegation(granted) });
   const fetchFn: NativeFetch = async (url, init) => {
     requestLog.push(url);
-    if (url.includes('.well-known')) return response(200, {
-      issuer, authorization_endpoint: `${issuer}/oauth2/authorize`, token_endpoint: `${issuer}/oauth2/token`,
-      pushed_authorization_request_endpoint: `${issuer}/oauth2/par`,
-      tinycloud_delegation_renew_endpoint: `${issuer}/oauth2/tinycloud/renew`,
-      tinycloud_delegation_revocation_endpoint: `${issuer}/oauth2/tinycloud/revoke`,
-    });
+    if (url.includes('.well-known')) return discoveryReply();
     if (url.endsWith('/par')) {
       const form = new URLSearchParams(init?.body);
       state = form.get('state')!;
@@ -82,6 +83,7 @@ function fixture(approved = capabilities) {
     new OpenKeyNative({ clientId: 'exo', redirectUri, plugin, fetchFn, verifyDelegation, sleepFn: async () => {} });
   return { plugin, make, delegation, renewal, revokeTokens, requestLog, get state() { return state; }, get renewCalls() { return renewCalls; }, get revokeCalls() { return revokeCalls; },
     setRenewReply: (fn: typeof renewReply) => { renewReply = fn; }, setRevokeReply: (fn: typeof revokeReply) => { revokeReply = fn; },
+    setDiscoveryReply: (fn: typeof discoveryReply) => { discoveryReply = fn; },
     setImmediateRenewal: () => { immediateRenewal = true; }, setTokenReply: (fn: typeof tokenReply) => { tokenReply = fn; } };
 }
 
@@ -293,9 +295,10 @@ describe('OpenKeyNative', () => {
     f.setRevokeReply(async () => { entered(); await gate; return response(200, {}); });
     const terminal = client.renew();
     await started;
-    const fresh = await client.signIn({ capabilities });
+    const freshPending = client.signIn({ capabilities });
     release();
     await expect(terminal).rejects.toMatchObject({ code: 'SPACE_UNAVAILABLE' });
+    const fresh = await freshPending;
     expect((await client.current())?.sessionKey.did).toBe(fresh.sessionKey.did);
   });
 
@@ -339,6 +342,8 @@ describe('OpenKeyNative', () => {
     release();
     await Promise.all([save, signOut]);
     expect(await client.sessionStorageAdapter().load(session.delegation.address!)).toBeNull();
+    await client.signIn({ capabilities });
+    expect(client.sessionStorageAdapter().exists(session.delegation.address!)).toBe(false);
   });
 
   test('a TinyCloud handoff after signOut cannot restore the old session', async () => {
@@ -363,7 +368,7 @@ describe('OpenKeyNative', () => {
     expect(f.plugin.values.size).toBe(0);
   });
 
-  test('an old renew cannot write over a new sign-in', async () => {
+  test('a new sign-in waits for an existing renew before replacing the session', async () => {
     const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
@@ -371,11 +376,31 @@ describe('OpenKeyNative', () => {
     const started = new Promise<void>((resolve) => { entered = resolve; });
     f.setRenewReply(() => ({ ...response(200, f.renewal('old')), json: async () => { entered(); await gate; return f.renewal('old'); } }));
     const old = client.renew(); await started;
-    const fresh = await client.signIn({ capabilities });
+    const freshPending = client.signIn({ capabilities });
     release();
-    await expect(old).rejects.toMatchObject({ code: 'NOT_SIGNED_IN' });
+    expect((await old).tokens.refreshToken).toBe('old');
+    const fresh = await freshPending;
     expect((await client.current())?.sessionKey.did).toBe(fresh.sessionKey.did);
     expect((await client.current())?.tokens.refreshToken).toBe('initial');
+  });
+
+  test('a cancelled replacement sign-in does not invalidate an in-flight renew (P3)', async () => {
+    const f = fixture(); const client = f.make(); const existing = await client.signIn({ capabilities });
+    const oldRenewal = f.renewal('rotated');
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    f.setRenewReply(() => ({ ...response(200, oldRenewal), json: async () => { entered(); await gate; return oldRenewal; } }));
+    const renewal = client.renew();
+    await started;
+    f.plugin.callback = async () => { throw { code: 'USER_CANCELLED' }; };
+    await expect(client.signIn({ capabilities })).rejects.toMatchObject({ code: 'USER_CANCELLED' });
+    release();
+    expect((await renewal).tokens.refreshToken).toBe('rotated');
+    expect((await client.current())?.sessionKey.did).toBe(existing.sessionKey.did);
+    expect((await client.current())?.tokens.refreshToken).toBe('rotated');
+    expect(f.revokeTokens).not.toContain('rotated');
   });
 
   test('transient revoke failure wipes and reports that the grant may remain active', async () => {
@@ -401,8 +426,10 @@ describe('OpenKeyNative', () => {
     expect(entries[0]![0].endsWith(':pending-revoke')).toBe(true);
     const pending = JSON.parse(entries[0]![1]);
     expect(Object.keys(pending).sort()).toEqual(['grants', 'version']);
-    expect(Object.keys(pending.grants[0]).sort()).toEqual(['privateJwk', 'refreshToken']);
+    expect(Object.keys(pending.grants[0]).sort()).toEqual(['attempts', 'expiresAt', 'privateJwk', 'refreshToken']);
     expect(pending.grants[0].refreshToken).toBe('initial');
+    expect(pending.grants[0].attempts).toBe(1);
+    expect(pending.grants[0].expiresAt).toBeGreaterThan(Date.now());
     f.setRevokeReply(() => response(200, {}));
     await client.signOut();
     expect(f.revokeCalls).toBe(3);
@@ -434,6 +461,110 @@ describe('OpenKeyNative', () => {
     f.setRevokeReply(() => response(401, { error: 'invalid_session_proof' }));
     await client.signOut();
     expect(f.plugin.values.size).toBe(0);
+  });
+
+  test('revoke classification keeps 429 and generic 5xx, but drops other 4xx', async () => {
+    for (const status of [429, 500, 503, 400, 403]) {
+      const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
+      f.setRevokeReply(() => response(status, { error: 'unexpected_error' }));
+      if (status === 429 || status >= 500) {
+        await expect(client.signOut()).rejects.toMatchObject({ status });
+        expect([...f.plugin.values.keys()].some((key) => key.endsWith(':pending-revoke'))).toBe(true);
+      } else {
+        await client.signOut();
+        expect(f.plugin.values.size).toBe(0);
+      }
+    }
+  });
+
+  test('discovery 503 during signOut keeps a bounded pending revoke', async () => {
+    const f = fixture(); await f.make().signIn({ capabilities });
+    f.setDiscoveryReply(() => response(503, { error: 'offline' }));
+    const fresh = f.make();
+    await expect(fresh.signOut()).rejects.toMatchObject({ code: 'SERVER', status: 503 });
+    const pending = JSON.parse([...f.plugin.values].find(([key]) => key.endsWith(':pending-revoke'))![1]);
+    expect(pending.grants).toHaveLength(1);
+    expect(pending.grants[0].attempts).toBe(1);
+    expect(await fresh.current()).toBeNull();
+  });
+
+  test('pending revoke retries stop at 20 attempts or refresh expiry', async () => {
+    const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
+    f.setRevokeReply(() => response(500, { error: 'unexpected_error' }));
+    await expect(client.signOut()).rejects.toMatchObject({ status: 500 });
+    const key = [...f.plugin.values.keys()].find((item) => item.endsWith(':pending-revoke'))!;
+    const record = JSON.parse(f.plugin.values.get(key)!);
+    record.grants[0].attempts = 19;
+    f.plugin.values.set(key, JSON.stringify(record));
+    await expect(client.signOut()).rejects.toMatchObject({ status: 500 });
+    expect(f.plugin.values.has(key)).toBe(false);
+    const calls = f.revokeCalls;
+    await client.signOut();
+    expect(f.revokeCalls).toBe(calls);
+
+    await client.signIn({ capabilities });
+    await expect(client.signOut()).rejects.toMatchObject({ status: 500 });
+    const expired = JSON.parse(f.plugin.values.get(key)!);
+    expired.grants[0].expiresAt = Date.now() - 1;
+    f.plugin.values.set(key, JSON.stringify(expired));
+    const beforeExpiry = f.revokeCalls;
+    await client.signOut();
+    expect(f.revokeCalls).toBe(beforeExpiry);
+    expect(f.plugin.values.has(key)).toBe(false);
+  });
+
+  test('pending revoke entries from the prior SDK revision gain retry bounds', async () => {
+    const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
+    f.setRevokeReply(() => response(500, { error: 'unexpected_error' }));
+    await expect(client.signOut()).rejects.toMatchObject({ status: 500 });
+    const key = [...f.plugin.values.keys()].find((item) => item.endsWith(':pending-revoke'))!;
+    const legacy = JSON.parse(f.plugin.values.get(key)!);
+    delete legacy.grants[0].attempts;
+    delete legacy.grants[0].expiresAt;
+    f.plugin.values.set(key, JSON.stringify(legacy));
+    await expect(client.signOut()).rejects.toMatchObject({ status: 500 });
+    const upgraded = JSON.parse(f.plugin.values.get(key)!);
+    expect(upgraded.grants[0].attempts).toBe(2);
+    expect(upgraded.grants[0].expiresAt).toBeGreaterThan(Date.now());
+  });
+
+  test('an already expired grant is not kept for pending revoke', async () => {
+    const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
+    for (const [key, value] of f.plugin.values) {
+      if (key.endsWith(':session')) {
+        const record = JSON.parse(value);
+        record.delegation.renewableUntil = new Date(Date.now() - 1_000).toISOString();
+        f.plugin.values.set(key, JSON.stringify(record));
+      }
+    }
+    f.setRevokeReply(() => response(500, { error: 'unexpected_error' }));
+    await expect(client.signOut()).rejects.toMatchObject({ status: 500 });
+    expect(f.plugin.values.size).toBe(0);
+  });
+
+  test('offline pending revoke retries discovery after recovery and permits signIn, renew, signOut', async () => {
+    const f = fixture(); const initial = f.make(); await initial.signIn({ capabilities });
+    f.setRevokeReply(() => response(503, { error: 'temporarily_unavailable' }, '1'));
+    await expect(initial.signOut()).rejects.toMatchObject({ status: 503 });
+    f.setDiscoveryReply(() => response(503, { error: 'offline' }));
+    const recovered = f.make();
+    const discoveryCount = () => f.requestLog.filter((url) => url.includes('.well-known')).length;
+    const offlineCount = discoveryCount();
+    await eventually(() => discoveryCount() > offlineCount);
+    expect([...f.plugin.values.keys()].some((key) => key.endsWith(':pending-revoke'))).toBe(true);
+    f.setDiscoveryReply(() => response(200, {
+      issuer, authorization_endpoint: `${issuer}/oauth2/authorize`, token_endpoint: `${issuer}/oauth2/token`,
+      pushed_authorization_request_endpoint: `${issuer}/oauth2/par`,
+      tinycloud_delegation_renew_endpoint: `${issuer}/oauth2/tinycloud/renew`,
+      tinycloud_delegation_revocation_endpoint: `${issuer}/oauth2/tinycloud/revoke`,
+    }));
+    f.setRevokeReply(() => response(200, {}));
+    expect((await recovered.signIn({ capabilities })).tokens.refreshToken).toBe('initial');
+    expect((await recovered.renew()).tokens.refreshToken).toBe('next');
+    await recovered.signOut();
+    expect(await recovered.current()).toBeNull();
+    expect(f.plugin.values.size).toBe(0);
+    expect(discoveryCount()).toBeGreaterThan(offlineCount + 1);
   });
 
   test('pending revoke retries at SDK initialization and before signIn', async () => {
