@@ -17,6 +17,14 @@ export const TINYCLOUD_DELEGATION_SCOPE = 'tinycloud:delegation';
 export const RESTRICTED_SCOPES: ReadonlySet<string> = new Set<string>([
   TINYCLOUD_SESSION_SCOPE, TINYCLOUD_MANAGE_KEY_SCOPE, TINYCLOUD_DELEGATION_SCOPE,
 ]);
+/**
+ * Scopes only OpenKey admins grant, through the admin route or the
+ * register-oauth-client workflow. No provider client-registration path
+ * (dynamic registration, create-client, update-client) may add or remove them.
+ */
+export const ADMIN_MANAGED_SCOPES: ReadonlySet<string> = new Set<string>([
+  TINYCLOUD_MANAGE_KEY_SCOPE, TINYCLOUD_DELEGATION_SCOPE,
+]);
 export const TINYCLOUD_OWNER_DIDS_CLAIM = 'https://tinycloud.xyz/owner_dids';
 export const TINYCLOUD_CANONICAL_IDENTITY_CLAIM =
   'https://tinycloud.xyz/canonical_identity';
@@ -36,7 +44,7 @@ export const OAUTH_SCOPES = [
 // admin-enabled native client, so an unauthenticated dynamic registration can
 // request neither.
 export const DYNAMIC_CLIENT_REGISTRATION_ALLOWED_SCOPES = OAUTH_SCOPES.filter(
-  (scope) => scope !== TINYCLOUD_MANAGE_KEY_SCOPE && scope !== TINYCLOUD_DELEGATION_SCOPE,
+  (scope) => !ADMIN_MANAGED_SCOPES.has(scope),
 );
 
 export function oauthValidAudiences(baseURL: string, configured = process.env.OAUTH_VALID_AUDIENCES): string[] {

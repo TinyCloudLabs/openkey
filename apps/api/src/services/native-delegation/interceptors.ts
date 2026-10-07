@@ -1,6 +1,6 @@
 import type { Context, MiddlewareHandler } from 'hono';
 import type { PrismaClient } from '@openkey/db';
-import { TINYCLOUD_DELEGATION_SCOPE } from '../../oauth-config';
+import { ADMIN_MANAGED_SCOPES, TINYCLOUD_DELEGATION_SCOPE } from '../../oauth-config';
 import { isNativeDelegationClient } from './policy';
 import { NATIVE_DELEGATION_ENDPOINT_PATHS } from './public-protocol';
 import { storedOpaqueAccessToken, storedRefreshToken, type ProviderTokenOptions } from './provider-tokens';
@@ -16,7 +16,12 @@ import { storedOpaqueAccessToken, storedRefreshToken, type ProviderTokenOptions 
  *   native-capable client.
  * - Revoke: refused for a `Bearer `-prefixed token; for a native-capable
  *   client, anything but its own access token; a native refresh token; and a
- *   token issued to another client (plan amendment A2). No side effects.
+ *   token issued to another client (plan amendment A2). No side effects. An
+ *   unknown token otherwise gets RFC 7009's 200 once the provider has
+ *   validated the client.
+ * - Client create/update: the admin-managed scopes (`tinycloud:delegation`,
+ *   `tinycloud:manage-key`) are never added or removed through the
+ *   provider's user-facing client routes.
  *
  * Native tokens are classified by how they were issued, never by the
  * client's current configuration. Tokens are normalized with the provider's
@@ -31,6 +36,10 @@ const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9
 export type ProviderInterceptorDatabase = Pick<PrismaClient, 'oauthClient' | 'oauthRefreshToken' | 'oauthAccessToken' | 'tinyCloudNativeGrant'>;
 
 type Refusal = { status: 400 | 401; error: string; description: string };
+/** Pass to the provider, then answer RFC 7009's 200 if it reports the token unknown. */
+const UNKNOWN_TOKEN = 'unknown-token';
+type Decision = Refusal | null | typeof UNKNOWN_TOKEN;
+const JSON_MEDIA_TYPE = /^application\/([a-z0-9.+-]*\+)?json/i;
 type ParsedBody = { params: URLSearchParams } | { refusal: Refusal } | { passThrough: true };
 
 /** The route better-call dispatches on: everything after the first base path. */
@@ -58,6 +67,32 @@ function duplicateKey(params: URLSearchParams): string | undefined {
 
 function scopeList(scope: string | null): string[] {
   return (scope ?? '').split(' ').filter(Boolean);
+}
+
+/**
+ * The JSON body better-call hands the client routes. Their schemas need
+ * arrays and objects, which only JSON can carry, so any other body fails the
+ * provider's validation and passes through untouched.
+ */
+async function parseProviderJson(request: Request): Promise<Record<string, unknown> | null> {
+  if (!request.body || !JSON_MEDIA_TYPE.test((request.headers.get('content-type') ?? '').toLowerCase())) return null;
+  try {
+    const body: unknown = JSON.parse(await request.clone().text());
+    return body && typeof body === 'object' && !Array.isArray(body) ? body as Record<string, unknown> : null;
+  } catch {
+    // The provider's own parse fails the same way, before any write.
+    return null;
+  }
+}
+
+const adminManagedScope: Refusal = {
+  status: 400,
+  error: 'invalid_scope',
+  description: `${[...ADMIN_MANAGED_SCOPES].join(' and ')} are granted only by OpenKey admins`,
+};
+
+function mentionsAdminManagedScope(scope: unknown): boolean {
+  return typeof scope === 'string' && scopeList(scope).some((entry) => ADMIN_MANAGED_SCOPES.has(entry));
 }
 
 /**
@@ -218,7 +253,7 @@ export function createProviderInterceptors({ database, tokens }: ProviderInterce
   }
 
   /** Spec "Provider refresh and revoke interception", revoke table; first match applies. */
-  async function guardRevoke(c: Context): Promise<Refusal | null> {
+  async function guardRevoke(c: Context): Promise<Decision> {
     const parsed = await parseProviderForm(c.req.raw);
     if ('passThrough' in parsed) return null;
     if ('refusal' in parsed) return parsed.refusal;
@@ -246,23 +281,59 @@ export function createProviderInterceptors({ database, tokens }: ProviderInterce
     }
     if (refresh?.native) return unsupported;
     const owner = refresh?.clientId ?? access?.clientId;
-    if (owner !== undefined && owner !== clients.effective) {
+    if (owner === undefined) return UNKNOWN_TOKEN;
+    if (owner !== clients.effective) {
       return { status: 400, error: 'invalid_request', description: 'token was not issued to this client' };
     }
     return null;
   }
 
+  async function guardCreateClient(c: Context): Promise<Decision> {
+    const body = await parseProviderJson(c.req.raw);
+    return body && mentionsAdminManagedScope(body.scope) ? adminManagedScope : null;
+  }
+
+  /** Neither adds an admin-managed scope nor changes the scopes of a client holding one. */
+  async function guardUpdateClient(c: Context): Promise<Decision> {
+    const body = await parseProviderJson(c.req.raw);
+    const update = body?.update;
+    if (!update || typeof update !== 'object' || Array.isArray(update) || !('scope' in update)) return null;
+    const scope = (update as Record<string, unknown>).scope;
+    if (mentionsAdminManagedScope(scope)) return adminManagedScope;
+    if (typeof body.client_id !== 'string') return null;
+    const existing = await database.oauthClient.findUnique({ where: { clientId: body.client_id }, select: { scopes: true } });
+    return existing?.scopes.some((entry) => ADMIN_MANAGED_SCOPES.has(entry)) ? adminManagedScope : null;
+  }
+
+  /**
+   * RFC 7009 §2.2: an unknown or invalid token is not an error. The provider
+   * validates the client first (401/400 `invalid_client` stays as it is) and
+   * then reports the unknown token as 400 `invalid_request`.
+   */
+  async function answerUnknownToken(c: Context): Promise<void> {
+    if (c.res.status !== 400) return;
+    const body = await c.res.clone().json().catch(() => null) as { error?: unknown } | null;
+    if (body?.error !== 'invalid_request') return;
+    const headers = new Headers(c.res.headers);
+    headers.delete('content-length');
+    c.res = new Response(null, { status: 200, headers });
+  }
+
   // Other auth routes go straight to better-auth without an async hop.
   return (c, next) => {
     const path = providerPath(c.req.url);
-    const guard = path === '/oauth2/authorize' ? guardAuthorize
-      : path === '/oauth2/token' && c.req.method === 'POST' ? guardToken
-        : path === '/oauth2/revoke' && c.req.method === 'POST' ? guardRevoke
-          : null;
+    const post = c.req.method === 'POST';
+    const guard: ((c: Context) => Promise<Decision>) | null = path === '/oauth2/authorize' ? guardAuthorize
+      : post && path === '/oauth2/token' ? guardToken
+        : post && path === '/oauth2/revoke' ? guardRevoke
+          : post && path === '/oauth2/create-client' ? guardCreateClient
+            : post && path === '/oauth2/update-client' ? guardUpdateClient
+              : null;
     if (!guard) return next();
-    return guard(c).then(async (refusal) => {
-      if (refusal) return refuse(c, refusal);
+    return guard(c).then(async (decision) => {
+      if (decision && decision !== UNKNOWN_TOKEN) return refuse(c, decision);
       await next();
+      if (decision === UNKNOWN_TOKEN) await answerUnknownToken(c);
     });
   };
 }

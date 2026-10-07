@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 
 import {
+  ADMIN_MANAGED_SCOPES,
   DEFAULT_OAUTH_SCOPES,
   DYNAMIC_CLIENT_REGISTRATION_ALLOWED_SCOPES,
   OAUTH_SCOPES,
@@ -41,6 +42,13 @@ describe('tinycloud:delegation scope sets', () => {
     expect(RESTRICTED_SCOPES.has(TINYCLOUD_DELEGATION_SCOPE)).toBe(true);
     expect(DEFAULT_OAUTH_SCOPES).not.toContain(TINYCLOUD_DELEGATION_SCOPE as never);
     expect(DYNAMIC_CLIENT_REGISTRATION_ALLOWED_SCOPES).not.toContain(TINYCLOUD_DELEGATION_SCOPE);
+  });
+
+  test('delegation and manage-key are admin-managed and never dynamically registrable', () => {
+    expect([...ADMIN_MANAGED_SCOPES].sort()).toEqual([TINYCLOUD_DELEGATION_SCOPE, 'tinycloud:manage-key'].sort());
+    for (const scope of ADMIN_MANAGED_SCOPES) {
+      expect(DYNAMIC_CLIENT_REGISTRATION_ALLOWED_SCOPES).not.toContain(scope as never);
+    }
   });
 
   test('dynamic registration keeps its existing tinycloud:session allowance', () => {

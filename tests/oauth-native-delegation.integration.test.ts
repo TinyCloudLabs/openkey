@@ -324,11 +324,69 @@ if (!backend) {
           type: 'user-agent-based', scope,
         }),
       });
-      const refused = await register(`openid ${DELEGATION}`);
-      expect(refused.status).toBe(400);
-      expect((await oauthError(refused)).error).toBe('invalid_scope');
+      for (const scope of [`openid ${DELEGATION}`, 'openid tinycloud:manage-key']) {
+        const refused = await register(scope);
+        expect(refused.status, scope).toBe(400);
+        expect((await oauthError(refused)).error).toBe('invalid_scope');
+      }
       expect((await register('openid')).status).toBe(200);
       expect(await prisma.oauthClient.count({ where: { scopes: { has: DELEGATION } } })).toBe(1);
+    });
+
+    test('a signed-in user cannot add or remove admin-managed scopes through create-client or update-client', async () => {
+      const clientRoute = (path: string, body: unknown) => call(`/api/auth/oauth2/${path}`, {
+        method: 'POST',
+        headers: { cookie, origin: WEB_ORIGIN, 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const adminManaged = () => prisma.oauthClient.count({
+        where: { OR: [{ scopes: { has: DELEGATION } }, { scopes: { has: 'tinycloud:manage-key' } }] },
+      });
+      const before = await adminManaged();
+      const created = (scope: string, extra: Record<string, unknown> = {}) => clientRoute('create-client', {
+        client_name: 'User client', redirect_uris: [ORDINARY_REDIRECT], token_endpoint_auth_method: 'none',
+        type: 'user-agent-based', scope, ...extra,
+      });
+      for (const [scope, extra] of [
+        [`openid ${DELEGATION}`, {}],
+        ['openid tinycloud:manage-key', {}],
+        ['openid tinycloud:manage-key', { token_endpoint_auth_method: 'client_secret_basic', type: 'web' }],
+      ] as const) {
+        const response = await created(scope, extra);
+        expect(response.status, scope).toBe(400);
+        expect((await oauthError(response)).error).toBe('invalid_scope');
+      }
+      expect(await adminManaged()).toBe(before);
+
+      // A user's own ordinary client: creation works, and so do ordinary scope
+      // updates, but neither admin-managed scope can be added.
+      const own = await created('openid email');
+      expect(own.status).toBe(200);
+      const ownClient = (await own.json() as { client_id: string }).client_id;
+      for (const scope of [`openid ${DELEGATION}`, 'openid tinycloud:manage-key']) {
+        const response = await clientRoute('update-client', { client_id: ownClient, update: { scope } });
+        expect(response.status, scope).toBe(400);
+        expect((await oauthError(response)).error).toBe('invalid_scope');
+      }
+      expect((await clientRoute('update-client', { client_id: ownClient, update: { scope: 'openid' } })).status).toBe(200);
+      expect((await prisma.oauthClient.findUniqueOrThrow({ where: { clientId: ownClient } })).scopes).toEqual(['openid']);
+
+      // A delegation-enabled client the user owns: its scopes can't be
+      // changed, so the scope can't be removed apart from its ceiling.
+      const enabled = await adminRequest('POST', '/clients', {
+        name: 'User-owned native', type: 'native', redirectUris: [NATIVE_REDIRECT], tinycloudNativeDelegation: ceiling,
+      });
+      const enabledClient = (await enabled.json() as { client: { clientId: string } }).client.clientId;
+      await prisma.oauthClient.update({ where: { clientId: enabledClient }, data: { userId: alice } });
+      const scopes = (await prisma.oauthClient.findUniqueOrThrow({ where: { clientId: enabledClient } })).scopes;
+      const removed = await clientRoute('update-client', { client_id: enabledClient, update: { scope: 'openid offline_access' } });
+      expect(removed.status).toBe(400);
+      expect((await oauthError(removed)).error).toBe('invalid_scope');
+      expect((await prisma.oauthClient.findUniqueOrThrow({ where: { clientId: enabledClient } })).scopes).toEqual(scopes);
+      // Other fields still update through the provider.
+      expect((await clientRoute('update-client', { client_id: enabledClient, update: { client_name: 'Renamed' } })).status).toBe(200);
+      await prisma.oauthClient.deleteMany({ where: { clientId: { in: [ownClient, enabledClient] } } });
+      expect(await adminManaged()).toBe(before);
     });
 
     test('a direct authorize request for the delegation scope is refused for every client', async () => {
@@ -659,16 +717,12 @@ if (!backend) {
       expect(await tokenState()).toEqual(seededState);
     });
 
-    test('an ordinary client\'s own access and refresh tokens, and unknown tokens, still go to the provider', async () => {
+    test('an ordinary client\'s own access and refresh tokens still go to the provider', async () => {
       await seedAccessToken('ordinary-access', ordinaryClient, ['openid'], 'ordinary-live');
       const access = await revoke({ client_id: ordinaryClient, token: 'ordinary-access', token_type_hint: 'access_token' });
       expect(access.status).toBe(200);
       const ordinary = await revoke({ client_id: ordinaryClient, token: 'ordinary-live', token_type_hint: 'refresh_token' });
       expect(ordinary.status).toBe(200);
-      // Passed through: the provider's own not-found answer (1.6.10 sends 400
-      // when no token_type_hint is given), with no side effects.
-      const unknown = await revoke({ client_id: ordinaryClient, token: 'never-issued' });
-      expect(await oauthError(unknown)).toEqual({ error: 'invalid_request', error_description: 'token not found' });
       expect(await tokenState()).toEqual({
         refresh: [
           { id: 'native-a', revoked: false },
@@ -678,6 +732,20 @@ if (!backend) {
         ],
         access: ['native-a-access'],
       });
+    });
+
+    test('RFC 7009: an unknown token gets 200 with no side effects once the client validates, whatever the hint', async () => {
+      for (const hint of hints) {
+        const unknown = await revoke({ client_id: ordinaryClient, token: 'never-issued', ...(hint ? { token_type_hint: hint } : {}) });
+        expect(unknown.status, String(hint)).toBe(200);
+        expect(await unknown.text(), String(hint)).toBe('');
+      }
+      expect(await tokenState()).toEqual(seededState);
+      // Client validation still comes first and is not masked.
+      const unknownClient = await revoke({ client_id: 'no-such-client', token: 'never-issued' });
+      expect(unknownClient.status).toBe(400);
+      expect((await oauthError(unknownClient)).error).toBe('invalid_client');
+      expect(await tokenState()).toEqual(seededState);
     });
   });
 
