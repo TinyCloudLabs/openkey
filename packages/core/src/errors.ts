@@ -7,8 +7,10 @@ export type OpenKeyErrorCode =
   | 'TIMEOUT'
   | 'NO_KEY'
   | 'UNAUTHORIZED'
+  | 'ACCESS_DENIED'
   | 'STATE_MISMATCH'
   | 'NETWORK_ERROR'
+  | 'SERVER'
   | 'UNKNOWN';
 
 /**
