@@ -52,20 +52,25 @@ existing stored session. `signOut()` signs the user out immediately: a
 successful or terminally failed revoke wipes the session and resolves,
 while a transient revoke failure moves the session key and refresh token
 to a pending-revoke record and rejects with the typed error. Only
-`NETWORK`, `TEMPORARILY_UNAVAILABLE` (after the internal retry) and any
-HTTP 5xx from the revoke endpoint or server discovery are transient; every
-other revoke error, including a 4xx `SERVER`, is terminal. Pending revokes
-are retried on the next `signOut()`, on construction and on `signIn()`,
-and dropped once they succeed or fail terminally. A failed secure-store
-write or wipe also rejects. A `signOut()` during an in-flight `signIn()`
-(including discovery and PAR), `renew()` or code exchange makes it discard
-its result and reject `NOT_SIGNED_IN` instead of persisting over the wiped
-session (an orphaned grant is revoked best-effort), and a storage read it
-overtakes is never cached. Renew results are bound to the session they
-started from: a newer session stored by `signIn()` meanwhile is neither
-overwritten nor wiped by them. A delegation returned by sign-in that is
-already inside the renewal lead window is renewed before `signIn()`
-resolves — if that renew fails non-terminally the error surfaces but the
-fresh session stays persisted. `refreshToken()` throws `UNAVAILABLE` in
-delegation mode (the provider refresh grant is refused for native
-clients). Delegation-mode errors surface as `OpenKeyNativeError`.
+`NETWORK`, `TEMPORARILY_UNAVAILABLE` (after the internal retry), any HTTP
+5xx from the revoke endpoint or server discovery, and HTTP 429 are
+transient; every other revoke error, including any other 4xx, is terminal.
+Pending revokes are retried on the next `signOut()`, on construction and
+on `signIn()`, and dropped once they succeed or fail terminally, once the
+refresh token has expired (7 days, or the grant's absolute expiry if
+sooner), or after 20 attempts. A failed server discovery is never cached.
+A failed secure-store write or wipe also rejects. A `signOut()` during an
+in-flight `signIn()` (including discovery and PAR), `renew()` or code
+exchange makes it discard its result and reject `NOT_SIGNED_IN` instead of
+persisting over the wiped session (an orphaned grant is revoked
+best-effort), and a storage read it overtakes is never cached. Renew
+results are bound to the session they started from: a newer session stored
+by `signIn()` meanwhile is neither overwritten nor wiped by them. A
+`signIn()` that has not stored its session yet (e.g. a cancelled one)
+never affects an in-flight `renew()`. A delegation returned by sign-in
+that is already inside the renewal lead window is renewed before
+`signIn()` resolves — if that renew fails non-terminally the error
+surfaces but the fresh session stays persisted. `refreshToken()` throws
+`UNAVAILABLE` in delegation mode (the provider refresh grant is refused
+for native clients). Delegation-mode errors surface as
+`OpenKeyNativeError`.

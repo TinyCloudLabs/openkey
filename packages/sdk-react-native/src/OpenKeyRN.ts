@@ -108,6 +108,13 @@ interface DelegationSession {
    * A `permissionsSubset` renew never narrows it.
    */
   permissions: NativeDelegationPermission[];
+  /** Absolute grant expiry (ms): `renewableUntil` + 300 s, when known. */
+  grantExpiresAt?: number;
+  /**
+   * When `refreshToken` expires (ms): 7 days after it was issued, capped
+   * by `grantExpiresAt`. Absent on records written before it was tracked.
+   */
+  refreshTokenExpiresAt?: number;
 }
 
 /** JSON shape persisted through `OpenKeySecureStore`. */
@@ -115,16 +122,67 @@ interface StoredDelegationSession {
   privateJwk: NativeSessionKeypair['privateJwk'];
   refreshToken: string;
   permissions: NativeDelegationPermission[];
+  grantExpiresAt?: number;
+  refreshTokenExpiresAt?: number;
 }
 
 /**
- * A grant whose revoke failed transiently at signOut(). Only what the
- * revoke needs is kept; it is retried on signOut(), on construction and
- * on signIn(), and dropped once the revoke succeeds or fails terminally.
+ * A grant whose revoke failed transiently at signOut(). Holds what the
+ * revoke needs plus its retry bounds; it is retried on signOut(), on
+ * construction and on signIn(), and dropped once the revoke succeeds or
+ * fails terminally, once `expiresAt` has passed, or after
+ * `MAX_REVOKE_ATTEMPTS` attempts.
  */
 interface StoredPendingRevoke {
   privateJwk: NativeSessionKeypair['privateJwk'];
   refreshToken: string;
+  /** Revoke attempts made so far (the failed signOut() counts as 1). */
+  attempts: number;
+  /** Refresh-token expiry (ms); the revoke is pointless after it. */
+  expiresAt: number;
+}
+
+/** Spec: every refresh token lives 7 days. */
+const REFRESH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/** Spec: `renewableUntil` is `absoluteExpiresAt − 300 s`. */
+const RENEWABLE_UNTIL_LEAD_MS = 300_000;
+/** A pending revoke is dropped after this many attempts. */
+const MAX_REVOKE_ATTEMPTS = 20;
+
+/**
+ * Absolute grant expiry (ms) from a delegation's `renewableUntil` (ISO
+ * string or epoch seconds/ms, as core accepts), or `undefined` when absent
+ * or unparseable.
+ */
+function grantExpiresAt(delegation: TinyCloudDelegation): number | undefined {
+  const value = delegation.renewableUntil;
+  let ms: number;
+  if (typeof value === 'number') {
+    ms = value > 1e11 ? value : value * 1000;
+  } else if (typeof value === 'string') {
+    ms = Date.parse(value);
+  } else {
+    return undefined;
+  }
+  return Number.isFinite(ms) && ms > 0
+    ? ms + RENEWABLE_UNTIL_LEAD_MS
+    : undefined;
+}
+
+/** `session` holding a freshly issued `refreshToken` (7-day TTL). */
+function withRefreshToken(
+  session: DelegationSession,
+  refreshToken: string,
+): DelegationSession {
+  const ttlEnd = Date.now() + REFRESH_TOKEN_TTL_MS;
+  return {
+    ...session,
+    refreshToken,
+    refreshTokenExpiresAt:
+      session.grantExpiresAt === undefined
+        ? ttlEnd
+        : Math.min(ttlEnd, session.grantExpiresAt),
+  };
 }
 
 /** Spec issuer: the OpenKey authorization server, not the app host. */
@@ -155,11 +213,11 @@ const TERMINAL_SESSION_CODES = new Set([
 /**
  * Revoke errors that a retry can fix: the grant may still be active, so
  * signOut keeps a pending revoke and rejects. Besides these codes, any
- * HTTP 5xx on the revoke path (revoke endpoint or server discovery) is
- * transient — a server outage must not wipe credentials. Every other
- * revoke error (INVALID_GRANT, CONSENT_REQUIRED, ACCESS_DENIED,
- * SPACE_UNAVAILABLE, a 4xx SERVER, …) is terminal: retrying won't change
- * it, so signOut wipes and resolves.
+ * HTTP 5xx on the revoke path (revoke endpoint or server discovery) and
+ * HTTP 429 are transient — a server outage or rate limit must not wipe
+ * credentials. Every other revoke error (INVALID_GRANT, CONSENT_REQUIRED,
+ * ACCESS_DENIED, SPACE_UNAVAILABLE, any other 4xx, …) is terminal:
+ * retrying won't change it, so signOut wipes and resolves.
  */
 const TRANSIENT_REVOKE_CODES = new Set(['NETWORK', 'TEMPORARILY_UNAVAILABLE']);
 
@@ -167,7 +225,8 @@ function isTransientRevokeError(error: unknown): error is OpenKeyNativeError {
   return (
     error instanceof OpenKeyNativeError &&
     (TRANSIENT_REVOKE_CODES.has(error.code) ||
-      (error.status !== undefined && error.status >= 500))
+      (error.status !== undefined &&
+        (error.status >= 500 || error.status === 429)))
   );
 }
 
@@ -613,6 +672,12 @@ export class OpenKeyRN {
           entries.push({
             privateJwk: session.sessionKey.privateJwk,
             refreshToken: session.refreshToken,
+            attempts: 1,
+            // A record from before expiry tracking: the token was issued
+            // before now, so now + 7 days is an upper bound.
+            expiresAt:
+              session.refreshTokenExpiresAt ??
+              Date.now() + REFRESH_TOKEN_TTL_MS,
           });
           await cfg.storage.set(
             this.pendingRevokeStorageKey,
@@ -656,8 +721,10 @@ export class OpenKeyRN {
   }
 
   /**
-   * Retry every pending revoke (single-flight). Entries that are revoked or
-   * fail terminally are dropped; the rest stay. Resolves the first
+   * Retry every pending revoke (single-flight). Entries that are revoked,
+   * fail terminally, are past their refresh-token expiry or reach
+   * `MAX_REVOKE_ATTEMPTS` are dropped; the rest stay with their attempt
+   * count bumped. Resolves the first
    * transient revoke error, or `undefined`. Rejects on a storage failure.
    */
   private retryPendingRevokes(): Promise<Error | undefined> {
@@ -683,32 +750,51 @@ export class OpenKeyRN {
     if (entries.length === 0) return undefined;
 
     let firstError: Error | undefined;
+    // Entries to drop, and new attempt counts for the ones kept.
     const done = new Set<string>();
+    const attempts = new Map<string, number>();
     for (const entry of entries) {
+      if (
+        Date.now() >= entry.expiresAt ||
+        entry.attempts >= MAX_REVOKE_ATTEMPTS
+      ) {
+        // The token is dead, or retrying has run its course.
+        done.add(entry.refreshToken);
+        continue;
+      }
       const error = await this.revokeGrant(
         sessionKeypairFromJwk(entry.privateJwk),
         entry.refreshToken,
       );
-      if (error) firstError ??= error;
-      else done.add(entry.refreshToken);
+      if (!error) {
+        done.add(entry.refreshToken);
+        continue;
+      }
+      firstError ??= error;
+      if (entry.attempts + 1 >= MAX_REVOKE_ATTEMPTS) {
+        done.add(entry.refreshToken);
+      } else {
+        attempts.set(entry.refreshToken, entry.attempts + 1);
+      }
     }
 
-    if (done.size > 0) {
-      // Re-read: a signOut() may have added an entry meanwhile.
-      await this.runInStorageQueue(async () => {
-        const remaining = (await this.readPendingRevokes()).filter(
-          (entry) => !done.has(entry.refreshToken),
+    // Re-read: a signOut() may have added an entry meanwhile.
+    await this.runInStorageQueue(async () => {
+      const remaining = (await this.readPendingRevokes())
+        .filter((entry) => !done.has(entry.refreshToken))
+        .map((entry) => ({
+          ...entry,
+          attempts: attempts.get(entry.refreshToken) ?? entry.attempts,
+        }));
+      if (remaining.length > 0) {
+        await cfg.storage.set(
+          this.pendingRevokeStorageKey,
+          JSON.stringify(remaining),
         );
-        if (remaining.length > 0) {
-          await cfg.storage.set(
-            this.pendingRevokeStorageKey,
-            JSON.stringify(remaining),
-          );
-        } else {
-          await cfg.storage.remove(this.pendingRevokeStorageKey);
-        }
-      });
-    }
+      } else {
+        await cfg.storage.remove(this.pendingRevokeStorageKey);
+      }
+    });
     return firstError;
   }
 
@@ -725,8 +811,12 @@ export class OpenKeyRN {
       if (!Array.isArray(entries)) throw new Error('not an array');
       for (const entry of entries) {
         sessionKeypairFromJwk(entry.privateJwk);
-        if (typeof entry.refreshToken !== 'string') {
-          throw new Error('missing refreshToken');
+        if (
+          typeof entry.refreshToken !== 'string' ||
+          !Number.isInteger(entry.attempts) ||
+          !Number.isFinite(entry.expiresAt)
+        ) {
+          throw new Error('malformed pending revoke');
         }
       }
       return entries;
@@ -870,11 +960,15 @@ export class OpenKeyRN {
           result.refreshToken,
         );
 
-        let session: DelegationSession = {
-          sessionKey: flow.sessionKey,
-          refreshToken: result.refreshToken,
-          permissions: approvedPermissions,
-        };
+        let session = withRefreshToken(
+          {
+            sessionKey: flow.sessionKey,
+            refreshToken: result.refreshToken,
+            permissions: approvedPermissions,
+            grantExpiresAt: grantExpiresAt(result.delegation),
+          },
+          result.refreshToken,
+        );
         // Persist BEFORE any immediate renew so the live refresh token is
         // never lost (spec). A signOut() during the exchange invalidates
         // this write; the orphaned grant is revoked best-effort.
@@ -906,7 +1000,7 @@ export class OpenKeyRN {
             renewed.delegation,
             renewed.refreshToken,
           );
-          session = { ...session, refreshToken: renewed.refreshToken };
+          session = withRefreshToken(session, renewed.refreshToken);
           await this.persistSessionGuarded(session, generation, {
             revokeOrphanOnInvalid,
           });
@@ -983,11 +1077,14 @@ export class OpenKeyRN {
     }
     if (error.rotatedRefreshToken) {
       await this.persistSessionGuarded(
-        {
-          sessionKey: flow.sessionKey,
-          refreshToken: error.rotatedRefreshToken,
-          permissions: approvedPermissions,
-        },
+        withRefreshToken(
+          {
+            sessionKey: flow.sessionKey,
+            refreshToken: error.rotatedRefreshToken,
+            permissions: approvedPermissions,
+          },
+          error.rotatedRefreshToken,
+        ),
         flow.generation,
       ).catch(() => {
         // Keep the original error: it carries rotatedRefreshToken.
@@ -1043,7 +1140,7 @@ export class OpenKeyRN {
         // rather than written over a wiped or newer session. The approved
         // set is kept as-is: a subset renew must not narrow it.
         await this.persistSessionGuarded(
-          { ...session, refreshToken: result.refreshToken },
+          withRefreshToken(session, result.refreshToken),
           generation,
           { sameSessionOnly: true, revokeOrphanOnInvalid: { metadata } },
         );
@@ -1071,7 +1168,7 @@ export class OpenKeyRN {
         // means signOut() won and nothing may be written.
         if (error.rotatedRefreshToken && error.code !== 'NOT_SIGNED_IN') {
           await this.persistSessionGuarded(
-            { ...session, refreshToken: error.rotatedRefreshToken },
+            withRefreshToken(session, error.rotatedRefreshToken),
             generation,
             metadata
               ? { sameSessionOnly: true, revokeOrphanOnInvalid: { metadata } }
@@ -1096,13 +1193,16 @@ export class OpenKeyRN {
   private ensureMetadata(): Promise<OpenKeyServerMetadata> {
     // Don't cache a failed discovery — a transient failure must not poison
     // later sign-ins.
-    this.metadataPromise ??= discoverOpenKeyServer(
-      this.issuer,
-      this.delegation!.fetchFn,
-    ).catch((error) => {
-      this.metadataPromise = undefined;
-      throw error;
-    });
+    if (!this.metadataPromise) {
+      const discovery: Promise<OpenKeyServerMetadata> = discoverOpenKeyServer(
+        this.issuer,
+        this.delegation!.fetchFn,
+      ).catch((error) => {
+        if (this.metadataPromise === discovery) this.metadataPromise = undefined;
+        throw error;
+      });
+      this.metadataPromise = discovery;
+    }
     return this.metadataPromise;
   }
 
@@ -1141,6 +1241,8 @@ export class OpenKeyRN {
         sessionKey: sessionKeypairFromJwk(record.privateJwk),
         refreshToken: record.refreshToken,
         permissions: record.permissions,
+        grantExpiresAt: record.grantExpiresAt,
+        refreshTokenExpiresAt: record.refreshTokenExpiresAt,
       };
       return session;
     } catch {
@@ -1157,6 +1259,8 @@ export class OpenKeyRN {
       privateJwk: session.sessionKey.privateJwk,
       refreshToken: session.refreshToken,
       permissions: session.permissions,
+      grantExpiresAt: session.grantExpiresAt,
+      refreshTokenExpiresAt: session.refreshTokenExpiresAt,
     };
     await this.delegation!.storage.set(
       this.delegationStorageKey,

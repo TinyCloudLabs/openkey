@@ -156,7 +156,7 @@ const newTokens = await openkey.refreshToken(tokens.refreshToken!);
 
 ### `openkey.signOut(accessToken?)`
 
-Clear pending sign-in flows, revoke the delegation grant (delegation mode), wipe the stored session, and revoke `accessToken` through the legacy revoke endpoint when given. The user is signed out as soon as `signOut()` starts: `renew()` rejects `NOT_SIGNED_IN`. A revoke failure is transient only when it is `NETWORK` (including an unreachable discovery endpoint), `TEMPORARILY_UNAVAILABLE` still failing after the internal retry, or any HTTP 5xx from the revoke endpoint or server discovery — a server outage never wipes credentials while the grant may still be active. Every other revoke error (`INVALID_GRANT`, `CONSENT_REQUIRED`, `ACCESS_DENIED`, `SPACE_UNAVAILABLE`, a 4xx `SERVER`, …) is terminal, since retrying won't change it. If the server revoke succeeds or fails terminally, the session is wiped and `signOut()` resolves. A transient revoke failure replaces the stored session with a *pending revoke* record that holds only the session key and refresh token, and `signOut()` rejects with the typed error — the grant may still be active. The SDK retries pending revokes on the next `signOut()`, when an `OpenKeyRN` is constructed, and on `signIn()`, and drops the record once the revoke succeeds or fails terminally. `signOut()` also rejects if the secure-store write or wipe fails.
+Clear pending sign-in flows, revoke the delegation grant (delegation mode), wipe the stored session, and revoke `accessToken` through the legacy revoke endpoint when given. The user is signed out as soon as `signOut()` starts: `renew()` rejects `NOT_SIGNED_IN`. A revoke failure is transient only when it is `NETWORK` (including an unreachable discovery endpoint), `TEMPORARILY_UNAVAILABLE` still failing after the internal retry, any HTTP 5xx from the revoke endpoint or server discovery, or HTTP 429 — a server outage or rate limit never wipes credentials while the grant may still be active. Every other revoke error (`INVALID_GRANT`, `CONSENT_REQUIRED`, `ACCESS_DENIED`, `SPACE_UNAVAILABLE`, any other 4xx, …) is terminal, since retrying won't change it. If the server revoke succeeds or fails terminally, the session is wiped and `signOut()` resolves. A transient revoke failure replaces the stored session with a *pending revoke* entry that holds the session key, the refresh token, an attempt count and the refresh token's expiry, and `signOut()` rejects with the typed error — the grant may still be active. The SDK retries pending revokes on the next `signOut()`, when an `OpenKeyRN` is constructed, and on `signIn()`. An entry is dropped once its revoke succeeds or fails terminally, once its refresh token has expired (7 days after issue, or the grant's absolute expiry if that is sooner), or after 20 attempts. A failed server discovery is never cached, so the next call retries it. `signOut()` also rejects if the secure-store write or wipe fails.
 
 ```typescript
 await openkey.signOut(tokens.accessToken);
@@ -266,7 +266,9 @@ reject with `NOT_SIGNED_IN` instead of persisting over the wiped session
 `signOut()` overtakes is dropped, so a later `renew()` never uses a session
 loaded before the sign-out. Renew results are bound to the session they
 started from: if a newer `signIn()` stored a session meanwhile, the renew
-neither overwrites it nor (on a terminal error) wipes it.
+neither overwrites it nor (on a terminal error) wipes it. A `signIn()` that
+has not yet stored its session (for example one the user cancels) does not
+affect an in-flight `renew()` at all.
 
 Delegation-mode errors are `OpenKeyNativeError` (`code`,
 `status`, `retryAfterSeconds`, `rotatedRefreshToken`); plain-mode errors
