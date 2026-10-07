@@ -153,12 +153,13 @@ const TERMINAL_SESSION_CODES = new Set([
 ]);
 
 /**
- * Revoke errors that mean the server-side grant is already unusable:
- * signOut wipes locally and resolves (spec). Anything else (NETWORK,
- * TEMPORARILY_UNAVAILABLE after the internal retry, SERVER, …) still wipes
- * locally but makes signOut reject — the grant may still be active.
+ * Revoke errors that a retry can fix: the grant may still be active, so
+ * signOut keeps a pending revoke and rejects. Every other revoke error
+ * (INVALID_GRANT, CONSENT_REQUIRED, ACCESS_DENIED, SPACE_UNAVAILABLE,
+ * SERVER, …) is terminal: retrying won't change it, so signOut wipes and
+ * resolves. Same classification as `@openkey/sdk-capacitor`.
  */
-const TERMINAL_REVOKE_CODES = new Set(['INVALID_GRANT']);
+const TRANSIENT_REVOKE_CODES = new Set(['NETWORK', 'TEMPORARILY_UNAVAILABLE']);
 
 /**
  * Extract the OAuth response parameters from a callback URL: query first,
@@ -479,14 +480,13 @@ export class OpenKeyRN {
    * the legacy `/api/auth/revoke` endpoint.
    *
    * The user reads as signed out from the moment signOut() starts:
-   * `renew()` rejects `NOT_SIGNED_IN`. Per the spec, a TERMINAL revoke
-   * failure (`invalid_session_proof`/`invalid_grant` → `INVALID_GRANT`)
-   * means the grant is already unusable server-side, so the session is
-   * wiped and signOut resolves. Any other revoke failure (NETWORK,
-   * TEMPORARILY_UNAVAILABLE after the internal retry, SERVER) leaves the
-   * grant possibly active: the session record is replaced by a pending-
-   * revoke record holding only the session key and refresh token, and
-   * signOut rejects with the typed error. Pending revokes are retried on
+   * `renew()` rejects `NOT_SIGNED_IN`. A TRANSIENT revoke failure
+   * (`NETWORK`, or `TEMPORARILY_UNAVAILABLE` still failing after the
+   * internal retry) leaves the grant possibly active: the session record
+   * is replaced by a pending-revoke record holding only the session key
+   * and refresh token, and signOut rejects with the typed error. Every
+   * other revoke failure is terminal — a retry won't change it — so the
+   * session is wiped and signOut resolves. Pending revokes are retried on
    * the next signOut(), on construction and on signIn(), and dropped once
    * they succeed or fail terminally. A storage failure also rejects.
    */
@@ -602,9 +602,9 @@ export class OpenKeyRN {
   }
 
   /**
-   * Revoke one grant. Resolves `undefined` when the grant is gone (revoked,
-   * or a terminal revoke error), or the typed error when it may still be
-   * active (discovery or revoke failed transiently).
+   * Revoke one grant. Resolves the typed error on a transient failure
+   * (`TRANSIENT_REVOKE_CODES`), when a retry may still revoke it; resolves
+   * `undefined` on success or any terminal failure.
    */
   private async revokeGrant(
     sessionKey: NativeSessionKeypair,
@@ -625,11 +625,11 @@ export class OpenKeyRN {
     } catch (error) {
       if (
         error instanceof OpenKeyNativeError &&
-        TERMINAL_REVOKE_CODES.has(error.code)
+        TRANSIENT_REVOKE_CODES.has(error.code)
       ) {
-        return undefined;
+        return error;
       }
-      return this.normalizeError(error);
+      return undefined;
     }
   }
 

@@ -2075,6 +2075,108 @@ describe('OpenKeyRN', () => {
       expect(JSON.parse(store.map.get(SESSION_KEY)!).refreshToken).toBe('rt-renew-2');
     });
 
+    // ── Revoke classification (aligned with sdk-capacitor): only NETWORK
+    //    and TEMPORARILY_UNAVAILABLE are transient; everything else is
+    //    terminal ──
+
+    const REVOKE_OUTCOMES: {
+      code: string;
+      transient: boolean;
+      respond: () => Promise<Response>;
+    }[] = [
+      { code: 'NETWORK', transient: true, respond: () => Promise.reject(new Error('offline')) },
+      {
+        code: 'TEMPORARILY_UNAVAILABLE',
+        transient: true,
+        respond: () => Promise.resolve(jsonResponse({ error: 'temporarily_unavailable' }, 503)),
+      },
+      {
+        code: 'INVALID_GRANT',
+        transient: false,
+        respond: () => Promise.resolve(jsonResponse({ error: 'invalid_grant' }, 400)),
+      },
+      {
+        code: 'CONSENT_REQUIRED',
+        transient: false,
+        respond: () => Promise.resolve(jsonResponse({ error: 'consent_required' }, 400)),
+      },
+      {
+        code: 'ACCESS_DENIED',
+        transient: false,
+        respond: () => Promise.resolve(jsonResponse({ error: 'access_denied' }, 403)),
+      },
+      {
+        code: 'SPACE_UNAVAILABLE',
+        transient: false,
+        respond: () => Promise.resolve(jsonResponse({ error: 'space_unavailable' }, 409)),
+      },
+      {
+        code: 'SERVER',
+        transient: false,
+        respond: () => Promise.resolve(jsonResponse({ error: 'server_error' }, 500)),
+      },
+    ];
+
+    function revokeFetch(respond: () => Promise<Response>): NativeFetch {
+      return (url: string) => {
+        if (url.includes('/.well-known/')) {
+          return Promise.resolve(jsonResponse(METADATA));
+        }
+        if (url.endsWith('/oauth2/tinycloud/revoke')) return respond();
+        return Promise.reject(new Error(`unexpected fetch: ${url}`));
+      };
+    }
+
+    for (const outcome of REVOKE_OUTCOMES) {
+      const verdict = outcome.transient
+        ? 'keeps a pending revoke and rejects'
+        : 'wipes and resolves';
+
+      it(`signOut() on a ${outcome.code} revoke ${verdict}`, async () => {
+        const store = memoryStore();
+        const sessionKey = await seedSession(store, 'rt-live');
+        const client = new OpenKeyRN(
+          makeDelegationConfig(store, revokeFetch(outcome.respond)),
+        );
+
+        if (outcome.transient) {
+          const thrown = await rejection(client.signOut());
+          expect(thrown.code).toBe(outcome.code);
+          expect(JSON.parse(store.map.get(PENDING_KEY)!)).toEqual([
+            { privateJwk: sessionKey.privateJwk, refreshToken: 'rt-live' },
+          ]);
+        } else {
+          await client.signOut();
+          expect(store.map.has(PENDING_KEY)).toBe(false);
+        }
+        expect(store.map.has(SESSION_KEY)).toBe(false);
+      });
+
+      it(`a pending revoke retried on a ${outcome.code} failure ${
+        outcome.transient ? 'is kept' : 'is dropped'
+      }`, async () => {
+        const store = memoryStore();
+        const sessionKey = generateSessionKeypair();
+        const pendingRecord = [
+          { privateJwk: sessionKey.privateJwk, refreshToken: 'rt-pending' },
+        ];
+        await store.set(PENDING_KEY, JSON.stringify(pendingRecord));
+        const client = new OpenKeyRN(
+          makeDelegationConfig(store, revokeFetch(outcome.respond)),
+        );
+
+        // No live session: signOut() only retries the pending revoke.
+        if (outcome.transient) {
+          const thrown = await rejection(client.signOut());
+          expect(thrown.code).toBe(outcome.code);
+          expect(JSON.parse(store.map.get(PENDING_KEY)!)).toEqual(pendingRecord);
+        } else {
+          await client.signOut();
+          expect(store.map.has(PENDING_KEY)).toBe(false);
+        }
+      });
+    }
+
   });
 
   describe('flow timers', () => {

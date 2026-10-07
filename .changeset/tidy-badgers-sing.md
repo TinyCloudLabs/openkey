@@ -51,9 +51,11 @@ error is revoked best-effort. A failed `signIn()` (`ACCESS_DENIED`,
 existing stored session. `signOut()` signs the user out immediately: a
 successful or terminally failed revoke wipes the session and resolves,
 while a transient revoke failure moves the session key and refresh token
-to a pending-revoke record and rejects with the typed error. Pending
-revokes are retried on the next `signOut()`, on construction and on
-`signIn()`, and dropped once they succeed or fail terminally. A failed
+to a pending-revoke record and rejects with the typed error. Only
+`NETWORK` and `TEMPORARILY_UNAVAILABLE` (after the internal retry) are
+transient; every other revoke error, including `SERVER`, is terminal.
+Pending revokes are retried on the next `signOut()`, on construction and
+on `signIn()`, and dropped once they succeed or fail terminally. A failed
 secure-store write or wipe also rejects. A `signOut()` during an in-flight
 `renew()` or code exchange makes it discard its result and reject
 `NOT_SIGNED_IN` instead of persisting over the wiped session (an orphaned
