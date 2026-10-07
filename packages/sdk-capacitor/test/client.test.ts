@@ -7,6 +7,11 @@ const host = 'https://tee.node.tinycloud.xyz';
 const redirectUri = 'xyz.tinycloud.exo://openkey/callback';
 const capabilities = [{ service: 'tinycloud.kv', space: 'applications', path: 'app/threads/', actions: ['tinycloud.kv/get'] }];
 const persisted = (session: NativeSession) => ({ address: session.delegation.address!, sessionKey: JSON.stringify(session.sessionKey.privateJwk) }) as never;
+function sessionEntry(plugin: MockPlugin): [string, string] {
+  const entry = [...plugin.values].find(([key]) => key.endsWith(':session'));
+  if (!entry) throw new Error('missing stored session');
+  return entry;
+}
 
 function response(status: number, data: unknown, retryAfter?: string): NativeFetchResponse {
   return { ok: status >= 200 && status < 300, status, json: async () => data,
@@ -38,6 +43,7 @@ function fixture(approved = capabilities) {
   let renewCalls = 0;
   let revokeCalls = 0;
   const revokeTokens: string[] = [];
+  const renewTokens: string[] = [];
   const requestLog: string[] = [];
   let immediateRenewal = false;
   let tokenReply: () => NativeFetchResponse = () => response(200, { access_token: 'access', refresh_token: 'initial', tinycloud_delegation: delegation() });
@@ -70,7 +76,10 @@ function fixture(approved = capabilities) {
       return response(201, { request_uri: 'urn:request:1', expires_in: 90 });
     }
     if (url.endsWith('/token')) return tokenReply();
-    if (url.endsWith('/renew')) return renewReply(++renewCalls);
+    if (url.endsWith('/renew')) {
+      renewTokens.push(new URLSearchParams(init?.body).get('refresh_token') ?? '');
+      return renewReply(++renewCalls);
+    }
     if (url.endsWith('/revoke')) {
       revokeCalls++;
       revokeTokens.push(new URLSearchParams(init?.body).get('refresh_token') ?? '');
@@ -81,7 +90,7 @@ function fixture(approved = capabilities) {
   plugin.callback = async () => `${redirectUri}?code=code&state=${state}&iss=${encodeURIComponent(issuer)}`;
   const make = (verifyDelegation: (delegation: ReturnType<typeof delegation>) => Promise<void> = async () => {}) =>
     new OpenKeyNative({ clientId: 'exo', redirectUri, plugin, fetchFn, verifyDelegation, sleepFn: async () => {} });
-  return { plugin, make, delegation, renewal, revokeTokens, requestLog, get state() { return state; }, get renewCalls() { return renewCalls; }, get revokeCalls() { return revokeCalls; },
+  return { plugin, make, delegation, renewal, revokeTokens, renewTokens, requestLog, get state() { return state; }, get renewCalls() { return renewCalls; }, get revokeCalls() { return revokeCalls; },
     setRenewReply: (fn: typeof renewReply) => { renewReply = fn; }, setRevokeReply: (fn: typeof revokeReply) => { revokeReply = fn; },
     setDiscoveryReply: (fn: typeof discoveryReply) => { discoveryReply = fn; },
     setImmediateRenewal: () => { immediateRenewal = true; }, setTokenReply: (fn: typeof tokenReply) => { tokenReply = fn; } };
@@ -325,6 +334,177 @@ describe('OpenKeyNative', () => {
     expect(await client.current()).toBeNull();
   });
 
+  test('signOut revokes a replacement stored while the prior revoke is in flight', async () => {
+    const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
+    const replacement = fixture();
+    replacement.setTokenReply(() => response(200, { access_token: 'access-b', refresh_token: 'second', tinycloud_delegation: replacement.delegation() }));
+    await replacement.make().signIn({ capabilities });
+    const [key, value] = sessionEntry(replacement.plugin);
+    f.setRevokeReply(async () => {
+      if (f.revokeCalls === 1) f.plugin.values.set(key, value);
+      return response(200, {});
+    });
+    await client.signOut();
+    expect(f.revokeTokens).toEqual(['initial', 'second']);
+    expect(f.plugin.values.size).toBe(0);
+  });
+
+  test('signOut during a replacement secure-store set revokes both grants', async () => {
+    const f = fixture(); const client = f.make();
+    let exchanges = 0;
+    f.setTokenReply(() => response(200, { access_token: 'access',
+      refresh_token: ++exchanges === 1 ? 'initial' : 'second', tinycloud_delegation: f.delegation() }));
+    await client.signIn({ capabilities });
+    const originalSet = f.plugin.secureStoreSet.bind(f.plugin);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    let blocked = false;
+    f.plugin.secureStoreSet = async (item) => {
+      await originalSet(item);
+      if (item.key.endsWith(':session') && !blocked) { blocked = true; entered(); await gate; }
+    };
+    const replacement = client.signIn({ capabilities });
+    await started;
+    const signOut = client.signOut();
+    release();
+    await expect(replacement).rejects.toMatchObject({ code: 'NOT_SIGNED_IN' });
+    await signOut;
+    expect(f.revokeTokens).toContain('initial');
+    expect(f.revokeTokens).toContain('second');
+    expect(f.plugin.values.size).toBe(0);
+  });
+
+  test('a rotated-token recovery write cannot replace another stored session', async () => {
+    const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
+    const replacement = fixture();
+    replacement.setTokenReply(() => response(200, { access_token: 'access-b', refresh_token: 'second', tinycloud_delegation: replacement.delegation() }));
+    const sessionB = await replacement.make().signIn({ capabilities });
+    const [key, value] = sessionEntry(replacement.plugin);
+    const invalid = { refresh_token: 'rotated', tinycloud_delegation: { ...f.delegation(), verificationMethod: 'wrong' } };
+    f.setRenewReply(() => ({ ...response(200, invalid), json: async () => {
+      f.plugin.values.set(key, value);
+      return invalid;
+    } }));
+    await expect(client.renew()).rejects.toMatchObject({ code: 'SERVER' });
+    expect(f.revokeTokens).toContain('rotated');
+    expect((await client.current())?.sessionKey.did).toBe(sessionB.sessionKey.did);
+    expect((await client.current())?.tokens.refreshToken).toBe('second');
+  });
+
+  test('a successful old renew cannot overwrite a replacement session', async () => {
+    const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
+    const replacement = fixture();
+    replacement.setTokenReply(() => response(200, { access_token: 'access-b', refresh_token: 'second', tinycloud_delegation: replacement.delegation() }));
+    const sessionB = await replacement.make().signIn({ capabilities });
+    const [key, value] = sessionEntry(replacement.plugin);
+    const oldRenewal = f.renewal('rotated');
+    f.setRenewReply(() => ({ ...response(200, oldRenewal), json: async () => {
+      f.plugin.values.set(key, value);
+      return oldRenewal;
+    } }));
+    await expect(client.renew()).rejects.toMatchObject({ code: 'NOT_SIGNED_IN' });
+    expect(f.revokeTokens).toContain('rotated');
+    expect((await client.current())?.sessionKey.did).toBe(sessionB.sessionKey.did);
+    expect((await client.current())?.tokens.refreshToken).toBe('second');
+  });
+
+  test('an older sign-in cannot overwrite a replacement stored before its exchange commits', async () => {
+    const f = fixture(); const client = f.make();
+    const replacement = fixture();
+    replacement.setTokenReply(() => response(200, { access_token: 'access-b', refresh_token: 'second', tinycloud_delegation: replacement.delegation() }));
+    const sessionB = await replacement.make().signIn({ capabilities });
+    const [key, value] = sessionEntry(replacement.plugin);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    f.plugin.callback = async () => { entered(); await gate; return `${redirectUri}?code=code&state=${f.state}&iss=${encodeURIComponent(issuer)}`; };
+    const old = client.signIn({ capabilities });
+    await started;
+    f.plugin.values.set(key, value);
+    release();
+    await expect(old).rejects.toMatchObject({ code: 'NOT_SIGNED_IN' });
+    expect(f.revokeTokens).toContain('initial');
+    expect((await client.current())?.sessionKey.did).toBe(sessionB.sessionKey.did);
+  });
+
+  test('an older sign-in immediate renew settles before a replacement sign-in starts', async () => {
+    const f = fixture(); f.setImmediateRenewal(); const client = f.make();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    f.setRenewReply(() => {
+      const oldRenewal = f.renewal('old-rotated');
+      return { ...response(200, oldRenewal), json: async () => { entered(); await gate; return oldRenewal; } };
+    });
+    const old = client.signIn({ capabilities });
+    await started;
+    await client.signOut();
+    await expect(client.signIn({ capabilities })).rejects.toMatchObject({ code: 'UNAVAILABLE' });
+    release();
+    await expect(old).rejects.toMatchObject({ code: 'NOT_SIGNED_IN' });
+    f.setRenewReply(() => response(200, f.renewal('new-rotated')));
+    const fresh = await client.signIn({ capabilities });
+    expect((await client.current())?.sessionKey.did).toBe(fresh.sessionKey.did);
+    expect((await client.current())?.tokens.refreshToken).toBe('new-rotated');
+  });
+
+  test('a delayed read of A does not make a later renew use A after B is stored', async () => {
+    const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
+    const replacement = fixture();
+    replacement.setTokenReply(() => response(200, { access_token: 'access-b', refresh_token: 'second', tinycloud_delegation: replacement.delegation() }));
+    await replacement.make().signIn({ capabilities });
+    const [key, value] = sessionEntry(replacement.plugin);
+    const originalGet = f.plugin.secureStoreGet.bind(f.plugin);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    let delayed = false;
+    f.plugin.secureStoreGet = async (args) => {
+      if (args.key === key && !delayed) {
+        delayed = true;
+        const stale = await originalGet(args);
+        entered();
+        await gate;
+        return stale;
+      }
+      return originalGet(args);
+    };
+    const oldRead = client.current();
+    await started;
+    f.plugin.values.set(key, value);
+    release();
+    await oldRead;
+    f.setRenewReply(() => response(200, replacement.renewal('third')));
+    expect((await client.renew()).tokens.refreshToken).toBe('third');
+    expect(f.renewTokens).toEqual(['second']);
+  });
+
+  test('a signOut read failing after it starts rejects and still clears the record', async () => {
+    const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
+    const [key] = sessionEntry(f.plugin);
+    const originalGet = f.plugin.secureStoreGet.bind(f.plugin);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    f.plugin.secureStoreGet = async (args) => {
+      if (args.key === key) { entered(); await gate; throw new Error('decrypt'); }
+      return originalGet(args);
+    };
+    const signOut = client.signOut();
+    await started;
+    expect(await client.current()).toBeNull();
+    release();
+    await expect(signOut).rejects.toBeInstanceOf(OpenKeyNativeError);
+    expect(f.revokeCalls).toBe(0);
+    expect(f.plugin.values.size).toBe(0);
+  });
+
   test('a TinyCloud session save already in flight is followed by the signOut wipe', async () => {
     const f = fixture(); const client = f.make(); const session = await client.signIn({ capabilities });
     const originalSet = f.plugin.secureStoreSet.bind(f.plugin);
@@ -528,12 +708,59 @@ describe('OpenKeyNative', () => {
     expect(upgraded.grants[0].expiresAt).toBeGreaterThan(Date.now());
   });
 
+  test('a corrupt pending revoke is deleted before the next signOut', async () => {
+    const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
+    const key = sessionEntry(f.plugin)[0].replace(/:session$/, ':pending-revoke');
+    f.plugin.values.set(key, '{broken');
+    await client.signOut();
+    expect(f.plugin.values.size).toBe(0);
+    expect(f.revokeCalls).toBe(1);
+  });
+
+  test('pending expiry uses token issue time and caps at renewableUntil plus five minutes', async () => {
+    const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
+    const [key, value] = sessionEntry(f.plugin);
+    const record = JSON.parse(value);
+    record.refreshIssuedAt = Date.now() - 8 * 24 * 60 * 60 * 1000;
+    f.plugin.values.set(key, JSON.stringify(record));
+    f.setRevokeReply(() => response(500, { error: 'unexpected_error' }));
+    await expect(client.signOut()).rejects.toMatchObject({ status: 500 });
+    expect(f.plugin.values.size).toBe(0);
+
+    await client.signIn({ capabilities });
+    const [newKey, newValue] = sessionEntry(f.plugin);
+    const capped = JSON.parse(newValue);
+    capped.delegation.renewableUntil = new Date(Date.now() + 60_000).toISOString();
+    f.plugin.values.set(newKey, JSON.stringify(capped));
+    await expect(client.signOut()).rejects.toMatchObject({ status: 500 });
+    const pending = JSON.parse([...f.plugin.values].find(([item]) => item.endsWith(':pending-revoke'))![1]);
+    expect(pending.grants[0].expiresAt).toBeGreaterThan(Date.now() + 350_000);
+    expect(pending.grants[0].expiresAt).toBeLessThan(Date.now() + 370_000);
+  });
+
+  test('a rotated refresh token gets a new issue time for pending-revoke expiry', async () => {
+    const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
+    const [key, value] = sessionEntry(f.plugin);
+    const old = JSON.parse(value);
+    old.refreshIssuedAt = Date.now() - 8 * 24 * 60 * 60 * 1000;
+    f.plugin.values.set(key, JSON.stringify(old));
+    f.setRenewReply(() => response(200, f.renewal('rotated')));
+    await client.renew();
+    const rotated = JSON.parse(sessionEntry(f.plugin)[1]);
+    expect(rotated.refreshIssuedAt).toBeGreaterThan(Date.now() - 5_000);
+    f.setRevokeReply(() => response(500, { error: 'unexpected_error' }));
+    await expect(client.signOut()).rejects.toMatchObject({ status: 500 });
+    const pending = JSON.parse([...f.plugin.values].find(([item]) => item.endsWith(':pending-revoke'))![1]);
+    expect(pending.grants[0].refreshToken).toBe('rotated');
+    expect(pending.grants[0].expiresAt).toBeGreaterThan(Date.now() + 6 * 24 * 60 * 60 * 1000);
+  });
+
   test('an already expired grant is not kept for pending revoke', async () => {
     const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
     for (const [key, value] of f.plugin.values) {
       if (key.endsWith(':session')) {
         const record = JSON.parse(value);
-        record.delegation.renewableUntil = new Date(Date.now() - 1_000).toISOString();
+        record.delegation.renewableUntil = new Date(Date.now() - 301_000).toISOString();
         f.plugin.values.set(key, JSON.stringify(record));
       }
     }
@@ -607,7 +834,8 @@ describe('OpenKeyNative', () => {
   test('an undecryptable record is wiped even when revoke cannot run', async () => {
     const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
     f.plugin.failGet = true;
-    await expect(client.signOut()).rejects.toMatchObject({ code: 'SERVER', message: 'Local state was cleared; the server grant may still be active' });
+    await expect(client.signOut()).rejects.toMatchObject({ code: 'SERVER', message: 'OpenKey secure-store read failed; local state was cleared and the grant may still be active' });
+    expect(f.revokeCalls).toBe(0);
     expect(f.plugin.values.size).toBe(0);
   });
 

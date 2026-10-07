@@ -60,6 +60,8 @@ interface StoredSession {
   delegation: TinyCloudDelegation;
   privateJwk: NativeSessionJwk & { d: string };
   permissions: NativeDelegationPermission[];
+  /** Milliseconds when the current refresh token was issued or rotated. */
+  refreshIssuedAt?: number;
 }
 
 interface PendingRevokeGrant {
@@ -84,6 +86,10 @@ function asNativeError(error: unknown): OpenKeyNativeError {
   return new OpenKeyNativeError('SERVER', 'Native OpenKey operation failed');
 }
 
+class SessionReadError extends OpenKeyNativeError {
+  constructor(message: string) { super('SERVER', message); }
+}
+
 const TERMINAL_RENEW_CODES = new Set(['INVALID_GRANT', 'CONSENT_REQUIRED', 'ACCESS_DENIED', 'SPACE_UNAVAILABLE']);
 const REFRESH_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_REVOKE_ATTEMPTS = 20;
@@ -93,11 +99,26 @@ function transientRevoke(error: OpenKeyNativeError): boolean {
     (error.status !== undefined && error.status >= 500 && error.status <= 599);
 }
 
-function refreshExpiry(delegation: TinyCloudDelegation): number {
-  const until = delegation.renewableUntil;
+function refreshExpiry(record: StoredSession): number {
+  const issued = Number.isFinite(record.refreshIssuedAt) ? record.refreshIssuedAt! :
+    record.delegation.issuedAt ? Date.parse(record.delegation.issuedAt) : NaN;
+  const refreshIssuedAt = Number.isFinite(issued) ? issued : Date.now();
+  const until = record.delegation.renewableUntil;
   const absolute = typeof until === 'number' ? (until < 1e12 ? until * 1000 : until) :
     typeof until === 'string' ? Date.parse(until) : NaN;
-  return Number.isFinite(absolute) ? Math.min(Date.now() + REFRESH_TTL_MS, absolute) : Date.now() + REFRESH_TTL_MS;
+  const expiry = refreshIssuedAt + REFRESH_TTL_MS;
+  return Number.isFinite(absolute) ? Math.min(expiry, absolute + 300_000) : expiry;
+}
+
+type SessionMatch = { key: string; token?: string } | null;
+
+function sessionMatch(record: StoredSession | null, expected: SessionMatch): boolean {
+  return expected === null ? record === null : record?.privateJwk.x === expected.key &&
+    (expected.token === undefined || record.tokens.refreshToken === expected.token);
+}
+
+function matchFor(record: StoredSession): SessionMatch {
+  return { key: record.privateJwk.x, token: record.tokens.refreshToken };
 }
 
 interface SessionCoordinator {
@@ -202,7 +223,7 @@ export class OpenKeyNative {
   private async read(): Promise<StoredSession | null> {
     let value: string | null;
     try { ({ value } = await this.plugin.secureStoreGet({ key: this.recordKey })); }
-    catch (error) { throw asNativeError(error); }
+    catch { throw new SessionReadError('OpenKey secure-store read failed'); }
     if (value === null) return null;
     try {
       const stored = JSON.parse(value) as StoredSession;
@@ -210,13 +231,13 @@ export class OpenKeyNative {
       sessionKeypairFromJwk(stored.privateJwk);
       return stored;
     } catch {
-      throw new OpenKeyNativeError('SERVER', 'Stored OpenKey session is invalid');
+      throw new SessionReadError('Stored OpenKey session is invalid');
     }
   }
   private async readPending(): Promise<PendingRevokeRecord> {
     let value: string | null;
     try { ({ value } = await this.plugin.secureStoreGet({ key: this.pendingRevokeKey })); }
-    catch (error) { throw asNativeError(error); }
+    catch { return this.clearCorruptPending(); }
     if (value === null) return { version: 1, grants: [] };
     try {
       const parsed = JSON.parse(value) as PendingRevokeRecord;
@@ -230,7 +251,12 @@ export class OpenKeyNative {
         if (!Number.isInteger(grant.attempts) || grant.attempts < 0 || !Number.isFinite(grant.expiresAt)) throw new Error();
       }
       return parsed;
-    } catch { throw new OpenKeyNativeError('SERVER', 'Stored pending revoke is invalid'); }
+    } catch { return this.clearCorruptPending(); }
+  }
+  private async clearCorruptPending(): Promise<PendingRevokeRecord> {
+    try { await this.plugin.secureStoreRemove({ key: this.pendingRevokeKey }); }
+    catch { throw new OpenKeyNativeError('SERVER', 'Corrupt pending revoke could not be cleared'); }
+    return { version: 1, grants: [] };
   }
   private appendPendingRevoke(grant: PendingRevokeGrant): Promise<void> {
     return this.withStorage(async () => {
@@ -296,33 +322,56 @@ export class OpenKeyNative {
     this.coordinator.storageTail = pending.then(() => {}, () => {});
     return pending;
   }
+  private readQueued(): Promise<StoredSession | null> { return this.withStorage(() => this.read()); }
   private assertEpoch(epoch: number): void {
     if (this.coordinator.epoch !== epoch) throw new OpenKeyNativeError('NOT_SIGNED_IN', 'The OpenKey session changed');
   }
   private assertAttempt(attempt: number): void {
     if (this.coordinator.signInAttempt !== attempt) throw new OpenKeyNativeError('NOT_SIGNED_IN', 'The sign-in attempt changed');
   }
-  private commitSignIn(record: StoredSession, attempt: number): Promise<number> {
+  private commitSignIn(record: StoredSession, attempt: number, previousKey: string | null): Promise<number> {
     return this.withStorage(async () => {
       this.assertAttempt(attempt);
+      const current = await this.read();
+      this.assertAttempt(attempt);
+      if ((current?.privateJwk.x ?? null) !== previousKey) {
+        throw new OpenKeyNativeError('NOT_SIGNED_IN', 'The stored OpenKey session changed during sign-in');
+      }
       try { await this.plugin.secureStoreSet({ key: this.recordKey, value: JSON.stringify(record) }); }
       catch (error) { throw asNativeError(error); }
-      this.assertAttempt(attempt);
+      if (this.coordinator.signInAttempt !== attempt) {
+        // A sign-out can start while the native set is in flight. Put the
+        // previous grant back before its queued read so it can revoke A;
+        // signIn's catch separately revokes the newly exchanged grant B.
+        try {
+          if (current) await this.plugin.secureStoreSet({ key: this.recordKey, value: JSON.stringify(current) });
+          else await this.plugin.secureStoreRemove({ key: this.recordKey });
+        } catch { throw new OpenKeyNativeError('SERVER', 'Cancelled sign-in could not restore the prior session'); }
+        this.assertAttempt(attempt);
+      }
       const epoch = ++this.coordinator.epoch;
       this.coordinator.sessionEpochs.clear();
       return epoch;
     });
   }
-  private write(record: StoredSession, epoch: number): Promise<void> {
+  private write(record: StoredSession, epoch: number, expected: SessionMatch): Promise<void> {
     return this.withStorage(async () => {
-      this.assertEpoch(epoch); // immediately before the native write
+      this.assertEpoch(epoch);
+      const current = await this.read();
+      this.assertEpoch(epoch);
+      if (!sessionMatch(current, expected)) throw new OpenKeyNativeError('NOT_SIGNED_IN', 'The stored OpenKey session changed');
       try { await this.plugin.secureStoreSet({ key: this.recordKey, value: JSON.stringify(record) }); }
       catch (error) { throw asNativeError(error); }
     });
   }
-  private wipe(epoch?: number): Promise<void> {
+  private wipe(epoch?: number, expected?: SessionMatch): Promise<boolean> {
     return this.withStorage(async () => {
-      if (epoch !== undefined && this.coordinator.epoch !== epoch) return;
+      if (epoch !== undefined && this.coordinator.epoch !== epoch) return false;
+      if (expected !== undefined) {
+        const current = await this.read();
+        if (epoch !== undefined && this.coordinator.epoch !== epoch) return false;
+        if (!sessionMatch(current, expected)) return false;
+      }
       let failure: OpenKeyNativeError | undefined;
       try { await this.plugin.secureStoreRemove({ key: this.recordKey }); }
       catch (error) { failure = asNativeError(error); }
@@ -330,6 +379,7 @@ export class OpenKeyNative {
       catch (error) { failure ??= asNativeError(error); }
       this.coordinator.sessionEpochs.clear();
       if (failure) throw new OpenKeyNativeError('SERVER', 'Local secure-store wipe failed');
+      return true;
     });
   }
   private present(record: StoredSession): NativeSession {
@@ -352,6 +402,8 @@ export class OpenKeyNative {
     await this.coordinator.signOutFlight?.catch(() => {});
     this.assertAttempt(attempt);
     await this.retryPendingRevoke().catch(() => {});
+    this.assertAttempt(attempt);
+    const previousKey = (await this.readQueued())?.privateJwk.x ?? null;
     this.assertAttempt(attempt);
     const metadata = await this.metadata();
     const sessionKey = generateSessionKeypair();
@@ -388,10 +440,11 @@ export class OpenKeyNative {
         tokens: { accessToken: result.accessToken, refreshToken: result.refreshToken, expiresIn: result.expiresIn, accessTokenExpiresAt: result.accessTokenExpiresAt },
         delegation: result.delegation, privateJwk: sessionKey.privateJwk,
         permissions: normalizeDelegationPermissions(options.capabilities),
+        refreshIssuedAt: Date.now(),
       };
       await this.coordinator.renewTail;
       this.assertAttempt(attempt);
-      epoch = await this.commitSignIn(record, attempt);
+      epoch = await this.commitSignIn(record, attempt, previousKey);
     } catch (caught) {
       // Exchange may have created a live grant. Use its exposed token only to
       // revoke; an unvalidated delegation is never persisted.
@@ -415,12 +468,12 @@ export class OpenKeyNative {
       }
       catch (error) {
         // A rejected signIn never leaves a restorable session behind.
-        await this.wipe(epoch);
+        await this.wipe(epoch, { key: sessionKey.privateJwk.x });
         throw error;
       }
     }
     this.assertEpoch(epoch);
-    const stored = await this.read();
+    const stored = await this.readQueued();
     this.assertEpoch(epoch);
     if (!stored) throw new OpenKeyNativeError('SERVER', 'Sign-in session was not stored');
     this.coordinator.signedOut = false;
@@ -430,7 +483,7 @@ export class OpenKeyNative {
   async current(): Promise<NativeSession | null> {
     if (this.coordinator.signedOut || this.coordinator.signOutFlight) return null;
     const epoch = this.coordinator.epoch;
-    const record = await this.read();
+    const record = await this.readQueued();
     if (this.coordinator.epoch !== epoch || this.coordinator.signedOut || this.coordinator.signOutFlight) return null;
     return record ? this.present(record) : null;
   }
@@ -461,7 +514,7 @@ export class OpenKeyNative {
 
   private async renewOnce(options: { siweNonce?: string; capabilities?: NativeDelegationPermission[] }, epoch: number): Promise<NativeSession> {
     this.assertEpoch(epoch);
-    let record = await this.read();
+    let record = await this.readQueued();
     if (!record) throw new OpenKeyNativeError('NOT_SIGNED_IN', 'No OpenKey session is stored');
     const metadata = await this.metadata();
     let conflictRetried = false;
@@ -484,7 +537,7 @@ export class OpenKeyNative {
         const error = asNativeError(caught);
         if (error.code === 'RENEWAL_CONFLICT' && !conflictRetried) {
           conflictRetried = true;
-          const reloaded = await this.read();
+          const reloaded = await this.readQueued();
           this.assertEpoch(epoch);
           if (reloaded && reloaded.tokens.refreshToken !== record.tokens.refreshToken) {
             record = reloaded;
@@ -492,13 +545,13 @@ export class OpenKeyNative {
           }
         }
         if (TERMINAL_RENEW_CODES.has(error.code)) {
-          this.coordinator.epoch++;
-          this.coordinator.signedOut = true;
-          this.coordinator.sessionEpochs.clear();
-          // Queue the wipe before any new sign-in can enqueue a write. Revoke
-          // may take another network round trip and must not erase that flow.
           let wipeError: unknown;
-          try { await this.wipe(); }
+          try {
+            if (await this.wipe(epoch, matchFor(record))) {
+              this.coordinator.epoch++;
+              this.coordinator.signedOut = true;
+            }
+          }
           catch (caught) { wipeError = caught; }
           if (error.rotatedRefreshToken && await this.revokeRotatedBestEffort(metadata, key, error.rotatedRefreshToken)) {
             error.rotatedRefreshToken = undefined;
@@ -507,9 +560,17 @@ export class OpenKeyNative {
           throw error;
         }
         if (error.rotatedRefreshToken) {
+          const expected = matchFor(record);
           record.tokens.refreshToken = error.rotatedRefreshToken;
-          try { await this.write(record, epoch); }
-          catch { /* The original error still carries the rotated token. */ }
+          record.refreshIssuedAt = Date.now();
+          try { await this.write(record, epoch, expected); }
+          catch (writeError) {
+            if (asNativeError(writeError).code === 'NOT_SIGNED_IN' &&
+                await this.revokeRotatedBestEffort(metadata, key, error.rotatedRefreshToken)) {
+              error.rotatedRefreshToken = undefined;
+            }
+            // The original error still carries a live token if revocation failed.
+          }
         }
         throw error;
       }
@@ -519,14 +580,20 @@ export class OpenKeyNative {
       }
       // Rotation is durable before verification or promise resolution. If a
       // write fails, the caller receives the live token in the typed error.
+      const expected = matchFor(record);
       record.tokens.refreshToken = renewed.refreshToken;
-      try { await this.write(record, epoch); }
+      record.refreshIssuedAt = Date.now();
+      try { await this.write(record, epoch, expected); }
       catch (caught) {
         if (this.coordinator.epoch !== epoch) {
           await this.revokeRotatedBestEffort(metadata, key, renewed.refreshToken);
           this.assertEpoch(epoch);
         }
-        const error = asNativeError(caught); error.rotatedRefreshToken = renewed.refreshToken; throw error;
+        const error = asNativeError(caught);
+        if (error.code !== 'NOT_SIGNED_IN' || !await this.revokeRotatedBestEffort(metadata, key, renewed.refreshToken)) {
+          error.rotatedRefreshToken = renewed.refreshToken;
+        }
+        throw error;
       }
       try { await this.verifier(renewed.delegation); }
       catch {
@@ -543,13 +610,17 @@ export class OpenKeyNative {
         this.assertEpoch(epoch);
       }
       record.delegation = renewed.delegation;
-      try { await this.write(record, epoch); }
+      try { await this.write(record, epoch, { key: record.privateJwk.x, token: renewed.refreshToken }); }
       catch (caught) {
         if (this.coordinator.epoch !== epoch) {
           await this.revokeRotatedBestEffort(metadata, key, renewed.refreshToken);
           this.assertEpoch(epoch);
         }
-        const error = asNativeError(caught); error.rotatedRefreshToken = renewed.refreshToken; throw error;
+        const error = asNativeError(caught);
+        if (error.code !== 'NOT_SIGNED_IN' || !await this.revokeRotatedBestEffort(metadata, key, renewed.refreshToken)) {
+          error.rotatedRefreshToken = renewed.refreshToken;
+        }
+        throw error;
       }
       this.assertEpoch(epoch);
       return this.present(record);
@@ -569,33 +640,49 @@ export class OpenKeyNative {
   }
 
   private async signOutOnce(): Promise<void> {
-    let record: StoredSession | null = null;
-    let readError: OpenKeyNativeError | undefined;
     let revokeError: OpenKeyNativeError | undefined;
     let pendingError: OpenKeyNativeError | undefined;
     let pendingWriteError: OpenKeyNativeError | undefined;
+    let pendingToken: string | undefined;
     try { await this.retryPendingRevoke(); }
     catch (caught) { pendingError = asNativeError(caught); }
-    try { record = await this.read(); }
-    catch (caught) { readError = asNativeError(caught); }
-    if (record) {
-      try {
-        await revokeDelegation({ metadata: await this.metadata(), clientId: this.options.clientId,
-          refreshToken: record.tokens.refreshToken, sessionKey: sessionKeypairFromJwk(record.privateJwk),
-          fetchFn: this.fetchFn, sleepFn: this.sleepFn });
-      } catch (caught) { revokeError = asNativeError(caught); }
+    for (;;) {
+      let record: StoredSession | null;
+      try { record = await this.readQueued(); }
+      catch {
+        // Clear even an undecryptable Android-backup record without reading it.
+        await this.wipe();
+        throw new OpenKeyNativeError('SERVER', 'OpenKey secure-store read failed; local state was cleared and the grant may still be active');
+      }
+      if (record) {
+        try {
+          await revokeDelegation({ metadata: await this.metadata(), clientId: this.options.clientId,
+            refreshToken: record.tokens.refreshToken, sessionKey: sessionKeypairFromJwk(record.privateJwk),
+            fetchFn: this.fetchFn, sleepFn: this.sleepFn });
+        } catch (caught) {
+          const error = asNativeError(caught);
+          if (transientRevoke(error)) {
+            revokeError ??= error;
+            try { await this.appendPendingRevoke({ privateJwk: record.privateJwk, refreshToken: record.tokens.refreshToken,
+              attempts: 1, expiresAt: refreshExpiry(record) }); }
+            catch (writeError) { pendingWriteError ??= asNativeError(writeError); pendingToken = record.tokens.refreshToken; }
+          }
+        }
+      }
+      let removed: boolean;
+      try { removed = await this.wipe(undefined, record ? matchFor(record) : null); }
+      catch (caught) {
+        if (!(caught instanceof SessionReadError)) throw caught;
+        await this.wipe();
+        throw new OpenKeyNativeError('SERVER', 'OpenKey secure-store read failed; local state was cleared and the grant may still be active');
+      }
+      if (removed) break;
+      // A different session was stored during revoke. Revoke the session that
+      // is current at the eventual removal point.
     }
-    if (record && revokeError && transientRevoke(revokeError)) {
-      try { await this.appendPendingRevoke({ privateJwk: record.privateJwk, refreshToken: record.tokens.refreshToken,
-        attempts: 1, expiresAt: refreshExpiry(record.delegation) }); }
-      catch (caught) { pendingWriteError = asNativeError(caught); }
-    }
-    // The wipe is independent of decryption and runs for every revoke outcome.
-    await this.wipe();
-    if (readError) throw new OpenKeyNativeError('SERVER', 'Local state was cleared; the server grant may still be active');
     if (pendingWriteError) {
       const error = new OpenKeyNativeError('SERVER', 'Local state was cleared; pending revoke could not be saved');
-      error.rotatedRefreshToken = record?.tokens.refreshToken;
+      error.rotatedRefreshToken = pendingToken;
       throw error;
     }
     if (revokeError && transientRevoke(revokeError)) {
