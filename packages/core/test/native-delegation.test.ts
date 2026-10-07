@@ -912,6 +912,33 @@ describe('endpoint clients', () => {
     expect(claims.cred_hash).toBe(Buffer.from(digest).toString('base64url'));
   });
 
+  it('records the issued token before a delegation validation failure', async () => {
+    const seen: string[] = [];
+    const { fetchFn } = mockFetch(() => jsonResponse({
+      access_token: 'at-1', refresh_token: 'rt-1', token_type: 'Bearer',
+      tinycloud_delegation: delegationFor(key.keyId, { verificationMethod: 'wrong' }),
+    }));
+    await expect(exchangeDelegationCode({
+      metadata: SERVER_METADATA, code: 'code-1', redirectUri: REDIRECT_URI,
+      clientId: CLIENT_ID, codeVerifier: 'v', sessionKey: key,
+      requestedPermissions: PERMISSIONS, expectedTinycloudHost: 'https://tee.node.tinycloud.xyz',
+      fetchFn, onRefreshToken: async (token) => { seen.push(token); },
+    })).rejects.toMatchObject({ code: 'SERVER', rotatedRefreshToken: 'rt-1' });
+    expect(seen).toEqual(['rt-1']);
+  });
+
+  it('records a refresh token even when the access token is missing', async () => {
+    const seen: string[] = [];
+    const { fetchFn } = mockFetch(() => jsonResponse({ refresh_token: 'rt-1' }));
+    await expect(exchangeDelegationCode({
+      metadata: SERVER_METADATA, code: 'code-1', redirectUri: REDIRECT_URI,
+      clientId: CLIENT_ID, codeVerifier: 'v', sessionKey: key,
+      requestedPermissions: PERMISSIONS, expectedTinycloudHost: 'https://tee.node.tinycloud.xyz',
+      fetchFn, onRefreshToken: async (token) => { seen.push(token); },
+    })).rejects.toMatchObject({ code: 'SERVER', rotatedRefreshToken: 'rt-1' });
+    expect(seen).toEqual(['rt-1']);
+  });
+
   it('exchangeDelegationCode maps invalid_grant to INVALID_GRANT', async () => {
     const { fetchFn } = mockFetch(() =>
       jsonResponse({ error: 'invalid_grant' }, 400),

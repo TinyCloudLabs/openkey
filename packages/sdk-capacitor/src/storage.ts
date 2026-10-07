@@ -42,7 +42,7 @@ export class NativeSessionStorage implements ISessionStorage {
     const generation = this.generation();
     let value: string | null;
     try { ({ value } = await this.plugin.secureStoreGet({ key: this.key })); }
-    catch { throw new OpenKeyNativeError('SERVER', 'TinyCloud secure store read failed'); }
+    catch { throw new OpenKeyNativeError('STORAGE', 'TinyCloud secure store read failed'); }
     if (!this.isVisible() || this.generation() !== generation) return null;
     if (value === null) {
       this.present.delete(address.toLowerCase());
@@ -50,7 +50,7 @@ export class NativeSessionStorage implements ISessionStorage {
     }
     let session: PersistedSessionData;
     try { session = JSON.parse(value) as PersistedSessionData; }
-    catch { throw new OpenKeyNativeError('SERVER', 'Stored TinyCloud session is invalid'); }
+    catch { throw new OpenKeyNativeError('STORAGE', 'Stored TinyCloud session is invalid'); }
     if (session.address?.toLowerCase() !== address.toLowerCase()) return null;
     this.present.add(address.toLowerCase());
     this.active = address;

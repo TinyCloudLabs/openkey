@@ -36,6 +36,8 @@ export interface OpenKeyNativeOptions {
   tinycloudHost?: string;
   /** Test and host-app injection points. */
   plugin?: OpenKeyCapacitorPlugin;
+  /** Shared identity for distinct plugin wrappers backed by one native secure store. */
+  storageIdentity?: object;
   fetchFn?: NativeFetch;
   sleepFn?: SleepFn;
   verifyDelegation?: (delegation: TinyCloudDelegation) => Promise<void>;
@@ -76,6 +78,15 @@ interface PendingRevokeRecord {
   grants: PendingRevokeGrant[];
 }
 
+interface ExchangeIntent {
+  version: 1;
+  /** OAuth state identifies this one attempted grant; the key identifies its server binding. */
+  attemptId: string;
+  privateJwk: NativeSessionJwk & { d: string };
+  refreshToken?: string;
+  expiresAt: number;
+}
+
 function asNativeError(error: unknown): OpenKeyNativeError {
   if (error instanceof OpenKeyNativeError) return error;
   if (error && typeof error === 'object' && 'code' in error) {
@@ -88,7 +99,7 @@ function asNativeError(error: unknown): OpenKeyNativeError {
 
 class SessionReadError extends OpenKeyNativeError {
   constructor(message: string, readonly corrupt: boolean) {
-    super(corrupt ? 'SERVER' : 'NETWORK', message);
+    super('STORAGE', message);
   }
 }
 
@@ -143,17 +154,18 @@ interface SessionCoordinator {
   signInFlight?: Promise<NativeSession>;
   signOutFlight?: Promise<void>;
   pendingRevokeFlight?: Promise<void>;
+  activeIntents: Set<string>;
 }
 
-// Instances using the same native plugin and client share an epoch and storage
-// queue. Separate test plugins and separate native clients remain isolated.
-const coordinators = new WeakMap<OpenKeyCapacitorPlugin, Map<string, SessionCoordinator>>();
-function coordinatorFor(plugin: OpenKeyCapacitorPlugin, namespace: string): SessionCoordinator {
-  let byNamespace = coordinators.get(plugin);
-  if (!byNamespace) { byNamespace = new Map(); coordinators.set(plugin, byNamespace); }
+// One queue and epoch per physical secure-store identity and key prefix.
+// Distinct wrappers of one backend must pass the same storageIdentity object.
+const coordinators = new WeakMap<object, Map<string, SessionCoordinator>>();
+function coordinatorFor(storeIdentity: object, namespace: string): SessionCoordinator {
+  let byNamespace = coordinators.get(storeIdentity);
+  if (!byNamespace) { byNamespace = new Map(); coordinators.set(storeIdentity, byNamespace); }
   let coordinator = byNamespace.get(namespace);
   if (!coordinator) {
-    coordinator = { epoch: 0, signInAttempt: 0, signedOut: false, sessionEpochs: new Map(), storageTail: Promise.resolve(), renewTail: Promise.resolve(), renewals: new Map() };
+    coordinator = { epoch: 0, signInAttempt: 0, signedOut: false, sessionEpochs: new Map(), storageTail: Promise.resolve(), renewTail: Promise.resolve(), renewals: new Map(), activeIntents: new Set() };
     byNamespace.set(namespace, coordinator);
   }
   return coordinator;
@@ -177,7 +189,7 @@ export class OpenKeyNative {
     this.sleepFn = options.sleepFn;
     this.verifier = options.verifyDelegation ?? verifyTinyCloudDelegation;
     this.namespace = `openkey:${this.issuer}:${options.clientId}`;
-    this.coordinator = coordinatorFor(this.plugin, this.namespace);
+    this.coordinator = coordinatorFor(options.storageIdentity ?? this.plugin, this.namespace);
     this.storage = new NativeSessionStorage(this.plugin, this.namespace, (session, write) => {
       let privateJwk: NativeSessionJwk & { d: string };
       try {
@@ -208,6 +220,7 @@ export class OpenKeyNative {
 
   private get recordKey(): string { return `${this.namespace}:session`; }
   private get pendingRevokeKey(): string { return `${this.namespace}:pending-revoke`; }
+  private get exchangeIntentKey(): string { return `${this.namespace}:exchange-intent`; }
   private metadata(): Promise<OpenKeyServerMetadata> {
     if (!this.metadataPromise) {
       const pending = discoverOpenKeyServer(this.issuer, this.fetchFn);
@@ -259,7 +272,7 @@ export class OpenKeyNative {
   private async readPending(): Promise<PendingRevokeRecord> {
     let value: string | null;
     try { ({ value } = await this.plugin.secureStoreGet({ key: this.pendingRevokeKey })); }
-    catch (error) { throw new OpenKeyNativeError('NETWORK', `Pending-revoke secure-store read failed: ${error instanceof Error ? error.message : 'native storage unavailable'}`); }
+    catch (error) { throw new OpenKeyNativeError('STORAGE', `Pending-revoke secure-store read failed: ${error instanceof Error ? error.message : 'native storage unavailable'}`); }
     if (value === null) return { version: 1, grants: [] };
     try {
       const parsed = JSON.parse(value) as PendingRevokeRecord;
@@ -279,6 +292,75 @@ export class OpenKeyNative {
     try { await this.plugin.secureStoreRemove({ key: this.pendingRevokeKey }); }
     catch { throw new OpenKeyNativeError('SERVER', 'Corrupt pending revoke could not be cleared'); }
     return { version: 1, grants: [] };
+  }
+  private async readExchangeIntent(): Promise<ExchangeIntent | null> {
+    let value: string | null;
+    try { ({ value } = await this.plugin.secureStoreGet({ key: this.exchangeIntentKey })); }
+    catch (error) { throw new OpenKeyNativeError('STORAGE', `Exchange-intent secure-store read failed: ${error instanceof Error ? error.message : 'native storage unavailable'}`); }
+    if (value === null) return null;
+    try {
+      const intent = JSON.parse(value) as ExchangeIntent;
+      if (intent.version !== 1 || typeof intent.attemptId !== 'string' || !intent.attemptId ||
+          !Number.isFinite(intent.expiresAt) ||
+          (intent.refreshToken !== undefined && (typeof intent.refreshToken !== 'string' || !intent.refreshToken))) throw new Error();
+      sessionKeypairFromJwk(intent.privateJwk);
+      return intent;
+    } catch {
+      try { await this.plugin.secureStoreRemove({ key: this.exchangeIntentKey }); }
+      catch { throw new OpenKeyNativeError('STORAGE', 'Corrupt exchange intent could not be cleared'); }
+      return null;
+    }
+  }
+  private writeExchangeIntent(intent: ExchangeIntent): Promise<void> {
+    return this.withStorage(async () => {
+      try { await this.plugin.secureStoreSet({ key: this.exchangeIntentKey, value: JSON.stringify(intent) }); }
+      catch { throw new OpenKeyNativeError('STORAGE', 'Exchange intent could not be saved'); }
+    });
+  }
+  private markExchangeToken(attemptId: string, token: string): Promise<void> {
+    return this.withStorage(async () => {
+      const intent = await this.readExchangeIntent();
+      if (!intent || intent.attemptId !== attemptId) throw new OpenKeyNativeError('STORAGE', 'Exchange intent was lost before its token could be saved');
+      intent.refreshToken = token;
+      try { await this.plugin.secureStoreSet({ key: this.exchangeIntentKey, value: JSON.stringify(intent) }); }
+      catch { throw new OpenKeyNativeError('STORAGE', 'Exchanged refresh token could not be saved'); }
+    });
+  }
+  private clearExchangeIntent(attemptId: string): Promise<void> {
+    return this.withStorage(async () => {
+      const intent = await this.readExchangeIntent();
+      if (!intent || intent.attemptId !== attemptId) return;
+      try { await this.plugin.secureStoreRemove({ key: this.exchangeIntentKey }); }
+      catch { throw new OpenKeyNativeError('STORAGE', 'Exchange intent could not be cleared'); }
+    });
+  }
+  private async retryExchangeIntentOnce(): Promise<void> {
+    const state = await this.withStorage(async () => {
+      const intent = await this.readExchangeIntent();
+      return { intent, session: intent ? await this.read() : null };
+    });
+    const { intent, session } = state;
+    if (!intent || this.coordinator.activeIntents.has(intent.attemptId)) return;
+    // A committed session is authoritative even if the app died between the
+    // session write and removal of its intent.
+    if (!intent.refreshToken || Date.now() >= intent.expiresAt || session?.privateJwk.x === intent.privateJwk.x) {
+      await this.clearExchangeIntent(intent.attemptId);
+      return;
+    }
+    try {
+      await revokeDelegation({ metadata: await this.metadata(), clientId: this.options.clientId,
+        refreshToken: intent.refreshToken, sessionKey: sessionKeypairFromJwk(intent.privateJwk),
+        fetchFn: this.fetchFn, sleepFn: this.sleepFn });
+    } catch (caught) {
+      const error = asNativeError(caught);
+      if (transientRevoke(error)) {
+        await this.appendPendingRevoke({ privateJwk: intent.privateJwk, refreshToken: intent.refreshToken,
+          attempts: 1, expiresAt: intent.expiresAt });
+        await this.clearExchangeIntent(intent.attemptId);
+        throw error;
+      }
+    }
+    await this.clearExchangeIntent(intent.attemptId);
   }
   private appendPendingRevoke(grant: PendingRevokeGrant): Promise<void> {
     return this.withStorage(async () => {
@@ -300,8 +382,14 @@ export class OpenKeyNative {
     return pending;
   }
   private async retryPendingRevokeOnce(): Promise<void> {
+    let intentError: OpenKeyNativeError | undefined;
+    try { await this.retryExchangeIntentOnce(); }
+    catch (caught) { intentError = asNativeError(caught); }
     const record = await this.withStorage(() => this.readPending());
-    if (record.grants.length === 0) return;
+    if (record.grants.length === 0) {
+      if (intentError) throw intentError;
+      return;
+    }
     const settled = new Set<string>();
     const attempted = new Map<string, number>();
     let transient: OpenKeyNativeError | undefined;
@@ -338,6 +426,7 @@ export class OpenKeyNative {
       });
     }
     if (transient) throw transient;
+    if (intentError) throw intentError;
   }
   private withStorage<T>(operation: () => Promise<T>): Promise<T> {
     const pending = this.coordinator.storageTail.then(operation);
@@ -351,7 +440,7 @@ export class OpenKeyNative {
   private assertAttempt(attempt: number): void {
     if (this.coordinator.signInAttempt !== attempt) throw new OpenKeyNativeError('NOT_SIGNED_IN', 'The sign-in attempt changed');
   }
-  private commitSignIn(record: StoredSession, attempt: number, previousKey: string | null): Promise<{ epoch: number; replaced: StoredSession | null }> {
+  private commitSignIn(record: StoredSession, attempt: number, previousKey: string | null, intentId: string): Promise<{ epoch: number; replaced: StoredSession | null }> {
     return this.withStorage(async () => {
       this.assertAttempt(attempt);
       const current = await this.read();
@@ -371,6 +460,12 @@ export class OpenKeyNative {
         } catch { throw new OpenKeyNativeError('SERVER', 'Cancelled sign-in could not restore the prior session'); }
         this.assertAttempt(attempt);
       }
+      // These two native writes share one process-wide storage step. If the
+      // process stops after the session write, recovery sees the matching key.
+      try {
+        const intent = await this.readExchangeIntent();
+        if (intent?.attemptId === intentId) await this.plugin.secureStoreRemove({ key: this.exchangeIntentKey });
+      } catch { /* The matching committed session makes a leftover intent safe to clear on restart. */ }
       const epoch = ++this.coordinator.epoch;
       this.coordinator.sessionEpochs.clear();
       return { epoch, replaced: current };
@@ -424,7 +519,10 @@ export class OpenKeyNative {
     // Keep the existing session active until the replacement is ready to commit.
     await this.coordinator.signOutFlight?.catch(() => {});
     this.assertAttempt(attempt);
-    await this.retryPendingRevoke().catch(() => {});
+    await this.retryPendingRevoke().catch((caught) => {
+      const error = asNativeError(caught);
+      if (error.code === 'STORAGE') throw error;
+    });
     this.assertAttempt(attempt);
     const previous = await this.readQueued();
     const previousKey = previous?.privateJwk.x ?? null;
@@ -452,12 +550,25 @@ export class OpenKeyNative {
       throw new OpenKeyNativeError('STATE_MISMATCH', 'Callback destination does not match redirect URI');
     }
     const { code } = parseNativeCallback({ url: callback, expectedState: state, issuer: this.issuer });
+    const intent: ExchangeIntent = { version: 1, attemptId: state, privateJwk: sessionKey.privateJwk,
+      expiresAt: Date.now() + REFRESH_TTL_MS };
+    this.coordinator.activeIntents.add(state);
+    try { await this.writeExchangeIntent(intent); }
+    catch (error) { this.coordinator.activeIntents.delete(state); throw error; }
     let result: NativeTokenResult | undefined;
     let epoch: number | undefined;
     try {
       result = await exchangeDelegationCode({ metadata, code, redirectUri: this.options.redirectUri,
         clientId: this.options.clientId, codeVerifier: verifier, sessionKey,
-        requestedPermissions: options.capabilities, expectedTinycloudHost: this.expectedHost(), fetchFn: this.fetchFn });
+        requestedPermissions: options.capabilities, expectedTinycloudHost: this.expectedHost(), fetchFn: this.fetchFn,
+        onRefreshToken: async (token) => {
+          try { await this.markExchangeToken(state, token); }
+          catch (caught) {
+            const error = asNativeError(caught);
+            error.rotatedRefreshToken = token;
+            throw error;
+          }
+        } });
       await this.verifier(result.delegation);
       const record: StoredSession = {
         version: 1,
@@ -468,7 +579,7 @@ export class OpenKeyNative {
       };
       await this.coordinator.renewTail;
       this.assertAttempt(attempt);
-      const committed = await this.commitSignIn(record, attempt, previousKey);
+      const committed = await this.commitSignIn(record, attempt, previousKey, state);
       epoch = committed.epoch;
       if (committed.replaced && committed.replaced.privateJwk.x !== record.privateJwk.x) {
         await this.abandonGrant(pendingGrant(committed.replaced), metadata);
@@ -481,15 +592,20 @@ export class OpenKeyNative {
       if (token) {
         const settled = await this.abandonGrant({ privateJwk: sessionKey.privateJwk, refreshToken: token,
           attempts: 1, expiresAt: grantExpiry(Date.now(), result?.delegation) }, metadata);
-        error.rotatedRefreshToken = settled ? undefined : token;
+        error.rotatedRefreshToken = settled || error.code === 'NOT_SIGNED_IN' ? undefined : token;
+        if (settled) await this.clearExchangeIntent(state).catch(() => {});
         if (previous && error.code === 'NOT_SIGNED_IN') {
           const current = await this.readQueued().catch(() => null);
           if (current?.privateJwk.x !== previous.privateJwk.x) {
             await this.abandonGrant(pendingGrant(previous), metadata);
           }
         }
+      } else {
+        await this.clearExchangeIntent(state).catch(() => {});
       }
       throw error;
+    } finally {
+      this.coordinator.activeIntents.delete(state);
     }
     if (!result) throw new OpenKeyNativeError('SERVER', 'Code exchange returned no result');
     if (epoch === undefined) throw new OpenKeyNativeError('SERVER', 'Sign-in session was not stored');
@@ -601,9 +717,9 @@ export class OpenKeyNative {
           record.refreshIssuedAt = Date.now();
           try { await this.write(record, epoch, expected); }
           catch (writeError) {
-            if (asNativeError(writeError).code === 'NOT_SIGNED_IN' &&
-                await this.abandonRotatedGrant(metadata, record, error.rotatedRefreshToken)) {
-              error.rotatedRefreshToken = undefined;
+            if (asNativeError(writeError).code === 'NOT_SIGNED_IN') {
+              const settled = await this.abandonRotatedGrant(metadata, record, error.rotatedRefreshToken);
+              if (settled || error.code === 'NOT_SIGNED_IN') error.rotatedRefreshToken = undefined;
             }
             // The original error still carries a live token if revocation failed.
           }
@@ -626,7 +742,10 @@ export class OpenKeyNative {
           this.assertEpoch(epoch);
         }
         const error = asNativeError(caught);
-        if (error.code !== 'NOT_SIGNED_IN' || !await this.abandonRotatedGrant(metadata, record, renewed.refreshToken)) {
+        if (error.code === 'NOT_SIGNED_IN') {
+          await this.abandonRotatedGrant(metadata, record, renewed.refreshToken);
+          error.rotatedRefreshToken = undefined;
+        } else {
           error.rotatedRefreshToken = renewed.refreshToken;
         }
         throw error;
@@ -653,7 +772,10 @@ export class OpenKeyNative {
           this.assertEpoch(epoch);
         }
         const error = asNativeError(caught);
-        if (error.code !== 'NOT_SIGNED_IN' || !await this.abandonRotatedGrant(metadata, record, renewed.refreshToken)) {
+        if (error.code === 'NOT_SIGNED_IN') {
+          await this.abandonRotatedGrant(metadata, record, renewed.refreshToken);
+          error.rotatedRefreshToken = undefined;
+        } else {
           error.rotatedRefreshToken = renewed.refreshToken;
         }
         throw error;
@@ -680,6 +802,10 @@ export class OpenKeyNative {
     let started = false;
     try { await this.retryPendingRevoke(); }
     catch (caught) { pendingError = asNativeError(caught); }
+    if (pendingError?.code === 'STORAGE') {
+      this.coordinator.signedOut = false;
+      throw pendingError;
+    }
     for (;;) {
       let record: StoredSession | null;
       try { record = await this.readQueued(); }

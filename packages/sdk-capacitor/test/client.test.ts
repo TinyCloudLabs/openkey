@@ -90,7 +90,7 @@ function fixture(approved = capabilities) {
   plugin.callback = async () => `${redirectUri}?code=code&state=${state}&iss=${encodeURIComponent(issuer)}`;
   const make = (verifyDelegation: (delegation: ReturnType<typeof delegation>) => Promise<void> = async () => {}) =>
     new OpenKeyNative({ clientId: 'exo', redirectUri, plugin, fetchFn, verifyDelegation, sleepFn: async () => {} });
-  return { plugin, make, delegation, renewal, revokeTokens, renewTokens, requestLog, get state() { return state; }, get renewCalls() { return renewCalls; }, get revokeCalls() { return revokeCalls; },
+  return { plugin, make, fetchFn, delegation, renewal, revokeTokens, renewTokens, requestLog, get state() { return state; }, get renewCalls() { return renewCalls; }, get revokeCalls() { return revokeCalls; },
     setRenewReply: (fn: typeof renewReply) => { renewReply = fn; }, setRevokeReply: (fn: typeof revokeReply) => { revokeReply = fn; },
     setDiscoveryReply: (fn: typeof discoveryReply) => { discoveryReply = fn; },
     setImmediateRenewal: () => { immediateRenewal = true; }, setTokenReply: (fn: typeof tokenReply) => { tokenReply = fn; } };
@@ -117,6 +117,61 @@ describe('OpenKeyNative', () => {
     await expect(client.signIn({ capabilities })).rejects.toMatchObject({ code: 'SERVER' });
     expect(f.revokeCalls).toBe(1);
     expect(await client.current()).toBeNull();
+  });
+
+  test('a crash after exchange but before session commit leaves a recoverable revoke intent', async () => {
+    const f = fixture();
+    const originalSet = f.plugin.secureStoreSet.bind(f.plugin);
+    let beforeCommit: Map<string, string> | undefined;
+    let beforeToken: Map<string, string> | undefined;
+    f.plugin.secureStoreSet = async (item) => {
+      await originalSet(item);
+      if (item.key.endsWith(':exchange-intent')) {
+        if (JSON.parse(item.value).refreshToken) beforeCommit = new Map(f.plugin.values);
+        else beforeToken = new Map(f.plugin.values);
+      }
+    };
+    await f.make().signIn({ capabilities });
+    expect(beforeCommit).toBeDefined();
+    expect([...beforeCommit!].some(([key]) => key.endsWith(':session'))).toBe(false);
+    const recovered = new MockPlugin(); recovered.values = beforeCommit!;
+    f.setRevokeReply(() => response(503, { error: 'temporarily_unavailable' }, '1'));
+    const client = new OpenKeyNative({ clientId: 'exo', redirectUri, plugin: recovered,
+      fetchFn: f.fetchFn, verifyDelegation: async () => {}, sleepFn: async () => {} });
+    await eventually(() => [...recovered.values].some(([key]) => key.endsWith(':pending-revoke')) &&
+      ![...recovered.values].some(([key]) => key.endsWith(':exchange-intent')));
+    const pending = JSON.parse([...recovered.values].find(([key]) => key.endsWith(':pending-revoke'))![1]);
+    expect(pending.grants.map((grant: { refreshToken: string }) => grant.refreshToken)).toEqual(['initial']);
+    expect(await client.current()).toBeNull();
+    await eventually(() => {
+      const entry = [...recovered.values].find(([key]) => key.endsWith(':pending-revoke'));
+      return entry !== undefined && JSON.parse(entry[1]).grants[0].attempts >= 2;
+    });
+
+    const neverExchanged = new MockPlugin(); neverExchanged.values = beforeToken!;
+    const revokeCalls = f.revokeCalls;
+    new OpenKeyNative({ clientId: 'exo', redirectUri, plugin: neverExchanged,
+      fetchFn: f.fetchFn, verifyDelegation: async () => {}, sleepFn: async () => {} });
+    await eventually(() => ![...neverExchanged.values].some(([key]) => key.endsWith(':exchange-intent')));
+    expect(f.revokeCalls).toBe(revokeCalls);
+  });
+
+  test('recovery clears an intent for a session already committed before the crash', async () => {
+    const f = fixture();
+    const originalSet = f.plugin.secureStoreSet.bind(f.plugin);
+    let committed: Map<string, string> | undefined;
+    f.plugin.secureStoreSet = async (item) => {
+      await originalSet(item);
+      if (item.key.endsWith(':session')) committed = new Map(f.plugin.values);
+    };
+    const session = await f.make().signIn({ capabilities });
+    expect([...committed!].some(([key]) => key.endsWith(':exchange-intent'))).toBe(true);
+    const recovered = new MockPlugin(); recovered.values = committed!;
+    const client = new OpenKeyNative({ clientId: 'exo', redirectUri, plugin: recovered,
+      fetchFn: f.fetchFn, verifyDelegation: async () => {}, sleepFn: async () => {} });
+    await eventually(() => ![...recovered.values].some(([key]) => key.endsWith(':exchange-intent')));
+    expect(f.revokeCalls).toBe(0);
+    expect((await client.current())?.sessionKey.did).toBe(session.sessionKey.did);
   });
 
   test('maps cancel, access_denied, and state mismatch', async () => {
@@ -330,7 +385,7 @@ describe('OpenKeyNative', () => {
     const renewal = client.renew(); await started;
     await client.signOut();
     release();
-    await expect(renewal).rejects.toMatchObject({ code: 'NOT_SIGNED_IN' });
+    await expect(renewal).rejects.toMatchObject({ code: 'NOT_SIGNED_IN', rotatedRefreshToken: undefined });
     expect(await client.current()).toBeNull();
   });
 
@@ -347,6 +402,55 @@ describe('OpenKeyNative', () => {
     await client.signOut();
     expect(f.revokeTokens).toEqual(['initial', 'second']);
     expect(f.plugin.values.size).toBe(0);
+  });
+
+  test('two plugin wrappers over one secure store share the CAS queue and epoch', async () => {
+    const f = fixture();
+    const wrap = (): OpenKeyCapacitorPlugin => ({
+      openAuthSession: (args) => f.plugin.openAuthSession(args),
+      secureStoreGet: (args) => f.plugin.secureStoreGet(args),
+      secureStoreSet: (args) => f.plugin.secureStoreSet(args),
+      secureStoreRemove: (args) => f.plugin.secureStoreRemove(args),
+    });
+    const pluginA = wrap(); const pluginB = wrap();
+    const make = (plugin: OpenKeyCapacitorPlugin) => new OpenKeyNative({ clientId: 'exo', redirectUri,
+      plugin, storageIdentity: f.plugin, fetchFn: f.fetchFn, verifyDelegation: async () => {}, sleepFn: async () => {} });
+    const a = make(pluginA); const b = make(pluginB);
+    let exchanges = 0;
+    f.setTokenReply(() => {
+      const token = ++exchanges === 1 ? 'initial' : 'second';
+      return response(200, { access_token: 'access', refresh_token: token, tinycloud_delegation: f.delegation() });
+    });
+    await a.signIn({ capabilities });
+    const renewalResult = f.renewal('rotated');
+    f.setRenewReply(() => response(200, renewalResult));
+    const originalGet = pluginA.secureStoreGet.bind(pluginA);
+    let reads = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const blocked = new Promise<void>((resolve) => { entered = resolve; });
+    pluginA.secureStoreGet = async (args) => {
+      if (args.key.endsWith(':session') && ++reads === 2) {
+        const old = await originalGet(args);
+        entered(); await gate;
+        return old;
+      }
+      return originalGet(args);
+    };
+    const renewal = a.renew();
+    await blocked;
+    let bSettled = false;
+    const signIn = b.signIn({ capabilities }).finally(() => { bSettled = true; });
+    void signIn.catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(bSettled).toBe(false);
+    release();
+    expect((await renewal).tokens.refreshToken).toBe('rotated');
+    const fresh = await signIn;
+    expect((await a.current())?.sessionKey.did).toBe(fresh.sessionKey.did);
+    expect((await b.current())?.tokens.refreshToken).toBe('second');
+    expect(f.revokeTokens).toContain('rotated');
   });
 
   test('signIn revokes the session it replaces and queues transient failure', async () => {
@@ -434,7 +538,7 @@ describe('OpenKeyNative', () => {
     await started;
     await expect(client.signOut()).rejects.toMatchObject({ code: 'TEMPORARILY_UNAVAILABLE' });
     release();
-    await expect(renewal).rejects.toMatchObject({ code: 'NOT_SIGNED_IN' });
+    await expect(renewal).rejects.toMatchObject({ code: 'NOT_SIGNED_IN', rotatedRefreshToken: undefined });
     const pending = JSON.parse([...f.plugin.values].find(([key]) => key.endsWith(':pending-revoke'))![1]);
     expect(pending.grants.map((grant: { refreshToken: string }) => grant.refreshToken).sort()).toEqual(['initial', 'rotated']);
     expect(await client.current()).toBeNull();
@@ -454,9 +558,12 @@ describe('OpenKeyNative', () => {
     const old = client.signIn({ capabilities });
     await started;
     f.plugin.values.set(key, value);
+    f.setRevokeReply(() => response(503, { error: 'temporarily_unavailable' }, '1'));
     release();
-    await expect(old).rejects.toMatchObject({ code: 'NOT_SIGNED_IN' });
+    await expect(old).rejects.toMatchObject({ code: 'NOT_SIGNED_IN', rotatedRefreshToken: undefined });
     expect(f.revokeTokens).toContain('initial');
+    const pending = JSON.parse([...f.plugin.values].find(([key]) => key.endsWith(':pending-revoke'))![1]);
+    expect(pending.grants.map((grant: { refreshToken: string }) => grant.refreshToken)).toContain('initial');
     expect((await client.current())?.sessionKey.did).toBe(sessionB.sessionKey.did);
   });
 
@@ -551,7 +658,7 @@ describe('OpenKeyNative', () => {
       if (args.key === key && ++reads === 2) throw new Error('decrypt');
       return originalGet(args);
     };
-    await expect(client.signOut()).rejects.toMatchObject({ code: 'NETWORK' });
+    await expect(client.signOut()).rejects.toMatchObject({ code: 'STORAGE' });
     expect(f.revokeTokens).toEqual(['initial']);
     expect((await client.current())?.tokens.refreshToken).toBe('second');
   });
@@ -885,7 +992,7 @@ describe('OpenKeyNative', () => {
   test('a secure-store read failure does not remove or revoke the session', async () => {
     const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
     f.plugin.failGet = true;
-    await expect(client.signOut()).rejects.toMatchObject({ code: 'NETWORK', message: 'OpenKey secure-store read failed: decrypt' });
+    await expect(client.signOut()).rejects.toMatchObject({ code: 'STORAGE', message: 'Pending-revoke secure-store read failed: decrypt' });
     expect(f.revokeCalls).toBe(0);
     expect(f.plugin.values.size).toBe(1);
     f.plugin.failGet = false;
@@ -893,11 +1000,20 @@ describe('OpenKeyNative', () => {
     expect((await client.renew()).tokens.refreshToken).toBe('next');
   });
 
+  test('session and TinyCloud storage read failures have the STORAGE code', async () => {
+    const f = fixture(); const client = f.make(); const session = await client.signIn({ capabilities });
+    f.plugin.failGet = true;
+    await expect(client.current()).rejects.toMatchObject({ code: 'STORAGE' });
+    await expect(client.sessionStorageAdapter().load(session.delegation.address!)).rejects.toMatchObject({ code: 'STORAGE' });
+    f.plugin.failGet = false;
+    expect((await client.current())?.tokens.refreshToken).toBe('initial');
+  });
+
   test('a readable but corrupt session can be removed on signOut', async () => {
     const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
     const [key] = sessionEntry(f.plugin);
     f.plugin.values.set(key, '{broken');
-    await expect(client.signOut()).rejects.toMatchObject({ code: 'SERVER', message: 'Stored OpenKey session is invalid' });
+    await expect(client.signOut()).rejects.toMatchObject({ code: 'STORAGE', message: 'Stored OpenKey session is invalid' });
     expect(f.plugin.values.size).toBe(0);
     expect(f.revokeCalls).toBe(0);
   });
@@ -945,7 +1061,7 @@ describe('OpenKeyNative', () => {
         state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
         return state / 0x100000000;
       };
-      const f = fixture(); const client = f.make();
+      const f = fixture(); const clients = [f.make(), f.make()];
       const live = new Set<string>();
       let serial = 0;
       f.setTokenReply(() => {
@@ -961,15 +1077,15 @@ describe('OpenKeyNative', () => {
         live.add(token);
         return response(200, f.renewal(token));
       });
-      await client.signIn({ capabilities });
+      await clients[0].signIn({ capabilities });
       f.setRevokeReply(() => response(503, { error: 'temporarily_unavailable' }, '1'));
-      await client.signOut().catch(() => {});
+      await clients[1].signOut().catch(() => {});
       f.setRevokeReply(() => {
         if (random() < 0.35) return response(503, { error: 'temporarily_unavailable' }, '1');
         live.delete(f.revokeTokens.at(-1)!);
         return response(200, {});
       });
-      await client.signIn({ capabilities });
+      await clients[0].signIn({ capabilities });
       const order: ('renew' | 'signIn' | 'signOut')[] = ['renew', 'signIn', 'signOut'];
       for (let i = order.length - 1; i > 0; i--) {
         const j = Math.floor(random() * (i + 1));
@@ -977,6 +1093,7 @@ describe('OpenKeyNative', () => {
       }
       const operations: Promise<unknown>[] = [];
       for (const operation of order) {
+        const client = clients[Math.floor(random() * clients.length)]!;
         const pending = operation === 'renew' ? client.renew() : operation === 'signIn'
           ? client.signIn({ capabilities }) : client.signOut();
         operations.push(pending.catch(() => {}));

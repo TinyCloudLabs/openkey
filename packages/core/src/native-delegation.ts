@@ -34,6 +34,7 @@ export type OpenKeyNativeErrorCode =
   | 'SPACE_UNAVAILABLE'
   | 'TEMPORARILY_UNAVAILABLE'
   | 'NETWORK'
+  | 'STORAGE'
   | 'SERVER'
   | 'NOT_SIGNED_IN'
   | 'UNAVAILABLE';
@@ -1070,6 +1071,8 @@ export interface ExchangeNativeCodeOptions {
   expectedTinycloudHost: string;
   fetchFn?: NativeFetch;
   sha256Fn?: SHA256Fn;
+  /** Persist the issued refresh token before delegation validation or returning it. */
+  onRefreshToken?: (refreshToken: string) => Promise<void>;
 }
 
 export interface NativeTokenResult {
@@ -1133,15 +1136,19 @@ export async function exchangeDelegationCode(
   }
 
   const data = await readJson(response, 'Token exchange');
+  const issuedRefreshToken = typeof data.refresh_token === 'string' ? data.refresh_token : undefined;
+  if (issuedRefreshToken) await options.onRefreshToken?.(issuedRefreshToken);
   if (
     typeof data.access_token !== 'string' ||
     typeof data.refresh_token !== 'string'
   ) {
-    throw new OpenKeyNativeError(
+    const error = new OpenKeyNativeError(
       'SERVER',
       'Token response missing access_token or refresh_token',
       response.status,
     );
+    error.rotatedRefreshToken = issuedRefreshToken;
+    throw error;
   }
 
   let delegation: TinyCloudDelegation;

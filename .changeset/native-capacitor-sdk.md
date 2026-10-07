@@ -9,3 +9,5 @@ Transient revoke failures leave a secure pending-revoke entry with the key, toke
 Queued session writes and sign-out removal now compare the stored session identity before changing it. Sign-out revokes a replacement session that arrives during an earlier revoke. Corrupt pending-revoke records are cleared, and retry expiry uses refresh-token issue or rotation time plus seven days, capped at `renewableUntil` plus five minutes.
 
 A secure-store read failure during sign-out leaves the unread session in place and rejects, so it can be used when storage recovers. Abandoned grants from replacement sign-ins, superseded renewals, orphaned exchanges, and terminal renewals are revoked best-effort; transient failures are retained for pending-revoke retry.
+
+Instances sharing a native store now share their queue and epoch by store identity and client key prefix. Exchange intents record issued tokens before delegation validation so startup can revoke grants left by an interrupted sign-in. Storage read failures use the distinct `STORAGE` code, and `NOT_SIGNED_IN` errors omit tokens after abandonment.
