@@ -13,9 +13,10 @@ import { storedOpaqueAccessToken, storedRefreshToken, type ProviderTokenOptions 
  *   URL, and a delegation client may not omit `scope`, because the provider
  *   would default to the client's scopes.
  * - Token, `grant_type=refresh_token`: refused for a native token and for a
- *   delegation client.
- * - Revoke: refused for a `Bearer `-prefixed token, a native token, and a
- *   token issued to another client (plan amendment A2), with no side effects.
+ *   native-capable client.
+ * - Revoke: refused for a `Bearer `-prefixed token; for a native-capable
+ *   client, anything but its own access token; a native refresh token; and a
+ *   token issued to another client (plan amendment A2). No side effects.
  *
  * Native tokens are classified by how they were issued, never by the
  * client's current configuration. Tokens are normalized with the provider's
@@ -109,7 +110,7 @@ export interface ProviderInterceptorOptions {
 }
 
 type RefreshTokenMatch = { clientId: string; native: boolean };
-type AccessTokenMatch = { clientId: string; native: boolean };
+type AccessTokenMatch = { clientId: string };
 
 export function createProviderInterceptors({ database, tokens }: ProviderInterceptorOptions): MiddlewareHandler {
   async function anyDelegationClient(clientIds: string[]): Promise<boolean> {
@@ -119,6 +120,21 @@ export function createProviderInterceptors({ database, tokens }: ProviderInterce
       select: { scopes: true, tinycloudNativeDelegation: true },
     });
     return clients.some(isNativeDelegationClient);
+  }
+
+  /**
+   * Native-capable: delegation is enabled now, or the client has ever issued
+   * a native grant (any status). Grant rows only disappear with the client or
+   * user, so disabling delegation never reopens the provider's refresh and
+   * revoke paths for the client. Any client id the request names counts.
+   */
+  async function anyNativeCapableClient(clientIds: string[]): Promise<boolean> {
+    if (clientIds.length === 0) return false;
+    const [enabled, grant] = await Promise.all([
+      anyDelegationClient(clientIds),
+      database.tinyCloudNativeGrant.findFirst({ where: { clientId: { in: clientIds } }, select: { id: true } }),
+    ]);
+    return enabled || grant !== null;
   }
 
   /**
@@ -147,23 +163,14 @@ export function createProviderInterceptors({ database, tokens }: ProviderInterce
   }
 
   /**
-   * An opaque access token is native if it carries tinycloud:delegation or
-   * its `refreshId` points at a native refresh-token row.
+   * An opaque access token's owner. Revocation decides on ownership alone:
+   * a native-capable client's own access tokens pass, native or not, and the
+   * provider deletes only that row.
    */
   async function accessToken(token: string): Promise<AccessTokenMatch | null> {
     const stored = await storedOpaqueAccessToken(tokens, token);
     if (stored === null) return null;
-    const row = await database.oauthAccessToken.findUnique({
-      where: { token: stored },
-      select: { clientId: true, scopes: true, refreshId: true },
-    });
-    if (!row) return null;
-    let native = row.scopes.includes(TINYCLOUD_DELEGATION_SCOPE);
-    if (!native && row.refreshId) {
-      const parent = await database.oauthRefreshToken.findUnique({ where: { id: row.refreshId }, select: { token: true } });
-      native = parent ? (await refreshTokenByStoredValue(parent.token))?.native === true : false;
-    }
-    return { clientId: row.clientId, native };
+    return database.oauthAccessToken.findUnique({ where: { token: stored }, select: { clientId: true } });
   }
 
   async function guardAuthorize(c: Context): Promise<Refusal | null> {
@@ -196,11 +203,11 @@ export function createProviderInterceptors({ database, tokens }: ProviderInterce
     const token = params.get('refresh_token');
     const presented = token ? await refreshToken(token) : null;
     // A native token never reaches the provider, whatever the client's
-    // current configuration or the requested scope. A delegation client
+    // current configuration or the requested scope. A native-capable client
     // never refreshes through the provider either: a revoked token of that
-    // client would otherwise delete every refresh token, native ones
-    // included, that the user holds for it.
-    if (presented?.native || await anyDelegationClient(clients.candidates)) {
+    // client, even an ordinary one, would otherwise delete every refresh
+    // token, native ones included, that the user holds for it.
+    if (presented?.native || await anyNativeCapableClient(clients.candidates)) {
       return {
         status: 400,
         error: 'invalid_grant',
@@ -225,13 +232,19 @@ export function createProviderInterceptors({ database, tokens }: ProviderInterce
     if (!token) return null;
     // Looked up as both kinds, whatever token_type_hint says.
     const [refresh, access] = await Promise.all([refreshToken(token), accessToken(token)]);
-    if (refresh?.native || access?.native) {
-      return {
-        status: 400,
-        error: 'unsupported_token_type',
-        description: `revoke TinyCloud delegation sessions at ${AUTH_BASE_PATH}${NATIVE_DELEGATION_ENDPOINT_PATHS.revoke}`,
-      };
+    const unsupported: Refusal = {
+      status: 400,
+      error: 'unsupported_token_type',
+      description: `revoke TinyCloud delegation sessions at ${AUTH_BASE_PATH}${NATIVE_DELEGATION_ENDPOINT_PATHS.revoke}`,
+    };
+    // A native-capable client reaches the provider only to revoke one of its
+    // own access tokens. Everything else, unknown tokens and its own ordinary
+    // refresh tokens included, could reach the provider's revoked-token
+    // branch and delete the client's native refresh tokens.
+    if (await anyNativeCapableClient(clients.candidates)) {
+      return access && !refresh && access.clientId === clients.effective ? null : unsupported;
     }
+    if (refresh?.native) return unsupported;
     const owner = refresh?.clientId ?? access?.clientId;
     if (owner !== undefined && owner !== clients.effective) {
       return { status: 400, error: 'invalid_request', description: 'token was not issued to this client' };
