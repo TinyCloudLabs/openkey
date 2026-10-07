@@ -52,17 +52,20 @@ existing stored session. `signOut()` signs the user out immediately: a
 successful or terminally failed revoke wipes the session and resolves,
 while a transient revoke failure moves the session key and refresh token
 to a pending-revoke record and rejects with the typed error. Only
-`NETWORK` and `TEMPORARILY_UNAVAILABLE` (after the internal retry) are
-transient; every other revoke error, including `SERVER`, is terminal.
-Pending revokes are retried on the next `signOut()`, on construction and
-on `signIn()`, and dropped once they succeed or fail terminally. A failed
-secure-store write or wipe also rejects. A `signOut()` during an in-flight
-`renew()` or code exchange makes it discard its result and reject
-`NOT_SIGNED_IN` instead of persisting over the wiped session (an orphaned
-exchange grant is revoked best-effort). A delegation returned by sign-in
-that is already inside the renewal lead window is renewed before
-`signIn()` resolves — if that renew fails non-terminally the error
-surfaces but the fresh session stays persisted. `refreshToken()` throws
-`UNAVAILABLE` in delegation mode (the provider refresh grant is refused
-for native clients). Delegation-mode errors surface as
-`OpenKeyNativeError`.
+`NETWORK`, `TEMPORARILY_UNAVAILABLE` (after the internal retry) and any
+HTTP 5xx from the revoke endpoint or server discovery are transient; every
+other revoke error, including a 4xx `SERVER`, is terminal. Pending revokes
+are retried on the next `signOut()`, on construction and on `signIn()`,
+and dropped once they succeed or fail terminally. A failed secure-store
+write or wipe also rejects. A `signOut()` during an in-flight `signIn()`
+(including discovery and PAR), `renew()` or code exchange makes it discard
+its result and reject `NOT_SIGNED_IN` instead of persisting over the wiped
+session (an orphaned grant is revoked best-effort), and a storage read it
+overtakes is never cached. Renew results are bound to the session they
+started from: a newer session stored by `signIn()` meanwhile is neither
+overwritten nor wiped by them. A delegation returned by sign-in that is
+already inside the renewal lead window is renewed before `signIn()`
+resolves — if that renew fails non-terminally the error surfaces but the
+fresh session stays persisted. `refreshToken()` throws `UNAVAILABLE` in
+delegation mode (the provider refresh grant is refused for native
+clients). Delegation-mode errors surface as `OpenKeyNativeError`.

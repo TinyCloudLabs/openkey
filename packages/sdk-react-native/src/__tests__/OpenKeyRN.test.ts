@@ -2075,14 +2075,17 @@ describe('OpenKeyRN', () => {
       expect(JSON.parse(store.map.get(SESSION_KEY)!).refreshToken).toBe('rt-renew-2');
     });
 
-    // ── Revoke classification (aligned with sdk-capacitor): only NETWORK
-    //    and TEMPORARILY_UNAVAILABLE are transient; everything else is
-    //    terminal ──
+    // ── Revoke classification: NETWORK, TEMPORARILY_UNAVAILABLE and any
+    //    HTTP 5xx (revoke endpoint or discovery) are transient; everything
+    //    else, including a 4xx, is terminal ──
 
     const REVOKE_OUTCOMES: {
+      name?: string;
       code: string;
       transient: boolean;
       respond: () => Promise<Response>;
+      /** Discovery response; defaults to the metadata. */
+      discovery?: () => Promise<Response>;
     }[] = [
       { code: 'NETWORK', transient: true, respond: () => Promise.reject(new Error('offline')) },
       {
@@ -2111,32 +2114,62 @@ describe('OpenKeyRN', () => {
         respond: () => Promise.resolve(jsonResponse({ error: 'space_unavailable' }, 409)),
       },
       {
+        name: 'SERVER 500',
+        code: 'SERVER',
+        transient: true,
+        respond: () => Promise.resolve(jsonResponse({ error: 'server_error' }, 500)),
+      },
+      {
+        name: 'SERVER 502 (non-JSON)',
+        code: 'SERVER',
+        transient: true,
+        respond: () => Promise.resolve(new Response('bad gateway', { status: 502 })),
+      },
+      {
+        name: 'SERVER 400',
         code: 'SERVER',
         transient: false,
-        respond: () => Promise.resolve(jsonResponse({ error: 'server_error' }, 500)),
+        respond: () => Promise.resolve(jsonResponse({ error: 'invalid_request' }, 400)),
+      },
+      {
+        name: 'discovery 503',
+        code: 'SERVER',
+        transient: true,
+        respond: () => Promise.reject(new Error('revoke must not be reached')),
+        discovery: () => Promise.resolve(new Response(null, { status: 503 })),
+      },
+      {
+        name: 'discovery 404',
+        code: 'SERVER',
+        transient: false,
+        respond: () => Promise.reject(new Error('revoke must not be reached')),
+        discovery: () => Promise.resolve(new Response(null, { status: 404 })),
       },
     ];
 
-    function revokeFetch(respond: () => Promise<Response>): NativeFetch {
+    function revokeFetch(outcome: (typeof REVOKE_OUTCOMES)[number]): NativeFetch {
       return (url: string) => {
         if (url.includes('/.well-known/')) {
-          return Promise.resolve(jsonResponse(METADATA));
+          return outcome.discovery
+            ? outcome.discovery()
+            : Promise.resolve(jsonResponse(METADATA));
         }
-        if (url.endsWith('/oauth2/tinycloud/revoke')) return respond();
+        if (url.endsWith('/oauth2/tinycloud/revoke')) return outcome.respond();
         return Promise.reject(new Error(`unexpected fetch: ${url}`));
       };
     }
 
     for (const outcome of REVOKE_OUTCOMES) {
+      const label = outcome.name ?? outcome.code;
       const verdict = outcome.transient
         ? 'keeps a pending revoke and rejects'
         : 'wipes and resolves';
 
-      it(`signOut() on a ${outcome.code} revoke ${verdict}`, async () => {
+      it(`signOut() on a ${label} revoke failure ${verdict}`, async () => {
         const store = memoryStore();
         const sessionKey = await seedSession(store, 'rt-live');
         const client = new OpenKeyRN(
-          makeDelegationConfig(store, revokeFetch(outcome.respond)),
+          makeDelegationConfig(store, revokeFetch(outcome)),
         );
 
         if (outcome.transient) {
@@ -2152,7 +2185,7 @@ describe('OpenKeyRN', () => {
         expect(store.map.has(SESSION_KEY)).toBe(false);
       });
 
-      it(`a pending revoke retried on a ${outcome.code} failure ${
+      it(`a pending revoke retried on a ${label} failure ${
         outcome.transient ? 'is kept' : 'is dropped'
       }`, async () => {
         const store = memoryStore();
@@ -2162,7 +2195,7 @@ describe('OpenKeyRN', () => {
         ];
         await store.set(PENDING_KEY, JSON.stringify(pendingRecord));
         const client = new OpenKeyRN(
-          makeDelegationConfig(store, revokeFetch(outcome.respond)),
+          makeDelegationConfig(store, revokeFetch(outcome)),
         );
 
         // No live session: signOut() only retries the pending revoke.
@@ -2176,6 +2209,207 @@ describe('OpenKeyRN', () => {
         }
       });
     }
+
+    // ── Generation / session binding (round 4) ──
+
+    it('a signOut() that completes during discovery invalidates the signIn()', async () => {
+      const store = memoryStore();
+      const { promise: discoveryReached, resolve: reachedDiscovery } =
+        Promise.withResolvers<void>();
+      const { promise: discoveryGate, resolve: releaseDiscovery } =
+        Promise.withResolvers<void>();
+      const captured: { parBody?: string } = {};
+      const inner = delegationFetch(captured);
+      const fetchFn: NativeFetch = async (url: string, init?: NativeFetchInit) => {
+        if (url.includes('/.well-known/')) {
+          reachedDiscovery();
+          await discoveryGate;
+        }
+        return inner(url, init);
+      };
+      const openBrowser = mock(async (): Promise<BrowserResult | void> => {
+        const state = new URLSearchParams(captured.parBody!).get('state')!;
+        return { type: 'success', url: callbackUrl(state) };
+      }) as BrowserOpener;
+      const client = new OpenKeyRN(
+        makeDelegationConfig(store, fetchFn, { openBrowser }),
+      );
+
+      const signInPromise = client.signIn();
+      signInPromise.catch(() => {});
+      await discoveryReached;
+      await client.signOut();
+      releaseDiscovery();
+
+      const thrown = await rejection(signInPromise);
+      expect(thrown.code).toBe('NOT_SIGNED_IN');
+      expect(openBrowser).not.toHaveBeenCalled();
+      expect(store.map.has(SESSION_KEY)).toBe(false);
+    });
+
+    it('a storage read overtaken by signOut() never repopulates the session cache', async () => {
+      const base = memoryStore();
+      const sessionKey = await seedSession(base, 'rt-old');
+      const { promise: readReached, resolve: reachedRead } =
+        Promise.withResolvers<void>();
+      const { promise: readGate, resolve: releaseRead } =
+        Promise.withResolvers<void>();
+      let gateNextSessionRead = true;
+      const store: OpenKeySecureStore = {
+        ...base,
+        get: async (key) => {
+          // The value is read when the call starts; it lands later.
+          const value = base.map.get(key) ?? null;
+          if (key === SESSION_KEY && gateNextSessionRead) {
+            gateNextSessionRead = false;
+            reachedRead();
+            await readGate;
+          }
+          return value;
+        },
+      };
+      let renewCalls = 0;
+      const fetchFn: NativeFetch = (url: string) => {
+        if (url.includes('/.well-known/')) {
+          return Promise.resolve(jsonResponse(METADATA));
+        }
+        if (url.endsWith('/oauth2/tinycloud/renew')) {
+          renewCalls += 1;
+          return Promise.resolve(
+            jsonResponse({
+              refresh_token: 'rt-new',
+              tinycloud_delegation: {
+                verificationMethod: sessionKey.keyId,
+                expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+                permissions: [KV_PERMISSION],
+                tinycloudHost: TC_HOST,
+              },
+            }),
+          );
+        }
+        if (url.endsWith('/oauth2/tinycloud/revoke')) {
+          return Promise.resolve(new Response(null, { status: 200 }));
+        }
+        return Promise.reject(new Error(`unexpected fetch: ${url}`));
+      };
+      const client = new OpenKeyRN(makeDelegationConfig(store, fetchFn));
+
+      const first = client.renew();
+      first.catch(() => {});
+      await readReached;
+      await client.signOut();
+      releaseRead();
+
+      expect((await rejection(first)).code).toBe('NOT_SIGNED_IN');
+      // A later renew() must not use a session loaded before the sign-out.
+      expect((await rejection(client.renew())).code).toBe('NOT_SIGNED_IN');
+      expect(renewCalls).toBe(0);
+      expect(base.map.has(SESSION_KEY)).toBe(false);
+    });
+
+    /**
+     * Fetch for "renew of the stored session A is in flight while signIn()
+     * stores session B": the first renew is held until `release`, then
+     * answered by `firstRenew`; later renews succeed for session B.
+     */
+    function renewRaceFetch(firstRenew: () => Response) {
+      const captured: { parBody?: string } = {};
+      const inner = delegationFetch(captured);
+      const reached = Promise.withResolvers<void>();
+      const gate = Promise.withResolvers<void>();
+      const renewTokens: string[] = [];
+      const revoked: string[] = [];
+      const fetchFn: NativeFetch = async (url: string, init?: NativeFetchInit) => {
+        if (url.endsWith('/oauth2/tinycloud/renew')) {
+          renewTokens.push(new URLSearchParams(init!.body!).get('refresh_token')!);
+          if (renewTokens.length === 1) {
+            reached.resolve();
+            await gate.promise;
+            return firstRenew();
+          }
+          return jsonResponse({
+            refresh_token: 'rt-b-2',
+            tinycloud_delegation: {
+              ...delegationPayload(captured.parBody!),
+            },
+          });
+        }
+        if (url.endsWith('/oauth2/tinycloud/revoke')) {
+          revoked.push(new URLSearchParams(init!.body!).get('refresh_token')!);
+          return new Response(null, { status: 200 });
+        }
+        return inner(url, init);
+      };
+      const openBrowser = mock(async (): Promise<BrowserResult | void> => {
+        const state = new URLSearchParams(captured.parBody!).get('state')!;
+        return { type: 'success', url: callbackUrl(state) };
+      }) as BrowserOpener;
+      return {
+        fetchFn,
+        openBrowser,
+        renewReached: reached.promise,
+        releaseRenew: () => gate.resolve(),
+        renewTokens,
+        revoked,
+      };
+    }
+
+    it('a terminal renew of an older session leaves a newer signed-in session alone', async () => {
+      const store = memoryStore();
+      await seedSession(store, 'rt-a');
+      const race = renewRaceFetch(() => jsonResponse({ error: 'invalid_grant' }, 400));
+      const client = new OpenKeyRN(
+        makeDelegationConfig(store, race.fetchFn, { openBrowser: race.openBrowser }),
+      );
+
+      const oldRenew = client.renew();
+      oldRenew.catch(() => {});
+      await race.renewReached;
+      await client.signIn(); // stores session B
+      const sessionB = store.map.get(SESSION_KEY)!;
+      expect(JSON.parse(sessionB).refreshToken).toBe('nat-refresh-1');
+
+      race.releaseRenew();
+      expect((await rejection(oldRenew)).code).toBe('INVALID_GRANT');
+      // Session A's terminal outcome did not wipe session B.
+      expect(store.map.get(SESSION_KEY)).toBe(sessionB);
+      const renewed = await client.renew();
+      expect(race.renewTokens).toEqual(['rt-a', 'nat-refresh-1']);
+      expect(renewed.refreshToken).toBe('rt-b-2');
+    });
+
+    it('a renew of an older session never overwrites a newer signed-in session', async () => {
+      const store = memoryStore();
+      const sessionA = await seedSession(store, 'rt-a');
+      const race = renewRaceFetch(() =>
+        jsonResponse({
+          refresh_token: 'rt-a-rotated',
+          tinycloud_delegation: {
+            verificationMethod: sessionA.keyId,
+            expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+            permissions: [KV_PERMISSION],
+            tinycloudHost: TC_HOST,
+          },
+        }),
+      );
+      const client = new OpenKeyRN(
+        makeDelegationConfig(store, race.fetchFn, { openBrowser: race.openBrowser }),
+      );
+
+      const oldRenew = client.renew();
+      oldRenew.catch(() => {});
+      await race.renewReached;
+      await client.signIn(); // stores session B
+      const sessionB = store.map.get(SESSION_KEY)!;
+
+      race.releaseRenew();
+      const thrown = await rejection(oldRenew);
+      expect(thrown.code).toBe('NOT_SIGNED_IN');
+      expect(thrown.rotatedRefreshToken).toBe('rt-a-rotated');
+      // Session B is intact and A's orphaned rotated grant was revoked.
+      expect(store.map.get(SESSION_KEY)).toBe(sessionB);
+      expect(race.revoked).toEqual(['rt-a-rotated']);
+    });
 
   });
 
