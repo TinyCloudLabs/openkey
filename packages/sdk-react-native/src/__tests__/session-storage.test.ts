@@ -667,7 +667,7 @@ describe('CAS session storage model', () => {
     expect(base.map.has(PENDING_KEY)).toBe(false);
   });
 
-  it('a failed rotated-token recovery write revokes the token and drops it from the error', async () => {
+  it("renew(): a failed recovery write surfaces STORAGE (cause: the original error) and revokes the token", async () => {
     const server = new FakeServer();
     const base = memoryStore();
     const { sessionKey: keyA } = await server.seedSession(base);
@@ -688,9 +688,79 @@ describe('CAS session storage model', () => {
     });
 
     const thrown = await rejection(client.renew());
-    expect(thrown.code).toBe('SERVER');
+    // Local state could not be saved: STORAGE, with the verification
+    // failure as its cause, and no token on either error.
+    expect(thrown.code).toBe('STORAGE');
     expect(thrown.rotatedRefreshToken).toBeUndefined();
+    expect(thrown.cause).toBeInstanceOf(OpenKeyNativeError);
+    expect((thrown.cause as OpenKeyNativeError).code).toBe('SERVER');
+    expect((thrown.cause as OpenKeyNativeError).rotatedRefreshToken).toBeUndefined();
     expect(server.grants.get(keyA.publicJwk.x)).toBe('revoked');
+  });
+
+  it('signIn(): a failed recovery write surfaces STORAGE (cause: the original error) and revokes the token', async () => {
+    const server = new FakeServer();
+    const base = memoryStore();
+    // The exchanged delegation fails verification (SERVER with the live
+    // token), and the recovery save of that token then fails to write.
+    const client = new OpenKeyRN({
+      host: 'https://auth.example.com',
+      clientId: CLIENT_ID,
+      redirectUri: REDIRECT_URI,
+      issuer: ISSUER,
+      openBrowser: server.openBrowser,
+      delegation: {
+        permissions: [KV_PERMISSION],
+        tinycloudHost: TC_HOST,
+        storage: failingWrites(base, [SESSION_KEY]),
+        verifyDelegation: () => Promise.reject(new Error('cid mismatch')),
+        fetchFn: server.fetch,
+        sleepFn: () => Promise.resolve(),
+      },
+    });
+
+    const thrown = await rejection(client.signIn());
+    expect(thrown.code).toBe('STORAGE');
+    expect(thrown.rotatedRefreshToken).toBeUndefined();
+    expect((thrown.cause as OpenKeyNativeError).code).toBe('SERVER');
+    expect((thrown.cause as OpenKeyNativeError).rotatedRefreshToken).toBeUndefined();
+    expect(server.revokeCalls).toEqual([server.exchangeIssued[0]!]);
+    expect(server.liveSids()).toEqual([]);
+  });
+
+  it('signOut(): a transient revoke plus a failed pending-revoke write is STORAGE, and nothing is removed', async () => {
+    const server = new FakeServer();
+    const base = memoryStore();
+    const { token } = await server.seedSession(base);
+    server.revokeFailRate = 1;
+    const client = server.client(failingWrites(base, [PENDING_KEY]));
+
+    const thrown = await rejection(client.signOut());
+    expect(thrown.code).toBe('STORAGE');
+    expect((thrown.cause as OpenKeyNativeError).code).toBe('TEMPORARILY_UNAVAILABLE');
+    // The token could not be parked, so the session record (its only
+    // copy) was kept for the next signOut().
+    expect(storedToken(base)).toBe(token);
+    expect(base.map.has(PENDING_KEY)).toBe(false);
+  });
+
+  it('signOut(): a transient revoke plus a failed session removal is STORAGE', async () => {
+    const server = new FakeServer();
+    const base = memoryStore();
+    const { token } = await server.seedSession(base);
+    server.revokeFailRate = 1;
+    const store: OpenKeySecureStore = {
+      ...base,
+      remove: (key) =>
+        key === SESSION_KEY ? Promise.reject(new Error('keychain locked')) : base.remove(key),
+    };
+    const client = server.client(store);
+
+    const thrown = await rejection(client.signOut());
+    expect(thrown.code).toBe('STORAGE');
+    expect((thrown.cause as OpenKeyNativeError).code).toBe('TEMPORARILY_UNAVAILABLE');
+    expect(pendingTokens(base)).toEqual([token]);
+    expect(storedToken(base)).toBe(token);
   });
 
   /**

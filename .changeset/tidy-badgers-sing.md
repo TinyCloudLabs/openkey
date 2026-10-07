@@ -85,19 +85,22 @@ that token is live and not abandoned: a `NOT_SIGNED_IN` refusal, a
 terminal outcome and an error whose recovery save failed carry none,
 because the token was abandoned (revoked, or a pending revoke). Every
 secure-store read or write failure is `STORAGE`; `NETWORK` is reserved for
-real network errors. No abandoned live grants: every grant the SDK lets go
-of without storing it — the session a `signIn()` replaces, a superseded
-renew's or sign-in's token, an orphaned exchange, a terminal outcome's
-rotated token, a token whose secure-store write failed — is revoked, or
-kept as a bounded pending revoke when the revoke fails transiently. A
-`signIn()` that has not stored its session yet (e.g. a cancelled one)
-never affects an in-flight `renew()`. A delegation returned by sign-in
-that is already inside the renewal lead window is renewed before
-`signIn()` resolves — if that renew fails non-terminally the error
-surfaces but the fresh session stays persisted. `refreshToken()` throws
-`UNAVAILABLE` in delegation mode (the provider refresh grant is refused
-for native clients). Delegation-mode errors surface as
-`OpenKeyNativeError`.
+real network errors. When local state can't be saved, `STORAGE` is what's
+reported: a failed rotated-token recovery save rejects with `STORAGE` (the
+original error as its `cause`), and `signOut()` rejects with `STORAGE`
+(the revoke error as its `cause`) when a pending-revoke or session write
+fails. No abandoned live grants: every grant the SDK lets go of without
+storing it — the session a `signIn()` replaces, a superseded renew's or
+sign-in's token, an orphaned exchange, a terminal outcome's rotated token,
+a token whose secure-store write failed — is revoked, or kept as a bounded
+pending revoke when the revoke fails transiently. A `signIn()` that has
+not stored its session yet (e.g. a cancelled one) never affects an
+in-flight `renew()`. A delegation returned by sign-in that is already
+inside the renewal lead window is renewed before `signIn()` resolves — if
+that renew fails non-terminally the error surfaces but the fresh session
+stays persisted. `refreshToken()` throws `UNAVAILABLE` in delegation mode
+(the provider refresh grant is refused for native clients).
+Delegation-mode errors surface as `OpenKeyNativeError`.
 
 `@openkey/core` adds the `STORAGE` native error code (after `NETWORK` in
 `OpenKeyNativeErrorCode`) for local secure-store failures.

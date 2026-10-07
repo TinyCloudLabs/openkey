@@ -235,7 +235,10 @@ errors). If a write fails, `signIn()`/`renew()` reject with `STORAGE`
 carrying **no** `rotatedRefreshToken`: the SDK has no API to take a token
 back, so instead of handing it to the caller it revokes the grant (see
 *No abandoned live grants* below), and the user signs in again.
-`signOut()` rejects with `STORAGE` if the credential wipe itself fails.
+`signOut()` rejects with `STORAGE` if the credential wipe, or the
+pending-revoke write after a transient revoke failure, fails (the revoke
+error is its `cause`); local state that could not be saved always
+outranks the revoke error.
 
 `renew()` is single-flight keyed on its options: concurrent calls with the
 same `siweNonce` and an equivalent `permissionsSubset` (compared after
@@ -250,14 +253,17 @@ before resolving, reloads the stored token and retries once on
 renewed delegation passes through `verifyDelegation` before it is
 accepted — a verification failure rejects `renew()` as `SERVER` after
 persisting the rotated token, which then rides the error as
-`rotatedRefreshToken`; if that save fails, the grant is abandoned and the
-error carries no token. Terminal errors (`INVALID_GRANT`, `CONSENT_REQUIRED`,
+`rotatedRefreshToken`. If that save fails, the grant is abandoned and no
+error carries the token; a secure-store failure rejects with `STORAGE`
+(the `SERVER` error is its `cause`), a refused save with the `SERVER`
+error. The same holds for a sign-in whose recovery save fails. Terminal
+errors (`INVALID_GRANT`, `CONSENT_REQUIRED`,
 `ACCESS_DENIED`, `SPACE_UNAVAILABLE`) wipe the local session before
 rethrowing: the grant is dead, so that's a local sign-out. A terminal
 outcome persists nothing — the grant of a rotated refresh token on the
 error (for example `hosting: "failed"`) is abandoned instead (see below),
-and the error carries no token. If `signIn()` returns a delegation already inside the spec's renewal lead window, it is
-renewed before `signIn()` resolves — you always receive a delegation
+and the error carries no token. If `signIn()` returns a delegation
+already inside the spec's renewal lead window, it is renewed before `signIn()` resolves — you always receive a delegation
 with a full TTL; if that immediate renew fails non-terminally, the error
 is surfaced but the just-issued session stays persisted, so the app can
 retry `renew()`. A `signIn()` that fails before its session is persisted

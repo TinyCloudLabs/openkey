@@ -734,16 +734,18 @@ export class OpenKeyRN {
 
   /**
    * Delegation half of signOut(). Returns the error signOut() rejects with
-   * (a storage read failure first, then the typed revoke error), or
-   * `undefined`.
+   * — any failure to read or save local state first (`STORAGE`), then the
+   * typed revoke error — or `undefined`.
    */
   private async signOutDelegation(): Promise<unknown> {
-    // Grants left by an earlier signOut() go first.
+    // Grants left by an earlier signOut() go first. A failure to save
+    // local state outranks a revoke error: it is reported as STORAGE.
     let pendingError: unknown;
+    let storageFailure: OpenKeyNativeError | undefined;
     try {
       pendingError = await this.retryPendingRevokes();
     } catch (error) {
-      pendingError = this.storageError('update pending revokes', error);
+      storageFailure = this.storageError('update pending revokes', error);
     }
 
     let revokeError: Error | undefined;
@@ -782,13 +784,19 @@ export class OpenKeyRN {
           // whatever is current now (or stop if nothing is).
           continue;
         }
-        return (
-          revokeError ??
-          this.storageError('remove stored delegation session', caught)
+        // Local state could not be saved — the pending revoke, or the
+        // removal of the session — so this is STORAGE, with the revoke
+        // error (if any) as its cause.
+        return this.storageError(
+          error
+            ? 'record the pending revoke or remove the stored delegation session'
+            : 'remove stored delegation session',
+          caught,
+          revokeError,
         );
       }
     }
-    return revokeError ?? pendingError;
+    return storageFailure ?? revokeError ?? pendingError;
   }
 
   /** Add a pending-revoke entry for `grant`. */
@@ -942,14 +950,42 @@ export class OpenKeyRN {
     });
   }
 
-  /** A secure-store read or write failure (`STORAGE`, never `NETWORK`). */
-  private storageError(action: string, error: unknown): OpenKeyNativeError {
-    return new OpenKeyNativeError(
+  /**
+   * A secure-store read or write failure (`STORAGE`, never `NETWORK`).
+   * `cause` is the error the operation was already reporting, if any.
+   */
+  private storageError(
+    action: string,
+    error: unknown,
+    cause?: unknown,
+  ): OpenKeyNativeError {
+    const storage = new OpenKeyNativeError(
       'STORAGE',
       `failed to ${action}: ${
         error instanceof Error ? error.message : String(error)
       }`,
     );
+    if (cause !== undefined) storage.cause = cause;
+    return storage;
+  }
+
+  /**
+   * The error to report after a rotated-token recovery save failed. The
+   * save abandoned the token either way, so it leaves `original`. A
+   * storage failure (`STORAGE`) is reported in place of `original`, which
+   * becomes its `cause`: local state could not be saved. A refusal
+   * (`NOT_SIGNED_IN`) leaves `original` as the error to report.
+   */
+  private afterFailedRecovery(
+    original: OpenKeyNativeError,
+    saveError: unknown,
+  ): OpenKeyNativeError {
+    original.rotatedRefreshToken = undefined;
+    if (saveError instanceof OpenKeyNativeError && saveError.code === 'STORAGE') {
+      saveError.cause = original;
+      return saveError;
+    }
+    return original;
   }
 
   private registerPendingFlow(
@@ -1145,12 +1181,15 @@ export class OpenKeyRN {
       pending.resolve(tokens);
     } catch (error) {
       if (pending.delegation && error instanceof OpenKeyNativeError) {
-        await this.settleFailedDelegationSignIn(
-          error,
-          pending.delegation,
-          replacedStoredSession,
-          approvedPermissions,
+        pending.reject(
+          await this.settleFailedDelegationSignIn(
+            error,
+            pending.delegation,
+            replacedStoredSession,
+            approvedPermissions,
+          ),
         );
+        return;
       }
       pending.reject(
         pending.delegation
@@ -1172,16 +1211,19 @@ export class OpenKeyRN {
    *   this attempt is left alone.
    * - Otherwise, a rotated refresh token is live and the old one dead, so
    *   it is persisted before the error is reported (spec). When that save
-   *   fails (refused or a storage failure) the grant is abandoned and the
-   *   token removed from the error.
+   *   fails the grant is abandoned and the token removed from the error;
+   *   a storage failure is reported as `STORAGE` with the original error
+   *   as its `cause`.
+   *
+   * Resolves the error to reject sign-in with.
    */
   private async settleFailedDelegationSignIn(
     error: OpenKeyNativeError,
     flow: PendingDelegationFlow,
     replacedStoredSession: boolean,
     approvedPermissions: NativeDelegationPermission[],
-  ): Promise<void> {
-    if (error.code === 'NOT_SIGNED_IN') return;
+  ): Promise<OpenKeyNativeError> {
+    if (error.code === 'NOT_SIGNED_IN') return error;
     if (TERMINAL_SESSION_CODES.has(error.code)) {
       if (replacedStoredSession) await this.removeSession(flow.sessionKey);
       if (error.rotatedRefreshToken) {
@@ -1197,12 +1239,12 @@ export class OpenKeyRN {
         );
         error.rotatedRefreshToken = undefined;
       }
-      return;
+      return error;
     }
     if (error.rotatedRefreshToken) {
       // Before the exchange's own save this is that save (replace whatever
       // is stored); after it, it belongs to this attempt's session only.
-      await this.saveSession(
+      return this.saveSession(
         withRefreshToken(
           {
             sessionKey: flow.sessionKey,
@@ -1213,12 +1255,12 @@ export class OpenKeyRN {
         ),
         replacedStoredSession ? { sid: sessionId(flow.sessionKey) } : 'any',
         flow.generation,
-      ).catch(() => {
-        // Any failed save (refusal or storage failure) abandoned the
-        // token, so it no longer rides the error.
-        error.rotatedRefreshToken = undefined;
-      });
+      ).then(
+        () => error,
+        (saveError: unknown) => this.afterFailedRecovery(error, saveError),
+      );
     }
+    return error;
   }
 
   private async renewOnce(
@@ -1294,15 +1336,17 @@ export class OpenKeyRN {
         // reporting the error or the session is lost (spec). NOT_SIGNED_IN
         // means signOut() won and nothing may be written.
         if (error.rotatedRefreshToken && error.code !== 'NOT_SIGNED_IN') {
-          await this.saveSession(
-            withRefreshToken(session, error.rotatedRefreshToken),
-            { sid: sessionId(session.sessionKey) },
-            generation,
-          ).catch(() => {
-            // Any failed save (refusal or storage failure) abandoned the
-            // token, so it no longer rides the error.
-            error.rotatedRefreshToken = undefined;
-          });
+          try {
+            await this.saveSession(
+              withRefreshToken(session, error.rotatedRefreshToken),
+              { sid: sessionId(session.sessionKey) },
+              generation,
+            );
+          } catch (saveError) {
+            // The failed save abandoned the token; a storage failure is
+            // reported as STORAGE with this error as its cause.
+            throw this.afterFailedRecovery(error, saveError);
+          }
         }
         if (error.code === 'RENEWAL_CONFLICT' && !reloadedAfterConflict) {
           // Another instance rotated the token first: reload what storage
