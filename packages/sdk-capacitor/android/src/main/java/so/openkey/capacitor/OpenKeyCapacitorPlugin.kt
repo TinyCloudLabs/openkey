@@ -31,7 +31,6 @@ class OpenKeyCapacitorPlugin : Plugin() {
     private var launched = false
     private var callbackUrl: String? = null
     private var expectedState: String? = null
-    private var ignoreNextResume = false
     private val handler = Handler(Looper.getMainLooper())
     private var cancel: Runnable? = null
     private lateinit var store: SecureStore
@@ -56,7 +55,6 @@ class OpenKeyCapacitorPlugin : Plugin() {
         pending = call
         callbackUrl = callback
         expectedState = state
-        ignoreNextResume = false
         launched = true
         try {
             CustomTabsIntent.Builder().build().launchUrl(activity, android.net.Uri.parse(url))
@@ -76,12 +74,11 @@ class OpenKeyCapacitorPlugin : Plugin() {
         val expected = callbackUrl ?: return
         val state = expectedState ?: return
         if (intent.action != Intent.ACTION_VIEW || !matchesOpenKeyRedirect(url.toString(), expected, state)) {
-            // An unrelated deep link must not consume the pending Custom Tab
-            // or make its following onResume look like a browser cancellation.
-            ignoreNextResume = true
+            // A foreign intent can close the Custom Tab. Keep the flow pending
+            // for the redirect grace period, then settle it as cancellation.
+            scheduleCancellation()
             return
         }
-        ignoreNextResume = false
         cancel?.let(handler::removeCallbacks)
         cancel = null
         pending = null
@@ -93,7 +90,10 @@ class OpenKeyCapacitorPlugin : Plugin() {
 
     override fun handleOnResume() {
         super.handleOnResume()
-        if (ignoreNextResume) { ignoreNextResume = false; return }
+        scheduleCancellation()
+    }
+
+    private fun scheduleCancellation() {
         if (!launched || pending == null) return
         // A redirect may arrive just after the app resumes. Give it a short grace period.
         val task = Runnable {

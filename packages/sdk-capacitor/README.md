@@ -83,7 +83,7 @@ async function handoff(next: typeof session) {
 await handoff(session);
 ```
 
-The app should compare `delegation.tinycloudHost` with its configured node, then verify its backend session before exposing data. `current()` reads the stored OpenKey session offline. To restore TinyCloud after an app restart, call `storage.load(address)` once so its synchronous `exists()` and `activeAddress()` cache is populated, then call `tcw.restoreSession(address)`.
+The app should compare `delegation.tinycloudHost` with its configured node, then verify its backend session before exposing data. `current()` reads the stored OpenKey session offline. To restore TinyCloud after an app restart, call `storage.load(address)` once so its synchronous `exists()` and `activeAddress()` cache is populated, then call `tcw.restoreSession(address)`. The adapter accepts saves only for the current OpenKey session key; a delayed handoff from before sign-out or a new sign-in fails.
 
 ## Renew and sign out
 
@@ -93,7 +93,7 @@ await handoff(renewed); // save, activate, then swap on the live TinyCloudWeb in
 await openkey.signOut();
 ```
 
-`renew()` is single-flight for identical options; different options run in order. It saves a rotated refresh token before returning. On `renewal_conflict` it reloads secure storage and retries once if another call stored a newer token. Terminal renew errors clear the local session. OpenKey's `Retry-After` handling for 429 and 503 lives in core. If immediate renewal after exchange fails, `signIn()` rejects and clears the initial session so `current()` cannot restore a sign-in reported as failed. `signOut()` removes local state after revoke. A terminal revoke failure still resolves; a transient failure wipes local state and rejects with a typed error saying the server grant may still be active. Catch `OpenKeyNativeError` and use its `code` (`USER_CANCELLED`, `ACCESS_DENIED`, `STATE_MISMATCH`, etc.); never log the raw error object because it can carry `rotatedRefreshToken`.
+`renew()` is single-flight for identical options; different options run in order. A capability subset applies to that renewal only; a later plain `renew()` uses the original approved set. It saves a rotated refresh token before returning. On `renewal_conflict` it reloads secure storage and retries once if another call stored a newer token. Terminal renew errors clear the local session. OpenKey's `Retry-After` handling for 429 and 503 lives in core. If immediate renewal after exchange fails, `signIn()` rejects and clears the initial session so `current()` cannot restore a sign-in reported as failed. `signOut()` removes local state after revoke. A terminal revoke failure still resolves; a transient failure wipes local state and rejects with a typed error saying the server grant may still be active. Catch `OpenKeyNativeError` and use its `code` (`USER_CANCELLED`, `ACCESS_DENIED`, `STATE_MISMATCH`, etc.); never log the raw error object because it can carry `rotatedRefreshToken`.
 
 ## Security
 

@@ -10,7 +10,7 @@ export class NativeSessionStorage implements ISessionStorage {
   constructor(
     private readonly plugin: OpenKeyCapacitorPlugin,
     private readonly namespace: string,
-    private readonly serializeWrite?: (write: () => Promise<void>) => Promise<void>,
+    private readonly serializeWrite?: (session: PersistedSessionData, write: () => Promise<void>) => Promise<void>,
   ) {}
 
   // One active TinyCloud session per OpenKey client. A fixed key lets signOut
@@ -20,10 +20,13 @@ export class NativeSessionStorage implements ISessionStorage {
   async save(address: string, session: PersistedSessionData): Promise<void> {
     try {
       const write = () => this.plugin.secureStoreSet({ key: this.key, value: JSON.stringify(session) });
-      if (this.serializeWrite) await this.serializeWrite(write);
+      if (this.serializeWrite) await this.serializeWrite(session, write);
       else await write();
     }
-    catch { throw new OpenKeyNativeError('SERVER', 'TinyCloud secure store write failed'); }
+    catch (error) {
+      if (error instanceof OpenKeyNativeError && error.code === 'NOT_SIGNED_IN') throw error;
+      throw new OpenKeyNativeError('SERVER', 'TinyCloud secure store write failed');
+    }
     this.present.clear();
     this.present.add(address.toLowerCase());
     this.active = address;

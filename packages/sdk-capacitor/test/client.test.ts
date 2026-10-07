@@ -1,11 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 import { base64UrlDecode, sessionDidForPublicKey, type NativeFetch, type NativeFetchResponse } from '@openkey/core';
-import { OpenKeyCapacitor, OpenKeyNative, OpenKeyNativeError, type OpenKeyCapacitorPlugin } from '../src/index';
+import { OpenKeyCapacitor, OpenKeyNative, OpenKeyNativeError, type NativeSession, type OpenKeyCapacitorPlugin } from '../src/index';
 
 const issuer = 'https://api.openkey.so/api/auth';
 const host = 'https://tee.node.tinycloud.xyz';
 const redirectUri = 'xyz.tinycloud.exo://openkey/callback';
 const capabilities = [{ service: 'tinycloud.kv', space: 'applications', path: 'app/threads/', actions: ['tinycloud.kv/get'] }];
+const persisted = (session: NativeSession) => ({ address: session.delegation.address!, sessionKey: JSON.stringify(session.sessionKey.privateJwk) }) as never;
 
 function response(status: number, data: unknown, retryAfter?: string): NativeFetchResponse {
   return { ok: status >= 200 && status < 300, status, json: async () => data,
@@ -25,7 +26,7 @@ class MockPlugin implements OpenKeyCapacitorPlugin {
   async secureStoreRemove({ key }: { key: string }): Promise<void> { if (this.failRemove) throw new Error('wipe'); this.values.delete(key); }
 }
 
-function fixture() {
+function fixture(approved = capabilities) {
   const plugin = new MockPlugin();
   let state = '';
   let keyId = '';
@@ -35,15 +36,15 @@ function fixture() {
   let tokenReply: () => NativeFetchResponse = () => response(200, { access_token: 'access', refresh_token: 'initial', tinycloud_delegation: delegation() });
   let renewReply: (call: number) => NativeFetchResponse = () => response(200, renewal('next'));
   let revokeReply: () => NativeFetchResponse = () => response(200, {});
-  const delegation = () => ({
+  const delegation = (granted = approved) => ({
     verificationMethod: keyId, expiresAt: new Date(Date.now() + (immediateRenewal ? 30_000 : 3_600_000)).toISOString(),
     issuedAt: new Date(Date.now() - (immediateRenewal ? 3_600_000 : 0)).toISOString(), permissions: [
-      { service: 'tinycloud.capabilities', space: 'applications', path: '', actions: ['tinycloud.capabilities/read'] }, ...capabilities,
+      { service: 'tinycloud.capabilities', space: 'applications', path: '', actions: ['tinycloud.capabilities/read'] }, ...granted,
     ], tinycloudHost: host, address: '0x0000000000000000000000000000000000000001', chainId: 1,
     spaceId: 'tinycloud:pkh:eip155:1:0x0000000000000000000000000000000000000001:applications',
     siwe: 'signed siwe', signature: '0xsignature', delegationHeader: { Authorization: 'Bearer fake' }, delegationCid: 'bafyfake',
   });
-  const renewal = (refreshToken: string) => ({ refresh_token: refreshToken, tinycloud_delegation: delegation() });
+  const renewal = (refreshToken: string, granted = approved) => ({ refresh_token: refreshToken, tinycloud_delegation: delegation(granted) });
   const fetchFn: NativeFetch = async (url, init) => {
     if (url.includes('.well-known')) return response(200, {
       issuer, authorization_endpoint: `${issuer}/oauth2/authorize`, token_endpoint: `${issuer}/oauth2/token`,
@@ -118,6 +119,19 @@ describe('OpenKeyNative', () => {
     expect((await f.make().current())?.tokens.refreshToken).toBe('next');
   });
 
+  test('a subset renew preserves the approved set for a later plain renew', async () => {
+    const second = { service: 'tinycloud.kv', space: 'applications', path: 'app/files/', actions: ['tinycloud.kv/get'] };
+    const approved = [...capabilities, second];
+    const f = fixture(approved); const client = f.make();
+    await client.signIn({ capabilities: approved });
+    f.setRenewReply((call) => response(200, f.renewal(`rotated${call}`, call === 1 ? capabilities : approved)));
+    expect((await client.renew({ capabilities })).tokens.refreshToken).toBe('rotated1');
+    expect((await client.renew()).tokens.refreshToken).toBe('rotated2');
+    expect(f.renewCalls).toBe(2);
+    const stored = JSON.parse([...f.plugin.values].find(([key]) => key.endsWith(':session'))![1]);
+    expect(stored.permissions).toEqual(expect.arrayContaining(approved));
+  });
+
   test('keeps a rotated token when post-2xx delegation validation fails', async () => {
     const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
     f.setRenewReply(() => response(200, { refresh_token: 'rotated', tinycloud_delegation: { ...f.delegation(), verificationMethod: 'wrong' } }));
@@ -152,7 +166,7 @@ describe('OpenKeyNative', () => {
 
   test('signOut wipes OpenKey and TinyCloud state after terminal revoke failure', async () => {
     const f = fixture(); const client = f.make(); const session = await client.signIn({ capabilities });
-    await client.sessionStorageAdapter().save(session.delegation.address!, { address: session.delegation.address!, sessionKey: 'private-jwk' } as never);
+    await client.sessionStorageAdapter().save(session.delegation.address!, persisted(session));
     f.setRevokeReply(() => response(401, { error: 'invalid_session_proof' }));
     await client.signOut();
     expect(await client.current()).toBeNull();
@@ -160,19 +174,32 @@ describe('OpenKeyNative', () => {
   });
 
   test('TinyCloud storage adapter never accesses localStorage', async () => {
-    const f = fixture(); const storage = f.make().sessionStorageAdapter();
+    const f = fixture(); const client = f.make(); const session = await client.signIn({ capabilities }); const storage = client.sessionStorageAdapter();
     const previous = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
     Object.defineProperty(globalThis, 'localStorage', { configurable: true, get() { throw new Error('localStorage touched'); } });
     try {
-      await storage.save('0xabc', { address: '0xabc', sessionKey: 'private-jwk' } as never);
-      expect((await storage.load('0xabc'))?.sessionKey).toBe('private-jwk');
-      expect(storage.exists('0xabc')).toBe(true);
-      await storage.clear('0xabc');
-      expect(storage.exists('0xabc')).toBe(false);
+      await storage.save(session.delegation.address!, persisted(session));
+      expect((await storage.load(session.delegation.address!))?.sessionKey).toBe(JSON.stringify(session.sessionKey.privateJwk));
+      expect(storage.exists(session.delegation.address!)).toBe(true);
+      await storage.clear(session.delegation.address!);
+      expect(storage.exists(session.delegation.address!)).toBe(false);
     } finally {
       if (previous) Object.defineProperty(globalThis, 'localStorage', previous);
       else Reflect.deleteProperty(globalThis, 'localStorage');
     }
+  });
+
+  test('offline current binds the restored session for a secure TinyCloud handoff', async () => {
+    const first = fixture();
+    await first.make().signIn({ capabilities });
+    const restoredApp = fixture();
+    restoredApp.plugin.values = new Map(first.plugin.values);
+    const client = restoredApp.make();
+    const restored = await client.current();
+    expect(restored).not.toBeNull();
+    await client.sessionStorageAdapter().save(restored!.delegation.address!, persisted(restored!));
+    expect((await client.sessionStorageAdapter().load(restored!.delegation.address!))?.sessionKey)
+      .toBe(JSON.stringify(restored!.sessionKey.privateJwk));
   });
 
   test('UNIMPLEMENTED maps to UNAVAILABLE and concurrent authorization has a distinct message', async () => {
@@ -245,12 +272,34 @@ describe('OpenKeyNative', () => {
       if (item.key.includes(':tinycloud:')) { entered(); await gate; }
       await originalSet(item);
     };
-    const save = client.sessionStorageAdapter().save(session.delegation.address!, { address: session.delegation.address!, sessionKey: 'private-jwk' } as never);
+    const save = client.sessionStorageAdapter().save(session.delegation.address!, persisted(session));
     await started;
     const signOut = client.signOut();
     release();
     await Promise.all([save, signOut]);
     expect(await client.sessionStorageAdapter().load(session.delegation.address!)).toBeNull();
+  });
+
+  test('a TinyCloud handoff after signOut cannot restore the old session', async () => {
+    const f = fixture(); const client = f.make(); const old = await client.signIn({ capabilities });
+    await client.signOut();
+    await expect(client.sessionStorageAdapter().save(old.delegation.address!, persisted(old))).rejects.toMatchObject({ code: 'NOT_SIGNED_IN' });
+    expect(await client.sessionStorageAdapter().load(old.delegation.address!)).toBeNull();
+    const fresh = await client.signIn({ capabilities });
+    await expect(client.sessionStorageAdapter().save(old.delegation.address!, persisted(old))).rejects.toMatchObject({ code: 'NOT_SIGNED_IN' });
+    await client.sessionStorageAdapter().save(fresh.delegation.address!, persisted(fresh));
+    expect((await client.sessionStorageAdapter().load(fresh.delegation.address!))?.sessionKey).toBe(JSON.stringify(fresh.sessionKey.privateJwk));
+  });
+
+  test('signIn then signOut in the same tick always wipes', async () => {
+    const f = fixture(); const client = f.make();
+    await client.signIn({ capabilities });
+    const signIn = client.signIn({ capabilities });
+    const signOut = client.signOut();
+    await signOut;
+    await expect(signIn).rejects.toMatchObject({ code: 'NOT_SIGNED_IN' });
+    expect(await client.current()).toBeNull();
+    expect(f.plugin.values.size).toBe(0);
   });
 
   test('an old renew cannot write over a new sign-in', async () => {
