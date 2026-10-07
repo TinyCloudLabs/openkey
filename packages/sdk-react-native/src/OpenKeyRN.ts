@@ -745,7 +745,10 @@ export class OpenKeyRN {
     try {
       pendingError = await this.retryPendingRevokes();
     } catch (error) {
-      storageFailure = this.storageError('update pending revokes', error);
+      storageFailure =
+        error instanceof OpenKeyNativeError && error.code === 'STORAGE'
+          ? error
+          : this.storageError('update pending revokes', error);
     }
 
     let revokeError: Error | undefined;
@@ -865,7 +868,8 @@ export class OpenKeyRN {
    * fail terminally, are past their refresh-token expiry or reach
    * `MAX_REVOKE_ATTEMPTS` are dropped; the rest stay with their attempt
    * count bumped. Resolves the first
-   * transient revoke error, or `undefined`. Rejects on a storage failure.
+   * transient revoke error, or `undefined`. Rejects with `STORAGE` on a
+   * storage failure, with that transient revoke error (if any) as `cause`.
    */
   private retryPendingRevokes(): Promise<Error | undefined> {
     if (!this.pendingRevokeRetry) {
@@ -883,9 +887,12 @@ export class OpenKeyRN {
   }
 
   private async retryPendingRevokesOnce(): Promise<Error | undefined> {
-    const entries = await this.runInStorageQueue(() =>
-      this.readPendingRevokes(),
-    );
+    let entries: StoredPendingRevoke[];
+    try {
+      entries = await this.runInStorageQueue(() => this.readPendingRevokes());
+    } catch (error) {
+      throw this.storageError('read pending revokes', error);
+    }
     if (entries.length === 0) return undefined;
 
     let firstError: Error | undefined;
@@ -918,22 +925,27 @@ export class OpenKeyRN {
     }
 
     // Re-read: a signOut() may have added an entry meanwhile.
-    await this.runInStorageQueue(() =>
-      this.updateRecord(this.pendingRevokeStorageKey, (raw) => {
-        const remaining = (parsePendingRevokes(raw) ?? [])
-          .filter((entry) => !done.has(entry.refreshToken))
-          .map((entry) => ({
-            ...entry,
-            attempts: attempts.get(entry.refreshToken) ?? entry.attempts,
-          }));
-        return {
-          result: undefined,
-          write: {
-            value: remaining.length > 0 ? JSON.stringify(remaining) : null,
-          },
-        };
-      }),
-    );
+    try {
+      await this.runInStorageQueue(() =>
+        this.updateRecord(this.pendingRevokeStorageKey, (raw) => {
+          const remaining = (parsePendingRevokes(raw) ?? [])
+            .filter((entry) => !done.has(entry.refreshToken))
+            .map((entry) => ({
+              ...entry,
+              attempts: attempts.get(entry.refreshToken) ?? entry.attempts,
+            }));
+          return {
+            result: undefined,
+            write: {
+              value: remaining.length > 0 ? JSON.stringify(remaining) : null,
+            },
+          };
+        }),
+      );
+    } catch (error) {
+      // The revoke error this retry already hit stays visible as the cause.
+      throw this.storageError('update pending revokes', error, firstError);
+    }
     return firstError;
   }
 

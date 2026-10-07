@@ -744,6 +744,35 @@ describe('CAS session storage model', () => {
     expect(base.map.has(PENDING_KEY)).toBe(false);
   });
 
+  it("signOut(): an older pending revoke's transient failure stays the cause when saving its retry fails", async () => {
+    const server = new FakeServer();
+    const base = memoryStore();
+    await server.seedPending(base);
+    server.revokeFailRate = 1;
+    // Construct with working storage first, so the launch-time retry is
+    // not the one under test; then the pending record's update fails.
+    let failPendingWrites = false;
+    const store: OpenKeySecureStore = {
+      ...base,
+      set: (key, value) =>
+        failPendingWrites && key === PENDING_KEY
+          ? Promise.reject(new Error('disk full'))
+          : base.set(key, value),
+    };
+    const client = server.client(store);
+    await client.signOut().catch(() => {}); // settles the launch-time retry
+    failPendingWrites = true;
+    const before = base.map.get(PENDING_KEY);
+
+    const thrown = await rejection(client.signOut());
+    expect(thrown.code).toBe('STORAGE');
+    expect(thrown.message).toContain('disk full');
+    expect(thrown.cause).toBeInstanceOf(OpenKeyNativeError);
+    expect((thrown.cause as OpenKeyNativeError).code).toBe('TEMPORARILY_UNAVAILABLE');
+    // The failed update left the record as it was.
+    expect(base.map.get(PENDING_KEY)).toBe(before);
+  });
+
   it('signOut(): a transient revoke plus a failed session removal is STORAGE', async () => {
     const server = new FakeServer();
     const base = memoryStore();
