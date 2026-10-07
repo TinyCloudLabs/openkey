@@ -37,6 +37,7 @@ import {
   socialProviderTrustedOrigins,
 } from './social-providers';
 import { crossSubDomainCookieOptions } from './auth-options';
+import { resolveRequestUri } from './services/native-delegation/par';
 
 export const prisma: PrismaClient = createPrismaClient({
   log: ['error', 'warn'],
@@ -168,6 +169,18 @@ const passkeyFreshnessPlugin = {
   },
 } satisfies BetterAuthPlugin;
 
+// Better Auth's authorize endpoint otherwise strips extension query keys
+// before the OAuth handler sees them. PAR's resolver and the full-query Hono
+// guard establish `tinycloud_request`; extending the schema keeps that one
+// binding in the signed consent query and stored authorization-code query.
+function withNativeAuthorizeQuery<T extends ReturnType<typeof oauthProvider>>(plugin: T): T {
+  const endpoint = plugin.endpoints.oauth2Authorize;
+  endpoint.options.query = endpoint.options.query.extend({
+    tinycloud_request: endpoint.options.query.shape.client_id.optional(),
+  });
+  return plugin;
+}
+
 
 export const auth = betterAuth({
   baseURL,
@@ -269,7 +282,8 @@ export const auth = betterAuth({
 
     // OAuth 2.1 Provider - enables third-party apps to authenticate users
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    oauthProvider({
+    withNativeAuthorizeQuery(oauthProvider({
+      requestUriResolver: ({ requestUri, clientId }) => resolveRequestUri(prisma, requestUri, clientId),
       loginPage: `${origin}/auth/login`,
       consentPage: `${origin}/oauth/consent`,
       allowDynamicClientRegistration: dynamicClientRegistrationEnabled(),
@@ -361,7 +375,7 @@ export const auth = betterAuth({
         if (canonicalIdentity) claims[TINYCLOUD_CANONICAL_IDENTITY_CLAIM] = canonicalIdentity;
         return claims;
       },
-    }) as any,
+    })) as any,
   ],
 
   // Provider entries are present only when every required secret is configured.

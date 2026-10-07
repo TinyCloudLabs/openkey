@@ -4,6 +4,7 @@ import { ADMIN_MANAGED_SCOPES, TINYCLOUD_DELEGATION_SCOPE } from '../../oauth-co
 import { isNativeDelegationClient } from './policy';
 import { NATIVE_DELEGATION_ENDPOINT_PATHS } from './public-protocol';
 import { storedOpaqueAccessToken, storedRefreshToken, type ProviderTokenOptions } from './provider-tokens';
+import { authoritativeQuery, matchesAuthoritativeQuery } from './par';
 
 /**
  * Fail-closed guards in front of better-auth's OAuth provider (spec:
@@ -33,7 +34,7 @@ const AUTH_BASE_PATH = '/api/auth';
 const FORM_MEDIA_TYPE = 'application/x-www-form-urlencoded';
 const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
-export type ProviderInterceptorDatabase = Pick<PrismaClient, 'oauthClient' | 'oauthRefreshToken' | 'oauthAccessToken' | 'tinyCloudNativeGrant'>;
+export type ProviderInterceptorDatabase = Pick<PrismaClient, 'oauthClient' | 'oauthRefreshToken' | 'oauthAccessToken' | 'tinyCloudNativeGrant' | 'tinyCloudNativeRequest'>;
 
 type Refusal = { status: 400 | 401; error: string; description: string };
 /**
@@ -41,7 +42,7 @@ type Refusal = { status: 400 | 401; error: string; description: string };
  * it reports the token unknown.
  */
 type UnknownToken = { unknownToken: Request };
-type Decision = Refusal | null | UnknownToken;
+type Decision = Refusal | null | UnknownToken | { replacement: Request } | { redirect: string };
 const JSON_MEDIA_TYPE = /^application\/([a-z0-9.+-]*\+)?json/i;
 type ParsedBody = { params: URLSearchParams } | { refusal: Refusal } | { passThrough: true };
 
@@ -213,20 +214,28 @@ export function createProviderInterceptors({ database, tokens, provider }: Provi
     return database.oauthAccessToken.findUnique({ where: { token: stored }, select: { clientId: true } });
   }
 
-  async function guardAuthorize(c: Context): Promise<Refusal | null> {
+  async function guardAuthorize(c: Context): Promise<Decision> {
     const params = new URL(c.req.url).searchParams;
     const duplicate = duplicateKey(params);
-    if (duplicate) return { status: 400, error: 'invalid_request', description: `parameter ${duplicate} is repeated` };
+    const invalid = (): Decision => ({ redirect: `${AUTH_BASE_PATH}/error?error=invalid_request` });
+    if (duplicate) return invalid();
+    const requestId = params.get('tinycloud_request');
+    if (requestId) {
+      if (params.has('request_uri')) return invalid();
+      const row = await database.tinyCloudNativeRequest.findUnique({ where: { id: requestId } });
+      if (!row || row.status !== 'RESOLVED' || row.expiresAt <= new Date()) return invalid();
+      const expected = authoritativeQuery(row);
+      if (!matchesAuthoritativeQuery(params, expected)) return invalid();
+      const url = new URL(c.req.url);
+      url.search = expected.toString();
+      return { replacement: new Request(url, c.req.raw) };
+    }
     if (scopeList(params.get('scope')).includes(TINYCLOUD_DELEGATION_SCOPE)) {
-      return {
-        status: 400,
-        error: 'invalid_scope',
-        description: `${TINYCLOUD_DELEGATION_SCOPE} is only available through pushed authorization requests`,
-      };
+      if (!params.has('request_uri')) return invalid();
     }
     const clientId = params.get('client_id');
     if (!params.has('scope') && !params.has('request_uri') && clientId && await anyDelegationClient([clientId])) {
-      return { status: 400, error: 'invalid_scope', description: 'scope is required for this client' };
+      return invalid();
     }
     return null;
   }
@@ -355,6 +364,8 @@ export function createProviderInterceptors({ database, tokens, provider }: Provi
               : null;
     if (!guard) return next();
     return guard(c).then(async (decision) => {
+      if (decision && 'redirect' in decision) return c.redirect(decision.redirect, 302);
+      if (decision && 'replacement' in decision) return provider(decision.replacement);
       if (decision && 'unknownToken' in decision) {
         c.res = await provider(decision.unknownToken);
         await answerUnknownToken(c);

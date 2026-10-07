@@ -65,6 +65,8 @@
      */
     approveBlockedReason?: string | null;
     finalPreview?: boolean;
+    approveText?: string;
+    cancelText?: string;
     /** Surface-specific context rendered in a fixed slot under the header. */
     context?: Snippet;
     /** Show which key signs; for users who chose one of several keys. */
@@ -83,6 +85,8 @@
     error = null,
     approveBlockedReason = null,
     finalPreview = false,
+    approveText = "Approve",
+    cancelText = "Cancel",
     context,
     showSigner = false,
     onApprove,
@@ -373,7 +377,7 @@
         ? "Signing…"
         : finalPreview
           ? "Approve exact bytes"
-          : "Approve",
+          : approveText,
   );
 </script>
 
@@ -761,7 +765,7 @@
       onclick={onCancel}
       disabled={approving}
     >
-      Cancel
+      {cancelText}
     </button>
     <button
       type="button"

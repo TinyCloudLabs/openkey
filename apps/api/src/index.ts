@@ -27,6 +27,8 @@ import { corsOriginPolicy } from './origin-policy';
 import { readinessHandler } from './readiness';
 import { createProviderInterceptors } from './services/native-delegation/interceptors';
 import { providerTokenOptions } from './services/native-delegation/provider-tokens';
+import { handlePar } from './services/native-delegation/par';
+import { createNativeDelegationConsentRouter } from './routes/native-delegation-consent';
 import {
   protocolAwareCors,
   withNativeDelegationMetadata,
@@ -145,6 +147,7 @@ app.get('/api/auth/providers', (c) =>
 
 // Fail-closed guards for delegation clients, ahead of the provider's
 // authorize, refresh and revoke handling.
+app.post('/api/auth/oauth2/par', (c) => handlePar(c.req.raw, authPrisma));
 app.use('/api/auth/*', createProviderInterceptors({
   database: authPrisma,
   tokens: providerTokenOptions(auth),
@@ -182,6 +185,7 @@ app.route('/api/variables', variablesRouter);
 
 // Delegate route (CLI auth flow)
 app.route('/api/delegate', delegateRouter);
+app.route('/api/oauth/tinycloud/requests', createNativeDelegationConsentRouter(authPrisma));
 app.route('/api/device-authorizations', deviceAuthorizationRouter);
 app.route('/api/delegation-codes', createDelegationCodeRouter({
   store: createPrismaDelegationCodeStore(),

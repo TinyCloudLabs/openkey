@@ -100,6 +100,42 @@ if (!backend) {
     });
   }
 
+  async function ensureNativeKey() {
+    const existing = await prisma.ethereumKey.findFirst({ where: { userId: alice, isCanonicalTinyCloud: true, archivedAt: null } });
+    if (existing) return existing;
+    const { createTeeClient, generatePrivateKey, getAddressFromPrivateKey, seal } = await import('@openkey/tee');
+    const privateKey = generatePrivateKey();
+    const address = getAddressFromPrivateKey(privateKey);
+    const sealingContext = randomUUID().replaceAll('-', '').padEnd(43, 'A').slice(0, 43);
+    const sealingKey = await createTeeClient().deriveKey(`openkey/key/${sealingContext}`);
+    return prisma.ethereumKey.create({ data: { id: 'tc773-native-key', userId: alice, address, publicKey: '0x1',
+      sealedBlob: await seal(privateKey, sealingKey), sealingContext, keyType: 'MANAGED', isCanonicalTinyCloud: true } });
+  }
+
+  async function nativePar(ttlSeconds = 3600) {
+    const state = randomUUID();
+    const challenge = await generateCodeChallenge('tc773-native-verifier-012345678901234567890123456789');
+    const detail = [{ type: 'tinycloud_delegation', session_key: { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' },
+      permissions: [
+        { service: 'tinycloud.capabilities', space: 'applications', path: '', actions: ['tinycloud.capabilities/read'] },
+        { service: 'tinycloud.kv', space: 'applications', path: 'xyz.tinycloud.tinychat/threads/', actions: ['tinycloud.kv/get', 'tinycloud.kv/put'] },
+      ], ttl_seconds: ttlSeconds }];
+    const par = await form('/api/auth/oauth2/par', new URLSearchParams({ client_id: nativeClient, response_type: 'code',
+      redirect_uri: NATIVE_REDIRECT, state, code_challenge: challenge, code_challenge_method: 'S256',
+      scope: `openid offline_access ${DELEGATION}`, authorization_details: JSON.stringify(detail) }).toString());
+    expect(par.status, await par.clone().text()).toBe(201);
+    const { request_uri } = await par.json() as { request_uri: string };
+    const id = request_uri.split(':').at(-1)!;
+    const authorize = await call(`/api/auth/oauth2/authorize?${new URLSearchParams({ client_id: nativeClient, request_uri })}`, { headers: { cookie } });
+    expect(authorize.status, await authorize.clone().text()).toBe(302);
+    return { id, state, consentUrl: new URL(authorize.headers.get('location')!) };
+  }
+
+  function nativeConsent(id: string, action: 'prepare' | 'approve' | 'deny', body: unknown = {}, userCookie = cookie) {
+    return call(`/api/oauth/tinycloud/requests/${id}/${action}`, { method: 'POST',
+      headers: { cookie: userCookie, origin: WEB_ORIGIN, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  }
+
   function adminRequest(method: string, path: string, body?: unknown) {
     return call(`/api/admin/oauth${path}`, {
       method,
@@ -439,8 +475,8 @@ if (!backend) {
           scope: `openid offline_access ${DELEGATION}`, code_challenge: challenge, code_challenge_method: 'S256',
         });
         const response = await call(`/api/auth/oauth2/authorize?${query}`, { headers: { cookie } });
-        expect(response.status).toBe(400);
-        expect((await oauthError(response)).error).toBe('invalid_scope');
+        expect(response.status).toBe(302);
+        expect(new URL(response.headers.get('location')!, API).searchParams.get('error')).toBe('invalid_request');
       }
       expect(await prisma.verification.count()).toBe(0);
     });
@@ -452,8 +488,8 @@ if (!backend) {
         code_challenge: challenge, code_challenge_method: 'S256',
       })}`, { headers: { cookie } });
       const native = await authorize(nativeClient, NATIVE_REDIRECT);
-      expect(native.status).toBe(400);
-      expect((await oauthError(native)).error).toBe('invalid_scope');
+      expect(native.status).toBe(302);
+      expect(new URL(native.headers.get('location')!, API).searchParams.get('error')).toBe('invalid_request');
       const ordinary = await authorize(ordinaryClient, ORDINARY_REDIRECT);
       expect(ordinary.status).toBe(302);
       expect(new URL(ordinary.headers.get('location')!).pathname).toBe('/oauth/consent');
@@ -464,8 +500,8 @@ if (!backend) {
         `/api/auth/oauth2/authorize?response_type=code&client_id=${ordinaryClient}&scope=openid&scope=${encodeURIComponent(DELEGATION)}`,
         { headers: { cookie } },
       );
-      expect(response.status).toBe(400);
-      expect((await oauthError(response)).error).toBe('invalid_request');
+      expect(response.status).toBe(302);
+      expect(new URL(response.headers.get('location')!, API).searchParams.get('error')).toBe('invalid_request');
     });
 
     test('a delegation-scoped code minted behind the interceptor still yields no token', async () => {
@@ -494,6 +530,278 @@ if (!backend) {
       expect(await tokenState()).toEqual(before);
     });
   });
+
+  test(`PAR through HTTP to signed consent and code (${backend})`, async () => {
+    const { createTeeClient, generatePrivateKey, getAddressFromPrivateKey, seal } = await import('@openkey/tee');
+    const privateKey = generatePrivateKey();
+    const address = getAddressFromPrivateKey(privateKey);
+    const sealingContext = randomUUID().replaceAll('-', '').padEnd(43, 'A').slice(0, 43);
+    const sealingKey = await createTeeClient().deriveKey(`openkey/key/${sealingContext}`);
+    await prisma.ethereumKey.create({ data: {
+      id: 'tc773-native-key', userId: alice, address, publicKey: '0x1', sealedBlob: await seal(privateKey, sealingKey),
+      sealingContext, keyType: 'MANAGED', isCanonicalTinyCloud: true,
+    } });
+    await prisma.user.update({ where: { id: alice }, data: { email: 'test@openkey.dev' } });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith('https://tee.node.tinycloud.xyz/peer/generate/')) return Promise.resolve(new Response('did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK'));
+      if (url === 'https://tee.node.tinycloud.xyz/delegate') return Promise.resolve(Response.json({ activated: [`tinycloud:pkh:eip155:1:${address}:applications`] }));
+      return originalFetch(input, init);
+    }) as typeof fetch;
+    try {
+      const verifier = 'tc773-native-verifier-012345678901234567890123456789';
+      const challenge = await generateCodeChallenge(verifier);
+      const state = randomUUID();
+      const detail = [{ type: 'tinycloud_delegation', session_key: { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' },
+        permissions: [
+          { service: 'tinycloud.capabilities', space: 'applications', path: '', actions: ['tinycloud.capabilities/read'] },
+          { service: 'tinycloud.kv', space: 'applications', path: 'xyz.tinycloud.tinychat/threads/', actions: ['tinycloud.kv/get'] },
+        ], ttl_seconds: 300 }];
+      const par = await form('/api/auth/oauth2/par', new URLSearchParams({
+        client_id: nativeClient, response_type: 'code', redirect_uri: NATIVE_REDIRECT, state,
+        code_challenge: challenge, code_challenge_method: 'S256', scope: `openid offline_access ${DELEGATION}`,
+        authorization_details: JSON.stringify(detail),
+      }).toString());
+      expect(par.status, await par.clone().text()).toBe(201);
+      const { request_uri } = await par.json() as { request_uri: string };
+      const requestId = request_uri.split(':').at(-1)!;
+      const first = await call(`/api/auth/oauth2/authorize?${new URLSearchParams({ client_id: nativeClient, request_uri })}`);
+      expect(first.status, await first.clone().text()).toBe(302);
+      const login = new URL(first.headers.get('location')!);
+      expect(login.pathname).toBe('/auth/login');
+      expect(login.searchParams.get('tinycloud_request')).toBe(requestId);
+      const signed = login.searchParams.toString();
+      const otp = await call('/api/auth/email-otp/send-verification-otp', { method: 'POST', headers: { 'content-type': 'application/json', origin: WEB_ORIGIN }, body: JSON.stringify({ email: 'test@openkey.dev', type: 'sign-in' }) });
+      expect(otp.status, await otp.clone().text()).toBe(200);
+      const signIn = await call('/api/auth/sign-in/email-otp', { method: 'POST', headers: { 'content-type': 'application/json', origin: WEB_ORIGIN }, body: JSON.stringify({ email: 'test@openkey.dev', otp: '000000', oauth_query: signed }) });
+      expect(signIn.status, await signIn.clone().text()).toBe(200);
+      const reentry = await call(`/api/auth/oauth2/authorize?${signed}`, { headers: { cookie } });
+      expect(reentry.status, await reentry.clone().text()).toBe(302);
+      const consentUrl = new URL(reentry.headers.get('location')!);
+      expect(consentUrl.pathname).toBe('/oauth/consent');
+      expect(consentUrl.searchParams.get('tinycloud_request')).toBe(requestId);
+      expect(consentUrl.searchParams.getAll('sig')).toHaveLength(1);
+      for (const mutation of [(p: URLSearchParams) => p.delete('prompt'), (p: URLSearchParams) => p.set('state', 'changed'), (p: URLSearchParams) => p.append('state', state), (p: URLSearchParams) => p.set('extra', '1')]) {
+        const replay = new URLSearchParams(signed);
+        mutation(replay);
+        const rejected = await call(`/api/auth/oauth2/authorize?${replay}`, { headers: { cookie } });
+        expect(new URL(rejected.headers.get('location')!, API).searchParams.get('error')).toBe('invalid_request');
+      }
+      const prepare = await call(`/api/oauth/tinycloud/requests/${requestId}/prepare`, { method: 'POST', headers: { cookie, origin: WEB_ORIGIN, 'content-type': 'application/json' }, body: '{}' });
+      expect(prepare.status, await prepare.clone().text()).toBe(200);
+      const preview = await prepare.json() as { revision: number; digest: string; sessionSiwe: string; hostPlan: { hostSiwe: string } | null };
+      await Bun.sleep(20);
+      const approve = await call(`/api/oauth/tinycloud/requests/${requestId}/approve`, { method: 'POST', headers: { cookie, origin: WEB_ORIGIN, 'content-type': 'application/json' }, body: JSON.stringify({ revision: preview.revision, digest: preview.digest, sessionSiwe: preview.sessionSiwe, hostSiwe: preview.hostPlan?.hostSiwe }) });
+      expect(approve.status, await approve.clone().text()).toBe(200);
+      const consent = await call('/api/auth/oauth2/consent', { method: 'POST', headers: { cookie, origin: WEB_ORIGIN, 'content-type': 'application/json' }, body: JSON.stringify({ accept: true, oauth_query: consentUrl.searchParams.toString() }) });
+      expect(consent.status, await consent.clone().text()).toBe(200);
+      const result = await consent.json() as { url?: string };
+      const code = new URL(result.url!).searchParams.get('code');
+      expect(code).toBeTruthy();
+      const approvedRow = await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id: requestId } });
+      expect(approvedRow.status).toBe('APPROVED');
+      expect(approvedRow.consentGeneration).toBe(0n);
+      const codeRow = await prisma.verification.findFirst({ where: { identifier: createHash('sha256').update(code!).digest('base64url') } });
+      expect(JSON.parse(codeRow!.value).query.tinycloud_request).toBe(requestId);
+      const artifact = (await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id: requestId } })).delegation as { siwe: string };
+      const issued = /Issued At: ([^\n]+)/.exec(artifact.siwe)![1]!;
+      const expires = /Expiration Time: ([^\n]+)/.exec(artifact.siwe)![1]!;
+      expect(Date.parse(expires) - Date.parse(issued)).toBe(300_000);
+      expect(artifact.siwe).not.toBe(preview.sessionSiwe);
+      const exchange = await form('/api/auth/oauth2/token', new URLSearchParams({ grant_type: 'authorization_code', code: code!,
+        client_id: nativeClient, redirect_uri: NATIVE_REDIRECT, code_verifier: verifier }).toString());
+      expect(exchange.status).toBe(400);
+      expect((await exchange.json() as { error: string }).error).toBe('invalid_grant');
+    } finally { globalThis.fetch = originalFetch; }
+  }, 120_000);
+
+  test(`native consent revisions, binding, TTL, expiry and deny (${backend})`, async () => {
+    await ensureNativeKey();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith('https://tee.node.tinycloud.xyz/peer/generate/')) return Promise.resolve(new Response('did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK'));
+      if (url === 'https://tee.node.tinycloud.xyz/delegate') return Promise.resolve(Response.json({ activated: [] }));
+      return originalFetch(input, init);
+    }) as typeof fetch;
+    try {
+      const { id } = await nativePar();
+      const crossOrigin = await call(`/api/oauth/tinycloud/requests/${id}/prepare`, { method: 'POST', headers: { cookie, origin: 'https://other.example', 'content-type': 'application/json' }, body: '{}' });
+      expect(crossOrigin.status).toBe(403);
+      const noSession = await call(`/api/oauth/tinycloud/requests/${id}/prepare`, { method: 'POST', headers: { origin: WEB_ORIGIN, 'content-type': 'application/json' }, body: '{}' });
+      expect(noSession.status).toBe(401);
+      expect((await noSession.json() as { error: string }).error).toBe('unauthorized');
+      const first = await nativeConsent(id, 'prepare');
+      expect(first.status, await first.clone().text()).toBe(200);
+      const p1 = await first.json() as { revision: number; digest: string; sessionSiwe: string; ttlSeconds: number; hostPlan: { hostSiwe: string } | null };
+      expect(p1.revision).toBe(1);
+      expect(p1.ttlSeconds).toBe(3600);
+      expect(p1.hostPlan).not.toBeNull();
+      const firstNonce = (await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id } })).siweNonce;
+      const second = await nativeConsent(id, 'prepare');
+      expect(second.status).toBe(200);
+      const p2 = await second.json() as typeof p1;
+      expect(p2.revision).toBe(2);
+      expect(p2.digest).not.toBe(p1.digest);
+      expect((await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id } })).siweNonce).toBe(firstNonce);
+      expect(await prisma.tinyCloudNativePreparation.count({ where: { requestId: id } })).toBe(2);
+      const stale = await nativeConsent(id, 'approve', { revision: 1, digest: p1.digest, sessionSiwe: p1.sessionSiwe, hostSiwe: p1.hostPlan?.hostSiwe });
+      expect(stale.status).toBe(409);
+      expect((await stale.json() as { error: string }).error).toBe('preparation_superseded');
+      const wrongDigest = await nativeConsent(id, 'approve', { revision: 2, digest: 'wrong', sessionSiwe: p2.sessionSiwe, hostSiwe: p2.hostPlan?.hostSiwe });
+      expect(wrongDigest.status).toBe(409);
+      expect((await wrongDigest.json() as { error: string }).error).toBe('preparation_mismatch');
+      const changedBytes = await nativeConsent(id, 'approve', { revision: 2, digest: p2.digest, sessionSiwe: p2.sessionSiwe + ' ', hostSiwe: p2.hostPlan?.hostSiwe });
+      expect(changedBytes.status).toBe(409);
+      const bobToken = randomUUID();
+      await prisma.session.create({ data: { id: 'tc773-bob-session', token: bobToken, userId: bob, expiresAt: new Date(Date.now() + 60_000) } });
+      const context = await auth.$context;
+      const bobCookie = (await serializeSignedCookie(context.authCookies.sessionToken.name, bobToken, context.secret)).split(';')[0]!;
+      const otherUser = await nativeConsent(id, 'prepare', {}, bobCookie);
+      expect(otherUser.status).toBe(403);
+      expect((await otherUser.json() as { error: string }).error).toBe('request_user_mismatch');
+      const client = await prisma.oauthClient.findUniqueOrThrow({ where: { clientId: nativeClient } });
+      const config = client.tinycloudNativeDelegation as Record<string, unknown>;
+      await prisma.oauthClient.update({ where: { clientId: nativeClient }, data: { tinycloudNativeDelegation: { ...config, maxDelegationTtlSeconds: 300 } } });
+      const shrunk = await nativeConsent(id, 'approve', { revision: 2, digest: p2.digest, sessionSiwe: p2.sessionSiwe, hostSiwe: p2.hostPlan?.hostSiwe });
+      expect(shrunk.status).toBe(409);
+      expect((await shrunk.json() as { error: string }).error).toBe('preparation_superseded');
+      await prisma.oauthClient.update({ where: { clientId: nativeClient }, data: { tinycloudNativeDelegation: { ...config, grantLifetimeSeconds: 300 } } });
+      const capped = await nativeConsent(id, 'prepare');
+      expect(capped.status).toBe(200);
+      const p3 = await capped.json() as typeof p1;
+      expect(p3.ttlSeconds).toBe(300);
+      await prisma.oauthClient.update({ where: { clientId: nativeClient }, data: { tinycloudNativeDelegation: { ...config, grantLifetimeSeconds: 300, siweDomain: 'other.example' } } });
+      const rebuiltMismatch = await nativeConsent(id, 'approve', { revision: p3.revision, digest: p3.digest, sessionSiwe: p3.sessionSiwe, hostSiwe: p3.hostPlan?.hostSiwe });
+      expect(rebuiltMismatch.status).toBe(409);
+      expect((await rebuiltMismatch.json() as { error: string }).error).toBe('preparation_mismatch');
+      expect((await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id } })).signature).toBeNull();
+      await prisma.oauthClient.update({ where: { clientId: nativeClient }, data: { tinycloudNativeDelegation: config } });
+      await prisma.tinyCloudNativeRequest.update({ where: { id }, data: { expiresAt: new Date(Date.now() - 1000) } });
+      const expired = await nativeConsent(id, 'approve', { revision: p3.revision, digest: p3.digest, sessionSiwe: p3.sessionSiwe, hostSiwe: p3.hostPlan?.hostSiwe });
+      expect(expired.status).toBe(409);
+      expect((await expired.json() as { error: string }).error).toBe('request_not_pending');
+      const denied = await nativePar();
+      const deny = await nativeConsent(denied.id, 'deny');
+      expect(deny.status).toBe(200);
+      const providerDeny = await call('/api/auth/oauth2/consent', { method: 'POST', headers: { cookie, origin: WEB_ORIGIN, 'content-type': 'application/json' }, body: JSON.stringify({ accept: false, oauth_query: denied.consentUrl.searchParams.toString() }) });
+      expect(providerDeny.status, await providerDeny.clone().text()).toBe(200);
+      const denial = new URL((await providerDeny.json() as { url: string }).url);
+      expect(denial.searchParams.get('error')).toBe('access_denied');
+      expect(denial.searchParams.get('state')).toBe(denied.state);
+      expect(denial.searchParams.get('iss')).toBe(ISSUER);
+    } finally { globalThis.fetch = originalFetch; }
+  }, 120_000);
+
+  test(`host plan uses the configured node and signs hosting only after a skipped activation (${backend})`, async () => {
+    const key = await ensureNativeKey();
+    const originalFetch = globalThis.fetch;
+    const space = `tinycloud:pkh:eip155:1:${key.address}:applications`;
+    let peerCalls = 0;
+    let delegateCalls = 0;
+    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith('https://tee.node.tinycloud.xyz/peer/generate/')) {
+        peerCalls++;
+        return Promise.resolve(new Response('did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK'));
+      }
+      if (url === 'https://tee.node.tinycloud.xyz/delegate') {
+        delegateCalls++;
+        return Promise.resolve(Response.json(delegateCalls === 1 ? { skipped: [space] } : { activated: [space] }));
+      }
+      return originalFetch(input, init);
+    }) as typeof fetch;
+    try {
+      const { id } = await nativePar();
+      const prepare = await nativeConsent(id, 'prepare');
+      expect(prepare.status, await prepare.clone().text()).toBe(200);
+      const preview = await prepare.json() as { revision: number; digest: string; sessionSiwe: string; hostPlan: { host: string; spaceId: string; hostSiwe: string } };
+      expect(preview.hostPlan.host).toBe('https://tee.node.tinycloud.xyz');
+      expect(preview.hostPlan.spaceId).toBe(space);
+      expect(peerCalls).toBe(1);
+      const approved = await nativeConsent(id, 'approve', { revision: preview.revision, digest: preview.digest, sessionSiwe: preview.sessionSiwe, hostSiwe: preview.hostPlan.hostSiwe });
+      expect(approved.status, await approved.clone().text()).toBe(200);
+      expect((await approved.json() as { hosting: string }).hosting).toBe('created');
+      expect(delegateCalls).toBe(3);
+      expect((await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id } })).hostSignedAt).not.toBeNull();
+
+      await prisma.tinyCloudBootstrapState.create({ data: { userId: alice, keyId: key.id, address: key.address, chainId: 1,
+        tinycloudHost: 'https://tee.node.tinycloud.xyz', bootstrapVersion: 'test', status: 'complete', checkedAt: new Date(), completedAt: new Date() } });
+      const second = await nativePar();
+      const prepared = await nativeConsent(second.id, 'prepare');
+      expect(prepared.status).toBe(200);
+      const existing = await prepared.json() as typeof preview;
+      expect(existing.hostPlan).toBeNull();
+      expect(peerCalls).toBe(1);
+      const approvedExisting = await nativeConsent(second.id, 'approve', { revision: existing.revision, digest: existing.digest, sessionSiwe: existing.sessionSiwe });
+      expect(approvedExisting.status).toBe(200);
+      expect((await approvedExisting.json() as { hosting: string }).hosting).toBe('existing');
+      expect((await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id: second.id } })).hostSignedAt).toBeNull();
+    } finally { globalThis.fetch = originalFetch; }
+  }, 120_000);
+
+  test(`PAR rejects malformed details and request URIs are single use (${backend})`, async () => {
+    const challenge = await generateCodeChallenge('tc773-native-verifier-012345678901234567890123456789');
+    const validDetail = { type: 'tinycloud_delegation', session_key: { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' },
+      permissions: [
+        { service: 'tinycloud.capabilities', space: 'applications', path: '', actions: ['tinycloud.capabilities/read'] },
+        { service: 'tinycloud.kv', space: 'applications', path: 'xyz.tinycloud.tinychat/threads/', actions: ['tinycloud.kv/get'] },
+      ] };
+    const base = new URLSearchParams({ client_id: nativeClient, response_type: 'code', redirect_uri: NATIVE_REDIRECT,
+      state: randomUUID(), code_challenge: challenge, code_challenge_method: 'S256',
+      scope: `openid offline_access ${DELEGATION}`, authorization_details: JSON.stringify([validDetail]) });
+    const check = async (params: URLSearchParams, code: string, status = 400) => {
+      const response = await form('/api/auth/oauth2/par', params.toString());
+      expect(response.status, await response.clone().text()).toBe(status);
+      expect((await response.json() as { error: string }).error).toBe(code);
+    };
+    const changed = (field: string, value: string) => { const p = new URLSearchParams(base); p.set(field, value); return p; };
+    await check(changed('redirect_uri', 'xyz.tinycloud.exo://evil/callback'), 'invalid_request');
+    await check(changed('code_challenge_method', 'plain'), 'invalid_request');
+    await check(changed('scope', `openid ${DELEGATION}`), 'invalid_scope');
+    await check(changed('authorization_details', JSON.stringify([{ ...validDetail, tinycloudHost: 'https://evil.example' }])), 'invalid_authorization_details');
+    await check(changed('authorization_details', JSON.stringify([{ ...validDetail, session_key: { ...validDetail.session_key, d: 'secret' } }])), 'invalid_authorization_details');
+    await check(changed('authorization_details', JSON.stringify([{ ...validDetail, permissions: validDetail.permissions.slice(1) }])), 'invalid_authorization_details');
+    await check(changed('authorization_details', JSON.stringify([{ ...validDetail, permissions: [...validDetail.permissions, { service: 'tinycloud.sql', space: 'applications', path: 'xyz.tinycloud.tinychat/threads', actions: ['tinycloud.sql/read'] }] }])), 'invalid_authorization_details');
+    await check(changed('authorization_details', JSON.stringify([{ ...validDetail, permissions: [validDetail.permissions[0], { ...validDetail.permissions[1], path: 'xyz.tinycloud.tinychat/threads/../secrets' }] }])), 'invalid_authorization_details');
+    process.env.TINYCLOUD_SQL_ISOLATED_HOSTS = 'https://tee.node.tinycloud.xyz';
+    const sqlCeiling = { ...(await prisma.oauthClient.findUniqueOrThrow({ where: { clientId: nativeClient } })).tinycloudNativeDelegation as Record<string, unknown>,
+      sql: { databases: ['xyz.tinycloud.tinychat/threads'], actions: ['read'] } };
+    const sqlRegistration = await adminRequest('POST', '/clients', { name: 'SQL native', type: 'native', redirectUris: [NATIVE_REDIRECT], tinycloudNativeDelegation: sqlCeiling });
+    expect(sqlRegistration.status).toBe(201);
+    const sqlClientId = (await sqlRegistration.json() as { client: { clientId: string } }).client.clientId;
+    process.env.TINYCLOUD_SQL_ISOLATED_HOSTS = '';
+    const sqlRequest = new URLSearchParams(base);
+    sqlRequest.set('client_id', sqlClientId);
+    sqlRequest.set('authorization_details', JSON.stringify([{ ...validDetail, permissions: [...validDetail.permissions,
+      { service: 'tinycloud.sql', space: 'applications', path: 'xyz.tinycloud.tinychat/threads', actions: ['tinycloud.sql/read'] }] }]));
+    await check(sqlRequest, 'invalid_authorization_details');
+    await prisma.oauthClient.delete({ where: { clientId: sqlClientId } });
+    const duplicate = new URLSearchParams(base); duplicate.append('client_id', nativeClient);
+    await check(duplicate, 'invalid_request');
+    const good = await form('/api/auth/oauth2/par', base.toString());
+    expect(good.status).toBe(201);
+    const uri = (await good.json() as { request_uri: string }).request_uri;
+    const pendingId = uri.split(':').at(-1)!;
+    const forged = new URLSearchParams(base);
+    forged.delete('authorization_details');
+    forged.set('prompt', 'consent');
+    forged.set('tinycloud_request', pendingId);
+    const pending = await call(`/api/auth/oauth2/authorize?${forged}`);
+    expect(new URL(pending.headers.get('location')!, API).searchParams.get('error')).toBe('invalid_request');
+    const wrongClient = await call(`/api/auth/oauth2/authorize?${new URLSearchParams({ client_id: ordinaryClient, request_uri: uri })}`);
+    expect(new URL(wrongClient.headers.get('location')!, API).searchParams.get('error')).toBe('invalid_request_uri');
+    const first = await call(`/api/auth/oauth2/authorize?${new URLSearchParams({ client_id: nativeClient, request_uri: uri })}`);
+    expect(first.status).toBe(302);
+    const reused = await call(`/api/auth/oauth2/authorize?${new URLSearchParams({ client_id: nativeClient, request_uri: uri })}`);
+    expect(new URL(reused.headers.get('location')!, API).searchParams.get('error')).toBe('invalid_request_uri');
+    const expired = await form('/api/auth/oauth2/par', base.toString());
+    const expiredUri = (await expired.json() as { request_uri: string }).request_uri;
+    await prisma.tinyCloudNativeRequest.update({ where: { id: expiredUri.split(':').at(-1)! }, data: { requestUriExpiresAt: new Date(Date.now() - 1000) } });
+    const refused = await call(`/api/auth/oauth2/authorize?${new URLSearchParams({ client_id: nativeClient, request_uri: expiredUri })}`);
+    expect(new URL(refused.headers.get('location')!, API).searchParams.get('error')).toBe('invalid_request_uri');
+  }, 120_000);
 
   describe(`refresh_token interception (${backend})`, () => {
     const refresh = (fields: Record<string, string>, headers: Record<string, string> = {}) =>
