@@ -1170,6 +1170,137 @@ describe('endpoint clients', () => {
     expect(jtis[0]).not.toBe(jtis[1]);
   });
 
+  it('renew with a permissionsSubset lacking capabilities/read succeeds', async () => {
+    // The wire set is normalized to include capabilities/read; validation
+    // must check the grant against that same array, not the raw subset.
+    const { fetchFn, calls } = mockFetch(() =>
+      jsonResponse({
+        refresh_token: 'rt-2',
+        tinycloud_delegation: delegationFor(key.keyId, {
+          // Server grants what the normalized subset requested.
+          permissions: [CAPABILITIES_READ_PERMISSION, PERMISSIONS[1]],
+        }),
+      }),
+    );
+    const result = await renewDelegation({
+      metadata: SERVER_METADATA,
+      clientId: CLIENT_ID,
+      refreshToken: 'rt-1',
+      sessionKey: key,
+      requestedPermissions: PERMISSIONS,
+      permissionsSubset: [PERMISSIONS[1]!],
+      expectedTinycloudHost: 'https://tee.node.tinycloud.xyz',
+      fetchFn,
+    });
+    expect(result.refreshToken).toBe('rt-2');
+    expect(result.delegation.verificationMethod).toBe(key.keyId);
+    // Wire carried the normalized set.
+    const body = new URLSearchParams(calls[0]!.init.body as string);
+    const details = JSON.parse(body.get('authorization_details')!);
+    expect(details[0].permissions).toEqual([
+      CAPABILITIES_READ_PERMISSION,
+      PERMISSIONS[1],
+    ]);
+  });
+
+  it('renew with requestedPermissions lacking capabilities/read succeeds', async () => {
+    // Callers pass their own list; the wire adds capabilities/read, and a
+    // server grant that echoes it must not fail the subset check (this was
+    // the dropped-rotation bug).
+    const { fetchFn } = mockFetch(() =>
+      jsonResponse({
+        refresh_token: 'rt-2',
+        tinycloud_delegation: delegationFor(key.keyId, {
+          permissions: [CAPABILITIES_READ_PERMISSION, PERMISSIONS[1]],
+        }),
+      }),
+    );
+    const result = await renewDelegation({
+      metadata: SERVER_METADATA,
+      clientId: CLIENT_ID,
+      refreshToken: 'rt-1',
+      sessionKey: key,
+      requestedPermissions: [PERMISSIONS[1]!],
+      expectedTinycloudHost: 'https://tee.node.tinycloud.xyz',
+      fetchFn,
+    });
+    expect(result.refreshToken).toBe('rt-2');
+  });
+
+  it('exchange validates against the normalized PAR permission set', async () => {
+    // requestedPermissions lacks capabilities/read; PAR prepends it, the
+    // server echoes it in the grant - this must pass.
+    const { fetchFn } = mockFetch(() =>
+      jsonResponse({
+        access_token: 'at-1',
+        refresh_token: 'rt-1',
+        tinycloud_delegation: delegationFor(key.keyId, {
+          permissions: [CAPABILITIES_READ_PERMISSION, PERMISSIONS[1]],
+        }),
+      }),
+    );
+    const result = await exchangeDelegationCode({
+      metadata: SERVER_METADATA,
+      code: 'code-1',
+      redirectUri: REDIRECT_URI,
+      clientId: CLIENT_ID,
+      codeVerifier: 'v',
+      sessionKey: key,
+      requestedPermissions: [PERMISSIONS[1]!],
+      expectedTinycloudHost: 'https://tee.node.tinycloud.xyz',
+      fetchFn,
+    });
+    expect(result.refreshToken).toBe('rt-1');
+  });
+
+  it('a failed renew validation still surfaces the rotated refresh token', async () => {
+    // Validation failure (expired delegation) after rotation.
+    const { fetchFn } = mockFetch(() =>
+      jsonResponse({
+        refresh_token: 'rt-2',
+        tinycloud_delegation: delegationFor(key.keyId, {
+          expiresAt: new Date(Date.now() - 1000).toISOString(),
+        }),
+      }),
+    );
+    await expect(
+      renewDelegation({
+        metadata: SERVER_METADATA,
+        clientId: CLIENT_ID,
+        refreshToken: 'rt-1',
+        sessionKey: key,
+        requestedPermissions: PERMISSIONS,
+        expectedTinycloudHost: 'https://tee.node.tinycloud.xyz',
+        fetchFn,
+      }),
+    ).rejects.toMatchObject({
+      code: 'SERVER',
+      rotatedRefreshToken: 'rt-2',
+    });
+
+    // hosting: "failed" after rotation likewise.
+    const hostingFailed = mockFetch(() =>
+      jsonResponse({
+        refresh_token: 'rt-3',
+        tinycloud_delegation: delegationFor(key.keyId, { hosting: 'failed' }),
+      }),
+    );
+    await expect(
+      renewDelegation({
+        metadata: SERVER_METADATA,
+        clientId: CLIENT_ID,
+        refreshToken: 'rt-1',
+        sessionKey: key,
+        requestedPermissions: PERMISSIONS,
+        expectedTinycloudHost: 'https://tee.node.tinycloud.xyz',
+        fetchFn: hostingFailed.fetchFn,
+      }),
+    ).rejects.toMatchObject({
+      code: 'SPACE_UNAVAILABLE',
+      rotatedRefreshToken: 'rt-3',
+    });
+  });
+
   it('renewal_conflict and invalid_session_proof are terminal (no retry)', async () => {
     for (const [status, serverError, code] of [
       [409, 'renewal_conflict', 'RENEWAL_CONFLICT'],

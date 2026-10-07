@@ -53,6 +53,14 @@ export class OpenKeyNativeError extends Error {
     super(message);
     this.name = 'OpenKeyNativeError';
   }
+
+  /**
+   * Set when a successful renew (or exchange) response was rejected after
+   * the server already rotated the refresh token - delegation validation
+   * or `hosting: "failed"`. The old token is dead; callers MUST persist
+   * this value before reporting the error, or the session is lost.
+   */
+  public rotatedRefreshToken?: string;
 }
 
 // ======= Injectable fetch =======
@@ -452,6 +460,26 @@ export async function discoverOpenKeyServer(
 // ======= authorization_details =======
 
 /**
+ * The exact permission array that goes on the wire: the caller's list with
+ * `CAPABILITIES_READ_PERMISSION` prepended when missing. Subset validation
+ * MUST run against this normalized array, not the raw caller list -
+ * otherwise a server grant that includes `tinycloud.capabilities/read`
+ * fails validation and a rotated refresh token is discarded.
+ */
+export function normalizeDelegationPermissions(
+  permissions: NativeDelegationPermission[],
+): NativeDelegationPermission[] {
+  const hasCapabilitiesRead = permissions.some(
+    (permission) =>
+      permission.service === CAPABILITIES_READ_PERMISSION.service &&
+      permission.actions.includes(CAPABILITIES_READ_PERMISSION.actions[0]!),
+  );
+  return hasCapabilitiesRead
+    ? permissions
+    : [CAPABILITIES_READ_PERMISSION, ...permissions];
+}
+
+/**
  * Build the `authorization_details` array for a `tinycloud_delegation`
  * request. Used for both PAR and renew. The mandatory
  * `tinycloud.capabilities/read` entry (`CAPABILITIES_READ_PERMISSION`) is
@@ -463,17 +491,10 @@ export function buildAuthorizationDetails(options: {
   ttlSeconds?: number;
   siweNonce?: string;
 }): TinyCloudDelegationRequest[] {
-  const hasCapabilitiesRead = options.permissions.some(
-    (permission) =>
-      permission.service === CAPABILITIES_READ_PERMISSION.service &&
-      permission.actions.includes(CAPABILITIES_READ_PERMISSION.actions[0]!),
-  );
   const detail: TinyCloudDelegationRequest = {
     type: 'tinycloud_delegation',
     session_key: options.sessionKey.publicJwk,
-    permissions: hasCapabilitiesRead
-      ? options.permissions
-      : [CAPABILITIES_READ_PERMISSION, ...options.permissions],
+    permissions: normalizeDelegationPermissions(options.permissions),
   };
   if (options.ttlSeconds !== undefined) detail.ttl_seconds = options.ttlSeconds;
   if (options.siweNonce !== undefined) detail.siwe_nonce = options.siweNonce;
@@ -1123,23 +1144,36 @@ export async function exchangeDelegationCode(
     );
   }
 
-  const delegation = validateTinyCloudDelegation(
-    data.tinycloud_delegation,
-    {
-      sessionKey: options.sessionKey,
-      requestedPermissions: options.requestedPermissions,
-      expectedTinycloudHost: options.expectedTinycloudHost,
-    },
-  );
-
-  // hosting: "failed" means the delegation can't reach the space: terminal
-  // for this session (spec SDK mapping → SPACE_UNAVAILABLE).
-  if (delegation.hosting === 'failed') {
-    throw new OpenKeyNativeError(
-      'SPACE_UNAVAILABLE',
-      'Delegation was issued but hosting the applications space failed',
-      response.status,
+  let delegation: TinyCloudDelegation;
+  try {
+    delegation = validateTinyCloudDelegation(
+      data.tinycloud_delegation,
+      {
+        sessionKey: options.sessionKey,
+        // Same normalized array sent on PAR - includes capabilities/read.
+        requestedPermissions: normalizeDelegationPermissions(
+          options.requestedPermissions,
+        ),
+        expectedTinycloudHost: options.expectedTinycloudHost,
+      },
     );
+    // hosting: "failed" means the delegation can't reach the space:
+    // terminal for this session (spec SDK mapping -> SPACE_UNAVAILABLE).
+    if (delegation.hosting === 'failed') {
+      throw new OpenKeyNativeError(
+        'SPACE_UNAVAILABLE',
+        'Delegation was issued but hosting the applications space failed',
+        response.status,
+      );
+    }
+  } catch (error) {
+    // The code was exchanged: tokens are live server-side. Surface the
+    // refresh token so the caller can persist it rather than lose the
+    // session (it is valid even though this delegation was rejected).
+    if (error instanceof OpenKeyNativeError) {
+      error.rotatedRefreshToken = data.refresh_token;
+    }
+    throw error;
   }
 
   return {
@@ -1197,6 +1231,11 @@ export interface RenewDelegationResult {
  * retries once with a fresh proof. `invalid_session_proof`,
  * `invalid_grant`, `consent_required` and `access_denied` are terminal and
  * never retried. `hosting: "failed"` throws `SPACE_UNAVAILABLE`.
+ *
+ * The server rotates the refresh token on every success. If validation of
+ * the returned delegation fails afterwards, the thrown error carries
+ * `rotatedRefreshToken`: the old token is dead, so the caller MUST persist
+ * it before reporting the error or the session is lost.
  */
 export async function renewDelegation(
   options: RenewDelegationOptions,
@@ -1206,9 +1245,13 @@ export async function renewDelegation(
   const sleep = options.sleepFn ?? defaultSleep;
   const htu = options.metadata.tinycloudDelegationRenewEndpoint;
 
-  const requestedPermissions =
-    options.permissionsSubset ?? options.requestedPermissions;
-  // Renew's authorization_details has the PAR shape but cannot set
+  // One normalized set: the exact array sent on the wire (including the
+  // prepended capabilities/read) is what the grant is subset-checked
+  // against - otherwise a 2xx renew that already rotated the refresh
+  // token is rejected and the new token is lost.
+  const requestedPermissions = normalizeDelegationPermissions(
+    options.permissionsSubset ?? options.requestedPermissions,
+  );
   // ttl_seconds; siwe_nonce travels as its own form field.
   const authorizationDetails = options.permissionsSubset
     ? buildAuthorizationDetails({
@@ -1282,17 +1325,27 @@ export async function renewDelegation(
     );
   }
 
-  const delegation = validateTinyCloudDelegation(data.tinycloud_delegation, {
-    sessionKey: options.sessionKey,
-    requestedPermissions,
-    expectedTinycloudHost: options.expectedTinycloudHost,
-  });
-  if (delegation.hosting === 'failed') {
-    throw new OpenKeyNativeError(
-      'SPACE_UNAVAILABLE',
-      'Renewed delegation could not reach the applications space',
-      response.status,
-    );
+  let delegation: TinyCloudDelegation;
+  try {
+    delegation = validateTinyCloudDelegation(data.tinycloud_delegation, {
+      sessionKey: options.sessionKey,
+      requestedPermissions,
+      expectedTinycloudHost: options.expectedTinycloudHost,
+    });
+    if (delegation.hosting === 'failed') {
+      throw new OpenKeyNativeError(
+        'SPACE_UNAVAILABLE',
+        'Renewed delegation could not reach the applications space',
+        response.status,
+      );
+    }
+  } catch (error) {
+    // The refresh token was already rotated: never discard it. Surface it
+    // on the error so the caller can persist it before reporting.
+    if (error instanceof OpenKeyNativeError) {
+      error.rotatedRefreshToken = data.refresh_token;
+    }
+    throw error;
   }
 
   return {

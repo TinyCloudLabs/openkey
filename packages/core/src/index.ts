@@ -69,6 +69,7 @@ export {
   discoveryUrlForIssuer,
   discoverOpenKeyServer,
   buildAuthorizationDetails,
+  normalizeDelegationPermissions,
   buildParRequest,
   sendParRequest,
   buildNativeAuthorizeUrl,
