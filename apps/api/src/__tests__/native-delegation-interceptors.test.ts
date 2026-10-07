@@ -22,6 +22,7 @@ function revokeThrough(providerResponse: () => Response) {
       seen.push(new URLSearchParams(await request.text()));
       return providerResponse();
     },
+    getSessionUserId: async () => null,
   }));
   app.post('/api/auth/*', () => new Response('not dispatched here', { status: 418 }));
   const response = app.fetch(new Request('https://api.openkey.test/api/auth/oauth2/revoke', {

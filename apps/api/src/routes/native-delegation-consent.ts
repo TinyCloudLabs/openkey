@@ -11,6 +11,7 @@ import { primaryKeyWhere } from '../services/primary-key';
 import { signManagedKey, unsealManagedKey } from '../services/managed-key-signing';
 import { nativeDelegationLockResponse } from '../services/native-delegation/errors';
 import { enabledNativeDelegation } from '../services/native-delegation/policy';
+import { nativeUserRetryAfter, type NativeUserAction } from '../services/native-delegation/user-rate-limit';
 import { ParError, validatePermissions, type NativePermission } from '../services/native-delegation/par';
 import { prepareDelegationSession, actionKey } from './delegate-session';
 
@@ -104,6 +105,14 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
     if (!session) return c.json({ error: 'unauthorized' }, 401);
     c.set('user', session.user);
     c.set('session', session.session);
+    await next();
+  });
+  router.use('*', async (c, next) => {
+    const action = c.req.path.split('/').at(-1);
+    if (action === 'prepare' || action === 'approve' || action === 'deny') {
+      const retryAfter = nativeUserRetryAfter(c.get('user').id, action as NativeUserAction);
+      if (retryAfter) return c.json({ error: 'slow_down' }, 429, { 'Retry-After': String(retryAfter), 'Cache-Control': 'no-store' });
+    }
     await next();
   });
   router.onError((error, c) => {

@@ -61,14 +61,17 @@ the recorded checksums and physical schema, including the native preparation
 host column and consent-withdrawal triggers. Any other pending migration fails closed. Once TC-488 is applied,
 deployments return to the full migration and schema-drift verification path.
 
-The public native PAR endpoint allows 120 requests per validated native client
-and 1,000 validated requests globally per minute, per API process. Unknown or
-ineligible client IDs do not enter the limiter. Client buckets expire and the
-least recently used buckets are evicted at the memory bound. The Phala gateway
-and ingress path has no authenticated HTTP client-IP header in this deployment;
-`CF-Connecting-IP` and `X-Forwarded-For` can be supplied by a caller, so PAR
-does not use either for rate limiting. Cloudflare manages DNS and certificates
-for this API domain but is not an HTTP proxy in this path.
+The public native PAR endpoint validates the full request before allocating a
+row or touching its volume-only backstop (10,000 valid requests per minute per
+API process, with an alert when reached). It has no per-client rate limit:
+`client_id` is public and could let an anonymous caller deny sign-in to that
+client. Unresolved PAR rows are deleted shortly after their 90-second
+`request_uri` window closes. Authorize re-entry and consent prepare, approve,
+and deny instead have separate per-process budgets keyed by the verified OpenKey
+session's user ID. The Phala gateway and ingress path has no authenticated HTTP client-IP
+header in this deployment; `CF-Connecting-IP` and `X-Forwarded-For` can be
+supplied by a caller, so PAR does not use either for rate limiting. Per-source
+fairness requires an authenticated network source at the ingress boundary.
 
 The canonical-key/organization-custody cutover is governed by the
 [TC-492 release runbook](./tc-492-canonical-key-cutover.md). It requires a

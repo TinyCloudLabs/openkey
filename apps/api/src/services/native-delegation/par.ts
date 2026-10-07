@@ -12,43 +12,59 @@ const JWK_KEYS = new Set(['kty', 'crv', 'x', 'kid']);
 const PERMISSION_KEYS = new Set(['service', 'space', 'path', 'actions']);
 const OPTIONAL_SCOPES = new Set(['openid', 'email', 'keys']);
 const PAR_WINDOW_MS = 60_000;
-const PAR_CLIENT_LIMIT = 120;
-const PAR_GLOBAL_LIMIT = 1_000;
-const PAR_MAX_CLIENT_BUCKETS = 10_000;
-let parSweeps = 0;
-type ParBucket = { count: number; resetAt: number };
-export function createParLimiter(clientLimit = PAR_CLIENT_LIMIT, globalLimit = PAR_GLOBAL_LIMIT, maxClientBuckets = PAR_MAX_CLIENT_BUCKETS) {
-  const clients = new Map<string, ParBucket>();
-  let global: ParBucket = { count: 0, resetAt: 0 };
-  let checks = 0;
-  return {
-    retryAfter(clientId: string, now = Date.now()): number {
-      if (++checks % 128 === 0) {
-        for (const [id, bucket] of clients) if (bucket.resetAt <= now) clients.delete(id);
-      }
-      const existing = clients.get(clientId);
-      const client = existing && existing.resetAt > now ? existing : { count: 0, resetAt: now + PAR_WINDOW_MS };
-      if (global.resetAt <= now) global = { count: 0, resetAt: now + PAR_WINDOW_MS };
-      const clientWait = client.count >= clientLimit ? Math.max(1, Math.ceil((client.resetAt - now) / 1000)) : 0;
-      const globalWait = global.count >= globalLimit ? Math.max(1, Math.ceil((global.resetAt - now) / 1000)) : 0;
-      if (clientWait || globalWait) return Math.max(clientWait, globalWait);
-      client.count++;
-      global.count++;
-      // Refresh recency and evict old client buckets instead of rejecting new
-      // validated clients when the process-local map reaches its memory bound.
-      clients.delete(clientId);
-      clients.set(clientId, client);
-      if (clients.size > maxClientBuckets) clients.delete(clients.keys().next().value!);
-      return 0;
-    },
-    clientBucketCount: () => clients.size,
+const PAR_GLOBAL_BACKSTOP = 10_000;
+const PAR_SWEEP_INTERVAL_MS = 10_000;
+const parSweepStarts = new WeakMap<PrismaClient, Promise<void>>();
+
+/** Volume-only backstop after complete validation. There is no per-client
+ * budget: client_id is public, so it cannot provide caller fairness. The
+ * dstack ingress path does not authenticate an HTTP client-IP header. */
+export function createParBackstop(limit = PAR_GLOBAL_BACKSTOP, alert: (limit: number) => void =
+  (value) => console.warn('[Native PAR] global storage safety cap reached', { limit: value })) {
+  let count = 0;
+  let resetAt = 0;
+  let alerted = false;
+  return (now = Date.now()): number => {
+    if (resetAt <= now) { count = 0; resetAt = now + PAR_WINDOW_MS; alerted = false; }
+    if (count >= limit) {
+      if (!alerted) { alert(limit); alerted = true; }
+      return Math.max(1, Math.ceil((resetAt - now) / 1_000));
+    }
+    count++;
+    return 0;
   };
 }
-const parLimiter = createParLimiter();
-/** Phala dstack gateway + dstack-ingress do not provide an authenticated client
- * IP header here. CF-Connecting-IP and X-Forwarded-For are client supplied;
- * rate-limit validated native clients and all validated traffic globally. */
-export const parRetryAfter = (clientId: string, now = Date.now()) => parLimiter.retryAfter(clientId, now);
+const parRetryAfter = createParBackstop();
+
+/** PENDING rows have no user, consent, or audit value after request_uri expiry.
+ * Sweep immediately on the first valid PAR and every ten seconds thereafter. */
+async function sweepNativeRequests(db: PrismaClient): Promise<void> {
+  await db.tinyCloudNativeRequest.deleteMany({ where: { OR: [
+    { status: 'PENDING', requestUriExpiresAt: { lt: new Date() } },
+    { expiresAt: { lt: new Date(Date.now() - 86_400_000) } },
+  ] } });
+}
+async function startNativeRequestSweep(db: PrismaClient): Promise<void> {
+  const existing = parSweepStarts.get(db);
+  if (existing) return existing;
+  const start = (async () => {
+    await sweepNativeRequests(db);
+    let running = false;
+    const timer = setInterval(() => {
+      if (running) return;
+      running = true;
+      void sweepNativeRequests(db)
+        .catch((error) => console.error('[Native PAR] request cleanup failed', {
+          kind: error instanceof Error ? error.name : 'unknown',
+        }))
+        .finally(() => { running = false; });
+    }, PAR_SWEEP_INTERVAL_MS);
+    timer.unref();
+  })();
+  parSweepStarts.set(db, start);
+  try { await start; }
+  catch (error) { parSweepStarts.delete(db); throw error; }
+}
 export type NativePermission = { service: string; space: 'applications'; path: string; actions: string[] };
 export class ParError extends Error {
   constructor(readonly status: 400 | 401, readonly code: string, message: string) { super(message); }
@@ -121,13 +137,6 @@ export async function handlePar(request: Request, db: PrismaClient): Promise<Res
       }
       invalid('unauthorized_client', 'native delegation is not enabled');
     }
-    // Unknown and ineligible client IDs never allocate a limiter bucket. The
-    // fixed global bucket also cannot be filled by junk IDs.
-    const retryAfter = parRetryAfter(clientId);
-    if (retryAfter) return Response.json({ error: 'slow_down' }, { status: 429, headers: { 'Retry-After': String(retryAfter), 'Cache-Control': 'no-store' } });
-    // A lazy sweep keeps rows available for delayed code redemption and audit
-    // while preventing indefinite growth. The indexed expiry makes this cheap.
-    if (++parSweeps % 100 === 0) await db.tinyCloudNativeRequest.deleteMany({ where: { expiresAt: { lt: new Date(Date.now() - 86_400_000) } } });
     const challenge = params.get('code_challenge')!;
     const state = params.get('state')!;
     if (params.get('response_type') !== 'code' || !client.redirectUris.includes(params.get('redirect_uri')!) ||
@@ -149,6 +158,9 @@ export async function handlePar(request: Request, db: PrismaClient): Promise<Res
     const ttl = detail.ttl_seconds === undefined ? ceiling.maxDelegationTtlSeconds : detail.ttl_seconds;
     if (!Number.isInteger(ttl) || (ttl as number) < 300 || (ttl as number) > ceiling.maxDelegationTtlSeconds) invalid('invalid_authorization_details', 'invalid ttl_seconds');
     if (detail.siwe_nonce !== undefined && (typeof detail.siwe_nonce !== 'string' || !/^[A-Za-z0-9]{8,64}$/.test(detail.siwe_nonce))) invalid('invalid_authorization_details', 'invalid siwe_nonce');
+    const retryAfter = parRetryAfter();
+    if (retryAfter) return Response.json({ error: 'slow_down' }, { status: 429, headers: { 'Retry-After': String(retryAfter), 'Cache-Control': 'no-store' } });
+    await startNativeRequestSweep(db);
     const id = randomBytes(24).toString('base64url');
     const now = Date.now();
     const jkt = createHash('sha256').update(JSON.stringify({ crv: 'Ed25519', kty: 'OKP', x: jwk.x })).digest('base64url');

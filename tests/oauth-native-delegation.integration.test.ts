@@ -510,7 +510,11 @@ if (!backend) {
       expect(empty.status).toBe(302);
       expect(new URL(empty.headers.get('location')!, API).searchParams.get('error')).toBe('invalid_request');
       for (const query of [{ scope: `openid ${DELEGATION}` }, { tinycloud_request: '' }, `scope=openid%20${encodeURIComponent(DELEGATION)}`,
-        { client_id: nativeClient }, `client_id=${encodeURIComponent(nativeClient)}`]) {
+        { client_id: nativeClient }, `client_id=${encodeURIComponent(nativeClient)}`,
+        [{ client_id: nativeClient, scope: ['openid', DELEGATION] }],
+        { client_id: nativeClient, scope: ['openid', DELEGATION] },
+        `client_id=${encodeURIComponent(nativeClient)}&scope=openid&scope=${encodeURIComponent(DELEGATION)}`,
+        `client_id=${encodeURIComponent(nativeClient)}&request_uri=urn%3Aietf%3Aparams%3Aoauth%3Arequest_uri%3Aforged`]) {
         const social = await call('/api/auth/sign-in/social', { method: 'POST', headers: { origin: WEB_ORIGIN, 'content-type': 'application/json' },
           body: JSON.stringify({ provider: 'google', additionalData: { query } }) });
         expect(social.status, await social.clone().text()).toBe(400);
@@ -903,7 +907,7 @@ if (!backend) {
       } finally { await prisma.oauthClient.update({ where: { clientId: nativeClient }, data: { tinycloudNativeDelegation: ceiling } }); }
     }, 900_000);
 
-  test(`public PAR limits validated clients, ignores spoofed IP headers, and sweeps old requests (${backend})`, async () => {
+  test(`public PAR validates before the backstop and sweeps expired PENDING rows (${backend})`, async () => {
     const createClient = async (name: string) => {
       const response = await adminRequest('POST', '/clients', { name, type: 'native', redirectUris: [NATIVE_REDIRECT], tinycloudNativeDelegation: ceiling });
       expect(response.status).toBe(201);
@@ -912,8 +916,8 @@ if (!backend) {
     const challenge = await generateCodeChallenge('tc773-rate-limit-verifier-012345678901234567890123456789');
     const detail = [{ type: 'tinycloud_delegation', session_key: { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' },
       permissions: [{ service: 'tinycloud.capabilities', space: 'applications', path: '', actions: ['tinycloud.capabilities/read'] }], ttl_seconds: 300 }];
-    const request = (clientId: string, ip: string) => form('/api/auth/oauth2/par', new URLSearchParams({
-      client_id: clientId, response_type: 'code', redirect_uri: NATIVE_REDIRECT, state: randomUUID(), code_challenge: challenge,
+    const request = (clientId: string, ip: string, invalidChallenge = false) => form('/api/auth/oauth2/par', new URLSearchParams({
+      client_id: clientId, response_type: 'code', redirect_uri: NATIVE_REDIRECT, state: randomUUID(), code_challenge: invalidChallenge ? 'invalid' : challenge,
       code_challenge_method: 'S256', scope: `openid offline_access ${DELEGATION}`, authorization_details: JSON.stringify(detail),
     }).toString(), { 'x-forwarded-for': ip });
     const clientId = await createClient('Rate limit client');
@@ -921,23 +925,50 @@ if (!backend) {
       const unknown = await request(`unknown-${i}-${randomUUID()}`, `198.51.100.${i + 1}`);
       expect(unknown.status).toBe(401);
     }
+    for (let i = 0; i < 130; i++) {
+      const invalid = await request(clientId, '198.51.100.1', true);
+      expect(invalid.status).toBe(400);
+    }
     const old = await request(clientId, '198.51.100.1');
     expect(old.status).toBe(201);
     const oldId = ((await old.json() as { request_uri: string }).request_uri).split(':').at(-1)!;
-    await prisma.tinyCloudNativeRequest.update({ where: { id: oldId }, data: { expiresAt: new Date(Date.now() - 2 * 86_400_000) } });
-    for (let i = 0; i < 119; i++) {
+    await prisma.tinyCloudNativeRequest.update({ where: { id: oldId }, data: { requestUriExpiresAt: new Date(Date.now() - 1_000) } });
+    for (let i = 0; i < 130; i++) {
       const response = await request(clientId, `198.51.${Math.floor(i / 250)}.${i % 250 + 2}`);
       expect(response.status, await response.clone().text()).toBe(201);
     }
+    const resolved = await nativePar();
+    await prisma.tinyCloudNativeRequest.update({ where: { id: resolved.id }, data: { requestUriExpiresAt: new Date(Date.now() - 1_000) } });
+    await Bun.sleep(10_100);
     expect(await prisma.tinyCloudNativeRequest.findUnique({ where: { id: oldId } })).toBeNull();
-    const clientLimited = await request(clientId, '198.51.101.1');
-    expect(clientLimited.status).toBe(429);
-    expect(clientLimited.headers.get('Retry-After')).toBeTruthy();
+    expect(await prisma.tinyCloudNativeRequest.findUnique({ where: { id: resolved.id } })).not.toBeNull();
     const otherClient = await createClient('Different client behind the same spoofed IP');
-    for (let i = 0; i < 61; i++) {
-      const response = await request(otherClient, '203.0.113.7');
-      expect(response.status, await response.clone().text()).toBe(201);
+    expect((await request(otherClient, '203.0.113.7')).status).toBe(201);
+  }, 120_000);
+
+  test(`native authorize re-entry and consent steps limit the authenticated user (${backend})`, async () => {
+    const rateUser = `tc773-rate-user-${randomUUID()}`;
+    const rateToken = randomUUID();
+    await prisma.user.create({ data: { id: rateUser, email: `${randomUUID()}@example.test`, emailVerified: true } });
+    await prisma.session.create({ data: { id: randomUUID(), token: rateToken, userId: rateUser, expiresAt: new Date(Date.now() + 600_000) } });
+    const context = await auth.$context;
+    const rateCookie = (await serializeSignedCookie(context.authCookies.sessionToken.name, rateToken, context.secret)).split(';')[0]!;
+    const { consentUrl } = await nativePar();
+    const reentry = `/api/auth/oauth2/authorize?${consentUrl.searchParams}`;
+    for (let i = 0; i < 120; i++) {
+      const response = await call(reentry, { headers: { cookie: rateCookie } });
+      expect(response.status, await response.clone().text()).not.toBe(429);
     }
+    const authorizeLimited = await call(reentry, { headers: { cookie: rateCookie } });
+    expect(authorizeLimited.status).toBe(429);
+    expect(authorizeLimited.headers.get('Retry-After')).toBeTruthy();
+    for (let i = 0; i < 30; i++) {
+      expect((await nativeConsent('missing-request', 'deny', {}, rateCookie)).status).toBe(404);
+    }
+    const denyLimited = await nativeConsent('missing-request', 'deny', {}, rateCookie);
+    expect(denyLimited.status).toBe(429);
+    expect(denyLimited.headers.get('Retry-After')).toBeTruthy();
+    expect((await nativeConsent('missing-request', 'prepare', {}, rateCookie)).status).toBe(404);
   }, 120_000);
 
   test(`PAR rejects malformed details and request URIs are single use (${backend})`, async () => {

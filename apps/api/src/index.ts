@@ -152,6 +152,7 @@ app.use('/api/auth/*', createProviderInterceptors({
   database: authPrisma,
   tokens: providerTokenOptions(auth),
   provider: (request) => auth.handler(request),
+  getSessionUserId: async (headers) => (await auth.api.getSession({ headers }))?.user.id ?? null,
 }));
 
 // better-auth routes - mount at /api/auth

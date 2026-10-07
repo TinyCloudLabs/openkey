@@ -5,6 +5,7 @@ import { isNativeDelegationClient } from './policy';
 import { NATIVE_DELEGATION_ENDPOINT_PATHS } from './public-protocol';
 import { storedOpaqueAccessToken, storedRefreshToken, type ProviderTokenOptions } from './provider-tokens';
 import { authoritativeQuery, matchesAuthoritativeQuery } from './par';
+import { nativeUserRetryAfter } from './user-rate-limit';
 
 /**
  * Fail-closed guards in front of better-auth's OAuth provider (spec:
@@ -36,7 +37,7 @@ const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9
 
 export type ProviderInterceptorDatabase = Pick<PrismaClient, 'oauthClient' | 'oauthRefreshToken' | 'oauthAccessToken' | 'tinyCloudNativeGrant' | 'tinyCloudNativeRequest'>;
 
-type Refusal = { status: 400 | 401; error: string; description: string };
+type Refusal = { status: 400 | 401 | 429; error: string; description: string; retryAfter?: number };
 /**
  * Send this request to the provider instead, then answer RFC 7009's 200 if
  * it reports the token unknown.
@@ -57,6 +58,7 @@ function providerPath(url: string): string | null {
 function refuse(c: Context, refusal: Refusal): Response {
   return c.json({ error: refusal.error, error_description: refusal.description }, refusal.status, {
     'Cache-Control': 'no-store',
+    ...(refusal.retryAfter ? { 'Retry-After': String(refusal.retryAfter) } : {}),
   });
 }
 
@@ -148,12 +150,13 @@ export interface ProviderInterceptorOptions {
   tokens: ProviderTokenOptions;
   /** better-auth's request handler, for an unknown token's rewritten revoke. */
   provider: (request: Request) => Response | Promise<Response>;
+  getSessionUserId: (headers: Headers) => Promise<string | null>;
 }
 
 type RefreshTokenMatch = { clientId: string; native: boolean };
 type AccessTokenMatch = { clientId: string };
 
-export function createProviderInterceptors({ database, tokens, provider }: ProviderInterceptorOptions): MiddlewareHandler {
+export function createProviderInterceptors({ database, tokens, provider, getSessionUserId }: ProviderInterceptorOptions): MiddlewareHandler {
   async function anyDelegationClient(clientIds: string[]): Promise<boolean> {
     if (clientIds.length === 0) return false;
     const clients = await database.oauthClient.findMany({
@@ -227,6 +230,11 @@ export function createProviderInterceptors({ database, tokens, provider }: Provi
       if (!row || row.status !== 'RESOLVED' || row.expiresAt <= new Date()) return invalid();
       const expected = authoritativeQuery(row);
       if (!matchesAuthoritativeQuery(params, expected)) return invalid();
+      const userId = await getSessionUserId(c.req.raw.headers);
+      if (userId) {
+        const retryAfter = nativeUserRetryAfter(userId, 'authorize');
+        if (retryAfter) return { status: 429, error: 'slow_down', description: 'too many authorization requests', retryAfter };
+      }
       const url = new URL(c.req.url);
       url.search = expected.toString();
       return { replacement: new Request(url, c.req.raw) };
@@ -318,17 +326,17 @@ export function createProviderInterceptors({ database, tokens, provider }: Provi
     const data = body?.additionalData;
     if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
     const query = (data as Record<string, unknown>).query;
-    const params = typeof query === 'string' ? new URLSearchParams(query) : null;
-    const object = query && typeof query === 'object' && !Array.isArray(query) ? query as Record<string, unknown> : null;
-    const scope = params?.get('scope') ?? object?.scope;
-    const hasScope = params?.has('scope') ?? (object ? 'scope' in object : false);
-    const hasRequestUri = params?.has('request_uri') ?? (object ? 'request_uri' in object : false);
-    const clientId = params?.get('client_id') ?? object?.client_id;
-    if (params?.has('tinycloud_request') || (object && 'tinycloud_request' in object) ||
-      (typeof scope === 'string' && scopeList(scope).includes(TINYCLOUD_DELEGATION_SCOPE)) ||
-      (Array.isArray(scope) && scope.includes(TINYCLOUD_DELEGATION_SCOPE)) ||
-      (!hasScope && !hasRequestUri && typeof clientId === 'string' && await anyDelegationClient([clientId]))) {
-      return { status: 400, error: 'invalid_request', description: 'native delegation requires a pushed authorization request' };
+    if (query === undefined) return null;
+    const invalid: Refusal = { status: 400, error: 'invalid_request', description: 'native delegation requires a pushed authorization request' };
+    // Better Auth can normalize list-shaped query values after this hook.
+    // Only a scalar query string has unambiguous scope and client identity.
+    if (typeof query !== 'string') return invalid;
+    const params = new URLSearchParams(query);
+    const clientId = params.get('client_id');
+    if (duplicateKey(params) || params.has('tinycloud_request') || params.has('request_uri') ||
+      scopeList(params.get('scope')).includes(TINYCLOUD_DELEGATION_SCOPE) ||
+      (!params.has('scope') && clientId && await anyDelegationClient([clientId]))) {
+      return invalid;
     }
     return null;
   }
