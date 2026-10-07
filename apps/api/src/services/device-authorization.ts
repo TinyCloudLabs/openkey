@@ -1,5 +1,12 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { SiweMessage } from 'siwe';
+import {
+  TINYCLOUD_DELEGATED_PATH,
+  TINYCLOUD_DELEGATED_PATH_MAX_LENGTH,
+  TINYCLOUD_DENIED_PATH_ROOTS,
+  hasDotSegment,
+  tinycloudPathSegments,
+} from './tinycloud-path-policy';
 
 export const DEVICE_AUTH_TRANSACTION_TTL_MS = 10 * 60 * 1000;
 export const DEVICE_AUTH_DEFAULT_DELEGATION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -56,12 +63,10 @@ export const DEVICE_FLOW_ABILITIES: Readonly<Record<string, readonly string[]>> 
   'tinycloud.capabilities': ['tinycloud.capabilities/read'],
 });
 const DEVICE_FLOW_DENIED_SPACES: Record<string, true> = { account: true, applications: true, secrets: true };
-const DEVICE_FLOW_DENIED_PATH_ROOTS: Record<string, true> = { secrets: true, vault: true };
 const DEVICE_PERMISSION_FIELDS: Record<string, true> = { service: true, space: true, path: true, actions: true };
 const DEVICE_SPACE_NAME = '[A-Za-z0-9][A-Za-z0-9._-]{0,63}';
 const DEVICE_SHORT_SPACE = new RegExp(`^${DEVICE_SPACE_NAME}$`);
 const DEVICE_PKH_SPACE = new RegExp(`^tinycloud:pkh:eip155:([1-9][0-9]{0,19}):(0x[0-9a-fA-F]{40}):(${DEVICE_SPACE_NAME})$`);
-const DEVICE_PATH = /^[A-Za-z0-9._~@+=,:-]+(?:\/[A-Za-z0-9._~@+=,:-]+)*\/?$/;
 
 export interface DeviceAuthorizationRecord {
   id: string;
@@ -390,10 +395,10 @@ function assertDevicePath(service: string, path: string, label: string): void {
     return;
   }
   if (path.length === 0) throw scopeError(`${label} must name an explicit path; whole-space grants are not available over device authorization`);
-  if (path.length > 256 || !DEVICE_PATH.test(path)) throw scopeError(`${label} must be a relative path without wildcards or empty segments`);
-  const segments = path.split('/').filter(Boolean);
-  if (segments.some((segment) => segment === '.' || segment === '..')) throw scopeError(`${label} must not contain . or .. segments`);
-  if (Object.hasOwn(DEVICE_FLOW_DENIED_PATH_ROOTS, segments[0]!.toLowerCase())) throw scopeError(`${label} must not address secrets`);
+  if (path.length > TINYCLOUD_DELEGATED_PATH_MAX_LENGTH || !TINYCLOUD_DELEGATED_PATH.test(path)) throw scopeError(`${label} must be a relative path without wildcards or empty segments`);
+  if (hasDotSegment(path)) throw scopeError(`${label} must not contain . or .. segments`);
+  const segments = tinycloudPathSegments(path);
+  if (Object.hasOwn(TINYCLOUD_DENIED_PATH_ROOTS, segments[0]!.toLowerCase())) throw scopeError(`${label} must not address secrets`);
 }
 
 /**

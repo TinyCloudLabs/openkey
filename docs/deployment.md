@@ -141,6 +141,7 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `ADMIN_API_KEY` | Bearer token for organization plan fixtures and app registration |
 | `INTERNAL_METRICS_TOKEN` | Bearer token for internal metrics |
 | `TINYCLOUD_BOOTSTRAP_HOST` | Trusted TinyCloud node used for canonical user-key bootstrap |
+| `TINYCLOUD_SQL_ISOLATED_HOSTS` | Comma-separated TinyCloud node origins that isolate SQL/DuckDB databases by full path. Native delegation ceilings may include SQL only for these hosts; unset refuses SQL. Also set as the `TINYCLOUD_SQL_ISOLATED_HOSTS` repository variable for **Register OAuth Client** |
 | `CLOUDFLARE_API_TOKEN` | For SSL certificate management |
 | `DSTACK_GATEWAY_DOMAIN` | Phala gateway base domain (e.g. `dstack-pha-prod5.phala.network`); the ingress CNAMEs `api.openkey.so` to `gateway.<base>` (never `_.<base>`, which Android cannot resolve) |
 | `CERTBOT_EMAIL` | Email for Let's Encrypt |

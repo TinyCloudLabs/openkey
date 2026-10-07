@@ -18,6 +18,7 @@ import {
   DYNAMIC_CLIENT_REGISTRATION_ALLOWED_SCOPES,
   OAUTH_SCOPES,
   TINYCLOUD_CANONICAL_IDENTITY_CLAIM,
+  TINYCLOUD_DELEGATION_SCOPE,
   TINYCLOUD_MANAGE_KEY_SCOPE,
   TINYCLOUD_MCP_SCOPE,
   TINYCLOUD_OWNER_DIDS_CLAIM,
@@ -282,7 +283,16 @@ export const auth = betterAuth({
       idTokenExpiresIn: 60 * 60, // 1 hour in seconds
       storeClientSecret: 'hashed',
       storeTokens: 'hashed',
-      async customTokenResponseFields({ grantType, verificationValue }) {
+      async customTokenResponseFields({ grantType, scopes, verificationValue }) {
+        // Runs before any access, refresh or ID token is created. A token
+        // carrying tinycloud:delegation must come from the native code
+        // exchange, never from the provider's ordinary grants.
+        if (scopes.includes(TINYCLOUD_DELEGATION_SCOPE)) {
+          throw new APIError('BAD_REQUEST', {
+            error: 'invalid_grant',
+            error_description: `${TINYCLOUD_DELEGATION_SCOPE} is not issued by this grant`,
+          });
+        }
         // Runs after the provider authenticates the client, before either
         // opaque/JWT access tokens or the ID token are created. Refresh has no
         // verificationValue: resolve the same request credentials the provider

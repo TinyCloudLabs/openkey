@@ -42,6 +42,7 @@ model User {
   developerAccount               DeveloperAccount?
   organizationMemberships        OrganizationMembership[]
   deviceAuthorizations           DeviceAuthorization[]
+  tinyCloudNativeGrants          TinyCloudNativeGrant[]
 
   @@map("user")
 }
@@ -373,6 +374,7 @@ model OauthClient {
   scopes                  String[] // Allowed scopes for this client
   tinycloudSessionPolicy  String?  // Dashboard-managed automatic signing policy
   tinycloudSessionOrigin  String?  // Exact browser origin allowed by that policy
+  tinycloudNativeDelegation Json?  // Admin-approved native capability ceiling
   disabled                Boolean  @default(false)
   skipConsent             Boolean  @default(false) // Admin-controlled trusted-client auto-approval; false by default
   enableEndSession        Boolean  @default(false)
@@ -397,6 +399,8 @@ model OauthClient {
   user                User?                @relation(fields: [userId], references: [id], onDelete: SetNull)
   organization        Organization?        @relation(fields: [organizationId], references: [id], onDelete: SetNull, map: "oauth_client_org_fkey")
   tinyCloudManageKeyAppPreferences TinyCloudManageKeyAppPreference[]
+  tinyCloudNativeRequests TinyCloudNativeRequest[]
+  tinyCloudNativeGrants TinyCloudNativeGrant[]
 
   @@unique([clientId, organizationId], map: "oauth_client_clientId_organizationId_key")
   @@index([organizationId], map: "oauth_client_organizationId_idx")
@@ -507,6 +511,114 @@ model OauthConsent {
 
   @@unique([userId, clientId])
   @@map("oauth_consent")
+}
+
+// TC-773 native TinyCloud delegation. A pushed authorization request from a
+// native app; sessionJwk is the device's public Ed25519 key only. Statuses are
+// a closed set enforced by a CHECK constraint in the migration.
+model TinyCloudNativeRequest {
+  id                      String   @id
+  clientId                String
+  redirectUri             String
+  state                   String
+  codeChallenge           String
+  scopes                  String[]
+  sessionDid              String
+  sessionJwk              Json
+  sessionJkt              String
+  requestedPermissions    Json
+  ttlSeconds              Int
+  siweNonce               String?
+  status                  String   @default("PENDING")
+  userId                  String?
+  currentRevision         Int      @default(0)
+  approvedRevision        Int?
+  consentGeneration       BigInt?
+  signature               String?
+  delegation              Json?
+  hosting                 String?
+  hostSignedAt            DateTime?
+  requestUriExpiresAt     DateTime
+  expiresAt               DateTime
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  client OauthClient @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  preparations TinyCloudNativePreparation[]
+
+  @@index([clientId, status])
+  @@index([userId, clientId, status])
+  @@index([expiresAt])
+  @@map("tinycloud_native_request")
+}
+
+// Immutable consent-screen revision of a request: the exact bytes and digest
+// the user approves.
+model TinyCloudNativePreparation {
+  id           String   @id
+  requestId    String
+  revision     Int
+  userId       String
+  keyId        String
+  address      String
+  sessionSiwe  String
+  hostPlan     Json?
+  permissions  Json
+  digest       String
+  createdAt    DateTime @default(now())
+
+  request TinyCloudNativeRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@unique([requestId, revision])
+  @@map("tinycloud_native_preparation")
+}
+
+// A redeemed native delegation session, bound to its refresh token hashes
+// (the provider's stored token format). Revoked by the consent-withdrawal
+// triggers in the migration.
+model TinyCloudNativeGrant {
+  id                       String   @id
+  userId                   String
+  clientId                 String
+  consentId                String
+  consentGeneration        BigInt
+  keyId                    String
+  address                  String
+  sessionDid               String
+  sessionJwk               Json
+  sessionJkt               String
+  spaceId                  String
+  approvedPermissions      Json
+  ttlSeconds               Int
+  tinycloudHost            String
+  refreshTokenHash         String?  @unique
+  previousRefreshTokenHash String?
+  rotatedAt                DateTime?
+  status                   String   @default("ACTIVE")
+  revokedAt                DateTime?
+  revokedReason            String?
+  absoluteExpiresAt        DateTime
+  lastRenewedAt            DateTime?
+  renewCount               Int      @default(0)
+  createdAt                DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  client OauthClient @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+
+  @@index([userId, clientId, status])
+  @@index([previousRefreshTokenHash])
+  @@map("tinycloud_native_grant")
+}
+
+// Deliberately independent of oauth_consent: deleting and recreating consent
+// must never reset its generation or let an old authorization code be adopted.
+model TinyCloudNativeConsentGeneration {
+  userId     String
+  clientId   String
+  generation BigInt @default(0)
+
+  @@id([userId, clientId])
+  @@map("tinycloud_native_consent_generation")
 }
 
 // A user-owned, immediate stop control for an OAuth application's

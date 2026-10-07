@@ -7,6 +7,16 @@ export const TINYCLOUD_SESSION_SCOPE = 'tinycloud:session';
  * default: clients must request it and users must see it at consent time.
  */
 export const TINYCLOUD_MANAGE_KEY_SCOPE = 'tinycloud:manage-key';
+/**
+ * A native app's request for a TinyCloud session delegation (TC-773). Only an
+ * OpenKey admin can enable it, together with the client's
+ * `tinycloudNativeDelegation` ceiling.
+ */
+export const TINYCLOUD_DELEGATION_SCOPE = 'tinycloud:delegation';
+/** Scopes that no registration path grants by default. */
+export const RESTRICTED_SCOPES: ReadonlySet<string> = new Set<string>([
+  TINYCLOUD_SESSION_SCOPE, TINYCLOUD_MANAGE_KEY_SCOPE, TINYCLOUD_DELEGATION_SCOPE,
+]);
 export const TINYCLOUD_OWNER_DIDS_CLAIM = 'https://tinycloud.xyz/owner_dids';
 export const TINYCLOUD_CANONICAL_IDENTITY_CLAIM =
   'https://tinycloud.xyz/canonical_identity';
@@ -18,13 +28,15 @@ export const OAUTH_SCOPES = [
   TINYCLOUD_MCP_SCOPE,
   TINYCLOUD_SESSION_SCOPE,
   TINYCLOUD_MANAGE_KEY_SCOPE,
+  TINYCLOUD_DELEGATION_SCOPE,
 ] as const;
 
 // Dynamic registration only creates public clients. `tinycloud:manage-key`
-// requires a pre-registered confidential client, so it cannot be requested by
-// an unauthenticated dynamic registration.
+// requires a pre-registered confidential client and `tinycloud:delegation` an
+// admin-enabled native client, so an unauthenticated dynamic registration can
+// request neither.
 export const DYNAMIC_CLIENT_REGISTRATION_ALLOWED_SCOPES = OAUTH_SCOPES.filter(
-  (scope) => scope !== TINYCLOUD_MANAGE_KEY_SCOPE,
+  (scope) => scope !== TINYCLOUD_MANAGE_KEY_SCOPE && scope !== TINYCLOUD_DELEGATION_SCOPE,
 );
 
 export function oauthValidAudiences(baseURL: string, configured = process.env.OAUTH_VALID_AUDIENCES): string[] {

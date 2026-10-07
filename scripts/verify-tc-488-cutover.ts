@@ -1,4 +1,5 @@
 import { createPrismaClient } from '@openkey/db';
+import { assertNativeDelegationSchema } from './native-delegation-schema-guards';
 
 const forbiddenRelations = [
   'managed_account', 'managed_account_operation', 'managed_account_policy',
@@ -44,6 +45,8 @@ async function main() {
       );
     }
     console.log('Verified TC-488 cutover: developer organizations retain OAuth administration without key custody, and canonical-key uniqueness remains enforced.');
+    await assertNativeDelegationSchema(prisma);
+    console.log('Verified TC-773 native delegation schema: consent generation table, closed statuses, and consent-withdrawal triggers are present.');
   } finally {
     await prisma.$disconnect();
   }

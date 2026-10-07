@@ -14,6 +14,7 @@ const baseline: MigrationRow = {
 const tc488 = '20260806_0002_remove_organization_key_custody';
 const device = '20260814_0001_share_device_authorization';
 const broker = '20261005_0001_delegation_code_broker';
+const native = '20261007_0001_tinycloud_native_foundation';
 const tc492 = [
   '20260805_0001_canonical_tinycloud_key',
   '20260805_0002_tinycloud_manage_key_app_preferences',
@@ -78,6 +79,29 @@ describe('production migration deployment mode', () => {
       migrationDirectories: directories,
       managedAccountTableExists: true,
     })).toThrow(`Stored migration checksum differs from the reviewed ${broker}`);
+  });
+
+  test('permits the reviewed TC-773 native delegation foundation while TC-488 remains parked', () => {
+    const directories = [baseline.migration_name, ...tc492, device, broker, native];
+    expect(selectProductionMigrationMode({
+      migrations: [baseline],
+      migrationDirectories: directories,
+      managedAccountTableExists: true,
+    })).toBe('pre-tc488-additive');
+    expect(partitionPreTc488Migrations([...tc492, device, broker, native])).toEqual({
+      apply: [...tc492.filter((name) => name !== tc488), device, broker, native],
+      park: [tc488],
+    });
+    expect(() => selectProductionMigrationMode({
+      migrations: [baseline, {
+        migration_name: native,
+        checksum: 'unreviewed',
+        finished_at: new Date(),
+        rolled_back_at: null,
+      }],
+      migrationDirectories: directories,
+      managedAccountTableExists: true,
+    })).toThrow(`Stored migration checksum differs from the reviewed ${native}`);
   });
 
   test('fails closed if another migration is pending before TC-488', () => {

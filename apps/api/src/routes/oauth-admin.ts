@@ -3,11 +3,20 @@
 import { Hono } from 'hono';
 import {
   OAUTH_SCOPES,
-  TINYCLOUD_MANAGE_KEY_SCOPE,
+  RESTRICTED_SCOPES,
+  TINYCLOUD_DELEGATION_SCOPE,
   TINYCLOUD_SESSION_SCOPE,
 } from '../oauth-config';
-import { createPrismaClient } from '@openkey/db';
+import { createPrismaClient, type Prisma } from '@openkey/db';
+// Namespace import: route tests replace @openkey/db with a module that only
+// provides createPrismaClient, and a named runtime import would fail to link.
+import * as openkeyDb from '@openkey/db';
 import { createHash, randomBytes } from 'crypto';
+import {
+  NativeDelegationPolicyError,
+  validateNativeDelegationConfig,
+  type NativeDelegationConfig,
+} from '../services/native-delegation/policy';
 import { publicPlanDefaults } from '../services/plan-entitlements';
 import {
   oauthApplicationType,
@@ -64,8 +73,12 @@ const COORDINATIONOS_WEB_SCOPES = ['openid', 'email', 'keys', TINYCLOUD_SESSION_
 // Public clients never receive signing capabilities implicitly; clients must
 // explicitly request manage-key consent.
 const PUBLIC_CLIENT_SCOPES = OAUTH_SCOPES.filter(
-  (scope) => scope !== TINYCLOUD_SESSION_SCOPE && scope !== TINYCLOUD_MANAGE_KEY_SCOPE,
+  (scope) => !RESTRICTED_SCOPES.has(scope),
 );
+
+function nativeDelegationJson(config: NativeDelegationConfig): Prisma.InputJsonObject {
+  return config as unknown as Prisma.InputJsonObject;
+}
 
 function hasExactCoordinationosScopes(scopes: unknown): scopes is string[] {
   if (!Array.isArray(scopes) || scopes.length !== COORDINATIONOS_WEB_SCOPES.length) return false;
@@ -176,6 +189,7 @@ oauthAdminRouter.post('/clients', async (c) => {
     type?: 'native' | 'spa' | 'web';
     scopes?: string[];
     autoApprove?: unknown;
+    tinycloudNativeDelegation?: unknown;
   }>();
 
   // Validation
@@ -216,6 +230,21 @@ oauthAdminRouter.post('/clients', async (c) => {
       return c.json({ error: `Invalid scopes: ${invalid.join(', ')}` }, 400);
     }
   }
+  if (body.scopes?.includes(TINYCLOUD_DELEGATION_SCOPE) && body.tinycloudNativeDelegation === undefined) {
+    return c.json({ error: 'tinycloud:delegation requires tinycloudNativeDelegation in the same request' }, 400);
+  }
+  let nativeConfig: NativeDelegationConfig | null = null;
+  if (body.tinycloudNativeDelegation !== undefined) {
+    try {
+      nativeConfig = validateNativeDelegationConfig(body.tinycloudNativeDelegation, {
+        type: applicationType, public: applicationType !== 'web',
+        tokenEndpointAuthMethod: applicationType === 'web' ? 'client_secret_basic' : 'none',
+      });
+    } catch (error) {
+      if (error instanceof NativeDelegationPolicyError) return c.json({ error: error.message }, 400);
+      throw error;
+    }
+  }
   if (applicationType === 'web' && !hasExactCoordinationosScopes(body.scopes)) {
     return c.json({
       error: `web clients require exactly these scopes: ${COORDINATIONOS_WEB_SCOPES.join(', ')}`,
@@ -245,7 +274,10 @@ oauthAdminRouter.post('/clients', async (c) => {
         uri: body.uri || null,
         icon: body.icon || null,
         redirectUris: body.redirectUris,
-        scopes: applicationType === 'web' ? [...COORDINATIONOS_WEB_SCOPES] : [...PUBLIC_CLIENT_SCOPES],
+        scopes: applicationType === 'web' ? [...COORDINATIONOS_WEB_SCOPES] : [
+          ...PUBLIC_CLIENT_SCOPES, ...(nativeConfig ? [TINYCLOUD_DELEGATION_SCOPE] : []),
+        ],
+        tinycloudNativeDelegation: nativeConfig ? nativeDelegationJson(nativeConfig) : undefined,
         disabled: false,
         skipConsent: body.autoApprove === true,
         enableEndSession: false,
@@ -376,6 +408,7 @@ oauthAdminRouter.patch('/clients/:clientId', async (c) => {
     autoApprove?: unknown;
     mode?: unknown;
     type?: unknown;
+    tinycloudNativeDelegation?: unknown;
   }>();
 
   // Guard: mode is immutable. Issued tokens are bound to the mode at creation;
@@ -392,11 +425,11 @@ oauthAdminRouter.patch('/clients/:clientId', async (c) => {
   }
   const autoApprove = typeof body.autoApprove === 'boolean' ? body.autoApprove : undefined;
 
-  let existing: { type: string | null; public: boolean } | null = null;
-  if ('redirectUris' in body || 'scopes' in body || autoApprove === true) {
+  let existing: { type: string | null; public: boolean; tokenEndpointAuthMethod: string | null; scopes: string[] } | null = null;
+  if ('redirectUris' in body || 'scopes' in body || autoApprove === true || 'tinycloudNativeDelegation' in body) {
     existing = await prisma.oauthClient.findUnique({
       where: { clientId },
-      select: { type: true, public: true },
+      select: { type: true, public: true, tokenEndpointAuthMethod: true, scopes: true },
     });
     if (!existing) return c.json({ error: 'Client not found' }, 404);
     if (existing.type === 'web' && ('redirectUris' in body || 'scopes' in body)) {
@@ -438,6 +471,24 @@ oauthAdminRouter.patch('/clients/:clientId', async (c) => {
     if (invalid.length > 0) {
       return c.json({ error: `Invalid scopes: ${invalid.join(', ')}` }, 400);
     }
+    // The delegation scope only changes together with its ceiling.
+    if (!('tinycloudNativeDelegation' in body) &&
+        body.scopes.includes(TINYCLOUD_DELEGATION_SCOPE) !== existing?.scopes.includes(TINYCLOUD_DELEGATION_SCOPE)) {
+      return c.json({ error: 'tinycloud:delegation scope is managed with tinycloudNativeDelegation' }, 400);
+    }
+  }
+
+  let nativeConfig: NativeDelegationConfig | null | undefined;
+  if ('tinycloudNativeDelegation' in body) {
+    if (body.tinycloudNativeDelegation === null) nativeConfig = null;
+    else {
+      try {
+        nativeConfig = validateNativeDelegationConfig(body.tinycloudNativeDelegation, existing!);
+      } catch (error) {
+        if (error instanceof NativeDelegationPolicyError) return c.json({ error: error.message }, 400);
+        throw error;
+      }
+    }
   }
 
   try {
@@ -450,6 +501,12 @@ oauthAdminRouter.patch('/clients/:clientId', async (c) => {
         ...(body.icon !== undefined && { icon: body.icon || null }),
         ...(body.disabled !== undefined && { disabled: body.disabled }),
         ...(body.scopes && { scopes: body.scopes }),
+        ...(nativeConfig !== undefined && {
+          tinycloudNativeDelegation: nativeConfig === null ? openkeyDb.Prisma.DbNull : nativeDelegationJson(nativeConfig),
+          scopes: nativeConfig === null
+            ? (body.scopes ?? existing!.scopes).filter((scope) => scope !== TINYCLOUD_DELEGATION_SCOPE)
+            : [...new Set([...(body.scopes ?? existing!.scopes), TINYCLOUD_DELEGATION_SCOPE])],
+        }),
         ...(autoApprove !== undefined && { skipConsent: autoApprove }),
       },
       select: {
