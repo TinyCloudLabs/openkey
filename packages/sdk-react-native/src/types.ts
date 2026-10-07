@@ -38,6 +38,14 @@ export interface OpenKeyRNDelegationConfig {
   tinycloudHost: string;
   /** Secure storage for the session key and rotated refresh token. */
   storage: OpenKeySecureStore;
+  /**
+   * Verify a returned delegation before the SDK accepts it: `siwe` +
+   * `signature` must reproduce `delegationHeader`/`delegationCid` (spec:
+   * the client verifies the signed session SIWE). Implement it with the
+   * TinyCloud session SDK; called on sign-in and on every renew, and must
+   * reject on failure. Required — the SDK fails closed without it.
+   */
+  verifyDelegation(delegation: TinyCloudDelegation): Promise<void>;
   /** Delegation TTL in seconds (server clamps to the client ceiling). */
   ttlSeconds?: number;
   /** Optional SIWE nonce bound into the signed session SIWE. */
@@ -54,7 +62,11 @@ export interface OpenKeyRNConfig {
   redirectUri: string;
   /**
    * Expected authorization-server issuer (RFC 9207), checked against the
-   * `iss` parameter on every callback. Defaults to `${host}/api/auth`.
+   * `iss` parameter on every callback and used for RFC 8414 discovery in
+   * delegation mode. Defaults to `https://api.openkey.so/api/auth` — the
+   * OpenKey authorization server, never derived from `host` (the app/API
+   * origin, e.g. `https://openkey.so`). Override for a staging or
+   * self-hosted issuer.
    */
   issuer?: string;
   /**

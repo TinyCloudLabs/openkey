@@ -2,7 +2,7 @@ import { describe, it, expect, mock, afterEach } from 'bun:test';
 import { OpenKeyRN } from '../OpenKeyRN';
 import type { BrowserOpener, BrowserResult, OpenKeyRNFullConfig } from '../OpenKeyRN';
 import { OpenKeyError } from '../types';
-import type { AuthTokens, OpenKeySecureStore } from '../types';
+import type { AuthTokens, OpenKeySecureStore, OpenKeyRNDelegationConfig } from '../types';
 import {
   OpenKeyNativeError,
   base64UrlDecode,
@@ -52,11 +52,12 @@ function makeConfig(overrides?: Partial<OpenKeyRNFullConfig>): OpenKeyRNFullConf
     host: TEST_HOST,
     clientId: TEST_CLIENT_ID,
     redirectUri: TEST_REDIRECT_URI,
+    // Tests use a self-hosted issuer; production defaults to api.openkey.so.
+    issuer: TEST_ISSUER,
     openBrowser: mock(() => Promise.resolve()) as BrowserOpener,
     ...overrides,
   };
 }
-
 /**
  * Legacy (void) opener that captures the authorization URL. `opened`
  * resolves the moment the SDK calls the opener, so tests wait on the real
@@ -135,9 +136,16 @@ function delegationPayload(parBody: string): Record<string, unknown> {
   return {
     verificationMethod: sessionKeyIdFromPar(parBody),
     expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    issuedAt: new Date(Date.now()).toISOString(),
     renewableUntil: new Date(Date.now() + 86_400_000).toISOString(),
     permissions: details[0]!.permissions,
     tinycloudHost: TC_HOST,
+    // Real-shaped fields the verifier inspects (spec: siwe + signature
+    // must reproduce delegationHeader and delegationCid).
+    siwe: 'openkey.so wants you to sign in with your TinyCloud account',
+    signature: '0x' + 'ab'.repeat(65),
+    delegationHeader: { Authorization: 'SIWE siwe=deadbeef sig=beef' },
+    delegationCid: 'bafydelegationcid',
   };
 }
 
@@ -432,22 +440,55 @@ describe('OpenKeyRN', () => {
       }
     });
 
-    it('rejects STATE_MISMATCH on a state mismatch', async () => {
+    it('rejects STATE_MISMATCH when the opener returns a wrong state', async () => {
+      const openBrowser = mock(
+        async (): Promise<BrowserResult | void> => ({
+          type: 'success',
+          url: callbackUrl('some-other-state'),
+        }),
+      ) as BrowserOpener;
+
+      const client = new OpenKeyRN(makeConfig({ openBrowser }));
+      try {
+        await client.signIn();
+        expect(true).toBe(false);
+      } catch (error) {
+        expect(error).toBeInstanceOf(OpenKeyError);
+        expect((error as OpenKeyError).code).toBe('STATE_MISMATCH');
+      }
+    });
+
+    it('ignores a stray callback whose state matches no flow', async () => {
+      const { openBrowser, opened } = captureOpener();
+      mockFetch(() => Promise.resolve(jsonResponse(TOKEN_RESPONSE)));
+      const client = new OpenKeyRN(makeConfig({ openBrowser }));
+      const signInPromise = client.signIn();
+
+      const state = new URL(await opened).searchParams.get('state')!;
+      // Not this flow's callback: ignored, and the flow stays alive.
+      expect(client.handleCallback(callbackUrl('some-other-state'))).toBe(
+        false,
+      );
+
+      // The real callback still completes the flow.
+      expect(client.handleCallback(callbackUrl(state))).toBe(true);
+      await signInPromise;
+    });
+
+    it('rejects SERVER on error=consent_required', async () => {
       const { openBrowser, opened } = captureOpener();
       const client = new OpenKeyRN(makeConfig({ openBrowser }));
       const signInPromise = client.signIn();
 
-      await opened;
-      // A single pending flow attributes the stray callback to it.
-      const handled = client.handleCallback(callbackUrl('some-other-state'));
-      expect(handled).toBe(true);
+      const state = new URL(await opened).searchParams.get('state')!;
+      client.handleCallback(callbackUrl(state, { error: 'consent_required' }));
 
       try {
         await signInPromise;
         expect(true).toBe(false);
       } catch (error) {
         expect(error).toBeInstanceOf(OpenKeyError);
-        expect((error as OpenKeyError).code).toBe('STATE_MISMATCH');
+        expect((error as OpenKeyError).code).toBe('SERVER');
       }
     });
 
@@ -651,7 +692,7 @@ describe('OpenKeyRN', () => {
       expect(params.get('token')).toBe('my-access-token');
     });
 
-    it('throws NETWORK_ERROR when fetch fails', async () => {
+    it('throws NETWORK_ERROR when the revoke fetch fails', async () => {
       mockFetch(() => Promise.reject(new Error('offline')));
 
       const client = new OpenKeyRN(makeConfig());
@@ -688,12 +729,15 @@ describe('OpenKeyRN', () => {
       store: OpenKeySecureStore,
       fetchFn: NativeFetch,
       overrides?: Partial<OpenKeyRNFullConfig>,
+      verifyDelegation?: OpenKeyRNDelegationConfig['verifyDelegation'],
     ): OpenKeyRNFullConfig {
       return makeConfig({
         delegation: {
           permissions: [KV_PERMISSION],
           tinycloudHost: TC_HOST,
           storage: store,
+          verifyDelegation:
+            verifyDelegation ?? (() => Promise.resolve()),
           fetchFn,
           sleepFn: () => Promise.resolve(),
         },
@@ -865,6 +909,397 @@ describe('OpenKeyRN', () => {
       } catch (error) {
         expect(error).toBeInstanceOf(OpenKeyNativeError);
         expect((error as OpenKeyNativeError).code).toBe('NOT_SIGNED_IN');
+      }
+    });
+
+    it('fails closed when verifyDelegation is missing', () => {
+      const store = memoryStore();
+      const fetchFn: NativeFetch = () =>
+        Promise.reject(new Error('fetch should not be called'));
+      const delegation = {
+        permissions: [KV_PERMISSION],
+        tinycloudHost: TC_HOST,
+        storage: store,
+        fetchFn,
+      } as Omit<OpenKeyRNDelegationConfig, 'verifyDelegation'> &
+        Partial<Pick<OpenKeyRNDelegationConfig, 'verifyDelegation'>>;
+
+      try {
+        new OpenKeyRN(makeConfig({ delegation }));
+        expect(true).toBe(false);
+      } catch (error) {
+        expect(error).toBeInstanceOf(OpenKeyNativeError);
+        expect((error as OpenKeyNativeError).code).toBe('UNAVAILABLE');
+      }
+    });
+
+    it('calls verifyDelegation on sign-in and rejects on failure', async () => {
+      const store = memoryStore();
+      const captured: { parBody?: string } = {};
+      const fetchFn = delegationFetch(captured);
+      const verifyDelegation = mock(() =>
+        Promise.reject(new Error('bad signature')),
+      );
+
+      const openBrowser = mock(async (): Promise<BrowserResult | void> => {
+        const state = new URLSearchParams(captured.parBody!).get('state')!;
+        return { type: 'success', url: callbackUrl(state) };
+      }) as BrowserOpener;
+
+      const client = new OpenKeyRN(
+        makeDelegationConfig(store, fetchFn, { openBrowser }, verifyDelegation),
+      );
+
+      let thrown: unknown;
+      try {
+        await client.signIn();
+        expect(true).toBe(false);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(OpenKeyNativeError);
+      expect((thrown as OpenKeyNativeError).code).toBe('SERVER');
+      // The code was exchanged, so the live refresh token rides the error.
+      expect((thrown as OpenKeyNativeError).rotatedRefreshToken).toBe(
+        'nat-refresh-1',
+      );
+      expect(verifyDelegation).toHaveBeenCalledTimes(1);
+    });
+
+    it('renews immediately when the new delegation is already in the lead window', async () => {
+      const store = memoryStore();
+      let renewCalls = 0;
+      let parBody = '';
+      const fetchFn: NativeFetch = (url: string, init?: NativeFetchInit) => {
+        if (url.includes('/.well-known/')) {
+          return Promise.resolve(jsonResponse(METADATA));
+        }
+        if (url.endsWith('/oauth2/par')) {
+          parBody = init!.body!;
+          return Promise.resolve(
+            jsonResponse(
+              { request_uri: 'urn:ietf:params:oauth:request_uri:req-1', expires_in: 90 },
+              201,
+            ),
+          );
+        }
+        if (url.endsWith('/oauth2/token')) {
+          return Promise.resolve(
+            jsonResponse({
+              access_token: 'nat-access',
+              refresh_token: 'rt-initial',
+              expires_in: 300,
+              tinycloud_delegation: {
+                // expiresAt − issuedAt lead exceeded → needs renewal now.
+                verificationMethod: sessionKeyIdFromPar(parBody),
+                issuedAt: new Date(Date.now() - 3_600_000).toISOString(),
+                expiresAt: new Date(Date.now() + 60_000).toISOString(),
+                permissions: [KV_PERMISSION],
+                tinycloudHost: TC_HOST,
+              },
+            }),
+          );
+        }
+        if (url.endsWith('/oauth2/tinycloud/renew')) {
+          renewCalls += 1;
+          return Promise.resolve(
+            jsonResponse({
+              refresh_token: 'rt-renewed',
+              tinycloud_delegation: {
+                verificationMethod: sessionKeyIdFromPar(parBody),
+                expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+                permissions: [KV_PERMISSION],
+                tinycloudHost: TC_HOST,
+              },
+            }),
+          );
+        }
+        return Promise.reject(new Error(`unexpected fetch: ${url}`));
+      };
+
+      const openBrowser = mock(async (): Promise<BrowserResult | void> => {
+        const state = new URLSearchParams(parBody).get('state')!;
+        return { type: 'success', url: callbackUrl(state) };
+      }) as BrowserOpener;
+
+      const client = new OpenKeyRN(
+        makeDelegationConfig(store, fetchFn, { openBrowser }),
+      );
+      const result = await client.signIn();
+
+      expect(renewCalls).toBe(1);
+      expect(result.refreshToken).toBe('rt-renewed');
+      const record = JSON.parse(
+        store.map.get(`openkey:tinycloud-delegation:${TEST_CLIENT_ID}`)!,
+      );
+      expect(record.refreshToken).toBe('rt-renewed');
+    });
+
+    it('rejects signIn with a typed error carrying the token when persist fails', async () => {
+      const base = memoryStore();
+      const store: OpenKeySecureStore & { map: Map<string, string> } = {
+        ...base,
+        set: () => Promise.reject(new Error('disk full')),
+      };
+      const captured: { parBody?: string } = {};
+      const fetchFn = delegationFetch(captured);
+
+      const openBrowser = mock(async (): Promise<BrowserResult | void> => {
+        const state = new URLSearchParams(captured.parBody!).get('state')!;
+        return { type: 'success', url: callbackUrl(state) };
+      }) as BrowserOpener;
+
+      const client = new OpenKeyRN(
+        makeDelegationConfig(store, fetchFn, { openBrowser }),
+      );
+
+      let thrown: unknown;
+      try {
+        await client.signIn();
+        expect(true).toBe(false);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(OpenKeyNativeError);
+      expect((thrown as OpenKeyNativeError).code).toBe('NETWORK');
+      expect((thrown as OpenKeyNativeError).rotatedRefreshToken).toBe(
+        'nat-refresh-1',
+      );
+    });
+
+    it('renew() rejects with rotatedRefreshToken when persist fails', async () => {
+      const base = memoryStore();
+      const sessionKey = generateSessionKeypair();
+      const key = `openkey:tinycloud-delegation:${TEST_CLIENT_ID}`;
+      await base.set(key, JSON.stringify({
+        privateJwk: sessionKey.privateJwk,
+        refreshToken: 'rt-old',
+        permissions: [KV_PERMISSION],
+      }));
+      const store: OpenKeySecureStore & { map: Map<string, string> } = {
+        ...base,
+        set: (k, v) =>
+          k === key ? Promise.reject(new Error('disk full')) : base.set(k, v),
+      };
+
+      const fetchFn: NativeFetch = (url: string, init?: NativeFetchInit) => {
+        if (url.includes('/.well-known/')) {
+          return Promise.resolve(jsonResponse(METADATA));
+        }
+        if (url.endsWith('/oauth2/tinycloud/renew')) {
+          return Promise.resolve(
+            jsonResponse({
+              refresh_token: 'rt-new',
+              tinycloud_delegation: {
+                verificationMethod: sessionKey.keyId,
+                expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+                permissions: [KV_PERMISSION],
+                tinycloudHost: TC_HOST,
+              },
+            }),
+          );
+        }
+        return Promise.reject(new Error(`unexpected fetch: ${url}`));
+      };
+
+      const client = new OpenKeyRN(makeDelegationConfig(store, fetchFn));
+
+      let thrown: unknown;
+      try {
+        await client.renew();
+        expect(true).toBe(false);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(OpenKeyNativeError);
+      expect((thrown as OpenKeyNativeError).code).toBe('NETWORK');
+      expect((thrown as OpenKeyNativeError).rotatedRefreshToken).toBe('rt-new');
+    });
+
+    it('signOut() rejects when the storage wipe fails', async () => {
+      const base = memoryStore();
+      const sessionKey = generateSessionKeypair();
+      const key = `openkey:tinycloud-delegation:${TEST_CLIENT_ID}`;
+      await base.set(key, JSON.stringify({
+        privateJwk: sessionKey.privateJwk,
+        refreshToken: 'rt-old',
+        permissions: [KV_PERMISSION],
+      }));
+      const store: OpenKeySecureStore & { map: Map<string, string> } = {
+        ...base,
+        remove: () => Promise.reject(new Error('locked')),
+      };
+      const fetchFn: NativeFetch = (url: string) => {
+        if (url.includes('/.well-known/')) {
+          return Promise.resolve(jsonResponse(METADATA));
+        }
+        return Promise.resolve(new Response(null, { status: 200 }));
+      };
+
+      const client = new OpenKeyRN(makeDelegationConfig(store, fetchFn));
+
+      let thrown: unknown;
+      try {
+        await client.signOut();
+        expect(true).toBe(false);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(OpenKeyNativeError);
+      expect((thrown as OpenKeyNativeError).code).toBe('NETWORK');
+    });
+
+    it('an in-flight renew() rejects NOT_SIGNED_IN after signOut()', async () => {
+      const store = memoryStore();
+      const sessionKey = generateSessionKeypair();
+      await store.set(`openkey:tinycloud-delegation:${TEST_CLIENT_ID}`, JSON.stringify({
+        privateJwk: sessionKey.privateJwk,
+        refreshToken: 'rt-old',
+        permissions: [KV_PERMISSION],
+      }));
+
+      const { promise: renewReached, resolve: releaseRenew } =
+        Promise.withResolvers<void>();
+      const fetchFn: NativeFetch = async (url: string) => {
+        if (url.includes('/.well-known/')) {
+          return jsonResponse(METADATA);
+        }
+        if (url.endsWith('/oauth2/tinycloud/renew')) {
+          releaseRenew();
+          // The renew response only lands after signOut has run.
+          await signOutDone.promise;
+          return jsonResponse({
+            refresh_token: 'rt-new',
+            tinycloud_delegation: {
+              verificationMethod: sessionKey.keyId,
+              expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+              permissions: [KV_PERMISSION],
+              tinycloudHost: TC_HOST,
+            },
+          });
+        }
+        return new Response(null, { status: 200 });
+      };
+      const signOutDone = Promise.withResolvers<void>();
+
+      const client = new OpenKeyRN(makeDelegationConfig(store, fetchFn));
+      const renewPromise = client.renew();
+      renewPromise.catch(() => {});
+      await renewReached;
+
+      await client.signOut();
+      signOutDone.resolve();
+
+      let thrown: unknown;
+      try {
+        await renewPromise;
+        expect(true).toBe(false);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(OpenKeyNativeError);
+      expect((thrown as OpenKeyNativeError).code).toBe('NOT_SIGNED_IN');
+      // The rotated token was never persisted over the wiped session.
+      expect(store.map.has(`openkey:tinycloud-delegation:${TEST_CLIENT_ID}`)).toBe(
+        false,
+      );
+    });
+
+    it('refreshToken() rejects UNAVAILABLE in delegation mode', async () => {
+      const store = memoryStore();
+      const fetchFn: NativeFetch = () =>
+        Promise.reject(new Error('fetch should not be called'));
+      const client = new OpenKeyRN(makeDelegationConfig(store, fetchFn));
+
+      let thrown: unknown;
+      try {
+        await client.refreshToken('rt');
+        expect(true).toBe(false);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(OpenKeyNativeError);
+      expect((thrown as OpenKeyNativeError).code).toBe('UNAVAILABLE');
+    });
+  });
+
+  describe('flow timers', () => {
+    it('clears the sign-in timeout on every settlement path', async () => {
+      const created: unknown[] = [];
+      const cleared: unknown[] = [];
+      const realSetTimeout = globalThis.setTimeout;
+      const realClearTimeout = globalThis.clearTimeout;
+      globalThis.setTimeout = ((fn: () => void, ms?: number) => {
+        const id = realSetTimeout(fn, ms);
+        created.push(id);
+        return id;
+      }) as typeof setTimeout;
+      globalThis.clearTimeout = ((id?: unknown) => {
+        cleared.push(id);
+        realClearTimeout(id as Parameters<typeof clearTimeout>[0]);
+      }) as typeof clearTimeout;
+
+      try {
+        // Path 1: cancel result.
+        mockFetch(() => Promise.resolve(jsonResponse(TOKEN_RESPONSE)));
+        const cancelled = new OpenKeyRN(
+          makeConfig({
+            openBrowser: mock(async (): Promise<BrowserResult | void> => ({
+              type: 'cancel',
+            })) as BrowserOpener,
+          }),
+        );
+        await expect(cancelled.signIn()).rejects.toMatchObject({
+          code: 'USER_CANCELLED',
+        });
+
+        // Path 2: success result → callback → exchange.
+        const succeeded = new OpenKeyRN(
+          makeConfig({
+            openBrowser: mock(
+              async (url: string): Promise<BrowserResult | void> => {
+                const state = new URL(url).searchParams.get('state')!;
+                return { type: 'success', url: callbackUrl(state) };
+              },
+            ) as BrowserOpener,
+          }),
+        );
+        await succeeded.signIn();
+
+        // Path 3: deep-link handleCallback.
+        const { openBrowser, opened } = captureOpener();
+        const deepLinked = new OpenKeyRN(makeConfig({ openBrowser }));
+        const signInPromise = deepLinked.signIn();
+        const state = new URL(await opened).searchParams.get('state')!;
+        deepLinked.handleCallback(callbackUrl(state));
+        await signInPromise;
+
+        // Path 4: error= callback.
+        const denied = new OpenKeyRN(
+          makeConfig({
+            openBrowser: mock(
+              async (url: string): Promise<BrowserResult | void> => {
+                const s = new URL(url).searchParams.get('state')!;
+                return {
+                  type: 'success',
+                  url: callbackUrl(s, { error: 'access_denied' }),
+                };
+              },
+            ) as BrowserOpener,
+          }),
+        );
+        await expect(denied.signIn()).rejects.toMatchObject({
+          code: 'ACCESS_DENIED',
+        });
+
+        // Every timer created was cleared — none left pending.
+        expect(created.length).toBeGreaterThanOrEqual(4);
+        for (const id of created) {
+          expect(cleared).toContain(id);
+        }
+      } finally {
+        globalThis.setTimeout = realSetTimeout;
+        globalThis.clearTimeout = realClearTimeout;
       }
     });
   });

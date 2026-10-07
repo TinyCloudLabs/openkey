@@ -16,6 +16,10 @@ and `state` and rejects `STATE_MISMATCH` on either mismatch, rejects
 New `OpenKeyErrorCode` values `ACCESS_DENIED` and `SERVER` were added to
 `@openkey/core` for this.
 
+The expected issuer is `config.issuer`, defaulting to
+`https://api.openkey.so/api/auth` — the OpenKey authorization server,
+never derived from `host` (which stays the app/API origin).
+
 `signIn()` scopes are configurable via `scopes` (default unchanged:
 `openid email keys offline_access`), and `resource` is now opt-in — it is
 **no longer sent by default** (previously it defaulted to `host`, which made
@@ -29,4 +33,13 @@ and `OpenKey-Session-Proof` proofs on code exchange, renewal and
 revocation. `signIn()` resolves with `tokens.delegation` set, and a
 single-flight `renew()` rotates the refresh token (persisted via the
 injected `OpenKeySecureStore`, plus once after `RENEWAL_CONFLICT` reloads)
-before resolving. Delegation-mode errors surface as `OpenKeyNativeError`.
+before resolving. Delegation mode requires a `verifyDelegation` callback —
+the spec requires the SDK to check `siwe` + `signature` against
+`delegationHeader`/`delegationCid`, and the client fails closed without it.
+Storage writes are strict: a failed persist rejects with
+`OpenKeyNativeError('NETWORK')` carrying `rotatedRefreshToken`, and a failed
+credential wipe makes `signOut()` reject. A `signOut()` during an in-flight
+`renew()` makes that renew discard its result and reject `NOT_SIGNED_IN`;
+`refreshToken()` throws `UNAVAILABLE` in delegation mode (the provider
+refresh grant is refused for native clients). Delegation-mode errors
+surface as `OpenKeyNativeError`.

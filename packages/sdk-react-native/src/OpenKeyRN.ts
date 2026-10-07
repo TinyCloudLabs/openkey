@@ -27,6 +27,7 @@ import {
   buildNativeAuthorizeUrl,
   parseNativeCallback,
   exchangeDelegationCode,
+  delegationNeedsRenewalNow,
   renewDelegation,
   revokeDelegation,
 } from '@openkey/core';
@@ -87,6 +88,8 @@ interface PendingDelegationFlow {
 interface PendingFlow {
   state: string;
   verifier: string;
+  /** Timeout handle; cleared when the flow settles through any path. */
+  timer?: ReturnType<typeof setTimeout>;
   /** Present when this flow runs the TinyCloud native-delegation protocol. */
   delegation?: PendingDelegationFlow;
   resolve: (tokens: OpenKeyRNAuthTokens) => void;
@@ -106,6 +109,9 @@ interface StoredDelegationSession {
   refreshToken: string;
   permissions: NativeDelegationPermission[];
 }
+
+/** Spec issuer: the OpenKey authorization server, not the app host. */
+const DEFAULT_ISSUER = 'https://api.openkey.so/api/auth';
 
 const CALLBACK_PARAMS = ['code', 'error', 'state', 'iss'] as const;
 
@@ -174,12 +180,14 @@ export class OpenKeyRN {
   private metadataPromise?: Promise<OpenKeyServerMetadata>;
   private delegationSession?: DelegationSession;
   private renewInFlight?: Promise<RenewDelegationResult>;
+  /** Bumped by signOut(); an in-flight renew checks it before persisting. */
+  private sessionGeneration = 0;
 
   constructor(config: OpenKeyRNFullConfig) {
     this.host = config.host;
     this.clientId = config.clientId;
     this.redirectUri = config.redirectUri;
-    this.issuer = config.issuer ?? `${this.host.replace(/\/+$/, '')}/api/auth`;
+    this.issuer = config.issuer ?? DEFAULT_ISSUER;
     this.scopes = config.scopes ?? [
       'openid',
       'email',
@@ -187,6 +195,18 @@ export class OpenKeyRN {
       'offline_access',
     ];
     this.resource = config.resource;
+    if (
+      config.delegation &&
+      typeof config.delegation.verifyDelegation !== 'function'
+    ) {
+      // Fail closed: delegation mode without signature verification would
+      // trust an unverified server payload (spec: the SDK verifies siwe +
+      // signature reproduce delegationHeader/delegationCid).
+      throw new OpenKeyNativeError(
+        'UNAVAILABLE',
+        'delegation.verifyDelegation is required',
+      );
+    }
     this.delegation = config.delegation;
     this.delegationStorageKey = `openkey:tinycloud-delegation:${this.clientId}`;
     this.openBrowser = config.openBrowser;
@@ -257,11 +277,7 @@ export class OpenKeyRN {
       const result = await this.openBrowser(authUrl, this.redirectUri);
       this.settleFromOpenerResult(state, result);
     } catch (error) {
-      const pending = this.pendingFlows.get(state);
-      if (pending) {
-        this.pendingFlows.delete(state);
-        pending.reject(this.normalizeError(error));
-      }
+      this.removePending(state)?.reject(this.normalizeError(error));
     }
 
     return tokensPromise;
@@ -274,37 +290,41 @@ export class OpenKeyRN {
    * Returns `true` if the URL was recognized and handled, `false` otherwise.
    *
    * The token exchange happens asynchronously — the pending `signIn()`
-   * promise resolves or rejects based on the exchange result. Callbacks with
-   * a `state` or `iss` mismatch reject the pending flow with
-   * `STATE_MISMATCH`; `error=access_denied` rejects it with `ACCESS_DENIED`
-   * and any other `error` with `SERVER`.
+   * promise resolves or rejects based on the exchange result. A callback
+   * for a pending flow whose `iss` mismatches rejects it with
+   * `STATE_MISMATCH`; `error=access_denied` rejects it with
+   * `ACCESS_DENIED` and any other `error` with `SERVER`. A callback whose
+   * `state` matches no pending flow is ignored and returns `false` — a
+   * `STATE_MISMATCH` on `state` can only surface through the flow's own
+   * opener result.
    */
   handleCallback(url: string): boolean {
     const params = extractCallbackParams(url);
     if (!params) return false;
 
+    // A callback whose state matches no pending flow is not ours: ignore it.
     const state = params.get('state');
-    let pending = state ? this.pendingFlows.get(state) : undefined;
+    const pending = state ? this.pendingFlows.get(state) : undefined;
+    if (!pending) return false;
 
-    if (!pending) {
-      // No flow for this state. When exactly one flow is pending, attribute
-      // the callback to it so a mismatched `state`/`iss` settles it with
-      // STATE_MISMATCH instead of dangling until the timeout.
-      if (this.pendingFlows.size !== 1) return false;
-      pending = this.pendingFlows.values().next().value!;
-    }
-
-    // Remove from pending immediately to prevent double-handling
-    this.pendingFlows.delete(pending.state);
+    // Remove from pending immediately to prevent double-handling.
+    this.removePending(pending.state);
 
     void this.settleFlowFromCallback(pending, url);
     return true;
   }
 
   /**
-   * Refresh an access token using a refresh token.
+   * Refresh an access token using a refresh token (plain mode only).
+   * Delegation clients can't use the provider refresh grant — use `renew()`.
    */
   async refreshToken(refreshTokenValue: string): Promise<OpenKeyRNAuthTokens> {
+    if (this.delegation) {
+      throw new OpenKeyNativeError(
+        'UNAVAILABLE',
+        'refreshToken() is unavailable in delegation mode; use renew()',
+      );
+    }
     return refreshAccessToken({
       host: this.host,
       refreshToken: refreshTokenValue,
@@ -333,7 +353,8 @@ export class OpenKeyRN {
         'renew() requires config.delegation',
       );
     }
-    this.renewInFlight ??= this.renewOnce(options)
+    const generation = this.sessionGeneration;
+    this.renewInFlight ??= this.renewOnce(options, generation)
       .finally(() => {
         this.renewInFlight = undefined;
       });
@@ -350,12 +371,18 @@ export class OpenKeyRN {
    * regardless.
    */
   async signOut(accessToken?: string): Promise<void> {
-    // Clear all pending flows
-    for (const [state, pending] of this.pendingFlows) {
-      pending.reject(new OpenKeyError('USER_CANCELLED', 'Sign-out cancelled pending sign-in'));
-      this.pendingFlows.delete(state);
+    // Clear all pending flows (removePending clears their timers too).
+    for (const state of [...this.pendingFlows.keys()]) {
+      this.removePending(state)?.reject(
+        new OpenKeyError('USER_CANCELLED', 'Sign-out cancelled pending sign-in'),
+      );
     }
 
+    // Invalidate any in-flight renew: it discards its result and rejects
+    // NOT_SIGNED_IN instead of persisting after this point.
+    this.sessionGeneration += 1;
+
+    let wipeError: unknown;
     if (this.delegation) {
       const session = await this.getDelegationSession().catch(() => null);
       const metadata = session
@@ -377,48 +404,57 @@ export class OpenKeyRN {
         }
       }
       this.delegationSession = undefined;
-      await this.delegation.storage
-        .remove(this.delegationStorageKey)
-        .catch(() => {});
-    }
-
-    if (accessToken === undefined) return;
-
-    const body = new URLSearchParams({
-      token: accessToken,
-    });
-
-    try {
-      const response = await fetch(`${this.host}/api/auth/revoke`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        body: body.toString(),
-      });
-
-      if (!response.ok) {
-        let detail = '';
-        try {
-          detail = await response.text();
-        } catch {
-          // ignore
-        }
-        throw new OpenKeyError(
-          'NETWORK_ERROR',
-          `Revocation failed: ${response.status} ${response.statusText}${detail ? ` - ${detail}` : ''}`,
+      try {
+        await this.delegation.storage.remove(this.delegationStorageKey);
+      } catch (error) {
+        // The local wipe failed: report it — signOut must not claim
+        // success while credentials may persist in secure storage.
+        wipeError = new OpenKeyNativeError(
+          'NETWORK',
+          `failed to remove stored delegation session: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
         );
       }
-    } catch (error) {
-      if (error instanceof OpenKeyError) {
-        throw error;
-      }
-      throw new OpenKeyError(
-        'NETWORK_ERROR',
-        error instanceof Error ? error.message : 'Network request failed',
-      );
     }
+
+    if (accessToken !== undefined) {
+      try {
+        const response = await fetch(`${this.host}/api/auth/revoke`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          body: new URLSearchParams({ token: accessToken }).toString(),
+        });
+
+        if (!response.ok) {
+          let detail = '';
+          try {
+            detail = await response.text();
+          } catch {
+            // ignore
+          }
+          throw new OpenKeyError(
+            'NETWORK_ERROR',
+            `Revocation failed: ${response.status} ${response.statusText}${detail ? ` - ${detail}` : ''}`,
+          );
+        }
+      } catch (error) {
+        if (wipeError === undefined) {
+          wipeError =
+            error instanceof OpenKeyError
+              ? error
+              : new OpenKeyError(
+                  'NETWORK_ERROR',
+                  error instanceof Error ? error.message : 'Network request failed',
+                );
+        }
+      }
+    }
+
+    if (wipeError !== undefined) throw wipeError;
   }
 
   // ======= Internals =======
@@ -429,19 +465,25 @@ export class OpenKeyRN {
     delegation?: PendingDelegationFlow,
   ): Promise<OpenKeyRNAuthTokens> {
     return new Promise<OpenKeyRNAuthTokens>((resolve, reject) => {
-      this.pendingFlows.set(state, { state, verifier, delegation, resolve, reject });
+      const pending: PendingFlow = {
+        state,
+        verifier,
+        delegation,
+        resolve,
+        reject,
+      };
+      this.pendingFlows.set(state, pending);
 
       // Set timeout to reject if callback never arrives
-      const timer = setTimeout(() => {
-        if (this.pendingFlows.has(state)) {
-          this.pendingFlows.delete(state);
+      pending.timer = setTimeout(() => {
+        if (this.pendingFlows.delete(state)) {
           reject(new OpenKeyError('TIMEOUT', `Sign-in timed out after ${this.timeoutMs}ms`));
         }
       }, this.timeoutMs);
 
       // Ensure the timer doesn't keep the Node/Bun process alive.
       // In Node/Bun, setTimeout returns an object with unref(); in browsers it returns a number.
-      const t: unknown = timer;
+      const t: unknown = pending.timer;
       if (
         typeof t === 'object' &&
         t !== null &&
@@ -454,6 +496,18 @@ export class OpenKeyRN {
   }
 
   /**
+   * Remove a pending flow and clear its timeout. Returns the flow so the
+   * caller can settle it; `undefined` when the state isn't pending.
+   */
+  private removePending(state: string): PendingFlow | undefined {
+    const pending = this.pendingFlows.get(state);
+    if (!pending) return undefined;
+    this.pendingFlows.delete(state);
+    clearTimeout(pending.timer);
+    return pending;
+  }
+
+  /**
    * Settle a pending flow from the opener's return value.
    * `void` (legacy opener) leaves the flow to the deep-link path / timeout.
    */
@@ -462,23 +516,22 @@ export class OpenKeyRN {
     result: BrowserResult | void,
   ): void {
     if (!result) return;
+    const pending = this.removePending(state);
+    if (!pending) return;
     if (result.type === 'success' && result.url) {
-      // handleCallback consumes the pending flow when the URL parses.
-      this.handleCallback(result.url);
+      // The URL came from THIS flow's opener: settle it directly. A wrong
+      // state or iss inside it rejects this flow — never another flow's.
+      void this.settleFlowFromCallback(pending, result.url);
       return;
     }
     // Any non-success, defined result ('cancel', 'dismiss', 'locked', …)
     // means the auth session produced no callback: settle immediately.
-    const pending = this.pendingFlows.get(state);
-    if (pending) {
-      this.pendingFlows.delete(state);
-      pending.reject(
-        new OpenKeyError(
-          'USER_CANCELLED',
-          `Sign-in was cancelled (browser result: ${result.type})`,
-        ),
-      );
-    }
+    pending.reject(
+      new OpenKeyError(
+        'USER_CANCELLED',
+        `Sign-in was cancelled (browser result: ${result.type})`,
+      ),
+    );
   }
 
   /**
@@ -498,7 +551,7 @@ export class OpenKeyRN {
 
       if (pending.delegation) {
         const cfg = this.delegation!;
-        const result = await exchangeDelegationCode({
+        let result = await exchangeDelegationCode({
           metadata: pending.delegation.metadata,
           code: callback.code,
           redirectUri: this.redirectUri,
@@ -510,21 +563,72 @@ export class OpenKeyRN {
           fetchFn: cfg.fetchFn,
           sha256Fn: this.sha256,
         });
+
+        // The SDK verifies the delegation itself: siwe + signature must
+        // reproduce delegationHeader/delegationCid (spec). If this fails the
+        // code was still exchanged, so surface the refresh token on the
+        // error — the caller must persist it or the session is lost.
+        try {
+          await cfg.verifyDelegation(result.delegation);
+        } catch (error) {
+          const wrapped = new OpenKeyNativeError(
+            'SERVER',
+            `delegation verification failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+          wrapped.rotatedRefreshToken = result.refreshToken;
+          throw wrapped;
+        }
+
+        // Renew immediately when the returned delegation is already inside
+        // the renewal lead window, so signIn never resolves with an
+        // almost-expired delegation (spec renewal schedule).
+        let refreshToken = result.refreshToken;
+        let delegation = result.delegation;
+        if (delegationNeedsRenewalNow(delegation)) {
+          const renewed = await renewDelegation({
+            metadata: pending.delegation.metadata,
+            clientId: this.clientId,
+            refreshToken,
+            sessionKey: pending.delegation.sessionKey,
+            requestedPermissions: delegation.permissions,
+            expectedTinycloudHost: cfg.tinycloudHost,
+            fetchFn: cfg.fetchFn,
+            sha256Fn: this.sha256,
+            sleepFn: cfg.sleepFn,
+          });
+          try {
+            await cfg.verifyDelegation(renewed.delegation);
+          } catch (error) {
+            const wrapped = new OpenKeyNativeError(
+              'SERVER',
+              `delegation verification failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+            wrapped.rotatedRefreshToken = renewed.refreshToken;
+            throw wrapped;
+          }
+          refreshToken = renewed.refreshToken;
+          delegation = renewed.delegation;
+        }
+
         const session: DelegationSession = {
           sessionKey: pending.delegation.sessionKey,
-          refreshToken: result.refreshToken,
-          permissions: result.delegation.permissions,
+          refreshToken,
+          permissions: delegation.permissions,
         };
         this.delegationSession = session;
-        // Best-effort: an in-memory session still works until restart.
-        await this.persistDelegationSession(session).catch(() => {});
+        await this.persistSessionOrThrow(session);
+
         pending.resolve({
           accessToken: result.accessToken,
           // The native flow issues no ID token; keep the AuthTokens shape.
           idToken: '',
-          refreshToken: result.refreshToken,
+          refreshToken,
           expiresIn: result.expiresIn ?? 0,
-          delegation: result.delegation,
+          delegation,
         });
         return;
       }
@@ -540,7 +644,9 @@ export class OpenKeyRN {
       pending.resolve(tokens);
     } catch (error) {
       // If the code was already exchanged, persist the rotated refresh token
-      // before reporting the error — the old token is dead (spec).
+      // before reporting the error — the old token is dead (spec). When
+      // persistence itself fails, the caller still needs the token, so the
+      // original error (which carries rotatedRefreshToken) is rethrown.
       if (
         error instanceof OpenKeyNativeError &&
         error.rotatedRefreshToken &&
@@ -552,7 +658,11 @@ export class OpenKeyRN {
           permissions: pending.delegation.permissions,
         };
         this.delegationSession = session;
-        await this.persistDelegationSession(session).catch(() => {});
+        try {
+          await this.persistDelegationSession(session);
+        } catch {
+          // Keep the original error: it already carries rotatedRefreshToken.
+        }
       }
       pending.reject(
         pending.delegation
@@ -562,10 +672,15 @@ export class OpenKeyRN {
     }
   }
 
-  private async renewOnce(options?: {
-    permissionsSubset?: NativeDelegationPermission[];
-    siweNonce?: string;
-  }): Promise<RenewDelegationResult> {
+  private async renewOnce(
+    options:
+      | {
+          permissionsSubset?: NativeDelegationPermission[];
+          siweNonce?: string;
+        }
+      | undefined,
+    generation: number,
+  ): Promise<RenewDelegationResult> {
     const cfg = this.delegation!;
     let reloadedAfterConflict = false;
     for (;;) {
@@ -587,25 +702,43 @@ export class OpenKeyRN {
           sha256Fn: this.sha256,
           sleepFn: cfg.sleepFn,
         });
+        // A signOut() during the request invalidated this renewal: discard
+        // the result and report signed-out rather than persisting a rotated
+        // token over a wiped session.
+        if (generation !== this.sessionGeneration) {
+          throw new OpenKeyNativeError(
+            'NOT_SIGNED_IN',
+            'sign-out during renewal',
+          );
+        }
+        await cfg.verifyDelegation(result.delegation);
         const next: DelegationSession = {
           sessionKey: session.sessionKey,
           refreshToken: result.refreshToken,
           permissions: result.delegation.permissions,
         };
         this.delegationSession = next;
-        await this.persistDelegationSession(next).catch(() => {});
+        await this.persistSessionOrThrow(next);
         return result;
       } catch (error) {
         if (error instanceof OpenKeyNativeError) {
           // The server already rotated the token: persist it before
           // reporting the error or the session is lost (spec).
-          if (error.rotatedRefreshToken) {
+          if (
+            error.rotatedRefreshToken &&
+            generation === this.sessionGeneration
+          ) {
             const next: DelegationSession = {
               ...session,
               refreshToken: error.rotatedRefreshToken,
             };
             this.delegationSession = next;
-            await this.persistDelegationSession(next).catch(() => {});
+            try {
+              await this.persistDelegationSession(next);
+            } catch {
+              // The thrown error already carries rotatedRefreshToken —
+              // the caller can retry persisting it.
+            }
           }
           if (error.code === 'RENEWAL_CONFLICT' && !reloadedAfterConflict) {
             // Another instance rotated the token first: reload what storage
@@ -671,6 +804,28 @@ export class OpenKeyRN {
   }
 
   /**
+   * Persist a session and convert a storage failure into a typed error
+   * carrying the rotated refresh token, so the caller can retry persisting
+   * the token rather than losing the session (spec).
+   */
+  private async persistSessionOrThrow(
+    session: DelegationSession,
+  ): Promise<void> {
+    try {
+      await this.persistDelegationSession(session);
+    } catch (error) {
+      const wrapped = new OpenKeyNativeError(
+        'NETWORK',
+        `failed to persist delegation session: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      wrapped.rotatedRefreshToken = session.refreshToken;
+      throw wrapped;
+    }
+  }
+
+  /**
    * `OpenKeyError` and `OpenKeyNativeError` pass through (delegation
    * protocol errors need `status`/`retryAfterSeconds`/`rotatedRefreshToken`);
    * anything else becomes `UNKNOWN`.
@@ -688,16 +843,17 @@ export class OpenKeyRN {
   /**
    * Plain-mode errors are always `OpenKeyError`. A native code that exists
    * verbatim (`USER_CANCELLED`, `ACCESS_DENIED`, `STATE_MISMATCH`, `SERVER`)
-   * is re-mapped onto `OpenKeyError`; anything else becomes `UNKNOWN`.
+   * is re-mapped onto `OpenKeyError`; every other native code (including
+   * `consent_required`) maps to `SERVER` — in plain mode the only OAuth
+   * `error=` with its own code is `access_denied`.
    */
   private toPlainError(error: unknown): Error {
     if (error instanceof OpenKeyError) return error;
-    if (
-      error instanceof OpenKeyNativeError &&
-      PLAIN_CALLBACK_CODES.has(error.code)
-    ) {
+    if (error instanceof OpenKeyNativeError) {
       return new OpenKeyError(
-        error.code as OpenKeyError['code'],
+        PLAIN_CALLBACK_CODES.has(error.code)
+          ? (error.code as OpenKeyError['code'])
+          : 'SERVER',
         error.message,
       );
     }

@@ -113,7 +113,7 @@ const openkey = new OpenKeyRN({
   openBrowser: (url, redirectUri) => ..., // Required: opens URL in system browser
   sha256: (input) => ...,           // Optional: custom SHA-256 for PKCE
   timeoutMs: 300_000,               // Optional: sign-in timeout (default 5 min)
-  issuer: 'https://api.openkey.so/api/auth', // Optional: expected `iss` (default `${host}/api/auth`)
+  issuer: 'https://api.openkey.so/api/auth', // Optional: expected `iss` + discovery issuer (this is the default; never derived from host — override for staging/self-hosted)
   scopes: ['openid', 'email', 'keys', 'offline_access'], // Optional: requested scopes (this is the default)
   resource: 'https://api.example.com', // Optional: RFC 8707 audience; access tokens become JWTs. Not sent by default.
   delegation: { ... },              // Optional: TinyCloud native-delegation mode (below)
@@ -129,14 +129,16 @@ const tokens = await openkey.signIn();
 ```
 
 Every callback must carry `iss` equal to the configured issuer (RFC 9207)
-and a `state` matching the pending request; a mismatch rejects `signIn()`
-with `STATE_MISMATCH`. A callback with `error=access_denied` rejects with
+— which defaults to `https://api.openkey.so/api/auth`, the OpenKey
+authorization server, and is never derived from `host` — plus a `state`
+matching the pending request; a mismatch rejects `signIn()` with
+`STATE_MISMATCH`. A callback with `error=access_denied` rejects with
 `ACCESS_DENIED`, any other `error` with `SERVER`, and `{type: 'cancel' |
 'dismiss' | 'locked'}` results reject with `USER_CANCELLED`.
 
 ### `openkey.handleCallback(url)`
 
-Handle an incoming deep link redirect. Call this from your app's URL/deep link handler when your opener resolves `void`. Returns `true` if the URL matched a pending sign-in flow, `false` otherwise.
+Handle an incoming deep link redirect. Call this from your app's URL/deep link handler when your opener resolves `void`. Returns `true` if the URL's `state` matched a pending sign-in flow, `false` otherwise — a callback whose `state` belongs to no pending flow is ignored, never attributed to another flow.
 
 ```typescript
 const handled: boolean = openkey.handleCallback(incomingUrl);
@@ -144,7 +146,9 @@ const handled: boolean = openkey.handleCallback(incomingUrl);
 
 ### `openkey.refreshToken(refreshToken)`
 
-Exchange a refresh token for new tokens.
+Exchange a refresh token for new tokens (plain mode only — in delegation
+mode the provider refresh grant is refused; `refreshToken()` throws
+`UNAVAILABLE`, use `renew()` instead).
 
 ```typescript
 const newTokens = await openkey.refreshToken(tokens.refreshToken!);
@@ -192,6 +196,18 @@ const openkey = new OpenKeyRN({
       set: (k, v) => SecureStore.setItemAsync(k, v),
       remove: (k) => SecureStore.deleteItemAsync(k),
     },
+    // Required — the SDK verifies every returned delegation before
+    // accepting it: the spec requires the session SIWE bytes (`siwe`) and
+    // `signature` to reproduce `delegationHeader` and `delegationCid`.
+    // Implement with the TinyCloud session SDK, e.g.:
+    //   verifyDelegation: (d) => tinycloudSession.verifyDelegation(
+    //         siwe: d.siwe!,
+    //         signature: d.signature!,
+    //         delegationHeader: d.delegationHeader!,
+    //         delegationCid: d.delegationCid!,
+    //       ),
+    // Must reject/throw on failure; the SDK fails closed without it.
+    verifyDelegation: (delegation) => myTinyCloudVerify(delegation),
     ttlSeconds: 3600,        // Optional; clamped to the client ceiling.
     siweNonce: undefined,    // Optional app-bound SIWE nonce.
   },
@@ -213,13 +229,21 @@ In delegation mode `config.scopes` are appended to the mandatory
 The `storage` interface (`OpenKeySecureStore`) is where the SDK keeps the
 Ed25519 session private JWK and the rotated refresh token — back it with
 Expo SecureStore, react-native-keychain, or encrypted MMKV. Persistence is
-best-effort: the in-memory session still works until restart if a write
-fails.
+strict: if a write fails, `signIn()`/`renew()` reject with an
+`OpenKeyNativeError('NETWORK')` carrying `rotatedRefreshToken` so the
+caller can retry persisting it. `signOut()` rejects with `NETWORK` if the
+credential wipe itself fails.
 
 `renew()` is single-flight, persists the rotated refresh token before
 resolving, reloads the stored token and retries once on
 `RENEWAL_CONFLICT`, and waits `Retry-After` (handled inside
-`@openkey/core`) on `RENEWAL_TOO_SOON` / `TEMPORARILY_UNAVAILABLE`.
+`@openkey/core`) on `RENEWAL_TOO_SOON` / `TEMPORARILY_UNAVAILABLE`. Every
+renewed delegation passes through `verifyDelegation` before it is
+accepted. If `signIn()` returns a delegation that is already inside the
+spec's renewal lead window, it is renewed before `signIn()` resolves —
+you always receive a delegation with a full TTL. A `signOut()` while a
+`renew()` is in flight makes that renew discard its result and reject
+with `NOT_SIGNED_IN` instead of persisting over the wiped session.
 
 Delegation-mode errors are `OpenKeyNativeError` (`code`,
 `status`, `retryAfterSeconds`, `rotatedRefreshToken`); plain-mode errors
@@ -249,7 +273,7 @@ interface OpenKeyRNFullConfig {
   clientId: string;            // OAuth client ID
   redirectUri: string;         // Deep link redirect URI
   openBrowser: BrowserOpener;  // Function to open URL in system browser
-  issuer?: string;             // Expected callback `iss` (default `${host}/api/auth`)
+  issuer?: string;             // Expected callback `iss` + discovery issuer (default https://api.openkey.so/api/auth; never derived from host)
   scopes?: string[];           // Requested scopes (default 'openid email keys offline_access')
   resource?: string;           // RFC 8707 resource indicator (not sent by default)
   delegation?: OpenKeyRNDelegationConfig; // TinyCloud delegation mode
