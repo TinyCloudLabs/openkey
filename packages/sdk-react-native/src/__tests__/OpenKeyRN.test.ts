@@ -2448,9 +2448,11 @@ describe('OpenKeyRN', () => {
       const thrown = await rejection(oldRenew);
       expect(thrown.code).toBe('NOT_SIGNED_IN');
       expect(thrown.rotatedRefreshToken).toBe('rt-a-rotated');
-      // Session B is intact and A's orphaned rotated grant was revoked.
+      // Session B is intact. The sign-in revoked the session it replaced
+      // (A, by its stored token), and A's orphaned rotated grant was
+      // revoked too.
       expect(store.map.get(SESSION_KEY)).toBe(sessionB);
-      expect(race.revoked).toEqual(['rt-a-rotated']);
+      expect(race.revoked).toEqual(['rt-a', 'rt-a-rotated']);
     });
 
     // ── Round 5: bounded pending revoke, discovery retry, signIn/renew

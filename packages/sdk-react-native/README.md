@@ -250,8 +250,8 @@ rotated token on `rotatedRefreshToken` (it is also persisted
 best-effort). Terminal errors (`INVALID_GRANT`, `CONSENT_REQUIRED`,
 `ACCESS_DENIED`, `SPACE_UNAVAILABLE`) wipe the local session before
 rethrowing: the grant is dead, so that's a local sign-out. A terminal
-outcome persists nothing — a rotated refresh token on the error (for
-example `hosting: "failed"`) is revoked best-effort instead. If `signIn()`
+outcome persists nothing — the grant of a rotated refresh token on the
+error (for example `hosting: "failed"`) is abandoned instead (see below). If `signIn()`
 returns a delegation already inside the spec's renewal lead window, it is
 renewed before `signIn()` resolves — you always receive a delegation
 with a full TTL; if that immediate renew fails non-terminally, the error
@@ -262,7 +262,7 @@ code exchange) leaves an existing stored session untouched.
 A `signOut()` while a `signIn()` (including its discovery and PAR), a
 `renew()` or a code exchange is in flight makes it discard its result and
 reject with `NOT_SIGNED_IN` instead of persisting over the wiped session
-(an orphaned grant is revoked best-effort).
+(the orphaned grant is abandoned, see below).
 
 #### Session storage model
 
@@ -277,7 +277,7 @@ removal is a compare-and-set, serialized with all other storage access:
 - `renew()`, the immediate renew after sign-in, the rotated-token recovery
   writes and terminal wipes only write or remove the record while it still
   holds *their* session. If another session replaced it, they write nothing,
-  reject with `NOT_SIGNED_IN`, and revoke their rotated grant best-effort;
+  reject with `NOT_SIGNED_IN`, and abandon their rotated grant;
 - `signOut()` signs out whatever session is current. It removes the record
   only if it still holds the session and token just revoked. If a different
   session was stored meanwhile (only possible from another `OpenKeyRN`
@@ -286,8 +286,16 @@ removal is a compare-and-set, serialized with all other storage access:
   `NETWORK`.
 
 A `signIn()` that has not yet stored its session (for example one the
-user cancels) does not affect an in-flight `renew()`. A `signIn()` does
-not revoke the session it replaces.
+user cancels) does not affect an in-flight `renew()`.
+
+**No abandoned live grants.** Every grant the SDK lets go of without
+storing it is revoked, and if that revoke fails transiently it goes into
+the pending-revoke record (the same bounded entry `signOut()` uses). That
+covers the session a `signIn()` replaces (revoked after the new session
+is saved), a superseded renew's or sign-in's token, an orphaned code
+exchange, and a terminal outcome's rotated token. The remaining case is
+a failed secure-store *write*: the live token then rides the error as
+`rotatedRefreshToken` and is not revoked.
 
 Delegation-mode errors are `OpenKeyNativeError` (`code`,
 `status`, `retryAfterSeconds`, `rotatedRefreshToken`); plain-mode errors

@@ -116,14 +116,18 @@ class FakeServer {
   readonly grants = new Map<string, 'active' | 'revoked'>();
   readonly revokeCalls: string[] = [];
   readonly renewCalls: string[] = [];
-  /** Sids whose revoke answered 503 at least once. */
-  readonly revokeFailedSids = new Set<string>();
+  /** Sids that received a terminal (4xx) revoke response. */
+  readonly terminalRevokeSids = new Set<string>();
+  /** Renews that rotate but answer `hosting: "failed"` (terminal). */
+  hostingFailedRenews = 0;
   /** Exchanges whose delegation is already inside the renewal lead window. */
   leadWindowExchanges = 0;
   revokeFailRate = 0;
   rng: () => number = Math.random;
   /** Awaited before every request is handled (scheduler / gates). */
   gate: (url: string) => Promise<void> = () => Promise.resolve();
+  /** Awaited after a request is handled, before its response returns. */
+  responseGate: (url: string) => Promise<void> = () => Promise.resolve();
 
   private issue(sid: string): string {
     const token = `rt-${sid.slice(0, 6)}-${++this.n}`;
@@ -189,6 +193,12 @@ class FakeServer {
 
   readonly fetch: NativeFetch = async (url: string, init?: NativeFetchInit) => {
     await this.gate(url);
+    const response = await this.handle(url, init);
+    await this.responseGate(url);
+    return response;
+  };
+
+  private async handle(url: string, init?: NativeFetchInit): Promise<Response> {
     const body = new URLSearchParams(init?.body ?? '');
     if (url.includes('/.well-known/')) return jsonResponse(METADATA);
     if (url.endsWith('/oauth2/par')) {
@@ -224,22 +234,29 @@ class FakeServer {
       const permissions = details
         ? (JSON.parse(details) as { permissions: NativeDelegationPermission[] }[])[0]!.permissions
         : [CAP_READ, KV_PERMISSION];
-      return jsonResponse({ refresh_token: this.issue(info.sid), tinycloud_delegation: this.delegation(info.sid, permissions) });
+      const delegation: Record<string, unknown> = this.delegation(info.sid, permissions);
+      if (this.hostingFailedRenews > 0) {
+        this.hostingFailedRenews -= 1;
+        delegation.hosting = 'failed';
+      }
+      return jsonResponse({ refresh_token: this.issue(info.sid), tinycloud_delegation: delegation });
     }
     if (url.endsWith('/oauth2/tinycloud/revoke')) {
       const token = body.get('refresh_token')!;
       this.revokeCalls.push(token);
       const info = this.tokens.get(token);
-      if (!info || info.status === 'dead') return jsonResponse({ error: 'invalid_grant' }, 400);
+      if (!info || info.status === 'dead') {
+        if (info) this.terminalRevokeSids.add(info.sid);
+        return jsonResponse({ error: 'invalid_grant' }, 400);
+      }
       if (this.rng() < this.revokeFailRate) {
-        this.revokeFailedSids.add(info.sid);
         return jsonResponse({ error: 'temporarily_unavailable' }, 503);
       }
       this.grants.set(info.sid, 'revoked');
       return new Response(null, { status: 200 });
     }
     throw new Error(`unexpected fetch: ${url}`);
-  };
+  }
 
   /** Opener that completes the authorization for the PAR it was given. */
   readonly openBrowser: BrowserOpener = async (url: string): Promise<BrowserResult | void> => {
@@ -270,12 +287,20 @@ class FakeServer {
   }
 }
 
-/** A gate that holds requests matching `match` until released. */
-function holdFirst(server: FakeServer, match: (url: string) => boolean) {
+/**
+ * Hold the first request matching `match` until released — before the
+ * server handles it, or (`response`) after the server handled it, so its
+ * effect (e.g. a rotation) has happened but the client hasn't seen it.
+ */
+function holdFirst(
+  server: FakeServer,
+  match: (url: string) => boolean,
+  phase: 'request' | 'response' = 'request',
+) {
   const reached = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   let held = false;
-  server.gate = async (url) => {
+  server[phase === 'request' ? 'gate' : 'responseGate'] = async (url) => {
     if (!held && match(url)) {
       held = true;
       reached.resolve();
@@ -340,19 +365,19 @@ describe('CAS session storage model', () => {
     const store = memoryStore();
     const client = server.client(store);
     server.leadWindowExchanges = 1; // the first sign-in renews immediately
-    const hold = holdFirst(server, (url) => url.endsWith('/renew'));
+    const hold = holdFirst(server, (url) => url.endsWith('/renew'), 'response');
 
     const first = client.signIn();
     first.catch(() => {});
-    await hold.reached; // B saved; its immediate renew is in flight
-    const second = await client.signIn(); // C replaces B
+    await hold.reached; // B saved; the server rotated B, response in flight
+    const second = await client.signIn(); // C replaces B (B is revoked)
     hold.release();
 
     const thrown = await rejection(first);
     expect(thrown.code).toBe('NOT_SIGNED_IN');
-    // C is intact; B's rotated grant was revoked, not written over C.
+    // C is intact; B's rotated token was abandoned, not written over C.
     expect(storedToken(store)).toBe(second.refreshToken);
-    expect(server.revokeCalls).toEqual([thrown.rotatedRefreshToken!]);
+    expect(server.revokeCalls).toContain(thrown.rotatedRefreshToken!);
     expect(server.liveSids()).toEqual([server.sidOf(second.refreshToken)!]);
   });
 
@@ -361,7 +386,7 @@ describe('CAS session storage model', () => {
     const store = memoryStore();
     const { sessionKey: keyA } = await server.seedSession(store);
     const client = server.client(store);
-    const hold = holdFirst(server, (url) => url.endsWith('/renew'));
+    const hold = holdFirst(server, (url) => url.endsWith('/renew'), 'response');
     const verifying = new OpenKeyRN({
       host: 'https://auth.example.com',
       clientId: CLIENT_ID,
@@ -393,6 +418,9 @@ describe('CAS session storage model', () => {
     expect(thrown.code).toBe('SERVER');
     expect(thrown.rotatedRefreshToken).toBeDefined();
     expect(storedToken(store)).toBe(signedIn.refreshToken);
+    // A was replaced (and revoked); its rotated token was abandoned too.
+    expect(server.revokeCalls).toContain(thrown.rotatedRefreshToken!);
+    expect(server.liveSids()).toEqual([server.sidOf(signedIn.refreshToken)!]);
   });
 
   it('renew() always uses the stored session, never an older in-memory one', async () => {
@@ -409,6 +437,85 @@ describe('CAS session storage model', () => {
     expect(server.renewCalls.at(-1)).toBe(signedIn.refreshToken);
     expect(storedToken(store)).toBe(renewed.refreshToken);
     expect(server.sidOf(renewed.refreshToken)).toBe(server.sidOf(signedIn.refreshToken));
+  });
+
+  it('signIn() revokes the session it replaces', async () => {
+    const server = new FakeServer();
+    const store = memoryStore();
+    const { sessionKey: keyA } = await server.seedSession(store);
+    const tokens = await server.client(store).signIn();
+
+    expect(server.grants.get(keyA.publicJwk.x)).toBe('revoked');
+    expect(server.liveSids()).toEqual([server.sidOf(tokens.refreshToken)!]);
+    expect(pendingTokens(store)).toEqual([]);
+  });
+
+  it('signIn() keeps a pending revoke for the replaced session when its revoke fails transiently', async () => {
+    const server = new FakeServer();
+    const store = memoryStore();
+    const { sessionKey: keyA, token: tokenA } = await server.seedSession(store);
+    server.revokeFailRate = 1;
+    const tokens = await server.client(store).signIn();
+
+    expect(storedToken(store)).toBe(tokens.refreshToken);
+    const entries = JSON.parse(store.map.get(PENDING_KEY)!);
+    expect(entries).toEqual([
+      { privateJwk: keyA.privateJwk, refreshToken: tokenA, attempts: 1, expiresAt: expect.any(Number) },
+    ]);
+    expect(entries[0].expiresAt).toBeLessThanOrEqual(Date.now() + SEVEN_DAYS_MS);
+  });
+
+  it("a superseded renew's rotated grant becomes a pending revoke on a transient failure", async () => {
+    const server = new FakeServer();
+    const store = memoryStore();
+    await server.seedSession(store);
+    const client = server.client(store);
+    const hold = holdFirst(server, (url) => url.endsWith('/renew'), 'response');
+
+    const renew = client.renew();
+    renew.catch(() => {});
+    await hold.reached; // the server rotated A
+    server.revokeFailRate = 1;
+    const signedIn = await client.signIn(); // replaces A
+    hold.release();
+
+    const thrown = await rejection(renew);
+    expect(thrown.code).toBe('NOT_SIGNED_IN');
+    expect(storedToken(store)).toBe(signedIn.refreshToken);
+    expect(pendingTokens(store)).toContain(thrown.rotatedRefreshToken!);
+  });
+
+  it("a terminal outcome's rotated grant becomes a pending revoke on a transient failure", async () => {
+    const server = new FakeServer();
+    const store = memoryStore();
+    await server.seedSession(store);
+    server.hostingFailedRenews = 1;
+    server.revokeFailRate = 1;
+
+    const thrown = await rejection(server.client(store).renew());
+    expect(thrown.code).toBe('SPACE_UNAVAILABLE');
+    expect(store.map.has(SESSION_KEY)).toBe(false);
+    expect(pendingTokens(store)).toEqual([thrown.rotatedRefreshToken!]);
+  });
+
+  it('an orphaned exchange becomes a pending revoke on a transient failure', async () => {
+    const server = new FakeServer();
+    const store = memoryStore();
+    const client = server.client(store);
+    const hold = holdFirst(server, (url) => url.endsWith('/oauth2/token'), 'response');
+
+    const signIn = client.signIn();
+    signIn.catch(() => {});
+    await hold.reached; // the server issued B's tokens
+    server.revokeFailRate = 1;
+    await client.signOut();
+    hold.release();
+
+    const thrown = await rejection(signIn);
+    expect(thrown.code).toBe('NOT_SIGNED_IN');
+    expect(store.map.has(SESSION_KEY)).toBe(false);
+    expect(pendingTokens(store)).toEqual([thrown.rotatedRefreshToken!]);
+    expect(server.liveSids()).toEqual([server.sidOf(thrown.rotatedRefreshToken!)!]);
   });
 
   it('signOut() rejects on a storage read failure and removes nothing', async () => {
@@ -478,8 +585,7 @@ async function runSchedule(seed: number) {
   server.gate = () => new Promise<void>((resolve) => waiting.push(resolve));
 
   const store = memoryStore();
-  const { sessionKey: keyA } = await server.seedSession(store);
-  const sidA = keyA.publicJwk.x;
+  await server.seedSession(store);
   await server.seedPending(store);
   const client = server.client(store);
 
@@ -520,14 +626,14 @@ async function runSchedule(seed: number) {
       if (waiting.length === 0) break;
     }
   }
-  return { server, store, sidA, order, outcomes, signInToken };
+  return { server, store, order, outcomes, signInToken };
 }
 
 describe('randomized interleavings (signIn / signOut / renew / pending revoke)', () => {
   const SEEDS = 150;
   it(`keeps the stored session consistent across ${SEEDS} seeded schedules`, async () => {
     for (let seed = 1; seed <= SEEDS; seed++) {
-      const { server, store, sidA, order, outcomes, signInToken } = await runSchedule(seed);
+      const { server, store, order, outcomes, signInToken } = await runSchedule(seed);
       const context = `seed ${seed}, start order ${order.join(' → ')}, outcomes ${JSON.stringify([...outcomes])}`;
       const check = (ok: boolean, what: string) => {
         if (!ok) throw new Error(`${what} (${context})`);
@@ -546,17 +652,14 @@ describe('randomized interleavings (signIn / signOut / renew / pending revoke)',
       const token = storedToken(store);
       check(token === null || server.isCurrent(token), `stored token ${token} is not current`);
 
-      // Every live grant is accounted for: stored, waiting in the pending-
-      // revoke record, one whose revoke failed transiently, or session A
-      // after a successful sign-in replaced it (sign-in does not revoke
-      // the session it replaces).
-      const accounted = new Set<string>();
+      // No abandoned live grants: every grant still live on the server is
+      // the stored session, waiting in the pending-revoke record, or one
+      // whose revoke got a terminal response.
+      const accounted = new Set<string>(server.terminalRevokeSids);
       if (token) accounted.add(server.sidOf(token)!);
       for (const t of pendingTokens(store)) accounted.add(server.sidOf(t)!);
-      for (const sid of server.revokeFailedSids) accounted.add(sid);
-      if (signInToken) accounted.add(sidA);
       for (const sid of server.liveSids()) {
-        check(accounted.has(sid), `live grant ${sid.slice(0, 6)} is unaccounted for`);
+        check(accounted.has(sid), `live grant ${sid.slice(0, 6)} is abandoned`);
       }
 
       // Sign-out intent: a signOut() that started after renew and signIn

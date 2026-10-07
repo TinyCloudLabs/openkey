@@ -45,15 +45,15 @@ fails closed without it. Storage writes are strict and serialized with
 `OpenKeyNativeError('NETWORK')` carrying `rotatedRefreshToken`. Terminal
 renew/exchange errors (`INVALID_GRANT`, `CONSENT_REQUIRED`,
 `ACCESS_DENIED`, `SPACE_UNAVAILABLE`) wipe the session they apply to
-before rethrowing and persist nothing; a rotated refresh token on such an
-error is revoked best-effort. A failed `signIn()` (`ACCESS_DENIED`,
-`USER_CANCELLED`, `STATE_MISMATCH`, a failed exchange) never wipes an
-existing stored session. `signOut()` signs the user out immediately: a
-successful or terminally failed revoke wipes the session and resolves,
-while a transient revoke failure moves the session key and refresh token
-to a pending-revoke record and rejects with the typed error. Only
-`NETWORK`, `TEMPORARILY_UNAVAILABLE` (after the internal retry), any HTTP
-5xx from the revoke endpoint or server discovery, and HTTP 429 are
+before rethrowing and persist nothing; the grant of a rotated refresh
+token on such an error is abandoned (below). A failed `signIn()`
+(`ACCESS_DENIED`, `USER_CANCELLED`, `STATE_MISMATCH`, a failed exchange)
+never wipes an existing stored session. `signOut()` signs the user out
+immediately: a successful or terminally failed revoke wipes the session
+and resolves, while a transient revoke failure moves the session key and
+refresh token to a pending-revoke record and rejects with the typed error.
+Only `NETWORK`, `TEMPORARILY_UNAVAILABLE` (after the internal retry), any
+HTTP 5xx from the revoke endpoint or server discovery, and HTTP 429 are
 transient; every other revoke error, including any other 4xx, is terminal.
 Pending revokes are retried on the next `signOut()`, on construction and
 on `signIn()`, and dropped once they succeed or fail terminally, once the
@@ -62,16 +62,20 @@ sooner), or after 20 attempts. A failed server discovery is never cached.
 A failed secure-store write or wipe also rejects. A `signOut()` during an
 in-flight `signIn()` (including discovery and PAR), `renew()` or code
 exchange makes it discard its result and reject `NOT_SIGNED_IN` instead of
-persisting over the wiped session (an orphaned grant is revoked
-best-effort), and the user reads as signed out from the moment it starts.
-Session storage is a compare-and-set model with no in-memory cache: every
-write or removal of the stored session (sign-in save, renew save,
-immediate renew, rotated-token recovery, terminal wipe, sign-out removal)
-states the session it expects to be current and writes nothing when that
-no longer holds. `signOut()` signs out whatever session is current, never
-removes a newer one it did not revoke, and rejects with `NETWORK` without
-removing anything when the record can't be read. A `signIn()` started
-during a `signOut()` saves after it. A `signIn()` that has not stored its
+persisting over the wiped session (the orphaned grant is abandoned), and
+the user reads as signed out from the moment it starts. Session storage is
+a compare-and-set model with no in-memory cache: every write or removal of
+the stored session (sign-in save, renew save, immediate renew,
+rotated-token recovery, terminal wipe, sign-out removal) states the
+session it expects to be current and writes nothing when that no longer
+holds. `signOut()` signs out whatever session is current, never removes a
+newer one it did not revoke, and rejects with `NETWORK` without removing
+anything when the record can't be read. A `signIn()` started during a
+`signOut()` saves after it. No abandoned live grants: every grant the SDK
+lets go of without storing it — the session a `signIn()` replaces, a
+superseded renew's or sign-in's token, an orphaned exchange, a terminal
+outcome's rotated token — is revoked, or kept as a bounded pending revoke
+when the revoke fails transiently. A `signIn()` that has not stored its
 session yet (e.g. a cancelled one) never affects an in-flight `renew()`. A
 delegation returned by sign-in that is already inside the renewal lead
 window is renewed before `signIn()` resolves — if that renew fails
