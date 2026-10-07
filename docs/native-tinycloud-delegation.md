@@ -108,11 +108,13 @@ registration and console-registered SPAs cannot get the scope.
 
 Further scope isolation:
 
-- The authorize guard refuses `tinycloud:delegation` unless the request came
-  through a `request_uri` or carries the server-set `tinycloud_request`
-  binding. For a delegation-enabled client, it also refuses an authorize
-  request that omits `scope` and has no `request_uri`, because the provider
-  would otherwise fall back to all of the client's scopes.
+- The authorize guard refuses `tinycloud:delegation` unless the request
+  either carries a `request_uri` or carries a `tinycloud_request` that passes
+  the server-side [binding check](#tinycloud_request-binding). The query
+  parameter alone is never trusted. For a delegation-enabled client, the
+  guard also refuses an authorize request that omits `scope` and has no
+  `request_uri`, because the provider would otherwise fall back to all of
+  the client's scopes.
 - An access token issued with `tinycloud:delegation` grants no signing.
   `/api/delegate/sign` returns 403 for it, and stays limited to confidential
   `web` clients.
@@ -194,7 +196,7 @@ by `prepareDelegationSession`, the same builder used for web sessions.
 | `URI` | The session `did:key` derived from the PAR `session_key` |
 | `Version` / `Chain ID` | `1` / `1` |
 | `Nonce` | The request's `siwe_nonce` if given, otherwise a random server nonce |
-| `Issued At` / `Expiration Time` | Signing time / signing time + the delegation TTL ([TTL rules](#ttl-rules)) |
+| `Issued At` / `Expiration Time` | The moment OpenKey signs / that moment + the delegation TTL ([TTL rules](#ttl-rules)). Prepare previews them with prepare-time values; approve sets them at signing ([Approve](#approve)). |
 | `Resources` | One `urn:recap:` resource covering exactly the approved permissions in the user's `applications` space |
 
 The only other signature in this flow is the optional, separately disclosed
@@ -230,7 +232,7 @@ request. Any other field, including any host field, is refused.
 | Member | Required | Value |
 |---|---|---|
 | `type` | yes | `"tinycloud_delegation"` |
-| `session_key` | yes | Public Ed25519 JWK: `{"kty":"OKP","crv":"Ed25519","x":"<b64url 32 bytes>"}`, optionally with a non-empty string `kid`. `x` must decode to exactly 32 bytes and re-encode to the same string. Private (`d`), `null`-valued or other members are refused. |
+| `session_key` | yes | Public Ed25519 JWK: `{"kty":"OKP","crv":"Ed25519","x":"<b64url 32 bytes>"}`, optionally with a non-empty string `kid` (ignored by the [thumbprint](#session-key-thumbprint)). `x` must decode to exactly 32 bytes and re-encode to the same string. Private (`d`), `null`-valued or other members are refused. |
 | `permissions` | yes | A non-empty array of permission entries ([Permissions](#permissions-and-the-signed-session-siwe)), all inside the ceiling. |
 | `ttl_seconds` | no | 300 to the ceiling's `maxDelegationTtlSeconds`. Defaults to the ceiling value. |
 | `siwe_nonce` | no | `[A-Za-z0-9]{8,64}`. Lets the app bind its own backend nonce into the SIWE. |
@@ -250,7 +252,8 @@ authorization_details=[{"type":"tinycloud_delegation","session_key":{"kty":"OKP"
 ```
 
 On success OpenKey stores a `PENDING` request holding the public JWK, its
-RFC 7638 thumbprint (`sessionJkt`), the session DID, the validated
+thumbprint `sessionJkt` ([Session key thumbprint](#session-key-thumbprint)),
+the session DID, the validated
 permissions, the TTL, the nonce and the PKCE challenge. It responds:
 
 ```http
@@ -285,14 +288,45 @@ status `PENDING`, and a `request_uri` no older than 90 seconds. It then marks
 the request `RESOLVED`, so the URI is single-use. It returns the stored
 parameters plus `prompt=consent` and `tinycloud_request=<id>`. `prompt=consent`
 overrides the client's `skipConsent` and any saved provider consent, so the
-consent screen always appears. An unknown, expired or reused `request_uri`
-shows OpenKey's error page (`invalid_request_uri`) and does not redirect to
-the app. The SDK reports a closed sheet without a callback as
-`USER_CANCELLED`.
+consent screen always appears.
+
+An unknown, expired or reused `request_uri` does not redirect to the app. The
+provider redirects the browser to its own error page:
+
+```text
+https://api.openkey.so/api/auth/error?error=invalid_request_uri&error_description=request_uri+is+invalid+or+expired
+```
+
+That is the provider default (`${baseURL}/error`), because OpenKey sets no
+`onAPIError.errorURL`, and this spec does not require one. The SDK reports a
+sheet that closes without a callback as `USER_CANCELLED`.
 
 If the user isn't signed in, OpenKey sends them to `/auth/login` and then
 resumes with the stored, resolved query. Login and the consent page run on
 `https://openkey.so`.
+
+### `tinycloud_request` binding
+
+The post-login re-entry is a plain `GET` to the authorize endpoint carrying
+the resolved query. `tinycloud_request` therefore arrives as an ordinary query
+parameter, and the provider does not check the query's `sig` or `exp` on a
+`GET`. Anyone can put `tinycloud_request=<id>` on an authorize URL, so the
+authorize guard checks it on the server. When there is no `request_uri`, the
+guard accepts a query carrying `tinycloud_request=<id>` only if the request
+row `<id>`:
+
+- exists, has status `RESOLVED` and is unexpired. Only OpenKey's own
+  `requestUriResolver` sets `RESOLVED`, so a row that was never resolved
+  (`PENDING`), or that has moved past `RESOLVED`, is refused;
+- has `clientId`, `redirectUri` and `codeChallenge` equal to the query's
+  `client_id`, `redirect_uri` and `code_challenge`, with
+  `code_challenge_method=S256`;
+- has stored scopes equal to the query's `scope`.
+
+Otherwise the guard redirects to the same error page with
+`error=invalid_request`, and never to the app. The same applies to any
+authorize request that has `tinycloud:delegation` in its scope but neither a
+`request_uri` nor a passing binding.
 
 Callbacks to the registered redirect URI:
 
@@ -332,7 +366,11 @@ Under the [lock order](#global-lock-order), OpenKey:
 2. binds `request.userId` to the session user on the first prepare, and
    returns 403 if a different user prepares it later;
 3. resolves the user's canonical key;
-4. builds the session SIWE with TTL = min(requested TTL, ceiling);
+4. builds a preview of the session SIWE. Its TTL is min(requested TTL,
+   ceiling), and its nonce is the request's `siwe_nonce`, or a server nonce
+   generated on the first prepare and reused by later revisions. Its
+   `Issued At` and `Expiration Time` hold prepare-time values that approval
+   replaces ([Approve](#approve));
 5. builds the [host plan](#host-plan) if one is needed;
 6. inserts an immutable `TinyCloudNativePreparation` with the next
    `revision`, and sets `request.currentRevision` to it.
@@ -375,7 +413,8 @@ The page renders **only** this server data (`@openkey/capability-review` and
 - the return scheme;
 - the node;
 - every permission, as path and actions;
-- the delegation lifetime and how long the app may keep renewing;
+- the delegation lifetime, as a duration from approval ("1 hour"), never
+  the preview's timestamps, and how long the app may keep renewing;
 - the host plan, as its own item, when it is present.
 
 ### Approve
@@ -391,18 +430,31 @@ Content-Type: application/json
 lock order, OpenKey requires:
 
 - status `RESOLVED`;
+- `now < request.expiresAt`, i.e. within 10 minutes of PAR;
 - `userId` equal to the session user;
 - `revision === currentRevision`;
 - a digest equal to the stored one;
 - echoed bytes identical to the stored `sessionSiwe` and `hostSiwe`;
-- the same canonical key;
-- an unexpired SIWE.
+- the same canonical key.
 
 It then records `request.consentGeneration` as the current
-[consent generation](#consent-generation-and-withdrawal), signs `sessionSiwe`
-with the canonical key, builds the delegation (`completeSessionSetup`), and
-stores it. It sets `APPROVED` and `approvedRevision`, then commits. **No
-canonical-key signature happens before this point.**
+[consent generation](#consent-generation-and-withdrawal).
+
+**Signing-time timestamps.** At signing time `t`, OpenKey rebuilds the session
+SIWE with `prepareDelegationSession` from the approved revision's inputs
+(address, chain ID, domain, session JWK, permissions and nonce), with
+`Issued At = t` and `Expiration Time = t + ttlSeconds`. The rebuilt message
+must match the approved `sessionSiwe` line for line, except for those two
+lines. Otherwise approval fails with 409 `preparation_mismatch` and nothing is
+signed. The canonical key signs the rebuilt bytes. OpenKey builds the
+delegation from them (`completeSessionSetup`), stores it, sets `APPROVED` and
+`approvedRevision`, and commits. **No canonical-key signature happens before
+this point.**
+
+The user therefore approves every signed field except the two timestamps, and
+those are fixed relative to approval: their difference is the approved TTL. A
+slow consent no longer eats into the delegation's lifetime. The host SIWE has
+no expiry and is signed exactly as approved.
 
 After the commit, OpenKey activates the delegation on `tinycloudHost`
 ([Host plan](#host-plan)) and responds:
@@ -435,9 +487,9 @@ redirects with `error=access_denied&state=…&iss=…`.
 | 401 | `unauthorized` | No OpenKey session. |
 | 403 | `request_user_mismatch` | The request is bound to a different user. |
 | 404 | `request_not_found` | Unknown id. |
-| 409 | `request_not_pending` | The status isn't `RESOLVED`, or the request expired. |
+| 409 | `request_not_pending` | The status isn't `RESOLVED`, or `now ≥ request.expiresAt` (10 minutes after PAR). |
 | 409 | `preparation_superseded` | `revision` isn't current: another tab prepared again, or the host plan was refreshed. Prepare again. |
-| 409 | `preparation_mismatch` | Wrong digest, changed echoed bytes, changed canonical key, or expired SIWE. |
+| 409 | `preparation_mismatch` | Wrong digest, changed echoed bytes, changed canonical key, or a signing-time rebuild that differs from the approved SIWE in a line other than `Issued At` / `Expiration Time`. |
 | 503 | `temporarily_unavailable` | Lock contention ([Global lock order](#global-lock-order)). |
 
 All of these are refused before anything is signed.
@@ -487,7 +539,7 @@ OpenKey-Session-Proof: <compact JWS>
 Protected header:
 
 ```json
-{"typ":"openkey-session-proof+jwt","alg":"EdDSA","kid":"<b64url RFC 7638 thumbprint of the session JWK>"}
+{"typ":"openkey-session-proof+jwt","alg":"EdDSA","kid":"<sessionJkt>"}
 ```
 
 Payload (exactly these claims):
@@ -507,6 +559,28 @@ is never used. The proof binds one credential, one endpoint and one client.
 Replay is prevented because each credential is single-use and consumed under
 lock, not by remembering `jti` values. A missing or invalid proof gets 401
 `invalid_session_proof`.
+
+### Session key thumbprint
+
+`sessionJkt` is the RFC 7638 JWK thumbprint of the session key. This spec
+fixes every choice RFC 7638 leaves open:
+
+- **Input:** the RFC 8785 (JCS) serialization of exactly
+  `{"crv":"Ed25519","kty":"OKP","x":"<x>"}`. These are the three required
+  OKP members (RFC 8037 §2), in lexicographic order, with no whitespace. The
+  JWK's optional `kid`, and any other member, is **excluded**.
+- **Hash:** SHA-256.
+- **Encoding:** unpadded base64url.
+
+Test vector (RFC 8037 Appendix A.3):
+
+```text
+x          = 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo
+input      = {"crv":"Ed25519","kty":"OKP","x":"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"}
+sessionJkt = kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k
+```
+
+The same value results whether or not the PAR `session_key` carried a `kid`.
 
 ## Code exchange and token response
 
@@ -536,9 +610,11 @@ In the `customTokenResponseFields` hook, OpenKey:
    one succeeds;
 5. inserts a `TinyCloudNativeGrant` (consent id, consent generation, key,
    session JWK, permissions, TTL, host, `absoluteExpiresAt = now +
-   grantLifetimeSeconds`). `generateRefreshToken` then writes the new refresh
-   token's hash to `grant.refreshTokenHash`
-   (`WHERE refreshTokenHash IS NULL`).
+   grantLifetimeSeconds`), and commits. After the hook returns, the provider
+   creates the refresh-token row itself, outside OpenKey's transaction. Its
+   `generateRefreshToken` callback writes the new token's hash to
+   `grant.refreshTokenHash` (`WHERE refreshTokenHash IS NULL`). OpenKey
+   neither locks nor inserts token rows during code exchange.
 
 If anything fails after step 4, the grant is left unlinked or pointing at no
 token. Renewal requires a live matching token row, so it fails closed, and
@@ -590,10 +666,20 @@ Success (`Cache-Control: no-store`):
 - `hosting` is `existing`, `created` or `failed`.
 - OpenKey never returns or stores the session private key.
 
+**Native delegation clients cannot refresh the OpenKey access token.** The
+provider's `refresh_token` grant refuses their refresh tokens
+([interception](#provider-refresh-and-revoke-interception)). Renewal returns
+only a new refresh token and delegation, with no access token or ID token.
+After `expires_in` (300 s), an app that needs OpenKey API access (for example
+`userinfo`) must sign in again through the browser. The refresh token is used
+only to renew and revoke the TinyCloud delegation. SDKs must not offer an
+access-token refresh for these clients.
+
 Before using the delegation, the client checks that:
 
 - `verificationMethod` is the DID of its own session key;
-- `expiresAt` is in the future;
+- `expiresAt` is in the future. If less than the renewal lead remains, it
+  renews immediately;
 - `permissions` is a subset of what it requested;
 - `tinycloudHost` is the host it expects;
 - `siwe` and `signature` reproduce `delegationHeader` and `delegationCid`.
@@ -627,7 +713,10 @@ Processing:
 
 1. Hash the token. Look up the grant without a lock by
    `refreshTokenHash = h OR previousRefreshTokenHash = h`. No grant →
-   400 `invalid_grant`, no side effects.
+   401 `invalid_session_proof`, no side effects. This is the same response as
+   a bad proof in step 2, so a caller without a valid proof cannot learn
+   whether a token is a live native token. Native revoke behaves the same
+   way.
 2. Verify the proof against the grant's stored JWK, and `client_id` against
    the grant. Failure → 401 `invalid_session_proof`, no side effects.
 3. Lock consent by `(userId, clientId)` `FOR SHARE`; if it is missing, return
@@ -651,8 +740,12 @@ Processing:
    - the canonical key is still `grant.keyId`, otherwise `consent_required`;
    - the user's key-control mode is not `USER_CONTROLLED_EXCLUSIVE`, and the
      app isn't blocked ("block new signatures"). Otherwise `access_denied`;
-   - `now ≥ lastRenewedAt + min(60 s, ttl/4)`, otherwise 429
-     `renewal_too_soon` with `Retry-After`;
+   - `now ≥ lastRenewedAt + min(60 s, ttl/4)`. Otherwise the response is
+     429 `renewal_too_soon` with `Retry-After: <n>`, where `n` is the whole
+     number of seconds until that time, rounded up and at least 1. Nothing
+     changes, and the presented token stays current. The SDK reports
+     `RENEWAL_TOO_SOON` with `retryAfterSeconds = n`; the client waits `n`
+     seconds and retries with the same token, without the generic backoff;
    - any requested subset is within the approved set, otherwise
      `consent_required`.
 7. Sign a fresh session SIWE for the **same** session DID, covering the
@@ -735,13 +828,14 @@ tokens. Already-issued delegations stay valid until `expiresAt`
 | Quantity | Rule |
 |---|---|
 | `request_uri` | 90 s, single use |
-| Native request (PAR to consent) | 10 min |
+| Native request (`request.expiresAt`) | 10 min after PAR. Prepare, approve and deny refuse an expired request. |
 | Authorization code | 10 min, single use; spent by any exchange attempt |
 | Access token | 300 s |
 | Refresh token | 7 days per token; rotated on every renewal |
 | Grant (`absoluteExpiresAt`) | Code exchange + the ceiling's `grantLifetimeSeconds` (default 30 days). Fixed; renewal never extends it. |
 | Last renewal | Before `absoluteExpiresAt − 300 s` (`renewableUntil`) |
-| Initial delegation TTL | `min(ttl_seconds or ceiling, ceiling.maxDelegationTtlSeconds)`. Stored as `grant.ttlSeconds`. |
+| Initial delegation TTL | `min(ttl_seconds or ceiling, ceiling.maxDelegationTtlSeconds)`, counted from the moment of signing at approve. Stored as `grant.ttlSeconds`. |
+| Renewal `Retry-After` (429) | Whole seconds until `lastRenewedAt + min(60 s, ttl/4)`, rounded up, at least 1 |
 | Renewed delegation TTL | `min(grant.ttlSeconds, current ceiling.maxDelegationTtlSeconds, absoluteExpiresAt − now)` |
 | Minimum renewal interval | `min(60 s, ttl/4)` after `lastRenewedAt` |
 | Rotation conflict window | 30 s after `rotatedAt` |
@@ -822,7 +916,7 @@ transaction starts with `SET LOCAL lock_timeout = '5s'`.
 | Operation | Locks |
 |---|---|
 | Prepare / approve | consent `FOR SHARE` (may be missing) → generation (`INSERT … ON CONFLICT DO NOTHING`, then `FOR SHARE`) → request `FOR UPDATE` |
-| Code exchange | consent `FOR SHARE` → generation `FOR SHARE` → request (atomic `UPDATE`) → grant insert → token rows |
+| Code exchange | consent `FOR SHARE` → generation `FOR SHARE` → request (atomic `UPDATE`) → grant insert. The provider writes the refresh-token row afterwards, outside this transaction, and `generateRefreshToken` links it to the grant. |
 | Renew / native revoke | consent `FOR SHARE` → generation `FOR SHARE` → grant `FOR UPDATE` → token rows |
 | Withdrawal trigger | consent (held by the `DELETE`/`UPDATE`) → generation `UPDATE` → requests → grants → token rows |
 
@@ -883,7 +977,7 @@ The interceptor decides before the provider runs:
 | Refresh token owned by an ordinary client | the same client | Passed to the provider. |
 | Access token owned by the requesting client | same | Passed to the provider, which deletes only that access token. |
 | Access token owned by another client | — | 400 `invalid_request`, no side effects. |
-| Not found | — | Passed to the provider, which rejects it without side effects. |
+| Not found | — | Passed to the provider, which returns 200 with no side effects (RFC 7009). |
 
 The ownership check protects a delegation client whether it appears as the
 token's owner or as the requesting client. Regression cases:
@@ -924,23 +1018,24 @@ routes, and the provider's `/api/auth/oauth2/revoke`.
 | Endpoint | HTTP | `error` |
 |---|---|---|
 | PAR | 400 / 401 | `invalid_request`, `invalid_scope`, `invalid_authorization_details`, `unauthorized_client`, `invalid_client` |
-| Authorize | error page | `invalid_request_uri` (no redirect) |
+| Authorize | `https://api.openkey.so/api/auth/error` | `invalid_request_uri`, or `invalid_request` for a failed `tinycloud_request` binding (no redirect to the app) |
 | Callback | redirect | `access_denied` (with `state`, `iss`) |
 | Prepare / approve / deny | 401 / 403 / 404 / 409 | `unauthorized`, `request_user_mismatch`, `request_not_found`, `request_not_pending`, `preparation_superseded`, `preparation_mismatch` |
 | Code exchange | 400 / 401 | provider errors, `invalid_session_proof`, `invalid_grant` |
-| Renew | 400 | `invalid_grant` (unknown, used, expired or reused token; revoked grant) |
+| Renew | 400 | `invalid_grant` (used, expired or reused token; revoked grant). Returned only after a valid proof. |
 | Renew | 400 | `consent_required` (consent withdrawn or changed, grant near its end, ceiling shrank, key changed, subset too wide) |
 | Renew | 400 | `access_denied` (exclusive key-control mode or app blocked) |
-| Renew | 401 | `invalid_session_proof` |
+| Renew | 401 | `invalid_session_proof` (bad proof, or unknown token) |
 | Renew | 409 | `renewal_conflict` (a previous token within 30 s of rotation) |
-| Renew | 429 | `renewal_too_soon` (`Retry-After`) |
-| Native revoke | 401 | `invalid_session_proof` |
+| Renew | 429 | `renewal_too_soon` (`Retry-After` in seconds) |
+| Native revoke | 401 | `invalid_session_proof` (bad proof, or unknown token) |
 | Provider refresh | 400 | `invalid_grant` (delegation client token) |
 | Provider revoke | 400 | `unsupported_token_type`, `invalid_request` (ownership mismatch) |
 | Any locked operation | 503 | `temporarily_unavailable` (`Retry-After: 2`) |
 
 The SDK (TC-774) maps these to `CONSENT_REQUIRED`, `INVALID_GRANT`,
-`RENEWAL_CONFLICT`, `TEMPORARILY_UNAVAILABLE`, `ACCESS_DENIED`,
+`RENEWAL_CONFLICT`, `RENEWAL_TOO_SOON` (with `retryAfterSeconds`),
+`TEMPORARILY_UNAVAILABLE`, `ACCESS_DENIED`,
 `STATE_MISMATCH`, `SPACE_UNAVAILABLE`, `USER_CANCELLED`, `NOT_SIGNED_IN`,
 `NETWORK`, `SERVER` and `UNAVAILABLE`.
 
@@ -1010,7 +1105,8 @@ A native refresh token is useless without its session key:
 
 - The renew and native revoke endpoints verify the proof **before** acting on
   the token. Before the proof is verified, the only lookup is a read, so
-  failure has no side effects.
+  failure has no side effects. An unknown token gets the same 401 as a bad
+  proof, so the endpoints don't reveal which tokens are live.
 - Reuse detection (revoking a grant whose previous token is presented after
   30 s) runs only after a valid proof. An attacker who has only a rotated
   token therefore cannot use reuse detection to log the user out.
