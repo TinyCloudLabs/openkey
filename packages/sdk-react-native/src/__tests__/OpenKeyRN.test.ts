@@ -1069,7 +1069,7 @@ describe('OpenKeyRN', () => {
         thrown = error;
       }
       expect(thrown).toBeInstanceOf(OpenKeyNativeError);
-      expect((thrown as OpenKeyNativeError).code).toBe('NETWORK');
+      expect((thrown as OpenKeyNativeError).code).toBe('STORAGE');
       // The SDK can't take the token back later, so it was revoked rather
       // than handed to the caller.
       expect((thrown as OpenKeyNativeError).rotatedRefreshToken).toBeUndefined();
@@ -1126,7 +1126,7 @@ describe('OpenKeyRN', () => {
         thrown = error;
       }
       expect(thrown).toBeInstanceOf(OpenKeyNativeError);
-      expect((thrown as OpenKeyNativeError).code).toBe('NETWORK');
+      expect((thrown as OpenKeyNativeError).code).toBe('STORAGE');
       expect((thrown as OpenKeyNativeError).rotatedRefreshToken).toBeUndefined();
       expect(revoked).toEqual(['rt-new']);
     });
@@ -1161,7 +1161,7 @@ describe('OpenKeyRN', () => {
         thrown = error;
       }
       expect(thrown).toBeInstanceOf(OpenKeyNativeError);
-      expect((thrown as OpenKeyNativeError).code).toBe('NETWORK');
+      expect((thrown as OpenKeyNativeError).code).toBe('STORAGE');
     });
 
     it('an in-flight renew() rejects NOT_SIGNED_IN after signOut()', async () => {
@@ -1791,7 +1791,9 @@ describe('OpenKeyRN', () => {
       );
       const thrown = await rejection(client.signIn());
       expect(thrown.code).toBe('SPACE_UNAVAILABLE');
-      expect(thrown.rotatedRefreshToken).toBe('rt-rotated');
+      // The rotated token was abandoned (revoked below), so it is not on
+      // the error.
+      expect(thrown.rotatedRefreshToken).toBeUndefined();
       // Terminal: nothing persisted (not even the rotated token), and the
       // rotated grant was revoked best-effort.
       expect(store.map.has(SESSION_KEY)).toBe(false);
@@ -1847,7 +1849,8 @@ describe('OpenKeyRN', () => {
       );
       const thrown = await rejection(client.signIn());
       expect(thrown.code).toBe('SPACE_UNAVAILABLE');
-      expect(thrown.rotatedRefreshToken).toBe('rt-new-grant');
+      // Abandoned (revoked below): not on the error.
+      expect(thrown.rotatedRefreshToken).toBeUndefined();
       expect(revoked).toEqual(['rt-new-grant']);
       // The stored session predates this attempt: untouched.
       expect(store.map.get(SESSION_KEY)).toBe(before!);

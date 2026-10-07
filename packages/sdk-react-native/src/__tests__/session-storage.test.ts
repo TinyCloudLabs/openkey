@@ -465,10 +465,12 @@ describe('CAS session storage model', () => {
 
     const thrown = await rejection(renew);
     expect(thrown.code).toBe('SERVER');
-    expect(thrown.rotatedRefreshToken).toBeDefined();
+    // The refused recovery write abandoned the rotated token, so the
+    // SERVER error no longer carries it.
+    expect(thrown.rotatedRefreshToken).toBeUndefined();
     expect(storedToken(store)).toBe(signedIn.refreshToken);
     // A was replaced (and revoked); its rotated token was abandoned too.
-    expect(server.revokeCalls).toContain(thrown.rotatedRefreshToken!);
+    expect(server.revokeCalls).toContain(server.renewIssued[0]!);
     expect(server.liveSids()).toEqual([server.sidOf(signedIn.refreshToken)!]);
   });
 
@@ -544,8 +546,51 @@ describe('CAS session storage model', () => {
 
     const thrown = await rejection(server.client(store).renew());
     expect(thrown.code).toBe('SPACE_UNAVAILABLE');
+    expect(thrown.rotatedRefreshToken).toBeUndefined();
     expect(store.map.has(SESSION_KEY)).toBe(false);
-    expect(pendingTokens(store)).toEqual([thrown.rotatedRefreshToken!]);
+    expect(pendingTokens(store)).toEqual([server.renewIssued[0]!]);
+  });
+
+  it("a sign-in's refused recovery write abandons the token and drops it from the error", async () => {
+    const server = new FakeServer();
+    const store = memoryStore();
+    // Verification of the exchanged delegation fails (non-terminal SERVER
+    // carrying the live token), but only after a signOut() has started, so
+    // the recovery save is refused.
+    const verifying = Promise.withResolvers<void>();
+    const verdict = Promise.withResolvers<void>();
+    const client = new OpenKeyRN({
+      host: 'https://auth.example.com',
+      clientId: CLIENT_ID,
+      redirectUri: REDIRECT_URI,
+      issuer: ISSUER,
+      openBrowser: server.openBrowser,
+      delegation: {
+        permissions: [KV_PERMISSION],
+        tinycloudHost: TC_HOST,
+        storage: store,
+        verifyDelegation: async () => {
+          verifying.resolve();
+          await verdict.promise;
+          throw new Error('cid mismatch');
+        },
+        fetchFn: server.fetch,
+        sleepFn: () => Promise.resolve(),
+      },
+    });
+
+    const signIn = client.signIn();
+    signIn.catch(() => {});
+    await verifying.promise;
+    await client.signOut();
+    verdict.resolve();
+
+    const thrown = await rejection(signIn);
+    expect(thrown.code).toBe('SERVER');
+    expect(thrown.rotatedRefreshToken).toBeUndefined();
+    expect(store.map.has(SESSION_KEY)).toBe(false);
+    expect(server.revokeCalls).toEqual([server.exchangeIssued[0]!]);
+    expect(server.liveSids()).toEqual([]);
   });
 
   it('an orphaned exchange becomes a pending revoke on a transient failure', async () => {
@@ -584,7 +629,7 @@ describe('CAS session storage model', () => {
     const base = memoryStore();
     const thrown = await rejection(server.client(failingWrites(base, [SESSION_KEY])).signIn());
 
-    expect(thrown.code).toBe('NETWORK');
+    expect(thrown.code).toBe('STORAGE');
     expect(thrown.rotatedRefreshToken).toBeUndefined();
     expect(server.revokeCalls).toHaveLength(1);
     expect(server.liveSids()).toEqual([]);
@@ -598,7 +643,7 @@ describe('CAS session storage model', () => {
     server.revokeFailRate = 1;
     const thrown = await rejection(server.client(failingWrites(base, [SESSION_KEY])).renew());
 
-    expect(thrown.code).toBe('NETWORK');
+    expect(thrown.code).toBe('STORAGE');
     expect(thrown.rotatedRefreshToken).toBeUndefined();
     // The rotated token went to the pending-revoke record for a later retry.
     const [entry] = JSON.parse(base.map.get(PENDING_KEY)!);
@@ -614,7 +659,7 @@ describe('CAS session storage model', () => {
       server.client(failingWrites(base, [SESSION_KEY, PENDING_KEY])).signIn(),
     );
 
-    expect(thrown.code).toBe('NETWORK');
+    expect(thrown.code).toBe('STORAGE');
     expect(thrown.rotatedRefreshToken).toBeUndefined();
     // Best effort is all that is left: the revoke was sent (and retried
     // once by core); nothing could be recorded.
@@ -737,7 +782,7 @@ describe('CAS session storage model', () => {
 
     failReads = true;
     const thrown = await rejection(client.signOut());
-    expect(thrown.code).toBe('NETWORK');
+    expect(thrown.code).toBe('STORAGE');
     expect(thrown.message).toContain('keychain locked');
     // Nothing removed or revoked: the user is not signed out.
     expect(removed).not.toContain(SESSION_KEY);

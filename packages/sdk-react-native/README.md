@@ -156,7 +156,7 @@ const newTokens = await openkey.refreshToken(tokens.refreshToken!);
 
 ### `openkey.signOut(accessToken?)`
 
-Clear pending sign-in flows, revoke the delegation grant (delegation mode), wipe the stored session, and revoke `accessToken` through the legacy revoke endpoint when given. The user is signed out as soon as `signOut()` starts: `renew()` rejects `NOT_SIGNED_IN`. A revoke failure is transient only when it is `NETWORK` (including an unreachable discovery endpoint), `TEMPORARILY_UNAVAILABLE` still failing after the internal retry, any HTTP 5xx from the revoke endpoint or server discovery, or HTTP 429 — a server outage or rate limit never wipes credentials while the grant may still be active. Every other revoke error (`INVALID_GRANT`, `CONSENT_REQUIRED`, `ACCESS_DENIED`, `SPACE_UNAVAILABLE`, any other 4xx, …) is terminal, since retrying won't change it. If the server revoke succeeds or fails terminally, the session is wiped and `signOut()` resolves. A transient revoke failure replaces the stored session with a *pending revoke* entry that holds the session key, the refresh token, an attempt count and the refresh token's expiry, and `signOut()` rejects with the typed error — the grant may still be active. The SDK retries pending revokes on the next `signOut()`, when an `OpenKeyRN` is constructed, and on `signIn()`. An entry is dropped once its revoke succeeds or fails terminally, once its refresh token has expired (7 days after issue, or the grant's absolute expiry if that is sooner), or after 20 attempts. A failed server discovery is never cached, so the next call retries it. `signOut()` also rejects if the secure-store write or wipe fails.
+Clear pending sign-in flows, revoke the delegation grant (delegation mode), wipe the stored session, and revoke `accessToken` through the legacy revoke endpoint when given. The user is signed out as soon as `signOut()` starts: `renew()` rejects `NOT_SIGNED_IN`. A revoke failure is transient only when it is `NETWORK` (including an unreachable discovery endpoint), `TEMPORARILY_UNAVAILABLE` still failing after the internal retry, any HTTP 5xx from the revoke endpoint or server discovery, or HTTP 429 — a server outage or rate limit never wipes credentials while the grant may still be active. Every other revoke error (`INVALID_GRANT`, `CONSENT_REQUIRED`, `ACCESS_DENIED`, `SPACE_UNAVAILABLE`, any other 4xx, …) is terminal, since retrying won't change it. If the server revoke succeeds or fails terminally, the session is wiped and `signOut()` resolves. A transient revoke failure replaces the stored session with a *pending revoke* entry that holds the session key, the refresh token, an attempt count and the refresh token's expiry, and `signOut()` rejects with the typed error — the grant may still be active. The SDK retries pending revokes on the next `signOut()`, when an `OpenKeyRN` is constructed, and on `signIn()`. An entry is dropped once its revoke succeeds or fails terminally, once its refresh token has expired (7 days after issue, or the grant's absolute expiry if that is sooner), or after 20 attempts. A failed server discovery is never cached, so the next call retries it. `signOut()` also rejects, with `STORAGE`, if the secure-store read, write or wipe fails.
 
 ```typescript
 await openkey.signOut(tokens.accessToken);
@@ -229,12 +229,13 @@ In delegation mode `config.scopes` are appended to the mandatory
 The `storage` interface (`OpenKeySecureStore`) is where the SDK keeps the
 Ed25519 session private JWK and the rotated refresh token — back it with
 Expo SecureStore, react-native-keychain, or encrypted MMKV. Persistence is
-strict: if a write fails, `signIn()`/`renew()` reject with an
-`OpenKeyNativeError('NETWORK')` that carries **no** `rotatedRefreshToken`.
-The SDK has no API to take a token back, so instead of handing it to the
-caller it revokes the grant (see *No abandoned live grants* below); the
-user signs in again. `signOut()` rejects with `NETWORK` if the credential
-wipe itself fails.
+strict: every secure-store read or write failure surfaces as
+`OpenKeyNativeError('STORAGE')` (`NETWORK` is only for real network
+errors). If a write fails, `signIn()`/`renew()` reject with `STORAGE`
+carrying **no** `rotatedRefreshToken`: the SDK has no API to take a token
+back, so instead of handing it to the caller it revokes the grant (see
+*No abandoned live grants* below), and the user signs in again.
+`signOut()` rejects with `STORAGE` if the credential wipe itself fails.
 
 `renew()` is single-flight keyed on its options: concurrent calls with the
 same `siweNonce` and an equivalent `permissionsSubset` (compared after
@@ -247,14 +248,15 @@ before resolving, reloads the stored token and retries once on
 `RENEWAL_CONFLICT`, and waits `Retry-After` (handled inside
 `@openkey/core`) on `RENEWAL_TOO_SOON` / `TEMPORARILY_UNAVAILABLE`. Every
 renewed delegation passes through `verifyDelegation` before it is
-accepted — a verification failure rejects `renew()` as `SERVER` with the
-rotated token on `rotatedRefreshToken` (it is also persisted
-best-effort). Terminal errors (`INVALID_GRANT`, `CONSENT_REQUIRED`,
+accepted — a verification failure rejects `renew()` as `SERVER` after
+persisting the rotated token, which then rides the error as
+`rotatedRefreshToken`; if that save fails, the grant is abandoned and the
+error carries no token. Terminal errors (`INVALID_GRANT`, `CONSENT_REQUIRED`,
 `ACCESS_DENIED`, `SPACE_UNAVAILABLE`) wipe the local session before
 rethrowing: the grant is dead, so that's a local sign-out. A terminal
 outcome persists nothing — the grant of a rotated refresh token on the
-error (for example `hosting: "failed"`) is abandoned instead (see below). If `signIn()`
-returns a delegation already inside the spec's renewal lead window, it is
+error (for example `hosting: "failed"`) is abandoned instead (see below),
+and the error carries no token. If `signIn()` returns a delegation already inside the spec's renewal lead window, it is
 renewed before `signIn()` resolves — you always receive a delegation
 with a full TTL; if that immediate renew fails non-terminally, the error
 is surfaced but the just-issued session stays persisted, so the app can
@@ -288,7 +290,7 @@ every `OpenKeyRN` that uses the same store object (see *Sharing storage*):
   session was stored meanwhile (only possible from another `OpenKeyRN`
   sharing the same backend), that session is revoked and removed too. If
   the record can't be read, `signOut()` removes nothing and rejects with
-  `NETWORK`.
+  `STORAGE`.
 
 A `signIn()` that has not yet stored its session (for example one the
 user cancels) does not affect an in-flight `renew()`.
@@ -299,8 +301,10 @@ the pending-revoke record (the same bounded entry `signOut()` uses). That
 covers the session a `signIn()` replaces (revoked after the new session
 is saved), a superseded renew's or sign-in's token, an orphaned code
 exchange, a terminal outcome's rotated token, and a token whose
-secure-store write failed (that `NETWORK` error, and any error whose
-recovery write failed, carries no `rotatedRefreshToken`).
+secure-store write failed. The rule for errors: an error carries
+`rotatedRefreshToken` only while that token is live and not abandoned —
+after a terminal outcome, a refused save or a failed write, it is not on
+the error.
 
 The one limit: if the secure store also fails to write the pending-revoke
 entry, nothing durable can be recorded. The SDK has then already sent the
@@ -428,7 +432,7 @@ Plain-mode errors are `OpenKeyError` with a typed code:
 | `UNKNOWN` | Unexpected error |
 
 Delegation-mode protocol errors are `OpenKeyNativeError` (codes in the
-[delegation spec](https://github.com/TinyCloudLabs/openkey/blob/main/docs/native-tinycloud-delegation.md): `USER_CANCELLED`, `ACCESS_DENIED`, `STATE_MISMATCH`, `CONSENT_REQUIRED`, `INVALID_GRANT`, `RENEWAL_CONFLICT`, `RENEWAL_TOO_SOON`, `SPACE_UNAVAILABLE`, `TEMPORARILY_UNAVAILABLE`, `NETWORK`, `SERVER`, `NOT_SIGNED_IN`, `UNAVAILABLE`).
+[delegation spec](https://github.com/TinyCloudLabs/openkey/blob/main/docs/native-tinycloud-delegation.md): `USER_CANCELLED`, `ACCESS_DENIED`, `STATE_MISMATCH`, `CONSENT_REQUIRED`, `INVALID_GRANT`, `RENEWAL_CONFLICT`, `RENEWAL_TOO_SOON`, `SPACE_UNAVAILABLE`, `TEMPORARILY_UNAVAILABLE`, `NETWORK`, `STORAGE`, `SERVER`, `NOT_SIGNED_IN`, `UNAVAILABLE`). `STORAGE` is a failed read or write of the injected secure store; `NETWORK` is a failed request.
 
 ```typescript
 import { OpenKeyError } from '@openkey/sdk-react-native';

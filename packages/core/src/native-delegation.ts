@@ -34,6 +34,7 @@ export type OpenKeyNativeErrorCode =
   | 'SPACE_UNAVAILABLE'
   | 'TEMPORARILY_UNAVAILABLE'
   | 'NETWORK'
+  | 'STORAGE'
   | 'SERVER'
   | 'NOT_SIGNED_IN'
   | 'UNAVAILABLE';

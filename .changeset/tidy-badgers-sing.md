@@ -42,7 +42,7 @@ renew never narrows the stored approved set. Delegation mode requires a
 `signature` against `delegationHeader`/`delegationCid`, and the client
 fails closed without it. Storage writes are strict and serialized with
 `signOut()`'s wipe: a failed persist rejects with
-`OpenKeyNativeError('NETWORK')` without `rotatedRefreshToken` — the SDK
+`OpenKeyNativeError('STORAGE')` without `rotatedRefreshToken` — the SDK
 cannot take the token back, so it revokes the grant (a pending revoke if
 that fails transiently; if the pending-revoke write fails too, the revoke
 attempt is all it can do). Terminal renew/exchange errors
@@ -72,7 +72,7 @@ the stored session (sign-in save, renew save, immediate renew,
 rotated-token recovery, terminal wipe, sign-out removal) states the
 session it expects to be current and writes nothing when that no longer
 holds. `signOut()` signs out whatever session is current, never removes a
-newer one it did not revoke, and rejects with `NETWORK` without removing
+newer one it did not revoke, and rejects with `STORAGE` without removing
 anything when the record can't be read. A `signIn()` started during a
 `signOut()` saves after it. The storage queue is shared by every
 `OpenKeyRN` that uses the same store object, and `OpenKeySecureStore`
@@ -80,18 +80,24 @@ gains an optional atomic `compareAndSet(key, expected, next)`; when a
 store provides it, every write lands only if the value is unchanged, so
 separate store objects or processes sharing a backend stay consistent.
 Apps should otherwise use one store object (ideally the `getOpenKeyRN()`
-singleton) per backend. A `NOT_SIGNED_IN` refusal no longer carries
-`rotatedRefreshToken`: the token is abandoned (revoked, or a pending
-revoke), not handed back. No abandoned live grants: every grant the SDK
-lets go of without storing it — the session a `signIn()` replaces, a
-superseded renew's or sign-in's token, an orphaned exchange, a terminal
-outcome's rotated token, a token whose secure-store write failed — is
-revoked, or kept as a bounded pending revoke when the revoke fails
-transiently. A `signIn()` that has not stored its session yet (e.g. a
-cancelled one) never affects an in-flight `renew()`. A delegation returned
-by sign-in that is already inside the renewal lead window is renewed
-before `signIn()` resolves — if that renew fails non-terminally the error
+singleton) per backend. An error carries `rotatedRefreshToken` only while
+that token is live and not abandoned: a `NOT_SIGNED_IN` refusal, a
+terminal outcome and an error whose recovery save failed carry none,
+because the token was abandoned (revoked, or a pending revoke). Every
+secure-store read or write failure is `STORAGE`; `NETWORK` is reserved for
+real network errors. No abandoned live grants: every grant the SDK lets go
+of without storing it — the session a `signIn()` replaces, a superseded
+renew's or sign-in's token, an orphaned exchange, a terminal outcome's
+rotated token, a token whose secure-store write failed — is revoked, or
+kept as a bounded pending revoke when the revoke fails transiently. A
+`signIn()` that has not stored its session yet (e.g. a cancelled one)
+never affects an in-flight `renew()`. A delegation returned by sign-in
+that is already inside the renewal lead window is renewed before
+`signIn()` resolves — if that renew fails non-terminally the error
 surfaces but the fresh session stays persisted. `refreshToken()` throws
 `UNAVAILABLE` in delegation mode (the provider refresh grant is refused
 for native clients). Delegation-mode errors surface as
 `OpenKeyNativeError`.
+
+`@openkey/core` adds the `STORAGE` native error code (after `NETWORK` in
+`OpenKeyNativeErrorCode`) for local secure-store failures.
