@@ -13,6 +13,11 @@ function response(status: number, data: unknown, retryAfter?: string): NativeFet
     headers: { get: () => retryAfter ?? null } };
 }
 
+async function eventually(check: () => boolean): Promise<void> {
+  for (let i = 0; i < 50 && !check(); i++) await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(check()).toBe(true);
+}
+
 class MockPlugin implements OpenKeyCapacitorPlugin {
   values = new Map<string, string>();
   failSet = false;
@@ -32,10 +37,12 @@ function fixture(approved = capabilities) {
   let keyId = '';
   let renewCalls = 0;
   let revokeCalls = 0;
+  const revokeTokens: string[] = [];
+  const requestLog: string[] = [];
   let immediateRenewal = false;
   let tokenReply: () => NativeFetchResponse = () => response(200, { access_token: 'access', refresh_token: 'initial', tinycloud_delegation: delegation() });
   let renewReply: (call: number) => NativeFetchResponse = () => response(200, renewal('next'));
-  let revokeReply: () => NativeFetchResponse = () => response(200, {});
+  let revokeReply: () => NativeFetchResponse | Promise<NativeFetchResponse> = () => response(200, {});
   const delegation = (granted = approved) => ({
     verificationMethod: keyId, expiresAt: new Date(Date.now() + (immediateRenewal ? 30_000 : 3_600_000)).toISOString(),
     issuedAt: new Date(Date.now() - (immediateRenewal ? 3_600_000 : 0)).toISOString(), permissions: [
@@ -46,6 +53,7 @@ function fixture(approved = capabilities) {
   });
   const renewal = (refreshToken: string, granted = approved) => ({ refresh_token: refreshToken, tinycloud_delegation: delegation(granted) });
   const fetchFn: NativeFetch = async (url, init) => {
+    requestLog.push(url);
     if (url.includes('.well-known')) return response(200, {
       issuer, authorization_endpoint: `${issuer}/oauth2/authorize`, token_endpoint: `${issuer}/oauth2/token`,
       pushed_authorization_request_endpoint: `${issuer}/oauth2/par`,
@@ -62,13 +70,17 @@ function fixture(approved = capabilities) {
     }
     if (url.endsWith('/token')) return tokenReply();
     if (url.endsWith('/renew')) return renewReply(++renewCalls);
-    if (url.endsWith('/revoke')) { revokeCalls++; return revokeReply(); }
+    if (url.endsWith('/revoke')) {
+      revokeCalls++;
+      revokeTokens.push(new URLSearchParams(init?.body).get('refresh_token') ?? '');
+      return revokeReply();
+    }
     throw new Error('unexpected request');
   };
   plugin.callback = async () => `${redirectUri}?code=code&state=${state}&iss=${encodeURIComponent(issuer)}`;
   const make = (verifyDelegation: (delegation: ReturnType<typeof delegation>) => Promise<void> = async () => {}) =>
     new OpenKeyNative({ clientId: 'exo', redirectUri, plugin, fetchFn, verifyDelegation, sleepFn: async () => {} });
-  return { plugin, make, delegation, renewal, get state() { return state; }, get renewCalls() { return renewCalls; }, get revokeCalls() { return revokeCalls; },
+  return { plugin, make, delegation, renewal, revokeTokens, requestLog, get state() { return state; }, get renewCalls() { return renewCalls; }, get revokeCalls() { return revokeCalls; },
     setRenewReply: (fn: typeof renewReply) => { renewReply = fn; }, setRevokeReply: (fn: typeof revokeReply) => { revokeReply = fn; },
     setImmediateRenewal: () => { immediateRenewal = true; }, setTokenReply: (fn: typeof tokenReply) => { tokenReply = fn; } };
 }
@@ -117,6 +129,16 @@ describe('OpenKeyNative', () => {
     expect(b.tokens.refreshToken).toBe('next');
     expect(f.renewCalls).toBe(1);
     expect((await f.make().current())?.tokens.refreshToken).toBe('next');
+  });
+
+  test('renew single-flight uses normalized permissions including capabilities/read', async () => {
+    const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
+    const read = { service: 'tinycloud.capabilities', space: 'applications', path: '', actions: ['tinycloud.capabilities/read'] };
+    const first = client.renew({ capabilities });
+    const equivalent = client.renew({ capabilities: [...capabilities, read] });
+    expect(first).toBe(equivalent);
+    await first;
+    expect(f.renewCalls).toBe(1);
   });
 
   test('a subset renew preserves the approved set for a later plain renew', async () => {
@@ -238,6 +260,45 @@ describe('OpenKeyNative', () => {
     expect(await client.current()).toBeNull();
   });
 
+  test('terminal post-rotation renew revokes the grant and never persists it', async () => {
+    const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
+    const writesBefore = f.plugin.setCount;
+    f.setRenewReply(() => response(200, { refresh_token: 'rotated', tinycloud_delegation: { ...f.delegation(), hosting: 'failed' } }));
+    await expect(client.renew()).rejects.toMatchObject({ code: 'SPACE_UNAVAILABLE' });
+    expect(f.revokeTokens).toContain('rotated');
+    expect(f.plugin.setCount).toBe(writesBefore);
+    expect(await client.current()).toBeNull();
+    await expect(client.renew()).rejects.toMatchObject({ code: 'NOT_SIGNED_IN' });
+    expect(f.plugin.values.size).toBe(0);
+  });
+
+  test('terminal renew still wipes when best-effort rotated revoke stays transient', async () => {
+    const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
+    const writesBefore = f.plugin.setCount;
+    f.setRenewReply(() => response(200, { refresh_token: 'rotated', tinycloud_delegation: { ...f.delegation(), hosting: 'failed' } }));
+    f.setRevokeReply(() => response(503, { error: 'temporarily_unavailable' }, '1'));
+    await expect(client.renew()).rejects.toMatchObject({ code: 'SPACE_UNAVAILABLE', rotatedRefreshToken: 'rotated' });
+    expect(f.revokeTokens).toEqual(['rotated', 'rotated']);
+    expect(f.plugin.setCount).toBe(writesBefore);
+    expect(await client.current()).toBeNull();
+  });
+
+  test('terminal cleanup cannot wipe a signIn started during rotated-grant revoke', async () => {
+    const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
+    f.setRenewReply(() => response(200, { refresh_token: 'rotated', tinycloud_delegation: { ...f.delegation(), hosting: 'failed' } }));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    f.setRevokeReply(async () => { entered(); await gate; return response(200, {}); });
+    const terminal = client.renew();
+    await started;
+    const fresh = await client.signIn({ capabilities });
+    release();
+    await expect(terminal).rejects.toMatchObject({ code: 'SPACE_UNAVAILABLE' });
+    expect((await client.current())?.sessionKey.did).toBe(fresh.sessionKey.did);
+  });
+
   test('different renew options serialize instead of sharing a flight', async () => {
     const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
     f.setRenewReply((call) => response(200, f.renewal(`next${call}`)));
@@ -323,6 +384,93 @@ describe('OpenKeyNative', () => {
     await expect(client.signOut()).rejects.toMatchObject({ code: 'TEMPORARILY_UNAVAILABLE', message: 'Local state was cleared; the server grant may still be active' });
     expect(await client.current()).toBeNull();
     expect(f.revokeCalls).toBe(2);
+  });
+
+  test('transient signOut keeps only a pending revoke and retries on next signOut', async () => {
+    const f = fixture(); const client = f.make(); const session = await client.signIn({ capabilities });
+    const storage = client.sessionStorageAdapter();
+    await storage.save(session.delegation.address!, persisted(session));
+    f.setRevokeReply(() => response(503, { error: 'temporarily_unavailable' }, '1'));
+    await expect(client.signOut()).rejects.toMatchObject({ code: 'TEMPORARILY_UNAVAILABLE' });
+    expect(await client.current()).toBeNull();
+    expect(await storage.load(session.delegation.address!)).toBeNull();
+    expect(storage.exists(session.delegation.address!)).toBe(false);
+    expect(storage.activeAddress()).toBeUndefined();
+    const entries = [...f.plugin.values];
+    expect(entries).toHaveLength(1);
+    expect(entries[0]![0].endsWith(':pending-revoke')).toBe(true);
+    const pending = JSON.parse(entries[0]![1]);
+    expect(Object.keys(pending).sort()).toEqual(['grants', 'version']);
+    expect(Object.keys(pending.grants[0]).sort()).toEqual(['privateJwk', 'refreshToken']);
+    expect(pending.grants[0].refreshToken).toBe('initial');
+    f.setRevokeReply(() => response(200, {}));
+    await client.signOut();
+    expect(f.revokeCalls).toBe(3);
+    expect(f.plugin.values.size).toBe(0);
+  });
+
+  test('signOut hides both stores before a slow transient revoke finishes', async () => {
+    const f = fixture(); const client = f.make(); const session = await client.signIn({ capabilities });
+    const storage = client.sessionStorageAdapter();
+    await storage.save(session.delegation.address!, persisted(session));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    f.setRevokeReply(async () => { entered(); await gate; return response(503, { error: 'temporarily_unavailable' }, '1'); });
+    const signOut = client.signOut();
+    await started;
+    expect(await client.current()).toBeNull();
+    expect(await storage.load(session.delegation.address!)).toBeNull();
+    expect(storage.exists(session.delegation.address!)).toBe(false);
+    release();
+    await expect(signOut).rejects.toMatchObject({ code: 'TEMPORARILY_UNAVAILABLE' });
+  });
+
+  test('a terminal retry removes the pending revoke record', async () => {
+    const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
+    f.setRevokeReply(() => response(503, { error: 'temporarily_unavailable' }, '1'));
+    await expect(client.signOut()).rejects.toMatchObject({ code: 'TEMPORARILY_UNAVAILABLE' });
+    f.setRevokeReply(() => response(401, { error: 'invalid_session_proof' }));
+    await client.signOut();
+    expect(f.plugin.values.size).toBe(0);
+  });
+
+  test('pending revoke retries at SDK initialization and before signIn', async () => {
+    const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
+    f.setRevokeReply(() => response(503, { error: 'temporarily_unavailable' }, '1'));
+    await expect(client.signOut()).rejects.toMatchObject({ code: 'TEMPORARILY_UNAVAILABLE' });
+    const pendingKey = [...f.plugin.values.keys()].find((key) => key.endsWith(':pending-revoke'))!;
+    f.setRevokeReply(() => response(200, {}));
+    f.make(); // constructor starts a background retry
+    await eventually(() => !f.plugin.values.has(pendingKey));
+    expect(f.revokeCalls).toBe(3);
+
+    await client.signIn({ capabilities });
+    f.setRevokeReply(() => response(503, { error: 'temporarily_unavailable' }, '1'));
+    await expect(client.signOut()).rejects.toMatchObject({ code: 'TEMPORARILY_UNAVAILABLE' });
+    f.setRevokeReply(() => response(200, {}));
+    const start = f.requestLog.length;
+    await client.signIn({ capabilities });
+    const calls = f.requestLog.slice(start);
+    expect(calls.findIndex((url) => url.endsWith('/revoke'))).toBeLessThan(calls.findIndex((url) => url.endsWith('/par')));
+    expect(f.plugin.values.has(pendingKey)).toBe(false);
+  });
+
+  test('cancel, access_denied and state mismatch on a new signIn preserve the old session', async () => {
+    const f = fixture(); const client = f.make(); const existing = await client.signIn({ capabilities });
+    await client.sessionStorageAdapter().save(existing.delegation.address!, persisted(existing));
+    for (const code of ['USER_CANCELLED', 'ACCESS_DENIED', 'STATE_MISMATCH'] as const) {
+      f.plugin.callback = code === 'USER_CANCELLED'
+        ? async () => { throw { code: 'USER_CANCELLED' }; }
+        : code === 'ACCESS_DENIED'
+          ? async () => `${redirectUri}?error=access_denied&state=${f.state}&iss=${encodeURIComponent(issuer)}`
+          : async () => `${redirectUri}?code=x&state=wrong&iss=${encodeURIComponent(issuer)}`;
+      await expect(client.signIn({ capabilities })).rejects.toMatchObject({ code });
+      expect((await client.current())?.tokens.refreshToken).toBe('initial');
+      expect((await client.sessionStorageAdapter().load(existing.delegation.address!))?.sessionKey)
+        .toBe(JSON.stringify(existing.sessionKey.privateJwk));
+    }
   });
 
   test('an undecryptable record is wiped even when revoke cannot run', async () => {
