@@ -37,6 +37,9 @@ const publicProtocolCors = cors({
   credentials: false,
   allowMethods: ['GET', 'POST', 'OPTIONS'],
   allowHeaders: ['Content-Type', OPENKEY_SESSION_PROOF_HEADER],
+  // Not CORS-safelisted: without this, WebView JavaScript reads null for it on
+  // 429 renewal_too_soon and 503 temporarily_unavailable.
+  exposeHeaders: ['Retry-After'],
 });
 
 /**

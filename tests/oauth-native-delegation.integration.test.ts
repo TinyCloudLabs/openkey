@@ -292,6 +292,11 @@ if (!backend) {
       }
       const added = await adminRequest('PATCH', `/clients/${ordinaryClient}`, { scopes: ['openid', DELEGATION] });
       expect(added.status).toBe(400);
+      const plain = await adminRequest('POST', '/clients', { name: 'Plain native', type: 'native', redirectUris: [NATIVE_REDIRECT] });
+      const plainClient = (await plain.json() as { client: { clientId: string } }).client.clientId;
+      const onDisabled = await adminRequest('PATCH', `/clients/${plainClient}`, { disabled: true, tinycloudNativeDelegation: ceiling });
+      expect(onDisabled.status).toBe(400);
+      await prisma.oauthClient.delete({ where: { clientId: plainClient } });
       expect(await prisma.oauthClient.count({ where: { scopes: { has: DELEGATION } } })).toBe(1);
 
       process.env.TINYCLOUD_SQL_ISOLATED_HOSTS = 'https://tee.node.tinycloud.xyz';
@@ -394,25 +399,50 @@ if (!backend) {
     const refresh = (fields: Record<string, string>, headers: Record<string, string> = {}) =>
       form('/api/auth/oauth2/token', new URLSearchParams({ grant_type: 'refresh_token', ...fields }).toString(), headers);
 
-    test('refuses a delegation client\'s live, revoked and rotated refresh tokens without side effects', async () => {
+    test('refuses native live, revoked and rotated refresh tokens with "use the renew endpoint" and no side effects', async () => {
       await prisma.oauthRefreshToken.update({ where: { id: 'native-b' }, data: { revoked: new Date() } });
       const state = await tokenState();
       for (const token of ['native-device-a', 'native-device-b', 'native-device-a-rotated']) {
         const response = await refresh({ client_id: nativeClient, refresh_token: token });
         expect(response.status, token).toBe(400);
-        expect((await oauthError(response)).error).toBe('invalid_grant');
+        expect(await oauthError(response), token).toEqual({ error: 'invalid_grant', error_description: 'use the renew endpoint' });
       }
       expect(await tokenState()).toEqual(state);
     });
 
-    test('protects delegation clients identified by the token owner or by the request client', async () => {
+    test('refuses a native token under another client_id and any token presented by a delegation client', async () => {
       const byOwner = await refresh({ client_id: ordinaryClient, refresh_token: 'native-device-a' });
       expect(byOwner.status).toBe(400);
+      expect((await oauthError(byOwner)).error).toBe('invalid_grant');
       const byRequest = await refresh({ client_id: nativeClient, refresh_token: 'ordinary-revoked' });
       expect(byRequest.status).toBe(400);
       const unknown = await refresh({ client_id: nativeClient, refresh_token: 'never-issued' });
       expect(unknown.status).toBe(400);
       expect(await tokenState()).toEqual(seededState);
+    });
+
+    test('native tokens stay native after an admin disables delegation for their client', async () => {
+      // One token native by its row scope only, one by its grant hash only.
+      await seedRefreshToken('native-scope-only', 'native-scope-only', nativeClient);
+      await seedRefreshToken('native-grant-only', 'native-grant-only', nativeClient, { scopes: ['openid', 'offline_access'] });
+      await seedGrant('grant-only', nativeClient, { current: 'native-grant-only' });
+      const disabled = await adminRequest('PATCH', `/clients/${nativeClient}`, { tinycloudNativeDelegation: null });
+      expect(disabled.status).toBe(200);
+      try {
+        const client = await prisma.oauthClient.findUniqueOrThrow({ where: { clientId: nativeClient } });
+        expect(client.scopes).not.toContain(DELEGATION);
+        expect(client.tinycloudNativeDelegation).toBeNull();
+        const state = await tokenState();
+        for (const token of ['native-device-a', 'native-device-a-rotated', 'native-scope-only', 'native-grant-only']) {
+          const response = await refresh({ client_id: nativeClient, refresh_token: token, scope: 'openid offline_access' });
+          expect(response.status, token).toBe(400);
+          expect(await oauthError(response), token).toEqual({ error: 'invalid_grant', error_description: 'use the renew endpoint' });
+        }
+        expect(await tokenState()).toEqual(state);
+      } finally {
+        const restored = await adminRequest('PATCH', `/clients/${nativeClient}`, { tinycloudNativeDelegation: ceiling });
+        expect(restored.status).toBe(200);
+      }
     });
 
     test('the Basic header identifies the client ahead of the body', async () => {
@@ -463,12 +493,19 @@ if (!backend) {
     const revoke = (fields: Record<string, string>, headers: Record<string, string> = {}) =>
       form('/api/auth/oauth2/revoke', new URLSearchParams(fields).toString(), headers);
 
+    async function seedAccessToken(id: string, clientId: string, scopes: string[], refreshId: string | null) {
+      await prisma.oauthAccessToken.create({ data: {
+        id, token: hash(id), clientId, userId: alice, refreshId, scopes, expiresAt: new Date(Date.now() + 300_000),
+      } });
+    }
+
     test('A2: an ordinary client\'s revoked token sent with a native client_id leaves both devices intact', async () => {
       const response = await revoke({ client_id: nativeClient, token: 'ordinary-revoked', token_type_hint: 'refresh_token' });
       expect(response.status).toBe(400);
-      expect((await oauthError(response)).error).toBe('invalid_request');
+      expect(await oauthError(response)).toEqual({ error: 'invalid_request', error_description: 'token was not issued to this client' });
       const viaBasic = await revoke({ token: 'ordinary-revoked' }, { authorization: basic(nativeClient, 'unused') });
       expect(viaBasic.status).toBe(400);
+      expect((await oauthError(viaBasic)).error).toBe('invalid_request');
       expect(await tokenState()).toEqual(seededState);
 
       // The same request straight to the provider deletes every native
@@ -481,33 +518,76 @@ if (!backend) {
       expect((await tokenState()).refresh.map((row) => row.id)).toEqual(['ordinary-live', 'ordinary-revoked']);
     });
 
-    test('refuses a delegation client\'s live, revoked and rotated refresh tokens with no side effects', async () => {
+    test('A2 with a Bearer prefix: refused before any lookup, every native token intact', async () => {
+      for (const hint of [undefined, 'refresh_token', 'access_token']) {
+        const response = await revoke({
+          client_id: nativeClient, token: 'Bearer ordinary-revoked', ...(hint ? { token_type_hint: hint } : {}),
+        });
+        expect(response.status, String(hint)).toBe(400);
+        expect(await oauthError(response)).toEqual({ error: 'invalid_request', error_description: 'token must not carry a Bearer prefix' });
+      }
+      const nativeBearer = await revoke({ client_id: nativeClient, token: 'Bearer native-device-a' });
+      expect((await oauthError(nativeBearer)).error).toBe('invalid_request');
+      expect(await tokenState()).toEqual(seededState);
+
+      // Without the interceptor the provider strips the prefix and runs the
+      // revoked-token branch.
+      await auth.handler(new Request(`${ISSUER}/oauth2/revoke`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ client_id: nativeClient, token: 'Bearer ordinary-revoked' }).toString(),
+      }));
+      expect((await tokenState()).refresh.map((row) => row.id)).toEqual(['ordinary-live', 'ordinary-revoked']);
+    });
+
+    test('native refresh and access tokens get unsupported_token_type, ahead of the ownership check', async () => {
       await prisma.oauthRefreshToken.update({ where: { id: 'native-b' }, data: { revoked: new Date() } });
+      // Native by its own scope, and native only through its refreshId.
+      await seedAccessToken('native-b-access', nativeClient, ['openid'], 'native-b');
       const state = await tokenState();
-      for (const token of ['native-device-a', 'native-device-b', 'native-device-a-rotated']) {
-        for (const hint of [undefined, 'refresh_token']) {
-          const response = await revoke({ client_id: nativeClient, token, ...(hint ? { token_type_hint: hint } : {}) });
-          expect(response.status, `${token} ${hint}`).toBe(400);
-          expect((await oauthError(response)).error).toBe('unsupported_token_type');
+      for (const token of ['native-device-a', 'native-device-b', 'native-device-a-rotated', 'native-a-access', 'native-b-access']) {
+        for (const client of [nativeClient, ordinaryClient]) {
+          for (const hint of [undefined, 'refresh_token', 'access_token']) {
+            const response = await revoke({ client_id: client, token, ...(hint ? { token_type_hint: hint } : {}) });
+            expect(response.status, `${token} ${client} ${hint}`).toBe(400);
+            expect((await oauthError(response)).error, `${token} ${client} ${hint}`).toBe('unsupported_token_type');
+          }
         }
       }
-      const bearerPrefixed = await revoke({ client_id: nativeClient, token: 'Bearer native-device-a' });
-      expect(bearerPrefixed.status).toBe(400);
       expect(await tokenState()).toEqual(state);
     });
 
-    test('duplicate keys are refused', async () => {
-      const response = await form('/api/auth/oauth2/revoke',
-        `client_id=${ordinaryClient}&token=ordinary-live&client_id=${nativeClient}`);
+    test('an access token owned by another client gets invalid_request', async () => {
+      await seedAccessToken('ordinary-access', ordinaryClient, ['openid'], 'ordinary-live');
+      const state = await tokenState();
+      const response = await revoke({ client_id: nativeClient, token: 'ordinary-access', token_type_hint: 'access_token' });
       expect(response.status).toBe(400);
+      expect(await oauthError(response)).toEqual({ error: 'invalid_request', error_description: 'token was not issued to this client' });
+      expect(await tokenState()).toEqual(state);
+    });
+
+    test('duplicate keys and malformed Basic credentials are refused', async () => {
+      const duplicate = await form('/api/auth/oauth2/revoke',
+        `client_id=${ordinaryClient}&token=ordinary-live&client_id=${nativeClient}`);
+      expect(duplicate.status).toBe(400);
+      const malformed = await revoke(
+        { token: 'ordinary-revoked' },
+        { authorization: `Basic ${Buffer.from(`${nativeClient}:x`).toString('base64url')}-` },
+      );
+      expect(malformed.status).toBe(401);
       expect(await tokenState()).toEqual(seededState);
     });
 
-    test('access tokens and ordinary refresh tokens still revoke through the provider', async () => {
-      const access = await revoke({ client_id: nativeClient, token: 'native-a-access', token_type_hint: 'access_token' });
+    test('the owner\'s ordinary access and refresh tokens, and unknown tokens, still go to the provider', async () => {
+      await seedAccessToken('ordinary-access', ordinaryClient, ['openid'], 'ordinary-live');
+      const access = await revoke({ client_id: ordinaryClient, token: 'ordinary-access', token_type_hint: 'access_token' });
       expect(access.status).toBe(200);
       const ordinary = await revoke({ client_id: ordinaryClient, token: 'ordinary-live', token_type_hint: 'refresh_token' });
       expect(ordinary.status).toBe(200);
+      // Passed through: the provider's own not-found answer (1.6.10 sends 400
+      // when no token_type_hint is given), with no side effects.
+      const unknown = await revoke({ client_id: nativeClient, token: 'never-issued' });
+      expect(await oauthError(unknown)).toEqual({ error: 'invalid_request', error_description: 'token not found' });
       expect(await tokenState()).toEqual({
         refresh: [
           { id: 'native-a', revoked: false },
@@ -515,7 +595,7 @@ if (!backend) {
           { id: 'ordinary-live', revoked: true },
           { id: 'ordinary-revoked', revoked: true },
         ],
-        access: [],
+        access: ['native-a-access'],
       });
     });
   });
@@ -536,6 +616,7 @@ if (!backend) {
           expect(response.status, path).toBe(200);
           expect(response.headers.get('access-control-allow-origin'), path).toBe('*');
           expect(response.headers.get('access-control-allow-credentials'), path).toBeNull();
+          expect(response.headers.get('access-control-expose-headers'), path).toBe('Retry-After');
         }
       }
       const metadata = await (await call('/.well-known/oauth-authorization-server/api/auth')).json() as Record<string, string>;
@@ -569,8 +650,28 @@ if (!backend) {
           const post = await form(path, 'grant_type=client_credentials', { origin });
           expect(post.headers.get('access-control-allow-origin'), path).toBe('*');
           expect(post.headers.get('access-control-allow-credentials'), path).toBeNull();
+          expect(post.headers.get('access-control-expose-headers'), path).toBe('Retry-After');
         }
       }
+    });
+
+    test('Retry-After on a public endpoint is readable from capacitor://localhost', async () => {
+      // No O2 route emits Retry-After yet, so a stub renew route sends the
+      // 503 that renew will send, behind the production CORS middleware.
+      const { Hono } = await import('hono');
+      const { protocolAwareCors } = await import('../apps/api/src/services/native-delegation/public-protocol');
+      const probe = new Hono();
+      probe.use('*', protocolAwareCors(async (_c, next) => { await next(); }));
+      probe.post('/api/auth/oauth2/tinycloud/renew', (c) =>
+        c.json({ error: 'temporarily_unavailable' }, 503, { 'Retry-After': '2' }));
+      const unavailable = await probe.fetch(new Request(`${API}/api/auth/oauth2/tinycloud/renew`, {
+        method: 'POST', headers: { origin: 'capacitor://localhost' },
+      }));
+      expect(unavailable.status).toBe(503);
+      expect(unavailable.headers.get('access-control-allow-origin')).toBe('*');
+      const exposed = (unavailable.headers.get('access-control-expose-headers') ?? '').split(',').map((name) => name.trim().toLowerCase());
+      expect(exposed).toContain('retry-after');
+      expect(unavailable.headers.get('retry-after')).toBe('2');
     });
 
     test('cookie-authenticated and other routes keep the restricted credentialed policy', async () => {
@@ -709,6 +810,24 @@ if (!backend) {
       expect(await prisma.tinyCloudNativeConsentGeneration.findUnique({
         where: { userId_clientId: { userId: 'tc773-carol', clientId: nativeClient } },
       })).toMatchObject({ generation: 1n });
+    });
+
+    test('the SIWE nonce is fixed once set and must be 8-64 alphanumerics', async () => {
+      await seedWithdrawalFixture();
+      const setNonce = (id: string, nonce: string | null) => Promise.resolve(prisma.tinyCloudNativeRequest.update({
+        where: { id }, data: { siweNonce: nonce },
+      }));
+      // First prepare writes the server nonce; later revisions rewrite the
+      // same value.
+      await setNonce('req-resolved', 'srvNonce0123456789');
+      await setNonce('req-resolved', 'srvNonce0123456789');
+      await expect(setNonce('req-resolved', 'otherNonce0123')).rejects.toThrow();
+      await expect(setNonce('req-resolved', null)).rejects.toThrow();
+      await expect(setNonce('req-approved', 'short')).rejects.toThrow();
+      await expect(setNonce('req-approved', 'has-a-dash-1234')).rejects.toThrow();
+      await prisma.tinyCloudNativeRequest.update({ where: { id: 'req-approved' }, data: { status: 'WITHDRAWN' } });
+      expect(await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id: 'req-resolved' } }))
+        .toMatchObject({ siweNonce: 'srvNonce0123456789' });
     });
 
     test('statuses outside the closed set are rejected', async () => {

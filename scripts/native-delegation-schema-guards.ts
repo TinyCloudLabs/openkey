@@ -3,7 +3,7 @@
 // consent-withdrawal triggers are what revoke native grants and tokens.
 
 export const nativeDelegationMigration = '20261007_0001_tinycloud_native_foundation';
-export const nativeDelegationChecksum = 'fc2d5731af7275a5f02c3af5c47a80ed4d2eec1623b4c48f5dc607e6ea661997';
+export const nativeDelegationChecksum = '09bd49921bb76911d9218f20866c88f47bcd88552bffec1b124d71e571ef9a02';
 
 type GuardDatabase = {
   $queryRawUnsafe<T>(query: string, ...values: unknown[]): Promise<T>;
@@ -22,6 +22,7 @@ export async function assertNativeDelegationSchema(database: GuardDatabase): Pro
     grant_client_cascade: boolean;
     withdrawal_function: boolean;
     withdrawal_triggers: number;
+    nonce_trigger: boolean;
   }>>(`
     SELECT
       EXISTS (SELECT 1 FROM information_schema.columns
@@ -40,6 +41,7 @@ export async function assertNativeDelegationSchema(database: GuardDatabase): Pro
       (SELECT COUNT(*)::int FROM pg_constraint WHERE contype = 'c' AND conname IN (
         'tinycloud_native_request_status_check',
         'tinycloud_native_request_hosting_check',
+        'tinycloud_native_request_siwe_nonce_check',
         'tinycloud_native_grant_status_check'
       )) AS status_checks,
       to_regclass('public."tinycloud_native_grant_refreshTokenHash_key"') IS NOT NULL AS grant_refresh_index,
@@ -51,7 +53,13 @@ export async function assertNativeDelegationSchema(database: GuardDatabase): Pro
           AND NOT tgisinternal
           AND tgenabled <> 'D'
           AND tgfoid = to_regprocedure('public.tinycloud_native_withdraw_consent()')
-          AND tgname IN ('tinycloud_native_consent_deleted', 'tinycloud_native_consent_scope_withdrawn')) AS withdrawal_triggers
+          AND tgname IN ('tinycloud_native_consent_deleted', 'tinycloud_native_consent_scope_withdrawn')) AS withdrawal_triggers,
+      EXISTS (SELECT 1 FROM pg_trigger
+        WHERE tgrelid = to_regclass('public.tinycloud_native_request')
+          AND NOT tgisinternal
+          AND tgenabled <> 'D'
+          AND tgname = 'tinycloud_native_request_nonce_immutable'
+          AND tgfoid = to_regprocedure('public.tinycloud_native_request_nonce_immutable()')) AS nonce_trigger
   `);
   const verified = rows[0];
   if (
@@ -61,11 +69,12 @@ export async function assertNativeDelegationSchema(database: GuardDatabase): Pro
     verified.request_columns !== 25 ||
     verified.preparation_columns !== 11 ||
     verified.grant_columns !== 24 ||
-    verified.status_checks !== 3 ||
+    verified.status_checks !== 4 ||
     !verified.grant_refresh_index ||
     !verified.grant_client_cascade ||
     !verified.withdrawal_function ||
-    verified.withdrawal_triggers !== 2
+    verified.withdrawal_triggers !== 2 ||
+    !verified.nonce_trigger
   ) {
     throw new Error(`TC-773 native delegation schema verification failed: ${JSON.stringify(verified)}`);
   }

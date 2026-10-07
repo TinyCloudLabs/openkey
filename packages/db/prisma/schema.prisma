@@ -528,6 +528,8 @@ model TinyCloudNativeRequest {
   sessionJkt              String
   requestedPermissions    Json
   ttlSeconds              Int
+  // PAR siwe_nonce, or the server nonce written by the first prepare. Fixed
+  // once set (trigger), and reused by every revision and the approval.
   siweNonce               String?
   status                  String   @default("PENDING")
   userId                  String?

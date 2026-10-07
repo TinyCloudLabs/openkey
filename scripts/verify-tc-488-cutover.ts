@@ -46,7 +46,7 @@ async function main() {
     }
     console.log('Verified TC-488 cutover: developer organizations retain OAuth administration without key custody, and canonical-key uniqueness remains enforced.');
     await assertNativeDelegationSchema(prisma);
-    console.log('Verified TC-773 native delegation schema: consent generation table, closed statuses, and consent-withdrawal triggers are present.');
+    console.log('Verified TC-773 native delegation schema: consent generation table, closed statuses, the fixed SIWE nonce, and consent-withdrawal triggers are present.');
   } finally {
     await prisma.$disconnect();
   }

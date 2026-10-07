@@ -37,6 +37,7 @@ export interface NativeDelegationClient {
   type: string | null;
   public: boolean;
   tokenEndpointAuthMethod: string | null;
+  disabled?: boolean;
 }
 
 export interface NativeDelegationPolicyOptions {
@@ -119,7 +120,7 @@ function sqlDatabase(path: string, appId: string): boolean {
 
 /**
  * The only way a delegation ceiling is accepted. Enablement is limited to
- * native public clients without a secret, KV paths and SQL databases stay in
+ * enabled native public clients without a secret, KV paths and SQL databases stay in
  * the client's own namespace, and SQL is refused unless the TinyCloud host
  * isolates databases by full path (`TINYCLOUD_SQL_ISOLATED_HOSTS`).
  */
@@ -133,6 +134,7 @@ export function validateNativeDelegationConfig(
   if (client.type !== 'native' || client.public !== true || client.tokenEndpointAuthMethod !== 'none') {
     reject('TinyCloud delegation requires a native public client with none token authentication');
   }
+  if (client.disabled === true) reject('TinyCloud delegation cannot be enabled on a disabled client');
   const value = object(input, 'tinycloudNativeDelegation', [
     'version', 'appId', 'tinycloudHost', 'kv', 'sql', 'maxDelegationTtlSeconds', 'grantLifetimeSeconds', 'siweDomain',
   ]);

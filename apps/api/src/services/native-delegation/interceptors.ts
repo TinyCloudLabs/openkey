@@ -1,33 +1,33 @@
-import { createHash } from 'node:crypto';
 import type { Context, MiddlewareHandler } from 'hono';
 import type { PrismaClient } from '@openkey/db';
 import { TINYCLOUD_DELEGATION_SCOPE } from '../../oauth-config';
 import { isNativeDelegationClient } from './policy';
 import { NATIVE_DELEGATION_ENDPOINT_PATHS } from './public-protocol';
+import { storedOpaqueAccessToken, storedRefreshToken, type ProviderTokenOptions } from './provider-tokens';
 
 /**
- * Fail-closed guards in front of better-auth's OAuth provider (TC-773 §1.3).
+ * Fail-closed guards in front of better-auth's OAuth provider (spec:
+ * "Provider refresh and revoke interception").
  *
  * - Authorize: `tinycloud:delegation` is never requested on the authorize
- *   URL (PAR is the only entry point), and a delegation client may not omit
- *   `scope`, because the provider would default to the client's scopes.
- * - Token, `grant_type=refresh_token`: refused for a delegation client's
- *   token, including revoked rows and rotated grant hashes. The provider's
- *   revoked-token branch would otherwise delete every refresh token the user
- *   holds for the client.
- * - Revoke: a refresh token is refused unless it was issued to the
- *   requesting client (plan amendment A2), and a delegation client's refresh
- *   token is refused outright, with no side effects. Access tokens pass.
+ *   URL, and a delegation client may not omit `scope`, because the provider
+ *   would default to the client's scopes.
+ * - Token, `grant_type=refresh_token`: refused for a native token and for a
+ *   delegation client.
+ * - Revoke: refused for a `Bearer `-prefixed token, a native token, and a
+ *   token issued to another client (plan amendment A2), with no side effects.
  *
- * Bodies are parsed the way the provider parses them; duplicate parameters
- * are refused rather than resolved, so both sides always see the same values.
+ * Native tokens are classified by how they were issued, never by the
+ * client's current configuration. Tokens are normalized with the provider's
+ * own options before every lookup, and bodies are parsed the way the provider
+ * parses them; duplicate parameters are refused rather than resolved.
  */
 
 const AUTH_BASE_PATH = '/api/auth';
 const FORM_MEDIA_TYPE = 'application/x-www-form-urlencoded';
 const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
-export type ProviderInterceptorDatabase = Pick<PrismaClient, 'oauthClient' | 'oauthRefreshToken' | 'tinyCloudNativeGrant'>;
+export type ProviderInterceptorDatabase = Pick<PrismaClient, 'oauthClient' | 'oauthRefreshToken' | 'oauthAccessToken' | 'tinyCloudNativeGrant'>;
 
 type Refusal = { status: 400 | 401; error: string; description: string };
 type ParsedBody = { params: URLSearchParams } | { refusal: Refusal } | { passThrough: true };
@@ -102,12 +102,16 @@ function requestClients(request: Request, params: URLSearchParams): { effective:
   return { effective: basicClient, candidates: [...new Set([basicClient, ...(bodyClient ? [bodyClient] : [])])] };
 }
 
-/** better-auth stores opaque tokens as base64url SHA-256 (`storeTokens: 'hashed'`). */
-function storedTokenHash(token: string): string {
-  return createHash('sha256').update(token).digest('base64url');
+export interface ProviderInterceptorOptions {
+  database: ProviderInterceptorDatabase;
+  /** The provider plugin's configured options; see `providerTokenOptions`. */
+  tokens: ProviderTokenOptions;
 }
 
-export function createProviderInterceptors(database: ProviderInterceptorDatabase): MiddlewareHandler {
+type RefreshTokenMatch = { clientId: string; native: boolean };
+type AccessTokenMatch = { clientId: string; native: boolean };
+
+export function createProviderInterceptors({ database, tokens }: ProviderInterceptorOptions): MiddlewareHandler {
   async function anyDelegationClient(clientIds: string[]): Promise<boolean> {
     if (clientIds.length === 0) return false;
     const clients = await database.oauthClient.findMany({
@@ -118,25 +122,48 @@ export function createProviderInterceptors(database: ProviderInterceptorDatabase
   }
 
   /**
-   * The presented refresh token's owner, from the provider's row (revoked rows
-   * included) or a native grant's current or previous hash, and whether that
-   * token belongs to a delegation client.
+   * A stored refresh-token value, classified by how it was issued: native if
+   * its row (revoked or not) carries tinycloud:delegation, or if it is a
+   * native grant's current or previous hash, whatever the grant's status.
    */
-  async function refreshTokenOwner(token: string): Promise<{ clientId: string; delegation: boolean } | null> {
-    const hash = storedTokenHash(token);
+  async function refreshTokenByStoredValue(stored: string): Promise<RefreshTokenMatch | null> {
     const [row, grant] = await Promise.all([
-      database.oauthRefreshToken.findUnique({ where: { token: hash }, select: { clientId: true, scopes: true } }),
+      database.oauthRefreshToken.findUnique({ where: { token: stored }, select: { clientId: true, scopes: true } }),
       database.tinyCloudNativeGrant.findFirst({
-        where: { OR: [{ refreshTokenHash: hash }, { previousRefreshTokenHash: hash }] },
+        where: { OR: [{ refreshTokenHash: stored }, { previousRefreshTokenHash: stored }] },
         select: { clientId: true },
       }),
     ]);
     if (!row && !grant) return null;
-    const clientId = row?.clientId ?? grant!.clientId;
-    const delegation = Boolean(grant) ||
-      row!.scopes.includes(TINYCLOUD_DELEGATION_SCOPE) ||
-      await anyDelegationClient([clientId]);
-    return { clientId, delegation };
+    return {
+      clientId: row?.clientId ?? grant!.clientId,
+      native: Boolean(grant) || row!.scopes.includes(TINYCLOUD_DELEGATION_SCOPE),
+    };
+  }
+
+  async function refreshToken(token: string): Promise<RefreshTokenMatch | null> {
+    const stored = await storedRefreshToken(tokens, token);
+    return stored === null ? null : refreshTokenByStoredValue(stored);
+  }
+
+  /**
+   * An opaque access token is native if it carries tinycloud:delegation or
+   * its `refreshId` points at a native refresh-token row.
+   */
+  async function accessToken(token: string): Promise<AccessTokenMatch | null> {
+    const stored = await storedOpaqueAccessToken(tokens, token);
+    if (stored === null) return null;
+    const row = await database.oauthAccessToken.findUnique({
+      where: { token: stored },
+      select: { clientId: true, scopes: true, refreshId: true },
+    });
+    if (!row) return null;
+    let native = row.scopes.includes(TINYCLOUD_DELEGATION_SCOPE);
+    if (!native && row.refreshId) {
+      const parent = await database.oauthRefreshToken.findUnique({ where: { id: row.refreshId }, select: { token: true } });
+      native = parent ? (await refreshTokenByStoredValue(parent.token))?.native === true : false;
+    }
+    return { clientId: row.clientId, native };
   }
 
   async function guardAuthorize(c: Context): Promise<Refusal | null> {
@@ -165,44 +192,49 @@ export function createProviderInterceptors(database: ProviderInterceptorDatabase
     if (params.get('grant_type') !== 'refresh_token') return null;
     const clients = requestClients(c.req.raw, params);
     if ('status' in clients) return clients;
+    // The refresh grant decodes the token without stripping `Bearer `.
     const token = params.get('refresh_token');
-    const owner = token ? await refreshTokenOwner(token) : null;
-    if (owner?.delegation || await anyDelegationClient(clients.candidates)) {
+    const presented = token ? await refreshToken(token) : null;
+    // A native token never reaches the provider, whatever the client's
+    // current configuration or the requested scope. A delegation client
+    // never refreshes through the provider either: a revoked token of that
+    // client would otherwise delete every refresh token, native ones
+    // included, that the user holds for it.
+    if (presented?.native || await anyDelegationClient(clients.candidates)) {
       return {
         status: 400,
         error: 'invalid_grant',
-        description: `TinyCloud delegation sessions renew at ${AUTH_BASE_PATH}${NATIVE_DELEGATION_ENDPOINT_PATHS.renew}`,
+        description: 'use the renew endpoint',
       };
-    }
-    if (owner && owner.clientId !== clients.effective) {
-      return { status: 400, error: 'invalid_grant', description: 'refresh token was not issued to this client' };
     }
     return null;
   }
 
+  /** Spec "Provider refresh and revoke interception", revoke table; first match applies. */
   async function guardRevoke(c: Context): Promise<Refusal | null> {
     const parsed = await parseProviderForm(c.req.raw);
     if ('passThrough' in parsed) return null;
     if ('refusal' in parsed) return parsed.refusal;
     const { params } = parsed;
+    const token = params.get('token');
+    if (token?.startsWith('Bearer ')) {
+      return { status: 400, error: 'invalid_request', description: 'token must not carry a Bearer prefix' };
+    }
     const clients = requestClients(c.req.raw, params);
     if ('status' in clients) return clients;
-    let token = params.get('token');
-    if (token?.startsWith('Bearer ')) token = token.replace('Bearer ', '');
     if (!token) return null;
-    const owner = await refreshTokenOwner(token);
-    // Not a refresh token: the provider only deletes an access token issued
-    // to the requesting client.
-    if (!owner) return null;
-    if (owner.clientId !== clients.effective) {
-      return { status: 400, error: 'invalid_request', description: 'token was not issued to this client' };
-    }
-    if (owner.delegation || await anyDelegationClient(clients.candidates)) {
+    // Looked up as both kinds, whatever token_type_hint says.
+    const [refresh, access] = await Promise.all([refreshToken(token), accessToken(token)]);
+    if (refresh?.native || access?.native) {
       return {
         status: 400,
         error: 'unsupported_token_type',
-        description: `TinyCloud delegation sessions are revoked at ${AUTH_BASE_PATH}${NATIVE_DELEGATION_ENDPOINT_PATHS.revoke}`,
+        description: `revoke TinyCloud delegation sessions at ${AUTH_BASE_PATH}${NATIVE_DELEGATION_ENDPOINT_PATHS.revoke}`,
       };
+    }
+    const owner = refresh?.clientId ?? access?.clientId;
+    if (owner !== undefined && owner !== clients.effective) {
+      return { status: 400, error: 'invalid_request', description: 'token was not issued to this client' };
     }
     return null;
   }

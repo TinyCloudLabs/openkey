@@ -26,6 +26,7 @@ import { configuredSocialProviderIds } from './social-providers';
 import { corsOriginPolicy } from './origin-policy';
 import { readinessHandler } from './readiness';
 import { createProviderInterceptors } from './services/native-delegation/interceptors';
+import { providerTokenOptions } from './services/native-delegation/provider-tokens';
 import {
   protocolAwareCors,
   withNativeDelegationMetadata,
@@ -144,7 +145,10 @@ app.get('/api/auth/providers', (c) =>
 
 // Fail-closed guards for delegation clients, ahead of the provider's
 // authorize, refresh and revoke handling.
-app.use('/api/auth/*', createProviderInterceptors(authPrisma));
+app.use('/api/auth/*', createProviderInterceptors({
+  database: authPrisma,
+  tokens: providerTokenOptions(auth),
+}));
 
 // better-auth routes - mount at /api/auth
 // Avoid async/await wrapper to preserve AsyncLocalStorage context in Bun

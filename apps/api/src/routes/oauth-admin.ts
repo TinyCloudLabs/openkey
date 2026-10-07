@@ -425,11 +425,17 @@ oauthAdminRouter.patch('/clients/:clientId', async (c) => {
   }
   const autoApprove = typeof body.autoApprove === 'boolean' ? body.autoApprove : undefined;
 
-  let existing: { type: string | null; public: boolean; tokenEndpointAuthMethod: string | null; scopes: string[] } | null = null;
+  let existing: {
+    type: string | null;
+    public: boolean;
+    tokenEndpointAuthMethod: string | null;
+    scopes: string[];
+    disabled: boolean;
+  } | null = null;
   if ('redirectUris' in body || 'scopes' in body || autoApprove === true || 'tinycloudNativeDelegation' in body) {
     existing = await prisma.oauthClient.findUnique({
       where: { clientId },
-      select: { type: true, public: true, tokenEndpointAuthMethod: true, scopes: true },
+      select: { type: true, public: true, tokenEndpointAuthMethod: true, scopes: true, disabled: true },
     });
     if (!existing) return c.json({ error: 'Client not found' }, 404);
     if (existing.type === 'web' && ('redirectUris' in body || 'scopes' in body)) {
@@ -483,7 +489,10 @@ oauthAdminRouter.patch('/clients/:clientId', async (c) => {
     if (body.tinycloudNativeDelegation === null) nativeConfig = null;
     else {
       try {
-        nativeConfig = validateNativeDelegationConfig(body.tinycloudNativeDelegation, existing!);
+        nativeConfig = validateNativeDelegationConfig(body.tinycloudNativeDelegation, {
+          ...existing!,
+          disabled: body.disabled ?? existing!.disabled,
+        });
       } catch (error) {
         if (error instanceof NativeDelegationPolicyError) return c.json({ error: error.message }, 400);
         throw error;

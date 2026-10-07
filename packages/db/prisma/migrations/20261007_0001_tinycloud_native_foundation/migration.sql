@@ -96,6 +96,26 @@ ALTER TABLE "tinycloud_native_request" ADD CONSTRAINT "tinycloud_native_request_
 ALTER TABLE "tinycloud_native_grant" ADD CONSTRAINT "tinycloud_native_grant_status_check"
   CHECK ("status" IN ('ACTIVE', 'REVOKED'));
 
+-- The session SIWE nonce: the app's PAR `siwe_nonce`, or a server nonce that
+-- the first prepare writes. Once set it never changes, so every later
+-- preparation revision and the approve-time rebuild sign the same nonce.
+ALTER TABLE "tinycloud_native_request" ADD CONSTRAINT "tinycloud_native_request_siwe_nonce_check"
+  CHECK ("siweNonce" IS NULL OR "siweNonce" ~ '^[A-Za-z0-9]{8,64}$');
+
+CREATE FUNCTION tinycloud_native_request_nonce_immutable() RETURNS TRIGGER AS $$
+BEGIN
+  IF OLD."siweNonce" IS NOT NULL AND NEW."siweNonce" IS DISTINCT FROM OLD."siweNonce" THEN
+    RAISE EXCEPTION 'tinycloud_native_request.siweNonce is immutable once set'
+      USING ERRCODE = 'check_violation';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER tinycloud_native_request_nonce_immutable
+  BEFORE UPDATE OF "siweNonce" ON "tinycloud_native_request" FOR EACH ROW
+  EXECUTE FUNCTION tinycloud_native_request_nonce_immutable();
+
 -- Withdrawing delegation consent for (OLD.userId, OLD.clientId), by any path:
 -- the provider's delete/update-consent endpoints, a user or client cascade, or
 -- direct SQL. The consent row is already locked by the triggering statement,

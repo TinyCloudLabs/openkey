@@ -14,10 +14,11 @@ import {
   isNativeDelegationClient,
   sqlIsolatedHosts,
   validateNativeDelegationConfig,
+  type NativeDelegationClient,
 } from '../services/native-delegation/policy';
 import { isPublicProtocolPath, nativeDelegationMetadata } from '../services/native-delegation/public-protocol';
 
-const nativeClient = { type: 'native', public: true, tokenEndpointAuthMethod: 'none' };
+const nativeClient: NativeDelegationClient = { type: 'native', public: true, tokenEndpointAuthMethod: 'none' };
 const host = 'https://tee.node.tinycloud.xyz';
 const ceiling = {
   version: 1,
@@ -65,6 +66,12 @@ describe('native delegation ceiling validation', () => {
     refused(ceiling, { type: 'web', public: false, tokenEndpointAuthMethod: 'client_secret_basic' });
     refused(ceiling, { type: 'native', public: false, tokenEndpointAuthMethod: 'none' });
     refused(ceiling, { type: 'native', public: true, tokenEndpointAuthMethod: 'client_secret_post' });
+  });
+
+  test('refuses a disabled client', () => {
+    refused(ceiling, { ...nativeClient, disabled: true });
+    expect(validateNativeDelegationConfig(ceiling, { ...nativeClient, disabled: false }, notIsolated).appId)
+      .toBe('xyz.tinycloud.tinychat');
   });
 
   test('SQL entries require a host in TINYCLOUD_SQL_ISOLATED_HOSTS', () => {
