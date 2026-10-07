@@ -97,6 +97,15 @@ function asNativeError(error: unknown): OpenKeyNativeError {
   return new OpenKeyNativeError('SERVER', 'Native OpenKey operation failed');
 }
 
+function storageFailure(message: string, cause?: OpenKeyNativeError): OpenKeyNativeError {
+  const failure = new OpenKeyNativeError('STORAGE', message);
+  if (cause) {
+    cause.rotatedRefreshToken = undefined;
+    failure.cause = cause;
+  }
+  return failure;
+}
+
 class SessionReadError extends OpenKeyNativeError {
   constructor(message: string, readonly corrupt: boolean) {
     super('STORAGE', message);
@@ -423,7 +432,7 @@ export class OpenKeyNative {
         try {
           if (grants.length === 0) await this.plugin.secureStoreRemove({ key: this.pendingRevokeKey });
           else await this.plugin.secureStoreSet({ key: this.pendingRevokeKey, value: JSON.stringify({ version: 1, grants }) });
-        } catch { throw new OpenKeyNativeError('STORAGE', 'Pending revoke retry could not be saved'); }
+        } catch { throw storageFailure('Pending revoke retry could not be saved', transient); }
       });
     }
     if (transient) throw transient;
@@ -728,7 +737,7 @@ export class OpenKeyNative {
             error.rotatedRefreshToken = undefined;
             const failure = asNativeError(writeError);
             if (failure.code === 'NOT_SIGNED_IN') throw failure;
-            throw new OpenKeyNativeError('STORAGE', 'Rotated refresh token could not be saved; its grant was abandoned');
+            throw storageFailure('Rotated refresh token could not be saved; its grant was abandoned', error);
           }
         }
         throw error;
@@ -751,7 +760,7 @@ export class OpenKeyNative {
         const error = asNativeError(caught);
         await this.abandonRotatedGrant(metadata, record, renewed.refreshToken);
         if (error.code === 'NOT_SIGNED_IN') throw error;
-        throw new OpenKeyNativeError('STORAGE', 'Rotated refresh token could not be saved; its grant was abandoned');
+        throw storageFailure('Rotated refresh token could not be saved; its grant was abandoned', error);
       }
       try { await this.verifier(renewed.delegation); }
       catch {
@@ -781,7 +790,7 @@ export class OpenKeyNative {
         }
         // The first write already made this token durable. Report the failed
         // delegation update without revoking the stored grant.
-        throw new OpenKeyNativeError('STORAGE', 'Renewed delegation could not be saved');
+        throw storageFailure('Renewed delegation could not be saved', error);
       }
       this.assertEpoch(epoch);
       return this.present(record);
@@ -800,7 +809,6 @@ export class OpenKeyNative {
   private async signOutOnce(): Promise<void> {
     let revokeError: OpenKeyNativeError | undefined;
     let pendingError: OpenKeyNativeError | undefined;
-    let pendingWriteError: OpenKeyNativeError | undefined;
     let started = false;
     try { await this.retryPendingRevoke(); }
     catch (caught) { pendingError = asNativeError(caught); }
@@ -837,17 +845,24 @@ export class OpenKeyNative {
             revokeError ??= error;
             try { await this.appendPendingRevoke({ privateJwk: record.privateJwk, refreshToken: record.tokens.refreshToken,
               attempts: 1, expiresAt: refreshExpiry(record) }); }
-            catch (writeError) { pendingWriteError ??= asNativeError(writeError); }
+            catch {
+              this.coordinator.signedOut = false;
+              throw storageFailure('Pending revoke could not be saved; session remains stored', revokeError);
+            }
           }
         }
       }
       let removed: boolean;
       try { removed = (await this.wipe(undefined, record ? matchFor(record) : null)).removed; }
       catch (caught) {
-        if (!(caught instanceof SessionReadError)) throw caught;
+        if (!(caught instanceof SessionReadError)) {
+          const failure = asNativeError(caught);
+          if (failure.code === 'STORAGE' && revokeError) throw storageFailure(failure.message, revokeError);
+          throw failure;
+        }
         if (!caught.corrupt) {
           this.coordinator.signedOut = false;
-          throw caught;
+          throw revokeError ? storageFailure(caught.message, revokeError) : caught;
         }
         await this.wipe();
         throw caught;
@@ -855,9 +870,6 @@ export class OpenKeyNative {
       if (removed) break;
       // A different session was stored during revoke. Revoke the session that
       // is current at the eventual removal point.
-    }
-    if (pendingWriteError) {
-      throw new OpenKeyNativeError('STORAGE', 'Local state was cleared; pending revoke could not be saved');
     }
     if (revokeError && transientRevoke(revokeError)) {
       throw new OpenKeyNativeError(revokeError.code, 'Local state was cleared; the server grant may still be active',

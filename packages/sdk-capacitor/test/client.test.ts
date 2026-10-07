@@ -301,7 +301,8 @@ describe('OpenKeyNative', () => {
   test('failed rotation write abandons the grant and reports STORAGE without a token', async () => {
     const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
     f.plugin.failSet = true;
-    await expect(client.renew()).rejects.toMatchObject({ code: 'STORAGE', rotatedRefreshToken: undefined });
+    await expect(client.renew()).rejects.toMatchObject({ code: 'STORAGE', rotatedRefreshToken: undefined,
+      cause: { code: 'STORAGE', rotatedRefreshToken: undefined } });
     expect(f.revokeTokens).toContain('next');
   });
 
@@ -309,7 +310,8 @@ describe('OpenKeyNative', () => {
     const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
     f.setRenewReply(() => response(200, { refresh_token: 'rotated', tinycloud_delegation: { ...f.delegation(), verificationMethod: 'wrong' } }));
     f.plugin.failSet = true;
-    await expect(client.renew()).rejects.toMatchObject({ code: 'STORAGE', rotatedRefreshToken: undefined });
+    await expect(client.renew()).rejects.toMatchObject({ code: 'STORAGE', rotatedRefreshToken: undefined,
+      cause: { code: 'SERVER', rotatedRefreshToken: undefined } });
     expect(f.revokeTokens).toContain('rotated');
   });
 
@@ -938,7 +940,8 @@ describe('OpenKeyNative', () => {
       if (item.key.endsWith(':pending-revoke')) throw new Error('disk full');
       await originalSet(item);
     };
-    await expect(client.signOut()).rejects.toMatchObject({ code: 'STORAGE' });
+    await expect(client.signOut()).rejects.toMatchObject({ code: 'STORAGE',
+      cause: { code: 'TEMPORARILY_UNAVAILABLE', rotatedRefreshToken: undefined } });
   });
 
   test('pending expiry uses token issue time and caps at renewableUntil plus five minutes', async () => {
@@ -1090,16 +1093,31 @@ describe('OpenKeyNative', () => {
     await expect(client.signOut()).rejects.toMatchObject({ code: 'STORAGE', message: 'Local secure-store wipe failed' });
   });
 
+  test('a wipe failure after transient revoke carries the revoke cause', async () => {
+    const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
+    f.setRevokeReply(() => response(503, { error: 'temporarily_unavailable' }, '1'));
+    f.plugin.failRemove = true;
+    await expect(client.signOut()).rejects.toMatchObject({ code: 'STORAGE',
+      cause: { code: 'TEMPORARILY_UNAVAILABLE', rotatedRefreshToken: undefined } });
+    expect(sessionEntry(f.plugin)[1]).toContain('initial');
+  });
+
   test('a signOut pending-revoke write failure reports STORAGE without a token', async () => {
     const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
     f.setRevokeReply(() => response(503, { error: 'temporarily_unavailable' }, '1'));
     const originalSet = f.plugin.secureStoreSet.bind(f.plugin);
+    const originalRemove = f.plugin.secureStoreRemove.bind(f.plugin);
+    let removes = 0;
     f.plugin.secureStoreSet = async (item) => {
       if (item.key.endsWith(':pending-revoke')) throw new Error('disk full');
       await originalSet(item);
     };
-    await expect(client.signOut()).rejects.toMatchObject({ code: 'STORAGE', rotatedRefreshToken: undefined });
-    expect(await client.current()).toBeNull();
+    f.plugin.secureStoreRemove = async (item) => { removes++; await originalRemove(item); };
+    await expect(client.signOut()).rejects.toMatchObject({ code: 'STORAGE', rotatedRefreshToken: undefined,
+      cause: { code: 'TEMPORARILY_UNAVAILABLE', rotatedRefreshToken: undefined } });
+    expect(removes).toBe(0);
+    expect(JSON.parse(sessionEntry(f.plugin)[1]).tokens.refreshToken).toBe('initial');
+    expect((await client.current())?.tokens.refreshToken).toBe('initial');
   });
 
   test('TinyCloud adapter write and remove failures report STORAGE', async () => {
