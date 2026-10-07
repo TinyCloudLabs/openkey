@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { createHash, generateKeyPairSync, randomUUID, sign, type KeyObject } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -276,6 +276,14 @@ if (!backend) {
     }
     process.env.DATABASE_URL = connectionString;
     delete process.env.OPENKEY_DATABASE_SCHEMA;
+    // One user runs every flow here, past O3's per-user authorize and
+    // consent budgets. Those limits are covered by the O3 suite; this
+    // process (a child of its own) runs without them.
+    const userRateLimit = await import('../apps/api/src/services/native-delegation/user-rate-limit');
+    mock.module('../apps/api/src/services/native-delegation/user-rate-limit', () => ({
+      ...userRateLimit,
+      nativeUserRetryAfter: () => 0,
+    }));
     // Route singletons capture DATABASE_URL on import, so the app loads only
     // after the disposable database exists.
     const { createPrismaClient } = await import('@openkey/db');
