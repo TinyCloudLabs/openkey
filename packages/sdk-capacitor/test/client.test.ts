@@ -298,17 +298,61 @@ describe('OpenKeyNative', () => {
     await expect(f.make().signIn({ capabilities })).rejects.toMatchObject({ code: 'UNAVAILABLE', message: 'An authorization session is already in progress' });
   });
 
-  test('failed rotation write reports the live token', async () => {
+  test('failed rotation write abandons the grant and reports STORAGE without a token', async () => {
     const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
     f.plugin.failSet = true;
-    await expect(client.renew()).rejects.toMatchObject({ code: 'SERVER', rotatedRefreshToken: 'next' });
+    await expect(client.renew()).rejects.toMatchObject({ code: 'STORAGE', rotatedRefreshToken: undefined });
+    expect(f.revokeTokens).toContain('next');
   });
 
-  test('post-2xx validation error retains its token when persistence also fails', async () => {
+  test('post-2xx validation error abandons the token when its recovery write fails', async () => {
     const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
     f.setRenewReply(() => response(200, { refresh_token: 'rotated', tinycloud_delegation: { ...f.delegation(), verificationMethod: 'wrong' } }));
     f.plugin.failSet = true;
-    await expect(client.renew()).rejects.toMatchObject({ code: 'SERVER', rotatedRefreshToken: 'rotated' });
+    await expect(client.renew()).rejects.toMatchObject({ code: 'STORAGE', rotatedRefreshToken: undefined });
+    expect(f.revokeTokens).toContain('rotated');
+  });
+
+  test('a failed rotation write queues a transient revoke and exposes no token', async () => {
+    const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
+    const originalSet = f.plugin.secureStoreSet.bind(f.plugin);
+    f.plugin.secureStoreSet = async (item) => {
+      if (item.key.endsWith(':session') && JSON.parse(item.value).tokens.refreshToken === 'next') throw new Error('disk full');
+      await originalSet(item);
+    };
+    f.setRevokeReply(() => response(503, { error: 'temporarily_unavailable' }, '1'));
+    await expect(client.renew()).rejects.toMatchObject({ code: 'STORAGE', rotatedRefreshToken: undefined });
+    const pending = JSON.parse([...f.plugin.values].find(([key]) => key.endsWith(':pending-revoke'))![1]);
+    expect(pending.grants.map((grant: { refreshToken: string }) => grant.refreshToken)).toContain('next');
+  });
+
+  test('a failed post-2xx recovery write queues its rotated token', async () => {
+    const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
+    f.setRenewReply(() => response(200, { refresh_token: 'rotated', tinycloud_delegation: { ...f.delegation(), verificationMethod: 'wrong' } }));
+    const originalSet = f.plugin.secureStoreSet.bind(f.plugin);
+    f.plugin.secureStoreSet = async (item) => {
+      if (item.key.endsWith(':session') && JSON.parse(item.value).tokens.refreshToken === 'rotated') throw new Error('disk full');
+      await originalSet(item);
+    };
+    f.setRevokeReply(() => response(503, { error: 'temporarily_unavailable' }, '1'));
+    await expect(client.renew()).rejects.toMatchObject({ code: 'STORAGE', rotatedRefreshToken: undefined });
+    const pending = JSON.parse([...f.plugin.values].find(([key]) => key.endsWith(':pending-revoke'))![1]);
+    expect(pending.grants.map((grant: { refreshToken: string }) => grant.refreshToken)).toContain('rotated');
+  });
+
+  test('a failed delegation update leaves the already stored rotated token usable', async () => {
+    const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
+    const originalSet = f.plugin.secureStoreSet.bind(f.plugin);
+    let rotatedWrites = 0;
+    f.plugin.secureStoreSet = async (item) => {
+      if (item.key.endsWith(':session') && JSON.parse(item.value).tokens.refreshToken === 'next' && ++rotatedWrites === 2) {
+        throw new Error('disk full');
+      }
+      await originalSet(item);
+    };
+    await expect(client.renew()).rejects.toMatchObject({ code: 'STORAGE', rotatedRefreshToken: undefined });
+    expect((await client.current())?.tokens.refreshToken).toBe('next');
+    expect(f.revokeTokens).toEqual([]);
   });
 
   test('verifier rejection after renew keeps the rotated token', async () => {
@@ -342,7 +386,7 @@ describe('OpenKeyNative', () => {
     const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
     f.setRenewReply(() => response(200, { refresh_token: 'rotated', tinycloud_delegation: { ...f.delegation(), hosting: 'failed' } }));
     f.setRevokeReply(() => response(503, { error: 'temporarily_unavailable' }, '1'));
-    await expect(client.renew()).rejects.toMatchObject({ code: 'SPACE_UNAVAILABLE', rotatedRefreshToken: 'rotated' });
+    await expect(client.renew()).rejects.toMatchObject({ code: 'SPACE_UNAVAILABLE', rotatedRefreshToken: undefined });
     expect(f.revokeTokens).toEqual(['initial', 'initial', 'rotated', 'rotated']);
     const pending = JSON.parse([...f.plugin.values].find(([key]) => key.endsWith(':pending-revoke'))![1]);
     expect(pending.grants.map((grant: { refreshToken: string }) => grant.refreshToken).sort()).toEqual(['initial', 'rotated']);
@@ -502,7 +546,7 @@ describe('OpenKeyNative', () => {
       f.plugin.values.set(key, value);
       return invalid;
     } }));
-    await expect(client.renew()).rejects.toMatchObject({ code: 'SERVER' });
+    await expect(client.renew()).rejects.toMatchObject({ code: 'NOT_SIGNED_IN', rotatedRefreshToken: undefined });
     expect(f.revokeTokens).toContain('rotated');
     expect((await client.current())?.sessionKey.did).toBe(sessionB.sessionKey.did);
     expect((await client.current())?.tokens.refreshToken).toBe('second');
@@ -875,6 +919,28 @@ describe('OpenKeyNative', () => {
     expect(f.revokeCalls).toBe(1);
   });
 
+  test('failure to remove a corrupt pending revoke reports STORAGE', async () => {
+    const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
+    const key = sessionEntry(f.plugin)[0].replace(/:session$/, ':pending-revoke');
+    f.plugin.values.set(key, '{broken');
+    f.plugin.failRemove = true;
+    await expect(client.signOut()).rejects.toMatchObject({ code: 'STORAGE' });
+    expect(f.revokeCalls).toBe(0);
+    expect((await client.current())?.tokens.refreshToken).toBe('initial');
+  });
+
+  test('a pending-revoke retry write failure reports STORAGE', async () => {
+    const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
+    f.setRevokeReply(() => response(503, { error: 'temporarily_unavailable' }, '1'));
+    await expect(client.signOut()).rejects.toMatchObject({ code: 'TEMPORARILY_UNAVAILABLE' });
+    const originalSet = f.plugin.secureStoreSet.bind(f.plugin);
+    f.plugin.secureStoreSet = async (item) => {
+      if (item.key.endsWith(':pending-revoke')) throw new Error('disk full');
+      await originalSet(item);
+    };
+    await expect(client.signOut()).rejects.toMatchObject({ code: 'STORAGE' });
+  });
+
   test('pending expiry uses token issue time and caps at renewableUntil plus five minutes', async () => {
     const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
     const [key, value] = sessionEntry(f.plugin);
@@ -1021,7 +1087,30 @@ describe('OpenKeyNative', () => {
   test('signOut reports a local wipe failure', async () => {
     const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
     f.plugin.failRemove = true;
-    await expect(client.signOut()).rejects.toMatchObject({ code: 'SERVER', message: 'Local secure-store wipe failed' });
+    await expect(client.signOut()).rejects.toMatchObject({ code: 'STORAGE', message: 'Local secure-store wipe failed' });
+  });
+
+  test('a signOut pending-revoke write failure reports STORAGE without a token', async () => {
+    const f = fixture(); const client = f.make(); await client.signIn({ capabilities });
+    f.setRevokeReply(() => response(503, { error: 'temporarily_unavailable' }, '1'));
+    const originalSet = f.plugin.secureStoreSet.bind(f.plugin);
+    f.plugin.secureStoreSet = async (item) => {
+      if (item.key.endsWith(':pending-revoke')) throw new Error('disk full');
+      await originalSet(item);
+    };
+    await expect(client.signOut()).rejects.toMatchObject({ code: 'STORAGE', rotatedRefreshToken: undefined });
+    expect(await client.current()).toBeNull();
+  });
+
+  test('TinyCloud adapter write and remove failures report STORAGE', async () => {
+    const f = fixture(); const client = f.make(); const session = await client.signIn({ capabilities });
+    const storage = client.sessionStorageAdapter();
+    f.plugin.failSet = true;
+    await expect(storage.save(session.delegation.address!, persisted(session))).rejects.toMatchObject({ code: 'STORAGE' });
+    f.plugin.failSet = false;
+    await storage.save(session.delegation.address!, persisted(session));
+    f.plugin.failRemove = true;
+    await expect(storage.clearAll()).rejects.toMatchObject({ code: 'STORAGE' });
   });
 
   test('immediate renew failure rejects signIn and removes the initial session', async () => {
@@ -1044,13 +1133,38 @@ describe('OpenKeyNative', () => {
     expect(f.revokeCalls).toBe(1);
   });
 
-  test('failed cleanup retains the live token on an exchange error', async () => {
+  test('failed sign-in session write abandons its grant and reports STORAGE', async () => {
+    const f = fixture();
+    const originalSet = f.plugin.secureStoreSet.bind(f.plugin);
+    f.plugin.secureStoreSet = async (item) => {
+      if (item.key.endsWith(':session')) throw new Error('disk full');
+      await originalSet(item);
+    };
+    await expect(f.make().signIn({ capabilities })).rejects.toMatchObject({ code: 'STORAGE', rotatedRefreshToken: undefined });
+    expect(f.revokeTokens).toContain('initial');
+  });
+
+  test('transient exchange cleanup queues the grant and strips its error token', async () => {
     const f = fixture();
     f.setTokenReply(() => response(200, { access_token: 'access', refresh_token: 'live', tinycloud_delegation: { ...f.delegation(), verificationMethod: 'wrong' } }));
     f.setRevokeReply(() => response(503, { error: 'temporarily_unavailable' }, '1'));
-    await expect(f.make().signIn({ capabilities })).rejects.toMatchObject({ code: 'SERVER', rotatedRefreshToken: 'live' });
+    await expect(f.make().signIn({ capabilities })).rejects.toMatchObject({ code: 'SERVER', rotatedRefreshToken: undefined });
     const pending = JSON.parse([...f.plugin.values].find(([key]) => key.endsWith(':pending-revoke'))![1]);
     expect(pending.grants.map((grant: { refreshToken: string }) => grant.refreshToken)).toEqual(['live']);
+  });
+
+  test('failed exchange cleanup pending write reports STORAGE instead of the earlier error', async () => {
+    const f = fixture();
+    f.setTokenReply(() => response(200, { access_token: 'access', refresh_token: 'live', tinycloud_delegation: { ...f.delegation(), verificationMethod: 'wrong' } }));
+    f.setRevokeReply(() => response(503, { error: 'temporarily_unavailable' }, '1'));
+    const originalSet = f.plugin.secureStoreSet.bind(f.plugin);
+    f.plugin.secureStoreSet = async (item) => {
+      if (item.key.endsWith(':pending-revoke')) throw new Error('disk full');
+      await originalSet(item);
+    };
+    await expect(f.make().signIn({ capabilities })).rejects.toMatchObject({ code: 'STORAGE', rotatedRefreshToken: undefined });
+    const intent = JSON.parse([...f.plugin.values].find(([key]) => key.endsWith(':exchange-intent'))![1]);
+    expect(intent.refreshToken).toBe('live');
   });
 
   test('seeded sign-in, renew, sign-out and pending-revoke interleavings account for live grants', async () => {
@@ -1086,18 +1200,39 @@ describe('OpenKeyNative', () => {
         return response(200, {});
       });
       await clients[0].signIn({ capabilities });
+      const waiting: (() => void)[] = [];
+      const originalGet = f.plugin.secureStoreGet.bind(f.plugin);
+      f.plugin.secureStoreGet = async (args) => {
+        const snapshot = await originalGet(args);
+        if (args.key.endsWith(':session') && random() < 0.5) {
+          await new Promise<void>((resolve) => { waiting.push(resolve); });
+        }
+        return snapshot;
+      };
       const order: ('renew' | 'signIn' | 'signOut')[] = ['renew', 'signIn', 'signOut'];
       for (let i = order.length - 1; i > 0; i--) {
         const j = Math.floor(random() * (i + 1));
         [order[i], order[j]] = [order[j], order[i]];
       }
       const operations: Promise<unknown>[] = [];
-      for (const operation of order) {
-        const client = clients[Math.floor(random() * clients.length)]!;
-        const pending = operation === 'renew' ? client.renew() : operation === 'signIn'
-          ? client.signIn({ capabilities }) : client.signOut();
-        operations.push(pending.catch(() => {}));
+      let started = 0;
+      let settled = 0;
+      for (let steps = 0; ; steps++) {
+        if (steps > 500) throw new Error(`seed ${seed}: storage schedule did not settle`);
         await tick();
+        if (started < order.length && (waiting.length === 0 || random() < 0.4)) {
+          const operation = order[started++]!;
+          const client = operation === 'renew' ? clients[0] : operation === 'signIn' ? clients[1] : clients[Math.floor(random() * 2)]!;
+          const pending = operation === 'renew' ? client.renew() : operation === 'signIn'
+            ? client.signIn({ capabilities }) : client.signOut();
+          operations.push(pending.then(() => { settled++; }, () => { settled++; }));
+          continue;
+        }
+        if (waiting.length > 0) {
+          waiting.splice(Math.floor(random() * waiting.length), 1)[0]!();
+          continue;
+        }
+        if (settled === order.length) break;
       }
       await Promise.allSettled(operations);
       const stored = [...f.plugin.values].find(([key]) => key.endsWith(':session'));

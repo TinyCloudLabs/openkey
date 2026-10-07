@@ -29,7 +29,7 @@ export class NativeSessionStorage implements ISessionStorage {
     }
     catch (error) {
       if (error instanceof OpenKeyNativeError && error.code === 'NOT_SIGNED_IN') throw error;
-      throw new OpenKeyNativeError('SERVER', 'TinyCloud secure store write failed');
+      throw new OpenKeyNativeError('STORAGE', 'TinyCloud secure store write failed');
     }
     if (!this.isVisible() || this.generation() !== generation) return;
     this.present.clear();
@@ -65,7 +65,7 @@ export class NativeSessionStorage implements ISessionStorage {
   /** Remove the fixed secure-store key without decrypting its contents. */
   async clearAll(): Promise<void> {
     try { await this.plugin.secureStoreRemove({ key: this.key }); }
-    catch { throw new OpenKeyNativeError('SERVER', 'TinyCloud secure store wipe failed'); }
+    catch { throw new OpenKeyNativeError('STORAGE', 'TinyCloud secure store wipe failed'); }
     this.present.clear();
     this.active = undefined;
   }
