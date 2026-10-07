@@ -5,6 +5,7 @@ export default defineConfig({
   format: ['esm', 'cjs'],
   dts: true,
   clean: true,
+  platform: 'browser',
   external: ['@capacitor/core', '@tinycloud/web-sdk'],
-  noExternal: ['@openkey/core'],
+  noExternal: ['@openkey/core', /^@noble\//],
 });

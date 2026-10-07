@@ -2,7 +2,7 @@ import { registerPlugin } from '@capacitor/core';
 import { OpenKeyNativeError } from '@openkey/core';
 
 export interface OpenKeyCapacitorPlugin {
-  openAuthSession(options: { url: string; callbackScheme: string; callbackUrl?: string; ephemeral?: boolean }): Promise<{ url: string }>;
+  openAuthSession(options: { url: string; callbackScheme: string; callbackUrl?: string; expectedState?: string; ephemeral?: boolean }): Promise<{ url: string }>;
   secureStoreGet(options: { key: string }): Promise<{ value: string | null }>;
   secureStoreSet(options: { key: string; value: string }): Promise<void>;
   secureStoreRemove(options: { key: string }): Promise<void>;

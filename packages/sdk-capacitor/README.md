@@ -4,7 +4,7 @@ Capacitor 8 sign-in for an OpenKey native client with a TinyCloud delegation. Th
 
 ## Register and install
 
-Ask an OpenKey admin to register a **native**, **public** client with token endpoint authentication `none` and enable `tinycloud:delegation` with a capability ceiling and TinyCloud host. Register an exact redirect URI. A private-use redirect needs a host and path, for example `xyz.tinycloud.exo://openkey/callback`; an HTTPS claimed redirect is also supported. A scheme-only URI is refused. Android private schemes can be claimed by another app, so use a claimed HTTPS redirect for production when available.
+Ask an OpenKey admin to register a **native**, **public** client with token endpoint authentication `none` and enable `tinycloud:delegation` with a capability ceiling and TinyCloud host. Register an exact redirect URI. For Android, use a private-use scheme with a host and `/callback` path, for example `xyz.tinycloud.exo://openkey/callback`. A scheme-only URI is refused. Android private schemes can be claimed by another app; the plugin checks the pending redirect and state before accepting one. HTTPS redirects are supported on iOS 17.4+ with a claimed domain, but this package does not ship an Android App Link filter.
 
 ```sh
 npm install @openkey/sdk-capacitor @capacitor/core@^8 @tinycloud/web-sdk@^2.11 @tinycloud/sdk-core
@@ -19,7 +19,7 @@ manifestPlaceholders += [openkeyRedirectScheme: 'xyz.tinycloud.exo', openkeyRedi
 
 The plugin activity matches `/callback`. Keep any unrelated OAuth intent filters on the app's main activity. The plugin supports Swift Package Manager, including Capacitor's `ios/App/CapApp-SPM` layout. Run `cap sync ios` after installing it.
 
-For an HTTPS redirect, set Android's placeholders to `https` and the claimed host, configure Android Digital Asset Links, and associate the same domain with the iOS app using `webcredentials:`. HTTPS callbacks use Apple's callback matcher and require iOS 17.4 or later; earlier iOS versions return `UNAVAILABLE` for that redirect.
+For an iOS HTTPS redirect, associate the domain with the app using `webcredentials:`. Apple's callback matcher requires iOS 17.4 or later; earlier versions return `UNAVAILABLE`.
 
 ## Sign in and hand off to TinyCloud
 
@@ -93,8 +93,8 @@ await handoff(renewed); // save, activate, then swap on the live TinyCloudWeb in
 await openkey.signOut();
 ```
 
-`renew()` is single-flight and saves a rotated refresh token before returning. On `renewal_conflict` it reloads secure storage and retries once if another call stored a newer token. OpenKey's `Retry-After` handling for 429 and 503 lives in core. `signOut()` calls the TinyCloud revoke endpoint and removes local state even if revoke fails. Catch `OpenKeyNativeError` and use its `code` (`USER_CANCELLED`, `ACCESS_DENIED`, `STATE_MISMATCH`, etc.); do not log the raw error object because it can carry `rotatedRefreshToken`.
+`renew()` is single-flight for identical options; different options run in order. It saves a rotated refresh token before returning. On `renewal_conflict` it reloads secure storage and retries once if another call stored a newer token. Terminal renew errors clear the local session. OpenKey's `Retry-After` handling for 429 and 503 lives in core. If immediate renewal after exchange fails, `signIn()` rejects and clears the initial session so `current()` cannot restore a sign-in reported as failed. `signOut()` removes local state after revoke. A terminal revoke failure still resolves; a transient failure wipes local state and rejects with a typed error saying the server grant may still be active. Catch `OpenKeyNativeError` and use its `code` (`USER_CANCELLED`, `ACCESS_DENIED`, `STATE_MISMATCH`, etc.); never log the raw error object because it can carry `rotatedRefreshToken`.
 
 ## Security
 
-The session private JWK and refresh token are stored in iOS Keychain generic passwords with `AfterFirstUnlockThisDeviceOnly` and iCloud synchronization disabled. Android stores AES-GCM ciphertext in SharedPreferences with a non-exportable Android Keystore key. The JWK is necessarily present in JS memory while TinyCloud WASM signs requests. `NativeSessionStorage` never uses localStorage. A device or JS runtime compromise can still expose an active session. Native access tokens are not refreshed; renewal rotates only the TinyCloud delegation refresh token. A lost renew response can require a new sign-in.
+The session private JWK and refresh token are stored in iOS Keychain generic passwords with `AfterFirstUnlockThisDeviceOnly` and iCloud synchronization disabled. Android stores AES-GCM ciphertext in the `openkey_secure_store` SharedPreferences file with a non-exportable Android Keystore key. Android apps with backup enabled must exclude `sharedpref/openkey_secure_store.xml` from both legacy `fullBackupContent` and Android 12+ `dataExtractionRules` for cloud backup and device transfer, or disable backup for the app. In each backup rules file use `<exclude domain="sharedpref" path="openkey_secure_store.xml" />` (under both `<cloud-backup>` and `<device-transfer>` for `dataExtractionRules`). A restored ciphertext cannot be decrypted with a different device's key. The JWK is necessarily present in JS memory while TinyCloud WASM signs requests. `NativeSessionStorage` never uses localStorage. A device or JS runtime compromise can still expose an active session. Native access tokens are not refreshed; renewal rotates only the TinyCloud delegation refresh token. A lost renew response can require a new sign-in.

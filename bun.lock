@@ -140,13 +140,15 @@
     },
     "packages/sdk-capacitor": {
       "name": "@openkey/sdk-capacitor",
-      "version": "0.1.0",
+      "version": "0.0.0",
       "devDependencies": {
         "@capacitor/core": "^8.0.0",
         "@openkey/core": "workspace:*",
         "@tinycloud/web-sdk": "2.11.0",
+        "@tinycloud/web-sdk-wasm": "1.7.6",
         "tsup": "^8.0.0",
         "typescript": "^6.0.0",
+        "viem": "^2.45.1",
       },
       "peerDependencies": {
         "@capacitor/core": "^8.0.0",

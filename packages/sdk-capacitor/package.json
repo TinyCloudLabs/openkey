@@ -18,6 +18,6 @@
   "publishConfig": { "access": "public", "registry": "https://registry.npmjs.org/" },
   "scripts": { "build": "tsup", "typecheck": "tsc --noEmit", "test": "bun test" },
   "peerDependencies": { "@capacitor/core": "^8.0.0", "@tinycloud/web-sdk": "^2.11.0" },
-  "devDependencies": { "@openkey/core": "workspace:*", "@capacitor/core": "^8.0.0", "@tinycloud/web-sdk": "2.11.0", "tsup": "^8.0.0", "typescript": "^6.0.0" },
+  "devDependencies": { "@openkey/core": "workspace:*", "@capacitor/core": "^8.0.0", "@tinycloud/web-sdk": "2.11.0", "@tinycloud/web-sdk-wasm": "1.7.6", "viem": "^2.45.1", "tsup": "^8.0.0", "typescript": "^6.0.0" },
   "capacitor": { "ios": { "src": "ios" }, "android": { "src": "android" } }
 }

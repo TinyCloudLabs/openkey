@@ -24,13 +24,15 @@ public class OpenKeyCapacitorPlugin: CAPPlugin, CAPBridgedPlugin, ASWebAuthentic
     }
 
     @objc public func openAuthSession(_ call: CAPPluginCall) {
+        DispatchQueue.main.async { [weak self] in
+        guard let self = self else { call.reject("Authorization session unavailable", "UNAVAILABLE"); return }
         guard let urlString = call.getString("url"), let url = URL(string: urlString), url.scheme == "https",
               let scheme = call.getString("callbackScheme"), !scheme.isEmpty else {
             call.reject("Invalid authorization URL or callback scheme", "INVALID_REQUEST")
             return
         }
         guard pendingCall == nil else {
-            call.reject("An authorization session is already open", "UNAVAILABLE")
+            call.reject("An authorization session is already open", "ALREADY_IN_PROGRESS")
             return
         }
         pendingCall = call
@@ -71,6 +73,7 @@ public class OpenKeyCapacitorPlugin: CAPPlugin, CAPBridgedPlugin, ASWebAuthentic
             pendingCall = nil
             authSession = nil
             call.reject("Could not start authorization session", "UNAVAILABLE")
+        }
         }
     }
 
