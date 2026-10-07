@@ -79,7 +79,7 @@
     },
     "packages/capability-review": {
       "name": "@openkey/capability-review",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "devDependencies": {
         "typescript": "^6.0.0",
       },
@@ -103,7 +103,11 @@
     "packages/core": {
       "name": "@openkey/core",
       "version": "0.8.8",
+      "dependencies": {
+        "@noble/curves": "^1.9.7",
+      },
       "devDependencies": {
+        "jose": "^6.1.3",
         "tsup": "^8.0.0",
         "typescript": "^6.0.0",
       },
@@ -125,7 +129,7 @@
     },
     "packages/sdk": {
       "name": "@openkey/sdk",
-      "version": "0.9.0",
+      "version": "0.11.0",
       "dependencies": {
         "@openkey/core": "workspace:*",
       },
