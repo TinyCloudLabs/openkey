@@ -230,9 +230,11 @@ The `storage` interface (`OpenKeySecureStore`) is where the SDK keeps the
 Ed25519 session private JWK and the rotated refresh token — back it with
 Expo SecureStore, react-native-keychain, or encrypted MMKV. Persistence is
 strict: if a write fails, `signIn()`/`renew()` reject with an
-`OpenKeyNativeError('NETWORK')` carrying `rotatedRefreshToken` so the
-caller can retry persisting it. `signOut()` rejects with `NETWORK` if the
-credential wipe itself fails.
+`OpenKeyNativeError('NETWORK')` that carries **no** `rotatedRefreshToken`.
+The SDK has no API to take a token back, so instead of handing it to the
+caller it revokes the grant (see *No abandoned live grants* below); the
+user signs in again. `signOut()` rejects with `NETWORK` if the credential
+wipe itself fails.
 
 `renew()` is single-flight keyed on its options: concurrent calls with the
 same `siweNonce` and an equivalent `permissionsSubset` (compared after
@@ -293,9 +295,15 @@ storing it is revoked, and if that revoke fails transiently it goes into
 the pending-revoke record (the same bounded entry `signOut()` uses). That
 covers the session a `signIn()` replaces (revoked after the new session
 is saved), a superseded renew's or sign-in's token, an orphaned code
-exchange, and a terminal outcome's rotated token. The remaining case is
-a failed secure-store *write*: the live token then rides the error as
-`rotatedRefreshToken` and is not revoked.
+exchange, a terminal outcome's rotated token, and a token whose
+secure-store write failed (that `NETWORK` error, and any error whose
+recovery write failed, carries no `rotatedRefreshToken`).
+
+The one limit: if the secure store also fails to write the pending-revoke
+entry, nothing durable can be recorded. The SDK has then already sent the
+revoke (core retries a 503 once), and that best-effort attempt is all it
+can do — if it failed transiently, the grant stays live until the user
+signs in again or it expires.
 
 Delegation-mode errors are `OpenKeyNativeError` (`code`,
 `status`, `retryAfterSeconds`, `rotatedRefreshToken`); plain-mode errors

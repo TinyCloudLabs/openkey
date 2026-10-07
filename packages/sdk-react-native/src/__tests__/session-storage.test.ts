@@ -518,6 +518,84 @@ describe('CAS session storage model', () => {
     expect(server.liveSids()).toEqual([server.sidOf(thrown.rotatedRefreshToken!)!]);
   });
 
+  /** Store whose writes to the keys in `failing` reject. */
+  function failingWrites(base: ReturnType<typeof memoryStore>, failing: string[]): OpenKeySecureStore {
+    return {
+      ...base,
+      set: (key, value) =>
+        failing.includes(key) ? Promise.reject(new Error('disk full')) : base.set(key, value),
+    };
+  }
+
+  it('a failed session write revokes the grant instead of handing the token back', async () => {
+    const server = new FakeServer();
+    const base = memoryStore();
+    const thrown = await rejection(server.client(failingWrites(base, [SESSION_KEY])).signIn());
+
+    expect(thrown.code).toBe('NETWORK');
+    expect(thrown.rotatedRefreshToken).toBeUndefined();
+    expect(server.revokeCalls).toHaveLength(1);
+    expect(server.liveSids()).toEqual([]);
+    expect(pendingTokens(base)).toEqual([]);
+  });
+
+  it('a failed session write keeps a pending revoke when the revoke fails transiently', async () => {
+    const server = new FakeServer();
+    const base = memoryStore();
+    const { sessionKey: keyA } = await server.seedSession(base);
+    server.revokeFailRate = 1;
+    const thrown = await rejection(server.client(failingWrites(base, [SESSION_KEY])).renew());
+
+    expect(thrown.code).toBe('NETWORK');
+    expect(thrown.rotatedRefreshToken).toBeUndefined();
+    // The rotated token went to the pending-revoke record for a later retry.
+    const [entry] = JSON.parse(base.map.get(PENDING_KEY)!);
+    expect(server.sidOf(entry.refreshToken)).toBe(keyA.publicJwk.x);
+    expect(server.isCurrent(entry.refreshToken)).toBe(true);
+  });
+
+  it('when the pending-revoke write fails too, the revoke was still attempted', async () => {
+    const server = new FakeServer();
+    const base = memoryStore();
+    server.revokeFailRate = 1;
+    const thrown = await rejection(
+      server.client(failingWrites(base, [SESSION_KEY, PENDING_KEY])).signIn(),
+    );
+
+    expect(thrown.code).toBe('NETWORK');
+    expect(thrown.rotatedRefreshToken).toBeUndefined();
+    // Best effort is all that is left: the revoke was sent (and retried
+    // once by core); nothing could be recorded.
+    expect(server.revokeCalls).toHaveLength(2);
+    expect(base.map.has(PENDING_KEY)).toBe(false);
+  });
+
+  it('a failed rotated-token recovery write revokes the token and drops it from the error', async () => {
+    const server = new FakeServer();
+    const base = memoryStore();
+    const { sessionKey: keyA } = await server.seedSession(base);
+    const client = new OpenKeyRN({
+      host: 'https://auth.example.com',
+      clientId: CLIENT_ID,
+      redirectUri: REDIRECT_URI,
+      issuer: ISSUER,
+      openBrowser: server.openBrowser,
+      delegation: {
+        permissions: [KV_PERMISSION],
+        tinycloudHost: TC_HOST,
+        storage: failingWrites(base, [SESSION_KEY]),
+        verifyDelegation: () => Promise.reject(new Error('cid mismatch')),
+        fetchFn: server.fetch,
+        sleepFn: () => Promise.resolve(),
+      },
+    });
+
+    const thrown = await rejection(client.renew());
+    expect(thrown.code).toBe('SERVER');
+    expect(thrown.rotatedRefreshToken).toBeUndefined();
+    expect(server.grants.get(keyA.publicJwk.x)).toBe('revoked');
+  });
+
   it('signOut() rejects on a storage read failure and removes nothing', async () => {
     const server = new FakeServer();
     const base = memoryStore();

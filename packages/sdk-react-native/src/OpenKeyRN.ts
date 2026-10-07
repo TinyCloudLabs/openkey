@@ -537,9 +537,11 @@ export class OpenKeyRN {
    * once. Terminal errors (`INVALID_GRANT`, `CONSENT_REQUIRED`,
    * `ACCESS_DENIED`, `SPACE_UNAVAILABLE`) wipe the local session before
    * rethrowing (spec: a terminal renew error is a local sign-out); a
-   * rotated token on a terminal error is not persisted but revoked
-   * best-effort. On a non-terminal error the rotated token is persisted
-   * first. Either way it rides the error as `rotatedRefreshToken`.
+   * rotated token on a terminal error is not persisted, its grant is
+   * abandoned (revoked, or a pending revoke). On a non-terminal error the
+   * rotated token is persisted first and rides the error as
+   * `rotatedRefreshToken`. If a secure-store write fails, the token's grant
+   * is abandoned too and the `NETWORK` error carries no token.
    * A `signOut()` during renewal makes it discard the result and reject
    * `NOT_SIGNED_IN` instead of persisting over the wiped session.
    */
@@ -1121,8 +1123,8 @@ export class OpenKeyRN {
    *   a rotated grant is abandoned (revoked, or a pending revoke). A stored session from before
    *   this attempt is left alone.
    * - Otherwise, a rotated refresh token is live and the old one dead, so
-   *   it is persisted before the error is reported (spec). When that fails
-   *   the error still carries rotatedRefreshToken.
+   *   it is persisted before the error is reported (spec). When that write
+   *   fails the grant is abandoned and the token removed from the error.
    */
   private async settleFailedDelegationSignIn(
     error: OpenKeyNativeError,
@@ -1161,8 +1163,16 @@ export class OpenKeyRN {
         ),
         replacedStoredSession ? { sid: sessionId(flow.sessionKey) } : 'any',
         flow.generation,
-      ).catch(() => {
-        // Keep the original error: it carries rotatedRefreshToken.
+      ).catch((saveError: unknown) => {
+        // A storage write failure abandoned (revoked) the token: it must
+        // not ride the error as if the caller could still use it. On a
+        // refusal the error keeps it, as NOT_SIGNED_IN errors do.
+        if (
+          saveError instanceof OpenKeyNativeError &&
+          saveError.code === 'NETWORK'
+        ) {
+          error.rotatedRefreshToken = undefined;
+        }
       });
     }
   }
@@ -1243,9 +1253,15 @@ export class OpenKeyRN {
             withRefreshToken(session, error.rotatedRefreshToken),
             { sid: sessionId(session.sessionKey) },
             generation,
-          ).catch(() => {
-            // The thrown error already carries rotatedRefreshToken — the
-            // caller can retry persisting it.
+          ).catch((saveError: unknown) => {
+            // A storage write failure abandoned (revoked) the token: drop
+            // it from the error so nobody treats it as live.
+            if (
+              saveError instanceof OpenKeyNativeError &&
+              saveError.code === 'NETWORK'
+            ) {
+              error.rotatedRefreshToken = undefined;
+            }
           });
         }
         if (error.code === 'RENEWAL_CONFLICT' && !reloadedAfterConflict) {
@@ -1399,9 +1415,13 @@ export class OpenKeyRN {
    * started after the signOut() lands after it (one that started before is
    * refused by `generation`). A refusal throws `NOT_SIGNED_IN` carrying
    * `rotatedRefreshToken`, after abandoning the discarded grant. A storage
-   * failure surfaces as `NETWORK` carrying the same token. When a sign-in's
-   * save replaces a different session, that session's grant is abandoned
-   * once the new one is written.
+   * write failure abandons the grant too — the SDK has no way to take the
+   * token back later, so leaving it live would orphan it — and throws
+   * `NETWORK` *without* `rotatedRefreshToken`: the token is revoked, or a
+   * pending revoke, or (when the pending-revoke write fails as well) its
+   * revoke was at least attempted. When a sign-in's save replaces a
+   * different session, that session's grant is abandoned once the new one
+   * is written.
    */
   private async saveSession(
     session: DelegationSession,
@@ -1425,14 +1445,13 @@ export class OpenKeyRN {
         await this.abandonGrant(session);
         throw error;
       }
-      const wrapped = new OpenKeyNativeError(
+      await this.abandonGrant(session);
+      throw new OpenKeyNativeError(
         'NETWORK',
-        `failed to persist delegation session: ${
+        `failed to persist delegation session; its grant was revoked: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
-      wrapped.rotatedRefreshToken = session.refreshToken;
-      throw wrapped;
     }
     if (
       replaced &&

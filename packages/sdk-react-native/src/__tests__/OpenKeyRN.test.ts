@@ -1035,14 +1035,22 @@ describe('OpenKeyRN', () => {
       expect(record.refreshToken).toBe('rt-renewed');
     });
 
-    it('rejects signIn with a typed error carrying the token when persist fails', async () => {
+    it('signIn revokes the new grant and rejects NETWORK without a token when persist fails', async () => {
       const base = memoryStore();
       const store: OpenKeySecureStore & { map: Map<string, string> } = {
         ...base,
         set: () => Promise.reject(new Error('disk full')),
       };
       const captured: { parBody?: string } = {};
-      const fetchFn = delegationFetch(captured);
+      const signInFetch = delegationFetch(captured);
+      const revoked: string[] = [];
+      const fetchFn: NativeFetch = (url: string, init?: NativeFetchInit) => {
+        if (url.endsWith('/oauth2/tinycloud/revoke')) {
+          revoked.push(new URLSearchParams(init!.body!).get('refresh_token')!);
+          return Promise.resolve(new Response(null, { status: 200 }));
+        }
+        return signInFetch(url, init);
+      };
 
       const openBrowser = mock(async (): Promise<BrowserResult | void> => {
         const state = new URLSearchParams(captured.parBody!).get('state')!;
@@ -1062,12 +1070,13 @@ describe('OpenKeyRN', () => {
       }
       expect(thrown).toBeInstanceOf(OpenKeyNativeError);
       expect((thrown as OpenKeyNativeError).code).toBe('NETWORK');
-      expect((thrown as OpenKeyNativeError).rotatedRefreshToken).toBe(
-        'nat-refresh-1',
-      );
+      // The SDK can't take the token back later, so it was revoked rather
+      // than handed to the caller.
+      expect((thrown as OpenKeyNativeError).rotatedRefreshToken).toBeUndefined();
+      expect(revoked).toEqual(['nat-refresh-1']);
     });
 
-    it('renew() rejects with rotatedRefreshToken when persist fails', async () => {
+    it('renew() revokes the rotated grant and rejects NETWORK without a token when persist fails', async () => {
       const base = memoryStore();
       const sessionKey = generateSessionKeypair();
       const key = `openkey:tinycloud-delegation:${TEST_CLIENT_ID}`;
@@ -1082,6 +1091,7 @@ describe('OpenKeyRN', () => {
           k === key ? Promise.reject(new Error('disk full')) : base.set(k, v),
       };
 
+      const revoked: string[] = [];
       const fetchFn: NativeFetch = (url: string, init?: NativeFetchInit) => {
         if (url.includes('/.well-known/')) {
           return Promise.resolve(jsonResponse(METADATA));
@@ -1099,6 +1109,10 @@ describe('OpenKeyRN', () => {
             }),
           );
         }
+        if (url.endsWith('/oauth2/tinycloud/revoke')) {
+          revoked.push(new URLSearchParams(init!.body!).get('refresh_token')!);
+          return Promise.resolve(new Response(null, { status: 200 }));
+        }
         return Promise.reject(new Error(`unexpected fetch: ${url}`));
       };
 
@@ -1113,7 +1127,8 @@ describe('OpenKeyRN', () => {
       }
       expect(thrown).toBeInstanceOf(OpenKeyNativeError);
       expect((thrown as OpenKeyNativeError).code).toBe('NETWORK');
-      expect((thrown as OpenKeyNativeError).rotatedRefreshToken).toBe('rt-new');
+      expect((thrown as OpenKeyNativeError).rotatedRefreshToken).toBeUndefined();
+      expect(revoked).toEqual(['rt-new']);
     });
 
     it('signOut() rejects when the storage wipe fails', async () => {
