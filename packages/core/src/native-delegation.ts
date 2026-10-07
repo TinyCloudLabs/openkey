@@ -7,13 +7,14 @@
  * response validation, and typed clients for the token, renew and revoke
  * endpoints. Both `@openkey/sdk-capacitor` and `@openkey/sdk-react-native`
  * build on this module.
- *
- * Wire shapes follow `tc773-plan-v3.md` §1:
- *   - PAR: `POST {metadata.pushed_authorization_request_endpoint}`
- *   - Token: `POST {metadata.token_endpoint}`
- *   - Renew: `POST {metadata.tinycloud_delegation_renew_endpoint}` (JSON)
- *   - Revoke: `POST {metadata.tinycloud_delegation_revocation_endpoint}` (JSON)
- *   - Proof header: `OpenKey-Session-Proof`
+ * Wire shapes follow `docs/native-tinycloud-delegation.md` (the O1 spec,
+ * normative for O2–O5 and TC-774):
+ *   - PAR: `POST {metadata.pushed_authorization_request_endpoint}` (form)
+ *   - Token: `POST {metadata.token_endpoint}` (form)
+ *   - Renew: `POST {metadata.tinycloud_delegation_renew_endpoint}` (form)
+ *   - Revoke: `POST {metadata.tinycloud_delegation_revocation_endpoint}` (form)
+ *   - Proof header: `OpenKey-Session-Proof`; JWS `kid` is the session JWK's
+ *     RFC 7638 thumbprint, compared to the stored `sessionJkt`.
  */
 
 import { ed25519 } from '@noble/curves/ed25519';
@@ -119,7 +120,7 @@ export interface TinyCloudDelegation {
   verificationMethod: string;
   siwe?: string;
   signature?: string;
-  delegationHeader?: string;
+  delegationHeader?: { Authorization: string };
   delegationCid?: string;
   issuedAt?: string;
   /** ISO timestamp or epoch seconds; must be in the future. */
@@ -149,10 +150,11 @@ export interface NativeSessionKeypair {
   did: string;
   /**
    * Full verification-method id, `did:key:z…#z…`. This is the value the
-   * server stores for `verificationMethod` and the JWS `kid`.
+   * server returns as `verificationMethod`. (The proof JWS `kid` is the
+   * JWK's RFC 7638 thumbprint, not this value.)
    */
   keyId: string;
-  /** Public JWK: `{kty: 'OKP', crv: 'Ed25519', x, kid}`. `kid` is `keyId`. */
+  /** Public JWK: `{kty: 'OKP', crv: 'Ed25519', x}` — the wire shape. */
   publicJwk: NativeSessionJwk;
   /** Private JWK: the public JWK plus `d`. */
   privateJwk: NativeSessionJwk & { d: string };
@@ -164,6 +166,16 @@ export interface NativeSessionKeypair {
 export const SESSION_PROOF_HEADER = 'OpenKey-Session-Proof';
 export const SESSION_PROOF_TYP = 'openkey-session-proof+jwt';
 export const DELEGATION_SCOPE = 'tinycloud:delegation';
+/**
+ * The permission entry every request must carry; the server refuses requests
+ * without `tinycloud.capabilities/read`.
+ */
+export const CAPABILITIES_READ_PERMISSION: NativeDelegationPermission = {
+  service: 'tinycloud.capabilities',
+  space: 'applications',
+  path: '',
+  actions: ['tinycloud.capabilities/read'],
+};
 /** Scope set sent on PAR when no `extraScopes` are given. */
 export const DEFAULT_DELEGATION_SCOPES = [
   'openid',
@@ -241,7 +253,6 @@ export function generateSessionKeypair(): NativeSessionKeypair {
     kty: 'OKP',
     crv: 'Ed25519',
     x: base64UrlEncode(publicKey),
-    kid: keyId,
   };
   return {
     did,
@@ -249,6 +260,18 @@ export function generateSessionKeypair(): NativeSessionKeypair {
     publicJwk,
     privateJwk: { ...publicJwk, d: base64UrlEncode(secretKey) },
   };
+}
+
+/**
+ * RFC 7638 JWK thumbprint of a session public JWK — the value the server
+ * stores as `sessionJkt` and requires as the proof JWS `kid`.
+ */
+export async function sessionJktForPublicJwk(
+  jwk: Pick<NativeSessionJwk, 'crv' | 'kty' | 'x'>,
+  sha256Fn?: SHA256Fn,
+): Promise<string> {
+  const canonical = JSON.stringify({ crv: jwk.crv, kty: jwk.kty, x: jwk.x });
+  return base64UrlEncode(await (sha256Fn ?? sha256)(canonical));
 }
 
 /**
@@ -269,16 +292,13 @@ export function sessionKeypairFromJwk(
   }
   const did = sessionDidForPublicKey(publicKey);
   const keyId = `${did}#${did.slice('did:key:'.length)}`;
+  const publicJwk: NativeSessionJwk = { kty: 'OKP', crv: 'Ed25519', x };
+  if (privateJwk.kid !== undefined) publicJwk.kid = privateJwk.kid;
   return {
     did,
     keyId,
-    publicJwk: {
-      kty: 'OKP',
-      crv: 'Ed25519',
-      x,
-      kid: privateJwk.kid ?? keyId,
-    },
-    privateJwk: { ...privateJwk, kid: privateJwk.kid ?? keyId },
+    publicJwk,
+    privateJwk,
   };
 }
 
@@ -409,7 +429,9 @@ export async function discoverOpenKeyServer(
 
 /**
  * Build the `authorization_details` array for a `tinycloud_delegation`
- * request. Used for both PAR and renew.
+ * request. Used for both PAR and renew. The mandatory
+ * `tinycloud.capabilities/read` entry (`CAPABILITIES_READ_PERMISSION`) is
+ * prepended when the caller's permissions do not already include it.
  */
 export function buildAuthorizationDetails(options: {
   sessionKey: NativeSessionKeypair;
@@ -417,10 +439,17 @@ export function buildAuthorizationDetails(options: {
   ttlSeconds?: number;
   siweNonce?: string;
 }): TinyCloudDelegationRequest[] {
+  const hasCapabilitiesRead = options.permissions.some(
+    (permission) =>
+      permission.service === CAPABILITIES_READ_PERMISSION.service &&
+      permission.actions.includes(CAPABILITIES_READ_PERMISSION.actions[0]!),
+  );
   const detail: TinyCloudDelegationRequest = {
     type: 'tinycloud_delegation',
     session_key: options.sessionKey.publicJwk,
-    permissions: options.permissions,
+    permissions: hasCapabilitiesRead
+      ? options.permissions
+      : [CAPABILITIES_READ_PERMISSION, ...options.permissions],
   };
   if (options.ttlSeconds !== undefined) detail.ttl_seconds = options.ttlSeconds;
   if (options.siweNonce !== undefined) detail.siwe_nonce = options.siweNonce;
@@ -443,9 +472,9 @@ export interface BuildParRequestOptions {
 }
 
 /**
- * Build the form-encoded PAR body (plan §1.1 step 2). The caller POSTs it to
- * `metadata.pushedAuthorizationRequestEndpoint` — the client cannot choose
- * the host.
+ * Build the form-encoded PAR body (spec: "Pushed authorization request").
+ * The caller POSTs it to `metadata.pushedAuthorizationRequestEndpoint` —
+ * the client cannot choose the host.
  */
 export function buildParRequest(options: BuildParRequestOptions): {
   body: string;
@@ -622,6 +651,8 @@ function mapOAuthError(
     case 'invalid_grant':
     case 'invalid_session_proof':
       return new OpenKeyNativeError('INVALID_GRANT', message, status, error);
+    case 'unauthorized':
+      return new OpenKeyNativeError('NOT_SIGNED_IN', message, status, error);
     case 'renewal_conflict':
       return new OpenKeyNativeError('RENEWAL_CONFLICT', message, status, error);
     case 'space_unavailable':
@@ -632,6 +663,7 @@ function mapOAuthError(
         error,
       );
     case 'temporarily_unavailable':
+    case 'renewal_too_soon':
       return new OpenKeyNativeError(
         'TEMPORARILY_UNAVAILABLE',
         message,
@@ -654,9 +686,6 @@ export interface SessionProofOptions {
   clientId: string;
   /** The credential being presented; hashed into `cred_hash`. */
   credential: string;
-  siweNonce?: string;
-  /** Optional permission subset (renew). Serialized into `authorization_details`. */
-  authorizationDetails?: TinyCloudDelegationRequest[];
   /** For runtimes without Web Crypto. */
   sha256Fn?: SHA256Fn;
 }
@@ -665,33 +694,28 @@ export interface SessionProofOptions {
  * Sign an `OpenKey-Session-Proof` compact JWS.
  *
  * Header: `{typ: "openkey-session-proof+jwt", alg: "EdDSA", kid}` where `kid`
- * is the did:key verification-method id (`did:key:z…#z…`).
- * Payload: `{jti, iat, htm, htu, client_id, cred_hash}` where `cred_hash` is
- * `b64url(sha256(credential))`, plus optional `siwe_nonce` and
- * `authorization_details`.
+ * is the RFC 7638 JWK thumbprint of the session public JWK — the value the
+ * server stores as `sessionJkt` at PAR.
+ * Payload: exactly `{jti, iat, htm, htu, client_id, cred_hash}` where
+ * `cred_hash` is `b64url(sha256(credential))`.
  */
 export async function signSessionProof(
   options: SessionProofOptions,
 ): Promise<string> {
+  const hash = options.sha256Fn ?? sha256;
   const header = {
     typ: SESSION_PROOF_TYP,
     alg: 'EdDSA',
-    kid: options.sessionKey.keyId,
+    kid: await sessionJktForPublicJwk(options.sessionKey.publicJwk, hash),
   };
-  const payload: Record<string, unknown> = {
+  const payload = {
     jti: generateNonce(),
     iat: Math.floor(Date.now() / 1000),
     htm: options.htm,
     htu: options.htu,
     client_id: options.clientId,
-    cred_hash: base64UrlEncode(
-      await (options.sha256Fn ?? sha256)(options.credential),
-    ),
+    cred_hash: base64UrlEncode(await hash(options.credential)),
   };
-  if (options.siweNonce !== undefined) payload.siwe_nonce = options.siweNonce;
-  if (options.authorizationDetails !== undefined) {
-    payload.authorization_details = options.authorizationDetails;
-  }
 
   const encoder = new TextEncoder();
   const signingInput = `${base64UrlEncode(
@@ -764,6 +788,11 @@ export interface ValidateDelegationOptions {
   sessionKey: NativeSessionKeypair;
   /** The permission set sent in `authorization_details`, for the subset check. */
   requestedPermissions: NativeDelegationPermission[];
+  /**
+   * The TinyCloud node the client expects (spec: `tinycloudHost` must be
+   * "the host it expects"). Compared for exact equality when given.
+   */
+  expectedTinycloudHost?: string;
 }
 
 /**
@@ -850,6 +879,15 @@ export function validateTinyCloudDelegation(
     throw new OpenKeyNativeError(
       'SERVER',
       `tinycloud_delegation.tinycloudHost must be https: ${delegation.tinycloudHost}`,
+    );
+  }
+  if (
+    options.expectedTinycloudHost !== undefined &&
+    delegation.tinycloudHost !== options.expectedTinycloudHost
+  ) {
+    throw new OpenKeyNativeError(
+      'SERVER',
+      `tinycloud_delegation.tinycloudHost "${delegation.tinycloudHost}" is not the expected host "${options.expectedTinycloudHost}"`,
     );
   }
 
@@ -940,6 +978,8 @@ export interface ExchangeNativeCodeOptions {
   codeVerifier: string;
   sessionKey: NativeSessionKeypair;
   requestedPermissions: NativeDelegationPermission[];
+  /** Expected TinyCloud node, checked against `tinycloudHost`. */
+  expectedTinycloudHost?: string;
   fetchFn?: NativeFetch;
   sha256Fn?: SHA256Fn;
 }
@@ -947,9 +987,13 @@ export interface ExchangeNativeCodeOptions {
 export interface NativeTokenResult {
   accessToken: string;
   refreshToken: string;
+  /** `expires_in`: access-token lifetime (300 s per spec). */
   expiresIn?: number;
+  /** `expires_at`: access-token expiry in Unix seconds, when present. */
+  accessTokenExpiresAt?: number;
   /** Raw `authorization_details` echo from the server, if present. */
   authorizationDetails?: unknown;
+  /** Validated `tinycloud_delegation` payload. */
   delegation: TinyCloudDelegation;
 }
 
@@ -1007,6 +1051,7 @@ export async function exchangeDelegationCode(
     {
       sessionKey: options.sessionKey,
       requestedPermissions: options.requestedPermissions,
+      expectedTinycloudHost: options.expectedTinycloudHost,
     },
   );
 
@@ -1015,6 +1060,8 @@ export async function exchangeDelegationCode(
     refreshToken: data.refresh_token,
     expiresIn:
       typeof data.expires_in === 'number' ? data.expires_in : undefined,
+    accessTokenExpiresAt:
+      typeof data.expires_at === 'number' ? data.expires_at : undefined,
     authorizationDetails: data.authorization_details,
     delegation,
   };
@@ -1029,10 +1076,15 @@ export interface RenewDelegationOptions {
   sessionKey: NativeSessionKeypair;
   /** Permissions granted on the last delegation; used for the subset check. */
   requestedPermissions: NativeDelegationPermission[];
-  /** Optional renewal narrowing + SIWE nonce (plan §1.4). */
+  /** Optional `siwe_nonce` form field (PAR rules: `[A-Za-z0-9]{8,64}`). */
   siweNonce?: string;
+  /**
+   * Optional permission subset sent as the `authorization_details` form
+   * field (PAR shape, same session key, no `ttl_seconds`).
+   */
   permissionsSubset?: NativeDelegationPermission[];
-  ttlSeconds?: number;
+  /** Expected TinyCloud node, checked against `tinycloudHost`. */
+  expectedTinycloudHost?: string;
   fetchFn?: NativeFetch;
   sha256Fn?: SHA256Fn;
 }
@@ -1044,9 +1096,10 @@ export interface RenewDelegationResult {
 }
 
 /**
- * Renew a delegation (plan §1.4): `POST
- * {metadata.tinycloudDelegationRenewEndpoint}` with JSON
- * `{client_id, refresh_token}` and `OpenKey-Session-Proof` where `cred_hash =
+ * Renew a delegation (spec: "Renewal"): `POST
+ * {metadata.tinycloudDelegationRenewEndpoint}` as form-encoded
+ * `client_id=…&refresh_token=…[&siwe_nonce=…][&authorization_details=…]`
+ * with `OpenKey-Session-Proof` where `cred_hash =
  * b64url(sha256(refresh_token))`.
  */
 export async function renewDelegation(
@@ -1058,12 +1111,12 @@ export async function renewDelegation(
 
   const requestedPermissions =
     options.permissionsSubset ?? options.requestedPermissions;
+  // Renew's authorization_details has the PAR shape but cannot set
+  // ttl_seconds; siwe_nonce travels as its own form field.
   const authorizationDetails = options.permissionsSubset
     ? buildAuthorizationDetails({
         sessionKey: options.sessionKey,
         permissions: options.permissionsSubset,
-        ttlSeconds: options.ttlSeconds,
-        siweNonce: options.siweNonce,
       })
     : undefined;
 
@@ -1073,18 +1126,24 @@ export async function renewDelegation(
     htu,
     clientId: options.clientId,
     credential: options.refreshToken,
-    siweNonce: options.siweNonce,
-    authorizationDetails,
     sha256Fn: options.sha256Fn,
   });
 
+  const body = new URLSearchParams({
+    client_id: options.clientId,
+    refresh_token: options.refreshToken,
+  });
+  if (options.siweNonce !== undefined) {
+    body.set('siwe_nonce', options.siweNonce);
+  }
+  if (authorizationDetails !== undefined) {
+    body.set('authorization_details', JSON.stringify(authorizationDetails));
+  }
+
   const response = await postForm(
     htu,
-    JSON.stringify({
-      client_id: options.clientId,
-      refresh_token: options.refreshToken,
-    }),
-    'application/json',
+    body.toString(),
+    'application/x-www-form-urlencoded',
     fetchFn,
     { [SESSION_PROOF_HEADER]: proof },
   );
@@ -1102,6 +1161,7 @@ export async function renewDelegation(
   const delegation = validateTinyCloudDelegation(data.tinycloud_delegation, {
     sessionKey: options.sessionKey,
     requestedPermissions,
+    expectedTinycloudHost: options.expectedTinycloudHost,
   });
 
   return {
@@ -1147,27 +1207,13 @@ export async function revokeDelegation(
 
   const response = await postForm(
     htu,
-    JSON.stringify({
+    new URLSearchParams({
       client_id: options.clientId,
       refresh_token: options.refreshToken,
-    }),
-    'application/json',
+    }).toString(),
+    'application/x-www-form-urlencoded',
     fetchFn,
     { [SESSION_PROOF_HEADER]: proof },
   );
-  if (response.ok) return;
-
-  try {
-    await throwEndpointError(response, 'Revoke');
-  } catch (error) {
-    // Idempotent: a missing/revoked grant (server `invalid_grant`) means the
-    // goal is already reached. A proof failure still propagates.
-    if (
-      error instanceof OpenKeyNativeError &&
-      error.serverError === 'invalid_grant'
-    ) {
-      return;
-    }
-    throw error;
-  }
+  if (!response.ok) await throwEndpointError(response, 'Revoke');
 }

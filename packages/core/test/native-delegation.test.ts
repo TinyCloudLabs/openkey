@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from 'bun:test';
-import { importJWK, compactVerify, decodeProtectedHeader, decodeJwt } from 'jose';
+import { importJWK, compactVerify, decodeProtectedHeader, decodeJwt, calculateJwkThumbprint } from 'jose';
 import { ed25519 } from '@noble/curves/ed25519';
 
 import {
@@ -23,6 +23,8 @@ import {
   sessionDidForPublicKey,
   generateSessionKeypair,
   sessionKeypairFromJwk,
+  sessionJktForPublicJwk,
+  CAPABILITIES_READ_PERMISSION,
   discoveryUrlForIssuer,
   discoverOpenKeyServer,
   buildAuthorizationDetails,
@@ -92,18 +94,27 @@ function mockFetch(
   return { fetchFn, calls };
 }
 
+// Spec "Permissions": fully-qualified service and action names, plus the
+// mandatory tinycloud.capabilities/read entry.
 const PERMISSIONS: NativeDelegationPermission[] = [
+  CAPABILITIES_READ_PERMISSION,
   {
-    service: 'kv',
+    service: 'tinycloud.kv',
     space: 'applications',
     path: 'xyz.tinycloud.tinychat/threads/',
-    actions: ['get', 'put', 'list', 'del', 'metadata'],
+    actions: [
+      'tinycloud.kv/get',
+      'tinycloud.kv/put',
+      'tinycloud.kv/list',
+      'tinycloud.kv/del',
+      'tinycloud.kv/metadata',
+    ],
   },
   {
-    service: 'sql',
+    service: 'tinycloud.sql',
     space: 'applications',
     path: 'xyz.tinycloud.tinychat/threads',
-    actions: ['read', 'write', 'schema'],
+    actions: ['tinycloud.sql/read', 'tinycloud.sql/write', 'tinycloud.sql/schema'],
   },
 ];
 
@@ -128,8 +139,18 @@ function delegationFor(
   return {
     version: 1,
     grantId: 'grant-1',
+    address: '0xabc',
+    chainId: 1,
+    ownerDid: 'did:pkh:eip155:1:0xabc',
+    spaceId: 'tinycloud:pkh:eip155:1:0xabc:applications',
     verificationMethod: keyId,
+    siwe: 'siwe-bytes',
+    signature: '0xsig',
+    delegationHeader: { Authorization: 'delegation-ucan' },
+    delegationCid: 'bafy...',
+    issuedAt: new Date().toISOString(),
     expiresAt: FUTURE,
+    renewableUntil: new Date(Date.now() + 30 * 86400_000).toISOString(),
     permissions: PERMISSIONS,
     tinycloudHost: 'https://tee.node.tinycloud.xyz',
     hosting: 'existing',
@@ -263,10 +284,10 @@ describe('session keys', () => {
     const key = generateSessionKeypair();
     expect(key.did).toMatch(/^did:key:z6Mk/);
     expect(key.keyId).toBe(`${key.did}#${key.did.slice(8)}`);
-    expect(key.publicJwk).toMatchObject({
+    expect(key.publicJwk).toEqual({
       kty: 'OKP',
       crv: 'Ed25519',
-      kid: key.keyId,
+      x: key.publicJwk.x,
     });
     expect(base64UrlDecode(key.publicJwk.x)).toHaveLength(32);
     expect(base64UrlDecode(key.privateJwk.d)).toHaveLength(32);
@@ -312,6 +333,24 @@ describe('PAR', () => {
     // public-only JWK on the wire
     expect(details[0]!.session_key).not.toHaveProperty('d');
   });
+  it('prepends tinycloud.capabilities/read when the caller omits it', () => {
+    const key = generateSessionKeypair();
+    const details = buildAuthorizationDetails({
+      sessionKey: key,
+      permissions: [PERMISSIONS[1]!],
+    });
+    expect(details[0]!.permissions).toEqual([
+      CAPABILITIES_READ_PERMISSION,
+      PERMISSIONS[1],
+    ]);
+    // a caller that already includes it is unchanged
+    const withEntry = buildAuthorizationDetails({
+      sessionKey: key,
+      permissions: PERMISSIONS,
+    });
+    expect(withEntry[0]!.permissions).toEqual(PERMISSIONS);
+  });
+
 
   it('builds the form-encoded PAR body', () => {
     const key = generateSessionKeypair();
@@ -504,11 +543,6 @@ describe('session proof', () => {
       htu: METADATA.token_endpoint,
       clientId: CLIENT_ID,
       credential,
-      siweNonce: 'nonce1234',
-      authorizationDetails: buildAuthorizationDetails({
-        sessionKey: key,
-        permissions: PERMISSIONS,
-      }),
     });
 
     const parts = jws.split('.');
@@ -517,20 +551,25 @@ describe('session proof', () => {
     const header = decodeProtectedHeader(jws);
     expect(header.typ).toBe(SESSION_PROOF_TYP);
     expect(header.alg).toBe('EdDSA');
-    expect(header.kid).toBe(key.keyId);
-
+    // kid = RFC 7638 JWK thumbprint (the stored sessionJkt), checked with
+    // jose's independent implementation.
     const jwk = { kty: 'OKP', crv: 'Ed25519', x: key.publicJwk.x };
+    expect(header.kid).toBe(await calculateJwkThumbprint(jwk, 'sha256'));
+    expect(header.kid).toBe(await sessionJktForPublicJwk(key.publicJwk));
+
     const publicKey = await importJWK(jwk, 'EdDSA');
     const { payload } = await compactVerify(jws, publicKey);
     const claims = JSON.parse(new TextDecoder().decode(payload));
 
+    // Spec: payload is exactly these six claims.
+    expect(Object.keys(claims).sort()).toEqual(
+      ['client_id', 'cred_hash', 'htm', 'htu', 'iat', 'jti'].sort(),
+    );
     expect(claims.htm).toBe('POST');
     expect(claims.htu).toBe(METADATA.token_endpoint);
     expect(claims.client_id).toBe(CLIENT_ID);
-    expect(typeof claims.jti).toBe('string');
+    expect(claims.jti).toMatch(/^.{16,128}$/);
     expect(typeof claims.iat).toBe('number');
-    expect(claims.siwe_nonce).toBe('nonce1234');
-    expect(claims.authorization_details[0].type).toBe('tinycloud_delegation');
 
     // cred_hash = b64url(sha256(credential))
     const digest = await crypto.subtle.digest(
@@ -541,7 +580,7 @@ describe('session proof', () => {
       Buffer.from(digest).toString('base64url'),
     );
 
-    // A proof signed for a different credential does not verify as valid data.
+    // A proof over a different credential has a different cred_hash.
     const other = await signSessionProof({
       sessionKey: key,
       htm: 'POST',
@@ -595,7 +634,7 @@ describe('validateTinyCloudDelegation', () => {
         validateTinyCloudDelegation(
           delegationFor(key.keyId, {
             permissions: [
-              { ...PERMISSIONS[0]!, actions: [...PERMISSIONS[0]!.actions, 'admin'] },
+              { ...PERMISSIONS[1]!, actions: [...PERMISSIONS[1]!.actions, 'tinycloud.kv/admin'] },
             ],
           }),
           opts,
@@ -607,7 +646,7 @@ describe('validateTinyCloudDelegation', () => {
         validateTinyCloudDelegation(
           delegationFor(key.keyId, {
             permissions: [
-              { service: 'kv', space: 'applications', actions: ['get'] },
+              { service: 'tinycloud.kv', space: 'applications', actions: ['tinycloud.kv/get'] },
             ],
           }),
           opts,
@@ -621,10 +660,10 @@ describe('validateTinyCloudDelegation', () => {
             permissions: [
               ...PERMISSIONS,
               {
-                service: 'encryption',
+                service: 'tinycloud.encryption',
                 space: 'applications',
                 path: 'x',
-                actions: ['read'],
+                actions: ['tinycloud.encryption/unwrap'],
               },
             ],
           }),
@@ -640,10 +679,10 @@ describe('validateTinyCloudDelegation', () => {
         delegationFor(key.keyId, {
           permissions: [
             {
-              service: 'kv',
+              service: 'tinycloud.kv',
               space: 'applications',
               path: 'xyz.tinycloud.tinychat/threads/abc',
-              actions: ['get'],
+              actions: ['tinycloud.kv/get'],
             },
           ],
         }),
@@ -670,6 +709,23 @@ describe('validateTinyCloudDelegation', () => {
       'SERVER',
     );
   });
+
+  it('rejects an unexpected tinycloudHost when expectedTinycloudHost is set', () => {
+    expectCode(
+      () =>
+        validateTinyCloudDelegation(delegationFor(key.keyId), {
+          ...opts,
+          expectedTinycloudHost: 'https://other.node.example.com',
+        }),
+      'SERVER',
+    );
+    expect(() =>
+      validateTinyCloudDelegation(delegationFor(key.keyId), {
+        ...opts,
+        expectedTinycloudHost: 'https://tee.node.tinycloud.xyz',
+      }),
+    ).not.toThrow();
+  });
 });
 
 // ======= Endpoint clients =======
@@ -682,7 +738,8 @@ describe('endpoint clients', () => {
       jsonResponse({
         access_token: 'at-1',
         refresh_token: 'rt-1',
-        expires_in: 3600,
+        expires_in: 300,
+        expires_at: 1791374700,
         token_type: 'Bearer',
         tinycloud_delegation: delegationFor(key.keyId),
       }),
@@ -699,6 +756,8 @@ describe('endpoint clients', () => {
     });
     expect(result.accessToken).toBe('at-1');
     expect(result.refreshToken).toBe('rt-1');
+    expect(result.expiresIn).toBe(300);
+    expect(result.accessTokenExpiresAt).toBe(1791374700);
     expect(result.delegation.verificationMethod).toBe(key.keyId);
 
     const call = calls[0]!;
@@ -738,7 +797,7 @@ describe('endpoint clients', () => {
     ).rejects.toMatchObject({ code: 'INVALID_GRANT', status: 400 });
   });
 
-  it('renewDelegation posts JSON and maps renewal_conflict', async () => {
+  it('renewDelegation posts form-encoded fields and maps renewal_conflict', async () => {
     const { fetchFn, calls } = mockFetch(() =>
       jsonResponse({ error: 'renewal_conflict' }, 409),
     );
@@ -749,6 +808,8 @@ describe('endpoint clients', () => {
         refreshToken: 'rt-1',
         sessionKey: key,
         requestedPermissions: PERMISSIONS,
+        siweNonce: 'renewnonce1',
+        permissionsSubset: [PERMISSIONS[1]!],
         fetchFn,
       }),
     ).rejects.toMatchObject({ code: 'RENEWAL_CONFLICT', status: 409 });
@@ -757,15 +818,31 @@ describe('endpoint clients', () => {
     expect(call.url).toBe(SERVER_METADATA.tinycloudDelegationRenewEndpoint);
     expect(
       (call.init.headers as Record<string, string>)['Content-Type'],
-    ).toBe('application/json');
-    const body = JSON.parse(call.init.body as string);
-    expect(body).toEqual({ client_id: CLIENT_ID, refresh_token: 'rt-1' });
+    ).toBe('application/x-www-form-urlencoded');
+    const body = new URLSearchParams(call.init.body as string);
+    expect(body.get('client_id')).toBe(CLIENT_ID);
+    expect(body.get('refresh_token')).toBe('rt-1');
+    expect(body.get('siwe_nonce')).toBe('renewnonce1');
+    // authorization_details: PAR shape, subset only, no ttl_seconds
+    const details = JSON.parse(body.get('authorization_details')!);
+    expect(details[0].type).toBe('tinycloud_delegation');
+    expect(details[0].session_key.x).toBe(key.publicJwk.x);
+    expect(details[0].permissions).toEqual([
+      CAPABILITIES_READ_PERMISSION,
+      PERMISSIONS[1],
+    ]);
+    expect(details[0]).not.toHaveProperty('ttl_seconds');
 
     const proof = (call.init.headers as Record<string, string>)[
       SESSION_PROOF_HEADER
     ]!;
     const claims = decodeJwt(proof);
     expect(claims.htu).toBe(SERVER_METADATA.tinycloudDelegationRenewEndpoint);
+    // proof payload carries exactly the six spec claims — the nonce and
+    // authorization_details travel in the body, not the JWS.
+    expect(Object.keys(claims).sort()).toEqual(
+      ['client_id', 'cred_hash', 'htm', 'htu', 'iat', 'jti'].sort(),
+    );
     const digest = await crypto.subtle.digest(
       'SHA-256',
       new TextEncoder().encode('rt-1'),
@@ -773,11 +850,43 @@ describe('endpoint clients', () => {
     expect(claims.cred_hash).toBe(Buffer.from(digest).toString('base64url'));
   });
 
+  it('renewDelegation maps 429 renewal_too_soon to TEMPORARILY_UNAVAILABLE', async () => {
+    const { fetchFn } = mockFetch(() =>
+      jsonResponse({ error: 'renewal_too_soon' }, 429),
+    );
+    await expect(
+      renewDelegation({
+        metadata: SERVER_METADATA,
+        clientId: CLIENT_ID,
+        refreshToken: 'rt-1',
+        sessionKey: key,
+        requestedPermissions: PERMISSIONS,
+        fetchFn,
+      }),
+    ).rejects.toMatchObject({ code: 'TEMPORARILY_UNAVAILABLE', status: 429 });
+  });
+
+  it('renewDelegation maps access_denied to ACCESS_DENIED', async () => {
+    const { fetchFn } = mockFetch(() =>
+      jsonResponse({ error: 'access_denied' }, 400),
+    );
+    await expect(
+      renewDelegation({
+        metadata: SERVER_METADATA,
+        clientId: CLIENT_ID,
+        refreshToken: 'rt-1',
+        sessionKey: key,
+        requestedPermissions: PERMISSIONS,
+        fetchFn,
+      }),
+    ).rejects.toMatchObject({ code: 'ACCESS_DENIED' });
+  });
+
   it('renewDelegation returns the rotated token and validates the delegation', async () => {
     const { fetchFn } = mockFetch(() =>
       jsonResponse({
         refresh_token: 'rt-2',
-        expires_in: 3600,
+        expires_in: 604800,
         tinycloud_delegation: delegationFor(key.keyId),
       }),
     );
@@ -793,7 +902,7 @@ describe('endpoint clients', () => {
     expect(result.delegation.verificationMethod).toBe(key.keyId);
   });
 
-  it('revokeDelegation resolves on 200 and on invalid_grant, throws otherwise', async () => {
+  it('revokeDelegation posts form-encoded fields; 200 resolves, 401 propagates', async () => {
     const ok = mockFetch(() => jsonResponse({}, 200));
     await revokeDelegation({
       metadata: SERVER_METADATA,
@@ -802,21 +911,27 @@ describe('endpoint clients', () => {
       sessionKey: key,
       fetchFn: ok.fetchFn,
     });
-    expect(ok.calls[0]!.url).toBe(
+    const call = ok.calls[0]!;
+    expect(call.url).toBe(
+      SERVER_METADATA.tinycloudDelegationRevocationEndpoint,
+    );
+    expect(
+      (call.init.headers as Record<string, string>)['Content-Type'],
+    ).toBe('application/x-www-form-urlencoded');
+    const body = new URLSearchParams(call.init.body as string);
+    expect(body.get('client_id')).toBe(CLIENT_ID);
+    expect(body.get('refresh_token')).toBe('rt-1');
+
+    const proof = (call.init.headers as Record<string, string>)[
+      SESSION_PROOF_HEADER
+    ]!;
+    const claims = decodeJwt(proof);
+    expect(claims.htu).toBe(
       SERVER_METADATA.tinycloudDelegationRevocationEndpoint,
     );
 
-    const gone = mockFetch(() => jsonResponse({ error: 'invalid_grant' }, 400));
-    await expect(
-      revokeDelegation({
-        metadata: SERVER_METADATA,
-        clientId: CLIENT_ID,
-        refreshToken: 'rt-1',
-        sessionKey: key,
-        fetchFn: gone.fetchFn,
-      }),
-    ).resolves.toBeUndefined();
-
+    // Spec: unknown token or bad proof → 401 invalid_session_proof, which
+    // maps to INVALID_GRANT and propagates (no idempotent swallow).
     const denied = mockFetch(() =>
       jsonResponse({ error: 'invalid_session_proof' }, 401),
     );
