@@ -38,7 +38,7 @@ import {
 } from './social-providers';
 import { crossSubDomainCookieOptions } from './auth-options';
 import { resolveRequestUri } from './services/native-delegation/par';
-import { exchangeNativeCode, generateNativeRefreshToken } from './services/native-delegation/code-exchange';
+import { exchangeNativeCode, generateNativeRefreshToken, withNativeTokenGuardErrors } from './services/native-delegation/code-exchange';
 import { providerTokenOptions } from './services/native-delegation/provider-tokens';
 
 export const prisma: PrismaClient = createPrismaClient({
@@ -206,7 +206,7 @@ export const auth = betterAuth({
     },
   },
 
-  database: prismaAdapter(prisma, {
+  database: prismaAdapter(withNativeTokenGuardErrors(prisma), {
     provider: 'postgresql',
   }),
 

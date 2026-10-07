@@ -4,7 +4,7 @@ import { generateRandomString } from 'better-auth/crypto';
 import { defineRequestState, getCurrentAuthContext } from '@better-auth/core/context';
 import type { PrismaClient } from '@openkey/db';
 import { TINYCLOUD_DELEGATION_SCOPE } from '../../oauth-config';
-import { isNativeDelegationLockTimeout } from './errors';
+import { isNativeDelegationLockTimeout, nativeDelegationSqlState } from './errors';
 import { enabledNativeDelegation } from './policy';
 import { storedToken, type ProviderTokenOptions } from './provider-tokens';
 import { OPENKEY_SESSION_PROOF_HEADER } from './public-protocol';
@@ -25,10 +25,15 @@ import type { NativePermission } from './par';
  * redemption and the grant; the provider then creates the refresh token
  * outside this transaction, and `generateNativeRefreshToken` links its hash
  * to the grant. A failure after the commit leaves the grant unlinked, which
- * renewal refuses.
+ * renewal refuses. A consent withdrawal that lands after linking but before
+ * the provider's token inserts is caught by the token guard triggers
+ * (20261007_0003): the insert fails and no live token exists for the
+ * revoked grant.
  */
 
 const RENEWAL_CUTOFF_MS = 300_000;
+/** SQLSTATE raised by the token guard triggers (20261007_0003). */
+const NATIVE_GRANT_NOT_LIVE = 'TC773';
 const TOKEN_PATH = '/oauth2/token';
 
 /** The grant this request's code exchange committed, awaiting its refresh token. */
@@ -61,6 +66,27 @@ export interface NativeCodeExchangeInput {
 
 function invalidGrant(description: string): never {
   throw new APIError('BAD_REQUEST', { error: 'invalid_grant', error_description: description });
+}
+
+/**
+ * Every failure after the provider deleted the code is final for that code.
+ * Lock contention maps to 503 with `Retry-After`; the description says the
+ * code cannot be retried, because the SDK must start a new authorization.
+ */
+function spentCodeError(error: unknown): unknown {
+  if (isNativeDelegationLockTimeout(error)) {
+    return new APIError('SERVICE_UNAVAILABLE', {
+      error: 'temporarily_unavailable',
+      error_description: 'lock contention; the authorization code is already spent and cannot be retried, start a new authorization',
+    }, { 'Retry-After': '2' });
+  }
+  if (nativeDelegationSqlState(error) === NATIVE_GRANT_NOT_LIVE) {
+    return new APIError('BAD_REQUEST', {
+      error: 'invalid_grant',
+      error_description: 'consent was withdrawn while the tokens were issued; the authorization code is already spent, start a new authorization',
+    });
+  }
+  return error;
 }
 
 function bound(query: Record<string, unknown>, key: string): string {
@@ -208,13 +234,7 @@ export async function exchangeNativeCode(
       };
     }, { timeout: 15_000 });
   } catch (error) {
-    if (isNativeDelegationLockTimeout(error)) {
-      throw new APIError('SERVICE_UNAVAILABLE', {
-        error: 'temporarily_unavailable',
-        error_description: 'lock contention; the authorization code is already spent and cannot be retried, start a new authorization',
-      }, { 'Retry-After': '2' });
-    }
-    throw error;
+    throw spentCodeError(error);
   }
   await pendingNativeGrant.set(redeemed.grantId);
   // The provider passes these to `ctx.json`, which better-auth's router drops
@@ -228,17 +248,47 @@ export async function exchangeNativeCode(
 /**
  * The provider's `generateRefreshToken`. Produces the provider's default
  * token and, when this request's code exchange committed a grant, writes the
- * token's stored hash to that grant (`WHERE refreshTokenHash IS NULL`).
+ * token's stored hash to that grant (`WHERE refreshTokenHash IS NULL`) while
+ * the grant is still ACTIVE. Only the grant row is locked, with the same
+ * bounded wait as every native transaction.
  */
 export async function generateNativeRefreshToken(db: PrismaClient, tokens: ProviderTokenOptions): Promise<string> {
   const token = generateRandomString(32, 'A-Z', 'a-z');
   const grantId = await pendingNativeGrant.get();
   if (grantId === undefined) return token;
   await pendingNativeGrant.set(undefined);
-  const linked = await db.tinyCloudNativeGrant.updateMany({
-    where: { id: grantId, refreshTokenHash: null },
-    data: { refreshTokenHash: await storedToken(tokens, token, 'refresh_token') },
-  });
-  if (linked.count !== 1) invalidGrant('native grant could not be linked to its refresh token');
+  const refreshTokenHash = await storedToken(tokens, token, 'refresh_token');
+  let linked: number;
+  try {
+    linked = await db.$transaction(async (tx) => {
+      await tx.$executeRaw`SET LOCAL lock_timeout = '5s'`;
+      const updated = await tx.tinyCloudNativeGrant.updateMany({
+        where: { id: grantId, refreshTokenHash: null, status: 'ACTIVE' },
+        data: { refreshTokenHash },
+      });
+      return updated.count;
+    }, { timeout: 15_000 });
+  } catch (error) {
+    throw spentCodeError(error);
+  }
+  if (linked !== 1) invalidGrant('native grant is no longer active; the authorization code is already spent, start a new authorization');
   return token;
+}
+
+/**
+ * The client better-auth writes through. The token guard triggers
+ * (20261007_0003) refuse a token row for a native grant that is no longer
+ * ACTIVE; without this the provider's insert failure would be a bare 500.
+ * Only the two token inserts are intercepted.
+ */
+export function withNativeTokenGuardErrors(db: PrismaClient): PrismaClient {
+  const create = async ({ args, query }: { args: unknown; query: (args: unknown) => Promise<unknown> }) => {
+    try {
+      return await query(args);
+    } catch (error) {
+      throw spentCodeError(error);
+    }
+  };
+  // A query-only extension keeps the client's model surface unchanged.
+  return db.$extends({ query: { oauthRefreshToken: { create }, oauthAccessToken: { create } } }) as unknown as PrismaClient;
 }

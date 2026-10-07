@@ -616,6 +616,114 @@ if (!backend) {
       }
     }, 60_000);
 
+    /** No live token of any kind for the native client, and the grant is revoked. */
+    async function expectWithdrawnWithoutLiveTokens(flow: Awaited<ReturnType<typeof approvedCode>>, response: Response) {
+      expect(response.status, await response.clone().text()).toBe(400);
+      expect(await oauthError(response)).toEqual({
+        error: 'invalid_grant',
+        error_description: 'consent was withdrawn while the tokens were issued; the authorization code is already spent, start a new authorization',
+      });
+      expect(await prisma.oauthRefreshToken.count({ where: { clientId: nativeClient } })).toBe(0);
+      expect(await prisma.oauthAccessToken.count({ where: { clientId: nativeClient } })).toBe(0);
+      const grant = await prisma.tinyCloudNativeGrant.findFirstOrThrow();
+      expect(grant).toMatchObject({ status: 'REVOKED', revokedReason: 'consent_withdrawn' });
+      expect(await requestStatus(flow.requestId)).toBe('REDEEMED');
+      const retry = await exchange(flow.code, flow.verifier, proof(flow.key, flow.code));
+      expect((await oauthError(retry)).error).toBe('invalid_verification');
+    }
+
+    /**
+     * Runs `body` with a test-only trigger that withdraws the native consent
+     * (through the real withdrawal trigger) at an exact point of the exchange.
+     */
+    async function withWithdrawalAt(table: string, event: string, when: string, body: () => Promise<void>) {
+      await prisma.$executeRawUnsafe(`CREATE FUNCTION tc773_o4_withdraw_now() RETURNS TRIGGER AS $$
+        BEGIN
+          DELETE FROM "oauth_consent" WHERE "userId" = '${alice}' AND "clientId" = '${nativeClient}';
+          RETURN NULL;
+        END; $$ LANGUAGE plpgsql`);
+      await prisma.$executeRawUnsafe(`CREATE TRIGGER tc773_o4_withdraw_now AFTER ${event} ON "${table}"
+        FOR EACH ROW WHEN (${when}) EXECUTE FUNCTION tc773_o4_withdraw_now()`);
+      try {
+        await body();
+      } finally {
+        await prisma.$executeRawUnsafe(`DROP TRIGGER tc773_o4_withdraw_now ON "${table}"`);
+        await prisma.$executeRawUnsafe('DROP FUNCTION tc773_o4_withdraw_now()');
+      }
+    }
+
+    test('a withdrawal between grant linking and the refresh-token insert leaves no live token', async () => {
+      const flow = await approvedCode();
+      await withWithdrawalAt('tinycloud_native_grant', 'UPDATE OF "refreshTokenHash"',
+        'OLD."refreshTokenHash" IS NULL AND NEW."refreshTokenHash" IS NOT NULL', async () => {
+          await expectWithdrawnWithoutLiveTokens(flow, await exchange(flow.code, flow.verifier, proof(flow.key, flow.code)));
+        });
+    }, 60_000);
+
+    test('a withdrawal between the refresh-token and access-token inserts leaves no live token', async () => {
+      const flow = await approvedCode();
+      await withWithdrawalAt('oauth_refresh_token', 'INSERT', `NEW."clientId" = '${nativeClient}'`, async () => {
+        await expectWithdrawnWithoutLiveTokens(flow, await exchange(flow.code, flow.verifier, proof(flow.key, flow.code)));
+      });
+    }, 60_000);
+
+    test.skipIf(backend !== 'postgres')('a concurrent withdrawal after linking: the blocked token insert is refused', async () => {
+      const flow = await approvedCode();
+      const holder = new Client({ connectionString });
+      await holder.connect();
+      try {
+        // Park the provider's refresh-token INSERT after linking, then withdraw
+        // consent from another session while it waits.
+        await holder.query('BEGIN');
+        await holder.query('LOCK TABLE "oauth_refresh_token" IN SHARE MODE');
+        const pending = exchange(flow.code, flow.verifier, proof(flow.key, flow.code));
+        const deadline = Date.now() + 10_000;
+        while (!(await prisma.tinyCloudNativeGrant.findFirst({ where: { refreshTokenHash: { not: null } } }))) {
+          if (Date.now() > deadline) throw new Error('grant was never linked');
+          await Bun.sleep(20);
+        }
+        await holder.query('DELETE FROM "oauth_consent" WHERE "userId" = $1 AND "clientId" = $2', [alice, nativeClient]);
+        await holder.query('COMMIT');
+        await expectWithdrawnWithoutLiveTokens(flow, await pending);
+      } finally {
+        await holder.end();
+      }
+    }, 60_000);
+
+    test.skipIf(backend !== 'postgres')('lock contention while linking the refresh token returns 503 and the code stays spent', async () => {
+      const flow = await approvedCode();
+      // Any lock wait inside the linking transaction: the test trigger waits
+      // for an advisory lock the holder keeps past the 5 s lock_timeout.
+      await prisma.$executeRawUnsafe(`CREATE FUNCTION tc773_o4_block_link() RETURNS TRIGGER AS $$
+        BEGIN PERFORM pg_advisory_xact_lock(773004); RETURN NEW; END; $$ LANGUAGE plpgsql`);
+      await prisma.$executeRawUnsafe(`CREATE TRIGGER tc773_o4_block_link BEFORE UPDATE OF "refreshTokenHash" ON "tinycloud_native_grant"
+        FOR EACH ROW EXECUTE FUNCTION tc773_o4_block_link()`);
+      const holder = new Client({ connectionString });
+      await holder.connect();
+      try {
+        await holder.query('SELECT pg_advisory_lock(773004)');
+        const started = Date.now();
+        const response = await exchange(flow.code, flow.verifier, proof(flow.key, flow.code));
+        expect(Date.now() - started).toBeLessThan(12_000);
+        expect(response.status, await response.clone().text()).toBe(503);
+        expect(response.headers.get('retry-after')).toBe('2');
+        const body = await oauthError(response);
+        expect(body.error).toBe('temporarily_unavailable');
+        expect(body.error_description).toContain('cannot be retried');
+      } finally {
+        await holder.end();
+        await prisma.$executeRawUnsafe('DROP TRIGGER tc773_o4_block_link ON "tinycloud_native_grant"');
+        await prisma.$executeRawUnsafe('DROP FUNCTION tc773_o4_block_link()');
+      }
+      // The grant committed by the hook stays unlinked; no token was issued.
+      const grant = await prisma.tinyCloudNativeGrant.findFirstOrThrow();
+      expect(grant.refreshTokenHash).toBeNull();
+      expect(await prisma.oauthRefreshToken.count()).toBe(0);
+      expect(await prisma.oauthAccessToken.count()).toBe(0);
+      const retry = await exchange(flow.code, flow.verifier, proof(flow.key, flow.code));
+      expect((await oauthError(retry)).error).toBe('invalid_verification');
+    }, 60_000);
+
     test.skipIf(backend !== 'postgres')('lock contention returns 503 temporarily_unavailable and the code stays spent', async () => {
       const flow = await approvedCode();
       const holder = new Client({ connectionString });

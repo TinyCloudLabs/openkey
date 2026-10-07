@@ -12,6 +12,8 @@ import {
   nativeDelegationMigration,
   nativePreparationHostChecksum,
   nativePreparationHostMigration,
+  nativeTokenGuardChecksum,
+  nativeTokenGuardMigration,
 } from './native-delegation-schema-guards';
 
 const repoRoot = resolve(import.meta.dir, '..');
@@ -38,6 +40,7 @@ const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
   [brokerMigration, brokerChecksum],
   [nativeDelegationMigration, nativeDelegationChecksum],
   [nativePreparationHostMigration, nativePreparationHostChecksum],
+  [nativeTokenGuardMigration, nativeTokenGuardChecksum],
 ]);
 
 export type MigrationRow = {
