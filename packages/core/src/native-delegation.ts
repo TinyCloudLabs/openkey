@@ -609,7 +609,8 @@ export function parseNativeCallback(options: {
   } catch {
     throw new OpenKeyNativeError(
       'SERVER',
-      `Callback URL is not parseable: ${options.url}`,
+      // Never echo the callback URL - it may carry code/state.
+      'Callback URL is not parseable',
     );
   }
 
@@ -626,7 +627,9 @@ export function parseNativeCallback(options: {
   if (!iss || iss !== options.issuer) {
     throw new OpenKeyNativeError(
       'STATE_MISMATCH',
-      `Callback iss "${iss ?? '(missing)'}" does not match issuer "${options.issuer}"`,
+      // Fixed message: iss is attacker-controlled and the URL carries
+      // the auth code.
+      'Callback iss does not match the issuer',
     );
   }
 
@@ -756,6 +759,14 @@ export async function signSessionProof(
 function parseExpiresAt(value: string | number, field: string): number {
   if (typeof value === 'number') {
     // Seconds vs milliseconds heuristic: seconds values past ~2286 exceed 1e11.
+    // Non-finite and non-positive values are malformed - reject (NaN <= now is
+    // false and would otherwise pass the future check).
+    if (!Number.isFinite(value) || value <= 0) {
+      throw new OpenKeyNativeError(
+        'SERVER',
+        `tinycloud_delegation.${field} is not a valid epoch or ISO time`,
+      );
+    }
     return value > 1e11 ? value : value * 1000;
   }
   if (typeof value === 'string') {
@@ -764,7 +775,7 @@ function parseExpiresAt(value: string | number, field: string): number {
   }
   throw new OpenKeyNativeError(
     'SERVER',
-    `tinycloud_delegation.${field} is not a timestamp`,
+    `tinycloud_delegation.${field} is not a valid epoch or ISO time`,
   );
 }
 
@@ -814,9 +825,10 @@ export interface ValidateDelegationOptions {
   requestedPermissions: NativeDelegationPermission[];
   /**
    * The TinyCloud node the client expects (spec: `tinycloudHost` must be
-   * "the host it expects"). Compared for exact equality when given.
+   * "the host it expects"). Required: validation fails closed without it.
+   * Exact-match against `delegation.tinycloudHost`.
    */
-  expectedTinycloudHost?: string;
+  expectedTinycloudHost: string;
 }
 
 /**
@@ -906,9 +918,16 @@ export function validateTinyCloudDelegation(
     );
   }
   if (
-    options.expectedTinycloudHost !== undefined &&
-    delegation.tinycloudHost !== options.expectedTinycloudHost
+    typeof options.expectedTinycloudHost !== 'string' ||
+    options.expectedTinycloudHost.length === 0
   ) {
+    // Fail closed: the host check must not silently vanish.
+    throw new OpenKeyNativeError(
+      'SERVER',
+      'expectedTinycloudHost is required to validate tinycloud_delegation',
+    );
+  }
+  if (delegation.tinycloudHost !== options.expectedTinycloudHost) {
     throw new OpenKeyNativeError(
       'SERVER',
       `tinycloud_delegation.tinycloudHost "${delegation.tinycloudHost}" is not the expected host "${options.expectedTinycloudHost}"`,
@@ -969,6 +988,13 @@ async function readJson(
 async function throwEndpointError(
   response: NativeFetchResponse,
   what: string,
+  /**
+   * Extra `error` values this endpoint maps to INVALID_GRANT (spec SDK
+   * table: provider code-exchange failures are terminal). Scoped to the
+   * token endpoint - PAR emits `invalid_request`/`invalid_client` for
+   * different causes, which stay SERVER.
+   */
+  invalidGrantErrors?: readonly string[],
 ): Promise<never> {
   const retryAfterSeconds = parseRetryAfterSeconds(
     response.headers?.get('Retry-After'),
@@ -976,11 +1002,22 @@ async function throwEndpointError(
   try {
     const data = (await response.json()) as Record<string, unknown>;
     if (typeof data.error === 'string' && data.error.length > 0) {
-      throw mapOAuthError(
-        data.error,
+      const description =
         typeof data.error_description === 'string'
           ? data.error_description
-          : undefined,
+          : undefined;
+      if (invalidGrantErrors?.includes(data.error)) {
+        throw new OpenKeyNativeError(
+          'INVALID_GRANT',
+          description ? `${data.error}: ${description}` : data.error,
+          response.status,
+          data.error,
+          retryAfterSeconds,
+        );
+      }
+      throw mapOAuthError(
+        data.error,
+        description,
         response.status,
         retryAfterSeconds,
       );
@@ -1008,8 +1045,8 @@ export interface ExchangeNativeCodeOptions {
   codeVerifier: string;
   sessionKey: NativeSessionKeypair;
   requestedPermissions: NativeDelegationPermission[];
-  /** Expected TinyCloud node, checked against `tinycloudHost`. */
-  expectedTinycloudHost?: string;
+  /** Expected TinyCloud node, exact-matched against `tinycloudHost`. Required - fails closed. */
+  expectedTinycloudHost: string;
   fetchFn?: NativeFetch;
   sha256Fn?: SHA256Fn;
 }
@@ -1066,7 +1103,13 @@ export async function exchangeDelegationCode(
     fetchFn,
     { [SESSION_PROOF_HEADER]: proof },
   );
-  if (!response.ok) await throwEndpointError(response, 'Token exchange');
+  if (!response.ok) {
+    await throwEndpointError(response, 'Token exchange', [
+      'invalid_request',
+      'invalid_client',
+      'invalid_verification',
+    ]);
+  }
 
   const data = await readJson(response, 'Token exchange');
   if (
@@ -1127,8 +1170,8 @@ export interface RenewDelegationOptions {
    * field (PAR shape, same session key, no `ttl_seconds`).
    */
   permissionsSubset?: NativeDelegationPermission[];
-  /** Expected TinyCloud node, checked against `tinycloudHost`. */
-  expectedTinycloudHost?: string;
+  /** Expected TinyCloud node, exact-matched against `tinycloudHost`. Required - fails closed. */
+  expectedTinycloudHost: string;
   fetchFn?: NativeFetch;
   sha256Fn?: SHA256Fn;
   /** Injectable sleep for the spec-mandated `Retry-After` waits. */

@@ -541,6 +541,35 @@ describe('callback', () => {
       'STATE_MISMATCH',
     );
   });
+
+  it('never copies the callback URL or its params into error messages', () => {
+    // Unparseable callback
+    try {
+      parseNativeCallback({
+        url: 'not a url?code=SECRET_CODE&state=SECRET_STATE',
+        expectedState: 'SECRET_STATE',
+        issuer: ISSUER,
+      });
+      expect.unreachable();
+    } catch (error) {
+      const message = (error as OpenKeyNativeError).message;
+      expect(message).not.toContain('SECRET_CODE');
+      expect(message).not.toContain('not a url');
+    }
+    // iss mismatch: the URL value must not appear in the message
+    try {
+      parseNativeCallback({
+        url: `myapp://cb?code=SECRET_CODE&state=state-1&iss=${encodeURIComponent('https://evil.example.com/LEAK_MARKER')}`,
+        expectedState: 'state-1',
+        issuer: ISSUER,
+      });
+      expect.unreachable();
+    } catch (error) {
+      const message = (error as OpenKeyNativeError).message;
+      expect(message).not.toContain('LEAK_MARKER');
+      expect(message).not.toContain('SECRET_CODE');
+    }
+  });
 });
 
 // ======= Session proof =======
@@ -662,7 +691,11 @@ describe('delegationNeedsRenewalNow', () => {
 
 describe('validateTinyCloudDelegation', () => {
   const key = generateSessionKeypair();
-  const opts = { sessionKey: key, requestedPermissions: PERMISSIONS };
+  const opts = {
+    sessionKey: key,
+    requestedPermissions: PERMISSIONS,
+    expectedTinycloudHost: 'https://tee.node.tinycloud.xyz',
+  };
 
   it('accepts a valid delegation', () => {
     const delegation = validateTinyCloudDelegation(
@@ -792,6 +825,39 @@ describe('validateTinyCloudDelegation', () => {
       }),
     ).not.toThrow();
   });
+
+  it('rejects a malformed expiresAt (non-finite, non-positive, bad string)', () => {
+    for (const expiresAt of [NaN, Infinity, -Infinity, 0, -5, 'tomorrow']) {
+      expectCode(
+        () =>
+          validateTinyCloudDelegation(
+            delegationFor(key.keyId, { expiresAt }),
+            opts,
+          ),
+        'SERVER',
+      );
+    }
+  });
+
+  it('fails closed when expectedTinycloudHost is absent or empty', () => {
+    expectCode(
+      () =>
+        validateTinyCloudDelegation(delegationFor(key.keyId), {
+          ...opts,
+          expectedTinycloudHost: '',
+        }),
+      'SERVER',
+    );
+    expectCode(
+      () =>
+        validateTinyCloudDelegation(delegationFor(key.keyId), {
+          // Bypass the required field - a JS caller could still omit it.
+          ...opts,
+          expectedTinycloudHost: undefined as unknown as string,
+        }),
+      'SERVER',
+    );
+  });
 });
 
 // ======= Endpoint clients =======
@@ -818,6 +884,7 @@ describe('endpoint clients', () => {
       codeVerifier: 'verifier-1',
       sessionKey: key,
       requestedPermissions: PERMISSIONS,
+      expectedTinycloudHost: 'https://tee.node.tinycloud.xyz',
       fetchFn,
     });
     expect(result.accessToken).toBe('at-1');
@@ -858,6 +925,7 @@ describe('endpoint clients', () => {
         codeVerifier: 'v',
         sessionKey: key,
         requestedPermissions: PERMISSIONS,
+        expectedTinycloudHost: 'https://tee.node.tinycloud.xyz',
         fetchFn,
       }),
     ).rejects.toMatchObject({ code: 'INVALID_GRANT', status: 400 });
@@ -880,6 +948,7 @@ describe('endpoint clients', () => {
         codeVerifier: 'v',
         sessionKey: key,
         requestedPermissions: PERMISSIONS,
+        expectedTinycloudHost: 'https://tee.node.tinycloud.xyz',
         fetchFn,
       }),
     ).rejects.toMatchObject({
@@ -910,9 +979,32 @@ describe('endpoint clients', () => {
         codeVerifier: 'v',
         sessionKey: key,
         requestedPermissions: PERMISSIONS,
+        expectedTinycloudHost: 'https://tee.node.tinycloud.xyz',
         fetchFn,
       }),
     ).rejects.toMatchObject({ code: 'SPACE_UNAVAILABLE' });
+  });
+
+  it('maps provider code-exchange errors to INVALID_GRANT (terminal, one request)', async () => {
+    for (const error of ['invalid_verification', 'invalid_request', 'invalid_client']) {
+      const { fetchFn, calls } = mockFetch(() =>
+        jsonResponse({ error, error_description: 'detail' }, 400),
+      );
+      await expect(
+        exchangeDelegationCode({
+          metadata: SERVER_METADATA,
+          code: 'code-1',
+          redirectUri: REDIRECT_URI,
+          clientId: CLIENT_ID,
+          codeVerifier: 'v',
+          sessionKey: key,
+          requestedPermissions: PERMISSIONS,
+          expectedTinycloudHost: 'https://tee.node.tinycloud.xyz',
+          fetchFn,
+        }),
+      ).rejects.toMatchObject({ code: 'INVALID_GRANT', serverError: error });
+      expect(calls).toHaveLength(1);
+    }
   });
 
   it('renewDelegation posts form-encoded fields and maps renewal_conflict', async () => {
@@ -926,6 +1018,7 @@ describe('endpoint clients', () => {
         refreshToken: 'rt-1',
         sessionKey: key,
         requestedPermissions: PERMISSIONS,
+        expectedTinycloudHost: 'https://tee.node.tinycloud.xyz',
         siweNonce: 'renewnonce1',
         permissionsSubset: [PERMISSIONS[1]!],
         fetchFn,
@@ -991,6 +1084,7 @@ describe('endpoint clients', () => {
       refreshToken: 'rt-1',
       sessionKey: key,
       requestedPermissions: PERMISSIONS,
+      expectedTinycloudHost: 'https://tee.node.tinycloud.xyz',
       fetchFn,
       sleepFn: (ms) => {
         slept.push(ms);
@@ -1018,6 +1112,7 @@ describe('endpoint clients', () => {
         refreshToken: 'rt-1',
         sessionKey: key,
         requestedPermissions: PERMISSIONS,
+        expectedTinycloudHost: 'https://tee.node.tinycloud.xyz',
         fetchFn,
         sleepFn: (ms) => {
           slept.push(ms);
@@ -1055,6 +1150,7 @@ describe('endpoint clients', () => {
       refreshToken: 'rt-1',
       sessionKey: key,
       requestedPermissions: PERMISSIONS,
+      expectedTinycloudHost: 'https://tee.node.tinycloud.xyz',
       fetchFn,
       sleepFn: (ms) => {
         slept.push(ms);
@@ -1089,6 +1185,7 @@ describe('endpoint clients', () => {
           refreshToken: 'rt-1',
           sessionKey: key,
           requestedPermissions: PERMISSIONS,
+          expectedTinycloudHost: 'https://tee.node.tinycloud.xyz',
           fetchFn,
           sleepFn: () => Promise.reject(new Error('must not sleep')),
         }),
@@ -1108,6 +1205,7 @@ describe('endpoint clients', () => {
         refreshToken: 'rt-1',
         sessionKey: key,
         requestedPermissions: PERMISSIONS,
+        expectedTinycloudHost: 'https://tee.node.tinycloud.xyz',
         fetchFn,
       }),
     ).rejects.toMatchObject({ code: 'ACCESS_DENIED' });
@@ -1127,6 +1225,7 @@ describe('endpoint clients', () => {
       refreshToken: 'rt-1',
       sessionKey: key,
       requestedPermissions: PERMISSIONS,
+      expectedTinycloudHost: 'https://tee.node.tinycloud.xyz',
       fetchFn,
     });
     expect(result.refreshToken).toBe('rt-2');
