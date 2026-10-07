@@ -30,16 +30,27 @@ optional.
 New `delegation` config enables the TinyCloud native-delegation protocol
 from `@openkey/core`: RFC 8414 discovery, PAR with an Ed25519 session key,
 and `OpenKey-Session-Proof` proofs on code exchange, renewal and
-revocation. `signIn()` resolves with `tokens.delegation` set, and a
-single-flight `renew()` rotates the refresh token (persisted via the
-injected `OpenKeySecureStore`, plus once after `RENEWAL_CONFLICT` reloads)
-before resolving. Delegation mode requires a `verifyDelegation` callback —
+revocation. `signIn()` resolves with `tokens.delegation` set, and
+`renew()` rotates the refresh token (persisted via the injected
+`OpenKeySecureStore`, plus once after `RENEWAL_CONFLICT` reloads) before
+resolving. `renew()` is single-flight keyed on options — identical calls
+share the in-flight renewal, different `permissionsSubset`/`siweNonce`
+queue behind it. Delegation mode requires a `verifyDelegation` callback —
 the spec requires the SDK to check `siwe` + `signature` against
-`delegationHeader`/`delegationCid`, and the client fails closed without it.
-Storage writes are strict: a failed persist rejects with
-`OpenKeyNativeError('NETWORK')` carrying `rotatedRefreshToken`, and a failed
-credential wipe makes `signOut()` reject. A `signOut()` during an in-flight
-`renew()` makes that renew discard its result and reject `NOT_SIGNED_IN`;
+`delegationHeader`/`delegationCid`, and the client fails closed without
+it. Storage writes are strict and serialized with `signOut()`'s wipe: a
+failed persist rejects with `OpenKeyNativeError('NETWORK')` carrying
+`rotatedRefreshToken`. Terminal renew/exchange errors (`INVALID_GRANT`,
+`CONSENT_REQUIRED`, `ACCESS_DENIED`, `SPACE_UNAVAILABLE`) wipe the local
+session before rethrowing. `signOut()` always wipes locally: a terminal
+revoke failure means the grant is already unusable so it resolves, while
+a transient revoke failure or a failed credential wipe rejects so the app
+can retry. A `signOut()` during an in-flight `renew()` or code exchange
+makes it discard its result and reject `NOT_SIGNED_IN` instead of
+persisting over the wiped session (an orphaned exchange grant is revoked
+best-effort). A delegation returned by sign-in that is already inside the
+renewal lead window is renewed before `signIn()` resolves — if that renew
+fails the error surfaces but the fresh session stays persisted.
 `refreshToken()` throws `UNAVAILABLE` in delegation mode (the provider
 refresh grant is refused for native clients). Delegation-mode errors
 surface as `OpenKeyNativeError`.

@@ -156,7 +156,7 @@ const newTokens = await openkey.refreshToken(tokens.refreshToken!);
 
 ### `openkey.signOut(accessToken?)`
 
-Clear pending sign-in flows, revoke the delegation grant (delegation mode), and revoke `accessToken` through the legacy revoke endpoint when given.
+Clear pending sign-in flows, revoke the delegation grant (delegation mode), wipe the stored session, and revoke `accessToken` through the legacy revoke endpoint when given. The local session is always wiped. If the server revoke fails with a terminal error the grant is already unusable, so `signOut()` resolves; a transient revoke failure (network, `temporarily_unavailable` after the internal retry) still wipes locally but rejects — the grant may still be active, so retry `signOut()`.
 
 ```typescript
 await openkey.signOut(tokens.accessToken);
@@ -234,16 +234,27 @@ strict: if a write fails, `signIn()`/`renew()` reject with an
 caller can retry persisting it. `signOut()` rejects with `NETWORK` if the
 credential wipe itself fails.
 
-`renew()` is single-flight, persists the rotated refresh token before
-resolving, reloads the stored token and retries once on
+`renew()` is single-flight keyed on its options: concurrent calls with
+identical `permissionsSubset`/`siweNonce` share one renewal, while a call
+with different options is queued behind the in-flight one so two renewals
+never race the same refresh token. It persists the rotated refresh token
+before resolving, reloads the stored token and retries once on
 `RENEWAL_CONFLICT`, and waits `Retry-After` (handled inside
 `@openkey/core`) on `RENEWAL_TOO_SOON` / `TEMPORARILY_UNAVAILABLE`. Every
 renewed delegation passes through `verifyDelegation` before it is
-accepted. If `signIn()` returns a delegation that is already inside the
-spec's renewal lead window, it is renewed before `signIn()` resolves —
-you always receive a delegation with a full TTL. A `signOut()` while a
-`renew()` is in flight makes that renew discard its result and reject
-with `NOT_SIGNED_IN` instead of persisting over the wiped session.
+accepted — a verification failure rejects `renew()` as `SERVER` with the
+rotated token on `rotatedRefreshToken` (it is also persisted
+best-effort). Terminal errors (`INVALID_GRANT`, `CONSENT_REQUIRED`,
+`ACCESS_DENIED`, `SPACE_UNAVAILABLE`) wipe the local session before
+rethrowing: the grant is dead, so that's a local sign-out. If `signIn()`
+returns a delegation already inside the spec's renewal lead window, it is
+renewed before `signIn()` resolves — you always receive a delegation
+with a full TTL; if that immediate renew fails, the error is surfaced but
+the just-issued session stays persisted, so the app can retry `renew()`.
+A `signOut()` while a `renew()` or code exchange is in flight makes it
+discard its result and reject with `NOT_SIGNED_IN` instead of persisting
+over the wiped session (an orphaned exchange grant is revoked
+best-effort).
 
 Delegation-mode errors are `OpenKeyNativeError` (`code`,
 `status`, `retryAfterSeconds`, `rotatedRefreshToken`); plain-mode errors

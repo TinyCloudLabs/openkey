@@ -1221,6 +1221,419 @@ describe('OpenKeyRN', () => {
       expect(thrown).toBeInstanceOf(OpenKeyNativeError);
       expect((thrown as OpenKeyNativeError).code).toBe('UNAVAILABLE');
     });
+
+    it('signOut() wipes locally but rejects when the revoke fails transiently', async () => {
+      const store = memoryStore();
+      const sessionKey = generateSessionKeypair();
+      const key = `openkey:tinycloud-delegation:${TEST_CLIENT_ID}`;
+      await store.set(key, JSON.stringify({
+        privateJwk: sessionKey.privateJwk,
+        refreshToken: 'rt-old',
+        permissions: [KV_PERMISSION],
+      }));
+
+      let revokeCalls = 0;
+      const fetchFn: NativeFetch = (url: string) => {
+        if (url.includes('/.well-known/')) {
+          return Promise.resolve(jsonResponse(METADATA));
+        }
+        if (url.endsWith('/oauth2/tinycloud/revoke')) {
+          revokeCalls += 1;
+          // 503 temporarily_unavailable on every attempt — core retries
+          // once internally, then throws TEMPORARILY_UNAVAILABLE.
+          return Promise.resolve(
+            jsonResponse({ error: 'temporarily_unavailable' }, 503),
+          );
+        }
+        return Promise.reject(new Error(`unexpected fetch: ${url}`));
+      };
+
+      const client = new OpenKeyRN(makeDelegationConfig(store, fetchFn));
+
+      let thrown: unknown;
+      try {
+        await client.signOut();
+        expect(true).toBe(false);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(OpenKeyNativeError);
+      expect((thrown as OpenKeyNativeError).code).toBe('TEMPORARILY_UNAVAILABLE');
+      expect(revokeCalls).toBe(2); // the spec's single internal retry
+      // The local session was still wiped — the grant may still be active
+      // server-side, so the caller can retry signOut().
+      expect(store.map.has(key)).toBe(false);
+    });
+
+    it('signOut() resolves on a terminal revoke failure and still wipes', async () => {
+      const store = memoryStore();
+      const sessionKey = generateSessionKeypair();
+      const key = `openkey:tinycloud-delegation:${TEST_CLIENT_ID}`;
+      await store.set(key, JSON.stringify({
+        privateJwk: sessionKey.privateJwk,
+        refreshToken: 'rt-old',
+        permissions: [KV_PERMISSION],
+      }));
+
+      let revokeCalls = 0;
+      const fetchFn: NativeFetch = (url: string) => {
+        if (url.includes('/.well-known/')) {
+          return Promise.resolve(jsonResponse(METADATA));
+        }
+        if (url.endsWith('/oauth2/tinycloud/revoke')) {
+          revokeCalls += 1;
+          // Terminal: the grant is already unusable server-side.
+          return Promise.resolve(
+            jsonResponse({ error: 'invalid_session_proof' }, 401),
+          );
+        }
+        return Promise.reject(new Error(`unexpected fetch: ${url}`));
+      };
+
+      const client = new OpenKeyRN(makeDelegationConfig(store, fetchFn));
+      await client.signOut(); // resolves — terminal revoke is success
+      expect(revokeCalls).toBe(1);
+      expect(store.map.has(key)).toBe(false);
+    });
+
+    it('discards an exchange that lands after signOut() and revokes the orphan', async () => {
+      const store = memoryStore();
+      const key = `openkey:tinycloud-delegation:${TEST_CLIENT_ID}`;
+      const { promise: exchangeReached, resolve: reachedExchange } =
+        Promise.withResolvers<void>();
+      const { promise: exchangeGate, resolve: releaseExchange } =
+        Promise.withResolvers<void>();
+      let parBody = '';
+      let revokedToken = '';
+      const fetchFn: NativeFetch = async (url: string, init?: NativeFetchInit) => {
+        if (url.includes('/.well-known/')) {
+          return jsonResponse(METADATA);
+        }
+        if (url.endsWith('/oauth2/par')) {
+          parBody = init!.body!;
+          return jsonResponse(
+            { request_uri: 'urn:ietf:params:oauth:request_uri:req-1', expires_in: 90 },
+            201,
+          );
+        }
+        if (url.endsWith('/oauth2/token')) {
+          reachedExchange();
+          // The exchange response only lands after signOut has run.
+          await exchangeGate;
+          return jsonResponse({
+            access_token: 'nat-access',
+            refresh_token: 'rt-orphaned',
+            expires_in: 300,
+            tinycloud_delegation: delegationPayload(parBody),
+          });
+        }
+        if (url.endsWith('/oauth2/tinycloud/revoke')) {
+          revokedToken = new URLSearchParams(init!.body!).get('refresh_token')!;
+          return new Response(null, { status: 200 });
+        }
+        return Promise.reject(new Error(`unexpected fetch: ${url}`));
+      };
+
+      const openBrowser = mock(async (): Promise<BrowserResult | void> => {
+        const state = new URLSearchParams(parBody).get('state')!;
+        return { type: 'success', url: callbackUrl(state) };
+      }) as BrowserOpener;
+
+      const client = new OpenKeyRN(
+        makeDelegationConfig(store, fetchFn, { openBrowser }),
+      );
+      const signInPromise = client.signIn();
+      signInPromise.catch(() => {});
+
+      await exchangeReached;
+      await client.signOut();
+      releaseExchange();
+
+      let thrown: unknown;
+      try {
+        await signInPromise;
+        expect(true).toBe(false);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(OpenKeyNativeError);
+      expect((thrown as OpenKeyNativeError).code).toBe('NOT_SIGNED_IN');
+      // The grant left behind by the discarded exchange was revoked
+      // best-effort, and no session was persisted over the wipe.
+      expect(revokedToken).toBe('rt-orphaned');
+      expect(store.map.has(key)).toBe(false);
+    });
+
+    it('a failed immediate renew keeps the initial session persisted', async () => {
+      const store = memoryStore();
+      const key = `openkey:tinycloud-delegation:${TEST_CLIENT_ID}`;
+      let parBody = '';
+      let renewCalls = 0;
+      const fetchFn: NativeFetch = (url: string, init?: NativeFetchInit) => {
+        if (url.includes('/.well-known/')) {
+          return Promise.resolve(jsonResponse(METADATA));
+        }
+        if (url.endsWith('/oauth2/par')) {
+          parBody = init!.body!;
+          return Promise.resolve(
+            jsonResponse(
+              { request_uri: 'urn:ietf:params:oauth:request_uri:req-1', expires_in: 90 },
+              201,
+            ),
+          );
+        }
+        if (url.endsWith('/oauth2/token')) {
+          return Promise.resolve(
+            jsonResponse({
+              access_token: 'nat-access',
+              refresh_token: 'rt-initial',
+              expires_in: 300,
+              tinycloud_delegation: {
+                // expiresAt inside the lead window → immediate renew.
+                verificationMethod: sessionKeyIdFromPar(parBody),
+                issuedAt: new Date(Date.now() - 3_600_000).toISOString(),
+                expiresAt: new Date(Date.now() + 60_000).toISOString(),
+                permissions: [KV_PERMISSION],
+                tinycloudHost: TC_HOST,
+              },
+            }),
+          );
+        }
+        if (url.endsWith('/oauth2/tinycloud/renew')) {
+          renewCalls += 1;
+          return Promise.resolve(
+            jsonResponse({ error: 'temporarily_unavailable' }, 503),
+          );
+        }
+        return Promise.reject(new Error(`unexpected fetch: ${url}`));
+      };
+
+      const openBrowser = mock(async (): Promise<BrowserResult | void> => {
+        const state = new URLSearchParams(parBody).get('state')!;
+        return { type: 'success', url: callbackUrl(state) };
+      }) as BrowserOpener;
+
+      const client = new OpenKeyRN(
+        makeDelegationConfig(store, fetchFn, { openBrowser }),
+      );
+
+      let thrown: unknown;
+      try {
+        await client.signIn();
+        expect(true).toBe(false);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(OpenKeyNativeError);
+      expect((thrown as OpenKeyNativeError).code).toBe('TEMPORARILY_UNAVAILABLE');
+      expect(renewCalls).toBe(2); // spec's single internal retry
+      // The initial exchange session survived — its refresh token is live.
+      const record = JSON.parse(store.map.get(key)!);
+      expect(record.refreshToken).toBe('rt-initial');
+    });
+
+    it('wraps a verifyDelegation failure on renew as SERVER and persists the rotated token', async () => {
+      const store = memoryStore();
+      const sessionKey = generateSessionKeypair();
+      const key = `openkey:tinycloud-delegation:${TEST_CLIENT_ID}`;
+      await store.set(key, JSON.stringify({
+        privateJwk: sessionKey.privateJwk,
+        refreshToken: 'rt-old',
+        permissions: [KV_PERMISSION],
+      }));
+
+      const fetchFn: NativeFetch = (url: string) => {
+        if (url.includes('/.well-known/')) {
+          return Promise.resolve(jsonResponse(METADATA));
+        }
+        if (url.endsWith('/oauth2/tinycloud/renew')) {
+          return Promise.resolve(
+            jsonResponse({
+              refresh_token: 'rt-new',
+              tinycloud_delegation: {
+                verificationMethod: sessionKey.keyId,
+                expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+                permissions: [KV_PERMISSION],
+                tinycloudHost: TC_HOST,
+              },
+            }),
+          );
+        }
+        return Promise.reject(new Error(`unexpected fetch: ${url}`));
+      };
+
+      const verifyDelegation = mock(() =>
+        Promise.reject(new Error('cid mismatch')),
+      );
+      const client = new OpenKeyRN(
+        makeDelegationConfig(store, fetchFn, undefined, verifyDelegation),
+      );
+
+      let thrown: unknown;
+      try {
+        await client.renew();
+        expect(true).toBe(false);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(OpenKeyNativeError);
+      expect((thrown as OpenKeyNativeError).code).toBe('SERVER');
+      // The rotated token is live and the old one dead: it rides the error
+      // AND was persisted best-effort.
+      expect((thrown as OpenKeyNativeError).rotatedRefreshToken).toBe('rt-new');
+      const record = JSON.parse(store.map.get(key)!);
+      expect(record.refreshToken).toBe('rt-new');
+    });
+
+    it('renew() on INVALID_GRANT wipes the local session (local sign-out)', async () => {
+      const store = memoryStore();
+      const sessionKey = generateSessionKeypair();
+      const key = `openkey:tinycloud-delegation:${TEST_CLIENT_ID}`;
+      await store.set(key, JSON.stringify({
+        privateJwk: sessionKey.privateJwk,
+        refreshToken: 'rt-old',
+        permissions: [KV_PERMISSION],
+      }));
+
+      const fetchFn: NativeFetch = (url: string) => {
+        if (url.includes('/.well-known/')) {
+          return Promise.resolve(jsonResponse(METADATA));
+        }
+        if (url.endsWith('/oauth2/tinycloud/renew')) {
+          return Promise.resolve(jsonResponse({ error: 'invalid_grant' }, 400));
+        }
+        return Promise.reject(new Error(`unexpected fetch: ${url}`));
+      };
+
+      const client = new OpenKeyRN(makeDelegationConfig(store, fetchFn));
+
+      let thrown: unknown;
+      try {
+        await client.renew();
+        expect(true).toBe(false);
+      } catch (error) {
+        thrown = error;
+      }
+      expect((thrown as OpenKeyNativeError).code).toBe('INVALID_GRANT');
+      expect(store.map.has(key)).toBe(false);
+      // And renew() now reports signed-out.
+      await expect(client.renew()).rejects.toMatchObject({
+        code: 'NOT_SIGNED_IN',
+      });
+    });
+
+    it('concurrent renew()s with different options queue behind each other', async () => {
+      const store = memoryStore();
+      const sessionKey = generateSessionKeypair();
+      const key = `openkey:tinycloud-delegation:${TEST_CLIENT_ID}`;
+      await store.set(key, JSON.stringify({
+        privateJwk: sessionKey.privateJwk,
+        refreshToken: 'rt-0',
+        permissions: [KV_PERMISSION],
+      }));
+
+      const { promise: firstReached, resolve: reachedFirst } =
+        Promise.withResolvers<void>();
+      const { promise: firstGate, resolve: releaseFirst } =
+        Promise.withResolvers<void>();
+      const renewBodies: string[] = [];
+      let renewCalls = 0;
+      const fetchFn: NativeFetch = async (url: string, init?: NativeFetchInit) => {
+        if (url.includes('/.well-known/')) {
+          return jsonResponse(METADATA);
+        }
+        if (url.endsWith('/oauth2/tinycloud/renew')) {
+          renewCalls += 1;
+          renewBodies.push(init!.body!);
+          if (renewCalls === 1) {
+            reachedFirst();
+            await firstGate;
+          }
+          return jsonResponse({
+            refresh_token: `rt-${renewCalls}`,
+            tinycloud_delegation: {
+              verificationMethod: sessionKey.keyId,
+              expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+              permissions: [KV_PERMISSION],
+              tinycloudHost: TC_HOST,
+            },
+          });
+        }
+        return Promise.reject(new Error(`unexpected fetch: ${url}`));
+      };
+
+      const client = new OpenKeyRN(makeDelegationConfig(store, fetchFn));
+
+      const p1 = client.renew({ siweNonce: 'nonce-aaa' });
+      await firstReached;
+      // Different options: must queue, not share the in-flight promise.
+      const p2 = client.renew({ siweNonce: 'nonce-bbb' });
+      expect(renewCalls).toBe(1);
+      releaseFirst();
+
+      const [r1, r2] = await Promise.all([p1, p2]);
+      expect(r1.refreshToken).toBe('rt-1');
+      expect(r2.refreshToken).toBe('rt-2');
+      expect(renewCalls).toBe(2);
+      // The queued renew ran sequentially and sent its own options plus the
+      // token the first renew rotated to.
+      expect(new URLSearchParams(renewBodies[0]!).get('siwe_nonce')).toBe(
+        'nonce-aaa',
+      );
+      expect(new URLSearchParams(renewBodies[0]!).get('refresh_token')).toBe(
+        'rt-0',
+      );
+      expect(new URLSearchParams(renewBodies[1]!).get('siwe_nonce')).toBe(
+        'nonce-bbb',
+      );
+      expect(new URLSearchParams(renewBodies[1]!).get('refresh_token')).toBe(
+        'rt-1',
+      );
+      const record = JSON.parse(store.map.get(key)!);
+      expect(record.refreshToken).toBe('rt-2');
+    });
+
+    it('concurrent renew()s with identical options share the in-flight renewal', async () => {
+      const store = memoryStore();
+      const sessionKey = generateSessionKeypair();
+      await store.set(`openkey:tinycloud-delegation:${TEST_CLIENT_ID}`, JSON.stringify({
+        privateJwk: sessionKey.privateJwk,
+        refreshToken: 'rt-0',
+        permissions: [KV_PERMISSION],
+      }));
+
+      let renewCalls = 0;
+      const fetchFn: NativeFetch = (url: string) => {
+        if (url.includes('/.well-known/')) {
+          return Promise.resolve(jsonResponse(METADATA));
+        }
+        if (url.endsWith('/oauth2/tinycloud/renew')) {
+          renewCalls += 1;
+          return Promise.resolve(
+            jsonResponse({
+              refresh_token: 'rt-1',
+              tinycloud_delegation: {
+                verificationMethod: sessionKey.keyId,
+                expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+                permissions: [KV_PERMISSION],
+                tinycloudHost: TC_HOST,
+              },
+            }),
+          );
+        }
+        return Promise.reject(new Error(`unexpected fetch: ${url}`));
+      };
+
+      const client = new OpenKeyRN(makeDelegationConfig(store, fetchFn));
+      const [r1, r2] = await Promise.all([
+        client.renew({ siweNonce: 'nonce-aaa' }),
+        client.renew({ siweNonce: 'nonce-aaa' }),
+      ]);
+      expect(renewCalls).toBe(1);
+      expect(r1.refreshToken).toBe('rt-1');
+      expect(r2.refreshToken).toBe('rt-1');
+    });
+
   });
 
   describe('flow timers', () => {
