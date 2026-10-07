@@ -52,6 +52,7 @@ export type {
   RenewDelegationOptions,
   RenewDelegationResult,
   RevokeDelegationOptions,
+  SleepFn,
 } from './native-delegation';
 export {
   OpenKeyNativeError,
@@ -78,4 +79,6 @@ export {
   exchangeDelegationCode,
   renewDelegation,
   revokeDelegation,
+  parseRetryAfterSeconds,
+  delegationNeedsRenewalNow,
 } from './native-delegation';

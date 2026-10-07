@@ -22,15 +22,15 @@ import { base64UrlEncode, base64UrlDecode, sha256, type SHA256Fn } from './pkce'
 
 // ======= Errors =======
 
-/** Error codes for the native delegation flow. */
+/** Error codes for the native delegation flow (spec "SDK mapping"). */
 export type OpenKeyNativeErrorCode =
   | 'USER_CANCELLED'
   | 'ACCESS_DENIED'
   | 'STATE_MISMATCH'
-  | 'ISSUER_MISMATCH'
   | 'CONSENT_REQUIRED'
   | 'INVALID_GRANT'
   | 'RENEWAL_CONFLICT'
+  | 'RENEWAL_TOO_SOON'
   | 'SPACE_UNAVAILABLE'
   | 'TEMPORARILY_UNAVAILABLE'
   | 'NETWORK'
@@ -47,6 +47,8 @@ export class OpenKeyNativeError extends Error {
     public status?: number,
     /** The server's `error` field when it returned a JSON OAuth error. */
     public serverError?: string,
+    /** `Retry-After` in whole seconds, when the server sent it (429/503). */
+    public retryAfterSeconds?: number,
   ) {
     super(message);
     this.name = 'OpenKeyNativeError';
@@ -68,6 +70,8 @@ export interface NativeFetchInit {
 export interface NativeFetchResponse {
   ok: boolean;
   status: number;
+  /** Header lookup for `Retry-After`; case-insensitive like `Headers.get`. */
+  headers?: { get(name: string): string | null };
   json(): Promise<unknown>;
 }
 
@@ -75,6 +79,26 @@ export type NativeFetch = (
   url: string,
   init?: NativeFetchInit,
 ) => Promise<NativeFetchResponse>;
+
+/** Sleep function, injectable for tests. */
+export type SleepFn = (ms: number) => Promise<void>;
+
+// Promise.withResolvers is newer than the ES2022 lib target and older
+// Hermes; keep the executor form.
+const defaultSleep: SleepFn = (ms) =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Parse a `Retry-After` header as whole seconds; `undefined` if absent/invalid. */
+export function parseRetryAfterSeconds(
+  value: string | null | undefined,
+): number | undefined {
+  if (value === null || value === undefined) return undefined;
+  const seconds = Number.parseInt(value, 10);
+  if (!Number.isFinite(seconds) || seconds < 0 || String(seconds) !== value.trim()) {
+    return undefined;
+  }
+  return seconds;
+}
 
 // ======= Wire types =======
 
@@ -377,7 +401,7 @@ export async function discoverOpenKeyServer(
 
   if (metadata.issuer !== issuer) {
     throw new OpenKeyNativeError(
-      'ISSUER_MISMATCH',
+      'SERVER',
       `metadata issuer "${String(metadata.issuer)}" does not match "${issuer}"`,
     );
   }
@@ -572,7 +596,7 @@ export interface NativeCallbackResult {
  * `iss` must equal the issuer (RFC 9207; the provider sends it on every
  * redirect, so a missing `iss` also fails) and `state` must match.
  * `error=access_denied` maps to `ACCESS_DENIED`; a state mismatch to
- * `STATE_MISMATCH`; a missing or wrong `iss` to `ISSUER_MISMATCH`.
+ * `STATE_MISMATCH`; a missing or wrong `iss` to `STATE_MISMATCH` too.
  */
 export function parseNativeCallback(options: {
   url: string;
@@ -601,7 +625,7 @@ export function parseNativeCallback(options: {
   const iss = params.get('iss');
   if (!iss || iss !== options.issuer) {
     throw new OpenKeyNativeError(
-      'ISSUER_MISMATCH',
+      'STATE_MISMATCH',
       `Callback iss "${iss ?? '(missing)'}" does not match issuer "${options.issuer}"`,
     );
   }
@@ -634,41 +658,41 @@ export function parseNativeCallback(options: {
 /** Map an OAuth `error` value (callback or JSON error body) to a typed error. */
 function mapOAuthError(
   error: string,
-  description?: string,
+  description: string | undefined,
   status?: number,
+  retryAfterSeconds?: number,
 ): OpenKeyNativeError {
   const message = description ? `${error}: ${description}` : error;
   switch (error) {
     case 'access_denied':
       return new OpenKeyNativeError('ACCESS_DENIED', message, status, error);
     case 'consent_required':
-      return new OpenKeyNativeError(
-        'CONSENT_REQUIRED',
-        message,
-        status,
-        error,
-      );
+      return new OpenKeyNativeError('CONSENT_REQUIRED', message, status, error);
     case 'invalid_grant':
     case 'invalid_session_proof':
+      // Terminal, never retried (spec SDK mapping).
       return new OpenKeyNativeError('INVALID_GRANT', message, status, error);
     case 'unauthorized':
       return new OpenKeyNativeError('NOT_SIGNED_IN', message, status, error);
     case 'renewal_conflict':
       return new OpenKeyNativeError('RENEWAL_CONFLICT', message, status, error);
     case 'space_unavailable':
+      return new OpenKeyNativeError('SPACE_UNAVAILABLE', message, status, error);
+    case 'renewal_too_soon':
       return new OpenKeyNativeError(
-        'SPACE_UNAVAILABLE',
+        'RENEWAL_TOO_SOON',
         message,
         status,
         error,
+        retryAfterSeconds,
       );
     case 'temporarily_unavailable':
-    case 'renewal_too_soon':
       return new OpenKeyNativeError(
         'TEMPORARILY_UNAVAILABLE',
         message,
         status,
         error,
+        retryAfterSeconds,
       );
     default:
       return new OpenKeyNativeError('SERVER', message, status, error);
@@ -946,6 +970,9 @@ async function throwEndpointError(
   response: NativeFetchResponse,
   what: string,
 ): Promise<never> {
+  const retryAfterSeconds = parseRetryAfterSeconds(
+    response.headers?.get('Retry-After'),
+  );
   try {
     const data = (await response.json()) as Record<string, unknown>;
     if (typeof data.error === 'string' && data.error.length > 0) {
@@ -955,6 +982,7 @@ async function throwEndpointError(
           ? data.error_description
           : undefined,
         response.status,
+        retryAfterSeconds,
       );
     }
   } catch (error) {
@@ -965,6 +993,8 @@ async function throwEndpointError(
     'SERVER',
     `${what} failed: HTTP ${response.status}`,
     response.status,
+    undefined,
+    retryAfterSeconds,
   );
 }
 
@@ -999,8 +1029,12 @@ export interface NativeTokenResult {
 
 /**
  * Exchange an authorization code for tokens plus the TinyCloud delegation
- * (plan §1.1b). Sends `OpenKey-Session-Proof` with `cred_hash =
+ * (spec: "Code exchange"). Sends `OpenKey-Session-Proof` with `cred_hash =
  * b64url(sha256(code))` and validates the delegation in the response.
+ *
+ * Never retried: any failed exchange spends the code — including a 503 —
+ * so errors surface to the caller, which must start a fresh sign-in.
+ * A successful response with `hosting: "failed"` throws `SPACE_UNAVAILABLE`.
  */
 export async function exchangeDelegationCode(
   options: ExchangeNativeCodeOptions,
@@ -1055,6 +1089,16 @@ export async function exchangeDelegationCode(
     },
   );
 
+  // hosting: "failed" means the delegation can't reach the space: terminal
+  // for this session (spec SDK mapping → SPACE_UNAVAILABLE).
+  if (delegation.hosting === 'failed') {
+    throw new OpenKeyNativeError(
+      'SPACE_UNAVAILABLE',
+      'Delegation was issued but hosting the applications space failed',
+      response.status,
+    );
+  }
+
   return {
     accessToken: data.access_token,
     refreshToken: data.refresh_token,
@@ -1087,6 +1131,8 @@ export interface RenewDelegationOptions {
   expectedTinycloudHost?: string;
   fetchFn?: NativeFetch;
   sha256Fn?: SHA256Fn;
+  /** Injectable sleep for the spec-mandated `Retry-After` waits. */
+  sleepFn?: SleepFn;
 }
 
 export interface RenewDelegationResult {
@@ -1101,12 +1147,20 @@ export interface RenewDelegationResult {
  * `client_id=…&refresh_token=…[&siwe_nonce=…][&authorization_details=…]`
  * with `OpenKey-Session-Proof` where `cred_hash =
  * b64url(sha256(refresh_token))`.
+ *
+ * Per the spec's SDK mapping: on 429 `renewal_too_soon` waits
+ * `Retry-After` seconds and retries once with the same token (no generic
+ * backoff); on 503 `temporarily_unavailable` waits `Retry-After` and
+ * retries once with a fresh proof. `invalid_session_proof`,
+ * `invalid_grant`, `consent_required` and `access_denied` are terminal and
+ * never retried. `hosting: "failed"` throws `SPACE_UNAVAILABLE`.
  */
 export async function renewDelegation(
   options: RenewDelegationOptions,
 ): Promise<RenewDelegationResult> {
   const fetchFn =
     options.fetchFn ?? (fetch as unknown as NativeFetch);
+  const sleep = options.sleepFn ?? defaultSleep;
   const htu = options.metadata.tinycloudDelegationRenewEndpoint;
 
   const requestedPermissions =
@@ -1120,15 +1174,6 @@ export async function renewDelegation(
       })
     : undefined;
 
-  const proof = await signSessionProof({
-    sessionKey: options.sessionKey,
-    htm: 'POST',
-    htu,
-    clientId: options.clientId,
-    credential: options.refreshToken,
-    sha256Fn: options.sha256Fn,
-  });
-
   const body = new URLSearchParams({
     client_id: options.clientId,
     refresh_token: options.refreshToken,
@@ -1140,14 +1185,50 @@ export async function renewDelegation(
     body.set('authorization_details', JSON.stringify(authorizationDetails));
   }
 
-  const response = await postForm(
-    htu,
-    body.toString(),
-    'application/x-www-form-urlencoded',
-    fetchFn,
-    { [SESSION_PROOF_HEADER]: proof },
-  );
-  if (!response.ok) await throwEndpointError(response, 'Renew');
+  let retriedTooSoon = false;
+  let retriedUnavailable = false;
+  let response: NativeFetchResponse;
+  for (;;) {
+    // Fresh proof per attempt: `iat` must be within ±60 s.
+    response = await postForm(
+      htu,
+      body.toString(),
+      'application/x-www-form-urlencoded',
+      fetchFn,
+      {
+        [SESSION_PROOF_HEADER]: await signSessionProof({
+          sessionKey: options.sessionKey,
+          htm: 'POST',
+          htu,
+          clientId: options.clientId,
+          credential: options.refreshToken,
+          sha256Fn: options.sha256Fn,
+        }),
+      },
+    );
+    if (response.ok) break;
+
+    let thrown: unknown;
+    try {
+      await throwEndpointError(response, 'Renew');
+    } catch (caught) {
+      thrown = caught;
+    }
+    if (!(thrown instanceof OpenKeyNativeError)) throw thrown;
+
+    if (thrown.code === 'RENEWAL_TOO_SOON' && !retriedTooSoon) {
+      retriedTooSoon = true;
+      // Wait Retry-After seconds; the spec guarantees ≥ 1.
+      await sleep(Math.max(thrown.retryAfterSeconds ?? 1, 1) * 1000);
+      continue;
+    }
+    if (thrown.code === 'TEMPORARILY_UNAVAILABLE' && !retriedUnavailable) {
+      retriedUnavailable = true;
+      await sleep(Math.max(thrown.retryAfterSeconds ?? 2, 1) * 1000);
+      continue;
+    }
+    throw thrown;
+  }
 
   const data = await readJson(response, 'Renew');
   if (typeof data.refresh_token !== 'string') {
@@ -1163,6 +1244,13 @@ export async function renewDelegation(
     requestedPermissions,
     expectedTinycloudHost: options.expectedTinycloudHost,
   });
+  if (delegation.hosting === 'failed') {
+    throw new OpenKeyNativeError(
+      'SPACE_UNAVAILABLE',
+      'Renewed delegation could not reach the applications space',
+      response.status,
+    );
+  }
 
   return {
     refreshToken: data.refresh_token,
@@ -1181,39 +1269,97 @@ export interface RevokeDelegationOptions {
   sessionKey: NativeSessionKeypair;
   fetchFn?: NativeFetch;
   sha256Fn?: SHA256Fn;
+  /** Injectable sleep for the spec-mandated `Retry-After` wait. */
+  sleepFn?: SleepFn;
 }
 
 /**
- * Revoke a grant (plan §1.5): `POST
- * {metadata.tinycloudDelegationRevocationEndpoint}` with JSON
- * `{client_id, refresh_token}` and `OpenKey-Session-Proof` where `cred_hash =
- * b64url(sha256(refresh_token))`. Resolves on success or when the server
- * reports `invalid_grant` (already revoked — the endpoint is idempotent).
+ * Revoke a grant (spec: "Native revocation"): `POST
+ * {metadata.tinycloudDelegationRevocationEndpoint}` as form-encoded
+ * `client_id=…&refresh_token=…` with `OpenKey-Session-Proof` where
+ * `cred_hash = b64url(sha256(refresh_token))`.
+ *
+ * Per the spec's SDK mapping: on 503 `temporarily_unavailable` waits
+ * `Retry-After` and retries once with the same token and a fresh proof.
+ * `401 invalid_session_proof` (bad proof or unknown token) is terminal —
+ * it maps to `INVALID_GRANT` and is never retried.
+ *
+ * Callers (SDK `signOut`): wipe the local session key and tokens even when
+ * this rejects with a terminal error — per spec, a terminal revoke failure
+ * means the server-side grant is already unusable. Core owns no storage,
+ * so the wipe lives in the SDK layer.
  */
 export async function revokeDelegation(
   options: RevokeDelegationOptions,
 ): Promise<void> {
   const fetchFn =
     options.fetchFn ?? (fetch as unknown as NativeFetch);
+  const sleep = options.sleepFn ?? defaultSleep;
   const htu = options.metadata.tinycloudDelegationRevocationEndpoint;
-  const proof = await signSessionProof({
-    sessionKey: options.sessionKey,
-    htm: 'POST',
-    htu,
-    clientId: options.clientId,
-    credential: options.refreshToken,
-    sha256Fn: options.sha256Fn,
-  });
+  const body = new URLSearchParams({
+    client_id: options.clientId,
+    refresh_token: options.refreshToken,
+  }).toString();
 
-  const response = await postForm(
-    htu,
-    new URLSearchParams({
-      client_id: options.clientId,
-      refresh_token: options.refreshToken,
-    }).toString(),
-    'application/x-www-form-urlencoded',
-    fetchFn,
-    { [SESSION_PROOF_HEADER]: proof },
-  );
-  if (!response.ok) await throwEndpointError(response, 'Revoke');
+  let retriedUnavailable = false;
+  for (;;) {
+    const response = await postForm(
+      htu,
+      body,
+      'application/x-www-form-urlencoded',
+      fetchFn,
+      {
+        [SESSION_PROOF_HEADER]: await signSessionProof({
+          sessionKey: options.sessionKey,
+          htm: 'POST',
+          htu,
+          clientId: options.clientId,
+          credential: options.refreshToken,
+          sha256Fn: options.sha256Fn,
+        }),
+      },
+    );
+    if (response.ok) return;
+
+    let thrown: unknown;
+    try {
+      await throwEndpointError(response, 'Revoke');
+    } catch (caught) {
+      thrown = caught;
+    }
+    if (!(thrown instanceof OpenKeyNativeError)) throw thrown;
+    if (
+      thrown.code === 'TEMPORARILY_UNAVAILABLE' &&
+      !retriedUnavailable
+    ) {
+      retriedUnavailable = true;
+      await sleep(Math.max(thrown.retryAfterSeconds ?? 2, 1) * 1000);
+      continue;
+    }
+    throw thrown;
+  }
+}
+
+/**
+ * True when the delegation should be renewed immediately — i.e. less than
+ * the spec's renewal lead time remains on `expiresAt`. The lead is
+ * `min(10 min, lifetime/4)` where `lifetime` comes from `issuedAt`; when
+ * `issuedAt` is absent the full 10-minute lead is used. Call this after
+ * sign-in (and on boot restore) to decide whether to renew now.
+ */
+export function delegationNeedsRenewalNow(
+  delegation: Pick<TinyCloudDelegation, 'expiresAt' | 'issuedAt'>,
+  now: number = Date.now(),
+): boolean {
+  const expiresAt = parseExpiresAt(delegation.expiresAt, 'expiresAt');
+  const issuedAt =
+    typeof delegation.issuedAt === 'string'
+      ? Date.parse(delegation.issuedAt)
+      : Number.NaN;
+  const lifetimeMs =
+    Number.isFinite(issuedAt) && issuedAt < expiresAt
+      ? expiresAt - issuedAt
+      : Number.POSITIVE_INFINITY;
+  const leadMs = Math.min(10 * 60 * 1000, lifetimeMs / 4);
+  return expiresAt - now < leadMs;
 }

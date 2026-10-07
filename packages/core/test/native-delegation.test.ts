@@ -38,6 +38,8 @@ import {
   exchangeDelegationCode,
   renewDelegation,
   revokeDelegation,
+  delegationNeedsRenewalNow,
+  parseRetryAfterSeconds,
   type NativeFetch,
   type NativeFetchResponse,
   type NativeDelegationPermission,
@@ -71,10 +73,17 @@ const SERVER_METADATA: OpenKeyServerMetadata = {
     METADATA.tinycloud_delegation_revocation_endpoint,
 };
 
-function jsonResponse(body: unknown, status = 200): NativeFetchResponse {
+function jsonResponse(
+  body: unknown,
+  status = 200,
+  headers?: Record<string, string>,
+): NativeFetchResponse {
   return {
     ok: status >= 200 && status < 300,
     status,
+    headers: headers
+      ? { get: (name: string) => headers[name] ?? null }
+      : undefined,
     json: () => Promise.resolve(body),
   };
 }
@@ -194,7 +203,10 @@ describe('discovery', () => {
       expect.unreachable();
     } catch (error) {
       expect(error).toBeInstanceOf(OpenKeyNativeError);
-      expect((error as OpenKeyNativeError).code).toBe('ISSUER_MISMATCH');
+      // Discovery issuer mismatch: a metadata-validation failure, not a
+      // callback mismatch — reported as SERVER with detail preserved.
+      expect((error as OpenKeyNativeError).code).toBe('SERVER');
+      expect((error as OpenKeyNativeError).message).toContain('issuer');
     }
   });
 
@@ -478,14 +490,14 @@ describe('callback', () => {
     );
   });
 
-  it('rejects an iss mismatch', () => {
+  it('rejects an iss mismatch as STATE_MISMATCH', () => {
     expectCode(
       () =>
         parseNativeCallback({
           url: `${base}?code=code-1&state=state-1&iss=${encodeURIComponent('https://evil.example.com/api/auth')}`,
           ...opts,
         }),
-      'ISSUER_MISMATCH',
+      'STATE_MISMATCH',
     );
   });
 
@@ -526,7 +538,7 @@ describe('callback', () => {
           url: `${base}?code=code-1&state=state-1`,
           ...opts,
         }),
-      'ISSUER_MISMATCH',
+      'STATE_MISMATCH',
     );
   });
 });
@@ -589,6 +601,60 @@ describe('session proof', () => {
       credential: 'different',
     });
     expect(decodeJwt(other).cred_hash).not.toBe(claims.cred_hash);
+  });
+});
+
+  it('kid is the RFC 8037 §A.3 JWK thumbprint vector', async () => {
+    // RFC 8037 §A.3 Ed25519 public key; thumbprint computed independently.
+    const jwk = {
+      kty: 'OKP',
+      crv: 'Ed25519',
+      x: '11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
+    };
+    expect(await sessionJktForPublicJwk(jwk)).toBe(
+      'kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k',
+    );
+    expect(await calculateJwkThumbprint(jwk, 'sha256')).toBe(
+      'kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k',
+    );
+  });
+
+describe('delegationNeedsRenewalNow', () => {
+  const now = Date.now();
+  const issued = new Date(now - 5 * 60_000).toISOString();
+
+  it('is true when less than the lead time remains', () => {
+    // 60 s left of a 1 h delegation (lead = min(10 min, 15 min) = 10 min)
+    expect(
+      delegationNeedsRenewalNow({
+        expiresAt: new Date(now + 60_000).toISOString(),
+        issuedAt: issued,
+      }),
+    ).toBe(true);
+  });
+
+  it('is false when more than the lead time remains', () => {
+    // 50 min left of a 55-min-old 1 h delegation → lifetime ≈ 65 min,
+    // lead = min(10 min, ~16 min) = 10 min
+    expect(
+      delegationNeedsRenewalNow({
+        expiresAt: new Date(now + 50 * 60_000).toISOString(),
+        issuedAt: issued,
+      }),
+    ).toBe(false);
+  });
+
+  it('uses the full 10-minute lead when issuedAt is missing', () => {
+    expect(
+      delegationNeedsRenewalNow({
+        expiresAt: new Date(now + 9 * 60_000).toISOString(),
+      }),
+    ).toBe(true);
+    expect(
+      delegationNeedsRenewalNow({
+        expiresAt: new Date(now + 11 * 60_000).toISOString(),
+      }),
+    ).toBe(false);
   });
 });
 
@@ -797,6 +863,58 @@ describe('endpoint clients', () => {
     ).rejects.toMatchObject({ code: 'INVALID_GRANT', status: 400 });
   });
 
+  it('503 on code exchange surfaces TEMPORARILY_UNAVAILABLE without resending the code', async () => {
+    const { fetchFn, calls } = mockFetch(() =>
+      jsonResponse(
+        { error: 'temporarily_unavailable' },
+        503,
+        { 'Retry-After': '2' },
+      ),
+    );
+    await expect(
+      exchangeDelegationCode({
+        metadata: SERVER_METADATA,
+        code: 'code-1',
+        redirectUri: REDIRECT_URI,
+        clientId: CLIENT_ID,
+        codeVerifier: 'v',
+        sessionKey: key,
+        requestedPermissions: PERMISSIONS,
+        fetchFn,
+      }),
+    ).rejects.toMatchObject({
+      code: 'TEMPORARILY_UNAVAILABLE',
+      status: 503,
+      retryAfterSeconds: 2,
+    });
+    // Exactly one request: the code is spent either way.
+    expect(calls).toHaveLength(1);
+  });
+
+  it('hosting: "failed" in a success response maps to SPACE_UNAVAILABLE', async () => {
+    const { fetchFn } = mockFetch(() =>
+      jsonResponse({
+        access_token: 'at-1',
+        refresh_token: 'rt-1',
+        expires_in: 300,
+        token_type: 'Bearer',
+        tinycloud_delegation: delegationFor(key.keyId, { hosting: 'failed' }),
+      }),
+    );
+    await expect(
+      exchangeDelegationCode({
+        metadata: SERVER_METADATA,
+        code: 'code-1',
+        redirectUri: REDIRECT_URI,
+        clientId: CLIENT_ID,
+        codeVerifier: 'v',
+        sessionKey: key,
+        requestedPermissions: PERMISSIONS,
+        fetchFn,
+      }),
+    ).rejects.toMatchObject({ code: 'SPACE_UNAVAILABLE' });
+  });
+
   it('renewDelegation posts form-encoded fields and maps renewal_conflict', async () => {
     const { fetchFn, calls } = mockFetch(() =>
       jsonResponse({ error: 'renewal_conflict' }, 409),
@@ -850,9 +968,48 @@ describe('endpoint clients', () => {
     expect(claims.cred_hash).toBe(Buffer.from(digest).toString('base64url'));
   });
 
-  it('renewDelegation maps 429 renewal_too_soon to TEMPORARILY_UNAVAILABLE', async () => {
+  it('429 renewal_too_soon waits Retry-After and retries once with the same token', async () => {
+    const slept: number[] = [];
+    let attempts = 0;
+    const { fetchFn, calls } = mockFetch(() => {
+      attempts += 1;
+      return attempts === 1
+        ? jsonResponse(
+            { error: 'renewal_too_soon' },
+            429,
+            { 'Retry-After': '7' },
+          )
+        : jsonResponse({
+            refresh_token: 'rt-2',
+            expires_in: 604800,
+            tinycloud_delegation: delegationFor(key.keyId),
+          });
+    });
+    const result = await renewDelegation({
+      metadata: SERVER_METADATA,
+      clientId: CLIENT_ID,
+      refreshToken: 'rt-1',
+      sessionKey: key,
+      requestedPermissions: PERMISSIONS,
+      fetchFn,
+      sleepFn: (ms) => {
+        slept.push(ms);
+        return Promise.resolve();
+      },
+    });
+    expect(result.refreshToken).toBe('rt-2');
+    expect(slept).toEqual([7000]);
+    // Same token on both attempts
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      expect(new URLSearchParams(call.init.body as string).get('refresh_token')).toBe('rt-1');
+    }
+  });
+
+  it('a second consecutive 429 propagates RENEWAL_TOO_SOON with retryAfterSeconds', async () => {
+    const slept: number[] = [];
     const { fetchFn } = mockFetch(() =>
-      jsonResponse({ error: 'renewal_too_soon' }, 429),
+      jsonResponse({ error: 'renewal_too_soon' }, 429, { 'Retry-After': '3' }),
     );
     await expect(
       renewDelegation({
@@ -862,8 +1019,82 @@ describe('endpoint clients', () => {
         sessionKey: key,
         requestedPermissions: PERMISSIONS,
         fetchFn,
+        sleepFn: (ms) => {
+          slept.push(ms);
+          return Promise.resolve();
+        },
       }),
-    ).rejects.toMatchObject({ code: 'TEMPORARILY_UNAVAILABLE', status: 429 });
+    ).rejects.toMatchObject({
+      code: 'RENEWAL_TOO_SOON',
+      status: 429,
+      serverError: 'renewal_too_soon',
+      retryAfterSeconds: 3,
+    });
+    expect(slept).toEqual([3000]);
+  });
+
+  it('503 on renew waits Retry-After and retries with a fresh proof', async () => {
+    const slept: number[] = [];
+    let attempts = 0;
+    const { fetchFn, calls } = mockFetch(() => {
+      attempts += 1;
+      return attempts === 1
+        ? jsonResponse(
+            { error: 'temporarily_unavailable' },
+            503,
+            { 'Retry-After': '2' },
+          )
+        : jsonResponse({
+            refresh_token: 'rt-2',
+            tinycloud_delegation: delegationFor(key.keyId),
+          });
+    });
+    const result = await renewDelegation({
+      metadata: SERVER_METADATA,
+      clientId: CLIENT_ID,
+      refreshToken: 'rt-1',
+      sessionKey: key,
+      requestedPermissions: PERMISSIONS,
+      fetchFn,
+      sleepFn: (ms) => {
+        slept.push(ms);
+        return Promise.resolve();
+      },
+    });
+    expect(result.refreshToken).toBe('rt-2');
+    expect(slept).toEqual([2000]);
+    expect(calls).toHaveLength(2);
+    // Fresh proofs: distinct jti on the retry.
+    const jtis = calls.map(
+      (call) =>
+        decodeJwt(
+          (call.init.headers as Record<string, string>)[SESSION_PROOF_HEADER]!,
+        ).jti,
+    );
+    expect(jtis[0]).not.toBe(jtis[1]);
+  });
+
+  it('renewal_conflict and invalid_session_proof are terminal (no retry)', async () => {
+    for (const [status, serverError, code] of [
+      [409, 'renewal_conflict', 'RENEWAL_CONFLICT'],
+      [401, 'invalid_session_proof', 'INVALID_GRANT'],
+    ] as const) {
+      const { fetchFn, calls } = mockFetch(() =>
+        jsonResponse({ error: serverError }, status),
+      );
+      await expect(
+        renewDelegation({
+          metadata: SERVER_METADATA,
+          clientId: CLIENT_ID,
+          refreshToken: 'rt-1',
+          sessionKey: key,
+          requestedPermissions: PERMISSIONS,
+          fetchFn,
+          sleepFn: () => Promise.reject(new Error('must not sleep')),
+        }),
+      ).rejects.toMatchObject({ code });
+      expect(calls).toHaveLength(1);
+    }
   });
 
   it('renewDelegation maps access_denied to ACCESS_DENIED', async () => {
@@ -944,6 +1175,59 @@ describe('endpoint clients', () => {
         fetchFn: denied.fetchFn,
       }),
     ).rejects.toMatchObject({ code: 'INVALID_GRANT', status: 401 });
+  });
+
+  it('503 on revoke waits Retry-After and retries once with the same token', async () => {
+    const slept: number[] = [];
+    let attempts = 0;
+    const { fetchFn, calls } = mockFetch(() => {
+      attempts += 1;
+      return attempts === 1
+        ? jsonResponse(
+            { error: 'temporarily_unavailable' },
+            503,
+            { 'Retry-After': '2' },
+          )
+        : jsonResponse({}, 200);
+    });
+    await revokeDelegation({
+      metadata: SERVER_METADATA,
+      clientId: CLIENT_ID,
+      refreshToken: 'rt-1',
+      sessionKey: key,
+      fetchFn,
+      sleepFn: (ms) => {
+        slept.push(ms);
+        return Promise.resolve();
+      },
+    });
+    expect(slept).toEqual([2000]);
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      expect(
+        new URLSearchParams(call.init.body as string).get('refresh_token'),
+      ).toBe('rt-1');
+    }
+  });
+
+  it('a second 503 on revoke propagates TEMPORARILY_UNAVAILABLE', async () => {
+    const { fetchFn } = mockFetch(() =>
+      jsonResponse(
+        { error: 'temporarily_unavailable' },
+        503,
+        { 'Retry-After': '2' },
+      ),
+    );
+    await expect(
+      revokeDelegation({
+        metadata: SERVER_METADATA,
+        clientId: CLIENT_ID,
+        refreshToken: 'rt-1',
+        sessionKey: key,
+        fetchFn,
+        sleepFn: () => Promise.resolve(),
+      }),
+    ).rejects.toMatchObject({ code: 'TEMPORARILY_UNAVAILABLE', status: 503 });
   });
 });
 
