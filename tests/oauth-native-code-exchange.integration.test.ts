@@ -199,9 +199,9 @@ if (!backend) {
   }
 
   /** A signed-in flow up to an issued code (session cookie already present). */
-  async function approvedCode(key = sessionKey(), ttlSeconds = 3600) {
+  async function approvedCode(key = sessionKey(), ttlSeconds = 3600, authorizeParams: Record<string, string> = {}) {
     const request = await par(key, ttlSeconds);
-    const authorize = await call(`/api/auth/oauth2/authorize?${new URLSearchParams({ client_id: nativeClient, request_uri: request.requestUri })}`, { headers: { cookie } });
+    const authorize = await call(`/api/auth/oauth2/authorize?${new URLSearchParams({ client_id: nativeClient, request_uri: request.requestUri, ...authorizeParams })}`, { headers: { cookie } });
     expect(authorize.status, await authorize.clone().text()).toBe(302);
     const consentUrl = new URL(authorize.headers.get('location')!);
     expect(consentUrl.pathname).toBe('/oauth/consent');
@@ -227,6 +227,17 @@ if (!backend) {
 
   async function requestStatus(id: string) {
     return (await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id } })).status;
+  }
+
+  /** The failed exchange spent the code and changed nothing else. */
+  async function expectSpentWithoutRedemption(flow: Awaited<ReturnType<typeof approvedCode>>, code = flow.code) {
+    expect(await requestStatus(flow.requestId)).toBe('APPROVED');
+    expect(await prisma.tinyCloudNativeGrant.count()).toBe(0);
+    expect(await prisma.oauthRefreshToken.count()).toBe(0);
+    expect(await prisma.oauthAccessToken.count()).toBe(0);
+    const retry = await exchange(code, flow.verifier, proof(flow.key, code));
+    expect(retry.status).toBe(401);
+    expect((await oauthError(retry)).error).toBe('invalid_verification');
   }
 
   const originalFetch = globalThis.fetch;
@@ -429,17 +440,6 @@ if (!backend) {
   }, 120_000);
 
   describe(`code exchange failures (${backend})`, () => {
-    /** The failed exchange spent the code and changed nothing else. */
-    async function expectSpentWithoutRedemption(flow: Awaited<ReturnType<typeof approvedCode>>, code = flow.code) {
-      expect(await requestStatus(flow.requestId)).toBe('APPROVED');
-      expect(await prisma.tinyCloudNativeGrant.count()).toBe(0);
-      expect(await prisma.oauthRefreshToken.count()).toBe(0);
-      expect(await prisma.oauthAccessToken.count()).toBe(0);
-      const retry = await exchange(code, flow.verifier, proof(flow.key, code));
-      expect(retry.status).toBe(401);
-      expect((await oauthError(retry)).error).toBe('invalid_verification');
-    }
-
     test('missing, malformed, foreign-key, stale and misbound proofs get 401 invalid_session_proof', async () => {
       const other = sessionKey();
       const variants: [string, (flow: Awaited<ReturnType<typeof approvedCode>>) => string | undefined][] = [
@@ -743,5 +743,108 @@ if (!backend) {
       }
       await expectSpentWithoutRedemption(flow);
     }, 60_000);
+  });
+
+  // A `resource` makes the provider issue a JWT access token, which has no
+  // token row, so consent withdrawal could not revoke it. A native delegation
+  // client only ever receives opaque, row-backed access tokens.
+  describe(`no JWT access tokens for native clients (${backend})`, () => {
+    const resourceRefused = { error: 'invalid_request', error_description: 'resource is not supported for native delegation clients' };
+
+    function userinfo(accessToken: string) {
+      return call('/api/auth/oauth2/userinfo', { headers: { authorization: `Bearer ${accessToken}` } });
+    }
+
+    /** The exchange succeeded with an opaque access token backed by a token row. */
+    async function expectOpaqueAccessToken(response: Response) {
+      expect(response.status, await response.clone().text()).toBe(200);
+      const body = await response.json() as { access_token: string; refresh_token: string };
+      expect(() => decodeJwt(body.access_token)).toThrow();
+      const row = await prisma.oauthAccessToken.findFirst({ where: { token: hash(body.access_token) } });
+      expect(row).toMatchObject({ clientId: nativeClient, userId: alice });
+      return body;
+    }
+
+    test('an exchange or refresh with resource is refused before the provider issues anything', async () => {
+      const flow = await approvedCode();
+      for (const resource of [API, ISSUER, `${ISSUER}/oauth2/userinfo`, '']) {
+        const response = await exchange(flow.code, flow.verifier, proof(flow.key, flow.code), { resource });
+        expect(response.status, resource).toBe(400);
+        expect(await oauthError(response), resource).toEqual(resourceRefused);
+      }
+      expect(await requestStatus(flow.requestId)).toBe('APPROVED');
+      expect(await prisma.tinyCloudNativeGrant.count()).toBe(0);
+      expect(await prisma.oauthRefreshToken.count()).toBe(0);
+      expect(await prisma.oauthAccessToken.count()).toBe(0);
+
+      const issued = await expectOpaqueAccessToken(await exchange(flow.code, flow.verifier, proof(flow.key, flow.code)));
+      const refresh = await form('/api/auth/oauth2/token', new URLSearchParams({
+        grant_type: 'refresh_token', client_id: nativeClient, refresh_token: issued.refresh_token, resource: API,
+      }));
+      expect(refresh.status).toBe(400);
+      expect(await oauthError(refresh)).toEqual({ error: 'invalid_grant', error_description: 'use the renew endpoint' });
+      expect(await prisma.oauthAccessToken.count()).toBe(1);
+    }, 60_000);
+
+    test('the exchange hook refuses resource on a path around the interceptor', async () => {
+      const flow = await approvedCode();
+      // auth.handler is the provider without the Hono interceptors.
+      const response = await auth.handler(new Request(`${ISSUER}/oauth2/token`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded', 'OpenKey-Session-Proof': proof(flow.key, flow.code) },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code', code: flow.code, client_id: nativeClient, redirect_uri: NATIVE_REDIRECT,
+          code_verifier: flow.verifier, resource: API,
+        }).toString(),
+      }));
+      expect(response.status).toBe(400);
+      expect(await oauthError(response)).toEqual(resourceRefused);
+      await expectSpentWithoutRedemption(flow);
+    }, 60_000);
+
+    test('a code minted with an authorize-time resource yields only an opaque access token', async () => {
+      // On the authorize URL, next to the request_uri.
+      const viaAuthorize = await approvedCode(sessionKey(), 3600, { resource: API });
+      await expectOpaqueAccessToken(await exchange(viaAuthorize.code, viaAuthorize.verifier, proof(viaAuthorize.key, viaAuthorize.code)));
+
+      // In the code's stored query, as a path around the authorize guard could store it.
+      const flow = await approvedCode();
+      const forged = await forgeCode(flow.code, (query) => { query.resource = API; });
+      await expectOpaqueAccessToken(await exchange(forged, flow.verifier, proof(flow.key, forged)));
+    }, 60_000);
+
+    test('after withdrawal no access token the native client received works at userinfo', async () => {
+      const received: string[] = [];
+      for (const authorizeParams of [{}, { resource: API }]) {
+        const flow = await approvedCode(sessionKey(), 3600, authorizeParams);
+        const body = await expectOpaqueAccessToken(await exchange(flow.code, flow.verifier, proof(flow.key, flow.code)));
+        received.push(body.access_token);
+      }
+      // The JWT route stays closed for a still-approved code.
+      const pending = await approvedCode();
+      const jwt = await exchange(pending.code, pending.verifier, proof(pending.key, pending.code), { resource: API });
+      expect(await oauthError(jwt)).toEqual(resourceRefused);
+      for (const accessToken of received) {
+        const live = await userinfo(accessToken);
+        expect(live.status, await live.clone().text()).toBe(200);
+      }
+
+      const consent = await prisma.oauthConsent.findFirstOrThrow({ where: { userId: alice, clientId: nativeClient } });
+      const deleted = await json('/api/auth/oauth2/delete-consent', { id: consent.id }, { cookie });
+      expect(deleted.status, await deleted.clone().text()).toBe(200);
+
+      for (const accessToken of received) {
+        const dead = await userinfo(accessToken);
+        expect(dead.status).toBe(400);
+        expect(await oauthError(dead)).toEqual({ error: 'invalid_request', error_description: 'Invalid access token' });
+      }
+      expect(await prisma.oauthAccessToken.count({ where: { clientId: nativeClient } })).toBe(0);
+      expect(await requestStatus(pending.requestId)).toBe('WITHDRAWN');
+      for (const overrides of [{ resource: API }, {}]) {
+        const late = await exchange(pending.code, pending.verifier, proof(pending.key, pending.code), overrides);
+        expect(late.status).toBe(400);
+      }
+      expect(await prisma.oauthAccessToken.count({ where: { clientId: nativeClient } })).toBe(0);
+    }, 120_000);
   });
 }

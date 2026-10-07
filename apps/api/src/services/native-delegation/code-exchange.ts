@@ -109,6 +109,16 @@ export async function exchangeNativeCode(
   const query = (verificationValue?.query ?? {}) as Record<string, unknown>;
   if (!scopes.includes(TINYCLOUD_DELEGATION_SCOPE) && !('tinycloud_request' in query)) return {};
 
+  const ctx = await getCurrentAuthContext();
+  // The provider issues a JWT access token, with no token row for consent
+  // withdrawal to revoke, when the request names a `resource`. The token
+  // interceptor refuses it first; this covers any path around the interceptor.
+  if ((ctx.body as { resource?: unknown } | undefined)?.resource !== undefined) {
+    throw new APIError('BAD_REQUEST', {
+      error: 'invalid_request',
+      error_description: 'resource is not supported for native delegation clients',
+    });
+  }
   const requestId = query.tinycloud_request;
   if (typeof requestId !== 'string' || !requestId) invalidGrant('authorization code has no native delegation request');
   const request = await db.tinyCloudNativeRequest.findUnique({ where: { id: requestId } });
@@ -125,7 +135,6 @@ export async function exchangeNativeCode(
   if (!user?.id) invalidGrant('authorization code has no user');
   const userId = user.id;
 
-  const ctx = await getCurrentAuthContext();
   const code = (ctx.body as { code?: unknown } | undefined)?.code;
   const proof = ctx.request?.headers.get(OPENKEY_SESSION_PROOF_HEADER);
   if (typeof code !== 'string' || !verifySessionProof(proof, {

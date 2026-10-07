@@ -16,6 +16,9 @@ import { nativeUserRetryAfter } from './user-rate-limit';
  *   would default to the client's scopes.
  * - Token, `grant_type=refresh_token`: refused for a native token and for a
  *   native-capable client.
+ * - Token, any other grant: a `resource` parameter is refused for a
+ *   native-capable client, so the provider never issues it a JWT access
+ *   token.
  * - Revoke: refused for a `Bearer `-prefixed token; for a native-capable
  *   client, anything but its own access token; a native refresh token; and a
  *   token issued to another client (plan amendment A2). No side effects. An
@@ -254,9 +257,20 @@ export function createProviderInterceptors({ database, tokens, provider, getSess
     if ('passThrough' in parsed) return null;
     if ('refusal' in parsed) return parsed.refusal;
     const { params } = parsed;
-    if (params.get('grant_type') !== 'refresh_token') return null;
+    const grantType = params.get('grant_type');
+    if (grantType !== 'refresh_token' && !params.has('resource')) return null;
     const clients = requestClients(c.req.raw, params);
     if ('status' in clients) return clients;
+    if (grantType !== 'refresh_token') {
+      // A `resource` makes the provider issue a JWT access token, which has
+      // no token row: consent withdrawal could not revoke it. A native-capable
+      // client only ever receives opaque, row-backed access tokens.
+      return await anyNativeCapableClient(clients.candidates) ? {
+        status: 400,
+        error: 'invalid_request',
+        description: 'resource is not supported for native delegation clients',
+      } : null;
+    }
     // The refresh grant decodes the token without stripping `Bearer `.
     const token = params.get('refresh_token');
     const presented = token ? await refreshToken(token) : null;
