@@ -18,7 +18,7 @@ import { storedOpaqueAccessToken, storedRefreshToken, type ProviderTokenOptions 
  *   client, anything but its own access token; a native refresh token; and a
  *   token issued to another client (plan amendment A2). No side effects. An
  *   unknown token otherwise gets RFC 7009's 200 once the provider has
- *   validated the client.
+ *   validated the client, JWT-shaped or not.
  * - Client create/update: the admin-managed scopes (`tinycloud:delegation`,
  *   `tinycloud:manage-key`) are never added or removed through the
  *   provider's user-facing client routes.
@@ -36,9 +36,12 @@ const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9
 export type ProviderInterceptorDatabase = Pick<PrismaClient, 'oauthClient' | 'oauthRefreshToken' | 'oauthAccessToken' | 'tinyCloudNativeGrant'>;
 
 type Refusal = { status: 400 | 401; error: string; description: string };
-/** Pass to the provider, then answer RFC 7009's 200 if it reports the token unknown. */
-const UNKNOWN_TOKEN = 'unknown-token';
-type Decision = Refusal | null | typeof UNKNOWN_TOKEN;
+/**
+ * Send this request to the provider instead, then answer RFC 7009's 200 if
+ * it reports the token unknown.
+ */
+type UnknownToken = { unknownToken: Request };
+type Decision = Refusal | null | UnknownToken;
 const JSON_MEDIA_TYPE = /^application\/([a-z0-9.+-]*\+)?json/i;
 type ParsedBody = { params: URLSearchParams } | { refusal: Refusal } | { passThrough: true };
 
@@ -142,12 +145,14 @@ export interface ProviderInterceptorOptions {
   database: ProviderInterceptorDatabase;
   /** The provider plugin's configured options; see `providerTokenOptions`. */
   tokens: ProviderTokenOptions;
+  /** better-auth's request handler, for an unknown token's rewritten revoke. */
+  provider: (request: Request) => Response | Promise<Response>;
 }
 
 type RefreshTokenMatch = { clientId: string; native: boolean };
 type AccessTokenMatch = { clientId: string };
 
-export function createProviderInterceptors({ database, tokens }: ProviderInterceptorOptions): MiddlewareHandler {
+export function createProviderInterceptors({ database, tokens, provider }: ProviderInterceptorOptions): MiddlewareHandler {
   async function anyDelegationClient(clientIds: string[]): Promise<boolean> {
     if (clientIds.length === 0) return false;
     const clients = await database.oauthClient.findMany({
@@ -281,7 +286,7 @@ export function createProviderInterceptors({ database, tokens }: ProviderInterce
     }
     if (refresh?.native) return unsupported;
     const owner = refresh?.clientId ?? access?.clientId;
-    if (owner === undefined) return UNKNOWN_TOKEN;
+    if (owner === undefined) return { unknownToken: unknownTokenRevoke(c.req.raw, params) };
     if (owner !== clients.effective) {
       return { status: 400, error: 'invalid_request', description: 'token was not issued to this client' };
     }
@@ -306,14 +311,33 @@ export function createProviderInterceptors({ database, tokens }: ProviderInterce
   }
 
   /**
-   * RFC 7009 §2.2: an unknown or invalid token is not an error. The provider
-   * validates the client first (401/400 `invalid_client` stays as it is) and
-   * then reports the unknown token as 400 `invalid_request`.
+   * The revoke the provider sees for a token no table holds. Forcing
+   * `token_type_hint=refresh_token` skips the provider's JWT branch, which
+   * throws a 500 for an unverifiable JWT-shaped token (`Missing jwt kid`, a
+   * foreign algorithm). Nothing is lost: a JWT access token is never stored,
+   * so the provider's revocation of one is a no-op. The provider still
+   * validates the client and looks the token up, so client errors and server
+   * errors (a failed database read) keep their own status.
+   */
+  function unknownTokenRevoke(request: Request, params: URLSearchParams): Request {
+    const body = new URLSearchParams(params);
+    body.set('token_type_hint', 'refresh_token');
+    const headers = new Headers(request.headers);
+    headers.delete('content-length');
+    return new Request(request.url, { method: 'POST', headers, body: body.toString() });
+  }
+
+  /**
+   * RFC 7009 §2.2: an unknown or invalid token is not an error. Only the
+   * provider's unknown-refresh-token answers become 200: 400
+   * `invalid_request` "token not found", or 400 `invalid_token` when a
+   * configured refresh-token prefix is missing. Client errors (401/400
+   * `invalid_client`) and every 5xx stay as they are.
    */
   async function answerUnknownToken(c: Context): Promise<void> {
     if (c.res.status !== 400) return;
     const body = await c.res.clone().json().catch(() => null) as { error?: unknown } | null;
-    if (body?.error !== 'invalid_request') return;
+    if (body?.error !== 'invalid_request' && body?.error !== 'invalid_token') return;
     const headers = new Headers(c.res.headers);
     headers.delete('content-length');
     c.res = new Response(null, { status: 200, headers });
@@ -331,9 +355,13 @@ export function createProviderInterceptors({ database, tokens }: ProviderInterce
               : null;
     if (!guard) return next();
     return guard(c).then(async (decision) => {
-      if (decision && decision !== UNKNOWN_TOKEN) return refuse(c, decision);
+      if (decision && 'unknownToken' in decision) {
+        c.res = await provider(decision.unknownToken);
+        await answerUnknownToken(c);
+        return c.res;
+      }
+      if (decision) return refuse(c, decision);
       await next();
-      if (decision === UNKNOWN_TOKEN) await answerUnknownToken(c);
     });
   };
 }

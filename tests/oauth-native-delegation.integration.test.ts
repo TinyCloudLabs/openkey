@@ -389,6 +389,48 @@ if (!backend) {
       expect(await adminManaged()).toBe(before);
     });
 
+    test('client routes: non-JSON bodies get 415, and JSON variants cannot smuggle an admin-managed scope', async () => {
+      const send = (path: string, contentType: string | null, body: BodyInit) => call(`/api/auth/oauth2/${path}`, {
+        method: 'POST',
+        headers: { cookie, origin: WEB_ORIGIN, ...(contentType ? { 'content-type': contentType } : {}) },
+        body,
+      });
+      const createFields = `"client_name":"Format","redirect_uris":["${ORDINARY_REDIRECT}"],"token_endpoint_auth_method":"none","type":"user-agent-based"`;
+      const before = await prisma.oauthClient.count();
+      const multipart = new FormData();
+      multipart.append('client_name', 'Format');
+      multipart.append('redirect_uris', ORDINARY_REDIRECT);
+      multipart.append('scope', `openid ${DELEGATION}`);
+      for (const [label, response] of [
+        ['form', await send('create-client', 'application/x-www-form-urlencoded',
+          `client_name=Format&redirect_uris=${encodeURIComponent(ORDINARY_REDIRECT)}&scope=${encodeURIComponent(`openid ${DELEGATION}`)}`)],
+        ['multipart', await send('create-client', null, multipart)],
+        ['text', await send('create-client', 'text/plain', `{${createFields},"scope":"openid ${DELEGATION}"}`)],
+        ['update form', await send('update-client', 'application/x-www-form-urlencoded', `client_id=x&update=${encodeURIComponent(`{"scope":"${DELEGATION}"}`)}`)],
+      ] as const) {
+        expect(response.status, label).toBe(415);
+      }
+      for (const [label, response] of [
+        ['charset json', await send('create-client', 'application/json; charset=utf-8', `{${createFields},"scope":"openid ${DELEGATION}"}`)],
+        ['vendor json', await send('create-client', 'application/vnd.api+json', `{${createFields},"scope":"openid tinycloud:manage-key"}`)],
+        // JSON.parse keeps the last duplicate, for the guard and the provider alike.
+        ['duplicate keys, admin scope last', await send('create-client', 'application/json', `{${createFields},"scope":"openid","scope":"openid ${DELEGATION}"}`)],
+      ] as const) {
+        expect(response.status, label).toBe(400);
+        expect((await oauthError(response)).error, label).toBe('invalid_scope');
+      }
+      expect(await prisma.oauthClient.count()).toBe(before);
+      const benign = await send('create-client', 'application/json', `{${createFields},"scope":"openid ${DELEGATION}","scope":"openid"}`);
+      expect(benign.status).toBe(200);
+      const benignClient = (await benign.json() as { client_id: string; scope: string });
+      expect(benignClient.scope).toBe('openid');
+      const smuggled = await send('update-client', 'application/json; charset=utf-8',
+        `{"client_id":"${benignClient.client_id}","update":{"scope":"openid","scope":"openid ${DELEGATION}"}}`);
+      expect(smuggled.status).toBe(400);
+      expect((await prisma.oauthClient.findUniqueOrThrow({ where: { clientId: benignClient.client_id } })).scopes).toEqual(['openid']);
+      await prisma.oauthClient.delete({ where: { clientId: benignClient.client_id } });
+    });
+
     test('a direct authorize request for the delegation scope is refused for every client', async () => {
       const challenge = await generateCodeChallenge('tc773-verifier-0123456789012345678901234567890');
       for (const [clientId, redirectUri] of [[nativeClient, NATIVE_REDIRECT], [ordinaryClient, ORDINARY_REDIRECT]] as const) {
@@ -745,6 +787,46 @@ if (!backend) {
       const unknownClient = await revoke({ client_id: 'no-such-client', token: 'never-issued' });
       expect(unknownClient.status).toBe(400);
       expect((await oauthError(unknownClient)).error).toBe('invalid_client');
+      expect(await tokenState()).toEqual(seededState);
+    });
+
+    test('RFC 7009: unknown JWT-shaped and malformed tokens get 200 under every hint', async () => {
+      const segment = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+      const jwtShaped = [
+        // No kid: the provider's own JWT verification throws `Missing jwt kid`.
+        'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJmb28ifQ.invalid',
+        `${segment({ alg: 'EdDSA', kid: 'no-such-key' })}.${segment({ sub: alice })}.c2lnbmF0dXJl`,
+        `${segment({ alg: 'ES256' })}.${segment({ exp: 1 })}.x`,
+        `${segment({ alg: 'none' })}.${segment({ sub: alice })}.`,
+      ];
+      const malformed = ['a.b', 'a.b.c.d', '....', 'eyJ.eyJ.x', 'not a token ü', 'x'.repeat(4096)];
+      for (const token of [...jwtShaped, ...malformed]) {
+        for (const hint of hints) {
+          const response = await revoke({ client_id: ordinaryClient, token, ...(hint ? { token_type_hint: hint } : {}) });
+          expect(response.status, `${token.slice(0, 40)} ${hint}`).toBe(200);
+          expect(await response.text(), `${token.slice(0, 40)} ${hint}`).toBe('');
+        }
+      }
+      expect(await tokenState()).toEqual(seededState);
+      // The client is still validated first.
+      const unknownClient = await revoke({ client_id: 'no-such-client', token: jwtShaped[0]! });
+      expect((await oauthError(unknownClient)).error).toBe('invalid_client');
+      // A native-capable client still gets unsupported_token_type.
+      expect((await oauthError(await revoke({ client_id: nativeClient, token: jwtShaped[0]! }))).error)
+        .toBe('unsupported_token_type');
+    });
+
+    test('a database failure during an unknown-token revoke stays a 5xx', async () => {
+      await prisma.$executeRawUnsafe('ALTER TABLE "oauth_refresh_token" RENAME TO "oauth_refresh_token_offline"');
+      try {
+        for (const token of ['never-issued', 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJmb28ifQ.invalid']) {
+          const response = await revoke({ client_id: ordinaryClient, token });
+          expect(response.status, token).toBe(500);
+        }
+      } finally {
+        await prisma.$executeRawUnsafe('ALTER TABLE "oauth_refresh_token_offline" RENAME TO "oauth_refresh_token"');
+      }
+      expect((await revoke({ client_id: ordinaryClient, token: 'never-issued' })).status).toBe(200);
       expect(await tokenState()).toEqual(seededState);
     });
   });
