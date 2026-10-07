@@ -4,6 +4,7 @@ import type {
   OpenKeyRNDelegationConfig,
 } from './types';
 import { OpenKeyError } from './types';
+import type { OpenKeySecureStore } from './types';
 import type {
   NativeDelegationPermission,
   NativeSessionKeypair,
@@ -164,6 +165,20 @@ function sessionId(sessionKey: NativeSessionKeypair): string {
   return sessionKey.publicJwk.x;
 }
 
+/**
+ * Storage queues, shared by every OpenKeyRN instance that uses the same
+ * store object: reads and compare-and-sets from separate instances over
+ * one store never interleave.
+ */
+const storageQueues = new WeakMap<OpenKeySecureStore, { tail: Promise<unknown> }>();
+
+/** What a read-decide-write step on one storage key does with its value. */
+interface RecordUpdate<T> {
+  result: T;
+  /** Present to write: the next value, or `null` to remove the key. */
+  write?: { value: string | null };
+}
+
 /** Spec: every refresh token lives 7 days. */
 const REFRESH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 /** Spec: `renewableUntil` is `absoluteExpiresAt − 300 s`. */
@@ -275,6 +290,56 @@ function extractCallbackParams(url: string): URLSearchParams | null {
   return null;
 }
 
+/** The stored session record for `raw`: `null` if absent, `'corrupt'` if unparseable. */
+function parseStoredSession(raw: string | null): DelegationSession | null | 'corrupt' {
+  if (!raw) return null;
+  try {
+    const record = JSON.parse(raw) as StoredDelegationSession;
+    return {
+      sessionKey: sessionKeypairFromJwk(record.privateJwk),
+      refreshToken: record.refreshToken,
+      permissions: record.permissions,
+      grantExpiresAt: record.grantExpiresAt,
+      refreshTokenExpiresAt: record.refreshTokenExpiresAt,
+    };
+  } catch {
+    return 'corrupt';
+  }
+}
+
+function serializeSession(session: DelegationSession): string {
+  const record: StoredDelegationSession = {
+    privateJwk: session.sessionKey.privateJwk,
+    refreshToken: session.refreshToken,
+    permissions: session.permissions,
+    grantExpiresAt: session.grantExpiresAt,
+    refreshTokenExpiresAt: session.refreshTokenExpiresAt,
+  };
+  return JSON.stringify(record);
+}
+
+/** The pending-revoke entries in `raw` (`[]` if absent), or `null` if corrupt. */
+function parsePendingRevokes(raw: string | null): StoredPendingRevoke[] | null {
+  if (!raw) return [];
+  try {
+    const entries = JSON.parse(raw) as StoredPendingRevoke[];
+    if (!Array.isArray(entries)) return null;
+    for (const entry of entries) {
+      sessionKeypairFromJwk(entry.privateJwk);
+      if (
+        typeof entry.refreshToken !== 'string' ||
+        !Number.isInteger(entry.attempts) ||
+        !Number.isFinite(entry.expiresAt)
+      ) {
+        return null;
+      }
+    }
+    return entries;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Identity for a renew() call's options — concurrent renew()s with the
  * same key share the in-flight promise; different keys queue behind it.
@@ -338,13 +403,6 @@ export class OpenKeyRN {
    * and check it before every write.
    */
   private sessionGeneration = 0;
-  /**
-   * Serializes every read and compare-and-set of the stored session and
-   * the pending-revoke record (see commitSession). There is no in-memory
-   * session cache: every use reads the record inside this queue. Tasks
-   * must not call runInStorageQueue themselves.
-   */
-  private storageQueue: Promise<unknown> = Promise.resolve();
   /** Options of the in-flight renew; queued callers compare against it. */
   private renewInFlightKey?: string;
   /** signOut()s in progress: while any runs, the user reads as signed out. */
@@ -728,27 +786,26 @@ export class OpenKeyRN {
     return revokeError ?? pendingError;
   }
 
-  /** Add a pending-revoke entry for `grant`, inside the storage queue. */
+  /** Add a pending-revoke entry for `grant`. */
   private appendPendingRevoke(grant: AbandonedGrant): Promise<void> {
-    return this.runInStorageQueue(async () => {
-      const entries = await this.readPendingRevokes();
-      if (entries.some((entry) => entry.refreshToken === grant.refreshToken)) {
-        return;
-      }
-      entries.push({
-        privateJwk: grant.sessionKey.privateJwk,
-        refreshToken: grant.refreshToken,
-        attempts: 1,
-        // A record from before expiry tracking: the token was issued
-        // before now, so now + 7 days is an upper bound.
-        expiresAt:
-          grant.refreshTokenExpiresAt ?? Date.now() + REFRESH_TOKEN_TTL_MS,
-      });
-      await this.delegation!.storage.set(
-        this.pendingRevokeStorageKey,
-        JSON.stringify(entries),
-      );
-    });
+    return this.runInStorageQueue(() =>
+      this.updateRecord(this.pendingRevokeStorageKey, (raw) => {
+        const entries = parsePendingRevokes(raw) ?? [];
+        if (entries.some((entry) => entry.refreshToken === grant.refreshToken)) {
+          return { result: undefined };
+        }
+        entries.push({
+          privateJwk: grant.sessionKey.privateJwk,
+          refreshToken: grant.refreshToken,
+          attempts: 1,
+          // A record from before expiry tracking: the token was issued
+          // before now, so now + 7 days is an upper bound.
+          expiresAt:
+            grant.refreshTokenExpiresAt ?? Date.now() + REFRESH_TOKEN_TTL_MS,
+        });
+        return { result: undefined, write: { value: JSON.stringify(entries) } };
+      }),
+    );
   }
 
   /**
@@ -813,7 +870,6 @@ export class OpenKeyRN {
   }
 
   private async retryPendingRevokesOnce(): Promise<Error | undefined> {
-    const cfg = this.delegation!;
     const entries = await this.runInStorageQueue(() =>
       this.readPendingRevokes(),
     );
@@ -849,22 +905,22 @@ export class OpenKeyRN {
     }
 
     // Re-read: a signOut() may have added an entry meanwhile.
-    await this.runInStorageQueue(async () => {
-      const remaining = (await this.readPendingRevokes())
-        .filter((entry) => !done.has(entry.refreshToken))
-        .map((entry) => ({
-          ...entry,
-          attempts: attempts.get(entry.refreshToken) ?? entry.attempts,
-        }));
-      if (remaining.length > 0) {
-        await cfg.storage.set(
-          this.pendingRevokeStorageKey,
-          JSON.stringify(remaining),
-        );
-      } else {
-        await cfg.storage.remove(this.pendingRevokeStorageKey);
-      }
-    });
+    await this.runInStorageQueue(() =>
+      this.updateRecord(this.pendingRevokeStorageKey, (raw) => {
+        const remaining = (parsePendingRevokes(raw) ?? [])
+          .filter((entry) => !done.has(entry.refreshToken))
+          .map((entry) => ({
+            ...entry,
+            attempts: attempts.get(entry.refreshToken) ?? entry.attempts,
+          }));
+        return {
+          result: undefined,
+          write: {
+            value: remaining.length > 0 ? JSON.stringify(remaining) : null,
+          },
+        };
+      }),
+    );
     return firstError;
   }
 
@@ -872,28 +928,13 @@ export class OpenKeyRN {
    * Read the pending-revoke record. Call inside the storage queue. A corrupt
    * record can never be revoked, so it is removed and reads as empty.
    */
-  private async readPendingRevokes(): Promise<StoredPendingRevoke[]> {
-    const cfg = this.delegation!;
-    const raw = await cfg.storage.get(this.pendingRevokeStorageKey);
-    if (!raw) return [];
-    try {
-      const entries = JSON.parse(raw) as StoredPendingRevoke[];
-      if (!Array.isArray(entries)) throw new Error('not an array');
-      for (const entry of entries) {
-        sessionKeypairFromJwk(entry.privateJwk);
-        if (
-          typeof entry.refreshToken !== 'string' ||
-          !Number.isInteger(entry.attempts) ||
-          !Number.isFinite(entry.expiresAt)
-        ) {
-          throw new Error('malformed pending revoke');
-        }
-      }
-      return entries;
-    } catch {
-      await cfg.storage.remove(this.pendingRevokeStorageKey);
-      return [];
-    }
+  private readPendingRevokes(): Promise<StoredPendingRevoke[]> {
+    return this.updateRecord(this.pendingRevokeStorageKey, (raw) => {
+      const entries = parsePendingRevokes(raw);
+      return entries
+        ? { result: entries }
+        : { result: [], write: { value: null } };
+    });
   }
 
   private storageError(action: string, error: unknown): OpenKeyNativeError {
@@ -1319,51 +1360,63 @@ export class OpenKeyRN {
    * but can't be parsed can never be used or revoked, so it is removed
    * and reads as no session.
    */
-  private async readStoredSession(): Promise<DelegationSession | null> {
-    const cfg = this.delegation!;
-    const raw = await cfg.storage.get(this.delegationStorageKey);
-    if (!raw) return null;
-    try {
-      const record = JSON.parse(raw) as StoredDelegationSession;
-      return {
-        sessionKey: sessionKeypairFromJwk(record.privateJwk),
-        refreshToken: record.refreshToken,
-        permissions: record.permissions,
-        grantExpiresAt: record.grantExpiresAt,
-        refreshTokenExpiresAt: record.refreshTokenExpiresAt,
-      };
-    } catch {
-      await cfg.storage.remove(this.delegationStorageKey);
-      return null;
-    }
-  }
-
-  /** Write the session record. Call inside the storage queue. */
-  private async writeStoredSession(session: DelegationSession): Promise<void> {
-    const record: StoredDelegationSession = {
-      privateJwk: session.sessionKey.privateJwk,
-      refreshToken: session.refreshToken,
-      permissions: session.permissions,
-      grantExpiresAt: session.grantExpiresAt,
-      refreshTokenExpiresAt: session.refreshTokenExpiresAt,
-    };
-    await this.delegation!.storage.set(
-      this.delegationStorageKey,
-      JSON.stringify(record),
-    );
+  private readStoredSession(): Promise<DelegationSession | null> {
+    return this.updateRecord(this.delegationStorageKey, (raw) => {
+      const session = parseStoredSession(raw);
+      return session === 'corrupt'
+        ? { result: null, write: { value: null } }
+        : { result: session };
+    });
   }
 
   /**
-   * Run `task` inside the storage queue. Serializes every read and write of
-   * the session and pending-revoke records.
+   * Run `task` inside the storage queue shared by every instance using
+   * this store object. Serializes every read and write of the session and
+   * pending-revoke records. Tasks must not call runInStorageQueue
+   * themselves.
    */
   private runInStorageQueue<T>(task: () => Promise<T>): Promise<T> {
-    const result = this.storageQueue.then(task, task);
-    this.storageQueue = result.then(
+    const storage = this.delegation!.storage;
+    let queue = storageQueues.get(storage);
+    if (!queue) {
+      queue = { tail: Promise.resolve() };
+      storageQueues.set(storage, queue);
+    }
+    const result = queue.tail.then(task, task);
+    queue.tail = result.then(
       () => undefined,
       () => undefined,
     );
     return result;
+  }
+
+  /**
+   * One read-decide-write step on a storage key (call inside the storage
+   * queue). `decide` sees the current raw value and says what to write.
+   * When the store implements `compareAndSet`, the write only lands if the
+   * value is still the one `decide` saw; otherwise `decide` runs again on
+   * the new value, so a writer outside this queue (another store object or
+   * process) is never overwritten blindly. Without `compareAndSet` the
+   * write is a plain `set`/`remove`, atomic only with respect to this
+   * queue.
+   */
+  private async updateRecord<T>(
+    key: string,
+    decide: (raw: string | null) => RecordUpdate<T>,
+  ): Promise<T> {
+    const storage = this.delegation!.storage;
+    for (;;) {
+      const raw = await storage.get(key);
+      const { result, write } = decide(raw);
+      if (!write) return result;
+      if (storage.compareAndSet) {
+        if (await storage.compareAndSet(key, raw, write.value)) return result;
+        continue;
+      }
+      if (write.value === null) await storage.remove(key);
+      else await storage.set(key, write.value);
+      return result;
+    }
   }
 
   /**
@@ -1373,48 +1426,51 @@ export class OpenKeyRN {
    * stored record and refuses unless it is the expected session (and
    * refresh token, when pinned). Only then is `next` written, or the record
    * removed when `next` is `null`. Resolves the session the write replaced
-   * (read in the same queued step), or `null`. A refusal writes nothing and
-   * throws `NOT_SIGNED_IN` (superseded); a storage failure — including a
-   * failure to read the record being replaced — throws as-is.
+   * (read in the same step), or `null`. A refusal writes nothing and throws
+   * `NOT_SIGNED_IN` (superseded); a storage failure — including a failure
+   * to read the record being replaced — throws as-is.
    */
   private commitSession(
     next: DelegationSession | null,
     expect: SessionExpectation,
     generation?: number,
   ): Promise<DelegationSession | null> {
-    return this.runInStorageQueue(async () => {
-      if (generation !== undefined && generation !== this.sessionGeneration) {
-        throw new OpenKeyNativeError(
-          'NOT_SIGNED_IN',
-          'sign-out since this operation started; result discarded',
-        );
-      }
-      const current = await this.readStoredSession();
-      if (expect !== 'any') {
+    return this.runInStorageQueue(() =>
+      this.updateRecord(this.delegationStorageKey, (raw) => {
+        if (generation !== undefined && generation !== this.sessionGeneration) {
+          throw new OpenKeyNativeError(
+            'NOT_SIGNED_IN',
+            'sign-out since this operation started; result discarded',
+          );
+        }
+        const parsed = parseStoredSession(raw);
+        const current = parsed === 'corrupt' ? null : parsed;
         if (
-          !current ||
-          sessionId(current.sessionKey) !== expect.sid ||
-          (expect.refreshToken !== undefined &&
-            current.refreshToken !== expect.refreshToken)
+          expect !== 'any' &&
+          (!current ||
+            sessionId(current.sessionKey) !== expect.sid ||
+            (expect.refreshToken !== undefined &&
+              current.refreshToken !== expect.refreshToken))
         ) {
           throw new OpenKeyNativeError(
             'NOT_SIGNED_IN',
             'the stored session changed; result discarded',
           );
         }
-      }
-      if (next) await this.writeStoredSession(next);
-      else await this.delegation!.storage.remove(this.delegationStorageKey);
-      return current;
-    });
+        return {
+          result: current,
+          write: { value: next ? serializeSession(next) : null },
+        };
+      }),
+    );
   }
 
   /**
    * Save a session through commitSession. `expect: 'any'` is a sign-in's
    * save: it first waits for any signOut() in progress, so a sign-in that
    * started after the signOut() lands after it (one that started before is
-   * refused by `generation`). A refusal throws `NOT_SIGNED_IN` carrying
-   * `rotatedRefreshToken`, after abandoning the discarded grant. A storage
+   * refused by `generation`). A refusal throws `NOT_SIGNED_IN` (without
+   * `rotatedRefreshToken`) after abandoning the discarded grant. A storage
    * write failure abandons the grant too — the SDK has no way to take the
    * token back later, so leaving it live would orphan it — and throws
    * `NETWORK` *without* `rotatedRefreshToken`: the token is revoked, or a
@@ -1441,7 +1497,8 @@ export class OpenKeyRN {
         error instanceof OpenKeyNativeError &&
         error.code === 'NOT_SIGNED_IN'
       ) {
-        error.rotatedRefreshToken = session.refreshToken;
+        // The token is abandoned (revoked, or a pending revoke), not a
+        // recovery token: it does not ride the error.
         await this.abandonGrant(session);
         throw error;
       }

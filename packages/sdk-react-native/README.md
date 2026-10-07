@@ -271,7 +271,8 @@ reject with `NOT_SIGNED_IN` instead of persisting over the wiped session
 The stored session is identified by its session id (the session public
 key, fresh for every sign-in). There is no in-memory copy: every
 `renew()` reads the record from `storage` first, and every write or
-removal is a compare-and-set, serialized with all other storage access:
+removal is a compare-and-set, serialized with all other storage access by
+every `OpenKeyRN` that uses the same store object (see *Sharing storage*):
 
 - a `signIn()` saves over whatever is stored, unless a `signOut()` has
   started since the `signIn()` did; a `signIn()` started *during* a
@@ -279,11 +280,13 @@ removal is a compare-and-set, serialized with all other storage access:
 - `renew()`, the immediate renew after sign-in, the rotated-token recovery
   writes and terminal wipes only write or remove the record while it still
   holds *their* session. If another session replaced it, they write nothing,
-  reject with `NOT_SIGNED_IN`, and abandon their rotated grant;
+  abandon their rotated grant, and reject with `NOT_SIGNED_IN` (which
+  carries no `rotatedRefreshToken`: the token was abandoned, not handed
+  back);
 - `signOut()` signs out whatever session is current. It removes the record
   only if it still holds the session and token just revoked. If a different
   session was stored meanwhile (only possible from another `OpenKeyRN`
-  sharing the same storage), that session is revoked and removed too. If
+  sharing the same backend), that session is revoked and removed too. If
   the record can't be read, `signOut()` removes nothing and rejects with
   `NETWORK`.
 
@@ -304,6 +307,36 @@ entry, nothing durable can be recorded. The SDK has then already sent the
 revoke (core retries a 503 once), and that best-effort attempt is all it
 can do — if it failed transiently, the grant stays live until the user
 signs in again or it expires.
+
+#### Sharing storage
+
+Use **one store object per storage backend** — ideally one `OpenKeyRN`
+through the `getOpenKeyRN()` singleton. The storage queue that makes
+every read-decide-write atomic is shared by all `OpenKeyRN` instances
+that use the *same store object*, so several instances (or hot-reloaded
+copies) over one store object stay consistent.
+
+`get`/`set`/`remove` are not atomic across *different* store objects, or
+across processes (an app extension, a second JS runtime) writing the same
+backend. Without help, two writers there can lose each other's updates:
+one instance reads the old session, another saves a new sign-in, and the
+first then writes over it — so a `signIn()` can silently disappear, or a
+rotated token can be overwritten by an older one, and the user has to sign
+in again. If your backend can compare-and-set atomically, implement the
+optional `compareAndSet(key, expected, next)` on `OpenKeySecureStore`:
+
+```typescript
+storage: {
+  get, set, remove,
+  // Replace the value only if it is still `expected` (null = absent);
+  // `next` null removes it. Must be atomic in the backend.
+  compareAndSet: (key, expected, next) => myBackend.cas(key, expected, next),
+},
+```
+
+The SDK then writes only if the value is still the one it read, and
+re-checks otherwise, so separate store objects and processes stay safe
+too.
 
 Delegation-mode errors are `OpenKeyNativeError` (`code`,
 `status`, `retryAfterSeconds`, `rotatedRefreshToken`); plain-mode errors

@@ -76,6 +76,46 @@ function memoryStore(): OpenKeySecureStore & { map: Map<string, string> } {
   };
 }
 
+/**
+ * A store object over `map`. `pause` is awaited at the start of every call
+ * (e.g. to hand the step to a scheduler), so calls from different instances
+ * interleave; `cas` adds an atomic compareAndSet.
+ */
+function backendStore(
+  map: Map<string, string>,
+  opts: { cas?: boolean; pause?: () => Promise<void> } = {},
+): OpenKeySecureStore & { map: Map<string, string> } {
+  const pause = async () => {
+    await opts.pause?.();
+  };
+  const store: OpenKeySecureStore & { map: Map<string, string> } = {
+    map,
+    get: async (key) => {
+      await pause();
+      return map.get(key) ?? null;
+    },
+    set: async (key, value) => {
+      await pause();
+      map.set(key, value);
+    },
+    remove: async (key) => {
+      await pause();
+      map.delete(key);
+    },
+  };
+  if (opts.cas) {
+    store.compareAndSet = async (key, expected, next) => {
+      await pause();
+      // Atomic: the check and the write happen in one synchronous step.
+      if ((map.get(key) ?? null) !== expected) return false;
+      if (next === null) map.delete(key);
+      else map.set(key, next);
+      return true;
+    };
+  }
+  return store;
+}
+
 function storedSid(store: { map: Map<string, string> }): string | null {
   const raw = store.map.get(SESSION_KEY);
   return raw ? (JSON.parse(raw) as { privateJwk: { x: string } }).privateJwk.x : null;
@@ -116,6 +156,9 @@ class FakeServer {
   readonly grants = new Map<string, 'active' | 'revoked'>();
   readonly revokeCalls: string[] = [];
   readonly renewCalls: string[] = [];
+  /** Refresh tokens issued by renew / code exchange, in order. */
+  readonly renewIssued: string[] = [];
+  readonly exchangeIssued: string[] = [];
   /** Sids that received a terminal (4xx) revoke response. */
   readonly terminalRevokeSids = new Set<string>();
   /** Renews that rotate but answer `hosting: "failed"` (terminal). */
@@ -215,9 +258,11 @@ class FakeServer {
       this.grants.set(par.sid, 'active');
       const leadWindow = this.leadWindowExchanges > 0;
       if (leadWindow) this.leadWindowExchanges -= 1;
+      const refreshToken = this.issue(par.sid);
+      this.exchangeIssued.push(refreshToken);
       return jsonResponse({
         access_token: `at-${par.sid.slice(0, 6)}`,
-        refresh_token: this.issue(par.sid),
+        refresh_token: refreshToken,
         expires_in: 300,
         tinycloud_delegation: this.delegation(par.sid, par.permissions, leadWindow),
       });
@@ -239,7 +284,9 @@ class FakeServer {
         this.hostingFailedRenews -= 1;
         delegation.hosting = 'failed';
       }
-      return jsonResponse({ refresh_token: this.issue(info.sid), tinycloud_delegation: delegation });
+      const refreshToken = this.issue(info.sid);
+      this.renewIssued.push(refreshToken);
+      return jsonResponse({ refresh_token: refreshToken, tinycloud_delegation: delegation });
     }
     if (url.endsWith('/oauth2/tinycloud/revoke')) {
       const token = body.get('refresh_token')!;
@@ -375,9 +422,11 @@ describe('CAS session storage model', () => {
 
     const thrown = await rejection(first);
     expect(thrown.code).toBe('NOT_SIGNED_IN');
+    // The abandoned token is not a recovery token: it is not on the error.
+    expect(thrown.rotatedRefreshToken).toBeUndefined();
     // C is intact; B's rotated token was abandoned, not written over C.
     expect(storedToken(store)).toBe(second.refreshToken);
-    expect(server.revokeCalls).toContain(thrown.rotatedRefreshToken!);
+    expect(server.revokeCalls).toContain(server.renewIssued[0]!);
     expect(server.liveSids()).toEqual([server.sidOf(second.refreshToken)!]);
   });
 
@@ -481,8 +530,9 @@ describe('CAS session storage model', () => {
 
     const thrown = await rejection(renew);
     expect(thrown.code).toBe('NOT_SIGNED_IN');
+    expect(thrown.rotatedRefreshToken).toBeUndefined();
     expect(storedToken(store)).toBe(signedIn.refreshToken);
-    expect(pendingTokens(store)).toContain(thrown.rotatedRefreshToken!);
+    expect(pendingTokens(store)).toContain(server.renewIssued[0]!);
   });
 
   it("a terminal outcome's rotated grant becomes a pending revoke on a transient failure", async () => {
@@ -513,9 +563,11 @@ describe('CAS session storage model', () => {
 
     const thrown = await rejection(signIn);
     expect(thrown.code).toBe('NOT_SIGNED_IN');
+    expect(thrown.rotatedRefreshToken).toBeUndefined();
     expect(store.map.has(SESSION_KEY)).toBe(false);
-    expect(pendingTokens(store)).toEqual([thrown.rotatedRefreshToken!]);
-    expect(server.liveSids()).toEqual([server.sidOf(thrown.rotatedRefreshToken!)!]);
+    const orphan = server.exchangeIssued[0]!;
+    expect(pendingTokens(store)).toEqual([orphan]);
+    expect(server.liveSids()).toEqual([server.sidOf(orphan)!]);
   });
 
   /** Store whose writes to the keys in `failing` reject. */
@@ -596,6 +648,74 @@ describe('CAS session storage model', () => {
     expect(server.grants.get(keyA.publicJwk.x)).toBe('revoked');
   });
 
+  /**
+   * Sol's lost update across instances: instance A's renew reads the old
+   * session for its save, instance B saves a new sign-in, then A writes.
+   * `stores` gives each instance its store object.
+   */
+  async function lostUpdateRace(stores: [OpenKeySecureStore, OpenKeySecureStore], map: Map<string, string>) {
+    const server = new FakeServer();
+    await server.seedSession(stores[0]);
+    const [first] = stores;
+    // Hold A's save-time read of the session record.
+    const readReached = Promise.withResolvers<void>();
+    const readGate = Promise.withResolvers<void>();
+    let armed = false;
+    const gatedGet = first.get.bind(first);
+    first.get = async (key) => {
+      if (armed && key === SESSION_KEY) {
+        armed = false;
+        const value = map.get(key) ?? null; // read now, delivered later
+        readReached.resolve();
+        await readGate.promise;
+        return value;
+      }
+      return gatedGet(key);
+    };
+    server.responseGate = async (url) => {
+      if (url.endsWith('/renew')) armed = true;
+    };
+    const exchanged = Promise.withResolvers<void>();
+    server.gate = async (url) => {
+      if (url.endsWith('/oauth2/token')) exchanged.resolve();
+    };
+
+    const instanceA = server.client(stores[0]);
+    const instanceB = server.client(stores[1]);
+    const renew = instanceA.renew();
+    renew.catch(() => {});
+    await readReached.promise; // A holds a stale read of the old session
+    const signIn = instanceB.signIn();
+    await exchanged.promise;
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
+    readGate.resolve();
+    await renew.catch(() => {});
+    const tokens = await signIn;
+    return { server, tokens };
+  }
+
+  it('two instances on one store object never lose a sign-in', async () => {
+    const map = new Map<string, string>();
+    const store = backendStore(map);
+    const { server, tokens } = await lostUpdateRace([store, store], map);
+
+    // B's sign-in survives; A's renew landed before it, then was replaced.
+    expect(storedSid({ map })).toBe(server.sidOf(tokens.refreshToken)!);
+    expect(server.liveSids()).toEqual([server.sidOf(tokens.refreshToken)!]);
+  });
+
+  it('separate store objects with compareAndSet never lose a sign-in', async () => {
+    const map = new Map<string, string>();
+    const { server, tokens } = await lostUpdateRace(
+      [backendStore(map, { cas: true }), backendStore(map, { cas: true })],
+      map,
+    );
+
+    // A's write saw the record change under it, re-checked, and refused.
+    expect(storedSid({ map })).toBe(server.sidOf(tokens.refreshToken)!);
+    expect(server.liveSids()).toEqual([server.sidOf(tokens.refreshToken)!]);
+  });
+
   it('signOut() rejects on a storage read failure and removes nothing', async () => {
     const server = new FakeServer();
     const base = memoryStore();
@@ -662,10 +782,31 @@ async function runSchedule(seed: number) {
   const waiting: (() => void)[] = [];
   server.gate = () => new Promise<void>((resolve) => waiting.push(resolve));
 
-  const store = memoryStore();
+  // Two instances over one backend: one shared store object, or (with an
+  // atomic compareAndSet) one store object each. Half the storage calls are
+  // held by the same scheduler as the requests, so the instances' reads
+  // and writes interleave with each other and with the network.
+  const map = new Map<string, string>();
+  const mode: 'shared object' | 'separate objects + CAS' =
+    rng() < 0.5 ? 'shared object' : 'separate objects + CAS';
+  let scheduling = false;
+  const pause = () =>
+    scheduling && rng() < 0.5
+      ? new Promise<void>((resolve) => waiting.push(resolve))
+      : Promise.resolve();
+  const stores =
+    mode === 'shared object'
+      ? (() => {
+          const shared = backendStore(map, { pause });
+          return [shared, shared];
+        })()
+      : [backendStore(map, { cas: true, pause }), backendStore(map, { cas: true, pause })];
+  const store = stores[0]!;
   await server.seedSession(store);
   await server.seedPending(store);
-  const client = server.client(store);
+  scheduling = true;
+  const clients = [server.client(stores[0]!), server.client(stores[1]!)];
+  const clientOf = new Map<Op, number>();
 
   const order: Op[] = ['renew', 'signIn', 'signOut'];
   for (let i = order.length - 1; i > 0; i--) {
@@ -677,6 +818,9 @@ async function runSchedule(seed: number) {
   let signInToken: string | undefined;
   const start = (op: Op) => {
     started.push(op);
+    const which = Math.floor(rng() * 2);
+    clientOf.set(op, which);
+    const client = clients[which]!;
     const promise =
       op === 'renew' ? client.renew()
       : op === 'signIn' ? client.signIn().then((t) => { signInToken = t.refreshToken; })
@@ -704,15 +848,17 @@ async function runSchedule(seed: number) {
       if (waiting.length === 0) break;
     }
   }
-  return { server, store, order, outcomes, signInToken };
+  return { server, store, order, outcomes, signInToken, mode, clientOf };
 }
 
-describe('randomized interleavings (signIn / signOut / renew / pending revoke)', () => {
+describe('randomized interleavings (two instances: signIn / signOut / renew / pending revoke)', () => {
   const SEEDS = 150;
   it(`keeps the stored session consistent across ${SEEDS} seeded schedules`, async () => {
     for (let seed = 1; seed <= SEEDS; seed++) {
-      const { server, store, order, outcomes, signInToken } = await runSchedule(seed);
-      const context = `seed ${seed}, start order ${order.join(' → ')}, outcomes ${JSON.stringify([...outcomes])}`;
+      const { server, store, order, outcomes, signInToken, mode, clientOf } = await runSchedule(seed);
+      const context = `seed ${seed}, ${mode}, start order ${order
+        .map((op) => `${op}@${clientOf.get(op)}`)
+        .join(' → ')}, outcomes ${JSON.stringify([...outcomes])}`;
       const check = (ok: boolean, what: string) => {
         if (!ok) throw new Error(`${what} (${context})`);
       };
@@ -740,11 +886,16 @@ describe('randomized interleavings (signIn / signOut / renew / pending revoke)',
         check(accounted.has(sid), `live grant ${sid.slice(0, 6)} is abandoned`);
       }
 
-      // Sign-out intent: a signOut() that started after renew and signIn
-      // leaves nothing stored; a signIn() that started after signOut() and
-      // succeeded is what remains.
-      if (order[2] === 'signOut') check(token === null, 'session stored after the last-started signOut');
-      if (order.indexOf('signIn') > order.indexOf('signOut') && signInToken) {
+      // Sign-out intent, for a signIn() on the same instance as signOut():
+      // a signOut() that started after it (and after renew) leaves nothing
+      // stored; a signIn() that started after signOut() and succeeded is
+      // what remains. (Across instances, a sign-in that saves after the
+      // other instance's signOut() finished legitimately survives it.)
+      const sameInstance = clientOf.get('signIn') === clientOf.get('signOut');
+      if (order[2] === 'signOut' && sameInstance) {
+        check(token === null, 'session stored after the last-started signOut');
+      }
+      if (sameInstance && order.indexOf('signIn') > order.indexOf('signOut') && signInToken) {
         // (A renew that started later may have rotated its token since.)
         check(
           token !== null && server.sidOf(token) === server.sidOf(signInToken),

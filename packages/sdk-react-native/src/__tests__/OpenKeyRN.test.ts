@@ -2462,7 +2462,8 @@ describe('OpenKeyRN', () => {
       race.releaseRenew();
       const thrown = await rejection(oldRenew);
       expect(thrown.code).toBe('NOT_SIGNED_IN');
-      expect(thrown.rotatedRefreshToken).toBe('rt-a-rotated');
+      // Abandoned (revoked below), so not handed back on the error.
+      expect(thrown.rotatedRefreshToken).toBeUndefined();
       // Session B is intact. The sign-in revoked the session it replaced
       // (A, by its stored token), and A's orphaned rotated grant was
       // revoked too.

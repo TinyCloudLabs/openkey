@@ -20,6 +20,20 @@ export interface OpenKeySecureStore {
   get(key: string): Promise<string | null>;
   set(key: string, value: string): Promise<void>;
   remove(key: string): Promise<void>;
+  /**
+   * Optional atomic compare-and-set: if the value stored under `key` is
+   * exactly `expected` (`null` = absent), replace it with `next` (`null` =
+   * remove) and resolve `true`; otherwise change nothing and resolve
+   * `false`. Implement it when the backend can do this atomically: the SDK
+   * then stays consistent even when several store objects or processes
+   * share the same backend. Without it, use one store object per backend
+   * (see the README's "Sharing storage").
+   */
+  compareAndSet?(
+    key: string,
+    expected: string | null,
+    next: string | null,
+  ): Promise<boolean>;
 }
 
 /**

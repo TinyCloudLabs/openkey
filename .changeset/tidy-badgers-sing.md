@@ -74,7 +74,15 @@ session it expects to be current and writes nothing when that no longer
 holds. `signOut()` signs out whatever session is current, never removes a
 newer one it did not revoke, and rejects with `NETWORK` without removing
 anything when the record can't be read. A `signIn()` started during a
-`signOut()` saves after it. No abandoned live grants: every grant the SDK
+`signOut()` saves after it. The storage queue is shared by every
+`OpenKeyRN` that uses the same store object, and `OpenKeySecureStore`
+gains an optional atomic `compareAndSet(key, expected, next)`; when a
+store provides it, every write lands only if the value is unchanged, so
+separate store objects or processes sharing a backend stay consistent.
+Apps should otherwise use one store object (ideally the `getOpenKeyRN()`
+singleton) per backend. A `NOT_SIGNED_IN` refusal no longer carries
+`rotatedRefreshToken`: the token is abandoned (revoked, or a pending
+revoke), not handed back. No abandoned live grants: every grant the SDK
 lets go of without storing it — the session a `signIn()` replaces, a
 superseded renew's or sign-in's token, an orphaned exchange, a terminal
 outcome's rotated token, a token whose secure-store write failed — is
