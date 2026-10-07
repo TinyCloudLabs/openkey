@@ -63,3 +63,59 @@ test('native consent shows the disclosed grant, re-prepares optional actions and
   expect(approve).toMatchObject({ revision: 2, digest: 'digest-2', hostSiwe: 'host bytes', sessionSiwe: siwe(false) });
   await expect.poll(() => calls.some(c => c.path === '/api/auth/oauth2/consent' && c.body.accept === true)).toBe(true);
 });
+
+test('retry after provider consent failure does not approve or sign again', async ({ page }) => {
+  let approvals = 0;
+  let providerPosts = 0;
+  await page.route('**/api/**', route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/auth/get-session') return json(route, { session: { id: 's', userId: 'u', expiresAt: new Date(Date.now() + 3600000).toISOString() }, user: { id: 'u', email: 'sam@example.test' } });
+    if (path.endsWith('/prepare')) return json(route, { ...base, revision: 1, digest: 'digest-1', sessionSiwe: siwe(true), selectedActionKeys: selected });
+    if (path.endsWith('/approve')) { approvals++; return json(route, { status: 'APPROVED', revision: 1, hosting: 'existing' }); }
+    if (path === '/api/auth/oauth2/consent') {
+      providerPosts++;
+      return providerPosts === 1 ? json(route, { error: 'temporarily_unavailable' }, 503)
+        : json(route, { url: 'https://example.test/callback?code=code' });
+    }
+    return json(route, { error: `unmocked ${path}` }, 404);
+  });
+  await page.goto('/oauth/consent?client_id=exo-native&tinycloud_request=native-1&sig=test');
+  await page.getByRole('button', { name: 'Allow', exact: true }).click();
+  await expect(page.getByText('temporarily_unavailable')).toBeVisible();
+  await page.getByRole('button', { name: 'Continue to app' }).click();
+  await expect.poll(() => providerPosts).toBe(2);
+  expect(approvals).toBe(1);
+});
+
+test('denial still reaches provider when request denial route fails', async ({ page }) => {
+  let providerDenied = false;
+  await page.route('**/api/**', route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/auth/get-session') return json(route, { session: { id: 's', userId: 'u', expiresAt: new Date(Date.now() + 3600000).toISOString() }, user: { id: 'u', email: 'sam@example.test' } });
+    if (path.endsWith('/prepare')) return json(route, { ...base, revision: 1, digest: 'digest-1', sessionSiwe: siwe(true), selectedActionKeys: selected });
+    if (path.endsWith('/deny')) return json(route, { error: 'request_not_pending' }, 409);
+    if (path === '/api/auth/oauth2/consent') { providerDenied = route.request().postDataJSON().accept === false; return json(route, { url: 'https://example.test/callback?error=access_denied' }); }
+    return json(route, { error: `unmocked ${path}` }, 404);
+  });
+  await page.goto('/oauth/consent?client_id=exo-native&tinycloud_request=native-1&sig=test');
+  await page.getByRole('button', { name: 'Deny', exact: true }).click();
+  await expect.poll(() => providerDenied).toBe(true);
+});
+
+test('reloaded approved request can finish provider consent', async ({ page }) => {
+  let approvals = 0;
+  let providerPosts = 0;
+  await page.route('**/api/**', route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/auth/get-session') return json(route, { session: { id: 's', userId: 'u', expiresAt: new Date(Date.now() + 3600000).toISOString() }, user: { id: 'u', email: 'sam@example.test' } });
+    if (path.endsWith('/prepare')) return json(route, { status: 'APPROVED' });
+    if (path.endsWith('/approve')) { approvals++; return json(route, { error: 'must not reapprove' }, 409); }
+    if (path === '/api/auth/oauth2/consent') { providerPosts++; return json(route, { url: 'https://example.test/callback?code=code' }); }
+    return json(route, { error: `unmocked ${path}` }, 404);
+  });
+  await page.goto('/oauth/consent?client_id=exo-native&tinycloud_request=native-1&sig=test');
+  await expect(page.getByText('Your delegation was approved.')).toBeVisible();
+  await page.getByRole('button', { name: 'Continue to app' }).click();
+  await expect.poll(() => providerPosts).toBe(1);
+  expect(approvals).toBe(0);
+});

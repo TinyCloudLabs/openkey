@@ -49,9 +49,10 @@ if (!backend) {
           new Response(child.stderr).text(),
           child.exited,
         ]);
+        if (process.env.OPENKEY_TEST_TINYCLOUD_NODE_URL) process.stdout.write(stdout);
         expect(exitCode, stdout + stderr).toBe(0);
       },
-      180_000,
+      process.env.OPENKEY_TEST_TINYCLOUD_NODE_URL ? 900_000 : 180_000,
     );
   }
 } else {
@@ -504,6 +505,18 @@ if (!backend) {
       expect(new URL(response.headers.get('location')!, API).searchParams.get('error')).toBe('invalid_request');
     });
 
+    test('empty native request and social additionalData cannot bypass native authorization', async () => {
+      const empty = await call(`/api/auth/oauth2/authorize?client_id=${nativeClient}&tinycloud_request=`, { headers: { cookie } });
+      expect(empty.status).toBe(302);
+      expect(new URL(empty.headers.get('location')!, API).searchParams.get('error')).toBe('invalid_request');
+      for (const query of [{ scope: `openid ${DELEGATION}` }, { tinycloud_request: '' }, `scope=openid%20${encodeURIComponent(DELEGATION)}`]) {
+        const social = await call('/api/auth/sign-in/social', { method: 'POST', headers: { origin: WEB_ORIGIN, 'content-type': 'application/json' },
+          body: JSON.stringify({ provider: 'google', additionalData: { query } }) });
+        expect(social.status, await social.clone().text()).toBe(400);
+        expect((await social.json() as { error: string }).error).toBe('invalid_request');
+      }
+    });
+
     test('a delegation-scoped code minted behind the interceptor still yields no token', async () => {
       await prisma.oauthConsent.create({ data: {
         id: 'consent-native', userId: alice, clientId: nativeClient, scopes: ['openid', 'offline_access', DELEGATION],
@@ -594,6 +607,11 @@ if (!backend) {
       await Bun.sleep(20);
       const approve = await call(`/api/oauth/tinycloud/requests/${requestId}/approve`, { method: 'POST', headers: { cookie, origin: WEB_ORIGIN, 'content-type': 'application/json' }, body: JSON.stringify({ revision: preview.revision, digest: preview.digest, sessionSiwe: preview.sessionSiwe, hostSiwe: preview.hostPlan?.hostSiwe }) });
       expect(approve.status, await approve.clone().text()).toBe(200);
+      const approveRetry = await nativeConsent(requestId, 'approve', { revision: preview.revision, digest: preview.digest, sessionSiwe: preview.sessionSiwe, hostSiwe: preview.hostPlan?.hostSiwe });
+      expect(approveRetry.status, await approveRetry.clone().text()).toBe(200);
+      const resumed = await nativeConsent(requestId, 'prepare');
+      expect(resumed.status).toBe(200);
+      expect(await resumed.json()).toEqual({ status: 'APPROVED' });
       const consent = await call('/api/auth/oauth2/consent', { method: 'POST', headers: { cookie, origin: WEB_ORIGIN, 'content-type': 'application/json' }, body: JSON.stringify({ accept: true, oauth_query: consentUrl.searchParams.toString() }) });
       expect(consent.status, await consent.clone().text()).toBe(200);
       const result = await consent.json() as { url?: string };
@@ -634,16 +652,20 @@ if (!backend) {
       expect((await noSession.json() as { error: string }).error).toBe('unauthorized');
       const first = await nativeConsent(id, 'prepare');
       expect(first.status, await first.clone().text()).toBe(200);
-      const p1 = await first.json() as { revision: number; digest: string; sessionSiwe: string; ttlSeconds: number; hostPlan: { hostSiwe: string } | null };
+      const p1 = await first.json() as { revision: number; digest: string; sessionSiwe: string; ttlSeconds: number; hostPlan: { hostSiwe: string } | null; selectedActionKeys: string[]; permissions: { actions: string[] }[] };
       expect(p1.revision).toBe(1);
       expect(p1.ttlSeconds).toBe(3600);
       expect(p1.hostPlan).not.toBeNull();
       const firstNonce = (await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id } })).siweNonce;
-      const second = await nativeConsent(id, 'prepare');
+      const second = await nativeConsent(id, 'prepare', { actionKeys: p1.selectedActionKeys.filter(key => !key.endsWith('tinycloud.kv/put')) });
       expect(second.status).toBe(200);
       const p2 = await second.json() as typeof p1;
       expect(p2.revision).toBe(2);
       expect(p2.digest).not.toBe(p1.digest);
+      expect(p2.permissions.flatMap(p => p.actions)).toContain('tinycloud.kv/get');
+      expect(p2.permissions.flatMap(p => p.actions)).not.toContain('tinycloud.kv/put');
+      expect(p2.sessionSiwe).toContain("'tinycloud.kv': 'get'");
+      expect(p2.sessionSiwe).not.toContain("'tinycloud.kv': 'put'");
       expect((await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id } })).siweNonce).toBe(firstNonce);
       expect(await prisma.tinyCloudNativePreparation.count({ where: { requestId: id } })).toBe(2);
       const stale = await nativeConsent(id, 'approve', { revision: 1, digest: p1.digest, sessionSiwe: p1.sessionSiwe, hostSiwe: p1.hostPlan?.hostSiwe });
@@ -654,6 +676,11 @@ if (!backend) {
       expect((await wrongDigest.json() as { error: string }).error).toBe('preparation_mismatch');
       const changedBytes = await nativeConsent(id, 'approve', { revision: 2, digest: p2.digest, sessionSiwe: p2.sessionSiwe + ' ', hostSiwe: p2.hostPlan?.hostSiwe });
       expect(changedBytes.status).toBe(409);
+      await prisma.oauthClient.update({ where: { clientId: nativeClient }, data: { tinycloudNativeDelegation: { ...ceiling, tinycloudHost: 'http://127.0.0.1:18080' } } });
+      const movedHost = await nativeConsent(id, 'approve', { revision: 2, digest: p2.digest, sessionSiwe: p2.sessionSiwe, hostSiwe: p2.hostPlan?.hostSiwe });
+      expect(movedHost.status).toBe(409);
+      expect((await movedHost.json() as { error: string }).error).toBe('preparation_superseded');
+      await prisma.oauthClient.update({ where: { clientId: nativeClient }, data: { tinycloudNativeDelegation: ceiling } });
       const bobToken = randomUUID();
       await prisma.session.create({ data: { id: 'tc773-bob-session', token: bobToken, userId: bob, expiresAt: new Date(Date.now() + 60_000) } });
       const context = await auth.$context;
@@ -691,6 +718,15 @@ if (!backend) {
       expect(denial.searchParams.get('error')).toBe('access_denied');
       expect(denial.searchParams.get('state')).toBe(denied.state);
       expect(denial.searchParams.get('iss')).toBe(ISSUER);
+      const expiredDeny = await nativePar();
+      await prisma.tinyCloudNativeRequest.update({ where: { id: expiredDeny.id }, data: { expiresAt: new Date(Date.now() - 1000) } });
+      expect((await nativeConsent(expiredDeny.id, 'deny')).status).toBe(409);
+      const providerFallback = await call('/api/auth/oauth2/consent', { method: 'POST', headers: { cookie, origin: WEB_ORIGIN, 'content-type': 'application/json' },
+        body: JSON.stringify({ accept: false, oauth_query: expiredDeny.consentUrl.searchParams.toString() }) });
+      expect(providerFallback.status, await providerFallback.clone().text()).toBe(200);
+      const deniedFallback = new URL((await providerFallback.json() as { url: string }).url);
+      expect(deniedFallback.searchParams.get('error')).toBe('access_denied');
+      expect(deniedFallback.searchParams.get('state')).toBe(expiredDeny.state);
     } finally { globalThis.fetch = originalFetch; }
   }, 120_000);
 
@@ -708,7 +744,8 @@ if (!backend) {
       }
       if (url === 'https://tee.node.tinycloud.xyz/delegate') {
         delegateCalls++;
-        return Promise.resolve(Response.json(delegateCalls === 1 ? { skipped: [space] } : { activated: [space] }));
+        return Promise.resolve(Response.json(delegateCalls === 1 ? { skipped: [space] }
+          : delegateCalls === 3 ? { activated: [], skipped: [] } : { activated: [space] }));
       }
       return originalFetch(input, init);
     }) as typeof fetch;
@@ -734,11 +771,161 @@ if (!backend) {
       const existing = await prepared.json() as typeof preview;
       expect(existing.hostPlan).toBeNull();
       expect(peerCalls).toBe(1);
+      await prisma.oauthClient.update({ where: { clientId: nativeClient }, data: { tinycloudNativeDelegation: { ...ceiling, tinycloudHost: 'http://127.0.0.1:18081' } } });
+      const movedExisting = await nativeConsent(second.id, 'approve', { revision: existing.revision, digest: existing.digest, sessionSiwe: existing.sessionSiwe });
+      expect(movedExisting.status).toBe(409);
+      expect((await movedExisting.json() as { error: string }).error).toBe('preparation_superseded');
+      await prisma.oauthClient.update({ where: { clientId: nativeClient }, data: { tinycloudNativeDelegation: ceiling } });
       const approvedExisting = await nativeConsent(second.id, 'approve', { revision: existing.revision, digest: existing.digest, sessionSiwe: existing.sessionSiwe });
       expect(approvedExisting.status).toBe(200);
       expect((await approvedExisting.json() as { hosting: string }).hosting).toBe('existing');
       expect((await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id: second.id } })).hostSignedAt).toBeNull();
     } finally { globalThis.fetch = originalFetch; }
+  }, 120_000);
+
+  test(`peer lookup failures report the real node status without preparing a revision (${backend})`, async () => {
+    await ensureNativeKey();
+    const host = 'http://127.0.0.1:18082';
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) =>
+      String(input).startsWith(`${host}/peer/generate/`)
+        ? Promise.resolve(new Response('node unavailable', { status: 503 }))
+        : originalFetch(input, init)) as typeof fetch;
+    await prisma.oauthClient.update({ where: { clientId: nativeClient }, data: { tinycloudNativeDelegation: { ...ceiling, tinycloudHost: host } } });
+    try {
+      const { id } = await nativePar();
+      const response = await nativeConsent(id, 'prepare');
+      expect(response.status).toBe(503);
+      expect(response.headers.get('Retry-After')).toBe('2');
+      const body = await response.json() as { error: string; error_description: string };
+      expect(body.error).toBe('temporarily_unavailable');
+      expect(body.error_description).toContain('HTTP 503: node unavailable');
+      expect(await prisma.tinyCloudNativePreparation.count({ where: { requestId: id } })).toBe(0);
+    } finally {
+      globalThis.fetch = originalFetch;
+      await prisma.oauthClient.update({ where: { clientId: nativeClient }, data: { tinycloudNativeDelegation: ceiling } });
+    }
+  });
+
+  test.skipIf(backend !== 'postgres')('consent-row contention maps prepare, approve and deny to 503 with Retry-After', async () => {
+    const key = await ensureNativeKey();
+    await prisma.tinyCloudBootstrapState.upsert({ where: { keyId_chainId_tinycloudHost_bootstrapVersion: { keyId: key.id, chainId: 1, tinycloudHost: ceiling.tinycloudHost, bootstrapVersion: 'test' } },
+      create: { userId: alice, keyId: key.id, address: key.address, chainId: 1, tinycloudHost: ceiling.tinycloudHost,
+        bootstrapVersion: 'test', status: 'complete', checkedAt: new Date(), completedAt: new Date() },
+      update: { status: 'complete', checkedAt: new Date(), completedAt: new Date() } });
+    await prisma.oauthConsent.create({ data: { id: 'lock-consent', userId: alice, clientId: nativeClient, scopes: ['openid', 'offline_access', DELEGATION] } });
+    const forPrepare = await nativePar();
+    const forApprove = await nativePar();
+    const previewResponse = await nativeConsent(forApprove.id, 'prepare');
+    expect(previewResponse.status, await previewResponse.clone().text()).toBe(200);
+    const preview = await previewResponse.json() as { revision: number; digest: string; sessionSiwe: string };
+    const forDeny = await nativePar();
+    const holder = new Client({ connectionString: process.env.DATABASE_URL });
+    await holder.connect();
+    try {
+      await holder.query('BEGIN');
+      await holder.query('SELECT id FROM oauth_consent WHERE id = $1 FOR UPDATE', ['lock-consent']);
+      const responses = await Promise.all([
+        nativeConsent(forPrepare.id, 'prepare'),
+        nativeConsent(forApprove.id, 'approve', { revision: preview.revision, digest: preview.digest, sessionSiwe: preview.sessionSiwe }),
+        nativeConsent(forDeny.id, 'deny'),
+      ]);
+      for (const response of responses) {
+        expect(response.status, await response.clone().text()).toBe(503);
+        expect(response.headers.get('Retry-After')).toBe('2');
+        expect((await response.json() as { error: string }).error).toBe('temporarily_unavailable');
+      }
+    } finally { await holder.query('ROLLBACK'); await holder.end(); }
+  }, 30_000);
+
+  // L1 opt-in: start approved N2 on loopback, then set
+  // OPENKEY_TEST_TINYCLOUD_NODE_URL=http://127.0.0.1:<port>. The default
+  // wait is nine minutes; OPENKEY_TEST_TINYCLOUD_NODE_WAIT_MS shortens smoke runs.
+  test.skipIf(backend !== 'postgres' || !process.env.OPENKEY_TEST_TINYCLOUD_NODE_URL)(
+    'real N2 node keeps the staged peer through consent and accepts both host SIWE domains', async () => {
+      const host = process.env.OPENKEY_TEST_TINYCLOUD_NODE_URL!;
+      const waitMs = Number(process.env.OPENKEY_TEST_TINYCLOUD_NODE_WAIT_MS ?? 540_000);
+      const { generatePrivateKey, getAddressFromPrivateKey, createWalletFromPrivateKey } = await import('@openkey/tee');
+      const { generateHostSIWEMessage, siweToDelegationHeaders } = await import('@tinycloud/node-sdk-wasm');
+      const { submitHostDelegation } = await import('@tinycloud/sdk-core');
+      for (const domain of ['openkey.so', 'cli.tinycloud.xyz']) {
+        const privateKey = generatePrivateKey();
+        const address = getAddressFromPrivateKey(privateKey);
+        const spaceId = `tinycloud:pkh:eip155:1:${address}:applications`;
+        const peerResponse = await fetch(`${host}/peer/generate/${encodeURIComponent(spaceId)}`);
+        expect(peerResponse.status).toBe(200);
+        const peerId = (await peerResponse.text()).trim();
+        expect(peerId.startsWith('did:key:')).toBe(true);
+        const siwe = generateHostSIWEMessage({ address, chainId: 1, domain, issuedAt: new Date().toISOString(), spaceId, peerId });
+        const signature = await createWalletFromPrivateKey(privateKey).signMessage({ message: siwe });
+        const submitted = await submitHostDelegation(host, siweToDelegationHeaders({ siwe, signature }) as Record<string, string>);
+        expect(submitted.success, JSON.stringify(submitted)).toBe(true);
+        console.log(`REAL NODE domain=${domain} peer=${peerId} accepted=true`);
+      }
+      const key = await ensureNativeKey();
+      const configured = { ...ceiling, tinycloudHost: host, siweDomain: 'openkey.so' };
+      await prisma.oauthClient.update({ where: { clientId: nativeClient }, data: { tinycloudNativeDelegation: configured } });
+      try {
+        const { id } = await nativePar();
+        const first = await nativeConsent(id, 'prepare');
+        expect(first.status, await first.clone().text()).toBe(200);
+        const p1 = await first.json() as { hostPlan: { peerId: string; hostSiwe: string; host: string }; revision: number; digest: string; sessionSiwe: string };
+        expect(p1.hostPlan.host).toBe(host);
+        expect(p1.hostPlan.hostSiwe.startsWith('openkey.so wants you to sign in')).toBe(true);
+        const repeated = await nativeConsent(id, 'prepare');
+        expect(repeated.status, await repeated.clone().text()).toBe(200);
+        const p2 = await repeated.json() as typeof p1;
+        expect(p2.hostPlan.peerId).toBe(p1.hostPlan.peerId);
+        const directPeer = await fetch(`${host}/peer/generate/${encodeURIComponent(`tinycloud:pkh:eip155:1:${key.address}:applications`)}`);
+        expect((await directPeer.text()).trim()).toBe(p1.hostPlan.peerId);
+        console.log(`REAL NODE peer/generate returns=${p1.hostPlan.peerId}; repeated_prepare=same; waiting_ms=${waitMs}`);
+        await Bun.sleep(waitMs);
+        const latest = await nativeConsent(id, 'prepare');
+        expect(latest.status, await latest.clone().text()).toBe(200);
+        const p3 = await latest.json() as typeof p1;
+        expect(p3.hostPlan.peerId).toBe(p1.hostPlan.peerId);
+        const approved = await nativeConsent(id, 'approve', { revision: p3.revision, digest: p3.digest, sessionSiwe: p3.sessionSiwe, hostSiwe: p3.hostPlan.hostSiwe });
+        expect(approved.status, await approved.clone().text()).toBe(200);
+        const result = await approved.json() as { hosting: string };
+        expect(result.hosting).toBe('created');
+        console.log(`REAL NODE gap_ms=${waitMs}; peer_stable=true; approve_hosting=${result.hosting}`);
+      } finally { await prisma.oauthClient.update({ where: { clientId: nativeClient }, data: { tinycloudNativeDelegation: ceiling } }); }
+    }, 900_000);
+
+  test(`public PAR limits client and IP and sweeps old requests (${backend})`, async () => {
+    const createClient = async (name: string) => {
+      const response = await adminRequest('POST', '/clients', { name, type: 'native', redirectUris: [NATIVE_REDIRECT], tinycloudNativeDelegation: ceiling });
+      expect(response.status).toBe(201);
+      return (await response.json() as { client: { clientId: string } }).client.clientId;
+    };
+    const challenge = await generateCodeChallenge('tc773-rate-limit-verifier-012345678901234567890123456789');
+    const detail = [{ type: 'tinycloud_delegation', session_key: { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' },
+      permissions: [{ service: 'tinycloud.capabilities', space: 'applications', path: '', actions: ['tinycloud.capabilities/read'] }], ttl_seconds: 300 }];
+    const request = (clientId: string, ip: string) => form('/api/auth/oauth2/par', new URLSearchParams({
+      client_id: clientId, response_type: 'code', redirect_uri: NATIVE_REDIRECT, state: randomUUID(), code_challenge: challenge,
+      code_challenge_method: 'S256', scope: `openid offline_access ${DELEGATION}`, authorization_details: JSON.stringify(detail),
+    }).toString(), { 'x-forwarded-for': ip });
+    const clientId = await createClient('Rate limit client');
+    const old = await request(clientId, '198.51.100.1');
+    expect(old.status).toBe(201);
+    const oldId = ((await old.json() as { request_uri: string }).request_uri).split(':').at(-1)!;
+    await prisma.tinyCloudNativeRequest.update({ where: { id: oldId }, data: { expiresAt: new Date(Date.now() - 2 * 86_400_000) } });
+    for (let i = 0; i < 119; i++) {
+      const response = await request(clientId, `198.51.${Math.floor(i / 250)}.${i % 250 + 2}`);
+      expect(response.status, await response.clone().text()).toBe(201);
+    }
+    expect(await prisma.tinyCloudNativeRequest.findUnique({ where: { id: oldId } })).toBeNull();
+    const clientLimited = await request(clientId, '198.51.101.1');
+    expect(clientLimited.status).toBe(429);
+    expect(clientLimited.headers.get('Retry-After')).toBeTruthy();
+    const otherClient = await createClient('IP limit client');
+    for (let i = 0; i < 60; i++) {
+      const response = await request(otherClient, '203.0.113.7');
+      expect(response.status, await response.clone().text()).toBe(201);
+    }
+    const ipLimited = await request(otherClient, '203.0.113.7');
+    expect(ipLimited.status).toBe(429);
+    expect(ipLimited.headers.get('Retry-After')).toBeTruthy();
   }, 120_000);
 
   test(`PAR rejects malformed details and request URIs are single use (${backend})`, async () => {

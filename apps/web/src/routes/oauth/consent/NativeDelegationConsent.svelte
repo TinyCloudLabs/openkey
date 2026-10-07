@@ -21,6 +21,7 @@
   let editing = $state(false);
   let loading = $state(true);
   let submitting = $state(false);
+  let approved = $state(false);
   let error = $state('');
   let serial = 0;
   const blocked = $derived(model && preview && !preparedMatchesSelection(model, baselineOptions, selection, preview.selectedActionKeys)
@@ -38,7 +39,7 @@
       method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error ?? `${action} failed (${response.status})`);
+    if (!response.ok) throw new Error(data.error_description ?? data.error ?? `${action} failed (${response.status})`);
     return data;
   }
   async function prepare(actionKeys?: string[]) {
@@ -46,8 +47,9 @@
     loading = true;
     error = '';
     try {
-      const data = await route('prepare', actionKeys ? { actionKeys } : {}) as Preview;
+      const data = await route('prepare', actionKeys ? { actionKeys } : {}) as Preview | { status: 'APPROVED' };
       if (turn !== serial) return;
+      if ('status' in data) { approved = true; return; }
       if (!model) {
         const parsed = parseCapabilityReview({
           message: data.sessionSiwe,
@@ -81,11 +83,16 @@
     window.location.href = target;
   }
   async function approve() {
-    if (!preview || blocked || submitting) return;
+    if ((!approved && (!preview || blocked)) || submitting) return;
     submitting = true; error = '';
     try {
-      await route('approve', { revision: preview.revision, digest: preview.digest,
-        sessionSiwe: preview.sessionSiwe, ...(preview.hostPlan ? { hostSiwe: preview.hostPlan.hostSiwe } : {}) });
+      if (!approved) {
+        const current = preview;
+        if (!current) throw new Error('Preparation missing');
+        await route('approve', { revision: current.revision, digest: current.digest,
+          sessionSiwe: current.sessionSiwe, ...(current.hostPlan ? { hostSiwe: current.hostPlan.hostSiwe } : {}) });
+        approved = true;
+      }
       await providerConsent(true);
     } catch (cause) {
       error = cause instanceof Error ? cause.message : 'Approval failed';
@@ -95,7 +102,9 @@
   }
   async function deny() {
     submitting = true; error = '';
-    try { await route('deny', {}); await providerConsent(false); }
+    try { await route('deny', {}); }
+    catch (cause) { console.warn('Native request denial could not be recorded', cause instanceof Error ? cause.message : 'unknown error'); }
+    try { await providerConsent(false); }
     catch (cause) { error = cause instanceof Error ? cause.message : 'Denial failed'; submitting = false; }
   }
   function changeSelection(next: Set<string>) {
@@ -112,6 +121,12 @@
 
 {#if loading && !preview}
   <p class="text-surface-600">Preparing delegation…</p>
+{:else if approved}
+  <div class="space-y-4 text-center">
+    <p>Your delegation was approved. Continue to return to the app.</p>
+    {#if error}<p role="alert" class="text-red-600">{error}</p>{/if}
+    <button type="button" class="rounded-lg bg-primary-600 px-4 py-2 text-white disabled:opacity-50" disabled={submitting} onclick={approve}>Continue to app</button>
+  </div>
 {:else if preview && model}
   {#snippet context()}
     {#if preview}

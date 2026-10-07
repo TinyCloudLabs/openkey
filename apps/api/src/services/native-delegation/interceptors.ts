@@ -220,8 +220,9 @@ export function createProviderInterceptors({ database, tokens, provider }: Provi
     const invalid = (): Decision => ({ redirect: `${AUTH_BASE_PATH}/error?error=invalid_request` });
     if (duplicate) return invalid();
     const requestId = params.get('tinycloud_request');
-    if (requestId) {
+    if (params.has('tinycloud_request')) {
       if (params.has('request_uri')) return invalid();
+      if (!requestId) return invalid();
       const row = await database.tinyCloudNativeRequest.findUnique({ where: { id: requestId } });
       if (!row || row.status !== 'RESOLVED' || row.expiresAt <= new Date()) return invalid();
       const expected = authoritativeQuery(row);
@@ -307,6 +308,27 @@ export function createProviderInterceptors({ database, tokens, provider }: Provi
     return body && mentionsAdminManagedScope(body.scope) ? adminManagedScope : null;
   }
 
+  // Better Auth's social callback can call authorizeEndpoint directly with
+  // additionalData.query, bypassing this interceptor's authorize guard.
+  // O4 MUST treat a code's stored provider query as untrusted and atomically
+  // bind redemption to an APPROVED native request; this guard is defense in
+  // depth, not evidence that every provider-internal path ran guardAuthorize.
+  async function guardSocialSignIn(c: Context): Promise<Decision> {
+    const body = await parseProviderJson(c.req.raw);
+    const data = body?.additionalData;
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+    const query = (data as Record<string, unknown>).query;
+    const params = typeof query === 'string' ? new URLSearchParams(query) : null;
+    const object = query && typeof query === 'object' && !Array.isArray(query) ? query as Record<string, unknown> : null;
+    const scope = params?.get('scope') ?? object?.scope;
+    if (params?.has('tinycloud_request') || (object && 'tinycloud_request' in object) ||
+      (typeof scope === 'string' && scopeList(scope).includes(TINYCLOUD_DELEGATION_SCOPE)) ||
+      (Array.isArray(scope) && scope.includes(TINYCLOUD_DELEGATION_SCOPE))) {
+      return { status: 400, error: 'invalid_request', description: 'native delegation requires a pushed authorization request' };
+    }
+    return null;
+  }
+
   /** Neither adds an admin-managed scope nor changes the scopes of a client holding one. */
   async function guardUpdateClient(c: Context): Promise<Decision> {
     const body = await parseProviderJson(c.req.raw);
@@ -357,6 +379,7 @@ export function createProviderInterceptors({ database, tokens, provider }: Provi
     const path = providerPath(c.req.url);
     const post = c.req.method === 'POST';
     const guard: ((c: Context) => Promise<Decision>) | null = path === '/oauth2/authorize' ? guardAuthorize
+      : post && path === '/sign-in/social' ? guardSocialSignIn
       : post && path === '/oauth2/token' ? guardToken
         : post && path === '/oauth2/revoke' ? guardRevoke
           : post && path === '/oauth2/create-client' ? guardCreateClient

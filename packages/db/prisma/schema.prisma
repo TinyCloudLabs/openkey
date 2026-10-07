@@ -563,6 +563,8 @@ model TinyCloudNativePreparation {
   userId       String
   keyId        String
   address      String
+  // The node shown to the user, even when hostPlan is null.
+  tinycloudHost String
   sessionSiwe  String
   hostPlan     Json?
   permissions  Json

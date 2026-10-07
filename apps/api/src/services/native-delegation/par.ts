@@ -11,6 +11,31 @@ const DETAIL_KEYS = new Set(['type', 'session_key', 'permissions', 'ttl_seconds'
 const JWK_KEYS = new Set(['kty', 'crv', 'x', 'kid']);
 const PERMISSION_KEYS = new Set(['service', 'space', 'path', 'actions']);
 const OPTIONAL_SCOPES = new Set(['openid', 'email', 'keys']);
+const PAR_WINDOW_MS = 60_000;
+const parBuckets = new Map<string, { count: number; resetAt: number }>();
+let parSweeps = 0;
+let parLimitChecks = 0;
+
+function consumeParLimit(key: string, limit: number, now: number): number {
+  const prior = parBuckets.get(key);
+  if (!prior || prior.resetAt <= now) {
+    parBuckets.set(key, { count: 1, resetAt: now + PAR_WINDOW_MS });
+    return 0;
+  }
+  if (prior.count >= limit) return Math.max(1, Math.ceil((prior.resetAt - now) / 1000));
+  prior.count++;
+  return 0;
+}
+
+/** Bound both identities: client limits remain effective if a proxy IP header
+ * is absent or spoofed. The outer proxy must set CF-Connecting-IP or XFF. */
+export function parRetryAfter(clientId: string, ip: string, now = Date.now()): number {
+  if (++parLimitChecks % 1024 === 0) for (const [key, bucket] of parBuckets) if (bucket.resetAt <= now) parBuckets.delete(key);
+  if (parBuckets.size >= 10_000 && (!parBuckets.has(`client:${clientId}`) || !parBuckets.has(`ip:${ip}`))) return 60;
+  const clientWait = consumeParLimit(`client:${clientId}`, 120, now);
+  const ipWait = consumeParLimit(`ip:${ip}`, 60, now);
+  return Math.max(clientWait, ipWait);
+}
 export type NativePermission = { service: string; space: 'applications'; path: string; actions: string[] };
 export class ParError extends Error {
   constructor(readonly status: 400 | 401, readonly code: string, message: string) { super(message); }
@@ -65,9 +90,15 @@ export async function handlePar(request: Request, db: PrismaClient): Promise<Res
   try {
     if ((request.headers.get('content-type') ?? '').split(';')[0]?.toLowerCase() !== 'application/x-www-form-urlencoded') invalid('invalid_request', 'form encoding required');
     const params = new URLSearchParams(await request.text());
+    const clientId = params.get('client_id') ?? 'unknown';
+    const ip = request.headers.get('cf-connecting-ip') ?? request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown';
+    const retryAfter = parRetryAfter(clientId, ip);
+    if (retryAfter) return Response.json({ error: 'slow_down' }, { status: 429, headers: { 'Retry-After': String(retryAfter), 'Cache-Control': 'no-store' } });
     const keys = [...params.keys()];
     if (keys.length !== FORM_KEYS.size || new Set(keys).size !== keys.length || keys.some(k => !FORM_KEYS.has(k))) invalid('invalid_request', 'missing, duplicate, or unexpected field');
-    const clientId = params.get('client_id')!;
+    // A lazy sweep keeps rows available for delayed code redemption and audit
+    // while preventing indefinite growth. The indexed expiry makes this cheap.
+    if (++parSweeps % 100 === 0) await db.tinyCloudNativeRequest.deleteMany({ where: { expiresAt: { lt: new Date(Date.now() - 86_400_000) } } });
     const client = await db.oauthClient.findUnique({ where: { clientId } });
     if (!client || client.disabled) throw new ParError(401, 'invalid_client', 'unknown or disabled client');
     const ceiling = enabledNativeDelegation(client);
