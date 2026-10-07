@@ -35,22 +35,32 @@ revocation. `signIn()` resolves with `tokens.delegation` set, and
 `OpenKeySecureStore`, plus once after `RENEWAL_CONFLICT` reloads) before
 resolving. `renew()` is single-flight keyed on options — identical calls
 share the in-flight renewal, different `permissionsSubset`/`siweNonce`
-queue behind it. Delegation mode requires a `verifyDelegation` callback —
-the spec requires the SDK to check `siwe` + `signature` against
-`delegationHeader`/`delegationCid`, and the client fails closed without
-it. Storage writes are strict and serialized with `signOut()`'s wipe: a
-failed persist rejects with `OpenKeyNativeError('NETWORK')` carrying
-`rotatedRefreshToken`. Terminal renew/exchange errors (`INVALID_GRANT`,
-`CONSENT_REQUIRED`, `ACCESS_DENIED`, `SPACE_UNAVAILABLE`) wipe the local
-session before rethrowing. `signOut()` always wipes locally: a terminal
-revoke failure means the grant is already unusable so it resolves, while
-a transient revoke failure or a failed credential wipe rejects so the app
-can retry. A `signOut()` during an in-flight `renew()` or code exchange
-makes it discard its result and reject `NOT_SIGNED_IN` instead of
-persisting over the wiped session (an orphaned exchange grant is revoked
-best-effort). A delegation returned by sign-in that is already inside the
-renewal lead window is renewed before `signIn()` resolves — if that renew
-fails the error surfaces but the fresh session stays persisted.
-`refreshToken()` throws `UNAVAILABLE` in delegation mode (the provider
-refresh grant is refused for native clients). Delegation-mode errors
-surface as `OpenKeyNativeError`.
+queue behind it (subsets compare in normalized form, so one with and
+without `tinycloud.capabilities/read` share a call). A `permissionsSubset`
+renew never narrows the stored approved set. Delegation mode requires a
+`verifyDelegation` callback — the spec requires the SDK to check `siwe` +
+`signature` against `delegationHeader`/`delegationCid`, and the client
+fails closed without it. Storage writes are strict and serialized with
+`signOut()`'s wipe: a failed persist rejects with
+`OpenKeyNativeError('NETWORK')` carrying `rotatedRefreshToken`. Terminal
+renew/exchange errors (`INVALID_GRANT`, `CONSENT_REQUIRED`,
+`ACCESS_DENIED`, `SPACE_UNAVAILABLE`) wipe the session they apply to
+before rethrowing and persist nothing; a rotated refresh token on such an
+error is revoked best-effort. A failed `signIn()` (`ACCESS_DENIED`,
+`USER_CANCELLED`, `STATE_MISMATCH`, a failed exchange) never wipes an
+existing stored session. `signOut()` signs the user out immediately: a
+successful or terminally failed revoke wipes the session and resolves,
+while a transient revoke failure moves the session key and refresh token
+to a pending-revoke record and rejects with the typed error. Pending
+revokes are retried on the next `signOut()`, on construction and on
+`signIn()`, and dropped once they succeed or fail terminally. A failed
+secure-store write or wipe also rejects. A `signOut()` during an in-flight
+`renew()` or code exchange makes it discard its result and reject
+`NOT_SIGNED_IN` instead of persisting over the wiped session (an orphaned
+exchange grant is revoked best-effort). A delegation returned by sign-in
+that is already inside the renewal lead window is renewed before
+`signIn()` resolves — if that renew fails non-terminally the error
+surfaces but the fresh session stays persisted. `refreshToken()` throws
+`UNAVAILABLE` in delegation mode (the provider refresh grant is refused
+for native clients). Delegation-mode errors surface as
+`OpenKeyNativeError`.
