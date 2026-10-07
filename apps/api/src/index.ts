@@ -29,6 +29,7 @@ import { createProviderInterceptors } from './services/native-delegation/interce
 import { providerTokenOptions } from './services/native-delegation/provider-tokens';
 import { handlePar } from './services/native-delegation/par';
 import { createNativeDelegationConsentRouter } from './routes/native-delegation-consent';
+import { handleNativeRenewOrRevoke } from './services/native-delegation/renew-revoke';
 import {
   protocolAwareCors,
   withNativeDelegationMetadata,
@@ -148,6 +149,8 @@ app.get('/api/auth/providers', (c) =>
 // Fail-closed guards for delegation clients, ahead of the provider's
 // authorize, refresh and revoke handling.
 app.post('/api/auth/oauth2/par', (c) => handlePar(c.req.raw, authPrisma));
+app.post('/api/auth/oauth2/tinycloud/renew', (c) => handleNativeRenewOrRevoke(c.req.raw, authPrisma, oauthIssuer, 'renew'));
+app.post('/api/auth/oauth2/tinycloud/revoke', (c) => handleNativeRenewOrRevoke(c.req.raw, authPrisma, oauthIssuer, 'revoke'));
 app.use('/api/auth/*', createProviderInterceptors({
   database: authPrisma,
   tokens: providerTokenOptions(auth),

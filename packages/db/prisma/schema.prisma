@@ -625,8 +625,8 @@ model TinyCloudNativeConsentGeneration {
   @@map("tinycloud_native_consent_generation")
 }
 
-// A user-owned, immediate stop control for an OAuth application's
-// tinycloud:manage-key consent. Missing rows mean the active OAuth consent is
+// A user-owned, immediate stop control for an OAuth application's TinyCloud
+// signing or native delegation consent. Missing rows leave native renewal
 // enabled; explicit rows preserve a user's disabled choice across refreshes.
 model TinyCloudManageKeyAppPreference {
   userId    String

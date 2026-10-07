@@ -122,7 +122,7 @@ export async function changeTinyCloudManageKeyGrant(
       return { kind: 'stale' as const, epoch };
     }
     const consent = await tx.oauthConsent.findFirst({
-      where: { userId, clientId, scopes: { has: 'tinycloud:manage-key' } }, select: { clientId: true },
+      where: { userId, clientId, OR: [{ scopes: { has: 'tinycloud:manage-key' } }, { scopes: { has: 'tinycloud:delegation' } }] }, select: { clientId: true },
     });
     if (!consent) return { kind: 'missing_consent' as const };
     const client = await tx.oauthClient.findUnique({ where: { clientId }, select: { name: true, uri: true } });

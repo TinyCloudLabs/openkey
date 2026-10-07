@@ -101,6 +101,8 @@ export interface TinyCloudManageKeyApp {
   icon: string | null;
   disabled: boolean;
   enabled: boolean;
+  nativeDelegation: boolean;
+  activeNativeGrants: number;
   status?: 'ENABLED' | 'DISABLED' | 'PENDING_USER_APPROVAL' | 'CONSENT_WITHDRAWN';
 }
 
@@ -273,6 +275,12 @@ export const api = {
     return fetchAPI(`/api/account/tinycloud-apps/${encodeURIComponent(clientId)}`, {
       method: 'PATCH',
       body: JSON.stringify({ enabled, expectedEpoch: policyEpoch, confirmation }),
+    });
+  },
+
+  async disconnectTinyCloudApp(clientId: string): Promise<{ clientId: string; disconnected: boolean }> {
+    return fetchAPI(`/api/account/tinycloud-apps/${encodeURIComponent(clientId)}`, {
+      method: 'DELETE', body: JSON.stringify({ confirmation: 'DISCONNECT' }),
     });
   },
 
