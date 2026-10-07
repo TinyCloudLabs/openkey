@@ -38,6 +38,8 @@ import {
 } from './social-providers';
 import { crossSubDomainCookieOptions } from './auth-options';
 import { resolveRequestUri } from './services/native-delegation/par';
+import { exchangeNativeCode, generateNativeRefreshToken } from './services/native-delegation/code-exchange';
+import { providerTokenOptions } from './services/native-delegation/provider-tokens';
 
 export const prisma: PrismaClient = createPrismaClient({
   log: ['error', 'warn'],
@@ -297,11 +299,15 @@ export const auth = betterAuth({
       idTokenExpiresIn: 60 * 60, // 1 hour in seconds
       storeClientSecret: 'hashed',
       storeTokens: 'hashed',
-      async customTokenResponseFields({ grantType, scopes, verificationValue }) {
+      generateRefreshToken: (): Promise<string> => generateNativeRefreshToken(prisma, providerTokenOptions(auth)),
+      async customTokenResponseFields({ grantType, user, scopes, verificationValue }) {
         // Runs before any access, refresh or ID token is created. A token
-        // carrying tinycloud:delegation must come from the native code
-        // exchange, never from the provider's ordinary grants.
-        if (scopes.includes(TINYCLOUD_DELEGATION_SCOPE)) {
+        // carrying tinycloud:delegation comes only from the native code
+        // exchange, never from the provider's other grants.
+        let nativeFields: Record<string, unknown> = {};
+        if (grantType === 'authorization_code') {
+          nativeFields = await exchangeNativeCode(prisma, `${baseURL}/api/auth`, { user, scopes, verificationValue });
+        } else if (scopes.includes(TINYCLOUD_DELEGATION_SCOPE)) {
           throw new APIError('BAD_REQUEST', {
             error: 'invalid_grant',
             error_description: `${TINYCLOUD_DELEGATION_SCOPE} is not issued by this grant`,
@@ -320,7 +326,7 @@ export const auth = betterAuth({
             : ctx.body?.client_id;
         }
         await oauthClientContext.set(clientId);
-        return {};
+        return nativeFields;
       },
       async customAccessTokenClaims({ user, scopes }) {
         if (!user || !scopes.includes(TINYCLOUD_MCP_SCOPE)) return {};

@@ -30,7 +30,7 @@ export function providerTokenOptions(auth: { options: { plugins?: unknown[] } })
   return plugin.options;
 }
 
-async function storedToken(options: ProviderTokenOptions, token: string, type: StoredTokenType): Promise<string> {
+export async function storedToken(options: ProviderTokenOptions, token: string, type: StoredTokenType): Promise<string> {
   const method = options.storeTokens ?? 'hashed';
   // `defaultHasher`: unpadded base64url SHA-256.
   if (method === 'hashed') return createHash('sha256').update(token).digest('base64url');

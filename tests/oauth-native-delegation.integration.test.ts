@@ -634,8 +634,9 @@ if (!backend) {
       expect(artifact.siwe).not.toBe(preview.sessionSiwe);
       const exchange = await form('/api/auth/oauth2/token', new URLSearchParams({ grant_type: 'authorization_code', code: code!,
         client_id: nativeClient, redirect_uri: NATIVE_REDIRECT, code_verifier: verifier }).toString());
-      expect(exchange.status).toBe(400);
-      expect((await exchange.json() as { error: string }).error).toBe('invalid_grant');
+      // The full exchange is covered by oauth-native-code-exchange.integration.test.ts.
+      expect(exchange.status).toBe(401);
+      expect((await exchange.json() as { error: string }).error).toBe('invalid_session_proof');
     } finally { globalThis.fetch = originalFetch; }
   }, 120_000);
 
