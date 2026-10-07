@@ -1,0 +1,23 @@
+{
+  "name": "@openkey/sdk-capacitor",
+  "version": "0.0.0",
+  "description": "Capacitor native sign-in and secure TinyCloud delegation storage for OpenKey",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": ["dist", "ios", "android", "Package.swift", "OpenKeyCapacitor.podspec", "README.md"],
+  "license": "SEE LICENSE IN LICENSE.md",
+  "publishConfig": { "access": "public", "registry": "https://registry.npmjs.org/" },
+  "scripts": { "build": "tsup", "typecheck": "tsc --noEmit", "test": "bun test" },
+  "peerDependencies": { "@capacitor/core": "^8.0.0", "@tinycloud/web-sdk": "^2.11.0" },
+  "devDependencies": { "@openkey/core": "workspace:*", "@capacitor/core": "^8.0.0", "@tinycloud/web-sdk": "2.11.0", "tsup": "^8.0.0", "typescript": "^6.0.0" },
+  "capacitor": { "ios": { "src": "ios" }, "android": { "src": "android" } }
+}
