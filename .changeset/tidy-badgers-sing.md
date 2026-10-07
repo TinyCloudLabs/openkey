@@ -63,14 +63,19 @@ A failed secure-store write or wipe also rejects. A `signOut()` during an
 in-flight `signIn()` (including discovery and PAR), `renew()` or code
 exchange makes it discard its result and reject `NOT_SIGNED_IN` instead of
 persisting over the wiped session (an orphaned grant is revoked
-best-effort), and a storage read it overtakes is never cached. Renew
-results are bound to the session they started from: a newer session stored
-by `signIn()` meanwhile is neither overwritten nor wiped by them. A
-`signIn()` that has not stored its session yet (e.g. a cancelled one)
-never affects an in-flight `renew()`. A delegation returned by sign-in
-that is already inside the renewal lead window is renewed before
-`signIn()` resolves — if that renew fails non-terminally the error
-surfaces but the fresh session stays persisted. `refreshToken()` throws
-`UNAVAILABLE` in delegation mode (the provider refresh grant is refused
-for native clients). Delegation-mode errors surface as
-`OpenKeyNativeError`.
+best-effort), and the user reads as signed out from the moment it starts.
+Session storage is a compare-and-set model with no in-memory cache: every
+write or removal of the stored session (sign-in save, renew save,
+immediate renew, rotated-token recovery, terminal wipe, sign-out removal)
+states the session it expects to be current and writes nothing when that
+no longer holds. `signOut()` signs out whatever session is current, never
+removes a newer one it did not revoke, and rejects with `NETWORK` without
+removing anything when the record can't be read. A `signIn()` started
+during a `signOut()` saves after it. A `signIn()` that has not stored its
+session yet (e.g. a cancelled one) never affects an in-flight `renew()`. A
+delegation returned by sign-in that is already inside the renewal lead
+window is renewed before `signIn()` resolves — if that renew fails
+non-terminally the error surfaces but the fresh session stays persisted.
+`refreshToken()` throws `UNAVAILABLE` in delegation mode (the provider
+refresh grant is refused for native clients). Delegation-mode errors
+surface as `OpenKeyNativeError`.

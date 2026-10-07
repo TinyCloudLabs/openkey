@@ -262,13 +262,32 @@ code exchange) leaves an existing stored session untouched.
 A `signOut()` while a `signIn()` (including its discovery and PAR), a
 `renew()` or a code exchange is in flight makes it discard its result and
 reject with `NOT_SIGNED_IN` instead of persisting over the wiped session
-(an orphaned grant is revoked best-effort). A storage read that a
-`signOut()` overtakes is dropped, so a later `renew()` never uses a session
-loaded before the sign-out. Renew results are bound to the session they
-started from: if a newer `signIn()` stored a session meanwhile, the renew
-neither overwrites it nor (on a terminal error) wipes it. A `signIn()` that
-has not yet stored its session (for example one the user cancels) does not
-affect an in-flight `renew()` at all.
+(an orphaned grant is revoked best-effort).
+
+#### Session storage model
+
+The stored session is identified by its session id (the session public
+key, fresh for every sign-in). There is no in-memory copy: every
+`renew()` reads the record from `storage` first, and every write or
+removal is a compare-and-set, serialized with all other storage access:
+
+- a `signIn()` saves over whatever is stored, unless a `signOut()` has
+  started since the `signIn()` did; a `signIn()` started *during* a
+  `signOut()` saves after it finishes;
+- `renew()`, the immediate renew after sign-in, the rotated-token recovery
+  writes and terminal wipes only write or remove the record while it still
+  holds *their* session. If another session replaced it, they write nothing,
+  reject with `NOT_SIGNED_IN`, and revoke their rotated grant best-effort;
+- `signOut()` signs out whatever session is current. It removes the record
+  only if it still holds the session and token just revoked. If a different
+  session was stored meanwhile (only possible from another `OpenKeyRN`
+  sharing the same storage), that session is revoked and removed too. If
+  the record can't be read, `signOut()` removes nothing and rejects with
+  `NETWORK`.
+
+A `signIn()` that has not yet stored its session (for example one the
+user cancels) does not affect an in-flight `renew()`. A `signIn()` does
+not revoke the session it replaces.
 
 Delegation-mode errors are `OpenKeyNativeError` (`code`,
 `status`, `retryAfterSeconds`, `rotatedRefreshToken`); plain-mode errors

@@ -2286,7 +2286,7 @@ describe('OpenKeyRN', () => {
       expect(store.map.has(SESSION_KEY)).toBe(false);
     });
 
-    it('a storage read overtaken by signOut() never repopulates the session cache', async () => {
+    it('a storage read overtaken by signOut() is never used', async () => {
       const base = memoryStore();
       const sessionKey = await seedSession(base, 'rt-old');
       const { promise: readReached, resolve: reachedRead } =
@@ -2336,8 +2336,11 @@ describe('OpenKeyRN', () => {
       const first = client.renew();
       first.catch(() => {});
       await readReached;
-      await client.signOut();
+      // Reads are serialized in the storage queue: signOut()'s own read
+      // waits behind the delayed one, which lands after signOut() started.
+      const signedOut = client.signOut();
       releaseRead();
+      await signedOut;
 
       expect((await rejection(first)).code).toBe('NOT_SIGNED_IN');
       // A later renew() must not use a session loaded before the sign-out.

@@ -142,6 +142,19 @@ interface StoredPendingRevoke {
   expiresAt: number;
 }
 
+/**
+ * Which stored session a write expects to be current. `any`: a sign-in's
+ * save, which replaces whatever is stored. Otherwise the session id (the
+ * session public key `x`, unique per sign-in), optionally pinned to one
+ * refresh token.
+ */
+type SessionExpectation = 'any' | { sid: string; refreshToken?: string };
+
+/** Session id: the session public key's `x`, fresh for every sign-in. */
+function sessionId(sessionKey: NativeSessionKeypair): string {
+  return sessionKey.publicJwk.x;
+}
+
 /** Spec: every refresh token lives 7 days. */
 const REFRESH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 /** Spec: `renewableUntil` is `absoluteExpiresAt − 300 s`. */
@@ -310,12 +323,6 @@ export class OpenKeyRN {
 
   private pendingFlows: Map<string, PendingFlow> = new Map();
   private metadataPromise?: Promise<OpenKeyServerMetadata>;
-  /**
-   * In-memory copy of the stored session, tagged with the sessionGeneration
-   * it was loaded or written in. A cache from an older generation (i.e.
-   * from before a signOut()) is never used.
-   */
-  private sessionCache?: { session: DelegationSession; generation: number };
   private renewInFlight?: Promise<RenewDelegationResult>;
   /**
    * Bumped by signOut(). signIn() and renew() capture it when they start
@@ -323,15 +330,16 @@ export class OpenKeyRN {
    */
   private sessionGeneration = 0;
   /**
-   * Serializes every delegation-session storage mutation (persist + wipe)
-   * so a write can never interleave with signOut's wipe. Tasks must not
-   * call runInStorageQueue themselves.
+   * Serializes every read and compare-and-set of the stored session and
+   * the pending-revoke record (see commitSession). There is no in-memory
+   * session cache: every use reads the record inside this queue. Tasks
+   * must not call runInStorageQueue themselves.
    */
   private storageQueue: Promise<unknown> = Promise.resolve();
   /** Options of the in-flight renew; queued callers compare against it. */
   private renewInFlightKey?: string;
-  /** Non-zero while signOut() runs: the user already reads as signed out. */
-  private signOutsInFlight = 0;
+  /** signOut()s in progress: while any runs, the user reads as signed out. */
+  private signOutFlights = new Set<Promise<unknown>>();
   /** Single-flight retry of the pending-revoke record. */
   private pendingRevokeRetry?: Promise<Error | undefined>;
 
@@ -575,7 +583,15 @@ export class OpenKeyRN {
    * other revoke failure is terminal — a retry won't change it — so the
    * session is wiped and signOut resolves. Pending revokes are retried on
    * the next signOut(), on construction and on signIn(), and dropped once
-   * they succeed or fail terminally. A storage failure also rejects.
+   * they succeed or fail terminally.
+   *
+   * signOut() signs out whatever session is current: the final remove is a
+   * compare-and-set on the session it revoked, and if a different session
+   * was stored meanwhile (only possible from another instance sharing the
+   * storage — this instance's sign-ins wait for signOut() before saving)
+   * that one is revoked and removed too. A storage failure rejects with a
+   * typed `NETWORK` error; a record that can't be read is never removed,
+   * and signOut() then never reports success.
    */
   async signOut(accessToken?: string): Promise<void> {
     // Clear all pending flows (removePending clears their timers too).
@@ -592,11 +608,12 @@ export class OpenKeyRN {
 
     let firstError: unknown;
     if (this.delegation) {
-      this.signOutsInFlight += 1;
+      const flight = this.signOutDelegation();
+      this.signOutFlights.add(flight);
       try {
-        firstError = await this.signOutDelegation();
+        firstError = await flight;
       } finally {
-        this.signOutsInFlight -= 1;
+        this.signOutFlights.delete(flight);
       }
     }
 
@@ -643,10 +660,10 @@ export class OpenKeyRN {
 
   /**
    * Delegation half of signOut(). Returns the error signOut() rejects with
-   * (the typed revoke error first), or `undefined`.
+   * (a storage read failure first, then the typed revoke error), or
+   * `undefined`.
    */
   private async signOutDelegation(): Promise<unknown> {
-    const cfg = this.delegation!;
     // Grants left by an earlier signOut() go first.
     let pendingError: unknown;
     try {
@@ -655,43 +672,72 @@ export class OpenKeyRN {
       pendingError = this.storageError('update pending revokes', error);
     }
 
-    const session = await this.loadStoredSession().catch(() => null);
-    const revokeError = session
-      ? await this.revokeGrant(session.sessionKey, session.refreshToken)
-      : undefined;
+    let revokeError: Error | undefined;
+    for (;;) {
+      let session: DelegationSession | null;
+      try {
+        session = await this.runInStorageQueue(() => this.readStoredSession());
+      } catch (error) {
+        // Unreadable: nothing is removed, and the caller is not told the
+        // sign-out succeeded.
+        return this.storageError('read stored delegation session', error);
+      }
+      if (!session) break;
 
-    let wipeError: unknown;
-    this.sessionCache = undefined;
-    try {
-      // One serialized task: the credentials move to the pending-revoke
-      // record before the session record is removed, so a failed write
-      // never loses the token needed to retry the revoke.
-      await this.runInStorageQueue(async () => {
-        if (session && revokeError) {
-          const entries = await this.readPendingRevokes();
-          entries.push({
-            privateJwk: session.sessionKey.privateJwk,
-            refreshToken: session.refreshToken,
-            attempts: 1,
-            // A record from before expiry tracking: the token was issued
-            // before now, so now + 7 days is an upper bound.
-            expiresAt:
-              session.refreshTokenExpiresAt ??
-              Date.now() + REFRESH_TOKEN_TTL_MS,
-          });
-          await cfg.storage.set(
-            this.pendingRevokeStorageKey,
-            JSON.stringify(entries),
-          );
+      const error = await this.revokeGrant(
+        session.sessionKey,
+        session.refreshToken,
+      );
+      revokeError ??= error;
+      try {
+        // The credentials reach the pending-revoke record before the
+        // session record can be removed: a failed write never loses the
+        // token needed to retry the revoke.
+        if (error) await this.appendPendingRevoke(session);
+        await this.commitSession(null, {
+          sid: sessionId(session.sessionKey),
+          refreshToken: session.refreshToken,
+        });
+        break;
+      } catch (caught) {
+        if (
+          caught instanceof OpenKeyNativeError &&
+          caught.code === 'NOT_SIGNED_IN'
+        ) {
+          // The record changed while this one was revoked: sign out
+          // whatever is current now (or stop if nothing is).
+          continue;
         }
-        await cfg.storage.remove(this.delegationStorageKey);
-      });
-    } catch (error) {
-      // signOut must not claim success while credentials may persist
-      // in secure storage.
-      wipeError = this.storageError('remove stored delegation session', error);
+        return (
+          revokeError ??
+          this.storageError('remove stored delegation session', caught)
+        );
+      }
     }
-    return revokeError ?? pendingError ?? wipeError;
+    return revokeError ?? pendingError;
+  }
+
+  /** Add a pending-revoke entry for `session`, inside the storage queue. */
+  private appendPendingRevoke(session: DelegationSession): Promise<void> {
+    return this.runInStorageQueue(async () => {
+      const entries = await this.readPendingRevokes();
+      if (entries.some((entry) => entry.refreshToken === session.refreshToken)) {
+        return;
+      }
+      entries.push({
+        privateJwk: session.sessionKey.privateJwk,
+        refreshToken: session.refreshToken,
+        attempts: 1,
+        // A record from before expiry tracking: the token was issued
+        // before now, so now + 7 days is an upper bound.
+        expiresAt:
+          session.refreshTokenExpiresAt ?? Date.now() + REFRESH_TOKEN_TTL_MS,
+      });
+      await this.delegation!.storage.set(
+        this.pendingRevokeStorageKey,
+        JSON.stringify(entries),
+      );
+    });
   }
 
   /**
@@ -972,7 +1018,7 @@ export class OpenKeyRN {
         // Persist BEFORE any immediate renew so the live refresh token is
         // never lost (spec). A signOut() during the exchange invalidates
         // this write; the orphaned grant is revoked best-effort.
-        await this.persistSessionGuarded(session, generation, {
+        await this.saveSession(session, 'any', generation, {
           revokeOrphanOnInvalid,
         });
         replacedStoredSession = true;
@@ -1001,9 +1047,12 @@ export class OpenKeyRN {
             renewed.refreshToken,
           );
           session = withRefreshToken(session, renewed.refreshToken);
-          await this.persistSessionGuarded(session, generation, {
-            revokeOrphanOnInvalid,
-          });
+          await this.saveSession(
+            session,
+            { sid: sessionId(flow.sessionKey) },
+            generation,
+            { revokeOrphanOnInvalid },
+          );
           delegation = renewed.delegation;
         }
 
@@ -1047,8 +1096,8 @@ export class OpenKeyRN {
   /**
    * Local state after a delegation sign-in fails.
    *
-   * - `NOT_SIGNED_IN`: a signOut() won; the guarded persist already
-   *   discarded the session and revoked the orphaned grant.
+   * - `NOT_SIGNED_IN`: a signOut() or a newer session won; saveSession
+   *   already discarded the session and revoked the orphaned grant.
    * - Terminal (`TERMINAL_SESSION_CODES`): the outcome is final, so nothing
    *   is persisted. The session this attempt stored (if any) is wiped, and
    *   a rotated grant is revoked best-effort. A stored session from before
@@ -1065,7 +1114,7 @@ export class OpenKeyRN {
   ): Promise<void> {
     if (error.code === 'NOT_SIGNED_IN') return;
     if (TERMINAL_SESSION_CODES.has(error.code)) {
-      if (replacedStoredSession) await this.wipeSession(flow.sessionKey);
+      if (replacedStoredSession) await this.removeSession(flow.sessionKey);
       if (error.rotatedRefreshToken) {
         await this.revokeBestEffort(
           flow.metadata,
@@ -1076,7 +1125,9 @@ export class OpenKeyRN {
       return;
     }
     if (error.rotatedRefreshToken) {
-      await this.persistSessionGuarded(
+      // Before the exchange's own save this is that save (replace whatever
+      // is stored); after it, it belongs to this attempt's session only.
+      await this.saveSession(
         withRefreshToken(
           {
             sessionKey: flow.sessionKey,
@@ -1085,6 +1136,7 @@ export class OpenKeyRN {
           },
           error.rotatedRefreshToken,
         ),
+        replacedStoredSession ? { sid: sessionId(flow.sessionKey) } : 'any',
         flow.generation,
       ).catch(() => {
         // Keep the original error: it carries rotatedRefreshToken.
@@ -1104,7 +1156,7 @@ export class OpenKeyRN {
     const cfg = this.delegation!;
     let reloadedAfterConflict = false;
     for (;;) {
-      const session = await this.getDelegationSession(generation);
+      const session = await this.readCurrentSession(generation);
       if (!session) {
         throw new OpenKeyNativeError('NOT_SIGNED_IN', 'No stored delegation session');
       }
@@ -1139,10 +1191,11 @@ export class OpenKeyRN {
         // throws NOT_SIGNED_IN; the rotated token is revoked best-effort
         // rather than written over a wiped or newer session. The approved
         // set is kept as-is: a subset renew must not narrow it.
-        await this.persistSessionGuarded(
+        await this.saveSession(
           withRefreshToken(session, result.refreshToken),
+          { sid: sessionId(session.sessionKey) },
           generation,
-          { sameSessionOnly: true, revokeOrphanOnInvalid: { metadata } },
+          { revokeOrphanOnInvalid: { metadata } },
         );
         return result;
       } catch (error) {
@@ -1153,7 +1206,7 @@ export class OpenKeyRN {
         // stored since is left alone. The outcome is final, so a rotated
         // token is not persisted; it is revoked best-effort instead.
         if (TERMINAL_SESSION_CODES.has(error.code)) {
-          await this.wipeSession(session.sessionKey);
+          await this.removeSession(session.sessionKey);
           if (error.rotatedRefreshToken && metadata) {
             await this.revokeBestEffort(
               metadata,
@@ -1167,12 +1220,11 @@ export class OpenKeyRN {
         // reporting the error or the session is lost (spec). NOT_SIGNED_IN
         // means signOut() won and nothing may be written.
         if (error.rotatedRefreshToken && error.code !== 'NOT_SIGNED_IN') {
-          await this.persistSessionGuarded(
+          await this.saveSession(
             withRefreshToken(session, error.rotatedRefreshToken),
+            { sid: sessionId(session.sessionKey) },
             generation,
-            metadata
-              ? { sameSessionOnly: true, revokeOrphanOnInvalid: { metadata } }
-              : { sameSessionOnly: true },
+            metadata ? { revokeOrphanOnInvalid: { metadata } } : undefined,
           ).catch(() => {
             // The thrown error already carries rotatedRefreshToken — the
             // caller can retry persisting it.
@@ -1182,7 +1234,6 @@ export class OpenKeyRN {
           // Another instance rotated the token first: reload what storage
           // has now and try once with it (spec SDK mapping).
           reloadedAfterConflict = true;
-          this.sessionCache = undefined;
           continue;
         }
         throw error;
@@ -1207,54 +1258,54 @@ export class OpenKeyRN {
   }
 
   /**
-   * The live session for a caller that started in `generation`; `null`
-   * while signOut() runs (already signed out) or once a signOut() has
-   * happened since. Only a cache from the current generation is used, and
-   * a storage read that a signOut() overtakes is dropped, not cached.
+   * The current session for a caller that started in `generation`, read
+   * from storage inside the queue (there is no cache). `null` while a
+   * signOut() runs (already signed out) or once one has started since
+   * `generation` — including one that started while the read was queued.
+   * A storage read failure throws a typed `NETWORK` error.
    */
-  private async getDelegationSession(
+  private async readCurrentSession(
     generation: number,
   ): Promise<DelegationSession | null> {
-    if (this.signOutsInFlight > 0 || generation !== this.sessionGeneration) {
-      return null;
+    const signedOut = () =>
+      this.signOutFlights.size > 0 || generation !== this.sessionGeneration;
+    if (signedOut()) return null;
+    let session: DelegationSession | null;
+    try {
+      session = await this.runInStorageQueue(() => this.readStoredSession());
+    } catch (error) {
+      throw this.storageError('read stored delegation session', error);
     }
-    if (this.sessionCache?.generation === generation) {
-      return this.sessionCache.session;
-    }
-    const session = await this.loadStoredSession();
-    if (this.signOutsInFlight > 0 || generation !== this.sessionGeneration) {
-      return null;
-    }
-    if (session) this.sessionCache = { session, generation };
-    return session;
+    return signedOut() ? null : session;
   }
 
-  /** Read the stored session from secure storage; never touches the cache. */
-  private async loadStoredSession(): Promise<DelegationSession | null> {
-    const cfg = this.delegation;
-    if (!cfg) return null;
+  /**
+   * Read the stored session record. Call inside the storage queue. A
+   * storage failure throws (nothing is assumed); a record that was read
+   * but can't be parsed can never be used or revoked, so it is removed
+   * and reads as no session.
+   */
+  private async readStoredSession(): Promise<DelegationSession | null> {
+    const cfg = this.delegation!;
     const raw = await cfg.storage.get(this.delegationStorageKey);
     if (!raw) return null;
     try {
       const record = JSON.parse(raw) as StoredDelegationSession;
-      const session: DelegationSession = {
+      return {
         sessionKey: sessionKeypairFromJwk(record.privateJwk),
         refreshToken: record.refreshToken,
         permissions: record.permissions,
         grantExpiresAt: record.grantExpiresAt,
         refreshTokenExpiresAt: record.refreshTokenExpiresAt,
       };
-      return session;
     } catch {
-      // Corrupt record: wipe it and report signed-out.
-      await cfg.storage.remove(this.delegationStorageKey).catch(() => {});
+      await cfg.storage.remove(this.delegationStorageKey);
       return null;
     }
   }
 
-  private async persistDelegationSession(
-    session: DelegationSession,
-  ): Promise<void> {
+  /** Write the session record. Call inside the storage queue. */
+  private async writeStoredSession(session: DelegationSession): Promise<void> {
     const record: StoredDelegationSession = {
       privateJwk: session.sessionKey.privateJwk,
       refreshToken: session.refreshToken,
@@ -1269,8 +1320,8 @@ export class OpenKeyRN {
   }
 
   /**
-   * Run `task` inside the storage mutex. Serializes every delegation-session
-   * storage mutation so a write can never interleave with signOut's wipe.
+   * Run `task` inside the storage queue. Serializes every read and write of
+   * the session and pending-revoke records.
    */
   private runInStorageQueue<T>(task: () => Promise<T>): Promise<T> {
     const result = this.storageQueue.then(task, task);
@@ -1282,52 +1333,73 @@ export class OpenKeyRN {
   }
 
   /**
-   * Persist a session inside the storage mutex, re-checking the session
-   * generation inside the serialized section (a signOut that lands between
-   * the network call and the write wins: the write is skipped and
-   * NOT_SIGNED_IN is thrown — with `rotatedRefreshToken` set so callers
-   * can still recover the live token). Storage failures surface as
-   * NETWORK carrying the same token.
-   *
-   * `sameSessionOnly`: used by renew — the write only lands while the
-   * stored record still holds this session's key. A newer sign-in that
-   * replaced it wins the same way a signOut() does (NOT_SIGNED_IN).
-   *
-   * `revokeOrphanOnInvalid`: a discarded session leaves a live grant the
-   * client will never see again, so it is revoked best-effort (spec's
-   * signOut revoke path).
+   * The one compare-and-set every session write and remove goes through.
+   * Inside the storage queue it refuses when a signOut() has started since
+   * `generation` (when given), then — unless `expect` is `any` — reads the
+   * stored record and refuses unless it is the expected session (and
+   * refresh token, when pinned). Only then is `next` written, or the record
+   * removed when `next` is `null`. A refusal writes nothing and throws
+   * `NOT_SIGNED_IN` (superseded); a storage failure throws as-is.
    */
-  private async persistSessionGuarded(
-    session: DelegationSession,
-    generation: number,
-    opts?: {
-      sameSessionOnly?: boolean;
-      revokeOrphanOnInvalid?: { metadata: OpenKeyServerMetadata };
-    },
+  private commitSession(
+    next: DelegationSession | null,
+    expect: SessionExpectation,
+    generation?: number,
   ): Promise<void> {
-    try {
-      await this.runInStorageQueue(async () => {
-        const replaced =
-          opts?.sameSessionOnly &&
-          !(await this.storedSessionIs(session.sessionKey));
-        if (generation !== this.sessionGeneration || replaced) {
-          const invalid = new OpenKeyNativeError(
+    return this.runInStorageQueue(async () => {
+      if (generation !== undefined && generation !== this.sessionGeneration) {
+        throw new OpenKeyNativeError(
+          'NOT_SIGNED_IN',
+          'sign-out since this operation started; result discarded',
+        );
+      }
+      if (expect !== 'any') {
+        const current = await this.readStoredSession();
+        if (
+          !current ||
+          sessionId(current.sessionKey) !== expect.sid ||
+          (expect.refreshToken !== undefined &&
+            current.refreshToken !== expect.refreshToken)
+        ) {
+          throw new OpenKeyNativeError(
             'NOT_SIGNED_IN',
-            replaced
-              ? 'session replaced by a newer sign-in; renewal discarded'
-              : 'sign-out during sign-in/renewal; session discarded',
+            'the stored session changed; result discarded',
           );
-          invalid.rotatedRefreshToken = session.refreshToken;
-          throw invalid;
         }
-        await this.persistDelegationSession(session);
-        this.sessionCache = { session, generation };
-      });
+      }
+      if (next) await this.writeStoredSession(next);
+      else await this.delegation!.storage.remove(this.delegationStorageKey);
+    });
+  }
+
+  /**
+   * Save a session through commitSession. `expect: 'any'` is a sign-in's
+   * save: it first waits for any signOut() in progress, so a sign-in that
+   * started after the signOut() lands after it (one that started before is
+   * refused by `generation`). A refusal throws `NOT_SIGNED_IN` carrying
+   * `rotatedRefreshToken`, after revoking the discarded grant best-effort
+   * when `revokeOrphanOnInvalid` is given. A storage failure surfaces as
+   * `NETWORK` carrying the same token.
+   */
+  private async saveSession(
+    session: DelegationSession,
+    expect: SessionExpectation,
+    generation: number,
+    opts?: { revokeOrphanOnInvalid?: { metadata: OpenKeyServerMetadata } },
+  ): Promise<void> {
+    if (expect === 'any') {
+      while (this.signOutFlights.size > 0) {
+        await Promise.allSettled([...this.signOutFlights]);
+      }
+    }
+    try {
+      await this.commitSession(session, expect, generation);
     } catch (error) {
       if (
         error instanceof OpenKeyNativeError &&
         error.code === 'NOT_SIGNED_IN'
       ) {
+        error.rotatedRefreshToken = session.refreshToken;
         if (opts?.revokeOrphanOnInvalid) {
           await this.revokeBestEffort(
             opts.revokeOrphanOnInvalid.metadata,
@@ -1346,6 +1418,18 @@ export class OpenKeyRN {
       wrapped.rotatedRefreshToken = session.refreshToken;
       throw wrapped;
     }
+  }
+
+  /**
+   * Remove the stored session if it is still `sessionKey`'s (terminal
+   * outcomes); a newer session is left alone. Best-effort: failures are
+   * swallowed — the terminal path that calls this must still surface its
+   * original error.
+   */
+  private async removeSession(sessionKey: NativeSessionKeypair): Promise<void> {
+    await this.commitSession(null, { sid: sessionId(sessionKey) }).catch(
+      () => {},
+    );
   }
 
   /**
@@ -1368,40 +1452,6 @@ export class OpenKeyRN {
       sha256Fn: this.sha256,
       sleepFn: cfg.sleepFn,
     }).catch(() => {});
-  }
-
-  /**
-   * Wipe the stored session for `sessionKey` inside the storage mutex. A
-   * newer session stored since (a different key) is left alone.
-   * Best-effort: wipe failures are swallowed — the terminal path that
-   * calls this must still surface its original error.
-   */
-  private async wipeSession(sessionKey: NativeSessionKeypair): Promise<void> {
-    if (this.sessionCache?.session.sessionKey.publicJwk.x === sessionKey.publicJwk.x) {
-      this.sessionCache = undefined;
-    }
-    await this.runInStorageQueue(async () => {
-      if (await this.storedSessionIs(sessionKey)) {
-        await this.delegation!.storage.remove(this.delegationStorageKey);
-      }
-    }).catch(() => {});
-  }
-
-  /**
-   * Whether the stored record holds `sessionKey` (call inside the storage
-   * queue). An absent or unreadable record holds no session.
-   */
-  private async storedSessionIs(
-    sessionKey: NativeSessionKeypair,
-  ): Promise<boolean> {
-    const raw = await this.delegation!.storage.get(this.delegationStorageKey);
-    if (!raw) return false;
-    try {
-      const record = JSON.parse(raw) as StoredDelegationSession;
-      return record.privateJwk?.x === sessionKey.publicJwk.x;
-    } catch {
-      return false;
-    }
   }
 
   /**
