@@ -12,6 +12,7 @@ import {
 import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
 import { requireFreshPasskey } from '../services/passkey-freshness';
 import { rejectNonBrowserControlRequest } from '../middleware/browser-control';
+import { nativeDelegationLockResponse } from '../services/native-delegation/errors';
 
 const prisma = createPrismaClient();
 
@@ -237,8 +238,7 @@ accountRouter.delete('/tinycloud-apps/:clientId', async (c) => {
   const userId = c.get('user').id;
   const clientId = c.req.param('clientId');
   const removed = await prisma.oauthConsent.deleteMany({ where: {
-    userId, clientId,
-    OR: [{ scopes: { has: TINYCLOUD_DELEGATION_SCOPE } }, { scopes: { has: TINYCLOUD_MANAGE_KEY_SCOPE } }],
+    userId, clientId, scopes: { has: TINYCLOUD_DELEGATION_SCOPE },
   } });
   if (removed.count === 0) return c.json({ error: 'TinyCloud app consent not found' }, 404);
   return c.json({ clientId, disconnected: true });
@@ -272,7 +272,8 @@ accountRouter.post('/delete', async (c) => {
   });
 
   // Delete all user data in transaction
-  await prisma.$transaction(async (tx) => {
+  try { await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "user" WHERE id = ${user.id} FOR UPDATE`;
     // Delete all ethereum keys (sealed blobs will be unrecoverable)
     await tx.ethereumKey.deleteMany({ where: { userId: user.id } });
 
@@ -290,7 +291,11 @@ accountRouter.post('/delete', async (c) => {
 
     // Finally delete the user
     await tx.user.delete({ where: { id: user.id } });
-  });
+  }); } catch (error) {
+    const unavailable = nativeDelegationLockResponse(error);
+    if (unavailable) return unavailable;
+    throw error;
+  }
 
   return c.json({
     success: true,

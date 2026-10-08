@@ -10,8 +10,10 @@ test('Prisma driver adapter lock SQLSTATE maps to 503 with retry', async () => {
   const response = nativeDelegationLockResponse(error)!;
   expect(response.status).toBe(503);
   expect(response.headers.get('Retry-After')).toBe('2');
+  expect(response.headers.get('Cache-Control')).toBe('no-store');
   expect(await response.json()).toEqual({ error: 'temporarily_unavailable' });
   expect(nativeDelegationLockResponse({ code: 'P2010', meta: { driverAdapterError: { cause: { code: '40P01' } } } })?.status).toBe(503);
+  expect(nativeDelegationLockResponse({ code: 'P2034' })?.status).toBe(503);
   expect(nativeDelegationLockResponse({ code: 'P2002' })).toBeNull();
 });
 

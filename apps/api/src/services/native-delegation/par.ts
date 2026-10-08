@@ -66,9 +66,10 @@ async function startNativeRequestSweep(db: PrismaClient): Promise<void> {
 }
 export type NativePermission = { service: string; space: 'applications'; path: string; actions: string[] };
 export class ParError extends Error {
-  constructor(readonly status: 400 | 401, readonly code: string, message: string) { super(message); }
+  constructor(readonly status: 400 | 401, readonly code: string, message: string,
+    readonly kind: 'malformed' | 'ceiling' = 'malformed') { super(message); }
 }
-function invalid(code: string, message: string): never { throw new ParError(400, code, message); }
+function invalid(code: string, message: string, kind: 'malformed' | 'ceiling' = 'malformed'): never { throw new ParError(400, code, message, kind); }
 function record(value: unknown, keys: Set<string>): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(k => !keys.has(k))) invalid('invalid_authorization_details', 'unexpected authorization detail member');
   return value as Record<string, unknown>;
@@ -84,10 +85,19 @@ export function validatePermissions(value: unknown, ceiling: NativeDelegationCon
       if (p.path !== '' || actions.length !== 1 || actions[0] !== 'tinycloud.capabilities/read') invalid('invalid_authorization_details', 'invalid capabilities permission');
     } else if (p.service === 'tinycloud.kv') {
       if (path.length > TINYCLOUD_DELEGATED_PATH_MAX_LENGTH || !TINYCLOUD_DELEGATED_PATH.test(path) || hasDotSegment(path) ||
-        !ceiling.kv.paths.some(allowed => allowed.endsWith('/') ? path.startsWith(allowed) : path === allowed) ||
-        actions.some(a => !a.startsWith('tinycloud.kv/') || !ceiling.kv.actions.includes(a.slice(13)))) invalid('invalid_authorization_details', 'KV permission exceeds ceiling');
+        actions.some(a => !a.startsWith('tinycloud.kv/') || !['get', 'put', 'list', 'del', 'metadata'].includes(a.slice(13)))) {
+        invalid('invalid_authorization_details', 'invalid KV permission');
+      }
+      if (!ceiling.kv.paths.some(allowed => allowed.endsWith('/') ? path.startsWith(allowed) : path === allowed) ||
+        actions.some(a => !ceiling.kv.actions.includes(a.slice(13)))) invalid('invalid_authorization_details', 'KV permission exceeds ceiling', 'ceiling');
     } else if (p.service === 'tinycloud.sql') {
-      if (!ceiling.sql || !ceiling.sql.databases.includes(path) || actions.some(a => !a.startsWith('tinycloud.sql/') || !ceiling.sql!.actions.includes(a.slice(14)))) invalid('invalid_authorization_details', 'SQL permission exceeds ceiling');
+      if (path.length > TINYCLOUD_DELEGATED_PATH_MAX_LENGTH || !TINYCLOUD_DELEGATED_PATH.test(path) || hasDotSegment(path) ||
+        actions.some(a => !a.startsWith('tinycloud.sql/') || !['read', 'write', 'schema'].includes(a.slice(14)))) {
+        invalid('invalid_authorization_details', 'invalid SQL permission');
+      }
+      if (!ceiling.sql || !ceiling.sql.databases.includes(path) || actions.some(a => !ceiling.sql!.actions.includes(a.slice(14)))) {
+        invalid('invalid_authorization_details', 'SQL permission exceeds ceiling', 'ceiling');
+      }
     } else invalid('invalid_authorization_details', 'unsupported service');
     return { service: p.service as string, space: 'applications' as const, path, actions };
   });

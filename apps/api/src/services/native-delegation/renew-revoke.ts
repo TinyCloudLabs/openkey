@@ -22,15 +22,15 @@ const DETAIL_KEYS = new Set(['type', 'session_key', 'permissions']);
 
 type Operation = 'renew' | 'revoke';
 type Failure = { error: string; status: 400 | 401 | 409 | 429; retryAfter?: number };
-type Result = { failure: Failure } | { body: Record<string, unknown> };
+type Result = { failure: Failure } | { body: Record<string, unknown> } | { needsUnseal: true };
 
 class KeyUnsealTimeout extends Error {}
 
-function fail(error: Failure['error'], status: Failure['status'], retryAfter?: number): Result {
+function fail(error: Failure['error'], status: Failure['status'], retryAfter?: number): { failure: Failure } {
   return { failure: { error, status, ...(retryAfter ? { retryAfter } : {}) } };
 }
 
-function respond(result: Result): Response {
+function respond(result: Exclude<Result, { needsUnseal: true }>): Response {
   const headers = { 'Cache-Control': 'no-store', 'Pragma': 'no-cache' };
   if ('failure' in result) return Response.json({ error: result.failure.error }, {
     status: result.failure.status,
@@ -101,12 +101,16 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
     const requested = operation === 'renew' ? requestedPermissions(params.get('authorization_details'), candidate.sessionJwk) : undefined;
     if (operation === 'renew' && requested === null) return respond(fail('invalid_authorization_details', 400));
 
-    // Unsealing can contact the TEE. Do it before taking database locks, then
-    // compare the canonical key and sealed blob again under the transaction.
-    const preKey = operation === 'renew' && candidate.status === 'ACTIVE' && candidate.refreshTokenHash === hash
+    // A valid proof over a previous token or one still inside the renewal
+    // interval needs no signing. Skip the TEE for those likely outcomes; the
+    // transaction remains authoritative and rechecks both under its locks.
+    const likelyFastRefusal = candidate.status !== 'ACTIVE' || candidate.previousRefreshTokenHash === hash ||
+      (candidate.lastRenewedAt !== null && Date.now() < candidate.lastRenewedAt.getTime() + Math.min(60, candidate.ttlSeconds / 4) * 1000);
+    let preKey = operation === 'renew' && !likelyFastRefusal
       ? await db.ethereumKey.findFirst({ where: primaryKeyWhere(candidate.userId) }) : null;
     let privateKey: Awaited<ReturnType<typeof unsealManagedKey>> | null = null;
-    if (preKey?.sealedBlob && preKey.id === candidate.keyId) {
+    const unsealForRenewal = async (): Promise<Response | null> => {
+      if (!preKey?.sealedBlob || preKey.id !== candidate.keyId) return null;
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         privateKey = await Promise.race([
@@ -120,10 +124,18 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
           ? Response.json({ error: 'temporarily_unavailable' }, { status: 503, headers: { 'Retry-After': '2', 'Cache-Control': 'no-store' } })
           : Response.json({ error: 'key_unavailable' }, { status: 500, headers: { 'Cache-Control': 'no-store' } });
       } finally { if (timer) clearTimeout(timer); }
+      return null;
+    };
+    if (!likelyFastRefusal && operation === 'renew') {
+      const unsealError = await unsealForRenewal();
+      if (unsealError) return unsealError;
     }
 
-    const result: Result = await db.$transaction(async (tx) => {
+    const transact = (): Promise<Result> => db.$transaction(async (tx) => {
       await tx.$executeRaw`SET LOCAL lock_timeout = '5s'`;
+      // The user row comes before the native rows: account deletion takes it
+      // before cascading through consent, grants and tokens.
+      await tx.$queryRaw`SELECT id FROM "user" WHERE id = ${candidate.userId} FOR SHARE`;
       const consents = await tx.$queryRaw<{ id: string; scopes: string[] }[]>`
         SELECT id, scopes FROM oauth_consent WHERE "userId" = ${candidate.userId} AND "clientId" = ${candidate.clientId} FOR SHARE`;
       const generations = await tx.$queryRaw<{ generation: bigint }[]>`
@@ -136,9 +148,9 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
         await deleteGrantTokens(tx, grant);
         return { body: {} };
       }
-      if (grant.status !== 'ACTIVE') return fail('invalid_grant', 400);
       if (!consents.some((consent) => consent.id === grant.consentId && consent.scopes.includes(TINYCLOUD_DELEGATION_SCOPE)) ||
         generations[0]?.generation !== grant.consentGeneration) return fail('consent_required', 400);
+      if (grant.status !== 'ACTIVE') return fail('invalid_grant', 400);
       const now = new Date();
       if (grant.previousRefreshTokenHash === hash) {
         if (grant.rotatedAt && now.getTime() - grant.rotatedAt.getTime() <= CONFLICT_WINDOW_MS) return fail('renewal_conflict', 409);
@@ -151,10 +163,9 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
       const row = await tx.oauthRefreshToken.findUnique({ where: { token: hash } });
       if (!row || row.userId !== grant.userId || row.clientId !== grant.clientId || !row.scopes.includes(TINYCLOUD_DELEGATION_SCOPE) ||
         row.revoked || row.expiresAt <= now) return fail('invalid_grant', 400);
-      await tx.$queryRaw`SELECT id FROM "user" WHERE id = ${grant.userId} FOR SHARE`;
       const user = await tx.user.findUnique({ where: { id: grant.userId }, select: { tinyCloudManageKeyMode: true, tinyCloudManageKeyPolicyEpoch: true } });
       if (!user) return fail('invalid_grant', 400);
-      const epoch = user?.tinyCloudManageKeyPolicyEpoch ?? 0n;
+      const epoch = user.tinyCloudManageKeyPolicyEpoch;
       const deny = async (code: 'consent_required' | 'access_denied', reason: string) => {
         await recordDecision(tx, grant, epoch, false, reason);
         return fail(code, 400);
@@ -174,14 +185,15 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
       if (requested !== undefined) {
         try { permissions = validatePermissions(requested, ceiling); }
         catch (error) {
-          if (error instanceof ParError) return fail('invalid_authorization_details', 400);
+          if (error instanceof ParError) return error.kind === 'ceiling'
+            ? deny('consent_required', 'ceiling_changed') : fail('invalid_authorization_details', 400);
           throw error;
         }
       } else permissions = approved;
-      if (requested !== undefined && !permissionSubset(permissions, approved)) return fail('invalid_authorization_details', 400);
+      if (requested !== undefined && !permissionSubset(permissions, approved)) return deny('consent_required', 'subset_too_wide');
       const key = await tx.ethereumKey.findFirst({ where: primaryKeyWhere(grant.userId) });
       if (!key || key.id !== grant.keyId || key.address.toLowerCase() !== grant.address.toLowerCase() ||
-        !privateKey || key.sealedBlob !== preKey?.sealedBlob) return deny('consent_required', 'key_changed');
+        !key.sealedBlob) return deny('consent_required', 'key_changed');
       if (user?.tinyCloudManageKeyMode === 'USER_CONTROLLED_EXCLUSIVE') return deny('access_denied', 'user_exclusive');
       const preference = await tx.tinyCloudManageKeyAppPreference.findUnique({ where: { userId_clientId: { userId: grant.userId, clientId: grant.clientId } } });
       if (preference?.status === 'DISABLED' || preference?.enabled === false) return deny('access_denied', 'grant_disabled');
@@ -192,6 +204,8 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
       const ttlSeconds = Math.min(grant.ttlSeconds, ceiling.maxDelegationTtlSeconds,
         Math.floor((grant.absoluteExpiresAt.getTime() - now.getTime()) / 1000));
       if (ttlSeconds <= 0) return deny('consent_required', 'grant_expired');
+      if (!privateKey) return { needsUnseal: true as const };
+      if (key.sealedBlob !== preKey?.sealedBlob) return deny('consent_required', 'key_changed');
       const siweNonce = nonce ?? randomBytes(12).toString('hex');
       const prepared = prepareDelegationSession({ address: ensureEip55(key.address), chainId: 1, prefix: 'applications',
         jwk: grant.sessionJwk as { kty: string; crv: string; x: string }, permissions, expiryMs: ttlSeconds * 1000,
@@ -224,6 +238,16 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
         },
       } };
     }, { timeout: 15_000 });
+    let result = await transact();
+    if ('needsUnseal' in result) {
+      preKey = await db.ethereumKey.findFirst({ where: primaryKeyWhere(candidate.userId) });
+      const unsealError = await unsealForRenewal();
+      if (unsealError) return unsealError;
+      // Crossing the interval boundary while checking under lock requires a
+      // second transaction. It revalidates every policy and token condition.
+      result = await transact();
+      if ('needsUnseal' in result) return respond(fail('consent_required', 400));
+    }
     return respond(result);
   } catch (error) {
     const locked = nativeDelegationLockResponse(error);

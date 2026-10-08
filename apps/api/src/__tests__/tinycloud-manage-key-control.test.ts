@@ -28,7 +28,7 @@ function controlDatabase() {
         return { count: 1 };
       },
     },
-    oauthConsent: { findFirst: async () => ({ clientId: 'client_1' }) },
+    oauthConsent: { findFirst: async () => ({ clientId: 'client_1' }), findMany: async () => [{ clientId: 'client_1' }] },
     oauthClient: { findUnique: async () => ({ name: 'Client One', uri: 'https://client.example' }) },
     tinyCloudManageKeyAppPreference: {
       findUnique: async ({ where }: any) => grants.get(where.userId_clientId.clientId) ?? null,

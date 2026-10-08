@@ -3,6 +3,7 @@
 export function nativeDelegationSqlState(error: unknown): string | undefined {
   if (!error || typeof error !== 'object') return undefined;
   const value = error as { code?: string; meta?: { code?: string; driverAdapterError?: { cause?: { code?: string } } }; cause?: { code?: string } };
+  if (value.code === 'P2034') return '40P01';
   return value.code === 'P2010'
     ? value.meta?.driverAdapterError?.cause?.code ?? value.meta?.code
     : value.code ?? value.cause?.code;
@@ -14,6 +15,6 @@ export function isNativeDelegationLockTimeout(error: unknown): boolean {
 
 export function nativeDelegationLockResponse(error: unknown): Response | null {
   return isNativeDelegationLockTimeout(error)
-    ? Response.json({ error: 'temporarily_unavailable' }, { status: 503, headers: { 'Retry-After': '2' } })
+    ? Response.json({ error: 'temporarily_unavailable' }, { status: 503, headers: { 'Retry-After': '2', 'Cache-Control': 'no-store' } })
     : null;
 }

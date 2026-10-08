@@ -199,7 +199,7 @@ if (!backend) {
     const other = sessionKey(); await seedDevice('device-b', other, 'token-b');
     const refused = await renew(other, 'token-b', { authorization_details: JSON.stringify([{ type: 'tinycloud_delegation', session_key: other.publicJwk, permissions: tooWide }]) });
     expect(refused.status).toBe(400);
-    expect(await error(refused)).toBe('invalid_authorization_details');
+    expect(await error(refused)).toBe('consent_required');
     for (const field of [{ ttl_seconds: 3600 }, { siwe_nonce: 'abcdefgh' }]) {
       const bad = await renew(other, 'token-b', { authorization_details: JSON.stringify([{ type: 'tinycloud_delegation', session_key: other.publicJwk, permissions, ...field }]) });
       expect(bad.status).toBe(400);
@@ -238,7 +238,7 @@ if (!backend) {
     await prisma.oauthConsent.delete({ where: { id: 'o5-consent' } });
     await prisma.oauthConsent.create({ data: { id: 'o5-consent-new', userId: USER, clientId, scopes: ['openid', 'offline_access', DELEGATION] } });
     const withdrawn = await renew(key, body.refresh_token);
-    expect(withdrawn.status).toBe(400); expect(await error(withdrawn)).toBe('invalid_grant');
+    expect(withdrawn.status).toBe(400); expect(await error(withdrawn)).toBe('consent_required');
   });
 
   test(`current ceiling and absolute grant end cap the renewed TTL (${backend})`, async () => {
@@ -279,6 +279,12 @@ if (!backend) {
     const soon = await renew(keyA, rotated); expect(soon.status).toBe(429); expect(await error(soon)).toBe('renewal_too_soon');
     expect(Number(soon.headers.get('retry-after'))).toBeGreaterThan(0);
     expect(soon.headers.get('access-control-expose-headers')?.toLowerCase()).toContain('retry-after');
+    const sealed = (await prisma.ethereumKey.findUniqueOrThrow({ where: { id: 'o5-key' } })).sealedBlob;
+    await prisma.ethereumKey.update({ where: { id: 'o5-key' }, data: { sealedBlob: 'corrupt-sealed-key' } });
+    try {
+      const fastConflict = await renew(keyA, 'token-a'); expect(fastConflict.status).toBe(409);
+      const fastInterval = await renew(keyA, rotated); expect(fastInterval.status).toBe(429);
+    } finally { await prisma.ethereumKey.update({ where: { id: 'o5-key' }, data: { sealedBlob: sealed } }); }
     await prisma.tinyCloudNativeGrant.update({ where: { id: 'device-a' }, data: { rotatedAt: new Date(Date.now() - 31_000) } });
     const reused = await renew(keyA, 'token-a'); expect(reused.status).toBe(400); expect(await error(reused)).toBe('invalid_grant');
     expect((await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: 'device-a' } })).revokedReason).toBe('refresh_reuse');
@@ -325,6 +331,32 @@ if (!backend) {
     expect(await prisma.oauthRefreshToken.findUnique({ where: { token: hash('token-a') } })).toBeNull();
   });
 
+  test(`EXCLUSIVE writes a disabled native preference that remains after SHARED (${backend})`, async () => {
+    const key = sessionKey(); await seedDevice('device-a', key, 'token-a');
+    const mode = (value: string, expectedEpoch: number) => app.fetch(new Request(`${API}/api/account/tinycloud-manage-key`, {
+      method: 'PATCH', headers: { cookie, Origin: 'https://openkey.test', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: value, expectedEpoch, confirmation: 'TAKE CONTROL' }),
+    }));
+    const epoch = Number((await prisma.user.findUniqueOrThrow({ where: { id: USER } })).tinyCloudManageKeyPolicyEpoch);
+    const exclusive = await mode('USER_CONTROLLED_EXCLUSIVE', epoch);
+    expect(exclusive.status, await exclusive.clone().text()).toBe(200);
+    expect(await prisma.tinyCloudManageKeyAppPreference.findUnique({ where: { userId_clientId: { userId: USER, clientId } } }))
+      .toMatchObject({ enabled: false, status: 'DISABLED' });
+    const shared = await mode('USER_CONTROLLED_SHARED', epoch + 1);
+    expect(shared.status, await shared.clone().text()).toBe(200);
+    const refused = await renew(key, 'token-a'); expect(refused.status).toBe(400); expect(await error(refused)).toBe('access_denied');
+  });
+
+  test(`Disconnect preserves a manage-key-only consent (${backend})`, async () => {
+    await prisma.oauthConsent.update({ where: { id: 'o5-consent' }, data: { scopes: ['tinycloud:manage-key'] } });
+    const response = await app.fetch(new Request(`${API}/api/account/tinycloud-apps/${clientId}`, {
+      method: 'DELETE', headers: { cookie, Origin: 'https://openkey.test', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmation: 'DISCONNECT' }),
+    }));
+    expect(response.status).toBe(404);
+    expect(await prisma.oauthConsent.findUnique({ where: { id: 'o5-consent' } })).not.toBeNull();
+  });
+
   if (backend === 'postgres') {
     test('a consent lock timeout rolls back renew and revoke and exposes Retry-After', async () => {
       const key = sessionKey(); await seedDevice('device-a', key, 'token-a');
@@ -336,6 +368,7 @@ if (!backend) {
           expect(response.status, await response.clone().text()).toBe(503);
           expect(await error(response)).toBe('temporarily_unavailable');
           expect(response.headers.get('retry-after')).toBe('2');
+          expect(response.headers.get('cache-control')).toBe('no-store');
           expect(response.headers.get('access-control-expose-headers')?.toLowerCase()).toContain('retry-after');
         }
         expect((await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: 'device-a' } })).status).toBe('ACTIVE');
@@ -353,7 +386,7 @@ if (!backend) {
         await connection.query('COMMIT');
         const response = await pending;
         expect(response.status).toBe(400);
-        expect(['invalid_grant', 'consent_required']).toContain(await error(response));
+        expect(await error(response)).toBe('consent_required');
         expect(await prisma.oauthRefreshToken.findUnique({ where: { token: hash('token-a') } })).toBeNull();
       } finally { await connection.query('ROLLBACK').catch(() => {}); await connection.end(); }
     });
@@ -382,5 +415,43 @@ if (!backend) {
         await Promise.all([blocker.end(), deleter.end()]);
       }
     });
+
+    test('account deletion holds the user first; renewal resumes after rollback', async () => {
+      const key = sessionKey(); await seedDevice('device-a', key, 'token-a');
+      const deleter = new Client({ connectionString: process.env.DATABASE_URL }); await deleter.connect();
+      try {
+        await deleter.query('BEGIN');
+        await deleter.query('DELETE FROM "user" WHERE id = $1', [USER]);
+        const pending = renew(key, 'token-a');
+        await Bun.sleep(150);
+        await deleter.query('ROLLBACK');
+        const response = await pending;
+        expect(response.status, await response.clone().text()).toBe(200);
+      } finally { await deleter.query('ROLLBACK').catch(() => {}); await deleter.end(); }
+    }, 20_000);
+
+    test('renewal holds the user first; account deletion waits without a deadlock', async () => {
+      const key = sessionKey(); await seedDevice('device-a', key, 'token-a');
+      const blocker = new Client({ connectionString: process.env.DATABASE_URL });
+      const deleter = new Client({ connectionString: process.env.DATABASE_URL });
+      await blocker.connect(); await deleter.connect();
+      try {
+        await blocker.query('BEGIN');
+        await blocker.query('SELECT id FROM oauth_refresh_token WHERE token = $1 FOR UPDATE', [hash('token-a')]);
+        const pending = renew(key, 'token-a');
+        await Bun.sleep(500);
+        await deleter.query('BEGIN');
+        const deletion = deleter.query('DELETE FROM "user" WHERE id = $1', [USER]);
+        await Bun.sleep(150);
+        await blocker.query('COMMIT');
+        const response = await pending;
+        expect(response.status, await response.clone().text()).toBe(200);
+        await deletion;
+        await deleter.query('ROLLBACK');
+      } finally {
+        await Promise.all([blocker.query('ROLLBACK').catch(() => {}), deleter.query('ROLLBACK').catch(() => {})]);
+        await Promise.all([blocker.end(), deleter.end()]);
+      }
+    }, 20_000);
   }
 }
