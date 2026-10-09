@@ -1,6 +1,6 @@
 {
   "name": "@openkey/sdk-capacitor",
-  "version": "0.0.0",
+  "version": "0.1.0-beta.0",
   "description": "Capacitor native sign-in and secure TinyCloud delegation storage for OpenKey",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -13,11 +13,43 @@
       "require": "./dist/index.cjs"
     }
   },
-  "files": ["dist", "ios", "android", "Package.swift", "OpenKeyCapacitor.podspec", "README.md"],
+  "files": [
+    "dist",
+    "ios",
+    "android",
+    "Package.swift",
+    "OpenKeyCapacitor.podspec",
+    "README.md"
+  ],
   "license": "SEE LICENSE IN LICENSE.md",
-  "publishConfig": { "access": "public", "registry": "https://registry.npmjs.org/" },
-  "scripts": { "build": "tsup", "typecheck": "tsc --noEmit", "test": "bun test" },
-  "peerDependencies": { "@capacitor/core": "^8.0.0", "@tinycloud/web-sdk": "^2.11.0" },
-  "devDependencies": { "@openkey/core": "workspace:*", "@capacitor/core": "^8.0.0", "@tinycloud/web-sdk": "2.11.0", "@tinycloud/web-sdk-wasm": "1.7.6", "viem": "^2.45.1", "tsup": "^8.0.0", "typescript": "^6.0.0" },
-  "capacitor": { "ios": { "src": "ios" }, "android": { "src": "android" } }
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "peerDependencies": {
+    "@capacitor/core": "^8.0.0",
+    "@tinycloud/web-sdk": "^2.11.0"
+  },
+  "devDependencies": {
+    "@openkey/core": "workspace:*",
+    "@capacitor/core": "^8.0.0",
+    "@tinycloud/web-sdk": "2.11.0",
+    "@tinycloud/web-sdk-wasm": "1.7.6",
+    "viem": "^2.45.1",
+    "tsup": "^8.0.0",
+    "typescript": "^6.0.0"
+  },
+  "capacitor": {
+    "ios": {
+      "src": "ios"
+    },
+    "android": {
+      "src": "android"
+    }
+  }
 }

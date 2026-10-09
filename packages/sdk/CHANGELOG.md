@@ -1,5 +1,14 @@
 # @openkey/sdk
 
+## 0.12.0-beta.0
+
+### Patch Changes
+
+- Updated dependencies [5b993e2]
+- Updated dependencies [5b993e2]
+- Updated dependencies [5b993e2]
+  - @openkey/core@0.12.0-beta.0
+
 ## 0.11.0
 
 ### Minor Changes

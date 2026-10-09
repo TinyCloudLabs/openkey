@@ -14,5 +14,24 @@
     "@openkey/tee": "0.0.1",
     "@openkey/types": "0.8.8"
   },
-  "changesets": []
+  "changesets": [
+    "account-key-bearer-boundary",
+    "consent-ui-parity",
+    "delegate-capabilities-read-baseline",
+    "delegate-complete-consume-after-checks",
+    "delegate-ordinary-link-policy",
+    "delegate-primary-key",
+    "delegate-raw-encryption-grants",
+    "device-authorization-bounded-scope",
+    "device-authorization-web",
+    "native-capacitor-sdk",
+    "native-delegation-core",
+    "native-exchange-intent-hook",
+    "passkeys-unsupported-ui",
+    "sign-out-widget-app-origin",
+    "smart-device-transactions",
+    "tc-704-set-primary-key",
+    "tidy-badgers-sing",
+    "widget-origin-checks"
+  ]
 }
