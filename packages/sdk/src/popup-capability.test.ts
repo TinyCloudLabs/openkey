@@ -70,5 +70,7 @@ describe('popupUnavailableError', () => {
     const embedded = popupUnavailableError(true);
     expect(embedded.code).toBe('POPUP_BLOCKED');
     expect(embedded.message).toContain('WebView');
+    expect(embedded.reason).toBe('embedded-webview');
+    expect('reason' in popupUnavailableError(false)).toBe(false);
   });
 });

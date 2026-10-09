@@ -786,6 +786,7 @@ describe('iframe to popup fallback without popup support', () => {
         jest.advanceTimersByTime(3001); // iframe ready timeout only, not the 5 minute timeout
         expect(await outcome(result)).toBe('rejected');
         await expect(result).rejects.toMatchObject({ code: 'POPUP_BLOCKED' });
+        await expect(result).rejects.not.toHaveProperty('reason');
         expect((openkey as any).popup).toBeNull();
       } finally {
         restore();
@@ -829,7 +830,7 @@ describe('iframe to popup fallback without popup support', () => {
         const { result } = signOutRequest(openkey);
         jest.advanceTimersByTime(3001);
         expect(await outcome(result)).toBe('rejected');
-        await expect(result).rejects.toMatchObject({ code: 'POPUP_BLOCKED' });
+        await expect(result).rejects.toMatchObject({ code: 'POPUP_BLOCKED', reason: 'embedded-webview' });
         expect(opened).toBe(0);
         expect((openkey as any).activeFlowCancellations.size).toBe(0);
         // Sign-out still clears local SDK state before it rejects.
@@ -852,7 +853,7 @@ describe('iframe to popup fallback without popup support', () => {
         const { result } = signOutRequest(openkey);
         jest.advanceTimersByTime(3001);
         expect(await outcome(result)).toBe('rejected');
-        await expect(result).rejects.toMatchObject({ code: 'POPUP_BLOCKED' });
+        await expect(result).rejects.toMatchObject({ code: 'POPUP_BLOCKED', reason: 'embedded-webview' });
         expect(opened).toBe(0);
       } finally {
         restore();

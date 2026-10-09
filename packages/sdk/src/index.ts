@@ -111,6 +111,8 @@ export interface SignOutAcknowledgement {
 export interface OpenKeyError {
   code: 'USER_CANCELLED' | 'POPUP_BLOCKED' | 'TIMEOUT' | 'NO_KEY' | 'UNAUTHORIZED' | 'UNKNOWN' | 'STATE_MISMATCH';
   message: string;
+  /** On `POPUP_BLOCKED`: `'embedded-webview'` when the page runs in an app WebView that cannot open popups. */
+  reason?: 'embedded-webview';
 }
 
 // ======= OAuth 2.1 Types =======

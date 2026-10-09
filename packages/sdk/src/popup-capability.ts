@@ -4,6 +4,8 @@
 export interface PopupError {
   code: 'POPUP_BLOCKED';
   message: string;
+  /** Set when the popup is unavailable because the page runs in an embedded app WebView. */
+  reason?: 'embedded-webview';
 }
 
 type PopupEnvironment = {
@@ -21,6 +23,11 @@ export function isEmbeddedAppWebView(env?: PopupEnvironment): boolean {
   if (target.ReactNativeWebView) return true;
 
   const userAgent = target.navigator?.userAgent ?? '';
+  // Known limitation: a WKWebView in iPadOS desktop content mode can report a
+  // Macintosh UA that includes `Safari/`, which this heuristic cannot tell apart
+  // from real Safari. Capacitor and React Native are still caught by the
+  // capability checks above, and `isUsablePopup` still fails fast when
+  // `window.open` returns null or a closed window.
   // Android WebView adds a `wv` token to the platform comment.
   if (/\bAndroid\b[^)]*;\s*wv\b/.test(userAgent)) return true;
   // iOS WKWebView sends an Apple WebKit UA without the `Safari/` token that
@@ -37,10 +44,12 @@ export function isUsablePopup(popup: Window | null | undefined): popup is Window
 }
 
 export function popupUnavailableError(embeddedWebView: boolean): PopupError {
-  return {
-    code: 'POPUP_BLOCKED',
-    message: embeddedWebView
-      ? 'Popups are not available in this embedded app WebView. Make sure the OpenKey host is allowed by frame-src, or use native sign-in.'
-      : 'Popup was blocked. Please allow popups for this site.',
-  };
+  if (embeddedWebView) {
+    return {
+      code: 'POPUP_BLOCKED',
+      message: 'Popups are not available in this embedded app WebView. Make sure the OpenKey host is allowed by frame-src, or use native sign-in.',
+      reason: 'embedded-webview',
+    };
+  }
+  return { code: 'POPUP_BLOCKED', message: 'Popup was blocked. Please allow popups for this site.' };
 }
