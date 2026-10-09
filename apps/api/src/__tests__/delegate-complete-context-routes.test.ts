@@ -21,10 +21,14 @@ const other = privateKeyToAccount('0x2222222222222222222222222222222222222222222
 const user = { id: 'user_1', email: 'alice@example.test' };
 const otherUser = { id: 'user_2', email: 'mallory@example.test' };
 let currentUser = user;
+let autoSignEnabled = true;
 const jwk = { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' };
 const otherJwk = { kty: 'OKP', crv: 'Ed25519', x: 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB' };
 const host = 'https://node.tinycloud.xyz';
-const keyRecord = {
+const keyRecord: {
+  id: string; userId: string; address: string; keyType: 'MANAGED' | 'EXTERNAL';
+  archivedAt: null; sealedBlob: string | null; sealingContext: null;
+} = {
   id: 'key_1',
   userId: user.id,
   address: account.address,
@@ -40,11 +44,12 @@ const prisma = {
     findMany: mock(async () => [keyRecord]),
     findUnique: mock(async () => keyRecord),
   },
-  user: { findUnique: mock(async () => ({ autoSignEnabled: true })) },
+  user: { findUnique: mock(async () => ({ autoSignEnabled })) },
   tinyCloudBootstrapState: {},
 };
 
 const activateSessionWithHost = mock(async () => ({ success: true }));
+const ensureTinyCloudBootstrap = mock(async () => ({ status: 'complete' as const }));
 const deviceService = new DeviceAuthorizationService(new MemoryDeviceAuthorizationStore(), {
   verificationOrigin: 'https://openkey.so',
   encryptionSecret: 'test-device-authorization-secret-is-long-enough',
@@ -65,6 +70,10 @@ mock.module('@openkey/tee', () => ({
   getAddressFromPrivateKey: () => account.address,
 }));
 mock.module('@tinycloud/sdk-core', () => ({ activateSessionWithHost }));
+mock.module('../services/tinycloud-bootstrap', () => ({
+  trustedTinyCloudBootstrapHost: () => host,
+  ensureTinyCloudBootstrap,
+}));
 mock.module('../middleware/session', () => ({
   requireSession: createMiddleware(async (c, next) => {
     c.set('user', currentUser);
@@ -99,7 +108,12 @@ beforeAll(async () => {
 beforeEach(() => {
   resetContexts?.();
   currentUser = user;
+  keyRecord.keyType = 'MANAGED';
+  keyRecord.sealedBlob = 'sealed-blob';
+  autoSignEnabled = true;
   activateSessionWithHost.mockClear();
+  activateSessionWithHost.mockImplementation(async () => ({ success: true }));
+  ensureTinyCloudBootstrap.mockClear();
   unseal.mockClear();
 });
 
@@ -225,6 +239,20 @@ const refusals: RefusalCase[] = [
 ];
 
 describe('versioned /complete validates every binding before consuming the context', () => {
+  test('external wallet activation skips the space without attempting onboarding', async () => {
+    keyRecord.keyType = 'EXTERNAL';
+    keyRecord.sealedBlob = null;
+    activateSessionWithHost.mockImplementation(async () => ({
+      success: true,
+      skipped: [`tinycloud:pkh:eip155:1:${account.address}:agents`],
+    }) as any);
+    const prepared = await prepare({ prefix: 'agents' });
+    const result = await post('/complete', await completeBody(prepared));
+    expect(result.status).toBe(200);
+    expect(result.body.spaceReady).toBe(false);
+    expect(ensureTinyCloudBootstrap).not.toHaveBeenCalled();
+  });
+
   for (const refusal of refusals) {
     test(`refuses ${refusal.name} and leaves the context usable`, async () => {
       const prepared = await prepare(refusal.prepare);
@@ -333,6 +361,66 @@ describe('managed approval checks everything caller-controlled before consuming 
     expect(replay.body.code).toBe('context-not-found');
     expect(unseal).toHaveBeenCalledTimes(1);
     expect(activateSessionWithHost).toHaveBeenCalledTimes(1);
+  });
+
+  test('finishes onboarding when activation skips a canonical agents space', async () => {
+    activateSessionWithHost.mockImplementation(async () => ({
+      success: true,
+      skipped: [`tinycloud:pkh:eip155:1:${account.address}:agents`],
+    }) as any);
+    const prepared = await prepare({ prefix: 'agents' });
+    const approved = await post('/', {
+      keyId: keyRecord.id,
+      jwk,
+      host,
+      prepared: prepared.prepared,
+      authorizationContextToken: prepared.authorizationContext.token,
+      selectedActionIds: prepared.selectedActionKeys,
+      protocolVersion: 1,
+    });
+    expect(approved.status).toBe(200);
+    expect(approved.body.spaceReady).toBe(true);
+    expect(approved.body.delegationHeader?.Authorization).toBeString();
+    expect(ensureTinyCloudBootstrap).toHaveBeenCalledTimes(1);
+  });
+
+  test('does not onboard when auto-sign is disabled and reports bootstrap failure', async () => {
+    autoSignEnabled = false;
+    activateSessionWithHost.mockImplementation(async () => ({
+      success: true,
+      skipped: [`tinycloud:pkh:eip155:1:${account.address}:agents`],
+    }) as any);
+    const prepared = await prepare({ prefix: 'agents' });
+    const approved = await post('/', {
+      keyId: keyRecord.id,
+      jwk,
+      host,
+      prepared: prepared.prepared,
+      authorizationContextToken: prepared.authorizationContext.token,
+      selectedActionIds: prepared.selectedActionKeys,
+      protocolVersion: 1,
+    });
+    expect(approved.status).toBe(200);
+    expect(approved.body.spaceReady).toBe(false);
+    expect(ensureTinyCloudBootstrap).not.toHaveBeenCalled();
+
+    autoSignEnabled = true;
+    ensureTinyCloudBootstrap.mockImplementationOnce(async () => ({
+      status: 'failed', errorCode: 'tinycloud_bootstrap_failed', errorMessage: 'seed failed',
+    }) as any);
+    const retry = await prepare({ prefix: 'agents' });
+    const failed = await post('/', {
+      keyId: keyRecord.id,
+      jwk,
+      host,
+      prepared: retry.prepared,
+      authorizationContextToken: retry.authorizationContext.token,
+      selectedActionIds: retry.selectedActionKeys,
+      protocolVersion: 1,
+    });
+    expect(failed.status).toBe(200);
+    expect(failed.body.spaceReady).toBe(false);
+    expect(failed.body.spaceError).toContain('seed failed');
   });
 
   const malformed: Array<[string, Record<string, unknown>]> = [

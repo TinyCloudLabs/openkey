@@ -73,6 +73,14 @@ export interface EnsureTinyCloudBootstrapInput {
   format: 'raw' | 'personal_sign';
 }
 
+export interface EnsureTinyCloudBootstrapInputCore {
+  prisma: PrismaLike;
+  userId: string;
+  key: TinyCloudBootstrapKey;
+  privateKey: string;
+  host?: string;
+}
+
 export class TinyCloudBootstrapError extends Error {
   constructor(
     message: string,
@@ -300,9 +308,34 @@ export async function ensureTinyCloudBootstrapForApprovedSign(
     };
   }
 
+  return ensureTinyCloudBootstrap({ ...input, host: tinycloudHost, chainId: parsed.chainId });
+}
+
+export async function ensureTinyCloudBootstrap(
+  input: EnsureTinyCloudBootstrapInputCore & { chainId?: number },
+): Promise<TinyCloudBootstrapOutcome> {
+  if (process.env.TINYCLOUD_BOOTSTRAP_ON_SIGN === 'off') return { status: 'skipped' };
+  const chainId = input.chainId ?? 1;
+  if (!isSupportedTinyCloudChainId(chainId)) return { status: 'skipped' };
+  let tinycloudHost: string;
+  try {
+    tinycloudHost = input.host ?? trustedTinyCloudBootstrapHost();
+    if (!TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS.has(tinycloudHost)) {
+      // Keep local development support consistent with the host resolver.
+      if (input.host && input.host === trustedTinyCloudBootstrapHost()) {
+        tinycloudHost = input.host;
+      } else {
+        throw new TinyCloudBootstrapError('TinyCloud bootstrap host is not trusted.', 'tinycloud_bootstrap_untrusted_host', false);
+      }
+    }
+  } catch (error) {
+    const bootstrapErr = error instanceof TinyCloudBootstrapError ? error : null;
+    return { status: 'failed', errorCode: bootstrapErr?.code ?? 'tinycloud_bootstrap_untrusted_host', errorMessage: bootstrapErr?.message ?? String(error) };
+  }
+
   const cacheKey = {
     keyId: input.key.id,
-    chainId: parsed.chainId,
+    chainId,
     tinycloudHost,
     bootstrapVersion: TINYCLOUD_BOOTSTRAP_VERSION,
   };
@@ -321,7 +354,7 @@ export async function ensureTinyCloudBootstrapForApprovedSign(
     userId: input.userId,
     keyId: input.key.id,
     address: ensureEip55(input.key.address),
-    chainId: parsed.chainId,
+    chainId,
     tinycloudHost,
   });
 
@@ -344,14 +377,14 @@ export async function ensureTinyCloudBootstrapForApprovedSign(
     await withBootstrapLockHeartbeat(input.prisma, cacheKey, attemptId, async () => {
       await bootstrapProbe({
         address: ensureEip55(input.key.address),
-        chainId: parsed.chainId,
+        chainId,
         privateKey: input.privateKey,
         tinycloudHost,
       });
 
       await bootstrapExecutor({
         address: ensureEip55(input.key.address),
-        chainId: parsed.chainId,
+        chainId,
         privateKey: input.privateKey,
         tinycloudHost,
       });

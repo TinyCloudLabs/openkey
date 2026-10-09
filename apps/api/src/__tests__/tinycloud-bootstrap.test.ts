@@ -32,6 +32,7 @@ type BootstrapHook = (input: {
 let TINYCLOUD_BOOTSTRAP_VERSION: string;
 let TinyCloudBootstrapError: new (...args: any[]) => Error;
 let ensureTinyCloudBootstrapForApprovedSign: (input: any) => Promise<TinyCloudBootstrapOutcome>;
+let ensureTinyCloudBootstrap: (input: any) => Promise<TinyCloudBootstrapOutcome>;
 let setTinyCloudBootstrapExecutorForTests: (executor?: BootstrapHook) => void;
 let setTinyCloudBootstrapProbeForTests: (probe?: BootstrapHook) => void;
 let sessionJwkForSigning: (
@@ -73,6 +74,7 @@ beforeEach(async () => {
     TINYCLOUD_BOOTSTRAP_VERSION,
     TinyCloudBootstrapError,
     ensureTinyCloudBootstrapForApprovedSign,
+    ensureTinyCloudBootstrap,
     setTinyCloudBootstrapExecutorForTests,
     setTinyCloudBootstrapProbeForTests,
     sessionJwkForSigning,
@@ -292,6 +294,14 @@ describe('ensureTinyCloudBootstrapForApprovedSign', () => {
     expect(probe).not.toHaveBeenCalled();
     expect(prisma.tinyCloudBootstrapState.create).not.toHaveBeenCalled();
     expect(prisma.tinyCloudBootstrapState.updateMany).not.toHaveBeenCalled();
+  });
+
+  test('shared onboarding core completes once and serves the next delegation from cache', async () => {
+    const input = { prisma, userId, key, privateKey, host: tinycloudHost, chainId };
+    expect(await ensureTinyCloudBootstrap(input)).toEqual({ status: 'complete' });
+    expect(executor).toHaveBeenCalledTimes(1);
+    expect(await ensureTinyCloudBootstrap(input)).toEqual({ status: 'complete' });
+    expect(executor).toHaveBeenCalledTimes(1);
   });
 
   test('creates a cache row, bootstraps, and marks the key complete', async () => {

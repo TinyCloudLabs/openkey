@@ -67,6 +67,7 @@
   let done = $state(false);
   let pasteCode = $state('');
   let shortCode = $state('');
+  let spaceReadinessMessage = $state('');
   let callbackFailed = $state(false);
   let copied = $state(false);
   let step = $state<'select-key' | 'link-wallet' | 'consent' | 'choose-wallet' | 'done'>('select-key');
@@ -989,6 +990,10 @@
 
   async function finishDelegate(data: any) {
     const payload = permissionsEdited ? { ...data, edited: true } : data;
+    const missingSpace = typeof payload.spaceId === 'string' ? payload.spaceId.split(':').at(-1) : 'requested';
+    spaceReadinessMessage = payload.spaceReady === false
+      ? `Approved. Your ${missingSpace} space isn't set up yet; the requesting app will tell you what to do.${payload.spaceError ? ` ${payload.spaceError}` : ''}`
+      : '';
 
     if (deviceTransactionId) {
       const API_URL = import.meta.env.VITE_API_URL || '';
@@ -1130,6 +1135,12 @@
           <svg class="w-12 h-12 text-green-500 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
             <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
+
+          {#if spaceReadinessMessage}
+            <p class="w-full rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 mb-4" role="status">
+              {spaceReadinessMessage}
+            </p>
+          {/if}
 
           {#if pasteCode}
             <h2 class="text-lg font-semibold text-surface-900 mb-2">Delegation Created</h2>

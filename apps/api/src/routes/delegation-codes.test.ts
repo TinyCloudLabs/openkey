@@ -9,6 +9,8 @@ const delegation = {
   verificationMethod: 'did:key:zSession',
   jwk: { kty: 'OKP', crv: 'Ed25519', x: 'public-key' },
   primary: true,
+  spaceReady: false,
+  spaceError: 'TinyCloud account setup failed (tinycloud_bootstrap_failed): seed failed.',
   expirationTime: '2099-01-01T00:00:00.000Z',
 };
 
