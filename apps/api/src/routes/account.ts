@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { requireSession, type SessionContext } from '../middleware/session';
 import { parseAutoSignPreferencePatch } from './account-preferences';
-import { TINYCLOUD_MANAGE_KEY_SCOPE } from '../oauth-config';
+import { TINYCLOUD_DELEGATION_SCOPE, TINYCLOUD_MANAGE_KEY_SCOPE } from '../oauth-config';
 import {
   changeTinyCloudManageKeyGrant,
   changeTinyCloudManageKeyMode,
@@ -12,6 +12,7 @@ import {
 import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
 import { requireFreshPasskey } from '../services/passkey-freshness';
 import { rejectNonBrowserControlRequest } from '../middleware/browser-control';
+import { nativeDelegationLockResponse } from '../services/native-delegation/errors';
 
 const prisma = createPrismaClient();
 
@@ -130,14 +131,15 @@ accountRouter.patch('/auto-sign', async (c) => {
   return c.json({ autoSignEnabled: preference.autoSignEnabled });
 });
 
-// List the apps with an active TinyCloud signing consent and the user's
-// per-app stop control. The client is always resolved from the consent row;
-// callers cannot create preferences for arbitrary OAuth client IDs.
+// List apps with a TinyCloud signing or native delegation consent and the
+// user's per-app stop control. The client is resolved from a consent, grant,
+// preference or decision; callers cannot create preferences without consent.
 accountRouter.get('/tinycloud-apps', async (c) => {
   const user = c.get('user');
-  const [consents, preferences, decisions, userPreference] = await Promise.all([
+  const [consents, preferences, decisions, userPreference, nativeGrants] = await Promise.all([
     prisma.oauthConsent.findMany({
-      where: { userId: user.id, scopes: { has: TINYCLOUD_MANAGE_KEY_SCOPE } }, select: { clientId: true },
+      where: { userId: user.id, OR: [{ scopes: { has: TINYCLOUD_MANAGE_KEY_SCOPE } }, { scopes: { has: TINYCLOUD_DELEGATION_SCOPE } }] },
+      select: { clientId: true, scopes: true },
     }),
     prisma.tinyCloudManageKeyAppPreference.findMany({
       where: { userId: user.id },
@@ -150,11 +152,13 @@ accountRouter.get('/tinycloud-apps', async (c) => {
     prisma.user.findUnique({
       where: { id: user.id }, select: { tinyCloudManageKeyMode: true, tinyCloudManageKeyPolicyEpoch: true },
     }),
+    prisma.tinyCloudNativeGrant.groupBy({ by: ['clientId'], where: { userId: user.id, status: 'ACTIVE' }, _count: { id: true } }),
   ]);
   const clientIds = [...new Set([
     ...consents.map((consent) => consent.clientId),
     ...preferences.map((preference) => preference.clientId),
     ...decisions.map((decision) => decision.clientId),
+    ...nativeGrants.map((grant) => grant.clientId),
   ])];
   const clients = clientIds.length === 0 ? [] : await prisma.oauthClient.findMany({
     where: { clientId: { in: clientIds } },
@@ -166,16 +170,22 @@ accountRouter.get('/tinycloud-apps', async (c) => {
     apps: clientIds.map((clientId) => {
       const preference = preferences.find((candidate) => candidate.clientId === clientId);
       const client = clientById.get(clientId);
+      const nativeDelegation = consents.some((consent) => consent.clientId === clientId && consent.scopes.includes(TINYCLOUD_DELEGATION_SCOPE));
+      const blocked = preference?.enabled === false || preference?.status === 'DISABLED';
       return {
         clientId,
         name: client?.name || preference?.clientNameSnapshot || clientId,
         uri: client?.uri || preference?.clientUriSnapshot || null,
         icon: client?.icon || null,
         disabled: client?.disabled ?? true,
-        enabled: userPreference?.tinyCloudManageKeyMode === 'APP_MANAGED'
+        nativeDelegation,
+        activeNativeGrants: nativeGrants.find((grant) => grant.clientId === clientId)?._count.id ?? 0,
+        enabled: nativeDelegation
+          ? userPreference?.tinyCloudManageKeyMode !== 'USER_CONTROLLED_EXCLUSIVE' && consentIds.has(clientId) && !blocked
+          : userPreference?.tinyCloudManageKeyMode === 'APP_MANAGED'
           ? consentIds.has(clientId) && !(preference?.enabled === false || preference?.status === 'DISABLED')
           : preference?.enabled === true && preference.status === 'ENABLED' && consentIds.has(clientId),
-        status: consentIds.has(clientId) ? (preference?.status ?? 'PENDING_USER_APPROVAL') : 'CONSENT_WITHDRAWN',
+        status: consentIds.has(clientId) ? (preference?.status ?? (nativeDelegation ? 'ENABLED' : 'PENDING_USER_APPROVAL')) : 'CONSENT_WITHDRAWN',
       };
     }),
     activity: decisions.map((decision) => {
@@ -217,6 +227,23 @@ accountRouter.patch('/tinycloud-apps/:clientId', async (c) => {
   return c.json({ clientId, enabled: result.grant.enabled, status: result.grant.status, policyEpoch: result.epoch });
 });
 
+// Disconnect withdraws the OAuth consent. The database withdrawal trigger
+// increments its generation, revokes every native grant for this app, and
+// deletes their tokens in the same transaction.
+accountRouter.delete('/tinycloud-apps/:clientId', async (c) => {
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
+  const body = await c.req.json().catch(() => null) as { confirmation?: unknown } | null;
+  if (body?.confirmation !== 'DISCONNECT') return c.json({ error: 'Type DISCONNECT to confirm' }, 400);
+  const userId = c.get('user').id;
+  const clientId = c.req.param('clientId');
+  const removed = await prisma.oauthConsent.deleteMany({ where: {
+    userId, clientId, scopes: { has: TINYCLOUD_DELEGATION_SCOPE },
+  } });
+  if (removed.count === 0) return c.json({ error: 'TinyCloud app consent not found' }, 404);
+  return c.json({ clientId, disconnected: true });
+});
+
 // Delete account permanently
 // Requires: cookie session from an OpenKey origin, a passkey verification on
 // this session within the last five minutes, and typed confirmation.
@@ -245,7 +272,8 @@ accountRouter.post('/delete', async (c) => {
   });
 
   // Delete all user data in transaction
-  await prisma.$transaction(async (tx) => {
+  try { await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "user" WHERE id = ${user.id} FOR UPDATE`;
     // Delete all ethereum keys (sealed blobs will be unrecoverable)
     await tx.ethereumKey.deleteMany({ where: { userId: user.id } });
 
@@ -263,7 +291,11 @@ accountRouter.post('/delete', async (c) => {
 
     // Finally delete the user
     await tx.user.delete({ where: { id: user.id } });
-  });
+  }); } catch (error) {
+    const unavailable = nativeDelegationLockResponse(error);
+    if (unavailable) return unavailable;
+    throw error;
+  }
 
   return c.json({
     success: true,

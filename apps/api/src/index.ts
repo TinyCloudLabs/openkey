@@ -6,7 +6,7 @@ import {
   oauthProviderAuthServerMetadata,
   oauthProviderOpenIdConfigMetadata,
 } from '@better-auth/oauth-provider';
-import { auth } from './auth';
+import { auth, prisma as authPrisma } from './auth';
 import { keysRouter } from './routes/keys';
 import { nostrKeysRouter } from './routes/nostr-keys';
 import { accountRouter } from './routes/account';
@@ -25,18 +25,21 @@ import { trackAuthorization, trackTokenExchange, trackUniqueUser } from './analy
 import { configuredSocialProviderIds } from './social-providers';
 import { corsOriginPolicy } from './origin-policy';
 import { readinessHandler } from './readiness';
+import { createProviderInterceptors } from './services/native-delegation/interceptors';
+import { providerTokenOptions } from './services/native-delegation/provider-tokens';
+import { handlePar } from './services/native-delegation/par';
+import { createNativeDelegationConsentRouter } from './routes/native-delegation-consent';
+import { handleNativeRenewOrRevoke } from './services/native-delegation/renew-revoke';
+import {
+  protocolAwareCors,
+  withNativeDelegationMetadata,
+} from './services/native-delegation/public-protocol';
 
 // Create Hono app
 const app = new Hono();
 
 // Middleware
 app.use('*', logger());
-
-// OAuth token endpoint: allow any origin (PKCE provides security for public clients)
-app.use('/api/auth/oauth2/token', cors({
-  origin: '*',
-  credentials: false, // credentials not needed for token exchange
-}));
 
 // Zero-gesture bootstrap signing: allow any origin. Third-party apps call
 // this from the browser with a bearer session token (no cookies), and the
@@ -47,12 +50,17 @@ app.use('/api/delegate/sign', cors({
   credentials: false,
 }));
 
-// All other routes: restricted to whitelisted origins
-app.use('*', cors({
+// OAuth discovery and the public protocol endpoints (token; native
+// delegation PAR, renew and revoke) answer any origin without credentials:
+// native apps call them from capacitor:// and https://localhost WebViews,
+// and PKCE plus session proofs, not cookies, authenticate them. Every other
+// route, including the cookie-authenticated consent routes, keeps the
+// restricted credentialed policy.
+app.use('*', protocolAwareCors(cors({
   origin: corsOriginPolicy('http://localhost:5173'),
   credentials: true,
   exposeHeaders: ['set-auth-token'],
-}));
+})));
 
 // Health check: traffic is accepted only when the database migration contract
 // required by this Prisma client is present and checksum-verified.
@@ -116,13 +124,14 @@ app.use('/api/auth/oauth2/authorize', async (c, next) => {
 // from the inferred Auth type here.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const authorizationServerMetadata = oauthProviderAuthServerMetadata(auth as any);
+const oauthIssuer = `${process.env.BETTER_AUTH_URL}/api/auth`;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const openIdConfiguration = oauthProviderOpenIdConfigMetadata(auth as any);
 app.get('/.well-known/oauth-authorization-server', (c) =>
-  authorizationServerMetadata(c.req.raw)
+  authorizationServerMetadata(c.req.raw).then((response) => withNativeDelegationMetadata(response, oauthIssuer))
 );
 app.get('/.well-known/oauth-authorization-server/api/auth', (c) =>
-  authorizationServerMetadata(c.req.raw)
+  authorizationServerMetadata(c.req.raw).then((response) => withNativeDelegationMetadata(response, oauthIssuer))
 );
 app.get('/.well-known/openid-configuration', (c) =>
   openIdConfiguration(c.req.raw)
@@ -136,6 +145,22 @@ app.get('/api/auth/.well-known/openid-configuration', (c) =>
 app.get('/api/auth/providers', (c) =>
   c.json({ providers: configuredSocialProviderIds() })
 );
+
+// Fail-closed guards for delegation clients, ahead of the provider's
+// authorize, refresh and revoke handling.
+app.post('/api/auth/oauth2/par', (c) => handlePar(c.req.raw, authPrisma));
+app.post('/api/auth/oauth2/tinycloud/renew', (c) => handleNativeRenewOrRevoke(c.req.raw, authPrisma, oauthIssuer, 'renew'));
+app.post('/api/auth/oauth2/tinycloud/revoke', (c) => handleNativeRenewOrRevoke(c.req.raw, authPrisma, oauthIssuer, 'revoke'));
+app.use('/api/auth/*', createProviderInterceptors({
+  database: authPrisma,
+  tokens: providerTokenOptions(auth),
+  provider: (request) => auth.handler(request),
+  getSessionUserId: async (headers) => (await auth.api.getSession({ headers }))?.user.id ?? null,
+  authorizationCodes: {
+    find: async (identifier) => (await auth.$context).internalAdapter.findVerificationValue(identifier),
+    delete: async (identifier) => (await auth.$context).internalAdapter.deleteVerificationByIdentifier(identifier),
+  },
+}));
 
 // better-auth routes - mount at /api/auth
 // Avoid async/await wrapper to preserve AsyncLocalStorage context in Bun
@@ -168,6 +193,7 @@ app.route('/api/variables', variablesRouter);
 
 // Delegate route (CLI auth flow)
 app.route('/api/delegate', delegateRouter);
+app.route('/api/oauth/tinycloud/requests', createNativeDelegationConsentRouter(authPrisma));
 app.route('/api/device-authorizations', deviceAuthorizationRouter);
 app.route('/api/delegation-codes', createDelegationCodeRouter({
   store: createPrismaDelegationCodeStore(),

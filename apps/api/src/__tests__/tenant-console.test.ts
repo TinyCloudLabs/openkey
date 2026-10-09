@@ -105,6 +105,11 @@ describe('developer organization console', () => {
     const created = await console.request('/org-a/apps', json('admin', { name: 'Safe', redirectUris: ['https://example.com/callback'], uri: 'https://example.com' }));
     expect(created.status).toBe(201);
     const app = (await created.json() as any).client;
+    // Console apps never receive restricted scopes such as tinycloud:delegation.
+    const stored = apps.find((candidate) => candidate.id === app.id)!;
+    expect(stored.scopes).toEqual(['openid', 'email', 'keys', 'offline_access']);
+    expect((await console.request(`/org-a/apps/${app.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json', 'x-test-user': 'admin' }, body: JSON.stringify({ scopes: ['tinycloud:delegation'] }) })).status).toBe(400);
+    expect(stored.scopes).toEqual(['openid', 'email', 'keys', 'offline_access']);
     expect((await console.request(`/org-a/apps/${app.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json', 'x-test-user': 'admin' }, body: JSON.stringify({ icon: 'data:text/html,owned' }) })).status).toBe(400);
     expect((await console.request('/org-a/apps', json('admin', { name: 'Over limit', redirectUris: ['https://example.com/other'] }))).status).toBe(429);
   });

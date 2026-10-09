@@ -79,6 +79,17 @@ export async function changeTinyCloudManageKeyMode(
         where: { userId, status: 'ENABLED' },
         data: { enabled: false, status: 'DISABLED' },
       });
+      const nativeConsents = await tx.oauthConsent.findMany({
+        where: { userId, scopes: { has: 'tinycloud:delegation' } },
+        select: { clientId: true },
+      });
+      for (const consent of nativeConsents) {
+        await tx.tinyCloudManageKeyAppPreference.upsert({
+          where: { userId_clientId: { userId, clientId: consent.clientId } },
+          create: { userId, clientId: consent.clientId, enabled: false, status: 'DISABLED' },
+          update: { enabled: false, status: 'DISABLED' },
+        });
+      }
     }
     await tx.tinyCloudManageKeyControlEvent.create({
       data: {
@@ -122,7 +133,7 @@ export async function changeTinyCloudManageKeyGrant(
       return { kind: 'stale' as const, epoch };
     }
     const consent = await tx.oauthConsent.findFirst({
-      where: { userId, clientId, scopes: { has: 'tinycloud:manage-key' } }, select: { clientId: true },
+      where: { userId, clientId, OR: [{ scopes: { has: 'tinycloud:manage-key' } }, { scopes: { has: 'tinycloud:delegation' } }] }, select: { clientId: true },
     });
     if (!consent) return { kind: 'missing_consent' as const };
     const client = await tx.oauthClient.findUnique({ where: { clientId }, select: { name: true, uri: true } });

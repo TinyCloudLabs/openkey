@@ -14,7 +14,7 @@
     "test:browser": "playwright test --config tests/browser/playwright.config.ts"
   },
   "dependencies": {
-    "@better-auth/oauth-provider": "^1.6.9",
+    "@better-auth/oauth-provider": "1.6.10",
     "@better-auth/passkey": "^1.6.9",
     "@openkey/capability-review": "workspace:*",
     "better-auth": "^1.6.9"

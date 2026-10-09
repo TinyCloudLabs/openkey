@@ -24,6 +24,7 @@ on:
       - scripts/deploy-production-migrations.ts
       - scripts/assert-production-migration-ready.ts
       - scripts/verify-tc-488-cutover.ts
+      - scripts/native-delegation-schema-guards.ts
       - docker-compose.prod.yml
       - .github/workflows/deploy-api.yml
   workflow_dispatch:

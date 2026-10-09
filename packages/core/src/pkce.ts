@@ -42,6 +42,34 @@ export function base64UrlEncode(buffer: Uint8Array): string {
   return base64.replace(/\+/g, '-').replace(/\//g, '_');
 }
 
+
+/**
+ * Pure JS base64url decoding into a Uint8Array.
+ * Accepts unpadded base64url (RFC 4648 §5); ignores `=` padding.
+ */
+export function base64UrlDecode(input: string): Uint8Array {
+  const base64 = input.replace(/-/g, '+').replace(/_/g, '/');
+  const clean = base64.replace(/=+$/, '');
+  const bytes = new Uint8Array(Math.floor((clean.length * 6) / 8));
+
+  let accumulator = 0;
+  let bits = 0;
+  let out = 0;
+  for (const char of clean) {
+    const value = BASE64_CHARS.indexOf(char);
+    if (value < 0) {
+      throw new Error(`Invalid base64url character: ${char}`);
+    }
+    accumulator = (accumulator << 6) | value;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      bytes[out++] = (accumulator >> bits) & 0xff;
+    }
+  }
+  return bytes;
+}
+
 /**
  * Generate a cryptographically random code verifier for PKCE.
  * Returns a 43-character base64url string (32 random bytes).
@@ -62,6 +90,8 @@ async function defaultSha256(input: string): Promise<Uint8Array> {
   const digest = await crypto.subtle.digest('SHA-256', data);
   return new Uint8Array(digest);
 }
+/** SHA-256 using Web Crypto, exported for hashing proof credentials. */
+export const sha256: SHA256Fn = defaultSha256;
 
 /**
  * Generate the PKCE code challenge from a code verifier.
@@ -72,9 +102,9 @@ async function defaultSha256(input: string): Promise<Uint8Array> {
  */
 export async function generateCodeChallenge(
   verifier: string,
-  sha256?: SHA256Fn,
+  sha256Fn?: SHA256Fn,
 ): Promise<string> {
-  const hashFn = sha256 ?? defaultSha256;
+  const hashFn = sha256Fn ?? defaultSha256;
   const digest = await hashFn(verifier);
   return base64UrlEncode(digest);
 }

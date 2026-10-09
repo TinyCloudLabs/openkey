@@ -5,6 +5,7 @@
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import { safeExternalHttpUrl, safeOAuthNavigationUrl } from '$lib/safe-oauth-url';
+  import NativeDelegationConsent from './NativeDelegationConsent.svelte';
 
   const session = authClient.useSession();
 
@@ -20,6 +21,7 @@
 
   // Get OAuth parameters from URL
   const clientId = $page.url.searchParams.get('client_id');
+  const nativeRequest = $page.url.searchParams.get('tinycloud_request');
   const scope = $page.url.searchParams.get('scope') || 'openid';
   const requestedScopes = new Set(scope.split(/\s+/).filter(Boolean));
 
@@ -75,6 +77,7 @@
 
     // Session is resolved and user is authenticated - fetch client info
     fetched = true;
+    if (nativeRequest) { loading = false; return; }
     fetchClientInfo();
   });
 
@@ -122,6 +125,9 @@
 </script>
 
 <div class="min-h-screen bg-surface-50 flex items-center justify-center px-4">
+  {#if nativeRequest && !loading}
+    <div class="w-full max-w-2xl py-8"><NativeDelegationConsent requestId={nativeRequest} email={$session.data?.user?.email} /></div>
+  {:else}
   <Card class="w-full max-w-md">
     {#if loading}
       <div class="py-12 text-center text-surface-500">
@@ -213,4 +219,5 @@
       </p>
     {/if}
   </Card>
+  {/if}
 </div>

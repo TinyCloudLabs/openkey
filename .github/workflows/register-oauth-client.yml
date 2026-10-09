@@ -26,6 +26,9 @@ on:
       uri:
         description: 'Application website URL (optional)'
         required: false
+      tinycloud_native_delegation:
+        description: 'Native delegation ceiling JSON (optional; SQL host must be isolated)'
+        required: false
 
 jobs:
   register:
@@ -46,6 +49,8 @@ jobs:
           CLIENT_REDIRECT_URIS: ${{ inputs.redirect_uris }}
           CLIENT_TYPE: ${{ inputs.type }}
           CLIENT_URI: ${{ inputs.uri }}
+          CLIENT_TINYCLOUD_NATIVE_DELEGATION: ${{ inputs.tinycloud_native_delegation }}
+          TINYCLOUD_SQL_ISOLATED_HOSTS: ${{ vars.TINYCLOUD_SQL_ISOLATED_HOSTS }}
         run: |
           if [ -z "$DATABASE_URL" ]; then
             echo "DATABASE_URL secret not set" >&2

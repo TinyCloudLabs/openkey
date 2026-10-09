@@ -18,6 +18,7 @@ import {
   DYNAMIC_CLIENT_REGISTRATION_ALLOWED_SCOPES,
   OAUTH_SCOPES,
   TINYCLOUD_CANONICAL_IDENTITY_CLAIM,
+  TINYCLOUD_DELEGATION_SCOPE,
   TINYCLOUD_MANAGE_KEY_SCOPE,
   TINYCLOUD_MCP_SCOPE,
   TINYCLOUD_OWNER_DIDS_CLAIM,
@@ -36,6 +37,9 @@ import {
   socialProviderTrustedOrigins,
 } from './social-providers';
 import { crossSubDomainCookieOptions } from './auth-options';
+import { resolveRequestUri } from './services/native-delegation/par';
+import { exchangeNativeCode, generateNativeRefreshToken, withNativeTokenGuardErrors } from './services/native-delegation/code-exchange';
+import { providerTokenOptions } from './services/native-delegation/provider-tokens';
 
 export const prisma: PrismaClient = createPrismaClient({
   log: ['error', 'warn'],
@@ -167,6 +171,18 @@ const passkeyFreshnessPlugin = {
   },
 } satisfies BetterAuthPlugin;
 
+// Better Auth's authorize endpoint otherwise strips extension query keys
+// before the OAuth handler sees them. PAR's resolver and the full-query Hono
+// guard establish `tinycloud_request`; extending the schema keeps that one
+// binding in the signed consent query and stored authorization-code query.
+function withNativeAuthorizeQuery<T extends ReturnType<typeof oauthProvider>>(plugin: T): T {
+  const endpoint = plugin.endpoints.oauth2Authorize;
+  endpoint.options.query = endpoint.options.query.extend({
+    tinycloud_request: endpoint.options.query.shape.client_id.optional(),
+  });
+  return plugin;
+}
+
 
 export const auth = betterAuth({
   baseURL,
@@ -190,7 +206,7 @@ export const auth = betterAuth({
     },
   },
 
-  database: prismaAdapter(prisma, {
+  database: prismaAdapter(withNativeTokenGuardErrors(prisma), {
     provider: 'postgresql',
   }),
 
@@ -268,7 +284,8 @@ export const auth = betterAuth({
 
     // OAuth 2.1 Provider - enables third-party apps to authenticate users
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    oauthProvider({
+    withNativeAuthorizeQuery(oauthProvider({
+      requestUriResolver: ({ requestUri, clientId }) => resolveRequestUri(prisma, requestUri, clientId),
       loginPage: `${origin}/auth/login`,
       consentPage: `${origin}/oauth/consent`,
       allowDynamicClientRegistration: dynamicClientRegistrationEnabled(),
@@ -282,7 +299,20 @@ export const auth = betterAuth({
       idTokenExpiresIn: 60 * 60, // 1 hour in seconds
       storeClientSecret: 'hashed',
       storeTokens: 'hashed',
-      async customTokenResponseFields({ grantType, verificationValue }) {
+      generateRefreshToken: (): Promise<string> => generateNativeRefreshToken(prisma, providerTokenOptions(auth)),
+      async customTokenResponseFields({ grantType, user, scopes, verificationValue }) {
+        // Runs before any access, refresh or ID token is created. A token
+        // carrying tinycloud:delegation comes only from the native code
+        // exchange, never from the provider's other grants.
+        let nativeFields: Record<string, unknown> = {};
+        if (grantType === 'authorization_code') {
+          nativeFields = await exchangeNativeCode(prisma, `${baseURL}/api/auth`, { user, scopes, verificationValue });
+        } else if (scopes.includes(TINYCLOUD_DELEGATION_SCOPE)) {
+          throw new APIError('BAD_REQUEST', {
+            error: 'invalid_grant',
+            error_description: `${TINYCLOUD_DELEGATION_SCOPE} is not issued by this grant`,
+          });
+        }
         // Runs after the provider authenticates the client, before either
         // opaque/JWT access tokens or the ID token are created. Refresh has no
         // verificationValue: resolve the same request credentials the provider
@@ -296,7 +326,7 @@ export const auth = betterAuth({
             : ctx.body?.client_id;
         }
         await oauthClientContext.set(clientId);
-        return {};
+        return nativeFields;
       },
       async customAccessTokenClaims({ user, scopes }) {
         if (!user || !scopes.includes(TINYCLOUD_MCP_SCOPE)) return {};
@@ -351,7 +381,7 @@ export const auth = betterAuth({
         if (canonicalIdentity) claims[TINYCLOUD_CANONICAL_IDENTITY_CLAIM] = canonicalIdentity;
         return claims;
       },
-    }) as any,
+    })) as any,
   ],
 
   // Provider entries are present only when every required secret is configured.
