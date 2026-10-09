@@ -162,6 +162,7 @@ function bootstrapSpaceName(space: string): BootstrapSpaceName {
     case 'account':
     case 'secrets':
     case 'public':
+    case 'agents':
       return space;
     default:
       throw new Error(`Unexpected bootstrap resource space: ${space}`);
@@ -273,6 +274,25 @@ describe('evaluateBootstrapSessionScope', () => {
     });
 
     expect(decision).toEqual({ allowed: true });
+  });
+
+  test('accepts the agents bootstrap session and rejects an added KV sync action', () => {
+    const spaceId = bootstrapSpaceId(address, chainId, 'agents');
+    const resources = BOOTSTRAP_SESSION_REQUESTS.agents.resources;
+    const entries = resources.map((resource) => entry(
+      resource.service,
+      spaceId,
+      resource.path,
+      [...resource.actions],
+    ));
+    expect(evaluateBootstrapSessionScope({ address, chainId, spaceId, entries })).toEqual({ allowed: true });
+
+    const syncEntries = [...entries];
+    syncEntries.find((candidate) => candidate.service === 'tinycloud.kv')!.actions.push('tinycloud.kv/sync');
+    expect(evaluateBootstrapSessionScope({ address, chainId, spaceId, entries: syncEntries })).toMatchObject({
+      allowed: false,
+      code: 'outside_bootstrap_allowlist',
+    });
   });
 
   test('rejects legacy "/" root paths from pre-2.4.1 bootstrap clients', () => {
@@ -479,6 +499,16 @@ describe('evaluateBootstrapHostScope', () => {
     expect(decision).toEqual({ allowed: true });
   });
 
+  test('accepts the agents space host delegation', () => {
+    const spaceId = bootstrapSpaceId(address, chainId, 'agents');
+    expect(evaluateBootstrapHostScope({
+      address,
+      chainId,
+      spaceId,
+      entries: [entry('space', spaceId, '', ['tinycloud.space/host'])],
+    })).toEqual({ allowed: true });
+  });
+
   test('rejects host delegations for non-enshrined spaces', () => {
     const spaceId = makePkhSpaceId(address, chainId, 'openkey');
 
@@ -509,6 +539,20 @@ describe('evaluateAutoSignPolicy', () => {
 });
 
 describe('delegateRouter Auto-Sign integration', () => {
+  test('POST /api/delegate/sign accepts the agents bootstrap session SIWE', async () => {
+    const message = bootstrapSessionSiweWithResources(
+      'agents',
+      BOOTSTRAP_SESSION_REQUESTS.agents.resources,
+    );
+    const response = await postBootstrapMessage(message);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      approved: true,
+      signature: expect.stringMatching(/^0x[0-9a-f]+$/i),
+    });
+    expect(signedMessages).toEqual([message]);
+  });
+
   test('POST /api/delegate/sign accepts the widened default SIWE with account entries preceding default', async () => {
     const router = await delegateRouter();
     const resources = BOOTSTRAP_SESSION_REQUESTS.default.resources;
