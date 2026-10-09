@@ -1,6 +1,6 @@
 {
   "name": "@openkey/sdk-capacitor",
-  "version": "0.1.0-beta.0",
+  "version": "0.1.0-beta.1",
   "description": "Capacitor native sign-in and secure TinyCloud delegation storage for OpenKey",
   "type": "module",
   "main": "./dist/index.cjs",

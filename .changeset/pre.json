@@ -28,6 +28,7 @@
     "native-delegation-core",
     "native-exchange-intent-hook",
     "passkeys-unsupported-ui",
+    "sdk-capacitor-host-kotlin",
     "sign-out-widget-app-origin",
     "smart-device-transactions",
     "tc-704-set-primary-key",
