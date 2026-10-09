@@ -8,6 +8,7 @@ import {
   buildAuthorizationUrl,
 } from '@openkey/core';
 import { OpenKeyNostr } from './nostr';
+import { isEmbeddedAppWebView, isUsablePopup, popupUnavailableError } from './popup-capability';
 
 export { OpenKeyNostr } from './nostr';
 export type {
@@ -110,6 +111,8 @@ export interface SignOutAcknowledgement {
 export interface OpenKeyError {
   code: 'USER_CANCELLED' | 'POPUP_BLOCKED' | 'TIMEOUT' | 'NO_KEY' | 'UNAUTHORIZED' | 'UNKNOWN' | 'STATE_MISMATCH';
   message: string;
+  /** On `POPUP_BLOCKED`: `'embedded-webview'` when the page runs in an app WebView that cannot open popups. */
+  reason?: 'embedded-webview';
 }
 
 // ======= OAuth 2.1 Types =======
@@ -894,6 +897,12 @@ export class OpenKey {
    * the SDK never holds an OpenKey session token. Local SDK state is cleared
    * before opening the widget, including when remote revocation is
    * unavailable.
+   *
+   * Rejects without waiting for the timeout when the widget cannot be shown
+   * (code `POPUP_BLOCKED`): the iframe did not load and the popup fallback is
+   * blocked, or the app is an embedded WebView that cannot open popups.
+   * Remote revocation did not happen then, so clearing any app session is the
+   * caller's decision.
    */
   async signOut(opts?: { mode?: OpenKeyMode }): Promise<SignOutAcknowledgement> {
     const requestId = `ok-signout-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -1543,20 +1552,22 @@ export class OpenKey {
     const left = window.screenX + (window.outerWidth - POPUP_WIDTH) / 2;
     const top = window.screenY + (window.outerHeight - POPUP_HEIGHT) / 2;
 
-    this.popup = window.open(
+    const popup = window.open(
       url,
       'openkey-oauth',
       `width=${POPUP_WIDTH},height=${POPUP_HEIGHT},left=${left},top=${top},popup=true`
     );
 
-    if (!this.popup) {
-      showToast('Popup was blocked. Please allow popups for this site.', 'error');
-      reject({
-        code: 'POPUP_BLOCKED',
-        message: 'Popup was blocked. Please allow popups or use redirect mode.',
-      });
+    if (!isUsablePopup(popup)) {
+      this.popup = null;
+      const embedded = isEmbeddedAppWebView();
+      if (!embedded) showToast('Popup was blocked. Please allow popups for this site.', 'error');
+      reject(embedded
+        ? popupUnavailableError(true)
+        : { code: 'POPUP_BLOCKED', message: 'Popup was blocked. Please allow popups or use redirect mode.' });
       return;
     }
+    this.popup = popup;
 
     const redirectHost = new URL(redirectUri).origin;
 
@@ -1785,6 +1796,11 @@ export class OpenKey {
       const readyTimeout = setTimeout(() => {
         if (readyReceived || settled) return;
         cleanup();
+        if (isEmbeddedAppWebView()) {
+          console.warn('OpenKey: iframe did not load in an embedded app WebView, which cannot open a popup. Add frame-src https://openkey.so to your CSP.');
+          settle(() => reject(popupUnavailableError(true)));
+          return;
+        }
         console.warn('OpenKey: iframe blocked by CSP, falling back to popup. Add frame-src https://openkey.so to your CSP.');
         showToast();
         const popupUrl = `${this.host}/widget/${action}?origin=${origin}${passkeysQueryFlag(this.passkeysSupported)}`;
@@ -1909,16 +1925,15 @@ export class OpenKey {
       `openkey-${action}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
       `width=${POPUP_WIDTH},height=${POPUP_HEIGHT},left=${left},top=${top},popup=true`
     );
-    this.popup = popup;
 
-    if (!popup) {
-      showToast('Popup was blocked. Please allow popups for this site.', 'error');
-      reject({
-        code: 'POPUP_BLOCKED',
-        message: 'Popup was blocked. Please allow popups for this site.',
-      });
+    if (!isUsablePopup(popup)) {
+      this.popup = null;
+      const embedded = isEmbeddedAppWebView();
+      if (!embedded) showToast('Popup was blocked. Please allow popups for this site.', 'error');
+      reject(popupUnavailableError(embedded));
       return;
     }
+    this.popup = popup;
 
     let settled = false;
     let cancel: () => void;

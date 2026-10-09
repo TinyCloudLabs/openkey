@@ -79,8 +79,8 @@
   }
 
   function describe(e: unknown): string {
-    const { code, message } = (e ?? {}) as { code?: string; message?: string };
-    if (code === 'POPUP_BLOCKED') return 'Your browser blocked the OpenKey window. Allow pop-ups for this site and try again.';
+    const { code, message, reason } = (e ?? {}) as { code?: string; message?: string; reason?: string };
+    if (code === 'POPUP_BLOCKED' && reason !== 'embedded-webview') return 'Your browser blocked the OpenKey window. Allow pop-ups for this site and try again.';
     return message || 'Something went wrong. Please try again.';
   }
 </script>

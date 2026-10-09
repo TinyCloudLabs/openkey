@@ -7,7 +7,7 @@
 // resize acceptance would surface immediately.
 
 // @ts-expect-error bun:test is a runtime-only module; tsc doesn't ship types
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, jest, test } from 'bun:test';
 import {
   validateIframeResize,
   shouldRouteAuthorizeTinyCloudExternal,
@@ -694,5 +694,201 @@ describe('passkeysSupported option', () => {
     } finally {
       (globalThis as any).window = previousWindow;
     }
+  });
+});
+
+describe('iframe to popup fallback without popup support', () => {
+  const ORIGIN = 'https://app.test';
+  const WEBVIEW_UA =
+    'Mozilla/5.0 (Linux; Android 14; Pixel 8; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/126.0.0.0 Mobile Safari/537.36';
+  const BROWSER_UA =
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+
+  function fakeElement(): any {
+    const element: any = {
+      style: {},
+      children: [] as any[],
+      setAttribute() {},
+      addEventListener() {},
+      appendChild(child: any) { element.children.push(child); return child; },
+      attachShadow: () => fakeElement(),
+      remove() {},
+      contentWindow: { postMessage() {} },
+    };
+    return element;
+  }
+
+  function signOutRequest(openkey: OpenKey) {
+    let settled: 'resolved' | 'rejected' | undefined;
+    const result = openkey.signOut({ mode: 'iframe' }).then(
+      (value) => { settled = 'resolved'; return value; },
+      (error) => { settled = 'rejected'; throw error; },
+    );
+    result.catch(() => {});
+    return { result, state: () => settled };
+  }
+
+  function setup(opts: { userAgent: string; open: (...args: any[]) => unknown; Capacitor?: unknown }) {
+    const previous = {
+      window: (globalThis as any).window,
+      document: (globalThis as any).document,
+      navigator: Object.getOwnPropertyDescriptor(globalThis, 'navigator'),
+    };
+    const navigator = { userAgent: opts.userAgent };
+    const win: any = {
+      location: { origin: ORIGIN, hostname: 'app.test', href: '' },
+      screenX: 0, screenY: 0, outerWidth: 1024, outerHeight: 768, innerHeight: 800,
+      navigator,
+      Capacitor: opts.Capacitor,
+      matchMedia: () => ({ matches: false }),
+      open: opts.open,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => true,
+    };
+    (globalThis as any).window = win;
+    (globalThis as any).document = { createElement: () => fakeElement(), body: fakeElement() };
+    Object.defineProperty(globalThis, 'navigator', { value: navigator, configurable: true });
+    const openkey = new OpenKey({ host: 'https://openkey.test', mode: 'iframe' });
+    (openkey as any).lastAuth = { address: '0xfirst', keyId: 'key-first', keyType: 'MANAGED' };
+    return {
+      openkey,
+      restore() {
+        (globalThis as any).window = previous.window;
+        (globalThis as any).document = previous.document;
+        if (previous.navigator) Object.defineProperty(globalThis, 'navigator', previous.navigator);
+      },
+    };
+  }
+
+  // Fake timers are on, so a missing rejection must fail the test, not hang it.
+  async function outcome(promise: Promise<unknown>): Promise<'resolved' | 'rejected' | 'pending'> {
+    let result: 'resolved' | 'rejected' | 'pending' = 'pending';
+    promise.then(() => { result = 'resolved'; }, () => { result = 'rejected'; });
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    return result;
+  }
+
+  async function withFakeTimers(run: () => Promise<void>) {
+    jest.useFakeTimers();
+    try {
+      await run();
+    } finally {
+      jest.useRealTimers();
+    }
+  }
+
+  test('window.open returning null rejects immediately with a typed error', async () => {
+    await withFakeTimers(async () => {
+      const { openkey, restore } = setup({ userAgent: BROWSER_UA, open: () => null });
+      try {
+        const { result } = signOutRequest(openkey);
+        jest.advanceTimersByTime(3001); // iframe ready timeout only, not the 5 minute timeout
+        expect(await outcome(result)).toBe('rejected');
+        await expect(result).rejects.toMatchObject({ code: 'POPUP_BLOCKED' });
+        await expect(result).rejects.not.toHaveProperty('reason');
+        expect((openkey as any).popup).toBeNull();
+      } finally {
+        restore();
+      }
+    });
+  });
+
+  test('window.open returning an already closed window rejects immediately', async () => {
+    await withFakeTimers(async () => {
+      const { openkey, restore } = setup({ userAgent: BROWSER_UA, open: () => ({ closed: true, close() {}, postMessage() {} }) });
+      try {
+        const { result } = signOutRequest(openkey);
+        jest.advanceTimersByTime(3001);
+        expect(await outcome(result)).toBe('rejected');
+        await expect(result).rejects.toMatchObject({ code: 'POPUP_BLOCKED' });
+        expect((openkey as any).popup).toBeNull();
+      } finally {
+        restore();
+      }
+    });
+  });
+
+  test('explicit popup mode with a null window.open rejects immediately', async () => {
+    const { openkey, restore } = setup({ userAgent: BROWSER_UA, open: () => null });
+    try {
+      await expect(openkey.signOut({ mode: 'popup' })).rejects.toMatchObject({ code: 'POPUP_BLOCKED' });
+    } finally {
+      restore();
+    }
+  });
+
+  test('an embedded WebView with the iframe not ready skips the popup and rejects', async () => {
+    await withFakeTimers(async () => {
+      let opened = 0;
+      const { openkey, restore } = setup({
+        userAgent: WEBVIEW_UA,
+        // A dead-but-open window is what hung sign-out in Android WebView.
+        open: () => { opened += 1; return { closed: false, close() {}, postMessage() {} }; },
+      });
+      try {
+        const { result } = signOutRequest(openkey);
+        jest.advanceTimersByTime(3001);
+        expect(await outcome(result)).toBe('rejected');
+        await expect(result).rejects.toMatchObject({ code: 'POPUP_BLOCKED', reason: 'embedded-webview' });
+        expect(opened).toBe(0);
+        expect((openkey as any).activeFlowCancellations.size).toBe(0);
+        // Sign-out still clears local SDK state before it rejects.
+        expect((openkey as any).lastAuth).toBeNull();
+      } finally {
+        restore();
+      }
+    });
+  });
+
+  test('Capacitor native is treated as an embedded WebView', async () => {
+    await withFakeTimers(async () => {
+      let opened = 0;
+      const { openkey, restore } = setup({
+        userAgent: BROWSER_UA,
+        Capacitor: { isNativePlatform: () => true },
+        open: () => { opened += 1; return { closed: false, close() {}, postMessage() {} }; },
+      });
+      try {
+        const { result } = signOutRequest(openkey);
+        jest.advanceTimersByTime(3001);
+        expect(await outcome(result)).toBe('rejected');
+        await expect(result).rejects.toMatchObject({ code: 'POPUP_BLOCKED', reason: 'embedded-webview' });
+        expect(opened).toBe(0);
+      } finally {
+        restore();
+      }
+    });
+  });
+
+  test('a normal browser still falls back to a popup and completes sign-out there', async () => {
+    await withFakeTimers(async () => {
+      const popup: any = { closed: false, close() { popup.closed = true; }, postMessage() {} };
+      let opened = 0;
+      const { openkey, restore } = setup({ userAgent: BROWSER_UA, open: () => { opened += 1; return popup; } });
+      const listeners: Array<(event: any) => void> = [];
+      (globalThis as any).window.addEventListener = (type: string, fn: (event: any) => void) => {
+        if (type === 'message') listeners.push(fn);
+      };
+      try {
+        const { result, state } = signOutRequest(openkey);
+        jest.advanceTimersByTime(3001);
+        expect(opened).toBe(1);
+        expect(state()).toBeUndefined();
+        // Answer with the requestId the SDK generated for this sign-out.
+        let posted: any;
+        popup.postMessage = (message: any) => { posted = message; };
+        const handler = listeners[listeners.length - 1]!;
+        handler({ origin: 'https://openkey.test', source: popup, data: { type: 'openkey:ready' } });
+        handler({
+          origin: 'https://openkey.test',
+          source: popup,
+          data: { type: 'openkey:sign-out:response', success: true, requestId: posted.requestId, protocolVersion: 1, revoked: true },
+        });
+        expect(await result).toEqual({ requestId: posted.requestId, revoked: true });
+      } finally {
+        restore();
+      }
+    });
   });
 });
