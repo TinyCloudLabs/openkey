@@ -18,6 +18,7 @@ let lastPasskeyAt: Date | null = null;
 let sessionLookups: unknown[] = [];
 
 const tx = {
+  $queryRaw: async () => [],
   ethereumKey: { deleteMany: async () => ({ count: 1 }) },
   passkey: { deleteMany: async () => ({ count: 1 }) },
   session: { deleteMany: async () => ({ count: 1 }) },
