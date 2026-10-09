@@ -40,11 +40,11 @@ export class NativeSessionStorage implements ISessionStorage {
   async load(address: string): Promise<PersistedSessionData | null> {
     if (!this.isVisible()) return null;
     const generation = this.generation();
-    let value: string | null;
+    let value: string | null | undefined;
     try { ({ value } = await this.plugin.secureStoreGet({ key: this.key })); }
     catch { throw new OpenKeyNativeError('STORAGE', 'TinyCloud secure store read failed'); }
     if (!this.isVisible() || this.generation() !== generation) return null;
-    if (value === null) {
+    if (value == null) {
       this.present.delete(address.toLowerCase());
       return null;
     }

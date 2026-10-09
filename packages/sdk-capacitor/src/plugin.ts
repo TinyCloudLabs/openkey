@@ -3,7 +3,7 @@ import { OpenKeyNativeError } from '@openkey/core';
 
 export interface OpenKeyCapacitorPlugin {
   openAuthSession(options: { url: string; callbackScheme: string; callbackUrl?: string; expectedState?: string; ephemeral?: boolean }): Promise<{ url: string }>;
-  secureStoreGet(options: { key: string }): Promise<{ value: string | null }>;
+  secureStoreGet(options: { key: string }): Promise<{ value?: string | null }>;
   secureStoreSet(options: { key: string; value: string }): Promise<void>;
   secureStoreRemove(options: { key: string }): Promise<void>;
 }
@@ -23,7 +23,7 @@ export const OpenKeyCapacitor = registerPlugin<OpenKeyCapacitorPlugin>('OpenKeyC
 
 export const secureStore = {
   async get(key: string): Promise<string | null> {
-    return (await OpenKeyCapacitor.secureStoreGet({ key })).value;
+    return (await OpenKeyCapacitor.secureStoreGet({ key })).value ?? null;
   },
   async set(key: string, value: string): Promise<void> {
     await OpenKeyCapacitor.secureStoreSet({ key, value });

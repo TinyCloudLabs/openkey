@@ -264,12 +264,12 @@ export class OpenKeyNative {
       attempts: 1, expiresAt: grantExpiry(Date.now(), record.delegation) }, metadata, true);
   }
   private async read(): Promise<StoredSession | null> {
-    let value: string | null;
+    let value: string | null | undefined;
     try { ({ value } = await this.plugin.secureStoreGet({ key: this.recordKey })); }
     catch (error) {
       throw new SessionReadError(`OpenKey secure-store read failed: ${error instanceof Error ? error.message : 'native storage unavailable'}`, false);
     }
-    if (value === null) return null;
+    if (value == null) return null;
     try {
       const stored = JSON.parse(value) as StoredSession;
       if (stored.version !== 1 || !stored.tokens?.refreshToken || !stored.delegation || !stored.privateJwk) throw new Error();
@@ -280,10 +280,10 @@ export class OpenKeyNative {
     }
   }
   private async readPending(): Promise<PendingRevokeRecord> {
-    let value: string | null;
+    let value: string | null | undefined;
     try { ({ value } = await this.plugin.secureStoreGet({ key: this.pendingRevokeKey })); }
     catch (error) { throw new OpenKeyNativeError('STORAGE', `Pending-revoke secure-store read failed: ${error instanceof Error ? error.message : 'native storage unavailable'}`); }
-    if (value === null) return { version: 1, grants: [] };
+    if (value == null) return { version: 1, grants: [] };
     try {
       const parsed = JSON.parse(value) as PendingRevokeRecord;
       if (parsed.version !== 1 || !Array.isArray(parsed.grants)) throw new Error();
@@ -304,10 +304,10 @@ export class OpenKeyNative {
     return { version: 1, grants: [] };
   }
   private async readExchangeIntent(): Promise<ExchangeIntent | null> {
-    let value: string | null;
+    let value: string | null | undefined;
     try { ({ value } = await this.plugin.secureStoreGet({ key: this.exchangeIntentKey })); }
     catch (error) { throw new OpenKeyNativeError('STORAGE', `Exchange-intent secure-store read failed: ${error instanceof Error ? error.message : 'native storage unavailable'}`); }
-    if (value === null) return null;
+    if (value == null) return null;
     try {
       const intent = JSON.parse(value) as ExchangeIntent;
       if (intent.version !== 1 || typeof intent.attemptId !== 'string' || !intent.attemptId ||

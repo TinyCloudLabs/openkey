@@ -111,6 +111,21 @@ describe('OpenKeyNative', () => {
     expect((await client.getSessionKey())?.did).toBe(session.sessionKey.did);
   });
 
+  test('omitted and undefined secure-store values are treated as missing', async () => {
+    for (const missing of [{}, { value: undefined }]) {
+      const f = fixture();
+      const originalGet = f.plugin.secureStoreGet.bind(f.plugin);
+      f.plugin.secureStoreGet = async (args) => f.plugin.values.has(args.key) ? originalGet(args) : missing;
+      const client = f.make();
+      expect(await client.current()).toBeNull();
+      const session = await client.signIn({ capabilities });
+      expect(session.tokens.refreshToken).toBe('initial');
+      expect(await client.sessionStorageAdapter().load(session.delegation.address!)).toBeNull();
+      await client.signOut();
+      expect(await client.current()).toBeNull();
+    }
+  });
+
   test('revokes an exchanged grant if TinyCloud verification fails before storage', async () => {
     const f = fixture();
     const client = f.make(async () => { throw new OpenKeyNativeError('SERVER', 'integrity failure'); });

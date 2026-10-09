@@ -9,6 +9,7 @@ import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
+import org.json.JSONObject
 import java.net.URI
 import java.net.URLDecoder
 
@@ -24,6 +25,8 @@ internal fun matchesOpenKeyRedirect(actual: String, expected: String, state: Str
         received.host.equals(callback.host, ignoreCase = true) &&
         received.port == callback.port && received.path == callback.path && responseStates == listOf(state)
 } catch (_: Exception) { false }
+
+internal fun secureStoreResult(value: String?): JSObject = JSObject().put("value", value ?: JSONObject.NULL)
 
 @CapacitorPlugin(name = "OpenKeyCapacitor")
 class OpenKeyCapacitorPlugin : Plugin() {
@@ -111,18 +114,18 @@ class OpenKeyCapacitorPlugin : Plugin() {
 
     @PluginMethod fun secureStoreGet(call: PluginCall) {
         val key = call.getString("key") ?: run { call.reject("Missing key", "INVALID_REQUEST"); return }
-        try { call.resolve(JSObject().put("value", store.get(key))) }
-        catch (_: Exception) { call.reject("Secure store read failed", "SERVER") }
+        try { call.resolve(secureStoreResult(store.get(key))) }
+        catch (error: Exception) { call.reject("Secure store read failed (${error.javaClass.simpleName})", "STORAGE") }
     }
     @PluginMethod fun secureStoreSet(call: PluginCall) {
         val key = call.getString("key") ?: run { call.reject("Missing key", "INVALID_REQUEST"); return }
         val value = call.getString("value") ?: run { call.reject("Missing value", "INVALID_REQUEST"); return }
         try { store.set(key, value); call.resolve() }
-        catch (_: Exception) { call.reject("Secure store write failed", "SERVER") }
+        catch (error: Exception) { call.reject("Secure store write failed (${error.javaClass.simpleName})", "STORAGE") }
     }
     @PluginMethod fun secureStoreRemove(call: PluginCall) {
         val key = call.getString("key") ?: run { call.reject("Missing key", "INVALID_REQUEST"); return }
         try { store.remove(key); call.resolve() }
-        catch (_: Exception) { call.reject("Secure store delete failed", "SERVER") }
+        catch (error: Exception) { call.reject("Secure store delete failed (${error.javaClass.simpleName})", "STORAGE") }
     }
 }
