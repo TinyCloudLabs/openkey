@@ -3,7 +3,6 @@ import {
   BOOTSTRAP_ALLOWLIST,
   BOOTSTRAP_ENCRYPTION_NETWORK_NAME,
   BOOTSTRAP_MANIFEST,
-  BOOTSTRAP_SPACE_NAMES,
   CAPABILITIES,
   ENCRYPTION,
   KV,
@@ -35,6 +34,7 @@ import {
 } from '@tinycloud/sdk-core';
 import type { PrismaClient } from '@openkey/db';
 import { DEFAULT_TINYCLOUD_BOOTSTRAP_HOST, TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS } from './tinycloud-hosts';
+import { kvSpaceRegistryStore, registerMissingBootstrapSpaces } from './tinycloud-space-registry';
 
 export const TINYCLOUD_BOOTSTRAP_VERSION = `@tinycloud/bootstrap:${canonicalHashHex({
   allowlist: BOOTSTRAP_ALLOWLIST,
@@ -568,7 +568,7 @@ async function runTinyCloudBootstrap(input: {
   // needs the spaces table to exist.
   await runAccountSchema(input.tinycloudHost, accountSession, steps);
   await Promise.all([
-    seedBootstrapSpaces(input.tinycloudHost, accountSession, input.address, input.chainId),
+    seedBootstrapSpaces(input.tinycloudHost, accountSession, steps, input.address, input.chainId),
     seedBootstrapApplications(input.tinycloudHost, accountSession, steps),
   ]);
 
@@ -728,52 +728,47 @@ async function executeSqlSchema(
 async function seedBootstrapSpaces(
   host: string,
   session: BootstrapSession,
+  steps: BootstrapStep[],
   address: string,
   chainId: number,
 ): Promise<void> {
   const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
   const now = new Date().toISOString();
-  const records = BOOTSTRAP_SPACE_NAMES.map((name) => ({
-    name,
-    spaceId: `tinycloud:pkh:eip155:${chainId}:${address}:${name}`,
-  }));
+  const seedStep = steps.find((step) => step.kind === 'seed-spaces');
+  if (!seedStep) throw new Error('TinyCloud bootstrap seed-spaces step is missing');
 
-  // KV + SQL must match what the SDK's account.spaces.register() writes
-  // (spaces/<fullSpaceId> keys, type "owned", mirrored account-index rows) —
-  // otherwise isFreshBootstrapAccount() sees an unprovisioned account and
-  // clients re-run bootstrap on every sign-in.
-  await Promise.all(records.map(({ name, spaceId }) => invokeRaw(
-    host,
-    session,
-    'kv',
-    `spaces/${spaceId}`,
-    KV.PUT,
-    JSON.stringify({
-      space_id: spaceId,
-      name,
-      owner_did: ownerDid,
-      type: 'owned',
-      permissions: ['*'],
-      status: 'active',
-      registered_at: now,
-      updated_at: now,
-    }),
-  )));
-
-  await invokeJsonWithActions(host, session, [
-    {
-      spaceId: session.spaceId,
-      service: 'sql',
-      path: 'account',
-      action: SQL.WRITE,
+  const store = kvSpaceRegistryStore(
+    ({ path, action, body, headers }) => invokeResponse(host, session, 'kv', path, action, body, headers),
+    async (rows) => {
+      if (rows.length === 0) return;
+      const columns = '(space_id, name, owner_did, type, permissions_json, status, registered_at, updated_at, expires_at)';
+      const values = rows.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
+      await invokeJsonWithActions(host, session, [{
+        spaceId: session.spaceId,
+        service: 'sql',
+        path: 'account',
+        action: SQL.WRITE,
+      }], {
+        action: 'batch',
+        statements: [{
+          sql: `INSERT OR REPLACE INTO spaces ${columns} VALUES ${values}`,
+          params: rows.flatMap((row) => [
+            row.spaceId,
+            row.name,
+            row.ownerDid,
+            row.type,
+            row.permissionsJson,
+            row.status,
+            row.registeredAt,
+            row.updatedAt,
+            row.expiresAt,
+          ]),
+        }],
+      });
     },
-  ], {
-    action: 'batch',
-    statements: records.map(({ name, spaceId }) => ({
-      sql: 'INSERT OR REPLACE INTO spaces (space_id, name, owner_did, type, permissions_json, status, registered_at, updated_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      params: [spaceId, name, ownerDid, 'owned', JSON.stringify(['*']), 'active', now, now, null],
-    })),
-  });
+  );
+  const result = await registerMissingBootstrapSpaces(store, seedStep.spaces, ownerDid, now);
+  console.log('[TinyCloudBootstrap] space registry', result);
 }
 
 async function seedBootstrapApplications(
@@ -908,15 +903,27 @@ async function invokeRaw(
   body?: BodyInit,
   extraHeaders: Record<string, string> = {},
 ): Promise<void> {
+  const response = await invokeResponse(host, session, service, path, action, body, extraHeaders);
+  if (!response.ok) {
+    throw new Error(`TinyCloud ${service}/${path} ${action} failed: HTTP ${response.status} ${await response.text()}`);
+  }
+}
+
+async function invokeResponse(
+  host: string,
+  session: BootstrapSession,
+  service: string,
+  path: string,
+  action: string,
+  body?: BodyInit,
+  extraHeaders: Record<string, string> = {},
+): Promise<Response> {
   const headers = invoke(session.session, service, path, action, undefined) as Record<string, string>;
-  const response = await fetch(`${host}/invoke`, {
+  return fetch(`${host}/invoke`, {
     method: 'POST',
     headers: { ...headers, ...extraHeaders },
     body,
   });
-  if (!response.ok) {
-    throw new Error(`TinyCloud ${service}/${path} ${action} failed: HTTP ${response.status} ${await response.text()}`);
-  }
 }
 
 function requiredSession(
