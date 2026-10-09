@@ -139,6 +139,13 @@ function ensureInput(message = approvedTinyCloudSiwe(), format: 'raw' | 'persona
 }
 
 describe('ensureTinyCloudBootstrapForApprovedSign', () => {
+  test('uses the agents bootstrap bundle version deliberately', () => {
+    // changing this re-runs bootstrap for every key; update deliberately
+    expect(TINYCLOUD_BOOTSTRAP_VERSION).toBe(
+      '@tinycloud/bootstrap:9564c7295d36b834630607e9d76441811c5640de08ee54e6041a583d9d895c06',
+    );
+  });
+
   test('normalizes the WASM session JWK map before Ed25519 signing', () => {
     const sessionJwk = new Map<string, unknown>([
       ['alg', 'EdDSA'],
