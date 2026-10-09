@@ -27,6 +27,8 @@ services:
       - OAUTH_VALID_AUDIENCES=${OAUTH_VALID_AUDIENCES:-https://mcp.tinycloud.xyz/mcp}
       - ADMIN_API_KEY=${ADMIN_API_KEY}
       - INTERNAL_METRICS_TOKEN=${INTERNAL_METRICS_TOKEN}
+      # Unset means no TinyCloud host may carry SQL in a native delegation ceiling.
+      - TINYCLOUD_SQL_ISOLATED_HOSTS=${TINYCLOUD_SQL_ISOLATED_HOSTS:-}
     restart: unless-stopped
     healthcheck:
       # Keep this aligned with the API's configurable listener. `$$` defers

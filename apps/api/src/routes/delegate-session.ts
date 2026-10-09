@@ -469,6 +469,9 @@ export interface PrepareDelegationSessionInput {
   permissions?: DelegationPermissionEntry[];
   /** Pre-validated, clamped delegation lifetime in milliseconds. */
   expiryMs: number;
+  domain?: string;
+  nonce?: string;
+  issuedAt?: Date;
 }
 
 export interface PrepareDelegationSessionResult {
@@ -490,6 +493,9 @@ export function prepareDelegationSession({
   permissionKeys,
   permissions,
   expiryMs,
+  domain,
+  nonce,
+  issuedAt,
 }: PrepareDelegationSessionInput): PrepareDelegationSessionResult {
   const isCliBaseline = permissions !== undefined;
   const effectivePrefix = isCliBaseline
@@ -497,12 +503,13 @@ export function prepareDelegationSession({
     : prefix;
   const spaceId = makeSpaceId(address, chainId, effectivePrefix);
 
-  const now = new Date();
+  const now = issuedAt ?? new Date();
   const expirationTime = new Date(now.getTime() + expiryMs);
   const baseConfig = {
     address,
     chainId,
-    domain: SIWE_DOMAIN,
+    domain: domain ?? SIWE_DOMAIN,
+    ...(nonce ? { nonce } : {}),
     issuedAt: now.toISOString(),
     expirationTime: expirationTime.toISOString(),
     spaceId,

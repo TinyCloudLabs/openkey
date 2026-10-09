@@ -49,15 +49,31 @@ deliberately not part of this runtime prerequisite and remains governed by its
 existing explicit operator gate.
 
 While the separately authorized TC-488 destructive custody cutover remains
-pending, production deploy permits two later additive migrations:
-`20260814_0001_share_device_authorization` and
-`20261005_0001_delegation_code_broker`. The deploy verifies their frozen SQL
+pending, production deploy permits four later additive migrations:
+`20260814_0001_share_device_authorization`,
+`20261005_0001_delegation_code_broker`,
+`20261007_0001_tinycloud_native_foundation`, and
+`20261007_0002_native_preparation_host`. The deploy verifies their frozen SQL
 checksums, the exact pending set, the baseline marker, and the physical
 pre-cutover custody table before temporarily excluding only the destructive
 TC-488 migration from a normal `prisma migrate deploy`. It then verifies
-the recorded checksums and the device and delegation-code tables' columns and
-indexes. Any other pending migration fails closed. Once TC-488 is applied,
+the recorded checksums and physical schema, including the native preparation
+host column and consent-withdrawal triggers. Any other pending migration fails closed. Once TC-488 is applied,
 deployments return to the full migration and schema-drift verification path.
+
+The public native PAR endpoint validates the full request before allocating a
+row. An alert records when valid PAR volume reaches 10,000 requests per minute
+per API process; it never rejects a PAR request. There is no per-client rate limit:
+`client_id` is public and could let an anonymous caller deny sign-in to that
+client. Unresolved PAR rows are deleted shortly after their 90-second
+`request_uri` window closes. Anonymous resolved rows are deleted after their
+10-minute request expiry; user-bound rows remain available for consent and
+audit. Authorize re-entry and consent prepare, approve,
+and deny instead have separate per-process budgets keyed by the verified OpenKey
+session's user ID. The Phala gateway and ingress path has no authenticated HTTP client-IP
+header in this deployment; `CF-Connecting-IP` and `X-Forwarded-For` can be
+supplied by a caller, so PAR does not use either for rate limiting. Per-source
+fairness requires an authenticated network source at the ingress boundary.
 
 The canonical-key/organization-custody cutover is governed by the
 [TC-492 release runbook](./tc-492-canonical-key-cutover.md). It requires a
@@ -141,6 +157,7 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `ADMIN_API_KEY` | Bearer token for organization plan fixtures and app registration |
 | `INTERNAL_METRICS_TOKEN` | Bearer token for internal metrics |
 | `TINYCLOUD_BOOTSTRAP_HOST` | Trusted TinyCloud node used for canonical user-key bootstrap |
+| `TINYCLOUD_SQL_ISOLATED_HOSTS` | Comma-separated TinyCloud node origins that isolate SQL/DuckDB databases by full path. Native delegation ceilings may include SQL only for these hosts; unset refuses SQL. Also set as the `TINYCLOUD_SQL_ISOLATED_HOSTS` repository variable for **Register OAuth Client** |
 | `CLOUDFLARE_API_TOKEN` | For SSL certificate management |
 | `DSTACK_GATEWAY_DOMAIN` | Phala gateway base domain (e.g. `dstack-pha-prod5.phala.network`); the ingress CNAMEs `api.openkey.so` to `gateway.<base>` (never `_.<base>`, which Android cannot resolve) |
 | `CERTBOT_EMAIL` | Email for Let's Encrypt |

@@ -53,7 +53,7 @@
   "dependencies": {
     "@better-auth/cli": "1.5.0-beta.13",
     "@better-auth/core": "^1.6.9",
-    "@better-auth/oauth-provider": "^1.6.9",
+    "@better-auth/oauth-provider": "1.6.10",
     "@better-auth/passkey": "^1.6.9",
     "better-auth": "^1.6.9",
     "bits-ui": "^2.15.2",

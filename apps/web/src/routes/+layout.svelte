@@ -10,6 +10,9 @@
   let isFullScreen = $derived(
     $page.url.pathname === '/' ||
     $page.url.pathname.startsWith('/auth/') ||
+    // OAuth flow pages (e.g. /oauth/consent) are often embedded in native
+    // auth sheets; the account chrome must not wrap them.
+    $page.url.pathname.startsWith('/oauth/') ||
     $page.url.pathname.startsWith('/delegate') ||
     $page.url.pathname.startsWith('/console') ||
     // The dev-only parity harness route hosts a bare adapter mount so

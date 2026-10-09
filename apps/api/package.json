@@ -10,7 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@better-auth/oauth-provider": "^1.6.9",
+    "@better-auth/oauth-provider": "1.6.10",
     "@better-auth/passkey": "^1.6.9",
     "@openkey/db": "workspace:*",
     "@openkey/tee": "workspace:*",

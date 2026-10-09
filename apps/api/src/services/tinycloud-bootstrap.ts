@@ -34,16 +34,12 @@ import {
   submitHostDelegation,
 } from '@tinycloud/sdk-core';
 import type { PrismaClient } from '@openkey/db';
+import { DEFAULT_TINYCLOUD_BOOTSTRAP_HOST, TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS } from './tinycloud-hosts';
 
 export const TINYCLOUD_BOOTSTRAP_VERSION = `@tinycloud/bootstrap:${canonicalHashHex({
   allowlist: BOOTSTRAP_ALLOWLIST,
   manifest: BOOTSTRAP_MANIFEST,
 })}`;
-const DEFAULT_TINYCLOUD_BOOTSTRAP_HOST = 'https://node.tinycloud.xyz';
-const TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS = new Set([
-  DEFAULT_TINYCLOUD_BOOTSTRAP_HOST,
-  'https://tee.node.tinycloud.xyz',
-]);
 const SUPPORTED_TINYCLOUD_CHAIN_IDS = new Set([1]);
 const BOOTSTRAP_LOCK_TTL_MS = 2 * 60 * 1000;
 const BOOTSTRAP_LOCK_REFRESH_MS = 30 * 1000;

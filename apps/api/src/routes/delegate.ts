@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
-import { createTeeClient, unseal } from '@openkey/tee';
+import { createTeeClient } from '@openkey/tee';
 import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
 import { requireSession } from '../middleware/session';
 import {
@@ -79,7 +79,7 @@ import {
 } from '../services/authorization-signing';
 import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
 import { fetchAndBindWellKnownManifest } from '../services/manifest-origin-fetch';
-import { deriveKeyForRecord } from '../services/key-sealing';
+import { signManagedKey, unsealManagedKey } from '../services/managed-key-signing';
 import {
   canonicalizeCoordinationosOrigin,
   evaluateCoordinationosSessionRequest,
@@ -586,23 +586,6 @@ function openKeyApprovalRequired(reason: string, code: string) {
     reason,
     code,
   };
-}
-
-async function unsealManagedKey(
-  key: { userId: string | null; sealingContext?: string | null },
-  sealedBlob: string,
-): Promise<Hex> {
-  const sealingKey = await deriveKeyForRecord(tee, key);
-  return unseal(sealedBlob, sealingKey) as Promise<Hex>;
-}
-
-async function signManagedKey(
-  key: { userId: string | null; sealingContext?: string | null },
-  sealedBlob: string,
-  message: string,
-) {
-  const privateKey = await unsealManagedKey(key, sealedBlob);
-  return signWithManagedPrivateKey(privateKey, message);
 }
 
 async function signWithManagedPrivateKey(privateKey: Hex, message: string) {

@@ -28,12 +28,35 @@
   let loadingProvider = $state<SocialProviderId | null>(null);
   // `passkeys=false` comes from clients that cannot use WebAuthn.
   const passkeysSupported = passkeysSupportedFromParams($page.url.searchParams);
+  // In OAuth flows the API answers sign-in/email-otp with its own redirect
+  // URL (the consent page, or the client's redirect_uri when consent can be
+  // skipped). The URL is captured during the sign-in response and replayed
+  // verbatim by handlePostSignIn so the passkey step can run first.
+  let oauthRedirectUrl: string | undefined;
 
   function getOAuthQuery(): string | undefined {
     return safeOAuthAuthorizeQuery($page.url.searchParams);
   }
 
+  /**
+   * Navigate to the OAuth redirect URL returned by the server, unchanged.
+   * The URL comes from the signed oauth_query the API verified, so the only
+   * client-side guard is against script-execution schemes. Returns false when
+   * the URL is missing or unsafe so the caller can fall back.
+   */
+  function navigateToOAuthRedirect(url: string): boolean {
+    try {
+      const parsed = new URL(url, $page.url.origin);
+      if (parsed.protocol === 'javascript:' || parsed.protocol === 'data:') return false;
+    } catch {
+      return false;
+    }
+    window.location.assign(url);
+    return true;
+  }
+
   function handlePostSignIn() {
+    if (oauthRedirectUrl && navigateToOAuthRedirect(oauthRedirectUrl)) return;
     const oauthQuery = getOAuthQuery();
     const redirect = normalizeAuthReturnTo(
       $page.url.searchParams.get('redirect'),
@@ -79,11 +102,27 @@
     loading = true;
     error = '';
     try {
-      const result = await authClient.signIn.emailOtp({
-        email,
-        otp,
-        oauth_query: getOAuthQuery(),
-      });
+      const result = await authClient.signIn.emailOtp(
+        {
+          email,
+          otp,
+          oauth_query: getOAuthQuery(),
+        },
+        {
+          // In OAuth flows the server answers { redirect: true, url }. The
+          // client's redirect plugin would otherwise navigate in this same
+          // onSuccess pass — before the key/passkey check below — so this
+          // hook (which better-fetch runs before plugin hooks) keeps the URL
+          // and clears the redirect flag to veto that navigation.
+          onSuccess(context) {
+            const data = context.data as { redirect?: boolean; url?: string } | null;
+            if (data?.redirect && typeof data.url === 'string' && data.url) {
+              oauthRedirectUrl = data.url;
+              data.redirect = false;
+            }
+          },
+        },
+      );
       if (result.error) {
         error = authErrorMessage(result.error, 'Invalid code');
         return;
