@@ -27,26 +27,43 @@ async function main() {
 
   const prisma = createPrismaClient();
   try {
-    const states = await prisma.tinyCloudBootstrapState.findMany({
-      orderBy: { checkedAt: 'desc' },
-      take: 5,
-      select: {
-        status: true,
-        tinycloudHost: true,
-        failureCode: true,
-        failureReason: true,
-        checkedAt: true,
-        completedAt: true,
-      },
-    });
-    console.log(JSON.stringify(states.map((state) => ({
-      status: state.status,
-      tinycloudHost: state.tinycloudHost,
-      failureCode: state.failureCode,
-      failureReason: sanitizeFailureReason(state.failureReason),
-      checkedAt: state.checkedAt.toISOString(),
-      completedAt: state.completedAt?.toISOString() ?? null,
-    })), null, 2));
+    const [counts, eligibleKeys, states] = await Promise.all([
+      prisma.tinyCloudBootstrapState.groupBy({
+        by: ['bootstrapVersion', 'status'],
+        _count: true,
+      }),
+      prisma.ethereumKey.count({
+        where: {
+          keyType: 'MANAGED',
+          archivedAt: null,
+          user: { is: { autoSignEnabled: true } },
+        },
+      }),
+      prisma.tinyCloudBootstrapState.findMany({
+        orderBy: { checkedAt: 'desc' },
+        take: 5,
+        select: {
+          status: true,
+          tinycloudHost: true,
+          failureCode: true,
+          failureReason: true,
+          checkedAt: true,
+          completedAt: true,
+        },
+      }),
+    ]);
+    console.log(JSON.stringify({
+      counts: counts.map((row) => ({ bootstrapVersion: row.bootstrapVersion, status: row.status, count: row._count })),
+      eligibleManagedAutoSignKeys: eligibleKeys,
+      recent: states.map((state) => ({
+        status: state.status,
+        tinycloudHost: state.tinycloudHost,
+        failureCode: state.failureCode,
+        failureReason: sanitizeFailureReason(state.failureReason),
+        checkedAt: state.checkedAt.toISOString(),
+        completedAt: state.completedAt?.toISOString() ?? null,
+      })),
+    }, null, 2));
   } finally {
     await prisma.$disconnect();
   }

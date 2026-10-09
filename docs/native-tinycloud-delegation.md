@@ -578,7 +578,7 @@ SIWE, and it is limited as follows:
 - **Freshness:** if the node's staged `peerId` can expire before approval,
   prepare refreshes a plan older than the observed lifetime, and approve
   returns 409 `preparation_superseded`.
-- **Scope:** the five-space account bootstrap is not part of this flow.
+- **Scope:** the account bootstrap is not part of this flow.
 
 `hosting: "failed"` never leads to a further signature. The code is still
 issued, and the app reports the space as unavailable (`SPACE_UNAVAILABLE`).
