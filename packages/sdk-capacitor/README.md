@@ -7,7 +7,7 @@ Capacitor 8 sign-in for an OpenKey native client with a TinyCloud delegation. Th
 Ask an OpenKey admin to register a **native**, **public** client with token endpoint authentication `none` and enable `tinycloud:delegation` with a capability ceiling and TinyCloud host. Register an exact redirect URI. For Android, use a private-use scheme with a host and `/callback` path, for example `xyz.tinycloud.exo://openkey/callback`. A scheme-only URI is refused. Android private schemes can be claimed by another app; the plugin checks the pending redirect and state before accepting one. HTTPS redirects are supported on iOS 17.4+ with a claimed domain, but this package does not ship an Android App Link filter.
 
 ```sh
-npm install @openkey/sdk-capacitor @capacitor/core@^8 @tinycloud/web-sdk@^2.11 @tinycloud/sdk-core
+npm install @openkey/sdk-capacitor @capacitor/core@^8 '@tinycloud/web-sdk@^2.11 || ^3.1' @tinycloud/sdk-core
 npx cap sync
 ```
 
