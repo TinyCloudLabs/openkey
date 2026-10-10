@@ -4,7 +4,7 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { verifyTinyCloudDelegation } from '../src/verify';
 import type { TinyCloudDelegation } from '@openkey/core';
 
-// This creates actual Cacao bytes with the WASM used by web-sdk 2.11.
+// This creates actual Cacao bytes with the WASM used by web-sdk 2.11 and 3.1.
 test('real WASM-signed delegations reproduce padded headers and CIDs', async () => {
   await initialized;
   let padded = 0;
