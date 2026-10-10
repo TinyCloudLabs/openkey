@@ -1720,6 +1720,12 @@ delegateRouter.post('/complete', async (c) => {
   if (!body.prepared || !body.signature || !body.host || !body.jwk) {
     return c.json({ error: 'prepared, signature, host, and jwk are required' }, 400);
   }
+  // After the required-field gate, keep the wallet signature as the exact
+  // string verified below, passed to session setup, and returned to clients.
+  if (typeof body.signature !== 'string') {
+    return c.json({ error: 'signature must be a string' }, 400);
+  }
+  const signature = body.signature;
 
   // Versioned protocol enforcement (Sol MAJOR-5): new callers MUST bind
   // through an authorization context token. Legacy callers (no
@@ -1794,7 +1800,7 @@ delegateRouter.post('/complete', async (c) => {
   // effect and leaves the pending approval usable (TC-587).
   let recoveredAddress = '';
   try {
-    recoveredAddress = verifyMessage(String(body.prepared.siwe ?? ''), String(body.signature));
+    recoveredAddress = verifyMessage(String(body.prepared.siwe ?? ''), signature);
   } catch {
     // An unparseable signature is refused below like a mismatched one.
   }
@@ -1925,7 +1931,7 @@ delegateRouter.post('/complete', async (c) => {
       spaceId: check.spaceId,
       verificationMethod: signedFields.uri,
       // The exact string the signature check above verified.
-      signature: String(body.signature),
+      signature,
     };
   }
 
@@ -1943,7 +1949,7 @@ delegateRouter.post('/complete', async (c) => {
     versionedSessionInput ?? {
       ...body.prepared,
       jwk: body.jwk,
-      signature: body.signature,
+      signature,
     },
   );
 
@@ -2010,6 +2016,8 @@ delegateRouter.post('/complete', async (c) => {
     // `expirationTime` from this when restoring the session, and
     // without it a restored session is treated as expired-at-epoch-zero.
     siwe: body.prepared.siwe,
+    // The exact wallet signature verified above and included in the session.
+    signature,
     // Versioned protocol additions:
     //   `signedMessage` is the exact bytes the signature verifies against
     //   (identical to `siwe`, but named per the SDK protocol so clients
