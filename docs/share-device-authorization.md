@@ -138,6 +138,16 @@ just before signing. Token-less legacy `/complete` calls still pass the echoed
 `expiresAt`, and `expiry` come from the signed SIWE, never from caller-supplied
 fields.
 
+After required-field validation, `/complete` rejects a non-string `signature`
+with 400 before context consumption or host activation. Missing, `null`,
+`false`, and `0` still receive the existing required-fields error; those
+requests are also refused before either side effect. A successful external
+wallet completion returns the same session proof as a managed approval:
+`siwe` and the verified wallet `signature`, plus `address`, `chainId`,
+`spaceId`, `delegationCid`, `delegationHeader`, and `verificationMethod`. This
+lets the CLI perform its field gate and cryptographic proof verification
+offline.
+
 ## Request
 
 `POST /api/device-authorizations` accepts `permissions` in the manifest shape
