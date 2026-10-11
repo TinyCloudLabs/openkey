@@ -16,6 +16,12 @@ const otherUser = { id: 'user_2', email: 'bob@example.test' };
 const jwk = { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' };
 const host = 'https://node.tinycloud.xyz';
 const space = `tinycloud:pkh:eip155:1:${account.address}:default`;
+// Two database rows may hold the same wallet under different address casing:
+// key linking checks the submitted spelling, while signer lookup normalizes it.
+const otherExternal = {
+  id: 'external_other', userId: otherUser.id, address: account.address.toLowerCase(),
+  keyType: 'EXTERNAL', archivedAt: null, sealedBlob: null, sealingContext: null,
+};
 const managed = {
   id: 'managed_1', userId: user.id, address: account.address, keyType: 'MANAGED',
   archivedAt: null, sealedBlob: 'sealed-blob', sealingContext: null,
@@ -179,6 +185,14 @@ async function finishAfterRefusal(approval: Approval) {
   expect(corrected.status).toBe(200);
   expect(corrected.body.signedMessage).toBe(approval.previewBytes);
   expect(verifyMessage(stringField(corrected.body.signedMessage), stringField(corrected.body.signature)).toLowerCase()).toBe(account.address.toLowerCase());
+  expect(signing.checkPreviewApproval({
+    token: approval.previewToken,
+    authorizationContextToken: approval.contextToken,
+    userId: user.id,
+    keyAddress: account.address,
+    selectedActionIds: new Set(approval.selected),
+    candidateSignedMessage: approval.previewBytes,
+  })).toMatchObject({ ok: false, error: 'preview-approval-not-found' });
   expect((await post('/authorize-sign', await validBody(approval))).body.code).toBe('context-not-found');
   if (currentKey.keyType === 'MANAGED') {
     expect(unseal).toHaveBeenCalledTimes(1);
@@ -229,10 +243,30 @@ function previewRecord(approval: Approval): Record<string, unknown> {
 }
 
 describe('authorize-sign checks every binding before consuming context and preview', () => {
+  test('another account with the same external wallet cannot probe a selection', async () => {
+    currentKey = external;
+    const approval = await approve();
+    const externalSignature = await account.signMessage({ message: approval.previewBytes });
+    currentUser = otherUser;
+    currentKey = otherExternal;
+    for (const selectedActionIds of [approval.selected, ['not-in-the-baseline']]) {
+      const refused = await post('/authorize-sign', {
+        ...approval.body, selectedActionIds, externalSignature,
+      });
+      expect(refused.status).toBe(400);
+      expect(refused.body.code).toBe('user_mismatch');
+      expect(refused.body.signature).toBeUndefined();
+    }
+    noSignatureIssued();
+    currentUser = user;
+    currentKey = external;
+    await finishAfterRefusal(approval);
+  });
+
   const contextFaults: Array<{
     name: string; code: string; field: string; change: (value: unknown, approval: Approval) => unknown;
   }> = [
-    { name: 'user', code: 'user-mismatch', field: 'userId', change: () => otherUser.id },
+    { name: 'user', code: 'user_mismatch', field: 'userId', change: () => otherUser.id },
     { name: 'key identity', code: 'key-mismatch', field: 'keyId', change: () => 'another_key' },
     { name: 'JWK digest', code: 'jwk-mismatch', field: 'jwkDigest', change: () => '0'.repeat(64) },
     { name: 'immutable header digest', code: 'immutable-fields-changed', field: 'immutableFieldsDigest', change: () => '0'.repeat(64) },
@@ -319,7 +353,7 @@ describe('authorize-sign checks every binding before consuming context and previ
   });
 
   for (const [name, selected, code] of [
-    ['an empty selection', () => [], 'empty_selection'],
+    ['an empty selection with required actions', () => [], 'required-action-missing'],
     ['a removed required action', (approval: Approval) => approval.allowed.filter((id) => !id.includes('capabilities/read')), 'required-action-missing'],
   ] as const) {
     test(`refuses ${name} before signing and allows corrected retry`, async () => {
@@ -332,6 +366,17 @@ describe('authorize-sign checks every binding before consuming context and previ
       await finishAfterRefusal(approval);
     });
   }
+  test('unknown action IDs keep the baseline refusal, not empty_selection', async () => {
+    const approval = await approve();
+    const refused = await post('/authorize-sign', {
+      ...approval.body, selectedActionIds: ['not-in-the-baseline'],
+    });
+    expect(refused.status).toBe(400);
+    expect(refused.body.code).toBe('action-not-in-baseline');
+    noSignatureIssued();
+    await finishAfterRefusal(approval);
+  });
+
 
   for (const [name, fault, code] of [
     ['failed narrowing', 'failure', 'siwe_not_parseable'],
@@ -392,6 +437,9 @@ describe('managed and external signer finalization', () => {
   }
 
   test('two requests paused at the real async key lookup yield only one signature', async () => {
+    // This barrier is before peek: it proves requests overlap and only one
+    // signs via single-use lookup. The identity compare is exercised by the
+    // service tests; it matters if an await is ever added after check.
     const approval = await approve();
     let arrivals = 0;
     let release!: () => void;
