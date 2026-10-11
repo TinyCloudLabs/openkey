@@ -102,6 +102,33 @@ import { isPrimaryKey, primaryKeyWhere } from '../services/primary-key';
 const prisma = createPrismaClient();
 const tee = createTeeClient();
 
+type SpaceSetupPlan = 'setup' | 'auto-sign-off' | 'external-wallet';
+
+async function managedSpaceSetupPlan(input: {
+  userId: string;
+  keyType: string;
+  host: string;
+  address: string;
+  chainId: number;
+  spaceId: string;
+}): Promise<{ space: string; plan: SpaceSetupPlan } | null> {
+  const name = input.spaceId.slice(input.spaceId.lastIndexOf(':') + 1);
+  if (
+    !BOOTSTRAP_SPACE_NAMES.includes(name as (typeof BOOTSTRAP_SPACE_NAMES)[number]) ||
+    input.spaceId !== makeSpaceId(input.address, input.chainId, name)
+  ) return null;
+
+  const { trustedTinyCloudBootstrapHost } = await import('../services/tinycloud-bootstrap');
+  if (input.host !== trustedTinyCloudBootstrapHost()) return null;
+  if (input.keyType !== 'MANAGED') return { space: name, plan: 'external-wallet' };
+
+  const preference = await prisma.user.findUnique({
+    where: { id: input.userId },
+    select: { autoSignEnabled: true },
+  });
+  return { space: name, plan: preference?.autoSignEnabled ? 'setup' : 'auto-sign-off' };
+}
+
 async function finishManagedSpaceOnboarding(input: {
   userId: string;
   key: {
@@ -120,27 +147,24 @@ async function finishManagedSpaceOnboarding(input: {
   skipped: boolean;
 }): Promise<{ spaceReady: boolean; spaceError?: string }> {
   if (!input.skipped) return { spaceReady: true };
-  if (input.key.keyType !== 'MANAGED') return { spaceReady: false };
-  const name = input.spaceId.slice(input.spaceId.lastIndexOf(':') + 1);
-  if (
-    !BOOTSTRAP_SPACE_NAMES.includes(name as (typeof BOOTSTRAP_SPACE_NAMES)[number]) ||
-    input.spaceId !== makeSpaceId(input.address, input.chainId, name)
-  ) return { spaceReady: false };
 
   try {
-    const { trustedTinyCloudBootstrapHost, ensureTinyCloudBootstrap } = await import('../services/tinycloud-bootstrap');
-    if (input.host !== trustedTinyCloudBootstrapHost()) return { spaceReady: false };
-    const preference = await prisma.user.findUnique({
-      where: { id: input.userId },
-      select: { autoSignEnabled: true },
+    const { ensureTinyCloudBootstrap } = await import('../services/tinycloud-bootstrap');
+    const setup = await managedSpaceSetupPlan({
+      userId: input.userId,
+      keyType: input.key.keyType,
+      host: input.host,
+      address: input.address,
+      chainId: input.chainId,
+      spaceId: input.spaceId,
     });
-    if (!preference?.autoSignEnabled) return { spaceReady: false };
+    if (setup?.plan !== 'setup') return { spaceReady: false };
     if (!input.privateKey && !input.key.sealedBlob) {
       return { spaceReady: false, spaceError: 'TinyCloud account setup failed: managed key has no sealed key data.' };
     }
     const privateKey = input.privateKey ?? await unsealManagedKey(input.key, input.key.sealedBlob!);
     const outcome = await ensureTinyCloudBootstrap({
-      prisma: prisma as any,
+      prisma,
       userId: input.userId,
       key: { id: input.key.id, address: input.key.address, keyType: input.key.keyType },
       privateKey,
@@ -1721,9 +1745,31 @@ delegateRouter.post('/prepare', async (c) => {
     );
   }
 
+  let spaceSetup: { space: string; plan: SpaceSetupPlan } | null = null;
+  try {
+    const setup = await managedSpaceSetupPlan({
+      userId: user.id,
+      keyType: key.keyType,
+      host,
+      address,
+      chainId,
+      spaceId: preparedResult.spaceId,
+    });
+    if (setup?.plan === 'setup' && process.env.TINYCLOUD_BOOTSTRAP_ON_SIGN !== 'off') {
+      const { isTinyCloudBootstrapComplete } = await import('../services/tinycloud-bootstrap');
+      if (!(await isTinyCloudBootstrapComplete(prisma, { keyId: key.id, chainId, host }))) {
+        spaceSetup = setup;
+      }
+    } else {
+      spaceSetup = setup;
+    }
+  } catch (error) {
+    console.warn('[Delegate] Failed to determine TinyCloud space setup notice:', error);
+  }
+
   return c.json({
     prepared: preparedData,
-    spaceId: preparedResult.spaceId,
+    spaceSetup,
     ownerDid,
     address,
     chainId,

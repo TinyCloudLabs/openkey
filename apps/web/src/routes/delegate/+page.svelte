@@ -23,6 +23,12 @@
   import { expectedSigner } from '$lib/delegate-expected-signer';
   import { autoSelectKey, keyPickerLayout } from '$lib/delegate-key-selection';
   import {
+    parseSpaceSetup,
+    spaceReadinessResult,
+    spaceSetupNoticeText,
+    type SpaceSetupNotice,
+  } from '$lib/delegate-space-setup';
+  import {
     parseCapabilityReview,
     defaultSelection,
     type CapabilityReviewModel,
@@ -67,7 +73,8 @@
   let done = $state(false);
   let pasteCode = $state('');
   let shortCode = $state('');
-  let spaceReadinessMessage = $state('');
+  let spaceSetup = $state<SpaceSetupNotice | null>(null);
+  let spaceReadiness = $state<ReturnType<typeof spaceReadinessResult>>(null);
   let callbackFailed = $state(false);
   let copied = $state(false);
   let step = $state<'select-key' | 'link-wallet' | 'consent' | 'choose-wallet' | 'done'>('select-key');
@@ -479,6 +486,7 @@
 
     preparedData = data.prepared;
     siweMessage = data.prepared?.siwe || '';
+    spaceSetup = parseSpaceSetup(data.spaceSetup);
     permissionOptions = permissions;
     selectedActionKeys = Array.isArray(data.selectedActionKeys)
       ? data.selectedActionKeys.filter((key: unknown): key is string => typeof key === 'string')
@@ -548,6 +556,8 @@
   function resetDelegationState() {
     preparedData = null;
     siweMessage = '';
+    spaceSetup = null;
+    spaceReadiness = null;
     permissionOptions = [];
     selectedActionKeys = [];
     editingPermissions = false;
@@ -990,10 +1000,7 @@
 
   async function finishDelegate(data: any) {
     const payload = permissionsEdited ? { ...data, edited: true } : data;
-    const missingSpace = typeof payload.spaceId === 'string' ? payload.spaceId.split(':').at(-1) : 'requested';
-    spaceReadinessMessage = payload.spaceReady === false
-      ? `Approved. Your ${missingSpace} space isn't set up yet; the requesting app will tell you what to do.${payload.spaceError ? ` ${payload.spaceError}` : ''}`
-      : '';
+    spaceReadiness = spaceReadinessResult(payload, spaceSetup);
 
     if (deviceTransactionId) {
       const API_URL = import.meta.env.VITE_API_URL || '';
@@ -1136,10 +1143,16 @@
             <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
 
-          {#if spaceReadinessMessage}
-            <p class="w-full rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 mb-4" role="status">
-              {spaceReadinessMessage}
-            </p>
+          {#if spaceReadiness}
+            <div class={`w-full rounded-xl border px-3 py-2 text-sm mb-4 ${spaceReadiness.kind === 'ready' ? 'border-green-300 bg-green-50 text-green-900' : 'border-amber-300 bg-amber-50 text-amber-900'}`} role="status">
+              <p>{spaceReadiness.text}</p>
+              {#if spaceReadiness.detail}
+                <details class="mt-2 text-left">
+                  <summary class="cursor-pointer font-medium">Details</summary>
+                  <pre class="mt-2 whitespace-pre-wrap break-words text-xs">{spaceReadiness.detail}</pre>
+                </details>
+              {/if}
+            </div>
           {/if}
 
           {#if pasteCode}
@@ -1350,6 +1363,14 @@
         {#if selectedKey.keyType === 'EXTERNAL'}
           <div class="p-3 bg-blue-50 border border-blue-200 rounded-xl text-sm text-blue-700">
             Your browser wallet will prompt you to sign a message to authorize this delegation.
+          </div>
+        {/if}
+        {#if spaceSetup}
+          <div
+            role="note"
+            class={`p-3 border rounded-xl text-sm ${spaceSetup.plan === 'setup' ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-surface-50 border-surface-200 text-surface-700'}`}
+          >
+            {spaceSetupNoticeText(spaceSetup)}
           </div>
         {/if}
         {/if}

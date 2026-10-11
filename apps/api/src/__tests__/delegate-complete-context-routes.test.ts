@@ -23,6 +23,7 @@ const otherUser = { id: 'user_2', email: 'mallory@example.test' };
 let currentUser = user;
 let autoSignEnabled = true;
 const jwk = { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' };
+let bootstrapComplete = false;
 const otherJwk = { kty: 'OKP', crv: 'Ed25519', x: 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB' };
 const host = 'https://node.tinycloud.xyz';
 const keyRecord: {
@@ -50,6 +51,7 @@ const prisma = {
 
 const activateSessionWithHost = mock(async () => ({ success: true }));
 const ensureTinyCloudBootstrap = mock(async () => ({ status: 'complete' as const }));
+const isTinyCloudBootstrapComplete = mock(async () => bootstrapComplete);
 const deviceService = new DeviceAuthorizationService(new MemoryDeviceAuthorizationStore(), {
   verificationOrigin: 'https://openkey.so',
   encryptionSecret: 'test-device-authorization-secret-is-long-enough',
@@ -73,6 +75,7 @@ mock.module('@tinycloud/sdk-core', () => ({ activateSessionWithHost }));
 mock.module('../services/tinycloud-bootstrap', () => ({
   trustedTinyCloudBootstrapHost: () => host,
   ensureTinyCloudBootstrap,
+  isTinyCloudBootstrapComplete,
 }));
 mock.module('../middleware/session', () => ({
   requireSession: createMiddleware(async (c, next) => {
@@ -104,19 +107,19 @@ beforeAll(async () => {
     await next();
   }));
 });
-
 beforeEach(() => {
   resetContexts?.();
   currentUser = user;
   keyRecord.keyType = 'MANAGED';
   keyRecord.sealedBlob = 'sealed-blob';
   autoSignEnabled = true;
+  bootstrapComplete = false;
   activateSessionWithHost.mockClear();
   activateSessionWithHost.mockImplementation(async () => ({ success: true }));
   ensureTinyCloudBootstrap.mockClear();
+  isTinyCloudBootstrapComplete.mockClear();
   unseal.mockClear();
 });
-
 async function post(path: string, body: Record<string, unknown>) {
   const res = await router.request(path, {
     method: 'POST',
@@ -131,6 +134,44 @@ async function prepare(extra: Record<string, unknown> = {}) {
   expect(prepared.status).toBe(200);
   return prepared.body;
 }
+
+describe('/prepare space setup disclosure', () => {
+  test('discloses setup for a managed key with auto-sign enabled', async () => {
+    expect((await prepare({ prefix: 'agents' })).spaceSetup).toEqual({
+      space: 'agents',
+      plan: 'setup',
+    });
+  });
+
+  test('reports when auto-sign is disabled', async () => {
+    autoSignEnabled = false;
+    expect((await prepare({ prefix: 'agents' })).spaceSetup).toEqual({
+      space: 'agents',
+      plan: 'auto-sign-off',
+    });
+  });
+
+  test('reports external wallet setup behavior', async () => {
+    keyRecord.keyType = 'EXTERNAL';
+    expect((await prepare({ prefix: 'agents' })).spaceSetup).toEqual({
+      space: 'agents',
+      plan: 'external-wallet',
+    });
+  });
+
+  test('omits setup already completed', async () => {
+    bootstrapComplete = true;
+    expect((await prepare({ prefix: 'agents' })).spaceSetup).toBeNull();
+  });
+
+  test('omits non-canonical spaces', async () => {
+    expect((await prepare({ prefix: 'not-a-bootstrap-space' })).spaceSetup).toBeNull();
+  });
+
+  test('omits a host other than the trusted bootstrap host', async () => {
+    expect((await prepare({ prefix: 'agents', host: 'https://untrusted.example' })).spaceSetup).toBeNull();
+  });
+});
 
 /** The versioned `/complete` body the web sends, signed by `signer`. */
 async function completeBody(prepared: Record<string, any>, siwe: string = prepared.prepared.siwe, signer = account) {

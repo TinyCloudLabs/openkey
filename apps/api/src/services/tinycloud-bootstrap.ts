@@ -311,6 +311,23 @@ export async function ensureTinyCloudBootstrapForApprovedSign(
   return ensureTinyCloudBootstrap({ ...input, host: tinycloudHost, chainId: parsed.chainId });
 }
 
+export async function isTinyCloudBootstrapComplete(
+  prisma: PrismaLike,
+  input: { keyId: string; chainId: number; host: string },
+): Promise<boolean> {
+  const state = await prisma.tinyCloudBootstrapState.findUnique({
+    where: {
+      keyId_chainId_tinycloudHost_bootstrapVersion: {
+        keyId: input.keyId,
+        chainId: input.chainId,
+        tinycloudHost: input.host,
+        bootstrapVersion: TINYCLOUD_BOOTSTRAP_VERSION,
+      },
+    },
+  });
+  return state?.status === 'complete';
+}
+
 export async function ensureTinyCloudBootstrap(
   input: EnsureTinyCloudBootstrapInputCore & { chainId?: number },
 ): Promise<TinyCloudBootstrapOutcome> {
