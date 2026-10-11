@@ -161,6 +161,16 @@ external signature), the route atomically compares and consumes both
 tokens: a concurrent loser and a replay cannot sign. A managed signing
 failure after consumption still requires a fresh approval.
 
+An expired authorization context returns `context-expired` (rather than
+`context-not-found`) on `/authorize-sign`, `/authorize-sign-preview`, the
+managed approval, and versioned `/complete`. An expired preview approval
+returns `preview-approval-expired` (rather than
+`preview-approval-not-found`) on `/authorize-sign`. An empty final selection
+with required actions returns `required-action-missing`; unknown action IDs
+return `action-not-in-baseline`. When no actions are required, an empty final
+selection returns `empty_selection` after context validation and before
+preview-approval validation.
+
 ## Request
 
 `POST /api/device-authorizations` accepts `permissions` in the manifest shape

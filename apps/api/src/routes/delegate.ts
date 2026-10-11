@@ -2409,9 +2409,10 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
  * fields, the allowed action set, and the original SIWE bytes.
  *
  * Flow:
- *   1. Peek the context and validate every binding without consuming it.
+ *   1. Look up the user's candidate keys, then peek the context and reject
+ *      a different owner before inspecting its selection.
  *   2. Rehydrate the ORIGINAL SIWE, JWK, and allowed action set from the
- *      bound context (never from the request body).
+ *      bound context (never from the request body); validate all bindings.
  *   3. Narrow the original entries and check the preview approval and any
  *      external signature against the exact bytes to return.
  *   4. Atomically consume the checked context and preview approval together.
@@ -2527,6 +2528,12 @@ delegateRouter.post('/authorize-sign', async (c) => {
     return c.json({ error: preview.message, code: preview.error }, 400);
   }
   const bound = preview.value;
+  // Peek is not an authority check. Reject another account before any
+  // selection-dependent response, even when it has the same external
+  // wallet linked under a different spelling of the address.
+  if (bound.userId !== user.id) {
+    return c.json({ error: 'Authorization context bound to a different user', code: 'user_mismatch' }, 400);
+  }
   const key = candidateKeys.find(
     (k) => ensureEip55(k.address).toLowerCase() === bound.keyAddress.toLowerCase(),
   );
@@ -2582,7 +2589,7 @@ delegateRouter.post('/authorize-sign', async (c) => {
   // Sol MAJOR-4: attenuation-subset check against the caveat-inclusive
   // baseline. We build the candidate attenuation from the SELECTED
   // entries (paired with the ORIGINAL caveats for each surviving
-  // (resource, ability) pair) so consume can verify:
+  // (resource, ability) pair) so the check can verify:
   //   1. baselineAttenuation digest matches what /prepare recorded, AND
   //   2. candidateAttenuation is a strict subset (narrowing OK, broadening
   //      or caveat-dropping rejected).
@@ -2592,16 +2599,6 @@ delegateRouter.post('/authorize-sign', async (c) => {
     selectedActionIds,
     baselineAttenuation,
   );
-
-  // Refuse an empty selection before checking required actions, so it
-  // retains the dedicated empty_selection error without spending either token.
-  const selectedEntries = entriesForSelectedActions(originalEntries, selectedActionIds);
-  if (selectedEntries.length === 0) {
-    return c.json(
-      { error: 'No selected actions map to any capability in the SIWE', code: 'empty_selection' },
-      400,
-    );
-  }
 
   // Validate the bound context without using it up. Every remaining
   // refusal, including the preview approval and external signature, must
@@ -2622,6 +2619,22 @@ delegateRouter.post('/authorize-sign', async (c) => {
   });
   if (!check.ok) {
     return c.json({ error: check.message, code: check.error }, 400);
+  }
+  // Context validation takes precedence for required actions and unknown IDs:
+  // [] with required actions is required-action-missing, and an unknown ID
+  // is action-not-in-baseline. Only a valid empty selection reaches this guard.
+  if (selectedActionIds.size === 0) {
+    return c.json(
+      { error: 'No selected actions map to any capability in the SIWE', code: 'empty_selection' },
+      400,
+    );
+  }
+  const selectedEntries = entriesForSelectedActions(originalEntries, selectedActionIds);
+  if (selectedEntries.length === 0) {
+    return c.json(
+      { error: 'No selected actions map to any capability in the SIWE', code: 'empty_selection' },
+      400,
+    );
   }
 
   // Sol critical-2 (exact bytes / unchanged-selection branch): if the

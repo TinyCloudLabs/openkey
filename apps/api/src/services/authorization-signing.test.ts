@@ -471,6 +471,30 @@ describe('preview-approval tokens', () => {
     })).toMatchObject({ ok: false, error: 'preview-approval-not-found' });
   });
 
+  it('refuses a context claim with the valid token but a different record identity', () => {
+    const { contextToken, previewToken } = issuePair();
+    const claims = checkPair(contextToken, previewToken);
+    const forgedContext = { token: claims.context.token, record: { ...claims.context.record } };
+    expect(consumeCheckedAuthorizationContext(forgedContext, claims.preview)).toMatchObject({
+      ok: false,
+      error: 'context-not-found',
+    });
+    const genuine = checkPair(contextToken, previewToken);
+    expect(consumeCheckedAuthorizationContext(genuine.context, genuine.preview)).toEqual({ ok: true });
+  });
+
+  it('refuses a preview claim with the valid token but a different record identity', () => {
+    const { contextToken, previewToken } = issuePair();
+    const claims = checkPair(contextToken, previewToken);
+    const forgedPreview = { token: claims.preview.token, record: { ...claims.preview.record } };
+    expect(consumeCheckedAuthorizationContext(claims.context, forgedPreview)).toMatchObject({
+      ok: false,
+      error: 'preview-approval-not-found',
+    });
+    const genuine = checkPair(contextToken, previewToken);
+    expect(consumeCheckedAuthorizationContext(genuine.context, genuine.preview)).toEqual({ ok: true });
+  });
+
   it('refuses mismatched claims without spending either record', () => {
     const first = issuePair();
     const second = issuePair();

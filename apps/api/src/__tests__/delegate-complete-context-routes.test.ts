@@ -3,7 +3,7 @@
 // request leaves the pending approval usable; a successful completion
 // consumes it exactly once, also under concurrent completions.
 
-import { beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { beforeAll, beforeEach, describe, expect, mock, setSystemTime, test } from 'bun:test';
 import { createHash, generateKeyPairSync } from 'node:crypto';
 import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
@@ -243,6 +243,20 @@ describe('versioned /complete validates every binding before consuming the conte
     });
   }
 
+  test('an expired versioned context reports context-expired without activation', async () => {
+    const prepared = await prepare();
+    const body = await completeBody(prepared);
+    setSystemTime(new Date(Date.now() + 6 * 60 * 1000));
+    try {
+      const refused = await post('/complete', body);
+      expect(refused.status).toBe(400);
+      expect(refused.body.code).toBe('context-expired');
+      expect(activateSessionWithHost).not.toHaveBeenCalled();
+    } finally {
+      setSystemTime();
+    }
+  });
+
   test('refuses a device-window violation and leaves the context usable', async () => {
     // An ordinary 90-day prepare completed under a 60-second device
     // transaction: only the device guard refuses it.
@@ -316,6 +330,19 @@ describe('managed approval checks everything caller-controlled before consuming 
       protocolVersion: 1,
     };
   }
+
+  test('an expired managed context reports context-expired before signing', async () => {
+    const valid = await approval();
+    setSystemTime(new Date(Date.now() + 6 * 60 * 1000));
+    try {
+      const refused = await post('/', valid);
+      expect(refused.status).toBe(400);
+      expect(refused.body.code).toBe('context-expired');
+      expect(unseal).not.toHaveBeenCalled();
+    } finally {
+      setSystemTime();
+    }
+  });
 
   test('refuses a device-window violation and leaves the context usable', async () => {
     const valid = await approval({ expiry: '90d' });
