@@ -10,7 +10,7 @@
   type Preview = {
     requestId: string; revision: number; digest: string; sessionSiwe: string;
     hostPlan: { host: string; spaceId: string; peerId: string; hostSiwe: string } | null;
-    client: { name: string; icon?: string | null; organization?: string | null; verified: false };
+    client: { name: string; icon?: string | null; organization?: string | null };
     address: string; keyId: string; redirectScheme: string; tinycloudHost: string;
     ttlSeconds: number; grantLifetimeSeconds: number; permissionOptions: ServerPermissionOption[]; selectedActionKeys: string[];
   };
@@ -133,7 +133,7 @@
     <div class="space-y-3 text-sm text-surface-700">
       <div class="flex items-center gap-3">
         {#if safeExternalHttpUrl(preview.client.icon)}<img src={safeExternalHttpUrl(preview.client.icon)!} alt="" class="h-10 w-10 rounded-lg" />{/if}
-        <div><strong>{preview.client.name}</strong><div>Unverified app{preview.client.organization ? ` · ${preview.client.organization}` : ''}</div></div>
+        <div><strong>{preview.client.name}</strong>{#if preview.client.organization}<div>{preview.client.organization}</div>{/if}</div>
       </div>
       <p>Return to <code>{preview.redirectScheme}://</code> after approval.</p>
       <p>Delegation lasts {duration(preview.ttlSeconds)} from approval. The app may auto-renew for up to {duration(preview.grantLifetimeSeconds)}.</p>
