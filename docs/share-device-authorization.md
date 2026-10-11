@@ -161,15 +161,22 @@ external signature), the route atomically compares and consumes both
 tokens: a concurrent loser and a replay cannot sign. A managed signing
 failure after consumption still requires a fresh approval.
 
-An expired authorization context returns `context-expired` (rather than
-`context-not-found`) on `/authorize-sign`, `/authorize-sign-preview`, the
-managed approval, and versioned `/complete`. An expired preview approval
-returns `preview-approval-expired` (rather than
-`preview-approval-not-found`) on `/authorize-sign`. An empty final selection
-with required actions returns `required-action-missing`; unknown action IDs
-return `action-not-in-baseline`. When no actions are required, an empty final
-selection returns `empty_selection` after context validation and before
-preview-approval validation.
+An expired authorization context returns `context-expired` on
+`/authorize-sign`, `/authorize-sign-preview`, the managed approval, and
+versioned `/complete` only while its record remains stored. Issuing a new
+context prunes expired records, after which the same token returns
+`context-not-found`. An expired preview approval returns
+`preview-approval-expired` on `/authorize-sign` until a new preview approval
+prunes it, after which it returns `preview-approval-not-found`. An empty
+final selection with required actions still returns
+`required-action-missing`; unknown action IDs still return
+`action-not-in-baseline`. When the caller has keys, `/authorize-sign` now
+rejects another account's context with `400 user_mismatch`, as
+`/authorize-sign-preview` already does, before inspecting the selection or
+spending the owner's context. Previously, unrelated keys yielded
+`404 key_not_found`; a case-variant record for the same wallet yielded
+`400 user-mismatch` and spent the owner's context. A caller with no keys
+still receives `404 key_not_found`.
 
 ## Request
 
