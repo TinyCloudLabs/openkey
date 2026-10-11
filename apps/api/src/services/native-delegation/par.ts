@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { PrismaClient } from '@openkey/db';
 import { sessionDidForPublicJwk } from '../device-authorization';
-import { enabledNativeDelegation, sqlIsolatedHosts, type NativeDelegationConfig } from './policy';
+import { enabledNativeDelegation, type NativeDelegationConfig } from './policy';
 import { TINYCLOUD_DELEGATION_SCOPE } from '../../oauth-config';
 import { TINYCLOUD_DELEGATED_PATH, TINYCLOUD_DELEGATED_PATH_MAX_LENGTH, hasDotSegment } from '../tinycloud-path-policy';
 
@@ -134,18 +134,7 @@ export async function handlePar(request: Request, db: PrismaClient): Promise<Res
     const client = await db.oauthClient.findUnique({ where: { clientId } });
     if (!client || client.disabled) throw new ParError(401, 'invalid_client', 'unknown or disabled client');
     const ceiling = enabledNativeDelegation(client);
-    if (!ceiling) {
-      const raw = client.tinycloudNativeDelegation as { tinycloudHost?: unknown; sql?: unknown } | null;
-      let details: unknown;
-      try { details = JSON.parse(params.get('authorization_details')!); } catch { /* invalid below */ }
-      const asksSql = Array.isArray(details) && details.some(detail =>
-        detail && typeof detail === 'object' && Array.isArray(detail.permissions) &&
-        detail.permissions.some((permission: unknown) => permission && typeof permission === 'object' && (permission as { service?: unknown }).service === 'tinycloud.sql'));
-      if (raw?.sql && typeof raw.tinycloudHost === 'string' && !sqlIsolatedHosts().has(raw.tinycloudHost) && asksSql) {
-        invalid('invalid_authorization_details', 'SQL requires an isolated TinyCloud host');
-      }
-      invalid('unauthorized_client', 'native delegation is not enabled');
-    }
+    if (!ceiling) invalid('unauthorized_client', 'native delegation is not enabled');
     const challenge = params.get('code_challenge')!;
     const state = params.get('state')!;
     if (params.get('response_type') !== 'code' || !client.redirectUris.includes(params.get('redirect_uri')!) ||

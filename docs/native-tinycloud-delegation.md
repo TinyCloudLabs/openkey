@@ -10,8 +10,7 @@ approved capabilities. It can never get a new signature for anything else or
 widen the grant.
 
 This document is normative for the OpenKey API (O2–O5), the client SDKs
-(TC-774) and Exo (TC-775). SQL capabilities also depend on the tinycloud-node
-isolation fix (TC-780; see [TinyCloud node dependency](#tinycloud-node-dependency-tc-780)).
+(TC-774) and Exo (TC-775).
 
 Conventions:
 
@@ -158,7 +157,7 @@ can set it, and the request can never exceed it.
 | `tinycloudHost` | Must be in `TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS` (`tinycloud-bootstrap.ts`). This is the only node the delegation is activated on and the only host a hosting signature can name. Requests cannot supply a host. |
 | `kv.paths` | Paths under `<appId>/`, using the device-flow path grammar (`[A-Za-z0-9._~@+=,:-]` segments; no `.` or `..` segments; `secrets` and `vault` roots refused). A trailing `/` makes it a prefix grant. |
 | `kv.actions` | A subset of `get`, `put`, `list`, `del`, `metadata`, meaning `tinycloud.kv/<action>`. |
-| `sql` | `null`, or an object. Accepted only if `tinycloudHost` is in `TINYCLOUD_SQL_ISOLATED_HOSTS` (server env). This is checked at enablement, at PAR and at every renewal, and fails closed. |
+| `sql` | `null`, or an object. Validates under the same rules as `kv`: databases confined to `<appId>/`. SQL delegates to the TinyCloud node exactly like KV — isolating databases by full path is the node's job. |
 | `sql.databases` | Exact database identities `<appId>/<name>`, with exactly one segment after the `appId` and no trailing `/`. |
 | `sql.actions` | A subset of `read`, `write`, `schema`, meaning `tinycloud.sql/<action>`. |
 | `maxDelegationTtlSeconds` | 300–86400, default 3600. The lifetime of each signed delegation. |
@@ -276,7 +275,7 @@ synchronous JSON:
 | 400 | `unauthorized_client` | The client is not native, public and `none`-auth, or delegation isn't enabled for it. |
 | 400 | `invalid_request` | Missing or duplicated field, an unknown field, a redirect URI mismatch, a non-S256 or malformed challenge. |
 | 400 | `invalid_scope` | `tinycloud:delegation` or `offline_access` missing, or a scope the client doesn't have. |
-| 400 | `invalid_authorization_details` | Not exactly one `tinycloud_delegation` object, an unknown member, an invalid JWK, permissions outside the ceiling, `space` other than `applications`, missing `tinycloud.capabilities/read`, an out-of-range TTL, a malformed nonce, or SQL requested when the host isn't SQL-isolated. |
+| 400 | `invalid_authorization_details` | Not exactly one `tinycloud_delegation` object, an unknown member, an invalid JWK, permissions outside the ceiling, `space` other than `applications`, missing `tinycloud.capabilities/read`, an out-of-range TTL, or a malformed nonce. |
 
 ## Authorization and callback
 
@@ -798,10 +797,9 @@ Processing:
    grant.
 6. Policy, rechecked on every renewal:
    - `now < absoluteExpiresAt − 300 s`, otherwise `consent_required`;
-   - the client is still enabled and has a ceiling, the approved (or
-     requested) permissions are still inside the **current** ceiling, and SQL
-     is still allowed (host in `TINYCLOUD_SQL_ISOLATED_HOSTS`). Otherwise
-     `consent_required`;
+   - the client is still enabled and has a ceiling, and the approved (or
+     requested) permissions are still inside the **current** ceiling.
+     Otherwise `consent_required`;
    - the canonical key is still `grant.keyId`, otherwise `consent_required`;
    - the user's key-control mode is not `USER_CONTROLLED_EXCLUSIVE`, and the
      app isn't blocked ("block new signatures"). Otherwise `access_denied`;
@@ -1231,43 +1229,11 @@ sees only the callback, or a sheet closed without one (`USER_CANCELLED`).
 server-side grant is already unusable, so `signOut` still wipes the local key
 and tokens and resolves.
 
-## TinyCloud node dependency (TC-780)
+## TinyCloud node responsibility
 
-SQL capabilities are only safe on a node that isolates SQL and DuckDB
-databases by full path. Released tinycloud-node (v1.4.10, and `main` before
-the fix) does not:
-
-- `db_name_from_path` picks a database by the **last path segment**, keyed by
-  `(space, name)`. So `appA/connectors` and `appB/connectors` share one
-  database in the shared `applications` space.
-- Invocation authorization uses descendant `extends`, so a grant for
-  `appA/connectors` also authorizes `appA/connectors/private`, which opens
-  the database `private`.
-- DuckDB has the same flaw.
-
-The fix (TC-780):
-
-- the database identity is the normalized full path;
-- a SQL or DuckDB grant without a trailing `/` matches **exactly**;
-- slash-terminated and pathless grants stay prefix grants, so web manifests
-  (`appId/`) keep working.
-
-Legacy data moves under a write-fenced, alias-based migration:
-
-- Legacy artifacts are found with each engine's exact old selector, including
-  the service.
-- An explicit alias maps a full-path identity to a legacy physical artifact.
-  **No path resolves to a legacy physical name directly.** Unattributed and
-  ambiguous artifacts stay quarantined until an authorized mapping exists.
-- The release is not auto-deployed until the fence, checkpoint, backup and
-  alias transaction are complete. The fixed binary is deployed, and any
-  rollback happens, while the fence is up.
-
-OpenKey's gate is `TINYCLOUD_SQL_ISOLATED_HOSTS`. A ceiling with `sql` is
-refused at enablement, and a SQL permission is refused at PAR and at renewal,
-unless the ceiling's host is listed there. A host is added only after its
-cutover has been verified. Until then, native clients can be enabled with
-`sql: null` and KV only.
+OpenKey validates SQL ceilings under the same application path rules as KV.
+SQL databases are isolated by their full application path at the TinyCloud
+node; that responsibility is the same for every node.
 
 ## Threat model
 
@@ -1289,7 +1255,7 @@ client, so OpenKey cannot authenticate it.
 | Replay | Single-use `request_uri`, single-use code (atomic redemption), proofs bound to one credential and endpoint and consumed under lock, refresh rotation with one-step reuse detection, `iss`, `state`, SIWE nonce. |
 | Cross-device logout through the provider's revoked-token branch (revoke or refresh grant) | Closed: native tokens are refused, a native-capable requesting client is refused outright on both provider paths, and the A2 ownership check covers ordinary clients. |
 | Hosting authority to a hostile node | Host comes only from the admin ceiling and the trusted allowlist; separately disclosed; digest-bound; signed at most once and only if the space is missing. |
-| Cross-app SQL access on the node | Closed only on TC-780-fixed nodes; enforced by `TINYCLOUD_SQL_ISOLATED_HOSTS`. |
+| Cross-app SQL access on the node | Closed by the node: every TinyCloud node isolates SQL databases by full path. |
 
 ### Stolen refresh tokens
 
@@ -1417,8 +1383,8 @@ rest.
 - **KV `list`** on a node without TC-731 can reveal sibling key names outside
   the granted prefix. Production nodes must run a release that includes
   TC-731.
-- **SQL on unfixed nodes** is unsafe; it is blocked by the
-  `TINYCLOUD_SQL_ISOLATED_HOSTS` gate, not by the node.
+- SQL delegates to the TinyCloud node exactly like KV; the node isolates
+  databases by full application path.
 - **Pinned provider internals.** The interceptors and hooks depend on
   better-auth 1.6.10's request parsing, revocation branch, token row format
   and hook order. `@better-auth/oauth-provider` is pinned exactly, and the

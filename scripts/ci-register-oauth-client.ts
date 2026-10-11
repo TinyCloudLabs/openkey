@@ -17,8 +17,6 @@
  *   CLIENT_TINYCLOUD_NATIVE_DELEGATION
  *                         Native delegation ceiling JSON (optional; native
  *                         clients only). Adds tinycloud:delegation.
- *   TINYCLOUD_SQL_ISOLATED_HOSTS
- *                         Hosts allowed to carry SQL entries in that ceiling
  *
  * Idempotent: if an active client with the same name already exists, it is
  * printed and no new client is created.

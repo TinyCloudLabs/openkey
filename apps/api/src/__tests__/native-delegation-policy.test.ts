@@ -13,7 +13,6 @@ import {
   NativeDelegationPolicyError,
   enabledNativeDelegation,
   isNativeDelegationClient,
-  sqlIsolatedHosts,
   validateNativeDelegationConfig,
   type NativeDelegationClient,
 } from '../services/native-delegation/policy';
@@ -29,10 +28,9 @@ const ceiling = {
   sql: null,
 };
 const sql = { databases: ['xyz.tinycloud.tinychat/threads'], actions: ['read', 'write', 'schema'] };
-const isolated = { isolatedHosts: new Set([host]), allowLocalHosts: false };
-const notIsolated = { isolatedHosts: new Set<string>(), allowLocalHosts: false };
+const policyOptions = { allowLocalHosts: false };
 
-function refused(input: unknown, client = nativeClient, options = isolated) {
+function refused(input: unknown, client = nativeClient, options = policyOptions) {
   expect(() => validateNativeDelegationConfig(input, client, options)).toThrow(NativeDelegationPolicyError);
 }
 
@@ -58,7 +56,7 @@ describe('tinycloud:delegation scope sets', () => {
 
 describe('native delegation ceiling validation', () => {
   test('accepts a native public ceiling and returns it with defaults in canonical order', () => {
-    expect(validateNativeDelegationConfig(ceiling, nativeClient, notIsolated)).toEqual({
+    expect(validateNativeDelegationConfig(ceiling, nativeClient, policyOptions)).toEqual({
       version: 1,
       appId: 'xyz.tinycloud.tinychat',
       tinycloudHost: host,
@@ -78,15 +76,12 @@ describe('native delegation ceiling validation', () => {
 
   test('refuses a disabled client', () => {
     refused(ceiling, { ...nativeClient, disabled: true });
-    expect(validateNativeDelegationConfig(ceiling, { ...nativeClient, disabled: false }, notIsolated).appId)
+    expect(validateNativeDelegationConfig(ceiling, { ...nativeClient, disabled: false }, policyOptions).appId)
       .toBe('xyz.tinycloud.tinychat');
   });
 
-  test('SQL entries require a host in TINYCLOUD_SQL_ISOLATED_HOSTS', () => {
-    refused({ ...ceiling, sql }, nativeClient, notIsolated);
-    expect(validateNativeDelegationConfig({ ...ceiling, sql }, nativeClient, isolated).sql).toEqual(sql);
-    expect(sqlIsolatedHosts(` ${host} , https://node.tinycloud.xyz,`)).toEqual(new Set([host, 'https://node.tinycloud.xyz']));
-    expect(sqlIsolatedHosts(undefined)).toEqual(new Set());
+  test('SQL and KV ceilings validate under the same path rules without env configuration', () => {
+    expect(validateNativeDelegationConfig({ ...ceiling, sql }, nativeClient, policyOptions)).toMatchObject({ kv: ceiling.kv, sql });
   });
 
   test('SQL databases are exact names under the appId', () => {
@@ -130,7 +125,7 @@ describe('native delegation ceiling validation', () => {
     refused({ ...ceiling, grantLifetimeSeconds: 2_592_001 });
     refused({ ...ceiling, siweDomain: 'openkey.so/path' });
     expect(validateNativeDelegationConfig(
-      { ...ceiling, tinycloudHost: 'http://localhost:8000' }, nativeClient, { ...notIsolated, allowLocalHosts: true },
+      { ...ceiling, tinycloudHost: 'http://localhost:8000' }, nativeClient, { ...policyOptions, allowLocalHosts: true },
     ).tinycloudHost).toBe('http://localhost:8000');
   });
 
@@ -138,16 +133,7 @@ describe('native delegation ceiling validation', () => {
     const client = {
       ...nativeClient, disabled: false, scopes: ['openid', TINYCLOUD_DELEGATION_SCOPE], tinycloudNativeDelegation: { ...ceiling, sql },
     };
-    const previous = process.env.TINYCLOUD_SQL_ISOLATED_HOSTS;
-    try {
-      process.env.TINYCLOUD_SQL_ISOLATED_HOSTS = host;
-      expect(enabledNativeDelegation(client)?.sql).toEqual(sql);
-      process.env.TINYCLOUD_SQL_ISOLATED_HOSTS = '';
-      expect(enabledNativeDelegation(client)).toBeNull();
-    } finally {
-      if (previous === undefined) delete process.env.TINYCLOUD_SQL_ISOLATED_HOSTS;
-      else process.env.TINYCLOUD_SQL_ISOLATED_HOSTS = previous;
-    }
+    expect(enabledNativeDelegation(client)?.sql).toEqual(sql);
     expect(enabledNativeDelegation({ ...client, tinycloudNativeDelegation: ceiling, disabled: true })).toBeNull();
     expect(enabledNativeDelegation({ ...client, tinycloudNativeDelegation: ceiling, scopes: ['openid'] })).toBeNull();
   });

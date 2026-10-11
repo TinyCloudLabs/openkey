@@ -41,8 +41,6 @@ export interface NativeDelegationClient {
 }
 
 export interface NativeDelegationPolicyOptions {
-  /** Hosts whose SQL/DuckDB databases are isolated per full path (TC-NODE). */
-  isolatedHosts?: ReadonlySet<string>;
   /** Accept loopback TinyCloud hosts; never in production. */
   allowLocalHosts?: boolean;
 }
@@ -82,11 +80,6 @@ function seconds(value: unknown, label: string, min: number, max: number, fallba
   return resolved;
 }
 
-/** Comma-separated origins from `TINYCLOUD_SQL_ISOLATED_HOSTS`. */
-export function sqlIsolatedHosts(configured = process.env.TINYCLOUD_SQL_ISOLATED_HOSTS): Set<string> {
-  return new Set((configured ?? '').split(',').map((value) => value.trim()).filter(Boolean));
-}
-
 function localHostsAllowed(): boolean {
   return process.env.NODE_ENV !== 'production' && process.env.TEE_MODE !== 'production';
 }
@@ -120,16 +113,16 @@ function sqlDatabase(path: string, appId: string): boolean {
 
 /**
  * The only way a delegation ceiling is accepted. Enablement is limited to
- * enabled native public clients without a secret, KV paths and SQL databases stay in
- * the client's own namespace, and SQL is refused unless the TinyCloud host
- * isolates databases by full path (`TINYCLOUD_SQL_ISOLATED_HOSTS`).
+ * enabled native public clients without a secret, and KV paths and SQL
+ * databases stay in the client's own namespace. SQL ceilings validate under
+ * the same rules as KV; isolating SQL databases by full path is the
+ * TinyCloud node's job, same as it is for KV.
  */
 export function validateNativeDelegationConfig(
   input: unknown,
   client: NativeDelegationClient,
   options: NativeDelegationPolicyOptions = {},
 ): NativeDelegationConfig {
-  const isolatedHosts = options.isolatedHosts ?? sqlIsolatedHosts();
   const allowLocalHosts = options.allowLocalHosts ?? localHostsAllowed();
   if (client.type !== 'native' || client.public !== true || client.tokenEndpointAuthMethod !== 'none') {
     reject('TinyCloud delegation requires a native public client with none token authentication');
@@ -153,7 +146,6 @@ export function validateNativeDelegationConfig(
 
   let parsedSql: NativeDelegationConfig['sql'] = null;
   if (value.sql !== null && value.sql !== undefined) {
-    if (!isolatedHosts.has(host)) reject('SQL requires a host listed in TINYCLOUD_SQL_ISOLATED_HOSTS');
     const sql = object(value.sql, 'sql', ['databases', 'actions']);
     const databases = strings(sql.databases, 'sql.databases');
     if (databases.some((path) => !sqlDatabase(path, appId))) {
@@ -179,8 +171,7 @@ export function validateNativeDelegationConfig(
 
 /**
  * Runtime gate for PAR and renewal: the client's stored ceiling re-validated
- * against the current environment. A host removed from
- * `TINYCLOUD_SQL_ISOLATED_HOSTS` or a malformed row disables delegation.
+ * against the current policy. A malformed row disables delegation.
  */
 export function enabledNativeDelegation(client: NativeDelegationClient & {
   scopes: string[];
