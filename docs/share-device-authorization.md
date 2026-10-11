@@ -167,8 +167,9 @@ versioned `/complete` only while its record remains stored. Issuing a new
 context prunes expired records, after which the same token returns
 `context-not-found`. An expired preview approval returns
 `preview-approval-expired` on `/authorize-sign` until a new preview approval
-prunes it, after which it returns `preview-approval-not-found`. An empty
-final selection with required actions still returns
+prunes it, after which it returns `preview-approval-not-found`. In practice
+an expired preview approval implies an expired context, which is reported
+first. An empty final selection with required actions still returns
 `required-action-missing`; unknown action IDs still return
 `action-not-in-baseline`. When the caller has keys, `/authorize-sign` now
 rejects another account's context with `400 user_mismatch`, as
