@@ -39,7 +39,6 @@ if (!backend) {
             RESEND_API_KEY: '',
             GOOGLE_CLIENT_ID: '',
             GOOGLE_CLIENT_SECRET: '',
-            TINYCLOUD_SQL_ISOLATED_HOSTS: '',
           },
           stdout: 'pipe',
           stderr: 'pipe',
@@ -314,14 +313,10 @@ if (!backend) {
       expect(ordinary.tinycloudNativeDelegation).toBeNull();
     });
 
-    test('enablement is refused for non-native clients, scope-only requests and SQL on non-isolated hosts', async () => {
+    test('enablement is refused for non-native clients and scope-only requests', async () => {
       const refused = [
         { name: 'SPA', type: 'spa', redirectUris: [ORDINARY_REDIRECT], tinycloudNativeDelegation: ceiling },
         { name: 'Scope only', type: 'native', redirectUris: [NATIVE_REDIRECT], scopes: ['openid', DELEGATION] },
-        {
-          name: 'SQL', type: 'native', redirectUris: [NATIVE_REDIRECT],
-          tinycloudNativeDelegation: { ...ceiling, sql: { databases: ['xyz.tinycloud.tinychat/threads'], actions: ['read'] } },
-        },
       ];
       for (const body of refused) {
         const response = await adminRequest('POST', '/clients', body);
@@ -336,20 +331,6 @@ if (!backend) {
       await prisma.oauthClient.delete({ where: { clientId: plainClient } });
       expect(await prisma.oauthClient.count({ where: { scopes: { has: DELEGATION } } })).toBe(1);
 
-      process.env.TINYCLOUD_SQL_ISOLATED_HOSTS = 'https://tee.node.tinycloud.xyz';
-      try {
-        const sql = await adminRequest('POST', '/clients', refused[2]);
-        expect(sql.status).toBe(201);
-        const clientId = (await sql.json() as { client: { clientId: string } }).client.clientId;
-        const disabled = await adminRequest('PATCH', `/clients/${clientId}`, { tinycloudNativeDelegation: null });
-        expect(disabled.status).toBe(200);
-        const row = await prisma.oauthClient.findUniqueOrThrow({ where: { clientId } });
-        expect(row.scopes).not.toContain(DELEGATION);
-        expect(row.tinycloudNativeDelegation).toBeNull();
-        await prisma.oauthClient.delete({ where: { clientId } });
-      } finally {
-        process.env.TINYCLOUD_SQL_ISOLATED_HOSTS = '';
-      }
     });
 
     test('dynamic registration cannot request the delegation scope', async () => {
@@ -1002,18 +983,21 @@ if (!backend) {
     await check(changed('authorization_details', JSON.stringify([{ ...validDetail, permissions: validDetail.permissions.slice(1) }])), 'invalid_authorization_details');
     await check(changed('authorization_details', JSON.stringify([{ ...validDetail, permissions: [...validDetail.permissions, { service: 'tinycloud.sql', space: 'applications', path: 'xyz.tinycloud.tinychat/threads', actions: ['tinycloud.sql/read'] }] }])), 'invalid_authorization_details');
     await check(changed('authorization_details', JSON.stringify([{ ...validDetail, permissions: [validDetail.permissions[0], { ...validDetail.permissions[1], path: 'xyz.tinycloud.tinychat/threads/../secrets' }] }])), 'invalid_authorization_details');
-    process.env.TINYCLOUD_SQL_ISOLATED_HOSTS = 'https://tee.node.tinycloud.xyz';
     const sqlCeiling = { ...(await prisma.oauthClient.findUniqueOrThrow({ where: { clientId: nativeClient } })).tinycloudNativeDelegation as Record<string, unknown>,
       sql: { databases: ['xyz.tinycloud.tinychat/threads'], actions: ['read'] } };
     const sqlRegistration = await adminRequest('POST', '/clients', { name: 'SQL native', type: 'native', redirectUris: [NATIVE_REDIRECT], tinycloudNativeDelegation: sqlCeiling });
     expect(sqlRegistration.status).toBe(201);
     const sqlClientId = (await sqlRegistration.json() as { client: { clientId: string } }).client.clientId;
-    process.env.TINYCLOUD_SQL_ISOLATED_HOSTS = '';
     const sqlRequest = new URLSearchParams(base);
     sqlRequest.set('client_id', sqlClientId);
-    sqlRequest.set('authorization_details', JSON.stringify([{ ...validDetail, permissions: [...validDetail.permissions,
-      { service: 'tinycloud.sql', space: 'applications', path: 'xyz.tinycloud.tinychat/threads', actions: ['tinycloud.sql/read'] }] }]));
-    await check(sqlRequest, 'invalid_authorization_details');
+    const sqlDetail = { ...validDetail, permissions: [...validDetail.permissions,
+      { service: 'tinycloud.sql', space: 'applications', path: 'xyz.tinycloud.tinychat/threads', actions: ['tinycloud.sql/read'] }] };
+    sqlRequest.set('authorization_details', JSON.stringify([sqlDetail]));
+    const sqlPar = await form('/api/auth/oauth2/par', sqlRequest.toString());
+    expect(sqlPar.status, await sqlPar.clone().text()).toBe(201);
+    const sqlPendingUri = (await sqlPar.json() as { request_uri: string }).request_uri;
+    const sqlPendingId = sqlPendingUri.split(':').at(-1)!;
+    await prisma.tinyCloudNativeRequest.deleteMany({ where: { id: sqlPendingId } });
     await prisma.oauthClient.delete({ where: { clientId: sqlClientId } });
     const duplicate = new URLSearchParams(base); duplicate.append('client_id', nativeClient);
     await check(duplicate, 'invalid_request');

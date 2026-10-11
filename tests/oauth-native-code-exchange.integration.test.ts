@@ -45,7 +45,6 @@ if (!backend) {
             RESEND_API_KEY: '',
             GOOGLE_CLIENT_ID: '',
             GOOGLE_CLIENT_SECRET: '',
-            TINYCLOUD_SQL_ISOLATED_HOSTS: '',
           },
           stdout: 'pipe',
           stderr: 'pipe',
