@@ -439,8 +439,7 @@ older revision is never changed.
     "clientId": "exo-native",
     "name": "Exo",
     "icon": "https://…/icon.png",
-    "organization": "TinyCloud Labs",
-    "verified": false
+    "organization": "TinyCloud Labs"
   },
   "redirectScheme": "xyz.tinycloud.exo",
   "address": "0x…",
@@ -458,8 +457,7 @@ older revision is never changed.
 The page renders **only** this server data (`@openkey/capability-review` and
 `SigningApproval`). It shows:
 
-- the app's name and icon, its owning organization, and the label
-  **Unverified app**;
+- the app's name and icon, and its owning organization;
 - the return scheme;
 - the node;
 - every permission, as path and actions;

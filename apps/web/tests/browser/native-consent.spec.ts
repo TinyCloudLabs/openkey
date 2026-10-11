@@ -20,7 +20,7 @@ const option = (service: string, short: string, path: string, actions: [string, 
 };
 const permissionOptions = [option('tinycloud.capabilities', 'capabilities', '', [[caps, true]]), option('tinycloud.kv', 'kv', 'xyz.tinycloud.tinychat/threads/', [[kvGet, false], [kvPut, false]])];
 const selected = permissionOptions.flatMap(p => p.actions.map(a => a.key));
-const base = { requestId: 'native-1', userId: 'u', keyId: 'key-1', address, client: { clientId: 'exo-native', name: 'Exo', icon: null, organization: 'TinyCloud Labs', verified: false },
+const base = { requestId: 'native-1', userId: 'u', keyId: 'key-1', address, client: { clientId: 'exo-native', name: 'Exo', icon: null, organization: 'TinyCloud Labs' },
   redirectScheme: 'xyz.tinycloud.exo', sessionDid: 'did:key:z6Mk', tinycloudHost: 'https://tee.node.tinycloud.xyz', ttlSeconds: 3600,
   grantLifetimeSeconds: 2592000, hostPlan: { host: 'https://tee.node.tinycloud.xyz', spaceId: space, peerId: 'did:key:z6Mk', hostSiwe: 'host bytes' }, permissionOptions };
 const json = (route: Route, body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
@@ -43,7 +43,8 @@ test('native consent shows the disclosed grant, re-prepares optional actions and
     return json(route, { error: `unmocked ${path}` }, 404);
   });
   await page.goto('/oauth/consent?client_id=exo-native&tinycloud_request=native-1&sig=test');
-  await expect(page.getByText('Unverified app')).toBeVisible();
+  await expect(page.getByRole('strong').filter({ hasText: 'Exo' })).toBeVisible();
+  await expect(page.getByText('TinyCloud Labs', { exact: true })).toBeVisible();
   await expect(page.getByText('xyz.tinycloud.exo://')).toBeVisible();
   await expect(page.getByText(/permanent hosting authorization/)).toBeVisible();
   await expect(page.getByText(/1 hour from approval/)).toBeVisible();
