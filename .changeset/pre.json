@@ -16,14 +16,19 @@
   },
   "changesets": [
     "account-key-bearer-boundary",
+    "authorize-sign-consume-after-checks",
     "consent-ui-parity",
     "delegate-capabilities-read-baseline",
     "delegate-complete-consume-after-checks",
+    "delegate-complete-wallet-signature",
+    "delegate-node-host-aliases",
     "delegate-ordinary-link-policy",
     "delegate-primary-key",
     "delegate-raw-encryption-grants",
+    "delegate-space-setup-disclosure",
     "device-authorization-bounded-scope",
     "device-authorization-web",
+    "drop-unverified-app-label",
     "native-capacitor-sdk",
     "native-delegation-core",
     "native-exchange-intent-hook",
@@ -37,6 +42,7 @@
     "tc-802-agents-space",
     "tc-802-create-only-space-registry",
     "tidy-badgers-sing",
+    "tidy-hints-brand",
     "widget-origin-checks"
   ]
 }

@@ -1,5 +1,11 @@
 # @openkey/core
 
+## 0.12.0-beta.2
+
+### Patch Changes
+
+- 9ba42fb: Add native sign-in presentation hints (including the `INVALID_REQUEST` error code) and configurable Android Custom Tabs theming.
+
 ## 0.12.0-beta.0
 
 ### Minor Changes
