@@ -1,7 +1,8 @@
 // Physical checks for the TC-773 native delegation migrations:
 // 20261007_0001_tinycloud_native_foundation, the additive
-// 20261007_0002_native_preparation_host, and the token guard triggers of
-// 20261007_0003_tinycloud_native_token_guard.
+// 20261007_0002_native_preparation_host, the token guard triggers of
+// 20261007_0003_tinycloud_native_token_guard, and sign-in columns from
+// 20261012_0001_signin_polish_hints_branding.
 // `prisma migrate diff` cannot see triggers or CHECK constraints, and the
 // consent-withdrawal triggers are what revoke native grants and tokens.
 

@@ -51,8 +51,8 @@ app.use('/api/delegate/sign', cors({
   credentials: false,
 }));
 
-// OAuth discovery and the public protocol endpoints (token; native
-// delegation PAR, renew and revoke) answer any origin without credentials:
+// OAuth discovery, public client branding, and public protocol endpoints
+// (token; native delegation PAR, renew and revoke) answer any origin without credentials:
 // native apps call them from capacitor:// and https://localhost WebViews,
 // and PKCE plus session proofs, not cookies, authenticate them. Every other
 // route, including the cookie-authenticated consent routes, keeps the

@@ -32,12 +32,14 @@ describe('normalizeAuthReturnTo', () => {
 });
 
 test('native login re-entry keeps tinycloud_request and the signed provider envelope', () => {
-  const source = new URLSearchParams({ client_id: 'native', tinycloud_request: 'request-1', prompt: 'consent',
+  const source = new URLSearchParams({ client_id: 'native', tinycloud_request: 'request-1', prompt: 'consent', login_hint: 'user@example.test', login_method: 'email',
     exp: '123', ba_iat: '100', ba_pl: 'session', sig: 'signature', ignored: 'value' });
   const query = new URLSearchParams(safeOAuthAuthorizeQuery(source));
   expect(query.get('tinycloud_request')).toBe('request-1');
   expect(query.get('prompt')).toBe('consent');
   expect(query.get('sig')).toBe('signature');
+  expect(query.get('login_method')).toBe('email');
+  expect(query.get('login_hint')).toBe('user@example.test');
   expect(query.get('exp')).toBe('123');
   expect(query.get('ba_iat')).toBe('100');
   expect(query.get('ba_pl')).toBe('session');

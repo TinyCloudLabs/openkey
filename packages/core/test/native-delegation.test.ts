@@ -413,7 +413,7 @@ describe('PAR', () => {
       clientId: CLIENT_ID, redirectUri: REDIRECT_URI, state: 'state', codeChallenge: 'challenge',
       sessionKey: generateSessionKeypair(), permissions: PERMISSIONS,
     };
-    for (const loginHint of ['x'.repeat(255) + '@example.com', 'a b@example.com', '@example.com', 'a@@example.com', 'a@']) {
+    for (const loginHint of ['x'.repeat(255) + '@example.com', 'a b@example.com', 'a\u0000b@example.com', '@example.com', 'a@@example.com', 'a@']) {
       expect(() => buildParRequest({ ...base, loginHint })).toThrow();
     }
     expect(() => buildParRequest({ ...base, loginHint: 'a@example.com', loginMethod: 'google' })).toThrow();

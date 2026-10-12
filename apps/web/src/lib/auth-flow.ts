@@ -11,6 +11,7 @@ const OAUTH_AUTHORIZE_KEYS = new Set([
   'nonce',
   'resource',
   'login_hint',
+  'login_method',
   'max_age',
   'ui_locales',
   'claims',

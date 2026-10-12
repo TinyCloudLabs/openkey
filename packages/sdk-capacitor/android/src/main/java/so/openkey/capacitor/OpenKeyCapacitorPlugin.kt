@@ -66,8 +66,8 @@ class OpenKeyCapacitorPlugin : Plugin() {
             val theme = call.getObject("browserTheme")
             if (theme != null) {
                 val toolbar = theme.getString("toolbarColor")
-                val scheme = theme.getString("colorScheme")
-                if (toolbar == null || !toolbar.matches(Regex("#[0-9a-fA-F]{6}")) || scheme !in listOf("dark", "light", "system")) {
+                val colorScheme = theme.getString("colorScheme")
+                if (toolbar == null || !toolbar.matches(Regex("#[0-9a-fA-F]{6}")) || colorScheme !in listOf("dark", "light", "system")) {
                     call.reject("Invalid browser theme", "INVALID_REQUEST")
                     pending = null
                     launched = false
@@ -82,7 +82,7 @@ class OpenKeyCapacitorPlugin : Plugin() {
                     .build()
                 builder.setColorSchemeParams(CustomTabsIntent.COLOR_SCHEME_DARK, colors)
                 builder.setColorSchemeParams(CustomTabsIntent.COLOR_SCHEME_LIGHT, colors)
-                builder.setColorScheme(when (scheme) {
+                builder.setColorScheme(when (colorScheme) {
                     "dark" -> CustomTabsIntent.COLOR_SCHEME_DARK
                     "light" -> CustomTabsIntent.COLOR_SCHEME_LIGHT
                     else -> CustomTabsIntent.COLOR_SCHEME_SYSTEM

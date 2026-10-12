@@ -143,7 +143,7 @@ export async function handlePar(request: Request, db: PrismaClient): Promise<Res
     let loginHint: string | null = null;
     if (rawHint !== null) {
       const hint = rawHint.trim();
-      if (hint.length > 254 || /\s/.test(hint) || (hint.match(/@/g) ?? []).length !== 1 ||
+      if (hint.length > 254 || /[\s\p{C}]/u.test(hint) || (hint.match(/@/g) ?? []).length !== 1 ||
         hint.startsWith('@') || hint.endsWith('@') || loginMethodValue === 'passkey' || loginMethodValue === 'google') {
         invalid('invalid_request', 'invalid login_hint');
       }

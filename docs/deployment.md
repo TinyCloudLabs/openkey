@@ -49,16 +49,19 @@ deliberately not part of this runtime prerequisite and remains governed by its
 existing explicit operator gate.
 
 While the separately authorized TC-488 destructive custody cutover remains
-pending, production deploy permits four later additive migrations:
+pending, production deploy permits these reviewed additive migrations:
 `20260814_0001_share_device_authorization`,
 `20261005_0001_delegation_code_broker`,
 `20261007_0001_tinycloud_native_foundation`, and
-`20261007_0002_native_preparation_host`. The deploy verifies their frozen SQL
-checksums, the exact pending set, the baseline marker, and the physical
+`20261007_0002_native_preparation_host`,
+`20261007_0003_tinycloud_native_token_guard`, and
+`20261012_0001_signin_polish_hints_branding`. The deploy verifies their frozen
+SQL checksums, the exact pending set, the baseline marker, and the physical
 pre-cutover custody table before temporarily excluding only the destructive
 TC-488 migration from a normal `prisma migrate deploy`. It then verifies
 the recorded checksums and physical schema, including the native preparation
-host column and consent-withdrawal triggers. Any other pending migration fails closed. Once TC-488 is applied,
+host column, sign-in hint and branding columns, and consent-withdrawal
+triggers. Any other pending migration fails closed. Once TC-488 is applied,
 deployments return to the full migration and schema-drift verification path.
 
 The public native PAR endpoint validates the full request before allocating a

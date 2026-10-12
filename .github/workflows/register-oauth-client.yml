@@ -12,14 +12,13 @@ on:
     inputs:
       name:
         description: 'Application display name (shown on the consent screen)'
-        required: true
+        required: false
       redirect_uris:
-        description: 'Comma-separated allowed redirect URIs'
+        description: 'Comma-separated allowed redirect URIs (required when creating a client)'
         required: false
       type:
         description: 'Client type'
-        required: true
-        default: 'native'
+        required: false
         type: choice
         options:
           - native
@@ -31,13 +30,13 @@ on:
         description: 'Existing enabled client ID to update branding only (optional)'
         required: false
       icon:
-        description: 'HTTPS icon URL (optional)'
+        description: 'HTTPS icon URL (optional); on update, empty leaves unchanged and none clears'
         required: false
       theme_background_color:
-        description: 'Brand background color as #rrggbb (optional)'
+        description: 'Brand background color as #rrggbb (optional); on update, empty leaves unchanged and none clears'
         required: false
       theme_accent_color:
-        description: 'Brand accent color as #rrggbb (optional)'
+        description: 'Brand accent color as #rrggbb (optional); on update, empty leaves unchanged and none clears'
         required: false
       tinycloud_native_delegation:
         description: 'Native delegation ceiling JSON (optional)'

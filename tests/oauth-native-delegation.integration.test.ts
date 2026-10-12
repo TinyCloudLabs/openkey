@@ -990,6 +990,7 @@ if (!backend) {
     await check(changed('authorization_details', JSON.stringify([{ ...validDetail, permissions: [validDetail.permissions[0], { ...validDetail.permissions[1], path: 'xyz.tinycloud.tinychat/threads/../secrets' }] }])), 'invalid_authorization_details');
     await check(changed('login_hint', 'a'.repeat(250) + '@example.com'), 'invalid_request');
     await check(changed('login_hint', 'user name@example.com'), 'invalid_request');
+    await check(changed('login_hint', 'user\u0000name@example.com'), 'invalid_request');
     const conflictingHint = changed('login_hint', 'person@example.com');
     conflictingHint.set('login_method', 'passkey');
     await check(conflictingHint, 'invalid_request');
@@ -1439,6 +1440,12 @@ if (!backend) {
         theme: { backgroundColor: null, accentColor: null },
       });
       expect((await call('/api/oauth/tinycloud/clients/unknown-client/branding')).status).toBe(404);
+      await prisma.oauthClient.update({ where: { clientId: nativeClient }, data: { disabled: true } });
+      try {
+        expect((await call(`/api/oauth/tinycloud/clients/${nativeClient}/branding`)).status).toBe(404);
+      } finally {
+        await prisma.oauthClient.update({ where: { clientId: nativeClient }, data: { disabled: false } });
+      }
     });
 
     test('Retry-After on a public endpoint is readable from capacitor://localhost', async () => {

@@ -3,4 +3,4 @@
 '@openkey/sdk-capacitor': patch
 ---
 
-Add native sign-in presentation hints and configurable Android Custom Tabs theming.
+Add native sign-in presentation hints (including the `INVALID_REQUEST` error code) and configurable Android Custom Tabs theming.
