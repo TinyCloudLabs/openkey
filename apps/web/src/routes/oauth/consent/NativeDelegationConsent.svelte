@@ -1,12 +1,19 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import { API_BASE } from '$lib/auth-client';
-  import { safeExternalHttpUrl, safeOAuthNavigationUrl } from '$lib/safe-oauth-url';
-  import SigningApproval from '$lib/components/signing/signing-approval.svelte';
-  import { parseCapabilityReview, defaultSelection, type CapabilityReviewModel } from '@openkey/capability-review';
+  import { safeOAuthNavigationUrl } from '$lib/safe-oauth-url';
+  import NativeShell from '$lib/components/auth/native-shell.svelte';
+  import { nativeAccessSummary } from '$lib/native-access';
+  import {
+    parseCapabilityReview, defaultSelection, buildRenderPlan, grantHeading,
+    type CapabilityAction, type CapabilityGrant, type CapabilityReviewModel,
+  } from '@openkey/capability-review';
   import { reviewSelectionToActionKeys, preparedMatchesSelection, type ServerPermissionOption } from '$lib/delegate-review-selection';
 
-  let { requestId, email }: { requestId: string; email?: string } = $props();
+  let { requestId, clientId, email, ready }: {
+    requestId: string; clientId: string; email?: string;
+    /** The session has resolved; the request is only prepared once it has. */
+    ready: boolean;
+  } = $props();
   type Preview = {
     requestId: string; revision: number; digest: string; sessionSiwe: string;
     hostPlan: { host: string; spaceId: string; peerId: string; hostSiwe: string } | null;
@@ -18,7 +25,6 @@
   let model = $state<CapabilityReviewModel | null>(null);
   let baselineOptions = $state<ServerPermissionOption[]>([]);
   let selection = $state<Set<string>>(new Set());
-  let editing = $state(false);
   let loading = $state(true);
   let submitting = $state(false);
   let approved = $state(false);
@@ -107,6 +113,11 @@
     try { await providerConsent(false); }
     catch (cause) { error = cause instanceof Error ? cause.message : 'Denial failed'; submitting = false; }
   }
+  function toggle(action: CapabilityAction) {
+    const next = new Set(selection);
+    if (next.has(action.id)) next.delete(action.id); else next.add(action.id);
+    changeSelection(next);
+  }
   function changeSelection(next: Set<string>) {
     selection = next;
     if (model) prepare(reviewSelectionToActionKeys(model, baselineOptions, next));
@@ -116,38 +127,302 @@
       : seconds % 3600 === 0 ? [seconds / 3600, 'hour'] : [Math.round(seconds / 60), 'minute'];
     return `${count} ${unit}${count === 1 ? '' : 's'}`;
   };
-  onMount(() => { prepare(); });
+  let started = false;
+  $effect(() => { if (ready && !started) { started = true; prepare(); } });
+  const summary = $derived(model && preview ? nativeAccessSummary(model, selection, preview.client.name) : null);
+  const grants = $derived(model ? buildRenderPlan(model.permissions).flatMap((bucket) => bucket.grants) : []);
+  const malformed = $derived(model?.protocol === 'malformed-recap');
+  const trustLabel: Record<CapabilityReviewModel['metadataTrust']['status'], string> = {
+    verified: 'Manifest signature verified',
+    'origin-bound': 'Manifest served by verified https origin',
+    unsigned: 'No signed manifest',
+    stale: 'Manifest signature is stale',
+    'wrong-key': 'Manifest signed by an unknown key',
+    'digest-mismatch': 'Manifest digest does not match declared content',
+  };
+  const exactTarget = (grant: CapabilityGrant) =>
+    `${grant.space}${grant.resourceService ? `/${grant.resourceService}` : ''}${grant.path ? `/${grant.path}` : ''}`;
 </script>
 
-{#if loading && !preview}
-  <p class="text-surface-600">Preparing delegation…</p>
-{:else if approved}
-  <div class="space-y-4 text-center">
-    <p>Your delegation was approved. Continue to return to the app.</p>
-    {#if error}<p role="alert" class="text-red-600">{error}</p>{/if}
-    <button type="button" class="rounded-lg bg-primary-600 px-4 py-2 text-white disabled:opacity-50" disabled={submitting} onclick={approve}>Continue to app</button>
-  </div>
-{:else if preview && model}
-  {#snippet context()}
-    {#if preview}
-    <div class="space-y-3 text-sm text-surface-700">
-      <div class="flex items-center gap-3">
-        {#if safeExternalHttpUrl(preview.client.icon)}<img src={safeExternalHttpUrl(preview.client.icon)!} alt="" class="h-10 w-10 rounded-lg" />{/if}
-        <div><strong>{preview.client.name}</strong>{#if preview.client.organization}<div>{preview.client.organization}</div>{/if}</div>
-      </div>
-      <p>Return to <code>{preview.redirectScheme}://</code> after approval.</p>
-      <p>Delegation lasts {duration(preview.ttlSeconds)} from approval. The app may auto-renew for up to {duration(preview.grantLifetimeSeconds)}.</p>
-      <p>TinyCloud node: <code>{preview.tinycloudHost}</code></p>
+<NativeShell {clientId} heading={(name) => `${name} wants access`} name={preview?.client.name ?? null}>
+  {#if !ready || (loading && !preview)}
+    <p class="nb-lede" role="status">Preparing your request…</p>
+  {:else if approved}
+    <p class="nb-lede">Your delegation was approved. Continue to return to the app.</p>
+    {#if error}<p role="alert" class="nb-error">{error}</p>{/if}
+    <button type="button" class="nb-button nb-primary" disabled={submitting} onclick={approve}>Continue to app</button>
+  {:else if preview && model && summary}
+    <p class="nb-lede signed-in">Signed in as <strong>{email}</strong></p>
+
+    <section class="panel" aria-label="Requested access">
+      <p class="sentence">{summary.sentence}</p>
+      {#each summary.warnings as warning}
+        <p class="note warning" role="status">{warning}</p>
+      {/each}
+      <p class="note">Access lasts up to {duration(preview.grantLifetimeSeconds)} and renews automatically while you use {preview.client.name}.</p>
       {#if preview.hostPlan}
-        <p class="rounded-lg border border-amber-300 bg-amber-50 p-3">If your applications space does not exist on {preview.hostPlan.host} yet, OpenKey will create it there. This is a permanent hosting authorization for that node.</p>
+        <p class="note">First sign-in: this also lets your TinyCloud node host your data.</p>
       {/if}
-    </div>
+    </section>
+
+    <details class="details">
+      <summary class="nb-details-summary">Details</summary>
+      <div class="details-body">
+        <dl>
+          {#if preview.client.organization}
+            <dt>App by</dt><dd>{preview.client.organization}</dd>
+          {/if}
+          <dt>TinyCloud node</dt><dd><code>{preview.tinycloudHost}</code></dd>
+          <dt>Returns to</dt><dd><code>{preview.redirectScheme}://</code></dd>
+          <dt>Signing key</dt><dd>{model.signer.label} <code>{model.signer.address}</code></dd>
+          <dt>App identity</dt><dd>{trustLabel[model.metadataTrust.status]}</dd>
+          {#if model.expiry}<dt>Expires</dt><dd>{model.expiry}</dd>{/if}
+          <dt>Renewals</dt><dd>Each renewal lasts {duration(preview.ttlSeconds)} from approval.</dd>
+        </dl>
+        {#if model.metadataTrust.reason}
+          <p class="note">{model.metadataTrust.reason}</p>
+        {/if}
+        {#if preview.hostPlan}
+          <p class="note">If your applications space does not exist on {preview.hostPlan.host} yet, OpenKey will create it there. This is a permanent hosting authorization for that node.</p>
+        {/if}
+
+        <h2>Exact grants</h2>
+        <ul class="grants">
+          {#each grants as grant (grant.id)}
+            <li>
+              <div class="grant-title">
+                {grantHeading(grant)}
+                {#if grant.severity === 'sensitive'}<span class="pill">Sensitive</span>{/if}
+              </div>
+              <code class="grant-target">{exactTarget(grant)}</code>
+              {#if grant.ownedBySelf === false}<p class="note">This data belongs to another user.</p>{/if}
+              <ul class="actions">
+                {#each grant.actions as action (action.id)}
+                  <li>
+                    {#if action.editable}
+                      <label class="action-toggle">
+                        <input type="checkbox" checked={selection.has(action.id)} disabled={loading || submitting} onchange={() => toggle(action)} />
+                        <span>{action.verb}</span>
+                      </label>
+                    {:else}
+                      <span class="action-static">{action.verb}{#if action.required} <span class="pill">required</span>{/if}</span>
+                    {/if}
+                  </li>
+                {/each}
+              </ul>
+            </li>
+          {/each}
+        </ul>
+
+        {#if model.parseWarnings.length > 0}
+          <h2>Notes</h2>
+          <ul class="warnings">
+            {#each model.parseWarnings as warning}
+              <li><code>{warning.code}</code> {warning.message}</li>
+            {/each}
+          </ul>
+        {/if}
+
+        <details class="raw">
+          <summary>Exact message being signed</summary>
+          <pre>{model.rawMessage}</pre>
+        </details>
+      </div>
+    </details>
+
+    {#if error}<p class="nb-error" role="alert">{error}</p>{/if}
+    {#if malformed}
+      <p class="nb-error" role="alert">This request carries a capability payload that could not be decoded, so it cannot be approved.</p>
+    {:else if blocked}
+      <p class="nb-note" role="status">{blocked}</p>
     {/if}
-  {/snippet}
-  <SigningApproval {model} {selection} {editing} approving={submitting || loading} {error} approveBlockedReason={blocked}
-    approveText="Allow" cancelText="Deny" {context} onApprove={approve} onCancel={deny}
-    onSelectionChange={changeSelection} onEditingChange={(next) => { editing = next; }} />
-  <p class="mt-4 text-center text-xs text-surface-500">Signed in as {email}</p>
-{:else}
-  <p role="alert" class="text-red-600">{error || 'Unable to prepare this request.'}</p>
-{/if}
+
+    <div class="nb-stack actions-row">
+      <button type="button" class="nb-button nb-primary" onclick={approve} disabled={submitting || loading || malformed || Boolean(blocked)}>
+        {submitting ? 'Working…' : 'Allow'}
+      </button>
+      <button type="button" class="nb-button" onclick={deny} disabled={submitting}>Don't allow</button>
+    </div>
+  {:else}
+    <p role="alert" class="nb-error">{error || 'Unable to prepare this request.'}</p>
+  {/if}
+</NativeShell>
+
+<style>
+  .signed-in {
+    margin-bottom: 16px;
+  }
+
+  .panel {
+    padding: 18px;
+    margin-bottom: 8px;
+    border-radius: 16px;
+    border: 1px solid var(--nb-border);
+    background: var(--nb-field);
+  }
+
+  .sentence {
+    margin: 0 0 10px;
+    font-size: 18px;
+    line-height: 1.4;
+    font-weight: 500;
+  }
+
+  .note {
+    margin: 10px 0 0;
+    font-size: 14px;
+    line-height: 1.45;
+    color: var(--nb-muted);
+  }
+
+  .warning {
+    color: var(--nb-fg);
+  }
+
+  .details {
+    margin-bottom: 20px;
+  }
+
+  .nb-details-summary,
+  .raw summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 48px;
+    padding: 0 4px;
+    font-size: 15px;
+    color: var(--nb-muted);
+    cursor: pointer;
+  }
+
+  .nb-details-summary::after,
+  .raw summary::after {
+    content: '+';
+    font-size: 20px;
+  }
+
+  details[open] > .nb-details-summary::after,
+  .raw[open] > summary::after {
+    content: '−';
+  }
+
+  .details-body {
+    padding: 4px 4px 12px;
+    font-size: 14px;
+    line-height: 1.45;
+    color: var(--nb-muted);
+  }
+
+  dl {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 6px 14px;
+    margin: 0;
+  }
+
+  dt {
+    color: var(--nb-faint);
+  }
+
+  dd {
+    margin: 0;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    color: var(--nb-fg);
+  }
+
+  code,
+  pre {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12.5px;
+  }
+
+  h2 {
+    margin: 18px 0 8px;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--nb-faint);
+  }
+
+  .grants,
+  .actions {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .grants > li {
+    padding: 12px 0;
+    border-top: 1px solid var(--nb-border);
+  }
+
+  .grant-title {
+    font-weight: 600;
+    color: var(--nb-fg);
+  }
+
+  .grant-target {
+    display: block;
+    margin: 4px 0 6px;
+    overflow-wrap: anywhere;
+    color: var(--nb-muted);
+  }
+
+  .pill {
+    margin-left: 6px;
+    padding: 1px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--nb-border);
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--nb-muted);
+  }
+
+  .action-toggle,
+  .action-static {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 48px;
+    color: var(--nb-fg);
+  }
+
+  .warnings {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .warnings li {
+    padding: 6px 0;
+    overflow-wrap: anywhere;
+  }
+
+  .action-toggle input {
+    width: 22px;
+    height: 22px;
+    accent-color: var(--nb-accent);
+  }
+
+  .raw {
+    margin-top: 12px;
+  }
+
+  pre {
+    margin: 0;
+    padding: 12px;
+    max-height: 240px;
+    overflow: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    border-radius: 12px;
+    background: var(--nb-field);
+    color: var(--nb-muted);
+  }
+
+  .actions-row {
+    margin-top: 4px;
+  }
+</style>

@@ -18,6 +18,16 @@ export const authClient = createAuthClient({
   ],
 });
 
+// Native-mode Google/Apple redirect. It has no oauthProviderClient, whose
+// request hook would add the signed authorize query (and so the native
+// request) as `oauth_query` to the social sign-in body.
+export const socialRedirectClient = createAuthClient({
+  baseURL: API_BASE,
+  fetchOptions: {
+    credentials: 'include',
+  },
+});
+
 // Export convenience functions
 export const {
   signIn,

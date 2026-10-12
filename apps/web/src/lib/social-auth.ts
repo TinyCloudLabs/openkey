@@ -1,4 +1,4 @@
-import { API_BASE } from './auth-client';
+import { API_BASE, socialRedirectClient } from './auth-client';
 import { setSessionToken } from './embed-passkey';
 
 export type SocialProviderId = 'google' | 'apple';
@@ -110,6 +110,37 @@ export async function signInWithSocialPopup(
       }
     });
   });
+}
+
+export type SocialRedirectDependencies = {
+  signInSocial: (input: {
+    provider: SocialProviderId;
+    callbackURL: string;
+    errorCallbackURL: string;
+    disableRedirect: true;
+  }) => Promise<{ data?: { url?: unknown } | null; error?: { message?: string } | null }>;
+  navigate: (url: string) => void;
+};
+
+/**
+ * Top-level Google/Apple sign-in for native mode. There is no popup in an
+ * authentication sheet, so this navigates the whole window to the provider.
+ * Better Auth returns to `callbackURL`, or `errorCallbackURL` on failure.
+ */
+export async function signInWithSocialRedirect(
+  provider: SocialProviderId,
+  returnUrls: { callbackURL: string; errorCallbackURL: string },
+  dependencies: SocialRedirectDependencies = {
+    signInSocial: (input) => socialRedirectClient.signIn.social(input),
+    navigate: (url) => window.location.assign(url),
+  },
+): Promise<void> {
+  const providerName = provider === 'google' ? 'Google' : 'Apple';
+  const result = await dependencies.signInSocial({ provider, ...returnUrls, disableRedirect: true });
+  if (result.error) throw new Error(result.error.message || `${providerName} sign-in failed.`);
+  const authorizationURL = safeSocialAuthorizationUrl(result.data?.url, provider);
+  if (!authorizationURL) throw new Error(`${providerName} returned an invalid authorization URL.`);
+  dependencies.navigate(authorizationURL);
 }
 
 export async function loadConfiguredSocialProviders(
