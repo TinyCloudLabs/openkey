@@ -67,3 +67,23 @@ describe('spaceReadinessResult', () => {
     expect(result && 'detail' in result).toBe(false);
   });
 });
+
+
+describe('TC-945 pending space readiness', () => {
+  for (const setupNotice of [notice('setup'), null]) {
+    test(`pending copy with ${setupNotice ? 'setup' : 'no'} notice uses the space name without error language`, () => {
+      const result = spaceReadinessResult({ spaceReady: null, spacePending: true, spaceId: 'did:space:agents' }, setupNotice);
+      expect(result?.kind).toBe('pending');
+      expect(result?.text).toContain('agents');
+      expect(result?.text).toContain('being set up');
+      expect(result?.text).toContain('ready');
+      for (const word of ["couldn't", "didn't", 'failed']) expect(result?.text).not.toContain(word);
+      expect(result).not.toHaveProperty('detail');
+    });
+  }
+  test('the marker never overrides a definite readiness answer', () => {
+    expect(spaceReadinessResult({ spaceReady: true, spacePending: true }, notice('setup'))?.kind).toBe('ready');
+    expect(spaceReadinessResult({ spaceReady: false, spacePending: true }, notice('setup'))?.kind).toBe('not-ready');
+    expect(spaceReadinessResult({ spaceReady: false, spacePending: true, spaceError: 'seed failed' }, notice('setup'))?.kind).toBe('failed');
+  });
+});

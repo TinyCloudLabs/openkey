@@ -33,9 +33,9 @@ export function spaceSetupNoticeText(notice: SpaceSetupNotice): string {
 }
 
 export function spaceReadinessResult(
-  payload: { spaceReady?: unknown; spaceError?: unknown; spaceId?: unknown },
+  payload: { spaceReady?: unknown; spaceError?: unknown; spacePending?: unknown; spaceId?: unknown },
   notice: SpaceSetupNotice | null,
-): { kind: 'ready' | 'unknown' | 'not-ready' | 'failed'; text: string; detail?: string } | null {
+): { kind: 'ready' | 'pending' | 'unknown' | 'not-ready' | 'failed'; text: string; detail?: string } | null {
   const requested = notice?.space ?? 'requested';
   const space = typeof payload.spaceId === 'string'
     ? payload.spaceId.split(':').at(-1) ?? requested
@@ -44,6 +44,9 @@ export function spaceReadinessResult(
     return notice?.plan === 'setup'
       ? { kind: 'ready', text: `Approved. Your ‘${space}’ space in TinyCloud is ready.` }
       : null;
+  }
+  if (payload.spacePending === true && payload.spaceReady !== false) {
+    return { kind: 'pending', text: `Approved. Your ‘${space}’ space in TinyCloud is being set up. This can take a minute. The app will continue when it's ready.` };
   }
   if (payload.spaceReady !== false) {
     return notice
