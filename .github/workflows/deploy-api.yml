@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: openkey-api-deploy
+  group: production-api
   cancel-in-progress: false
 
 env:
