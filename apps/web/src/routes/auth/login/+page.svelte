@@ -8,8 +8,16 @@
   import {
     loadConfiguredSocialProviders,
     signInWithSocialPopup,
+    signInWithSocialRedirect,
     type SocialProviderId,
   } from '$lib/social-auth';
+  import {
+    nativeOtpSentKey,
+    nativeReentryKey,
+    nativeSignIn,
+    nativeSocialReturnUrls,
+  } from '$lib/native-mode';
+  import NativeShell from '$lib/components/auth/native-shell.svelte';
   import { api } from '$lib/api';
   import SocialButtons from '$lib/components/auth/social-buttons.svelte';
   import { passkeysSupportedFromParams } from '$lib/passkey-support';
@@ -17,17 +25,32 @@
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
 
-  type Step = 'email' | 'otp' | 'passkey';
+  // 'passkey' is the enrolment offer; 'passkeySignIn' and 'google' are native-mode landing steps.
+  type Step = 'email' | 'otp' | 'passkey' | 'passkeySignIn' | 'google';
 
-  let email = $state('');
+  // Native mode: the signed authorize query carries `tinycloud_request`, so the
+  // sign-in is running in a system sheet opened by a native app.
+  const native = nativeSignIn($page.url.searchParams);
+  // `passkeys=false` comes from clients that cannot use WebAuthn.
+  const passkeysSupported = passkeysSupportedFromParams($page.url.searchParams);
+
+  function initialStep(): Step {
+    if (!native || native.socialError) return 'email';
+    if (native.method === 'email' && native.hint) return 'otp';
+    if (native.method === 'passkey' && passkeysSupported) return 'passkeySignIn';
+    if (native.method === 'google') return 'google';
+    return 'email';
+  }
+
+  let email = $state(native?.hint ?? '');
   let otp = $state('');
-  let step = $state<Step>('email');
+  let step = $state<Step>(initialStep());
+  let codeSent = $state(false);
+  let verifying = $state(false);
   let loading = $state(false);
   let error = $state('');
   let providers = $state<SocialProviderId[]>([]);
   let loadingProvider = $state<SocialProviderId | null>(null);
-  // `passkeys=false` comes from clients that cannot use WebAuthn.
-  const passkeysSupported = passkeysSupportedFromParams($page.url.searchParams);
   // In OAuth flows the API answers sign-in/email-otp with its own redirect
   // URL (the consent page, or the client's redirect_uri when consent can be
   // skipped). The URL is captured during the sign-in response and replayed
@@ -77,22 +100,77 @@
     }
   }
 
-  onMount(async () => {
-    providers = await loadConfiguredSocialProviders().catch(() => []);
+  onMount(() => {
+    loadConfiguredSocialProviders().then((loaded) => { providers = loaded; }).catch(() => {});
+    if (native) {
+      // Coming back from the provider via the browser's back button restores
+      // this page mid-redirect; clear the busy state.
+      window.addEventListener('pageshow', (event) => {
+        if (!event.persisted) return;
+        loading = false;
+        loadingProvider = null;
+        if (step === 'google') step = 'email';
+      });
+      startNative(native);
+    }
   });
 
-  async function sendOTP() {
+  // Automatic first action for the requested login method. It runs once per
+  // page load, and the code send is also keyed to the request in sessionStorage
+  // so a reload never mails a second code.
+  async function startNative(request: NonNullable<typeof native>) {
+    if (request.socialError) {
+      error = 'Google sign-in did not finish. Continue with your email instead.';
+      return;
+    }
+
+    const existing = await authClient.getSession();
+    if (existing.error) {
+      error = authErrorMessage(existing.error, 'Could not check your session');
+      step = 'email';
+      return;
+    }
+    if (existing.data) {
+      // Already signed in (for example straight back from Google): continue the
+      // authorize request instead of signing in again. Once per request, so an
+      // authorize that sends us back here cannot loop.
+      const key = nativeReentryKey(request.requestId);
+      if (!sessionStorage.getItem(key)) {
+        sessionStorage.setItem(key, '1');
+        handlePostSignIn();
+        return;
+      }
+      step = 'email';
+      return;
+    }
+
+    if (request.method === 'google') {
+      await signInWithSocialTopLevel('google');
+    } else if (request.method === 'email' && request.hint && step === 'otp') {
+      const key = nativeOtpSentKey(request.requestId);
+      if (sessionStorage.getItem(key)) {
+        codeSent = true;
+        return;
+      }
+      if (await sendOTP()) sessionStorage.setItem(key, '1');
+    }
+  }
+
+  async function sendOTP(): Promise<boolean> {
     loading = true;
     error = '';
     try {
       const result = await authClient.emailOtp.sendVerificationOtp({ email, type: 'sign-in' });
       if (result.error) {
         error = authErrorMessage(result.error, 'Failed to send code');
-      } else {
-        step = 'otp';
+        return false;
       }
+      codeSent = true;
+      step = 'otp';
+      return true;
     } catch (e: any) {
       error = e.message || 'Failed to send code';
+      return false;
     } finally {
       loading = false;
     }
@@ -100,6 +178,7 @@
 
   async function verifyOTP() {
     loading = true;
+    verifying = true;
     error = '';
     try {
       const result = await authClient.signIn.emailOtp(
@@ -143,7 +222,8 @@
       // any failure (network, API unavailable) falls through to handlePostSignIn()
       // so that OTP sign-in works independently of passkey availability.
       // Clients without WebAuthn skip the prompt entirely.
-      if (passkeysSupported) {
+      // Native mode never offers enrolment: the sheet's job is to return to the app.
+      if (passkeysSupported && !native) {
         try {
           const passkeys = await authClient.passkey.listUserPasskeys();
           if (!passkeys.error && Array.isArray(passkeys.data) && passkeys.data.length === 0) {
@@ -159,6 +239,7 @@
       error = e.message || 'Invalid code';
     } finally {
       loading = false;
+      verifying = false;
     }
   }
 
@@ -194,6 +275,21 @@
     }
   }
 
+  async function signInWithSocialTopLevel(provider: SocialProviderId) {
+    if (!native) return;
+    loading = true;
+    loadingProvider = provider;
+    error = '';
+    try {
+      await signInWithSocialRedirect(provider, nativeSocialReturnUrls(window.location.origin, native.signedQuery));
+    } catch (e: any) {
+      error = e.message || `${provider === 'google' ? 'Google' : 'Apple'} sign-in failed`;
+      step = 'email';
+      loading = false;
+      loadingProvider = null;
+    }
+  }
+
   async function registerPasskey() {
     loading = true;
     error = '';
@@ -215,9 +311,125 @@
     step = 'email';
     otp = '';
     error = '';
+    if (native) email = '';
+  }
+
+  function setOtp(value: string) {
+    otp = value.replace(/\D/g, '').slice(0, 6);
   }
 </script>
 
+{#if native}
+  <NativeShell clientId={native.clientId} heading={(name) => `Sign in to ${name}`}>
+    {#if error}
+      <div class="nb-error" role="alert">{error}</div>
+    {/if}
+
+    {#if step === 'otp'}
+      <p class="nb-lede">
+        {#if codeSent}
+          We sent a 6-digit code to <strong>{email}</strong>.
+        {:else if loading}
+          Sending a 6-digit code to <strong>{email}</strong>…
+        {:else}
+          We couldn't send a code to <strong>{email}</strong>.
+        {/if}
+      </p>
+      <form onsubmit={(event) => { event.preventDefault(); verifyOTP(); }} class="nb-stack">
+        <div class="otp">
+          <label for="otp" class="sr-only">Verification code</label>
+          <input
+            id="otp"
+            class="otp-input"
+            type="text"
+            value={otp}
+            oninput={(event) => { setOtp(event.currentTarget.value); event.currentTarget.value = otp; }}
+            maxlength={6}
+            inputmode="numeric"
+            autocomplete="one-time-code"
+            required
+            disabled={verifying}
+            autofocus
+          />
+          <div class="otp-boxes" aria-hidden="true">
+            {#each [0, 1, 2, 3, 4, 5] as index}
+              <span class="otp-box" class:otp-box-active={index === otp.length}>{otp[index] ?? ''}</span>
+            {/each}
+          </div>
+        </div>
+        <button type="submit" class="nb-button nb-primary" disabled={loading || otp.length < 6}>
+          {verifying ? 'Verifying…' : 'Continue'}
+        </button>
+      </form>
+      <div class="nb-center">
+        <button type="button" class="nb-link" onclick={useDifferentEmail} disabled={loading}>Use a different email</button>
+        <button type="button" class="nb-link nb-quiet" onclick={sendOTP} disabled={loading}>Resend code</button>
+      </div>
+    {:else if step === 'passkeySignIn'}
+      <p class="nb-lede">Use the passkey saved on this device to sign in.</p>
+      <div class="nb-stack">
+        <button type="button" class="nb-button nb-primary" onclick={signInWithPasskey} disabled={loading}>
+          {loading ? 'Waiting for passkey…' : 'Continue with passkey'}
+        </button>
+      </div>
+      <div class="nb-center">
+        <button type="button" class="nb-link" onclick={() => { step = 'email'; error = ''; }} disabled={loading}>Use email instead</button>
+      </div>
+    {:else if step === 'google'}
+      <p class="nb-lede" role="status">Connecting to Google…</p>
+    {:else}
+      <p class="nb-lede">Enter your email and we'll send you a sign-in code.</p>
+      <form onsubmit={(event) => { event.preventDefault(); sendOTP(); }} class="nb-stack">
+        <label for="email" class="sr-only">Email address</label>
+        <input
+          id="email"
+          class="nb-input"
+          type="email"
+          bind:value={email}
+          placeholder="you@example.com"
+          autocomplete="email"
+          autocapitalize="none"
+          spellcheck={false}
+          required
+          disabled={loading}
+        />
+        <button type="submit" class="nb-button nb-primary" disabled={loading}>
+          {loading && !loadingProvider ? 'Sending code…' : 'Continue'}
+        </button>
+      </form>
+
+      {#if providers.length > 0 || passkeysSupported}
+        <div class="nb-or" aria-hidden="true">or</div>
+        <div class="nb-stack">
+          {#each providers as provider}
+            <button
+              type="button"
+              class="nb-button"
+              onclick={() => signInWithSocialTopLevel(provider)}
+              disabled={loading}
+              aria-label={`Continue with ${provider === 'google' ? 'Google' : 'Apple'}`}
+            >
+              {#if provider === 'google'}
+              <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+                <path fill="#4285F4" d="M17.64 9.205c0-.638-.057-1.252-.164-1.841H9v3.482h4.844a4.14 4.14 0 0 1-1.797 2.716v2.258h2.909c1.703-1.568 2.684-3.879 2.684-6.615Z"/>
+                <path fill="#34A853" d="M9 18c2.43 0 4.468-.806 5.956-2.18l-2.909-2.258c-.806.54-1.835.859-3.047.859-2.344 0-4.328-1.585-5.037-3.714H.956v2.333A9 9 0 0 0 9 18Z"/>
+                <path fill="#FBBC05" d="M3.963 10.707A5.41 5.41 0 0 1 3.682 9c0-.592.102-1.167.281-1.707V4.96H.956A9 9 0 0 0 0 9c0 1.452.347 2.827.956 4.04l3.007-2.333Z"/>
+                <path fill="#EA4335" d="M9 3.579c1.321 0 2.507.454 3.441 1.346l2.581-2.581C13.464.892 11.426 0 9 0A9 9 0 0 0 .956 4.96l3.007 2.333C4.672 5.164 6.656 3.579 9 3.579Z"/>
+              </svg>
+              {/if}
+              {loadingProvider === provider ? `Connecting to ${provider === 'google' ? 'Google' : 'Apple'}…` : `Continue with ${provider === 'google' ? 'Google' : 'Apple'}`}
+            </button>
+          {/each}
+          {#if passkeysSupported}
+            <button type="button" class="nb-button" onclick={signInWithPasskey} disabled={loading}>
+              {loading && !loadingProvider ? 'Waiting for passkey…' : 'Use a passkey'}
+            </button>
+          {/if}
+        </div>
+      {/if}
+    {/if}
+  </NativeShell>
+{:else}
 <div class="flex min-h-screen items-center justify-center bg-surface-50 px-4 py-12">
   <div class="w-full max-w-md">
     <div class="mb-8 flex justify-center">
@@ -366,3 +578,42 @@
     </div>
   </div>
 </div>
+{/if}
+
+<style>
+  .otp {
+    position: relative;
+  }
+
+  .otp-input {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    font-size: 16px;
+  }
+
+  .otp-boxes {
+    display: flex;
+    gap: 8px;
+    pointer-events: none;
+  }
+
+  .otp-box {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    justify-content: center;
+    height: 56px;
+    border-radius: 12px;
+    border: 1px solid var(--nb-border);
+    background: var(--nb-field);
+    font-size: 24px;
+    font-weight: 600;
+  }
+
+  .otp-box-active {
+    border-color: var(--nb-fg);
+  }
+</style>

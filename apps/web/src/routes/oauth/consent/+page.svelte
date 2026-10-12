@@ -21,7 +21,7 @@
 
   // Get OAuth parameters from URL
   const clientId = $page.url.searchParams.get('client_id');
-  const nativeRequest = $page.url.searchParams.get('tinycloud_request');
+  const nativeRequest = clientId ? $page.url.searchParams.get('tinycloud_request') : null;
   const scope = $page.url.searchParams.get('scope') || 'openid';
   const requestedScopes = new Set(scope.split(/\s+/).filter(Boolean));
 
@@ -124,10 +124,10 @@
   }
 </script>
 
+{#if nativeRequest && clientId}
+  <NativeDelegationConsent requestId={nativeRequest} {clientId} email={$session.data?.user?.email} ready={fetched} />
+{:else}
 <div class="min-h-screen bg-surface-50 flex items-center justify-center px-4">
-  {#if nativeRequest && !loading}
-    <div class="w-full max-w-2xl py-8"><NativeDelegationConsent requestId={nativeRequest} email={$session.data?.user?.email} /></div>
-  {:else}
   <Card class="w-full max-w-md">
     {#if loading}
       <div class="py-12 text-center text-surface-500">
@@ -219,5 +219,5 @@
       </p>
     {/if}
   </Card>
-  {/if}
 </div>
+{/if}
