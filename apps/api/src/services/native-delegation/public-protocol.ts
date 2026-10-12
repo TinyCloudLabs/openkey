@@ -13,9 +13,9 @@ export const NATIVE_DELEGATION_ENDPOINT_PATHS = {
 /**
  * Discovery and the public protocol endpoints a native app calls without
  * cookies (TC-773 §1.1). Matched exactly against the WHATWG-normalized
- * pathname, the same pathname better-auth routes on. The cookie-authenticated
- * consent routes (`/api/auth/oauth2/consent`, `/api/oauth/tinycloud/...`) and
- * every account route stay under the restricted, credentialed CORS policy.
+ * pathname, the same pathname better-auth routes on. Cookie-authenticated
+ * consent routes and `/api/oauth/tinycloud/...` routes other than public client
+ * branding stay under the restricted, credentialed CORS policy.
  */
 const PUBLIC_PROTOCOL_PATHS: ReadonlySet<string> = new Set([
   '/.well-known/oauth-authorization-server',
@@ -29,7 +29,8 @@ const PUBLIC_PROTOCOL_PATHS: ReadonlySet<string> = new Set([
 ]);
 
 export function isPublicProtocolPath(url: string): boolean {
-  return PUBLIC_PROTOCOL_PATHS.has(new URL(url).pathname);
+  const pathname = new URL(url).pathname;
+  return PUBLIC_PROTOCOL_PATHS.has(pathname) || /^\/api\/oauth\/tinycloud\/clients\/[^/]+\/branding$/.test(pathname);
 }
 
 const publicProtocolCors = cors({

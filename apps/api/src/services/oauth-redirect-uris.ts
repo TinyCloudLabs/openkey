@@ -205,3 +205,12 @@ export function validateOAuthClientMetadataUrl(value: unknown): RedirectUriValid
   if (url.protocol === 'http:' && isLoopbackHostname(url.hostname)) return { valid: true };
   return { valid: false, reason: 'Application URL must use HTTPS or loopback HTTP' };
 }
+
+export function validateOAuthClientIconUrl(value: unknown): RedirectUriValidation {
+  const validation = validateOAuthClientMetadataUrl(value);
+  if (!validation.valid) return validation;
+  if (typeof value !== 'string' || new URL(value).protocol !== 'https:') {
+    return { valid: false, reason: 'Application icon must use HTTPS' };
+  }
+  return { valid: true };
+}

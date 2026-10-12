@@ -34,6 +34,8 @@ const deviceMigration = '20260814_0001_share_device_authorization';
 const deviceChecksum = '81bc814a59b2d7604c5d40490e1c96290a7532b70751c60b44b60e3e4b1e199a';
 const brokerMigration = '20261005_0001_delegation_code_broker';
 const brokerChecksum = 'cc7dcc5365251f6b7c14caf38a892c998a28eb7c998531b7c3b669f4744744df';
+const signinPolishMigration = '20261012_0001_signin_polish_hints_branding';
+const signinPolishChecksum = 'd09960dda6ae76472c61629283b4030131d47b5f0f5cd7d79a3d02c0c5bf0e96';
 // Reviewed expand-only migrations that may run while TC-488 stays parked.
 const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
   [deviceMigration, deviceChecksum],
@@ -41,6 +43,7 @@ const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
   [nativeDelegationMigration, nativeDelegationChecksum],
   [nativePreparationHostMigration, nativePreparationHostChecksum],
   [nativeTokenGuardMigration, nativeTokenGuardChecksum],
+  [signinPolishMigration, signinPolishChecksum],
 ]);
 
 export type MigrationRow = {
@@ -237,6 +240,9 @@ async function deployAdditiveMigrationsBeforeTc488(
     broker_column_count: number;
     broker_expiry_index: boolean;
     broker_primary_key: boolean;
+    oauth_client_theme_columns: number;
+    request_login_hint_column: boolean;
+    request_login_method_column: boolean;
   }>>(`
     SELECT
       (SELECT COUNT(*)::int FROM information_schema.columns
@@ -273,7 +279,16 @@ async function deployAdditiveMigrationsBeforeTc488(
       EXISTS (
         SELECT 1 FROM pg_constraint
         WHERE conname = 'delegation_code_pkey' AND contype = 'p'
-      ) AS broker_primary_key
+      ) AS broker_primary_key,
+      (SELECT COUNT(*)::int FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'oauth_client'
+          AND column_name IN ('themeBackgroundColor', 'themeAccentColor') AND data_type = 'text') AS oauth_client_theme_columns,
+      EXISTS (SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'tinycloud_native_request'
+          AND column_name = 'loginHint' AND data_type = 'text') AS request_login_hint_column,
+      EXISTS (SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'tinycloud_native_request'
+          AND column_name = 'loginMethod' AND data_type = 'text') AS request_login_method_column
   `);
   const verified = physical[0];
   if (
@@ -296,7 +311,10 @@ async function deployAdditiveMigrationsBeforeTc488(
     !verified.user_foreign_key ||
     verified.broker_column_count !== 4 ||
     !verified.broker_expiry_index ||
-    !verified.broker_primary_key
+    !verified.broker_primary_key ||
+    verified.oauth_client_theme_columns !== 2 ||
+    !verified.request_login_hint_column ||
+    !verified.request_login_method_column
   ) {
     throw new Error('Pre-TC-488 additive physical schema verification failed');
   }

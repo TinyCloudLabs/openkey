@@ -1,4 +1,7 @@
 import { describe, expect, test } from 'bun:test';
+import { createHash } from 'node:crypto';
+import { readdir, readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import {
   partitionPreTc488Migrations,
   selectProductionMigrationMode,
@@ -17,6 +20,7 @@ const broker = '20261005_0001_delegation_code_broker';
 const native = '20261007_0001_tinycloud_native_foundation';
 const nativeHost = '20261007_0002_native_preparation_host';
 const nativeTokenGuard = '20261007_0003_tinycloud_native_token_guard';
+const signinPolish = '20261012_0001_signin_polish_hints_branding';
 const tc492 = [
   '20260805_0001_canonical_tinycloud_key',
   '20260805_0002_tinycloud_manage_key_app_preferences',
@@ -144,6 +148,23 @@ describe('production migration deployment mode', () => {
       migrationDirectories: directories,
       managedAccountTableExists: true,
     })).toThrow(`Stored migration checksum differs from the reviewed ${nativeTokenGuard}`);
+  });
+
+  test('accepts the real sign-in polish migration in the branch migration list before TC-488', async () => {
+    const migrationsRoot = join(import.meta.dir, '../packages/db/prisma/migrations');
+    const directories = (await readdir(migrationsRoot, { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
+    const history: MigrationRow[] = [];
+    for (const name of directories.filter((name) => name !== tc488 && name !== signinPolish)) {
+      const checksum = createHash('sha256')
+        .update(await readFile(join(migrationsRoot, name, 'migration.sql'))).digest('hex');
+      history.push({ migration_name: name, checksum, finished_at: new Date(), rolled_back_at: null });
+    }
+    expect(selectProductionMigrationMode({
+      migrations: history,
+      migrationDirectories: directories,
+      managedAccountTableExists: true,
+    })).toBe('pre-tc488-additive');
   });
 
   test('fails closed if another migration is pending before TC-488', () => {

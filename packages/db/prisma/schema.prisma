@@ -370,6 +370,8 @@ model OauthClient {
   name                    String
   uri                     String? // Application website
   icon                    String? // Logo URL
+  themeBackgroundColor    String?
+  themeAccentColor        String?
   redirectUris            String[] // Array of allowed redirect URIs
   scopes                  String[] // Allowed scopes for this client
   tinycloudSessionPolicy  String?  // Dashboard-managed automatic signing policy
@@ -531,6 +533,8 @@ model TinyCloudNativeRequest {
   // PAR siwe_nonce, or the server nonce written by the first prepare. Fixed
   // once set (trigger), and reused by every revision and the approval.
   siweNonce               String?
+  loginHint               String?
+  loginMethod             String?
   status                  String   @default("PENDING")
   userId                  String?
   currentRevision         Int      @default(0)

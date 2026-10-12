@@ -10,10 +10,16 @@
  *
  * Env:
  *   DATABASE_URL          Postgres connection string (required)
- *   CLIENT_NAME           Display name (required)
- *   CLIENT_REDIRECT_URIS  Comma-separated redirect URIs (required)
- *   CLIENT_TYPE           "native" | "spa" (default "spa")
+ *   CLIENT_NAME           Display name (required on create; optional on update)
+ *   CLIENT_REDIRECT_URIS  Comma-separated redirect URIs (required on create)
+ *   CLIENT_TYPE           "native" | "spa" (default "native")
  *   CLIENT_URI            Application website URL (optional)
+ *   CLIENT_ID             Existing enabled client to update branding only. In
+ *                         update mode, empty branding values are unchanged;
+ *                         use `none` to clear icon or theme colours.
+ *   CLIENT_ICON           HTTPS icon URL (optional)
+ *   CLIENT_THEME_BACKGROUND_COLOR  #rrggbb (optional)
+ *   CLIENT_THEME_ACCENT_COLOR      #rrggbb (optional)
  *   CLIENT_TINYCLOUD_NATIVE_DELEGATION
  *                         Native delegation ceiling JSON (optional; native
  *                         clients only). Adds tinycloud:delegation.
@@ -57,6 +63,28 @@ function nativeDelegationConfig(type: string, raw: string | undefined): NativeDe
   return validateNativeDelegationConfig(parsed, { type, public: true, tokenEndpointAuthMethod: 'none' }, POLICY_OPTIONS);
 }
 
+function optionalHttpsIcon(emptyValue: undefined | null = null): string | null | undefined {
+  const rawValue = process.env.CLIENT_ICON?.trim();
+  if (!rawValue) return emptyValue;
+  if (rawValue.toLowerCase() === 'none') return null;
+  const value = rawValue;
+  let url: URL;
+  try { url = new URL(value); } catch { throw new Error('CLIENT_ICON must be an HTTPS URL'); }
+  if (url.protocol !== 'https:' || !url.hostname || url.username || url.password) {
+    throw new Error('CLIENT_ICON must be an HTTPS URL without credentials');
+  }
+  return value;
+}
+
+function themeColor(name: string, emptyValue: undefined | null = null): string | null | undefined {
+  const rawValue = process.env[name]?.trim();
+  if (!rawValue) return emptyValue;
+  if (rawValue.toLowerCase() === 'none') return null;
+  const value = rawValue;
+  if (!/^#[0-9a-fA-F]{6}$/.test(value)) throw new Error(`${name} must be #rrggbb or none`);
+  return value;
+}
+
 // Postgres JSONB reorders object keys, so compare both ceilings in the
 // validator's canonical form.
 function sameNativeDelegationConfig(
@@ -75,13 +103,45 @@ function sameNativeDelegationConfig(
 
 async function main() {
   required('DATABASE_URL');
-  const name = required('CLIENT_NAME');
-  const redirectUris = required('CLIENT_REDIRECT_URIS')
-    .split(',')
-    .map((uri) => uri.trim())
-    .filter(Boolean);
-  const type = process.env.CLIENT_TYPE?.trim() || 'spa';
+  const clientIdToUpdate = process.env.CLIENT_ID?.trim();
+  const name = clientIdToUpdate ? process.env.CLIENT_NAME?.trim() || undefined : required('CLIENT_NAME');
+  if (clientIdToUpdate) {
+    const incompatible = [
+      ['CLIENT_TINYCLOUD_NATIVE_DELEGATION', process.env.CLIENT_TINYCLOUD_NATIVE_DELEGATION],
+      ['CLIENT_REDIRECT_URIS', process.env.CLIENT_REDIRECT_URIS],
+      ['CLIENT_URI', process.env.CLIENT_URI],
+      ['CLIENT_TYPE', process.env.CLIENT_TYPE],
+    ].filter(([, value]) => value?.trim());
+    if (incompatible.length > 0) {
+      throw new Error(`client_id updates branding only; remove ${incompatible.map(([key]) => key).join(', ')}`);
+    }
+  }
+  const redirectUris = clientIdToUpdate ? [] : required('CLIENT_REDIRECT_URIS')
+    .split(',').map((uri) => uri.trim()).filter(Boolean);
+  const type = process.env.CLIENT_TYPE?.trim() || 'native';
   const uri = process.env.CLIENT_URI?.trim() || null;
+  const icon = optionalHttpsIcon(clientIdToUpdate ? undefined : null);
+  const themeBackgroundColor = themeColor('CLIENT_THEME_BACKGROUND_COLOR', clientIdToUpdate ? undefined : null);
+  const themeAccentColor = themeColor('CLIENT_THEME_ACCENT_COLOR', clientIdToUpdate ? undefined : null);
+
+  if (clientIdToUpdate) {
+    const existingClient = await prisma.oauthClient.findUnique({ where: { clientId: clientIdToUpdate } });
+    if (!existingClient || existingClient.disabled) throw new Error(`Enabled OAuth client not found: ${clientIdToUpdate}`);
+    await prisma.oauthClient.update({
+      where: { clientId: clientIdToUpdate },
+      data: {
+        ...(name ? { name } : {}),
+        ...(icon !== undefined ? { icon } : {}),
+        ...(themeBackgroundColor !== undefined ? { themeBackgroundColor } : {}),
+        ...(themeAccentColor !== undefined ? { themeAccentColor } : {}),
+      },
+    });
+    console.log(`Branding updated for enabled OAuth client: ${name ?? clientIdToUpdate}`);
+    console.log(`CLIENT_ID=${clientIdToUpdate}`);
+    return;
+  }
+
+  const clientName = name ?? required('CLIENT_NAME');
 
   if (!['native', 'spa'].includes(type)) {
     console.error(`Error: CLIENT_TYPE must be native or spa, got: ${type}`);
@@ -98,7 +158,7 @@ async function main() {
   }
 
   const existing = await prisma.oauthClient.findFirst({
-    where: { name, disabled: false },
+    where: { name: clientName, disabled: false },
   });
   if (existing) {
     if (nativeConfig && (
@@ -107,7 +167,7 @@ async function main() {
     )) {
       throw new Error('An active client with this name exists without this delegation ceiling; change it with the admin API');
     }
-    console.log(`Client "${name}" already exists — not creating a duplicate.`);
+    console.log(`Client "${clientName}" already exists — not creating a duplicate.`);
     console.log(`CLIENT_ID=${existing.clientId}`);
     console.log(`REDIRECT_URIS=${existing.redirectUris.join(',')}`);
     return;
@@ -119,9 +179,11 @@ async function main() {
       id: randomBytes(16).toString('hex'),
       clientId,
       clientSecret: null,
-      name,
+      name: clientName,
       uri,
-      icon: null,
+      icon,
+      themeBackgroundColor,
+      themeAccentColor,
       redirectUris,
       scopes: ['openid', 'email', 'keys', 'offline_access', ...(nativeConfig ? [TINYCLOUD_DELEGATION_SCOPE] : [])],
       tinycloudNativeDelegation: nativeConfig ? nativeConfig as unknown as Prisma.InputJsonObject : undefined,
@@ -137,7 +199,7 @@ async function main() {
     },
   });
 
-  console.log(`OAuth client registered: ${name}`);
+  console.log(`OAuth client registered: ${clientName}`);
   console.log(`CLIENT_ID=${clientId}`);
   console.log(`REDIRECT_URIS=${redirectUris.join(',')}`);
   console.log('Public PKCE-only client (no client secret).');

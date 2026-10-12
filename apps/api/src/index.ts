@@ -11,6 +11,7 @@ import { keysRouter } from './routes/keys';
 import { nostrKeysRouter } from './routes/nostr-keys';
 import { accountRouter } from './routes/account';
 import { oauthAdminRouter } from './routes/oauth-admin';
+import { createOauthBrandingRouter } from './routes/oauth-branding';
 import { passkeyProxyRouter } from './routes/passkey-proxy';
 import { secretsRouter } from './routes/secrets';
 import { variablesRouter } from './routes/variables';
@@ -50,8 +51,8 @@ app.use('/api/delegate/sign', cors({
   credentials: false,
 }));
 
-// OAuth discovery and the public protocol endpoints (token; native
-// delegation PAR, renew and revoke) answer any origin without credentials:
+// OAuth discovery, public client branding, and public protocol endpoints
+// (token; native delegation PAR, renew and revoke) answer any origin without credentials:
 // native apps call them from capacitor:// and https://localhost WebViews,
 // and PKCE plus session proofs, not cookies, authenticate them. Every other
 // route, including the cookie-authenticated consent routes, keeps the
@@ -194,6 +195,7 @@ app.route('/api/variables', variablesRouter);
 // Delegate route (CLI auth flow)
 app.route('/api/delegate', delegateRouter);
 app.route('/api/oauth/tinycloud/requests', createNativeDelegationConsentRouter(authPrisma));
+app.route('/api/oauth/tinycloud', createOauthBrandingRouter(authPrisma));
 app.route('/api/device-authorizations', deviceAuthorizationRouter);
 app.route('/api/delegation-codes', createDelegationCodeRouter({
   store: createPrismaDelegationCodeStore(),

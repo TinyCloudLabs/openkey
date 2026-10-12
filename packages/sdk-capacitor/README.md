@@ -34,6 +34,7 @@ const openkey = new OpenKeyNative({
   issuer: 'https://api.openkey.so/api/auth',
   tinycloudHost: 'https://tee.node.tinycloud.xyz',
   ephemeralSession: true,
+  browserTheme: { toolbarColor: '#09090B', colorScheme: 'dark' },
 });
 
 // Keep this instance at module scope and reuse it for sign-in, renewal, and sign-out.
@@ -43,6 +44,8 @@ const session = await openkey.signIn({
     { service: 'tinycloud.kv', space: 'applications', path: 'xyz.tinycloud.tinychat/threads/', actions: ['tinycloud.kv/get', 'tinycloud.kv/put'] },
   ],
   siweNonce: backendNonce,
+  loginHint: 'person@example.com',
+  loginMethod: 'email',
 });
 
 const storage = openkey.sessionStorageAdapter();
@@ -84,6 +87,16 @@ async function handoff(next: typeof session) {
 }
 await handoff(session);
 ```
+
+`loginHint` and `loginMethod` are optional presentation hints for OpenKey's
+sign-in page. They never authorize access or replace server-side validation.
+`browserTheme` styles Android Custom Tabs; iOS `ASWebAuthenticationSession`
+does not expose browser chrome styling, so the option is ignored there.
+
+Client branding is configured through the OAuth admin API (`icon`,
+`themeBackgroundColor`, and `themeAccentColor`). The public
+`GET /api/oauth/tinycloud/clients/:clientId/branding` endpoint returns that
+display data to OpenKey web clients.
 
 The app should compare `delegation.tinycloudHost` with its configured node, then verify its backend session before exposing data. `current()` reads the stored OpenKey session offline. To restore TinyCloud after an app restart, call `storage.load(address)` once so its synchronous `exists()` and `activeAddress()` cache is populated, then call `tcw.restoreSession(address)`. The adapter accepts saves only for the current OpenKey session key; a delayed handoff from before sign-out or a new sign-in fails.
 

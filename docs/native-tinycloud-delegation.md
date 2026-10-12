@@ -225,9 +225,14 @@ No cookies or credentials are sent. Fields:
 | `code_challenge_method` | yes | `S256` |
 | `scope` | yes | Space-separated. Must contain `tinycloud:delegation` and `offline_access`, and may add `openid`, `email` and `keys`. |
 | `authorization_details` | yes | A JSON array holding exactly one `tinycloud_delegation` object (below), encoded as the field's string value. |
+| `login_hint` | no | Optional email UX hint. Trimmed, at most 254 characters, no whitespace, exactly one `@` with non-empty sides; OpenKey lowercases it. May be used only with `login_method=email` or without a method. |
+| `login_method` | no | `email`, `passkey` or `google`; selects the initial sign-in UX only. |
 
 Every form key may appear at most once; a duplicated key fails the whole
-request. Any other field, including any host field, is refused.
+request. Any other field, including any host field, is refused. Hints never
+authorize a user or change the client's scopes, redirect URI, permissions,
+delegation ceiling, or consent requirements. OpenKey validates all authorization
+fields and binds supplied hints into the signed authorize query.
 
 `authorization_details[0]`:
 
@@ -253,6 +258,17 @@ scope=openid offline_access tinycloud:delegation
 authorization_details=[{"type":"tinycloud_delegation","session_key":{"kty":"OKP","crv":"Ed25519","x":"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"},"permissions":[{"service":"tinycloud.capabilities","space":"applications","path":"","actions":["tinycloud.capabilities/read"]},{"service":"tinycloud.kv","space":"applications","path":"xyz.tinycloud.tinychat/threads/","actions":["tinycloud.kv/get","tinycloud.kv/put","tinycloud.kv/list"]},{"service":"tinycloud.sql","space":"applications","path":"xyz.tinycloud.tinychat/threads","actions":["tinycloud.sql/read","tinycloud.sql/write"]}],"ttl_seconds":3600,"siwe_nonce":"n0nce4exo"}]
 ```
 
+Native authorize pages may read the optional client theme from
+`GET /api/oauth/tinycloud/clients/:clientId/branding`. It returns the enabled
+client's ID, name, HTTPS icon, organization name, and nullable background and
+accent colors. This endpoint is public and cached for five minutes. Admins set
+colors with `themeBackgroundColor` and `themeAccentColor` on client create or
+PATCH; each accepts `#rrggbb` or `null` to clear it. The
+`register-oauth-client.yml` workflow accepts `icon`,
+`theme_background_color`, and `theme_accent_color` when creating a client. Set
+`client_id` to update only that enabled client's name and branding; redirect
+URIs, scopes, type, and delegation ceiling stay untouched. Icons must use HTTPS.
+
 On success OpenKey stores a `PENDING` request holding the public JWK, its
 thumbprint `sessionJkt` ([Session key thumbprint](#session-key-thumbprint)),
 the session DID, the validated
@@ -274,6 +290,7 @@ synchronous JSON:
 | 401 | `invalid_client` | Unknown or disabled client. |
 | 400 | `unauthorized_client` | The client is not native, public and `none`-auth, or delegation isn't enabled for it. |
 | 400 | `invalid_request` | Missing or duplicated field, an unknown field, a redirect URI mismatch, a non-S256 or malformed challenge. |
+| 400 | `invalid_request` | Invalid login hint or method, or a login hint paired with `passkey` or `google`. |
 | 400 | `invalid_scope` | `tinycloud:delegation` or `offline_access` missing, or a scope the client doesn't have. |
 | 400 | `invalid_authorization_details` | Not exactly one `tinycloud_delegation` object, an unknown member, an invalid JWK, permissions outside the ceiling, `space` other than `applications`, missing `tinycloud.capabilities/read`, an out-of-range TTL, or a malformed nonce. |
 
@@ -1194,8 +1211,9 @@ routes, and the provider's `/api/auth/oauth2/revoke`.
 The SDK (TC-774) error codes are `USER_CANCELLED`, `ACCESS_DENIED`,
 `STATE_MISMATCH`, `CONSENT_REQUIRED`, `INVALID_GRANT`, `RENEWAL_CONFLICT`,
 `RENEWAL_TOO_SOON` (with `retryAfterSeconds`), `SPACE_UNAVAILABLE`,
-`TEMPORARILY_UNAVAILABLE`, `NOT_SIGNED_IN`, `NETWORK`, `SERVER` and
-`UNAVAILABLE`.
+`TEMPORARILY_UNAVAILABLE`, `NOT_SIGNED_IN`, `INVALID_REQUEST`, `NETWORK`,
+`SERVER` and `UNAVAILABLE`. `INVALID_REQUEST` is also used locally when a
+client supplies a malformed or conflicting PAR login hint.
 
 | Server outcome | SDK code | Behavior |
 |---|---|---|

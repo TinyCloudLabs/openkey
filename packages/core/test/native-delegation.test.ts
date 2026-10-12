@@ -390,6 +390,36 @@ describe('PAR', () => {
     expect(details[0].session_key.x).toBe(key.publicJwk.x);
   });
 
+  it('includes normalized optional login hints without adding unset keys', () => {
+    const base = buildParRequest({
+      clientId: CLIENT_ID, redirectUri: REDIRECT_URI, state: 'state', codeChallenge: 'challenge',
+      sessionKey: generateSessionKeypair(), permissions: PERMISSIONS,
+      loginHint: '  PERSON@Example.COM  ',
+    });
+    const form = new URLSearchParams(base.body);
+    expect(form.get('login_hint')).toBe('person@example.com');
+    expect(form.has('login_method')).toBe(false);
+
+    const passkey = new URLSearchParams(buildParRequest({
+      clientId: CLIENT_ID, redirectUri: REDIRECT_URI, state: 'state', codeChallenge: 'challenge',
+      sessionKey: generateSessionKeypair(), permissions: PERMISSIONS, loginMethod: 'passkey',
+    }).body);
+    expect(passkey.get('login_method')).toBe('passkey');
+    expect(passkey.has('login_hint')).toBe(false);
+  });
+
+  it('rejects malformed or conflicting login hints at the SDK boundary', () => {
+    const base = {
+      clientId: CLIENT_ID, redirectUri: REDIRECT_URI, state: 'state', codeChallenge: 'challenge',
+      sessionKey: generateSessionKeypair(), permissions: PERMISSIONS,
+    };
+    for (const loginHint of ['x'.repeat(255) + '@example.com', 'a b@example.com', 'a\u0000b@example.com', '@example.com', 'a@@example.com', 'a@']) {
+      expect(() => buildParRequest({ ...base, loginHint })).toThrow();
+    }
+    expect(() => buildParRequest({ ...base, loginHint: 'a@example.com', loginMethod: 'google' })).toThrow();
+    expect(() => buildParRequest({ ...base, loginHint: `${'a'.repeat(252)}@x` })).not.toThrow();
+  });
+
   it('POSTs PAR and returns request_uri', async () => {
     const key = generateSessionKeypair();
     const { fetchFn, calls } = mockFetch(() =>
