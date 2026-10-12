@@ -629,6 +629,17 @@ model TinyCloudNativeConsentGeneration {
   @@map("tinycloud_native_consent_generation")
 }
 
+// Short-lived proof identifiers prevent a captured native session proof from
+// being replayed within its accepted iat window.
+model NativeSessionProofJti {
+  jtiHash   String   @id @map("jti_hash")
+  grantId   String   @map("grant_id")
+  expiresAt DateTime @map("expires_at")
+
+  @@index([expiresAt])
+  @@map("native_session_proof_jti")
+}
+
 // A user-owned, immediate stop control for an OAuth application's TinyCloud
 // signing or native delegation consent. Missing rows leave native renewal
 // enabled; explicit rows preserve a user's disabled choice across refreshes.

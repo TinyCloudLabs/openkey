@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { createHash, generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
 
-import { credentialHash, verifySessionProof } from '../services/native-delegation/session-proof';
+import { credentialHash, sessionProofJtiHash, verifySessionProof, verifySessionProofClaims } from '../services/native-delegation/session-proof';
 
 const sha256 = (value: string) => createHash('sha256').update(value).digest('base64url');
 const segment = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
@@ -38,6 +38,9 @@ describe('OpenKey-Session-Proof verification', () => {
 
   test('accepts a proof that satisfies every rule', () => {
     expect(verifySessionProof(proof(), expected, NOW)).toBe(true);
+    expect(verifySessionProofClaims(proof(), expected, NOW)).toEqual({ jti: 'abcdefghijklmnop', iat: NOW / 1000 });
+    expect(verifySessionProofClaims(proof({}, { cred_hash: sha256('wrong') }), expected, NOW)).toBeNull();
+    expect(sessionProofJtiHash('abcdefghijklmnop')).toBe(sha256('abcdefghijklmnop'));
   });
 
   test('iat is accepted within ±60 s and refused beyond', () => {
