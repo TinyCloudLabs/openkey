@@ -25,7 +25,7 @@ import {
   permissionKey as computePermissionKey,
 } from './delegate-session';
 import { activateSessionWithHost } from '@tinycloud/sdk-core';
-import { CAPABILITIES } from '@tinycloud/bootstrap';
+import { BOOTSTRAP_SPACE_NAMES, CAPABILITIES } from '@tinycloud/bootstrap';
 import {
   delegateErrorResponse,
   normalizeDelegateReason,
@@ -101,6 +101,87 @@ import { isPrimaryKey, primaryKeyWhere } from '../services/primary-key';
 
 const prisma = createPrismaClient();
 const tee = createTeeClient();
+
+type SpaceSetupPlan = 'setup' | 'auto-sign-off' | 'external-wallet';
+
+async function managedSpaceSetupPlan(input: {
+  userId: string;
+  keyType: string;
+  host: string;
+  address: string;
+  chainId: number;
+  spaceId: string;
+}): Promise<{ space: string; plan: SpaceSetupPlan } | null> {
+  const name = input.spaceId.slice(input.spaceId.lastIndexOf(':') + 1);
+  if (
+    !BOOTSTRAP_SPACE_NAMES.includes(name as (typeof BOOTSTRAP_SPACE_NAMES)[number]) ||
+    input.spaceId !== makeSpaceId(input.address, input.chainId, name)
+  ) return null;
+
+  const { trustedTinyCloudBootstrapHost } = await import('../services/tinycloud-bootstrap');
+  if (input.host !== trustedTinyCloudBootstrapHost()) return null;
+  if (input.keyType !== 'MANAGED') return { space: name, plan: 'external-wallet' };
+
+  const preference = await prisma.user.findUnique({
+    where: { id: input.userId },
+    select: { autoSignEnabled: true },
+  });
+  return { space: name, plan: preference?.autoSignEnabled ? 'setup' : 'auto-sign-off' };
+}
+type SpaceReadiness = { spaceReady: boolean | null; spaceError?: string };
+
+async function finishManagedSpaceOnboarding(input: {
+  userId: string;
+  key: {
+    id: string;
+    userId: string | null;
+    address: string;
+    keyType: string;
+    sealedBlob: string | null;
+    sealingContext?: string | null;
+  };
+  privateKey?: string;
+  host: string;
+  address: string;
+  chainId: number;
+  spaceId: string;
+  skipped: boolean;
+}): Promise<{ spaceReady: boolean; spaceError?: string }> {
+  if (!input.skipped) return { spaceReady: true };
+
+  try {
+    const { ensureTinyCloudBootstrap } = await import('../services/tinycloud-bootstrap');
+    const setup = await managedSpaceSetupPlan({
+      userId: input.userId,
+      keyType: input.key.keyType,
+      host: input.host,
+      address: input.address,
+      chainId: input.chainId,
+      spaceId: input.spaceId,
+    });
+    if (setup?.plan !== 'setup') return { spaceReady: false };
+    if (!input.privateKey && !input.key.sealedBlob) {
+      return { spaceReady: false, spaceError: 'TinyCloud account setup failed: managed key has no sealed key data.' };
+    }
+    const privateKey = input.privateKey ?? await unsealManagedKey(input.key, input.key.sealedBlob!);
+    const outcome = await ensureTinyCloudBootstrap({
+      prisma,
+      userId: input.userId,
+      key: { id: input.key.id, address: input.key.address, keyType: input.key.keyType },
+      privateKey,
+      host: input.host,
+      chainId: input.chainId,
+    });
+    return outcome.status === 'complete'
+      ? { spaceReady: true }
+      : { spaceReady: false, spaceError: `TinyCloud account setup failed${outcome.status === 'failed' ? ` (${outcome.errorCode}): ${outcome.errorMessage}` : ''}.` };
+  } catch (error) {
+    return {
+      spaceReady: false,
+      spaceError: `TinyCloud account setup failed: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
 
 async function resolveBetterAuthSession(c: any): Promise<boolean> {
   let resolved = false;
@@ -1374,9 +1455,21 @@ delegateRouter.post('/', async (c) => {
     });
 
     let hostActivated = false;
+    let spaceReadiness: SpaceReadiness = { spaceReady: null };
     try {
       const activationResult = await activateSessionWithHost(host, session.delegationHeader);
       hostActivated = activationResult.success;
+      if (hostActivated) {
+        spaceReadiness = await finishManagedSpaceOnboarding({
+          userId: user.id,
+          key,
+          host,
+          address,
+          chainId,
+          spaceId: bound.spaceId,
+          skipped: Boolean(activationResult.skipped?.includes(bound.spaceId)),
+        });
+      }
       if (!hostActivated) {
         console.warn(`[Delegate] Session activation warning: ${activationResult.error}`);
       }
@@ -1405,6 +1498,7 @@ delegateRouter.post('/', async (c) => {
       // record. Unsigned metadata for the CLI; the SIWE stays the authority.
       primary: isPrimaryKey(key),
       hostActivated,
+      ...spaceReadiness,
       // `edited` is a hint for the UI response payload; the authority
       // gate is the token itself. The stored context was issued from a
       // /prepare that may or may not have narrowed; the actual signed
@@ -1456,16 +1550,27 @@ delegateRouter.post('/', async (c) => {
   });
 
   let hostActivated = false;
+  let spaceReadiness: SpaceReadiness = { spaceReady: null };
   try {
     const activationResult = await activateSessionWithHost(host, session.delegationHeader);
     hostActivated = activationResult.success;
+    if (hostActivated) {
+      spaceReadiness = await finishManagedSpaceOnboarding({
+        userId: user.id,
+        key,
+        host,
+        address,
+        chainId,
+        spaceId: preparedResult.spaceId,
+        skipped: Boolean(activationResult.skipped?.includes(preparedResult.spaceId)),
+      });
+    }
     if (!hostActivated) {
       console.warn(`[Delegate] Session activation warning: ${activationResult.error}`);
     }
   } catch (e) {
     console.warn(`[Delegate] Session activation failed (host unreachable):`, e);
   }
-
   const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
 
   let effectiveEntries: RecapEntry[] = [];
@@ -1492,6 +1597,7 @@ delegateRouter.post('/', async (c) => {
     chainId,
     primary: isPrimaryKey(key),
     hostActivated,
+    ...spaceReadiness,
     edited: preparedResult.edited,
     reason,
     expirationTime,
@@ -1643,9 +1749,32 @@ delegateRouter.post('/prepare', async (c) => {
     );
   }
 
+  let spaceSetup: { space: string; plan: SpaceSetupPlan } | null = null;
+  try {
+    const setup = await managedSpaceSetupPlan({
+      userId: user.id,
+      keyType: key.keyType,
+      host,
+      address,
+      chainId,
+      spaceId: preparedResult.spaceId,
+    });
+    if (setup?.plan !== 'setup') {
+      spaceSetup = setup;
+    } else if (process.env.TINYCLOUD_BOOTSTRAP_ON_SIGN !== 'off') {
+      const { isTinyCloudBootstrapComplete } = await import('../services/tinycloud-bootstrap');
+      if (!(await isTinyCloudBootstrapComplete(prisma, { keyId: key.id, chainId, host }))) {
+        spaceSetup = setup;
+      }
+    }
+  } catch (error) {
+    console.warn('[Delegate] Failed to determine TinyCloud space setup notice:', error);
+  }
+
   return c.json({
     prepared: preparedData,
     spaceId: preparedResult.spaceId,
+    spaceSetup,
     ownerDid,
     address,
     chainId,
@@ -1963,10 +2092,15 @@ delegateRouter.post('/complete', async (c) => {
     }
   }
 
+  const address = preparedAddress;
+  const chainId = signedFields.chainId;
+  const spaceId = preparedSpaceId;
   let hostActivated = false;
+  let spaceReady: boolean | null = null;
   try {
     const activationResult = await activateSessionWithHost(body.host, session.delegationHeader);
     hostActivated = activationResult.success;
+    if (hostActivated) spaceReady = !activationResult.skipped?.includes(spaceId);
     if (!hostActivated) {
       console.warn(`[Delegate] Session activation warning: ${activationResult.error}`);
     }
@@ -1974,9 +2108,6 @@ delegateRouter.post('/complete', async (c) => {
     console.warn(`[Delegate] Session activation failed (host unreachable):`, e);
   }
 
-  const address = preparedAddress;
-  const chainId = signedFields.chainId;
-  const spaceId = preparedSpaceId;
   const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
   const reason = normalizeDelegateReason(body.reason);
 
@@ -2007,6 +2138,7 @@ delegateRouter.post('/complete', async (c) => {
     chainId,
     primary,
     hostActivated,
+    spaceReady,
     edited: Boolean(body.edited),
     reason,
     expirationTime,

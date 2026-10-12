@@ -14,6 +14,8 @@ const PUBLIC_DELEGATION_FIELDS: Record<string, true> = {
   address: true,
   chainId: true,
   hostActivated: true,
+  spaceReady: true,
+  spaceError: true,
   primary: true,
   edited: true,
   reason: true,
