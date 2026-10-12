@@ -12,6 +12,8 @@ import {
   nativeDelegationMigration,
   nativePreparationHostChecksum,
   nativePreparationHostMigration,
+  nativeSessionProofJtiChecksum,
+  nativeSessionProofJtiMigration,
   nativeTokenGuardChecksum,
   nativeTokenGuardMigration,
 } from './native-delegation-schema-guards';
@@ -43,6 +45,7 @@ const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
   [nativeDelegationMigration, nativeDelegationChecksum],
   [nativePreparationHostMigration, nativePreparationHostChecksum],
   [nativeTokenGuardMigration, nativeTokenGuardChecksum],
+  [nativeSessionProofJtiMigration, nativeSessionProofJtiChecksum],
   [signinPolishMigration, signinPolishChecksum],
 ]);
 

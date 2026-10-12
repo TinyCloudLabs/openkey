@@ -149,7 +149,7 @@ if (!backend) {
   });
 
   beforeEach(async () => {
-    await prisma.$executeRawUnsafe(`TRUNCATE TABLE "oauth_refresh_token", "oauth_access_token", "oauth_consent",
+    await prisma.$executeRawUnsafe(`TRUNCATE TABLE "oauth_refresh_token", "oauth_access_token", "native_session_proof_jti", "oauth_consent",
       "tinycloud_native_grant", "tinycloud_native_request", "tinycloud_native_consent_generation",
       "tinycloud_manage_key_app_preference", "tinycloud_manage_key_signing_decision" CASCADE`);
     await prisma.user.update({ where: { id: USER }, data: { tinyCloudManageKeyMode: 'APP_MANAGED' } });
@@ -301,30 +301,56 @@ if (!backend) {
     const undeliveredRow = await prisma.oauthRefreshToken.findUniqueOrThrow({ where: { token: hash(undelivered) } });
     await prisma.oauthAccessToken.create({ data: { id: 'undelivered-access', token: hash('undelivered-access'), clientId, userId: USER,
       refreshId: undeliveredRow.id, scopes: ['openid', DELEGATION], expiresAt: new Date(Date.now() + 300_000) } });
-    const beforeConflictExpiry = Date.now();
     const beforeConflict = await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: 'device-a' } });
-    setSystemTime(new Date(beforeConflictExpiry + 20_000));
-    const conflict = await renew(key, 'token-a'); expect(conflict.status).toBe(409); expect(await error(conflict)).toBe('renewal_conflict');
-    expect(await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: 'device-a' } })).toMatchObject({
-      status: 'ACTIVE', refreshTokenHash: beforeConflict.refreshTokenHash,
-      previousRefreshTokenHash: beforeConflict.previousRefreshTokenHash, renewCount: beforeConflict.renewCount,
-      rotatedAt: beforeConflict.rotatedAt,
-    });
-    setSystemTime(new Date(beforeConflictExpiry + 61_000));
     try {
+      const atConflictBoundary = beforeConflict.rotatedAt!.getTime() + 30_000;
+      setSystemTime(new Date(atConflictBoundary));
+      const conflictProof = proof(key, 'token-a', RENEW);
+      const conflict = await form(RENEW, new URLSearchParams({ client_id: clientId, refresh_token: 'token-a' }), conflictProof);
+      expect(conflict.status).toBe(409); expect(await error(conflict)).toBe('renewal_conflict');
+      expect(await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: 'device-a' } })).toMatchObject({
+        status: 'ACTIVE', refreshTokenHash: beforeConflict.refreshTokenHash,
+        previousRefreshTokenHash: beforeConflict.previousRefreshTokenHash, renewCount: beforeConflict.renewCount,
+        rotatedAt: beforeConflict.rotatedAt,
+      });
+      setSystemTime(new Date(atConflictBoundary + 1));
+      const afterBoundaryProof = proof(key, 'token-a', RENEW);
+      const afterBoundary = await form(RENEW, new URLSearchParams({ client_id: clientId, refresh_token: 'token-a' }), afterBoundaryProof);
+      expect(afterBoundary.status).toBe(429); expect(await error(afterBoundary)).toBe('renewal_too_soon');
+      expect(await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: 'device-a' } })).toMatchObject({
+        status: 'ACTIVE', refreshTokenHash: beforeConflict.refreshTokenHash,
+        previousRefreshTokenHash: beforeConflict.previousRefreshTokenHash, renewCount: beforeConflict.renewCount,
+        rotatedAt: beforeConflict.rotatedAt,
+      });
+      setSystemTime(new Date(beforeConflict.rotatedAt!.getTime() + 61_000));
+      for (const capturedProof of [conflictProof, afterBoundaryProof]) {
+        const replay = await form(RENEW, new URLSearchParams({ client_id: clientId, refresh_token: 'token-a' }), capturedProof);
+        expect(replay.status).toBe(401); expect(await error(replay)).toBe('invalid_session_proof');
+      }
+      expect(await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: 'device-a' } })).toMatchObject({
+        status: 'ACTIVE', refreshTokenHash: beforeConflict.refreshTokenHash,
+        previousRefreshTokenHash: beforeConflict.previousRefreshTokenHash, renewCount: beforeConflict.renewCount,
+        rotatedAt: beforeConflict.rotatedAt,
+      });
       const recovered = await renew(key, 'token-a'); expect(recovered.status, await recovered.clone().text()).toBe(200);
       const fresh = (await recovered.json() as { refresh_token: string }).refresh_token;
       expect(fresh).not.toBe(undelivered);
       expect((await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: 'device-a' } })).status).toBe('ACTIVE');
+      expect((await prisma.tinyCloudManageKeySigningDecision.findFirstOrThrow({ where: { userId: USER }, orderBy: { createdAt: 'desc' } })).reason)
+        .toBe('native_renew_recovered');
       expect(await prisma.oauthRefreshToken.findUnique({ where: { token: hash(undelivered) } })).toBeNull();
       expect(await prisma.oauthAccessToken.findUnique({ where: { id: 'undelivered-access' } })).toBeNull();
       expect(await error(await renew(key, undelivered))).toBe('invalid_session_proof');
       expect(await error(await revoke(key, undelivered))).toBe('invalid_session_proof');
       const afterUndeliveredAttempts = await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: 'device-a' } });
       expect(afterUndeliveredAttempts).toMatchObject({ status: 'ACTIVE', refreshTokenHash: hash(fresh), previousRefreshTokenHash: hash('token-a') });
-      setSystemTime(new Date(beforeConflictExpiry + 122_000));
-      const repeatRecovery = await renew(key, 'token-a');
+      setSystemTime(new Date(beforeConflict.rotatedAt!.getTime() + 122_000));
+      const repeatProof = proof(key, 'token-a', RENEW);
+      const repeatFields = new URLSearchParams({ client_id: clientId, refresh_token: 'token-a' });
+      const repeatRecovery = await form(RENEW, repeatFields, repeatProof);
       expect(repeatRecovery.status).toBe(400); expect(await error(repeatRecovery)).toBe('invalid_grant');
+      const replayedInvalidGrant = await form(RENEW, repeatFields, repeatProof);
+      expect(replayedInvalidGrant.status).toBe(401); expect(await error(replayedInvalidGrant)).toBe('invalid_session_proof');
       expect((await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: 'device-a' } })).status).toBe('ACTIVE');
       expect((await revoke(key, 'token-a')).status).toBe(200);
     } finally { setSystemTime(); }
@@ -334,16 +360,19 @@ if (!backend) {
     const key = sessionKey(); await seedDevice('device-a', key, 'token-a');
     const first = await renew(key, 'token-a'); expect(first.status).toBe(200);
     const before = await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: 'device-a' } });
-    const fields = new URLSearchParams({ client_id: clientId, refresh_token: 'token-a' });
-    const noProof = await form(RENEW, fields);
-    expect(noProof.status).toBe(401); expect(await error(noProof)).toBe('invalid_session_proof');
-    const otherKey = sessionKey();
-    const wrongKey = await renew(key, 'token-a', {}, proof(otherKey, 'token-a', RENEW));
-    expect(wrongKey.status).toBe(401); expect(await error(wrongKey)).toBe('invalid_session_proof');
-    const after = await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: 'device-a' } });
-    expect(after).toMatchObject({ status: 'ACTIVE', refreshTokenHash: before.refreshTokenHash,
-      previousRefreshTokenHash: before.previousRefreshTokenHash, renewCount: before.renewCount, rotatedAt: before.rotatedAt });
-    expect(await prisma.oauthRefreshToken.findMany()).toHaveLength(2);
+    setSystemTime(new Date(before.rotatedAt!.getTime() + 61_000));
+    try {
+      const fields = new URLSearchParams({ client_id: clientId, refresh_token: 'token-a' });
+      const noProof = await form(RENEW, fields);
+      expect(noProof.status).toBe(401); expect(await error(noProof)).toBe('invalid_session_proof');
+      const otherKey = sessionKey();
+      const wrongKey = await renew(key, 'token-a', {}, proof(otherKey, 'token-a', RENEW));
+      expect(wrongKey.status).toBe(401); expect(await error(wrongKey)).toBe('invalid_session_proof');
+      const after = await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: 'device-a' } });
+      expect(after).toMatchObject({ status: 'ACTIVE', refreshTokenHash: before.refreshTokenHash,
+        previousRefreshTokenHash: before.previousRefreshTokenHash, renewCount: before.renewCount, rotatedAt: before.rotatedAt });
+      expect(await prisma.oauthRefreshToken.findMany()).toHaveLength(2);
+    } finally { setSystemTime(); }
   });
 
   test(`a token two rotations old cannot renew; current or previous token can revoke (${backend})`, async () => {
@@ -358,9 +387,36 @@ if (!backend) {
       const tooOld = await renew(key, 'token-a');
       expect(tooOld.status).toBe(401); expect(await error(tooOld)).toBe('invalid_session_proof');
       expect((await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: 'device-a' } })).status).toBe('ACTIVE');
+      expect((await revoke(key, tokenC)).status).toBe(200);
       expect((await revoke(key, tokenB)).status).toBe(200);
-      const currentRevoke = await revoke(key, tokenC);
-      expect(currentRevoke.status).toBe(200);
+    } finally { setSystemTime(); }
+  });
+
+  test(`concurrent current-token renewals issue at most one usable token (${backend})`, async () => {
+    const key = sessionKey(); await seedDevice('device-a', key, 'token-a');
+    const responses = await Promise.all([renew(key, 'token-a'), renew(key, 'token-a')]);
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 409]);
+    const grant = await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: 'device-a' } });
+    expect(grant.status).toBe('ACTIVE');
+    expect(await prisma.oauthRefreshToken.count({ where: { userId: USER, revoked: null } })).toBe(1);
+    const current = await prisma.oauthRefreshToken.findUniqueOrThrow({ where: { token: grant.refreshTokenHash! } });
+    expect(current.revoked).toBeNull();
+  });
+
+  test(`concurrent previous-token recoveries issue at most one usable token (${backend})`, async () => {
+    const key = sessionKey(); await seedDevice('device-a', key, 'token-a');
+    const first = await renew(key, 'token-a'); expect(first.status).toBe(200);
+    const rotatedAt = (await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: 'device-a' } })).rotatedAt!;
+    try {
+      setSystemTime(new Date(rotatedAt.getTime() + 61_000));
+      const responses = await Promise.all([renew(key, 'token-a'), renew(key, 'token-a')]);
+      expect(responses.map((response) => response.status).sort()).toEqual([200, 409]);
+      const grant = await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: 'device-a' } });
+      expect(grant.status).toBe('ACTIVE');
+      expect(await prisma.oauthRefreshToken.count({ where: { userId: USER, revoked: null } })).toBe(1);
+      const current = await prisma.oauthRefreshToken.findUniqueOrThrow({ where: { token: grant.refreshTokenHash! } });
+      expect(current.revoked).toBeNull();
+      expect(await prisma.oauthRefreshToken.findUnique({ where: { token: hash('token-a') } })).toBeNull();
     } finally { setSystemTime(); }
   });
 
@@ -377,7 +433,11 @@ if (!backend) {
     expect(provider.status).toBe(400); expect(await error(provider)).toBe('unsupported_token_type');
     const providerCurrent = await form('/api/auth/oauth2/revoke', new URLSearchParams({ client_id: clientId, token: rotated }));
     expect(providerCurrent.status).toBe(400); expect(await error(providerCurrent)).toBe('unsupported_token_type');
-    const removed = await revoke(keyA, rotated); expect(removed.status).toBe(200); expect(await removed.json()).toEqual({});
+    const revokeFields = new URLSearchParams({ client_id: clientId, refresh_token: rotated });
+    const revokeProof = proof(keyA, rotated, REVOKE);
+    const removed = await form(REVOKE, revokeFields, revokeProof); expect(removed.status).toBe(200); expect(await removed.json()).toEqual({});
+    const replayedRevoke = await form(REVOKE, revokeFields, revokeProof);
+    expect(replayedRevoke.status).toBe(401); expect(await error(replayedRevoke)).toBe('invalid_session_proof');
     expect(await prisma.oauthAccessToken.findUnique({ where: { id: 'device-a-access' } })).toBeNull();
     expect(await prisma.oauthAccessToken.findUnique({ where: { id: 'device-b-access' } })).not.toBeNull();
     const again = await revoke(keyA, 'token-a'); expect(again.status).toBe(200); expect(await again.json()).toEqual({});
