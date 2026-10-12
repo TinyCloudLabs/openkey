@@ -2,9 +2,8 @@ import { describe, expect, it, beforeEach, setSystemTime } from 'bun:test';
 import {
   _resetAuthorizationContextStoreForTests,
   checkAuthorizationContext,
-  consumeAuthorizationContext,
   consumeCheckedAuthorizationContext,
-  consumePreviewApproval,
+  checkPreviewApproval,
   digestAbilities,
   digestFullRecapAttenuation,
   digestImmutableFields,
@@ -63,22 +62,23 @@ describe('authorization-signing', () => {
 
   it('accepts a matching context', () => {
     const { token } = issueAuthorizationContext(baseIssueInput());
-    const result = consumeAuthorizationContext(baseConsumeInput(token));
+    const result = checkAuthorizationContext(baseConsumeInput(token));
     expect(result.ok).toBe(true);
   });
 
   it('is single-use — replay is rejected', () => {
     const { token } = issueAuthorizationContext(baseIssueInput());
-    const first = consumeAuthorizationContext(baseConsumeInput(token));
-    expect(first.ok).toBe(true);
-    const second = consumeAuthorizationContext(baseConsumeInput(token));
+    const first = checkAuthorizationContext(baseConsumeInput(token));
+    if (!first.ok) throw new Error('check should pass');
+    expect(consumeCheckedAuthorizationContext(first.claim).ok).toBe(true);
+    const second = checkAuthorizationContext(baseConsumeInput(token));
     expect(second.ok).toBe(false);
     if (!second.ok) expect(second.error).toBe('context-not-found');
   });
 
   it('rejects a different user', () => {
     const { token } = issueAuthorizationContext(baseIssueInput());
-    const result = consumeAuthorizationContext({
+    const result = checkAuthorizationContext({
       ...baseConsumeInput(token),
       userId: 'user-2',
     });
@@ -88,7 +88,7 @@ describe('authorization-signing', () => {
 
   it('rejects a different JWK', () => {
     const { token } = issueAuthorizationContext(baseIssueInput());
-    const result = consumeAuthorizationContext({
+    const result = checkAuthorizationContext({
       ...baseConsumeInput(token),
       jwk: { ...jwk, x: 'BBB' },
     });
@@ -98,7 +98,7 @@ describe('authorization-signing', () => {
 
   it('rejects a different host', () => {
     const { token } = issueAuthorizationContext(baseIssueInput());
-    const result = consumeAuthorizationContext({
+    const result = checkAuthorizationContext({
       ...baseConsumeInput(token),
       host: 'https://evil.example',
     });
@@ -108,7 +108,7 @@ describe('authorization-signing', () => {
 
   it('rejects an altered immutable field', () => {
     const { token } = issueAuthorizationContext(baseIssueInput());
-    const result = consumeAuthorizationContext({
+    const result = checkAuthorizationContext({
       ...baseConsumeInput(token),
       candidateImmutableFieldsDigest: digestImmutableFields({
         ...immutable,
@@ -121,7 +121,7 @@ describe('authorization-signing', () => {
 
   it('rejects selecting an action outside baseline', () => {
     const { token } = issueAuthorizationContext(baseIssueInput());
-    const result = consumeAuthorizationContext({
+    const result = checkAuthorizationContext({
       ...baseConsumeInput(token),
       selectedActionIds: new Set(['not-in-baseline', 'req']),
     });
@@ -131,7 +131,7 @@ describe('authorization-signing', () => {
 
   it('rejects removing a required action', () => {
     const { token } = issueAuthorizationContext(baseIssueInput());
-    const result = consumeAuthorizationContext({
+    const result = checkAuthorizationContext({
       ...baseConsumeInput(token),
       selectedActionIds: new Set(['a1']), // req dropped
     });
@@ -147,7 +147,7 @@ describe('authorization-signing', () => {
 
   it('accepts a matching candidate abilities digest', () => {
     const { token } = issueAuthorizationContext(baseIssueInput());
-    const result = consumeAuthorizationContext({
+    const result = checkAuthorizationContext({
       ...baseConsumeInput(token),
       candidateAbilitiesDigest: digestAbilities(abilities),
     });
@@ -156,7 +156,7 @@ describe('authorization-signing', () => {
 
   it('rejects a mismatched candidate abilities digest', () => {
     const { token } = issueAuthorizationContext(baseIssueInput());
-    const result = consumeAuthorizationContext({
+    const result = checkAuthorizationContext({
       ...baseConsumeInput(token),
       candidateAbilitiesDigest: digestAbilities({
         kv: { '': ['tinycloud.kv/get', 'tinycloud.kv/put', 'tinycloud.kv/del'] },
@@ -168,7 +168,7 @@ describe('authorization-signing', () => {
 
   it('skips candidate abilities check when null', () => {
     const { token } = issueAuthorizationContext(baseIssueInput());
-    const result = consumeAuthorizationContext({
+    const result = checkAuthorizationContext({
       ...baseConsumeInput(token),
       candidateAbilitiesDigest: null,
     });
@@ -186,7 +186,7 @@ describe('authorization-signing', () => {
       initialSelectionActionIds: new Set(['a1', 'req']),
     };
     const { token } = issueAuthorizationContext(issue);
-    const result = consumeAuthorizationContext({
+    const result = checkAuthorizationContext({
       ...baseConsumeInput(token),
       selectedActionIds: new Set(['a1', 'a2', 'req']),
     });
@@ -254,7 +254,33 @@ describe('preview-approval tokens', () => {
     _resetAuthorizationContextStoreForTests();
   });
 
-  it('consumes a matching (context, selection, bytes) triple', () => {
+  function issuePair() {
+    const contextToken = issueAuthorizationContext(baseIssueInput()).token;
+    const previewToken = issuePreviewApproval({
+      authorizationContextToken: contextToken,
+      userId: 'user-1',
+      keyAddress: immutable.address,
+      selectedActionIds: new Set(['a1', 'req']),
+      signedMessage: 'approved bytes',
+    }).token;
+    return { contextToken, previewToken };
+  }
+
+  function checkPair(contextToken: string, previewToken: string) {
+    const context = checkAuthorizationContext(baseConsumeInput(contextToken));
+    const preview = checkPreviewApproval({
+      token: previewToken,
+      authorizationContextToken: contextToken,
+      userId: 'user-1',
+      keyAddress: immutable.address,
+      selectedActionIds: new Set(['a1', 'req']),
+      candidateSignedMessage: 'approved bytes',
+    });
+    if (!context.ok || !preview.ok) throw new Error('both claims should pass');
+    return { context: context.claim, preview: preview.claim };
+  }
+
+  it('checks a matching (context, selection, bytes) triple without consuming it', () => {
     const previewBytes = 'server-authoritative-signed-bytes-v1';
     const { token } = issuePreviewApproval({
       authorizationContextToken: 'ctx-abc',
@@ -263,10 +289,11 @@ describe('preview-approval tokens', () => {
       selectedActionIds: new Set(['a1', 'a2']),
       signedMessage: previewBytes,
     });
-    const res = consumePreviewApproval({
+    const res = checkPreviewApproval({
       token,
       authorizationContextToken: 'ctx-abc',
       userId: 'u1',
+      keyAddress: immutable.address,
       selectedActionIds: new Set(['a2', 'a1']), // order-independent
       candidateSignedMessage: previewBytes,
     });
@@ -274,7 +301,7 @@ describe('preview-approval tokens', () => {
     if (res.ok) expect(res.signedMessage).toBe(previewBytes);
   });
 
-  it('is single-use — replay is rejected', () => {
+  it('keeps preview approval usable after repeated checks', () => {
     const { token } = issuePreviewApproval({
       authorizationContextToken: 'ctx-x',
       userId: 'u1',
@@ -282,23 +309,24 @@ describe('preview-approval tokens', () => {
       selectedActionIds: new Set(['x']),
       signedMessage: 'bytes-x',
     });
-    const first = consumePreviewApproval({
+    const first = checkPreviewApproval({
       token,
       authorizationContextToken: 'ctx-x',
       userId: 'u1',
+      keyAddress: immutable.address,
       selectedActionIds: new Set(['x']),
       candidateSignedMessage: 'bytes-x',
     });
-    expect(first.ok).toBe(true);
-    const second = consumePreviewApproval({
+    if (!first.ok) throw new Error('first check should pass');
+    const second = checkPreviewApproval({
       token,
       authorizationContextToken: 'ctx-x',
       userId: 'u1',
+      keyAddress: immutable.address,
       selectedActionIds: new Set(['x']),
       candidateSignedMessage: 'bytes-x',
     });
-    expect(second.ok).toBe(false);
-    if (!second.ok) expect(second.error).toBe('preview-approval-not-found');
+    expect(second.ok).toBe(true);
   });
 
   it('rejects a different bytes candidate', () => {
@@ -309,10 +337,11 @@ describe('preview-approval tokens', () => {
       selectedActionIds: new Set(['x']),
       signedMessage: 'previewed-bytes',
     });
-    const res = consumePreviewApproval({
+    const res = checkPreviewApproval({
       token,
       authorizationContextToken: 'ctx-y',
       userId: 'u1',
+      keyAddress: immutable.address,
       selectedActionIds: new Set(['x']),
       candidateSignedMessage: 'different-bytes',
     });
@@ -328,10 +357,11 @@ describe('preview-approval tokens', () => {
       selectedActionIds: new Set(['a', 'b']),
       signedMessage: 'bytes-z',
     });
-    const res = consumePreviewApproval({
+    const res = checkPreviewApproval({
       token,
       authorizationContextToken: 'ctx-z',
       userId: 'u1',
+      keyAddress: immutable.address,
       // Missing "b" — this is a narrowing at finalize.
       selectedActionIds: new Set(['a']),
       candidateSignedMessage: 'bytes-z',
@@ -348,10 +378,11 @@ describe('preview-approval tokens', () => {
       selectedActionIds: new Set(['a']),
       signedMessage: 'bytes-w',
     });
-    const res = consumePreviewApproval({
+    const res = checkPreviewApproval({
       token,
       authorizationContextToken: 'ctx-w',
       userId: 'u2',
+      keyAddress: immutable.address,
       selectedActionIds: new Set(['a']),
       candidateSignedMessage: 'bytes-w',
     });
@@ -367,20 +398,207 @@ describe('preview-approval tokens', () => {
       selectedActionIds: new Set(['a']),
       signedMessage: 'bytes-v',
     });
-    const res = consumePreviewApproval({
+    const res = checkPreviewApproval({
       token,
       authorizationContextToken: 'ctx-other',
       userId: 'u1',
+      keyAddress: immutable.address,
       selectedActionIds: new Set(['a']),
       candidateSignedMessage: 'bytes-v',
     });
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error).toBe('preview-approval-context-mismatch');
   });
+
+  it('checks the preview signer address without spending its approval', () => {
+    const { contextToken, previewToken } = issuePair();
+    const refusal = checkPreviewApproval({
+      token: previewToken,
+      authorizationContextToken: contextToken,
+      userId: 'user-1',
+      keyAddress: '0x2222222222222222222222222222222222222222',
+      selectedActionIds: new Set(['a1', 'req']),
+      candidateSignedMessage: 'approved bytes',
+    });
+    expect(refusal).toMatchObject({ ok: false, error: 'preview-approval-key-mismatch' });
+    const claims = checkPair(contextToken, previewToken);
+    expect(consumeCheckedAuthorizationContext(claims.context, claims.preview)).toEqual({ ok: true });
+  });
+
+  it('keeps preview approval usable after selection, bytes, user, and context refusals', () => {
+    const { contextToken, previewToken } = issuePair();
+    const valid = {
+      token: previewToken,
+      authorizationContextToken: contextToken,
+      userId: 'user-1',
+      keyAddress: immutable.address,
+      selectedActionIds: new Set(['a1', 'req']),
+      candidateSignedMessage: 'approved bytes',
+    };
+    const invalid = [
+      { ...valid, userId: 'other' },
+      { ...valid, authorizationContextToken: 'other' },
+      { ...valid, selectedActionIds: new Set(['a1']) },
+      { ...valid, candidateSignedMessage: 'other bytes' },
+    ];
+    for (const attempt of invalid) {
+      expect(checkPreviewApproval(attempt).ok).toBe(false);
+    }
+    const claims = checkPair(contextToken, previewToken);
+    expect(consumeCheckedAuthorizationContext(claims.context, claims.preview)).toEqual({ ok: true });
+  });
+
+  it('atomically admits one of two checked context-and-preview pairs', () => {
+    const { contextToken, previewToken } = issuePair();
+    const first = checkPair(contextToken, previewToken);
+    const second = checkPair(contextToken, previewToken);
+    expect(consumeCheckedAuthorizationContext(first.context, first.preview)).toEqual({ ok: true });
+    expect(consumeCheckedAuthorizationContext(second.context, second.preview)).toMatchObject({
+      ok: false,
+      error: 'context-not-found',
+    });
+    expect(checkAuthorizationContext(baseConsumeInput(contextToken))).toMatchObject({
+      ok: false,
+      error: 'context-not-found',
+    });
+    expect(checkPreviewApproval({
+      token: previewToken,
+      authorizationContextToken: contextToken,
+      userId: 'user-1',
+      keyAddress: immutable.address,
+      selectedActionIds: new Set(['a1', 'req']),
+      candidateSignedMessage: 'approved bytes',
+    })).toMatchObject({ ok: false, error: 'preview-approval-not-found' });
+  });
+
+  it('refuses a context claim with the valid token but a different record identity', () => {
+    const { contextToken, previewToken } = issuePair();
+    const claims = checkPair(contextToken, previewToken);
+    const forgedContext = { token: claims.context.token, record: { ...claims.context.record } };
+    expect(consumeCheckedAuthorizationContext(forgedContext, claims.preview)).toMatchObject({
+      ok: false,
+      error: 'context-not-found',
+    });
+    const genuine = checkPair(contextToken, previewToken);
+    expect(consumeCheckedAuthorizationContext(genuine.context, genuine.preview)).toEqual({ ok: true });
+  });
+
+  it('refuses a preview claim with the valid token but a different record identity', () => {
+    const { contextToken, previewToken } = issuePair();
+    const claims = checkPair(contextToken, previewToken);
+    const forgedPreview = { token: claims.preview.token, record: { ...claims.preview.record } };
+    expect(consumeCheckedAuthorizationContext(claims.context, forgedPreview)).toMatchObject({
+      ok: false,
+      error: 'preview-approval-not-found',
+    });
+    const genuine = checkPair(contextToken, previewToken);
+    expect(consumeCheckedAuthorizationContext(genuine.context, genuine.preview)).toEqual({ ok: true });
+  });
+
+  it('refuses mismatched claims without spending either record', () => {
+    const first = issuePair();
+    const second = issuePair();
+    const firstClaims = checkPair(first.contextToken, first.previewToken);
+    const secondClaims = checkPair(second.contextToken, second.previewToken);
+    expect(consumeCheckedAuthorizationContext(firstClaims.context, secondClaims.preview)).toMatchObject({
+      ok: false,
+      error: 'preview-approval-context-mismatch',
+    });
+    expect(consumeCheckedAuthorizationContext(firstClaims.context, firstClaims.preview)).toEqual({ ok: true });
+    expect(consumeCheckedAuthorizationContext(secondClaims.context, secondClaims.preview)).toEqual({ ok: true });
+  });
+
+  it('preserves the context when the preview claim no longer matches the store', () => {
+    const { contextToken, previewToken } = issuePair();
+    const claims = checkPair(contextToken, previewToken);
+    expect(consumeCheckedAuthorizationContext(claims.context, {
+      token: 'missing-preview',
+      record: claims.preview.record,
+    })).toMatchObject({ ok: false, error: 'preview-approval-not-found' });
+    expect(consumeCheckedAuthorizationContext(claims.context, claims.preview)).toEqual({ ok: true });
+  });
+
+  it('refuses a checked preview from another signer without consuming either claim', () => {
+    const { contextToken, previewToken } = issuePair();
+    const context = checkAuthorizationContext(baseConsumeInput(contextToken));
+    const alternate = issuePreviewApproval({
+      authorizationContextToken: contextToken,
+      userId: 'user-1',
+      keyAddress: '0x2222222222222222222222222222222222222222',
+      selectedActionIds: new Set(['a1', 'req']),
+      signedMessage: 'approved bytes',
+    });
+    const preview = checkPreviewApproval({
+      token: alternate.token,
+      authorizationContextToken: contextToken,
+      userId: 'user-1',
+      keyAddress: '0x2222222222222222222222222222222222222222',
+      selectedActionIds: new Set(['a1', 'req']),
+      candidateSignedMessage: 'approved bytes',
+    });
+    if (!context.ok || !preview.ok) throw new Error('both individual checks should pass');
+    expect(consumeCheckedAuthorizationContext(context.claim, preview.claim)).toMatchObject({
+      ok: false,
+      error: 'preview-approval-key-mismatch',
+    });
+    expect(checkPreviewApproval({
+      token: alternate.token,
+      authorizationContextToken: contextToken,
+      userId: 'user-1',
+      keyAddress: '0x2222222222222222222222222222222222222222',
+      selectedActionIds: new Set(['a1', 'req']),
+      candidateSignedMessage: 'approved bytes',
+    }).ok).toBe(true);
+    const correct = checkPair(contextToken, previewToken);
+    expect(consumeCheckedAuthorizationContext(correct.context, correct.preview)).toEqual({ ok: true });
+  });
+
+  it('leaves both checked records intact if the pair expires before consumption', () => {
+    const { contextToken, previewToken } = issuePair();
+    const claims = checkPair(contextToken, previewToken);
+    setSystemTime(new Date(Date.now() + 6 * 60 * 1000));
+    try {
+      expect(consumeCheckedAuthorizationContext(claims.context, claims.preview)).toMatchObject({
+        ok: false,
+        error: 'context-expired',
+      });
+      expect(checkPreviewApproval({
+        token: previewToken,
+        authorizationContextToken: contextToken,
+        userId: 'user-1',
+        keyAddress: immutable.address,
+        selectedActionIds: new Set(['a1', 'req']),
+        candidateSignedMessage: 'approved bytes',
+      })).toMatchObject({ ok: false, error: 'preview-approval-expired' });
+    } finally {
+      setSystemTime();
+    }
+    // Roll the test clock back to distinguish retained records from deletions.
+    const stillStored = checkPair(contextToken, previewToken);
+    expect(consumeCheckedAuthorizationContext(stillStored.context, stillStored.preview)).toEqual({ ok: true });
+  });
+
+  it('leaves preview usable when the context claim was already consumed', () => {
+    const { contextToken, previewToken } = issuePair();
+    const claims = checkPair(contextToken, previewToken);
+    expect(consumeCheckedAuthorizationContext(claims.context)).toEqual({ ok: true });
+    expect(consumeCheckedAuthorizationContext(claims.context, claims.preview)).toMatchObject({
+      ok: false,
+      error: 'context-not-found',
+    });
+    expect(checkPreviewApproval({
+      token: previewToken,
+      authorizationContextToken: contextToken,
+      userId: 'user-1',
+      keyAddress: immutable.address,
+      selectedActionIds: new Set(['a1', 'req']),
+      candidateSignedMessage: 'approved bytes',
+    }).ok).toBe(true);
+  });
 });
 
 // Sol final continuation contract requirement 3: caveat semantics must be
-// EXACT for every surviving (resource, ability). The consume path exercises
+// EXACT for every surviving (resource, ability). The check path exercises
 // `attenuationSubsetFailure` via `candidateAttenuation`/`baselineAttenuation`.
 describe('caveat semantics — surviving abilities require exact multiset equality', () => {
   beforeEach(() => {
@@ -404,7 +622,7 @@ describe('caveat semantics — surviving abilities require exact multiset equali
       [resource]: { [abilityGet]: [{}], [abilityPut]: [{ maxSize: 100 }] },
     };
     const { token } = issueWithBaseline(baseline);
-    const res = consumeAuthorizationContext({
+    const res = checkAuthorizationContext({
       ...baseConsumeInput(token),
       candidateAttenuation: baseline,
       baselineAttenuation: baseline,
@@ -420,7 +638,7 @@ describe('caveat semantics — surviving abilities require exact multiset equali
       [resource]: { [abilityGet]: [{}] },
     };
     const { token } = issueWithBaseline(baseline);
-    const res = consumeAuthorizationContext({
+    const res = checkAuthorizationContext({
       ...baseConsumeInput(token),
       candidateAttenuation: candidate,
       baselineAttenuation: baseline,
@@ -436,7 +654,7 @@ describe('caveat semantics — surviving abilities require exact multiset equali
     };
     const candidate = { [resource]: { [abilityGet]: [{}] } };
     const { token } = issueWithBaseline(baseline);
-    const res = consumeAuthorizationContext({
+    const res = checkAuthorizationContext({
       ...baseConsumeInput(token),
       candidateAttenuation: candidate,
       baselineAttenuation: baseline,
@@ -452,7 +670,7 @@ describe('caveat semantics — surviving abilities require exact multiset equali
       [resource]: { [abilityGet]: [{ maxAge: 60 }] }, // dropped the minSize caveat
     };
     const { token } = issueWithBaseline(baseline);
-    const res = consumeAuthorizationContext({
+    const res = checkAuthorizationContext({
       ...baseConsumeInput(token),
       candidateAttenuation: candidate,
       baselineAttenuation: baseline,
@@ -472,7 +690,7 @@ describe('caveat semantics — surviving abilities require exact multiset equali
       [resource]: { [abilityGet]: [{ maxAge: 60 }, { extraCaveat: true }] },
     };
     const { token } = issueWithBaseline(baseline);
-    const res = consumeAuthorizationContext({
+    const res = checkAuthorizationContext({
       ...baseConsumeInput(token),
       candidateAttenuation: candidate,
       baselineAttenuation: baseline,
@@ -490,7 +708,7 @@ describe('caveat semantics — surviving abilities require exact multiset equali
       [resource]: { [abilityGet]: [{ maxAge: 3600 }] }, // different value
     };
     const { token } = issueWithBaseline(baseline);
-    const res = consumeAuthorizationContext({
+    const res = checkAuthorizationContext({
       ...baseConsumeInput(token),
       candidateAttenuation: candidate,
       baselineAttenuation: baseline,
@@ -506,7 +724,7 @@ describe('caveat semantics — surviving abilities require exact multiset equali
     const baseline = { [resource]: { [abilityGet]: [{}, {}] } };
     const candidate = { [resource]: { [abilityGet]: [{}] } };
     const { token } = issueWithBaseline(baseline);
-    const res = consumeAuthorizationContext({
+    const res = checkAuthorizationContext({
       ...baseConsumeInput(token),
       candidateAttenuation: candidate,
       baselineAttenuation: baseline,
@@ -522,7 +740,7 @@ describe('caveat semantics — surviving abilities require exact multiset equali
     const baseline = { [resource]: { [abilityGet]: [{}] } };
     const candidate = { [resource]: { [abilityGet]: [{}, {}] } };
     const { token } = issueWithBaseline(baseline);
-    const res = consumeAuthorizationContext({
+    const res = checkAuthorizationContext({
       ...baseConsumeInput(token),
       candidateAttenuation: candidate,
       baselineAttenuation: baseline,
@@ -538,7 +756,7 @@ describe('caveat semantics — surviving abilities require exact multiset equali
     const baseline = { [resource]: { [abilityGet]: [{}] } };
     const candidate = { [resource]: { [abilityGet]: [{}], [abilityPut]: [{}] } };
     const { token } = issueWithBaseline(baseline);
-    const res = consumeAuthorizationContext({
+    const res = checkAuthorizationContext({
       ...baseConsumeInput(token),
       candidateAttenuation: candidate,
       baselineAttenuation: baseline,
@@ -558,7 +776,7 @@ describe('caveat semantics — surviving abilities require exact multiset equali
       [otherResource]: { 'tinycloud.sql/read': [{}] },
     };
     const { token } = issueWithBaseline(baseline);
-    const res = consumeAuthorizationContext({
+    const res = checkAuthorizationContext({
       ...baseConsumeInput(token),
       candidateAttenuation: candidate,
       baselineAttenuation: baseline,
