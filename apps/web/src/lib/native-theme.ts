@@ -77,10 +77,12 @@ export function nativeTheme(input?: { backgroundColor?: string | null; accentCol
   const dark = luminance(foreground) > luminance(background);
 
   // Fields tint the background toward the foreground; keep the tint only as
-  // strong as leaves body text at 4.5:1 on top of it.
-  let field = composite(foreground, background, 0.07);
-  for (let alpha = 0.07; contrastRatio(foreground, field) < MIN_TEXT_CONTRAST && alpha > 0; alpha -= 0.01) {
-    field = composite(foreground, background, Math.max(alpha, 0));
+  // strong as leaves body text at 4.5:1 on top of it. Zero tint (the field is
+  // the background) always passes because the foreground was chosen for it.
+  let field = background;
+  for (let step = 7; step >= 0; step--) {
+    field = composite(foreground, background, step / 100);
+    if (contrastRatio(foreground, field) >= MIN_TEXT_CONTRAST) break;
   }
   const surfaces = [background, field];
   const muted = softenedText(foreground, background, 0.68, surfaces);

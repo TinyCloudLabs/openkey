@@ -76,6 +76,27 @@ describe('text contrast on the composited surfaces', () => {
     },
   );
 
+  const hex = (value: number) => value.toString(16).padStart(2, '0');
+  const greys = [...Array.from({ length: 33 }, (_, index) => Math.min(index * 8, 255)), 0x73, 0x77, 0x78, 0x7a].map((v) => `#${hex(v).repeat(3)}`);
+  const channelSteps = [0, 0x40, 0x80, 0xc0, 0xff];
+  const coloured = channelSteps.flatMap((r) => channelSteps.flatMap((g) => channelSteps.map((b) => `#${hex(r)}${hex(g)}${hex(b)}`)));
+
+  test.each(['#787878', '#737373', '#986098', ...greys, ...coloured])(
+    'every text token reaches 4.5:1 on the background and the field over %s, with the placeholder on the field',
+    (backgroundColor: string) => {
+      const { style, background } = nativeTheme({ backgroundColor });
+      const field = token(style, 'field');
+      for (const name of ['fg', 'muted', 'faint']) {
+        expect(contrastRatio(token(style, name), background)).toBeGreaterThanOrEqual(4.5);
+        expect(contrastRatio(token(style, name), field)).toBeGreaterThanOrEqual(4.5);
+      }
+    },
+  );
+
+  test.each([...greys, ...coloured])('accent text reaches 4.5:1 on accent %s', (accentColor: string) => {
+    expect(contrastRatio(token(nativeTheme({ accentColor }).style, 'accent-fg'), accentColor)).toBeGreaterThanOrEqual(4.5);
+  });
+
   test('the light theme keeps its faint text and placeholders readable (was 3.5:1)', () => {
     const { style } = nativeTheme({ backgroundColor: '#F4F4F5' });
     expect(contrastRatio(token(style, 'faint'), '#f4f4f5')).toBeGreaterThanOrEqual(4.5);
