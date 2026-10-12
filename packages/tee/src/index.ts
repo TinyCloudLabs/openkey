@@ -28,6 +28,11 @@ export function createTeeClient(): TeeClient {
 
 /**
  * Production client using @phala/dstack-sdk (DstackClient for dstack OS 0.5.x)
+ *
+ * Every sealed key depends on this derivation: sha256(v0 GetKey(path).key).
+ * The SDK is pinned exactly; in SDK 0.6 `DstackClient` is the v1 client, which
+ * derives different keys. tests/dstack-key-derivation.kat.test.ts freezes the
+ * output; read it before touching this function or the SDK version (TC-964).
  */
 function createProductionClient(): TeeClient {
   const getDstackClient = async () => {

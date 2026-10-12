@@ -153,20 +153,20 @@ OpenKey uses Phala's `@phala/dstack-sdk` to secure Ethereum private keys.
 
 // Production - real dstack
 function createProductionClient(): TeeClient {
-  const getTappdClient = async () => {
-    const { TappdClient } = await import('@phala/dstack-sdk');
-    return new TappdClient();
+  const getDstackClient = async () => {
+    const { DstackClient } = await import('@phala/dstack-sdk');
+    return new DstackClient();
   };
 
   return {
     async deriveKey(path: string): Promise<Uint8Array> {
-      const client = await getTappdClient();
-      const result = await client.deriveKey(path);
-      return result.asUint8Array();
+      const client = await getDstackClient();
+      const result = await client.getKey(path);
+      return sha256(result.key);
     },
     async getQuote(data: string): Promise<string> {
-      const client = await getTappdClient();
-      const result = await client.tdxQuote(data);
+      const client = await getDstackClient();
+      const result = await client.getQuote(data);
       return result.quote;
     },
     isInTee: () => true,
@@ -213,6 +213,24 @@ const signature = await account.signMessage({ message });
 - Path includes user ID → each user gets unique sealing key
 - Only code running in an attested TEE can derive the real keys
 - In dev mode, uses SHA256 hash instead (not secure, but deterministic for testing)
+
+### Frozen key derivation
+
+Every sealed key is encrypted under `sha256(GetKey(path).key)` from dstack's v0
+guest API. If that output changes, every sealed wallet and Nostr key becomes
+unrecoverable, so it is frozen (TC-964):
+
+- `@phala/dstack-sdk` is pinned to exactly `0.5.7`, and Dependabot ignores it.
+  In SDK 0.6, `DstackClient` is the v1 client (`/v1/GetKey`), which derives
+  different keys. On 0.6 use `DstackClientV0`, never `DstackClient`.
+- `packages/tee/tests/dstack-key-derivation.kat.test.ts` derives keys through
+  `createTeeClient()` against a fake v0 guest agent and checks the SDK version,
+  the exact `/GetKey` request and the resulting sealing keys. It runs in CI
+  (`dstack key-derivation guard`) and in the Docker build.
+- To change the SDK, first run the test with
+  `OPENKEY_DSTACK_SIMULATOR_SOCKET=<dstack.sock>` against the real dstack
+  simulator and prove the sealing keys are unchanged. Never edit the known
+  answers to make the test pass.
 
 ### Attestation Endpoint
 

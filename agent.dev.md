@@ -98,3 +98,8 @@ bun dev:portless
   entry to `agent.changelog.md` so future agents can see what changed and why.
 - PR descriptions should list security implications, env changes, deployment impact, tests run, and
   cross-repo dependencies.
+- Never bump `@phala/dstack-sdk` or change `createProductionClient` in `packages/tee` without
+  reading `docs/tee-overview.md` "Frozen key derivation". The SDK is pinned exactly; in SDK 0.6
+  `DstackClient` derives different keys, which would make every sealed key unrecoverable. The
+  known-answer test `packages/tee/tests/dstack-key-derivation.kat.test.ts` must pass unchanged
+  (TC-964).

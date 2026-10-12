@@ -11,4 +11,10 @@ updates:
       openkey:
         patterns:
           - "@openkey/*"
+    ignore:
+      # Sealed-key derivation depends on this SDK; in 0.6 `DstackClient`
+      # derives different keys. Bump it by hand only, after the known-answer
+      # test in packages/tee/tests/dstack-key-derivation.kat.test.ts is
+      # re-proven against a real dstack guest agent (TC-964).
+      - dependency-name: "@phala/dstack-sdk"
     open-pull-requests-limit: 10
