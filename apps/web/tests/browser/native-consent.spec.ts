@@ -59,7 +59,7 @@ test.describe('compact native consent', () => {
     await expect(page.getByText('Access lasts up to 30 days and renews automatically while you use Exo.')).toBeVisible();
     await expect(page.getByText(/First sign-in: this also lets your TinyCloud node host your data/)).toBeVisible();
     await expect(page.getByText('Signed in as')).toContainText('sam@example.test');
-    await expect(page.getByRole('button', { name: 'Not you?' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Not you?' })).toHaveCount(0);
     await expect(page.getByText('Secured by OpenKey · openkey.so')).toBeVisible();
     await expect(page.locator('[data-native-shell]')).toHaveCSS('background-color', 'rgb(9, 9, 11)');
     await expect(page.getByRole('button', { name: 'Allow', exact: true })).toHaveCSS('background-color', 'rgb(250, 250, 250)');
@@ -73,6 +73,15 @@ test.describe('compact native consent', () => {
     await expect(page.getByText('TinyCloud Labs', { exact: true })).toBeVisible();
     await expect(page.getByText(/permanent hosting authorization/)).toBeVisible();
     await expect(page.getByText(/Each renewal lasts 1 hour/)).toBeVisible();
+    await expect(page.getByText('Canonical OpenKey key')).toBeVisible();
+    await expect(page.getByText('No signed manifest')).toBeVisible();
+    await expect(page.getByText('Private-use redirect schemes do not verify the app')).toBeVisible();
+    for (const label of await details.locator('label.action-toggle').all()) {
+      expect((await label.boundingBox())!.height).toBeGreaterThanOrEqual(48);
+    }
+    for (const summary of await page.locator('summary').all()) {
+      expect((await summary.boundingBox())!.height).toBeGreaterThanOrEqual(48);
+    }
     await expect(details.getByRole('checkbox', { name: 'get' })).toBeChecked();
     await expect(details.getByRole('checkbox', { name: 'put' })).toBeChecked();
 
@@ -105,25 +114,23 @@ test.describe('compact native consent', () => {
     await expect(page.getByRole('button', { name: 'Allow', exact: true })).toBeEnabled();
   });
 
-  test('"Not you?" signs out and returns to the login sheet for the same request without the hints', async ({ page }) => {
-    let signedOut = false;
-    const signedQuery = new URLSearchParams({ client_id: 'exo-native', tinycloud_request: 'native-1', login_method: 'email', login_hint: 'sam@example.test', exp: '9999999999', ba_iat: '1', sig: 'test' }).toString();
+  test('parser warnings stay reachable inside Details', async ({ page }) => {
+    const [recap] = siwe(true).split('\n').filter(line => line.startsWith('- urn:recap:'));
+    const duplicated = `${siwe(true)}\n${recap}`;
     await page.route('**/api/**', route => {
       const path = new URL(route.request().url()).pathname;
-      if (path === '/api/auth/get-session') return json(route, signedOut ? null : sessionBody);
+      if (path === '/api/auth/get-session') return json(route, sessionBody);
       if (path === '/api/oauth/tinycloud/clients/exo-native/branding') return json(route, EXO_BRANDING);
-      if (path === '/api/auth/providers') return json(route, { providers: [] });
-      if (path === '/api/auth/sign-out') { signedOut = true; return json(route, { success: true }); }
-      if (path.endsWith('/prepare')) return json(route, { ...base, revision: 1, digest: 'digest-1', sessionSiwe: siwe(true), selectedActionKeys: selected });
+      if (path.endsWith('/prepare')) return json(route, { ...base, revision: 1, digest: 'digest-1', sessionSiwe: duplicated, selectedActionKeys: selected });
       return json(route, { error: `unmocked ${path}` }, 404);
     });
-    await page.goto(`/oauth/consent?${signedQuery}`);
-    await page.getByRole('button', { name: 'Not you?' }).click();
-    await page.waitForURL(/\/auth\/login\?/);
-    expect(page.url()).toContain('tinycloud_request=native-1');
-    expect(page.url()).toContain('native_switch=1');
-    await expect(page.locator('#email')).toHaveValue('');
-    await expect(page.getByRole('heading', { name: 'Sign in to Exo' })).toBeVisible();
+    await page.goto('/oauth/consent?client_id=exo-native&tinycloud_request=native-1&sig=test');
+    const details = page.locator('details.details');
+    await expect(details).toBeVisible();
+    await expect(page.getByText(/appears multiple times/).first()).toBeHidden();
+    await details.locator(':scope > summary').click();
+    await expect(page.getByRole('heading', { name: 'Notes' })).toBeVisible();
+    await expect(page.getByText(/duplicate-action Action tinycloud\.kv\/get appears multiple times/)).toBeVisible();
   });
 
   test('a session-less visitor is sent to login and never sees the light consent card', async ({ page }) => {

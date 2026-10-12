@@ -30,14 +30,37 @@ export function contrastRatio(first: string, second: string): number {
   return (lighter + 0.05) / (darker + 0.05);
 }
 
-/** Near-white or near-black, whichever reads better on `background`. */
+const MIN_TEXT_CONTRAST = 4.5;
+
+/** Near-white or near-black, or pure white/black when neither reaches 4.5:1 on `background`. */
 export function readableTextOn(background: string): string {
-  return contrastRatio(background, LIGHT_TEXT) >= contrastRatio(background, DARK_TEXT) ? LIGHT_TEXT : DARK_TEXT;
+  const near = contrastRatio(background, LIGHT_TEXT) >= contrastRatio(background, DARK_TEXT) ? LIGHT_TEXT : DARK_TEXT;
+  if (contrastRatio(background, near) >= MIN_TEXT_CONTRAST) return near;
+  return contrastRatio(background, '#ffffff') >= contrastRatio(background, '#000000') ? '#ffffff' : '#000000';
+}
+
+function toHex(values: number[]): string {
+  return `#${values.map((value) => Math.round(value).toString(16).padStart(2, '0')).join('')}`;
+}
+
+/** `top` laid over `bottom` at `alpha`, as an opaque colour. */
+export function composite(top: string, bottom: string, alpha: number): string {
+  const [topChannels, bottomChannels] = [channels(top), channels(bottom)];
+  return toHex(topChannels.map((value, index) => value * alpha + bottomChannels[index]! * (1 - alpha)));
 }
 
 function withAlpha(hex: string, alpha: number): string {
   const [red, green, blue] = channels(hex);
   return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+}
+
+/** The lowest-alpha mix of `foreground` over `background` that reads at 4.5:1 on every surface. */
+function softenedText(foreground: string, background: string, start: number, surfaces: string[]): string {
+  for (let alpha = start; alpha < 1; alpha += 0.02) {
+    const mixed = composite(foreground, background, alpha);
+    if (surfaces.every((surface) => contrastRatio(mixed, surface) >= MIN_TEXT_CONTRAST)) return mixed;
+  }
+  return foreground;
 }
 
 export interface NativeTheme {
@@ -51,14 +74,25 @@ export function nativeTheme(input?: { backgroundColor?: string | null; accentCol
   const background = parseHexColor(input?.backgroundColor) ?? DEFAULT_BACKGROUND;
   const accent = parseHexColor(input?.accentColor) ?? DEFAULT_ACCENT;
   const foreground = readableTextOn(background);
-  const dark = foreground === LIGHT_TEXT;
+  const dark = luminance(foreground) > luminance(background);
+
+  // Fields tint the background toward the foreground; keep the tint only as
+  // strong as leaves body text at 4.5:1 on top of it.
+  let field = composite(foreground, background, 0.07);
+  for (let alpha = 0.07; contrastRatio(foreground, field) < MIN_TEXT_CONTRAST && alpha > 0; alpha -= 0.01) {
+    field = composite(foreground, background, Math.max(alpha, 0));
+  }
+  const surfaces = [background, field];
+  const muted = softenedText(foreground, background, 0.68, surfaces);
+  const faint = softenedText(foreground, background, 0.5, surfaces);
+
   const style = [
     `--nb-bg:${background}`,
     `--nb-fg:${foreground}`,
-    `--nb-muted:${withAlpha(foreground, 0.68)}`,
-    `--nb-faint:${withAlpha(foreground, 0.5)}`,
+    `--nb-muted:${muted}`,
+    `--nb-faint:${faint}`,
     `--nb-border:${withAlpha(foreground, 0.2)}`,
-    `--nb-field:${withAlpha(foreground, 0.07)}`,
+    `--nb-field:${field}`,
     `--nb-accent:${accent}`,
     `--nb-accent-fg:${readableTextOn(accent)}`,
     `color-scheme:${dark ? 'dark' : 'light'}`,

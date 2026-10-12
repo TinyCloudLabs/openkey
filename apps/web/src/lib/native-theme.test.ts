@@ -60,3 +60,42 @@ describe('nativeTheme', () => {
     expect(theme.style).not.toContain('}');
   });
 });
+
+describe('text contrast on the composited surfaces', () => {
+  const token = (style: string, name: string) => style.match(new RegExp(`--nb-${name}:(#[0-9a-f]{6})`))![1]!;
+
+  test.each(['#09090b', '#f4f4f5', '#777777', '#888888', '#7a7a7a', '#000000', '#ffffff', '#0b5fff', '#ffd400', '#ff3b30'])(
+    'foreground, muted and faint text reach 4.5:1 on the background and on the field over %s',
+    (backgroundColor: string) => {
+      const { style, background } = nativeTheme({ backgroundColor });
+      const field = token(style, 'field');
+      for (const name of ['fg', 'muted', 'faint']) {
+        expect(contrastRatio(token(style, name), background)).toBeGreaterThanOrEqual(4.5);
+        expect(contrastRatio(token(style, name), field)).toBeGreaterThanOrEqual(4.5);
+      }
+    },
+  );
+
+  test('the light theme keeps its faint text and placeholders readable (was 3.5:1)', () => {
+    const { style } = nativeTheme({ backgroundColor: '#F4F4F5' });
+    expect(contrastRatio(token(style, 'faint'), '#f4f4f5')).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(token(style, 'faint'), token(style, 'field'))).toBeGreaterThanOrEqual(4.5);
+  });
+
+  test('a mid-grey theme falls back to pure black or white for the foreground', () => {
+    const { style } = nativeTheme({ backgroundColor: '#777777' });
+    expect(['#000000', '#ffffff']).toContain(token(style, 'fg'));
+    expect(contrastRatio(token(style, 'fg'), '#777777')).toBeGreaterThanOrEqual(4.5);
+  });
+
+  test.each(['#fafafa', '#777777', '#7a7a7a', '#0b5fff', '#ffd400', '#101010'])('accent text reaches 4.5:1 on accent %s', (accentColor: string) => {
+    const { style } = nativeTheme({ accentColor });
+    expect(contrastRatio(token(style, 'accent-fg'), accentColor)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  test('the Exo defaults keep their original look', () => {
+    const { style } = nativeTheme(null);
+    expect(token(style, 'fg')).toBe('#fafafa');
+    expect(contrastRatio(token(style, 'muted'), '#09090b')).toBeGreaterThan(8);
+  });
+});

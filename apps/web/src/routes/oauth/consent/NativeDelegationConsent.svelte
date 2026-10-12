@@ -1,9 +1,8 @@
 <script lang="ts">
-  import { API_BASE, authClient } from '$lib/auth-client';
+  import { API_BASE } from '$lib/auth-client';
   import { safeOAuthNavigationUrl } from '$lib/safe-oauth-url';
   import NativeShell from '$lib/components/auth/native-shell.svelte';
   import { nativeAccessSummary } from '$lib/native-access';
-  import { NATIVE_SWITCH_ACCOUNT_PARAM } from '$lib/native-mode';
   import {
     parseCapabilityReview, defaultSelection, buildRenderPlan, grantHeading,
     type CapabilityAction, type CapabilityGrant, type CapabilityReviewModel,
@@ -114,18 +113,6 @@
     try { await providerConsent(false); }
     catch (cause) { error = cause instanceof Error ? cause.message : 'Denial failed'; submitting = false; }
   }
-  async function notYou() {
-    const signed = oauthQuery();
-    submitting = true; error = '';
-    try {
-      const result = await authClient.signOut();
-      if (result.error) throw new Error(result.error.message ?? 'Sign out failed');
-      window.location.assign(`/auth/login?${signed ?? ''}&${NATIVE_SWITCH_ACCOUNT_PARAM}=1`);
-    } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Sign out failed';
-      submitting = false;
-    }
-  }
   function toggle(action: CapabilityAction) {
     const next = new Set(selection);
     if (next.has(action.id)) next.delete(action.id); else next.add(action.id);
@@ -145,6 +132,14 @@
   const summary = $derived(model && preview ? nativeAccessSummary(model, selection, preview.client.name) : null);
   const grants = $derived(model ? buildRenderPlan(model.permissions).flatMap((bucket) => bucket.grants) : []);
   const malformed = $derived(model?.protocol === 'malformed-recap');
+  const trustLabel: Record<CapabilityReviewModel['metadataTrust']['status'], string> = {
+    verified: 'Manifest signature verified',
+    'origin-bound': 'Manifest served by verified https origin',
+    unsigned: 'No signed manifest',
+    stale: 'Manifest signature is stale',
+    'wrong-key': 'Manifest signed by an unknown key',
+    'digest-mismatch': 'Manifest digest does not match declared content',
+  };
   const exactTarget = (grant: CapabilityGrant) =>
     `${grant.space}${grant.resourceService ? `/${grant.resourceService}` : ''}${grant.path ? `/${grant.path}` : ''}`;
 </script>
@@ -157,9 +152,7 @@
     {#if error}<p role="alert" class="nb-error">{error}</p>{/if}
     <button type="button" class="nb-button nb-primary" disabled={submitting} onclick={approve}>Continue to app</button>
   {:else if preview && model && summary}
-    <p class="nb-lede signed-in">
-      Signed in as <strong>{email}</strong> · <button type="button" class="nb-link nb-inline" disabled={submitting} onclick={notYou}>Not you?</button>
-    </p>
+    <p class="nb-lede signed-in">Signed in as <strong>{email}</strong></p>
 
     <section class="panel" aria-label="Requested access">
       <p class="sentence">{summary.sentence}</p>
@@ -181,9 +174,14 @@
           {/if}
           <dt>TinyCloud node</dt><dd><code>{preview.tinycloudHost}</code></dd>
           <dt>Returns to</dt><dd><code>{preview.redirectScheme}://</code></dd>
-          <dt>Signing key</dt><dd><code>{preview.address}</code></dd>
+          <dt>Signing key</dt><dd>{model.signer.label} <code>{model.signer.address}</code></dd>
+          <dt>App identity</dt><dd>{trustLabel[model.metadataTrust.status]}</dd>
+          {#if model.expiry}<dt>Expires</dt><dd>{model.expiry}</dd>{/if}
           <dt>Renewals</dt><dd>Each renewal lasts {duration(preview.ttlSeconds)} from approval.</dd>
         </dl>
+        {#if model.metadataTrust.reason}
+          <p class="note">{model.metadataTrust.reason}</p>
+        {/if}
         {#if preview.hostPlan}
           <p class="note">If your applications space does not exist on {preview.hostPlan.host} yet, OpenKey will create it there. This is a permanent hosting authorization for that node.</p>
         {/if}
@@ -216,6 +214,15 @@
           {/each}
         </ul>
 
+        {#if model.parseWarnings.length > 0}
+          <h2>Notes</h2>
+          <ul class="warnings">
+            {#each model.parseWarnings as warning}
+              <li><code>{warning.code}</code> {warning.message}</li>
+            {/each}
+          </ul>
+        {/if}
+
         <details class="raw">
           <summary>Exact message being signed</summary>
           <pre>{model.rawMessage}</pre>
@@ -244,13 +251,6 @@
 <style>
   .signed-in {
     margin-bottom: 16px;
-  }
-
-  .signed-in .nb-inline {
-    min-height: 0;
-    padding: 0;
-    font-size: inherit;
-    color: var(--nb-fg);
   }
 
   .panel {
@@ -385,8 +385,19 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    min-height: 44px;
+    min-height: 48px;
     color: var(--nb-fg);
+  }
+
+  .warnings {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .warnings li {
+    padding: 6px 0;
+    overflow-wrap: anywhere;
   }
 
   .action-toggle input {

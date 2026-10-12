@@ -36,7 +36,7 @@ const session = {
 };
 
 interface Mock {
-  calls: Array<{ path: string; body: any }>;
+  calls: Array<{ path: string; body: any; raw: string }>;
   count: (path: string) => number;
 }
 
@@ -47,8 +47,9 @@ async function mockApi(
   const calls: Mock['calls'] = [];
   await page.route('**/api/**', (route) => {
     const path = new URL(route.request().url()).pathname;
+    const raw = route.request().postData() ?? '';
     const body = route.request().method() === 'POST' ? route.request().postDataJSON() : null;
-    calls.push({ path, body });
+    calls.push({ path, body, raw });
     if (path === '/api/auth/get-session') return json(route, options.session ?? null);
     if (path === '/api/auth/providers') return json(route, { providers: options.providers ?? [] });
     if (path === '/api/oauth/tinycloud/clients/exo-native/branding') {
@@ -88,9 +89,41 @@ test.describe('native login', () => {
     await expect(page.getByText('Secured by OpenKey · openkey.so')).toBeVisible();
 
     await page.reload();
-    await expect(page.getByText('We sent a 6-digit code to')).toBeVisible();
+    await expect(page.getByText(/A 6-digit code was requested for/)).toBeVisible();
     await page.waitForLoadState('networkidle');
     expect(api.count(SEND)).toBe(1);
+  });
+
+  test('reloading while the first send is still in flight does not send a second code', async ({ page }) => {
+    const sends: number[] = [];
+    const api = await mockApi(page);
+    await page.route(`**${SEND}`, async (route) => {
+      sends.push(Date.now());
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true }) }).catch(() => {});
+    });
+    await page.goto(`/auth/login?${signedQuery({ login_method: 'email', login_hint: 'sam@example.test' })}`);
+    await expect.poll(() => sends.length).toBe(1);
+    await page.reload();
+    await expect(page.getByText(/A 6-digit code was requested for/)).toBeVisible();
+    await page.waitForTimeout(2000);
+    expect(sends.length).toBe(1);
+    expect(api.count(SEND)).toBe(0);
+
+    await page.getByRole('button', { name: 'Resend code' }).click();
+    await expect.poll(() => sends.length).toBe(2);
+  });
+
+  test('a failed automatic send keeps its claim: reload does not retry, Resend does', async ({ page }) => {
+    let sends = 0;
+    await mockApi(page);
+    await page.route(`**${SEND}`, (route) => { sends++; return json(route, { message: 'Try later' }, 429); });
+    await page.goto(`/auth/login?${signedQuery({ login_method: 'email', login_hint: 'sam@example.test' })}`);
+    await expect(page.getByRole('alert')).toBeVisible();
+    await page.reload();
+    await expect(page.getByText(/A 6-digit code was requested for/)).toBeVisible();
+    await page.waitForLoadState('networkidle');
+    expect(sends).toBe(1);
   });
 
   test('a hint without a method behaves like the email method', async ({ page }) => {
@@ -163,13 +196,13 @@ test.describe('native login', () => {
     await page.waitForURL('https://accounts.google.com/**');
 
     const request = api.calls.find((call) => call.path === '/api/auth/sign-in/social')!;
+    expect(Object.keys(request.body).sort()).toEqual(['callbackURL', 'disableRedirect', 'errorCallbackURL', 'provider']);
     expect(request.body.provider).toBe('google');
     expect(request.body.callbackURL).toBe(`http://localhost:5779/auth/login?${query}`);
     expect(request.body.errorCallbackURL).toBe(`http://localhost:5779/auth/login?${query}&native_social_error=1`);
     expect(request.body.disableRedirect).toBe(true);
-    expect(JSON.stringify(request.body)).not.toContain('additionalData');
-    expect(JSON.stringify(request.body)).not.toContain('tinycloud_request=req-1&client_id');
-    expect(request.body.additionalData).toBeUndefined();
+    expect(request.raw).not.toContain('oauth_query');
+    expect(request.raw).not.toContain('additionalData');
   });
 
   test('returning from google with a session re-enters authorize once and does not loop', async ({ page }) => {

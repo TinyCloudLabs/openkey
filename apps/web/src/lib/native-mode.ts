@@ -7,9 +7,8 @@ export type NativeLoginMethod = 'email' | 'passkey' | 'google';
 
 const LOGIN_METHODS: readonly NativeLoginMethod[] = ['email', 'passkey', 'google'];
 
-/** Marker on the Google error return, and on "Not you?" to drop the signed hints. */
+/** Marker on the Google error return. */
 export const NATIVE_SOCIAL_ERROR_PARAM = 'native_social_error';
-export const NATIVE_SWITCH_ACCOUNT_PARAM = 'native_switch';
 
 export interface NativeSignIn {
   requestId: string;
@@ -39,7 +38,6 @@ export function nativeSignIn(searchParams: URLSearchParams): NativeSignIn | null
   const clientId = query.get('client_id');
   if (!requestId || !clientId) return null;
 
-  const switching = searchParams.has(NATIVE_SWITCH_ACCOUNT_PARAM);
   const rawMethod = query.get('login_method');
   const method = LOGIN_METHODS.find((candidate) => candidate === rawMethod) ?? null;
   const hint = nativeLoginHint(query.get('login_hint'));
@@ -48,8 +46,8 @@ export function nativeSignIn(searchParams: URLSearchParams): NativeSignIn | null
     requestId,
     clientId,
     signedQuery,
-    method: switching ? null : emailHint && !method ? 'email' : method,
-    hint: switching ? null : emailHint,
+    method: emailHint && !method ? 'email' : method,
+    hint: emailHint,
     socialError: searchParams.has(NATIVE_SOCIAL_ERROR_PARAM),
   };
 }

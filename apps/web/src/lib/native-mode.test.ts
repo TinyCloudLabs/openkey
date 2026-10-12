@@ -43,12 +43,6 @@ describe('nativeSignIn', () => {
     expect(nativeSignIn(signed({ login_method: 'email', login_hint: 'not-an-email' }))).toMatchObject({ method: 'email', hint: null });
   });
 
-  test('"Not you?" drops the signed hints but keeps the request', () => {
-    const params = signed({ login_method: 'email', login_hint: 'sam@example.test' });
-    params.set('native_switch', '1');
-    expect(nativeSignIn(params)).toMatchObject({ requestId: 'req-1', method: null, hint: null });
-  });
-
   test('flags the Google error return', () => {
     const params = signed({ login_method: 'google' });
     params.set('native_social_error', '1');

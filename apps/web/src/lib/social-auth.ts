@@ -1,4 +1,4 @@
-import { API_BASE, authClient } from './auth-client';
+import { API_BASE, socialRedirectClient } from './auth-client';
 import { setSessionToken } from './embed-passkey';
 
 export type SocialProviderId = 'google' | 'apple';
@@ -131,7 +131,7 @@ export async function signInWithSocialRedirect(
   provider: SocialProviderId,
   returnUrls: { callbackURL: string; errorCallbackURL: string },
   dependencies: SocialRedirectDependencies = {
-    signInSocial: (input) => authClient.signIn.social(input),
+    signInSocial: (input) => socialRedirectClient.signIn.social(input),
     navigate: (url) => window.location.assign(url),
   },
 ): Promise<void> {

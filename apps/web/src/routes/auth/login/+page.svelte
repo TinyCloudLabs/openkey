@@ -46,6 +46,8 @@
   let otp = $state('');
   let step = $state<Step>(initialStep());
   let codeSent = $state(false);
+  // A code was requested by an earlier load of this page; delivery is unconfirmed.
+  let codeRequested = $state(false);
   let verifying = $state(false);
   let loading = $state(false);
   let error = $state('');
@@ -147,12 +149,16 @@
     if (request.method === 'google') {
       await signInWithSocialTopLevel('google');
     } else if (request.method === 'email' && request.hint && step === 'otp') {
+      // Claimed before dispatch, and kept on a failed or unanswered send: a
+      // reload while the send is in flight must not mail a second code. Resend
+      // is the retry.
       const key = nativeOtpSentKey(request.requestId);
       if (sessionStorage.getItem(key)) {
-        codeSent = true;
+        codeRequested = true;
         return;
       }
-      if (await sendOTP()) sessionStorage.setItem(key, '1');
+      sessionStorage.setItem(key, '1');
+      await sendOTP();
     }
   }
 
@@ -331,6 +337,8 @@
           We sent a 6-digit code to <strong>{email}</strong>.
         {:else if loading}
           Sending a 6-digit code to <strong>{email}</strong>…
+        {:else if codeRequested}
+          A 6-digit code was requested for <strong>{email}</strong>. Enter it below, or resend if it has not arrived.
         {:else}
           We couldn't send a code to <strong>{email}</strong>.
         {/if}
