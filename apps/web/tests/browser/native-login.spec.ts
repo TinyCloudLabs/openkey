@@ -150,12 +150,11 @@ test.describe('native login', () => {
     expect(api.count(SEND)).toBe(0);
   });
 
-  test('a correct code continues to the app and never offers passkey enrolment', async ({ page }) => {
+  test('the sixth digit submits by itself, continues to the app and never offers passkey enrolment', async ({ page }) => {
     const api = await mockApi(page);
     await page.goto(`/auth/login?${signedQuery({ login_method: 'email', login_hint: 'sam@example.test' })}`);
     await page.waitForLoadState('networkidle');
     await page.locator('#otp').fill('123456');
-    await page.getByRole('button', { name: 'Continue', exact: true }).click();
 
     await page.waitForURL('https://app.test/done?code=abc');
     expect(api.calls.find((call) => call.path === '/api/auth/sign-in/email-otp')!.body).toMatchObject({
@@ -189,6 +188,78 @@ test.describe('native login', () => {
     await expect(page.locator('#email')).toBeVisible();
   });
 
+  test('the code step is one one-time-code input drawn as six 44x52 boxes, and Continue waits for the sixth digit', async ({ page }) => {
+    await mockApi(page);
+    await page.goto(`/auth/login?${signedQuery({ login_method: 'email', login_hint: 'sam@example.test' })}`);
+    const input = page.locator('#otp');
+    await expect(page.locator('input')).toHaveCount(1);
+    await expect(input).toHaveAttribute('autocomplete', 'one-time-code');
+    await expect(input).toHaveAttribute('inputmode', 'numeric');
+    await expect(input).toHaveAttribute('maxlength', '6');
+    await expect(input).toBeFocused();
+
+    const boxes = (await page.locator('.otp-box').all()).map((box) => box.boundingBox());
+    const rects = (await Promise.all(boxes)).map((box) => box!);
+    expect(rects).toHaveLength(6);
+    for (const rect of rects) {
+      expect(rect.width).toBe(44);
+      expect(rect.height).toBe(52);
+    }
+    const gaps = rects.slice(1).map((rect, index) => rect.x - (rects[index]!.x + rects[index]!.width));
+    expect(gaps).toEqual([8, 8, 16, 8, 8]);
+
+    await expect(page.getByRole('button', { name: 'Continue', exact: true })).toBeDisabled();
+    await input.pressSequentially('12345');
+    await expect(page.getByRole('button', { name: 'Continue', exact: true })).toBeDisabled();
+    await expect(page.locator('.otp-box-active')).toHaveCSS('border-top-color', 'rgb(250, 250, 250)');
+  });
+
+  test('a wrong code shows one plain line with a single shake, clears the boxes and lets you try again', async ({ page }) => {
+    await mockApi(page);
+    let attempts = 0;
+    await page.route('**/api/auth/sign-in/email-otp', (route) => {
+      attempts++;
+      if (attempts === 1) return json(route, { message: 'Invalid OTP', code: 'INVALID_OTP' }, 400);
+      return json(route, { redirect: true, url: 'https://app.test/done?code=abc' });
+    });
+    await page.goto(`/auth/login?${signedQuery({ login_method: 'email', login_hint: 'sam@example.test' })}`);
+    await page.waitForLoadState('networkidle');
+    await page.evaluate(() => {
+      (window as any).__shakes = 0;
+      document.addEventListener('animationstart', (event) => {
+        if ((event as AnimationEvent).animationName.includes('otp-shake')) (window as any).__shakes++;
+      }, true);
+    });
+    const input = page.locator('#otp');
+    await input.fill('000000');
+
+    const line = page.getByText("That code didn't match. Check the latest email.");
+    await expect(line).toBeVisible();
+    await expect(line).toHaveCSS('color', 'rgb(250, 250, 250)');
+    await expect(page.locator('.nb-error')).toHaveCount(0);
+    await expect(input).toHaveValue('');
+    await expect(input).toBeFocused();
+    await expect(page.getByRole('button', { name: 'Continue', exact: true })).toBeDisabled();
+    expect(await page.evaluate(() => (window as any).__shakes)).toBe(1);
+
+    await input.pressSequentially('123456');
+    await page.waitForURL('https://app.test/done?code=abc');
+    expect(attempts).toBe(2);
+  });
+
+  test('a resend countdown follows a delivered code, and the secondary actions share one quiet row', async ({ page }) => {
+    await mockApi(page);
+    await page.goto(`/auth/login?${signedQuery({ login_method: 'email', login_hint: 'sam@example.test' })}`);
+    const resend = page.getByRole('button', { name: /^Resend in 0:\d\d$/ });
+    await expect(resend).toBeDisabled();
+    const different = page.getByRole('button', { name: 'Use a different email' });
+    const [first, second] = await Promise.all([resend.boundingBox(), different.boundingBox()]);
+    expect(Math.abs((first!.y + first!.height / 2) - (second!.y + second!.height / 2))).toBeLessThan(2);
+    expect(first!.x).toBeLessThan(second!.x);
+    await expect(page.getByText('·', { exact: true })).toBeVisible();
+    await expect(different).toHaveCSS('text-decoration-line', 'none');
+  });
+
   test('google redirects the whole window and keeps the native query out of the social request body', async ({ page }) => {
     const api = await mockApi(page);
     const query = signedQuery({ login_method: 'google' });
@@ -203,6 +274,87 @@ test.describe('native login', () => {
     expect(request.body.disableRedirect).toBe(true);
     expect(request.raw).not.toContain('oauth_query');
     expect(request.raw).not.toContain('additionalData');
+  });
+
+  test('the google redirect frame keeps the header and says Opening Google', async ({ page }) => {
+    await mockApi(page);
+    await page.route('**/api/auth/sign-in/social', async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      await json(route, { url: 'https://accounts.google.com/o/oauth2/v2/auth?client_id=x', redirect: false }).catch(() => {});
+    });
+    await page.goto(`/auth/login?${signedQuery({ login_method: 'google' })}`);
+    await expect(page.getByRole('heading', { name: 'Sign in to Exo' })).toBeVisible();
+    await expect(page.getByText('Opening Google…')).toBeVisible();
+    await expect(page.locator('img.nb-icon')).toBeVisible();
+    await page.waitForURL('https://accounts.google.com/**');
+  });
+
+  test('the Google button on the email step shows the same Opening Google frame', async ({ page }) => {
+    await mockApi(page, { providers: ['google'] });
+    await page.route('**/api/auth/sign-in/social', async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      await json(route, { url: 'https://accounts.google.com/o/oauth2/v2/auth?client_id=x', redirect: false }).catch(() => {});
+    });
+    await page.goto(`/auth/login?${signedQuery()}`);
+    await page.getByRole('button', { name: 'Continue with Google' }).click();
+    await expect(page.getByText('Opening Google…')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Sign in to Exo' })).toBeVisible();
+    await page.waitForURL('https://accounts.google.com/**');
+  });
+
+  test('first paint is already dark and native-feel while the branding request is still pending', async ({ page }) => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    await mockApi(page, { branding: async (route) => { await gate; await json(route, EXO_BRANDING); } });
+    await page.goto(`/auth/login?${signedQuery({ login_method: 'email' })}`, { waitUntil: 'domcontentloaded' });
+
+    const root = page.locator('html');
+    await expect(root).toHaveCSS('background-color', 'rgb(9, 9, 11)');
+    await expect(root).toHaveCSS('color-scheme', 'dark');
+    await expect(page.locator('[data-native-shell]')).toHaveAttribute('data-branding', 'loading');
+    await expect(page.locator('[data-native-shell]')).toHaveCSS('background-color', 'rgb(9, 9, 11)');
+    await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute('content', '#09090b');
+    await expect(page.locator('meta[name="color-scheme"]')).toHaveAttribute('content', 'dark');
+    await expect(page.locator('#email')).toBeVisible();
+    release();
+    await expect(page.locator('[data-native-shell]')).toHaveAttribute('data-branding', 'ready');
+    await expect(root).toHaveCSS('background-color', 'rgb(9, 9, 11)');
+  });
+
+  test('login uses the same 64px icon, 22.5% radius and 32px title that consent uses', async ({ page }) => {
+    await mockApi(page);
+    await page.goto(`/auth/login?${signedQuery({ login_method: 'email' })}`);
+    await expect(page.getByRole('heading', { name: 'Sign in to Exo' })).toHaveCSS('font-size', '32px');
+    const icon = await page.locator('.nb-icon').boundingBox();
+    expect([icon!.width, icon!.height, icon!.x, icon!.y]).toEqual([64, 64, 24, 28]);
+    await expect(page.locator('.nb-icon')).toHaveCSS('border-radius', '22.5%');
+  });
+
+  test('the dark first paint is in the server HTML, before any script runs', async ({ browser }) => {
+    const context = await browser.newContext({ javaScriptEnabled: false, viewport: { width: 390, height: 844 } });
+    const page = await context.newPage();
+    await page.route('**/api/**', (route) => json(route, null));
+    await page.goto(`/auth/login?${signedQuery({ login_method: 'email' })}`);
+    await expect(page.locator('[data-native-shell]')).toHaveCSS('background-color', 'rgb(9, 9, 11)');
+    await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute('content', '#09090b');
+    await context.close();
+  });
+
+  test('native-feel settings: no zoom-on-focus, no tap highlight, no overscroll, edge-to-edge viewport, accent focus ring', async ({ page }) => {
+    await mockApi(page, { branding: (route) => json(route, { ...EXO_BRANDING, theme: { backgroundColor: '#09090B', accentColor: '#0B5FFF' } }) });
+    await page.goto(`/auth/login?${signedQuery({ login_method: 'email' })}`);
+    const email = page.locator('#email');
+    await expect(email).toBeVisible();
+    expect(await email.evaluate((node) => parseFloat(getComputedStyle(node).fontSize))).toBeGreaterThanOrEqual(16);
+    const shell = page.locator('[data-native-shell]');
+    await expect(shell).toHaveCSS('touch-action', 'manipulation');
+    await expect(shell).toHaveCSS('-webkit-tap-highlight-color', 'rgba(0, 0, 0, 0)');
+    await expect(page.locator('html')).toHaveCSS('overscroll-behavior-y', 'none');
+    await expect(page.locator('meta[name="viewport"]')).toHaveAttribute('content', /viewport-fit=cover/);
+    await expect(shell).toHaveAttribute('data-branding', 'ready');
+    await email.focus();
+    await expect(email).toHaveCSS('outline-color', 'rgb(11, 95, 255)');
+    await expect(email).toHaveCSS('outline-width', '2px');
   });
 
   test('returning from google with a session re-enters authorize once and does not loop', async ({ page }) => {
@@ -280,11 +432,11 @@ test.describe('native login', () => {
 
   test('a sign-in failure is shown in the native sheet', async ({ page }) => {
     await mockApi(page);
-    await page.route('**/api/auth/sign-in/email-otp', (route) => json(route, { message: 'Invalid OTP', code: 'INVALID_OTP' }, 400));
+    await page.route('**/api/auth/sign-in/email-otp', (route) => json(route, { message: 'Too many attempts', code: 'TOO_MANY_ATTEMPTS' }, 403));
     await page.goto(`/auth/login?${signedQuery({ login_method: 'email', login_hint: 'sam@example.test' })}`);
     await page.waitForLoadState('networkidle');
     await page.locator('#otp').fill('000000');
-    await page.getByRole('button', { name: 'Continue', exact: true }).click();
-    await expect(page.getByRole('alert')).toBeVisible();
+    await expect(page.locator('.nb-error')).toHaveText('Too many attempts');
+    await expect(page.getByText("That code didn't match")).toHaveCount(0);
   });
 });

@@ -114,6 +114,13 @@ describe('text contrast on the composited surfaces', () => {
     expect(contrastRatio(token(style, 'accent-fg'), accentColor)).toBeGreaterThanOrEqual(4.5);
   });
 
+  test('the focus ring is the accent unless it would vanish into the background', () => {
+    expect(token(nativeTheme({ accentColor: '#0b5fff' }).style, 'ring')).toBe('#0b5fff');
+    expect(token(nativeTheme(null).style, 'ring')).toBe('#fafafa');
+    expect(token(nativeTheme({ backgroundColor: '#0b0b0e', accentColor: '#101014' }).style, 'ring')).toBe('#fafafa');
+    expect(token(nativeTheme({ backgroundColor: '#ffffff', accentColor: '#fafafa' }).style, 'ring')).toBe('#09090b');
+  });
+
   test('the Exo defaults keep their original look', () => {
     const { style } = nativeTheme(null);
     expect(token(style, 'fg')).toBe('#fafafa');

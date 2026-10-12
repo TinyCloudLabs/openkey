@@ -1,7 +1,7 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
   import { page } from '$app/stores';
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
   import { authClient, API_BASE, authErrorMessage } from '$lib/auth-client';
   import { consoleOrigin } from '$lib/console-host';
   import { normalizeAuthReturnTo, safeOAuthAuthorizeQuery } from '$lib/auth-flow';
@@ -51,6 +51,14 @@
   let verifying = $state(false);
   let loading = $state(false);
   let error = $state('');
+  // Native code step: a wrong code is one plain line (no alert box) and a single shake.
+  let wrongCode = $state(false);
+  let shaking = $state(false);
+  let otpInput = $state<HTMLInputElement | null>(null);
+  // Seconds until another code may be requested; the API allows 3 sends per 60 s.
+  const RESEND_SECONDS = 30;
+  let resendIn = $state(0);
+  let resendTimer: ReturnType<typeof setInterval> | undefined;
   let providers = $state<SocialProviderId[]>([]);
   let loadingProvider = $state<SocialProviderId | null>(null);
   // In OAuth flows the API answers sign-in/email-otp with its own redirect
@@ -173,6 +181,7 @@
       }
       codeSent = true;
       step = 'otp';
+      if (native) startResendCountdown();
       return true;
     } catch (e: any) {
       error = e.message || 'Failed to send code';
@@ -182,10 +191,24 @@
     }
   }
 
+  function startResendCountdown() {
+    clearInterval(resendTimer);
+    const deadline = Date.now() + RESEND_SECONDS * 1000;
+    resendIn = RESEND_SECONDS;
+    resendTimer = setInterval(() => {
+      resendIn = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+      if (resendIn === 0) clearInterval(resendTimer);
+    }, 250);
+  }
+  onDestroy(() => clearInterval(resendTimer));
+
+  const resendLabel = (seconds: number) => `Resend in 0:${String(seconds).padStart(2, '0')}`;
+
   async function verifyOTP() {
     loading = true;
     verifying = true;
     error = '';
+    wrongCode = false;
     try {
       const result = await authClient.signIn.emailOtp(
         {
@@ -209,7 +232,13 @@
         },
       );
       if (result.error) {
-        error = authErrorMessage(result.error, 'Invalid code');
+        if (native && result.error.code === 'INVALID_OTP') {
+          wrongCode = true;
+          shaking = true;
+          otp = '';
+        } else {
+          error = authErrorMessage(result.error, 'Invalid code');
+        }
         return;
       }
 
@@ -246,6 +275,7 @@
     } finally {
       loading = false;
       verifying = false;
+      if (native) tick().then(() => otpInput?.focus());
     }
   }
 
@@ -283,6 +313,7 @@
 
   async function signInWithSocialTopLevel(provider: SocialProviderId) {
     if (!native) return;
+    step = 'google';
     loading = true;
     loadingProvider = provider;
     error = '';
@@ -322,6 +353,8 @@
 
   function setOtp(value: string) {
     otp = value.replace(/\D/g, '').slice(0, 6);
+    if (native) wrongCode = false;
+    if (native && otp.length === 6 && !loading) verifyOTP();
   }
 </script>
 
@@ -357,21 +390,28 @@
             autocomplete="one-time-code"
             required
             disabled={verifying}
+            bind:this={otpInput}
             autofocus
           />
-          <div class="otp-boxes" aria-hidden="true">
+          <div class="otp-boxes" class:shake={shaking} onanimationend={() => { shaking = false; }} aria-hidden="true">
             {#each [0, 1, 2, 3, 4, 5] as index}
-              <span class="otp-box" class:otp-box-active={index === otp.length}>{otp[index] ?? ''}</span>
+              <span class="otp-box" class:otp-box-gap={index === 3} class:otp-box-active={index === Math.min(otp.length, 5)}>{otp[index] ?? ''}</span>
             {/each}
           </div>
         </div>
+        {#if wrongCode}
+          <p class="wrong-code" role="alert">That code didn't match. Check the latest email.</p>
+        {/if}
         <button type="submit" class="nb-button nb-primary" disabled={loading || otp.length < 6}>
           {verifying ? 'Verifying…' : 'Continue'}
         </button>
       </form>
-      <div class="nb-center">
-        <button type="button" class="nb-link" onclick={useDifferentEmail} disabled={loading}>Use a different email</button>
-        <button type="button" class="nb-link nb-quiet" onclick={sendOTP} disabled={loading}>Resend code</button>
+      <div class="nb-row">
+        <button type="button" class="nb-link nb-quiet" onclick={sendOTP} disabled={loading || resendIn > 0}>
+          {resendIn > 0 ? resendLabel(resendIn) : 'Resend code'}
+        </button>
+        <span aria-hidden="true">·</span>
+        <button type="button" class="nb-link nb-quiet" onclick={useDifferentEmail} disabled={loading}>Use a different email</button>
       </div>
     {:else if step === 'passkeySignIn'}
       <p class="nb-lede">Use the passkey saved on this device to sign in.</p>
@@ -384,7 +424,7 @@
         <button type="button" class="nb-link" onclick={() => { step = 'email'; error = ''; }} disabled={loading}>Use email instead</button>
       </div>
     {:else if step === 'google'}
-      <p class="nb-lede" role="status">Connecting to Google…</p>
+      <p class="nb-lede" role="status">Opening Google…</p>
     {:else}
       <p class="nb-lede">Enter your email and we'll send you a sign-in code.</p>
       <form onsubmit={(event) => { event.preventDefault(); sendOTP(); }} class="nb-stack">
@@ -604,16 +644,18 @@
 
   .otp-boxes {
     display: flex;
+    justify-content: center;
     gap: 8px;
     pointer-events: none;
   }
 
   .otp-box {
     display: flex;
-    flex: 1;
+    flex: none;
     align-items: center;
     justify-content: center;
-    height: 56px;
+    width: 44px;
+    height: 52px;
     border-radius: 12px;
     border: 1px solid var(--nb-border);
     background: var(--nb-field);
@@ -621,7 +663,35 @@
     font-weight: 600;
   }
 
-  .otp-box-active {
-    border-color: var(--nb-fg);
+  .otp-box-gap {
+    margin-left: 8px;
+  }
+
+  .otp-input:focus ~ .otp-boxes .otp-box-active {
+    border-color: var(--nb-ring);
+    box-shadow: 0 0 0 1px var(--nb-ring);
+  }
+
+  .wrong-code {
+    margin: 0;
+    text-align: center;
+    font-size: 15px;
+    line-height: 1.4;
+    color: var(--nb-fg);
+  }
+
+  .shake {
+    animation: otp-shake 0.35s ease-in-out 1;
+  }
+
+  @keyframes otp-shake {
+    20% { transform: translateX(-8px); }
+    40% { transform: translateX(7px); }
+    60% { transform: translateX(-5px); }
+    80% { transform: translateX(3px); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .shake { animation: none; }
   }
 </style>

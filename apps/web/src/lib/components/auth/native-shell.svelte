@@ -37,15 +37,30 @@
   // browser chrome show the document background, so match it.
   $effect(() => {
     const root = document.documentElement;
-    const previous = { background: root.style.background, colorScheme: root.style.colorScheme };
+    const previous = {
+      background: root.style.background,
+      colorScheme: root.style.colorScheme,
+      overscroll: root.style.overscrollBehavior,
+    };
     root.style.background = theme.background;
     root.style.colorScheme = theme.dark ? 'dark' : 'light';
+    root.style.overscrollBehavior = 'none';
     document.body.style.background = theme.background;
     return () => {
       root.style.background = previous.background;
       root.style.colorScheme = previous.colorScheme;
+      root.style.overscrollBehavior = previous.overscroll;
       document.body.style.background = '';
     };
+  });
+
+  // Let the sheet draw under the notch and home indicator; the shell pads by the safe-area insets.
+  $effect(() => {
+    const viewport = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
+    if (!viewport || viewport.content.includes('viewport-fit')) return;
+    const previous = viewport.content;
+    viewport.content = `${previous}, viewport-fit=cover`;
+    return () => { viewport.content = previous; };
   });
 </script>
 
@@ -93,6 +108,8 @@
     background: var(--nb-bg);
     color: var(--nb-fg);
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
     padding: max(env(safe-area-inset-top), 28px) max(env(safe-area-inset-right), 24px)
       max(env(safe-area-inset-bottom), 20px) max(env(safe-area-inset-left), 24px);
     -webkit-text-size-adjust: 100%;
@@ -116,7 +133,7 @@
     justify-content: center;
     width: 64px;
     height: 64px;
-    border-radius: 16px;
+    border-radius: 22.5%;
     object-fit: cover;
     margin-bottom: 24px;
   }
@@ -195,8 +212,15 @@
   }
 
   .native-shell :global(.nb-input:focus-visible) {
-    outline: 2px solid var(--nb-fg);
+    outline: 2px solid var(--nb-ring);
     outline-offset: 2px;
+  }
+
+  .native-shell :global(.nb-input:-webkit-autofill) {
+    -webkit-text-fill-color: var(--nb-fg);
+    caret-color: var(--nb-fg);
+    box-shadow: 0 0 0 1000px var(--nb-field) inset;
+    transition: background-color 9999s ease-out;
   }
 
   .native-shell :global(.nb-button) {
@@ -227,13 +251,17 @@
   .native-shell :global(.nb-button:focus-visible),
   .native-shell :global(.nb-link:focus-visible),
   .native-shell :global(.nb-details-summary:focus-visible) {
-    outline: 2px solid var(--nb-fg);
+    outline: 2px solid var(--nb-ring);
     outline-offset: 2px;
   }
 
   .native-shell :global(.nb-button:disabled) {
     opacity: 0.5;
     cursor: default;
+  }
+
+  .native-shell :global(.nb-button.nb-primary:disabled) {
+    opacity: 0.3;
   }
 
   .native-shell :global(.nb-link) {
@@ -264,6 +292,16 @@
     flex-direction: column;
     align-items: center;
     margin-top: 8px;
+  }
+
+  .native-shell :global(.nb-row) {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    margin-top: 20px;
+    color: var(--nb-muted);
+    font-size: 15px;
   }
 
   .native-shell :global(.nb-or) {

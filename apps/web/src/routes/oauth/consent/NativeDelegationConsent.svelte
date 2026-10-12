@@ -241,7 +241,7 @@
       <button type="button" class="nb-button nb-primary" onclick={approve} disabled={submitting || loading || malformed || Boolean(blocked)}>
         {submitting ? 'Working…' : 'Allow'}
       </button>
-      <button type="button" class="nb-button" onclick={deny} disabled={submitting}>Deny</button>
+      <button type="button" class="nb-button" onclick={deny} disabled={submitting}>Don't allow</button>
     </div>
   {:else}
     <p role="alert" class="nb-error">{error || 'Unable to prepare this request.'}</p>

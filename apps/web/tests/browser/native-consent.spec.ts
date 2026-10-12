@@ -55,6 +55,10 @@ test.describe('compact native consent', () => {
     await page.goto('/oauth/consent?client_id=exo-native&tinycloud_request=native-1&sig=test');
 
     await expect(page.getByRole('heading', { name: 'Exo wants access' })).toBeVisible();
+    const icon = await page.locator('.nb-icon').boundingBox();
+    expect([icon!.width, icon!.height]).toEqual([64, 64]);
+    await expect(page.locator('.nb-icon')).toHaveCSS('border-radius', '22.5%');
+    await expect(page.getByRole('heading', { name: 'Exo wants access' })).toHaveCSS('font-size', '32px');
     await expect(page.getByText('Exo will be able to read and save your Exo data.')).toBeVisible();
     await expect(page.getByText('Access lasts up to 30 days and renews automatically while you use Exo.')).toBeVisible();
     await expect(page.getByText(/First sign-in: this also lets your TinyCloud node host your data/)).toBeVisible();
@@ -89,7 +93,7 @@ test.describe('compact native consent', () => {
     await expect.poll(() => calls.filter(c => c.path.endsWith('/prepare')).length).toBe(2);
     await expect(page.getByText('Exo will be able to read your Exo data.')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Allow', exact: true })).toBeEnabled();
-    await expect(page.getByRole('button', { name: 'Deny', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: "Don't allow", exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Allow', exact: true }).click();
     await expect.poll(() => calls.some(c => c.path.endsWith('/approve'))).toBe(true);
     const approve = calls.find(c => c.path.endsWith('/approve'))!.body;
@@ -181,7 +185,7 @@ test('denial still reaches provider when request denial route fails', async ({ p
     return json(route, { error: `unmocked ${path}` }, 404);
   });
   await page.goto('/oauth/consent?client_id=exo-native&tinycloud_request=native-1&sig=test');
-  await page.getByRole('button', { name: 'Deny', exact: true }).click();
+  await page.getByRole('button', { name: "Don't allow", exact: true }).click();
   await expect.poll(() => providerDenied).toBe(true);
 });
 

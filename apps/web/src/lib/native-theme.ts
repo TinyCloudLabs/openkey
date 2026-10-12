@@ -31,6 +31,7 @@ export function contrastRatio(first: string, second: string): number {
 }
 
 const MIN_TEXT_CONTRAST = 4.5;
+const MIN_RING_CONTRAST = 3;
 
 /** Near-white or near-black, or pure white/black when neither reaches 4.5:1 on `background`. */
 export function readableTextOn(background: string): string {
@@ -96,6 +97,8 @@ export function nativeTheme(input?: { backgroundColor?: string | null; accentCol
     `--nb-border:${withAlpha(foreground, 0.2)}`,
     `--nb-field:${field}`,
     `--nb-accent:${accent}`,
+    // Focus ring and focused-box border: the accent, unless it would vanish into the background.
+    `--nb-ring:${contrastRatio(accent, background) >= MIN_RING_CONTRAST ? accent : foreground}`,
     `--nb-accent-fg:${readableTextOn(accent)}`,
     `color-scheme:${dark ? 'dark' : 'light'}`,
   ].join(';');
