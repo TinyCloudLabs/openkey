@@ -88,7 +88,7 @@ export async function assertNativeDelegationSchema(database: GuardDatabase): Pro
     !verified?.client_column ||
     verified.generation_columns !== 3 ||
     !verified.generation_primary_key ||
-    verified.request_columns !== 25 ||
+    verified.request_columns !== 27 ||
     verified.preparation_columns !== 12 ||
     !verified.preparation_host_column ||
     verified.grant_columns !== 24 ||

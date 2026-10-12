@@ -1,8 +1,10 @@
 package so.openkey.capacitor
 
 import android.content.Intent
+import android.graphics.Color
 import android.os.Handler
 import android.os.Looper
+import androidx.browser.customtabs.CustomTabColorSchemeParams
 import androidx.browser.customtabs.CustomTabsIntent
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
@@ -60,7 +62,33 @@ class OpenKeyCapacitorPlugin : Plugin() {
         expectedState = state
         launched = true
         try {
-            CustomTabsIntent.Builder().build().launchUrl(activity, android.net.Uri.parse(url))
+            val builder = CustomTabsIntent.Builder()
+            val theme = call.getObject("browserTheme")
+            if (theme != null) {
+                val toolbar = theme.getString("toolbarColor")
+                val scheme = theme.getString("colorScheme")
+                if (toolbar == null || !toolbar.matches(Regex("#[0-9a-fA-F]{6}")) || scheme !in listOf("dark", "light", "system")) {
+                    call.reject("Invalid browser theme", "INVALID_REQUEST")
+                    pending = null
+                    launched = false
+                    callbackUrl = null
+                    expectedState = null
+                    return
+                }
+                val color = Color.parseColor(toolbar)
+                val colors = CustomTabColorSchemeParams.Builder()
+                    .setToolbarColor(color)
+                    .setNavigationBarColor(color)
+                    .build()
+                builder.setColorSchemeParams(CustomTabsIntent.COLOR_SCHEME_DARK, colors)
+                builder.setColorSchemeParams(CustomTabsIntent.COLOR_SCHEME_LIGHT, colors)
+                builder.setColorScheme(when (scheme) {
+                    "dark" -> CustomTabsIntent.COLOR_SCHEME_DARK
+                    "light" -> CustomTabsIntent.COLOR_SCHEME_LIGHT
+                    else -> CustomTabsIntent.COLOR_SCHEME_SYSTEM
+                })
+            }
+            builder.build().launchUrl(activity, android.net.Uri.parse(url))
         } catch (_: Exception) {
             pending = null
             launched = false

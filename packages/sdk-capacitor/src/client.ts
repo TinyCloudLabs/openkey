@@ -32,6 +32,8 @@ export interface OpenKeyNativeOptions {
   redirectUri: string;
   issuer?: string;
   ephemeralSession?: boolean;
+  /** Android Custom Tabs appearance. iOS ASWebAuthenticationSession ignores this option. */
+  browserTheme?: { toolbarColor: string; colorScheme: 'dark' | 'light' | 'system' };
   /** Exact TinyCloud host expected by the app. Set this for non-default nodes. */
   tinycloudHost?: string;
   /** Test and host-app injection points. */
@@ -192,6 +194,10 @@ export class OpenKeyNative {
   private metadataPromise?: Promise<OpenKeyServerMetadata>;
 
   constructor(private readonly options: OpenKeyNativeOptions) {
+    if (options.browserTheme && (!/^#[0-9a-fA-F]{6}$/.test(options.browserTheme.toolbarColor) ||
+      !['dark', 'light', 'system'].includes(options.browserTheme.colorScheme))) {
+      throw new OpenKeyNativeError('INVALID_REQUEST', 'Invalid browserTheme');
+    }
     this.issuer = options.issuer ?? 'https://api.openkey.so/api/auth';
     this.plugin = options.plugin ?? OpenKeyCapacitor;
     this.fetchFn = options.fetchFn;
@@ -516,7 +522,7 @@ export class OpenKeyNative {
     return { tokens: record.tokens, delegation: record.delegation, sessionKey };
   }
 
-  signIn(options: { capabilities: NativeDelegationPermission[]; ttlSeconds?: number; siweNonce?: string }): Promise<NativeSession> {
+  signIn(options: { capabilities: NativeDelegationPermission[]; ttlSeconds?: number; siweNonce?: string; loginHint?: string; loginMethod?: 'email' | 'passkey' | 'google' }): Promise<NativeSession> {
     if (this.coordinator.signInFlight) return Promise.reject(new OpenKeyNativeError('UNAVAILABLE', 'A sign-in is already in progress'));
     const attempt = ++this.coordinator.signInAttempt;
     const pending = this.signInOnce(options, attempt);
@@ -525,7 +531,7 @@ export class OpenKeyNative {
     return pending;
   }
 
-  private async signInOnce(options: { capabilities: NativeDelegationPermission[]; ttlSeconds?: number; siweNonce?: string }, attempt: number): Promise<NativeSession> {
+  private async signInOnce(options: { capabilities: NativeDelegationPermission[]; ttlSeconds?: number; siweNonce?: string; loginHint?: string; loginMethod?: 'email' | 'passkey' | 'google' }, attempt: number): Promise<NativeSession> {
     // Keep the existing session active until the replacement is ready to commit.
     await this.coordinator.signOutFlight?.catch(() => {});
     this.assertAttempt(attempt);
@@ -546,11 +552,12 @@ export class OpenKeyNative {
       clientId: this.options.clientId, redirectUri: this.options.redirectUri, state,
       codeChallenge: challenge, sessionKey, permissions: options.capabilities,
       ttlSeconds: options.ttlSeconds, siweNonce: options.siweNonce,
+      loginHint: options.loginHint, loginMethod: options.loginMethod,
     }, this.fetchFn);
     const url = buildNativeAuthorizeUrl({ authorizationEndpoint: metadata.authorizationEndpoint, clientId: this.options.clientId, requestUri });
     let callback: string;
     try {
-      callback = (await this.plugin.openAuthSession({ url, callbackScheme: new URL(this.options.redirectUri).protocol.slice(0, -1), callbackUrl: this.options.redirectUri, expectedState: state, ephemeral: this.options.ephemeralSession ?? true })).url;
+      callback = (await this.plugin.openAuthSession({ url, callbackScheme: new URL(this.options.redirectUri).protocol.slice(0, -1), callbackUrl: this.options.redirectUri, expectedState: state, ephemeral: this.options.ephemeralSession ?? true, browserTheme: this.options.browserTheme })).url;
     } catch (error) { throw asNativeError(error); }
     let returned: URL;
     try { returned = new URL(callback); }

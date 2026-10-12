@@ -21,6 +21,7 @@ import { publicPlanDefaults } from '../services/plan-entitlements';
 import {
   oauthApplicationType,
   validateCoordinationosWebRedirectUris,
+  validateOAuthClientIconUrl,
   validateOAuthClientMetadataUrl,
   validateOAuthRedirectUris,
 } from '../services/oauth-redirect-uris';
@@ -152,10 +153,11 @@ oauthAdminRouter.post('/organizations/:organizationId/clients', async (c) => {
   if (!redirectValidation.valid) {
     return c.json({ error: redirectValidation.reason }, 400);
   }
-  for (const value of [body.uri, body.icon]) {
-    if (value !== undefined && value !== '' && !validateOAuthClientMetadataUrl(value).valid) {
-      return c.json({ error: 'Application URI and icon must use HTTPS or loopback HTTP' }, 400);
-    }
+  if (body.uri !== undefined && body.uri !== '' && !validateOAuthClientMetadataUrl(body.uri).valid) {
+    return c.json({ error: 'Application URI must use HTTPS or loopback HTTP' }, 400);
+  }
+  if (body.icon !== undefined && body.icon !== '' && !validateOAuthClientIconUrl(body.icon).valid) {
+    return c.json({ error: 'Application icon must use HTTPS' }, 400);
   }
   const organizationId = c.req.param('organizationId');
   const organization = await prisma.organization.findUnique({
@@ -186,6 +188,8 @@ oauthAdminRouter.post('/clients', async (c) => {
     redirectUris: string[];
     uri?: string;
     icon?: string;
+    themeBackgroundColor?: string | null;
+    themeAccentColor?: string | null;
     type?: 'native' | 'spa' | 'web';
     scopes?: string[];
     autoApprove?: unknown;
@@ -250,9 +254,15 @@ oauthAdminRouter.post('/clients', async (c) => {
       error: `web clients require exactly these scopes: ${COORDINATIONOS_WEB_SCOPES.join(', ')}`,
     }, 400);
   }
-  for (const value of [body.uri, body.icon]) {
-    if (value !== undefined && value !== '' && !validateOAuthClientMetadataUrl(value).valid) {
-      return c.json({ error: 'Application URI and icon must use HTTPS or loopback HTTP' }, 400);
+  if (body.uri !== undefined && body.uri !== '' && !validateOAuthClientMetadataUrl(body.uri).valid) {
+    return c.json({ error: 'Application URI must use HTTPS or loopback HTTP' }, 400);
+  }
+  if (body.icon !== undefined && body.icon !== '' && !validateOAuthClientIconUrl(body.icon).valid) {
+    return c.json({ error: 'Application icon must use HTTPS' }, 400);
+  }
+  for (const value of [body.themeBackgroundColor, body.themeAccentColor]) {
+    if (value !== undefined && value !== null && (typeof value !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(value))) {
+      return c.json({ error: 'Theme colors must be #rrggbb or null' }, 400);
     }
   }
 
@@ -273,6 +283,8 @@ oauthAdminRouter.post('/clients', async (c) => {
         name: body.name,
         uri: body.uri || null,
         icon: body.icon || null,
+        themeBackgroundColor: body.themeBackgroundColor ?? null,
+        themeAccentColor: body.themeAccentColor ?? null,
         redirectUris: body.redirectUris,
         scopes: applicationType === 'web' ? [...COORDINATIONOS_WEB_SCOPES] : [
           ...PUBLIC_CLIENT_SCOPES, ...(nativeConfig ? [TINYCLOUD_DELEGATION_SCOPE] : []),
@@ -403,6 +415,8 @@ oauthAdminRouter.patch('/clients/:clientId', async (c) => {
     redirectUris?: string[];
     uri?: string;
     icon?: string;
+    themeBackgroundColor?: string | null;
+    themeAccentColor?: string | null;
     disabled?: boolean;
     scopes?: string[];
     autoApprove?: unknown;
@@ -464,9 +478,15 @@ oauthAdminRouter.patch('/clients/:clientId', async (c) => {
     );
     if (!redirectValidation.valid) return c.json({ error: redirectValidation.reason }, 400);
   }
-  for (const value of [body.uri, body.icon]) {
-    if (value !== undefined && value !== '' && !validateOAuthClientMetadataUrl(value).valid) {
-      return c.json({ error: 'Application URI and icon must use HTTPS or loopback HTTP' }, 400);
+  if (body.uri !== undefined && body.uri !== '' && !validateOAuthClientMetadataUrl(body.uri).valid) {
+    return c.json({ error: 'Application URI must use HTTPS or loopback HTTP' }, 400);
+  }
+  if (body.icon !== undefined && body.icon !== '' && !validateOAuthClientIconUrl(body.icon).valid) {
+    return c.json({ error: 'Application icon must use HTTPS' }, 400);
+  }
+  for (const value of [body.themeBackgroundColor, body.themeAccentColor]) {
+    if (value !== undefined && value !== null && (typeof value !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(value))) {
+      return c.json({ error: 'Theme colors must be #rrggbb or null' }, 400);
     }
   }
 
@@ -508,6 +528,8 @@ oauthAdminRouter.patch('/clients/:clientId', async (c) => {
         ...(body.redirectUris && { redirectUris: body.redirectUris }),
         ...(body.uri !== undefined && { uri: body.uri || null }),
         ...(body.icon !== undefined && { icon: body.icon || null }),
+        ...(body.themeBackgroundColor !== undefined && { themeBackgroundColor: body.themeBackgroundColor }),
+        ...(body.themeAccentColor !== undefined && { themeAccentColor: body.themeAccentColor }),
         ...(body.disabled !== undefined && { disabled: body.disabled }),
         ...(body.scopes && { scopes: body.scopes }),
         ...(nativeConfig !== undefined && {

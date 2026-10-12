@@ -1,6 +1,7 @@
 name: Register OAuth Client
 
-# Manually register a public (PKCE-only) OAuth client in the prod database.
+# Manually register a public (PKCE-only) OAuth client in the prod database, or update
+# the branding fields of an existing enabled client by setting client_id.
 # OpenKey uses pre-registered clients only, and the prod ADMIN_API_KEY lives
 # solely in the Phala CVM env — this workflow provides an auditable
 # registration path using the same DATABASE_URL secret the deploy workflow's
@@ -14,7 +15,7 @@ on:
         required: true
       redirect_uris:
         description: 'Comma-separated allowed redirect URIs'
-        required: true
+        required: false
       type:
         description: 'Client type'
         required: true
@@ -25,6 +26,18 @@ on:
           - spa
       uri:
         description: 'Application website URL (optional)'
+        required: false
+      client_id:
+        description: 'Existing enabled client ID to update branding only (optional)'
+        required: false
+      icon:
+        description: 'HTTPS icon URL (optional)'
+        required: false
+      theme_background_color:
+        description: 'Brand background color as #rrggbb (optional)'
+        required: false
+      theme_accent_color:
+        description: 'Brand accent color as #rrggbb (optional)'
         required: false
       tinycloud_native_delegation:
         description: 'Native delegation ceiling JSON (optional)'
@@ -49,6 +62,10 @@ jobs:
           CLIENT_REDIRECT_URIS: ${{ inputs.redirect_uris }}
           CLIENT_TYPE: ${{ inputs.type }}
           CLIENT_URI: ${{ inputs.uri }}
+          CLIENT_ID: ${{ inputs.client_id }}
+          CLIENT_ICON: ${{ inputs.icon }}
+          CLIENT_THEME_BACKGROUND_COLOR: ${{ inputs.theme_background_color }}
+          CLIENT_THEME_ACCENT_COLOR: ${{ inputs.theme_accent_color }}
           CLIENT_TINYCLOUD_NATIVE_DELEGATION: ${{ inputs.tinycloud_native_delegation }}
         run: |
           if [ -z "$DATABASE_URL" ]; then

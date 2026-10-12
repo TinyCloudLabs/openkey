@@ -172,13 +172,13 @@ const passkeyFreshnessPlugin = {
 } satisfies BetterAuthPlugin;
 
 // Better Auth's authorize endpoint otherwise strips extension query keys
-// before the OAuth handler sees them. PAR's resolver and the full-query Hono
-// guard establish `tinycloud_request`; extending the schema keeps that one
-// binding in the signed consent query and stored authorization-code query.
+// before the OAuth handler sees them. PAR's resolver and the full-query guard
+// establish the native bindings; extending the schema keeps them signed.
 function withNativeAuthorizeQuery<T extends ReturnType<typeof oauthProvider>>(plugin: T): T {
   const endpoint = plugin.endpoints.oauth2Authorize;
   endpoint.options.query = endpoint.options.query.extend({
     tinycloud_request: endpoint.options.query.shape.client_id.optional(),
+    login_method: endpoint.options.query.shape.client_id.optional(),
   });
   return plugin;
 }

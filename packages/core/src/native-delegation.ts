@@ -32,6 +32,7 @@ export type OpenKeyNativeErrorCode =
   | 'RENEWAL_CONFLICT'
   | 'RENEWAL_TOO_SOON'
   | 'SPACE_UNAVAILABLE'
+  | 'INVALID_REQUEST'
   | 'TEMPORARILY_UNAVAILABLE'
   | 'NETWORK'
   | 'STORAGE'
@@ -513,6 +514,8 @@ export interface BuildParRequestOptions {
   permissions: NativeDelegationPermission[];
   ttlSeconds?: number;
   siweNonce?: string;
+  loginHint?: string;
+  loginMethod?: 'email' | 'passkey' | 'google';
   /** Extra scopes appended to `openid offline_access tinycloud:delegation`. */
   extraScopes?: string[];
 }
@@ -542,6 +545,18 @@ export function buildParRequest(options: BuildParRequestOptions): {
     'authorization_details',
     JSON.stringify(buildAuthorizationDetails(options)),
   );
+  if (options.loginMethod !== undefined && !['email', 'passkey', 'google'].includes(options.loginMethod)) {
+    throw new OpenKeyNativeError('INVALID_REQUEST', 'Invalid login_method');
+  }
+  if (options.loginHint !== undefined) {
+    const hint = options.loginHint.trim();
+    if (hint.length > 254 || /\s/.test(hint) || (hint.match(/@/g) ?? []).length !== 1 ||
+      hint.startsWith('@') || hint.endsWith('@') || options.loginMethod === 'passkey' || options.loginMethod === 'google') {
+      throw new OpenKeyNativeError('INVALID_REQUEST', 'Invalid login_hint');
+    }
+    form.set('login_hint', hint.toLowerCase());
+  }
+  if (options.loginMethod !== undefined) form.set('login_method', options.loginMethod);
 
   return {
     body: form.toString(),

@@ -560,7 +560,7 @@ if (!backend) {
       const par = await form('/api/auth/oauth2/par', new URLSearchParams({
         client_id: nativeClient, response_type: 'code', redirect_uri: NATIVE_REDIRECT, state,
         code_challenge: challenge, code_challenge_method: 'S256', scope: `openid offline_access ${DELEGATION}`,
-        authorization_details: JSON.stringify(detail),
+        authorization_details: JSON.stringify(detail), login_hint: '  TEST@openkey.dev  ', login_method: 'email',
       }).toString());
       expect(par.status, await par.clone().text()).toBe(201);
       const { request_uri } = await par.json() as { request_uri: string };
@@ -570,6 +570,11 @@ if (!backend) {
       const login = new URL(first.headers.get('location')!);
       expect(login.pathname).toBe('/auth/login');
       expect(login.searchParams.get('tinycloud_request')).toBe(requestId);
+      expect(login.searchParams.get('login_hint')).toBe('test@openkey.dev');
+      expect(login.searchParams.get('login_method')).toBe('email');
+      expect(await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id: requestId } })).toMatchObject({
+        loginHint: 'test@openkey.dev', loginMethod: 'email',
+      });
       const signed = login.searchParams.toString();
       const otp = await call('/api/auth/email-otp/send-verification-otp', { method: 'POST', headers: { 'content-type': 'application/json', origin: WEB_ORIGIN }, body: JSON.stringify({ email: 'test@openkey.dev', type: 'sign-in' }) });
       expect(otp.status, await otp.clone().text()).toBe(200);
@@ -983,6 +988,12 @@ if (!backend) {
     await check(changed('authorization_details', JSON.stringify([{ ...validDetail, permissions: validDetail.permissions.slice(1) }])), 'invalid_authorization_details');
     await check(changed('authorization_details', JSON.stringify([{ ...validDetail, permissions: [...validDetail.permissions, { service: 'tinycloud.sql', space: 'applications', path: 'xyz.tinycloud.tinychat/threads', actions: ['tinycloud.sql/read'] }] }])), 'invalid_authorization_details');
     await check(changed('authorization_details', JSON.stringify([{ ...validDetail, permissions: [validDetail.permissions[0], { ...validDetail.permissions[1], path: 'xyz.tinycloud.tinychat/threads/../secrets' }] }])), 'invalid_authorization_details');
+    await check(changed('login_hint', 'a'.repeat(250) + '@example.com'), 'invalid_request');
+    await check(changed('login_hint', 'user name@example.com'), 'invalid_request');
+    const conflictingHint = changed('login_hint', 'person@example.com');
+    conflictingHint.set('login_method', 'passkey');
+    await check(conflictingHint, 'invalid_request');
+    await check(changed('login_method', 'password'), 'invalid_request');
     const sqlCeiling = { ...(await prisma.oauthClient.findUniqueOrThrow({ where: { clientId: nativeClient } })).tinycloudNativeDelegation as Record<string, unknown>,
       sql: { databases: ['xyz.tinycloud.tinychat/threads'], actions: ['read'] } };
     const sqlRegistration = await adminRequest('POST', '/clients', { name: 'SQL native', type: 'native', redirectUris: [NATIVE_REDIRECT], tinycloudNativeDelegation: sqlCeiling });
@@ -1413,6 +1424,21 @@ if (!backend) {
           expect(post.headers.get('access-control-expose-headers'), path).toBe('Retry-After');
         }
       }
+    });
+
+    test('branding is public to OpenKey web origins and hides disabled or unknown clients', async () => {
+      const response = await call(`/api/oauth/tinycloud/clients/${nativeClient}/branding`, {
+        headers: { origin: WEB_ORIGIN },
+      });
+      expect(response.status).toBe(200);
+      expect(response.headers.get('access-control-allow-origin')).toBe('*');
+      expect(response.headers.get('cache-control')).toBe('public, max-age=300');
+      expect(await response.json()).toMatchObject({
+        clientId: nativeClient,
+        name: 'Exo native',
+        theme: { backgroundColor: null, accentColor: null },
+      });
+      expect((await call('/api/oauth/tinycloud/clients/unknown-client/branding')).status).toBe(404);
     });
 
     test('Retry-After on a public endpoint is readable from capacitor://localhost', async () => {

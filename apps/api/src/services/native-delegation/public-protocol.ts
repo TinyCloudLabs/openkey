@@ -29,7 +29,8 @@ const PUBLIC_PROTOCOL_PATHS: ReadonlySet<string> = new Set([
 ]);
 
 export function isPublicProtocolPath(url: string): boolean {
-  return PUBLIC_PROTOCOL_PATHS.has(new URL(url).pathname);
+  const pathname = new URL(url).pathname;
+  return PUBLIC_PROTOCOL_PATHS.has(pathname) || /^\/api\/oauth\/tinycloud\/clients\/[^/]+\/branding$/.test(pathname);
 }
 
 const publicProtocolCors = cors({

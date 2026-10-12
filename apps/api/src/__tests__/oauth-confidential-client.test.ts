@@ -125,6 +125,7 @@ describe('confidential CoordinationOS OAuth client', () => {
     [{ ...valid, scopes: [...valid.scopes, 'tinycloud:session'] }],
     [{ ...valid, scopes: 'openid email keys tinycloud:session' }],
     [{ ...valid, type: 'unsupported' }],
+    [{ ...valid, icon: 'http://localhost:5173/icon.png' }],
   ])('rejects invalid web registration %#', async (body) => {
     const response = await request('/clients', 'POST', body);
     expect(response.status).toBe(400);
@@ -227,6 +228,27 @@ describe('confidential CoordinationOS OAuth client', () => {
     expect(stored.redirectUris).toEqual(callback);
     expect(stored.scopes).toEqual(scopes);
     expect(await response.json()).not.toHaveProperty('client.clientSecret');
+  });
+
+  test('client branding colors validate on create and support null to clear on PATCH', async () => {
+    const created = await request('/clients', 'POST', {
+      ...valid, themeBackgroundColor: '#09090B', themeAccentColor: '#FAFAFA',
+    });
+    expect(created.status).toBe(201);
+    expect(stored).toMatchObject({ themeBackgroundColor: '#09090B', themeAccentColor: '#FAFAFA' });
+
+    update.mockClear();
+    const invalid = await request(`/clients/${stored.clientId}`, 'PATCH', { themeAccentColor: 'white' });
+    expect(invalid.status).toBe(400);
+    expect(update).not.toHaveBeenCalled();
+    const insecureIcon = await request(`/clients/${stored.clientId}`, 'PATCH', { icon: 'http://localhost:5173/icon.png' });
+    expect(insecureIcon.status).toBe(400);
+    expect(update).not.toHaveBeenCalled();
+
+    const cleared = await request(`/clients/${stored.clientId}`, 'PATCH', { themeBackgroundColor: null });
+    expect(cleared.status).toBe(200);
+    expect(stored.themeBackgroundColor).toBeNull();
+    expect(stored.themeAccentColor).toBe('#FAFAFA');
   });
 
   test('admin APIs expose and update confidential-client auto approval without returning secrets', async () => {

@@ -6,7 +6,8 @@ import { TINYCLOUD_DELEGATION_SCOPE } from '../../oauth-config';
 import { TINYCLOUD_DELEGATED_PATH, TINYCLOUD_DELEGATED_PATH_MAX_LENGTH, hasDotSegment } from '../tinycloud-path-policy';
 
 export const REQUEST_URI_PREFIX = 'urn:ietf:params:oauth:request_uri:';
-const FORM_KEYS = new Set(['client_id', 'response_type', 'redirect_uri', 'state', 'code_challenge', 'code_challenge_method', 'scope', 'authorization_details']);
+const REQUIRED_FORM_KEYS = new Set(['client_id', 'response_type', 'redirect_uri', 'state', 'code_challenge', 'code_challenge_method', 'scope', 'authorization_details']);
+const OPTIONAL_FORM_KEYS = new Set(['login_hint', 'login_method']);
 const DETAIL_KEYS = new Set(['type', 'session_key', 'permissions', 'ttl_seconds', 'siwe_nonce']);
 const JWK_KEYS = new Set(['kty', 'crv', 'x', 'kid']);
 const PERMISSION_KEYS = new Set(['service', 'space', 'path', 'actions']);
@@ -108,12 +109,15 @@ export function validatePermissions(value: unknown, ceiling: NativeDelegationCon
   }
   return entries;
 }
-export function authoritativeQuery(row: { clientId: string; redirectUri: string; state: string; scopes: string[]; codeChallenge: string; id: string }): URLSearchParams {
-  return new URLSearchParams([
+export function authoritativeQuery(row: { clientId: string; redirectUri: string; state: string; scopes: string[]; codeChallenge: string; id: string; loginHint?: string | null; loginMethod?: string | null }): URLSearchParams {
+  const query = new URLSearchParams([
     ['client_id', row.clientId], ['response_type', 'code'], ['redirect_uri', row.redirectUri], ['state', row.state],
     ['scope', row.scopes.join(' ')], ['code_challenge', row.codeChallenge], ['code_challenge_method', 'S256'],
     ['prompt', 'consent'], ['tinycloud_request', row.id],
   ]);
+  if (row.loginHint) query.set('login_hint', row.loginHint);
+  if (row.loginMethod) query.set('login_method', row.loginMethod);
+  return query;
 }
 export function matchesAuthoritativeQuery(incoming: URLSearchParams, expected: URLSearchParams): boolean {
   const envelope = new Set(['exp', 'ba_iat', 'ba_pl', 'sig']);
@@ -130,7 +134,22 @@ export async function handlePar(request: Request, db: PrismaClient): Promise<Res
     const params = new URLSearchParams(await request.text());
     const clientId = params.get('client_id') ?? '';
     const keys = [...params.keys()];
-    if (keys.length !== FORM_KEYS.size || new Set(keys).size !== keys.length || keys.some(k => !FORM_KEYS.has(k))) invalid('invalid_request', 'missing, duplicate, or unexpected field');
+    const keySet = new Set(keys);
+    if (keys.length !== keySet.size || keys.some(k => !REQUIRED_FORM_KEYS.has(k) && !OPTIONAL_FORM_KEYS.has(k)) ||
+      [...REQUIRED_FORM_KEYS].some(k => !keySet.has(k))) invalid('invalid_request', 'missing, duplicate, or unexpected field');
+    const rawHint = params.get('login_hint');
+    const loginMethodValue = params.get('login_method');
+    if (loginMethodValue !== null && !['email', 'passkey', 'google'].includes(loginMethodValue)) invalid('invalid_request', 'invalid login_method');
+    let loginHint: string | null = null;
+    if (rawHint !== null) {
+      const hint = rawHint.trim();
+      if (hint.length > 254 || /\s/.test(hint) || (hint.match(/@/g) ?? []).length !== 1 ||
+        hint.startsWith('@') || hint.endsWith('@') || loginMethodValue === 'passkey' || loginMethodValue === 'google') {
+        invalid('invalid_request', 'invalid login_hint');
+      }
+      loginHint = hint.toLowerCase();
+    }
+    const loginMethod = loginHint && loginMethodValue === null ? 'email' : loginMethodValue;
     const client = await db.oauthClient.findUnique({ where: { clientId } });
     if (!client || client.disabled) throw new ParError(401, 'invalid_client', 'unknown or disabled client');
     const ceiling = enabledNativeDelegation(client);
@@ -164,7 +183,8 @@ export async function handlePar(request: Request, db: PrismaClient): Promise<Res
     await db.tinyCloudNativeRequest.create({ data: {
       id, clientId, redirectUri: params.get('redirect_uri')!, state: params.get('state')!, codeChallenge: params.get('code_challenge')!, scopes,
       sessionDid: did, sessionJwk: JSON.parse(JSON.stringify(jwk)), sessionJkt: jkt, requestedPermissions: permissions, ttlSeconds: ttl as number,
-      siweNonce: detail.siwe_nonce as string | undefined, requestUriExpiresAt: new Date(now + 90_000), expiresAt: new Date(now + 600_000),
+      siweNonce: detail.siwe_nonce as string | undefined, loginHint, loginMethod,
+      requestUriExpiresAt: new Date(now + 90_000), expiresAt: new Date(now + 600_000),
     } });
     return Response.json({ request_uri: REQUEST_URI_PREFIX + id, expires_in: 90 }, { status: 201, headers: { 'Cache-Control': 'no-store' } });
   } catch (error) { if (error instanceof ParError) return fail(error); throw error; }

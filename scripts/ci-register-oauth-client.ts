@@ -14,6 +14,10 @@
  *   CLIENT_REDIRECT_URIS  Comma-separated redirect URIs (required)
  *   CLIENT_TYPE           "native" | "spa" (default "spa")
  *   CLIENT_URI            Application website URL (optional)
+ *   CLIENT_ID             Existing enabled client to update branding only
+ *   CLIENT_ICON           HTTPS icon URL (optional)
+ *   CLIENT_THEME_BACKGROUND_COLOR  #rrggbb (optional)
+ *   CLIENT_THEME_ACCENT_COLOR      #rrggbb (optional)
  *   CLIENT_TINYCLOUD_NATIVE_DELEGATION
  *                         Native delegation ceiling JSON (optional; native
  *                         clients only). Adds tinycloud:delegation.
@@ -57,6 +61,23 @@ function nativeDelegationConfig(type: string, raw: string | undefined): NativeDe
   return validateNativeDelegationConfig(parsed, { type, public: true, tokenEndpointAuthMethod: 'none' }, POLICY_OPTIONS);
 }
 
+function optionalHttpsIcon(): string | null {
+  const value = process.env.CLIENT_ICON?.trim() || null;
+  if (value === null) return null;
+  let url: URL;
+  try { url = new URL(value); } catch { throw new Error('CLIENT_ICON must be an HTTPS URL'); }
+  if (url.protocol !== 'https:' || !url.hostname || url.username || url.password) {
+    throw new Error('CLIENT_ICON must be an HTTPS URL without credentials');
+  }
+  return value;
+}
+
+function themeColor(name: string): string | null {
+  const value = process.env[name]?.trim() || null;
+  if (value !== null && !/^#[0-9a-fA-F]{6}$/.test(value)) throw new Error(`${name} must be #rrggbb`);
+  return value;
+}
+
 // Postgres JSONB reorders object keys, so compare both ceilings in the
 // validator's canonical form.
 function sameNativeDelegationConfig(
@@ -76,12 +97,26 @@ function sameNativeDelegationConfig(
 async function main() {
   required('DATABASE_URL');
   const name = required('CLIENT_NAME');
-  const redirectUris = required('CLIENT_REDIRECT_URIS')
-    .split(',')
-    .map((uri) => uri.trim())
-    .filter(Boolean);
+  const clientIdToUpdate = process.env.CLIENT_ID?.trim();
+  const redirectUris = clientIdToUpdate ? [] : required('CLIENT_REDIRECT_URIS')
+    .split(',').map((uri) => uri.trim()).filter(Boolean);
   const type = process.env.CLIENT_TYPE?.trim() || 'spa';
   const uri = process.env.CLIENT_URI?.trim() || null;
+  const icon = optionalHttpsIcon();
+  const themeBackgroundColor = themeColor('CLIENT_THEME_BACKGROUND_COLOR');
+  const themeAccentColor = themeColor('CLIENT_THEME_ACCENT_COLOR');
+
+  if (clientIdToUpdate) {
+    const existingClient = await prisma.oauthClient.findUnique({ where: { clientId: clientIdToUpdate } });
+    if (!existingClient || existingClient.disabled) throw new Error(`Enabled OAuth client not found: ${clientIdToUpdate}`);
+    await prisma.oauthClient.update({
+      where: { clientId: clientIdToUpdate },
+      data: { name, icon, themeBackgroundColor, themeAccentColor },
+    });
+    console.log(`Branding updated for enabled OAuth client: ${name}`);
+    console.log(`CLIENT_ID=${clientIdToUpdate}`);
+    return;
+  }
 
   if (!['native', 'spa'].includes(type)) {
     console.error(`Error: CLIENT_TYPE must be native or spa, got: ${type}`);
@@ -121,7 +156,9 @@ async function main() {
       clientSecret: null,
       name,
       uri,
-      icon: null,
+      icon,
+      themeBackgroundColor,
+      themeAccentColor,
       redirectUris,
       scopes: ['openid', 'email', 'keys', 'offline_access', ...(nativeConfig ? [TINYCLOUD_DELEGATION_SCOPE] : [])],
       tinycloudNativeDelegation: nativeConfig ? nativeConfig as unknown as Prisma.InputJsonObject : undefined,

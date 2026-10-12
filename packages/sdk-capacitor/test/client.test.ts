@@ -29,8 +29,9 @@ class MockPlugin implements OpenKeyCapacitorPlugin {
   failGet = false;
   failRemove = false;
   setCount = 0;
+  openOptions: Parameters<OpenKeyCapacitorPlugin['openAuthSession']>[0] | null = null;
   callback: (url: string) => Promise<string> = async () => '';
-  async openAuthSession({ url }: { url: string }): Promise<{ url: string }> { return { url: await this.callback(url) }; }
+  async openAuthSession({ url, ...options }: Parameters<OpenKeyCapacitorPlugin['openAuthSession']>[0]): Promise<{ url: string }> { this.openOptions = options; return { url: await this.callback(url) }; }
   async secureStoreGet({ key }: { key: string }): Promise<{ value: string | null }> { if (this.failGet) throw new Error('decrypt'); return { value: this.values.get(key) ?? null }; }
   async secureStoreSet({ key, value }: { key: string; value: string }): Promise<void> { this.setCount++; if (this.failSet) throw new Error('write'); this.values.set(key, value); }
   async secureStoreRemove({ key }: { key: string }): Promise<void> { if (this.failRemove) throw new Error('wipe'); this.values.delete(key); }
@@ -45,6 +46,7 @@ function fixture(approved = capabilities) {
   const revokeTokens: string[] = [];
   const renewTokens: string[] = [];
   const requestLog: string[] = [];
+  let parForm: URLSearchParams | null = null;
   let immediateRenewal = false;
   let tokenReply: () => NativeFetchResponse = () => response(200, { access_token: 'access', refresh_token: 'initial', tinycloud_delegation: delegation() });
   let renewReply: (call: number) => NativeFetchResponse = () => response(200, renewal('next'));
@@ -69,6 +71,7 @@ function fixture(approved = capabilities) {
     if (url.includes('.well-known')) return discoveryReply();
     if (url.endsWith('/par')) {
       const form = new URLSearchParams(init?.body);
+      parForm = form;
       state = form.get('state')!;
       const detail = JSON.parse(form.get('authorization_details')!)[0];
       const did = sessionDidForPublicKey(base64UrlDecode(detail.session_key.x));
@@ -90,7 +93,7 @@ function fixture(approved = capabilities) {
   plugin.callback = async () => `${redirectUri}?code=code&state=${state}&iss=${encodeURIComponent(issuer)}`;
   const make = (verifyDelegation: (delegation: ReturnType<typeof delegation>) => Promise<void> = async () => {}) =>
     new OpenKeyNative({ clientId: 'exo', redirectUri, plugin, fetchFn, verifyDelegation, sleepFn: async () => {} });
-  return { plugin, make, fetchFn, delegation, renewal, revokeTokens, renewTokens, requestLog, get state() { return state; }, get renewCalls() { return renewCalls; }, get revokeCalls() { return revokeCalls; },
+  return { plugin, make, fetchFn, delegation, renewal, revokeTokens, renewTokens, requestLog, get parForm() { return parForm; }, get state() { return state; }, get renewCalls() { return renewCalls; }, get revokeCalls() { return revokeCalls; },
     setRenewReply: (fn: typeof renewReply) => { renewReply = fn; }, setRevokeReply: (fn: typeof revokeReply) => { revokeReply = fn; },
     setDiscoveryReply: (fn: typeof discoveryReply) => { discoveryReply = fn; },
     setImmediateRenewal: () => { immediateRenewal = true; }, setTokenReply: (fn: typeof tokenReply) => { tokenReply = fn; } };
@@ -109,6 +112,21 @@ describe('OpenKeyNative', () => {
     expect(session.sessionKey.privateJwk.d).toBeTruthy();
     expect((await f.make().current())?.delegation.delegationCid).toBe('bafyfake');
     expect((await client.getSessionKey())?.did).toBe(session.sessionKey.did);
+  });
+  test('passes sign-in hints to PAR and Android browser appearance to the plugin', async () => {
+    const f = fixture();
+    const theme = { toolbarColor: '#09090B', colorScheme: 'dark' as const };
+    const client = new OpenKeyNative({ clientId: 'exo', redirectUri, plugin: f.plugin, fetchFn: f.fetchFn,
+      verifyDelegation: async () => {}, sleepFn: async () => {}, browserTheme: theme });
+    await client.signIn({ capabilities, loginHint: 'person@example.com', loginMethod: 'email' });
+    expect(f.parForm?.get('login_hint')).toBe('person@example.com');
+    expect(f.parForm?.get('login_method')).toBe('email');
+    expect(f.plugin.openOptions?.browserTheme).toEqual(theme);
+  });
+  test('validates browser theme at construction', () => {
+    const f = fixture();
+    expect(() => new OpenKeyNative({ clientId: 'exo', redirectUri, plugin: f.plugin, fetchFn: f.fetchFn,
+      browserTheme: { toolbarColor: 'red', colorScheme: 'dark' } })).toThrow();
   });
 
   test('omitted and undefined secure-store values are treated as missing', async () => {
