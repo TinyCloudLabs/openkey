@@ -3,8 +3,8 @@ import { createHash, createPublicKey, verify } from 'node:crypto';
 /**
  * `OpenKey-Session-Proof` verification (spec: "Session proof"). The proof is
  * checked only against the session key stored at PAR; a key supplied with the
- * request is never used. Renew and revoke consume `jti` transactionally;
- * code exchange replay is prevented by its single-use authorization code.
+ * request is never used. Renew and revoke commit each `jti` before any later
+ * work; code exchange replay is prevented by its single-use authorization code.
  */
 
 export const SESSION_PROOF_TYP = 'openkey-session-proof+jwt';

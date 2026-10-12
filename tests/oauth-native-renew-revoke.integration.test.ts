@@ -69,9 +69,9 @@ if (!backend) {
     return `did:key:z${encoded}`;
   }
 
-  function proof(key: SessionKey, token: string, path: string, overrides: { signer?: KeyObject; kid?: string; credHash?: string } = {}) {
+  function proof(key: SessionKey, token: string, path: string, overrides: { signer?: KeyObject; kid?: string; credHash?: string; jti?: string; iat?: number } = {}) {
     const header = b64({ typ: 'openkey-session-proof+jwt', alg: 'EdDSA', kid: overrides.kid ?? key.jkt });
-    const payload = b64({ jti: randomUUID().replaceAll('-', ''), iat: Math.floor(Date.now() / 1000), htm: 'POST',
+    const payload = b64({ jti: overrides.jti ?? randomUUID().replaceAll('-', ''), iat: overrides.iat ?? Math.floor(Date.now() / 1000), htm: 'POST',
       htu: `${ISSUER}${path.slice('/api/auth'.length)}`, client_id: clientId, cred_hash: overrides.credHash ?? hash(token) });
     return `${header}.${payload}.${sign(null, Buffer.from(`${header}.${payload}`), overrides.signer ?? key.privateKey).toString('base64url')}`;
   }
@@ -356,6 +356,72 @@ if (!backend) {
     } finally { setSystemTime(); }
   });
 
+  test(`a replay remains refused after proof expiry and cleanup (${backend})`, async () => {
+    const key = sessionKey(); await seedDevice('device-a', key, 'token-a');
+    const first = await renew(key, 'token-a'); expect(first.status).toBe(200);
+    const grantBefore = await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: 'device-a' } });
+    const proofIat = Math.floor((grantBefore.rotatedAt!.getTime() + 30_000) / 1000);
+    const jti = randomUUID().replaceAll('-', '');
+    let releaseReplayLock: (() => void) | undefined;
+    setSystemTime(new Date(proofIat * 1000));
+    try {
+      const fields = new URLSearchParams({ client_id: clientId, refresh_token: 'token-a' });
+      const captured = proof(key, 'token-a', RENEW, { jti, iat: proofIat });
+      const firstUse = await form(RENEW, fields, captured);
+      expect(firstUse.status).toBe(409);
+      const jtiHash = hash(jti);
+      const stored = await prisma.nativeSessionProofJti.findUniqueOrThrow({ where: { jtiHash } });
+      expect(stored.expiresAt.getTime()).toBe((proofIat + 120) * 1000);
+
+      let locked!: () => void;
+      const rowLocked = new Promise<void>((resolve) => { locked = resolve; });
+      const hold = new Promise<void>((resolve) => { releaseReplayLock = resolve; });
+      const lockTransaction = prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT jti_hash FROM native_session_proof_jti WHERE jti_hash = ${jtiHash} FOR UPDATE`;
+        locked();
+        await hold;
+      });
+      await rowLocked;
+      setSystemTime(new Date((proofIat + 59) * 1000));
+      const replayPromise = form(RENEW, fields, captured);
+      // Keep the replay at its JTI check while crossing the original proof
+      // expiry and running the periodic sweep's deletion predicate.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      setSystemTime(new Date((proofIat + 61) * 1000));
+      const sweepPromise = prisma.nativeSessionProofJti.deleteMany({ where: { expiresAt: { lt: new Date() } } });
+      releaseReplayLock();
+      const [replay] = await Promise.all([replayPromise, sweepPromise]);
+      await lockTransaction;
+      expect(replay.status).toBe(401); expect(await error(replay)).toBe('invalid_session_proof');
+      expect(await prisma.nativeSessionProofJti.findUnique({ where: { jtiHash } })).not.toBeNull();
+      expect(await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: 'device-a' } })).toMatchObject({
+        status: 'ACTIVE', refreshTokenHash: grantBefore.refreshTokenHash,
+        previousRefreshTokenHash: grantBefore.previousRefreshTokenHash, renewCount: grantBefore.renewCount,
+      });
+      expect(await prisma.oauthRefreshToken.count()).toBe(2);
+    } finally { releaseReplayLock?.(); setSystemTime(); }
+  }, 15_000);
+
+  test(`an unseal failure still consumes its proof (${backend})`, async () => {
+    const key = sessionKey(); await seedDevice('device-a', key, 'token-a');
+    const grantBefore = await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: 'device-a' } });
+    const sealed = (await prisma.ethereumKey.findUniqueOrThrow({ where: { id: 'o5-key' } })).sealedBlob;
+    await prisma.ethereumKey.update({ where: { id: 'o5-key' }, data: { sealedBlob: 'corrupt-sealed-key' } });
+    const captured = proof(key, 'token-a', RENEW);
+    try {
+      const fields = new URLSearchParams({ client_id: clientId, refresh_token: 'token-a' });
+      const failed = await form(RENEW, fields, captured);
+      expect(failed.status).toBe(500); expect(await error(failed)).toBe('key_unavailable');
+      await prisma.ethereumKey.update({ where: { id: 'o5-key' }, data: { sealedBlob: sealed } });
+      const replay = await form(RENEW, fields, captured);
+      expect(replay.status).toBe(401); expect(await error(replay)).toBe('invalid_session_proof');
+      expect(await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: 'device-a' } })).toMatchObject({
+        status: 'ACTIVE', refreshTokenHash: grantBefore.refreshTokenHash, renewCount: grantBefore.renewCount,
+      });
+      expect(await prisma.oauthRefreshToken.count()).toBe(1);
+    } finally { await prisma.ethereumKey.update({ where: { id: 'o5-key' }, data: { sealedBlob: sealed } }); }
+  });
+
   test(`previous-token renew requires its grant's session proof and never mutates on failure (${backend})`, async () => {
     const key = sessionKey(); await seedDevice('device-a', key, 'token-a');
     const first = await renew(key, 'token-a'); expect(first.status).toBe(200);
@@ -417,6 +483,23 @@ if (!backend) {
       const current = await prisma.oauthRefreshToken.findUniqueOrThrow({ where: { token: grant.refreshTokenHash! } });
       expect(current.revoked).toBeNull();
       expect(await prisma.oauthRefreshToken.findUnique({ where: { token: hash('token-a') } })).toBeNull();
+    } finally { setSystemTime(); }
+  });
+
+  test(`concurrent current-token renewal and previous-token recovery issue at most one usable token (${backend})`, async () => {
+    const key = sessionKey(); await seedDevice('device-a', key, 'token-a');
+    const first = await renew(key, 'token-a'); expect(first.status).toBe(200);
+    const tokenB = (await first.json() as { refresh_token: string }).refresh_token;
+    const rotatedAt = (await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: 'device-a' } })).rotatedAt!;
+    try {
+      setSystemTime(new Date(rotatedAt.getTime() + 61_000));
+      const responses = await Promise.all([renew(key, 'token-a'), renew(key, tokenB)]);
+      expect(responses.filter((response) => response.status === 200)).toHaveLength(1);
+      expect(responses.filter((response) => response.status !== 200).every((response) => [400, 401].includes(response.status))).toBe(true);
+      const grant = await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: 'device-a' } });
+      expect(grant.status).toBe('ACTIVE');
+      expect(await prisma.oauthRefreshToken.count({ where: { userId: USER, revoked: null } })).toBe(1);
+      expect(await prisma.oauthRefreshToken.findUniqueOrThrow({ where: { token: grant.refreshTokenHash! } })).toMatchObject({ revoked: null });
     } finally { setSystemTime(); }
   });
 

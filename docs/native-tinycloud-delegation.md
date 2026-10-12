@@ -625,11 +625,13 @@ Payload (exactly these claims):
 OpenKey verifies the signature against the public JWK **stored** at PAR, and
 requires `kid` to equal the stored `sessionJkt`. A key supplied at redemption
 is never used. The proof binds one credential, one endpoint and one client.
-Renew and native revoke atomically consume the hash of each verified `jti`
-inside the transaction, including proofs on requests that return a conflict or
-policy error. A repeated `jti` gets 401 `invalid_session_proof`. Code exchange
-replay is prevented by consuming its single-use authorization code under lock.
-A missing or invalid proof gets 401 `invalid_session_proof`.
+Renew and native revoke commit the hash of each verified `jti` before unsealing
+or starting the operation transaction, including requests that later fail.
+Rows remain for two proof windows after `iat`, and the operation transaction
+checks proof freshness again after locking the grant. A repeated `jti` or a
+proof that expired while waiting gets 401 `invalid_session_proof`. Code
+exchange replay is prevented by consuming its single-use authorization code
+under lock. A missing or invalid proof gets 401 `invalid_session_proof`.
 
 ### Session key thumbprint
 
@@ -1288,7 +1290,7 @@ client, so OpenKey cannot authenticate it.
 | Consent phishing by an arbitrary client | Only admins can enable delegation; dynamic and console clients cannot get the scope; each client is confined to `<appId>/` paths on one allowlisted node. |
 | Stale or swapped consent preview | Immutable revisions, the digest, exact byte echo, user binding and a canonical-key recheck under lock. A tab can approve only the bytes it displayed. |
 | Old code or grant after consent withdrawal | Generation binding: withdrawal revokes grants and pending requests in the same transaction, and re-consent cannot revive them. |
-| Replay | Single-use `request_uri`, single-use code (atomic redemption), renew/revoke proof `jti` consumption in the same transaction as the result, proofs bound to one credential and endpoint, current/previous refresh-token recognition, `iss`, `state`, SIWE nonce. |
+| Replay | Single-use `request_uri`, single-use code (atomic redemption), renew/revoke proof `jti` committed before operation work and retained beyond its acceptance window, freshness rechecked under the grant lock, proofs bound to one credential and endpoint, current/previous refresh-token recognition, `iss`, `state`, SIWE nonce. |
 | Cross-device logout through the provider's revoked-token branch (revoke or refresh grant) | Closed: native tokens are refused, a native-capable requesting client is refused outright on both provider paths, and the A2 ownership check covers ordinary clients. |
 | Hosting authority to a hostile node | Host comes only from the admin ceiling and the trusted allowlist; separately disclosed; digest-bound; signed at most once and only if the space is missing. |
 | Cross-app SQL access on the node | Closed by the node: every TinyCloud node isolates SQL databases by full path. |
@@ -1301,17 +1303,19 @@ A native refresh token is useless without its session key:
   the token. Before the proof is verified, the only lookup is a read, so
   failure has no side effects. An unknown token gets the same 401 as a bad
   proof, so the endpoints don't reveal which tokens are live.
-- After verification, renew and native revoke hash and consume the proof's
-  `jti` in the same transaction as the endpoint result. A captured proof
-  replay therefore gets `401 invalid_session_proof`, even when the first use
-  returned `renewal_conflict`, `renewal_too_soon` or `invalid_grant`. Expired
-  JTI rows are swept; a proof cannot become valid again after its `iat` window.
+- After verification, renew and native revoke commit the hashed `jti` before
+  unsealing or starting the endpoint transaction, so failures outside a
+  transaction also consume the proof. The endpoint checks `iat` freshness
+  again after acquiring the grant lock. JTI rows remain for two proof windows
+  after `iat`, then are swept; a captured proof cannot be accepted again after
+  its original request or become valid again after cleanup.
 - A previous-token retry after 30 s recovers the session only after a valid
-  proof with a fresh, unconsumed `jti`. RFC 9449 §5 describes
-  sender-constraining refresh tokens to the proof key; the application-specific
-  proof and one-time `jti` ensure a captured token and proof alone cannot turn
-  a retry into a forced sign-out. This is an application of the
-  sender-constraint model, not an RFC requirement to disable rotation.
+  proof with a fresh, unconsumed `jti`. The `jti` is consumed even if unsealing,
+  locking, or later policy checks fail. RFC 9449 §5 describes sender-constraining
+  refresh tokens to the proof key; the application-specific proof and one-time
+  `jti` ensure a captured token and proof alone cannot turn a retry into a
+  forced sign-out. This is an application of the sender-constraint model, not
+  an RFC requirement to disable rotation.
 - The provider's `grant_type=refresh_token` and `/oauth2/revoke` refuse native
   tokens, revoked rows included, even after delegation is disabled for the
   client. Provider 1.6.10's revoked-token branch would otherwise delete every

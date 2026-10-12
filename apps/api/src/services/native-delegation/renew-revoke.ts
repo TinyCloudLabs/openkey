@@ -125,9 +125,16 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
       htu: `${issuer}${NATIVE_DELEGATION_ENDPOINT_PATHS[operation]}`, clientId: candidate.clientId, credential: token,
     });
     if (!sessionProof) return invalidProof();
-    await startSessionProofJtiSweep(db);
     const proofJtiHash = sessionProofJtiHash(sessionProof.jti);
-    const proofExpiresAt = new Date((sessionProof.iat + SESSION_PROOF_MAX_SKEW_SECONDS) * 1000);
+    // Keep the record for another full proof window after acceptance expires,
+    // so a request verified just before expiry cannot race cleanup while waiting.
+    const proofExpiresAt = new Date((sessionProof.iat + 2 * SESSION_PROOF_MAX_SKEW_SECONDS) * 1000);
+    const consumed = await db.nativeSessionProofJti.createMany({
+      data: [{ jtiHash: proofJtiHash, grantId: candidate.id, expiresAt: proofExpiresAt }],
+      skipDuplicates: true,
+    });
+    if (consumed.count !== 1) return invalidProof();
+    await startSessionProofJtiSweep(db);
 
     const nonce = params.get('siwe_nonce');
     let preflightFailure: ReturnType<typeof fail> | null = null;
@@ -179,12 +186,9 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
           const generations = await tx.$queryRaw<{ generation: bigint }[]>`
             SELECT generation FROM tinycloud_native_consent_generation WHERE "userId" = ${candidate.userId} AND "clientId" = ${candidate.clientId} FOR SHARE`;
           await tx.$queryRaw`SELECT id FROM tinycloud_native_grant WHERE id = ${candidate.id} FOR UPDATE`;
-          const consumed = await tx.$queryRaw<{ jti_hash: string }[]>`
-            INSERT INTO native_session_proof_jti (jti_hash, grant_id, expires_at)
-            VALUES (${proofJtiHash}, ${candidate.id}, ${proofExpiresAt})
-            ON CONFLICT (jti_hash) DO NOTHING
-            RETURNING jti_hash`;
-          if (!consumed.length) return fail('invalid_session_proof', 401);
+          // A request may have waited for unsealing or this lock after its
+          // initial verification. Do not honor it once its proof window ends.
+          if (Math.abs(Date.now() / 1000 - sessionProof.iat) > SESSION_PROOF_MAX_SKEW_SECONDS) return fail('invalid_session_proof', 401);
           if (preflightFailure) return preflightFailure;
           const grant = await tx.tinyCloudNativeGrant.findUnique({ where: { id: candidate.id } });
           if (!grant || (grant.refreshTokenHash !== hash && grant.previousRefreshTokenHash !== hash)) return fail('invalid_grant', 400);
