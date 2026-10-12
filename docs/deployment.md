@@ -203,7 +203,7 @@ Deployments trigger on every push to `main` (serialized by the
 
 4. Deploy via Phala CLI:
    ```bash
-   phala deploy -c docker-compose.prod.yml -n openkey-api
+   phala deploy -c docker-compose.prod.yml -n openkey-api --no-public-logs
    ```
 
 5. Verify TEE attestation is working:
