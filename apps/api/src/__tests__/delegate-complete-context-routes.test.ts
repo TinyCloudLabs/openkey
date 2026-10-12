@@ -3,7 +3,7 @@
 // request leaves the pending approval usable; a successful completion
 // consumes it exactly once, also under concurrent completions.
 
-import { beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { createHash, generateKeyPairSync } from 'node:crypto';
 import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
@@ -79,7 +79,6 @@ mock.module('@openkey/tee', () => ({
 mock.module('@tinycloud/sdk-core', () => ({ activateSessionWithHost }));
 mock.module('../services/tinycloud-bootstrap', () => ({
   ...realBootstrap,
-  trustedTinyCloudBootstrapHost: () => host,
   ensureTinyCloudBootstrap,
   isTinyCloudBootstrapComplete,
 }));
@@ -114,6 +113,7 @@ beforeAll(async () => {
   }));
 });
 beforeEach(() => {
+  delete process.env.TINYCLOUD_BOOTSTRAP_HOST;
   resetContexts?.();
   currentUser = user;
   keyRecord.keyType = 'MANAGED';
@@ -124,6 +124,7 @@ beforeEach(() => {
   activateSessionWithHost.mockImplementation(async () => ({ success: true, status: 200 }));
   ensureTinyCloudBootstrap.mockClear();
   isTinyCloudBootstrapComplete.mockClear();
+  prisma.user.findUnique.mockClear();
   unseal.mockClear();
 });
 async function post(path: string, body: Record<string, unknown>) {
@@ -140,6 +141,193 @@ async function prepare(extra: Record<string, unknown> = {}) {
   expect(prepared.status).toBe(200);
   return prepared.body;
 }
+
+function skipAgents() {
+  activateSessionWithHost.mockImplementation(async () => ({
+    success: true,
+    skipped: [`tinycloud:pkh:eip155:1:${account.address}:agents`],
+  }) as any);
+}
+
+async function managedApproval(reqHost: string, extra: Record<string, unknown> = {}) {
+  const prepared = await prepare({ prefix: 'agents', host: reqHost, ...extra });
+  return post('/', {
+    keyId: keyRecord.id,
+    jwk,
+    host: reqHost,
+    prepared: prepared.prepared,
+    authorizationContextToken: prepared.authorizationContext.token,
+    selectedActionIds: prepared.selectedActionKeys,
+    protocolVersion: 1,
+  });
+}
+
+async function legacyApproval(reqHost: string) {
+  return post('/', { keyId: keyRecord.id, jwk, host: reqHost, prefix: 'agents' });
+}
+
+describe('TC-943 prod host pair (pre-merge)', () => {
+  const savedEnv = {
+    NODE_ENV: process.env.NODE_ENV,
+    TEE_MODE: process.env.TEE_MODE,
+    TINYCLOUD_BOOTSTRAP_HOST: process.env.TINYCLOUD_BOOTSTRAP_HOST,
+  };
+  const requestHosts = [
+    'https://tee.node.tinycloud.xyz',
+    'https://node.tinycloud.xyz',
+    'https://tee.node.tinycloud.xyz/',
+    'HTTPS://TEE.NODE.TINYCLOUD.XYZ',
+  ];
+  const untrustedHosts = [
+    'https://evil.node.tinycloud.xyz',
+    'https://node.tinycloud.xyz.evil.com',
+    'http://node.tinycloud.xyz',
+    'http://tee.node.tinycloud.xyz',
+    'https://node.tinycloud.xyz:8443',
+    'https://node.tinycloud.xyz:443',
+    'https://user@node.tinycloud.xyz',
+    'https://node.tinycloud.xyz/path',
+    'https://tee.node.tinycloud.xyz.',
+    'https://xn--nde-sna.tinycloud.xyz',
+    'https://node.tinyclοud.xyz',
+    'not a url',
+  ];
+
+  beforeEach(() => {
+    delete process.env.TINYCLOUD_BOOTSTRAP_HOST;
+    process.env.NODE_ENV = 'production';
+    process.env.TEE_MODE = 'production';
+    skipAgents();
+  });
+
+  afterEach(() => {
+    for (const [name, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+
+  function expectOnboarding(result: Awaited<ReturnType<typeof post>>, reqHost: string) {
+    expect(result.status).toBe(200);
+    expect(result.body.hostActivated).toBe(true);
+    // Keep readiness and the bootstrap call count together in regression output.
+    expect({
+      spaceReady: result.body.spaceReady,
+      bootstrapCalls: ensureTinyCloudBootstrap.mock.calls.length,
+    }).toEqual({ spaceReady: true, bootstrapCalls: 1 });
+    expect(result.body.spaceError).toBeUndefined();
+    expect(activateSessionWithHost.mock.calls[0]![0]).toBe(reqHost);
+    expect(ensureTinyCloudBootstrap).toHaveBeenCalledTimes(1);
+    expect(ensureTinyCloudBootstrap).toHaveBeenCalledWith(expect.objectContaining({
+      host: 'https://node.tinycloud.xyz',
+      chainId: 1,
+    }));
+  }
+
+  function expectNoOnboarding(result: Awaited<ReturnType<typeof post>>) {
+    expect(result.status).toBe(200);
+    expect(result.body.hostActivated).toBe(true);
+    expect(result.body.spaceReady).toBe(false);
+    expect(result.body.spaceError).toBeUndefined();
+    expect(ensureTinyCloudBootstrap).not.toHaveBeenCalled();
+    expect(unseal).toHaveBeenCalledTimes(1);
+  }
+
+  for (const reqHost of requestHosts) {
+    test(`/ versioned finishes onboarding for ${reqHost} keyed by the configured host`, async () => {
+      expectOnboarding(await managedApproval(reqHost), reqHost);
+    });
+  }
+
+  for (const reqHost of requestHosts.slice(0, 2)) {
+    test(`/ legacy finishes onboarding for ${reqHost} keyed by the configured host`, async () => {
+      expectOnboarding(await legacyApproval(reqHost), reqHost);
+    });
+  }
+
+  for (const reqHost of requestHosts) {
+    test(`/prepare discloses setup for ${reqHost} and checks completion under the configured host`, async () => {
+      const result = await prepare({ prefix: 'agents', host: reqHost });
+      expect(result.host).toBe(reqHost);
+      expect(result.spaceSetup).toEqual({ space: 'agents', plan: 'setup' });
+      expect(result.spaceSetup).not.toHaveProperty('bootstrapHost');
+      expect(isTinyCloudBootstrapComplete).toHaveBeenCalledWith(expect.anything(), {
+        keyId: 'key_1', chainId: 1, host: 'https://node.tinycloud.xyz',
+      });
+    });
+  }
+
+  test('/prepare honours completion stored under the configured host for an alias', async () => {
+    bootstrapComplete = true;
+    expect((await prepare({ prefix: 'agents', host: requestHosts[0] })).spaceSetup).toBeNull();
+    expect(isTinyCloudBootstrapComplete).toHaveBeenCalledWith(expect.anything(), {
+      keyId: 'key_1', chainId: 1, host: 'https://node.tinycloud.xyz',
+    });
+  });
+
+  for (const reqHost of untrustedHosts) {
+    test(`/ versioned does not onboard ${reqHost}`, async () => {
+      expectNoOnboarding(await managedApproval(reqHost));
+    });
+
+    test(`/prepare omits setup for ${reqHost}`, async () => {
+      expect((await prepare({ prefix: 'agents', host: reqHost })).spaceSetup).toBeNull();
+      expect(isTinyCloudBootstrapComplete).not.toHaveBeenCalled();
+      expect(prisma.user.findUnique).not.toHaveBeenCalled();
+    });
+  }
+
+  for (const reqHost of ['https://evil.node.tinycloud.xyz', 'http://tee.node.tinycloud.xyz']) {
+    test(`/ legacy does not onboard ${reqHost}`, async () => {
+      expectNoOnboarding(await legacyApproval(reqHost));
+    });
+  }
+
+  test('/prepare rejects an empty host', async () => {
+    expect((await post('/prepare', { keyId: keyRecord.id, jwk, prefix: 'agents', host: '' })).status).toBe(400);
+    expect(isTinyCloudBootstrapComplete).not.toHaveBeenCalled();
+  });
+});
+
+describe('TC-943 local dev host stays exact', () => {
+  const savedEnv = {
+    NODE_ENV: process.env.NODE_ENV,
+    TINYCLOUD_BOOTSTRAP_HOST: process.env.TINYCLOUD_BOOTSTRAP_HOST,
+  };
+  const localHost = 'http://127.0.0.1:49152';
+
+  beforeEach(() => {
+    process.env.NODE_ENV = 'test';
+    process.env.TINYCLOUD_BOOTSTRAP_HOST = localHost;
+    skipAgents();
+  });
+
+  afterEach(() => {
+    for (const [name, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+
+  test('/prepare does not substitute a prod alias for the local node', async () => {
+    expect((await prepare({ prefix: 'agents', host: 'https://tee.node.tinycloud.xyz' })).spaceSetup).toBeNull();
+    expect(isTinyCloudBootstrapComplete).not.toHaveBeenCalled();
+  });
+
+  test('/ versioned does not onboard a prod alias with local config', async () => {
+    const result = await managedApproval('https://tee.node.tinycloud.xyz');
+    expect(result.status).toBe(200);
+    expect(result.body.spaceReady).toBe(false);
+    expect(ensureTinyCloudBootstrap).not.toHaveBeenCalled();
+  });
+
+  test('/prepare preserves setup for the exact local host', async () => {
+    expect((await prepare({ prefix: 'agents', host: localHost })).spaceSetup).toEqual({ space: 'agents', plan: 'setup' });
+    expect(isTinyCloudBootstrapComplete).toHaveBeenCalledWith(expect.anything(), {
+      keyId: 'key_1', chainId: 1, host: localHost,
+    });
+  });
+});
 
 describe('/prepare space setup disclosure', () => {
   test('discloses setup for a managed key with auto-sign enabled', async () => {
