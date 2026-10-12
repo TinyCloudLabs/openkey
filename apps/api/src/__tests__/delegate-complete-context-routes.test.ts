@@ -7,6 +7,7 @@ import { beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { createHash, generateKeyPairSync } from 'node:crypto';
 import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
+import type { SpaceHostResult } from '@tinycloud/sdk-core';
 import {
   DeviceAuthorizationService,
   MemoryDeviceAuthorizationStore,
@@ -49,7 +50,10 @@ const prisma = {
   tinyCloudBootstrapState: {},
 };
 
-const activateSessionWithHost = mock(async () => ({ success: true }));
+const activateSessionWithHost = mock(async (_host: string, _header: { Authorization: string }): Promise<SpaceHostResult> => ({
+  success: true,
+  status: 200,
+}));
 const ensureTinyCloudBootstrap = mock(async () => ({ status: 'complete' as const }));
 const isTinyCloudBootstrapComplete = mock(async () => bootstrapComplete);
 const deviceService = new DeviceAuthorizationService(new MemoryDeviceAuthorizationStore(), {
@@ -58,6 +62,7 @@ const deviceService = new DeviceAuthorizationService(new MemoryDeviceAuthorizati
 });
 
 const unseal = mock(async () => privateKey);
+const realBootstrap = await import('../services/tinycloud-bootstrap?complete-context-routes-actual' as string);
 
 mock.module('@openkey/db', () => ({ createPrismaClient: () => prisma }));
 mock.module('@openkey/tee', () => ({
@@ -73,6 +78,7 @@ mock.module('@openkey/tee', () => ({
 }));
 mock.module('@tinycloud/sdk-core', () => ({ activateSessionWithHost }));
 mock.module('../services/tinycloud-bootstrap', () => ({
+  ...realBootstrap,
   trustedTinyCloudBootstrapHost: () => host,
   ensureTinyCloudBootstrap,
   isTinyCloudBootstrapComplete,
@@ -115,7 +121,7 @@ beforeEach(() => {
   autoSignEnabled = true;
   bootstrapComplete = false;
   activateSessionWithHost.mockClear();
-  activateSessionWithHost.mockImplementation(async () => ({ success: true }));
+  activateSessionWithHost.mockImplementation(async () => ({ success: true, status: 200 }));
   ensureTinyCloudBootstrap.mockClear();
   isTinyCloudBootstrapComplete.mockClear();
   unseal.mockClear();
@@ -171,6 +177,15 @@ describe('/prepare space setup disclosure', () => {
   test('omits a host other than the trusted bootstrap host', async () => {
     expect((await prepare({ prefix: 'agents', host: 'https://untrusted.example' })).spaceSetup).toBeNull();
   });
+  test('omits the setup promise when bootstrap on sign is switched off', async () => {
+    process.env.TINYCLOUD_BOOTSTRAP_ON_SIGN = 'off';
+    try {
+      expect((await prepare({ prefix: 'agents' })).spaceSetup).toBeNull();
+    } finally {
+      delete process.env.TINYCLOUD_BOOTSTRAP_ON_SIGN;
+    }
+  });
+
 });
 
 /** The versioned `/complete` body the web sends, signed by `signer`. */
@@ -337,6 +352,18 @@ describe('versioned /complete validates every binding before consuming the conte
     expect(replay.body.delegationHeader).toBeUndefined();
     expect(activateSessionWithHost).toHaveBeenCalledTimes(1);
   });
+  test('reports unknown readiness when host activation fails', async () => {
+    activateSessionWithHost.mockImplementationOnce(async () => ({
+      success: false,
+      status: 502,
+      error: 'bad gateway',
+    }));
+    const result = await post('/complete', await completeBody(await prepare({ prefix: 'agents' })));
+    expect(result.status).toBe(200);
+    expect(result.body.hostActivated).toBe(false);
+    expect(result.body.spaceReady).toBeNull();
+  });
+
 
   test('of two concurrent completions of one context exactly one succeeds', async () => {
     const prepared = await prepare();
@@ -402,6 +429,32 @@ describe('managed approval checks everything caller-controlled before consuming 
     expect(replay.body.code).toBe('context-not-found');
     expect(unseal).toHaveBeenCalledTimes(1);
     expect(activateSessionWithHost).toHaveBeenCalledTimes(1);
+  });
+
+  test('does not claim readiness or onboard when host activation fails', async () => {
+    activateSessionWithHost.mockImplementationOnce(async () => ({
+      success: false,
+      status: 502,
+      error: 'bad gateway',
+    }));
+    const approved = await post('/', await approval({ prefix: 'agents' }));
+    expect(approved.status).toBe(200);
+    expect(approved.body.hostActivated).toBe(false);
+    expect(approved.body.spaceReady).toBeNull();
+    expect(approved.body.spaceError).toBeUndefined();
+    expect(ensureTinyCloudBootstrap).not.toHaveBeenCalled();
+  });
+
+  test('does not claim readiness or onboard when host activation throws', async () => {
+    activateSessionWithHost.mockImplementationOnce(async () => {
+      throw new Error('host unreachable');
+    });
+    const approved = await post('/', await approval({ prefix: 'agents' }));
+    expect(approved.status).toBe(200);
+    expect(approved.body.hostActivated).toBe(false);
+    expect(approved.body.spaceReady).toBeNull();
+    expect(approved.body.spaceError).toBeUndefined();
+    expect(ensureTinyCloudBootstrap).not.toHaveBeenCalled();
   });
 
   test('finishes onboarding when activation skips a canonical agents space', async () => {

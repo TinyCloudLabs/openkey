@@ -35,14 +35,22 @@ export function spaceSetupNoticeText(notice: SpaceSetupNotice): string {
 export function spaceReadinessResult(
   payload: { spaceReady?: unknown; spaceError?: unknown; spaceId?: unknown },
   notice: SpaceSetupNotice | null,
-): { kind: 'ready' | 'not-ready' | 'failed'; text: string; detail?: string } | null {
+): { kind: 'ready' | 'unknown' | 'not-ready' | 'failed'; text: string; detail?: string } | null {
   const requested = notice?.space ?? 'requested';
   const space = typeof payload.spaceId === 'string'
     ? payload.spaceId.split(':').at(-1) ?? requested
     : requested;
-  if (payload.spaceReady !== false) {
+  if (payload.spaceReady === true) {
     return notice?.plan === 'setup'
       ? { kind: 'ready', text: `Approved. Your ‘${space}’ space in TinyCloud is ready.` }
+      : null;
+  }
+  if (payload.spaceReady !== false) {
+    return notice
+      ? {
+          kind: 'unknown',
+          text: `Approved, but OpenKey couldn't confirm that your ‘${space}’ space in TinyCloud is set up. The app will tell you what to do.`,
+        }
       : null;
   }
   if (typeof payload.spaceError === 'string' && payload.spaceError.length > 0) {

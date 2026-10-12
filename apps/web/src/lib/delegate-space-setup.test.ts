@@ -35,7 +35,18 @@ describe('spaceReadinessResult', () => {
     expect(result?.text).toContain('agents');
     expect(spaceReadinessResult({ spaceReady: true }, null)).toBeNull();
     expect(spaceReadinessResult({ spaceReady: true }, notice('auto-sign-off'))).toBeNull();
-    expect(spaceReadinessResult({}, notice('setup'))?.kind).toBe('ready');
+  });
+  test('does not claim readiness when the API could not confirm it', () => {
+    for (const payload of [
+      { spaceReady: null, spaceId: 'did:space:agents' },
+      {},
+    ]) {
+      const result = spaceReadinessResult(payload, notice('setup'));
+      expect(result?.kind).toBe('unknown');
+      expect(result?.text).toContain('agents');
+      expect(result?.text).not.toContain('is ready');
+    }
+    expect(spaceReadinessResult({ spaceReady: null }, null)).toBeNull();
   });
 
   test('reports failed details separately from the user-facing text', () => {

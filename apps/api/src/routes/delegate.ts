@@ -128,6 +128,7 @@ async function managedSpaceSetupPlan(input: {
   });
   return { space: name, plan: preference?.autoSignEnabled ? 'setup' : 'auto-sign-off' };
 }
+type SpaceReadiness = { spaceReady: boolean | null; spaceError?: string };
 
 async function finishManagedSpaceOnboarding(input: {
   userId: string;
@@ -1454,19 +1455,21 @@ delegateRouter.post('/', async (c) => {
     });
 
     let hostActivated = false;
-    let spaceReadiness: { spaceReady: boolean; spaceError?: string } = { spaceReady: true };
+    let spaceReadiness: SpaceReadiness = { spaceReady: null };
     try {
       const activationResult = await activateSessionWithHost(host, session.delegationHeader);
       hostActivated = activationResult.success;
-      spaceReadiness = await finishManagedSpaceOnboarding({
-        userId: user.id,
-        key,
-        host,
-        address,
-        chainId,
-        spaceId: bound.spaceId,
-        skipped: activationResult.success && Boolean(activationResult.skipped?.includes(bound.spaceId)),
-      });
+      if (hostActivated) {
+        spaceReadiness = await finishManagedSpaceOnboarding({
+          userId: user.id,
+          key,
+          host,
+          address,
+          chainId,
+          spaceId: bound.spaceId,
+          skipped: Boolean(activationResult.skipped?.includes(bound.spaceId)),
+        });
+      }
       if (!hostActivated) {
         console.warn(`[Delegate] Session activation warning: ${activationResult.error}`);
       }
@@ -1547,26 +1550,27 @@ delegateRouter.post('/', async (c) => {
   });
 
   let hostActivated = false;
-  let spaceReadiness: { spaceReady: boolean; spaceError?: string } = { spaceReady: true };
+  let spaceReadiness: SpaceReadiness = { spaceReady: null };
   try {
     const activationResult = await activateSessionWithHost(host, session.delegationHeader);
     hostActivated = activationResult.success;
-    spaceReadiness = await finishManagedSpaceOnboarding({
-      userId: user.id,
-      key,
-      host,
-      address,
-      chainId,
-      spaceId: preparedResult.spaceId,
-      skipped: activationResult.success && Boolean(activationResult.skipped?.includes(preparedResult.spaceId)),
-    });
+    if (hostActivated) {
+      spaceReadiness = await finishManagedSpaceOnboarding({
+        userId: user.id,
+        key,
+        host,
+        address,
+        chainId,
+        spaceId: preparedResult.spaceId,
+        skipped: Boolean(activationResult.skipped?.includes(preparedResult.spaceId)),
+      });
+    }
     if (!hostActivated) {
       console.warn(`[Delegate] Session activation warning: ${activationResult.error}`);
     }
   } catch (e) {
     console.warn(`[Delegate] Session activation failed (host unreachable):`, e);
   }
-
   const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
 
   let effectiveEntries: RecapEntry[] = [];
@@ -1755,13 +1759,13 @@ delegateRouter.post('/prepare', async (c) => {
       chainId,
       spaceId: preparedResult.spaceId,
     });
-    if (setup?.plan === 'setup' && process.env.TINYCLOUD_BOOTSTRAP_ON_SIGN !== 'off') {
+    if (setup?.plan !== 'setup') {
+      spaceSetup = setup;
+    } else if (process.env.TINYCLOUD_BOOTSTRAP_ON_SIGN !== 'off') {
       const { isTinyCloudBootstrapComplete } = await import('../services/tinycloud-bootstrap');
       if (!(await isTinyCloudBootstrapComplete(prisma, { keyId: key.id, chainId, host }))) {
         spaceSetup = setup;
       }
-    } else {
-      spaceSetup = setup;
     }
   } catch (error) {
     console.warn('[Delegate] Failed to determine TinyCloud space setup notice:', error);
@@ -1769,6 +1773,7 @@ delegateRouter.post('/prepare', async (c) => {
 
   return c.json({
     prepared: preparedData,
+    spaceId: preparedResult.spaceId,
     spaceSetup,
     ownerDid,
     address,
@@ -2091,11 +2096,11 @@ delegateRouter.post('/complete', async (c) => {
   const chainId = signedFields.chainId;
   const spaceId = preparedSpaceId;
   let hostActivated = false;
-  let spaceReady = true;
+  let spaceReady: boolean | null = null;
   try {
     const activationResult = await activateSessionWithHost(body.host, session.delegationHeader);
     hostActivated = activationResult.success;
-    spaceReady = !activationResult.skipped?.includes(spaceId);
+    if (hostActivated) spaceReady = !activationResult.skipped?.includes(spaceId);
     if (!hostActivated) {
       console.warn(`[Delegate] Session activation warning: ${activationResult.error}`);
     }
