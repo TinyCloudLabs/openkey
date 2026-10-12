@@ -1,5 +1,12 @@
 # @openkey/sdk-react-native
 
+## 0.12.0-beta.2
+
+### Patch Changes
+
+- Updated dependencies [9ba42fb]
+  - @openkey/core@0.12.0-beta.2
+
 ## 0.12.0-beta.0
 
 ### Minor Changes
