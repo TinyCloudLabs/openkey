@@ -213,6 +213,7 @@ describe('device delegation window on /api/delegate', () => {
     };
     const signed = await post('/', approval);
     expect(signed.status).toBe(200);
+    expect(signed.body.permissions).toHaveLength(permissions.length);
     // The page maps signed ReCap grants back to the request's service and space spelling.
     const approvedPermissions = permissions.map((requested) => {
       const grant = signed.body.permissions.find((entry: { service: string; space: string; path: string }) =>
