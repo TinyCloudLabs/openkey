@@ -63,7 +63,7 @@ jobs:
           bun run db:migrate:deploy:production
 
       - name: Install Phala CLI
-        run: npm install -g phala
+        run: npm install -g phala@1.1.22
 
       - name: Deploy to Phala Cloud
         env:
@@ -72,5 +72,6 @@ jobs:
           phala deploy \
             --api-token "$PHALA_CLOUD_API_KEY" \
             --cvm-id openkey-api \
+            --no-public-logs \
             --compose docker-compose.prod.yml \
             --wait
