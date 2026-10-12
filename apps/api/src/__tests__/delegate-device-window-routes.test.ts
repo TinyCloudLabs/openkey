@@ -178,6 +178,67 @@ describe('device delegation window on /api/delegate', () => {
     expect(activateSessionWithHost).toHaveBeenCalledTimes(1);
   });
 
+  test('the /delegate page device approval reaches the CLI poll', async () => {
+    const deviceSecret = `secret-${randomBytes(8).toString('hex')}`;
+    const codeVerifier = `verifier-${randomBytes(8).toString('hex')}`;
+    const permissions = [
+      { service: 'tinycloud.kv', space: 'default', path: 'shares/', actions: ['tinycloud.kv/get', 'tinycloud.kv/put', 'tinycloud.kv/list'] },
+      { service: 'tinycloud.capabilities', space: 'default', path: '', actions: ['tinycloud.capabilities/read'] },
+    ];
+    const { transactionId: id } = await deviceService.start({
+      deviceSecretHash: createHash('sha256').update(deviceSecret).digest('base64url'),
+      codeChallenge: createHash('sha256').update(codeVerifier).digest('base64url'),
+      sessionDid: sessionDidForPublicJwk(jwk),
+      publicJwk: jwk,
+      relayPublicJwk: generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).publicKey.export({ format: 'jwk' }) as Record<string, unknown>,
+      permissions,
+      nodeOrigin: host,
+      shareOrigin: 'https://share.tinycloud.xyz',
+      delegationTtlSeconds: 3600,
+    }, '198.51.100.9');
+
+    // prepareDelegation(): the /delegate page's request body.
+    const page = { keyId: keyRecord.id, jwk, host, prefix: 'default', permissions, expiry: '3600s', deviceTransactionId: id };
+    const prepared = await post('/prepare', page);
+    expect(prepared.status).toBe(200);
+
+    // doManagedDelegate(): actionKeys are included only when the selection was edited.
+    const approval = {
+      ...page,
+      prepared: prepared.body.prepared,
+      authorizationContextToken: prepared.body.authorizationContext.token,
+      selectedActionIds: prepared.body.selectedActionKeys,
+      protocolVersion: 1,
+      ...(prepared.body.edited ? { actionKeys: prepared.body.selectedActionKeys } : {}),
+    };
+    const signed = await post('/', approval);
+    expect(signed.status).toBe(200);
+    const replay = await post('/', approval);
+    expect(replay.status).toBe(400);
+    expect(replay.body.code).toBe('context-not-found');
+
+    // finishDelegate(): relay approval, followed by the CLI's poll.
+    const eph = generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).publicKey.export({ format: 'jwk' }) as Record<string, string>;
+    await deviceService.approve(id, user.id, {
+      relay: {
+        version: 1,
+        algorithm: 'ECDH-P256-A256GCM',
+        ephemeralPublicJwk: { kty: eph.kty, crv: eph.crv, x: eph.x, y: eph.y },
+        nonce: randomBytes(12).toString('base64url'),
+        ciphertext: randomBytes(64).toString('base64url'),
+      },
+      binding: {
+        transactionId: id,
+        sessionDid: sessionDidForPublicJwk(jwk),
+        nodeOrigin: host,
+        shareOrigin: 'https://share.tinycloud.xyz',
+        permissions,
+        delegationExpiresAt: signed.body.expiresAt,
+      },
+    });
+    expect((await deviceService.poll({ transactionId: id, deviceSecret, codeVerifier })).status).toBe('approved');
+  });
+
   test('refuses reshaped spellings of the session JWK for a named transaction', async () => {
     const reshapedKeys = [
       { ...jwk, d: null }, { ...jwk, p: 'x' }, { ...jwk, use: 'sig' }, { ...jwk, x: `${jwk.x}=` },
