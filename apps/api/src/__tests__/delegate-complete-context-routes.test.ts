@@ -3,7 +3,7 @@
 // request leaves the pending approval usable; a successful completion
 // consumes it exactly once, also under concurrent completions.
 
-import { afterEach, beforeAll, beforeEach, describe, expect, mock, setSystemTime, test } from 'bun:test';
+import { afterEach, beforeAll, beforeEach, describe, expect, mock, setSystemTime, spyOn, test } from 'bun:test';
 import { createHash, generateKeyPairSync } from 'node:crypto';
 import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
@@ -814,5 +814,104 @@ describe('a CLI request without capabilities/read (TC-658)', () => {
     expect(refused.body.delegationHeader).toBeUndefined();
     expect(refused.body.error).toBe('Edited permissions must be a subset of the original delegation request');
     expect(activateSessionWithHost).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('TC-945 bootstrap budget', () => {
+  const savedBudget = process.env.TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS;
+  const cleanups: Array<() => void> = [];
+  beforeEach(() => {
+    process.env.TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS = '50';
+    skipAgents();
+  });
+  afterEach(async () => {
+    if (savedBudget === undefined) delete process.env.TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS;
+    else process.env.TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS = savedBudget;
+    for (const cleanup of cleanups.splice(0)) cleanup();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+  function deferredBootstrap() {
+    let resolve!: (outcome: any) => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<any>((res, rej) => { resolve = res; reject = rej; });
+    // Lets the unmodified, unbounded route finish so failing-first tests clean up.
+    const guard = setTimeout(() => resolve({ status: 'complete' }), 1500);
+    cleanups.push(() => { clearTimeout(guard); resolve({ status: 'complete' }); });
+    return { promise, resolve, reject };
+  }
+  for (const requestHost of ['https://tee.node.tinycloud.xyz', 'https://node.tinycloud.xyz']) {
+    for (const [name, approve] of [['versioned', managedApproval], ['legacy', legacyApproval]] as const) {
+      test(`slow bootstrap returns pending for ${name} approval via ${requestHost}`, async () => {
+        const work = deferredBootstrap();
+        ensureTinyCloudBootstrap.mockImplementationOnce(() => work.promise);
+        const start = performance.now();
+        const result = await approve(requestHost);
+        expect(performance.now() - start).toBeLessThan(1000);
+        expect(result.status).toBe(200);
+        expect(result.body).toMatchObject({ hostActivated: true, spaceReady: null, spacePending: true });
+        expect(result.body).not.toHaveProperty('spaceError');
+        expect(result.body.delegationHeader?.Authorization).toBeString();
+        expect(ensureTinyCloudBootstrap).toHaveBeenCalledWith(expect.objectContaining({ host: 'https://node.tinycloud.xyz' }));
+        expect(unseal).toHaveBeenCalledTimes(2);
+        work.resolve({ status: 'complete' });
+      });
+    }
+  }
+  test('fast bootstrap reports ready without a pending marker', async () => {
+    const result = await managedApproval(host);
+    expect(result.status).toBe(200);
+    expect(result.body.spaceReady).toBe(true);
+    expect(result.body).not.toHaveProperty('spacePending');
+  });
+  test('a lock held by another approval reports pending rather than an error', async () => {
+    ensureTinyCloudBootstrap.mockImplementationOnce(async () => ({
+      status: 'failed', errorCode: 'tinycloud_bootstrap_in_progress', errorMessage: 'Already in progress.',
+    }) as any);
+    const result = await managedApproval(host);
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({ hostActivated: true, spaceReady: null, spacePending: true });
+    expect(result.body).not.toHaveProperty('spaceError');
+  });
+  test('other bootstrap failures keep the error contract without a pending marker', async () => {
+    ensureTinyCloudBootstrap.mockImplementationOnce(async () => ({
+      status: 'failed', errorCode: 'tinycloud_bootstrap_failed', errorMessage: 'seed failed',
+    }) as any);
+    const result = await managedApproval(host);
+    expect(result.body.spaceReady).toBe(false);
+    expect(result.body.spaceError).toContain('seed failed');
+    expect(result.body).not.toHaveProperty('spacePending');
+  });
+  for (const [name, approve] of [['versioned', managedApproval], ['legacy', legacyApproval]] as const) {
+    test(`bootstrap rejection before the budget keeps the plain setup error for ${name} approval`, async () => {
+      ensureTinyCloudBootstrap.mockImplementationOnce(async () => { throw new Error('database unavailable'); });
+      const result = await approve(host);
+      expect(result.status).toBe(200);
+      expect(result.body).toMatchObject({
+        hostActivated: true,
+        spaceReady: false,
+        spaceError: 'TinyCloud account setup failed: database unavailable.',
+      });
+      expect(result.body).not.toHaveProperty('spacePending');
+    });
+  }
+  test('rejection after the response is logged once without an unhandled rejection', async () => {
+    const work = deferredBootstrap();
+    ensureTinyCloudBootstrap.mockImplementationOnce(() => work.promise);
+    const unhandled = mock(() => {});
+    const error = spyOn(console, 'error').mockImplementation(() => {});
+    process.on('unhandledRejection', unhandled);
+    try {
+      const result = await managedApproval(host);
+      expect(result.body).toMatchObject({ spaceReady: null, spacePending: true });
+      work.reject(new Error('background database failure'));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandled).not.toHaveBeenCalled();
+      expect(error).toHaveBeenCalledTimes(1);
+      expect(error).toHaveBeenCalledWith('[Delegate] TinyCloud bootstrap crashed (async)', {
+        keyId: keyRecord.id, host: 'https://node.tinycloud.xyz',
+        errorCode: 'tinycloud_bootstrap_crashed', errorMessage: 'background database failure',
+      });
+    } finally { process.off('unhandledRejection', unhandled); error.mockRestore(); }
   });
 });

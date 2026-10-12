@@ -96,6 +96,7 @@ import {
 } from '../services/coordinationos-signing-audit';
 import { validateTinyCloudManageKeyRequest } from '../services/tinycloud-manage-key-policy';
 import { canonicalTrustedTinyCloudHost } from '../services/tinycloud-hosts';
+import { awaitTinyCloudBootstrapWithinBudget } from '../services/tinycloud-bootstrap-budget';
 import { deviceDelegationWindowError, deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, primaryKeyWhere } from '../services/primary-key';
 
@@ -131,7 +132,7 @@ async function managedSpaceSetupPlan(input: {
   });
   return { space: name, plan: preference?.autoSignEnabled ? 'setup' : 'auto-sign-off', bootstrapHost };
 }
-type SpaceReadiness = { spaceReady: boolean | null; spaceError?: string };
+type SpaceReadiness = { spaceReady: boolean | null; spaceError?: string; spacePending?: true };
 
 async function finishManagedSpaceOnboarding(input: {
   userId: string;
@@ -149,7 +150,7 @@ async function finishManagedSpaceOnboarding(input: {
   chainId: number;
   spaceId: string;
   skipped: boolean;
-}): Promise<{ spaceReady: boolean; spaceError?: string }> {
+}): Promise<SpaceReadiness> {
   if (!input.skipped) return { spaceReady: true };
 
   try {
@@ -167,17 +168,26 @@ async function finishManagedSpaceOnboarding(input: {
       return { spaceReady: false, spaceError: 'TinyCloud account setup failed: managed key has no sealed key data.' };
     }
     const privateKey = input.privateKey ?? await unsealManagedKey(input.key, input.key.sealedBlob!);
-    const outcome = await ensureTinyCloudBootstrap({
-      prisma,
-      userId: input.userId,
-      key: { id: input.key.id, address: input.key.address, keyType: input.key.keyType },
-      privateKey,
-      host: setup.bootstrapHost,
-      chainId: input.chainId,
-    });
-    return outcome.status === 'complete'
-      ? { spaceReady: true }
-      : { spaceReady: false, spaceError: `TinyCloud account setup failed${outcome.status === 'failed' ? ` (${outcome.errorCode}): ${outcome.errorMessage}` : ''}.` };
+    const outcome = await awaitTinyCloudBootstrapWithinBudget(
+      ensureTinyCloudBootstrap({
+        prisma,
+        userId: input.userId,
+        key: { id: input.key.id, address: input.key.address, keyType: input.key.keyType },
+        privateKey,
+        host: setup.bootstrapHost,
+        chainId: input.chainId,
+      }),
+      { logPrefix: '[Delegate]', logContext: { keyId: input.key.id, host: setup.bootstrapHost } },
+    );
+    if (outcome.status === 'complete') return { spaceReady: true };
+    // Still running here or under another approval's lock: the lock/cache finishes it once.
+    if (outcome.status === 'pending' || (outcome.status === 'failed' && outcome.errorCode === 'tinycloud_bootstrap_in_progress')) {
+      return { spaceReady: null, spacePending: true };
+    }
+    if (outcome.status === 'failed' && outcome.errorCode === 'tinycloud_bootstrap_crashed') {
+      return { spaceReady: false, spaceError: `TinyCloud account setup failed: ${outcome.errorMessage}.` };
+    }
+    return { spaceReady: false, spaceError: `TinyCloud account setup failed${outcome.status === 'failed' ? ` (${outcome.errorCode}): ${outcome.errorMessage}` : ''}.` };
   } catch (error) {
     return {
       spaceReady: false,

@@ -83,3 +83,31 @@ describe('delegation short-code broker', () => {
     expect(disguised.status).toBe(400);
   });
 });
+
+
+describe('TC-945 pending delegation short codes', () => {
+  test('round-trips pending readiness through POST and GET', async () => {
+    const { app } = fixture();
+    const { spaceError: _error, ...publicDelegation } = delegation;
+    const pending = { ...publicDelegation, spaceReady: null, spacePending: true };
+    const created = await app.request('/api/delegation-codes', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ delegation: pending }),
+    });
+    expect(created.status).toBe(201);
+    const { code } = await created.json() as { code: string };
+    const fetched = await app.request(`/api/delegation-codes/${code}`);
+    expect(fetched.status).toBe(200);
+    expect(await fetched.json()).toEqual({ delegation: pending });
+  });
+  for (const spacePending of [false, 'yes']) {
+    test(`rejects spacePending ${JSON.stringify(spacePending)}`, async () => {
+      const { app } = fixture();
+      const response = await app.request('/api/delegation-codes', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ delegation: { ...delegation, spaceReady: null, spacePending } }),
+      });
+      expect(response.status).toBe(400);
+    });
+  }
+});

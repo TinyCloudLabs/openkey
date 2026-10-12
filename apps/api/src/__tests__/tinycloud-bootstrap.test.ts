@@ -18,6 +18,7 @@ let state: {
   status: string;
   attemptId?: string | null;
   lockExpiresAt?: Date | null;
+  failureReason?: string | null;
 } | null = null;
 
 const executor = mock(async () => undefined);
@@ -47,6 +48,7 @@ const prisma = {
   tinyCloudBootstrapState: {
     findUnique: mock(async () => state),
     create: mock(async ({ data }: { data: typeof state }) => {
+      if (state) throw Object.assign(new Error('Unique constraint failed'), { code: 'P2002' });
       state = { ...data!, id: 'state_1' };
       return state;
     }),
@@ -383,5 +385,68 @@ describe('ensureTinyCloudBootstrapForApprovedSign', () => {
     expect(outcome).toEqual({ status: 'skipped' });
     expect(executor).not.toHaveBeenCalled();
     expect(probe).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('TC-945 background bootstrap lock and cache', () => {
+  test('concurrent approval executes once; background completion writes state and retry uses cache', async () => {
+    const { awaitTinyCloudBootstrapWithinBudget, setTinyCloudBootstrapBackgroundObserverForTests } = await import('../services/tinycloud-bootstrap-budget');
+    let release!: () => void;
+    const work = new Promise<void>((resolve) => { release = resolve; });
+    executor.mockImplementationOnce(() => work.then(() => undefined));
+    let observed!: (outcome: TinyCloudBootstrapOutcome) => void;
+    const background = new Promise<TinyCloudBootstrapOutcome>((resolve) => { observed = resolve; });
+    setTinyCloudBootstrapBackgroundObserverForTests(observed);
+    const input = { prisma, userId, key, privateKey, host: tinycloudHost, chainId };
+    const options = { logPrefix: '[Bootstrap test]', logContext: { keyId: key.id } };
+    try {
+      const first = awaitTinyCloudBootstrapWithinBudget(ensureTinyCloudBootstrap(input), { ...options, budgetMs: 50 });
+      const second = awaitTinyCloudBootstrapWithinBudget(ensureTinyCloudBootstrap(input), { ...options, budgetMs: 1000 });
+      expect(await first).toEqual({ status: 'pending' });
+      expect(await second).toMatchObject({ status: 'failed', errorCode: 'tinycloud_bootstrap_in_progress' });
+      expect(executor).toHaveBeenCalledTimes(1);
+      release();
+      expect(await background).toEqual({ status: 'complete' });
+      expect(state).toMatchObject({ status: 'complete', attemptId: null, lockExpiresAt: null });
+      prisma.tinyCloudBootstrapState.create.mockClear();
+      prisma.tinyCloudBootstrapState.updateMany.mockClear();
+      expect(await ensureTinyCloudBootstrap(input)).toEqual({ status: 'complete' });
+      expect(executor).toHaveBeenCalledTimes(1);
+      expect(prisma.tinyCloudBootstrapState.create).not.toHaveBeenCalled();
+      expect(prisma.tinyCloudBootstrapState.updateMany).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await work;
+      setTinyCloudBootstrapBackgroundObserverForTests();
+    }
+  });
+
+  test('background failure is durably recorded without unhandled rejection and allows retry', async () => {
+    const { awaitTinyCloudBootstrapWithinBudget, setTinyCloudBootstrapBackgroundObserverForTests } = await import('../services/tinycloud-bootstrap-budget');
+    let reject!: (error: Error) => void;
+    const work = new Promise<void>((_resolve, rej) => { reject = rej; });
+    executor.mockImplementationOnce(() => work.then(() => undefined));
+    let observed!: (outcome: TinyCloudBootstrapOutcome) => void;
+    const background = new Promise<TinyCloudBootstrapOutcome>((resolve) => { observed = resolve; });
+    setTinyCloudBootstrapBackgroundObserverForTests(observed);
+    const unhandled = mock(() => {});
+    process.on('unhandledRejection', unhandled);
+    const input = { prisma, userId, key, privateKey, host: tinycloudHost, chainId };
+    try {
+      expect(await awaitTinyCloudBootstrapWithinBudget(ensureTinyCloudBootstrap(input), {
+        budgetMs: 50, logPrefix: '[Bootstrap test]', logContext: { keyId: key.id },
+      })).toEqual({ status: 'pending' });
+      reject(new Error('background seed failed'));
+      expect(await background).toMatchObject({ status: 'failed', errorCode: 'tinycloud_bootstrap_failed' });
+      expect(state).toMatchObject({ status: 'failed', failureReason: 'background seed failed', lockExpiresAt: null });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandled).not.toHaveBeenCalled();
+      expect(await ensureTinyCloudBootstrap(input)).toEqual({ status: 'complete' });
+      expect(executor).toHaveBeenCalledTimes(2);
+    } finally {
+      process.off('unhandledRejection', unhandled);
+      setTinyCloudBootstrapBackgroundObserverForTests();
+    }
   });
 });

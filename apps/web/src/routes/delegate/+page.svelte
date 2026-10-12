@@ -1144,7 +1144,7 @@
           </svg>
 
           {#if spaceReadiness}
-            <div class={`w-full rounded-xl border px-3 py-2 text-sm mb-4 ${spaceReadiness.kind === 'ready' ? 'border-green-300 bg-green-50 text-green-900' : 'border-amber-300 bg-amber-50 text-amber-900'}`} role="status">
+            <div class={`w-full rounded-xl border px-3 py-2 text-sm mb-4 ${spaceReadiness.kind === 'ready' ? 'border-green-300 bg-green-50 text-green-900' : spaceReadiness.kind === 'pending' ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-amber-300 bg-amber-50 text-amber-900'}`} role="status">
               <p>{spaceReadiness.text}</p>
               {#if spaceReadiness.detail}
                 <details class="mt-2 text-left">
