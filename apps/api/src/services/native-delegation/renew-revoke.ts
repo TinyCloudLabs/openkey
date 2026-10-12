@@ -152,17 +152,27 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
         generations[0]?.generation !== grant.consentGeneration) return fail('consent_required', 400);
       if (grant.status !== 'ACTIVE') return fail('invalid_grant', 400);
       const now = new Date();
-      if (grant.previousRefreshTokenHash === hash) {
-        if (grant.rotatedAt && now.getTime() - grant.rotatedAt.getTime() <= CONFLICT_WINDOW_MS) return fail('renewal_conflict', 409);
-        await tx.tinyCloudNativeGrant.update({ where: { id: grant.id }, data: { status: 'REVOKED', revokedAt: now, revokedReason: 'refresh_reuse' } });
-        await deleteGrantTokens(tx, grant);
-        return fail('invalid_grant', 400);
+      const recoveringLostResponse = grant.previousRefreshTokenHash === hash;
+      if (recoveringLostResponse && grant.rotatedAt && now.getTime() - grant.rotatedAt.getTime() <= CONFLICT_WINDOW_MS) {
+        return fail('renewal_conflict', 409);
       }
-      const tokenRows = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM oauth_refresh_token WHERE token = ${hash} FOR UPDATE`;
+      const rowHash = recoveringLostResponse ? grant.refreshTokenHash : hash;
+      if (!rowHash) return fail('invalid_grant', 400);
+      const tokenRows = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM oauth_refresh_token WHERE token = ${rowHash} FOR UPDATE`;
       if (!tokenRows.length) return fail('invalid_grant', 400);
-      const row = await tx.oauthRefreshToken.findUnique({ where: { token: hash } });
+      const row = await tx.oauthRefreshToken.findUnique({ where: { token: rowHash } });
       if (!row || row.userId !== grant.userId || row.clientId !== grant.clientId || !row.scopes.includes(TINYCLOUD_DELEGATION_SCOPE) ||
         row.revoked || row.expiresAt <= now) return fail('invalid_grant', 400);
+      if (recoveringLostResponse) {
+        // A previous token is recoverable once. Its revoked row proves it was
+        // rotated normally; deleting it below consumes that recovery path.
+        await tx.$queryRaw`SELECT id FROM oauth_refresh_token WHERE token = ${hash} FOR UPDATE`;
+        const previousRow = await tx.oauthRefreshToken.findUnique({ where: { token: hash } });
+        if (!previousRow || previousRow.userId !== grant.userId || previousRow.clientId !== grant.clientId ||
+          !previousRow.scopes.includes(TINYCLOUD_DELEGATION_SCOPE) || !previousRow.revoked || previousRow.expiresAt <= now) {
+          return fail('invalid_grant', 400);
+        }
+      }
       const user = await tx.user.findUnique({ where: { id: grant.userId }, select: { tinyCloudManageKeyMode: true, tinyCloudManageKeyPolicyEpoch: true } });
       if (!user) return fail('invalid_grant', 400);
       const epoch = user.tinyCloudManageKeyPolicyEpoch;
@@ -216,7 +226,14 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
       const newToken = generateRandomString(32, 'A-Z', 'a-z');
       const newHash = await storedToken({ storeTokens: 'hashed' }, newToken, 'refresh_token');
       const expiresAt = new Date(now.getTime() + REFRESH_LIFETIME_SECONDS * 1000);
-      await tx.oauthRefreshToken.update({ where: { id: row.id }, data: { revoked: now } });
+      if (recoveringLostResponse) {
+        const previousRow = await tx.oauthRefreshToken.findUniqueOrThrow({ where: { token: hash }, select: { id: true } });
+        const rowsToDelete = [row.id, previousRow.id];
+        await tx.oauthAccessToken.deleteMany({ where: { refreshId: { in: rowsToDelete } } });
+        await tx.oauthRefreshToken.deleteMany({ where: { id: { in: rowsToDelete } } });
+      } else {
+        await tx.oauthRefreshToken.update({ where: { id: row.id }, data: { revoked: now } });
+      }
       await tx.oauthRefreshToken.create({ data: {
         id: randomUUID(), token: newHash, clientId: row.clientId, userId: row.userId, sessionId: row.sessionId,
         referenceId: row.referenceId, scopes: row.scopes, authTime: row.authTime, expiresAt,

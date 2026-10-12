@@ -806,10 +806,17 @@ Processing:
 4. If `h` is the **previous** hash:
    - within 30 s of `rotatedAt` → 409 `renewal_conflict`, no side effects
      (two renewals raced; reload the stored token);
-   - otherwise this is refresh-token reuse: revoke the grant
-     (`refresh_reuse`), delete its token rows, and return `invalid_grant`.
-5. The token row must exist, be unrevoked and unexpired, and match the
-   grant.
+   - otherwise treat it as recovery from a lost renewal response. The valid
+     session proof binds the request to the device key, so run the same
+     consent, generation, status, expiry, ceiling, key, user-mode, preference,
+     interval and permission checks as a current-token renewal. The previous
+     token's OAuth row must still exist as a revoked row, and the current
+     token's row must be live. A consumed recovery token whose row was deleted
+     returns `invalid_grant`.
+5. For a current-token renewal, its OAuth row must exist, be unrevoked and
+   unexpired, and match the grant. For recovery, use the current row only as
+   the source of the new row's client, user, session, reference, scope and
+   authentication metadata; never make the revoked previous row live again.
 6. Policy, rechecked on every renewal:
    - `now < absoluteExpiresAt − 300 s`, otherwise `consent_required`;
    - the client is still enabled and has a ceiling, and the approved (or
@@ -838,6 +845,11 @@ Processing:
      `refreshTokenHash` to the new hash, and update `rotatedAt`,
      `lastRenewedAt` and `renewCount`;
    - write the audit row `native_renew`.
+   - during lost-response recovery, delete the presented previous row and the
+     never-delivered current row, including access-token rows attached to the
+     latter. Keep the presented hash only as the grant's previous hash so
+     native revoke still accepts it; renew refuses it because its OAuth row
+     is gone. The newly issued token is then the only token usable for renewal.
 9. Commit and respond:
 
 ```json
@@ -870,9 +882,13 @@ The `tinycloud_delegation` object has the same shape as in the token response.
 Here `expires_in` is the new refresh token's lifetime. The client must persist
 the new refresh token before it reports the renewal as done.
 
-There is no idempotent replay. If a renewal response is lost, the old token
-becomes "previous": retrying within 30 s gets `renewal_conflict`, and retrying
-later revokes the grant. Either way, the user signs in again.
+There is no response replay. If a renewal response is lost, retrying the old
+token within 30 s gets `renewal_conflict`; after that window it performs one
+normal renewal using the current row's metadata and policy checks. The
+never-delivered token and its access-token rows are deleted. The old token's
+revoked row is then deleted too, so it cannot recover twice; only the fresh
+token can renew. Native revoke continues to accept the current or immediately
+previous grant hash.
 
 Renewal never accepts a new session key, a broader permission set or a longer
 TTL. Any of those requires a new browser authorization.
@@ -1259,8 +1275,9 @@ client, so OpenKey cannot authenticate it.
 
 | Threat | Outcome |
 |---|---|
-| Refresh token stolen (current or rotated) | **No effect.** Renew, native revoke and reuse detection all require a session proof first. The provider refresh and revoke endpoints refuse delegation tokens without side effects, and the ownership check stops a token from being replayed under another `client_id`. |
-| Refresh token and session private key stolen | The attacker can renew within the approved set and TTL until `renewableUntil` (the grant's absolute expiry), withdrawal, block or native revoke. Reuse detection ends it early only if the legitimate device presents the attacker's *previous* token; see [Stolen refresh tokens](#stolen-refresh-tokens). Each rotation issues a fresh 7-day token, so the token expiry is not a bound. No new capabilities, spaces, nodes or signatures. |
+| Refresh token stolen without the session private key | **No effect.** Renew and native revoke require a session proof first. The provider refresh and revoke endpoints refuse delegation tokens without side effects, and the ownership check stops a token from being replayed under another `client_id`. This sender constraint follows the model in [RFC 9449 §5](https://www.rfc-editor.org/rfc/rfc9449.html#section-5); the application-specific session proof is not DPoP. |
+| Refresh token and session private key stolen | The attacker can renew within the approved set and TTL until `renewableUntil` (the grant's absolute expiry), withdrawal, block or native revoke. Each rotation issues a fresh 7-day token, so the token expiry is not a bound. No new capabilities, spaces, nodes or signatures. |
+| Lost renew response | With a valid session proof, the previous token recovers once after the 30 s conflict window. The server deletes the undelivered token and its access rows; the recovered token becomes the only renewable token. |
 | Delegation stolen without the session key | Useless. Every invocation must be signed by the session key. |
 | Delegation and session key stolen | Usable until `expiresAt` (at most the approved TTL, 1 h by default). It cannot be recalled before then. |
 | Authorization response intercepted | See [Interception versus impersonation](#interception-versus-impersonation-rfc-8252-86). The interceptor lacks the PKCE verifier and the session key. |
@@ -1268,7 +1285,7 @@ client, so OpenKey cannot authenticate it.
 | Consent phishing by an arbitrary client | Only admins can enable delegation; dynamic and console clients cannot get the scope; each client is confined to `<appId>/` paths on one allowlisted node. |
 | Stale or swapped consent preview | Immutable revisions, the digest, exact byte echo, user binding and a canonical-key recheck under lock. A tab can approve only the bytes it displayed. |
 | Old code or grant after consent withdrawal | Generation binding: withdrawal revokes grants and pending requests in the same transaction, and re-consent cannot revive them. |
-| Replay | Single-use `request_uri`, single-use code (atomic redemption), proofs bound to one credential and endpoint and consumed under lock, refresh rotation with one-step reuse detection, `iss`, `state`, SIWE nonce. |
+| Replay | Single-use `request_uri`, single-use code (atomic redemption), proofs bound to one credential and endpoint and consumed under lock, current/previous refresh-token recognition, `iss`, `state`, SIWE nonce. |
 | Cross-device logout through the provider's revoked-token branch (revoke or refresh grant) | Closed: native tokens are refused, a native-capable requesting client is refused outright on both provider paths, and the A2 ownership check covers ordinary clients. |
 | Hosting authority to a hostile node | Host comes only from the admin ceiling and the trusted allowlist; separately disclosed; digest-bound; signed at most once and only if the space is missing. |
 | Cross-app SQL access on the node | Closed by the node: every TinyCloud node isolates SQL databases by full path. |
@@ -1281,9 +1298,12 @@ A native refresh token is useless without its session key:
   the token. Before the proof is verified, the only lookup is a read, so
   failure has no side effects. An unknown token gets the same 401 as a bad
   proof, so the endpoints don't reveal which tokens are live.
-- Reuse detection (revoking a grant whose previous token is presented after
-  30 s) runs only after a valid proof. An attacker who has only a rotated
-  token therefore cannot use reuse detection to log the user out.
+- A previous-token retry after 30 s recovers the session only after a valid
+  proof. RFC 9449 §5 describes sender-constraining refresh tokens to the
+  proof key; applying that protection here means possession of the refresh
+  token alone cannot turn a retry into a forced sign-out. This is an
+  application of the sender-constraint model, not an RFC requirement to
+  disable refresh-token rotation or all reuse detection.
 - The provider's `grant_type=refresh_token` and `/oauth2/revoke` refuse native
   tokens, revoked rows included, even after delegation is disabled for the
   client. Provider 1.6.10's revoked-token branch would otherwise delete every
@@ -1292,12 +1312,13 @@ A native refresh token is useless without its session key:
   with or without a `Bearer ` prefix.
 
 If the session key is stolen too, the attacker becomes a second holder of the
-same grant. Reuse detection is **one step deep**: renewal looks up only the
+same grant. Token recognition is **one step deep**: renewal looks up only the
 grant's current and previous hashes. So:
 
 - If the attacker rotates once (A→B) and the device then presents A, A is
-  the previous token. After 30 s that revokes the grant (`refresh_reuse`),
-  ending both copies.
+  the previous token. After 30 s the device recovers: B and its access rows
+  are deleted, a fresh token is issued, and A's revoked row is deleted so it
+  cannot recover again.
 - If the attacker rotates twice or more (A→B→C, for example while the device
   is offline) and the device then presents A, A is neither current nor
   previous. The device gets 401 `invalid_session_proof` and signs out
@@ -1317,7 +1338,7 @@ The real bounds on a stolen key and token are therefore:
 The attacker never gains more than the device had: the same DID, permissions
 and TTL.
 
-Keeping the whole token family to detect deeper reuse is not part of this
+Keeping the whole token family to recognize deeper replay is not part of this
 version. It would need a per-grant history of every issued token hash, kept
 until the grant expires, plus a lookup on every renewal and revoke. Because
 the session key must be stolen too, and the grant is bounded and revocable, we
@@ -1388,9 +1409,11 @@ rest.
   default).
 - **Private-scheme impersonation** remains possible. Consent and the ceiling
   limit it; they do not prevent it.
-- **Lost renewal response.** It forces a new sign-in; there is no idempotent
-  replay.
-- **One-step reuse detection.** An attacker holding the session key who has
+- **Lost renewal response.** The previous token can recover one time after
+  the 30 s conflict window, provided the device can produce its session-key
+  proof. A second lost response requires the newly issued token; the older
+  token has been consumed.
+- **One-step token recognition.** An attacker holding the session key who has
   rotated two or more times is not detected when the device presents an older
   token. The bound is the grant's absolute expiry plus explicit revocation
   ([Stolen refresh tokens](#stolen-refresh-tokens)).
