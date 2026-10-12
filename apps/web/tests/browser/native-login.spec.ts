@@ -214,6 +214,30 @@ test.describe('native login', () => {
     await expect(page.locator('.otp-box-active')).toHaveCSS('border-top-color', 'rgb(250, 250, 250)');
   });
 
+  test('the sixth digit, a second form submit and a forced Continue click send exactly one verification', async ({ page }) => {
+    await mockApi(page);
+    let verifications = 0;
+    await page.route('**/api/auth/sign-in/email-otp', async (route) => {
+      verifications++;
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      await json(route, { redirect: true, url: 'https://app.test/done?code=abc' }).catch(() => {});
+    });
+    await page.goto(`/auth/login?${signedQuery({ login_method: 'email', login_hint: 'sam@example.test' })}`);
+    await page.waitForLoadState('networkidle');
+    await page.locator('#otp').fill('123456');
+    await expect.poll(() => verifications).toBe(1);
+
+    await page.evaluate(() => {
+      const form = document.querySelector('form')!;
+      form.requestSubmit();
+      form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }));
+      (form.querySelector('button[type="submit"]') as HTMLButtonElement).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      form.requestSubmit(form.querySelector('button[type="submit"]') as HTMLButtonElement);
+    });
+    await page.waitForURL('https://app.test/done?code=abc');
+    expect(verifications).toBe(1);
+  });
+
   test('a wrong code shows one plain line with a single shake, clears the boxes and lets you try again', async ({ page }) => {
     await mockApi(page);
     let attempts = 0;

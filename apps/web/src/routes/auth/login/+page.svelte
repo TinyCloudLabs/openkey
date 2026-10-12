@@ -205,6 +205,8 @@
   const resendLabel = (seconds: number) => `Resend in 0:${String(seconds).padStart(2, '0')}`;
 
   async function verifyOTP() {
+    // One verification at a time, however it was triggered (sixth digit, Enter, Continue).
+    if (native && (verifying || loading || otp.length !== 6)) return;
     loading = true;
     verifying = true;
     error = '';

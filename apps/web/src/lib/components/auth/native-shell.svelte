@@ -37,9 +37,12 @@
   // browser chrome show the document background, so match it.
   $effect(() => {
     const root = document.documentElement;
+    // app.html paints these before hydration and marks them; they are not the
+    // document's own styles, so leaving native mode clears them.
+    const preloaded = root.hasAttribute('data-native-preload');
     const previous = {
-      background: root.style.background,
-      colorScheme: root.style.colorScheme,
+      background: preloaded ? '' : root.style.background,
+      colorScheme: preloaded ? '' : root.style.colorScheme,
       overscroll: root.style.overscrollBehavior,
     };
     root.style.background = theme.background;
@@ -47,6 +50,7 @@
     root.style.overscrollBehavior = 'none';
     document.body.style.background = theme.background;
     return () => {
+      root.removeAttribute('data-native-preload');
       root.style.background = previous.background;
       root.style.colorScheme = previous.colorScheme;
       root.style.overscrollBehavior = previous.overscroll;

@@ -149,6 +149,38 @@ test.describe('compact native consent', () => {
     await page.waitForURL(/\/auth\/login\?redirect=/);
     await expect(page.getByText('Loading...')).toHaveCount(0);
   });
+
+  test('leaving native mode for the plain login clears the pre-paint dark root styles', async ({ page }) => {
+    await page.route('**/api/**', route => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === '/api/auth/get-session') return json(route, null);
+      if (path === '/api/oauth/tinycloud/clients/exo-native/branding') return json(route, EXO_BRANDING);
+      if (path === '/api/auth/providers') return json(route, { providers: [] });
+      return json(route, { error: `unmocked ${path}` }, 404);
+    });
+    const rootState = () => page.evaluate(() => {
+      const root = document.documentElement;
+      return {
+        style: root.getAttribute('style') ?? '',
+        preload: root.hasAttribute('data-native-preload'),
+        background: getComputedStyle(root).backgroundColor,
+        colorScheme: getComputedStyle(root).colorScheme,
+        overscroll: getComputedStyle(root).overscrollBehaviorY,
+        viewport: document.querySelector('meta[name="viewport"]')!.getAttribute('content'),
+      };
+    });
+
+    await page.goto('/auth/login?redirect=%2Fdashboard');
+    await expect(page.getByRole('heading', { name: 'Welcome to OpenKey' })).toBeVisible();
+    const plain = await rootState();
+    expect(plain.style).toBe('');
+
+    await page.goto('/oauth/consent?client_id=exo-native&tinycloud_request=native-1&sig=test');
+    await page.waitForURL(/\/auth\/login\?redirect=/);
+    await expect(page.getByRole('heading', { name: 'Welcome to OpenKey' })).toBeVisible();
+    await expect(page.locator('[data-native-shell]')).toHaveCount(0);
+    expect(await rootState()).toEqual(plain);
+  });
 });
 
 test('retry after provider consent failure does not approve or sign again', async ({ page }) => {
