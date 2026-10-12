@@ -16,11 +16,11 @@
 //   - bound to a nonce
 //   - bound to an issue and expiry timestamp
 //
-// /complete MUST consume the context only after every authority check passes.
-// Any deviation — a different key, a different host, an added action, an
-// altered immutable field, a broadened selection, or a signature that
-// verifies against different bytes — is rejected without spending the
-// context. The `edited` flag is IGNORED for authority decisions.
+// /complete MUST consume the context (single-use). Any deviation — a
+// different key, a different host, an added action, an altered immutable
+// field, a broadened selection, a signature that verifies against different
+// bytes — is rejected. The `edited` flag in the request body is IGNORED
+// for authority decisions; authority checks always run.
 //
 // The context is not persisted to the database — it lives in an in-process
 // map keyed by an opaque token. Restarting the API invalidates outstanding
@@ -389,7 +389,7 @@ export interface ConsumeInput {
   /**
    * Sol MAJOR-4: the FULL ReCap attenuation of the candidate SIWE the caller
    * wants to complete, as returned by `extractRecapAttenuationFromSiwe`.
-   * When supplied, the check verifies that the candidate attenuation is a
+   * When supplied, consume verifies that the candidate attenuation is a
    * STRICT SUBSET of the baseline attenuation bound at /prepare — narrowing
    * is permitted but broadening (any new resource, ability, or caveat) is
    * rejected. Caveats compare as ordered multisets — removing a caveat is
@@ -397,18 +397,18 @@ export interface ConsumeInput {
    *
    * The baseline attenuation is not stored directly on the context (the
    * digest suffices); instead callers pass the ORIGINAL SIWE attenuation
-   * on both sides. Checking performs a stateless subset test.
+   * on both sides. Consume is a stateless subset test.
    */
   candidateAttenuation?: Record<string, Record<string, unknown[]>>;
   /**
    * Sol MAJOR-4: the baseline ReCap attenuation, as extracted from the
    * ORIGINAL SIWE bound at /prepare. When supplied alongside
-   * `candidateAttenuation`, the check runs a subset check against this
+   * `candidateAttenuation`, consume runs a subset check against this
    * baseline. This is the SAME attenuation whose digest is stored on the
-   * context, so the check additionally cross-checks
+   * context, so consume additionally cross-checks
    * `digestFullRecapAttenuation(baselineAttenuation) === stored.baselineAbilitiesDigest`
    * before running the subset test — a mismatch means the caller supplied
-   * a different baseline than the one bound at /prepare and the check fails
+   * a different baseline than the one bound at /prepare and consume fails
    * fast rather than accepting a subset check against attacker-controlled
    * baseline data.
    */
@@ -547,6 +547,27 @@ function attenuationSubsetFailure(
 }
 
 /**
+ * Consume the context and validate it in one step. The context is deleted
+ * as soon as it is found, so a refused call also uses it up. `/complete`
+ * and the managed approval use `checkAuthorizationContext` +
+ * `consumeCheckedAuthorizationContext` instead, so a refusal leaves the
+ * pending approval usable.
+ */
+export function consumeAuthorizationContext(
+  input: ConsumeInput,
+): ConsumeSuccess | ConsumeFailure {
+  const now = Date.now();
+  pruneExpired(now);
+  const stored = store.get(input.token);
+  if (!stored) {
+    return { ok: false, error: "context-not-found", message: "Authorization context not found." };
+  }
+  // Single-use: consume immediately so replay attempts miss.
+  store.delete(input.token);
+  return evaluateContext(stored, input, now);
+}
+
+/**
  * The exact stored context a successful `checkAuthorizationContext`
  * validated. Pass it to `consumeCheckedAuthorizationContext`.
  */
@@ -559,14 +580,16 @@ export interface AuthorizationContextClaim {
 export type CheckSuccess = ConsumeSuccess & { claim: AuthorizationContextClaim };
 
 /**
- * TC-587: run every binding check without consuming the context. A refusal
- * leaves it usable. Call `consumeCheckedAuthorizationContext(result.claim)`
- * only once every other check of the request has passed.
+ * TC-587: run every binding check of `consumeAuthorizationContext` without
+ * consuming the context. A refusal leaves the context usable. Call
+ * `consumeCheckedAuthorizationContext(result.claim)` once every other check
+ * of the request has passed and completion is about to succeed.
  */
 export function checkAuthorizationContext(
   input: ConsumeInput,
 ): CheckSuccess | ConsumeFailure {
   const now = Date.now();
+  pruneExpired(now);
   const stored = store.get(input.token);
   if (!stored) {
     return { ok: false, error: "context-not-found", message: "Authorization context not found." };
@@ -576,54 +599,23 @@ export function checkAuthorizationContext(
 }
 
 /**
- * Atomically compare both checked records (when preview approval is supplied)
- * and their expirations before deleting either. No asynchronous work may occur
- * between this validation and the two deletions.
+ * TC-587: atomic compare-and-delete. Deletes the context only if the store
+ * still holds the exact record the check validated (stored records are
+ * never mutated). Synchronous, so nothing can run between the compare and
+ * the delete: of two completions that both passed the check, exactly one
+ * consumes the context and the other is refused, as is any later replay.
  */
 export function consumeCheckedAuthorizationContext(
   claim: AuthorizationContextClaim,
-  previewClaim?: PreviewApprovalClaim,
-): { ok: true } | ConsumeFailure | PreviewApprovalCheckFailure {
+): { ok: true } | ConsumeFailure {
   const current = store.get(claim.token);
   if (current === undefined || current !== claim.record) {
     return { ok: false, error: "context-not-found", message: "Authorization context not found." };
   }
-  const now = Date.now();
-  if (current.expiresAt <= now) {
+  store.delete(claim.token);
+  if (current.expiresAt <= Date.now()) {
     return { ok: false, error: "context-expired", message: "Authorization context expired." };
   }
-  if (previewClaim) {
-    const preview = previewApprovals.get(previewClaim.token);
-    if (preview === undefined || preview !== previewClaim.record) {
-      return { ok: false, error: "preview-approval-not-found", message: "Preview approval token not found." };
-    }
-    if (preview.expiresAt <= now) {
-      return { ok: false, error: "preview-approval-expired", message: "Preview approval expired." };
-    }
-    if (preview.authorizationContextToken !== claim.token) {
-      return {
-        ok: false,
-        error: "preview-approval-context-mismatch",
-        message: "Preview approval was issued for a different authorization context.",
-      };
-    }
-    if (preview.userId !== current.userId) {
-      return {
-        ok: false,
-        error: "preview-approval-user-mismatch",
-        message: "Preview approval bound to a different user.",
-      };
-    }
-    if (preview.keyAddress !== current.keyAddress) {
-      return {
-        ok: false,
-        error: "preview-approval-key-mismatch",
-        message: "Preview approval bound to a different key address.",
-      };
-    }
-    previewApprovals.delete(previewClaim.token);
-  }
-  store.delete(claim.token);
   return { ok: true };
 }
 
@@ -783,18 +775,19 @@ export interface PeekFailure {
 /**
  * Non-consuming lookup for a stored authorization context. Returns the bound
  * fields so a caller can reconstruct the immutable-fields digest before
- * invoking `checkAuthorizationContext`. This exists because
+ * invoking `consumeAuthorizationContext`. This exists because
  * `/authorize-sign` needs to look up the bound key row (via keyAddress)
- * before it can compute the candidate immutable-fields digest for checking.
+ * before it can compute the candidate immutable-fields digest for consume.
  *
  * Peek DOES NOT extend the token TTL and DOES NOT reveal the token itself.
  * It only surfaces the bound facts that the caller supplied at issue time.
- * Callers MUST follow up with `checkAuthorizationContext` and
- * `consumeCheckedAuthorizationContext` — the peek is purely a lookup,
- * never an authority.
+ * Callers MUST follow up with `consumeAuthorizationContext` (or
+ * `checkAuthorizationContext` + `consumeCheckedAuthorizationContext`) —
+ * the peek is purely a lookup, never an authority.
  */
 export function peekAuthorizationContext(token: string): PeekSuccess | PeekFailure {
   const now = Date.now();
+  pruneExpired(now);
   const stored = store.get(token);
   if (!stored) {
     return { ok: false, error: "context-not-found", message: "Authorization context not found." };
@@ -907,49 +900,41 @@ export function issuePreviewApproval(
   };
 }
 
-export type PreviewApprovalCheckError =
+export type PreviewApprovalConsumeError =
   | "preview-approval-not-found"
   | "preview-approval-expired"
   | "preview-approval-user-mismatch"
   | "preview-approval-context-mismatch"
-  | "preview-approval-key-mismatch"
   | "preview-approval-selection-mismatch"
   | "preview-approval-bytes-mismatch";
 
-export interface PreviewApprovalCheckInput {
+export interface PreviewApprovalConsumeInput {
   token: string;
   authorizationContextToken: string;
   userId: string;
-  keyAddress: string;
   selectedActionIds: Set<string>;
   /** The candidate signedMessage /authorize-sign is about to sign. */
   candidateSignedMessage: string;
 }
 
-export interface PreviewApprovalCheckSuccess {
+export interface PreviewApprovalConsumeSuccess {
   ok: true;
   signedMessage: string;
   selectedActionIds: Set<string>;
   keyAddress: string;
-  claim: PreviewApprovalClaim;
 }
 
-export interface PreviewApprovalCheckFailure {
+export interface PreviewApprovalConsumeFailure {
   ok: false;
-  error: PreviewApprovalCheckError;
+  error: PreviewApprovalConsumeError;
   message: string;
 }
 
-/** The exact preview record validated by `checkPreviewApproval`. */
-export interface PreviewApprovalClaim {
-  readonly token: string;
-  readonly record: object;
-}
-
-export function checkPreviewApproval(
-  input: PreviewApprovalCheckInput,
-): PreviewApprovalCheckSuccess | PreviewApprovalCheckFailure {
+export function consumePreviewApproval(
+  input: PreviewApprovalConsumeInput,
+): PreviewApprovalConsumeSuccess | PreviewApprovalConsumeFailure {
   const now = Date.now();
+  prunePreviewApprovals(now);
   const stored = previewApprovals.get(input.token);
   if (!stored) {
     return {
@@ -958,6 +943,8 @@ export function checkPreviewApproval(
       message: "Preview approval token not found.",
     };
   }
+  // Single-use: delete before validation so replay attempts miss.
+  previewApprovals.delete(input.token);
   if (stored.expiresAt <= now) {
     return {
       ok: false,
@@ -978,13 +965,6 @@ export function checkPreviewApproval(
       error: "preview-approval-context-mismatch",
       message:
         "Preview approval was issued for a different authorization context.",
-    };
-  }
-  if (stored.keyAddress !== input.keyAddress.toLowerCase()) {
-    return {
-      ok: false,
-      error: "preview-approval-key-mismatch",
-      message: "Preview approval bound to a different key address.",
     };
   }
   // Sol CRITICAL-1: enforce EXACT selection equality between preview and
@@ -1026,6 +1006,5 @@ export function checkPreviewApproval(
     signedMessage: stored.signedMessage,
     selectedActionIds: new Set(stored.selectedActionIds),
     keyAddress: stored.keyAddress,
-    claim: { token: input.token, record: stored },
   };
 }
