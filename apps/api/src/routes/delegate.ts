@@ -96,6 +96,7 @@ import {
   type CoordinationosDenialCode,
 } from '../services/coordinationos-signing-audit';
 import { validateTinyCloudManageKeyRequest } from '../services/tinycloud-manage-key-policy';
+import { canonicalTrustedTinyCloudHost } from '../services/tinycloud-hosts';
 import { deviceDelegationWindowError, deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, primaryKeyWhere } from '../services/primary-key';
 
@@ -103,6 +104,7 @@ const prisma = createPrismaClient();
 const tee = createTeeClient();
 
 type SpaceSetupPlan = 'setup' | 'auto-sign-off' | 'external-wallet';
+type ManagedSpaceSetup = { space: string; plan: SpaceSetupPlan; bootstrapHost: string };
 
 async function managedSpaceSetupPlan(input: {
   userId: string;
@@ -111,7 +113,7 @@ async function managedSpaceSetupPlan(input: {
   address: string;
   chainId: number;
   spaceId: string;
-}): Promise<{ space: string; plan: SpaceSetupPlan } | null> {
+}): Promise<ManagedSpaceSetup | null> {
   const name = input.spaceId.slice(input.spaceId.lastIndexOf(':') + 1);
   if (
     !BOOTSTRAP_SPACE_NAMES.includes(name as (typeof BOOTSTRAP_SPACE_NAMES)[number]) ||
@@ -119,14 +121,16 @@ async function managedSpaceSetupPlan(input: {
   ) return null;
 
   const { trustedTinyCloudBootstrapHost } = await import('../services/tinycloud-bootstrap');
-  if (input.host !== trustedTinyCloudBootstrapHost()) return null;
-  if (input.keyType !== 'MANAGED') return { space: name, plan: 'external-wallet' };
+  // TC-943: Courier and node-sdk send the tee.node alias of the configured node.
+  const bootstrapHost = canonicalTrustedTinyCloudHost(input.host, trustedTinyCloudBootstrapHost());
+  if (!bootstrapHost) return null;
+  if (input.keyType !== 'MANAGED') return { space: name, plan: 'external-wallet', bootstrapHost };
 
   const preference = await prisma.user.findUnique({
     where: { id: input.userId },
     select: { autoSignEnabled: true },
   });
-  return { space: name, plan: preference?.autoSignEnabled ? 'setup' : 'auto-sign-off' };
+  return { space: name, plan: preference?.autoSignEnabled ? 'setup' : 'auto-sign-off', bootstrapHost };
 }
 type SpaceReadiness = { spaceReady: boolean | null; spaceError?: string };
 
@@ -169,7 +173,7 @@ async function finishManagedSpaceOnboarding(input: {
       userId: input.userId,
       key: { id: input.key.id, address: input.key.address, keyType: input.key.keyType },
       privateKey,
-      host: input.host,
+      host: setup.bootstrapHost,
       chainId: input.chainId,
     });
     return outcome.status === 'complete'
@@ -1759,12 +1763,13 @@ delegateRouter.post('/prepare', async (c) => {
       chainId,
       spaceId: preparedResult.spaceId,
     });
+    const disclosed = setup && { space: setup.space, plan: setup.plan };
     if (setup?.plan !== 'setup') {
-      spaceSetup = setup;
+      spaceSetup = disclosed;
     } else if (process.env.TINYCLOUD_BOOTSTRAP_ON_SIGN !== 'off') {
       const { isTinyCloudBootstrapComplete } = await import('../services/tinycloud-bootstrap');
-      if (!(await isTinyCloudBootstrapComplete(prisma, { keyId: key.id, chainId, host }))) {
-        spaceSetup = setup;
+      if (!(await isTinyCloudBootstrapComplete(prisma, { keyId: key.id, chainId, host: setup.bootstrapHost }))) {
+        spaceSetup = disclosed;
       }
     }
   } catch (error) {
