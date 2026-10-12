@@ -1,15 +1,16 @@
 import type { TinyCloudBootstrapOutcome } from './tinycloud-bootstrap';
 
 export const DEFAULT_TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS = 2500;
+const MAX_TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS = 60_000;
 
-/** Read per call so tests and tuning see the current env. Invalid or negative → default. */
+/** Read per call. Invalid or negative → default; cap at 60 seconds to avoid timer overflow. */
 export function tinyCloudBootstrapSyncBudgetMs(
   env: Record<string, string | undefined> = process.env,
 ): number {
   const configured = env.TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS;
   const budget = configured?.trim() ? Number(configured) : NaN;
   return Number.isFinite(budget) && budget >= 0
-    ? budget
+    ? Math.min(budget, MAX_TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS)
     : DEFAULT_TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS;
 }
 
@@ -48,7 +49,10 @@ export async function awaitTinyCloudBootstrapWithinBudget(
     result = await Promise.race([
       settled,
       new Promise<{ status: 'pending' }>((resolve) => {
-        timer = setTimeout(() => resolve({ status: 'pending' }), options.budgetMs ?? tinyCloudBootstrapSyncBudgetMs());
+        timer = setTimeout(
+          () => resolve({ status: 'pending' }),
+          Math.min(options.budgetMs ?? tinyCloudBootstrapSyncBudgetMs(), MAX_TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS),
+        );
       }),
     ]);
   } finally {

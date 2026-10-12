@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
+import { fileURLToPath } from 'node:url';
 import { privateKeyToAccount } from 'viem/accounts';
 import type { TinyCloudBootstrapOutcome } from '../services/tinycloud-bootstrap';
 
 // Keep the bootstrap sync budget short so the pending-path test is fast.
-// Must be set before the routes/keys module is first imported.
+// The shared helper reads this per request.
 process.env.TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS = '75';
 
 const privateKey = '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
@@ -101,6 +102,31 @@ beforeEach(() => {
 
 async function keysRouter() {
   return (await import('../routes/keys')).keysRouter;
+}
+
+// TC-928: another file can leave a cached TEE mock without `seal`, preventing
+// keys.ts from linking. Run new regressions in a fresh process in that case;
+// keep the existing aggregate failures visible and never skip these assertions.
+function signingRegressionTest(name: string, run: () => Promise<void>) {
+  test(name, async () => {
+    if (process.env.TC945_KEYS_SIGN_ISOLATED !== '1' && !('seal' in await import('@openkey/tee'))) {
+      const pattern = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const child = Bun.spawn([
+        process.execPath, 'test', fileURLToPath(import.meta.url), '--test-name-pattern', pattern,
+      ], {
+        env: { ...process.env, TC945_KEYS_SIGN_ISOLATED: '1' },
+        stdout: 'pipe', stderr: 'pipe',
+      });
+      const [exitCode, stdout, stderr] = await Promise.all([
+        child.exited, new Response(child.stdout).text(), new Response(child.stderr).text(),
+      ]);
+      if (exitCode !== 0) throw new Error(`Isolated signing regression failed:\n${stdout}${stderr}`);
+      expect(stderr).toMatch(/\b1 pass\b/);
+      expect(stderr).toMatch(/\b0 fail\b/);
+      return;
+    }
+    await run();
+  });
 }
 
 describe('keysRouter managed signing', () => {
@@ -238,6 +264,117 @@ describe('keysRouter managed signing', () => {
     );
     consoleSpy.mockRestore();
   });
+
+  signingRegressionTest('POST /:keyId/sign still signs when bootstrap rejects before the budget', async () => {
+    ensureTinyCloudBootstrapForApprovedSign.mockImplementationOnce(async () => {
+      calls.push('bootstrap');
+      throw new Error('database unavailable');
+    });
+    const error = spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const router = await keysRouter();
+      const response = await router.request('/key_1/sign', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ message: 'hello' }),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        signature: expect.stringMatching(/^0x[0-9a-f]+$/i),
+        address,
+        format: 'personal_sign',
+        tinycloudBootstrap: { status: 'failed', errorCode: 'tinycloud_bootstrap_crashed' },
+      });
+      expect(calls).toEqual(['bootstrap', 'sign']);
+      expect(error).toHaveBeenCalledTimes(1);
+      expect(error).toHaveBeenCalledWith('[Keys] TinyCloud bootstrap failed', {
+        keyId: keyRecord.id,
+        errorCode: 'tinycloud_bootstrap_crashed',
+        errorMessage: 'database unavailable',
+      });
+    } finally { error.mockRestore(); }
+  });
+
+  signingRegressionTest('POST /:keyId/sign background rejection logs only identifiers and error details', async () => {
+    let resolveBootstrap!: (outcome: TinyCloudBootstrapOutcome) => void;
+    let rejectBootstrap!: (error: Error) => void;
+    const bootstrap = new Promise<TinyCloudBootstrapOutcome>((resolve, reject) => {
+      resolveBootstrap = resolve;
+      rejectBootstrap = reject;
+    });
+    ensureTinyCloudBootstrapForApprovedSign.mockImplementationOnce(() => bootstrap);
+    const error = spyOn(console, 'error').mockImplementation(() => {});
+    const log = spyOn(console, 'log').mockImplementation(() => {});
+    const unhandled = mock(() => {});
+    process.on('unhandledRejection', unhandled);
+    try {
+      const router = await keysRouter();
+      const response = await router.request('/key_1/sign', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ message: 'hello' }),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        signature: expect.stringMatching(/^0x[0-9a-f]+$/i),
+        tinycloudBootstrap: { status: 'pending' },
+      });
+      rejectBootstrap(new Error('background database failure'));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandled).not.toHaveBeenCalled();
+      expect(log).not.toHaveBeenCalled();
+      expect(error).toHaveBeenCalledTimes(1);
+      expect(error).toHaveBeenCalledWith('[Keys] TinyCloud bootstrap crashed (async)', {
+        keyId: keyRecord.id,
+        errorCode: 'tinycloud_bootstrap_crashed',
+        errorMessage: 'background database failure',
+      });
+      const logged = JSON.stringify(error.mock.calls);
+      expect(logged).not.toContain('privateKey');
+      expect(logged).not.toContain(privateKey);
+      expect(logged).not.toContain(keyRecord.sealedBlob!);
+    } finally {
+      resolveBootstrap({ status: 'complete' });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      process.off('unhandledRejection', unhandled);
+      error.mockRestore();
+      log.mockRestore();
+    }
+  });
+
+  for (const [configured, expectedMs] of [['125', 125], [undefined, 2500]] as const) {
+    signingRegressionTest(`POST /:keyId/sign schedules the ${configured === undefined ? 'default' : 'configured'} ${expectedMs} ms bootstrap budget`, async () => {
+      const savedBudget = process.env.TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS;
+      if (configured === undefined) delete process.env.TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS;
+      else process.env.TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS = configured;
+      const router = await keysRouter();
+      let resolveBootstrap!: (outcome: TinyCloudBootstrapOutcome) => void;
+      const bootstrap = new Promise<TinyCloudBootstrapOutcome>((resolve) => { resolveBootstrap = resolve; });
+      ensureTinyCloudBootstrapForApprovedSign.mockImplementationOnce(() => bootstrap);
+      const timer = spyOn(globalThis, 'setTimeout');
+      const request = router.request('/key_1/sign', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ message: 'hello' }),
+      });
+      try {
+        // An asynchronous bootstrap should complete before either budget, but not a forced 0 ms budget.
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        resolveBootstrap({ status: 'complete' });
+        const response = await request;
+        expect(response.status).toBe(200);
+        expect(await response.json()).toMatchObject({ tinycloudBootstrap: { status: 'complete' } });
+        expect(timer).toHaveBeenCalledWith(expect.any(Function), expectedMs);
+      } finally {
+        resolveBootstrap({ status: 'complete' });
+        await request;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        timer.mockRestore();
+        if (savedBudget === undefined) delete process.env.TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS;
+        else process.env.TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS = savedBudget;
+      }
+    });
+  }
 
   test('POST /:keyId/sign includes tinycloudBootstrap:skipped when bootstrap is not applicable', async () => {
     ensureTinyCloudBootstrapForApprovedSign.mockImplementationOnce(async () => {

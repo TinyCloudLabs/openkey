@@ -184,6 +184,9 @@ async function finishManagedSpaceOnboarding(input: {
     if (outcome.status === 'pending' || (outcome.status === 'failed' && outcome.errorCode === 'tinycloud_bootstrap_in_progress')) {
       return { spaceReady: null, spacePending: true };
     }
+    if (outcome.status === 'failed' && outcome.errorCode === 'tinycloud_bootstrap_crashed') {
+      return { spaceReady: false, spaceError: `TinyCloud account setup failed: ${outcome.errorMessage}.` };
+    }
     return { spaceReady: false, spaceError: `TinyCloud account setup failed${outcome.status === 'failed' ? ` (${outcome.errorCode}): ${outcome.errorMessage}` : ''}.` };
   } catch (error) {
     return {

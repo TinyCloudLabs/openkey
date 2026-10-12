@@ -109,6 +109,23 @@ describe('TC-945 TinyCloud bootstrap budget', () => {
     expect(tinyCloudBootstrapSyncBudgetMs({ TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS: '75' })).toBe(75);
   });
 
+  test('clamps configured budgets to 60000 ms so oversized timers cannot overflow', () => {
+    for (const value of ['60000', '60001', '3000000000', String(Number.MAX_SAFE_INTEGER)]) {
+      expect(tinyCloudBootstrapSyncBudgetMs({ TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS: value })).toBe(60_000);
+    }
+    expect(tinyCloudBootstrapSyncBudgetMs({ TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS: '59999' })).toBe(59_999);
+  });
+
+  test('clamps an explicit budget override before scheduling its timer', async () => {
+    const timer = spyOn(globalThis, 'setTimeout');
+    try {
+      expect(await awaitTinyCloudBootstrapWithinBudget(Promise.resolve({ status: 'complete' }), {
+        ...options, budgetMs: 3_000_000_000,
+      })).toEqual({ status: 'complete' });
+      expect(timer).toHaveBeenCalledWith(expect.any(Function), 60_000);
+    } finally { timer.mockRestore(); }
+  });
+
   test('a throwing background observer cannot cause an unhandled rejection', async () => {
     const work = deferred();
     const unhandled = mock(() => {});

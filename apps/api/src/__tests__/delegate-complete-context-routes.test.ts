@@ -882,6 +882,19 @@ describe('TC-945 bootstrap budget', () => {
     expect(result.body.spaceError).toContain('seed failed');
     expect(result.body).not.toHaveProperty('spacePending');
   });
+  for (const [name, approve] of [['versioned', managedApproval], ['legacy', legacyApproval]] as const) {
+    test(`bootstrap rejection before the budget keeps the plain setup error for ${name} approval`, async () => {
+      ensureTinyCloudBootstrap.mockImplementationOnce(async () => { throw new Error('database unavailable'); });
+      const result = await approve(host);
+      expect(result.status).toBe(200);
+      expect(result.body).toMatchObject({
+        hostActivated: true,
+        spaceReady: false,
+        spaceError: 'TinyCloud account setup failed: database unavailable.',
+      });
+      expect(result.body).not.toHaveProperty('spacePending');
+    });
+  }
   test('rejection after the response is logged once without an unhandled rejection', async () => {
     const work = deferredBootstrap();
     ensureTinyCloudBootstrap.mockImplementationOnce(() => work.promise);
