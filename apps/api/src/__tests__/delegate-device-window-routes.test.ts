@@ -213,9 +213,24 @@ describe('device delegation window on /api/delegate', () => {
     };
     const signed = await post('/', approval);
     expect(signed.status).toBe(200);
+    // The page maps signed ReCap grants back to the request's service and space spelling.
+    const approvedPermissions = permissions.map((requested) => {
+      const grant = signed.body.permissions.find((entry: { service: string; space: string; path: string }) =>
+        `tinycloud.${entry.service}` === requested.service &&
+        (entry.space === requested.space || entry.space.endsWith(`:${requested.space}`)) &&
+        entry.path === requested.path,
+      );
+      expect(grant).toBeDefined();
+      expect(grant.actions).toHaveLength(requested.actions.length);
+      expect(grant.actions.every((action: string) => requested.actions.includes(action))).toBe(true);
+      return { ...requested, actions: requested.actions.filter((action) => grant.actions.includes(action)) };
+    });
+    expect(approvedPermissions).toEqual(permissions);
     const replay = await post('/', approval);
     expect(replay.status).toBe(400);
     expect(replay.body.code).toBe('context-not-found');
+    expect(replay.body.delegationHeader).toBeUndefined();
+    expect(activateSessionWithHost).toHaveBeenCalledTimes(1);
 
     // finishDelegate(): relay approval, followed by the CLI's poll.
     const eph = generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).publicKey.export({ format: 'jwk' }) as Record<string, string>;
@@ -232,11 +247,15 @@ describe('device delegation window on /api/delegate', () => {
         sessionDid: sessionDidForPublicJwk(jwk),
         nodeOrigin: host,
         shareOrigin: 'https://share.tinycloud.xyz',
-        permissions,
+        permissions: approvedPermissions,
         delegationExpiresAt: signed.body.expiresAt,
       },
     });
-    expect((await deviceService.poll({ transactionId: id, deviceSecret, codeVerifier })).status).toBe('approved');
+    const polled = await deviceService.poll({ transactionId: id, deviceSecret, codeVerifier });
+    expect(polled.status).toBe('approved');
+    if (polled.status !== 'approved') throw new Error('Expected approved device poll');
+    expect(polled.binding.permissions).toEqual(permissions);
+    expect(polled.binding.delegationExpiresAt).toBe(signed.body.expiresAt);
   });
 
   test('refuses reshaped spellings of the session JWK for a named transaction', async () => {
