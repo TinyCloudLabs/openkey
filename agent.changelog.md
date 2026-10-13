@@ -3,6 +3,12 @@
 Track changes to agent-facing development guidance for OpenKey. Add a concise entry when
 `agent.dev.md` or related agent workflow expectations change.
 
+## 2026-10-12
+
+- Sealed-key derivation is frozen (TC-964): `@phala/dstack-sdk` is pinned to exactly `0.5.7` and
+  ignored by Dependabot, and a known-answer test runs in the new `dstack key-derivation guard`
+  check and the Docker build. Agents never edit its known answers to make it pass.
+
 ## 2026-10-03
 
 - Agents never bump a major version (TC-615). Changesets are `minor` or `patch`; a maintainer

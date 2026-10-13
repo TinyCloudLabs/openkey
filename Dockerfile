@@ -30,6 +30,9 @@ COPY . .
 RUN bun test packages/db/src/schema-contract.test.ts
 RUN bun run build --filter @openkey/db
 RUN bun run build --filter @openkey/tee
+# The runtime image ships this stage's node_modules and packages/tee/dist.
+# Refuse to build it if sealed-key derivation would change (TC-964).
+RUN OPENKEY_KAT_REQUIRE_DIST=1 bun test packages/tee/tests/dstack-key-derivation.kat.test.ts
 RUN bun run build --filter @openkey/api
 
 # Production image
