@@ -9,16 +9,19 @@ describe('resolveTeeMode fails closed (TC-966)', () => {
     expect(resolveTeeMode({ TEE_MODE: 'production' })).toBe('production');
   });
 
-  test('the mock needs an explicit TEE_MODE=development outside production', () => {
-    expect(resolveTeeMode({ TEE_MODE: 'development' })).toBe('development');
-    expect(resolveTeeMode({ TEE_MODE: 'development', NODE_ENV: 'test' })).toBe('development');
+  test('the mock needs an explicit TEE_MODE=development in local development', () => {
+    for (const nodeEnv of [undefined, '', 'development', 'test']) {
+      expect(resolveTeeMode({ TEE_MODE: 'development', NODE_ENV: nodeEnv })).toBe('development');
+    }
   });
 
-  test('TEE_MODE=development is refused with NODE_ENV=production', () => {
-    expect(() => resolveTeeMode({ TEE_MODE: 'development', NODE_ENV: 'production' })).toThrow(
-      'TEE_MODE=development is not allowed with NODE_ENV=production',
-    );
-  });
+  for (const nodeEnv of ['production', 'staging', 'preview', 'Development', 'constructor']) {
+    test(`TEE_MODE=development is refused with NODE_ENV=${nodeEnv}`, () => {
+      expect(() => resolveTeeMode({ TEE_MODE: 'development', NODE_ENV: nodeEnv })).toThrow(
+        'TEE_MODE=development is only allowed for local development',
+      );
+    });
+  }
 
   for (const mode of [undefined, '', 'prod', 'Production', ' production', 'dev']) {
     for (const nodeEnv of ['production', undefined]) {

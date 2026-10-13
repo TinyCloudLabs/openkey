@@ -3,10 +3,10 @@
 //
 // The mock client seals under sha256(DEV_SEALING_KEY || path), where
 // DEV_SEALING_KEY falls back to a public default. This script tries every
-// sealed blob against those mock keys and prints COUNTS ONLY: per table, per
-// sealing-path type, per result, plus the created_at range of any blob that
-// decrypts. It never prints, logs or writes key material, plaintext, user IDs,
-// sealing contexts or blobs.
+// sealed blob against the public dev keys and the deployment's key, and prints
+// COUNTS ONLY: per table, per sealing-path type, per result, plus the
+// created_at range of any blob that decrypts. It never prints, logs or writes
+// key material, plaintext, user IDs, sealing contexts or blobs.
 //
 // Read-only: one transaction, `SET TRANSACTION READ ONLY`, rolled back at the
 // end.
@@ -15,16 +15,28 @@
 //   DATABASE_URL      the database to check (required)
 //   DEV_SEALING_KEY   the deployment's DEV_SEALING_KEY, if it has one (optional)
 //
-// Usage: bun run ops/tc-966-mock-seal-check/check.ts
+// Usage: bun --no-env-file run ops/tc-966-mock-seal-check/check.ts
+// (--no-env-file stops Bun loading a local .env in place of the real values.)
 // See README.md for what each result means.
 import { SQL } from 'bun';
 import { createDecipheriv, createHash } from 'node:crypto';
 
-/** The mock client's public fallback (packages/tee/src/index.ts, since 2026-01-04). */
-const PUBLIC_DEFAULT_DEV_SEALING_KEY = 'openkey-dev-sealing-key-32b!';
+/**
+ * Every DEV_SEALING_KEY value published in this repository, so anyone could
+ * have derived the key: the code's fallback (packages/tee/src/index.ts, since
+ * 2026-01-04), docker-compose.yml and docs/development.md, the .env.example
+ * placeholder, the README placeholder, and the nostr route tests.
+ */
+const PUBLIC_DEV_SEALING_KEYS = [
+  'openkey-dev-sealing-key-32b!',
+  'openkey-dev-sealing-key-32bytes!',
+  '<32-byte-hex-key-for-local-dev>',
+  '...',
+  'test-sealing-key-for-nostr-route-tests',
+];
 
 type Result =
-  | 'decrypts with the public default'
+  | 'decrypts with a public dev key'
   | 'decrypts with the prod DEV_SEALING_KEY'
   | "doesn't decrypt"
   | 'malformed blob'
@@ -61,12 +73,14 @@ function opensWith(blob: Buffer, devKey: string, path: string): boolean {
   }
 }
 
-export function classify(row: SealedRow, prodDevKey: string | undefined): Result {
+function classify(row: SealedRow, prodDevKey: string | undefined): Result {
   if (row.path === null) return 'no sealing path';
   const blob = Buffer.from(row.blob, 'base64');
   if (blob.length < 28) return 'malformed blob';
-  if (opensWith(blob, PUBLIC_DEFAULT_DEV_SEALING_KEY, row.path)) return 'decrypts with the public default';
-  if (prodDevKey && opensWith(blob, prodDevKey, row.path)) return 'decrypts with the prod DEV_SEALING_KEY';
+  const path = row.path;
+  // Public keys first: a prod key that equals a published one is public.
+  if (PUBLIC_DEV_SEALING_KEYS.some((devKey) => opensWith(blob, devKey, path))) return 'decrypts with a public dev key';
+  if (prodDevKey && opensWith(blob, prodDevKey, path)) return 'decrypts with the prod DEV_SEALING_KEY';
   return "doesn't decrypt";
 }
 
@@ -126,11 +140,14 @@ async function main(): Promise<void> {
   const tx = await sql.reserve();
   const tallies = new Map<string, Tally>();
   let total = 0;
+  let databaseName = '';
   try {
     await tx`BEGIN`;
     await tx`SET TRANSACTION READ ONLY`;
     const [{ transaction_read_only: readOnly }] = await tx`SHOW transaction_read_only`;
     if (readOnly !== 'on') throw new Error('transaction is not read-only; refusing to continue');
+    // A name, not a credential: lets the operator confirm the target database.
+    [{ current_database: databaseName }] = await tx`SELECT current_database()`;
 
     for (const row of await readSealedRows(tx)) {
       total += 1;
@@ -150,15 +167,26 @@ async function main(): Promise<void> {
     await sql.close();
   }
 
-  console.log(`TC-966 mock-seal check: ${total} sealed blobs checked (read-only transaction, rolled back)`);
-  console.log(`prod DEV_SEALING_KEY ${prodDevKey ? 'provided' : 'NOT provided: only the public default was tried'}`);
+  console.log(`TC-966 mock-seal check: ${total} sealed blobs checked in database "${databaseName}" (read-only transaction, rolled back)`);
+  console.log(`public dev keys tried: ${PUBLIC_DEV_SEALING_KEYS.length} (every value published in the repository)`);
+  console.log(`prod DEV_SEALING_KEY ${prodDevKey ? 'provided' : 'NOT provided: only the public dev keys were tried'}`);
   console.log('table\tpath type\tresult\tcount\tcreated_at range');
   for (const [label, tally] of [...tallies].sort(([a], [b]) => a.localeCompare(b))) {
     const range = tally.earliest ? `${tally.earliest.toISOString()} .. ${tally.latest!.toISOString()}` : '';
     console.log(`${label}\t${tally.count}\t${range}`);
   }
-  const affected = [...tallies].filter(([label]) => label.includes('\tdecrypts')).reduce((n, [, t]) => n + t.count, 0);
-  console.log(affected === 0 ? 'VERDICT: no blob decrypts with a mock key' : `VERDICT: ${affected} blob(s) decrypt with a mock key`);
+  const countWhere = (match: string) =>
+    [...tallies].filter(([label]) => label.includes(match)).reduce((n, [, t]) => n + t.count, 0);
+  const affected = countWhere('\tdecrypts');
+  if (affected > 0) {
+    console.log(`VERDICT: AFFECTED: ${affected} blob(s) decrypt with a mock key`);
+  } else {
+    const tested = prodDevKey ? 'the public dev keys and the provided DEV_SEALING_KEY' : 'the public dev keys only';
+    console.log(`VERDICT: no blob decrypts with the tested mock keys (${tested}).`);
+    console.log(
+      `  Not covered: blobs sealed under any other or earlier DEV_SEALING_KEY, deleted rows and backups, and ${countWhere('\tno sealing path')} row(s) with no sealing path.`,
+    );
+  }
   process.exitCode = affected === 0 ? 0 : 1;
 }
 

@@ -1,4 +1,4 @@
-// TC-966: the production API must refuse to start unless TEE_MODE=production,
+// TC-966: a deployed API must refuse to start unless TEE_MODE=production,
 // instead of silently sealing keys with the mock TEE client.
 //
 // Spawns the real entry point (apps/api/src/index.ts) with a clean environment.
@@ -14,11 +14,14 @@ const ENTRY = join(import.meta.dir, '..', 'index.ts');
 const cwd = mkdtempSync(join(tmpdir(), 'openkey-tee-mode-'));
 afterAll(() => rmSync(cwd, { recursive: true, force: true }));
 
-async function startApi(teeMode: string | undefined): Promise<{ exitCode: number | null; output: string }> {
+async function startApi(
+  nodeEnv: string,
+  teeMode: string | undefined,
+): Promise<{ exitCode: number | null; output: string }> {
   const env: Record<string, string> = {
     PATH: process.env.PATH ?? '',
     HOME: process.env.HOME ?? '',
-    NODE_ENV: 'production',
+    NODE_ENV: nodeEnv,
     // Unreachable placeholders: startup must stop before anything connects.
     DATABASE_URL: 'postgresql://openkey@127.0.0.1:1/openkey',
     BETTER_AUTH_SECRET: 'tee-mode-startup-test-secret-not-a-real-secret',
@@ -47,18 +50,29 @@ async function startApi(teeMode: string | undefined): Promise<{ exitCode: number
   return { exitCode: child.exitCode, output: stdout + stderr };
 }
 
-describe('API startup with NODE_ENV=production (TC-966)', () => {
-  for (const teeMode of [undefined, '', 'prod', 'Production', 'development']) {
-    test(`TEE_MODE=${JSON.stringify(teeMode)} stops startup`, async () => {
-      const { exitCode, output } = await startApi(teeMode);
+describe('API startup in a deployment (TC-966)', () => {
+  const cases: Array<[string, string | undefined]> = [
+    ['production', undefined],
+    ['production', ''],
+    ['production', 'prod'],
+    ['production', 'Production'],
+    ['production', 'development'],
+    ['staging', 'development'],
+    ['staging', undefined],
+  ];
+  for (const [nodeEnv, teeMode] of cases) {
+    test(`NODE_ENV=${nodeEnv} TEE_MODE=${JSON.stringify(teeMode)} stops startup`, async () => {
+      const { exitCode, output } = await startApi(nodeEnv, teeMode);
       expect(exitCode).not.toBe(0);
-      expect(output).toMatch(/TEE_MODE must be "production" or "development"|TEE_MODE=development is not allowed/);
+      expect(output).toMatch(
+        /TEE_MODE must be "production" or "development"|TEE_MODE=development is only allowed for local development/,
+      );
       expect(output).not.toContain('OpenKey API starting');
     }, 30_000);
   }
 
-  test('TEE_MODE=production gets past the TEE check', async () => {
-    const { output } = await startApi('production');
+  test('NODE_ENV=production TEE_MODE=production gets past the TEE check', async () => {
+    const { output } = await startApi('production', 'production');
     expect(output).toContain('TEE Mode: production');
     expect(output).not.toContain('refusing to fall back to mock sealing keys');
   }, 30_000);

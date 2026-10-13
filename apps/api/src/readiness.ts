@@ -1,5 +1,6 @@
 import type { Context } from 'hono';
 import { checkRuntimeSchemaContract, getPrisma, type SchemaContractDatabase } from '@openkey/db';
+import { resolveTeeMode } from '@openkey/tee';
 
 export type ReadinessCheck = () => Promise<{ ready: boolean }>;
 
@@ -15,6 +16,6 @@ export function readinessHandler(check: ReadinessCheck = checkApiReadiness) {
       // connection error on this unauthenticated public endpoint.
       return c.json({ status: 'not_ready' }, 503);
     }
-    return c.json({ status: 'ok', tee: process.env.TEE_MODE || 'development' });
+    return c.json({ status: 'ok', tee: resolveTeeMode() });
   };
 }

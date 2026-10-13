@@ -6,7 +6,7 @@ Track changes to agent-facing development guidance for OpenKey. Add a concise en
 ## 2026-10-13
 
 - `TEE_MODE` fails closed (TC-966). Only `production` (dstack) and an explicit `development`
-  (mock, refused with `NODE_ENV=production`) are accepted; anything else stops the API at startup.
+  (mock, only with `NODE_ENV` unset, `development` or `test`) are accepted; anything else stops the API at startup.
   `docker-compose.prod.yml` hardcodes `production`. `bun test` gets `TEE_MODE=development` from
   the committed `.env.test`; tests that need the mock outside the repository root must set it
   themselves.

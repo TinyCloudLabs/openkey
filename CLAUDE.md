@@ -95,7 +95,7 @@ const isDev = process.env.NODE_ENV !== 'production' && process.env.TEE_MODE !== 
 ## Environment Files
 
 - `.env` - Local development
-- `.env.prod` - Production secrets (not committed). Required keys: `DATABASE_URL`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `RESEND_API_KEY`, `BETTER_AUTH_SECRET`, `ADMIN_API_KEY`, `CORS_ORIGIN`, `WEBAUTHN_RP_ID`, `WEBAUTHN_ORIGIN`, `BETTER_AUTH_URL`, `CLOUDFLARE_API_TOKEN`. `TEE_MODE` is hardcoded to `production` in `docker-compose.prod.yml`; the API refuses to start unless it is `production`, or `development` outside production (TC-966)
+- `.env.prod` - Production secrets (not committed). Required keys: `DATABASE_URL`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `RESEND_API_KEY`, `BETTER_AUTH_SECRET`, `ADMIN_API_KEY`, `CORS_ORIGIN`, `WEBAUTHN_RP_ID`, `WEBAUTHN_ORIGIN`, `BETTER_AUTH_URL`, `CLOUDFLARE_API_TOKEN`. `TEE_MODE` is hardcoded to `production` in `docker-compose.prod.yml`; the API refuses to start unless it is `production`, or `development` with `NODE_ENV` unset, `development` or `test` (TC-966)
 
 ## Common Commands
 

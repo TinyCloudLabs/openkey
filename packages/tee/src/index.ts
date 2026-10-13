@@ -15,20 +15,28 @@ export interface DeriveKeyResult {
 
 export type TeeMode = 'production' | 'development';
 
+/** NODE_ENV values under which the mock may run. Unset is local `bun run`. */
+const MOCK_NODE_ENVS: Record<string, true> = { development: true, test: true };
+
 /**
  * Resolves the TEE mode from the environment, failing closed (TC-966).
  *
  * Only `TEE_MODE=production` uses dstack. The mock client seals under
  * deterministic dev keys, so it needs an explicit `TEE_MODE=development`, and
- * it is refused when `NODE_ENV=production`. A missing or misspelled TEE_MODE
- * throws instead of silently selecting the mock.
+ * only for local development: NODE_ENV unset, `development` or `test`. Any
+ * other NODE_ENV (production, staging, preview, …) is a deployment and is
+ * refused. A missing or misspelled TEE_MODE throws instead of silently
+ * selecting the mock.
  */
 export function resolveTeeMode(env: Record<string, string | undefined> = process.env): TeeMode {
   const mode = env.TEE_MODE;
   if (mode === 'production') return 'production';
   if (mode === 'development') {
-    if (env.NODE_ENV === 'production') {
-      throw new Error('TEE_MODE=development is not allowed with NODE_ENV=production; set TEE_MODE=production');
+    const nodeEnv = env.NODE_ENV;
+    if (nodeEnv !== undefined && nodeEnv !== '' && !Object.hasOwn(MOCK_NODE_ENVS, nodeEnv)) {
+      throw new Error(
+        `TEE_MODE=development is only allowed for local development (NODE_ENV unset, development or test), not NODE_ENV=${JSON.stringify(nodeEnv)}; set TEE_MODE=production`,
+      );
     }
     return 'development';
   }
