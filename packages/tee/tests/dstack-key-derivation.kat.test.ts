@@ -198,8 +198,11 @@ const paths = KNOWN_ANSWER.vectors.map((vector) => vector.path);
 const expectedSealingKeys = Object.fromEntries(
   KNOWN_ANSWER.vectors.map((vector) => [vector.path, vector.sealingKey]),
 );
-// dist exists after `bun run build` (CI and the Dockerfile build it first).
+// dist exists after `bun run build`. Local runs skip it when absent and may test
+// a stale build; CI and the Dockerfile build first and set
+// OPENKEY_KAT_REQUIRE_DIST=1, so a missing dist fails there instead of skipping.
 const hasDist = existsSync(join(TEE_DIR, 'dist', 'index.js'));
+const skipDist = !hasDist && process.env.OPENKEY_KAT_REQUIRE_DIST !== '1';
 
 describe('dstack sealing-key derivation (known answer, TC-964)', () => {
   test(`${SDK} is exactly the version the known answer was proven against`, () => {
@@ -245,7 +248,7 @@ describe('dstack sealing-key derivation (known answer, TC-964)', () => {
     });
 
     for (const entry of ['src', 'dist'] as const) {
-      test.skipIf(entry === 'dist' && !hasDist)(
+      test.skipIf(entry === 'dist' && skipDist)(
         `${entry}: derives the recorded sealing keys with the recorded v0 requests`,
         async () => {
           agent.requests.length = 0;
@@ -269,7 +272,12 @@ describe('dstack sealing-key derivation (known answer, TC-964)', () => {
   // dstack's `sdk/simulator` config (and so its appkeys.json). Build it with
   // `cargo build --release -p dstack-guest-agent-simulator` in a dstack checkout.
   const simulatorSocket = process.env.OPENKEY_DSTACK_SIMULATOR_SOCKET;
-  test.skipIf(!simulatorSocket)('the real dstack simulator gives the same sealing keys', async () => {
-    expect(await deriveThroughOpenKey('src', simulatorSocket!, paths)).toEqual(expectedSealingKeys);
-  });
+  for (const entry of ['src', 'dist'] as const) {
+    test.skipIf(!simulatorSocket || (entry === 'dist' && skipDist))(
+      `${entry}: the real dstack simulator gives the same sealing keys`,
+      async () => {
+        expect(await deriveThroughOpenKey(entry, simulatorSocket!, paths)).toEqual(expectedSealingKeys);
+      },
+    );
+  }
 });

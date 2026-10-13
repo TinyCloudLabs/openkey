@@ -37,3 +37,5 @@ jobs:
 
       - name: Known-answer test
         run: bun test packages/tee/tests/dstack-key-derivation.kat.test.ts
+        env:
+          OPENKEY_KAT_REQUIRE_DIST: '1'
