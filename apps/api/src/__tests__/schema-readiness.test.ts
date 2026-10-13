@@ -39,7 +39,15 @@ test('readiness HTTP path returns non-2xx for a controlled required migration mi
 });
 
 test('readiness HTTP path returns 200 for a valid required migration contract', async () => {
-  const response = await requestHealthOverHttp(validRows);
-  expect(response.status).toBe(200);
-  expect(await response.json()).toEqual({ status: 'ok', tee: 'development' });
+  // /health reports the resolved TEE mode, which must be explicit (TC-966).
+  const savedMode = process.env.TEE_MODE;
+  process.env.TEE_MODE = 'development';
+  try {
+    const response = await requestHealthOverHttp(validRows);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: 'ok', tee: 'development' });
+  } finally {
+    if (savedMode === undefined) delete process.env.TEE_MODE;
+    else process.env.TEE_MODE = savedMode;
+  }
 });

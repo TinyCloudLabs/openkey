@@ -25,7 +25,8 @@ import { createDecipheriv, createHash } from 'node:crypto';
  * Every DEV_SEALING_KEY value published in this repository, so anyone could
  * have derived the key: the code's fallback (packages/tee/src/index.ts, since
  * 2026-01-04), docker-compose.yml and docs/development.md, the .env.example
- * placeholder, the README placeholder, and the nostr route tests.
+ * placeholder, the README placeholder, the nostr route tests, and the
+ * local-pglite-device-smoke script on branch skgbafa/tc-13-openkey-session-recovery.
  */
 const PUBLIC_DEV_SEALING_KEYS = [
   'openkey-dev-sealing-key-32b!',
@@ -33,6 +34,7 @@ const PUBLIC_DEV_SEALING_KEYS = [
   '<32-byte-hex-key-for-local-dev>',
   '...',
   'test-sealing-key-for-nostr-route-tests',
+  '0123456789abcdef0123456789abcdef',
 ];
 
 type Result =
@@ -169,7 +171,12 @@ async function main(): Promise<void> {
 
   console.log(`TC-966 mock-seal check: ${total} sealed blobs checked in database "${databaseName}" (read-only transaction, rolled back)`);
   console.log(`public dev keys tried: ${PUBLIC_DEV_SEALING_KEYS.length} (every value published in the repository)`);
-  console.log(`prod DEV_SEALING_KEY ${prodDevKey ? 'provided' : 'NOT provided: only the public dev keys were tried'}`);
+  const prodKeyNote = !prodDevKey
+    ? 'NOT provided: only the public dev keys were tried'
+    : PUBLIC_DEV_SEALING_KEYS.includes(prodDevKey)
+      ? 'provided, but it EQUALS a published dev key, so it is public (check this is the intended value)'
+      : 'provided';
+  console.log(`prod DEV_SEALING_KEY ${prodKeyNote}`);
   console.log('table\tpath type\tresult\tcount\tcreated_at range');
   for (const [label, tally] of [...tallies].sort(([a], [b]) => a.localeCompare(b))) {
     const range = tally.earliest ? `${tally.earliest.toISOString()} .. ${tally.latest!.toISOString()}` : '';

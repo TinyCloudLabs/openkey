@@ -14,7 +14,8 @@ First it tries every `DEV_SEALING_KEY` value published in this repository:
 - the code's fallback;
 - `openkey-dev-sealing-key-32bytes!` (`docker-compose.yml`, `docs/development.md`);
 - the `.env.example` and `README.md` placeholders;
-- the nostr route tests' key.
+- the nostr route tests' key;
+- `0123456789abcdef0123456789abcdef` (a smoke script on an unmerged branch).
 
 Then it tries the deployment's own key, if you provide it.
 
