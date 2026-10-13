@@ -17,7 +17,9 @@ services:
       - APPLE_KEY_ID=${APPLE_KEY_ID}
       - APPLE_PRIVATE_KEY=${APPLE_PRIVATE_KEY}
       - APPLE_APP_BUNDLE_IDENTIFIER=${APPLE_APP_BUNDLE_IDENTIFIER}
-      - TEE_MODE=${TEE_MODE}
+      # Hardcoded: the encrypted env must not be able to select mock sealing
+      # keys (TC-966).
+      - TEE_MODE=production
       - RESEND_API_KEY=${RESEND_API_KEY}
       - API_PORT=${API_PORT}
       - CORS_ORIGIN=${CORS_ORIGIN}

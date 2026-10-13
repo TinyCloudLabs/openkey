@@ -194,7 +194,7 @@ GOOGLE_CLIENT_SECRET="..."
 RESEND_API_KEY="..."
 
 # TEE
-TEE_MODE="production"  # or "development" for mock
+TEE_MODE="production"  # or "development" for the mock; anything else stops the API
 DEV_SEALING_KEY="..."  # only needed in development
 TINYCLOUD_BOOTSTRAP_HOST="https://node.tinycloud.xyz"
 

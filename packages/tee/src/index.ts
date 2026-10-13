@@ -13,17 +13,38 @@ export interface DeriveKeyResult {
   certificateChain: string[];
 }
 
-// Check if we're running in TEE
-const isProduction = process.env.TEE_MODE === 'production';
+export type TeeMode = 'production' | 'development';
 
 /**
- * Create a TEE client - uses dstack SDK in production, mock in development
+ * Resolves the TEE mode from the environment, failing closed (TC-966).
+ *
+ * Only `TEE_MODE=production` uses dstack. The mock client seals under
+ * deterministic dev keys, so it needs an explicit `TEE_MODE=development`, and
+ * it is refused when `NODE_ENV=production`. A missing or misspelled TEE_MODE
+ * throws instead of silently selecting the mock.
+ */
+export function resolveTeeMode(env: Record<string, string | undefined> = process.env): TeeMode {
+  const mode = env.TEE_MODE;
+  if (mode === 'production') return 'production';
+  if (mode === 'development') {
+    if (env.NODE_ENV === 'production') {
+      throw new Error('TEE_MODE=development is not allowed with NODE_ENV=production; set TEE_MODE=production');
+    }
+    return 'development';
+  }
+  const got = mode === undefined ? 'unset' : JSON.stringify(mode);
+  throw new Error(
+    `TEE_MODE must be "production" or "development" (got ${got}); refusing to fall back to mock sealing keys`,
+  );
+}
+
+/**
+ * Create a TEE client: dstack for TEE_MODE=production, the mock for an explicit
+ * TEE_MODE=development. Throws otherwise (see resolveTeeMode). API modules call
+ * this at import, so a bad TEE_MODE stops the API at startup.
  */
 export function createTeeClient(): TeeClient {
-  if (isProduction) {
-    return createProductionClient();
-  }
-  return createMockClient();
+  return resolveTeeMode() === 'production' ? createProductionClient() : createMockClient();
 }
 
 /**
@@ -60,7 +81,7 @@ function createProductionClient(): TeeClient {
 }
 
 /**
- * Mock client for local development
+ * Mock client for local development (TEE_MODE=development only)
  * Uses deterministic key derivation from DEV_SEALING_KEY env var
  */
 function createMockClient(): TeeClient {
@@ -130,9 +151,6 @@ export async function unseal(sealedData: string, sealingKey: Uint8Array): Promis
 
   return decrypted.toString('utf8');
 }
-
-// Re-export for convenience
-export { isProduction as isProductionTee };
 
 // Re-export wallet utilities
 export { createWalletFromPrivateKey, generatePrivateKey, getAddressFromPrivateKey } from './wallet';

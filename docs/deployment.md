@@ -153,7 +153,7 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `APPLE_KEY_ID` | Sign in with Apple private-key ID |
 | `APPLE_PRIVATE_KEY` | Apple `.p8` ES256 private key (literal or escaped newlines) |
 | `APPLE_APP_BUNDLE_IDENTIFIER` | Optional native Apple app bundle identifier |
-| `TEE_MODE` | `production` |
+| `TEE_MODE` | Not read from the env: `docker-compose.prod.yml` hardcodes `production`, and the API refuses to start otherwise (TC-966) |
 | `RESEND_API_KEY` | Resend API key for emails |
 | `API_PORT` | `3001` |
 | `CORS_ORIGIN` | `https://openkey.so,https://console.openkey.so` |
