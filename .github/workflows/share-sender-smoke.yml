@@ -54,14 +54,13 @@ jobs:
         env:
           SHARE_REF: ${{ inputs.share_ref || 'main' }}
         run: |
-          lockfile="$(mktemp)"
-          trap 'rm -f "$lockfile"' EXIT
-          curl --fail --silent --show-error --location \
-            "https://raw.githubusercontent.com/TinyCloudLabs/share/${SHARE_REF}/package-lock.json" \
-            --output "$lockfile"
-          hash=$(sha256sum "$lockfile" | cut -d ' ' -f 1)
+          repo="$RUNNER_TEMP/share-smoke-source"
+          git clone --quiet --depth 1 --branch "$SHARE_REF" \
+            https://github.com/TinyCloudLabs/share.git "$repo"
+          hash=$(sha256sum "$repo/package-lock.json" | cut -d ' ' -f 1)
           echo "hash=$hash" >> "$GITHUB_OUTPUT"
       - name: Cache Share npm dependencies
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
         uses: actions/cache@v4
         with:
           path: ~/.npm
@@ -69,6 +68,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
+      - name: Pin Share smoke clone to the hashed snapshot
+        run: git config --global url."file://${RUNNER_TEMP}/share-smoke-source".insteadOf https://github.com/TinyCloudLabs/share.git
       - name: Share sender sign-in smoke
         env:
           SHARE_REF: ${{ inputs.share_ref || 'main' }}
