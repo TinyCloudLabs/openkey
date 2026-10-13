@@ -49,6 +49,23 @@ jobs:
             sleep 20
           done
           echo "openkey.so did not finish deploying within 20 minutes"; exit 1
+      - name: Resolve Share smoke lockfile
+        id: share-lock
+        env:
+          SHARE_REF: ${{ inputs.share_ref || 'main' }}
+        run: |
+          lockfile="$(mktemp)"
+          trap 'rm -f "$lockfile"' EXIT
+          curl --fail --silent --show-error --location \
+            "https://raw.githubusercontent.com/TinyCloudLabs/share/${SHARE_REF}/package-lock.json" \
+            --output "$lockfile"
+          hash=$(sha256sum "$lockfile" | cut -d ' ' -f 1)
+          echo "hash=$hash" >> "$GITHUB_OUTPUT"
+      - name: Cache Share npm dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ steps.share-lock.outputs.hash }}
       - uses: actions/setup-node@v4
         with:
           node-version: "20"

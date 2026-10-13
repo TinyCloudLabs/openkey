@@ -24,6 +24,11 @@ jobs:
         with:
           bun-version: latest
 
+      - name: Restore Bun dependency cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
       - name: Install Dependencies
         run: bun install
 
