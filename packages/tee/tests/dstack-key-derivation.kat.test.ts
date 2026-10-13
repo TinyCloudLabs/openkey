@@ -3,12 +3,14 @@
 // Every sealed user wallet and Nostr key is encrypted under
 // sha256(dstack v0 GetKey(path).key). If that output ever changes, every sealed
 // key becomes unrecoverable. In @phala/dstack-sdk 0.6, `DstackClient` is the v1
-// client (`/v1/GetKey`), which derives different keys for the same path, so an
-// SDK bump alone would silently do this.
+// client: the unchanged call `getKey(path)` throws ("algorithm is required"),
+// and the obvious fix, `getKey(path, 'secp256k1')`, calls `/v1/GetKey`, which
+// derives different keys for the same path.
 //
 // This test drives OpenKey's production client (`createTeeClient()` with
-// TEE_MODE=production) against a fake dstack guest agent on a Unix socket. The
-// fake implements the frozen v0 `GetKey` exactly as dstack does:
+// TEE_MODE=production), from both src and the built dist the API image runs,
+// against a fake dstack guest agent on a Unix socket. The fake implements the
+// frozen v0 `GetKey` exactly as dstack does:
 //   key = HKDF-SHA256(salt = "RATLS", ikm = app k256 key, info = path, 32 bytes)
 // (dstack ra-tls `derive_key`, guest-agent `rpc_service.rs` `get_key`), keyed
 // with the public simulator app key from dstack's `sdk/simulator/appkeys.json`.
@@ -18,12 +20,19 @@
 // It fails if:
 // - the installed SDK version, the package.json spec, or the bun.lock entry
 //   differs from KNOWN_ANSWER.sdkVersion;
-// - the client sends anything other than the recorded v0 request;
+// - the client sends anything other than the recorded v0 requests;
 // - OpenKey's post-processing of the key changes.
 //
-// Never edit KNOWN_ANSWER to make this pass. Changing the SDK version is allowed
-// only after proving, against a real dstack guest agent or the simulator, that
-// every sealing key is byte-identical; record that proof in the PR.
+// Not covered: the probe reaches the agent through the SDK's
+// DSTACK_SIMULATOR_ENDPOINT; production uses the SDK's default socket
+// (/var/run/dstack.sock). `getQuote` has no known answer. Both are covered only
+// by the exact version pin.
+//
+// Never edit KNOWN_ANSWER to make this pass. Changing the SDK version or the
+// recorded request is allowed only after proving that every sealing key is
+// byte-identical against a dstack guest agent of the version production runs
+// (the v0.6.0 simulator alone doesn't prove it for an older production agent);
+// record that proof in the PR.
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { createHash, createHmac } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -39,12 +48,20 @@ const KNOWN_ANSWER = {
     {
       // Per-key sealing context: `openkey/key/<43-char base64url>`.
       path: 'openkey/key/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+      request: {
+        url: '/GetKey',
+        body: '{"path":"openkey/key/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","purpose":""}',
+      },
       dstackKey: '69e4abf98a56751e4482efa31dab402feb162f8b34cbd2b386b7ed3850d38ed3',
       sealingKey: 'd8777af36cfaafe84bd5b204d2c67a257d4acc8cd95c8bca59dc7205c70764fb',
     },
     {
       // Legacy per-user path: `openkey/user/<userId>/keys`.
       path: 'openkey/user/user-a/keys',
+      request: {
+        url: '/GetKey',
+        body: '{"path":"openkey/user/user-a/keys","purpose":""}',
+      },
       dstackKey: 'cbd4c308594a8e2685230a613f0572651dbf488a4511d3be8cbf1b9719e54a21',
       sealingKey: '53581d6d24f90554aeee2f848351b9fbfb7f9967314c3cc37a257a566e0f6691',
     },
@@ -133,9 +150,15 @@ function startFakeGuestAgent(socketPath: string): FakeGuestAgent {
   };
 }
 
-/** Runs OpenKey's production TeeClient in a child process against `endpoint`. */
-async function deriveThroughOpenKey(endpoint: string, paths: string[]): Promise<Record<string, string>> {
-  const child = Bun.spawn([process.execPath, 'run', PROBE, ...paths], {
+type TeeEntry = 'src' | 'dist';
+
+/** Runs OpenKey's production TeeClient (from `entry`) in a child process against `endpoint`. */
+async function deriveThroughOpenKey(
+  entry: TeeEntry,
+  endpoint: string,
+  paths: string[],
+): Promise<Record<string, string>> {
+  const child = Bun.spawn([process.execPath, 'run', PROBE, entry, ...paths], {
     cwd: TEE_DIR,
     env: {
       PATH: process.env.PATH ?? '',
@@ -152,7 +175,7 @@ async function deriveThroughOpenKey(endpoint: string, paths: string[]): Promise<
     child.exited,
   ]);
   if (exitCode !== 0) {
-    throw new Error(`dstack-kat-probe exited ${exitCode}: ${stderr}`);
+    throw new Error(`dstack-kat-probe (${entry}) exited ${exitCode}: ${stderr}`);
   }
   return JSON.parse(stdout) as Record<string, string>;
 }
@@ -175,6 +198,8 @@ const paths = KNOWN_ANSWER.vectors.map((vector) => vector.path);
 const expectedSealingKeys = Object.fromEntries(
   KNOWN_ANSWER.vectors.map((vector) => [vector.path, vector.sealingKey]),
 );
+// dist exists after `bun run build` (CI and the Dockerfile build it first).
+const hasDist = existsSync(join(TEE_DIR, 'dist', 'index.js'));
 
 describe('dstack sealing-key derivation (known answer, TC-964)', () => {
   test(`${SDK} is exactly the version the known answer was proven against`, () => {
@@ -210,25 +235,34 @@ describe('dstack sealing-key derivation (known answer, TC-964)', () => {
       rmSync(socketDir, { recursive: true, force: true });
     });
 
-    test('derives the recorded sealing keys with the recorded v0 requests', async () => {
-      const sealingKeys = await deriveThroughOpenKey(join(socketDir, 'dstack.sock'), paths);
-
-      expect(agent.requests).toEqual(
-        KNOWN_ANSWER.vectors.map((vector) => ({
-          method: 'POST',
-          url: '/GetKey',
-          contentType: 'application/json',
-          body: JSON.stringify({ path: vector.path, purpose: '' }),
-        })),
-      );
+    test('the recorded dstack keys and sealing keys are consistent', () => {
       for (const vector of KNOWN_ANSWER.vectors) {
         expect(v0DeriveKey(vector.path).toString('hex')).toBe(vector.dstackKey);
         expect(createHash('sha256').update(Buffer.from(vector.dstackKey, 'hex')).digest('hex')).toBe(
           vector.sealingKey,
         );
       }
-      expect(sealingKeys).toEqual(expectedSealingKeys);
     });
+
+    for (const entry of ['src', 'dist'] as const) {
+      test.skipIf(entry === 'dist' && !hasDist)(
+        `${entry}: derives the recorded sealing keys with the recorded v0 requests`,
+        async () => {
+          agent.requests.length = 0;
+          const sealingKeys = await deriveThroughOpenKey(entry, join(socketDir, 'dstack.sock'), paths);
+
+          expect(agent.requests).toEqual(
+            KNOWN_ANSWER.vectors.map((vector) => ({
+              method: 'POST',
+              url: vector.request.url,
+              contentType: 'application/json',
+              body: vector.request.body,
+            })),
+          );
+          expect(sealingKeys).toEqual(expectedSealingKeys);
+        },
+      );
+    }
   });
 
   // Opt-in: the same answers from the real dstack guest-agent simulator, run with
@@ -236,6 +270,6 @@ describe('dstack sealing-key derivation (known answer, TC-964)', () => {
   // `cargo build --release -p dstack-guest-agent-simulator` in a dstack checkout.
   const simulatorSocket = process.env.OPENKEY_DSTACK_SIMULATOR_SOCKET;
   test.skipIf(!simulatorSocket)('the real dstack simulator gives the same sealing keys', async () => {
-    expect(await deriveThroughOpenKey(simulatorSocket!, paths)).toEqual(expectedSealingKeys);
+    expect(await deriveThroughOpenKey('src', simulatorSocket!, paths)).toEqual(expectedSealingKeys);
   });
 });
