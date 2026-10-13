@@ -19,6 +19,7 @@ PUBLISHABLE=(
   packages/types/package.json
   packages/cli/package.json
   packages/sdk-react-native/package.json
+  packages/sdk-capacitor/package.json
 )
 
 # For each publishable package, find workspace:* refs and resolve them
