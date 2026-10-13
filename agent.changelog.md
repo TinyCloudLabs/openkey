@@ -3,6 +3,14 @@
 Track changes to agent-facing development guidance for OpenKey. Add a concise entry when
 `agent.dev.md` or related agent workflow expectations change.
 
+## 2026-10-13
+
+- `TEE_MODE` fails closed (TC-966). Only `production` (dstack) and an explicit `development`
+  (mock, only with `NODE_ENV` unset, `development` or `test`) are accepted; anything else stops the API at startup.
+  `docker-compose.prod.yml` hardcodes `production`. `bun test` gets `TEE_MODE=development` from
+  the committed `.env.test`; tests that need the mock outside the repository root must set it
+  themselves.
+
 ## 2026-10-12
 
 - Sealed-key derivation is frozen (TC-964): `@phala/dstack-sdk` is pinned to exactly `0.5.7` and

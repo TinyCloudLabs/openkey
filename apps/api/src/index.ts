@@ -31,6 +31,7 @@ import { providerTokenOptions } from './services/native-delegation/provider-toke
 import { handlePar } from './services/native-delegation/par';
 import { createNativeDelegationConsentRouter } from './routes/native-delegation-consent';
 import { handleNativeRenewOrRevoke } from './services/native-delegation/renew-revoke';
+import { resolveTeeMode } from '@openkey/tee';
 import {
   protocolAwareCors,
   withNativeDelegationMetadata,
@@ -243,7 +244,7 @@ const ALL_SCOPES = ['openid', 'email', 'keys', 'offline_access'];
 const port = parseInt(process.env.API_PORT || '3001');
 
 console.log(`OpenKey API starting on port ${port}...`);
-console.log(`TEE Mode: ${process.env.TEE_MODE || 'development'}`);
+console.log(`TEE Mode: ${resolveTeeMode()}`);
 
 export default {
   port,

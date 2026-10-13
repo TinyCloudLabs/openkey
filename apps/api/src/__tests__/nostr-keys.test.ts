@@ -103,8 +103,17 @@ beforeEach(() => {
   currentUser = user;
 });
 
+// The route creates its TEE client when first imported; these tests seal with
+// the real mock client, which needs an explicit TEE_MODE=development (TC-966).
 async function router() {
-  return (await import('../routes/nostr-keys')).nostrKeysRouter;
+  const savedMode = process.env.TEE_MODE;
+  process.env.TEE_MODE = 'development';
+  try {
+    return (await import('../routes/nostr-keys')).nostrKeysRouter;
+  } finally {
+    if (savedMode === undefined) delete process.env.TEE_MODE;
+    else process.env.TEE_MODE = savedMode;
+  }
 }
 
 async function createKey() {

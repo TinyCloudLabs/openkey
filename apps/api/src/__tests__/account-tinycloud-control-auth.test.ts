@@ -19,6 +19,9 @@ const prisma = {
   },
 };
 
+// Restored afterwards: other files in the same `bun test` run read these.
+const savedEnv = { CORS_ORIGIN: process.env.CORS_ORIGIN, TEE_MODE: process.env.TEE_MODE };
+
 beforeAll(() => {
   mock.module('@openkey/db', () => ({ createPrismaClient: () => prisma }));
   mock.module('../middleware/session', () => ({
@@ -33,8 +36,10 @@ beforeAll(() => {
 
 afterAll(() => {
   mock.restore();
-  delete process.env.CORS_ORIGIN;
-  delete process.env.TEE_MODE;
+  for (const [name, value] of Object.entries(savedEnv)) {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
 });
 
 async function request(path: string, headers: Record<string, string>) {

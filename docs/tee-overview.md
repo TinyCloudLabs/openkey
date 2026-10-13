@@ -258,5 +258,6 @@ return { quote, isInTee: tee.isInTee() };
 | Variable | Value | Description |
 |----------|-------|-------------|
 | `TEE_MODE` | `production` | Use real dstack SDK |
-| `TEE_MODE` | `development` | Use mock with `DEV_SEALING_KEY` |
+| `TEE_MODE` | `development` | Use mock with `DEV_SEALING_KEY`; only with `NODE_ENV` unset, `development` or `test` |
+| `TEE_MODE` | anything else, or unset | The API refuses to start (TC-966). There is no implicit mock |
 | `DEV_SEALING_KEY` | any string | Deterministic key for local dev |
