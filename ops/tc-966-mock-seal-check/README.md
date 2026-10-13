@@ -91,8 +91,10 @@ rows that exist now. It can't rule out:
 - rows deleted since, and backups;
 - the `no sealing path` rows.
 
-If those gaps matter, a production-side canary settles them: any blob that
-fails to unseal under dstack in production was not sealed by dstack.
+A production-side unseal check (each blob under dstack) shows only whether a
+key is **recoverable today**. A failure there is inconclusive about how the blob
+was sealed: it could also be corruption, a wrong sealing path, or a changed
+dstack derivation. And it doesn't cover deleted rows or backups.
 
 Exit code 2 means the check didn't run: `DATABASE_URL` is missing, or there was
 a connection or query error.
