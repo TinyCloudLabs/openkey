@@ -294,6 +294,17 @@ if (!backend) {
       expect((await json('/api/auth/sign-up/email-otp', { email, signupToken })).status).toBe(200);
     });
 
+    test('two verified codes for one email confirmed at once create one account', async () => {
+      const email = 'two-tabs@openkey.test';
+      const first = await newAccountToken(email);
+      const second = await newAccountToken(email);
+      const responses = await Promise.all([first, second].map((signupToken) => json('/api/auth/sign-up/email-otp', { email, signupToken })));
+      expect(responses.map((response) => response.status).sort()).toEqual([200, 400]);
+      const loser = responses.find((response) => response.status === 400)!;
+      expect((await loser.json() as { code: string }).code).toBe('ACCOUNT_ALREADY_EXISTS');
+      expect(await accountsFor(email)).toEqual({ users: 1, keys: 1 });
+    });
+
     test('a token for an email that gained an account meanwhile creates nothing', async () => {
       const email = 'raced-social@openkey.test';
       const signupToken = await newAccountToken(email);

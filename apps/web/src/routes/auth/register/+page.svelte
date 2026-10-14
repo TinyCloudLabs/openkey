@@ -2,10 +2,10 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/stores';
   import { onMount } from 'svelte';
-  import { authClient, API_BASE, authErrorMessage } from '$lib/auth-client';
+  import { authClient, API_BASE, authErrorMessage, confirmEmailSignUp } from '$lib/auth-client';
   import { api } from '$lib/api';
   import { setSessionToken } from '$lib/embed-passkey';
-  import { newAccountSignupToken, SIGN_UP_EMAIL_OTP_PATH } from '$lib/email-signup';
+  import { newAccountSignupToken } from '$lib/email-signup';
   import {
     loadConfiguredSocialProviders,
     signInWithSocialPopup,
@@ -112,7 +112,7 @@
       // code for a new email confirms the sign-up straight away (TC-1114).
       const signupToken = newAccountSignupToken(result.error);
       const outcome = signupToken
-        ? await authClient.$fetch(SIGN_UP_EMAIL_OTP_PATH, { method: 'POST', body: { email, signupToken } })
+        ? await confirmEmailSignUp({ email, signupToken })
         : result;
       if (outcome.error) {
         error = authErrorMessage(outcome.error, 'Invalid code');

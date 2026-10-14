@@ -2,9 +2,9 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/stores';
   import { onMount, onDestroy, tick } from 'svelte';
-  import { authClient, API_BASE, authErrorMessage } from '$lib/auth-client';
+  import { authClient, API_BASE, authErrorMessage, confirmEmailSignUp } from '$lib/auth-client';
   import { consoleOrigin } from '$lib/console-host';
-  import { normalizeAuthReturnTo, safeOAuthAuthorizeQuery } from '$lib/auth-flow';
+  import { holdOAuthRedirect, normalizeAuthReturnTo, safeOAuthAuthorizeQuery } from '$lib/auth-flow';
   import {
     loadConfiguredSocialProviders,
     signInWithSocialPopup,
@@ -21,7 +21,7 @@
   import { api } from '$lib/api';
   import SocialButtons from '$lib/components/auth/social-buttons.svelte';
   import { passkeysSupportedFromParams } from '$lib/passkey-support';
-  import { newAccountSignupToken, SIGN_UP_EMAIL_OTP_PATH } from '$lib/email-signup';
+  import { newAccountSignupToken } from '$lib/email-signup';
   import NewAccountConfirmation from '$lib/components/auth/new-account-confirmation.svelte';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
@@ -210,17 +210,9 @@
 
   const resendLabel = (seconds: number) => `Resend in 0:${String(seconds).padStart(2, '0')}`;
 
-  // In OAuth flows the server answers { redirect: true, url }. The client's
-  // redirect plugin would otherwise navigate in this same onSuccess pass —
-  // before the key/passkey check below — so this hook (which better-fetch
-  // runs before plugin hooks) keeps the URL and clears the redirect flag to
-  // veto that navigation.
+  // Keeps the server's OAuth redirect so the key/passkey checks run first.
   function keepOAuthRedirect(context: { data: unknown }) {
-    const data = context.data as { redirect?: boolean; url?: string } | null;
-    if (data?.redirect && typeof data.url === 'string' && data.url) {
-      oauthRedirectUrl = data.url;
-      data.redirect = false;
-    }
+    oauthRedirectUrl = holdOAuthRedirect(context.data) ?? oauthRedirectUrl;
   }
 
   async function verifyOTP() {
@@ -271,11 +263,7 @@
     creating = true;
     error = '';
     try {
-      const result = await authClient.$fetch(SIGN_UP_EMAIL_OTP_PATH, {
-        method: 'POST',
-        body: { email, signupToken, oauth_query: getOAuthQuery() },
-        onSuccess: keepOAuthRedirect,
-      });
+      const result = await confirmEmailSignUp({ email, signupToken, oauth_query: getOAuthQuery() }, keepOAuthRedirect);
       signupToken = null;
       if (result.error) {
         // Expired or already used: the user starts again with a new code.
@@ -292,9 +280,13 @@
     }
   }
 
+  // Recovery is email sign-in plus a new passkey; it continues the OAuth
+  // request or redirect this login page was serving.
   function recoverAccount() {
-    const returnTo = $page.url.searchParams.get('redirect') ?? `${$page.url.pathname}${$page.url.search}`;
-    window.location.href = `/auth/recover?returnTo=${encodeURIComponent(returnTo)}`;
+    const oauthQuery = getOAuthQuery();
+    const redirect = $page.url.searchParams.get('redirect');
+    const params: Record<string, string> = oauthQuery ? { oauth_query: oauthQuery } : redirect ? { returnTo: redirect } : {};
+    window.location.href = `/auth/recover?${new URLSearchParams(params)}`;
   }
 
   async function continueAfterEmailSignIn() {
@@ -465,7 +457,7 @@
     {:else if step === 'newAccount'}
       <p class="nb-lede">No OpenKey account for <strong>{email}</strong>.</p>
       <p class="nb-lede">
-        Create a new account{passkeysSupported ? ', or sign in with your passkey' : ''}?
+        Create a new account{passkeysSupported ? ', or sign in with your passkey or recover your account' : ''}?
       </p>
       <div class="nb-stack">
         <button type="button" class="nb-button nb-primary" onclick={createAccount} disabled={loading}>
@@ -474,6 +466,9 @@
         {#if passkeysSupported}
           <button type="button" class="nb-button" onclick={signInWithPasskey} disabled={loading}>
             Sign in with a passkey
+          </button>
+          <button type="button" class="nb-button" onclick={recoverAccount} disabled={loading}>
+            Recover your account
           </button>
         {/if}
       </div>

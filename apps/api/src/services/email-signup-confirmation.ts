@@ -90,14 +90,23 @@ export function emailSignupConfirmation(database: PrismaClient) {
           log('warn', 'auth_email_signup_refused', 'signup_token_invalid');
           throw refused();
         }
-        if (await ctx.context.internalAdapter.findUserByEmail(email)) {
+        const accountExists = () => {
           log('warn', 'auth_email_signup_refused', 'signup_account_exists');
-          throw new APIError('BAD_REQUEST', {
+          return new APIError('BAD_REQUEST', {
             code: ACCOUNT_ALREADY_EXISTS,
             message: 'An OpenKey account already exists for this email. Sign in instead.',
           });
+        };
+        if (await ctx.context.internalAdapter.findUserByEmail(email)) throw accountExists();
+        let user;
+        try {
+          user = await ctx.context.internalAdapter.createUser({ email, emailVerified: true, name: '' });
+        } catch (error) {
+          // A concurrent sign-up for the same email (a second verified code,
+          // or social sign-in) won the unique email constraint.
+          if (await ctx.context.internalAdapter.findUserByEmail(email)) throw accountExists();
+          throw error;
         }
-        const user = await ctx.context.internalAdapter.createUser({ email, emailVerified: true, name: '' });
         const session = await ctx.context.internalAdapter.createSession(user.id);
         await setSessionCookie(ctx, { session, user });
         log('info', 'auth_email_signup_confirmed');

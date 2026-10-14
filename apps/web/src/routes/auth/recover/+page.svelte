@@ -1,11 +1,13 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
-  import { authClient, API_BASE, authErrorMessage } from '$lib/auth-client';
+  import { page } from '$app/stores';
+  import { authClient, API_BASE, authErrorMessage, confirmEmailSignUp } from '$lib/auth-client';
+  import { holdOAuthRedirect, safeOAuthAuthorizeQuery } from '$lib/auth-flow';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
   import { setSessionToken } from '$lib/embed-passkey';
-  import { newAccountSignupToken, SIGN_UP_EMAIL_OTP_PATH } from '$lib/email-signup';
+  import { newAccountSignupToken } from '$lib/email-signup';
   import NewAccountConfirmation from '$lib/components/auth/new-account-confirmation.svelte';
 
   let { data } = $props();
@@ -19,6 +21,13 @@
   let error = $state('');
 
   const isEmbedPopup = $derived(typeof window !== 'undefined' && !!window.opener && data.isEmbed);
+  // Set when the login page sends recovery here mid-OAuth (TC-1114): the
+  // recovered sign-in continues that authorize request.
+  const oauthQuery = safeOAuthAuthorizeQuery($page.url.searchParams);
+  let oauthRedirectUrl: string | undefined;
+  const keepOAuthRedirect = (context: { data: unknown }) => {
+    oauthRedirectUrl = holdOAuthRedirect(context.data) ?? oauthRedirectUrl;
+  };
 
   async function sendOTP() {
     loading = true;
@@ -41,7 +50,7 @@
     loading = true;
     error = '';
     try {
-      const result = await authClient.signIn.emailOtp({ email, otp });
+      const result = await authClient.signIn.emailOtp({ email, otp, oauth_query: oauthQuery }, { onSuccess: keepOAuthRedirect });
       const token = newAccountSignupToken(result.error);
       if (token) {
         signupToken = token;
@@ -64,7 +73,7 @@
     loading = true;
     error = '';
     try {
-      const result = await authClient.$fetch(SIGN_UP_EMAIL_OTP_PATH, { method: 'POST', body: { email, signupToken } });
+      const result = await confirmEmailSignUp({ email, signupToken, oauth_query: oauthQuery }, keepOAuthRedirect);
       signupToken = null;
       if (result.error) {
         // Expired or already used: the user starts again with a new code.
@@ -110,6 +119,15 @@
       return;
     }
 
+    if (oauthQuery) {
+      // The server's URL comes from the signed query it verified; only
+      // script-executing schemes are refused, as on the login page.
+      const url = oauthRedirectUrl ?? `${API_BASE}/api/auth/oauth2/authorize?${oauthQuery}`;
+      if (!/^(javascript|data):/i.test(new URL(url, window.location.origin).protocol)) {
+        window.location.assign(url);
+        return;
+      }
+    }
     await goto(data.returnTo || '/dashboard');
   }
 
