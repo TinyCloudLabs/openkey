@@ -1,18 +1,28 @@
+import { createServer } from 'node:net';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { Hono } from 'hono';
-import { logger as betterAuthGlobalLogger } from '@better-auth/core/env';
-import { apiErrorHandler, betterAuthLog, log, logError, requestLogger, withScheduledLogContext, type ApiEnv } from '../log';
+import { apiErrorHandler, betterAuthLog, log, logConfigInvalid, logError, requestLogger, withScheduledLogContext, type ApiEnv } from '../log';
 
 const output: string[] = [];
 const stdoutWrite = process.stdout.write;
 const stderrWrite = process.stderr.write;
 
-function assertAllowlistedJsonLines(): void {
-  for (const raw of output) {
-    const line = JSON.parse(raw);
-    expect(Object.keys(line).every((key) => ['ts', 'level', 'event', 'method', 'route', 'status', 'ms', 'request_id', 'error_name', 'error_code'].includes(key))).toBe(true);
-  }
+async function unusedPort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        server.close();
+        reject(new Error('Could not allocate a test port'));
+        return;
+      }
+      server.close((error) => error ? reject(error) : resolve(address.port));
+    });
+  });
 }
+
 
 beforeEach(() => {
   output.length = 0;
@@ -67,26 +77,42 @@ describe('API structured logging', () => {
     expect(output.join('\n')).not.toContain(canary);
   });
 
-  test('isolates concurrent request IDs and keeps IDs in post-response work', async () => {
+  test('keeps post-response work associated with its originating concurrent request', async () => {
     const app = new Hono<ApiEnv>();
     const { promise, resolve } = Promise.withResolvers<void>();
     app.use('*', requestLogger);
     app.get('/work/:name', (c) => {
+      const name = c.req.param('name');
       betterAuthLog('error', 'auth error message', new Error('auth canary'));
       void Promise.reject(new Error('analytics canary')).catch((error) => logError('error', 'analytics_token_tracking_failed', error));
-      void promise.then(() => log('info', 'primary_key_changed'));
-      return c.json({ ok: true });
+      const event = name === 'first' ? 'primary_key_changed' : 'tinycloud_bootstrap_background_completed';
+      void promise.then(() => log('info', event));
+      return c.json({ requestId: c.get('requestId') });
     });
 
-    await Promise.all([app.request('/work/first'), app.request('/work/second')]);
+    const [firstResponse, secondResponse] = await Promise.all([app.request('/work/first'), app.request('/work/second')]);
+    const first = await firstResponse.json();
+    const second = await secondResponse.json();
     resolve();
     await Promise.resolve();
     const lines = output.map((line) => JSON.parse(line));
-    const requestIds = lines.filter((line) => line.event === 'request').map((line) => line.request_id);
-    const requestScopedIds = lines.filter((line) => ['better_auth', 'analytics_token_tracking_failed', 'primary_key_changed'].includes(line.event)).map((line) => line.request_id);
-    expect(new Set(requestIds).size).toBe(2);
-    expect(requestScopedIds).toHaveLength(6);
-    expect(requestScopedIds.every((id) => requestIds.includes(id))).toBe(true);
+    const firstBackground = lines.find((line) => line.event === 'primary_key_changed');
+    const secondBackground = lines.find((line) => line.event === 'tinycloud_bootstrap_background_completed');
+    expect(firstBackground.request_id).toBe(first.requestId);
+    expect(secondBackground.request_id).toBe(second.requestId);
+    expect(firstBackground.request_id).not.toBe(secondBackground.request_id);
+    const immediate = lines.filter((line) => ['better_auth', 'analytics_token_tracking_failed'].includes(line.event));
+    expect(immediate).toHaveLength(4);
+    expect(immediate.every((line) => [first.requestId, second.requestId].includes(line.request_id))).toBe(true);
+  });
+
+  test('logs only known invalid configuration keys without values', () => {
+    logConfigInvalid('BETTER_AUTH_URL');
+    logConfigInvalid('canary-url-value');
+    const line = JSON.parse(output[0]!);
+    expect(output).toHaveLength(1);
+    expect(line).toMatchObject({ event: 'config_invalid', error_code: 'BETTER_AUTH_URL', request_id: 'startup' });
+    expect(output.join('\n')).not.toContain('canary-url-value');
   });
 
   test('uses <unmatched> for requests without a matching route', async () => {
@@ -128,37 +154,89 @@ describe('API structured logging', () => {
     withScheduledLogContext(() => log('info', 'native_par_valid_request_volume_threshold_reached'));
     expect(output.map((line) => JSON.parse(line).request_id)).toEqual(['startup', 'scheduled']);
   });
-  test('logs uncaught exceptions and unhandled rejections through the safe classifier', async () => {
+  test('fatal exceptions and rejections terminate a child server after safe logging', async () => {
     const loggerModule = new URL('../log.ts', import.meta.url).href;
-    const child = Bun.spawn([process.execPath, '-e', `
-      const logger = await import(${JSON.stringify(loggerModule)});
-      logger.handleUncaughtException(new Error('uncaught canary@example.test Bearer SecretToken'));
-      logger.handleUnhandledRejection(new Error('rejection canary@example.test Bearer SecretToken'));
-    `], { cwd: import.meta.dir, stdout: 'pipe', stderr: 'pipe' });
+    for (const kind of ['uncaught', 'rejection']) {
+      const port = await unusedPort();
+      const child = Bun.spawn([process.execPath, '-e', `
+        const logger = await import(${JSON.stringify(loggerModule)});
+        logger.installFatalHandlers();
+        const kind = ${JSON.stringify(kind)};
+        Bun.serve({
+          hostname: '127.0.0.1',
+          port: ${port},
+          fetch(request) {
+            if (new URL(request.url).pathname === '/fatal') {
+              setTimeout(() => {
+                if (kind === 'uncaught') throw new Error('fatal canary@example.test Bearer SecretToken');
+                void Promise.reject(new Error('fatal canary@example.test Bearer SecretToken'));
+              }, 20);
+              return new Response('armed');
+            }
+            return new Response('alive');
+          },
+        });
+      `], { cwd: import.meta.dir, stdout: 'pipe', stderr: 'pipe' });
+      const url = `http://127.0.0.1:${port}`;
+      let ready = false;
+      for (let attempt = 0; attempt < 50 && !ready; attempt++) {
+        try {
+          ready = (await fetch(`${url}/health`)).status === 200;
+        } catch {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      }
+      expect(ready).toBe(true);
+      expect(await (await fetch(`${url}/fatal`)).text()).toBe('armed');
+      let timeout: NodeJS.Timeout;
+      const exitCode = await Promise.race([
+        child.exited,
+        new Promise<null>((resolve) => { timeout = setTimeout(() => { child.kill(); resolve(null); }, 3_000); }),
+      ]);
+      clearTimeout(timeout!);
+      const [stdout, stderr] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
+      expect(exitCode).toBe(1);
+      await expect(fetch(`${url}/health`, { signal: AbortSignal.timeout(200) })).rejects.toThrow();
+      const lines = `${stdout}${stderr}`.split('\n').filter(Boolean).map((line) => JSON.parse(line));
+      expect(lines.map((line) => line.event)).toEqual([kind === 'uncaught' ? 'uncaught_exception' : 'unhandled_rejection']);
+      expect(lines.map((line) => line.error_name)).toEqual(['Error']);
+      expect(lines.every((line) => Object.keys(line).every((key) => ['ts', 'level', 'event', 'method', 'route', 'status', 'ms', 'request_id', 'error_name', 'error_code'].includes(key)))).toBe(true);
+      expect(`${stdout}${stderr}`).not.toContain('canary@example.test');
+      expect(`${stdout}${stderr}`).not.toContain('SecretToken');
+    }
+  });
+
+  test('routes every console output method and Better Auth logging through the real safe sinks', async () => {
+    const canary = 'otp-canary@example.test Bearer SecretToken123';
+    const loggerModule = new URL('../log.ts', import.meta.url).href;
+    const script = `
+      await import(${JSON.stringify(loggerModule)});
+      const { logger } = await import('@better-auth/core/env');
+      const methods = ['assert', 'count', 'countReset', 'time', 'timeLog', 'timeEnd', 'group', 'groupCollapsed', 'groupEnd', 'dirxml', 'table', 'log', 'info', 'warn', 'error', 'debug', 'trace', 'dir'];
+      for (const method of methods) {
+        if (typeof console[method] !== 'function') throw new Error('missing console method');
+        if (method === 'assert') console[method](false, ${JSON.stringify(canary)});
+        else if (method === 'dirxml') console[method]({ email: ${JSON.stringify(canary)} });
+        else console[method](${JSON.stringify(canary)});
+      }
+      logger.error('Better Auth raw message ${canary}', new Error(${JSON.stringify(canary)}));
+    `;
+    const child = Bun.spawn([process.execPath, '-e', script], {
+      cwd: import.meta.dir,
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
     const [exitCode, stdout, stderr] = await Promise.all([
       child.exited,
       new Response(child.stdout).text(),
       new Response(child.stderr).text(),
     ]);
-    const lines = `${stdout}${stderr}`.split('\n').filter(Boolean).map((line) => JSON.parse(line));
-    expect(exitCode).toBe(1);
-    expect(lines.map((line) => line.event)).toEqual(['uncaught_exception', 'unhandled_rejection']);
-    expect(lines.every((line) => line.error_name === 'Error')).toBe(true);
-    expect(`${stdout}${stderr}`).not.toContain('canary@example.test');
-    expect(`${stdout}${stderr}`).not.toContain('SecretToken');
-  });
-  test('routes console and Better Auth global logger output through the allowlist', () => {
-    const canary = 'otp-canary@example.test Bearer SecretToken123';
-    const consoleMethods = globalThis.console as unknown as Record<string, (...args: unknown[]) => void>;
-    for (const method of ['log', 'info', 'warn', 'error', 'debug', 'trace']) consoleMethods[method]!(canary);
-    consoleMethods.dir!({ email: canary, toJSON: () => canary });
-    consoleMethods.table!([{ ticket: canary }]);
-    betterAuthGlobalLogger.error(`oauth-provider error ${canary}`, new Error(canary));
-    betterAuthLog('error', `auth callback ${canary}`, new Error(canary));
-
-    expect(output.length).toBeGreaterThanOrEqual(4);
-    assertAllowlistedJsonLines();
-    expect(output.join('\n')).not.toContain(canary);
+    const lines = `${stdout}${stderr}`.split('\n').filter(Boolean).map((raw) => JSON.parse(raw));
+    expect(exitCode).toBe(0);
+    expect(lines.length).toBe(19);
+    expect(lines.every((line) => Object.keys(line).every((key) => ['ts', 'level', 'event', 'method', 'route', 'status', 'ms', 'request_id', 'error_name', 'error_code'].includes(key)))).toBe(true);
+    expect(lines.every((line) => line.event === 'third_party_console' || line.event === 'better_auth')).toBe(true);
+    expect(`${stdout}${stderr}`).not.toContain(canary);
   });
 
   test('captures real Prisma validation and database errors at the process sinks', async () => {
@@ -192,6 +270,7 @@ describe('API structured logging', () => {
       new Response(child.stdout).text(),
       new Response(child.stderr).text(),
     ]);
+    expect(exitCode).toBe(0);
     const lines = `${stdout}${stderr}`.split('\n').filter(Boolean);
     expect(lines.length).toBeGreaterThan(0);
     for (const raw of lines) {

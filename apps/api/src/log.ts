@@ -22,13 +22,13 @@ const EVENTS: Record<string, true> = {
   oauth_client_create_failed: true, oauth_client_delete_failed: true, oauth_client_update_failed: true,
   tinycloud_bootstrap_background_failed: true, tinycloud_bootstrap_background_completed: true,
   tinycloud_bootstrap_space_registry_completed: true, native_par_valid_request_volume_threshold_reached: true,
-  native_par_request_cleanup_failed: true, native_session_proof_cleanup_failed: true, third_party_console: true,
-  uncaught_exception: true, unhandled_rejection: true,
+  third_party_console: true, uncaught_exception: true, unhandled_rejection: true, config_invalid: true,
 };
+const CONFIG_KEYS: Record<string, true> = { BETTER_AUTH_URL: true };
 const ERROR_CODES: Record<string, true> = {
   P2002: true, P2025: true, P2010: true, P2034: true, tinycloud_bootstrap_failed: true,
   tinycloud_bootstrap_crashed: true, tinycloud_bootstrap_in_progress: true,
-  tinycloud_bootstrap_expired_request: true,
+  tinycloud_bootstrap_expired_request: true, BETTER_AUTH_URL: true,
 };
 const LEVELS: Record<string, true> = { debug: true, info: true, warn: true, error: true };
 const METHODS: Record<string, true> = {
@@ -93,26 +93,42 @@ function thirdPartyConsole(level: LogLevel, args: unknown[]): void {
   emit(level, 'third_party_console', safeErrorFields(error));
 }
 
-const consoleLevels: Record<string, LogLevel> = {
-  log: 'info', info: 'info', warn: 'warn', error: 'error', debug: 'debug', trace: 'debug',
-  dir: 'info', table: 'info',
-};
-for (const [method, level] of Object.entries(consoleLevels)) {
+const NO_OUTPUT_CONSOLE_METHODS = new Set(['constructor', 'Console']);
+const consoleMethods = new Set<string>();
+let consolePrototype: object | null = console;
+while (consolePrototype && consolePrototype !== Object.prototype) {
+  for (const method of Object.getOwnPropertyNames(consolePrototype)) {
+    if (NO_OUTPUT_CONSOLE_METHODS.has(method) || consoleMethods.has(method)) continue;
+    const descriptor = Object.getOwnPropertyDescriptor(consolePrototype, method);
+    if (typeof descriptor?.value === 'function') consoleMethods.add(method);
+  }
+  consolePrototype = Object.getPrototypeOf(consolePrototype) as object | null;
+}
+for (const method of consoleMethods) {
+  const level: LogLevel = method === 'error' ? 'error' : method === 'warn' ? 'warn' :
+    method === 'debug' || method === 'trace' ? 'debug' : 'info';
   (console as unknown as Record<string, (...args: unknown[]) => void>)[method] = (...args) => thirdPartyConsole(level, args);
 }
 
-export function handleUncaughtException(error: Error): void {
+export function logConfigInvalid(configKey: string): void {
+  if (!Object.hasOwn(CONFIG_KEYS, configKey)) return;
+  emit('error', 'config_invalid', { error_code: configKey });
+}
+
+function handleUncaughtException(error: Error): void {
   logError('error', 'uncaught_exception', error);
-  process.exitCode = 1;
+  process.exit(1);
 }
 
-export function handleUnhandledRejection(reason: unknown): void {
+function handleUnhandledRejection(reason: unknown): void {
   logError('error', 'unhandled_rejection', reason);
-  process.exitCode = 1;
+  process.exit(1);
 }
 
-process.on('uncaughtException', handleUncaughtException);
-process.on('unhandledRejection', handleUnhandledRejection);
+export function installFatalHandlers(): void {
+  process.on('uncaughtException', handleUncaughtException);
+  process.on('unhandledRejection', handleUnhandledRejection);
+}
 
 function routeTemplate(route: string | undefined): string {
   return !route || route === '*' || route === '/*' ? '<unmatched>' : route;

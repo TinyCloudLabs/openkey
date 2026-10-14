@@ -1,7 +1,8 @@
-// OpenKey API - Hono server with better-auth
+import './log'; // Keep first: patches dependency console output before any dependency module runs.
+import './install-process-handlers'; // Install fatal handlers before dependency startup.
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { apiErrorHandler, log, logError, requestLogger, type ApiEnv } from './log';
+import { apiErrorHandler, log, logConfigInvalid, logError, requestLogger, type ApiEnv } from './log';
 import {
   oauthProviderAuthServerMetadata,
   oauthProviderOpenIdConfigMetadata,
@@ -36,6 +37,16 @@ import {
   protocolAwareCors,
   withNativeDelegationMetadata,
 } from './services/native-delegation/public-protocol';
+
+
+const betterAuthUrl = process.env.BETTER_AUTH_URL;
+try {
+  if (!betterAuthUrl) throw new Error();
+  new URL(betterAuthUrl);
+} catch {
+  logConfigInvalid('BETTER_AUTH_URL');
+  throw new Error('Invalid API configuration');
+}
 
 // Create Hono app
 const app = new Hono<ApiEnv>();
