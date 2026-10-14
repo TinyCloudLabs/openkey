@@ -78,5 +78,6 @@ jobs:
             --api-token "$PHALA_CLOUD_API_KEY" \
             --cvm-id openkey-api \
             --no-public-logs \
+            --no-public-sysinfo \
             --compose docker-compose.prod.yml \
             --wait

@@ -663,7 +663,7 @@ jobs:
             '.phase == "expanded" and .candidateDigestSha256 == $digest and .deterministicCandidateCount == $candidates and .existingCanonicalCount == $candidates and .unassignedCandidateCount == 0 and .selectionConflictCount == 0 and .predictedAddressChangeCount == 0 and .canonicalWithoutEligibleKeyCount == 0 and .tenantCustodyKeyCount == 0' \
             tc492-post.json >/dev/null
           sed -i "s|\${DOCKER_IMAGE}|skgbafa/openkey-api@${IMAGE_DIGEST}|g" docker-compose.prod.yml
-          phala deploy --api-token "$PHALA_CLOUD_API_KEY" --cvm-id openkey-api --compose docker-compose.prod.yml --wait
+          phala deploy --api-token "$PHALA_CLOUD_API_KEY" --cvm-id openkey-api --compose docker-compose.prod.yml --no-public-logs --no-public-sysinfo --wait
           phala ps openkey-api --api-token "$PHALA_CLOUD_API_KEY" --json > /tmp/containers-after.json
           EXPECTED_IMAGE="skgbafa/openkey-api@${IMAGE_DIGEST}" node <<'NODE'
           const fs = require('node:fs');
