@@ -13,6 +13,7 @@ import { enabledNativeDelegation } from './policy';
 import { storedToken } from './provider-tokens';
 import { NATIVE_DELEGATION_ENDPOINT_PATHS, OPENKEY_SESSION_PROOF_HEADER } from './public-protocol';
 import { credentialHash, SESSION_PROOF_MAX_SKEW_SECONDS, sessionProofJtiHash, verifySessionProofClaims } from './session-proof';
+import { logError } from '../../log';
 
 const REFRESH_LIFETIME_SECONDS = 7 * 24 * 60 * 60;
 const RENEWAL_CUTOFF_MS = 300_000;
@@ -43,9 +44,7 @@ async function startSessionProofJtiSweep(db: PrismaClient): Promise<void> {
       if (running) return;
       running = true;
       void sweepExpiredSessionProofJtis(db)
-        .catch((error) => console.error('[Native session proof] cleanup failed', {
-          kind: error instanceof Error ? error.name : 'unknown',
-        }))
+        .catch((error) => logError('error', 'native_session_proof_cleanup_failed', error))
         .finally(() => { running = false; });
     }, SESSION_PROOF_JTI_SWEEP_INTERVAL_MS);
     timer.unref();

@@ -236,7 +236,7 @@ describe('keysRouter managed signing', () => {
         errorMessage: 'node unreachable',
       };
     });
-    const consoleSpy = spyOn(console, 'error').mockImplementation(() => {});
+    const consoleSpy = spyOn(console, 'log').mockImplementation(() => {});
     const router = await keysRouter();
 
     const response = await router.request('/key_1/sign', {
@@ -254,14 +254,9 @@ describe('keysRouter managed signing', () => {
       tinycloudBootstrap: { status: 'failed', errorCode: 'tinycloud_bootstrap_failed' },
     });
     expect(calls).toEqual(['bootstrap', 'sign']);
-    expect(consoleSpy).toHaveBeenCalledWith(
-      '[Keys] TinyCloud bootstrap failed',
-      expect.objectContaining({
-        keyId: keyRecord.id,
-        errorCode: 'tinycloud_bootstrap_failed',
-        errorMessage: 'node unreachable',
-      }),
-    );
+    const line = JSON.parse(consoleSpy.mock.calls[0]![0] as string);
+    expect(line).toMatchObject({ level: 'error', event: 'tinycloud_bootstrap_failed', error_code: 'tinycloud_bootstrap_failed' });
+    expect(Object.keys(line).sort()).toEqual(['error_code', 'event', 'level', 'ts']);
     consoleSpy.mockRestore();
   });
 
@@ -270,7 +265,7 @@ describe('keysRouter managed signing', () => {
       calls.push('bootstrap');
       throw new Error('database unavailable');
     });
-    const error = spyOn(console, 'error').mockImplementation(() => {});
+    const log = spyOn(console, 'log').mockImplementation(() => {});
     try {
       const router = await keysRouter();
       const response = await router.request('/key_1/sign', {
@@ -286,16 +281,14 @@ describe('keysRouter managed signing', () => {
         tinycloudBootstrap: { status: 'failed', errorCode: 'tinycloud_bootstrap_crashed' },
       });
       expect(calls).toEqual(['bootstrap', 'sign']);
-      expect(error).toHaveBeenCalledTimes(1);
-      expect(error).toHaveBeenCalledWith('[Keys] TinyCloud bootstrap failed', {
-        keyId: keyRecord.id,
-        errorCode: 'tinycloud_bootstrap_crashed',
-        errorMessage: 'database unavailable',
-      });
-    } finally { error.mockRestore(); }
+      expect(log).toHaveBeenCalledTimes(1);
+      const line = JSON.parse(log.mock.calls[0]![0] as string);
+      expect(line).toMatchObject({ level: 'error', event: 'tinycloud_bootstrap_failed', error_code: 'tinycloud_bootstrap_crashed' });
+      expect(Object.keys(line).sort()).toEqual(['error_code', 'event', 'level', 'ts']);
+    } finally { log.mockRestore(); }
   });
 
-  signingRegressionTest('POST /:keyId/sign background rejection logs only identifiers and error details', async () => {
+  signingRegressionTest('POST /:keyId/sign emits only allowlisted fields on background rejection', async () => {
     let resolveBootstrap!: (outcome: TinyCloudBootstrapOutcome) => void;
     let rejectBootstrap!: (error: Error) => void;
     const bootstrap = new Promise<TinyCloudBootstrapOutcome>((resolve, reject) => {
@@ -303,7 +296,6 @@ describe('keysRouter managed signing', () => {
       rejectBootstrap = reject;
     });
     ensureTinyCloudBootstrapForApprovedSign.mockImplementationOnce(() => bootstrap);
-    const error = spyOn(console, 'error').mockImplementation(() => {});
     const log = spyOn(console, 'log').mockImplementation(() => {});
     const unhandled = mock(() => {});
     process.on('unhandledRejection', unhandled);
@@ -322,14 +314,11 @@ describe('keysRouter managed signing', () => {
       rejectBootstrap(new Error('background database failure'));
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(unhandled).not.toHaveBeenCalled();
-      expect(log).not.toHaveBeenCalled();
-      expect(error).toHaveBeenCalledTimes(1);
-      expect(error).toHaveBeenCalledWith('[Keys] TinyCloud bootstrap crashed (async)', {
-        keyId: keyRecord.id,
-        errorCode: 'tinycloud_bootstrap_crashed',
-        errorMessage: 'background database failure',
-      });
-      const logged = JSON.stringify(error.mock.calls);
+      expect(log).toHaveBeenCalledTimes(1);
+      const line = JSON.parse(log.mock.calls[0]![0] as string);
+      expect(line).toMatchObject({ level: 'error', event: 'tinycloud_bootstrap_background_failed', error_code: 'tinycloud_bootstrap_crashed' });
+      expect(Object.keys(line).sort()).toEqual(['error_code', 'event', 'level', 'ts']);
+      const logged = log.mock.calls.map(([entry]) => entry).join('\\n');
       expect(logged).not.toContain('privateKey');
       expect(logged).not.toContain(privateKey);
       expect(logged).not.toContain(keyRecord.sealedBlob!);
@@ -337,7 +326,6 @@ describe('keysRouter managed signing', () => {
       resolveBootstrap({ status: 'complete' });
       await new Promise((resolve) => setTimeout(resolve, 0));
       process.off('unhandledRejection', unhandled);
-      error.mockRestore();
       log.mockRestore();
     }
   });

@@ -26,6 +26,7 @@ import {
   validateOAuthRedirectUris,
 } from '../services/oauth-redirect-uris';
 
+import { logError } from '../log';
 const defaultPrisma = createPrismaClient();
 let prisma = defaultPrisma;
 
@@ -332,7 +333,7 @@ oauthAdminRouter.post('/clients', async (c) => {
     if (error.code === 'P2002') {
       return c.json({ error: 'Client with this ID already exists' }, 409);
     }
-    console.error('Failed to create OAuth client:', error);
+    logError('error', 'oauth_client_create_failed', error);
     return c.json({ error: 'Failed to create client' }, 500);
   }
 });
@@ -402,7 +403,7 @@ oauthAdminRouter.delete('/clients/:clientId', async (c) => {
     if (error.code === 'P2025') {
       return c.json({ error: 'Client not found' }, 404);
     }
-    console.error('Failed to delete OAuth client:', error);
+    logError('error', 'oauth_client_delete_failed', error);
     return c.json({ error: 'Failed to delete client' }, 500);
   }
 });
@@ -560,7 +561,7 @@ oauthAdminRouter.patch('/clients/:clientId', async (c) => {
     if (error.code === 'P2025') {
       return c.json({ error: 'Client not found' }, 404);
     }
-    console.error('Failed to update OAuth client:', error);
+    logError('error', 'oauth_client_update_failed', error);
     return c.json({ error: 'Failed to update client' }, 500);
   }
 });

@@ -1,3 +1,4 @@
+import { log } from '../log';
 import type { TinyCloudBootstrapOutcome } from './tinycloud-bootstrap';
 
 export const DEFAULT_TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS = 2500;
@@ -60,18 +61,11 @@ export async function awaitTinyCloudBootstrapWithinBudget(
   }
 
   if (result.status === 'pending') {
-    // Only identifiers belong in the background closure, never the bootstrap input/key.
-    const { logPrefix, logContext } = options;
     void settled.then((outcome) => {
       if (outcome.status === 'failed') {
-        const label = outcome.errorCode === 'tinycloud_bootstrap_crashed' ? 'crashed' : 'failed';
-        console.error(`${logPrefix} TinyCloud bootstrap ${label} (async)`, {
-          ...logContext,
-          errorCode: outcome.errorCode,
-          errorMessage: outcome.errorMessage,
-        });
+        log('error', 'tinycloud_bootstrap_background_failed', { error_code: outcome.errorCode });
       } else {
-        console.log(`${logPrefix} TinyCloud bootstrap finished (async)`, { ...logContext, status: outcome.status });
+        log('info', 'tinycloud_bootstrap_background_completed');
       }
       try {
         backgroundObserver?.(outcome);

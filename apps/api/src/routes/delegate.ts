@@ -48,6 +48,7 @@ import {
   type RecapEntry,
   type SessionAbilities,
 } from './delegate-session';
+import { log, logError } from '../log';
 
 // Re-export the pure delegation helpers so existing external test files
 // (e.g. delegate-oauth-route.test.ts) that import them from this module
@@ -1484,10 +1485,10 @@ delegateRouter.post('/', async (c) => {
         });
       }
       if (!hostActivated) {
-        console.warn(`[Delegate] Session activation warning: ${activationResult.error}`);
+        log('warn', 'delegate_session_activation_warning');
       }
     } catch (e) {
-      console.warn(`[Delegate] Session activation failed (host unreachable):`, e);
+      logError('warn', 'delegate_session_activation_failed', e);
     }
 
     const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
@@ -1579,10 +1580,10 @@ delegateRouter.post('/', async (c) => {
       });
     }
     if (!hostActivated) {
-      console.warn(`[Delegate] Session activation warning: ${activationResult.error}`);
+      log('warn', 'delegate_session_activation_warning');
     }
   } catch (e) {
-    console.warn(`[Delegate] Session activation failed (host unreachable):`, e);
+    logError('warn', 'delegate_session_activation_failed', e);
   }
   const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
 
@@ -1750,7 +1751,7 @@ delegateRouter.post('/prepare', async (c) => {
       originalSiwe: preparedResult.prepared.siwe,
     });
   } catch (issueErr) {
-    console.warn('[Delegate] Failed to issue authorization context:', issueErr);
+    logError('warn', 'delegate_authorization_context_issue_failed', issueErr);
     // If we cannot issue a context there is no safe /complete path — force
     // callers to retry.
     return c.json(
@@ -1782,7 +1783,7 @@ delegateRouter.post('/prepare', async (c) => {
       }
     }
   } catch (error) {
-    console.warn('[Delegate] Failed to determine TinyCloud space setup notice:', error);
+    logError('warn', 'delegate_space_setup_notice_failed', error);
   }
 
   return c.json({
@@ -2116,10 +2117,10 @@ delegateRouter.post('/complete', async (c) => {
     hostActivated = activationResult.success;
     if (hostActivated) spaceReady = !activationResult.skipped?.includes(spaceId);
     if (!hostActivated) {
-      console.warn(`[Delegate] Session activation warning: ${activationResult.error}`);
+      log('warn', 'delegate_session_activation_warning');
     }
   } catch (e) {
-    console.warn(`[Delegate] Session activation failed (host unreachable):`, e);
+    logError('warn', 'delegate_session_activation_failed', e);
   }
 
   const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
@@ -2486,7 +2487,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
               };
             }
           } catch (bindErr) {
-            console.warn('[authorize-sign-prepare] Origin-bind threw:', bindErr);
+            logError('warn', 'delegate_origin_bind_failed', bindErr);
             metadataTrust = { status: 'unsigned', reason: 'origin-bind threw' };
           }
         } else {
@@ -2520,7 +2521,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       verifiedManifest,
     });
   } catch (issueErr) {
-    console.warn('[authorize-sign-prepare] Failed to issue authorization context:', issueErr);
+    logError('warn', 'delegate_authorization_context_issue_failed', issueErr);
     return c.json(
       { error: 'Failed to issue authorization context', code: 'authorization_context_failed' },
       500,

@@ -46,10 +46,10 @@ describe('TC-945 TinyCloud bootstrap budget', () => {
       await flush();
       expect(observer).toHaveBeenCalledTimes(1);
       expect(observer).toHaveBeenCalledWith({ status: 'complete' });
-      expect(log).toHaveBeenCalledWith('[Budget test] TinyCloud bootstrap finished (async)', {
-        keyId: 'key_1', status: 'complete',
-      });
-      expect(log.mock.calls[0]![1]).not.toHaveProperty('privateKey');
+      expect(log).toHaveBeenCalledTimes(1);
+      const line = JSON.parse(log.mock.calls[0]![0] as string);
+      expect(line).toMatchObject({ level: 'info', event: 'tinycloud_bootstrap_background_completed' });
+      expect(Object.keys(line).sort()).toEqual(['event', 'level', 'ts']);
     } finally { work.resolve({ status: 'complete' }); log.mockRestore(); }
   });
 
@@ -57,7 +57,7 @@ describe('TC-945 TinyCloud bootstrap budget', () => {
     const work = deferred();
     const observer = mock(() => {});
     setTinyCloudBootstrapBackgroundObserverForTests(observer);
-    const error = spyOn(console, 'error').mockImplementation(() => {});
+    const log = spyOn(console, 'log').mockImplementation(() => {});
     const outcome = { status: 'failed' as const, errorCode: 'tinycloud_bootstrap_failed', errorMessage: 'seed failed' };
     try {
       expect(await awaitTinyCloudBootstrapWithinBudget(work.promise, options)).toEqual({ status: 'pending' });
@@ -65,10 +65,11 @@ describe('TC-945 TinyCloud bootstrap budget', () => {
       await flush();
       expect(observer).toHaveBeenCalledTimes(1);
       expect(observer).toHaveBeenCalledWith(outcome);
-      expect(error).toHaveBeenCalledWith('[Budget test] TinyCloud bootstrap failed (async)', {
-        keyId: 'key_1', errorCode: outcome.errorCode, errorMessage: outcome.errorMessage,
-      });
-    } finally { work.resolve(outcome); error.mockRestore(); }
+      expect(log).toHaveBeenCalledTimes(1);
+      const line = JSON.parse(log.mock.calls[0]![0] as string);
+      expect(line).toMatchObject({ level: 'error', event: 'tinycloud_bootstrap_background_failed', error_code: outcome.errorCode });
+      expect(Object.keys(line).sort()).toEqual(['error_code', 'event', 'level', 'ts']);
+    } finally { work.resolve(outcome); log.mockRestore(); }
   });
 
   test('background rejection is normalized and never unhandled', async () => {
@@ -77,28 +78,28 @@ describe('TC-945 TinyCloud bootstrap budget', () => {
     const unhandled = mock(() => {});
     setTinyCloudBootstrapBackgroundObserverForTests(observer);
     process.on('unhandledRejection', unhandled);
-    const error = spyOn(console, 'error').mockImplementation(() => {});
+    const log = spyOn(console, 'log').mockImplementation(() => {});
     try {
       expect(await awaitTinyCloudBootstrapWithinBudget(work.promise, options)).toEqual({ status: 'pending' });
       work.reject(new Error('database unavailable'));
       await flush();
       expect(observer).toHaveBeenCalledTimes(1);
       expect(observer).toHaveBeenCalledWith({ status: 'failed', errorCode: 'tinycloud_bootstrap_crashed', errorMessage: 'database unavailable' });
-      expect(error).toHaveBeenCalledWith('[Budget test] TinyCloud bootstrap crashed (async)', {
-        keyId: 'key_1', errorCode: 'tinycloud_bootstrap_crashed', errorMessage: 'database unavailable',
-      });
-      expect(unhandled).not.toHaveBeenCalled();
-    } finally { work.resolve({ status: 'complete' }); process.off('unhandledRejection', unhandled); error.mockRestore(); }
+      expect(log).toHaveBeenCalledTimes(1);
+      const line = JSON.parse(log.mock.calls[0]![0] as string);
+      expect(line).toMatchObject({ level: 'error', event: 'tinycloud_bootstrap_background_failed', error_code: 'tinycloud_bootstrap_crashed' });
+      expect(Object.keys(line).sort()).toEqual(['error_code', 'event', 'level', 'ts']);
+    } finally { work.resolve({ status: 'complete' }); process.off('unhandledRejection', unhandled); log.mockRestore(); }
   });
 
   test('rejection before the budget returns failed synchronously', async () => {
-    const error = spyOn(console, 'error').mockImplementation(() => {});
+    const log = spyOn(console, 'log').mockImplementation(() => {});
     try {
       expect(await awaitTinyCloudBootstrapWithinBudget(Promise.reject(new Error('database unavailable')), options)).toEqual({
         status: 'failed', errorCode: 'tinycloud_bootstrap_crashed', errorMessage: 'database unavailable',
       });
-      expect(error).not.toHaveBeenCalled();
-    } finally { error.mockRestore(); }
+      expect(log).not.toHaveBeenCalled();
+    } finally { log.mockRestore(); }
   });
 
   test('reads the current environment and defaults invalid or negative budgets', () => {

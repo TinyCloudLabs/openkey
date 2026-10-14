@@ -4,6 +4,7 @@ import { sessionDidForPublicJwk } from '../device-authorization';
 import { enabledNativeDelegation, type NativeDelegationConfig } from './policy';
 import { TINYCLOUD_DELEGATION_SCOPE } from '../../oauth-config';
 import { TINYCLOUD_DELEGATED_PATH, TINYCLOUD_DELEGATED_PATH_MAX_LENGTH, hasDotSegment } from '../tinycloud-path-policy';
+import { log, logError } from '../../log';
 
 export const REQUEST_URI_PREFIX = 'urn:ietf:params:oauth:request_uri:';
 const REQUIRED_FORM_KEYS = new Set(['client_id', 'response_type', 'redirect_uri', 'state', 'code_challenge', 'code_challenge_method', 'scope', 'authorization_details']);
@@ -21,7 +22,7 @@ const parSweepStarts = new WeakMap<PrismaClient, Promise<void>>();
  * so neither client ID nor this process-wide count can provide caller fairness.
  * The dstack ingress path does not authenticate an HTTP client-IP header. */
 export function createParVolumeAlert(threshold = PAR_GLOBAL_ALERT_THRESHOLD, alert: (threshold: number) => void =
-  (value) => console.warn('[Native PAR] valid request volume threshold reached', { threshold: value })) {
+  () => log('warn', 'native_par_valid_request_volume_threshold_reached')) {
   let count = 0;
   let resetAt = 0;
   let alerted = false;
@@ -54,9 +55,7 @@ async function startNativeRequestSweep(db: PrismaClient): Promise<void> {
       if (running) return;
       running = true;
       void sweepNativeRequests(db)
-        .catch((error) => console.error('[Native PAR] request cleanup failed', {
-          kind: error instanceof Error ? error.name : 'unknown',
-        }))
+        .catch((error) => logError('error', 'native_par_request_cleanup_failed', error))
         .finally(() => { running = false; });
     }, PAR_SWEEP_INTERVAL_MS);
     timer.unref();
