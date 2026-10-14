@@ -178,7 +178,6 @@ async function finishManagedSpaceOnboarding(input: {
         host: setup.bootstrapHost,
         chainId: input.chainId,
       }),
-      { logPrefix: '[Delegate]', logContext: { keyId: input.key.id, host: setup.bootstrapHost } },
     );
     if (outcome.status === 'complete') return { spaceReady: true };
     // Still running here or under another approval's lock: the lock/cache finishes it once.

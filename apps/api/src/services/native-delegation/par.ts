@@ -4,7 +4,7 @@ import { sessionDidForPublicJwk } from '../device-authorization';
 import { enabledNativeDelegation, type NativeDelegationConfig } from './policy';
 import { TINYCLOUD_DELEGATION_SCOPE } from '../../oauth-config';
 import { TINYCLOUD_DELEGATED_PATH, TINYCLOUD_DELEGATED_PATH_MAX_LENGTH, hasDotSegment } from '../tinycloud-path-policy';
-import { log, logError } from '../../log';
+import { log, logError, withScheduledLogContext } from '../../log';
 
 export const REQUEST_URI_PREFIX = 'urn:ietf:params:oauth:request_uri:';
 const REQUIRED_FORM_KEYS = new Set(['client_id', 'response_type', 'redirect_uri', 'state', 'code_challenge', 'code_challenge_method', 'scope', 'authorization_details']);
@@ -55,7 +55,7 @@ async function startNativeRequestSweep(db: PrismaClient): Promise<void> {
       if (running) return;
       running = true;
       void sweepNativeRequests(db)
-        .catch((error) => logError('error', 'native_par_request_cleanup_failed', error))
+        .catch((error) => withScheduledLogContext(() => logError('error', 'native_par_request_cleanup_failed', error)))
         .finally(() => { running = false; });
     }, PAR_SWEEP_INTERVAL_MS);
     timer.unref();

@@ -34,7 +34,7 @@ export function setTinyCloudBootstrapBackgroundObserverForTests(observer?: Backg
  */
 export async function awaitTinyCloudBootstrapWithinBudget(
   bootstrap: Promise<TinyCloudBootstrapOutcome>,
-  options: { logPrefix: string; logContext: { keyId: string; [k: string]: unknown }; budgetMs?: number },
+  options: { budgetMs?: number } = {},
 ): Promise<BudgetedTinyCloudBootstrapOutcome> {
   const settled = bootstrap.then(
     (outcome) => outcome,
@@ -63,7 +63,7 @@ export async function awaitTinyCloudBootstrapWithinBudget(
   if (result.status === 'pending') {
     void settled.then((outcome) => {
       if (outcome.status === 'failed') {
-        log('error', 'tinycloud_bootstrap_background_failed', { error_code: outcome.errorCode });
+        log('error', 'tinycloud_bootstrap_background_failed', outcome.errorCode);
       } else {
         log('info', 'tinycloud_bootstrap_background_completed');
       }

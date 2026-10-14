@@ -40,11 +40,9 @@ import { crossSubDomainCookieOptions } from './auth-options';
 import { resolveRequestUri } from './services/native-delegation/par';
 import { exchangeNativeCode, generateNativeRefreshToken, withNativeTokenGuardErrors } from './services/native-delegation/code-exchange';
 import { providerTokenOptions } from './services/native-delegation/provider-tokens';
-import { log, logError } from './log';
+import { betterAuthLog, log, logError } from './log';
 
-export const prisma: PrismaClient = createPrismaClient({
-  log: ['error', 'warn'],
-});
+export const prisma: PrismaClient = createPrismaClient();
 const tee = createTeeClient();
 
 // Initialize Resend for email OTP
@@ -193,11 +191,7 @@ export const auth = betterAuth({
   logger: {
     level: 'debug',
     disableColors: true,
-    log: (level, _message, ...args) => {
-      const error = args.find((arg) => arg instanceof Error);
-      if (error && (level === 'error' || level === 'warn')) logError(level, 'better_auth', error);
-      else log(level, 'better_auth');
-    },
+    log: betterAuthLog,
   },
 
   database: prismaAdapter(withNativeTokenGuardErrors(prisma), {

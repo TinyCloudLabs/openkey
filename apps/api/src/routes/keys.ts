@@ -304,12 +304,9 @@ keysRouter.post('/:keyId/sign', async (c) => {
   // Bound bootstrap's synchronous wait; background work keeps its existing lock/heartbeat.
   const bootstrap = await awaitTinyCloudBootstrapWithinBudget(
     ensureTinyCloudBootstrapForApprovedSign({ prisma, userId: user.id, key, privateKey, message: body.message, format }),
-    { logPrefix: '[Keys]', logContext: { keyId: key.id } },
   );
   if (bootstrap.status === 'failed') {
-    log('error', 'tinycloud_bootstrap_failed', {
-      error_code: bootstrap.errorCode,
-    });
+    log('error', 'tinycloud_bootstrap_failed', bootstrap.errorCode);
   }
 
   const signature = await account.signMessage({

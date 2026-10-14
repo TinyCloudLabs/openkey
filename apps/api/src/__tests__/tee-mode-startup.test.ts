@@ -64,9 +64,10 @@ describe('API startup in a deployment (TC-966)', () => {
     test(`NODE_ENV=${nodeEnv} TEE_MODE=${JSON.stringify(teeMode)} stops startup`, async () => {
       const { exitCode, output } = await startApi(nodeEnv, teeMode);
       expect(exitCode).not.toBe(0);
-      expect(output).toMatch(
-        /TEE_MODE must be "production" or "development"|TEE_MODE=development is only allowed for local development/,
-      );
+      const lines = output.split('\n').filter(Boolean).map((line) => JSON.parse(line));
+      const startupError = lines.find((line) => line.event === 'uncaught_exception');
+      expect(startupError).toMatchObject({ request_id: 'startup', error_name: 'Error' });
+      expect(Object.keys(startupError).sort()).toEqual(['error_name', 'event', 'level', 'request_id', 'ts']);
       expect(output).not.toContain('OpenKey API starting');
     }, 30_000);
   }
