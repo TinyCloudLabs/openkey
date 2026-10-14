@@ -15,6 +15,7 @@ import { deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, PrimaryKeyConflictError, setPrimaryKey } from '../services/primary-key';
 import { rejectNonBrowserControlRequest } from '../middleware/browser-control';
 
+import { log } from '../log';
 const prisma = createPrismaClient();
 const tee = createTeeClient();
 
@@ -303,14 +304,9 @@ keysRouter.post('/:keyId/sign', async (c) => {
   // Bound bootstrap's synchronous wait; background work keeps its existing lock/heartbeat.
   const bootstrap = await awaitTinyCloudBootstrapWithinBudget(
     ensureTinyCloudBootstrapForApprovedSign({ prisma, userId: user.id, key, privateKey, message: body.message, format }),
-    { logPrefix: '[Keys]', logContext: { keyId: key.id } },
   );
   if (bootstrap.status === 'failed') {
-    console.error('[Keys] TinyCloud bootstrap failed', {
-      keyId: key.id,
-      errorCode: bootstrap.errorCode,
-      errorMessage: bootstrap.errorMessage,
-    });
+    log('error', 'tinycloud_bootstrap_failed', bootstrap.errorCode);
   }
 
   const signature = await account.signMessage({
@@ -442,11 +438,7 @@ keysRouter.post('/:keyId/primary', async (c) => {
   }
 
   if (result.kind === 'changed') {
-    console.log('[Keys] Primary key changed', {
-      userId: user.id,
-      keyId: result.keyId,
-      previousKeyId: result.previousKeyId,
-    });
+    log('info', 'primary_key_changed');
   }
 
   return c.json({

@@ -36,6 +36,7 @@ import type { PrismaClient } from '@openkey/db';
 import { DEFAULT_TINYCLOUD_BOOTSTRAP_HOST, TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS } from './tinycloud-hosts';
 import { kvSpaceRegistryStore, registerMissingBootstrapSpaces } from './tinycloud-space-registry';
 
+import { log } from '../log';
 export const TINYCLOUD_BOOTSTRAP_VERSION = `@tinycloud/bootstrap:${canonicalHashHex({
   allowlist: BOOTSTRAP_ALLOWLIST,
   manifest: BOOTSTRAP_MANIFEST,
@@ -817,8 +818,8 @@ async function seedBootstrapSpaces(
       });
     },
   );
-  const result = await registerMissingBootstrapSpaces(store, seedStep.spaces, ownerDid, now);
-  console.log('[TinyCloudBootstrap] space registry', result);
+  await registerMissingBootstrapSpaces(store, seedStep.spaces, ownerDid, now);
+  log('info', 'tinycloud_bootstrap_space_registry_completed');
 }
 
 async function seedBootstrapApplications(

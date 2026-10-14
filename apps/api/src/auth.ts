@@ -40,10 +40,9 @@ import { crossSubDomainCookieOptions } from './auth-options';
 import { resolveRequestUri } from './services/native-delegation/par';
 import { exchangeNativeCode, generateNativeRefreshToken, withNativeTokenGuardErrors } from './services/native-delegation/code-exchange';
 import { providerTokenOptions } from './services/native-delegation/provider-tokens';
+import { betterAuthLog, log, logError } from './log';
 
-export const prisma: PrismaClient = createPrismaClient({
-  log: ['error', 'warn'],
-});
+export const prisma: PrismaClient = createPrismaClient();
 const tee = createTeeClient();
 
 // Initialize Resend for email OTP
@@ -192,18 +191,7 @@ export const auth = betterAuth({
   logger: {
     level: 'debug',
     disableColors: true,
-    log: (level, message, ...args) => {
-      const details = args.map((arg) => {
-        if (!(arg instanceof Error)) return arg;
-        return {
-          name: arg.name,
-          message: arg.message,
-          stack: arg.stack,
-          cause: arg.cause,
-        };
-      });
-      console.log(`[Better Auth] [${level}]`, message, ...details);
-    },
+    log: betterAuthLog,
   },
 
   database: prismaAdapter(withNativeTokenGuardErrors(prisma), {
@@ -245,7 +233,7 @@ export const auth = betterAuth({
     emailOTP({
       async sendVerificationOTP({ email, otp, type }) {
         if (!resend) {
-          console.log(`[DEV] OTP for ${email}: ${otp} (type: ${type})`);
+          if (isDev) log('warn', 'otp_delivery_unconfigured');
           return;
         }
 
@@ -440,9 +428,9 @@ export const auth = betterAuth({
                 label: 'Key 0',
               },
             });
-            console.log(`[Auth] Auto-generated key for new user ${user.id}: ${address}`);
+            log('info', 'auth_key_generated');
           } catch (error) {
-            console.error(`[Auth] Failed to auto-generate key for user ${user.id}:`, error);
+            logError('error', 'auth_key_generation_failed', error);
           }
         },
       },

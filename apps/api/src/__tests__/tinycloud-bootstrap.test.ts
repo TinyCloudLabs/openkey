@@ -399,10 +399,9 @@ describe('TC-945 background bootstrap lock and cache', () => {
     const background = new Promise<TinyCloudBootstrapOutcome>((resolve) => { observed = resolve; });
     setTinyCloudBootstrapBackgroundObserverForTests(observed);
     const input = { prisma, userId, key, privateKey, host: tinycloudHost, chainId };
-    const options = { logPrefix: '[Bootstrap test]', logContext: { keyId: key.id } };
     try {
-      const first = awaitTinyCloudBootstrapWithinBudget(ensureTinyCloudBootstrap(input), { ...options, budgetMs: 50 });
-      const second = awaitTinyCloudBootstrapWithinBudget(ensureTinyCloudBootstrap(input), { ...options, budgetMs: 1000 });
+      const first = awaitTinyCloudBootstrapWithinBudget(ensureTinyCloudBootstrap(input), { budgetMs: 50 });
+      const second = awaitTinyCloudBootstrapWithinBudget(ensureTinyCloudBootstrap(input), { budgetMs: 1000 });
       expect(await first).toEqual({ status: 'pending' });
       expect(await second).toMatchObject({ status: 'failed', errorCode: 'tinycloud_bootstrap_in_progress' });
       expect(executor).toHaveBeenCalledTimes(1);
@@ -435,7 +434,7 @@ describe('TC-945 background bootstrap lock and cache', () => {
     const input = { prisma, userId, key, privateKey, host: tinycloudHost, chainId };
     try {
       expect(await awaitTinyCloudBootstrapWithinBudget(ensureTinyCloudBootstrap(input), {
-        budgetMs: 50, logPrefix: '[Bootstrap test]', logContext: { keyId: key.id },
+        budgetMs: 50,
       })).toEqual({ status: 'pending' });
       reject(new Error('background seed failed'));
       expect(await background).toMatchObject({ status: 'failed', errorCode: 'tinycloud_bootstrap_failed' });

@@ -15,6 +15,7 @@ import { nativeUserRetryAfter, type NativeUserAction } from '../services/native-
 import { ParError, validatePermissions, type NativePermission } from '../services/native-delegation/par';
 import { prepareDelegationSession, actionKey } from './delegate-session';
 
+import { log, logError } from '../log';
 export class NativeConsentError extends Error {
   constructor(readonly status: 401 | 403 | 404 | 409 | 500 | 503, readonly code: string, readonly description?: string) { super(code); }
 }
@@ -145,7 +146,7 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
       try { peerId = await withinTimeout(hostOps.fetchPeerId(preCeiling.tinycloudHost, preSpace), 5_000); }
       catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
-        console.error('[Native consent] peer lookup failed', { host: preCeiling.tinycloudHost, spaceId: preSpace, reason });
+        logError('error', 'native_consent_peer_lookup_failed', error);
         throw new NativeConsentError(503, 'temporarily_unavailable', `TinyCloud node peer lookup failed: ${reason.slice(0, 200)}`);
       }
     }
@@ -201,9 +202,7 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
         // The blob and TEE error text may contain sensitive material. Log only
         // the error kind; a corrupt blob or sealing-context mismatch is not a
         // transient outage and must not receive Retry-After.
-        console.error('Native delegation key unseal failed', {
-          keyId: preKey.id, kind: error instanceof NativeOperationTimeoutError ? 'timeout' : error instanceof Error ? error.name : 'unknown',
-        });
+        logError('error', 'native_consent_key_unseal_failed', error);
         if (error instanceof NativeOperationTimeoutError) fail(503, 'temporarily_unavailable');
         fail(500, 'key_unavailable');
       }
@@ -264,15 +263,14 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
             // idempotent: HTTP 200 with both lists empty.
             const alreadyRegistered = retry.activated?.length === 0 && retry.skipped?.length === 0;
             if (retry.success && (retry.activated?.includes(result.artifact.spaceId) || alreadyRegistered)) hosting = 'created';
-            else console.warn('[Native consent] activation after host setup failed', { host: result.artifact.tinycloudHost, spaceId: result.artifact.spaceId, status: retry.status, activated: retry.activated, skipped: retry.skipped });
+            else log('warn', 'native_consent_activation_after_host_setup_failed');
           }
-          else console.warn('[Native consent] host delegation rejected', { host: result.hostPlan.host, spaceId: result.artifact.spaceId, status: submitted.status });
+          else log('warn', 'native_consent_host_delegation_rejected');
         }
       }
-      else console.warn('[Native consent] activation did not host space', { host: result.artifact.tinycloudHost, spaceId: result.artifact.spaceId, status: activated.status, activated: activated.activated, skipped: activated.skipped });
+      else log('warn', 'native_consent_activation_did_not_host_space');
     } catch (error) {
-      console.warn('[Native consent] host activation error', { host: result.artifact.tinycloudHost, spaceId: result.artifact.spaceId,
-        reason: error instanceof Error ? error.message : String(error) });
+      logError('warn', 'native_consent_host_activation_failed', error);
     }
     await db.tinyCloudNativeRequest.update({ where: { id: result.rowId }, data: { hosting } });
     return c.json({ status: 'APPROVED', revision: result.revision, hosting });

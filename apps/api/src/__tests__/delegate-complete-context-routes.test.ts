@@ -899,7 +899,9 @@ describe('TC-945 bootstrap budget', () => {
     const work = deferredBootstrap();
     ensureTinyCloudBootstrap.mockImplementationOnce(() => work.promise);
     const unhandled = mock(() => {});
-    const error = spyOn(console, 'error').mockImplementation(() => {});
+    const output: string[] = [];
+    const originalWrite = process.stdout.write;
+    process.stdout.write = ((chunk: string | Uint8Array) => { output.push(String(chunk)); return true; }) as typeof process.stdout.write;
     process.on('unhandledRejection', unhandled);
     try {
       const result = await managedApproval(host);
@@ -907,11 +909,10 @@ describe('TC-945 bootstrap budget', () => {
       work.reject(new Error('background database failure'));
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(unhandled).not.toHaveBeenCalled();
-      expect(error).toHaveBeenCalledTimes(1);
-      expect(error).toHaveBeenCalledWith('[Delegate] TinyCloud bootstrap crashed (async)', {
-        keyId: keyRecord.id, host: 'https://node.tinycloud.xyz',
-        errorCode: 'tinycloud_bootstrap_crashed', errorMessage: 'background database failure',
-      });
-    } finally { process.off('unhandledRejection', unhandled); error.mockRestore(); }
+      expect(output).toHaveLength(1);
+      const line = JSON.parse(output[0]!);
+      expect(line).toMatchObject({ level: 'error', event: 'tinycloud_bootstrap_background_failed', error_code: 'tinycloud_bootstrap_crashed', request_id: 'startup' });
+      expect(Object.keys(line).sort()).toEqual(['error_code', 'event', 'level', 'request_id', 'ts']);
+    } finally { process.off('unhandledRejection', unhandled); process.stdout.write = originalWrite; }
   });
 });

@@ -1,7 +1,8 @@
-// OpenKey API - Hono server with better-auth
+import './log'; // Keep first: patches dependency console output before any dependency module runs.
+import './install-process-handlers'; // Install fatal handlers before dependency startup.
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { logger } from 'hono/logger';
+import { apiErrorHandler, log, logConfigInvalid, logError, requestLogger, type ApiEnv } from './log';
 import {
   oauthProviderAuthServerMetadata,
   oauthProviderOpenIdConfigMetadata,
@@ -37,11 +38,21 @@ import {
   withNativeDelegationMetadata,
 } from './services/native-delegation/public-protocol';
 
+
+const betterAuthUrl = process.env.BETTER_AUTH_URL;
+try {
+  if (!betterAuthUrl) throw new Error();
+  new URL(betterAuthUrl);
+} catch {
+  logConfigInvalid('BETTER_AUTH_URL');
+  throw new Error('Invalid API configuration');
+}
+
 // Create Hono app
-const app = new Hono();
+const app = new Hono<ApiEnv>();
 
 // Middleware
-app.use('*', logger());
+app.use('*', requestLogger);
 
 // Zero-gesture bootstrap signing: allow any origin. Third-party apps call
 // this from the browser with a bearer session token (no cookies), and the
@@ -86,14 +97,14 @@ app.use('/api/auth/oauth2/token', async (c, next) => {
     if (clientId) {
       // Fire-and-forget: don't block the response
       trackTokenExchange(clientId).catch((err) =>
-        console.error('[Analytics] Failed to track token exchange:', err)
+        logError('error', 'analytics_token_exchange_failed', err)
       );
       trackUniqueUser(clientId).catch((err) =>
-        console.error('[Analytics] Failed to track unique user:', err)
+        logError('error', 'analytics_unique_user_failed', err)
       );
     }
   } catch (err) {
-    console.error('[Analytics] Error in token tracking middleware:', err);
+    logError('error', 'analytics_token_tracking_failed', err);
   }
 });
 
@@ -110,11 +121,11 @@ app.use('/api/auth/oauth2/authorize', async (c, next) => {
 
     if (clientId) {
       trackAuthorization(clientId).catch((err) =>
-        console.error('[Analytics] Failed to track authorization:', err)
+        logError('error', 'analytics_authorization_failed', err)
       );
     }
   } catch (err) {
-    console.error('[Analytics] Error in authorization tracking middleware:', err);
+    logError('error', 'analytics_authorization_tracking_failed', err);
   }
 });
 
@@ -211,10 +222,7 @@ app.route('/api/console/organizations', tenantConsoleRouter);
 app.notFound((c) => c.json({ error: 'Not found' }, 404));
 
 // Error handler
-app.onError((err, c) => {
-  console.error('API Error:', err);
-  return c.json({ error: 'Internal server error' }, 500);
-});
+app.onError(apiErrorHandler);
 
 // One-time startup migration: ensure all OAuth clients have full scopes
 import { createPrismaClient } from '@openkey/db';
@@ -232,19 +240,18 @@ const ALL_SCOPES = ['openid', 'email', 'keys', 'offline_access'];
       },
     });
     if (result.count > 0) {
-      console.log(`[Startup] Updated ${result.count} OAuth client(s) to full scopes`);
+      log('info', 'oauth_client_scopes_updated');
     }
     await prisma.$disconnect();
   } catch (err) {
-    console.error('[Startup] Failed to update OAuth client scopes:', err);
+    logError('error', 'oauth_client_scopes_update_failed', err);
   }
 })();
 
 // Start server
 const port = parseInt(process.env.API_PORT || '3001');
 
-console.log(`OpenKey API starting on port ${port}...`);
-console.log(`TEE Mode: ${resolveTeeMode()}`);
+log('info', 'api_starting');
 
 export default {
   port,
