@@ -34,6 +34,7 @@ import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
 import { prepareSession, parseRecapFromSiwe } from '@tinycloud/node-sdk-wasm';
 import { verifyMessage } from 'ethers';
+import { mockModules, replaceModules } from './mock-module';
 
 const privateKey = '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 const account = privateKeyToAccount(privateKey);
@@ -74,41 +75,42 @@ const prisma = {
   tinyCloudBootstrapState: {},
 };
 
-mock.module('@openkey/db', () => ({ createPrismaClient: () => prisma }));
-
-mock.module('@openkey/tee', () => ({
-  createTeeClient: () => ({
-    deriveKey: mock(async () => new Uint8Array(32)),
-    getQuote: mock(async () => 'quote'),
-    isInTee: () => false,
+replaceModules({
+  '../middleware/session': () => ({
+    requireSession: createMiddleware(async (c, next) => {
+      c.set('user', currentUser);
+      c.set('session', {
+        id: 'session_' + currentUser.id,
+        userId: currentUser.id,
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      await next();
+    }),
   }),
-  unseal: mock(async () => privateKey),
-  createWalletFromPrivateKey: (key: string) => {
-    const wallet = privateKeyToAccount(key as `0x${string}`);
-    return {
-      ...wallet,
-      signMessage: async (input: { message: string }) => wallet.signMessage(input),
-    };
-  },
-  generatePrivateKey: () => privateKey,
-  getAddressFromPrivateKey: () => address,
-}));
-
-mock.module('@tinycloud/sdk-core', () => ({
-  activateSessionWithHost: mock(async () => ({ success: true })),
-}));
-
-mock.module('../middleware/session', () => ({
-  requireSession: createMiddleware(async (c, next) => {
-    c.set('user', currentUser);
-    c.set('session', {
-      id: 'session_' + currentUser.id,
-      userId: currentUser.id,
-      expiresAt: new Date(Date.now() + 60_000),
-    });
-    await next();
+});
+await mockModules({
+  '@openkey/db': () => ({ createPrismaClient: () => prisma }),
+  '@openkey/tee': () => ({
+    createTeeClient: () => ({
+      deriveKey: mock(async () => new Uint8Array(32)),
+      getQuote: mock(async () => 'quote'),
+      isInTee: () => false,
+    }),
+    unseal: mock(async () => privateKey),
+    createWalletFromPrivateKey: (key: string) => {
+      const wallet = privateKeyToAccount(key as `0x${string}`);
+      return {
+        ...wallet,
+        signMessage: async (input: { message: string }) => wallet.signMessage(input),
+      };
+    },
+    generatePrivateKey: () => privateKey,
+    getAddressFromPrivateKey: () => address,
   }),
-}));
+  '@tinycloud/sdk-core': () => ({
+    activateSessionWithHost: mock(async () => ({ success: true })),
+  }),
+});
 
 let router: typeof import('../routes/delegate')['delegateRouter'];
 let resetContexts: typeof import('../services/authorization-signing')['_resetAuthorizationContextStoreForTests'];

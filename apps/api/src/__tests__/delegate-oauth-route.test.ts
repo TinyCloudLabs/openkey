@@ -15,6 +15,7 @@ import {
   coordinationosInviteCodePath,
   coordinationosUserNamespace,
 } from '../services/coordinationos-session-policy';
+import { mockModules, replaceModules } from './mock-module';
 
 const configuredClientId = 'coordinationos-client';
 const configuredOrigin = 'https://coordination.example';
@@ -156,7 +157,6 @@ const prisma: any = {
   }),
 };
 
-mock.module('@openkey/db', () => ({ createPrismaClient: () => prisma }));
 const ensureTinyCloudBootstrapForApprovedSign = mock(async (input: any) => {
   bootstrapCalls.push(input);
   executionOrder.push(`bootstrap:${bootstrapMode}`);
@@ -168,34 +168,37 @@ const ensureTinyCloudBootstrapForApprovedSign = mock(async (input: any) => {
       }
     : { status: 'complete' as const };
 });
-mock.module('../services/tinycloud-bootstrap', () => ({
-  ensureTinyCloudBootstrapForApprovedSign,
-}));
-const realTee = await import('../../../../packages/tee/src/index?coordinationos-route-test' as string);
-mock.module('@openkey/tee', () => ({
-  ...realTee,
-  createTeeClient: () => ({ deriveKey: async () => new Uint8Array(32) }),
-  unseal: mock(async () => privateKey),
-  createWalletFromPrivateKey: (value: `0x${string}`) => {
-    const wallet = privateKeyToAccount(value);
-    return {
-      ...wallet,
-      signMessage: async (input: { message: string }) => {
-        signerCalls += 1;
-        executionOrder.push('sign');
-        if (signerFailure) throw new Error('TEE signer unavailable');
-        return wallet.signMessage(input);
-      },
-    };
-  },
-  generatePrivateKey: () => privateKey,
-  getAddressFromPrivateKey: () => address,
-}));
 // The route's non-sign endpoints retain their normal middleware. /sign is
 // explicitly replaced below through the injectable auth seam under test.
-mock.module('../middleware/session', () => ({
-  requireSession: createMiddleware(async (c) => c.json({ error: 'Unauthorized' }, 401)),
-}));
+replaceModules({
+  '../middleware/session': () => ({
+    requireSession: createMiddleware(async (c) => c.json({ error: 'Unauthorized' }, 401)),
+  }),
+});
+await mockModules({
+  '@openkey/db': () => ({ createPrismaClient: () => prisma }),
+  '../services/tinycloud-bootstrap': () => ({
+    ensureTinyCloudBootstrapForApprovedSign,
+  }),
+  '@openkey/tee': () => ({
+    createTeeClient: () => ({ deriveKey: async () => new Uint8Array(32) }),
+    unseal: mock(async () => privateKey),
+    createWalletFromPrivateKey: (value: `0x${string}`) => {
+      const wallet = privateKeyToAccount(value);
+      return {
+        ...wallet,
+        signMessage: async (input: { message: string }) => {
+          signerCalls += 1;
+          executionOrder.push('sign');
+          if (signerFailure) throw new Error('TEE signer unavailable');
+          return wallet.signMessage(input);
+        },
+      };
+    },
+    generatePrivateKey: () => privateKey,
+    getAddressFromPrivateKey: () => address,
+  }),
+});
 
 let router: typeof import('../routes/delegate')['delegateRouter'];
 let setSignerAuth: typeof import('../routes/delegate')['setDelegateSignerAuthMiddlewareForTests'];
@@ -226,7 +229,6 @@ beforeAll(async () => {
 
 afterAll(() => {
   setSignerAuth();
-  mock.restore();
 });
 
 afterEach(() => {

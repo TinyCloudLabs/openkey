@@ -8,6 +8,7 @@ import { prepareSession } from '@tinycloud/node-sdk-wasm';
 import * as signing from '../services/authorization-signing';
 import * as realNarrowing from '../services/siwe-narrow';
 import type { delegateRouter, setDelegateSignerAuthMiddlewareForTests } from '../routes/delegate';
+import { mockModules, replaceModules } from './mock-module';
 
 const account = privateKeyToAccount('0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef');
 const otherSigner = privateKeyToAccount('0x2222222222222222222222222222222222222222222222222222222222222222');
@@ -42,37 +43,41 @@ const prisma = {
   user: { findUnique: mock(async () => ({ autoSignEnabled: true })) },
   tinyCloudBootstrapState: {},
 };
+// Captured before mocking: bun rewrites the imported namespace in place.
+const narrow = realNarrowing.narrowSiwePreservingImmutable;
 const unseal = mock(async () => '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef');
 const signManagedMessage = mock(async (message: string) => account.signMessage({ message }));
-mock.module('@openkey/db', () => ({ createPrismaClient: () => prisma }));
-mock.module('@openkey/tee', () => ({
-  createTeeClient: () => ({ deriveKey: mock(async () => new Uint8Array(32)), getQuote: mock(async () => 'quote'), isInTee: () => false }),
-  unseal,
-  createWalletFromPrivateKey: () => ({ signMessage: ({ message }: { message: string }) => signManagedMessage(message) }),
-  generatePrivateKey: () => '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-  getAddressFromPrivateKey: () => account.address,
-}));
-mock.module('../middleware/session', () => ({
-  requireSession: createMiddleware(async (c, next) => {
-    c.set('user', currentUser);
-    c.set('session', { id: 'session_test', userId: currentUser.id, expiresAt: new Date(Date.now() + 60_000) });
-    await next();
+replaceModules({
+  '../middleware/session': () => ({
+    requireSession: createMiddleware(async (c, next) => {
+      c.set('user', currentUser);
+      c.set('session', { id: 'session_test', userId: currentUser.id, expiresAt: new Date(Date.now() + 60_000) });
+      await next();
+    }),
   }),
-}));
-// Fault injection at the SIWE regenerator, NOT at the authorization service:
-// valid prepared inputs cannot naturally produce a corrupt regenerated result.
-const narrow = realNarrowing.narrowSiwePreservingImmutable;
-mock.module('../services/siwe-narrow', () => ({
-  ...realNarrowing,
-  narrowSiwePreservingImmutable: (input: Parameters<typeof narrow>[0]) => {
-    if (narrowingFault === 'failure') return narrow({ ...input, originalSiwe: '' });
-    const result = narrow(input);
-    if (narrowingFault === 'immutable-drift' && result.ok) {
-      return { ...result, siwe: result.siwe.replace(/^(Nonce: .+)$/m, '$1x') };
-    }
-    return result;
-  },
-}));
+});
+await mockModules({
+  '@openkey/db': () => ({ createPrismaClient: () => prisma }),
+  '@openkey/tee': () => ({
+    createTeeClient: () => ({ deriveKey: mock(async () => new Uint8Array(32)), getQuote: mock(async () => 'quote'), isInTee: () => false }),
+    unseal,
+    createWalletFromPrivateKey: () => ({ signMessage: ({ message }: { message: string }) => signManagedMessage(message) }),
+    generatePrivateKey: () => '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+    getAddressFromPrivateKey: () => account.address,
+  }),
+  // Fault injection at the SIWE regenerator, NOT at the authorization service:
+  // valid prepared inputs cannot naturally produce a corrupt regenerated result.
+  '../services/siwe-narrow': () => ({
+    narrowSiwePreservingImmutable: (input: Parameters<typeof narrow>[0]) => {
+      if (narrowingFault === 'failure') return narrow({ ...input, originalSiwe: '' });
+      const result = narrow(input);
+      if (narrowingFault === 'immutable-drift' && result.ok) {
+        return { ...result, siwe: result.siwe.replace(/^(Nonce: .+)$/m, '$1x') };
+      }
+      return result;
+    },
+  }),
+});
 
 let router: typeof delegateRouter;
 // Load the router after mock.module registrations; a static import would bind

@@ -1,11 +1,10 @@
 // TC-688 / TC-689: a Better Auth session token presented as a bearer from
 // outside OpenKey cannot reach key signing, key management or account routes,
 // and account deletion requires a fresh passkey on a cookie session.
-//
-// Run this file on its own: bun's module mocks leak across test files.
-import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { Hono } from 'hono';
 import { createMiddleware } from 'hono/factory';
+import { mockModules, replaceModules } from './mock-module';
 
 const OPENKEY_ORIGIN = 'https://openkey.test';
 const SESSION_TOKEN = 'leaked-session-token';
@@ -51,13 +50,21 @@ const prisma = {
   },
 };
 
-beforeAll(async () => {
-  const realTee = await import('@openkey/tee');
-  process.env.CORS_ORIGIN = OPENKEY_ORIGIN;
-  process.env.TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS = '10';
-  mock.module('@openkey/db', () => ({ createPrismaClient: () => prisma }));
-  mock.module('@openkey/tee', () => ({
-    ...realTee,
+// Stands in for Better Auth: every request resolves to user_1's session.
+// The boundary must reject untrusted bearers before this runs.
+replaceModules({
+  '../middleware/session': () => ({
+    requireSession: createMiddleware(async (c, next) => {
+      sessionResolutions += 1;
+      c.set('user', { id: 'user_1', email: 'user@example.com' });
+      c.set('session', { id: 'session_1', userId: 'user_1', expiresAt: new Date(now + 60_000) });
+      await next();
+    }),
+  }),
+});
+await mockModules({
+  '@openkey/db': () => ({ createPrismaClient: () => prisma }),
+  '@openkey/tee': () => ({
     createTeeClient: () => ({ deriveKey: async () => new Uint8Array(32), getQuote: async () => 'quote', isInTee: () => false }),
     seal: async () => 'sealed',
     unseal: async () => `0x${'11'.repeat(32)}`,
@@ -67,26 +74,28 @@ beforeAll(async () => {
       signMessage: async () => { signCalls += 1; return '0xsig'; },
       signTypedData: async () => { signCalls += 1; return '0xsig'; },
     }),
-  }));
-  mock.module('../services/tinycloud-bootstrap', () => ({
+  }),
+  '../services/tinycloud-bootstrap': () => ({
     ensureTinyCloudBootstrapForApprovedSign: async () => ({ status: 'complete' }),
-  }));
-  // Stands in for Better Auth: every request resolves to user_1's session.
-  // The boundary must reject untrusted bearers before this runs.
-  mock.module('../middleware/session', () => ({
-    requireSession: createMiddleware(async (c, next) => {
-      sessionResolutions += 1;
-      c.set('user', { id: 'user_1', email: 'user@example.com' });
-      c.set('session', { id: 'session_1', userId: 'user_1', expiresAt: new Date(now + 60_000) });
-      await next();
-    }),
-  }));
+  }),
+});
+
+// Restored afterwards: other files in the same `bun test` run read these.
+const savedEnv = {
+  CORS_ORIGIN: process.env.CORS_ORIGIN,
+  TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS: process.env.TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS,
+};
+
+beforeAll(() => {
+  process.env.CORS_ORIGIN = OPENKEY_ORIGIN;
+  process.env.TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS = '10';
 });
 
 afterAll(() => {
-  mock.restore();
-  delete process.env.CORS_ORIGIN;
-  delete process.env.TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS;
+  for (const [name, value] of Object.entries(savedEnv)) {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
 });
 
 beforeEach(() => {
@@ -99,9 +108,9 @@ beforeEach(() => {
 
 // Mounted exactly as apps/api/src/index.ts mounts them.
 async function api() {
-  const { keysRouter } = await import('../routes/keys');
-  const { nostrKeysRouter } = await import('../routes/nostr-keys');
-  const { accountRouter } = await import('../routes/account');
+  const { keysRouter } = await import('../routes/keys?session-bearer-boundary' as string);
+  const { nostrKeysRouter } = await import('../routes/nostr-keys?session-bearer-boundary' as string);
+  const { accountRouter } = await import('../routes/account?session-bearer-boundary' as string);
   const app = new Hono();
   app.route('/api/keys', keysRouter);
   app.route('/api/keys/nostr', nostrKeysRouter);
@@ -123,14 +132,16 @@ async function call(
   });
 }
 
-const custodyRoutes: Array<[string, string, unknown?]> = [
+// Every row has a body slot: bun passes a `done` callback to a test.each
+// callback that declares more parameters than its row has values.
+const custodyRoutes: Array<[string, string, unknown]> = [
   ['POST', '/api/keys/key_1/sign', { message: 'hello' }],
   ['POST', '/api/keys/key_1/sign-typed-data', { domain: {}, types: {}, primaryType: 'Mail', message: {} }],
-  ['POST', '/api/keys/key_1/archive'],
+  ['POST', '/api/keys/key_1/archive', undefined],
   ['POST', '/api/keys/generate', {}],
-  ['GET', '/api/keys'],
+  ['GET', '/api/keys', undefined],
   ['POST', '/api/keys/nostr', {}],
-  ['GET', '/api/account'],
+  ['GET', '/api/account', undefined],
   ['PATCH', '/api/account/auto-sign', { autoSignEnabled: false }],
   ['POST', '/api/account/delete', { confirmation: 'DELETE MY ACCOUNT' }],
 ];

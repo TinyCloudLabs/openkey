@@ -13,6 +13,7 @@ import {
 } from '../services/device-authorization';
 import type { delegateRouter } from '../routes/delegate';
 import type { _resetAuthorizationContextStoreForTests } from '../services/authorization-signing';
+import { mockModules, replaceModules } from './mock-module';
 
 const privateKey = '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 const account = privateKeyToAccount(privateKey);
@@ -45,30 +46,34 @@ const deviceService = new DeviceAuthorizationService(new MemoryDeviceAuthorizati
   encryptionSecret: 'test-device-authorization-secret-is-long-enough',
 });
 
-mock.module('@openkey/db', () => ({ createPrismaClient: () => prisma }));
-mock.module('@openkey/tee', () => ({
-  createTeeClient: () => ({
-    deriveKey: mock(async () => new Uint8Array(32)),
-    getQuote: mock(async () => 'quote'),
-    isInTee: () => false,
+replaceModules({
+  '../middleware/session': () => ({
+    requireSession: createMiddleware(async (c, next) => {
+      c.set('user', user);
+      c.set('session', { id: 'session_1', userId: user.id, expiresAt: new Date(Date.now() + 60_000) });
+      await next();
+    }),
   }),
-  unseal: mock(async () => privateKey),
-  createWalletFromPrivateKey: (key: string) => {
-    const wallet = privateKeyToAccount(key as `0x${string}`);
-    return { ...wallet, signMessage: async (input: { message: string }) => wallet.signMessage(input) };
-  },
-  generatePrivateKey: () => privateKey,
-  getAddressFromPrivateKey: () => account.address,
-}));
-mock.module('@tinycloud/sdk-core', () => ({ activateSessionWithHost }));
-mock.module('../middleware/session', () => ({
-  requireSession: createMiddleware(async (c, next) => {
-    c.set('user', user);
-    c.set('session', { id: 'session_1', userId: user.id, expiresAt: new Date(Date.now() + 60_000) });
-    await next();
+  '../routes/device-authorization': () => ({ deviceAuthorizationService: deviceService }),
+});
+await mockModules({
+  '@openkey/db': () => ({ createPrismaClient: () => prisma }),
+  '@openkey/tee': () => ({
+    createTeeClient: () => ({
+      deriveKey: mock(async () => new Uint8Array(32)),
+      getQuote: mock(async () => 'quote'),
+      isInTee: () => false,
+    }),
+    unseal: mock(async () => privateKey),
+    createWalletFromPrivateKey: (key: string) => {
+      const wallet = privateKeyToAccount(key as `0x${string}`);
+      return { ...wallet, signMessage: async (input: { message: string }) => wallet.signMessage(input) };
+    },
+    generatePrivateKey: () => privateKey,
+    getAddressFromPrivateKey: () => account.address,
   }),
-}));
-mock.module('../routes/device-authorization', () => ({ deviceAuthorizationService: deviceService }));
+  '@tinycloud/sdk-core': () => ({ activateSessionWithHost }),
+});
 
 let router: typeof delegateRouter;
 let resetContexts: typeof _resetAuthorizationContextStoreForTests;

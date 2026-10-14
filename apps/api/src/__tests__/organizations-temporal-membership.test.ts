@@ -1,6 +1,12 @@
 import { expect, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
-import { createOrganizationsRouter } from '../routes/organizations';
+import { mockModules, replaceModules } from './mock-module';
+
+// The module's default router loads Better Auth and opens the default
+// database; this test injects both.
+replaceModules({ '../middleware/session': () => ({}) });
+await mockModules({ '@openkey/db': () => ({ createPrismaClient: () => ({}) }) });
+const { createOrganizationsRouter } = await import('../routes/organizations?temporal-membership' as string) as typeof import('../routes/organizations');
 
 test('organization selection excludes expired and not-yet-valid memberships', async () => {
   const observed: any[] = [];

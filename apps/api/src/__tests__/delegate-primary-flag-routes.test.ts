@@ -8,6 +8,7 @@ import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
 import type { delegateRouter } from '../routes/delegate';
 import type { _resetAuthorizationContextStoreForTests } from '../services/authorization-signing';
+import { mockModules, replaceModules } from './mock-module';
 
 const primaryPrivateKey = '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 const secondaryPrivateKey = '0x3333333333333333333333333333333333333333333333333333333333333333';
@@ -47,26 +48,30 @@ const prisma = {
   tinyCloudBootstrapState: {},
 };
 
-mock.module('@openkey/db', () => ({ createPrismaClient: () => prisma }));
-mock.module('@openkey/tee', () => ({
-  createTeeClient: () => ({
-    deriveKey: mock(async () => new Uint8Array(32)),
-    getQuote: mock(async () => 'quote'),
-    isInTee: () => false,
+replaceModules({
+  '../middleware/session': () => ({
+    requireSession: createMiddleware(async (c, next) => {
+      c.set('user', user);
+      c.set('session', { id: 'session_1', userId: user.id, expiresAt: new Date(Date.now() + 60_000) });
+      await next();
+    }),
   }),
-  unseal: mock(async (sealedBlob: string) => sealedBlob === 'sealed-primary' ? primaryPrivateKey : secondaryPrivateKey),
-  createWalletFromPrivateKey: (key: string) => privateKeyToAccount(key as `0x${string}`),
-  generatePrivateKey: () => primaryPrivateKey,
-  getAddressFromPrivateKey: () => primaryAccount.address,
-}));
-mock.module('@tinycloud/sdk-core', () => ({ activateSessionWithHost: mock(async () => ({ success: true })) }));
-mock.module('../middleware/session', () => ({
-  requireSession: createMiddleware(async (c, next) => {
-    c.set('user', user);
-    c.set('session', { id: 'session_1', userId: user.id, expiresAt: new Date(Date.now() + 60_000) });
-    await next();
+});
+await mockModules({
+  '@openkey/db': () => ({ createPrismaClient: () => prisma }),
+  '@openkey/tee': () => ({
+    createTeeClient: () => ({
+      deriveKey: mock(async () => new Uint8Array(32)),
+      getQuote: mock(async () => 'quote'),
+      isInTee: () => false,
+    }),
+    unseal: mock(async (sealedBlob: string) => sealedBlob === 'sealed-primary' ? primaryPrivateKey : secondaryPrivateKey),
+    createWalletFromPrivateKey: (key: string) => privateKeyToAccount(key as `0x${string}`),
+    generatePrivateKey: () => primaryPrivateKey,
+    getAddressFromPrivateKey: () => primaryAccount.address,
   }),
-}));
+  '@tinycloud/sdk-core': () => ({ activateSessionWithHost: mock(async () => ({ success: true })) }),
+});
 
 let router: typeof delegateRouter;
 let resetContexts: typeof _resetAuthorizationContextStoreForTests;

@@ -1,6 +1,12 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { createHash } from 'node:crypto';
+import { mockModules } from './mock-module';
 
+// Restored afterwards: other files in the same `bun test` run read these.
+const savedEnv = {
+  ADMIN_API_KEY: process.env.ADMIN_API_KEY,
+  OPENKEY_COORDINATIONOS_SUPABASE_CALLBACK_URI: process.env.OPENKEY_COORDINATIONOS_SUPABASE_CALLBACK_URI,
+};
 process.env.ADMIN_API_KEY = 'admin-test-key';
 process.env.OPENKEY_COORDINATIONOS_SUPABASE_CALLBACK_URI =
   'https://coordination.example/auth/v1/callback';
@@ -35,6 +41,12 @@ const prisma = {
   },
 };
 
+// The route opens a default client when it loads; without DATABASE_URL that is
+// the developer's local PGlite database. Keep it off disk.
+await mockModules({
+  '@openkey/db': () => ({ createPrismaClient: () => ({ $disconnect: async () => {} }) }),
+});
+
 let router: typeof import('../routes/oauth-admin')['oauthAdminRouter'];
 let setDatabase: typeof import('../routes/oauth-admin')['setOauthAdminDatabaseForTests'];
 let disconnectDefaultDatabase: typeof import('../routes/oauth-admin')['disconnectOauthAdminDefaultDatabaseForTests'];
@@ -51,6 +63,10 @@ beforeAll(async () => {
 afterAll(async () => {
   setDatabase();
   await disconnectDefaultDatabase();
+  for (const [name, value] of Object.entries(savedEnv)) {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
 });
 
 beforeEach(() => {

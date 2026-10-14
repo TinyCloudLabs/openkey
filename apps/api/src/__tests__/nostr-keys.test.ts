@@ -1,8 +1,15 @@
-import { beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
 import { verifyEvent, type Event as NostrToolsEvent } from 'nostr-tools/pure';
+import { mockModules, replaceModules } from './mock-module';
 
+// Restored afterwards: other files in the same `bun test` run read it.
+const savedSealingKey = process.env.DEV_SEALING_KEY;
 process.env.DEV_SEALING_KEY = 'test-sealing-key-for-nostr-route-tests';
+afterAll(() => {
+  if (savedSealingKey === undefined) delete process.env.DEV_SEALING_KEY;
+  else process.env.DEV_SEALING_KEY = savedSealingKey;
+});
 
 const user = { id: 'user_1', email: 'test@example.com' };
 const otherUser = { id: 'user_2', email: 'other@example.com' };
@@ -83,18 +90,21 @@ const prisma = {
   nostrSigningDecision: makeTable(decisionRows),
 };
 
-mock.module('@openkey/db', () => ({
-  createPrismaClient: () => prisma,
-}));
-
 let currentUser = user;
-mock.module('../middleware/session', () => ({
-  requireSession: createMiddleware(async (c, next) => {
-    c.set('user', currentUser);
-    c.set('session', { id: 'session_1', userId: currentUser.id, expiresAt: new Date(Date.now() + 60_000) });
-    await next();
+replaceModules({
+  '../middleware/session': () => ({
+    requireSession: createMiddleware(async (c, next) => {
+      c.set('user', currentUser);
+      c.set('session', { id: 'session_1', userId: currentUser.id, expiresAt: new Date(Date.now() + 60_000) });
+      await next();
+    }),
   }),
-}));
+});
+await mockModules({
+  '@openkey/db': () => ({
+    createPrismaClient: () => prisma,
+  }),
+});
 
 beforeEach(() => {
   nostrKeyRows.length = 0;
@@ -109,7 +119,7 @@ async function router() {
   const savedMode = process.env.TEE_MODE;
   process.env.TEE_MODE = 'development';
   try {
-    return (await import('../routes/nostr-keys')).nostrKeysRouter;
+    return (await import('../routes/nostr-keys?nostr-keys-test' as string)).nostrKeysRouter;
   } finally {
     if (savedMode === undefined) delete process.env.TEE_MODE;
     else process.env.TEE_MODE = savedMode;
