@@ -3,6 +3,7 @@
 // that return a challengeToken + sessionToken in the JSON body.
 
 import { startAuthentication, startRegistration } from '@simplewebauthn/browser';
+import { newAccountSignupToken, SIGN_UP_EMAIL_OTP_PATH } from './email-signup';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
@@ -40,12 +41,15 @@ export async function embedSendEmailOtp(
   }
 }
 
+/** Signed in, or verified for an email with no account yet (TC-1114). */
+export type EmbedEmailOtpResult = { sessionToken: string } | { signupToken: string };
+
 export async function embedVerifyEmailOtp(
   email: string,
   otp: string,
   fetchImpl: typeof fetch = fetch,
   persistToken: (token: string) => void = setSessionToken,
-): Promise<string> {
+): Promise<EmbedEmailOtpResult> {
   const response = await fetchImpl(`${API_BASE}/api/auth/sign-in/email-otp`, {
     method: 'POST',
     credentials: 'include',
@@ -53,8 +57,36 @@ export async function embedVerifyEmailOtp(
     body: JSON.stringify({ email, otp }),
   });
   const body = await response.json().catch(() => null);
+  const signupToken = newAccountSignupToken(body);
+  if (signupToken) return { signupToken };
+  return { sessionToken: persistEmbeddedSession(response, body, 'Invalid code', persistToken) };
+}
+
+/** Creates the account the user confirmed, with the token from the verified code. */
+export async function embedCreateAccount(
+  email: string,
+  signupToken: string,
+  fetchImpl: typeof fetch = fetch,
+  persistToken: (token: string) => void = setSessionToken,
+): Promise<string> {
+  const response = await fetchImpl(`${API_BASE}/api/auth${SIGN_UP_EMAIL_OTP_PATH}`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ email, signupToken }),
+  });
+  const body = await response.json().catch(() => null);
+  return persistEmbeddedSession(response, body, 'Could not create your account', persistToken);
+}
+
+function persistEmbeddedSession(
+  response: Response,
+  body: { message?: string; error?: string; token?: string; session?: { token?: string } } | null,
+  failure: string,
+  persistToken: (token: string) => void,
+): string {
   if (!response.ok) {
-    throw new Error(body?.message || body?.error || 'Invalid code');
+    throw new Error(body?.message || body?.error || failure);
   }
   const sessionToken =
     response.headers.get('set-auth-token')

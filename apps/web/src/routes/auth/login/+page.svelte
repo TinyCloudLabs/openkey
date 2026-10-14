@@ -2,9 +2,9 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/stores';
   import { onMount, onDestroy, tick } from 'svelte';
-  import { authClient, API_BASE, authErrorMessage } from '$lib/auth-client';
+  import { authClient, API_BASE, authErrorMessage, confirmEmailSignUp } from '$lib/auth-client';
   import { consoleOrigin } from '$lib/console-host';
-  import { normalizeAuthReturnTo, safeOAuthAuthorizeQuery } from '$lib/auth-flow';
+  import { holdOAuthRedirect, normalizeAuthReturnTo, safeOAuthAuthorizeQuery } from '$lib/auth-flow';
   import {
     loadConfiguredSocialProviders,
     signInWithSocialPopup,
@@ -21,12 +21,15 @@
   import { api } from '$lib/api';
   import SocialButtons from '$lib/components/auth/social-buttons.svelte';
   import { passkeysSupportedFromParams } from '$lib/passkey-support';
+  import { newAccountSignupToken } from '$lib/email-signup';
+  import NewAccountConfirmation from '$lib/components/auth/new-account-confirmation.svelte';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
 
   // 'passkey' is the enrolment offer; 'passkeySignIn' and 'google' are native-mode landing steps.
-  type Step = 'email' | 'otp' | 'passkey' | 'passkeySignIn' | 'google';
+  // 'newAccount' follows a verified code for an email with no account (TC-1114).
+  type Step = 'email' | 'otp' | 'newAccount' | 'passkey' | 'passkeySignIn' | 'google';
 
   // Native mode: the signed authorize query carries `tinycloud_request`, so the
   // sign-in is running in a system sheet opened by a native app.
@@ -66,6 +69,9 @@
   // skipped). The URL is captured during the sign-in response and replayed
   // verbatim by handlePostSignIn so the passkey step can run first.
   let oauthRedirectUrl: string | undefined;
+  // Proof of the verified code, spent only if the user creates the account.
+  let signupToken = $state<string | null>(null);
+  let creating = $state(false);
 
   function getOAuthQuery(): string | undefined {
     return safeOAuthAuthorizeQuery($page.url.searchParams);
@@ -204,6 +210,11 @@
 
   const resendLabel = (seconds: number) => `Resend in 0:${String(seconds).padStart(2, '0')}`;
 
+  // Keeps the server's OAuth redirect so the key/passkey checks run first.
+  function keepOAuthRedirect(context: { data: unknown }) {
+    oauthRedirectUrl = holdOAuthRedirect(context.data) ?? oauthRedirectUrl;
+  }
+
   async function verifyOTP() {
     // One verification at a time, however it was triggered (sixth digit, Enter, Continue).
     if (native && (verifying || loading || otp.length !== 6)) return;
@@ -218,23 +229,16 @@
           otp,
           oauth_query: getOAuthQuery(),
         },
-        {
-          // In OAuth flows the server answers { redirect: true, url }. The
-          // client's redirect plugin would otherwise navigate in this same
-          // onSuccess pass — before the key/passkey check below — so this
-          // hook (which better-fetch runs before plugin hooks) keeps the URL
-          // and clears the redirect flag to veto that navigation.
-          onSuccess(context) {
-            const data = context.data as { redirect?: boolean; url?: string } | null;
-            if (data?.redirect && typeof data.url === 'string' && data.url) {
-              oauthRedirectUrl = data.url;
-              data.redirect = false;
-            }
-          },
-        },
+        { onSuccess: keepOAuthRedirect },
       );
       if (result.error) {
-        if (native && result.error.code === 'INVALID_OTP') {
+        const token = newAccountSignupToken(result.error);
+        if (token) {
+          // The code is verified but no account exists: ask before creating one.
+          signupToken = token;
+          otp = '';
+          step = 'newAccount';
+        } else if (native && result.error.code === 'INVALID_OTP') {
           wrongCode = true;
           shaking = true;
           otp = '';
@@ -243,35 +247,7 @@
         }
         return;
       }
-
-      // Email OTP is also the default account-creation path. The API normally
-      // provisions a key in its user hook; this keeps the user moving if that
-      // non-critical hook needs to be retried.
-      try {
-        const { keys } = await api.listKeys();
-        if (keys.length === 0) await api.generateKey();
-      } catch (keyError) {
-        console.error('[Login] Failed to ensure key exists:', keyError);
-      }
-
-      // Encourage passkey setup for accounts that do not have one, but never
-      // make it a condition of continuing. Passkey discovery is best-effort:
-      // any failure (network, API unavailable) falls through to handlePostSignIn()
-      // so that OTP sign-in works independently of passkey availability.
-      // Clients without WebAuthn skip the prompt entirely.
-      // Native mode never offers enrolment: the sheet's job is to return to the app.
-      if (passkeysSupported && !native) {
-        try {
-          const passkeys = await authClient.passkey.listUserPasskeys();
-          if (!passkeys.error && Array.isArray(passkeys.data) && passkeys.data.length === 0) {
-            step = 'passkey';
-            return;
-          }
-        } catch (passkeyError) {
-          console.error('[Login] Failed to check passkeys, continuing without prompt:', passkeyError);
-        }
-      }
-      handlePostSignIn();
+      await continueAfterEmailSignIn();
     } catch (e: any) {
       error = e.message || 'Invalid code';
     } finally {
@@ -279,6 +255,68 @@
       verifying = false;
       if (native) tick().then(() => otpInput?.focus());
     }
+  }
+
+  async function createAccount() {
+    if (!signupToken) return;
+    loading = true;
+    creating = true;
+    error = '';
+    try {
+      const result = await confirmEmailSignUp({ email, signupToken, oauth_query: getOAuthQuery() }, keepOAuthRedirect);
+      signupToken = null;
+      if (result.error) {
+        // Expired or already used: the user starts again with a new code.
+        error = authErrorMessage(result.error, 'Could not create your account');
+        step = 'email';
+        return;
+      }
+      await continueAfterEmailSignIn();
+    } catch (e: any) {
+      error = e.message || 'Could not create your account';
+    } finally {
+      loading = false;
+      creating = false;
+    }
+  }
+
+  // Recovery is email sign-in plus a new passkey; it continues the OAuth
+  // request or redirect this login page was serving.
+  function recoverAccount() {
+    const oauthQuery = getOAuthQuery();
+    const redirect = $page.url.searchParams.get('redirect');
+    const params: Record<string, string> = oauthQuery ? { oauth_query: oauthQuery } : redirect ? { returnTo: redirect } : {};
+    window.location.href = `/auth/recover?${new URLSearchParams(params)}`;
+  }
+
+  async function continueAfterEmailSignIn() {
+    // The API normally provisions a key in its user hook; this keeps the user
+    // moving if that non-critical hook needs to be retried.
+    try {
+      const { keys } = await api.listKeys();
+      if (keys.length === 0) await api.generateKey();
+    } catch (keyError) {
+      console.error('[Login] Failed to ensure key exists:', keyError);
+    }
+
+    // Encourage passkey setup for accounts that do not have one, but never
+    // make it a condition of continuing. Passkey discovery is best-effort:
+    // any failure (network, API unavailable) falls through to handlePostSignIn()
+    // so that OTP sign-in works independently of passkey availability.
+    // Clients without WebAuthn skip the prompt entirely.
+    // Native mode never offers enrolment: the sheet's job is to return to the app.
+    if (passkeysSupported && !native) {
+      try {
+        const passkeys = await authClient.passkey.listUserPasskeys();
+        if (!passkeys.error && Array.isArray(passkeys.data) && passkeys.data.length === 0) {
+          step = 'passkey';
+          return;
+        }
+      } catch (passkeyError) {
+        console.error('[Login] Failed to check passkeys, continuing without prompt:', passkeyError);
+      }
+    }
+    handlePostSignIn();
   }
 
   async function signInWithPasskey() {
@@ -350,6 +388,7 @@
     step = 'email';
     otp = '';
     error = '';
+    signupToken = null;
     if (native) email = '';
   }
 
@@ -414,6 +453,27 @@
         </button>
         <span aria-hidden="true">·</span>
         <button type="button" class="nb-link nb-quiet" onclick={useDifferentEmail} disabled={loading}>Use a different email</button>
+      </div>
+    {:else if step === 'newAccount'}
+      <p class="nb-lede">No OpenKey account for <strong>{email}</strong>.</p>
+      <p class="nb-lede">
+        Create a new account{passkeysSupported ? ', or sign in with your passkey or recover your account' : ''}?
+      </p>
+      <div class="nb-stack">
+        <button type="button" class="nb-button nb-primary" onclick={createAccount} disabled={loading}>
+          {creating ? 'Creating account…' : 'Create a new account'}
+        </button>
+        {#if passkeysSupported}
+          <button type="button" class="nb-button" onclick={signInWithPasskey} disabled={loading}>
+            Sign in with a passkey
+          </button>
+          <button type="button" class="nb-button" onclick={recoverAccount} disabled={loading}>
+            Recover your account
+          </button>
+        {/if}
+      </div>
+      <div class="nb-center">
+        <button type="button" class="nb-link" onclick={useDifferentEmail} disabled={loading}>Use a different email</button>
       </div>
     {:else if step === 'passkeySignIn'}
       <p class="nb-lede">Use the passkey saved on this device to sign in.</p>
@@ -493,7 +553,7 @@
     <Card class="w-full p-8 sm:p-10">
       {#if step === 'email'}
         <h1 class="mb-2 text-center text-2xl font-bold text-surface-900">Welcome to OpenKey</h1>
-        <p class="mb-7 text-center text-sm text-surface-500">Sign in or create an account with your email</p>
+        <p class="mb-7 text-center text-sm text-surface-500">Sign in with your email. We'll ask before creating a new account.</p>
 
         {#if error}
           <div class="mb-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" role="alert">
@@ -589,6 +649,21 @@
         >
           Use a different email
         </button>
+      {:else if step === 'newAccount'}
+        {#if error}
+          <div class="mb-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" role="alert">
+            {error}
+          </div>
+        {/if}
+        <NewAccountConfirmation
+          {email}
+          busy={loading}
+          {creating}
+          oncreate={createAccount}
+          ondifferentemail={useDifferentEmail}
+          onpasskey={passkeysSupported ? signInWithPasskey : undefined}
+          onrecover={passkeysSupported ? recoverAccount : undefined}
+        />
       {:else}
         <div class="mb-5 flex justify-center">
           <div class="inline-flex h-12 w-12 items-center justify-center rounded-full bg-primary-50 text-primary-700 ring-1 ring-primary-200">

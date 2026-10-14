@@ -201,6 +201,7 @@ openkey/
 - Runs TypeScript directly via Bun — **no bundling**. Bundling breaks better-auth's AsyncLocalStorage request tracking.
 - Auth is handled by [better-auth](https://better-auth.com) with passkey, email OTP, Google OAuth, and OAuth provider plugins.
 - New users automatically get a TEE-sealed Ethereum key on account creation.
+- A verified email code never creates an account by itself (TC-1114). For an email with no account, `POST /api/auth/sign-in/email-otp` answers `403 NEW_ACCOUNT_CONFIRMATION_REQUIRED` with a single-use, five-minute `signupToken` bound to that email; the account is created only when the user confirms and the client posts `{ email, signupToken }` to `POST /api/auth/sign-up/email-otp`.
 - In dev mode (`TEE_MODE=development`), the TEE client uses deterministic mock keys instead of dstack.
 
 ### Web (apps/web)

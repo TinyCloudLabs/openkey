@@ -174,7 +174,7 @@
 
       {#if !$session.data}
         <div class="flex flex-col items-center justify-center text-center py-4">
-          <p class="text-surface-500 text-sm mb-5">Sign in or create an account to continue</p>
+          <p class="text-surface-500 text-sm mb-5">Sign in to continue. We'll ask before creating a new account.</p>
 
           {#if error}
             <div class="w-full bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl mb-4 text-sm" role="alert">

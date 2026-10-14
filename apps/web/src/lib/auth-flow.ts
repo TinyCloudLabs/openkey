@@ -76,3 +76,17 @@ export function safeOAuthAuthorizeQuery(searchParams: URLSearchParams): string |
   }
   return safe.get('client_id') ? safe.toString() : undefined;
 }
+
+/**
+ * In OAuth flows the API answers a sign-in with `{ redirect: true, url }`. The
+ * auth client's redirect plugin would navigate in the same onSuccess pass, so
+ * callers run this from their own onSuccess (which better-fetch runs first):
+ * it clears the flag to veto that navigation and returns the URL to follow
+ * once the page's own steps are done.
+ */
+export function holdOAuthRedirect(data: unknown): string | undefined {
+  const answer = data as { redirect?: boolean; url?: unknown } | null;
+  if (!answer?.redirect || typeof answer.url !== 'string' || !answer.url) return undefined;
+  answer.redirect = false;
+  return answer.url;
+}

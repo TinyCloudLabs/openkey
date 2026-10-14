@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { authClient, authErrorMessage } from '$lib/auth-client';
   import {
+    embedCreateAccount,
     embedSendEmailOtp,
     embedSignInPasskey,
     embedVerifyEmailOtp,
@@ -13,6 +14,7 @@
     type SocialProviderId,
   } from '$lib/social-auth';
   import SocialButtons from './social-buttons.svelte';
+  import NewAccountConfirmation from './new-account-confirmation.svelte';
   import Button from '$lib/components/ui/button.svelte';
   import Input from '$lib/components/ui/input.svelte';
 
@@ -23,6 +25,8 @@
     onuseexternalwallet?: () => void;
     /** False when the client opened OpenKey with `passkeys=false`. */
     passkeysSupported?: boolean;
+    /** Opens account recovery; offered when an email has no account. */
+    onrecover?: () => void;
   }
 
   let {
@@ -31,13 +35,16 @@
     hasEoa = false,
     onuseexternalwallet,
     passkeysSupported = true,
+    onrecover,
   }: Props = $props();
 
-  type BusyAction = 'send-email' | 'verify-email' | 'passkey' | SocialProviderId;
+  type BusyAction = 'send-email' | 'verify-email' | 'create-account' | 'passkey' | SocialProviderId;
 
-  let step = $state<'choices' | 'email' | 'otp'>('choices');
+  // 'new-account' follows a verified code for an email with no account (TC-1114).
+  let step = $state<'choices' | 'email' | 'otp' | 'new-account'>('choices');
   let email = $state('');
   let otp = $state('');
+  let signupToken = $state<string | null>(null);
   let error = $state('');
   let busy = $state<BusyAction | null>(null);
   let providers = $state<SocialProviderId[]>([]);
@@ -63,10 +70,34 @@
     busy = 'verify-email';
     error = '';
     try {
-      await embedVerifyEmailOtp(email, otp);
+      const result = await embedVerifyEmailOtp(email, otp);
+      if ('signupToken' in result) {
+        signupToken = result.signupToken;
+        otp = '';
+        step = 'new-account';
+        return;
+      }
       onauthenticated();
     } catch (cause: any) {
       error = cause.message || 'Invalid code';
+    } finally {
+      busy = null;
+    }
+  }
+
+  async function createAccount() {
+    if (!signupToken) return;
+    busy = 'create-account';
+    error = '';
+    try {
+      await embedCreateAccount(email, signupToken);
+      signupToken = null;
+      onauthenticated();
+    } catch (cause: any) {
+      // Expired or already used: the user starts again with a new code.
+      signupToken = null;
+      step = 'email';
+      error = cause.message || 'Could not create your account';
     } finally {
       busy = null;
     }
@@ -109,12 +140,15 @@
   function backToChoices() {
     step = 'choices';
     otp = '';
+    signupToken = null;
     error = '';
   }
 </script>
 
 <div class="flex flex-col items-center justify-center py-2 text-center">
-  <p class="mb-4 text-sm text-surface-500">{prompt}</p>
+  {#if step !== 'new-account'}
+    <p class="mb-4 text-sm text-surface-500">{prompt}</p>
+  {/if}
 
   {#if error}
     <div class="mb-4 w-full rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" role="alert">
@@ -201,6 +235,16 @@
     >
       Back
     </button>
+  {:else if step === 'new-account'}
+    <NewAccountConfirmation
+      {email}
+      busy={busy !== null}
+      creating={busy === 'create-account'}
+      oncreate={createAccount}
+      ondifferentemail={() => { step = 'email'; signupToken = null; error = ''; }}
+      onpasskey={passkeysSupported ? signInWithPasskey : undefined}
+      onrecover={passkeysSupported ? onrecover : undefined}
+    />
   {:else}
     <p class="mb-3 text-sm text-surface-500">
       Enter the 6-digit code sent to <span class="font-medium text-surface-900">{email}</span>
