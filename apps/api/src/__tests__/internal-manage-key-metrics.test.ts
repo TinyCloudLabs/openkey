@@ -1,10 +1,9 @@
-import { afterAll, beforeAll, expect, mock, test } from 'bun:test';
+import { expect, test } from 'bun:test';
+import { mockModules } from './mock-module';
 
-beforeAll(() => {
-  mock.module('@openkey/db', () => ({ createPrismaClient: () => ({}) }));
+await mockModules({
+  '@openkey/db': () => ({ createPrismaClient: () => ({}) }),
 });
-
-afterAll(() => mock.restore());
 
 test('internal metrics expose aggregate manage-key health without identity material', async () => {
   const userCounts = [10, 2, 8, 1];

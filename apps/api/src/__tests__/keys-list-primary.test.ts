@@ -4,6 +4,7 @@
 import { beforeAll, describe, expect, mock, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
 import type { keysRouter } from '../routes/keys';
+import { mockModules, replaceModules } from './mock-module';
 
 const user = { id: 'user_1', email: 'alice@example.test' };
 const createdAt = new Date('2026-01-01T00:00:00.000Z');
@@ -30,22 +31,26 @@ const findMany = mock(async ({ where, select }: { where: { userId: string; archi
     .filter((key) => key.userId === where.userId && (!('archivedAt' in where) || key.archivedAt === null))
     .map((key) => Object.fromEntries(Object.keys(select).map((field) => [field, key[field as keyof typeof key]]))));
 
-mock.module('@openkey/db', () => ({ createPrismaClient: () => ({ ethereumKey: { findMany } }) }));
-mock.module('@openkey/tee', () => ({
-  createTeeClient: () => ({ deriveKey: mock(async () => new Uint8Array(32)), isInTee: () => false }),
-  seal: mock(async () => 'sealed'),
-  unseal: mock(async () => '0x'),
-  generatePrivateKey: () => '0x',
-  getAddressFromPrivateKey: () => '0x',
-}));
-mock.module('../services/tinycloud-bootstrap', () => ({ ensureTinyCloudBootstrapForApprovedSign: mock(async () => ({ status: 'skipped' })) }));
-mock.module('../middleware/session', () => ({
-  requireSession: createMiddleware(async (c, next) => {
-    c.set('user', user);
-    c.set('session', { id: 'session_1', userId: user.id, expiresAt: new Date(Date.now() + 60_000) });
-    await next();
+replaceModules({
+  '../middleware/session': () => ({
+    requireSession: createMiddleware(async (c, next) => {
+      c.set('user', user);
+      c.set('session', { id: 'session_1', userId: user.id, expiresAt: new Date(Date.now() + 60_000) });
+      await next();
+    }),
   }),
-}));
+});
+await mockModules({
+  '@openkey/db': () => ({ createPrismaClient: () => ({ ethereumKey: { findMany } }) }),
+  '@openkey/tee': () => ({
+    createTeeClient: () => ({ deriveKey: mock(async () => new Uint8Array(32)), isInTee: () => false }),
+    seal: mock(async () => 'sealed'),
+    unseal: mock(async () => '0x'),
+    generatePrivateKey: () => '0x',
+    getAddressFromPrivateKey: () => '0x',
+  }),
+  '../services/tinycloud-bootstrap': () => ({ ensureTinyCloudBootstrapForApprovedSign: mock(async () => ({ status: 'skipped' })) }),
+});
 
 let router: typeof keysRouter;
 

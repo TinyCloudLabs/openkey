@@ -1,5 +1,6 @@
-import { afterAll, beforeAll, describe, expect, mock, test } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
+import { mockModules, replaceModules } from './mock-module';
 
 const prisma = {
   $transaction: async (callback: (tx: any) => Promise<unknown>) => callback(prisma),
@@ -22,20 +23,24 @@ const prisma = {
 // Restored afterwards: other files in the same `bun test` run read these.
 const savedEnv = { CORS_ORIGIN: process.env.CORS_ORIGIN, TEE_MODE: process.env.TEE_MODE };
 
-beforeAll(() => {
-  mock.module('@openkey/db', () => ({ createPrismaClient: () => prisma }));
-  mock.module('../middleware/session', () => ({
+replaceModules({
+  '../middleware/session': () => ({
     requireSession: createMiddleware(async (c, next) => {
       c.set('user', { id: 'user_1' });
       return next();
     }),
-  }));
+  }),
+});
+await mockModules({
+  '@openkey/db': () => ({ createPrismaClient: () => prisma }),
+});
+
+beforeAll(() => {
   process.env.CORS_ORIGIN = 'https://openkey.test';
   process.env.TEE_MODE = 'production';
 });
 
 afterAll(() => {
-  mock.restore();
   for (const [name, value] of Object.entries(savedEnv)) {
     if (value === undefined) delete process.env[name];
     else process.env[name] = value;

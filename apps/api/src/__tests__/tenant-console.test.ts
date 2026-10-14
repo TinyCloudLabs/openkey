@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, mock, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
+import { mockModules, replaceModules } from './mock-module';
 
 const now = new Date('2026-08-05T12:00:00.000Z');
 const users = {
@@ -61,8 +62,6 @@ const db = {
   },
 };
 
-mock.module('@openkey/db', () => ({ createPrismaClient: () => db }));
-
 const session = createMiddleware(async (c, next) => {
   const userId = c.req.header('x-test-user');
   if (!userId || !(userId in users)) return c.json({ error: 'Unauthorized' }, 401);
@@ -71,10 +70,15 @@ const session = createMiddleware(async (c, next) => {
   await next();
 });
 
-mock.module('../middleware/session', () => ({ requireSession: session }));
+replaceModules({
+  '../middleware/session': () => ({ requireSession: session }),
+});
+await mockModules({
+  '@openkey/db': () => ({ createPrismaClient: () => db }),
+});
 
 async function router() {
-  const { createTenantConsoleRouter } = await import('../routes/tenant-console');
+  const { createTenantConsoleRouter } = await import('../routes/tenant-console?tenant-console-test' as string);
   return createTenantConsoleRouter(db as any, { sessionMiddleware: session as any });
 }
 function json(userId: string, body: unknown) { return { method: 'POST', headers: { 'content-type': 'application/json', 'x-test-user': userId }, body: JSON.stringify(body) }; }

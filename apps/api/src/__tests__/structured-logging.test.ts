@@ -286,5 +286,6 @@ describe('API structured logging', () => {
     }
     expect(`${stdout}${stderr}`).not.toContain(email);
     expect(`${stdout}${stderr}`).not.toContain(ticket);
-  });
+    // Starting a process and an in-memory PGlite takes about 4 s on a busy host.
+  }, 30_000);
 });

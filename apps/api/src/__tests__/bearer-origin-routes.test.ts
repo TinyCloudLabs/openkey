@@ -2,11 +2,10 @@
 // also refuses a bearer session token unless it comes from an OpenKey web
 // origin. /api/delegate/sign keeps its OAuth-only signer auth, and the
 // unauthenticated device-authorization endpoints the CLI calls are unchanged.
-//
-// Run this file on its own: bun's module mocks leak across test files.
-import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { Hono } from 'hono';
 import { createMiddleware } from 'hono/factory';
+import { mockModules, replaceModules } from './mock-module';
 
 const OPENKEY_ORIGIN = 'https://openkey.test';
 const GUARD_ERROR = { error: 'Bearer session tokens are accepted only from OpenKey' };
@@ -23,32 +22,37 @@ const prisma: any = new Proxy({}, {
 
 let app: Hono;
 
-beforeAll(async () => {
-  const realTee = await import('@openkey/tee');
-  process.env.CORS_ORIGIN = OPENKEY_ORIGIN;
-  mock.module('@openkey/db', () => ({ createPrismaClient: () => prisma }));
-  mock.module('@openkey/tee', () => ({
-    ...realTee,
-    createTeeClient: () => ({ deriveKey: async () => new Uint8Array(32), getQuote: async () => 'quote', isInTee: () => false }),
-  }));
-  mock.module('../services/tinycloud-bootstrap', () => ({
-    ensureTinyCloudBootstrapForApprovedSign: async () => ({ status: 'complete' }),
-  }));
-  mock.module('../middleware/session', () => ({
+replaceModules({
+  '../middleware/session': () => ({
     requireSession: createMiddleware(async (c, next) => {
       sessionResolutions += 1;
       c.set('user', { id: 'user_1', email: 'user@example.com' });
       c.set('session', { id: 'session_1', userId: 'user_1', expiresAt: new Date(Date.now() + 60_000) });
       await next();
     }),
-  }));
+  }),
+});
+await mockModules({
+  '@openkey/db': () => ({ createPrismaClient: () => prisma }),
+  '@openkey/tee': () => ({
+    createTeeClient: () => ({ deriveKey: async () => new Uint8Array(32), getQuote: async () => 'quote', isInTee: () => false }),
+  }),
+  '../services/tinycloud-bootstrap': () => ({
+    ensureTinyCloudBootstrapForApprovedSign: async () => ({ status: 'complete' }),
+  }),
+});
 
-  const delegate = await import('../routes/delegate');
-  const { secretsRouter } = await import('../routes/secrets');
-  const { variablesRouter } = await import('../routes/variables');
-  const { organizationsRouter } = await import('../routes/organizations');
-  const { tenantConsoleRouter } = await import('../routes/tenant-console');
-  const { deviceAuthorizationRouter } = await import('../routes/device-authorization');
+const savedCorsOrigin = process.env.CORS_ORIGIN;
+
+beforeAll(async () => {
+  process.env.CORS_ORIGIN = OPENKEY_ORIGIN;
+
+  const delegate = await import('../routes/delegate?bearer-origin-routes' as string);
+  const { secretsRouter } = await import('../routes/secrets?bearer-origin-routes' as string);
+  const { variablesRouter } = await import('../routes/variables?bearer-origin-routes' as string);
+  const { organizationsRouter } = await import('../routes/organizations?bearer-origin-routes' as string);
+  const { tenantConsoleRouter } = await import('../routes/tenant-console?bearer-origin-routes' as string);
+  const { deviceAuthorizationRouter } = await import('../routes/device-authorization?bearer-origin-routes' as string);
   delegate.setDelegateSignerAuthMiddlewareForTests(createMiddleware(async (c) => {
     signerAuthCalls += 1;
     return c.json({ signerAuth: true }, 401);
@@ -68,8 +72,8 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
-  mock.restore();
-  delete process.env.CORS_ORIGIN;
+  if (savedCorsOrigin === undefined) delete process.env.CORS_ORIGIN;
+  else process.env.CORS_ORIGIN = savedCorsOrigin;
 });
 
 beforeEach(() => {
