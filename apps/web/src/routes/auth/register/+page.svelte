@@ -5,6 +5,7 @@
   import { authClient, API_BASE, authErrorMessage } from '$lib/auth-client';
   import { api } from '$lib/api';
   import { setSessionToken } from '$lib/embed-passkey';
+  import { newAccountSignupToken, SIGN_UP_EMAIL_OTP_PATH } from '$lib/email-signup';
   import {
     loadConfiguredSocialProviders,
     signInWithSocialPopup,
@@ -107,8 +108,14 @@
     error = '';
     try {
       const result = await authClient.signIn.emailOtp({ email, otp });
-      if (result.error) {
-        error = authErrorMessage(result.error, 'Invalid code');
+      // This page is the explicit "create an account" choice, so a verified
+      // code for a new email confirms the sign-up straight away (TC-1114).
+      const signupToken = newAccountSignupToken(result.error);
+      const outcome = signupToken
+        ? await authClient.$fetch(SIGN_UP_EMAIL_OTP_PATH, { method: 'POST', body: { email, signupToken } })
+        : result;
+      if (outcome.error) {
+        error = authErrorMessage(outcome.error, 'Invalid code');
       } else {
         step = 'passkey';
       }

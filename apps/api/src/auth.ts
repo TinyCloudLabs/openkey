@@ -40,6 +40,7 @@ import { crossSubDomainCookieOptions } from './auth-options';
 import { resolveRequestUri } from './services/native-delegation/par';
 import { exchangeNativeCode, generateNativeRefreshToken, withNativeTokenGuardErrors } from './services/native-delegation/code-exchange';
 import { providerTokenOptions } from './services/native-delegation/provider-tokens';
+import { emailSignupConfirmation } from './services/email-signup-confirmation';
 import { betterAuthLog, log, logError } from './log';
 
 export const prisma: PrismaClient = createPrismaClient();
@@ -229,7 +230,8 @@ export const auth = betterAuth({
       },
     }),
 
-    // Email OTP is the default registration and sign-in method.
+    // Email OTP is the default registration and sign-in method. A verified code
+    // for an unknown email asks the user to confirm before an account exists.
     emailOTP({
       async sendVerificationOTP({ email, otp, type }) {
         if (!resend) {
@@ -263,6 +265,7 @@ export const auth = betterAuth({
       // that may still be arriving or grouped into the same email thread.
       resendStrategy: 'reuse',
     }),
+    emailSignupConfirmation(prisma),
 
     // Bearer plugin - returns session token in set-auth-token header
     bearer(),

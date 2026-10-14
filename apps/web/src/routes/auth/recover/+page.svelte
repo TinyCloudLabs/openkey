@@ -5,12 +5,16 @@
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
   import { setSessionToken } from '$lib/embed-passkey';
+  import { newAccountSignupToken, SIGN_UP_EMAIL_OTP_PATH } from '$lib/email-signup';
+  import NewAccountConfirmation from '$lib/components/auth/new-account-confirmation.svelte';
 
   let { data } = $props();
 
   let email = $state('');
   let otp = $state('');
-  let step = $state<'email' | 'otp' | 'passkey'>('email');
+  // 'newAccount' follows a verified code for an email with no account (TC-1114).
+  let step = $state<'email' | 'otp' | 'newAccount' | 'passkey'>('email');
+  let signupToken = $state<string | null>(null);
   let loading = $state(false);
   let error = $state('');
 
@@ -38,13 +42,39 @@
     error = '';
     try {
       const result = await authClient.signIn.emailOtp({ email, otp });
-      if (result.error) {
+      const token = newAccountSignupToken(result.error);
+      if (token) {
+        signupToken = token;
+        otp = '';
+        step = 'newAccount';
+      } else if (result.error) {
         error = authErrorMessage(result.error, 'Invalid code');
       } else {
         step = 'passkey';
       }
     } catch (e: any) {
       error = e.message || 'Invalid code';
+    } finally {
+      loading = false;
+    }
+  }
+
+  async function createAccount() {
+    if (!signupToken) return;
+    loading = true;
+    error = '';
+    try {
+      const result = await authClient.$fetch(SIGN_UP_EMAIL_OTP_PATH, { method: 'POST', body: { email, signupToken } });
+      signupToken = null;
+      if (result.error) {
+        // Expired or already used: the user starts again with a new code.
+        error = authErrorMessage(result.error, 'Could not create your account');
+        step = 'email';
+      } else {
+        step = 'passkey';
+      }
+    } catch (e: any) {
+      error = e.message || 'Could not create your account';
     } finally {
       loading = false;
     }
@@ -194,6 +224,21 @@
         <Button variant="ghost" onclick={() => { step = 'email'; error = ''; }} class="w-full mt-2">
           Back
         </Button>
+      {/if}
+
+      {#if step === 'newAccount'}
+        {#if error}
+          <div class="bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl mb-6 text-sm" role="alert">
+            {error}
+          </div>
+        {/if}
+        <NewAccountConfirmation
+          {email}
+          busy={loading}
+          creating={loading}
+          oncreate={createAccount}
+          ondifferentemail={() => { step = 'email'; signupToken = null; error = ''; }}
+        />
       {/if}
 
       {#if step === 'passkey'}
