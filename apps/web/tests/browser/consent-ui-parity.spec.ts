@@ -113,7 +113,9 @@ test('manual OpenKey login shows a short retrieval code and keeps the paste fall
   });
   await page.goto(`/delegate?did=did:key:z6Mk&jwk=${jwk}`);
   await page.getByRole('button', { name: 'Approve', exact: true }).click();
-  await expect(page.getByText('sf23-22cs')).toBeVisible();
+  // An API from before upper-case codes still returns lower case; the page
+  // shows the code in upper case either way.
+  await expect(page.getByText('SF23-22CS')).toBeVisible();
   await page.getByText('Use full delegation code instead').click();
   await expect(page.getByRole('textbox', { name: 'Full delegation code' })).toBeVisible();
 });
@@ -150,6 +152,21 @@ test.describe('TC-660 /device prefilled code', () => {
     await page.getByRole('button', { name: 'Continue' }).click();
     await expect(page.getByRole('alert')).toContainText('That code is invalid or expired');
     expect(lookups).toHaveLength(1);
+  });
+
+  test('a typed or pasted lower-case code is shown and looked up in upper case', async ({ page }) => {
+    await mock(page, oneKey, false);
+    const lookups: string[] = [];
+    page.on('request', (req) => { if (req.url().includes('/device-authorizations/lookup')) lookups.push(new URL(req.url()).searchParams.get('user_code') ?? ''); });
+    await page.goto('/device');
+    const input = page.getByRole('textbox', { name: 'Device code' });
+    await input.pressSequentially('abcd', { delay: 30 });
+    await expect(input).toHaveValue('ABCD');
+    await input.fill('abcd-efgh');
+    await expect(input).toHaveValue('ABCD-EFGH');
+    await page.getByRole('button', { name: 'Continue' }).click();
+    await expect(page.getByRole('alert')).toBeVisible();
+    expect(lookups).toEqual(['ABCD-EFGH']);
   });
 
   test('without a code the editable form stays', async ({ page }) => {

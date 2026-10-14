@@ -2,6 +2,9 @@ import { randomBytes } from 'node:crypto';
 import { Hono, type MiddlewareHandler } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 
+// Codes are stored and looked up in lower case, the form every CLI since the
+// broker shipped lower-cases to before its GET, so codes issued before codes
+// were shown in upper case still redeem. Responses carry the upper-case form.
 const CODE_ALPHABET = 'abcdefghijklmnopqrstuvwxyz234567';
 const CODE_TTL_MS = 10 * 60 * 1000;
 const PUBLIC_DELEGATION_FIELDS: Record<string, true> = {
@@ -75,7 +78,7 @@ export function createDelegationCodeRouter(input: {
       const code = `${Array.from(characters.subarray(0, 4), (byte) => CODE_ALPHABET[byte & 31]).join('')}-${Array.from(characters.subarray(4), (byte) => CODE_ALPHABET[byte & 31]).join('')}`;
       if (await input.store.create(code, delegation, expiresAt)) {
         c.header('Cache-Control', 'no-store');
-        return c.json({ code, expiresAt: expiresAt.toISOString() }, 201);
+        return c.json({ code: code.toUpperCase(), expiresAt: expiresAt.toISOString() }, 201);
       }
     }
     return c.json({ error: 'Could not allocate delegation code' }, 503);

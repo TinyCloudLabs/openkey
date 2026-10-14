@@ -2,6 +2,8 @@ import { describe, expect, test } from 'bun:test';
 import { createHash, generateKeyPairSync, randomBytes } from 'node:crypto';
 import {
   DEVICE_AUTH_DEFAULT_DELEGATION_TTL_MS,
+  DEVICE_AUTH_START_LIMIT,
+  DEVICE_AUTH_TRANSACTION_TTL_MS,
   type DevicePermission,
   type DeviceRelayEnvelope,
   DeviceAuthorizationError,
@@ -509,5 +511,32 @@ describe('OpenKey device authorization service', () => {
 
     await input.service.approve(transaction.transactionId, 'user-1', encryptedApproval(input, transaction, input.request.permissions, new Date(input.now().getTime() + 30_000)));
     await expect(check(input.publicJwk)).rejects.toMatchObject({ code: 'expired_token', status: 410 });
+  });
+});
+
+describe('device user code casing', () => {
+  test('issues upper-case codes from the 32-symbol alphabet without 0, 1, I or O', async () => {
+    const input = fixture();
+    const seen = new Set<string>();
+    for (let index = 0; index < 300; index += 1) {
+      const { userCode } = await input.service.start(input.request, `198.51.100.${Math.floor(index / DEVICE_AUTH_START_LIMIT)}`);
+      expect(userCode).toMatch(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
+      for (const symbol of userCode.replace('-', '')) seen.add(symbol);
+    }
+    expect([...seen].sort().join('')).toBe('23456789ABCDEFGHJKLMNPQRSTUVWXYZ');
+  });
+
+  test('looks up lower- and mixed-case codes under the stored upper-case key, until the same expiry', async () => {
+    const input = fixture();
+    const transaction = await input.service.start(input.request, '203.0.113.9');
+    const keys: string[] = [];
+    const findByUserCode = input.store.findByUserCode.bind(input.store);
+    input.store.findByUserCode = async (userCode) => { keys.push(userCode); return findByUserCode(userCode); };
+    const lower = transaction.userCode.toLowerCase();
+    const variants = [transaction.userCode, lower, lower.replace('-', ''), [...transaction.userCode].map((c, i) => (i % 2 ? c.toLowerCase() : c)).join('')];
+    for (const variant of variants) expect((await input.service.lookup(variant))?.id).toBe(transaction.transactionId);
+    expect(new Set(keys)).toEqual(new Set([transaction.userCode.replace('-', '')]));
+    input.advance(DEVICE_AUTH_TRANSACTION_TTL_MS);
+    for (const variant of variants) expect(await input.service.lookup(variant)).toBeNull();
   });
 });

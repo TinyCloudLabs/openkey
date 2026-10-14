@@ -1068,7 +1068,7 @@
       });
       if (response.ok) {
         const result = await response.json();
-        if (/^[a-z2-7]{4}-[a-z2-7]{4}$/.test(result.code)) shortCode = result.code;
+        if (/^[a-z2-7]{4}-[a-z2-7]{4}$/i.test(result.code)) shortCode = result.code.toUpperCase();
       }
     } catch {
       // The full delegation remains available when the broker is unreachable.
