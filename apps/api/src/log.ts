@@ -8,7 +8,7 @@ type ErrorFields = { error_name?: string; error_code?: string };
 type RequestContext = { requestId: string };
 
 const requestContext = new AsyncLocalStorage<RequestContext>();
-const EVENTS: Record<string, true> = {
+const EVENTS = {
   better_auth: true, otp_delivery_unconfigured: true, auth_key_generated: true, auth_key_generation_failed: true,
   analytics_token_exchange_failed: true, analytics_unique_user_failed: true, analytics_token_tracking_failed: true,
   analytics_authorization_failed: true, analytics_authorization_tracking_failed: true, oauth_client_scopes_updated: true,
@@ -22,8 +22,11 @@ const EVENTS: Record<string, true> = {
   oauth_client_create_failed: true, oauth_client_delete_failed: true, oauth_client_update_failed: true,
   tinycloud_bootstrap_background_failed: true, tinycloud_bootstrap_background_completed: true,
   tinycloud_bootstrap_space_registry_completed: true, native_par_valid_request_volume_threshold_reached: true,
+  native_par_request_cleanup_failed: true, native_session_proof_cleanup_failed: true,
   third_party_console: true, uncaught_exception: true, unhandled_rejection: true, config_invalid: true,
-};
+  unlisted_event: true,
+} as const satisfies Record<string, true>;
+type EventName = keyof typeof EVENTS;
 const CONFIG_KEYS: Record<string, true> = { BETTER_AUTH_URL: true };
 const ERROR_CODES: Record<string, true> = {
   P2002: true, P2025: true, P2010: true, P2034: true, tinycloud_bootstrap_failed: true,
@@ -54,13 +57,13 @@ function safeErrorFields(error: unknown): ErrorFields {
   }
 }
 
-function emit(level: LogLevel, event: string, fields: Record<string, string | number | undefined> = {}): void {
+function emit(level: LogLevel, event: EventName, fields: Record<string, string | number | undefined> = {}): void {
   if (typeof level !== 'string' || !Object.hasOwn(LEVELS, level)) return;
-  if (typeof event !== 'string' || !Object.hasOwn(EVENTS, event)) return;
+  const safeEvent: EventName = typeof event === 'string' && Object.hasOwn(EVENTS, event) ? event : 'unlisted_event';
   const line: Record<string, string | number> = {
     ts: new Date().toISOString(),
     level,
-    event,
+    event: safeEvent,
     request_id: requestContext.getStore()?.requestId ?? 'startup',
   };
   for (const [key, value] of Object.entries(fields)) {
@@ -69,12 +72,12 @@ function emit(level: LogLevel, event: string, fields: Record<string, string | nu
   process.stdout.write(`${JSON.stringify(line)}\n`);
 }
 
-export function log(level: LogLevel, event: string, errorCode?: string): void {
+export function log(level: LogLevel, event: EventName, errorCode?: string): void {
   const safeCode = typeof errorCode === 'string' && Object.hasOwn(ERROR_CODES, errorCode) ? errorCode : undefined;
   emit(level, event, { error_code: safeCode });
 }
 
-export function logError(level: 'warn' | 'error', event: string, error: unknown): void {
+export function logError(level: 'warn' | 'error', event: EventName, error: unknown): void {
   emit(level, event, safeErrorFields(error));
 }
 

@@ -114,6 +114,13 @@ describe('API structured logging', () => {
     expect(line).toMatchObject({ event: 'config_invalid', error_code: 'BETTER_AUTH_URL', request_id: 'startup' });
     expect(output.join('\n')).not.toContain('canary-url-value');
   });
+  test('replaces an unknown runtime event with the fixed fallback', () => {
+    const unlistedEvent = 'private-canary-event';
+    log('info', unlistedEvent as never);
+    const line = JSON.parse(output[0]!);
+    expect(line.event).toBe('unlisted_event');
+    expect(output.join('\n')).not.toContain(unlistedEvent);
+  });
 
   test('uses <unmatched> for requests without a matching route', async () => {
     const app = new Hono<ApiEnv>();
