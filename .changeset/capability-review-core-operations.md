@@ -1,0 +1,5 @@
+---
+"@openkey/capability-review": minor
+---
+
+Capability review now names every TinyCloud core ability in the node registry instead of showing "Unknown service". `tinycloud.space/host` and `space/create` show as "Create a space" (sensitive); `space/list` and `space/info` are standard. `tinycloud.hooks/*` and the reserved `tinycloud.vfs/*` are attention. `tinycloud.duckdb` read, write and export are standard; DuckDB admin, import and `*`, and SQL admin and `*` on a named application database, are sensitive. `kv/sync`, `kv/retain` and the `kv/delete`, `sql/select` and `duckdb/select` aliases classify like their KV, SQL and DuckDB targets. New `CapabilityFamily` values: `space-create`, `space-read`, `hooks`, `duckdb-data`, `database-admin`, `file-data`; an exhaustive switch over the family type needs these cases. Unregistered services and verbs still classify as `unknown`. Nothing changes in what is permitted, signed or delegated. `registry-inventory.md` lists every ability's label, description and severity (TC-799).

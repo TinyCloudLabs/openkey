@@ -22,6 +22,13 @@ import {
   KV_SECRET_SERVICES_PROOF,
   isSecretsSpace,
 } from "./app-scope.js";
+import {
+  KV_FEED_DESCRIPTIONS,
+  SQL_ADMIN_OPERATIONS,
+  coreOperations,
+  isCoreOperationService,
+  joinDistinct,
+} from "./core-operations.js";
 
 export interface StatementEntry {
   /**
@@ -640,6 +647,9 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
   // and capabilities branches keep their own dedicated exact-ability
   // allowlists inside the branch; this gate is a no-op for those
   // services (see `allActionsRecognizedForService`).
+  const coreStatement = coreOperationStatement(grant);
+  if (coreStatement) return coreStatement;
+
   if (!allActionsRecognizedForService(grant)) {
     return fallbackStatement(grant);
   }
@@ -1063,6 +1073,88 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
 
   // 6. Unknown service — never invent friendly semantics.
   return fallbackStatement(grant);
+}
+
+/**
+ * Friendly copy for TinyCloud core operations named by exact ability
+ * (core-operations.ts), plus SQL admin on a named database and the KV
+ * change feed. Returns null when the grant is not one of these shapes; the
+ * caller then applies its usual gates. Every action must be in the catalog,
+ * the family must be the one classify.ts assigns, and another user's
+ * resource always renders literally.
+ */
+function coreOperationStatement(grant: CapabilityGrant): StatementEntry | null {
+  const service = grant.service;
+  const abilities = grant.actions.map((action) => action.ability);
+  const resource = resourceOf(grant);
+  const literal = () => fallbackStatement(grant);
+
+  if (isCoreOperationService(service)) {
+    const operations = coreOperations(service, abilities);
+    if (
+      !operations ||
+      grant.ownedBySelf === false ||
+      !operations.some((operation) => operation.family === grant.family)
+    ) {
+      return literal();
+    }
+    return {
+      primaryText: joinDistinct(
+        operations.map((operation) => operation.description),
+        "; ",
+      ),
+      service,
+      resource,
+    };
+  }
+
+  const exactVerbs = (
+    services: ReadonlySet<string>,
+    catalog: Readonly<Record<string, unknown>>,
+  ): string[] | null => {
+    if (abilities.length === 0) return null;
+    const verbs: string[] = [];
+    for (const ability of abilities) {
+      if (!ability.includes("/")) return null;
+      const head = ability.slice(0, ability.indexOf("/"));
+      const verb = verbOf(ability);
+      if (!services.has(head) || !Object.hasOwn(catalog, verb)) return null;
+      verbs.push(verb);
+    }
+    return verbs;
+  };
+
+  if (grant.family === "database-admin" && SQL_SERVICES.has(service)) {
+    const verbs = exactVerbs(SQL_SERVICES, SQL_ADMIN_OPERATIONS);
+    if (!verbs || grant.ownedBySelf === false) return literal();
+    return {
+      primaryText: joinDistinct(
+        verbs.map((verb) => SQL_ADMIN_OPERATIONS[verb]!.description),
+        "; ",
+      ),
+      service,
+      resource,
+    };
+  }
+
+  if (
+    KV_SERVICES.has(service) &&
+    (grant.family === "own-app-data" || grant.family === "bootstrap-kv") &&
+    grant.ownedBySelf !== false &&
+    !isSecretsSpace(grant.space)
+  ) {
+    const verbs = exactVerbs(KV_SERVICES, KV_FEED_DESCRIPTIONS);
+    if (!verbs) return null;
+    return {
+      primaryText: joinDistinct(
+        verbs.map((verb) => KV_FEED_DESCRIPTIONS[verb]!),
+        "; ",
+      ),
+      service,
+      resource,
+    };
+  }
+  return null;
 }
 
 /**

@@ -383,3 +383,6 @@ export const REAL_RECAP_SAME_ABILITY_TWO_PATHS = siwe([
     },
   }),
 ]);
+
+/** SIWE message builder for tests that assemble their own resources. */
+export { siwe as siweWithResources };

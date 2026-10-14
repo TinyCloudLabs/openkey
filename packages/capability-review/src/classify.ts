@@ -13,7 +13,9 @@
 //      is the default for whole-space grants without a recognizable path.
 //   5. Named secret services split into read vs mutation.
 //   6. Encryption services split into key material vs decrypt.
-//   7. Unknown services fall back to the "unknown" family and elevate
+//   7. The remaining TinyCloud core services (space, hooks, duckdb, vfs)
+//      classify by exact registered verb (see core-operations.ts).
+//   8. Unknown services fall back to the "unknown" family and elevate
 //      severity.
 //
 // The classifier NEVER lowers severity based on metadata. Metadata may enrich
@@ -23,6 +25,14 @@
 import type { CapabilityFamily, PermissionSeverity } from "./model.js";
 import { isSecretsSpace } from "./app-scope.js";
 import { isMetadataOnlyAccess } from "./action-semantics.js";
+import {
+  SPACE_SERVICES,
+  SQL_ADMIN_OPERATIONS,
+  coreOperations,
+  isCoreOperationService,
+  joinDistinct,
+  type CoreOperation,
+} from "./core-operations.js";
 
 interface RecapEntryLike {
   service: string;
@@ -71,11 +81,28 @@ const DECRYPT_VERBS = new Set(["decrypt"]);
 // into the fail-closed `unknown` family (see BOOTSTRAP_CAPABILITIES_SERVICES
 // branch below), which elevates severity via `classifySeverityFromActions`.
 const CAPABILITY_READ_VERBS = new Set(["read"]);
-const KV_VERBS = new Set(["get", "list", "metadata", "put", "del"]);
+// `delete` is the registry's deprecated alias of `del`. `sync` (change feed)
+// and `retain` (offline retention attestation) are registered KV abilities.
+const KV_VERBS = new Set([
+  "get",
+  "list",
+  "metadata",
+  "put",
+  "del",
+  "delete",
+  "sync",
+  "retain",
+]);
 const ACCOUNT_REGISTRY_KV_VERBS = new Set(["get", "list", "put"]);
 const ACCOUNT_SETUP_KV_VERBS = new Set(["get", "put"]);
-const SQL_DATA_VERBS = new Set(["read", "write"]);
-const SQL_DATABASE_VERBS = new Set(["read", "write", "schema"]);
+// `select` is the registry's deprecated alias of `read`.
+const SQL_DATA_VERBS = new Set(["read", "select", "write"]);
+const SQL_DATABASE_VERBS = new Set(["read", "select", "write", "schema"]);
+const SQL_ADMIN_VERBS = new Set(Object.keys(SQL_ADMIN_OPERATIONS));
+const SQL_NAMED_DATABASE_VERBS = new Set([
+  ...SQL_DATABASE_VERBS,
+  ...SQL_ADMIN_VERBS,
+]);
 const DELEGATION_VERBS = new Set(["list", "status"]);
 const ENCRYPTION_NETWORK_VERBS = new Set(["network.create", "network.revoke"]);
 const ENCRYPTION_VERBS = new Set([
@@ -350,6 +377,26 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
       knownTarget = { family: "bootstrap-sql", displayLabel: "Account index" };
     } else if (spaceName === "applications" || spaceName === "default") {
       const scoped = isScopedDataPath(path);
+      // Admin or wildcard authority over one named application database.
+      // Whole-space admin stays unknown: it reaches every database.
+      if (
+        scoped &&
+        entry.actions.some((action) => SQL_ADMIN_VERBS.has(verbOf(action)))
+      ) {
+        if (!allVerbsIn(entry.actions, SQL_NAMED_DATABASE_VERBS)) {
+          return unknownActionLabel(service);
+        }
+        const label = joinDistinct(
+          entry.actions
+            .map((action) => SQL_ADMIN_OPERATIONS[verbOf(action)]?.label)
+            .filter((value): value is string => value !== undefined),
+          ", ",
+        );
+        return {
+          family: "database-admin",
+          displayLabel: isOtherUser ? `${label} — another user's space` : label,
+        };
+      }
       const allowed = scoped ? SQL_DATABASE_VERBS : SQL_DATA_VERBS;
       if (!allVerbsIn(entry.actions, allowed)) {
         return unknownActionLabel(service);
@@ -474,6 +521,13 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     };
   }
 
+  if (isCoreOperationService(service)) {
+    return classifyCoreOperation(entry, {
+      isOtherUser,
+      spaceName,
+    });
+  }
+
   // Unknown, own vs cross-app data.
   const spaceLabel =
     space && space.startsWith("tinycloud:")
@@ -483,6 +537,74 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     family: "unknown",
     displayLabel: `Unknown service ${service} on ${spaceLabel || "(no space)"}`,
   };
+}
+
+// Most severe first, so a mixed grant takes its strongest family.
+const CORE_FAMILY_PRIORITY: readonly CapabilityFamily[] = [
+  "space-create",
+  "database-admin",
+  "hooks",
+  "file-data",
+  "duckdb-data",
+  "space-read",
+];
+
+function dominantCoreFamily(operations: CoreOperation[]): CapabilityFamily {
+  const families = new Set(operations.map((operation) => operation.family));
+  return CORE_FAMILY_PRIORITY.find((family) => families.has(family)) ?? "unknown";
+}
+
+function classifyCoreOperation(
+  entry: RecapEntryLike,
+  context: { isOtherUser: boolean; spaceName: string | null },
+): { family: CapabilityFamily; displayLabel: string } {
+  const { service, space } = entry;
+  if (entry.serviceMismatch === true) {
+    return unknownActionLabel(service);
+  }
+  const operations = coreOperations(service, entry.actions);
+  if (!operations) {
+    return unknownActionLabel(service);
+  }
+  const family = dominantCoreFamily(operations);
+  const label = joinDistinct(
+    operations.map((operation) => operation.label),
+    ", ",
+  );
+
+  // Space operations address the space itself, not data inside it, so they
+  // apply to any space name.
+  if (SPACE_SERVICES.has(service)) {
+    if (family === "space-create") {
+      return {
+        family,
+        displayLabel: context.isOtherUser ? `${label} for another user` : label,
+      };
+    }
+    return context.isOtherUser
+      ? { family: "cross-app-data", displayLabel: "Another user's space details" }
+      : { family, displayLabel: label };
+  }
+
+  // Data services. A secrets space or a space without a known product
+  // meaning stays fail-closed, like KV and SQL.
+  if (isSecretsSpace(space)) {
+    return {
+      family: "unknown",
+      displayLabel: `Unrecognized ${service} access to secrets`,
+    };
+  }
+  if (context.spaceName !== "applications" && context.spaceName !== "default") {
+    return { family: "unknown", displayLabel: `Unrecognized ${service} data` };
+  }
+  if (context.isOtherUser) {
+    // Never lower an administrative grant to the attention-level
+    // cross-user family.
+    return family === "database-admin"
+      ? { family, displayLabel: `${label} — another user's space` }
+      : { family: "cross-app-data", displayLabel: "Another user's data" };
+  }
+  return { family, displayLabel: label };
 }
 
 function describeName(path: string): string {
@@ -527,6 +649,15 @@ export function classifySeverityFromActions(
         : "sensitive";
     case "encryption-decrypt":
       return hasDecrypt ? "sensitive" : "attention";
+    case "space-create":
+    case "database-admin":
+      return "sensitive";
+    case "hooks":
+    case "file-data":
+      return "attention";
+    case "space-read":
+    case "duckdb-data":
+      return "standard";
     case "unknown":
     default:
       // Fail-closed: an unknown service could be doing anything. Always

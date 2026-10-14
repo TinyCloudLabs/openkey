@@ -39,6 +39,12 @@ export type CapabilityFamily =
   | "secret-mutation"
   | "encryption-key"
   | "encryption-decrypt"
+  | "space-create"
+  | "space-read"
+  | "hooks"
+  | "duckdb-data"
+  | "database-admin"
+  | "file-data"
   | "unknown";
 
 /**
