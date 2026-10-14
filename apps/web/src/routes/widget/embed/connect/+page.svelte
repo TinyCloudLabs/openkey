@@ -232,11 +232,12 @@
         </div>
       {/if}
       <EmbeddedSignIn
-        prompt="Sign in or create an account to continue"
+        prompt="Sign in to continue. We'll ask before creating a new account."
         onauthenticated={() => { embedAuthenticated = true; }}
         {hasEoa}
         onuseexternalwallet={useExternalWallet}
         {passkeysSupported}
+        onrecover={recover}
       />
     {:else if loading}
       <div class="flex flex-col items-center justify-center text-center text-surface-400 py-6">

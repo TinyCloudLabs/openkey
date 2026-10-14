@@ -313,7 +313,7 @@
       </div>
     {:else if step === 'sign-in'}
       <EmbeddedSignIn
-        prompt={mode === 'sign' ? 'Sign in to approve this signing request' : 'Sign in or create an account to connect'}
+        prompt={mode === 'sign' ? 'Sign in to approve this signing request' : "Sign in to connect. We'll ask before creating a new account."}
         onauthenticated={onAuthenticated}
         {passkeysSupported}
       />
