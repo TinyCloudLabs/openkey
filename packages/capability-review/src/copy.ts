@@ -36,6 +36,12 @@ export const FAMILY_LABEL: Record<CapabilityFamily, string> = {
   "secret-mutation": "Named secret (mutate)",
   "encryption-key": "Encryption key material",
   "encryption-decrypt": "Decrypt encrypted content",
+  "space-create": "Create a space",
+  "space-read": "Space details",
+  hooks: "Change notifications",
+  "duckdb-data": "DuckDB database",
+  "database-admin": "Database administration",
+  "file-data": "Files",
   unknown: "Unknown capability",
 };
 
