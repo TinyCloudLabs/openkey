@@ -91,8 +91,9 @@ Optional (features degrade gracefully without these):
 | Variable | Purpose |
 |----------|---------|
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Google OAuth sign-in |
-| `APPLE_CLIENT_ID` / `APPLE_TEAM_ID` / `APPLE_KEY_ID` / `APPLE_PRIVATE_KEY` | Sign in with Apple (all four are required before the button is shown) |
-| `APPLE_APP_BUNDLE_IDENTIFIER` | Optional native-app audience for Apple ID tokens |
+| `APPLE_SIGN_IN_ENABLED` | Defaults to `false`; even configured credentials do not advertise or activate Apple without `true` |
+| `APPLE_CLIENT_ID` / `APPLE_TEAM_ID` / `APPLE_KEY_ID` / `APPLE_PRIVATE_KEY` | Apple web code flow (all four plus the flag are required) |
+| `APPLE_NATIVE_SIGN_IN_ENABLED` / `APPLE_APP_BUNDLE_IDENTIFIERS` | Reserved for a later PAR-bound native flow; stock ID-token sign-in is disabled |
 | `RESEND_API_KEY` | Email OTP delivery (without it, OTPs print to console) |
 | `ADMIN_API_KEY` | Protect admin endpoints (OAuth client registration) |
 | `INTERNAL_METRICS_TOKEN` | Protect internal metrics endpoints |
@@ -116,21 +117,23 @@ Register these exact production callback URLs with each provider:
 - Apple: `https://api.openkey.so/api/auth/callback/apple`
 
 For Apple, `APPLE_CLIENT_ID` is the web Services ID, not the native bundle ID.
-OpenKey signs a short-lived ES256 client-secret JWT at runtime using
-`APPLE_TEAM_ID`, `APPLE_KEY_ID`, and the `.p8` value in `APPLE_PRIVATE_KEY`;
-escaped `\n` sequences are accepted. `APPLE_APP_BUNDLE_IDENTIFIER` is optional
-and is only needed for native Apple ID-token audiences. Apple does not accept
-`localhost`, plain HTTP, or callbacks without a valid TLS certificate, so local
-testing must use an HTTPS domain such as the portless profile and that exact
-HTTPS callback must be registered in Apple Developer.
+`APPLE_SIGN_IN_ENABLED` stays `false` by default, including when credentials
+are present. The API signs a new ES256 client-secret JWT for each token exchange
+or revocation, valid for at most five minutes; escaped `\\n` in the `.p8` is
+accepted. Apple does not accept localhost, plain HTTP or invalid TLS, so a
+real provider callback needs a registered HTTPS host. Tests use local stub
+tokens instead of Apple credentials.
 
-Apple returns an email address only on the first authorization. OpenKey relies
-on Better Auth's persisted provider account and account-linking records on
-later sign-ins; do not delete those records or require later callbacks to carry
-email. If users can choose Apple's private relay, register OpenKey's outbound
-sender domain (including the Resend envelope-sender domain) in Certificates,
-Identifiers & Profiles → Sign in with Apple for Email Communication, and
-configure matching SPF and DKIM records.
+The web callback reads identity only from Apple's token-endpoint ID token:
+`iss`, `aud`, `exp`, `iat` and a verified email are checked; the unsigned
+`user.email` is ignored. An already-linked `sub` may sign in without a new
+email claim, but an unlinked `sub` cannot create an account without a verified
+email. New sign-ups go through `/api/auth/social/continuation` and
+`/api/auth/social/confirm`; existing accounts require explicit linking with a
+fresh email OTP. The first email-code sign-in to a social-created account
+requires `/api/auth/social/email-sign-in/confirm` to review linked providers,
+or refuse and lock it. Apple remains disabled in production until enrollment,
+the remaining TC-1188 slices and Sam's separate authorization.
 
 ## Scripts
 

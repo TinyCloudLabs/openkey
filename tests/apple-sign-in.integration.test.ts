@@ -451,6 +451,22 @@ if (!backend) {
         expect(await prisma.user.count()).toBe(2);
         expect(await prisma.ethereumKey.count()).toBe(0);
       });
+
+      test('Apple unlink requires fresh email OTP and revokes the issuing-client refresh token', async () => {
+        const user = await prisma.user.create({ data: { id: randomUUID(), email: 'unlink@openkey.test', emailVerified: true } });
+        const cookie = await signedInCookie(user.email);
+        await stepUp(cookie, user.id);
+        await appleCallback(profile('unlink-sub', 'relay@privaterelay.appleid.com'), cookie, true);
+        await prisma.session.updateMany({
+          where: { userId: user.id }, data: { lastEmailOtpAt: new Date(Date.now() - 6 * 60_000) },
+        });
+        expect((await post('/api/account/social/unlink', { providerId: 'apple', accountId: 'unlink-sub' }, cookie)).status).toBe(403);
+        expect(await prisma.account.count({ where: { userId: user.id, providerId: 'apple' } })).toBe(1);
+        await stepUp(cookie, user.id);
+        expect((await post('/api/account/social/unlink', { providerId: 'apple', accountId: 'unlink-sub' }, cookie)).status).toBe(200);
+        expect(await prisma.account.count({ where: { userId: user.id, providerId: 'apple' } })).toBe(0);
+        expect(revoked.some(({ token, clientId }) => token.startsWith('refresh-') && clientId === SERVICES_ID)).toBe(true);
+      });
     });
 
     describe('social-created mailbox review', () => {

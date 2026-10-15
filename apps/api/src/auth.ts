@@ -33,6 +33,7 @@ import {
   recordPasskeyFreshnessAfterHook,
 } from './services/passkey-freshness';
 import {
+  configuredSocialProviderIds,
   createSocialProviders,
   socialProviderTrustedOrigins,
 } from './social-providers';
@@ -42,8 +43,9 @@ import { exchangeNativeCode, generateNativeRefreshToken, withNativeTokenGuardErr
 import { providerTokenOptions } from './services/native-delegation/provider-tokens';
 import { emailSignupConfirmation } from './services/email-signup-confirmation';
 import { hasFreshEmailStepUp } from './services/email-otp-step-up';
-import { googleSocialConfirmation } from './services/google-social-confirmation';
-import { assertCurrentGoogleLink, googleLinkStatePlugin } from './services/google-link-state';
+import { confirmedSocialProvider, socialConfirmation } from './services/social-confirmation';
+import { assertCurrentSocialLink, socialLinkStatePlugin } from './services/social-link-state';
+import { socialMailboxReview } from './services/social-mailbox-review';
 import { betterAuthLog, log, logError } from './log';
 
 export const prisma: PrismaClient = createPrismaClient();
@@ -240,20 +242,33 @@ export const auth = betterAuth({
     storeSessionInDatabase: true, // Required for OAuth provider
   },
 
+  user: {
+    additionalFields: {
+      socialCreatedProvider: { type: 'string', required: false, input: false, returned: false },
+      socialEmailReviewedAt: { type: 'date', required: false, input: false, returned: false },
+      lockedAt: { type: 'date', required: false, input: false, returned: false },
+    },
+  },
+
   account: {
+    additionalFields: {
+      appleClientId: { type: 'string', required: false, input: false, returned: false },
+    },
     encryptOAuthTokens: true,
     accountLinking: {
       disableImplicitLinking: true,
       allowDifferentEmails: true,
       allowUnlinkingAll: true,
+      trustedProviders: configuredSocialProviderIds(process.env).includes('apple') ? ['apple'] : [],
     },
   },
 
   plugins: [
     passkeyFreshnessPlugin,
     accountLinkingStepUpPlugin,
-    googleLinkStatePlugin(prisma),
-    googleSocialConfirmation(prisma),
+    socialLinkStatePlugin(prisma),
+    socialConfirmation(prisma),
+    socialMailboxReview(prisma),
     // Passkeys are an encouraged optional sign-in and step-up method.
     passkey({
       rpID,
@@ -459,6 +474,8 @@ export const auth = betterAuth({
               message: 'A verified email is required to create an OpenKey account.',
             });
           }
+          const socialProvider = await confirmedSocialProvider.get();
+          if (socialProvider) return { data: { socialCreatedProvider: socialProvider } };
         },
         after: async (user) => {
           try {
@@ -489,10 +506,13 @@ export const auth = betterAuth({
     },
     account: {
       create: { before: async (account) => {
-        if (account.providerId === 'google') await assertCurrentGoogleLink(prisma, account.userId);
+        if (account.providerId === 'google' || account.providerId === 'apple') {
+          await assertCurrentSocialLink(prisma, account.providerId, account.userId);
+        }
+        if (account.providerId === 'apple') return { data: { appleClientId: process.env.APPLE_CLIENT_ID } };
       } },
       update: { before: async () => {
-        await assertCurrentGoogleLink(prisma);
+        await assertCurrentSocialLink(prisma);
       } },
     },
   },
