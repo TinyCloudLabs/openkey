@@ -1,7 +1,7 @@
 // Key management routes
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
-import { createTeeClient, seal, unseal, generatePrivateKey, getAddressFromPrivateKey } from '@openkey/tee';
+import { createTeeClient, seal, unseal, generatePrivateKey, getAddressFromPrivateKey, type TeeQuote } from '@openkey/tee';
 import { requireSession, type SessionContext } from '../middleware/session';
 import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
 import { verifyMessage } from 'viem';
@@ -15,7 +15,7 @@ import { deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, PrimaryKeyConflictError, setPrimaryKey } from '../services/primary-key';
 import { rejectNonBrowserControlRequest } from '../middleware/browser-control';
 
-import { log } from '../log';
+import { log, logError } from '../log';
 const prisma = createPrismaClient();
 const tee = createTeeClient();
 
@@ -380,15 +380,29 @@ keysRouter.get('/:keyId/quote', async (c) => {
     return c.json({ error: 'Key not found' }, 404);
   }
 
-  // Generate attestation quote proving key is in TEE
-  const quote = await tee.getQuote(JSON.stringify({
+  // The quote's REPORTDATA carries SHA-256 of this exact string; it is
+  // returned so a verifier can recompute the digest (docs/tee-overview.md).
+  const binding = JSON.stringify({
+    type: 'openkey.key-quote',
+    version: 1,
     address: key.address,
     userId: user.id,
     timestamp: Date.now(),
-  }));
+  });
+
+  let quote: TeeQuote;
+  try {
+    quote = await tee.getQuote(binding);
+  } catch (error) {
+    logError('error', 'key_quote_failed', error);
+    return c.json({ error: 'quote_unavailable' }, 503);
+  }
 
   return c.json({
-    quote,
+    quote: quote.quote,
+    eventLog: quote.eventLog,
+    binding,
+    bindingSha256: quote.reportDataSha256,
     address: key.address,
     inTee: tee.isInTee(),
   });

@@ -4,8 +4,21 @@ import { createHash, createCipheriv, createDecipheriv, randomBytes } from 'crypt
 // Types
 export interface TeeClient {
   deriveKey(path: string): Promise<Uint8Array>;
-  getQuote(data: string): Promise<string>;
+  /**
+   * Quote SHA-256 of `binding` (UTF-8). TDX REPORTDATA holds 64 bytes, so the
+   * quote carries the 32-byte digest followed by 32 zero bytes.
+   */
+  getQuote(binding: string): Promise<TeeQuote>;
   isInTee(): boolean;
+}
+
+export interface TeeQuote {
+  /** Hex TDX quote. */
+  quote: string;
+  /** dstack event log (JSON), for RTMR replay. */
+  eventLog: string;
+  /** Hex SHA-256 of the binding: the first 32 bytes of the quote's REPORTDATA. */
+  reportDataSha256: string;
 }
 
 export interface DeriveKeyResult {
@@ -78,10 +91,17 @@ function createProductionClient(): TeeClient {
       return new Uint8Array(hash);
     },
 
-    async getQuote(data: string): Promise<string> {
+    async getQuote(binding: string): Promise<TeeQuote> {
+      const digest = createHash('sha256').update(binding, 'utf8').digest();
       const client = await getDstackClient();
-      const result = await client.getQuote(data);
-      return result.quote;
+      const result = await client.getQuote(digest);
+      // The guest agent zero-pads report data to 64 bytes. Refuse a quote over
+      // anything other than this binding's digest.
+      const expected = Buffer.concat([digest, Buffer.alloc(32)]).toString('hex');
+      if (result.report_data?.replace(/^0x/, '').toLowerCase() !== expected) {
+        throw new Error('dstack quote report data does not match the binding');
+      }
+      return { quote: result.quote, eventLog: result.event_log, reportDataSha256: digest.toString('hex') };
     },
 
     isInTee: () => true,
@@ -105,8 +125,12 @@ function createMockClient(): TeeClient {
       return new Uint8Array(hash);
     },
 
-    async getQuote(_data: string): Promise<string> {
-      return 'mock-tdx-quote-for-development';
+    async getQuote(binding: string): Promise<TeeQuote> {
+      return {
+        quote: 'mock-tdx-quote-for-development',
+        eventLog: '[]',
+        reportDataSha256: createHash('sha256').update(binding, 'utf8').digest('hex'),
+      };
     },
 
     isInTee: () => false,

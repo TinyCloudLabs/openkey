@@ -164,10 +164,13 @@ function createProductionClient(): TeeClient {
       const result = await client.getKey(path);
       return sha256(result.key);
     },
-    async getQuote(data: string): Promise<string> {
+    async getQuote(binding: string): Promise<TeeQuote> {
+      // REPORTDATA holds 64 bytes: quote SHA-256(binding), zero-padded by dstack
+      const digest = sha256(binding);
       const client = await getDstackClient();
-      const result = await client.getQuote(data);
-      return result.quote;
+      const result = await client.getQuote(digest);
+      // reject unless result.report_data == digest || 32 zero bytes
+      return { quote: result.quote, eventLog: result.event_log, reportDataSha256: hex(digest) };
     },
     isInTee: () => true,
   };
@@ -182,8 +185,8 @@ function createMockClient(): TeeClient {
       // SHA256(devKey + path) - deterministic for testing
       return sha256(devKey + path);
     },
-    async getQuote(_data: string): Promise<string> {
-      return 'mock-tdx-quote-for-development';
+    async getQuote(binding: string): Promise<TeeQuote> {
+      return { quote: 'mock-tdx-quote-for-development', eventLog: '[]', reportDataSha256: hex(sha256(binding)) };
     },
     isInTee: () => false,
   };
@@ -240,18 +243,38 @@ unrecoverable, so it is frozen (TC-964):
 
 ### Attestation Endpoint
 
-Clients can verify a key is in a real TEE:
+Clients can verify a key is in a real TEE. `GET /api/keys/:keyId/quote`
+(signed-in session, own key) quotes SHA-256 of a JSON binding and returns the
+exact binding string:
 
 ```typescript
-// GET /keys/:keyId/quote
-const quote = await tee.getQuote(JSON.stringify({
+const binding = JSON.stringify({
+  type: 'openkey.key-quote',
+  version: 1,
   address: key.address,
   userId: user.id,
   timestamp: Date.now(),
-}));
+});
+const quote = await tee.getQuote(binding); // 503 quote_unavailable if it throws
 
-return { quote, isInTee: tee.isInTee() };
+return {
+  quote: quote.quote,               // hex TDX quote
+  eventLog: quote.eventLog,         // for RTMR replay
+  binding,                          // the exact preimage
+  bindingSha256: quote.reportDataSha256,
+  address: key.address,
+  inTee: tee.isInTee(),
+};
 ```
+
+To verify: SHA-256 of the UTF-8 `binding` must equal `bindingSha256`;
+`binding` must name the expected `address`; the verified quote's REPORTDATA
+(read from the quote, not the JSON) must be `bindingSha256` followed by 32 zero
+bytes; and `eventLog` must replay to the quote's RTMRs. dstack quotes at most
+64 bytes of report data, which is why the binding is hashed. The production
+client refuses a guest-agent answer whose `report_data` differs from the
+padded digest; `packages/tee/tests/dstack-quote.test.ts` covers that contract
+against a fake guest agent.
 
 ### Environment Configuration
 

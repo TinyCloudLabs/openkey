@@ -206,10 +206,12 @@ Deployments trigger on every push to `main` (serialized by the
    phala deploy -c docker-compose.prod.yml -n openkey-api --no-public-logs --no-public-sysinfo
    ```
 
-5. Verify TEE attestation is working:
+5. Verify TEE attestation is working, with a signed-in session for a key you own:
    ```bash
-   curl https://api.openkey.so/api/keys/YOUR_KEY_ID/quote
-   # Should return { "quote": "...", "isInTee": true }
+   curl -H "Cookie: $OPENKEY_SESSION_COOKIE" \
+     https://api.openkey.so/api/keys/YOUR_KEY_ID/quote
+   # Should return 200 with "quote", "eventLog", "binding", "bindingSha256" and "inTee": true.
+   # 503 {"error":"quote_unavailable"} means the TEE could not produce a quote.
    ```
 
 6. Verify internal metrics are available to trusted callers:
@@ -265,17 +267,21 @@ account-host console URLs redirect permanently to the console hostname.
 
 ## Verifying TEE Security
 
-After deployment, verify the API is running in a real TEE:
+After deployment, verify the API is running in a real TEE. The quote route
+needs a signed-in session for a key you own:
 
 ```bash
-# Get attestation quote
-curl https://api.openkey.so/api/keys/test/quote
-
-# Response should include:
-# - "isInTee": true
-# - "quote": a valid TDX quote (base64 encoded)
+curl -H "Cookie: $OPENKEY_SESSION_COOKIE" \
+  https://api.openkey.so/api/keys/YOUR_KEY_ID/quote
 ```
 
-The quote can be verified against Intel/AMD attestation services to prove:
-1. The code is running in a real TEE (not emulated)
-2. The code hash matches the expected OpenKey image
+A 200 response has `quote` (hex TDX quote), `eventLog`, `binding`,
+`bindingSha256`, `address` and `"inTee": true`. Check, as in
+`docs/tee-overview.md` ("Attestation Endpoint"):
+
+1. SHA-256 of the exact `binding` string equals `bindingSha256`, and
+   `binding` names the expected `address`.
+2. The quote verifies (dstack-verifier or Intel DCAP) and its REPORTDATA is
+   `bindingSha256` followed by 32 zero bytes.
+3. Replaying `eventLog` reproduces the quote's RTMRs, and the compose hash
+   matches the expected OpenKey image.
