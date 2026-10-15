@@ -379,6 +379,15 @@ describe('Apple native token verifier (not a live sign-in endpoint)', () => {
     });
   });
 
+  test('accepts a valid server nonce when Apple omits nonce_supported', async () => {
+    const { options, sign } = await nativeVerifierFixture();
+    const token = await sign({ nonce_supported: undefined });
+
+    expect(await verifyAppleNativeIdToken(token, options)).toMatchObject({
+      sub: 'native-apple-user',
+    });
+  });
+
   for (const [claim, override] of [
     ['issuer', { issuer: 'https://attacker.example.test' }],
     ['Services ID audience', { audience: 'services.openkey.test' }],

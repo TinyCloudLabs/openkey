@@ -3,14 +3,15 @@ import type { BetterAuthPlugin } from 'better-auth';
 import { APIError, createAuthMiddleware } from 'better-auth/api';
 import { defineRequestState } from '@better-auth/core/context';
 import type { PrismaClient } from '@openkey/db';
+import type { SocialProviderId } from '../social-providers';
 import { hasFreshEmailStepUp } from './email-otp-step-up';
 
-const PREFIX = 'openkey-google-oauth-state:';
+const PREFIX = 'openkey-social-oauth-state:';
 const TTL_MS = 10 * 60 * 1000;
-type LinkSession = { sessionId: string; userId: string };
+type LinkSession = { sessionId: string; userId: string; providerId: SocialProviderId };
 type Binding = { kind: 'sign-in' } | ({ kind: 'link' } & LinkSession);
 
-const committingGoogleLink = defineRequestState<LinkSession | undefined>(() => undefined);
+const committingSocialLink = defineRequestState<LinkSession | undefined>(() => undefined);
 
 function digest(state: string): string {
   return createHash('sha256').update(state).digest('base64url');
@@ -18,13 +19,14 @@ function digest(state: string): string {
 function invalidLink(): APIError {
   return new APIError('FORBIDDEN', {
     code: 'EMAIL_STEP_UP_REQUIRED',
-    message: 'Verify an email code in the current session before linking Google.',
+    message: 'Verify an email code in the current session before linking an account.',
   });
 }
 
-export async function assertCurrentGoogleLink(database: PrismaClient, userId?: string): Promise<void> {
-  const binding = await committingGoogleLink.get();
+export async function assertCurrentSocialLink(database: PrismaClient, providerId?: SocialProviderId, userId?: string): Promise<void> {
+  const binding = await committingSocialLink.get();
   if (!binding) return;
+  if (providerId && binding.providerId !== providerId) throw invalidLink();
   const session = await database.session.findUnique({
     where: { id: binding.sessionId }, select: { userId: true, expiresAt: true },
   });
@@ -32,17 +34,18 @@ export async function assertCurrentGoogleLink(database: PrismaClient, userId?: s
     || !await hasFreshEmailStepUp(database, binding.sessionId)) throw invalidLink();
 }
 
-export function googleLinkStatePlugin(database: PrismaClient) {
+export function socialLinkStatePlugin(database: PrismaClient) {
   let lastSweepAt = 0;
   return {
-    id: 'openkey-google-link-state',
+    id: 'openkey-social-link-state',
     hooks: {
-      // Register both sign-in and link states: an unregistered Google state
-      // cannot be distinguished from an older, unbound link at callback.
+      // Register both sign-in and link states so an unregistered state cannot
+      // be mistaken for an older, unbound link at callback.
       after: [{
         matcher: (ctx) => ctx.path === '/link-social' || ctx.path === '/sign-in/social',
         handler: createAuthMiddleware(async (ctx) => {
-          if ((ctx.body as { provider?: string } | undefined)?.provider !== 'google') return;
+          const providerId = (ctx.body as { provider?: string } | undefined)?.provider;
+          if (providerId !== 'google' && providerId !== 'apple') return;
           const url = (ctx.context.returned as { url?: string } | undefined)?.url;
           if (!url) return;
           const state = new URL(url).searchParams.get('state');
@@ -57,10 +60,10 @@ export function googleLinkStatePlugin(database: PrismaClient) {
           const current = ctx.context.session;
           if (ctx.path === '/link-social' && (!current?.session || !current.user)) throw invalidLink();
           const binding: Binding = ctx.path === '/link-social'
-            ? { kind: 'link', sessionId: current!.session.id, userId: current!.user.id }
+            ? { kind: 'link', sessionId: current!.session.id, userId: current!.user.id, providerId }
             : { kind: 'sign-in' };
           await database.verification.create({ data: {
-            id: randomUUID(), identifier: PREFIX + digest(state), value: JSON.stringify(binding),
+            id: randomUUID(), identifier: PREFIX + providerId + ':' + digest(state), value: JSON.stringify(binding),
             expiresAt: new Date(Date.now() + TTL_MS),
           } });
         }),
@@ -70,18 +73,20 @@ export function googleLinkStatePlugin(database: PrismaClient) {
       before: [{
         matcher: (ctx) => ctx.path === '/callback/:id',
         handler: createAuthMiddleware(async (ctx) => {
-          if (ctx.params?.id !== 'google') return;
-          const payload = ctx.method === 'POST' ? ctx.body : ctx.query;
-          const state = (payload as { state?: unknown } | undefined)?.state;
+          const providerId = ctx.params?.id;
+          if (providerId !== 'google' && providerId !== 'apple') return;
+          // Apple's form_post first redirects to GET; BA parses state only on GET.
+          if (ctx.method !== 'GET') return;
+          const state = ctx.query?.state;
           if (typeof state !== 'string') throw invalidLink();
           const row = await database.verification.findFirst({
-            where: { identifier: PREFIX + digest(state), expiresAt: { gt: new Date() } },
+            where: { identifier: PREFIX + providerId + ':' + digest(state), expiresAt: { gt: new Date() } },
           });
           if (!row) throw invalidLink();
           const binding = JSON.parse(row.value) as Binding;
           if (binding.kind === 'link') {
-            await committingGoogleLink.set({ sessionId: binding.sessionId, userId: binding.userId });
-            await assertCurrentGoogleLink(database, binding.userId);
+            await committingSocialLink.set({ sessionId: binding.sessionId, userId: binding.userId, providerId });
+            await assertCurrentSocialLink(database, providerId, binding.userId);
           }
           const consumed = await database.verification.deleteMany({
             where: { id: row.id, value: row.value, expiresAt: { gt: new Date() } },
