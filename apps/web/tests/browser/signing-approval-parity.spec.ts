@@ -685,4 +685,56 @@ test.describe('signing-approval browser parity — production adapters', () => {
       await expect(page.getByText('Refusing to sign: malformed capability payload')).toBeVisible();
     }
   });
+  function siweForOrigin(domain: string, origin: string) {
+    const message = EXPLORER_PERMISSION_POPUP_REQUEST.replace(
+      /^[^\n]+ wants you to sign in with your Ethereum account:/,
+      `${domain} wants you to sign in with your Ethereum account:`,
+    );
+    return parseCapabilityReview({
+      message,
+      editable: true,
+      signer: {
+        label: 'Managed key',
+        address: '0xd559CCd9EB87c530A9a349262669386dE93cf412',
+        chainId: 1,
+        provenance: 'managed',
+      },
+      metadataTrust: { status: 'unsigned', reason: 'no manifest supplied' },
+      reason: { text: '', source: 'none' },
+      requester: {
+        displayName: 'Requester',
+        verifiedOrigin: origin,
+        appId: null,
+        manifestName: null,
+        manifestNameProvenance: 'none',
+        manifestId: null,
+        manifestIdProvenance: 'none',
+        manifestDigest: null,
+        domainWarning: false,
+        originWarning: false,
+      },
+    });
+  }
+
+  test('web popup refuses a SIWE domain different from the requester', async ({ page }) => {
+    const model = siweForOrigin('other.example', 'https://requester.example');
+    await loadHarness(page, { surface: 'popup', model, initialSelection: fixtureInitialSelection(model) });
+    await expect(page.getByRole('button', { name: 'Approve' })).toBeDisabled();
+    await expect(page.getByText(/SIWE domain.*requesting origin/i)).toBeVisible();
+    expect(await readCalls(page)).toEqual([]);
+  });
+
+  test('web iframe allows SIWE for the requesting origin', async ({ page }) => {
+    const model = siweForOrigin('requester.example', 'https://requester.example');
+    await loadHarness(page, { surface: 'iframe', model, initialSelection: fixtureInitialSelection(model) });
+    await page.getByRole('button', { name: 'Approve' }).click();
+    await expect.poll(async () => (await readCalls(page)).map(call => call.name)).toEqual(['requestPreview']);
+  });
+
+  test('web origin cannot claim native issuer openkey.so', async ({ page }) => {
+    const model = siweForOrigin('openkey.so', 'https://attacker.example');
+    await loadHarness(page, { surface: 'iframe', model, initialSelection: fixtureInitialSelection(model) });
+    await expect(page.getByRole('button', { name: 'Approve' })).toBeDisabled();
+    expect(await readCalls(page)).toEqual([]);
+  });
 });
