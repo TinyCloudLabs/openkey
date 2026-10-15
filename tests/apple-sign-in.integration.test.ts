@@ -255,14 +255,14 @@ if (!backend) {
   });
   beforeEach(async () => {
     profiles.clear(); revoked.length = 0; mail.length = 0; failRevocation = false;
-    await prisma.$executeRawUnsafe('TRUNCATE TABLE "user", "verification" CASCADE');
+    await prisma.$executeRawUnsafe('TRUNCATE TABLE "user", "verification", "apple_social_continuation" CASCADE');
   });
 
   if (backend === 'disabled') {
     test('idle disabled startup cleans expired Apple grants without an auth request', async () => {
       await auth.$context;
       const key = (await auth.$context).secretConfig;
-      const row = await prisma.verification.create({ data: {
+      const row = await prisma.appleSocialContinuation.create({ data: {
         id: randomUUID(), identifier: `openkey-apple-confirm:${randomUUID()}`,
         expiresAt: new Date(Date.now() - 1000),
         value: await symmetricEncrypt({ key, data: JSON.stringify({
@@ -274,7 +274,7 @@ if (!backend) {
       expect(sweep).toBeDefined();
       await sweep!();
       expect(revoked).toContainEqual({ token: 'idle-disabled-refresh', clientId: SERVICES_ID });
-      expect(await prisma.verification.count({ where: { id: row.id } })).toBe(0);
+      expect(await prisma.appleSocialContinuation.count({ where: { id: row.id } })).toBe(0);
       expect(await prisma.user.count()).toBe(0);
       expect(await prisma.session.count()).toBe(0);
     });
@@ -290,7 +290,7 @@ if (!backend) {
       const continuation = randomUUID();
       const binding = randomUUID();
       const key = (await auth.$context).secretConfig;
-      await prisma.verification.create({ data: {
+      await prisma.appleSocialContinuation.create({ data: {
         id: randomUUID(),
         identifier: `openkey-apple-confirm:${createHash('sha256').update(continuation).digest('base64url')}`,
         expiresAt: new Date(Date.now() + 5 * 60_000),
@@ -311,9 +311,20 @@ if (!backend) {
       expect(await prisma.account.count()).toBe(0);
       expect(await prisma.ethereumKey.count()).toBe(0);
       expect(await prisma.session.count()).toBe(0);
-      expect(await prisma.verification.count({ where: {
+      expect(await prisma.appleSocialContinuation.count({ where: {
         identifier: { startsWith: 'openkey-apple-confirm:' },
       } })).toBe(1);
+      await prisma.appleSocialContinuation.updateMany({
+        where: { identifier: { startsWith: 'openkey-apple-confirm:' } },
+        data: { expiresAt: new Date(Date.now() - 1000) },
+      });
+      expect((await post('/api/auth/sign-in/email-otp', {
+        email: 'unrelated@openkey.test', otp: '000000',
+      })).status).toBe(400);
+      expect(await prisma.appleSocialContinuation.count()).toBe(1);
+      await sweep!();
+      expect(revoked).toContainEqual({ token: 'stub-refresh', clientId: SERVICES_ID });
+      expect(await prisma.appleSocialContinuation.count()).toBe(0);
     });
     test('disabled Apple preserves the Google-created mailbox email OTP session', async () => {
       const email = 'google-mailbox@openkey.test';
@@ -401,7 +412,7 @@ if (!backend) {
 
       test('expired continuation cannot create an account and revokes abandoned tokens', async () => {
         const { response, continuation } = await newContinuation('expired-sub', 'expired@openkey.test');
-        await prisma.verification.updateMany({
+        await prisma.appleSocialContinuation.updateMany({
           where: { identifier: { startsWith: 'openkey-apple-confirm:' } },
           data: { expiresAt: new Date(Date.now() - 1000) },
         });
@@ -444,7 +455,7 @@ if (!backend) {
           headers: { cookie: cookies(response) },
         });
         expect((await preview.json() as { outcome: string }).outcome).toBe('account_exists');
-        const rows = await prisma.verification.findMany({ where: { identifier: { startsWith: 'openkey-apple-confirm:' } } });
+        const rows = await prisma.appleSocialContinuation.findMany({ where: { identifier: { startsWith: 'openkey-apple-confirm:' } } });
         expect(rows).toHaveLength(1);
         const key = (await auth.$context).secretConfig;
         const stored = JSON.parse(await symmetricDecrypt({ key, data: rows[0]!.value })) as Record<string, unknown>;
@@ -460,7 +471,7 @@ if (!backend) {
         failRevocation = true;
         const { response } = await appleCallback(profile('retry-revoke-sub', email));
         expect(location(response).searchParams.get('error')).toBe('account_exists');
-        const row = await prisma.verification.findFirstOrThrow({
+        const row = await prisma.appleSocialContinuation.findFirstOrThrow({
           where: { identifier: { startsWith: 'openkey-apple-confirm:' } },
         });
         const key = (await auth.$context).secretConfig;
@@ -469,12 +480,12 @@ if (!backend) {
         };
         expect(stored.tokens?.refreshToken?.startsWith('refresh-')).toBe(true);
         expect(row.value).not.toContain(stored.tokens!.refreshToken!);
-        await prisma.verification.update({ where: { id: row.id }, data: { expiresAt: new Date(Date.now() - 1000) } });
+        await prisma.appleSocialContinuation.update({ where: { id: row.id }, data: { expiresAt: new Date(Date.now() - 1000) } });
         await sweep!();
-        expect(await prisma.verification.count({ where: { id: row.id } })).toBe(1);
+        expect(await prisma.appleSocialContinuation.count({ where: { id: row.id } })).toBe(1);
         failRevocation = false;
         await sweep!();
-        expect(await prisma.verification.count({ where: { id: row.id } })).toBe(0);
+        expect(await prisma.appleSocialContinuation.count({ where: { id: row.id } })).toBe(0);
         expect(revoked).toHaveLength(3);
         expect(await prisma.account.count()).toBe(0);
       });
@@ -486,7 +497,7 @@ if (!backend) {
         const rejected = await post('/api/auth/social/confirm', { continuation }, cookies(response));
         expect(rejected.status).toBe(400);
         expect(await prisma.account.count()).toBe(0);
-        const row = await prisma.verification.findFirstOrThrow({
+        const row = await prisma.appleSocialContinuation.findFirstOrThrow({
           where: { identifier: { startsWith: 'openkey-apple-confirm:' } },
         });
         const key = (await auth.$context).secretConfig;
@@ -495,11 +506,11 @@ if (!backend) {
         };
         expect(retained.tokens?.refreshToken?.startsWith('refresh-')).toBe(true);
         expect(row.value).not.toContain(retained.tokens!.refreshToken!);
-        await prisma.verification.update({ where: { id: row.id }, data: { expiresAt: new Date(Date.now() - 1000) } });
+        await prisma.appleSocialContinuation.update({ where: { id: row.id }, data: { expiresAt: new Date(Date.now() - 1000) } });
         failRevocation = false;
         await sweep!();
         expect(revoked.some(({ token, clientId }) => token.startsWith('refresh-') && clientId === SERVICES_ID)).toBe(true);
-        expect(await prisma.verification.count({ where: { id: row.id } })).toBe(0);
+        expect(await prisma.appleSocialContinuation.count({ where: { id: row.id } })).toBe(0);
       });
 
       test('failed revoke survives unrelated OTP lookup until recovery succeeds', async () => {
@@ -508,19 +519,19 @@ if (!backend) {
         await prisma.user.create({ data: { id: randomUUID(), email, emailVerified: true } });
         failRevocation = true;
         expect((await post('/api/auth/social/confirm', { continuation }, cookies(response))).status).toBe(400);
-        const job = await prisma.verification.findFirstOrThrow({
+        const job = await prisma.appleSocialContinuation.findFirstOrThrow({
           where: { identifier: { startsWith: 'openkey-apple-confirm:revoke:' } },
         });
         expect(revoked).toHaveLength(1);
         expect((await post('/api/auth/sign-in/email-otp', {
           email: 'unrelated@openkey.test', otp: '000000',
         })).status).toBe(400);
-        expect(await prisma.verification.count({ where: { id: job.id } })).toBe(1);
+        expect(await prisma.appleSocialContinuation.count({ where: { id: job.id } })).toBe(1);
         failRevocation = false;
         await sweep!();
         expect(revoked).toContainEqual({ token: expect.stringContaining('refresh-'), clientId: SERVICES_ID });
         expect(revoked).toHaveLength(2);
-        expect(await prisma.verification.count({ where: { id: job.id } })).toBe(0);
+        expect(await prisma.appleSocialContinuation.count({ where: { id: job.id } })).toBe(0);
         expect(await prisma.account.count()).toBe(0);
       });
 
@@ -533,7 +544,7 @@ if (!backend) {
         await stepUp(cookie, user.id);
         await appleCallback(profile('later-linked-sub', email), cookie, true);
         expect(await prisma.account.count({ where: { providerId: 'apple', accountId: 'later-linked-sub' } })).toBe(1);
-        await prisma.verification.updateMany({
+        await prisma.appleSocialContinuation.updateMany({
           where: { identifier: { startsWith: 'openkey-apple-confirm:' } },
           data: { expiresAt: new Date(Date.now() - 1000) },
         });
