@@ -142,7 +142,7 @@ describe('production getQuote binding (TC-1193)', () => {
     await expect(createTeeClient().getQuote(binding)).rejects.toMatchObject({ code: 'quote_report_data_mismatch' });
   });
 
-  test('rejects truncated and non-TDX quotes', async () => {
+  test('rejects truncated and non-TDX quotes as a format failure', async () => {
     const valid = (hex: string) => tdxQuote(Buffer.from(hex.padEnd(128, '0'), 'hex'));
     const sgx = (hex: string) => {
       const quote = valid(hex);
@@ -156,7 +156,7 @@ describe('production getQuote binding (TC-1193)', () => {
       sgx,
     ]) {
       reply = (hex) => ({ status: 200, body: honestQuote(hex, make(hex)) });
-      await expect(createTeeClient().getQuote(binding)).rejects.toMatchObject({ code: 'quote_report_data_mismatch' });
+      await expect(createTeeClient().getQuote(binding)).rejects.toMatchObject({ code: 'quote_format_invalid' });
     }
   });
 });

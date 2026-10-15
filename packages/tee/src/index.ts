@@ -21,9 +21,18 @@ export interface TeeQuote {
   reportDataSha256: string;
 }
 
-/** A dstack answer that is not a quote over the binding's digest. */
+/**
+ * A dstack answer that is not a quote over the binding's digest. `code` (an
+ * allowlisted log field) separates a quote we can't parse from one over
+ * other report data.
+ */
 class QuoteBindingError extends Error {
-  readonly code = 'quote_report_data_mismatch';
+  constructor(
+    message: string,
+    readonly code: 'quote_report_data_mismatch' | 'quote_format_invalid' = 'quote_report_data_mismatch',
+  ) {
+    super(message);
+  }
 }
 
 // TDX quote layout, Intel TDX DCAP Quoting Library API, Appendix A ("Version
@@ -42,13 +51,13 @@ const TD_REPORT_DATA_OFFSET = QUOTE_HEADER_LENGTH + 520;
 function quoteReportData(quote: Buffer): Buffer {
   const signatureLengthAt = QUOTE_HEADER_LENGTH + TD_QUOTE_BODY_LENGTH;
   if (quote.length < signatureLengthAt + 4) {
-    throw new QuoteBindingError(`dstack quote is truncated (${quote.length} bytes)`);
+    throw new QuoteBindingError(`dstack quote is truncated (${quote.length} bytes)`, 'quote_format_invalid');
   }
   if (quote.readUInt16LE(0) !== 4 || quote.readUInt32LE(4) !== 0x81) {
-    throw new QuoteBindingError('dstack quote is not a TDX version 4 quote');
+    throw new QuoteBindingError('dstack quote is not a TDX version 4 quote', 'quote_format_invalid');
   }
   if (quote.length - (signatureLengthAt + 4) < quote.readUInt32LE(signatureLengthAt)) {
-    throw new QuoteBindingError('dstack quote signature data is truncated');
+    throw new QuoteBindingError('dstack quote signature data is truncated', 'quote_format_invalid');
   }
   return quote.subarray(TD_REPORT_DATA_OFFSET, TD_REPORT_DATA_OFFSET + 64);
 }
@@ -135,7 +144,10 @@ function createProductionClient(): TeeClient {
         throw new QuoteBindingError('dstack echoed report data does not match the binding');
       }
       const quote = result.quote.replace(/^0x/, '');
-      if (!/^(?:[0-9a-fA-F]{2})+$/.test(quote) || !quoteReportData(Buffer.from(quote, 'hex')).equals(expected)) {
+      if (!/^(?:[0-9a-fA-F]{2})+$/.test(quote)) {
+        throw new QuoteBindingError('dstack quote is not hex', 'quote_format_invalid');
+      }
+      if (!quoteReportData(Buffer.from(quote, 'hex')).equals(expected)) {
         throw new QuoteBindingError('dstack quote REPORTDATA does not match the binding');
       }
       return { quote, eventLog: result.event_log, reportDataSha256: digest.toString('hex') };

@@ -290,18 +290,27 @@ To verify a response:
    code produced the binding at some unknown time: it can be replayed, and
    `timestamp` is host-controlled time that the quote does not authenticate.
 2. Verify the quote (dstack-verifier or Intel DCAP) and require an acceptable
-   TCB status, such as `UpToDate`.
-3. Check MRTD and RTMR0-2 against the published dstack OS image for the
+   TCB status, such as `UpToDate`. A good TCB status is not enough on its own.
+3. Check the TD report body yourself, since quote verification does not
+   apply relying-party policy (Intel TDX DCAP Quoting Library API, §2.3.2 and
+   Appendix A.3.4): TDATTRIBUTES must have the debug bit (TUD) clear, because
+   a debug TD's memory is readable by the host, and must carry the attributes
+   the approved dstack OS configuration expects.
+4. Check MRTD and RTMR0-2 against the published dstack OS image for the
    deployed version.
-4. Replay `eventLog` to RTMR3. Its `compose-hash` must match the expected
-   `docker-compose.prod.yml` (image pinned by digest), and its `app-id` and
+5. Replay `eventLog` to RTMR3. Its `compose-hash` is SHA-256 of the full
+   app-compose JSON that dstack deployed, not of `docker-compose.prod.yml`
+   alone; it embeds the compose file with runner settings and `allowed_envs`.
+   Compare it with a trusted expected hash of that exact manifest (computed as
+   in the pinned SDK's `getComposeHash`), then check the manifest's embedded
+   compose file pins the expected image digests. Its `app-id` and
    `key-provider` must be OpenKey's.
-5. Read REPORTDATA from the verified quote, not the JSON: it must equal
+6. Read REPORTDATA from the verified quote, not the JSON: it must equal
    SHA-256 of the UTF-8 `binding` followed by 32 zero bytes. `bindingSha256`
    is a convenience.
-6. `JSON.parse(binding)` must have `type === 'openkey.key-quote'`,
+7. `JSON.parse(binding)` must have `type === 'openkey.key-quote'`,
    `version === 1`, your nonce and the expected `address`.
-7. Reject `inTee: false` and the development mock quote.
+8. Reject `inTee: false` and the development mock quote.
 
 ### Environment Configuration
 

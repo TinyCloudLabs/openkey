@@ -277,8 +277,9 @@ curl -H "Cookie: $OPENKEY_SESSION_COOKIE" \
 
 A 200 response has `quote` (hex TDX quote), `eventLog`, `binding`,
 `bindingSha256`, `address` and `"inTee": true`. The API only checks that the
-binding is present in the quote; you must verify the quote. Follow all seven
+binding is present in the quote; you must verify the quote. Follow all eight
 steps in `docs/tee-overview.md` ("Attestation Endpoint"): quote signature and
-TCB status, OS image measurements, RTMR3 replay (compose hash, app id, key
-provider), REPORTDATA read from the verified quote, and the binding's type,
-version, nonce and address.
+TCB status, TDATTRIBUTES with the debug bit clear, OS image measurements,
+RTMR3 replay (hash of the full app-compose manifest, app id, key provider),
+REPORTDATA read from the verified quote, and the binding's type, version,
+nonce and address.

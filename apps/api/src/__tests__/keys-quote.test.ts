@@ -62,6 +62,7 @@ await mockModules({
 });
 
 const originalStdoutWrite = process.stdout.write;
+const logLines: string[] = [];
 beforeEach(() => {
   keyRecord = {
     id: 'key_1',
@@ -74,7 +75,8 @@ beforeEach(() => {
   };
   tee.getQuote.mockClear();
   unseal.mockClear();
-  process.stdout.write = (() => true) as typeof process.stdout.write;
+  logLines.length = 0;
+  process.stdout.write = ((chunk: string | Uint8Array) => { logLines.push(String(chunk)); return true; }) as typeof process.stdout.write;
 });
 afterEach(() => { process.stdout.write = originalStdoutWrite; });
 
@@ -148,6 +150,8 @@ describe('GET /:keyId/quote (TC-1193)', () => {
     const response = await router.request('/key_1/quote');
 
     expect(response.status).toBe(503);
+    // The only alert for a tampered key record.
+    expect(logLines.some((line) => line.includes('"key_quote_failed"') && line.includes('"quote_key_custody_mismatch"'))).toBe(true);
     expect(await response.json()).toEqual({ error: 'quote_unavailable' });
     expect(tee.getQuote).not.toHaveBeenCalled();
   });
