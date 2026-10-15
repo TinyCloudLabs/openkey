@@ -11,7 +11,9 @@ const requestContext = new AsyncLocalStorage<RequestContext>();
 const EVENTS = {
   better_auth: true, otp_delivery_unconfigured: true, auth_key_generated: true, auth_key_generation_failed: true,
   auth_email_signup_confirmation_required: true, auth_email_signup_confirmed: true, auth_email_signup_refused: true,
-  auth_google_continuation_cleanup_failed: true, auth_google_token_revoke_failed: true, auth_google_signup_confirmed: true,
+  auth_social_continuation_cleanup_failed: true, auth_social_token_revoke_failed: true, auth_social_signup_confirmed: true,
+  auth_social_notice_failed: true, auth_social_email_review_required: true,
+  auth_social_email_review_refused: true, auth_social_email_review_confirmed: true,
   analytics_token_exchange_failed: true, analytics_unique_user_failed: true, analytics_token_tracking_failed: true,
   analytics_authorization_failed: true, analytics_authorization_tracking_failed: true, oauth_client_scopes_updated: true,
   oauth_client_scopes_update_failed: true, api_starting: true, request: true, api_error: true,

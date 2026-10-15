@@ -33,6 +33,8 @@ import {
   recordPasskeyFreshnessAfterHook,
 } from './services/passkey-freshness';
 import {
+  appleTokenClientId,
+  configuredSocialProviderIds,
   createSocialProviders,
   socialProviderTrustedOrigins,
 } from './social-providers';
@@ -42,8 +44,9 @@ import { exchangeNativeCode, generateNativeRefreshToken, withNativeTokenGuardErr
 import { providerTokenOptions } from './services/native-delegation/provider-tokens';
 import { emailSignupConfirmation } from './services/email-signup-confirmation';
 import { hasFreshEmailStepUp } from './services/email-otp-step-up';
-import { googleSocialConfirmation } from './services/google-social-confirmation';
-import { assertCurrentGoogleLink, googleLinkStatePlugin } from './services/google-link-state';
+import { confirmedSocialProvider, socialConfirmation } from './services/social-confirmation';
+import { assertCurrentSocialLink, socialLinkStatePlugin } from './services/social-link-state';
+import { socialMailboxReview } from './services/social-mailbox-review';
 import { betterAuthLog, log, logError } from './log';
 
 export const prisma: PrismaClient = createPrismaClient();
@@ -179,12 +182,19 @@ const accountLinkingStepUpPlugin = {
   hooks: {
     before: [{
       matcher: (ctx) => ctx.path === '/link-social' || ctx.path === '/unlink-account',
-      handler: (async (ctx: { path: string; headers?: Headers }) => {
+      handler: (async (ctx: { path: string; headers?: Headers; body?: unknown }) => {
         const session = ctx.headers ? await auth.api.getSession({ headers: ctx.headers }) : null;
         if (!session || !await hasFreshEmailStepUp(prisma, session.session.id)) {
           throw new APIError('FORBIDDEN', {
             code: 'EMAIL_STEP_UP_REQUIRED',
             message: 'Verify an email code before changing linked accounts.',
+          });
+        }
+        if (ctx.path === '/unlink-account'
+          && (ctx.body as { providerId?: unknown } | undefined)?.providerId === 'apple') {
+          throw new APIError('FORBIDDEN', {
+            code: 'APPLE_UNLINK_REQUIRES_REVOCATION',
+            message: 'Use the revocation-protected account unlink endpoint.',
           });
         }
         if (ctx.path === '/unlink-account' && !session.user.emailVerified
@@ -240,20 +250,33 @@ export const auth = betterAuth({
     storeSessionInDatabase: true, // Required for OAuth provider
   },
 
+  user: {
+    additionalFields: {
+      socialCreatedProvider: { type: 'string', required: false, input: false, returned: false },
+      socialEmailReviewedAt: { type: 'date', required: false, input: false, returned: false },
+      lockedAt: { type: 'date', required: false, input: false, returned: false },
+    },
+  },
+
   account: {
+    additionalFields: {
+      appleClientId: { type: 'string', required: false, input: false, returned: false },
+    },
     encryptOAuthTokens: true,
     accountLinking: {
       disableImplicitLinking: true,
       allowDifferentEmails: true,
       allowUnlinkingAll: true,
+      trustedProviders: configuredSocialProviderIds(process.env).includes('apple') ? ['apple'] : [],
     },
   },
 
   plugins: [
     passkeyFreshnessPlugin,
     accountLinkingStepUpPlugin,
-    googleLinkStatePlugin(prisma),
-    googleSocialConfirmation(prisma),
+    socialLinkStatePlugin(prisma),
+    socialConfirmation(prisma),
+    socialMailboxReview(prisma),
     // Passkeys are an encouraged optional sign-in and step-up method.
     passkey({
       rpID,
@@ -459,6 +482,8 @@ export const auth = betterAuth({
               message: 'A verified email is required to create an OpenKey account.',
             });
           }
+          const socialProvider = await confirmedSocialProvider.get();
+          if (socialProvider) return { data: { socialCreatedProvider: socialProvider } };
         },
         after: async (user) => {
           try {
@@ -489,10 +514,24 @@ export const auth = betterAuth({
     },
     account: {
       create: { before: async (account) => {
-        if (account.providerId === 'google') await assertCurrentGoogleLink(prisma, account.userId);
+        if (account.providerId === 'google' || account.providerId === 'apple') {
+          await assertCurrentSocialLink(prisma, account.providerId, account.userId);
+        }
+        if (account.providerId === 'apple') {
+          const clientId = await appleTokenClientId.get();
+          if (!clientId) throw new APIError('FORBIDDEN', {
+            code: 'APPLE_ISSUING_CLIENT_UNKNOWN',
+            message: 'The Apple token issuer was not verified.',
+          });
+          return { data: { appleClientId: clientId } };
+        }
       } },
-      update: { before: async () => {
-        await assertCurrentGoogleLink(prisma);
+      update: { before: async (account) => {
+        await assertCurrentSocialLink(prisma);
+        const clientId = await appleTokenClientId.get();
+        if (clientId && (account.refreshToken !== undefined || account.accessToken !== undefined)) {
+          return { data: { appleClientId: clientId } };
+        }
       } },
     },
   },

@@ -13,6 +13,9 @@ model User {
   email           String   @unique
   emailVerified   Boolean  @default(false)
   name            String?
+  socialCreatedProvider String?
+  socialEmailReviewedAt DateTime?
+  lockedAt DateTime?
   image           String?
   autoSignEnabled Boolean  @default(true)
   tinyCloudManageKeyEnabled Boolean @default(true)
@@ -121,6 +124,7 @@ model Account {
   refreshTokenExpiresAt DateTime?
   scope                 String?
   idToken               String?
+  appleClientId         String?
   password              String?
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
@@ -145,6 +149,19 @@ model Verification {
   userId String?
 
   @@map("verification")
+}
+
+// Apple confirmation and revocation retries are owned by OpenKey, not Better
+// Auth's Verification expiry cleanup (which runs during unrelated OTP lookups).
+model AppleSocialContinuation {
+  id         String   @id
+  identifier String   @unique
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  @@index([expiresAt])
+  @@map("apple_social_continuation")
 }
 
 // better-auth Passkey credentials
