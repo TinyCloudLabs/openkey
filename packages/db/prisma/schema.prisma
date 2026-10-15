@@ -151,6 +151,19 @@ model Verification {
   @@map("verification")
 }
 
+// Apple confirmation and revocation retries are owned by OpenKey, not Better
+// Auth's Verification expiry cleanup (which runs during unrelated OTP lookups).
+model AppleSocialContinuation {
+  id         String   @id
+  identifier String   @unique
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  @@index([expiresAt])
+  @@map("apple_social_continuation")
+}
+
 // better-auth Passkey credentials
 model Passkey {
   id           String   @id

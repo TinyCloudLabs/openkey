@@ -91,17 +91,17 @@ async function hasMatchingUser(database: PrismaClient, email: string): Promise<b
 }
 
 export function socialConfirmation(database: PrismaClient) {
-  async function sweepExpired(key: Parameters<typeof symmetricDecrypt>[0]['key']) {
-    const expired = await database.verification.findMany({
-      where: {
-        OR: [
-          { identifier: { startsWith: PREFIX.google } },
-          { identifier: { startsWith: PREFIX.apple } },
-        ],
-        expiresAt: { lte: new Date() },
-      },
+  async function findActiveContinuation(token: string) {
+    const hash = digest(token);
+    const now = new Date();
+    return await database.verification.findFirst({
+      where: { identifier: PREFIX.google + hash, expiresAt: { gt: now } },
+    }) ?? await database.appleSocialContinuation.findFirst({
+      where: { identifier: PREFIX.apple + hash, expiresAt: { gt: now } },
     });
-    for (const row of expired) {
+  }
+  async function sweepRows(rows: { id: string; value: string }[], key: Parameters<typeof symmetricDecrypt>[0]['key'], apple: boolean) {
+    for (const row of rows) {
       try {
         const stored = JSON.parse(await symmetricDecrypt({ key, data: row.value })) as Continuation;
         if (stored.tokens && (stored.outcome === 'new_account' || stored.providerId === 'apple')) {
@@ -114,8 +114,20 @@ export function socialConfirmation(database: PrismaClient) {
         log('warn', 'auth_social_continuation_cleanup_failed');
         continue;
       }
-      await database.verification.deleteMany({ where: { id: row.id } });
+      if (apple) await database.appleSocialContinuation.deleteMany({ where: { id: row.id } });
+      else await database.verification.deleteMany({ where: { id: row.id } });
     }
+  }
+  async function sweepExpired(key: Parameters<typeof symmetricDecrypt>[0]['key']) {
+    const now = new Date();
+    const googleExpired = await database.verification.findMany({
+      where: { identifier: { startsWith: PREFIX.google }, expiresAt: { lte: now } },
+    });
+    const appleDue = await database.appleSocialContinuation.findMany({
+      where: { expiresAt: { lte: now } },
+    });
+    await sweepRows(googleExpired, key, false);
+    await sweepRows(appleDue, key, true);
   }
   let sweeping = false;
   let sweepStarted = false;
@@ -133,6 +145,7 @@ export function socialConfirmation(database: PrismaClient) {
 
   return {
     id: 'openkey-social-confirmation',
+    init: (ctx) => { scheduleSweep(ctx.secretConfig); },
     hooks: {
       after: [{
         matcher: (ctx) => ctx.path === '/callback/:id',
@@ -181,11 +194,13 @@ export function socialConfirmation(database: PrismaClient) {
             ...(nativeQueryHash ? { nativeQueryHash } : {}),
             ...(outcome === 'new_account' || retainAppleTokens ? { tokens } : {}),
           };
-          await database.verification.create({ data: {
+          const data = {
             id: randomUUID(), identifier: PREFIX[providerId] + digest(token),
             value: await symmetricEncrypt({ key: ctx.context.secretConfig, data: JSON.stringify(stored) }),
             expiresAt: new Date(Date.now() + TTL_MS),
-          } });
+          };
+          if (providerId === 'apple') await database.appleSocialContinuation.create({ data });
+          else await database.verification.create({ data });
           ctx.setCookie(COOKIE, binding, {
             httpOnly: true, secure: true, sameSite: 'lax', path: '/', maxAge: TTL_MS / 1000,
           });
@@ -202,9 +217,7 @@ export function socialConfirmation(database: PrismaClient) {
         const token = ctx.query?.continuation;
         const binding = ctx.getCookie(COOKIE);
         if (typeof token !== 'string' || !binding) throw invalid();
-        const row = await database.verification.findFirst({
-          where: { identifier: { in: [PREFIX.google + digest(token), PREFIX.apple + digest(token)] }, expiresAt: { gt: new Date() } },
-        });
+        const row = await findActiveContinuation(token);
         if (!row) throw invalid();
         const stored = JSON.parse(await symmetricDecrypt({ key: ctx.context.secretConfig, data: row.value })) as Continuation;
         if (stored.providerId === 'apple' && !configuredSocialProviderIds().includes('apple')) {
@@ -226,9 +239,7 @@ export function socialConfirmation(database: PrismaClient) {
         const token = body.continuation;
         const binding = ctx.getCookie(COOKIE);
         if (typeof token !== 'string' || !binding) throw invalid();
-        const row = await database.verification.findFirst({
-          where: { identifier: { in: [PREFIX.google + digest(token), PREFIX.apple + digest(token)] }, expiresAt: { gt: new Date() } },
-        });
+        const row = await findActiveContinuation(token);
         if (!row) throw invalid();
         const stored = JSON.parse(await symmetricDecrypt({ key: ctx.context.secretConfig, data: row.value })) as Continuation;
         if (stored.providerId === 'apple' && !configuredSocialProviderIds().includes('apple')) {
@@ -243,11 +254,11 @@ export function socialConfirmation(database: PrismaClient) {
           || (stored.nativeQueryHash && (typeof body.oauthQuery !== 'string'
             || digest(body.oauthQuery) !== stored.nativeQueryHash))) throw invalid();
         const isApple = stored.providerId === 'apple';
-        // Retire Apple's spendable continuation atomically, but keep its encrypted
-        // tokens until Create succeeds or revocation succeeds. A crash leaves a
-        // non-redeemable row for the expiry sweeper.
+        // Retire Apple's spendable continuation atomically in OpenKey-owned
+        // storage. Its encrypted token cannot be deleted by Better Auth's
+        // unrelated Verification/OTP expiry cleanup before revocation succeeds.
         const consumed = isApple
-          ? await database.verification.updateMany({
+          ? await database.appleSocialContinuation.updateMany({
             where: { id: row.id, value: row.value, identifier: row.identifier, expiresAt: { gt: new Date() } },
             data: { identifier: `${PREFIX.apple}revoke:${digest(token)}`, expiresAt: new Date(Date.now() + TTL_MS) },
           })
@@ -262,10 +273,10 @@ export function socialConfirmation(database: PrismaClient) {
             where: { providerId: 'apple', accountId: profile.id }, select: { id: true },
           });
           if (linkedApple || await revokeAbandoned(stored)) {
-            if (isApple) await database.verification.deleteMany({ where: { id: row.id } });
+            if (isApple) await database.appleSocialContinuation.deleteMany({ where: { id: row.id } });
           } else {
             log('warn', 'auth_social_token_revoke_failed');
-            if (isApple) await database.verification.updateMany({
+            if (isApple) await database.appleSocialContinuation.updateMany({
               where: { id: row.id }, data: { expiresAt: new Date() },
             });
           }
@@ -305,7 +316,7 @@ export function socialConfirmation(database: PrismaClient) {
           await abandon();
           throw error;
         }
-        if (isApple) await database.verification.deleteMany({ where: { id: row.id } });
+        if (isApple) await database.appleSocialContinuation.deleteMany({ where: { id: row.id } });
         const session = await ctx.context.internalAdapter.createSession(created.user.id);
         await setSessionCookie(ctx, { session, user: created.user });
         if (isApple) await sendSocialAccountNotice(profile.email);

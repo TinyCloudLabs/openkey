@@ -137,6 +137,11 @@ flow; the Apple review client is not shipped in this server-only slice. Apple
 remains disabled in production until enrollment, the remaining TC-1188 slices
 and Sam's separate authorization.
 
+Apple continuation and revocation retry rows are owned by the
+`apple_social_continuation` table, outside Better Auth's generic OTP expiry
+cleanup. An idle API schedules their expiry sweep on startup even when Apple
+sign-in is disabled; failed revocations remain encrypted until recovery.
+
 ## Scripts
 
 ### Dev Servers

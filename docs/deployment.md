@@ -195,6 +195,13 @@ Google accounts retain the existing email-OTP behavior while Apple is off.
 Refusing Apple review locks the account; TC-1231 owns enforcement across
 existing sessions, grants and signing before production enablement.
 
+Pending Apple confirmations and failed revocations use the OpenKey-owned
+`apple_social_continuation` table, not Better Auth's OTP verification table.
+The expiry/revocation worker starts even when Apple sign-in is disabled. If
+disabling Apple after use, retain the issuing Services ID, Team ID, key ID,
+private key, and Better Auth decryption secrets until pending grants are
+revoked or safely linked; removing them leaves encrypted retry rows uncleared.
+
 Apple rejects localhost, non-HTTPS domains and invalid TLS, so live provider
 testing requires a registered HTTPS hostname. Before production, register
 the outbound sender and envelope-sender domains used by Resend in Apple's
