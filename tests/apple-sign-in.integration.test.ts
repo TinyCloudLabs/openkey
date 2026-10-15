@@ -65,6 +65,7 @@ if (!backend) {
   let app: { fetch: (request: Request) => Response | Promise<Response> };
   const profiles = new Map<string, { claims: Record<string, unknown>; refreshToken: string }>();
   const revoked: Array<{ token: string; clientId: string }> = [];
+  let failRevocation = false;
   const mail: Array<{ to: string; subject: string; html: string }> = [];
 
   function cookies(response: Response): string {
@@ -211,7 +212,7 @@ if (!backend) {
       if (url === 'https://appleid.apple.com/auth/revoke') {
         const body = new URLSearchParams(String(init?.body));
         revoked.push({ token: body.get('token') ?? '', clientId: body.get('client_id') ?? '' });
-        return new Response('', { status: 200 });
+        return new Response('', { status: failRevocation ? 503 : 200 });
       }
       if (url.startsWith('https://appleid.apple.com/')) throw new Error(`Unexpected Apple network request: ${url}`);
       if (url.startsWith('https://api.resend.com/')) {
@@ -243,7 +244,7 @@ if (!backend) {
     await rm(directory, { recursive: true, force: true });
   });
   beforeEach(async () => {
-    profiles.clear(); revoked.length = 0; mail.length = 0;
+    profiles.clear(); revoked.length = 0; mail.length = 0; failRevocation = false;
     await prisma.$executeRawUnsafe('TRUNCATE TABLE "user", "verification" CASCADE');
   });
 
@@ -380,6 +381,31 @@ if (!backend) {
         expect(stored).not.toHaveProperty('tokens');
         expect(JSON.stringify(stored)).not.toContain('refresh-');
         expect(revoked.some(({ token, clientId }) => token.startsWith('refresh-') && clientId === SERVICES_ID)).toBe(true);
+      });
+
+      test('failed existing-email revocation retains encrypted token for expiry retry', async () => {
+        const email = 'retry-revoke@openkey.test';
+        await prisma.user.create({ data: { id: randomUUID(), email, emailVerified: true } });
+        failRevocation = true;
+        const { response } = await appleCallback(profile('retry-revoke-sub', email));
+        expect(location(response).searchParams.get('error')).toBe('account_exists');
+        const row = await prisma.verification.findFirstOrThrow({
+          where: { identifier: { startsWith: 'openkey-apple-confirm:' } },
+        });
+        const key = (await auth.$context).secretConfig;
+        const stored = JSON.parse(await symmetricDecrypt({ key, data: row.value })) as {
+          tokens?: { refreshToken?: string };
+        };
+        expect(stored.tokens?.refreshToken?.startsWith('refresh-')).toBe(true);
+        expect(row.value).not.toContain(stored.tokens!.refreshToken!);
+        await prisma.verification.update({ where: { id: row.id }, data: { expiresAt: new Date(Date.now() - 1000) } });
+        await sweep!();
+        expect(await prisma.verification.count({ where: { id: row.id } })).toBe(1);
+        failRevocation = false;
+        await sweep!();
+        expect(await prisma.verification.count({ where: { id: row.id } })).toBe(0);
+        expect(revoked).toHaveLength(3);
+        expect(await prisma.account.count()).toBe(0);
       });
 
       test('identity claimed before Create leaves no orphan user or key', async () => {
