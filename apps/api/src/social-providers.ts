@@ -1,7 +1,24 @@
 import { decodeJwt, importPKCS8, SignJWT } from 'jose';
+import { defineRequestState } from '@better-auth/core/context';
+import { google } from '@better-auth/core/social-providers';
 import { resolveConsoleOrigin, type OriginPolicyEnvironment } from './origin-policy';
 
 export type SocialProviderId = 'google' | 'apple';
+export type GoogleCallbackProfile = {
+  id: string;
+  email: string;
+  name: string;
+  image?: string;
+  tokens: {
+    accessToken?: string;
+    refreshToken?: string;
+    idToken?: string;
+    accessTokenExpiresAt?: Date;
+    refreshTokenExpiresAt?: Date;
+    scope?: string;
+  };
+};
+export const googleCallbackProfile = defineRequestState<GoogleCallbackProfile | undefined>(() => undefined);
 
 type ProviderEnvironment = OriginPolicyEnvironment;
 type PersistedAppleUser = {
@@ -119,9 +136,37 @@ export function createSocialProviders(
   const providers: Record<string, unknown> = {};
 
   if (hasGoogleConfiguration(env)) {
-    providers.google = {
+    const options = {
       clientId: env.GOOGLE_CLIENT_ID!,
       clientSecret: env.GOOGLE_CLIENT_SECRET!,
+      disableImplicitSignUp: true,
+      disableSignUp: true,
+      disableIdTokenSignIn: true,
+    };
+    const defaultGoogle = google(options);
+    providers.google = {
+      ...options,
+      async getUserInfo(tokens: Parameters<typeof defaultGoogle.getUserInfo>[0]) {
+        const result = await defaultGoogle.getUserInfo(tokens);
+        const user = result?.user;
+        if (user?.emailVerified === true && typeof user.email === 'string' && user.id) {
+          await googleCallbackProfile.set({
+            id: String(user.id),
+            email: user.email.toLowerCase(),
+            name: user.name || '',
+            image: user.image,
+            tokens: {
+              accessToken: tokens.accessToken,
+              refreshToken: tokens.refreshToken,
+              idToken: tokens.idToken,
+              accessTokenExpiresAt: tokens.accessTokenExpiresAt,
+              refreshTokenExpiresAt: tokens.refreshTokenExpiresAt,
+              scope: tokens.scopes?.join(','),
+            },
+          });
+        }
+        return result;
+      },
     };
   }
 

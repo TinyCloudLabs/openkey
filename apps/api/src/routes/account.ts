@@ -13,6 +13,7 @@ import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
 import { requireFreshPasskey } from '../services/passkey-freshness';
 import { rejectNonBrowserControlRequest } from '../middleware/browser-control';
 import { nativeDelegationLockResponse } from '../services/native-delegation/errors';
+import { sendAccountStepUpCode, verifyAccountStepUpCode } from '../services/email-otp-step-up';
 
 const prisma = createPrismaClient();
 
@@ -26,6 +27,23 @@ accountRouter.use('*', requireSession);
 // Account deletion needs a passkey verification on this session within the
 // last five minutes (TC-689).
 const ACCOUNT_DELETE_PASSKEY_MAX_AGE_MS = 5 * 60 * 1000;
+accountRouter.post('/step-up/email-otp/send', async (c) => {
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
+  const result = await sendAccountStepUpCode(prisma, c.get('session').id, c.get('user').email);
+  if (result === 'unavailable') return c.json({ error: 'Email delivery unavailable' }, 503);
+  return c.json({ status: true });
+});
+
+accountRouter.post('/step-up/email-otp/verify', async (c) => {
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
+  const body = await c.req.json().catch(() => null) as { code?: unknown } | null;
+  const valid = await verifyAccountStepUpCode(prisma, c.get('session').id, c.get('user').email, body?.code);
+  if (!valid) return c.json({ error: 'Invalid or expired account verification code' }, 400);
+  return c.json({ status: true });
+});
+
 
 // Get account info
 accountRouter.get('/', async (c) => {

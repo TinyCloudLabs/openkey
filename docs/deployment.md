@@ -169,6 +169,11 @@ Google and Apple must be configured with these exact production return URLs:
 - `https://api.openkey.so/api/auth/callback/google`
 - `https://api.openkey.so/api/auth/callback/apple`
 
+Google's explicit account-linking and new-account confirmation change the API
+and web together. Deploy both in one window after the reviewed migration is
+ready; the migration adds the session email-code timestamp and a unique
+provider/account identity index. This change does not enable Apple sign-in.
+
 Apple requires `APPLE_CLIENT_ID` to be the web Services ID. The API generates
 the ES256 client-secret JWT at runtime with a 180-day lifetime, below Apple's
 six-month maximum; the `.p8` key remains API-only and must never be set as a
