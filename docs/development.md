@@ -130,10 +130,12 @@ The web callback reads identity only from Apple's token-endpoint ID token:
 email claim, but an unlinked `sub` cannot create an account without a verified
 email. New sign-ups go through `/api/auth/social/continuation` and
 `/api/auth/social/confirm`; existing accounts require explicit linking with a
-fresh email OTP. The first email-code sign-in to a social-created account
+fresh email OTP. The first email-code sign-in to an Apple-created account
 requires `/api/auth/social/email-sign-in/confirm` to review linked providers,
-or refuse and lock it. Apple remains disabled in production until enrollment,
-the remaining TC-1188 slices and Sam's separate authorization.
+or refuse and lock it. Google-created accounts retain the existing email-OTP
+flow; the Apple review client is not shipped in this server-only slice. Apple
+remains disabled in production until enrollment, the remaining TC-1188 slices
+and Sam's separate authorization.
 
 ## Scripts
 

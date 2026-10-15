@@ -25,9 +25,9 @@ function invalid(): APIError {
 }
 
 /** Notify the verified mailbox when its social identity creates an account. */
-export async function sendSocialAccountNotice(email: string, providerId: 'google' | 'apple'): Promise<void> {
+export async function sendSocialAccountNotice(email: string): Promise<void> {
   if (!resend) return;
-  const provider = providerId === 'apple' ? 'Apple' : 'Google';
+  const provider = 'Apple';
   try {
     const { error } = await resend.emails.send({
       from: 'OpenKey <noreply@openkey.so>',
@@ -57,7 +57,7 @@ export function socialMailboxReview(database: PrismaClient): BetterAuthPlugin {
                 if (user?.lockedAt) throw new APIError('FORBIDDEN', {
                   code: 'SOCIAL_ACCOUNT_LOCKED', message: 'This account is locked.',
                 });
-                if (context?.path !== '/sign-in/email-otp' || !user?.socialCreatedProvider || user.socialEmailReviewedAt) return;
+                if (context?.path !== '/sign-in/email-otp' || user?.socialCreatedProvider !== 'apple' || user.socialEmailReviewedAt) return;
                 // A missing endpoint cookie context must not permit a session or an unbound confirmation.
                 if (!context.setCookie) throw new APIError('INTERNAL_SERVER_ERROR');
                 const confirmation = randomBytes(32).toString('base64url');
@@ -111,7 +111,7 @@ export function socialMailboxReview(database: PrismaClient): BetterAuthPlugin {
           });
           if (consumed.count !== 1) return false;
           const updated = await tx.user.updateMany({
-            where: { id: row.userId!, socialCreatedProvider: { not: null }, socialEmailReviewedAt: null, lockedAt: null },
+            where: { id: row.userId!, socialCreatedProvider: 'apple', socialEmailReviewedAt: null, lockedAt: null },
             data: body.decision === 'continue' ? { socialEmailReviewedAt: now } : { lockedAt: now },
           });
           if (updated.count !== 1) throw invalid(); // Roll back the challenge consumption.

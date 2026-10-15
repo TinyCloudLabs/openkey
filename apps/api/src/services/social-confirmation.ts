@@ -7,7 +7,7 @@ import { parseUserOutput } from 'better-auth/db';
 import type { PrismaClient } from '@openkey/db';
 import { defineRequestState } from '@better-auth/core/context';
 import {
-  appleCallbackProfile, googleCallbackProfile, generateAppleClientSecret,
+  appleCallbackProfile, googleCallbackProfile, configuredSocialProviderIds, generateAppleClientSecret,
   type AppleCallbackProfile, type GoogleCallbackProfile, type SocialProviderId,
 } from '../social-providers';
 import { sendSocialAccountNotice } from './social-mailbox-review';
@@ -104,15 +104,11 @@ export function socialConfirmation(database: PrismaClient) {
     for (const row of expired) {
       try {
         const stored = JSON.parse(await symmetricDecrypt({ key, data: row.value })) as Continuation;
-        if (stored.tokens) {
-          if (stored.outcome === 'account_exists' && stored.providerId === 'apple') {
-            if (!await revokeAbandoned(stored)) continue;
-          } else if (stored.outcome === 'new_account') {
-            const linked = await database.account.findFirst({
-              where: { providerId: stored.providerId, accountId: stored.profile.id }, select: { id: true },
-            });
-            if (!linked && !await revokeAbandoned(stored)) continue;
-          }
+        if (stored.tokens && (stored.outcome === 'new_account' || stored.providerId === 'apple')) {
+          const linked = await database.account.findFirst({
+            where: { providerId: stored.providerId, accountId: stored.profile.id }, select: { id: true },
+          });
+          if (!linked && !await revokeAbandoned(stored)) continue;
         }
       } catch {
         log('warn', 'auth_social_continuation_cleanup_failed');
@@ -162,11 +158,16 @@ export function socialConfirmation(database: PrismaClient) {
           const outcome = error === 'account_not_linked' || await hasMatchingUser(database, profile.email)
             ? 'account_exists' : 'new_account';
           let retainAppleTokens = false;
-          if (outcome === 'account_exists' && !await revokeAbandoned({
-            providerId, bindingHash: '', outcome, profile, tokens: profile.tokens,
-          })) {
-            log('warn', 'auth_social_token_revoke_failed');
-            retainAppleTokens = providerId === 'apple';
+          if (outcome === 'account_exists') {
+            const linkedApple = providerId === 'apple' && await database.account.findFirst({
+              where: { providerId, accountId: profile.id }, select: { id: true },
+            });
+            if (!linkedApple && !await revokeAbandoned({
+              providerId, bindingHash: '', outcome, profile, tokens: profile.tokens,
+            })) {
+              log('warn', 'auth_social_token_revoke_failed');
+              retainAppleTokens = providerId === 'apple';
+            }
           }
           const token = randomBytes(32).toString('base64url');
           const nativeQuery = new URLSearchParams(target.searchParams);
@@ -206,6 +207,10 @@ export function socialConfirmation(database: PrismaClient) {
         });
         if (!row) throw invalid();
         const stored = JSON.parse(await symmetricDecrypt({ key: ctx.context.secretConfig, data: row.value })) as Continuation;
+        if (stored.providerId === 'apple' && !configuredSocialProviderIds().includes('apple')) {
+          scheduleSweep(ctx.context.secretConfig);
+          throw invalid();
+        }
         if (stored.bindingHash !== digest(binding)
           || (stored.nativeQueryHash && (typeof ctx.query?.oauthQuery !== 'string'
             || digest(ctx.query.oauthQuery) !== stored.nativeQueryHash))) throw invalid();
@@ -226,6 +231,10 @@ export function socialConfirmation(database: PrismaClient) {
         });
         if (!row) throw invalid();
         const stored = JSON.parse(await symmetricDecrypt({ key: ctx.context.secretConfig, data: row.value })) as Continuation;
+        if (stored.providerId === 'apple' && !configuredSocialProviderIds().includes('apple')) {
+          scheduleSweep(ctx.context.secretConfig);
+          throw invalid();
+        }
         if ((stored.providerId !== 'apple' && stored.providerId !== 'google')
           || !row.identifier.startsWith(PREFIX[stored.providerId])
           || typeof stored.profile?.id !== 'string' || typeof stored.profile.email !== 'string'
@@ -233,14 +242,33 @@ export function socialConfirmation(database: PrismaClient) {
           || stored.bindingHash !== digest(binding) || stored.outcome !== 'new_account' || !stored.tokens
           || (stored.nativeQueryHash && (typeof body.oauthQuery !== 'string'
             || digest(body.oauthQuery) !== stored.nativeQueryHash))) throw invalid();
-        const consumed = await database.verification.deleteMany({
-          where: { id: row.id, value: row.value, expiresAt: { gt: new Date() } },
-        });
+        const isApple = stored.providerId === 'apple';
+        // Retire Apple's spendable continuation atomically, but keep its encrypted
+        // tokens until Create succeeds or revocation succeeds. A crash leaves a
+        // non-redeemable row for the expiry sweeper.
+        const consumed = isApple
+          ? await database.verification.updateMany({
+            where: { id: row.id, value: row.value, identifier: row.identifier, expiresAt: { gt: new Date() } },
+            data: { identifier: `${PREFIX.apple}revoke:${digest(token)}`, expiresAt: new Date(Date.now() + TTL_MS) },
+          })
+          : await database.verification.deleteMany({
+            where: { id: row.id, value: row.value, expiresAt: { gt: new Date() } },
+          });
         if (consumed.count !== 1) throw invalid();
         ctx.setCookie(COOKIE, '', { httpOnly: true, secure: true, sameSite: 'lax', path: '/', maxAge: 0 });
         const { profile, tokens } = stored;
         const abandon = async () => {
-          if (!await revokeAbandoned(stored)) log('warn', 'auth_social_token_revoke_failed');
+          const linkedApple = isApple && await database.account.findFirst({
+            where: { providerId: 'apple', accountId: profile.id }, select: { id: true },
+          });
+          if (linkedApple || await revokeAbandoned(stored)) {
+            if (isApple) await database.verification.deleteMany({ where: { id: row.id } });
+          } else {
+            log('warn', 'auth_social_token_revoke_failed');
+            if (isApple) await database.verification.updateMany({
+              where: { id: row.id }, data: { expiresAt: new Date() },
+            });
+          }
         };
         if (await hasMatchingUser(database, profile.email)) {
           await abandon();
@@ -248,7 +276,7 @@ export function socialConfirmation(database: PrismaClient) {
         }
         let created;
         try {
-          await confirmedSocialProvider.set(stored.providerId);
+          if (isApple) await confirmedSocialProvider.set('apple');
           created = await ctx.context.internalAdapter.createOAuthUser({
             email: profile.email, emailVerified: true, name: profile.name, image: profile.image,
           }, {
@@ -274,9 +302,10 @@ export function socialConfirmation(database: PrismaClient) {
           await abandon();
           throw error;
         }
+        if (isApple) await database.verification.deleteMany({ where: { id: row.id } });
         const session = await ctx.context.internalAdapter.createSession(created.user.id);
         await setSessionCookie(ctx, { session, user: created.user });
-        await sendSocialAccountNotice(profile.email, stored.providerId);
+        if (isApple) await sendSocialAccountNotice(profile.email);
         log('info', 'auth_social_signup_confirmed');
         return ctx.json({ token: session.token, user: parseUserOutput(ctx.context.options, created.user) });
       }),

@@ -189,9 +189,10 @@ unsigned `user.email` is ignored. Returning identities use `(apple, sub)`,
 including callbacks without an email claim. New accounts need the existing
 cookie-bound social confirmation; linking and unlinking need current-session
 email OTP step-up. Apple refresh tokens are encrypted with their issuing
-Services ID. A confirmed social account sends a mailbox notice; its first
+Services ID. A confirmed Apple account sends a mailbox notice; its first
 email-OTP sign-in requires a separate linked-provider review before a session.
-Refusing that review locks the account; TC-1231 owns enforcement across
+Google accounts retain the existing email-OTP behavior while Apple is off.
+Refusing Apple review locks the account; TC-1231 owns enforcement across
 existing sessions, grants and signing before production enablement.
 
 Apple rejects localhost, non-HTTPS domains and invalid TLS, so live provider

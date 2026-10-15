@@ -26,6 +26,9 @@ export type AppleCallbackProfile = GoogleCallbackProfile & {
   clientId: string;
 };
 export const appleCallbackProfile = defineRequestState<AppleCallbackProfile | undefined>(() => undefined);
+// Set only after the Apple token-endpoint claims pass validation. Better Auth's
+// linked-account token refresh invokes Account.update without a provider ID.
+export const appleTokenClientId = defineRequestState<string | undefined>(() => undefined);
 
 type ProviderEnvironment = OriginPolicyEnvironment;
 type PersistedAppleUser = {
@@ -167,7 +170,8 @@ export async function resolveAppleUserInfo(
     },
     data: {
       ...profile,
-      is_private_email: profile.is_private_email === true || profile.is_private_email === 'true',
+      is_private_email: profile.is_private_email === true || profile.is_private_email === 'true'
+        || Boolean(email?.toLowerCase().endsWith('@privaterelay.appleid.com')),
     },
   };
 }
@@ -281,23 +285,26 @@ export function createSocialProviders(
       async getUserInfo(tokens: AppleTokenSet) {
         const result = await resolveAppleUserInfo(tokens, findPersistedAppleUser, clientId);
         const user = result?.user;
-        if (result && user?.emailVerified && user.email && await hasRequestState()) {
-          await appleCallbackProfile.set({
-            id: user.id,
-            email: user.email.toLowerCase(),
-            name: user.name,
-            image: user.image,
-            isPrivateEmail: result.data.is_private_email,
-            clientId,
-            tokens: {
-              accessToken: tokens.accessToken,
-              refreshToken: tokens.refreshToken,
-              idToken: tokens.idToken,
-              accessTokenExpiresAt: tokens.accessTokenExpiresAt,
-              refreshTokenExpiresAt: tokens.refreshTokenExpiresAt,
-              scope: tokens.scopes?.join(','),
-            },
-          });
+        if (result && await hasRequestState()) {
+          await appleTokenClientId.set(clientId);
+          if (user?.emailVerified && user.email) {
+            await appleCallbackProfile.set({
+              id: user.id,
+              email: user.email.toLowerCase(),
+              name: user.name,
+              image: user.image,
+              isPrivateEmail: result.data.is_private_email,
+              clientId,
+              tokens: {
+                accessToken: tokens.accessToken,
+                refreshToken: tokens.refreshToken,
+                idToken: tokens.idToken,
+                accessTokenExpiresAt: tokens.accessTokenExpiresAt,
+                refreshTokenExpiresAt: tokens.refreshTokenExpiresAt,
+                scope: tokens.scopes?.join(','),
+              },
+            });
+          }
         }
         return result;
       },
