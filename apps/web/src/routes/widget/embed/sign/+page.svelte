@@ -419,10 +419,7 @@
       reviewModel = null;
       return;
     }
-    const canEdit =
-      messageProtocolVersion !== null &&
-      messageProtocolVersion >= 1 &&
-      origin !== '*';
+    const canEdit = authorizationProtocolVersion === 1 && origin !== '*';
     // Sol MAJOR-8: derive REAL origin/domain warning facts rather than
     // hard-coding them to false.
     let siweDomainForModel: string | null = null;
@@ -836,16 +833,15 @@
         return;
       }
 
-      // Legacy exact-byte path (no narrowing).
+      // Exact-byte signing cannot narrow the request: show every parsed
+      // action and report the full set rather than a UI-only selection.
       const result = await api.signMessage(key.id, message);
       const effectivePermissions = reviewModel
         ? reviewModel.permissions.map((grant) => ({
             service: grant.service,
             space: grant.space,
             path: grant.path,
-            actions: grant.actions
-              .filter((action) => reviewSelection.has(action.id))
-              .map((action) => action.ability),
+            actions: grant.actions.map((action) => action.ability),
           }))
         : undefined;
       sendResponse({
@@ -854,7 +850,9 @@
         signature: result.signature,
         address: result.address,
         signedMessage: message,
-        selectedActionKeys: reviewModel ? Array.from(reviewSelection) : undefined,
+        selectedActionKeys: reviewModel
+          ? reviewModel.permissions.flatMap((grant) => grant.actions.map((action) => action.id))
+          : undefined,
         permissions: effectivePermissions,
       });
       sendClose();

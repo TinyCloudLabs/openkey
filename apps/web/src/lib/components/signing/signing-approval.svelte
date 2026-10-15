@@ -135,7 +135,10 @@
         : []),
     ];
   });
-  const isEditable = $derived(model.protocol === "tinycloud-siwe-recap");
+  const isEditable = $derived(
+    model.protocol === "tinycloud-siwe-recap" &&
+    model.permissions.some((grant) => grant.actions.some((action) => action.editable)),
+  );
   const isMalformedRecap = $derived(model.protocol === "malformed-recap");
   const headline = $derived(
     isMalformedRecap

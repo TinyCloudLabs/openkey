@@ -73,10 +73,12 @@ test('v2 final preview bytes are visible before approval and require a new layou
 test('ordinary v2 SIWE ReCap signs exact bytes without entering authorization preview', async ({ page }) => {
   let prepares = 0;
   let signs = 0;
+  let signedExactly = false;
   await page.addInitScript(() => sessionStorage.setItem('openkey_session_token', 'test-session'));
   await page.route('**/api/keys/**', (route) => {
     if (route.request().url().endsWith('/sign')) {
       signs++;
+      signedExactly = route.request().postDataJSON()?.message === siwe;
       return route.fulfill({ json: { signature: '0x00', address } });
     }
     return route.fulfill({ json: { key: {
@@ -111,6 +113,8 @@ test('ordinary v2 SIWE ReCap signs exact bytes without entering authorization pr
   }, siwe);
   const frame = page.frameLocator('#sign-v2');
   const approve = frame.getByRole('button', { name: 'Approve', exact: true });
+  await frame.getByText('Advanced details', { exact: true }).click();
+  await expect(frame.getByRole('button', { name: 'Edit', exact: true })).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => (window as unknown as Window & { received: Array<{ type: string }> }).received.some(m => m.type === 'openkey:resize'))).toBe(true);
   const resize = await page.evaluate(() => (window as unknown as Window & { received: Array<{ type: string; height: number; layoutId: number }> }).received.filter(m => m.type === 'openkey:resize').at(-1)!);
   await page.evaluate(({ height, layoutId }) => {
@@ -122,5 +126,16 @@ test('ordinary v2 SIWE ReCap signs exact bytes without entering authorization pr
   await expect(approve).toBeEnabled();
   await approve.click();
   await expect.poll(() => signs).toBe(1);
+  expect(signedExactly).toBe(true);
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as Window & { received: Array<{ type: string }> }).received.some(m => m.type === 'openkey:sign:response'),
+  )).toBe(true);
+  const exactMetadata = await page.evaluate(() => {
+    const messages = (window as unknown as Window & { received: Array<{ type: string; selectedActionKeys?: string[]; permissions?: Array<{ actions: string[] }> }> }).received;
+    const response = messages.find(m => m.type === 'openkey:sign:response');
+    return response?.selectedActionKeys?.some(key => key.endsWith('tinycloud.kv/put')) &&
+      response?.permissions?.some(grant => grant.actions.includes('tinycloud.kv/put'));
+  });
+  expect(exactMetadata).toBe(true);
   expect(prepares).toBe(0);
 });
