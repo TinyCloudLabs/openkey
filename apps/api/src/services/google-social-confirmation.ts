@@ -43,10 +43,10 @@ async function revokeGoogleToken(accessToken: string | undefined): Promise<boole
 }
 
 async function hasMatchingUser(database: PrismaClient, email: string): Promise<boolean> {
-  return (await database.user.findFirst({
-    where: { email: { equals: email, mode: 'insensitive' } },
-    select: { id: true },
-  })) !== null;
+  const rows = await database.$queryRaw<{ id: string }[]>`
+    SELECT id FROM "user" WHERE LOWER(email) = LOWER(${email}) LIMIT 1
+  `;
+  return rows.length > 0;
 }
 
 export function googleSocialConfirmation(database: PrismaClient) {
@@ -188,6 +188,11 @@ export function googleSocialConfirmation(database: PrismaClient) {
         } catch (error) {
           if (await hasMatchingUser(database, profile.email)) {
             throw new APIError('BAD_REQUEST', { code: 'ACCOUNT_ALREADY_EXISTS', message: 'Sign in to your existing OpenKey account.' });
+          }
+          if (await database.account.findFirst({
+            where: { providerId: 'google', accountId: profile.id }, select: { id: true },
+          })) {
+            throw new APIError('BAD_REQUEST', { code: 'ACCOUNT_ALREADY_LINKED', message: 'This Google identity is already linked.' });
           }
           throw error;
         }

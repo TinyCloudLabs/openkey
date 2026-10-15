@@ -69,14 +69,22 @@
       } else {
         const account = accounts[0];
         if (!account) throw new Error('Google is no longer linked to this account.');
-        const result = await authClient.unlinkAccount({ providerId: 'google', accountId: account.accountId });
-        if (result.error) throw new Error(authErrorMessage(result.error, 'Could not unlink Google.'));
+        const unlink = await fetch(`${API_BASE}/api/account/social/unlink`, {
+          method: 'POST', credentials: 'include',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ providerId: 'google', accountId: account.accountId }),
+        });
+        if (!unlink.ok) throw new Error('Could not unlink Google. Verify a new code or add a passkey first.');
         await refreshAccounts();
         action = null;
         step = null;
         notice = 'Google was unlinked. You can still sign in with your email or passkey.';
       }
     } catch (cause) {
+      if (action === 'unlink' && code === '') {
+        action = null;
+        step = null;
+      }
       error = cause instanceof Error ? cause.message : 'Could not update your account.';
     } finally {
       busy = false;

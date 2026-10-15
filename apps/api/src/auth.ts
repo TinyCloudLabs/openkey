@@ -43,6 +43,7 @@ import { providerTokenOptions } from './services/native-delegation/provider-toke
 import { emailSignupConfirmation } from './services/email-signup-confirmation';
 import { hasFreshEmailStepUp } from './services/email-otp-step-up';
 import { googleSocialConfirmation } from './services/google-social-confirmation';
+import { assertCurrentGoogleLink, googleLinkStatePlugin } from './services/google-link-state';
 import { betterAuthLog, log, logError } from './log';
 
 export const prisma: PrismaClient = createPrismaClient();
@@ -224,6 +225,7 @@ export const auth = betterAuth({
 
   database: prismaAdapter(withNativeTokenGuardErrors(prisma), {
     provider: 'postgresql',
+    transaction: true,
   }),
 
   // Passwords stay disabled; email OTP is the default authentication path.
@@ -250,6 +252,7 @@ export const auth = betterAuth({
   plugins: [
     passkeyFreshnessPlugin,
     accountLinkingStepUpPlugin,
+    googleLinkStatePlugin(prisma),
     googleSocialConfirmation(prisma),
     // Passkeys are an encouraged optional sign-in and step-up method.
     passkey({
@@ -483,6 +486,14 @@ export const auth = betterAuth({
           }
         },
       },
+    },
+    account: {
+      create: { before: async (account) => {
+        if (account.providerId === 'google') await assertCurrentGoogleLink(prisma, account.userId);
+      } },
+      update: { before: async () => {
+        await assertCurrentGoogleLink(prisma);
+      } },
     },
   },
 });

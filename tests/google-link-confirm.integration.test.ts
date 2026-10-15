@@ -198,6 +198,13 @@ if (!backend) {
       expect(await prisma.user.count()).toBe(1);
     });
 
+    test('literal email punctuation does not match another account', async () => {
+      await prisma.user.create({ data: { id: randomUUID(), email: 'wildXcard@openkey.test', emailVerified: true } });
+      const { response } = await googleCallback({ sub: 'underscore-sub', email: 'wild_card@openkey.test', email_verified: true });
+      expect(new URL(response.headers.get('location')!).searchParams.get('error')).toBe('new_account');
+      expect(await prisma.account.count()).toBe(0);
+    });
+
     test('unknown verified email creates only after bound confirmation, once', async () => {
       const email = 'confirmed-google@openkey.test';
       const { response } = await googleCallback({ sub: 'new-sub', email, email_verified: true });
@@ -215,6 +222,18 @@ if (!backend) {
       expect(await prisma.ethereumKey.count({ where: { userId: user.id, isCanonicalTinyCloud: true } })).toBe(1);
       expect(await prisma.account.count({ where: { userId: user.id, providerId: 'google', accountId: 'new-sub' } })).toBe(1);
       expect((await post('/api/auth/social/confirm', { continuation }, cookies(response))).status).toBe(400);
+    });
+
+    test('a provider identity claimed before confirmation leaves no orphan user or key', async () => {
+      const email = 'conflicted@openkey.test';
+      const { response } = await googleCallback({ sub: 'claimed-sub', email, email_verified: true });
+      const continuation = new URL(response.headers.get('location')!).searchParams.get('continuation');
+      const owner = await prisma.user.create({ data: { id: randomUUID(), email: 'owner@openkey.test', emailVerified: true } });
+      await prisma.account.create({ data: { id: randomUUID(), userId: owner.id, providerId: 'google', accountId: 'claimed-sub' } });
+      expect((await post('/api/auth/social/confirm', { continuation }, cookies(response))).status).toBe(400);
+      expect(await prisma.user.count({ where: { email } })).toBe(0);
+      expect(await prisma.ethereumKey.count()).toBe(0);
+      expect(await prisma.account.count({ where: { providerId: 'google', accountId: 'claimed-sub' } })).toBe(1);
     });
 
     test('explicit requestSignUp still requires confirmation and expired continuations cannot create', async () => {
@@ -289,6 +308,40 @@ if (!backend) {
       expect(await prisma.session.count({ where: { userId: user.id } })).toBe(sessionCount);
     });
 
+    test('revoking the originating session prevents a pending Google link', async () => {
+      const user = await prisma.user.create({ data: { id: randomUUID(), email: 'revoked-link@openkey.test', emailVerified: true } });
+      const cookie = await signedInCookie(user.email);
+      await stepUp(cookie, user.id);
+      const start = await post('/api/auth/link-social', { provider: 'google', disableRedirect: true }, cookie);
+      expect(start.status).toBe(200);
+      const state = new URL((await start.json() as { url: string }).url).searchParams.get('state');
+      expect(state).toBeTruthy();
+      await prisma.session.deleteMany({ where: { userId: user.id } });
+      const code = randomUUID();
+      profiles.set(code, { sub: 'revoked-sub', email: user.email, email_verified: true });
+      await call(`/api/auth/callback/google?state=${encodeURIComponent(state!)}&code=${code}`, {
+        headers: { cookie: cookies(start) },
+      });
+      expect(await prisma.account.count({ where: { userId: user.id } })).toBe(0);
+    });
+
+    test('an expired step-up prevents a pending Google link', async () => {
+      const user = await prisma.user.create({ data: { id: randomUUID(), email: 'expired-link@openkey.test', emailVerified: true } });
+      const cookie = await signedInCookie(user.email);
+      await stepUp(cookie, user.id);
+      const start = await post('/api/auth/link-social', { provider: 'google', disableRedirect: true }, cookie);
+      expect(start.status).toBe(200);
+      const state = new URL((await start.json() as { url: string }).url).searchParams.get('state');
+      expect(state).toBeTruthy();
+      await prisma.session.updateMany({ where: { userId: user.id }, data: { lastEmailOtpAt: new Date(Date.now() - 6 * 60 * 1000) } });
+      const code = randomUUID();
+      profiles.set(code, { sub: 'expired-link-sub', email: user.email, email_verified: true });
+      await call(`/api/auth/callback/google?state=${encodeURIComponent(state!)}&code=${code}`, {
+        headers: { cookie: cookies(start) },
+      });
+      expect(await prisma.account.count({ where: { userId: user.id } })).toBe(0);
+    });
+
     test('three incorrect step-up codes exhaust the code without issuing another session', async () => {
       const user = await prisma.user.create({ data: { id: randomUUID(), email: 'attempts@openkey.test', emailVerified: true } });
       const cookie = await signedInCookie(user.email);
@@ -328,6 +381,20 @@ if (!backend) {
       expect(await prisma.account.count({ where: { userId: user.id } })).toBe(0);
     });
 
+    test('fresh email step-up can unlink on a valid session older than 24 hours', async () => {
+      const user = await prisma.user.create({ data: { id: randomUUID(), email: 'older-session@openkey.test', emailVerified: true } });
+      await prisma.account.create({ data: { id: randomUUID(), userId: user.id, providerId: 'google', accountId: 'older-sub' } });
+      const cookie = await signedInCookie(user.email);
+      await prisma.session.updateMany({
+        where: { userId: user.id }, data: { createdAt: new Date(Date.now() - 48 * 60 * 60 * 1000) },
+      });
+      expect((await post('/api/account/social/unlink', { providerId: 'google', accountId: 'older-sub' }, cookie)).status).toBe(403);
+      await stepUp(cookie, user.id);
+      expect((await post('/api/auth/unlink-account', { providerId: 'google' }, cookie)).status).toBe(403);
+      expect((await post('/api/account/social/unlink', { providerId: 'google', accountId: 'older-sub' }, cookie)).status).toBe(200);
+      expect(await prisma.account.count({ where: { userId: user.id } })).toBe(0);
+    });
+
     test('unlink refuses leaving an unverified-email user without a usable method', async () => {
       const user = await prisma.user.create({ data: { id: randomUUID(), email: 'no-recovery@openkey.test', emailVerified: false } });
       await prisma.account.createMany({ data: [
@@ -341,6 +408,8 @@ if (!backend) {
       await stepUp(cookie, user.id);
       const response = await post('/api/auth/unlink-account', { providerId: 'google' }, cookie);
       expect(response.status).toBe(403);
+      expect(await prisma.account.count({ where: { userId: user.id } })).toBe(2);
+      expect((await post('/api/account/social/unlink', { providerId: 'google', accountId: 'primary-sub' }, cookie)).status).toBe(403);
       expect(await prisma.account.count({ where: { userId: user.id } })).toBe(2);
     });
   });
