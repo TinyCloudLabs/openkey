@@ -1,5 +1,6 @@
 // Account management routes
 import { Hono } from 'hono';
+import { symmetricDecrypt } from 'better-auth/crypto';
 import { createPrismaClient } from '@openkey/db';
 import { requireSession, type SessionContext } from '../middleware/session';
 import { parseAutoSignPreferencePatch } from './account-preferences';
@@ -14,6 +15,8 @@ import { requireFreshPasskey } from '../services/passkey-freshness';
 import { rejectNonBrowserControlRequest } from '../middleware/browser-control';
 import { nativeDelegationLockResponse } from '../services/native-delegation/errors';
 import { sendAccountStepUpCode, verifyAccountStepUpCode } from '../services/email-otp-step-up';
+import { auth } from '../auth';
+import { revokeAppleToken } from '../services/social-confirmation';
 
 const prisma = createPrismaClient();
 
@@ -46,13 +49,15 @@ accountRouter.post('/step-up/email-otp/verify', async (c) => {
 
 // Better Auth's unlink endpoint also requires session.createdAt < 24 hours.
 // An email code proves freshness without refreshing the entire session (which
-// would weaken other sensitive endpoints), so Settings uses this Google route.
+// would weaken other sensitive endpoints), so Settings uses this route.
 accountRouter.post('/social/unlink', async (c) => {
   const rejected = rejectNonBrowserControlRequest(c);
   if (rejected) return rejected;
   const body = await c.req.json().catch(() => null) as { providerId?: unknown; accountId?: unknown } | null;
-  if (body?.providerId !== 'google' || typeof body.accountId !== 'string' || !body.accountId) {
-    return c.json({ error: 'A Google account is required' }, 400);
+  const providerId = body?.providerId;
+  if ((providerId !== 'google' && providerId !== 'apple')
+    || typeof body?.accountId !== 'string' || !body.accountId) {
+    return c.json({ error: 'A Google or Apple account is required' }, 400);
   }
   const accountId = body.accountId;
   const current = c.get('session');
@@ -72,10 +77,11 @@ accountRouter.post('/social/unlink', async (c) => {
       return 'LAST_SIGN_IN_METHOD';
     }
     const account = await tx.account.findFirst({
-      where: { userId: session.userId, providerId: 'google', accountId },
-      select: { id: true },
+      where: { userId: session.userId, providerId, accountId },
+      select: { id: true, refreshToken: true, appleClientId: true },
     });
     if (!account) return 'ACCOUNT_NOT_FOUND';
+    if (providerId === 'apple') return account;
     await tx.account.delete({ where: { id: account.id } });
     return 'UNLINKED';
   });
@@ -83,6 +89,44 @@ accountRouter.post('/social/unlink', async (c) => {
     return c.json({ error: outcome }, 403);
   }
   if (outcome === 'ACCOUNT_NOT_FOUND') return c.json({ error: outcome }, 404);
+  if (typeof outcome !== 'string') {
+    let refreshToken: string | undefined;
+    if (outcome.refreshToken) {
+      try {
+        refreshToken = await symmetricDecrypt({
+          key: (await auth.$context).secretConfig, data: outcome.refreshToken,
+        });
+      } catch {
+        return c.json({ error: 'APPLE_TOKEN_UNAVAILABLE' }, 503);
+      }
+    }
+    if (!await revokeAppleToken(refreshToken, outcome.appleClientId ?? undefined)) {
+      return c.json({ error: 'APPLE_TOKEN_REVOKE_FAILED' }, 503);
+    }
+    const removed = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "session" WHERE id = ${current.id} FOR UPDATE`;
+      const session = await tx.session.findUnique({
+        where: { id: current.id },
+        select: { userId: true, expiresAt: true, lastEmailOtpAt: true, user: { select: { emailVerified: true } } },
+      });
+      const now = Date.now();
+      const verifiedAt = session?.lastEmailOtpAt?.getTime();
+      if (!session || session.userId !== c.get('user').id || session.expiresAt.getTime() <= now
+        || verifiedAt === undefined || verifiedAt > now || now - verifiedAt >= 5 * 60 * 1000
+        || (!session.user.emailVerified && await tx.passkey.count({ where: { userId: session.userId } }) === 0)) {
+        return 'EMAIL_STEP_UP_REQUIRED';
+      }
+      const deleted = await tx.account.deleteMany({
+        where: {
+          id: outcome.id, userId: session.userId, providerId: 'apple', accountId,
+          refreshToken: outcome.refreshToken, appleClientId: outcome.appleClientId,
+        },
+      });
+      return deleted.count === 1 ? 'UNLINKED' : 'ACCOUNT_CHANGED';
+    });
+    if (removed === 'EMAIL_STEP_UP_REQUIRED') return c.json({ error: removed }, 403);
+    if (removed === 'ACCOUNT_CHANGED') return c.json({ error: removed }, 409);
+  }
   return c.json({ status: true });
 });
 
