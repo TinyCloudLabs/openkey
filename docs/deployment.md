@@ -206,7 +206,7 @@ Deployments trigger on every push to `main` (serialized by the
    phala deploy -c docker-compose.prod.yml -n openkey-api --no-public-logs --no-public-sysinfo
    ```
 
-5. Verify TEE attestation is working, with a signed-in session for a key you own:
+5. Verify TEE attestation is working, with a signed-in session for a managed key you own:
    ```bash
    curl -H "Cookie: $OPENKEY_SESSION_COOKIE" \
      https://api.openkey.so/api/keys/YOUR_KEY_ID/quote
@@ -268,20 +268,17 @@ account-host console URLs redirect permanently to the console hostname.
 ## Verifying TEE Security
 
 After deployment, verify the API is running in a real TEE. The quote route
-needs a signed-in session for a key you own:
+needs a signed-in session for a managed key you own; send a fresh nonce:
 
 ```bash
 curl -H "Cookie: $OPENKEY_SESSION_COOKIE" \
-  https://api.openkey.so/api/keys/YOUR_KEY_ID/quote
+  "https://api.openkey.so/api/keys/YOUR_KEY_ID/quote?nonce=$(openssl rand -hex 32)"
 ```
 
 A 200 response has `quote` (hex TDX quote), `eventLog`, `binding`,
-`bindingSha256`, `address` and `"inTee": true`. Check, as in
-`docs/tee-overview.md` ("Attestation Endpoint"):
-
-1. SHA-256 of the exact `binding` string equals `bindingSha256`, and
-   `binding` names the expected `address`.
-2. The quote verifies (dstack-verifier or Intel DCAP) and its REPORTDATA is
-   `bindingSha256` followed by 32 zero bytes.
-3. Replaying `eventLog` reproduces the quote's RTMRs, and the compose hash
-   matches the expected OpenKey image.
+`bindingSha256`, `address` and `"inTee": true`. The API only checks that the
+binding is present in the quote; you must verify the quote. Follow all seven
+steps in `docs/tee-overview.md` ("Attestation Endpoint"): quote signature and
+TCB status, OS image measurements, RTMR3 replay (compose hash, app id, key
+provider), REPORTDATA read from the verified quote, and the binding's type,
+version, nonce and address.

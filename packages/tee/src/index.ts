@@ -21,6 +21,38 @@ export interface TeeQuote {
   reportDataSha256: string;
 }
 
+/** A dstack answer that is not a quote over the binding's digest. */
+class QuoteBindingError extends Error {
+  readonly code = 'quote_report_data_mismatch';
+}
+
+// TDX quote layout, Intel TDX DCAP Quoting Library API, Appendix A ("Version
+// 4 Quote Format"): a 48-byte header (version u16 LE at 0, TEE type u32 LE at
+// 4, 0x81 for TDX), the 584-byte TD Quote Body, then a u32 LE signature-data
+// length and that many bytes. REPORTDATA is the last 64 bytes of the body
+// (body offset 520). dstack emits version 4 quotes.
+const QUOTE_HEADER_LENGTH = 48;
+const TD_QUOTE_BODY_LENGTH = 584;
+const TD_REPORT_DATA_OFFSET = QUOTE_HEADER_LENGTH + 520;
+
+/**
+ * The REPORTDATA of a structurally complete TDX v4 quote. Checks layout only;
+ * it does not verify the quote's signature or certificates.
+ */
+function quoteReportData(quote: Buffer): Buffer {
+  const signatureLengthAt = QUOTE_HEADER_LENGTH + TD_QUOTE_BODY_LENGTH;
+  if (quote.length < signatureLengthAt + 4) {
+    throw new QuoteBindingError(`dstack quote is truncated (${quote.length} bytes)`);
+  }
+  if (quote.readUInt16LE(0) !== 4 || quote.readUInt32LE(4) !== 0x81) {
+    throw new QuoteBindingError('dstack quote is not a TDX version 4 quote');
+  }
+  if (quote.length - (signatureLengthAt + 4) < quote.readUInt32LE(signatureLengthAt)) {
+    throw new QuoteBindingError('dstack quote signature data is truncated');
+  }
+  return quote.subarray(TD_REPORT_DATA_OFFSET, TD_REPORT_DATA_OFFSET + 64);
+}
+
 export interface DeriveKeyResult {
   key: Uint8Array;
   certificateChain: string[];
@@ -95,13 +127,18 @@ function createProductionClient(): TeeClient {
       const digest = createHash('sha256').update(binding, 'utf8').digest();
       const client = await getDstackClient();
       const result = await client.getQuote(digest);
-      // The guest agent zero-pads report data to 64 bytes. Refuse a quote over
-      // anything other than this binding's digest.
-      const expected = Buffer.concat([digest, Buffer.alloc(32)]).toString('hex');
-      if (result.report_data?.replace(/^0x/, '').toLowerCase() !== expected) {
-        throw new Error('dstack quote report data does not match the binding');
+      const expected = Buffer.concat([digest, Buffer.alloc(32)]);
+      // The guest agent's echo is a cheap sanity check; the binding that
+      // matters is the REPORTDATA inside the quote. Verifiers still verify the
+      // quote itself.
+      if (result.report_data?.replace(/^0x/, '').toLowerCase() !== expected.toString('hex')) {
+        throw new QuoteBindingError('dstack echoed report data does not match the binding');
       }
-      return { quote: result.quote, eventLog: result.event_log, reportDataSha256: digest.toString('hex') };
+      const quote = result.quote.replace(/^0x/, '');
+      if (!/^(?:[0-9a-fA-F]{2})+$/.test(quote) || !quoteReportData(Buffer.from(quote, 'hex')).equals(expected)) {
+        throw new QuoteBindingError('dstack quote REPORTDATA does not match the binding');
+      }
+      return { quote, eventLog: result.event_log, reportDataSha256: digest.toString('hex') };
     },
 
     isInTee: () => true,

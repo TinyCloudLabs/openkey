@@ -33,7 +33,7 @@ const ERROR_CODES: Record<string, true> = {
   P2002: true, P2025: true, P2010: true, P2034: true, tinycloud_bootstrap_failed: true,
   tinycloud_bootstrap_crashed: true, tinycloud_bootstrap_in_progress: true,
   tinycloud_bootstrap_expired_request: true, BETTER_AUTH_URL: true, signup_token_invalid: true,
-  signup_account_exists: true,
+  signup_account_exists: true, quote_report_data_mismatch: true, quote_key_custody_mismatch: true,
 };
 const LEVELS: Record<string, true> = { debug: true, info: true, warn: true, error: true };
 const METHODS: Record<string, true> = {
