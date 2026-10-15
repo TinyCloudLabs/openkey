@@ -1,11 +1,11 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
-import { generateKeyPairSync, randomUUID } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
 import { Client } from 'pg';
-import { symmetricDecrypt } from 'better-auth/crypto';
+import { symmetricDecrypt, symmetricEncrypt } from 'better-auth/crypto';
 import { decodeJwt, SignJWT } from 'jose';
 import { recoverMessageAddress } from 'viem';
 import type * as DatabaseModule from '@openkey/db';
@@ -257,6 +257,28 @@ if (!backend) {
       expect(await prisma.user.count()).toBe(0);
       expect(await prisma.account.count()).toBe(0);
     });
+    test('disabling Apple also refuses an unexpired continuation issued before the flag changed', async () => {
+      const continuation = randomUUID();
+      const binding = randomUUID();
+      const key = (await auth.$context).secretConfig;
+      await prisma.verification.create({ data: {
+        id: randomUUID(),
+        identifier: `openkey-apple-confirm:${createHash('sha256').update(continuation).digest('base64url')}`,
+        expiresAt: new Date(Date.now() + 5 * 60_000),
+        value: await symmetricEncrypt({ key, data: JSON.stringify({
+          providerId: 'apple', bindingHash: createHash('sha256').update(binding).digest('base64url'), outcome: 'new_account',
+          profile: { id: 'prior-apple-sub', email: 'prior@openkey.test', name: 'Prior', clientId: SERVICES_ID },
+          tokens: { accessToken: 'stub-access', refreshToken: 'stub-refresh' },
+        }) }),
+      } });
+      const response = await post('/api/auth/social/confirm', { continuation },
+        `__Host-openkey_social_continuation=${binding}`);
+      expect(response.status).not.toBe(200);
+      expect(await prisma.user.count()).toBe(0);
+      expect(await prisma.account.count()).toBe(0);
+      expect(await prisma.ethereumKey.count()).toBe(0);
+      expect(await prisma.session.count()).toBe(0);
+    });
   } else {
     describe('Apple code-flow identity and confirmation', () => {
       test('unsigned form_post user.email cannot claim another mailbox', async () => {
@@ -407,6 +429,29 @@ if (!backend) {
         expect(revoked).toHaveLength(3);
         expect(await prisma.account.count()).toBe(0);
       });
+      test('failed revoke after a Create race retains the abandoned token for retry', async () => {
+        const email = 'create-race@openkey.test';
+        const { response, continuation } = await newContinuation('create-race-sub', email);
+        await prisma.user.create({ data: { id: randomUUID(), email, emailVerified: true } });
+        failRevocation = true;
+        const rejected = await post('/api/auth/social/confirm', { continuation }, cookies(response));
+        expect(rejected.status).toBe(400);
+        expect(await prisma.account.count()).toBe(0);
+        const row = await prisma.verification.findFirstOrThrow({
+          where: { identifier: { startsWith: 'openkey-apple-confirm:' } },
+        });
+        const key = (await auth.$context).secretConfig;
+        const retained = JSON.parse(await symmetricDecrypt({ key, data: row.value })) as {
+          tokens?: { refreshToken?: string };
+        };
+        expect(retained.tokens?.refreshToken?.startsWith('refresh-')).toBe(true);
+        expect(row.value).not.toContain(retained.tokens!.refreshToken!);
+        await prisma.verification.update({ where: { id: row.id }, data: { expiresAt: new Date(Date.now() - 1000) } });
+        failRevocation = false;
+        await sweep!();
+        expect(revoked.some(({ token, clientId }) => token.startsWith('refresh-') && clientId === SERVICES_ID)).toBe(true);
+        expect(await prisma.verification.count({ where: { id: row.id } })).toBe(0);
+      });
 
       test('identity claimed before Create leaves no orphan user or key', async () => {
         const email = 'conflict@openkey.test';
@@ -492,6 +537,23 @@ if (!backend) {
         expect((await post('/api/account/social/unlink', { providerId: 'apple', accountId: 'unlink-sub' }, cookie)).status).toBe(200);
         expect(await prisma.account.count({ where: { userId: user.id, providerId: 'apple' } })).toBe(0);
         expect(revoked.some(({ token, clientId }) => token.startsWith('refresh-') && clientId === SERVICES_ID)).toBe(true);
+      });
+      test('new Apple sign-in refreshes issuing client ID along with its rotated refresh token', async () => {
+        const user = await prisma.user.create({ data: {
+          id: randomUUID(), email: 'rotated@openkey.test', emailVerified: true,
+        } });
+        const cookie = await signedInCookie(user.email);
+        await stepUp(cookie, user.id);
+        await appleCallback(profile('rotated-sub', user.email), cookie, true);
+        const account = await prisma.account.findFirstOrThrow({
+          where: { userId: user.id, providerId: 'apple', accountId: 'rotated-sub' },
+        });
+        await prisma.account.update({ where: { id: account.id }, data: { appleClientId: 'previous-services-id' } });
+        const { response } = await appleCallback(profile('rotated-sub', user.email));
+        expect(location(response).searchParams.has('error')).toBe(false);
+        const refreshed = await prisma.account.findUniqueOrThrow({ where: { id: account.id } });
+        expect(refreshed.refreshToken).not.toBe(account.refreshToken);
+        expect(refreshed.appleClientId).toBe(SERVICES_ID);
       });
     });
 
