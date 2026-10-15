@@ -271,13 +271,20 @@ if (!backend) {
           tokens: { accessToken: 'stub-access', refreshToken: 'stub-refresh' },
         }) }),
       } });
-      const response = await post('/api/auth/social/confirm', { continuation },
-        `__Host-openkey_social_continuation=${binding}`);
+      const cookie = `__Host-openkey_social_continuation=${binding}`;
+      const preview = await call(`/api/auth/social/continuation?continuation=${continuation}`, {
+        headers: { cookie },
+      });
+      expect(preview.status).not.toBe(200);
+      const response = await post('/api/auth/social/confirm', { continuation }, cookie);
       expect(response.status).not.toBe(200);
       expect(await prisma.user.count()).toBe(0);
       expect(await prisma.account.count()).toBe(0);
       expect(await prisma.ethereumKey.count()).toBe(0);
       expect(await prisma.session.count()).toBe(0);
+      expect(await prisma.verification.count({ where: {
+        identifier: { startsWith: 'openkey-apple-confirm:' },
+      } })).toBe(1);
     });
     test('disabled Apple preserves the Google-created mailbox email OTP session', async () => {
       const email = 'google-mailbox@openkey.test';
