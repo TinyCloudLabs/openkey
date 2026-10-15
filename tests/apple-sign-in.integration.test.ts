@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
+import type { Server } from 'bun';
 import { createHash, generateKeyPairSync, randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -57,6 +58,7 @@ if (!backend) {
   const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
   const jwk = { ...publicKey.export({ format: 'jwk' }), kid: KID, alg: 'RS256', use: 'sig' };
   const originalFetch = globalThis.fetch;
+  let httpServer: Server<undefined>;
   const originalSetInterval = globalThis.setInterval;
   let sweep: (() => Promise<void>) | undefined;
   let admin: Client | undefined;
@@ -75,7 +77,7 @@ if (!backend) {
     return parts.filter(Boolean).join('; ');
   }
   function call(path: string, init: RequestInit = {}) {
-    return app.fetch(new Request(`${API}${path}`, init));
+    return originalFetch(`http://127.0.0.1:${httpServer.port}${path}`, { ...init, redirect: 'manual' });
   }
   function post(path: string, body: unknown, cookie = '') {
     return call(path, {
@@ -226,6 +228,13 @@ if (!backend) {
     prisma = createPrismaClient();
     ({ auth } = await import('../apps/api/src/auth'));
     app = (await import('../apps/api/src/index')).default;
+    httpServer = Bun.serve({
+      hostname: '127.0.0.1', port: 0,
+      fetch: (request) => {
+        const url = new URL(request.url);
+        return app.fetch(new Request(API + url.pathname + url.search, request));
+      },
+    });
     // Capture the existing continuation sweeper so expiry is tested without a wall-clock wait.
     globalThis.setInterval = ((handler: (...args: unknown[]) => void, timeout?: number, ...args: unknown[]) => {
       if (timeout === 60_000) sweep = async () => { await handler(...args); };
@@ -236,6 +245,7 @@ if (!backend) {
   afterAll(async () => {
     globalThis.fetch = originalFetch;
     globalThis.setInterval = originalSetInterval;
+    httpServer?.stop(true);
     await prisma?.$disconnect();
     if (admin) {
       await admin.query(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`);
