@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
+import type { Server } from 'bun';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -51,6 +52,7 @@ if (!backend) {
   const API = 'https://api.openkey.test';
   const ORIGIN = 'https://openkey.test';
   const originalFetch = globalThis.fetch;
+  let httpServer: Server<undefined>;
   const profiles = new Map<string, { sub: string; email: string; email_verified: boolean }>();
 
   function jwt(payload: object): string {
@@ -60,7 +62,7 @@ if (!backend) {
     return response.headers.getSetCookie().map((cookie) => cookie.split(';')[0]).join('; ');
   }
   function call(path: string, init: RequestInit = {}) {
-    return app.fetch(new Request(`${API}${path}`, init));
+    return originalFetch(`http://127.0.0.1:${httpServer.port}${path}`, { ...init, redirect: 'manual' });
   }
   function post(path: string, body: unknown, cookie = '') {
     return call(path, {
@@ -152,10 +154,18 @@ if (!backend) {
     prisma = createPrismaClient();
     ({ auth } = await import('../apps/api/src/auth'));
     app = (await import('../apps/api/src/index')).default;
+    httpServer = Bun.serve({
+      hostname: '127.0.0.1', port: 0,
+      fetch: (request) => {
+        const url = new URL(request.url);
+        return app.fetch(new Request(API + url.pathname + url.search, request));
+      },
+    });
   }, 120_000);
 
   afterAll(async () => {
     globalThis.fetch = originalFetch;
+    httpServer?.stop(true);
     await prisma?.$disconnect();
     if (admin) {
       await admin.query(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`);
