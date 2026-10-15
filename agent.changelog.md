@@ -13,8 +13,10 @@ Track changes to agent-facing development guidance for OpenKey. Add a concise en
   after first redemption, bounded by the signed grant, so the same device
   credential can recover a lost response. Startup and scheduled bounded sweeps
   purge idle results; conditional expiry clearing preserves a concurrent
-  redemption across the approval deadline. Owner-bound requests support
-  authenticated linked-key denial; unbound legacy requests still expire.
+  redemption across the approval deadline. Atomic consumption requires a
+  present relay and returns it from the updated row, so cleanup cannot make a
+  successful response unrecoverable. Owner-bound requests support authenticated
+  linked-key denial; unbound legacy requests still expire.
 
 ## 2026-10-13
 

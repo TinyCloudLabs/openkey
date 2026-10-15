@@ -36,6 +36,11 @@ function fakeDatabase() {
       for (const row of matched) Object.assign(row, structuredClone(data));
       return { count: matched.length };
     },
+    updateManyAndReturn: async ({ where, data }: { where: Where; data: Row }) => {
+      const matched = [...rows.values()].filter((row) => matches(row, where));
+      for (const row of matched) Object.assign(row, structuredClone(data));
+      return structuredClone(matched);
+    },
   };
   const ethereumKey = {
     findFirst: async ({ where }: { where: { userId: string; address: { equals: string }; archivedAt: null } }) => {

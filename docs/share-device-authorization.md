@@ -264,17 +264,20 @@ still read; their lifetime is derived from the stored deadline and capped at
 ## Recovery and explicit denial
 
 The first approved `/token` redemption must occur before the ten-minute
-transaction deadline and the signed grant's expiry. It atomically records
-`consumedAt` without deleting the encrypted relay. The same transaction ID,
-device secret and PKCE verifier then retrieve the identical relay and binding,
-including after the approval deadline, until the earlier of ten minutes after
-first redemption or signed grant expiry. Concurrent redemptions return that
-one persisted decision; OpenKey does not sign another grant. Approved and
-consumed requests disappear from public `/lookup`. At the recovery boundary
-`/token` returns `expired_token` (410) and clears the relay. A stale approved
-poll cannot clear a concurrently consumed relay: expiry clearing checks the
-current database status and deadline before writing, then reloads the winning
-decision. Startup and ten-second scheduled sweeps clear expired ciphertext
+transaction deadline and the signed grant's expiry. An atomic update records
+`consumedAt` only while the encrypted relay is still present and returns the
+relay from the updated row, not an earlier read. If cleanup wins first, the
+device receives `expired_token` instead of an unrecoverable success. The same
+transaction ID, device secret and PKCE verifier then retrieve the identical
+relay and binding, including after the approval deadline, until the earlier of
+ten minutes after first redemption or signed grant expiry. Concurrent
+redemptions return that one persisted decision; OpenKey does not sign another
+grant. Approved and consumed requests disappear from public `/lookup`. At the
+recovery boundary `/token` returns `expired_token` (410) and clears the relay.
+A stale approved poll cannot clear a concurrently consumed relay: expiry
+clearing checks the current database status and deadline before writing, then
+reloads the winning decision. Startup and ten-second scheduled sweeps clear
+expired ciphertext
 even with no later device traffic. Each database batch clears at most 100 rows;
 the scheduler drains full batches and catches up again after downtime. Later
 starts also clear expired relays.

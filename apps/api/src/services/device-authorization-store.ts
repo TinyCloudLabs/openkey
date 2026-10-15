@@ -179,19 +179,17 @@ export function createPrismaDeviceAuthorizationStore(database: any): DeviceAutho
       });
     },
     async consumeApproved(id, now) {
-      return database.$transaction(async (tx: Prisma.TransactionClient) => {
-        const available = {
-          id, status: 'APPROVED', consumedAt: null,
+      // The ciphertext must still be present at the same atomic transition.
+      // A cleanup winner leaves no consumable row; return only the row that
+      // UPDATE ... RETURNING actually wrote, never a prior SELECT snapshot.
+      const [value] = await database.deviceAuthorization.updateManyAndReturn({
+        where: {
+          id, status: 'APPROVED', consumedAt: null, encryptedResult: { not: null },
           transactionExpiresAt: { gt: now }, delegationExpiresAt: { gt: now },
-        };
-        const value = await tx.deviceAuthorization.findFirst({ where: available });
-        if (!value) return null;
-        const updated = await tx.deviceAuthorization.updateMany({
-          where: available,
-          data: { status: 'CONSUMED', consumedAt: now },
-        });
-        return updated.count === 1 ? { ...fromDatabase(value), status: 'consumed' as const, consumedAt: now } : null;
+        },
+        data: { status: 'CONSUMED', consumedAt: now },
       });
+      return value ? fromDatabase(value) : null;
     },
     async purgeResult(id, now) {
       await database.deviceAuthorization.updateMany({
