@@ -279,6 +279,19 @@ if (!backend) {
       expect(await prisma.ethereumKey.count()).toBe(0);
       expect(await prisma.session.count()).toBe(0);
     });
+    test('disabled Apple preserves the Google-created mailbox email OTP session', async () => {
+      const email = 'google-mailbox@openkey.test';
+      const user = await prisma.user.create({ data: {
+        id: randomUUID(), email, emailVerified: true, socialCreatedProvider: 'google',
+      } });
+      await prisma.account.create({ data: {
+        id: randomUUID(), userId: user.id, providerId: 'google', accountId: 'google-mailbox-sub',
+      } });
+      const response = await socialOtp(email);
+      expect(response.status).toBe(200);
+      expect(sessionCookie(response)).toBe(true);
+      expect(await prisma.session.count({ where: { userId: user.id } })).toBe(1);
+    });
   } else {
     describe('Apple code-flow identity and confirmation', () => {
       test('unsigned form_post user.email cannot claim another mailbox', async () => {
@@ -453,6 +466,54 @@ if (!backend) {
         expect(await prisma.verification.count({ where: { id: row.id } })).toBe(0);
       });
 
+      test('linked Apple subject is never revoked by an earlier failed existing-email cleanup', async () => {
+        const email = 'later-link@openkey.test';
+        const user = await prisma.user.create({ data: { id: randomUUID(), email, emailVerified: true } });
+        failRevocation = true;
+        await appleCallback(profile('later-linked-sub', email));
+        const cookie = await signedInCookie(email);
+        await stepUp(cookie, user.id);
+        await appleCallback(profile('later-linked-sub', email), cookie, true);
+        expect(await prisma.account.count({ where: { providerId: 'apple', accountId: 'later-linked-sub' } })).toBe(1);
+        await prisma.verification.updateMany({
+          where: { identifier: { startsWith: 'openkey-apple-confirm:' } },
+          data: { expiresAt: new Date(Date.now() - 1000) },
+        });
+        failRevocation = false;
+        const before = revoked.length;
+        await sweep!();
+        expect(revoked).toHaveLength(before);
+      });
+
+      test('a subject linked before confirmation is not revoked by its old continuation', async () => {
+        const { response, continuation } = await newContinuation('linked-before-create', 'unclaimed@openkey.test');
+        const user = await prisma.user.create({ data: {
+          id: randomUUID(), email: 'link-owner@openkey.test', emailVerified: true,
+        } });
+        const cookie = await signedInCookie(user.email);
+        await stepUp(cookie, user.id);
+        await appleCallback(profile('linked-before-create', user.email), cookie, true);
+        const before = revoked.length;
+        expect((await post('/api/auth/social/confirm', { continuation }, cookies(response))).status).toBe(400);
+        expect(revoked).toHaveLength(before);
+        expect(await prisma.account.count({ where: { userId: user.id, accountId: 'linked-before-create' } })).toBe(1);
+      });
+
+      test('verified relay domain is private without the optional Apple claim', async () => {
+        const { response, continuation } = await newContinuation('relay-domain-only', 'domain-only@privaterelay.appleid.com');
+        const preview = await call(`/api/auth/social/continuation?continuation=${continuation}`, {
+          headers: { cookie: cookies(response) },
+        });
+        expect((await preview.json() as { isPrivateEmail?: boolean }).isPrivateEmail).toBe(true);
+
+        await prisma.user.create({ data: {
+          id: randomUUID(), email: 'existing@privaterelay.appleid.com', emailVerified: true,
+        } });
+        const existing = await appleCallback(profile('existing-relay-sub', 'existing@privaterelay.appleid.com'));
+        expect(location(existing.response).searchParams.get('error')).toBe('account_exists');
+        expect(await prisma.account.count()).toBe(0);
+      });
+
       test('identity claimed before Create leaves no orphan user or key', async () => {
         const email = 'conflict@openkey.test';
         const { response, continuation } = await newContinuation('already-owned-sub', email);
@@ -554,6 +615,30 @@ if (!backend) {
         const refreshed = await prisma.account.findUniqueOrThrow({ where: { id: account.id } });
         expect(refreshed.refreshToken).not.toBe(account.refreshToken);
         expect(refreshed.appleClientId).toBe(SERVICES_ID);
+      });
+
+      test('stock Apple unlink cannot bypass revocation; custom unlink uses the issuing client', async () => {
+        const user = await prisma.user.create({ data: {
+          id: randomUUID(), email: 'stock-unlink@openkey.test', emailVerified: true,
+        } });
+        const cookie = await signedInCookie(user.email);
+        await stepUp(cookie, user.id);
+        await appleCallback(profile('stock-unlink-sub', user.email), cookie, true);
+        failRevocation = true;
+        const stock = await post('/api/auth/unlink-account', {
+          providerId: 'apple', accountId: 'stock-unlink-sub',
+        }, cookie);
+        expect(stock.status).not.toBe(200);
+        expect(await prisma.account.count({ where: { userId: user.id, accountId: 'stock-unlink-sub' } })).toBe(1);
+        expect((await post('/api/account/social/unlink', {
+          providerId: 'apple', accountId: 'stock-unlink-sub',
+        }, cookie)).status).toBe(503);
+        failRevocation = false;
+        expect((await post('/api/account/social/unlink', {
+          providerId: 'apple', accountId: 'stock-unlink-sub',
+        }, cookie)).status).toBe(200);
+        expect(revoked.some(({ token, clientId }) => token.startsWith('refresh-') && clientId === SERVICES_ID)).toBe(true);
+        expect(await prisma.account.count({ where: { userId: user.id, accountId: 'stock-unlink-sub' } })).toBe(0);
       });
     });
 
