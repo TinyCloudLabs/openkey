@@ -624,6 +624,23 @@ if (!backend) {
         expect(refreshed.appleClientId).toBe(SERVICES_ID);
       });
 
+      test('pending Apple confirmation stores the token issuer even when configuration rotates', async () => {
+        const email = 'pending-rotation@openkey.test';
+        const { response, continuation } = await newContinuation('pending-rotation-sub', email);
+        const originalClientId = process.env.APPLE_CLIENT_ID;
+        try {
+          process.env.APPLE_CLIENT_ID = 'rotated-services-id';
+          expect((await post('/api/auth/social/confirm', { continuation }, cookies(response))).status).toBe(200);
+        } finally {
+          if (originalClientId === undefined) delete process.env.APPLE_CLIENT_ID;
+          else process.env.APPLE_CLIENT_ID = originalClientId;
+        }
+        const account = await prisma.account.findFirstOrThrow({
+          where: { providerId: 'apple', accountId: 'pending-rotation-sub' },
+        });
+        expect(account.appleClientId).toBe(SERVICES_ID);
+      });
+
       test('stock Apple unlink cannot bypass revocation; custom unlink uses the issuing client', async () => {
         const user = await prisma.user.create({ data: {
           id: randomUUID(), email: 'stock-unlink@openkey.test', emailVerified: true,
