@@ -21,6 +21,7 @@ import { internalMetricsRouter } from './routes/internal-metrics';
 import { organizationsRouter } from './routes/organizations';
 import { tenantConsoleRouter } from './routes/tenant-console';
 import { deviceAuthorizationRouter } from './routes/device-authorization';
+import { createPrismaDeviceAuthorizationStore, startDeviceAuthorizationResultSweep } from './services/device-authorization-store';
 import { createDelegationCodeRouter, createPrismaDelegationCodeStore } from './routes/delegation-codes';
 import { requireSession } from './middleware/session';
 import { trackAuthorization, trackTokenExchange, trackUniqueUser } from './analytics';
@@ -247,6 +248,11 @@ const ALL_SCOPES = ['openid', 'email', 'keys', 'offline_access'];
     logError('error', 'oauth_client_scopes_update_failed', err);
   }
 })();
+
+// Startup catch-up and independent periodic clearing do not require a device
+// request. Imported test apps do not run background database work.
+if (import.meta.main) startDeviceAuthorizationResultSweep(createPrismaDeviceAuthorizationStore(authPrisma));
+
 
 // Start server
 const port = parseInt(process.env.API_PORT || '3001');

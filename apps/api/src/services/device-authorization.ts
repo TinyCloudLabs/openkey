@@ -10,6 +10,7 @@ import {
 
 export const DEVICE_AUTH_TRANSACTION_TTL_MS = 10 * 60 * 1000;
 export const DEVICE_AUTH_RECOVERY_TTL_MS = 10 * 60 * 1000;
+export const DEVICE_AUTH_RESULT_SWEEP_BATCH_SIZE = 100;
 export const DEVICE_AUTH_DEFAULT_DELEGATION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const DEVICE_AUTH_MAX_DELEGATION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const DEVICE_AUTH_POLL_INTERVAL_SECONDS = 2;
@@ -120,8 +121,9 @@ export interface DeviceAuthorizationStore {
   /** The store verifies the signed-in user's linked owner key before the pending-state transition. */
   deny(id: string, userId: string, now: Date): Promise<boolean>;
   consumeApproved(id: string, now: Date): Promise<DeviceAuthorizationRecord | null>;
-  purgeResult(id: string): Promise<void>;
-  purgeExpiredResults(now: Date): Promise<void>;
+  purgeResult(id: string, now: Date): Promise<void>;
+  /** At most one bounded batch; the scheduler repeats until the backlog drains. */
+  purgeExpiredResults(now: Date): Promise<number>;
 }
 
 export class MemoryDeviceAuthorizationStore implements DeviceAuthorizationStore {
@@ -187,23 +189,29 @@ export class MemoryDeviceAuthorizationStore implements DeviceAuthorizationStore 
     return { ...record };
   }
 
-  async purgeResult(id: string): Promise<void> {
+  async purgeResult(id: string, now: Date): Promise<void> {
     const record = this.records.get(id);
-    if (record) delete record.encryptedResult;
+    if (record && this.resultExpired(record, now)) delete record.encryptedResult;
   }
 
-  async purgeExpiredResults(now: Date): Promise<void> {
+  private resultExpired(record: DeviceAuthorizationRecord, now: Date): boolean {
+    return !!record.encryptedResult && (
+      record.delegationExpiresAt <= now ||
+      (record.status === 'approved' && record.transactionExpiresAt <= now) ||
+      (record.status === 'consumed' && !!record.consumedAt &&
+        record.consumedAt.getTime() + DEVICE_AUTH_RECOVERY_TTL_MS <= now.getTime())
+    );
+  }
+
+  async purgeExpiredResults(now: Date): Promise<number> {
+    let purged = 0;
     for (const record of this.records.values()) {
-      if (
-        record.encryptedResult &&
-        (record.delegationExpiresAt <= now ||
-          (record.status === 'approved' && record.transactionExpiresAt <= now) ||
-          (record.status === 'consumed' && record.consumedAt &&
-            record.consumedAt.getTime() + DEVICE_AUTH_RECOVERY_TTL_MS <= now.getTime()))
-      ) {
+      if (this.resultExpired(record, now)) {
         delete record.encryptedResult;
+        if (++purged === DEVICE_AUTH_RESULT_SWEEP_BATCH_SIZE) break;
       }
     }
+    return purged;
   }
 }
 
@@ -849,7 +857,7 @@ export class DeviceAuthorizationService {
     if (!input || typeof input !== 'object' || Array.isArray(input)) {
       throw new DeviceAuthorizationError('invalid_request', 'device token request must be an object', 400);
     }
-    const record = await this.store.findById(input.transactionId);
+    let record = await this.store.findById(input.transactionId);
     if (!record) throw new DeviceAuthorizationError('expired_token', 'device authorization expired', 410);
     if (
       !equalDigest(sha256(input.deviceSecret), record.deviceSecretHash) ||
@@ -874,8 +882,17 @@ export class DeviceAuthorizationService {
       (record.status === 'consumed' &&
         (!record.consumedAt || record.consumedAt.getTime() + DEVICE_AUTH_RECOVERY_TTL_MS <= now.getTime()))
     ) {
-      await this.store.purgeResult(record.id);
-      throw new DeviceAuthorizationError('expired_token', 'device authorization expired', 410);
+      // The APPROVED snapshot may predate another poll's successful consume.
+      // Purge only if the durable row is still expired, then use the winner's
+      // state if its recovery window is open.
+      await this.store.purgeResult(record.id, now);
+      const current = await this.store.findById(record.id);
+      if (!current || current.status !== 'consumed' || !current.encryptedResult ||
+        current.delegationExpiresAt <= now || !current.consumedAt ||
+        current.consumedAt.getTime() + DEVICE_AUTH_RECOVERY_TTL_MS <= now.getTime()) {
+        throw new DeviceAuthorizationError('expired_token', 'device authorization expired', 410);
+      }
+      record = current;
     }
     // A compare-and-set claims the first redemption. Concurrent losers read
     // the committed row again rather than signing or consuming a second time.

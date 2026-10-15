@@ -11,7 +11,9 @@ Track changes to agent-facing development guidance for OpenKey. Add a concise en
   Added real-provider OAuth regression coverage to the normal API suite.
 - Device approvals (TC-1256) retain only the encrypted relay for ten minutes
   after first redemption, bounded by the signed grant, so the same device
-  credential can recover a lost response. Owner-bound requests support
+  credential can recover a lost response. Startup and scheduled bounded sweeps
+  purge idle results; conditional expiry clearing preserves a concurrent
+  redemption across the approval deadline. Owner-bound requests support
   authenticated linked-key denial; unbound legacy requests still expire.
 
 ## 2026-10-13

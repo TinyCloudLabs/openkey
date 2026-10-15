@@ -1,7 +1,9 @@
 import type { Prisma } from '@openkey/db';
+import { logError, withScheduledLogContext } from '../log';
 import {
   DEVICE_AUTH_MAX_DELEGATION_TTL_MS,
   DEVICE_AUTH_RECOVERY_TTL_MS,
+  DEVICE_AUTH_RESULT_SWEEP_BATCH_SIZE,
   type DeviceAuthorizationRecord,
   type DeviceAuthorizationStore,
   type DevicePermission,
@@ -77,6 +79,40 @@ function fromDatabase(value: any): DeviceAuthorizationRecord {
     ...(value.encryptedResult ? { encryptedResult: value.encryptedResult } : {}),
     ...(value.consumedAt ? { consumedAt: value.consumedAt } : {}),
   };
+}
+function expiredRelayWhere(now: Date): Prisma.DeviceAuthorizationWhereInput {
+  return {
+    encryptedResult: { not: null },
+    OR: [
+      { delegationExpiresAt: { lte: now } },
+      { status: 'APPROVED', transactionExpiresAt: { lte: now } },
+      { status: 'CONSUMED', consumedAt: { lte: new Date(now.getTime() - DEVICE_AUTH_RECOVERY_TTL_MS) } },
+    ],
+  };
+}
+
+/** Runs immediately on startup, then independently of device traffic. Each
+ * query is bounded; repeating full batches drains a backlog without overlap. */
+export function startDeviceAuthorizationResultSweep(
+  store: DeviceAuthorizationStore,
+  now: () => Date = () => new Date(),
+): { started: Promise<void>; stop: () => void } {
+  let running = false;
+  async function sweep(): Promise<void> {
+    if (running) return;
+    running = true;
+    try {
+      while (await store.purgeExpiredResults(now()) === DEVICE_AUTH_RESULT_SWEEP_BATCH_SIZE) { /* drain */ }
+    } catch (error) {
+      withScheduledLogContext(() => logError('error', 'device_authorization_result_cleanup_failed', error));
+    } finally {
+      running = false;
+    }
+  }
+  const started = sweep();
+  const timer = setInterval(sweep, 10_000);
+  timer.unref();
+  return { started, stop: () => clearInterval(timer) };
 }
 
 export function createPrismaDeviceAuthorizationStore(database: any): DeviceAuthorizationStore {
@@ -157,21 +193,23 @@ export function createPrismaDeviceAuthorizationStore(database: any): DeviceAutho
         return updated.count === 1 ? { ...fromDatabase(value), status: 'consumed' as const, consumedAt: now } : null;
       });
     },
-    async purgeResult(id) {
-      await database.deviceAuthorization.updateMany({ where: { id }, data: { encryptedResult: null } });
-    },
-    async purgeExpiredResults(now) {
+    async purgeResult(id, now) {
       await database.deviceAuthorization.updateMany({
-        where: {
-          encryptedResult: { not: null },
-          OR: [
-            { delegationExpiresAt: { lte: now } },
-            { status: 'APPROVED', transactionExpiresAt: { lte: now } },
-            { status: 'CONSUMED', consumedAt: { lte: new Date(now.getTime() - DEVICE_AUTH_RECOVERY_TTL_MS) } },
-          ],
-        },
+        where: { id, ...expiredRelayWhere(now) },
         data: { encryptedResult: null },
       });
+    },
+    async purgeExpiredResults(now) {
+      const where = expiredRelayWhere(now);
+      const rows: { id: string }[] = await database.deviceAuthorization.findMany({
+        where, select: { id: true }, orderBy: { id: 'asc' }, take: DEVICE_AUTH_RESULT_SWEEP_BATCH_SIZE,
+      });
+      if (rows.length === 0) return 0;
+      const result = await database.deviceAuthorization.updateMany({
+        where: { ...where, id: { in: rows.map((row) => row.id) } },
+        data: { encryptedResult: null },
+      });
+      return result.count;
     },
   };
 }

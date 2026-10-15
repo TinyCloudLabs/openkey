@@ -17,6 +17,7 @@ function fakeDatabase() {
       if ('gt' in expected) return (row[field] as Date) > (expected.gt as Date);
       if ('lte' in expected) return (row[field] as Date) <= (expected.lte as Date);
       if ('not' in expected) return (row[field] ?? null) !== expected.not;
+      if ('in' in expected) return Array.isArray(expected.in) && expected.in.includes(row[field]);
     }
     return (row[field] ?? null) === expected;
   });
@@ -26,6 +27,9 @@ function fakeDatabase() {
     },
     findUnique: async ({ where }: { where: Where }) => structuredClone([...rows.values()].find((row) => matches(row, where)) ?? null),
     findFirst: async ({ where }: { where: Where }) => structuredClone([...rows.values()].find((row) => matches(row, where)) ?? null),
+    findMany: async ({ where, take }: { where: Where; take: number }) =>
+      [...rows.values()].filter((row) => matches(row, where)).sort((a, b) => String(a.id).localeCompare(String(b.id)))
+        .slice(0, take).map((row) => ({ id: row.id })),
     count: async ({ where }: { where: Where }) => [...rows.values()].filter((row) => row.requestIpHash === where.requestIpHash).length,
     updateMany: async ({ where, data }: { where: Where; data: Row }) => {
       const matched = [...rows.values()].filter((row) => matches(row, where));

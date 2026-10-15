@@ -271,8 +271,13 @@ including after the approval deadline, until the earlier of ten minutes after
 first redemption or signed grant expiry. Concurrent redemptions return that
 one persisted decision; OpenKey does not sign another grant. Approved and
 consumed requests disappear from public `/lookup`. At the recovery boundary
-`/token` returns `expired_token` (410) and clears the relay. Later starts also
-clear expired relays left by clients that never polled again.
+`/token` returns `expired_token` (410) and clears the relay. A stale approved
+poll cannot clear a concurrently consumed relay: expiry clearing checks the
+current database status and deadline before writing, then reloads the winning
+decision. Startup and ten-second scheduled sweeps clear expired ciphertext
+even with no later device traffic. Each database batch clears at most 100 rows;
+the scheduler drains full batches and catches up again after downtime. Later
+starts also clear expired relays.
 
 An owner-bound pending request may be explicitly denied at
 `POST /api/device-authorizations/:transactionId/deny`. This route requires
