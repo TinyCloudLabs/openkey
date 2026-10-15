@@ -64,6 +64,8 @@
      * re-prepare.
      */
     approveBlockedReason?: string | null;
+    /** Disable Approve while an embedding host is applying the review layout. */
+    layoutBlocked?: boolean;
     finalPreview?: boolean;
     approveText?: string;
     cancelText?: string;
@@ -84,6 +86,7 @@
     approving = false,
     error = null,
     approveBlockedReason = null,
+    layoutBlocked = false,
     finalPreview = false,
     approveText = "Approve",
     cancelText = "Cancel",
@@ -369,7 +372,7 @@
   }
 
   const approveDisabled = $derived(approving || isMalformedRecap);
-  const approveButtonDisabled = $derived(approveDisabled || Boolean(approveBlockedReason));
+  const approveButtonDisabled = $derived(layoutBlocked || approveDisabled || Boolean(approveBlockedReason));
   const approveLabel = $derived(
     isMalformedRecap
       ? "Cannot approve"

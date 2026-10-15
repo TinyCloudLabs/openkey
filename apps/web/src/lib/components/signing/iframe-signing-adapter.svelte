@@ -24,9 +24,10 @@
     initialSelection: Set<string>;
     /** Transport for widget-specific completion. */
     transport: WidgetSigningTransport;
+    layoutBlocked?: boolean;
   }
 
-  let { model, initialSelection, transport }: Props = $props();
+  let { model, initialSelection, transport, layoutBlocked = false }: Props = $props();
 
   // Adapter-owned presentational state — see popup-signing-adapter.svelte
   // for the same-shape note. `initialSelection` is only read once.
@@ -66,6 +67,7 @@
   {editing}
   approving={transport.approving}
   error={transport.error}
+  {layoutBlocked}
   finalPreview={transport.previewReady}
   {onApprove}
   {onCancel}

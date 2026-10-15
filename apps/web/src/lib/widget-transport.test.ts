@@ -1,11 +1,12 @@
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
-import { describe, expect, it, beforeEach, afterEach } from 'bun:test';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'bun:test';
 import {
   createVersionedIframeTransport,
   createWidgetTransport,
   isFromWidgetCounterparty,
   resolveWidgetOrigin,
 } from './widget-transport';
+import { createIframeLayoutGate } from './widget-transport';
 
 // Minimal DOM-ish shim for the transport in a Node test environment.
 // We simulate window, window.opener, window.postMessage, and MessageEvent.
@@ -660,6 +661,136 @@ describe('widget-transport', () => {
     expect(requested).toBe(1);
     expect(invalids).toContain('invalid-payload');
   });
+});
+
+describe('v2 embedded review layout', () => {
+  beforeEach(() => {
+    originalWindow = (globalThis as any).window;
+  });
+  afterEach(() => {
+    (globalThis as any).window = originalWindow;
+  });
+
+  it('binds ready, request, resize and layout acknowledgement to the URL phase and exact parent', () => {
+    const { parent, child } = makeWindows();
+    const requests: unknown[] = [];
+    const layouts: unknown[] = [];
+    const invalid: string[] = [];
+    const transport = createWidgetTransport({
+      origin: 'https://caller.example',
+      container: 'iframe',
+      protocolVersion: 2,
+      requestId: 'phase-2',
+      onRequest: (request) => requests.push(request),
+      onLayoutApplied: (height, layoutId) => layouts.push([height, layoutId]),
+      onClose: () => {},
+      onInvalid: (reason) => invalid.push(reason),
+    });
+    transport.emitReady();
+    expect(parent.sent[0]?.data).toEqual({
+      type: 'openkey:ready', protocolVersion: 2, requestId: 'phase-2',
+    });
+    for (const id of ['old-phase', 'phase-2']) {
+      child.dispatch({
+        origin: 'https://caller.example',
+        source: parent as unknown as MessageEventSource,
+        data: { type: 'openkey:sign:request', requestId: id, protocolVersion: 2, message: 'SIWE' },
+      });
+    }
+    expect(requests).toHaveLength(1);
+    transport.emitResize(733, 1);
+    expect(parent.sent.at(-1)?.data).toEqual({
+      type: 'openkey:resize', height: 733, layoutId: 1, requestId: 'phase-2', protocolVersion: 2,
+    });
+    transport.emitLayoutSignal(true, 1);
+    expect(parent.sent.at(-1)?.data).toEqual({
+      type: 'openkey:layout-ready', requestId: 'phase-2', protocolVersion: 2, layoutId: 1,
+    });
+    transport.emitLayoutSignal(false, 1);
+    expect(parent.sent.at(-1)?.data).toEqual({
+      type: 'openkey:layout-invalidated', requestId: 'phase-2', protocolVersion: 2, layoutId: 1,
+    });
+    child.dispatch({
+      origin: 'https://evil.example', source: parent as unknown as MessageEventSource,
+      data: { type: 'openkey:layout-applied', requestId: 'phase-2', protocolVersion: 2, height: 733, layoutId: 1 },
+    });
+    child.dispatch({
+      origin: 'https://caller.example', source: new FakeWindow() as unknown as MessageEventSource,
+      data: { type: 'openkey:layout-applied', requestId: 'phase-2', protocolVersion: 2, height: 733, layoutId: 1 },
+    });
+    child.dispatch({
+      origin: 'https://caller.example', source: parent as unknown as MessageEventSource,
+      data: { type: 'openkey:layout-applied', requestId: 'old-phase', protocolVersion: 2, height: 733, layoutId: 1 },
+    });
+    child.dispatch({
+      origin: 'https://caller.example', source: parent as unknown as MessageEventSource,
+      data: { type: 'openkey:layout-applied', requestId: 'phase-2', protocolVersion: 2, height: 733, layoutId: 1 },
+    });
+    expect(layouts).toEqual([[733, 1]]);
+    expect(invalid).toContain('wrong-origin');
+    expect(invalid).toContain('wrong-source');
+    expect(invalid).toContain('invalid-layout');
+  });
+
+  it('waits for visible review, applied geometry and 100ms stability, then revokes on change', () => {
+    vi.useFakeTimers();
+    const resizes: Array<[number, number]> = [];
+    const enabled: boolean[] = [];
+    const gate = createIframeLayoutGate(
+      (height, layoutId) => resizes.push([height, layoutId]),
+      (ready) => enabled.push(ready),
+    );
+    gate.measure(720, false);
+    expect(resizes).toHaveLength(0);
+    gate.measure(720, true);
+    expect(gate.canApprove()).toBe(false);
+    const first = resizes[0]!;
+    gate.applied(first[0], first[1]);
+    vi.advanceTimersByTime(120);
+    expect(gate.canApprove()).toBe(true);
+    gate.changed();
+    expect(gate.canApprove()).toBe(false);
+    gate.measure(720, true);
+    const second = resizes[1]!;
+    expect(second[1]).toBeGreaterThan(first[1]);
+    gate.applied(first[0], first[1]); // same height, old layout: still blocked
+    vi.advanceTimersByTime(120);
+    expect(gate.canApprove()).toBe(false);
+    gate.applied(second[0], second[1]);
+    expect(gate.canApprove()).toBe(true);
+    const resizeCount = resizes.length;
+    gate.measure(720, true);
+    expect(resizes).toHaveLength(resizeCount); // no late resize while enabled
+    gate.destroy();
+    expect(enabled).toContain(true);
+    vi.useRealTimers();
+  });
+  it('keeps a timed-out layout blocked even if the host acknowledges late', () => {
+    vi.useFakeTimers();
+    try {
+      const resizes: Array<[number, number]> = [];
+      let timedOut = 0;
+      const gate = createIframeLayoutGate(
+        (height, layoutId) => resizes.push([height, layoutId]),
+        () => {},
+        () => timedOut++,
+      );
+      gate.measure(810, true);
+      vi.advanceTimersByTime(5000);
+      expect(timedOut).toBe(1);
+      gate.applied(600, resizes[0]![1]);
+      gate.changed();
+      gate.measure(810, true);
+      vi.advanceTimersByTime(5000);
+      expect(gate.canApprove()).toBe(false);
+      expect(timedOut).toBe(1);
+      expect(resizes).toHaveLength(1);
+      gate.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
 });
 
 describe('versioned iframe transport', () => {
