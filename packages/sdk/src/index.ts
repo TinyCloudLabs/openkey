@@ -584,7 +584,10 @@ class IframeModal {
 
     this.card = document.createElement('div');
     this.card.className = 'ok-card';
-    if (opts.hideUntilLayout) this.card.style.visibility = 'hidden';
+    if (opts.hideUntilLayout) {
+      this.card.style.visibility = 'hidden';
+      this.card.style.animation = 'none';
+    }
 
     if (isMobile) {
       const handle = document.createElement('div');

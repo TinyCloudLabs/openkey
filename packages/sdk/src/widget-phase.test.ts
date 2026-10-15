@@ -154,6 +154,7 @@ describe('embedded Connect and Sign phases', () => {
       expect(frame.style.visibility).toBe('hidden');
       const card = h.elements.find(el => el.className === 'ok-card');
       expect(card?.style.visibility).toBe('hidden');
+      expect(card?.style.animation).toBe('none'); // no scale/slide under a newly enabled Approve
       h.send(frame, { type: 'openkey:ready', ...phase });
       h.send(frame, { type: 'openkey:resize', height: 740, layoutId: 1, requestId: 'stale', protocolVersion: 2 });
       expect(frame.posts.some(p => typeof p === 'object' && p !== null && 'type' in p && p.type === 'openkey:layout-applied')).toBe(false);
