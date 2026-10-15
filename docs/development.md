@@ -168,6 +168,18 @@ configure matching SPF and DKIM records.
 | `bun oauth:register` | Register a new OAuth client |
 | `bun oauth:list` | List registered OAuth clients |
 
+Dynamic registration at `POST /api/auth/oauth2/register` supports public PKCE clients.
+When `scope` is omitted, the registration allowlist includes `openid`, `email`, `keys`,
+`offline_access`, and `tinycloud:mcp`, so MCP clients can request the advertised resource
+scope during authorization. Explicitly supplied scope lists stay unchanged. Registration
+does not grant a token or bypass user consent; TinyCloud signing/delegation scopes are
+never defaults.
+
+Existing clients retain their stored scope allowlists. If a connector created before this
+default was added returns `invalid_scope` for `tinycloud:mcp`, recreate the connector after
+the API update so it registers a new client. Refreshing tools or signing in again with the
+same client ID does not change its scopes.
+
 ## Project Structure
 
 ```

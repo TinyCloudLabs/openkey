@@ -30,10 +30,11 @@ export const TINYCLOUD_CANONICAL_IDENTITY_CLAIM =
   'https://tinycloud.xyz/canonical_identity';
 export const DEFAULT_TINYCLOUD_MCP_AUDIENCE = 'https://mcp.tinycloud.xyz/mcp';
 
-export const DEFAULT_OAUTH_SCOPES = ['openid', 'email', 'keys', 'offline_access'] as const;
+// MCP clients may omit scope during registration, then request it at authorize.
+// This allowlist does not replace user consent or grant TinyCloud signing access.
+export const DEFAULT_OAUTH_SCOPES = ['openid', 'email', 'keys', 'offline_access', TINYCLOUD_MCP_SCOPE] as const;
 export const OAUTH_SCOPES = [
   ...DEFAULT_OAUTH_SCOPES,
-  TINYCLOUD_MCP_SCOPE,
   TINYCLOUD_SESSION_SCOPE,
   TINYCLOUD_MANAGE_KEY_SCOPE,
   TINYCLOUD_DELEGATION_SCOPE,
