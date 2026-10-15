@@ -190,6 +190,14 @@ if (!backend) {
       expect(await prisma.account.count()).toBe(0);
     });
 
+    test('a matching verified email with different casing remains an existing account', async () => {
+      const user = await prisma.user.create({ data: { id: randomUUID(), email: 'ExistingCase@openkey.test', emailVerified: true } });
+      const { response } = await googleCallback({ sub: 'case-sub', email: 'existingcase@openkey.test', email_verified: true });
+      expect(new URL(response.headers.get('location')!).searchParams.get('error')).toBe('account_exists');
+      expect(await prisma.account.count({ where: { userId: user.id } })).toBe(0);
+      expect(await prisma.user.count()).toBe(1);
+    });
+
     test('unknown verified email creates only after bound confirmation, once', async () => {
       const email = 'confirmed-google@openkey.test';
       const { response } = await googleCallback({ sub: 'new-sub', email, email_verified: true });

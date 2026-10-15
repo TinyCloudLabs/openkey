@@ -42,6 +42,13 @@ async function revokeGoogleToken(accessToken: string | undefined): Promise<boole
   }
 }
 
+async function hasMatchingUser(database: PrismaClient, email: string): Promise<boolean> {
+  return (await database.user.findFirst({
+    where: { email: { equals: email, mode: 'insensitive' } },
+    select: { id: true },
+  })) !== null;
+}
+
 export function googleSocialConfirmation(database: PrismaClient) {
   async function sweepExpired(key: Parameters<typeof symmetricDecrypt>[0]['key']) {
     const expired = await database.verification.findMany({
@@ -94,7 +101,8 @@ export function googleSocialConfirmation(database: PrismaClient) {
           const profile = await googleCallbackProfile.get();
           if (!profile) return; // No verified profile from the token exchange.
           scheduleSweep(ctx.context.secretConfig);
-          const outcome = error === 'account_not_linked' ? 'account_exists' : 'new_account';
+          const outcome = error === 'account_not_linked' || await hasMatchingUser(database, profile.email)
+            ? 'account_exists' : 'new_account';
           if (outcome === 'account_exists' && !await revokeGoogleToken(profile.tokens.accessToken)) {
             log('warn', 'auth_google_token_revoke_failed');
           }
@@ -161,7 +169,7 @@ export function googleSocialConfirmation(database: PrismaClient) {
         if (consumed.count !== 1) throw invalid();
         ctx.setCookie(COOKIE, '', { httpOnly: true, secure: true, sameSite: 'lax', path: '/', maxAge: 0 });
         const { profile, tokens } = stored;
-        if (await ctx.context.internalAdapter.findUserByEmail(profile.email)) {
+        if (await hasMatchingUser(database, profile.email)) {
           throw new APIError('BAD_REQUEST', { code: 'ACCOUNT_ALREADY_EXISTS', message: 'Sign in to your existing OpenKey account.' });
         }
         let created;
@@ -178,7 +186,7 @@ export function googleSocialConfirmation(database: PrismaClient) {
             scope: tokens.scope,
           });
         } catch (error) {
-          if (await ctx.context.internalAdapter.findUserByEmail(profile.email)) {
+          if (await hasMatchingUser(database, profile.email)) {
             throw new APIError('BAD_REQUEST', { code: 'ACCOUNT_ALREADY_EXISTS', message: 'Sign in to your existing OpenKey account.' });
           }
           throw error;
