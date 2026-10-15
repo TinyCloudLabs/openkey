@@ -66,6 +66,7 @@
     approveBlockedReason?: string | null;
     /** Disable Approve while an embedding host is applying the review layout. */
     layoutBlocked?: boolean;
+    stickyActions?: boolean;
     finalPreview?: boolean;
     approveText?: string;
     cancelText?: string;
@@ -87,6 +88,7 @@
     error = null,
     approveBlockedReason = null,
     layoutBlocked = false,
+    stickyActions = false,
     finalPreview = false,
     approveText = "Approve",
     cancelText = "Cancel",
@@ -386,6 +388,7 @@
 
 <div
   class="signing-approval"
+  class:sticky-actions={stickyActions}
   role="dialog"
   aria-modal="true"
   aria-labelledby="signing-approval-headline"
@@ -1358,6 +1361,14 @@
   .actions {
     display: flex;
     gap: 10px;
+  }
+  .sticky-actions .actions {
+    position: sticky;
+    bottom: 0;
+    z-index: 1;
+    padding: 10px 0;
+    background: #fff;
+    box-shadow: 0 -8px 16px rgb(255 255 255 / 90%);
   }
   .cancel,
   .approve {

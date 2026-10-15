@@ -68,6 +68,7 @@
   approving={transport.approving}
   error={transport.error}
   {layoutBlocked}
+  stickyActions
   finalPreview={transport.previewReady}
   {onApprove}
   {onCancel}

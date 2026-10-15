@@ -95,6 +95,7 @@ describe('embedded Connect and Sign phases', () => {
       expect(signFrame.posts).toHaveLength(0);
       h.send(signFrame, { type: 'openkey:ready', ...sign });
       expect(signFrame.posts.at(-1)).toMatchObject({ type: 'openkey:sign:request', keyId: 'key-first', ...sign });
+      expect(signFrame.posts.at(-1)).not.toHaveProperty('authorizationProtocolVersion');
       h.send(signFrame, { type: 'openkey:sign:response', success: true, signature: 'wrong', address: '0xfirst', ...connect });
       h.send(signFrame, { type: 'openkey:close', ...connect });
       h.send(connectFrame, { type: 'openkey:sign:response', success: true, signature: 'wrong', address: '0xfirst', ...sign });
@@ -107,6 +108,25 @@ describe('embedded Connect and Sign phases', () => {
       h.send(signFrame, { type: 'openkey:layout-ready', layoutId: 1, ...sign });
       h.send(signFrame, { type: 'openkey:sign:response', success: true, signature: 'right', address: '0xfirst', ...sign });
       expect((await signing).signature).toBe('right');
+
+      const authorizing = h.client.authorizeTinyCloud({
+        protocolVersion: 1, siwe: 'review me', keyId: 'key-first', jwk: { kty: 'EC' },
+      });
+      await Promise.resolve();
+      const authFrame = h.frames[2];
+      if (!authFrame) throw new Error('Authorization iframe missing');
+      const authPhase = h.correlation(authFrame);
+      h.send(authFrame, { type: 'openkey:ready', ...authPhase });
+      expect(authFrame.posts.at(-1)).toMatchObject({
+        type: 'openkey:sign:request', authorizationProtocolVersion: 1, jwk: { kty: 'EC' }, ...authPhase,
+      });
+      h.send(authFrame, { type: 'openkey:resize', height: 700, layoutId: 1, ...authPhase });
+      h.send(authFrame, { type: 'openkey:layout-ready', layoutId: 1, ...authPhase });
+      h.send(authFrame, {
+        type: 'openkey:sign:response', success: true, signature: 'authorized',
+        address: '0xfirst', signedMessage: 'review me', selectedActionKeys: [], permissions: [], ...authPhase,
+      });
+      expect((await authorizing).signedMessage).toBe('review me');
     } finally { h.restore(); }
   });
 
@@ -149,6 +169,7 @@ describe('embedded Connect and Sign phases', () => {
       h.send(frame, { type: 'openkey:resize', height: 620, layoutId: 4, ...phase });
       expect(frame.style.height).toBe('620px');
       h.send(frame, { type: 'openkey:layout-ready', layoutId: 4, ...phase });
+      h.send(frame, { type: 'openkey:layout-invalidated', layoutId: 4, ...phase });
       h.send(frame, { type: 'openkey:sign:response', success: true, signature: 'ok', address: '0xfirst', ...phase });
       await signing;
     } finally { h.restore(); }

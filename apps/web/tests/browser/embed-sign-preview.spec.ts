@@ -41,7 +41,7 @@ test('v2 final preview bytes are visible before approval and require a new layou
   await expect.poll(() => page.evaluate(() => (window as unknown as Window & { received: Array<{ type: string; requestId?: string }> }).received.some(m => m.type === 'openkey:ready' && m.requestId === 'phase-1'))).toBe(true);
   await page.evaluate((message) => {
     document.querySelector<HTMLIFrameElement>('#sign-v2')?.contentWindow?.postMessage(
-      { type: 'openkey:sign:request', requestId: 'phase-1', protocolVersion: 2, keyId: 'selected-key', message },
+      { type: 'openkey:sign:request', requestId: 'phase-1', protocolVersion: 2, authorizationProtocolVersion: 1, keyId: 'selected-key', jwk: { kty: 'EC' }, message },
       location.origin,
     );
   }, siwe);
@@ -68,4 +68,59 @@ test('v2 final preview bytes are visible before approval and require a new layou
   await expect.poll(() => page.evaluate(() => (window as unknown as Window & { received: Array<{ type: string }> }).received.filter(m => m.type === 'openkey:resize').length)).toBeGreaterThan(1);
   await applyLatestLayout();
   await expect(frame.getByRole('button', { name: 'Approve exact bytes' })).toBeEnabled();
+});
+
+test('ordinary v2 SIWE ReCap signs exact bytes without entering authorization preview', async ({ page }) => {
+  let prepares = 0;
+  let signs = 0;
+  await page.addInitScript(() => sessionStorage.setItem('openkey_session_token', 'test-session'));
+  await page.route('**/api/keys/**', (route) => {
+    if (route.request().url().endsWith('/sign')) {
+      signs++;
+      return route.fulfill({ json: { signature: '0x00', address } });
+    }
+    return route.fulfill({ json: { key: {
+      id: 'selected-key', address, publicKey: '0x02', keyIndex: 0,
+      label: 'Selected', keyType: 'MANAGED', createdAt: '2026-01-01T00:00:00Z',
+    } } });
+  });
+  await page.route('**/api/auth/get-session**', (route) => route.fulfill({ json: { session: { id: 'test-session' }, user: { id: 'test-user' } } }));
+  await page.route('**/api/delegate/authorize-sign-prepare', (route) => {
+    prepares++;
+    return route.fulfill({ json: { authorizationContextToken: 'fixture' } });
+  });
+  await page.goto('/__parity_harness');
+  await page.evaluate(() => {
+    const iframe = document.createElement('iframe');
+    iframe.id = 'sign-v2';
+    iframe.src = `/widget/embed/sign?origin=${encodeURIComponent(location.origin)}&requestId=phase-plain&protocolVersion=2&keyId=selected-key`;
+    (window as unknown as Window & { received: Array<{ type: string; height?: number; layoutId?: number }> }).received = [];
+    window.addEventListener('message', (event) => {
+      if (event.source === iframe.contentWindow && event.origin === location.origin) {
+        (window as unknown as Window & { received: unknown[] }).received.push(event.data);
+      }
+    });
+    document.body.append(iframe);
+  });
+  await expect.poll(() => page.evaluate(() => (window as unknown as Window & { received: Array<{ type: string }> }).received.some(m => m.type === 'openkey:ready'))).toBe(true);
+  await page.evaluate((message) => {
+    document.querySelector<HTMLIFrameElement>('#sign-v2')?.contentWindow?.postMessage(
+      { type: 'openkey:sign:request', requestId: 'phase-plain', protocolVersion: 2, keyId: 'selected-key', message },
+      location.origin,
+    );
+  }, siwe);
+  const frame = page.frameLocator('#sign-v2');
+  const approve = frame.getByRole('button', { name: 'Approve', exact: true });
+  await expect.poll(() => page.evaluate(() => (window as unknown as Window & { received: Array<{ type: string }> }).received.some(m => m.type === 'openkey:resize'))).toBe(true);
+  const resize = await page.evaluate(() => (window as unknown as Window & { received: Array<{ type: string; height: number; layoutId: number }> }).received.filter(m => m.type === 'openkey:resize').at(-1)!);
+  await page.evaluate(({ height, layoutId }) => {
+    const iframe = document.querySelector<HTMLIFrameElement>('#sign-v2');
+    const appliedHeight = Math.min(height, Math.floor(window.innerHeight * 0.85));
+    if (iframe) iframe.style.height = `${appliedHeight}px`;
+    iframe?.contentWindow?.postMessage({ type: 'openkey:layout-applied', requestId: 'phase-plain', protocolVersion: 2, height: appliedHeight, layoutId }, location.origin);
+  }, resize);
+  await expect(approve).toBeEnabled();
+  await approve.click();
+  await expect.poll(() => signs).toBe(1);
+  expect(prepares).toBe(0);
 });

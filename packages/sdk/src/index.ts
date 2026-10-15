@@ -239,7 +239,7 @@ type MessageType =
   | { type: 'openkey:auth:request'; appName: string; requestId?: string; protocolVersion?: number }
   | { type: 'openkey:auth:response'; success: true; address: string; keyId: string; keyType?: 'MANAGED' | 'EXTERNAL'; requestId?: string; protocolVersion?: number }
   | { type: 'openkey:auth:response'; success: false; error: OpenKeyError; requestId?: string; protocolVersion?: number }
-  | { type: 'openkey:sign:request'; message: string; keyId?: string; requestId?: string; protocolVersion?: number }
+  | { type: 'openkey:sign:request'; message: string; keyId?: string; requestId?: string; protocolVersion?: number; authorizationProtocolVersion?: 1 }
   | { type: 'openkey:sign:response'; success: true; signature: string; address: string; requestId?: string; protocolVersion?: number }
   | {
       type: 'openkey:sign:response';
@@ -545,6 +545,7 @@ class IframeModal {
   private phaseV2 = false;
   private currentLayoutId = 0;
   private frozenLayoutId: number | null = null;
+  private hasDisplayedLayout = false;
 
   constructor(opts: { url: string; host: string; hideUntilLayout?: boolean; onClose: () => void; onMessage: (data: MessageType) => void }) {
     this.host = opts.host;
@@ -651,6 +652,7 @@ class IframeModal {
             data.layoutId !== this.currentLayoutId) return;
         if (data.type === 'openkey:layout-ready') {
           this.frozenLayoutId = data.layoutId;
+          this.hasDisplayedLayout = true;
         } else if (this.frozenLayoutId === data.layoutId) {
           this.frozenLayoutId = null;
         }
@@ -677,8 +679,8 @@ class IframeModal {
     this.iframe.style.visibility = 'visible';
     this.card.style.visibility = 'visible';
   }
-  isLayoutReady(): boolean {
-    return this.frozenLayoutId !== null;
+  hasDisplayedCurrentPhase(): boolean {
+    return this.hasDisplayedLayout;
   }
 
 
@@ -1775,7 +1777,12 @@ export class OpenKey {
             if (phase && data.protocolVersion === 2) {
               if (data.requestId !== phase.requestId) return;
               modal?.activatePhase(phase.requestId, phase.protocolVersion);
-              modal?.postMessage({ ...message, ...phase });
+              modal?.postMessage({
+                ...message,
+                ...phase,
+                ...(action === 'sign' && isVersionedRequest && outgoingProtocolVersion === 1
+                  ? { authorizationProtocolVersion: 1 } : {}),
+              });
             } else if (phase && data.protocolVersion !== undefined && data.protocolVersion !== 1) {
               return;
             } else {
@@ -1819,8 +1826,10 @@ export class OpenKey {
             return;
           }
 
+          // Consent is gated in the widget; do not discard an authorized
+          // result merely because its "Signing…" state invalidated geometry.
           if (action === 'sign' && modal?.isVersionedPhase() &&
-              !modal.isLayoutReady() && this.isResponseForAction(action, data)) return;
+              !modal.hasDisplayedCurrentPhase() && this.isResponseForAction(action, data)) return;
           if (this.isResponseForAction(action, data)) {
             settle(() => {
               cleanup();

@@ -8,7 +8,9 @@ const key = {
 const message = `localhost:5779 wants you to sign in with your Ethereum account:\n${address}\n\nSign in\n\nURI: http://localhost:5779\nVersion: 1\nChain ID: 1\nNonce: 12345678\nIssued At: 2026-10-15T00:00:00.000Z`;
 
 // Exercise the real embed route in a frame, not a mocked approval button.
-test('v2 review is visible, reads only the selected public key once and waits for fresh host layout', async ({ page }) => {
+for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
+test(`v2 review at ${viewport.width}px reads one owner key and waits for fresh host layout`, async ({ page }) => {
+  await page.setViewportSize(viewport);
   const keyReads: string[] = [];
   let signCalls = 0;
   await page.addInitScript(() => sessionStorage.setItem('openkey_session_token', 'test-session'));
@@ -62,11 +64,17 @@ test('v2 review is visible, reads only the selected public key once and waits fo
   await expect(approve).toBeDisabled(); // ack alone cannot approve before the frame is resized
   await page.evaluate(({ height, layoutId }) => {
     const iframe = document.querySelector<HTMLIFrameElement>('#sign-v2');
-    const appliedHeight = Math.min(height, Math.floor(window.innerHeight * 0.85));
+    const appliedHeight = Math.min(height, window.innerWidth <= 390 ? 300 : Math.floor(window.innerHeight * 0.85));
     if (iframe) iframe.style.height = `${appliedHeight}px`;
     iframe?.contentWindow?.postMessage({ type: 'openkey:layout-applied', requestId: 'phase-1', protocolVersion: 2, height: appliedHeight, layoutId }, location.origin);
   }, lastResize!);
   await expect(approve).toBeEnabled();
+  if (viewport.width === 390) {
+    const frameBox = await page.locator('#sign-v2').boundingBox();
+    const approveBox = await approve.boundingBox();
+    expect(frameBox && approveBox).toBeTruthy();
+    expect(approveBox!.y + approveBox!.height).toBeLessThanOrEqual(frameBox!.y + frameBox!.height);
+  }
   expect(keyReads).toHaveLength(1);
   expect(keyReads[0]).toContain('/api/keys/selected-key');
   const count = await page.evaluate(() => (window as unknown as Window & { received: Array<{ type: string }> }).received.filter(m => m.type === 'openkey:resize').length);
@@ -91,7 +99,7 @@ test('v2 review is visible, reads only the selected public key once and waits fo
   await expect(approve).toBeDisabled(); // stale same-phase ack cannot approve changed review
   await page.evaluate(({ height, layoutId }) => {
     const iframe = document.querySelector<HTMLIFrameElement>('#sign-v2');
-    const appliedHeight = Math.min(height, Math.floor(window.innerHeight * 0.85));
+    const appliedHeight = Math.min(height, window.innerWidth <= 390 ? 300 : Math.floor(window.innerHeight * 0.85));
     if (iframe) iframe.style.height = `${appliedHeight}px`;
     iframe?.contentWindow?.postMessage(
       { type: 'openkey:layout-applied', requestId: 'phase-1', protocolVersion: 2, height: appliedHeight, layoutId },
@@ -106,3 +114,4 @@ test('v2 review is visible, reads only the selected public key once and waits fo
   }));
   expect(signCalls).toBe(0); // A key read under the old owner cannot authorize the new owner.
 });
+}

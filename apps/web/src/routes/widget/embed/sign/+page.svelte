@@ -1,5 +1,6 @@
 <script lang="ts">
   import { page } from '$app/stores';
+  import { tick } from 'svelte';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
   import { getSessionToken, isEmbedContext } from '$lib/embed-passkey';
@@ -30,6 +31,7 @@
 
   let message = $state('');
   let messageProtocolVersion = $state<number | null>(null);
+  let authorizationProtocolVersion = $state<number | null>(null);
   let messageJwk = $state<Record<string, unknown> | null>(null);
   // Sol MAJOR-2: bind the TinyCloud host into /authorize-sign-prepare
   // so /authorize-sign cannot swap hosts.
@@ -197,9 +199,9 @@
     const sameRead = v2 && keyFetched && request.data.keyId === phaseKeyId &&
       keyReadToken === getSessionToken() &&
       keyReadSessionId === (inIframe ? null : $session.data?.session?.id);
-    // A prefetched error already has a measured panel. No DOM change follows
-    // the request, so invalidating it here would strand the hidden iframe.
-    if (!sameRead || !keyError) layoutGate?.changed();
+    // An early key result may have been measured before transport bound its
+    // request ID. Reissue the layout after binding this request.
+    layoutGate?.changed();
     if (!sameRead) {
       keyReadGeneration++;
       key = null;
@@ -212,6 +214,9 @@
     currentRequestId = request.requestId;
     message = String(data.message ?? '');
     messageProtocolVersion = request.protocolVersion;
+    authorizationProtocolVersion = v2
+      ? (data.authorizationProtocolVersion === 1 ? 1 : null)
+      : request.protocolVersion;
     messageJwk = (data.jwk as Record<string, unknown>) ?? null;
     messageHost = typeof data.host === 'string' ? data.host : '';
     keyId = typeof data.keyId === 'string' ? data.keyId : null;
@@ -260,7 +265,7 @@
         layoutGate?.measure(
           height,
           (!!review && review.getClientRects().length > 0 && getComputedStyle(review).visibility === 'visible') ||
-          (!!keyError && content.getClientRects().length > 0),
+          ((!isAuthenticated || !!keyError) && content.getClientRects().length > 0),
         );
         return;
       }
@@ -300,6 +305,19 @@
       sessionChecked = true;
       loading = false;
     }
+  });
+  // Authentication and a prefetched key error can render before transport
+  // binds its request ID. Measure the current step after that binding so
+  // the hidden host frame always exposes Sign In or Cancel.
+  $effect(() => {
+    if (!v2 || !requestSealed || (isAuthenticated && !keyError)) return;
+    void tick().then(() => {
+      if ((isAuthenticated && !keyError) || !contentEl) return;
+      layoutGate?.measure(
+        Math.max(contentEl.scrollHeight, Math.ceil(contentEl.getBoundingClientRect().height)),
+        true,
+      );
+    });
   });
 
   $effect(() => {
@@ -373,6 +391,7 @@
       keyError = '';
       message = event.data.message;
       messageProtocolVersion = incomingProtocolVersion;
+      authorizationProtocolVersion = incomingProtocolVersion;
       messageJwk = event.data.jwk ?? null;
       messageHost = typeof event.data.host === 'string' ? event.data.host : '';
       keyId = event.data.keyId || null;
@@ -548,8 +567,7 @@
 
   function canUseAuthorizeSignFn(): boolean {
     return (
-      messageProtocolVersion !== null &&
-      messageProtocolVersion >= 1 &&
+      authorizationProtocolVersion === 1 &&
       origin !== '*' &&
       reviewModel !== null &&
       reviewModel.protocol === 'tinycloud-siwe-recap'

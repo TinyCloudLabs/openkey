@@ -283,6 +283,13 @@ export function createWidgetTransport(opts: WidgetTransportOptions): WidgetTrans
       return;
     }
     if (
+      payload.authorizationProtocolVersion !== undefined &&
+      payload.authorizationProtocolVersion !== 1
+    ) {
+      opts.onInvalid?.("invalid-payload", event);
+      return;
+    }
+    if (
       payload.sessionToken !== undefined &&
       (typeof payload.sessionToken !== "string" || !payload.sessionToken)
     ) {
