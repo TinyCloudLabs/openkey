@@ -35,6 +35,7 @@ import {
   recordPasskeyFreshnessAfterHook,
 } from './services/passkey-freshness';
 import {
+  appleTokenClientId,
   configuredSocialProviderIds,
   createSocialProviders,
   socialProviderTrustedOrigins,
@@ -185,12 +186,19 @@ const accountLinkingStepUpPlugin = {
   hooks: {
     before: [{
       matcher: (ctx) => ctx.path === '/link-social' || ctx.path === '/unlink-account',
-      handler: (async (ctx: { path: string; headers?: Headers }) => {
+      handler: (async (ctx: { path: string; headers?: Headers; body?: unknown }) => {
         const session = ctx.headers ? await auth.api.getSession({ headers: ctx.headers }) : null;
         if (!session || !await hasFreshEmailStepUp(prisma, session.session.id)) {
           throw new APIError('FORBIDDEN', {
             code: 'EMAIL_STEP_UP_REQUIRED',
             message: 'Verify an email code before changing linked accounts.',
+          });
+        }
+        if (ctx.path === '/unlink-account'
+          && (ctx.body as { providerId?: unknown } | undefined)?.providerId === 'apple') {
+          throw new APIError('FORBIDDEN', {
+            code: 'APPLE_UNLINK_REQUIRES_REVOCATION',
+            message: 'Use the revocation-protected account unlink endpoint.',
           });
         }
         if (ctx.path === '/unlink-account' && !session.user.emailVerified
@@ -562,8 +570,12 @@ export const auth = betterAuth({
         }
         if (account.providerId === 'apple') return { data: { appleClientId: process.env.APPLE_CLIENT_ID } };
       } },
-      update: { before: async () => {
+      update: { before: async (account) => {
         await assertCurrentSocialLink(prisma);
+        const clientId = await appleTokenClientId.get();
+        if (clientId && (account.refreshToken !== undefined || account.accessToken !== undefined)) {
+          return { data: { appleClientId: clientId } };
+        }
       } },
     },
   },

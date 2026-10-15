@@ -236,6 +236,9 @@ if (!backend) {
       const otp = await auth.api.createVerificationOTP({ body: { email, type: 'sign-in' } });
       const signedIn = await post('/api/auth/sign-in/email-otp', { email, otp });
       expect(signedIn.status).toBe(200);
+      const payload = await signedIn.json() as { token: string; user: { email: string } };
+      expect(Object.keys(payload).sort()).toEqual(['token', 'user']);
+      expect(payload.user.email).toBe(email);
       expect(cookies(signedIn)).toContain('session_token=');
       expect(await prisma.session.count({ where: { userId: user.id } })).toBe(1);
     });
