@@ -98,6 +98,11 @@ bun dev:portless
   entry to `agent.changelog.md` so future agents can see what changed and why.
 - PR descriptions should list security implications, env changes, deployment impact, tests run, and
   cross-repo dependencies.
+- MCP registrations that omit `scope` must allow `tinycloud:mcp` at authorization time.
+  Keep explicit narrower allowlists and all privileged signing/delegation restrictions intact.
+  Existing clients are not broadened automatically; affected connectors must re-register.
+  The API suite exercises registration, consent, PKCE exchange and refresh in an isolated
+  real-provider subprocess (`oauth-mcp-registration.test.ts`).
 - Never bump `@phala/dstack-sdk` or change `createProductionClient` in `packages/tee` without
   reading `docs/tee-overview.md` "Frozen key derivation". The SDK is pinned exactly; in SDK 0.6
   `DstackClient` derives different keys, which would make every sealed key unrecoverable. The
