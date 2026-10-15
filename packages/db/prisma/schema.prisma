@@ -59,13 +59,14 @@ model DelegationCode {
 }
 
 // OpenKey-owned, short-lived RFC 8628-style transaction state for CLI
-// authorization. Delegation results are encrypted before persistence and are
-// consumed exactly once; this table never stores a CLI private key.
+// authorization. Encrypted results are replayable for ten minutes after
+// first redemption (bounded by grant expiry); no CLI private key is stored.
 model DeviceAuthorization {
   id                      String    @id
   userCode                String    @unique
   deviceSecretHash        String
   codeChallenge           String
+  ownerDid                String?
   sessionDid              String
   publicJwk               Json
   relayPublicJwk          Json

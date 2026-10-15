@@ -1,5 +1,7 @@
+import type { Prisma } from '@openkey/db';
 import {
   DEVICE_AUTH_MAX_DELEGATION_TTL_MS,
+  DEVICE_AUTH_RECOVERY_TTL_MS,
   type DeviceAuthorizationRecord,
   type DeviceAuthorizationStore,
   type DevicePermission,
@@ -56,6 +58,7 @@ function fromDatabase(value: any): DeviceAuthorizationRecord {
     id: value.id,
     userCode: value.userCode,
     deviceSecretHash: value.deviceSecretHash,
+    ...(value.ownerDid ? { ownerDid: value.ownerDid } : {}),
     codeChallenge: value.codeChallenge,
     sessionDid: value.sessionDid,
     publicJwk: value.publicJwk,
@@ -120,22 +123,54 @@ export function createPrismaDeviceAuthorizationStore(database: any): DeviceAutho
         return result.count === 1;
       });
     },
-    async consumeApproved(id) {
-      return database.$transaction(async (tx: any) => {
-        const value = await tx.deviceAuthorization.findFirst({
-          where: { id, status: 'APPROVED', consumedAt: null },
+    async deny(id, userId, now) {
+      return database.$transaction(async (tx: Prisma.TransactionClient) => {
+        const pending = { id, status: 'PENDING', transactionExpiresAt: { gt: now } };
+        const record = await tx.deviceAuthorization.findFirst({ where: pending });
+        if (!record?.ownerDid) return false;
+        const address = /^did:pkh:eip155:1:(0x[0-9a-fA-F]{40})$/.exec(record.ownerDid)?.[1];
+        if (!address) return false;
+        const key = await tx.ethereumKey.findFirst({
+          where: { userId, address: { equals: address, mode: 'insensitive' }, archivedAt: null },
+          select: { id: true },
         });
+        if (!key) return false;
+        const result = await tx.deviceAuthorization.updateMany({
+          where: { ...pending, ownerDid: record.ownerDid },
+          data: { status: 'DENIED', approvedByUserId: userId },
+        });
+        return result.count === 1;
+      });
+    },
+    async consumeApproved(id, now) {
+      return database.$transaction(async (tx: Prisma.TransactionClient) => {
+        const available = {
+          id, status: 'APPROVED', consumedAt: null,
+          transactionExpiresAt: { gt: now }, delegationExpiresAt: { gt: now },
+        };
+        const value = await tx.deviceAuthorization.findFirst({ where: available });
         if (!value) return null;
         const updated = await tx.deviceAuthorization.updateMany({
-          where: { id, status: 'APPROVED', consumedAt: null },
-          data: {
-            status: 'CONSUMED',
-            consumedAt: new Date(),
-            encryptedResult: null,
-          },
+          where: available,
+          data: { status: 'CONSUMED', consumedAt: now },
         });
-        if (updated.count !== 1) return null;
-        return fromDatabase(value);
+        return updated.count === 1 ? { ...fromDatabase(value), status: 'consumed' as const, consumedAt: now } : null;
+      });
+    },
+    async purgeResult(id) {
+      await database.deviceAuthorization.updateMany({ where: { id }, data: { encryptedResult: null } });
+    },
+    async purgeExpiredResults(now) {
+      await database.deviceAuthorization.updateMany({
+        where: {
+          encryptedResult: { not: null },
+          OR: [
+            { delegationExpiresAt: { lte: now } },
+            { status: 'APPROVED', transactionExpiresAt: { lte: now } },
+            { status: 'CONSUMED', consumedAt: { lte: new Date(now.getTime() - DEVICE_AUTH_RECOVERY_TTL_MS) } },
+          ],
+        },
+        data: { encryptedResult: null },
       });
     },
   };

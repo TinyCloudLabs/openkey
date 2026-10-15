@@ -9,14 +9,20 @@ type Where = Record<string, unknown>;
 // Minimal stand-in for the Prisma delegate: JSON columns round-trip through
 // structuredClone the way Postgres JSONB does.
 function fakeDatabase() {
+  const owners = new Map<string, string>();
   const rows = new Map<string, Row>();
-  const matches = (row: Row, where: Where) => Object.entries(where).every(([field, expected]) => {
-    if (expected && typeof expected === 'object' && 'gt' in expected) return (row[field] as Date) > (expected.gt as Date);
+  const matches: (row: Row, where: Where) => boolean = (row, where) => Object.entries(where).every(([field, expected]) => {
+    if (field === 'OR') return Array.isArray(expected) && expected.some((condition) => matches(row, condition as Where));
+    if (expected && typeof expected === 'object') {
+      if ('gt' in expected) return (row[field] as Date) > (expected.gt as Date);
+      if ('lte' in expected) return (row[field] as Date) <= (expected.lte as Date);
+      if ('not' in expected) return (row[field] ?? null) !== expected.not;
+    }
     return (row[field] ?? null) === expected;
   });
   const table = {
     create: async ({ data }: { data: Row }) => {
-      rows.set(data.id as string, structuredClone({ approvedByUserId: null, encryptedResult: null, consumedAt: null, ...data }));
+      rows.set(data.id as string, structuredClone({ approvedByUserId: null, ownerDid: null, encryptedResult: null, consumedAt: null, ...data }));
     },
     findUnique: async ({ where }: { where: Where }) => structuredClone([...rows.values()].find((row) => matches(row, where)) ?? null),
     findFirst: async ({ where }: { where: Where }) => structuredClone([...rows.values()].find((row) => matches(row, where)) ?? null),
@@ -27,7 +33,17 @@ function fakeDatabase() {
       return { count: matched.length };
     },
   };
-  return { rows, deviceAuthorization: table, $transaction: async <T>(run: (tx: { deviceAuthorization: typeof table }) => Promise<T>) => run({ deviceAuthorization: table }) };
+  const ethereumKey = {
+    findFirst: async ({ where }: { where: { userId: string; address: { equals: string }; archivedAt: null } }) => {
+      const address = owners.get(where.userId);
+      return address?.toLowerCase() === where.address.equals.toLowerCase() ? { address } : null;
+    },
+  };
+  return {
+    rows, owners, deviceAuthorization: table, ethereumKey,
+    $transaction: async <T>(run: (tx: { deviceAuthorization: typeof table; ethereumKey: typeof ethereumKey }) => Promise<T>) =>
+      run({ deviceAuthorization: table, ethereumKey }),
+  };
 }
 
 function startRequest(permissions: unknown, reason?: string) {
@@ -86,6 +102,94 @@ describe('Prisma device authorization store', () => {
 
     const result = await service.poll({ transactionId: transaction.transactionId, deviceSecret: 'device-secret', codeVerifier: 'code-verifier' });
     expect(result.status === 'approved' && result.binding.permissions).toEqual(approved);
+  });
+
+  test('returns the same durable relay across concurrent polls and a new store instance', async () => {
+    const database = fakeDatabase();
+    const options = {
+      verificationOrigin: 'https://openkey.so',
+      encryptionSecret: 'test-device-authorization-secret-is-long-enough',
+    };
+    const service = new DeviceAuthorizationService(createPrismaDeviceAuthorizationStore(database), options);
+    const permissions = [{ service: 'tinycloud.capabilities', space: 'applications', path: '', actions: ['tinycloud.capabilities/read'] }];
+    const transaction = await service.start(startRequest(permissions), '203.0.113.3');
+    const row = database.rows.get(transaction.transactionId)!;
+    const approval = relayFor(row, permissions);
+    await service.approve(transaction.transactionId, 'user-1', approval);
+    const credentials = { transactionId: transaction.transactionId, deviceSecret: 'device-secret', codeVerifier: 'code-verifier' };
+    const [first, concurrent] = await Promise.all([service.poll(credentials), service.poll(credentials)]);
+    expect(first).toEqual(concurrent);
+    expect(first.status).toBe('approved');
+    const consumedAt = row.consumedAt;
+    const restarted = new DeviceAuthorizationService(createPrismaDeviceAuthorizationStore(database), options);
+    expect(await restarted.poll(credentials)).toEqual(first);
+    expect(row).toMatchObject({ status: 'CONSUMED', consumedAt });
+    expect(JSON.parse(row.encryptedResult as string)).toEqual(approval.relay);
+  });
+
+  test('purges persisted relay on recovery expiry while preserving a stable expired token result', async () => {
+    const database = fakeDatabase();
+    let nowMs = Date.now();
+    const options = {
+      verificationOrigin: 'https://openkey.so',
+      encryptionSecret: 'test-device-authorization-secret-is-long-enough',
+      now: () => new Date(nowMs),
+    };
+    const service = new DeviceAuthorizationService(createPrismaDeviceAuthorizationStore(database), options);
+    const permissions = [{ service: 'tinycloud.capabilities', space: 'applications', path: '', actions: ['tinycloud.capabilities/read'] }];
+    const transaction = await service.start(startRequest(permissions), '203.0.113.5');
+    const row = database.rows.get(transaction.transactionId)!;
+    await service.approve(transaction.transactionId, 'user-1', relayFor(row, permissions));
+    const credentials = { transactionId: transaction.transactionId, deviceSecret: 'device-secret', codeVerifier: 'code-verifier' };
+    expect((await service.poll(credentials)).status).toBe('approved');
+    nowMs += 10 * 60 * 1000;
+    const restarted = new DeviceAuthorizationService(createPrismaDeviceAuthorizationStore(database), options);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await expect(restarted.poll(credentials)).rejects.toMatchObject({ code: 'expired_token', status: 410 });
+    }
+    expect(row.encryptedResult).toBeNull();
+  });
+
+  test('sweeps expired durable relays when another request starts', async () => {
+    const database = fakeDatabase();
+    let nowMs = Date.now();
+    const service = new DeviceAuthorizationService(createPrismaDeviceAuthorizationStore(database), {
+      verificationOrigin: 'https://openkey.so',
+      encryptionSecret: 'test-device-authorization-secret-is-long-enough',
+      now: () => new Date(nowMs),
+    });
+    const permissions = [{ service: 'tinycloud.capabilities', space: 'applications', path: '', actions: ['tinycloud.capabilities/read'] }];
+    const consumed = await service.start(startRequest(permissions), '203.0.113.6');
+    const row = database.rows.get(consumed.transactionId)!;
+    await service.approve(consumed.transactionId, 'user-1', relayFor(row, permissions));
+    await service.poll({ transactionId: consumed.transactionId, deviceSecret: 'device-secret', codeVerifier: 'code-verifier' });
+    nowMs += 10 * 60 * 1000;
+    await service.start(startRequest(permissions), '203.0.113.7');
+    expect(row.encryptedResult).toBeNull();
+  });
+
+  test('persists the intended owner and denies only for a linked owner key under the pending-state guard', async () => {
+    const database = fakeDatabase();
+    const service = new DeviceAuthorizationService(createPrismaDeviceAuthorizationStore(database), {
+      verificationOrigin: 'https://openkey.so',
+      encryptionSecret: 'test-device-authorization-secret-is-long-enough',
+    });
+    const owner = 'did:pkh:eip155:1:0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed';
+    const permissions = [{ service: 'tinycloud.capabilities', space: 'applications', path: '', actions: ['tinycloud.capabilities/read'] }];
+    const transaction = await service.start({ ...startRequest(permissions), owner }, '203.0.113.4');
+    const row = database.rows.get(transaction.transactionId)!;
+    expect(row.ownerDid).toBe(owner);
+    database.owners.set('stranger', '0x0000000000000000000000000000000000000002');
+    await expect(service.deny(transaction.transactionId, 'stranger'))
+      .rejects.toMatchObject({ code: 'not_found', status: 404 });
+    expect(row.status).toBe('PENDING');
+    database.owners.set('owner-user', '0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed');
+    await service.deny(transaction.transactionId, 'owner-user');
+    expect(row.status).toBe('DENIED');
+    await expect(service.poll({ transactionId: transaction.transactionId, deviceSecret: 'device-secret', codeVerifier: 'code-verifier' }))
+      .rejects.toMatchObject({ code: 'access_denied', status: 403 });
+    await expect(service.deny(transaction.transactionId, 'owner-user'))
+      .rejects.toMatchObject({ code: 'not_found', status: 404 });
   });
 
   test('still consumes rows approved before TC-539 with a bare permission array', async () => {

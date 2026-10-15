@@ -69,6 +69,15 @@ export function createDeviceAuthorizationRouter(input: {
     }
   });
 
+  router.post('/:transactionId/deny', requireOpenKeyOriginForBearer, input.sessionMiddleware ?? requireSession, async (c) => {
+    try {
+      await input.service.deny(c.req.param('transactionId'), c.get('user').id);
+      return c.json({ denied: true });
+    } catch (error) {
+      return routeError(c, error);
+    }
+  });
+
   return router;
 }
 

@@ -72,6 +72,9 @@
   let delegating = $state(false);
   let done = $state(false);
   let pasteCode = $state('');
+  let denied = $state(false);
+  let denying = $state(false);
+  let ownerBoundDeviceRequest = $state(false);
   let shortCode = $state('');
   let spaceSetup = $state<SpaceSetupNotice | null>(null);
   let spaceReadiness = $state<ReturnType<typeof spaceReadinessResult>>(null);
@@ -261,7 +264,10 @@
         shareOrigin: deviceShareOrigin,
         permissions: requestedPermissions,
         expiry: expiryParam,
-      }).then((record) => { requestReason = normalizeReason(deviceRequestReason(record)); })
+      }).then((record) => {
+        requestReason = normalizeReason(deviceRequestReason(record));
+        ownerBoundDeviceRequest = Boolean(record.ownerDid);
+      })
     : Promise.resolve();
   deviceRequestVerified.catch((cause: Error) => { error = cause.message; });
 
@@ -1077,6 +1083,29 @@
     step = 'done';
   }
 
+  async function denyDeviceRequest() {
+    if (!deviceTransactionId || !ownerBoundDeviceRequest || !$session.data) return;
+    denying = true;
+    error = '';
+    try {
+      await deviceRequestVerified;
+      const API_URL = import.meta.env.VITE_API_URL || '';
+      const response = await fetch(`${API_URL}/api/device-authorizations/${encodeURIComponent(deviceTransactionId)}/deny`, {
+        method: 'POST',
+        credentials: 'include',
+        redirect: 'error',
+      });
+      if (!response.ok) throw new Error('denial refused');
+      denied = true;
+      done = true;
+      step = 'done';
+    } catch {
+      error = 'Could not deny this device request. It may be unavailable or already resolved.';
+    } finally {
+      denying = false;
+    }
+  }
+
   async function signInWithPasskey() {
     signingIn = true;
     error = '';
@@ -1139,6 +1168,10 @@
     <Card class="w-full p-6">
       {#if step === 'done'}
         <div class="flex flex-col items-center justify-center text-center py-4">
+          {#if denied}
+            <h2 class="text-lg font-semibold text-surface-900 mb-2">Device request denied</h2>
+            <p class="text-surface-500 text-sm">No approval was delivered. You can close this window.</p>
+          {:else}
           <svg class="w-12 h-12 text-green-500 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
             <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
@@ -1196,6 +1229,7 @@
           {:else}
             <h2 class="text-lg font-semibold text-surface-900 mb-2">Authenticated</h2>
             <p class="text-surface-500 text-sm">You can close this window and return to the CLI.</p>
+          {/if}
           {/if}
         </div>
 
@@ -1602,6 +1636,16 @@
           </div>
           {/if}
         {/if}
+      {/if}
+      {#if $session.data && step === 'consent' && deviceTransactionId && ownerBoundDeviceRequest}
+        <button
+          type="button"
+          onclick={denyDeviceRequest}
+          disabled={denying || delegating}
+          class="mt-5 w-full rounded-xl border border-surface-300 bg-white px-4 py-2 text-sm font-medium text-surface-700 transition-colors hover:bg-surface-50 disabled:opacity-50"
+        >
+          {denying ? 'Denying request…' : 'Deny this device request'}
+        </button>
       {/if}
     </Card>
 

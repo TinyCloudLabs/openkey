@@ -9,6 +9,7 @@ import {
 } from './tinycloud-path-policy';
 
 export const DEVICE_AUTH_TRANSACTION_TTL_MS = 10 * 60 * 1000;
+export const DEVICE_AUTH_RECOVERY_TTL_MS = 10 * 60 * 1000;
 export const DEVICE_AUTH_DEFAULT_DELEGATION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const DEVICE_AUTH_MAX_DELEGATION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const DEVICE_AUTH_POLL_INTERVAL_SECONDS = 2;
@@ -67,12 +68,15 @@ const DEVICE_PERMISSION_FIELDS: Record<string, true> = { service: true, space: t
 const DEVICE_SPACE_NAME = '[A-Za-z0-9][A-Za-z0-9._-]{0,63}';
 const DEVICE_SHORT_SPACE = new RegExp(`^${DEVICE_SPACE_NAME}$`);
 const DEVICE_PKH_SPACE = new RegExp(`^tinycloud:pkh:eip155:([1-9][0-9]{0,19}):(0x[0-9a-fA-F]{40}):(${DEVICE_SPACE_NAME})$`);
+const DEVICE_OWNER_DID = /^did:pkh:eip155:1:(0x[0-9a-fA-F]{40})$/;
 
 export interface DeviceAuthorizationRecord {
   id: string;
   userCode: string;
   deviceSecretHash: string;
   codeChallenge: string;
+  /** Optional owner binding; absent on legacy device requests. */
+  ownerDid?: string;
   sessionDid: string;
   publicJwk: Record<string, unknown>;
   relayPublicJwk: Record<string, unknown>;
@@ -113,11 +117,16 @@ export interface DeviceAuthorizationStore {
     delegationExpiresAt: Date;
     approvedPermissions: DevicePermission[];
   }): Promise<boolean>;
-  consumeApproved(id: string): Promise<DeviceAuthorizationRecord | null>;
+  /** The store verifies the signed-in user's linked owner key before the pending-state transition. */
+  deny(id: string, userId: string, now: Date): Promise<boolean>;
+  consumeApproved(id: string, now: Date): Promise<DeviceAuthorizationRecord | null>;
+  purgeResult(id: string): Promise<void>;
+  purgeExpiredResults(now: Date): Promise<void>;
 }
 
 export class MemoryDeviceAuthorizationStore implements DeviceAuthorizationStore {
   private records = new Map<string, DeviceAuthorizationRecord>();
+  constructor(private readonly controlsOwner: (userId: string, ownerDid: string) => boolean | Promise<boolean> = () => false) {}
 
   async create(record: DeviceAuthorizationRecord): Promise<void> {
     this.records.set(record.id, { ...record });
@@ -160,19 +169,47 @@ export class MemoryDeviceAuthorizationStore implements DeviceAuthorizationStore 
     return true;
   }
 
-  async consumeApproved(id: string): Promise<DeviceAuthorizationRecord | null> {
+  async deny(id: string, userId: string, now: Date): Promise<boolean> {
     const record = this.records.get(id);
-    if (!record || record.status !== 'approved' || record.consumedAt) return null;
+    if (!record?.ownerDid || !(await this.controlsOwner(userId, record.ownerDid))) return false;
+    if (record.status !== 'pending' || record.transactionExpiresAt <= now) return false;
+    record.status = 'denied';
+    record.approvedByUserId = userId;
+    return true;
+  }
+
+  async consumeApproved(id: string, now: Date): Promise<DeviceAuthorizationRecord | null> {
+    const record = this.records.get(id);
+    if (!record || record.status !== 'approved' || record.consumedAt ||
+      record.transactionExpiresAt <= now || record.delegationExpiresAt <= now) return null;
     record.status = 'consumed';
-    record.consumedAt = new Date();
-    const consumed = { ...record };
-    delete record.encryptedResult;
-    return consumed;
+    record.consumedAt = now;
+    return { ...record };
+  }
+
+  async purgeResult(id: string): Promise<void> {
+    const record = this.records.get(id);
+    if (record) delete record.encryptedResult;
+  }
+
+  async purgeExpiredResults(now: Date): Promise<void> {
+    for (const record of this.records.values()) {
+      if (
+        record.encryptedResult &&
+        (record.delegationExpiresAt <= now ||
+          (record.status === 'approved' && record.transactionExpiresAt <= now) ||
+          (record.status === 'consumed' && record.consumedAt &&
+            record.consumedAt.getTime() + DEVICE_AUTH_RECOVERY_TTL_MS <= now.getTime()))
+      ) {
+        delete record.encryptedResult;
+      }
+    }
   }
 }
 
 export type DeviceAuthorizationStart = {
   deviceSecretHash: string;
+  owner?: string;
   codeChallenge: string;
   sessionDid: string;
   publicJwk: Record<string, unknown>;
@@ -654,6 +691,9 @@ export class DeviceAuthorizationService {
     if (!/^[A-Za-z0-9_-]{43}$/.test(input.deviceSecretHash) || !/^[A-Za-z0-9_-]{43}$/.test(input.codeChallenge)) {
       throw new DeviceAuthorizationError('invalid_request', 'device secret hash and PKCE challenge must be SHA-256 base64url values', 400);
     }
+    if (input.owner !== undefined && (typeof input.owner !== 'string' || !DEVICE_OWNER_DID.test(input.owner))) {
+      throw new DeviceAuthorizationError('invalid_request', 'owner must be a did:pkh:eip155:1 account', 400);
+    }
     const publicJwk = publicSessionJwk(input.publicJwk);
     const relayPublicJwk = publicRelayJwk(input.relayPublicJwk);
     if (input.sessionDid !== sessionDidForPublicJwk(publicJwk)) {
@@ -665,6 +705,7 @@ export class DeviceAuthorizationService {
     const nodeOrigin = canonicalOrigin(input.nodeOrigin, 'nodeOrigin');
     const shareOrigin = canonicalOrigin(input.shareOrigin, 'shareOrigin');
     const requestIpHash = sha256(`device-auth-ip\0${this.options.encryptionSecret}\0${requestIp}`);
+    await this.store.purgeExpiredResults(now);
     const recent = await this.store.countRecentByIpHash(requestIpHash, new Date(now.getTime() - DEVICE_AUTH_START_WINDOW_MS));
     if (recent >= DEVICE_AUTH_START_LIMIT) {
       throw new DeviceAuthorizationError('rate_limited', 'too many device authorization requests', 429);
@@ -679,6 +720,7 @@ export class DeviceAuthorizationService {
       userCode: rawUserCode,
       deviceSecretHash: input.deviceSecretHash,
       codeChallenge: input.codeChallenge,
+      ...(input.owner ? { ownerDid: input.owner } : {}),
       sessionDid: input.sessionDid,
       publicJwk,
       relayPublicJwk,
@@ -781,6 +823,14 @@ export class DeviceAuthorizationService {
     if (!approved) throw new DeviceAuthorizationError('expired_token', 'device authorization is no longer pending', 410);
   }
 
+  async deny(transactionId: string, userId: string): Promise<void> {
+    if (!(await this.store.deny(transactionId, userId, this.now()))) {
+      // Unknown, unbound, settled, expired and unrelated-account requests
+      // share one response; the public selector is not denial authority.
+      throw new DeviceAuthorizationError('not_found', 'device authorization unavailable', 404);
+    }
+  }
+
   async poll(input: { transactionId: string; deviceSecret: string; codeVerifier: string }): Promise<
     | { status: 'pending'; interval: number }
     | {
@@ -800,9 +850,7 @@ export class DeviceAuthorizationService {
       throw new DeviceAuthorizationError('invalid_request', 'device token request must be an object', 400);
     }
     const record = await this.store.findById(input.transactionId);
-    if (!record || record.transactionExpiresAt <= this.now()) {
-      throw new DeviceAuthorizationError('expired_token', 'device authorization expired', 410);
-    }
+    if (!record) throw new DeviceAuthorizationError('expired_token', 'device authorization expired', 410);
     if (
       !equalDigest(sha256(input.deviceSecret), record.deviceSecretHash) ||
       !equalDigest(sha256(input.codeVerifier), record.codeChallenge)
@@ -810,32 +858,51 @@ export class DeviceAuthorizationService {
       throw new DeviceAuthorizationError('invalid_grant', 'device secret or PKCE verifier is invalid', 401);
     }
     const now = this.now();
-    if (record.nextPollAt > now) {
-      throw new DeviceAuthorizationError('slow_down', 'polling faster than the allowed interval', 429);
+    if (record.status === 'pending') {
+      if (record.transactionExpiresAt <= now) throw new DeviceAuthorizationError('expired_token', 'device authorization expired', 410);
+      if (record.nextPollAt > now) throw new DeviceAuthorizationError('slow_down', 'polling faster than the allowed interval', 429);
+      await this.store.updatePoll(record.id, new Date(now.getTime() + record.pollIntervalSeconds * 1000));
+      return { status: 'pending', interval: record.pollIntervalSeconds };
     }
-    await this.store.updatePoll(record.id, new Date(now.getTime() + record.pollIntervalSeconds * 1000));
-    if (record.status === 'pending') return { status: 'pending', interval: record.pollIntervalSeconds };
-    if (record.status !== 'approved') throw new DeviceAuthorizationError('invalid_grant', 'device authorization was already consumed', 409);
-    const consumed = await this.store.consumeApproved(record.id);
-    if (!consumed) throw new DeviceAuthorizationError('invalid_grant', 'device authorization was already consumed', 409);
+    if (record.status === 'denied') {
+      if (record.transactionExpiresAt <= now) throw new DeviceAuthorizationError('expired_token', 'device authorization expired', 410);
+      throw new DeviceAuthorizationError('access_denied', 'device authorization denied', 403);
+    }
+    if (
+      record.delegationExpiresAt <= now ||
+      (record.status === 'approved' && record.transactionExpiresAt <= now) ||
+      (record.status === 'consumed' &&
+        (!record.consumedAt || record.consumedAt.getTime() + DEVICE_AUTH_RECOVERY_TTL_MS <= now.getTime()))
+    ) {
+      await this.store.purgeResult(record.id);
+      throw new DeviceAuthorizationError('expired_token', 'device authorization expired', 410);
+    }
+    // A compare-and-set claims the first redemption. Concurrent losers read
+    // the committed row again rather than signing or consuming a second time.
+    const redeemed = record.status === 'approved'
+      ? (await this.store.consumeApproved(record.id, now) ?? await this.store.findById(record.id))
+      : record;
+    if (!redeemed || redeemed.status !== 'consumed' || !redeemed.encryptedResult) {
+      throw new DeviceAuthorizationError('expired_token', 'device authorization expired', 410);
+    }
     return {
       status: 'approved',
       relay: (() => {
         try {
-          return JSON.parse(consumed.encryptedResult ?? '') as DeviceRelayEnvelope;
+          return JSON.parse(redeemed.encryptedResult) as DeviceRelayEnvelope;
         } catch {
           throw new DeviceAuthorizationError('invalid_result', 'approved relay result is unavailable', 500);
         }
       })(),
       binding: {
-        transactionId: consumed.id,
-        sessionDid: consumed.sessionDid,
-        nodeOrigin: consumed.nodeOrigin,
-        shareOrigin: consumed.shareOrigin,
+        transactionId: redeemed.id,
+        sessionDid: redeemed.sessionDid,
+        nodeOrigin: redeemed.nodeOrigin,
+        shareOrigin: redeemed.shareOrigin,
         // Rows approved before TC-539 carry no separate approved set; their
         // approval was validated as equal to the request.
-        permissions: consumed.approvedPermissions ?? consumed.permissions,
-        delegationExpiresAt: consumed.delegationExpiresAt.toISOString(),
+        permissions: redeemed.approvedPermissions ?? redeemed.permissions,
+        delegationExpiresAt: redeemed.delegationExpiresAt.toISOString(),
       },
     };
   }
