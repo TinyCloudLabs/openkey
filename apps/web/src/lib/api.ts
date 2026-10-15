@@ -239,7 +239,14 @@ export const api = {
     });
   },
 
-  async getQuote(keyId: string): Promise<{ quote: string; address: string; inTee: boolean }> {
+  async getQuote(keyId: string): Promise<{
+    quote: string;
+    eventLog: string;
+    binding: string;
+    bindingSha256: string;
+    address: string;
+    inTee: boolean;
+  }> {
     return fetchAPI(`/api/keys/${keyId}/quote`);
   },
 

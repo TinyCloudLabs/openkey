@@ -16,7 +16,7 @@ const EVENTS = {
   oauth_client_scopes_update_failed: true, api_starting: true, request: true, api_error: true,
   delegate_session_activation_warning: true, delegate_session_activation_failed: true,
   delegate_authorization_context_issue_failed: true, delegate_space_setup_notice_failed: true,
-  delegate_origin_bind_failed: true, tinycloud_bootstrap_failed: true, primary_key_changed: true,
+  delegate_origin_bind_failed: true, tinycloud_bootstrap_failed: true, primary_key_changed: true, key_quote_failed: true,
   native_consent_peer_lookup_failed: true, native_consent_key_unseal_failed: true,
   native_consent_activation_after_host_setup_failed: true, native_consent_host_delegation_rejected: true,
   native_consent_activation_did_not_host_space: true, native_consent_host_activation_failed: true,
@@ -33,7 +33,8 @@ const ERROR_CODES: Record<string, true> = {
   P2002: true, P2025: true, P2010: true, P2034: true, tinycloud_bootstrap_failed: true,
   tinycloud_bootstrap_crashed: true, tinycloud_bootstrap_in_progress: true,
   tinycloud_bootstrap_expired_request: true, BETTER_AUTH_URL: true, signup_token_invalid: true,
-  signup_account_exists: true,
+  signup_account_exists: true, quote_report_data_mismatch: true, quote_key_custody_mismatch: true,
+  quote_format_invalid: true,
 };
 const LEVELS: Record<string, true> = { debug: true, info: true, warn: true, error: true };
 const METHODS: Record<string, true> = {

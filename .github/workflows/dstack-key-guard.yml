@@ -47,6 +47,11 @@ jobs:
         env:
           OPENKEY_KAT_REQUIRE_DIST: '1'
 
+      # The production client quotes SHA-256 of its binding and refuses a quote
+      # over other report data (TC-1193).
+      - name: Quote binding contract test
+        run: bun test packages/tee/tests/dstack-quote.test.ts
+
   tee-mode:
     name: TEE mode fails closed
     runs-on: ubuntu-latest

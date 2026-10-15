@@ -206,10 +206,12 @@ Deployments trigger on every push to `main` (serialized by the
    phala deploy -c docker-compose.prod.yml -n openkey-api --no-public-logs --no-public-sysinfo
    ```
 
-5. Verify TEE attestation is working:
+5. Verify TEE attestation is working, with a signed-in session for a managed key you own:
    ```bash
-   curl https://api.openkey.so/api/keys/YOUR_KEY_ID/quote
-   # Should return { "quote": "...", "isInTee": true }
+   curl -H "Cookie: $OPENKEY_SESSION_COOKIE" \
+     https://api.openkey.so/api/keys/YOUR_KEY_ID/quote
+   # Should return 200 with "quote", "eventLog", "binding", "bindingSha256" and "inTee": true.
+   # 503 {"error":"quote_unavailable"} means the TEE could not produce a quote.
    ```
 
 6. Verify internal metrics are available to trusted callers:
@@ -265,17 +267,19 @@ account-host console URLs redirect permanently to the console hostname.
 
 ## Verifying TEE Security
 
-After deployment, verify the API is running in a real TEE:
+After deployment, verify the API is running in a real TEE. The quote route
+needs a signed-in session for a managed key you own; send a fresh nonce:
 
 ```bash
-# Get attestation quote
-curl https://api.openkey.so/api/keys/test/quote
-
-# Response should include:
-# - "isInTee": true
-# - "quote": a valid TDX quote (base64 encoded)
+curl -H "Cookie: $OPENKEY_SESSION_COOKIE" \
+  "https://api.openkey.so/api/keys/YOUR_KEY_ID/quote?nonce=$(openssl rand -hex 32)"
 ```
 
-The quote can be verified against Intel/AMD attestation services to prove:
-1. The code is running in a real TEE (not emulated)
-2. The code hash matches the expected OpenKey image
+A 200 response has `quote` (hex TDX quote), `eventLog`, `binding`,
+`bindingSha256`, `address` and `"inTee": true`. The API only checks that the
+binding is present in the quote; you must verify the quote. Follow all eight
+steps in `docs/tee-overview.md` ("Attestation Endpoint"): quote signature and
+TCB status, TDATTRIBUTES with the debug bit clear, OS image measurements,
+RTMR3 replay (hash of the full app-compose manifest, app id, key provider),
+REPORTDATA read from the verified quote, and the binding's type, version,
+nonce and address.

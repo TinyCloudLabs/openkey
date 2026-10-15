@@ -1,7 +1,7 @@
 // Key management routes
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
-import { createTeeClient, seal, unseal, generatePrivateKey, getAddressFromPrivateKey } from '@openkey/tee';
+import { createTeeClient, seal, unseal, generatePrivateKey, getAddressFromPrivateKey, type TeeQuote } from '@openkey/tee';
 import { requireSession, type SessionContext } from '../middleware/session';
 import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
 import { verifyMessage } from 'viem';
@@ -15,7 +15,7 @@ import { deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, PrimaryKeyConflictError, setPrimaryKey } from '../services/primary-key';
 import { rejectNonBrowserControlRequest } from '../middleware/browser-control';
 
-import { log } from '../log';
+import { log, logError } from '../log';
 const prisma = createPrismaClient();
 const tee = createTeeClient();
 
@@ -366,29 +366,58 @@ keysRouter.post('/:keyId/sign-typed-data', async (c) => {
   });
 });
 
-// Get attestation quote for a key
+// Get an attestation quote binding a managed key's address to this TEE. The
+// quote is issued only after the TEE unseals the key and finds the recorded
+// address, so it means: code with this measurement holds the key (TC-1193).
 keysRouter.get('/:keyId/quote', async (c) => {
   const user = c.get('user');
   const keyId = c.req.param('keyId');
+  // Optional verifier challenge: 16-64 bytes as lowercase hex.
+  const nonce = c.req.query('nonce') ?? null;
+  if (nonce !== null && !/^[0-9a-f]{32,128}$/.test(nonce)) {
+    return c.json({ error: 'invalid_nonce' }, 400);
+  }
 
   const key = await prisma.ethereumKey.findFirst({
     where: { id: keyId, userId: user.id, archivedAt: null },
-    select: { address: true },
   });
 
   if (!key) {
     return c.json({ error: 'Key not found' }, 404);
   }
 
-  // Generate attestation quote proving key is in TEE
-  const quote = await tee.getQuote(JSON.stringify({
-    address: key.address,
-    userId: user.id,
-    timestamp: Date.now(),
-  }));
+  if (key.keyType === 'EXTERNAL') {
+    return c.json({ error: 'External keys are not held in the TEE' }, 400);
+  }
+
+  let binding: string;
+  let quote: TeeQuote;
+  try {
+    const privateKey = await unseal(key.sealedBlob!, await deriveKeyForRecord(tee, key)) as Hex;
+    if (getAddressFromPrivateKey(privateKey).toLowerCase() !== key.address.toLowerCase()) {
+      log('error', 'key_quote_failed', 'quote_key_custody_mismatch');
+      return c.json({ error: 'quote_unavailable' }, 503);
+    }
+    // The quote's REPORTDATA carries SHA-256 of this exact string; it is
+    // returned so a verifier can recompute the digest (docs/tee-overview.md).
+    binding = JSON.stringify({
+      type: 'openkey.key-quote',
+      version: 1,
+      nonce,
+      address: key.address,
+      timestamp: Date.now(),
+    });
+    quote = await tee.getQuote(binding);
+  } catch (error) {
+    logError('error', 'key_quote_failed', error);
+    return c.json({ error: 'quote_unavailable' }, 503);
+  }
 
   return c.json({
-    quote,
+    quote: quote.quote,
+    eventLog: quote.eventLog,
+    binding,
+    bindingSha256: quote.reportDataSha256,
     address: key.address,
     inTee: tee.isInTee(),
   });
