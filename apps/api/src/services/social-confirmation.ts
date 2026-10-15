@@ -7,7 +7,7 @@ import { parseUserOutput } from 'better-auth/db';
 import type { PrismaClient } from '@openkey/db';
 import { defineRequestState } from '@better-auth/core/context';
 import {
-  appleCallbackProfile, googleCallbackProfile, configuredSocialProviderIds, generateAppleClientSecret,
+  appleCallbackProfile, appleTokenClientId, googleCallbackProfile, configuredSocialProviderIds, generateAppleClientSecret,
   type AppleCallbackProfile, type GoogleCallbackProfile, type SocialProviderId,
 } from '../social-providers';
 import { sendSocialAccountNotice } from './social-mailbox-review';
@@ -276,7 +276,10 @@ export function socialConfirmation(database: PrismaClient) {
         }
         let created;
         try {
-          if (isApple) await confirmedSocialProvider.set('apple');
+          if (isApple) {
+            await confirmedSocialProvider.set('apple');
+            await appleTokenClientId.set(profile.clientId!);
+          }
           created = await ctx.context.internalAdapter.createOAuthUser({
             email: profile.email, emailVerified: true, name: profile.name, image: profile.image,
           }, {

@@ -517,7 +517,14 @@ export const auth = betterAuth({
         if (account.providerId === 'google' || account.providerId === 'apple') {
           await assertCurrentSocialLink(prisma, account.providerId, account.userId);
         }
-        if (account.providerId === 'apple') return { data: { appleClientId: process.env.APPLE_CLIENT_ID } };
+        if (account.providerId === 'apple') {
+          const clientId = await appleTokenClientId.get();
+          if (!clientId) throw new APIError('FORBIDDEN', {
+            code: 'APPLE_ISSUING_CLIENT_UNKNOWN',
+            message: 'The Apple token issuer was not verified.',
+          });
+          return { data: { appleClientId: clientId } };
+        }
       } },
       update: { before: async (account) => {
         await assertCurrentSocialLink(prisma);
