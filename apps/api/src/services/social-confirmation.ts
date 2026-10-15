@@ -104,11 +104,15 @@ export function socialConfirmation(database: PrismaClient) {
     for (const row of expired) {
       try {
         const stored = JSON.parse(await symmetricDecrypt({ key, data: row.value })) as Continuation;
-        if (stored.outcome === 'new_account' && stored.tokens) {
-          const linked = await database.account.findFirst({
-            where: { providerId: stored.providerId, accountId: stored.profile.id }, select: { id: true },
-          });
-          if (!linked && !await revokeAbandoned(stored)) continue;
+        if (stored.tokens) {
+          if (stored.outcome === 'account_exists' && stored.providerId === 'apple') {
+            if (!await revokeAbandoned(stored)) continue;
+          } else if (stored.outcome === 'new_account') {
+            const linked = await database.account.findFirst({
+              where: { providerId: stored.providerId, accountId: stored.profile.id }, select: { id: true },
+            });
+            if (!linked && !await revokeAbandoned(stored)) continue;
+          }
         }
       } catch {
         log('warn', 'auth_social_continuation_cleanup_failed');
@@ -157,10 +161,12 @@ export function socialConfirmation(database: PrismaClient) {
           scheduleSweep(ctx.context.secretConfig);
           const outcome = error === 'account_not_linked' || await hasMatchingUser(database, profile.email)
             ? 'account_exists' : 'new_account';
+          let retainAppleTokens = false;
           if (outcome === 'account_exists' && !await revokeAbandoned({
             providerId, bindingHash: '', outcome, profile, tokens: profile.tokens,
           })) {
             log('warn', 'auth_social_token_revoke_failed');
+            retainAppleTokens = providerId === 'apple';
           }
           const token = randomBytes(32).toString('base64url');
           const nativeQuery = new URLSearchParams(target.searchParams);
@@ -172,7 +178,7 @@ export function socialConfirmation(database: PrismaClient) {
           const stored: Continuation = {
             providerId, bindingHash: digest(binding), outcome, profile: displayProfile,
             ...(nativeQueryHash ? { nativeQueryHash } : {}),
-            ...(outcome === 'new_account' ? { tokens } : {}),
+            ...(outcome === 'new_account' || retainAppleTokens ? { tokens } : {}),
           };
           await database.verification.create({ data: {
             id: randomUUID(), identifier: PREFIX[providerId] + digest(token),
