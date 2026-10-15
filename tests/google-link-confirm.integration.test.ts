@@ -28,6 +28,7 @@ if (!backend) {
           WEBAUTHN_ORIGIN: 'https://openkey.test',
           CORS_ORIGIN: 'https://openkey.test',
           ADMIN_API_KEY: 'tc1197-admin-key',
+          APPLE_SIGN_IN_ENABLED: 'false',
           RESEND_API_KEY: '',
           GOOGLE_CLIENT_ID: 'tc1197-google-client',
           GOOGLE_CLIENT_SECRET: 'tc1197-google-secret',
@@ -222,6 +223,21 @@ if (!backend) {
       expect(await prisma.ethereumKey.count({ where: { userId: user.id, isCanonicalTinyCloud: true } })).toBe(1);
       expect(await prisma.account.count({ where: { userId: user.id, providerId: 'google', accountId: 'new-sub' } })).toBe(1);
       expect((await post('/api/auth/social/confirm', { continuation }, cookies(response))).status).toBe(400);
+    });
+
+    test('Google confirmation retains the #276 email OTP session flow when Apple is off', async () => {
+      const email = 'new-google-otp@openkey.test';
+      const { response } = await googleCallback({ sub: 'new-google-otp-sub', email, email_verified: true });
+      const continuation = new URL(response.headers.get('location')!).searchParams.get('continuation');
+      expect((await post('/api/auth/social/confirm', { continuation }, cookies(response))).status).toBe(200);
+      const user = await prisma.user.findUniqueOrThrow({ where: { email } });
+      expect(user.socialCreatedProvider).toBeNull();
+      await prisma.session.deleteMany({ where: { userId: user.id } });
+      const otp = await auth.api.createVerificationOTP({ body: { email, type: 'sign-in' } });
+      const signedIn = await post('/api/auth/sign-in/email-otp', { email, otp });
+      expect(signedIn.status).toBe(200);
+      expect(cookies(signedIn)).toContain('session_token=');
+      expect(await prisma.session.count({ where: { userId: user.id } })).toBe(1);
     });
 
     test('a provider identity claimed before confirmation leaves no orphan user or key', async () => {
