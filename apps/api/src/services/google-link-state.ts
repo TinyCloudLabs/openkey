@@ -1,0 +1,94 @@
+import { createHash, randomUUID } from 'node:crypto';
+import type { BetterAuthPlugin } from 'better-auth';
+import { APIError, createAuthMiddleware } from 'better-auth/api';
+import { defineRequestState } from '@better-auth/core/context';
+import type { PrismaClient } from '@openkey/db';
+import { hasFreshEmailStepUp } from './email-otp-step-up';
+
+const PREFIX = 'openkey-google-oauth-state:';
+const TTL_MS = 10 * 60 * 1000;
+type LinkSession = { sessionId: string; userId: string };
+type Binding = { kind: 'sign-in' } | ({ kind: 'link' } & LinkSession);
+
+const committingGoogleLink = defineRequestState<LinkSession | undefined>(() => undefined);
+
+function digest(state: string): string {
+  return createHash('sha256').update(state).digest('base64url');
+}
+function invalidLink(): APIError {
+  return new APIError('FORBIDDEN', {
+    code: 'EMAIL_STEP_UP_REQUIRED',
+    message: 'Verify an email code in the current session before linking Google.',
+  });
+}
+
+export async function assertCurrentGoogleLink(database: PrismaClient, userId?: string): Promise<void> {
+  const binding = await committingGoogleLink.get();
+  if (!binding) return;
+  const session = await database.session.findUnique({
+    where: { id: binding.sessionId }, select: { userId: true, expiresAt: true },
+  });
+  if ((userId && binding.userId !== userId) || session?.userId !== binding.userId || session.expiresAt <= new Date()
+    || !await hasFreshEmailStepUp(database, binding.sessionId)) throw invalidLink();
+}
+
+export function googleLinkStatePlugin(database: PrismaClient) {
+  let lastSweepAt = 0;
+  return {
+    id: 'openkey-google-link-state',
+    hooks: {
+      // Register both sign-in and link states: an unregistered Google state
+      // cannot be distinguished from an older, unbound link at callback.
+      after: [{
+        matcher: (ctx) => ctx.path === '/link-social' || ctx.path === '/sign-in/social',
+        handler: createAuthMiddleware(async (ctx) => {
+          if ((ctx.body as { provider?: string } | undefined)?.provider !== 'google') return;
+          const url = (ctx.context.returned as { url?: string } | undefined)?.url;
+          if (!url) return;
+          const state = new URL(url).searchParams.get('state');
+          if (!state) return;
+          const now = Date.now();
+          if (now - lastSweepAt >= TTL_MS) {
+            await database.verification.deleteMany({
+              where: { identifier: { startsWith: PREFIX }, expiresAt: { lte: new Date(now) } },
+            });
+            lastSweepAt = now;
+          }
+          const current = ctx.context.session;
+          if (ctx.path === '/link-social' && (!current?.session || !current.user)) throw invalidLink();
+          const binding: Binding = ctx.path === '/link-social'
+            ? { kind: 'link', sessionId: current!.session.id, userId: current!.user.id }
+            : { kind: 'sign-in' };
+          await database.verification.create({ data: {
+            id: randomUUID(), identifier: PREFIX + digest(state), value: JSON.stringify(binding),
+            expiresAt: new Date(Date.now() + TTL_MS),
+          } });
+        }),
+      }],
+      // BA's link state contains a user ID, not the originating session. A
+      // revoked or stale session must never authorize the later Account write.
+      before: [{
+        matcher: (ctx) => ctx.path === '/callback/:id',
+        handler: createAuthMiddleware(async (ctx) => {
+          if (ctx.params?.id !== 'google') return;
+          const payload = ctx.method === 'POST' ? ctx.body : ctx.query;
+          const state = (payload as { state?: unknown } | undefined)?.state;
+          if (typeof state !== 'string') throw invalidLink();
+          const row = await database.verification.findFirst({
+            where: { identifier: PREFIX + digest(state), expiresAt: { gt: new Date() } },
+          });
+          if (!row) throw invalidLink();
+          const binding = JSON.parse(row.value) as Binding;
+          if (binding.kind === 'link') {
+            await committingGoogleLink.set({ sessionId: binding.sessionId, userId: binding.userId });
+            await assertCurrentGoogleLink(database, binding.userId);
+          }
+          const consumed = await database.verification.deleteMany({
+            where: { id: row.id, value: row.value, expiresAt: { gt: new Date() } },
+          });
+          if (consumed.count !== 1) throw invalidLink();
+        }),
+      }],
+    },
+  } satisfies BetterAuthPlugin;
+}

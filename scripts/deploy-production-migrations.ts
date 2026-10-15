@@ -38,6 +38,8 @@ const brokerMigration = '20261005_0001_delegation_code_broker';
 const brokerChecksum = 'cc7dcc5365251f6b7c14caf38a892c998a28eb7c998531b7c3b669f4744744df';
 const signinPolishMigration = '20261012_0001_signin_polish_hints_branding';
 const signinPolishChecksum = 'd09960dda6ae76472c61629283b4030131d47b5f0f5cd7d79a3d02c0c5bf0e96';
+const googleLinkStepUpMigration = '20261015_0001_google_link_step_up';
+const googleLinkStepUpChecksum = '3ed9b8b09a918a86c68fa2d0eb1563ebc169bd070a7c3b72641ca9d3d64ca945';
 // Reviewed expand-only migrations that may run while TC-488 stays parked.
 const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
   [deviceMigration, deviceChecksum],
@@ -47,6 +49,7 @@ const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
   [nativeTokenGuardMigration, nativeTokenGuardChecksum],
   [nativeSessionProofJtiMigration, nativeSessionProofJtiChecksum],
   [signinPolishMigration, signinPolishChecksum],
+  [googleLinkStepUpMigration, googleLinkStepUpChecksum],
 ]);
 
 export type MigrationRow = {

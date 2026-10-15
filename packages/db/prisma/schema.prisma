@@ -102,6 +102,7 @@ model Session {
   ipAddress     String?
   userAgent     String?
   lastPasskeyAt DateTime?
+  lastEmailOtpAt DateTime?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -125,6 +126,8 @@ model Account {
   updatedAt             DateTime  @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([providerId, accountId])
 
   @@map("account")
 }

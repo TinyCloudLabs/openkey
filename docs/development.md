@@ -214,6 +214,7 @@ openkey/
 - Auth is handled by [better-auth](https://better-auth.com) with passkey, email OTP, Google OAuth, and OAuth provider plugins.
 - New users automatically get a TEE-sealed Ethereum key on account creation.
 - A verified email code never creates an account by itself (TC-1114). For an email with no account, `POST /api/auth/sign-in/email-otp` answers `403 NEW_ACCOUNT_CONFIRMATION_REQUIRED` with a single-use, five-minute `signupToken` bound to that email; the account is created only when the user confirms and the client posts `{ email, signupToken }` to `POST /api/auth/sign-up/email-otp`.
+- Google sign-in uses verified email only. A new verified Google identity returns a five-minute, cookie-bound confirmation instead of creating an account; only `POST /api/auth/social/confirm` creates the account and session. A matching existing email does not link automatically. Sign in to that account, verify an email code through `POST /api/account/step-up/email-otp/send` and `/verify`, then link Google from Settings. The OAuth link state is also bound to that live, recently verified session at callback. Settings unlinks through `POST /api/account/social/unlink`, so an older valid session can use a fresh code without changing Better Auth's freshness policy for other routes. Unlinking is refused without a remaining usable sign-in method. A passkey sign-in does not replace the email-code step-up.
 - In dev mode (`TEE_MODE=development`), the TEE client uses deterministic mock keys instead of dstack.
 
 ### Web (apps/web)

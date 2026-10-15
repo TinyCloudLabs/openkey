@@ -21,6 +21,7 @@ const native = '20261007_0001_tinycloud_native_foundation';
 const nativeHost = '20261007_0002_native_preparation_host';
 const nativeTokenGuard = '20261007_0003_tinycloud_native_token_guard';
 const signinPolish = '20261012_0001_signin_polish_hints_branding';
+const googleLinkStepUp = '20261015_0001_google_link_step_up';
 const tc492 = [
   '20260805_0001_canonical_tinycloud_key',
   '20260805_0002_tinycloud_manage_key_app_preferences',
@@ -148,6 +149,23 @@ describe('production migration deployment mode', () => {
       migrationDirectories: directories,
       managedAccountTableExists: true,
     })).toThrow(`Stored migration checksum differs from the reviewed ${nativeTokenGuard}`);
+  });
+
+  test('permits the reviewed Google linking migration while TC-488 remains parked', () => {
+    const directories = [baseline.migration_name, ...tc492, googleLinkStepUp];
+    expect(selectProductionMigrationMode({
+      migrations: [baseline], migrationDirectories: directories, managedAccountTableExists: true,
+    })).toBe('pre-tc488-additive');
+    expect(partitionPreTc488Migrations([...tc492, googleLinkStepUp])).toEqual({
+      apply: [...tc492.filter((name) => name !== tc488), googleLinkStepUp],
+      park: [tc488],
+    });
+    expect(() => selectProductionMigrationMode({
+      migrations: [baseline, {
+        migration_name: googleLinkStepUp, checksum: 'unreviewed', finished_at: new Date(), rolled_back_at: null,
+      }],
+      migrationDirectories: directories, managedAccountTableExists: true,
+    })).toThrow(`Stored migration checksum differs from the reviewed ${googleLinkStepUp}`);
   });
 
   test('accepts the real sign-in polish migration in the branch migration list before TC-488', async () => {
