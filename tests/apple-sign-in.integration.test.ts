@@ -224,6 +224,11 @@ if (!backend) {
       }
       return originalFetch(input, init);
     }) as typeof fetch;
+    // Capture startup cleanup before Better Auth initializes, without waiting a minute.
+    globalThis.setInterval = ((handler: (...args: unknown[]) => void, timeout?: number, ...args: unknown[]) => {
+      if (timeout === 60_000) sweep = async () => { await handler(...args); };
+      return originalSetInterval(handler, timeout, ...args);
+    }) as typeof setInterval;
     const { createPrismaClient } = await import('@openkey/db');
     prisma = createPrismaClient();
     ({ auth } = await import('../apps/api/src/auth'));
@@ -235,11 +240,6 @@ if (!backend) {
         return app.fetch(new Request(API + url.pathname + url.search, request));
       },
     });
-    // Capture the existing continuation sweeper so expiry is tested without a wall-clock wait.
-    globalThis.setInterval = ((handler: (...args: unknown[]) => void, timeout?: number, ...args: unknown[]) => {
-      if (timeout === 60_000) sweep = async () => { await handler(...args); };
-      return originalSetInterval(handler, timeout, ...args);
-    }) as typeof setInterval;
   }, 120_000);
 
   afterAll(async () => {
@@ -259,6 +259,25 @@ if (!backend) {
   });
 
   if (backend === 'disabled') {
+    test('idle disabled startup cleans expired Apple grants without an auth request', async () => {
+      await auth.$context;
+      const key = (await auth.$context).secretConfig;
+      const row = await prisma.verification.create({ data: {
+        id: randomUUID(), identifier: `openkey-apple-confirm:${randomUUID()}`,
+        expiresAt: new Date(Date.now() - 1000),
+        value: await symmetricEncrypt({ key, data: JSON.stringify({
+          providerId: 'apple', bindingHash: 'unused', outcome: 'new_account',
+          profile: { id: 'idle-disabled-sub', email: 'idle-disabled@openkey.test', name: '', clientId: SERVICES_ID },
+          tokens: { refreshToken: 'idle-disabled-refresh' },
+        }) }),
+      } });
+      expect(sweep).toBeDefined();
+      await sweep!();
+      expect(revoked).toContainEqual({ token: 'idle-disabled-refresh', clientId: SERVICES_ID });
+      expect(await prisma.verification.count({ where: { id: row.id } })).toBe(0);
+      expect(await prisma.user.count()).toBe(0);
+      expect(await prisma.session.count()).toBe(0);
+    });
     test('credentials alone cannot advertise or start Apple while flag is false', async () => {
       const providers = await call('/api/auth/providers');
       expect(await providers.json()).toEqual({ providers: [] });
@@ -481,6 +500,28 @@ if (!backend) {
         await sweep!();
         expect(revoked.some(({ token, clientId }) => token.startsWith('refresh-') && clientId === SERVICES_ID)).toBe(true);
         expect(await prisma.verification.count({ where: { id: row.id } })).toBe(0);
+      });
+
+      test('failed revoke survives unrelated OTP lookup until recovery succeeds', async () => {
+        const email = 'retry-survival@openkey.test';
+        const { response, continuation } = await newContinuation('retry-survival-sub', email);
+        await prisma.user.create({ data: { id: randomUUID(), email, emailVerified: true } });
+        failRevocation = true;
+        expect((await post('/api/auth/social/confirm', { continuation }, cookies(response))).status).toBe(400);
+        const job = await prisma.verification.findFirstOrThrow({
+          where: { identifier: { startsWith: 'openkey-apple-confirm:revoke:' } },
+        });
+        expect(revoked).toHaveLength(1);
+        expect((await post('/api/auth/sign-in/email-otp', {
+          email: 'unrelated@openkey.test', otp: '000000',
+        })).status).toBe(400);
+        expect(await prisma.verification.count({ where: { id: job.id } })).toBe(1);
+        failRevocation = false;
+        await sweep!();
+        expect(revoked).toContainEqual({ token: expect.stringContaining('refresh-'), clientId: SERVICES_ID });
+        expect(revoked).toHaveLength(2);
+        expect(await prisma.verification.count({ where: { id: job.id } })).toBe(0);
+        expect(await prisma.account.count()).toBe(0);
       });
 
       test('linked Apple subject is never revoked by an earlier failed existing-email cleanup', async () => {
