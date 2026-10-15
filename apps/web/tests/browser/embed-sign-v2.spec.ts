@@ -69,6 +69,7 @@ test(`v2 review at ${viewport.width}px reads one owner key and waits for fresh h
     iframe?.contentWindow?.postMessage({ type: 'openkey:layout-applied', requestId: 'phase-1', protocolVersion: 2, height: appliedHeight, layoutId }, location.origin);
   }, lastResize!);
   await expect(approve).toBeEnabled();
+  const stableHeight = await page.locator('#sign-v2').evaluate((iframe) => iframe.getBoundingClientRect().height);
   if (viewport.width === 390) {
     const frameBox = await page.locator('#sign-v2').boundingBox();
     const approveBox = await approve.boundingBox();
@@ -97,16 +98,16 @@ test(`v2 review at ${viewport.width}px reads one owner key and waits for fresh h
     );
   }, lastResize!);
   await expect(approve).toBeDisabled(); // stale same-phase ack cannot approve changed review
-  await page.evaluate(({ height, layoutId }) => {
-    const iframe = document.querySelector<HTMLIFrameElement>('#sign-v2');
-    const appliedHeight = Math.min(height, window.innerWidth <= 390 ? 300 : Math.floor(window.innerHeight * 0.85));
-    if (iframe) iframe.style.height = `${appliedHeight}px`;
-    iframe?.contentWindow?.postMessage(
-      { type: 'openkey:layout-applied', requestId: 'phase-1', protocolVersion: 2, height: appliedHeight, layoutId },
+  await page.evaluate(({ layoutId, stableHeight }) => {
+    // A real v2 SDK keeps its first approved height, even if review text
+    // changes and the widget needs a fresh acknowledgement.
+    document.querySelector<HTMLIFrameElement>('#sign-v2')?.contentWindow?.postMessage(
+      { type: 'openkey:layout-applied', requestId: 'phase-1', protocolVersion: 2, height: stableHeight, layoutId },
       location.origin,
     );
-  }, nextResize!);
+  }, { layoutId: nextResize!.layoutId, stableHeight });
   await expect(approve).toBeEnabled();
+  expect(await page.locator('#sign-v2').evaluate((iframe) => iframe.getBoundingClientRect().height)).toBe(stableHeight);
   await frame.locator('body').evaluate(() => sessionStorage.setItem('openkey_session_token', 'other-owner-session'));
   await approve.click();
   await frame.locator('body').evaluate(() => new Promise<void>((resolve) => {

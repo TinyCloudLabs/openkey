@@ -590,7 +590,7 @@ export function createIframeLayoutGate(
       }, 100);
     },
     applied(nextHeight: number, nextLayoutId: number) {
-      if (nextHeight <= 0 || nextHeight > height || nextLayoutId !== layoutId) return;
+      if (!Number.isFinite(nextHeight) || nextHeight <= 0 || nextLayoutId !== layoutId) return;
       applied = true;
       check();
     },

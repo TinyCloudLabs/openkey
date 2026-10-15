@@ -750,16 +750,16 @@ describe('v2 embedded review layout', () => {
     expect(gate.canApprove()).toBe(true);
     gate.changed();
     expect(gate.canApprove()).toBe(false);
-    gate.measure(720, true);
+    gate.measure(620, true);
     const second = resizes[1]!;
     expect(second[1]).toBeGreaterThan(first[1]);
     gate.applied(first[0], first[1]); // same height, old layout: still blocked
     vi.advanceTimersByTime(120);
     expect(gate.canApprove()).toBe(false);
-    gate.applied(second[0], second[1]);
+    gate.applied(first[0], second[1]); // host keeps the first visible height fixed
     expect(gate.canApprove()).toBe(true);
     const resizeCount = resizes.length;
-    gate.measure(720, true);
+    gate.measure(620, true);
     expect(resizes).toHaveLength(resizeCount); // no late resize while enabled
     gate.destroy();
     expect(enabled).toContain(true);

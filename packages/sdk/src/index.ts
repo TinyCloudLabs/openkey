@@ -544,7 +544,7 @@ class IframeModal {
   private expectedProtocolVersion: number | null = null;
   private phaseV2 = false;
   private currentLayoutId = 0;
-  private frozenLayoutId: number | null = null;
+  private displayedHeight = 0;
   private hasDisplayedLayout = false;
 
   constructor(opts: { url: string; host: string; hideUntilLayout?: boolean; onClose: () => void; onMessage: (data: MessageType) => void }) {
@@ -626,13 +626,18 @@ class IframeModal {
         });
         if (h === null) return;
         if (this.phaseV2) {
-          if (this.frozenLayoutId !== null ||
-              typeof data.layoutId !== 'number' || !Number.isSafeInteger(data.layoutId) ||
+          if (typeof data.layoutId !== 'number' || !Number.isSafeInteger(data.layoutId) ||
               data.layoutId <= this.currentLayoutId) return;
           this.currentLayoutId = data.layoutId;
           this.iframe.style.transition = 'none';
         }
-        this.iframe.style.height = `${h}px`;
+        // Once Approve has been enabled, keep the visible surface fixed.
+        // Later review revisions may invalidate consent, but must scroll
+        // inside this frame rather than move the host card.
+        if (!this.phaseV2 || !this.hasDisplayedLayout) {
+          this.iframe.style.height = `${h}px`;
+          if (this.phaseV2) this.displayedHeight = h;
+        }
         if (this.phaseV2) {
           this.iframe.style.visibility = 'visible';
           this.card.style.visibility = 'visible';
@@ -641,7 +646,7 @@ class IframeModal {
             requestId: this.expectedRequestId,
             protocolVersion: 2,
             layoutId: data.layoutId,
-            height: h,
+            height: this.hasDisplayedLayout ? this.displayedHeight : h,
           });
         }
         return;
@@ -651,10 +656,7 @@ class IframeModal {
             data.protocolVersion !== this.expectedProtocolVersion ||
             data.layoutId !== this.currentLayoutId) return;
         if (data.type === 'openkey:layout-ready') {
-          this.frozenLayoutId = data.layoutId;
           this.hasDisplayedLayout = true;
-        } else if (this.frozenLayoutId === data.layoutId) {
-          this.frozenLayoutId = null;
         }
         return;
       }

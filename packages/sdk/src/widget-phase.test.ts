@@ -167,7 +167,8 @@ describe('embedded Connect and Sign phases', () => {
       expect(frame.style.height).toBe('740px');
       h.send(frame, { type: 'openkey:layout-invalidated', layoutId: 2, ...phase });
       h.send(frame, { type: 'openkey:resize', height: 620, layoutId: 4, ...phase });
-      expect(frame.style.height).toBe('620px');
+      expect(frame.style.height).toBe('740px');
+      expect(frame.posts.at(-1)).toMatchObject({ type: 'openkey:layout-applied', height: 740, layoutId: 4, ...phase });
       h.send(frame, { type: 'openkey:layout-ready', layoutId: 4, ...phase });
       h.send(frame, { type: 'openkey:layout-invalidated', layoutId: 4, ...phase });
       h.send(frame, { type: 'openkey:sign:response', success: true, signature: 'ok', address: '0xfirst', ...phase });
