@@ -595,6 +595,8 @@ if (!backend) {
       const prepare = await call(`/api/oauth/tinycloud/requests/${requestId}/prepare`, { method: 'POST', headers: { cookie, origin: WEB_ORIGIN, 'content-type': 'application/json' }, body: '{}' });
       expect(prepare.status, await prepare.clone().text()).toBe(200);
       const preview = await prepare.json() as { revision: number; digest: string; sessionSiwe: string; hostPlan: { hostSiwe: string } | null };
+      // The registered native PAR path signs its own issuer, not the browser origin.
+      expect(preview.sessionSiwe.startsWith('openkey.so wants you to sign in with your Ethereum account:')).toBe(true);
       await Bun.sleep(20);
       const approve = await call(`/api/oauth/tinycloud/requests/${requestId}/approve`, { method: 'POST', headers: { cookie, origin: WEB_ORIGIN, 'content-type': 'application/json' }, body: JSON.stringify({ revision: preview.revision, digest: preview.digest, sessionSiwe: preview.sessionSiwe, hostSiwe: preview.hostPlan?.hostSiwe }) });
       expect(approve.status, await approve.clone().text()).toBe(200);

@@ -51,10 +51,13 @@
     PROTOCOL_HINT,
     sensitiveCallout,
   } from "@openkey/capability-review";
+  import { originAuthority } from "$lib/requester-display";
 
   interface Props {
     model: CapabilityReviewModel;
     selection: Set<string>;
+    /** Set by the browser widget adapters, never by request contents. */
+    webSigner?: boolean;
     editing: boolean;
     approving?: boolean;
     error?: string | null;
@@ -80,6 +83,7 @@
   let {
     model,
     selection,
+    webSigner = false,
     editing,
     approving = false,
     error = null,
@@ -368,7 +372,15 @@
     }, 2000);
   }
 
-  const approveDisabled = $derived(approving || isMalformedRecap);
+  const siweDomain = $derived(
+    model.rawMessage.match(/^([^\r\n]+) wants you to sign in with your Ethereum account:\r?$/m)?.[1] ?? null,
+  );
+  const originMismatch = $derived(
+    webSigner && siweDomain !== null &&
+      (model.requester.verifiedOrigin === null ||
+        siweDomain !== originAuthority(model.requester.verifiedOrigin)),
+  );
+  const approveDisabled = $derived(approving || isMalformedRecap || originMismatch);
   const approveButtonDisabled = $derived(approveDisabled || Boolean(approveBlockedReason));
   const approveLabel = $derived(
     isMalformedRecap
@@ -757,6 +769,9 @@
   {#if approveBlockedReason}
     <p class="approve-blocked" role="status" aria-live="polite">{approveBlockedReason}</p>
   {/if}
+  {#if originMismatch}
+    <p class="approve-blocked" role="alert">Refusing to sign: SIWE domain does not match the requesting origin.</p>
+  {/if}
 
   <footer class="actions">
     <button
@@ -770,7 +785,7 @@
     <button
       type="button"
       class="approve"
-      onclick={onApprove}
+      onclick={() => { if (!approveButtonDisabled) onApprove(); }}
       disabled={approveButtonDisabled}
       aria-disabled={approveButtonDisabled}
     >

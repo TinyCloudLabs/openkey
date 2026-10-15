@@ -63,6 +63,7 @@
 <SigningApproval
   {model}
   {selection}
+  webSigner
   {editing}
   approving={transport.approving}
   error={transport.error}
