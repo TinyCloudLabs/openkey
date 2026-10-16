@@ -13,12 +13,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
-      - run: git fetch origin main:refs/remotes/origin/main && git branch -f main origin/main
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
       - run: bun install --frozen-lockfile
       - run: bun test scripts/check-changesets.test.mjs
-      - run: bun changeset status
+      - run: bun scripts/check-changesets.mjs

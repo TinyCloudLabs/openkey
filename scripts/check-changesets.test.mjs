@@ -6,14 +6,15 @@ import { join, resolve } from 'node:path';
 
 const repo = resolve(import.meta.dir, '..');
 const cli = join(repo, 'node_modules/.bin/changeset');
+const gate = join(repo, 'scripts/check-changesets.mjs');
 const directories = [];
 
 afterEach(() => {
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
-function status(cwd, output = false) {
-  return spawnSync(process.execPath, [cli, 'status', ...(output ? ['--output=release-plan.json'] : [])], {
+function check(cwd) {
+  return spawnSync(process.execPath, [gate], {
     cwd,
     encoding: 'utf8',
   });
@@ -43,23 +44,56 @@ function fixture(changesets) {
 const sdk = '---\n"@openkey/sdk": patch\n---\n\nSDK fix.\n';
 const web = '---\n"@openkey/web": patch\n---\n\nWeb fix.\n';
 
-test('the release plan rejects a changeset mixing ignored web and publishable SDK', () => {
+function versionFixture() {
+  const directory = fixture({ sdk });
+  const branch = spawnSync('git', ['checkout', '-b', 'version'], { cwd: directory, encoding: 'utf8' });
+  if (branch.status !== 0) throw new Error(branch.stderr);
+  writeFileSync(join(directory, 'packages/sdk/package.json'), JSON.stringify({ name: '@openkey/sdk', version: '0.12.1-beta.1' }));
+  writeFileSync(join(directory, 'packages/sdk/CHANGELOG.md'), '# 0.12.1-beta.1\n\nSDK fix.\n');
+  writeFileSync(join(directory, '.changeset/pre.json'), JSON.stringify({
+    mode: 'pre',
+    tag: 'beta',
+    initialVersions: { '@openkey/sdk': '0.12.0', '@openkey/web': '0.0.2' },
+    changesets: ['sdk'],
+  }));
+  for (const args of [['add', '.changeset/pre.json', 'packages/sdk'], ['-c', 'user.name=CI', '-c', 'user.email=ci@example.test', 'commit', '-m', 'version packages']]) {
+    const git = spawnSync('git', args, { cwd: directory, encoding: 'utf8' });
+    if (git.status !== 0) throw new Error(git.stderr);
+  }
+  return directory;
+}
+
+test('a version PR passes after its changeset is consumed and the SDK is bumped', () => {
+  const result = check(versionFixture());
+  expect(result.status, result.stderr + result.stdout).toBe(0);
+});
+
+test('the gate rejects a changeset mixing ignored web and publishable SDK', () => {
   const directory = fixture({ mixed: '---\n"@openkey/sdk": patch\n"@openkey/web": patch\n---\n\nBoth.\n' });
-  const result = status(directory);
+  const result = check(directory);
   expect(result.status).not.toBe(0);
   expect(result.stderr + result.stdout).toContain('Mixed changesets that contain both ignored and not ignored packages are not allowed');
 });
 
+test('malformed changeset frontmatter is rejected', () => {
+  const directory = fixture({ invalid: '---\n"@openkey/sdk": [unterminated\n---\n\nInvalid.\n' });
+  const result = check(directory);
+  expect(result.status).not.toBe(0);
+  expect(result.stderr + result.stdout).toContain('unterminated');
+});
+
 test('separate SDK and ignored web changesets plan only an SDK bump', () => {
   const directory = fixture({ sdk, web });
-  const result = status(directory, true);
+  const gateResult = check(directory);
+  expect(gateResult.status, gateResult.stderr + gateResult.stdout).toBe(0);
+  const result = spawnSync(process.execPath, [cli, 'status', '--output=release-plan.json'], { cwd: directory, encoding: 'utf8' });
   expect(result.status, result.stderr + result.stdout).toBe(0);
   const plan = JSON.parse(readFileSync(join(directory, 'release-plan.json'), 'utf8'));
   expect(plan.releases.filter((release) => release.type !== 'none').map(({ name, newVersion }) => ({ name, newVersion })))
     .toEqual([{ name: '@openkey/sdk', newVersion: '0.12.1' }]);
 });
 
-test('the PR checkout has a valid release plan', () => {
-  const result = status(repo);
+test('the PR checkout has parseable, unmixed pending changesets', () => {
+  const result = check(repo);
   expect(result.status, result.stderr + result.stdout).toBe(0);
 });
