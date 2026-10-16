@@ -39,6 +39,11 @@ export default defineConfig({
       name: 'chromium',
       use: { ...devices['Desktop Chrome'] },
     },
+    {
+      name: 'webkit-sign-handshake',
+      testMatch: '**/sdk-sign-handshake.spec.ts',
+      use: { ...devices['Desktop Safari'] },
+    },
   ],
 
   webServer: {

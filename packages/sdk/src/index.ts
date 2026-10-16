@@ -546,6 +546,7 @@ class IframeModal {
   private currentLayoutId = 0;
   private displayedHeight = 0;
   private hasDisplayedLayout = false;
+  private revealTimer?: ReturnType<typeof setTimeout>;
 
   constructor(opts: { url: string; host: string; hideUntilLayout?: boolean; onClose: () => void; onMessage: (data: MessageType) => void }) {
     this.host = opts.host;
@@ -585,7 +586,10 @@ class IframeModal {
     this.card = document.createElement('div');
     this.card.className = 'ok-card';
     if (opts.hideUntilLayout) {
-      this.card.style.visibility = 'hidden';
+      // Keep the iframe in the viewport and rendering: visibility:hidden
+      // throttles its animation frames before the widget can measure review.
+      this.card.style.opacity = '0';
+      this.card.style.pointerEvents = 'none';
       this.card.style.animation = 'none';
     }
 
@@ -605,7 +609,10 @@ class IframeModal {
     this.iframe.src = opts.url;
     this.iframe.setAttribute('allow', 'clipboard-write *; publickey-credentials-get *; publickey-credentials-create *');
     this.iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox');
-    if (opts.hideUntilLayout) this.iframe.style.visibility = 'hidden';
+    if (opts.hideUntilLayout) {
+      this.iframe.style.opacity = '0';
+      this.iframe.style.pointerEvents = 'none';
+    }
     this.card.appendChild(this.iframe);
 
     backdrop.appendChild(this.card);
@@ -642,8 +649,7 @@ class IframeModal {
           if (this.phaseV2) this.displayedHeight = h;
         }
         if (this.phaseV2) {
-          this.iframe.style.visibility = 'visible';
-          this.card.style.visibility = 'visible';
+          this.revealFrame();
           this.postMessage({
             type: 'openkey:layout-applied',
             requestId: this.expectedRequestId,
@@ -674,15 +680,28 @@ class IframeModal {
   activatePhase(requestId: string, protocolVersion: 2): void {
     this.setExpectedCorrelation(requestId, protocolVersion);
     this.phaseV2 = true;
+    // A blocked or slow layout must not strand Cancel behind an invisible
+    // frame. This only reveals the UI; widget consent remains layout-gated.
+    this.revealTimer = setTimeout(() => this.revealFrame(), 5000);
   }
 
   isVersionedPhase(): boolean {
     return this.phaseV2;
   }
 
-  revealLegacy(): void {
+  private revealFrame(): void {
+    clearTimeout(this.revealTimer);
+    this.revealTimer = undefined;
+    this.iframe.style.opacity = '1';
+    this.iframe.style.pointerEvents = 'auto';
+    this.card.style.opacity = '1';
+    this.card.style.pointerEvents = 'auto';
     this.iframe.style.visibility = 'visible';
     this.card.style.visibility = 'visible';
+  }
+
+  revealLegacy(): void {
+    this.revealFrame();
   }
   hasDisplayedCurrentPhase(): boolean {
     return this.hasDisplayedLayout;
@@ -710,6 +729,7 @@ class IframeModal {
   }
 
   destroy() {
+    clearTimeout(this.revealTimer);
     window.removeEventListener('message', this.messageHandler);
     this.root.remove();
   }
