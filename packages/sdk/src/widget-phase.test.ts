@@ -1,11 +1,12 @@
 // @ts-expect-error bun:test is a runtime-only module; tsc does not ship its types
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, test, vi } from 'bun:test';
 import { OpenKey } from './index';
 
 type FakeElement = {
   tag: string;
   className?: string;
   style: Record<string, string>;
+  inert?: boolean;
   src: string;
   children: FakeElement[];
   contentWindow: { postMessage: (data: unknown, origin: string) => void };
@@ -151,9 +152,14 @@ describe('embedded Connect and Sign phases', () => {
       const frame = h.frames[0];
       if (!frame) throw new Error('Sign iframe missing');
       const phase = h.correlation(frame);
-      expect(frame.style.visibility).toBe('hidden');
+      expect(frame.style.visibility).toBeUndefined();
+      expect(frame.style.opacity).toBe('0');
+      expect(frame.style.pointerEvents).toBe('none');
       const card = h.elements.find(el => el.className === 'ok-card');
-      expect(card?.style.visibility).toBe('hidden');
+      expect(card?.style.visibility).toBeUndefined();
+      expect(card?.style.opacity).toBe('0');
+      expect(card?.style.pointerEvents).toBe('none');
+      expect(card?.inert).toBe(true); // pointer-events alone does not block keyboard focus
       expect(card?.style.animation).toBe('none'); // no scale/slide under a newly enabled Approve
       h.send(frame, { type: 'openkey:ready', ...phase });
       h.send(frame, { type: 'openkey:resize', height: 740, layoutId: 1, requestId: 'stale', protocolVersion: 2 });
@@ -161,6 +167,10 @@ describe('embedded Connect and Sign phases', () => {
       h.send(frame, { type: 'openkey:resize', height: 740, layoutId: 2, ...phase });
       expect(frame.style.height).toBe('740px');
       expect(card?.style.visibility).toBe('visible');
+      expect(frame.style.opacity).toBe('1');
+      expect(frame.style.pointerEvents).toBe('auto');
+      expect(card?.style.opacity).toBe('1');
+      expect(card?.inert).toBe(false);
       expect(frame.style.transition).toBe('none');
       expect(frame.posts.at(-1)).toMatchObject({ type: 'openkey:layout-applied', height: 740, layoutId: 2, ...phase });
       h.send(frame, { type: 'openkey:layout-ready', layoutId: 2, ...phase });
@@ -176,4 +186,35 @@ describe('embedded Connect and Sign phases', () => {
       await signing;
     } finally { h.restore(); }
   });
+  test('reveals a stalled v2 Sign frame without treating timeout as consent', async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    try {
+      const signing = h.client.signMessage({ message: 'review me', keyId: 'key-first' });
+      const frame = h.frames[0];
+      if (!frame) throw new Error('Sign iframe missing');
+      const card = h.elements.find(el => el.className === 'ok-card');
+      const phase = h.correlation(frame);
+      h.send(frame, { type: 'openkey:ready', ...phase });
+      vi.advanceTimersByTime(5000);
+      expect(frame.style.opacity).toBe('1');
+      expect(frame.style.pointerEvents).toBe('auto');
+      expect(card?.style.opacity).toBe('1');
+      expect(card?.inert).toBe(false);
+      expect(frame.posts.some(p => typeof p === 'object' && p !== null && 'type' in p && p.type === 'openkey:layout-applied')).toBe(false);
+      let settled = false;
+      void signing.then(() => { settled = true; });
+      h.send(frame, { type: 'openkey:sign:response', success: true, signature: 'early', address: '0xfirst', ...phase });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      h.send(frame, { type: 'openkey:resize', height: 600, layoutId: 1, ...phase });
+      h.send(frame, { type: 'openkey:layout-ready', layoutId: 1, ...phase });
+      h.send(frame, { type: 'openkey:sign:response', success: true, signature: 'ok', address: '0xfirst', ...phase });
+      expect((await signing).signature).toBe('ok');
+    } finally {
+      h.restore();
+      vi.useRealTimers();
+    }
+  });
+
 });
