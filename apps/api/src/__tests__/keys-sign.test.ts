@@ -1,6 +1,8 @@
 import { afterAll, afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
+import { verifyMessage } from 'viem';
+import { SiweMessage } from 'siwe';
 import { prepareSession } from '@tinycloud/node-sdk-wasm';
 import type { TinyCloudBootstrapOutcome } from '../services/tinycloud-bootstrap';
 import { mockModules, replaceModules } from './mock-module';
@@ -176,6 +178,34 @@ describe('keysRouter managed signing', () => {
     expect(calls).toEqual([]);
   });
 
+  test.each([
+    ['hex raw', (siwe: string) => ({ message: `0x${Buffer.from(siwe, 'utf8').toString('hex')}`, format: 'raw' })],
+    ['raw object', (siwe: string) => ({ message: { raw: `0x${Buffer.from(siwe, 'utf8').toString('hex')}` } })],
+  ])('POST /:keyId/sign cannot sign root authority via %s', async (_name, request) => {
+    const router = await keysRouter();
+    const response = await router.request('/key_1/sign', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(request(delegationSiwe('', 'tinycloud.delegation/revoke'))),
+    });
+    expect(response.status).toBe(400);
+    expect(unseal).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
+  });
+
+  test('POST /:keyId/sign still signs ordinary raw bytes', async () => {
+    const router = await keysRouter();
+    const response = await router.request('/key_1/sign', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: '0x68656c6c6f', format: 'raw' }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json() as { signature: string };
+    expect(body.signature).toBe(await account.signMessage({ message: { raw: '0x68656c6c6f' } }));
+    expect(calls).toEqual(['bootstrap', 'sign']);
+  });
+
   test('POST /:keyId/sign still signs a resource-scoped revocation request', async () => {
     const router = await keysRouter();
     const response = await router.request('/key_1/sign', {
@@ -184,6 +214,30 @@ describe('keysRouter managed signing', () => {
       body: JSON.stringify({ message: delegationSiwe('grants/specific-grant', 'tinycloud.delegation/revoke') }),
     });
     expect(response.status).toBe(200);
+    expect(calls).toEqual(['bootstrap', 'sign']);
+  });
+
+  test('POST /:keyId/sign signs an owner revocation bound to one CID', async () => {
+    const now = new Date();
+    const message = new SiweMessage({
+      domain: 'account.tinycloud.xyz',
+      address,
+      uri: 'ucan:bafkreicidexample',
+      version: '1',
+      chainId: 1,
+      nonce: 'abcdefgh',
+      issuedAt: now.toISOString(),
+      expirationTime: new Date(now.getTime() + 60_000).toISOString(),
+    }).prepareMessage();
+    const router = await keysRouter();
+    const response = await router.request('/key_1/sign', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json() as { signature: `0x${string}` };
+    expect(await verifyMessage({ address, message, signature: body.signature })).toBe(true);
     expect(calls).toEqual(['bootstrap', 'sign']);
   });
 
