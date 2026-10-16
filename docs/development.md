@@ -216,6 +216,24 @@ openkey/
 - A verified email code never creates an account by itself (TC-1114). For an email with no account, `POST /api/auth/sign-in/email-otp` answers `403 NEW_ACCOUNT_CONFIRMATION_REQUIRED` with a single-use, five-minute `signupToken` bound to that email; the account is created only when the user confirms and the client posts `{ email, signupToken }` to `POST /api/auth/sign-up/email-otp`.
 - In dev mode (`TEE_MODE=development`), the TEE client uses deterministic mock keys instead of dstack.
 
+#### Request correlation (TC-959)
+
+- The API accepts a hyphenated UUID v4 `X-Request-Id` (RFC variant `8`, `9`, `a`, or `b`), case-insensitively, and normalizes it to lowercase. Missing, malformed, combined/duplicate, nil, and non-v4 values get a fresh UUID. The same ID appears in the response header and typed request/error logs, including error responses.
+- This is untrusted correlation metadata, not an identity or authorization claim. It never replaces SIWE nonces, authorization-context tokens, native request IDs, or server-generated signing/audit IDs. Do not put user identifiers or tokens in it.
+- `src/log.ts` is loaded before dependencies and wraps native fetch for the two trusted TinyCloud origins and the configured `TINYCLOUD_URL` / `TINYCLOUD_BOOTSTRAP_HOST` origins. This covers SDK-owned HTTP calls as well as direct calls without changing signed authorization headers or request bodies. Other destinations are unchanged. The ID is read from async context on each call, so cached clients and post-response work retain the correct originating request; startup/scheduled work does not send the `startup`/`scheduled` log labels as headers.
+- Keep the logger import first in the API entry point. Do not bundle the API or capture a request ID in a cached client. No Vector shipping, sink configuration, or production rollout is part of this correlation change.
+
+Focused regression coverage (no Docker or production services):
+
+```bash
+bun run db:generate
+bun run build --filter @openkey/db --filter @openkey/tee
+bun test apps/api/src/__tests__/structured-logging.test.ts apps/api/src/__tests__/delegate-complete-context-routes.test.ts
+```
+
+The tests include a real loopback HTTP `/api/delegate/complete` → pinned SDK → node `/delegate` edge, concurrent accepted/minted IDs, unchanged signed authority, and child-process stdout/stderr leak checks. The complete API suite remains `bun test apps/api/src/__tests__`.
+
+
 ### Web (apps/web)
 
 - SvelteKit 5 with Tailwind CSS 4.

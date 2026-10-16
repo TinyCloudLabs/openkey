@@ -6,8 +6,11 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, mock, setSystemTime, spyOn, test } from 'bun:test';
 import { createHash, generateKeyPairSync } from 'node:crypto';
 import { createMiddleware } from 'hono/factory';
+import { Hono } from 'hono';
+import { requestLogger, apiErrorHandler } from '../log';
+import type { ApiEnv } from '../log';
 import { privateKeyToAccount } from 'viem/accounts';
-import type { SpaceHostResult } from '@tinycloud/sdk-core';
+import type { SpaceHostResult, activateSessionWithHost as ActivateSessionWithHost } from '@tinycloud/sdk-core';
 import {
   DeviceAuthorizationService,
   MemoryDeviceAuthorizationStore,
@@ -55,6 +58,7 @@ const activateSessionWithHost = mock(async (_host: string, _header: { Authorizat
   success: true,
   status: 200,
 }));
+let realActivateSessionWithHost: typeof ActivateSessionWithHost;
 const ensureTinyCloudBootstrap = mock(async () => ({ status: 'complete' as const }));
 const isTinyCloudBootstrapComplete = mock(async () => bootstrapComplete);
 const deviceService = new DeviceAuthorizationService(new MemoryDeviceAuthorizationStore(), {
@@ -87,7 +91,10 @@ await mockModules({
     generatePrivateKey: () => privateKey,
     getAddressFromPrivateKey: () => account.address,
   }),
-  '@tinycloud/sdk-core': () => ({ activateSessionWithHost }),
+  '@tinycloud/sdk-core': (actual) => {
+    realActivateSessionWithHost = actual.activateSessionWithHost;
+    return { activateSessionWithHost };
+  },
   '../services/tinycloud-bootstrap': () => ({
     ensureTinyCloudBootstrap,
     isTinyCloudBootstrapComplete,
@@ -392,6 +399,70 @@ async function completeBody(prepared: Record<string, any>, siwe: string = prepar
     selectedActionIds: prepared.selectedActionKeys,
   };
 }
+
+test('TC-959 correlates real HTTP completion and SDK node activation without changing signed authority', async () => {
+  const received: Array<{ requestId: string | null; authorization: string | null }> = [];
+  const node = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    fetch(request) {
+      received.push({ requestId: request.headers.get('X-Request-Id'), authorization: request.headers.get('Authorization') });
+      return Response.json({ activated: [], skipped: [] });
+    },
+  });
+  const nodeOrigin = `http://127.0.0.1:${node.port}`;
+  const previousHost = process.env.TINYCLOUD_URL;
+  process.env.TINYCLOUD_URL = nodeOrigin;
+  activateSessionWithHost.mockImplementation(realActivateSessionWithHost);
+  const app = new Hono<ApiEnv>();
+  app.use('*', requestLogger);
+  app.route('/api/delegate', router);
+  app.onError(apiErrorHandler);
+  const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: app.fetch });
+  const incoming = [
+    'owner-canary@example.test Bearer token-canary',
+    undefined,
+    'A3B54A8D-9927-4C01-9A2E-5F4EC31E90B2',
+    '64e09578-4ca5-4d12-b172-2ef8762d04cb',
+  ];
+  try {
+    const prepared = await Promise.all(incoming.map(() => prepare({ host: nodeOrigin, prefix: 'tc959' })));
+    const completed = await Promise.all(prepared.map(async (preparation, index) => {
+      const requestId = incoming[index];
+      const body = { ...await completeBody(preparation), host: nodeOrigin };
+      const response = await fetch(`http://127.0.0.1:${server.port}/api/delegate/complete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(requestId ? { 'X-Request-Id': requestId } : {}) },
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(200);
+      const result = await response.json() as Record<string, any>;
+      expect(result.hostActivated).toBe(true);
+      const correlationId = response.headers.get('X-Request-Id');
+      if (index >= 2) expect(correlationId).toBe(requestId!.toLowerCase());
+      else expect(correlationId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      expect(result.siwe).toBe(body.prepared.siwe);
+      expect(result.signature).toBe(body.signature);
+      const edge = received.find((entry) => entry.authorization === result.delegationHeader.Authorization);
+      expect(edge?.requestId).toBe(correlationId);
+      expect(correlationId).not.toBe(body.authorizationContextToken);
+      return correlationId;
+    }));
+    expect(new Set(completed).size).toBe(incoming.length);
+    const errorResponse = await fetch(`http://127.0.0.1:${server.port}/api/delegate/complete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Request-Id': '34db1e5b-6a32-4f70-9611-fc1e1f737975' },
+      body: '{',
+    });
+    expect(errorResponse.status).toBe(500);
+    expect(errorResponse.headers.get('X-Request-Id')).toBe('34db1e5b-6a32-4f70-9611-fc1e1f737975');
+  } finally {
+    server.stop(true);
+    node.stop(true);
+    if (previousHost === undefined) delete process.env.TINYCLOUD_URL;
+    else process.env.TINYCLOUD_URL = previousHost;
+  }
+});
 
 /** A fresh device transaction for the test session key and host. */
 async function startDeviceTransaction() {

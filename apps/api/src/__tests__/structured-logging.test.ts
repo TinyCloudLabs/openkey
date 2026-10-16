@@ -77,6 +77,44 @@ describe('API structured logging', () => {
     expect(output.join('\n')).not.toContain(canary);
   });
 
+  const uuid = 'a3b54a8d-9927-4c01-9a2e-5f4ec31e90b2';
+  for (const incoming of [uuid, uuid.toUpperCase()]) {
+    test(`accepts and canonicalizes UUID request ID ${incoming}`, async () => {
+      const app = new Hono<ApiEnv>();
+      app.use('*', requestLogger);
+      app.get('/accepted', (c) => c.json({ requestId: c.get('requestId') }));
+      const response = await app.request('/accepted', { headers: { 'X-Request-Id': incoming } });
+      const expected = incoming.toLowerCase();
+      expect(response.headers.get('X-Request-Id')).toBe(expected);
+      expect(await response.json()).toEqual({ requestId: expected });
+      expect(output.map((line) => JSON.parse(line))).toEqual([
+        expect.objectContaining({ event: 'request', request_id: expected, route: '/accepted', status: 200 }),
+      ]);
+    });
+  }
+
+  for (const incoming of [
+    undefined, '', 'owner-canary@example.test', 'Bearer token-canary', uuid.replaceAll('-', ''),
+    `{${uuid}}`, `urn:uuid:${uuid}`, `${uuid}, ${uuid}`, `${uuid}suffix`, `${uuid.slice(0, 8)} ${uuid.slice(9)}`,
+    '00000000-0000-0000-0000-000000000000', 'ffffffff-ffff-ffff-ffff-ffffffffffff',
+    'a3b54a8d-9927-0c01-9a2e-5f4ec31e90b2', 'a3b54a8d-9927-4c01-7a2e-5f4ec31e90b2',
+    'a3b54a8d-9927-7c01-9a2e-5f4ec31e90b2',
+  ]) {
+    test(`mints a UUID for absent or malformed ID ${JSON.stringify(incoming)}`, async () => {
+      const app = new Hono<ApiEnv>();
+      app.use('*', requestLogger);
+      app.get('/rejected', (c) => c.json({ requestId: c.get('requestId') }));
+      const headers: Record<string, string> = incoming === undefined ? {} : { 'X-Request-Id': incoming };
+      const response = await app.request('/rejected', { headers });
+      const minted = response.headers.get('X-Request-Id');
+      expect(minted).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      expect(minted).not.toBe(incoming);
+      expect(await response.json()).toEqual({ requestId: minted });
+      expect(JSON.parse(output[0]!).request_id).toBe(minted);
+      if (incoming) expect(output.join('\n')).not.toContain(incoming);
+    });
+  }
+
   test('keeps post-response work associated with its originating concurrent request', async () => {
     const app = new Hono<ApiEnv>();
     const { promise, resolve } = Promise.withResolvers<void>();
@@ -160,6 +198,89 @@ describe('API structured logging', () => {
     log('info', 'api_starting');
     withScheduledLogContext(() => log('info', 'native_par_valid_request_volume_threshold_reached'));
     expect(output.map((line) => JSON.parse(line).request_id)).toEqual(['startup', 'scheduled']);
+  });
+  test('keeps real HTTP completion logs and process sinks correlated without raw authority or PII', async () => {
+    const child = Bun.spawn([
+      process.execPath, 'test', './delegate-complete-context-routes.test.ts', '-t', 'TC-959 correlates',
+    ], { cwd: import.meta.dir, stdout: 'pipe', stderr: 'pipe' });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited, new Response(child.stdout).text(), new Response(child.stderr).text(),
+    ]);
+    expect(exitCode).toBe(0);
+    const lines = stdout.split('\n').filter((line) => line.startsWith('{')).map((line) => JSON.parse(line));
+    const requests = lines.filter((line) => line.event === 'request');
+    expect(requests.map((line) => line.status).sort()).toEqual([200, 200, 200, 200, 500]);
+    expect(requests.every((line) => line.route === '/api/delegate/complete')).toBe(true);
+    for (const requestId of [
+      uuid, '64e09578-4ca5-4d12-b172-2ef8762d04cb', '34db1e5b-6a32-4f70-9611-fc1e1f737975',
+    ]) expect(requests.filter((line) => line.request_id === requestId)).toHaveLength(1);
+    expect(lines.find((line) => line.event === 'api_error')).toMatchObject({
+      request_id: '34db1e5b-6a32-4f70-9611-fc1e1f737975', error_name: 'SyntaxError',
+    });
+    for (const canary of [
+      'owner-canary@example.test', 'token-canary', 'alice@example.test', 'did:pkh:',
+      '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+      'authorizationContextToken', 'Authorization', 'JSON Parse error',
+    ]) expect(`${stdout}${stderr}`).not.toContain(canary);
+  });
+
+  test('propagates only to node origins and preserves outbound Request and init semantics', async () => {
+    const received: Array<{ id: string | null; authorization: string | null; body: string; path: string }> = [];
+    const node = Bun.serve({
+      hostname: '127.0.0.1', port: 0,
+      async fetch(request) {
+        received.push({
+          id: request.headers.get('X-Request-Id'), authorization: request.headers.get('Authorization'),
+          body: await request.text(), path: new URL(request.url).pathname,
+        });
+        return new Response('ok');
+      },
+    });
+    const other = Bun.serve({
+      hostname: '127.0.0.1', port: 0,
+      fetch(request) { return Response.json({ id: request.headers.get('X-Request-Id') }); },
+    });
+    const nodeOrigin = `http://127.0.0.1:${node.port}`;
+    const previousHost = process.env.TINYCLOUD_URL;
+    process.env.TINYCLOUD_URL = nodeOrigin;
+    const app = new Hono<ApiEnv>();
+    app.use('*', requestLogger);
+    const { promise, resolve } = Promise.withResolvers<void>();
+    let background: Promise<void>;
+    app.get('/outbound', async (c) => {
+      await fetch(new Request(`${nodeOrigin}/request`, {
+        method: 'POST', headers: { Authorization: 'Bearer outbound-canary', 'X-Request-Id': 'stale-id' }, body: 'signed-body',
+      }));
+      await fetch(new Request(`${nodeOrigin}/override`, {
+        method: 'POST', headers: { Authorization: 'must-be-overridden' }, body: 'original-body',
+      }), { headers: { Authorization: 'Bearer override-canary' }, body: 'override-body' });
+      background = promise.then(async () => { await fetch(`${nodeOrigin}/background`); });
+      const thirdParty = await fetch(`http://127.0.0.1:${other.port}/third-party`);
+      await withScheduledLogContext(() => fetch(`${nodeOrigin}/scheduled`));
+      return c.json(await thirdParty.json());
+    });
+    try {
+      const response = await app.request('/outbound', { headers: { 'X-Request-Id': uuid } });
+      expect(await response.json()).toEqual({ id: null });
+      resolve();
+      await background!;
+      await fetch(`${nodeOrigin}/startup`);
+      expect(received).toEqual([
+        { id: uuid, authorization: 'Bearer outbound-canary', body: 'signed-body', path: '/request' },
+        { id: uuid, authorization: 'Bearer override-canary', body: 'override-body', path: '/override' },
+        { id: null, authorization: null, body: '', path: '/scheduled' },
+        { id: uuid, authorization: null, body: '', path: '/background' },
+        { id: null, authorization: null, body: '', path: '/startup' },
+      ]);
+      expect(output.join('\n')).not.toContain('outbound-canary');
+      expect(output.join('\n')).not.toContain('override-canary');
+    } finally {
+      resolve();
+      node.stop(true);
+      other.stop(true);
+      if (previousHost === undefined) delete process.env.TINYCLOUD_URL;
+      else process.env.TINYCLOUD_URL = previousHost;
+    }
   });
   test('fatal exceptions and rejections terminate a child server after safe logging', async () => {
     const loggerModule = new URL('../log.ts', import.meta.url).href;
