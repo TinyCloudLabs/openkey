@@ -27,6 +27,13 @@ export function createPreparedHandoffRouter(service: PreparedHandoffService = pr
     throw error;
   });
 
+  // An authenticated, non-cached feature check keeps a newer web build from
+  // submitting the prepared request to an API that has no claim route yet.
+  router.get('/available', requireSession, (c) => {
+    c.header('Cache-Control', 'no-store');
+    return c.json({ transportVersion: 2 });
+  });
+
   router.post('/claim', requireOpenKeyOriginForBearer, requireSession, bodyLimit({
     maxSize: 6 * 1024,
     onError: (c) => c.json({ code: 'invalid_request', error: 'Handoff request exceeds 6 KiB' }, 400),

@@ -990,7 +990,12 @@ describe('prepared handoff signing over HTTP', () => {
     sessionAvailable = false;
     const unauthenticated = await handoffRouter.request('/claim', { method: 'POST', headers: { 'content-type': 'application/json' }, body: claimBody });
     expect(unauthenticated.status).toBe(401);
+    const availabilityUnauthenticated = await handoffRouter.request('/available');
+    expect(availabilityUnauthenticated.status).toBe(401);
     sessionAvailable = true;
+    const availability = await handoffRouter.request('/available');
+    expect(availability.status).toBe(200);
+    expect(await availability.json()).toEqual({ transportVersion: 2 });
     const claimRes = await handoffRouter.request('/claim', { method: 'POST', headers: { 'content-type': 'application/json' }, body: claimBody });
     expect(claimRes.status).toBe(201);
     const handoff = await claimRes.json() as { ticket: string };

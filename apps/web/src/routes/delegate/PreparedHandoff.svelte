@@ -135,6 +135,9 @@
     const data: unknown = await response.json().catch(() => ({}));
     if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error(`Invalid response from ${path}.`);
     const record = data as Record<string, unknown>;
+    if (path === 'handoffs/claim' && response.status === 404 && record.error === 'Not found') {
+      throw new Error('Prepared CLI sign-in is not available yet. Restart the CLI command after OpenKey is updated.');
+    }
     if (!response.ok) throw new Error(typeof record.error === 'string' ? record.error : `HTTP ${response.status}`);
     return record;
   }
@@ -154,6 +157,18 @@
     try {
       const input = pending;
       if (!input) throw new Error('Missing prepared sign-in request. Restart the CLI command.');
+      const availability = await fetch(`${apiUrl}/api/delegate/handoffs/available`, {
+        credentials: 'include', cache: 'no-store',
+      });
+      if (availability.status === 404) {
+        throw new Error('Prepared CLI sign-in is not available yet. Restart the CLI command after OpenKey is updated.');
+      }
+      const feature: unknown = await availability.json().catch(() => null);
+      if (!availability.ok || !feature || typeof feature !== 'object' ||
+        !('transportVersion' in feature) || feature.transportVersion !== 2) {
+        throw new Error('Could not verify prepared CLI sign-in availability. Restart the CLI command.');
+      }
+      if (pending !== input) throw new Error('Prepared sign-in request expired. Restart the CLI command.');
       const claimed = await post('handoffs/claim', input);
       if (pending !== input) throw new Error('Prepared sign-in request expired. Restart the CLI command.');
       if (claimed.transportVersion !== 2 || claimed.ticket !== input.delivery.handoffId ||

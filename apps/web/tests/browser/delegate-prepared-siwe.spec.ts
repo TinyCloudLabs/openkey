@@ -38,6 +38,7 @@ async function setup(page: Page, options: { keyId?: string; callback?: string; n
     calls.push({ path, body });
     if (path === '/api/auth/get-session') return json(route, 200, options.authenticated === false ? null : { session: { id: 's', userId: 'u', expiresAt: '2026-10-16T18:00:00.000Z' }, user: { id: 'u', email: 'owner@example.test' } });
     if (path === '/api/keys') return json(route, 200, { keys: options.keys ?? [{ ...key, keyType: options.external ? 'EXTERNAL' : 'MANAGED' }] });
+    if (path === '/api/delegate/handoffs/available') return json(route, 200, { transportVersion: 2 });
     if (path === '/api/delegate/handoffs/claim') return json(route, 201, { transportVersion: 2, ticket: handoffId, expiresAt: '2026-10-16T17:05:00.000Z' });
     if (path === '/api/delegate/handoffs/cancel-claimed') return json(route, 200, { cancelled: true });
     if (path === '/api/delegate/authorize-sign-prepare') {
@@ -113,6 +114,26 @@ test('v2 warns when the exact SIWE has no expiration rather than implying the ti
   await expect(page.getByText('Approval request expires')).toBeVisible();
   await expect(page.getByText('No expiry set')).toBeVisible();
   await expect(page.getByText('Access granted until')).toHaveCount(0);
+});
+
+test('v2 explains an unavailable API before claiming and never enters legacy signing', async ({ page }) => {
+  const calls = await setup(page, { authenticated: false });
+  await expect(page.getByText('Sign in to review this request.')).toBeVisible();
+  let claims = 0;
+  await page.route('**/api/delegate/handoffs/available', route => json(route, 404, { error: 'Not found' }));
+  await page.route('**/api/delegate/handoffs/claim', route => {
+    claims++;
+    return json(route, 404, { error: 'Not found' });
+  });
+  await page.route('**/api/auth/get-session', route => json(route, 200, {
+    session: { id: 's', userId: 'u', expiresAt: '2026-10-16T18:00:00.000Z' },
+    user: { id: 'u', email: 'owner@example.test' },
+  }));
+  await page.goto('/delegate?transportVersion=2');
+  await expect(page.getByRole('alert')).toContainText('Prepared CLI sign-in is not available yet');
+  expect(claims).toBe(0);
+  expect(calls.filter(call => call.path === '/api/delegate/prepare' || call.path === '/api/delegate/authorize-sign')).toHaveLength(0);
+  expect(await page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey)).toBeNull();
 });
 
 test('v2 keeps the cleared fragment only in tab storage through sign-in and removes it after claim', async ({ page }) => {
