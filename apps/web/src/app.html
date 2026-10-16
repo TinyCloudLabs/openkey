@@ -14,7 +14,7 @@
       // tab storage only carries it through an OpenKey sign-in redirect.
       if (location.pathname === '/delegate' && location.hash.startsWith('#tv')) {
         const fragment = location.hash;
-        history.replaceState(history.state, '', location.pathname + location.search);
+        history.replaceState(history.state, '', location.pathname + '?transportVersion=2');
         document.documentElement.dataset.preparedHandoff = '1';
         try {
           sessionStorage.setItem('openkey.delegate.tv2.pending', fragment);

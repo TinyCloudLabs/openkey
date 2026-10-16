@@ -28,7 +28,7 @@ const narrowedSiwe = siwe.replace(
 const narrowedResult = { ...rawResult, signedMessage: narrowedSiwe, selectedActionKeys: [fullKey], permissions: [{ service: 'tinycloud.kv', space, path: 'notes/', actions: ['tinycloud.kv/get'] }] };
 const json = (route: Route, status: number, body: unknown) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 
-async function setup(page: Page, options: { keyId?: string; callback?: string; narrowed?: boolean; external?: boolean; keys?: KeyFixture[]; siwe?: string; authenticated?: boolean } = {}) {
+async function setup(page: Page, options: { keyId?: string; callback?: string; narrowed?: boolean; external?: boolean; keys?: KeyFixture[]; siwe?: string; authenticated?: boolean; entry?: 'client' | 'hash' | 'conflict' } = {}) {
   const calls: Array<{ path: string; body: unknown }> = [];
   let preparedKeyId = key.id;
   await page.clock.setFixedTime(new Date('2026-10-16T17:00:00.000Z'));
@@ -50,7 +50,22 @@ async function setup(page: Page, options: { keyId?: string; callback?: string; n
     return json(route, 404, { error: `unexpected ${path}` });
   });
   const input = { transportVersion: 2, request: { protocolVersion: 1, siwe: options.siwe ?? siwe, jwk, host, sessionDid: 'did:key:cli-session', ...options.keyId ? { keyId: options.keyId } : {} }, delivery: { handoffId, state, cancelSecret, ...options.callback ? { callback: options.callback } : {} } };
-  await page.goto(`/delegate#tv2=${Buffer.from(JSON.stringify(input)).toString('base64url')}`);
+  const url = `/delegate#tv2=${Buffer.from(JSON.stringify(input)).toString('base64url')}`;
+  if (options.entry === 'conflict') {
+    await page.goto(`/delegate?did=did:key:z6MkLegacy&jwk=${Buffer.from(JSON.stringify(jwk)).toString('base64url')}${url.slice('/delegate'.length)}`);
+  } else if (options.entry) {
+    await page.goto(options.entry === 'client' ? '/auth/login' : '/delegate?transportVersion=2');
+    await page.evaluate(target => {
+      const link = document.createElement('a');
+      link.id = 'test-v2-link';
+      link.href = target;
+      link.textContent = 'Continue to prepared sign-in';
+      document.body.append(link);
+    }, url);
+    await page.locator('#test-v2-link').click();
+  } else {
+    await page.goto(url);
+  }
   return calls;
 }
 
@@ -111,6 +126,72 @@ test('v2 keeps the cleared fragment only in tab storage through sign-in and remo
   await expect(page.getByText('Only approve if you started this sign-in yourself on your own computer.')).toBeVisible();
   expect(await page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey)).toBeNull();
   expect(calls.filter(call => call.path === '/api/delegate/handoffs/claim')).toHaveLength(1);
+});
+
+for (const entry of ['client', 'hash', 'conflict'] as const) {
+  test(`v2 ${entry} navigation scrubs fragment and never enters legacy approval`, async ({ page }) => {
+    const calls = await setup(page, { entry });
+    await expect(page.getByText('Only approve if you started this sign-in yourself on your own computer.')).toBeVisible();
+    expect(new URL(page.url()).hash).toBe('');
+    expect(await page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey)).toBeNull();
+    expect(calls.filter(call => call.path === '/api/delegate/handoffs/claim')).toHaveLength(1);
+    expect(calls.filter(call => call.path === '/api/delegate/prepare')).toHaveLength(0);
+  });
+}
+
+test('an explicit v1 link replaces pending v2 after sign-in', async ({ page }) => {
+  await setup(page, { authenticated: false });
+  await expect(page.getByText('Sign in to review this request.')).toBeVisible();
+  const legacyJwk = Buffer.from(JSON.stringify(jwk)).toString('base64url');
+  await page.goto(`/delegate?did=did:key:z6MkLegacy&jwk=${legacyJwk}`);
+  await expect.poll(() => page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey)).toBeNull();
+  await expect(page.getByText('Prepared CLI sign-in')).toHaveCount(0);
+
+  await page.route('**/api/auth/get-session', route => json(route, 200, {
+    session: { id: 's', userId: 'u', expiresAt: '2026-10-16T18:00:00.000Z' },
+    user: { id: 'u', email: 'owner@example.test' },
+  }));
+  const prepared: unknown[] = [];
+  await page.route('**/api/delegate/prepare', route => {
+    prepared.push(route.request().postDataJSON());
+    return json(route, 200, {
+      prepared: { siwe, spaceId: space, jwk }, spaceId: space,
+      ownerDid: `did:pkh:eip155:1:${address}`, address, chainId: 1, host,
+      permissions: [{ key: `tinycloud.kv\0${space}\0notes/`, service: 'kv', path: 'notes/',
+        label: 'kv', resourcePath: 'kv/notes/', actions: [
+          { key: fullKey, action: 'get', ability: 'tinycloud.kv/get', required: false },
+          { key: syncKey, action: 'sync', ability: 'tinycloud.kv/sync', required: false },
+        ] }],
+      selectedActionKeys: [fullKey, syncKey], edited: false,
+      authorizationContext: { token: 'legacy-context', expiresAt: Date.now() + 300_000, baselineAbilitiesDigest: 'digest' },
+    });
+  });
+  await page.reload();
+  await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
+  expect(prepared).toEqual([expect.objectContaining({ jwk, host })]);
+  expect(await page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey)).toBeNull();
+});
+
+test('a newly navigated v2 fragment replaces the previous pending request', async ({ page }) => {
+  await setup(page, { authenticated: false });
+  const first = await page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey);
+  expect(first).not.toBeNull();
+  const replacement = JSON.parse(Buffer.from(first!.slice(5), 'base64url').toString('utf8'));
+  replacement.delivery.handoffId = 'D'.repeat(43);
+  replacement.delivery.state = 'E'.repeat(43);
+  replacement.delivery.cancelSecret = 'F'.repeat(43);
+  const fragment = `#tv2=${Buffer.from(JSON.stringify(replacement)).toString('base64url')}`;
+  await page.evaluate(value => {
+    const link = document.createElement('a');
+    link.id = 'replacement-v2-link';
+    link.href = `/delegate${value}`;
+    link.textContent = 'New prepared sign-in';
+    document.body.append(link);
+  }, fragment);
+  await page.locator('#replacement-v2-link').click();
+  await expect(page.getByText('Sign in to review this request.')).toBeVisible();
+  expect(new URL(page.url()).hash).toBe('');
+  expect(await page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey)).toBe(fragment);
 });
 
 test('cancel before authenticated claim clears only tab-scoped request data', async ({ page }) => {

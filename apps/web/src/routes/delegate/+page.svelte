@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { afterNavigate } from '$app/navigation';
   import { page } from '$app/stores';
   import { authClient, authErrorMessage } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
@@ -114,7 +115,41 @@
   let dispatchReady = $state(false);
   let preparedMode = $state(false);
   let preparedFragment = $state('');
+  let reloadingFragment = false;
+  function captureClientFragment(): boolean {
+    if (reloadingFragment) return true;
+    if (!location.hash.startsWith('#tv')) return false;
+    reloadingFragment = true;
+    dispatchReady = false;
+    const fragment = location.hash;
+    // The document-head bootstrap does not run during SvelteKit navigation.
+    // Scrub before persisting, then reload so the existing auth continuation
+    // starts without ever entering the legacy delegation branch.
+    history.replaceState(history.state, '', `${location.pathname}?transportVersion=2`);
+    try { sessionStorage.setItem('openkey.delegate.tv2.pending', fragment); } catch { /* The explicit v2 marker prevents a v1 fallback. */ }
+    location.reload();
+    return true;
+  }
+  function dispatchClientNavigation(): boolean {
+    if (captureClientFragment()) return true;
+    // The bare route is the only auth return that resumes tab-scoped v2.
+    // A newly opened explicit legacy link wins over an older pending request.
+    if (!location.search || location.search === '?transportVersion=2') return false;
+    let stored: string | null = null;
+    try { stored = sessionStorage.getItem('openkey.delegate.tv2.pending'); } catch { /* No persistent fallback. */ }
+    if (stored === null && !preparedMode && document.documentElement.dataset.preparedHandoff !== '1') return false;
+    try { sessionStorage.removeItem('openkey.delegate.tv2.pending'); } catch { /* No persistent fallback. */ }
+    delete document.documentElement.dataset.preparedHandoff;
+    dispatchReady = false;
+    // Reinitialize the legacy query-bound state even for same-route SPA links.
+    location.reload();
+    return true;
+  }
+  afterNavigate(() => { if (typeof window !== 'undefined') dispatchClientNavigation(); });
   onMount(() => {
+    if (dispatchClientNavigation()) return;
+    const onHashChange = () => { dispatchClientNavigation(); };
+    window.addEventListener('hashchange', onHashChange);
     let stored: string | null = null;
     try { stored = sessionStorage.getItem('openkey.delegate.tv2.pending'); } catch { /* The approval page reports unavailable tab storage. */ }
     if (document.documentElement.dataset.preparedHandoff === '1' || stored !== null) {
@@ -122,6 +157,7 @@
       preparedFragment = stored ?? '';
     }
     dispatchReady = true;
+    return () => window.removeEventListener('hashchange', onHashChange);
   });
   const did = $page.url.searchParams.get('did') || '';
   const jwkB64 = $page.url.searchParams.get('jwk') || '';

@@ -213,8 +213,12 @@ for paste-only use. The CLI rejects a full URL over 8192 UTF-8 bytes with
 an explicit error, never a v1 fallback. The API claim body limit is 6 KiB.
 The fragment is not sent in HTTP requests or access logs, but trusted
 same-origin page JavaScript can read it, including `cancelSecret`. The
-document bootstrap removes it from the address immediately, using only
-tab-scoped `sessionStorage` to survive an OpenKey sign-in redirect. It is
+document bootstrap removes it from the address immediately. Client-side
+navigation and hash changes scrub it and reload before legacy approval can
+run. Only the bare `/delegate` authentication return or the internal
+`?transportVersion=2` marker resumes pending tab-scoped `sessionStorage`.
+An explicit v1 URL clears stale v2 tab data; a new v2 fragment replaces
+the old one. Pending data is
 removed on claim, cancellation, error or timeout; never use `localStorage`.
 After a claim, a refresh cannot recover the request or signed result: the
 page asks for a new CLI sign-in. No request or private JWK is put in a
