@@ -236,10 +236,10 @@ export interface CapabilityPresentationEnvelopeV1 {
 // the plain signMessage path, but versioned flows (authorizeTinyCloud)
 // always carry both fields and the SDK matches them on response.
 type MessageType =
-  | { type: 'openkey:auth:request'; appName: string }
+  | { type: 'openkey:auth:request'; appName: string; requestId?: string; protocolVersion?: number }
   | { type: 'openkey:auth:response'; success: true; address: string; keyId: string; keyType?: 'MANAGED' | 'EXTERNAL'; requestId?: string; protocolVersion?: number }
   | { type: 'openkey:auth:response'; success: false; error: OpenKeyError; requestId?: string; protocolVersion?: number }
-  | { type: 'openkey:sign:request'; message: string; keyId?: string; requestId?: string; protocolVersion?: number }
+  | { type: 'openkey:sign:request'; message: string; keyId?: string; requestId?: string; protocolVersion?: number; authorizationProtocolVersion?: 1 }
   | { type: 'openkey:sign:response'; success: true; signature: string; address: string; requestId?: string; protocolVersion?: number }
   | {
       type: 'openkey:sign:response';
@@ -291,16 +291,19 @@ type MessageType =
   | { type: 'openkey:link-wallet:request' }
   | { type: 'openkey:link-wallet:response'; success: true; address: string; keyId: string }
   | { type: 'openkey:link-wallet:response'; success: false; error: OpenKeyError }
-  | { type: 'openkey:link-wallet:delegate' }
-  | { type: 'openkey:link-wallet:result'; success: true; address: string; keyId: string }
-  | { type: 'openkey:link-wallet:result'; success: false; error: OpenKeyError }
-  | { type: 'openkey:auth:use-external-wallet' }
+  | { type: 'openkey:link-wallet:delegate'; requestId?: string; protocolVersion?: number }
+  | { type: 'openkey:link-wallet:result'; success: true; address: string; keyId: string; requestId?: string; protocolVersion?: number }
+  | { type: 'openkey:link-wallet:result'; success: false; error: OpenKeyError; requestId?: string; protocolVersion?: number }
+  | { type: 'openkey:auth:use-external-wallet'; requestId?: string; protocolVersion?: number }
   | { type: 'openkey:sign-out:request'; requestId: string; protocolVersion: 1 }
   | { type: 'openkey:sign-out:response'; success: true; requestId: string; protocolVersion: 1; revoked: boolean }
   | { type: 'openkey:sign-out:response'; success: false; requestId: string; protocolVersion: 1; error: OpenKeyError }
-  | { type: 'openkey:resize'; height: number; protocolVersion?: number }
-  | { type: 'openkey:ready'; protocolVersion?: number }
-  | { type: 'openkey:close' };
+  | { type: 'openkey:resize'; height: number; requestId?: string; protocolVersion?: number; layoutId?: number }
+  | { type: 'openkey:layout-applied'; height: number; requestId: string; protocolVersion: 2; layoutId: number }
+  | { type: 'openkey:layout-ready'; requestId: string; protocolVersion: 2; layoutId: number }
+  | { type: 'openkey:layout-invalidated'; requestId: string; protocolVersion: 2; layoutId: number }
+  | { type: 'openkey:ready'; requestId?: string; protocolVersion?: number }
+  | { type: 'openkey:close'; requestId?: string; protocolVersion?: number };
 
 type WidgetResponseMessage = Extract<MessageType, { success: boolean }>;
 
@@ -527,6 +530,7 @@ class IframeModal {
   private root: HTMLDivElement;
   private shadow: ShadowRoot;
   private iframe: HTMLIFrameElement;
+  private card: HTMLDivElement;
   private onClose: () => void;
   private onMessage: (data: MessageType) => void;
   private messageHandler: (event: MessageEvent) => void;
@@ -538,8 +542,12 @@ class IframeModal {
   // only uncorrelated resizes from this iframe are accepted (TC-647).
   private expectedRequestId: string | null = null;
   private expectedProtocolVersion: number | null = null;
+  private phaseV2 = false;
+  private currentLayoutId = 0;
+  private displayedHeight = 0;
+  private hasDisplayedLayout = false;
 
-  constructor(opts: { url: string; host: string; onClose: () => void; onMessage: (data: MessageType) => void }) {
+  constructor(opts: { url: string; host: string; hideUntilLayout?: boolean; onClose: () => void; onMessage: (data: MessageType) => void }) {
     this.host = opts.host;
     this.onClose = opts.onClose;
     this.onMessage = opts.onMessage;
@@ -574,28 +582,33 @@ class IframeModal {
       if (e.target === backdrop) this.close();
     });
 
-    const card = document.createElement('div');
-    card.className = 'ok-card';
+    this.card = document.createElement('div');
+    this.card.className = 'ok-card';
+    if (opts.hideUntilLayout) {
+      this.card.style.visibility = 'hidden';
+      this.card.style.animation = 'none';
+    }
 
     if (isMobile) {
       const handle = document.createElement('div');
       handle.className = 'ok-handle';
-      card.appendChild(handle);
+      this.card.appendChild(handle);
     }
 
     const closeBtn = document.createElement('button');
     closeBtn.className = 'ok-close';
     closeBtn.textContent = '\u00d7';
     closeBtn.addEventListener('click', () => this.close());
-    card.appendChild(closeBtn);
+    this.card.appendChild(closeBtn);
 
     this.iframe = document.createElement('iframe');
     this.iframe.src = opts.url;
     this.iframe.setAttribute('allow', 'clipboard-write *; publickey-credentials-get *; publickey-credentials-create *');
     this.iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox');
-    card.appendChild(this.iframe);
+    if (opts.hideUntilLayout) this.iframe.style.visibility = 'hidden';
+    this.card.appendChild(this.iframe);
 
-    backdrop.appendChild(card);
+    backdrop.appendChild(this.card);
     this.shadow.appendChild(style);
     this.shadow.appendChild(backdrop);
 
@@ -615,25 +628,66 @@ class IframeModal {
           viewportHeight: window.innerHeight,
         });
         if (h === null) return;
-        this.iframe.style.height = `${h}px`;
+        if (this.phaseV2) {
+          if (typeof data.layoutId !== 'number' || !Number.isSafeInteger(data.layoutId) ||
+              data.layoutId <= this.currentLayoutId) return;
+          this.currentLayoutId = data.layoutId;
+          this.iframe.style.transition = 'none';
+        }
+        // Once Approve has been enabled, keep the visible surface fixed.
+        // Later review revisions may invalidate consent, but must scroll
+        // inside this frame rather than move the host card.
+        if (!this.phaseV2 || !this.hasDisplayedLayout) {
+          this.iframe.style.height = `${h}px`;
+          if (this.phaseV2) this.displayedHeight = h;
+        }
+        if (this.phaseV2) {
+          this.iframe.style.visibility = 'visible';
+          this.card.style.visibility = 'visible';
+          this.postMessage({
+            type: 'openkey:layout-applied',
+            requestId: this.expectedRequestId,
+            protocolVersion: 2,
+            layoutId: data.layoutId,
+            height: this.hasDisplayedLayout ? this.displayedHeight : h,
+          });
+        }
         return;
       }
-      // Sol MAJOR-9: openkey:close MUST also carry versioning when the
-      // request was versioned. The close message is the only other one
-      // that a stray frame could try to inject to abort a legitimate
-      // approval. For simplicity we drop unversioned close on messages
-      // arriving from an authenticated iframe source and let the SDK's
-      // timeout eventually fire.
-      if (data.type === 'openkey:close') {
-        // No protocol-version requirement enforced here because a
-        // versionless close is a legitimate cancel from any widget
-        // version; source+origin validation earlier is sufficient.
+      if (data.type === 'openkey:layout-ready' || data.type === 'openkey:layout-invalidated') {
+        if (!this.phaseV2 || data.requestId !== this.expectedRequestId ||
+            data.protocolVersion !== this.expectedProtocolVersion ||
+            data.layoutId !== this.currentLayoutId) return;
+        if (data.type === 'openkey:layout-ready') {
+          this.hasDisplayedLayout = true;
+        }
+        return;
       }
+      // Origin and iframe source have been checked before forwarding any
+      // ready, close or response to the phase-scoped flow.
       this.onMessage(data);
     };
     window.addEventListener('message', this.messageHandler);
     document.body.appendChild(this.root);
   }
+
+  activatePhase(requestId: string, protocolVersion: 2): void {
+    this.setExpectedCorrelation(requestId, protocolVersion);
+    this.phaseV2 = true;
+  }
+
+  isVersionedPhase(): boolean {
+    return this.phaseV2;
+  }
+
+  revealLegacy(): void {
+    this.iframe.style.visibility = 'visible';
+    this.card.style.visibility = 'visible';
+  }
+  hasDisplayedCurrentPhase(): boolean {
+    return this.hasDisplayedLayout;
+  }
+
 
   postMessage(message: object) {
     this.iframe.contentWindow?.postMessage(message, this.host);
@@ -1373,7 +1427,7 @@ export class OpenKey {
     return this.openFlow<SignResult>('sign', {
       type: 'openkey:sign:request',
       message: request.message,
-      keyId: request.keyId,
+      keyId: request.keyId ?? this.lastAuth?.keyId,
     }, mode);
   }
 
@@ -1665,15 +1719,26 @@ export class OpenKey {
       return new Promise(() => {}); // never resolves, page navigates
     }
 
-    // iframe mode with auto-fallback
-    const url = `${this.host}/widget/embed/${action}?origin=${origin}${eoaFlag}${passkeysFlag}`;
-    return this.openIframeModal<T>(url, action, message, origin);
+    // The URL binds a fresh phase before the widget boots. A deployed older
+    // widget can still answer with its legacy ready and keep the old protocol.
+    // Without a selected key the existing unversioned sign flow remains in use.
+    const selectedKeyId = action === 'sign' && 'keyId' in message ? message.keyId : null;
+    const phase = action === 'connect' || (action === 'sign' && typeof selectedKeyId === 'string')
+      ? { requestId: crypto.randomUUID(), protocolVersion: 2 as const }
+      : null;
+    const keyId = action === 'sign' && 'keyId' in message && typeof message.keyId === 'string'
+      ? `&keyId=${encodeURIComponent(message.keyId)}` : '';
+    const url = `${this.host}/widget/embed/${action}?origin=${origin}${eoaFlag}${passkeysFlag}${phase ? `&requestId=${encodeURIComponent(phase.requestId)}&protocolVersion=2${keyId}` : ''}`;
+    return this.openIframeModal<T>(url, action, message, origin, phase);
   }
 
-  private openIframeModal<T>(url: string, action: string, message: object, origin: string): Promise<T> {
-    // Sol MAJOR-3: capture the outgoing request's correlation IDs so
-    // response handlers can require them to match. Legacy unversioned
-    // requests carry neither and skip correlation.
+  private openIframeModal<T>(
+    url: string,
+    action: string,
+    message: object,
+    origin: string,
+    phase: { requestId: string; protocolVersion: 2 } | null = null,
+  ): Promise<T> {
     const outgoingRequestId = (message as { requestId?: unknown }).requestId;
     const outgoingProtocolVersion = (message as { protocolVersion?: unknown }).protocolVersion;
     const isVersionedRequest =
@@ -1703,6 +1768,7 @@ export class OpenKey {
       modal = new IframeModal({
         url,
         host: this.host,
+        hideUntilLayout: action === 'sign' && !!phase,
         onClose: () => {
           settle(() => {
             cleanup();
@@ -1710,20 +1776,40 @@ export class OpenKey {
           });
         },
         onMessage: (data: MessageType) => {
+          if (settled) return;
           if (data.type === 'openkey:ready') {
+            if (readyReceived) return;
+            if (phase && data.protocolVersion === 2) {
+              if (data.requestId !== phase.requestId) return;
+              modal?.activatePhase(phase.requestId, phase.protocolVersion);
+              modal?.postMessage({
+                ...message,
+                ...phase,
+                ...(action === 'sign' && isVersionedRequest && outgoingProtocolVersion === 1
+                  ? { authorizationProtocolVersion: 1 } : {}),
+              });
+            } else if (phase && data.protocolVersion !== undefined && data.protocolVersion !== 1) {
+              return;
+            } else {
+              // Pre-v2 widgets retain their existing independent modal flow.
+              modal?.setExpectedCorrelation(
+                isVersionedRequest ? outgoingRequestId as string : null,
+                isVersionedRequest ? outgoingProtocolVersion as number : null,
+              );
+              modal?.revealLegacy();
+              modal?.postMessage(message);
+            }
             readyReceived = true;
-            modal?.postMessage(message);
             return;
           }
-          // Sol MAJOR-3: correlate versioned responses. If the request
-          // was versioned, drop any response that doesn't match the
-          // outgoing requestId/protocolVersion. If the request was
-          // unversioned (legacy), accept any response.
-          if (isVersionedRequest) {
-            const respRequestId = (data as { requestId?: unknown }).requestId;
-            const respVersion = (data as { protocolVersion?: unknown }).protocolVersion;
-            if (respRequestId !== outgoingRequestId) return;
-            if (respVersion !== outgoingProtocolVersion) return;
+          if (!readyReceived) return;
+          const activeRequestId = phase && modal?.isVersionedPhase()
+            ? phase.requestId : isVersionedRequest ? outgoingRequestId : null;
+          const activeVersion = phase && modal?.isVersionedPhase()
+            ? phase.protocolVersion : isVersionedRequest ? outgoingProtocolVersion : null;
+          if (activeRequestId !== null) {
+            if (!('requestId' in data) || data.requestId !== activeRequestId ||
+                !('protocolVersion' in data) || data.protocolVersion !== activeVersion) return;
           }
 
           if (data.type === 'openkey:close') {
@@ -1735,7 +1821,7 @@ export class OpenKey {
           }
 
           if (data.type === 'openkey:link-wallet:delegate') {
-            this.handleWalletLinkDelegation(modal!);
+            this.handleWalletLinkDelegation(modal!, modal?.isVersionedPhase() ? phase : null);
             return;
           }
 
@@ -1745,6 +1831,10 @@ export class OpenKey {
             return;
           }
 
+          // Consent is gated in the widget; do not discard an authorized
+          // result merely because its "Signing…" state invalidated geometry.
+          if (action === 'sign' && modal?.isVersionedPhase() &&
+              !modal.hasDisplayedCurrentPhase() && this.isResponseForAction(action, data)) return;
           if (this.isResponseForAction(action, data)) {
             settle(() => {
               cleanup();
@@ -1835,8 +1925,8 @@ export class OpenKey {
     return false;
   }
 
-  private handleWalletLinkDelegation(modal: IframeModal) {
-    const sendResult = (result: MessageType) => modal.postMessage(result);
+  private handleWalletLinkDelegation(modal: IframeModal, phase: { requestId: string; protocolVersion: 2 } | null = null) {
+    const sendResult = (result: MessageType) => modal.postMessage({ ...result, ...phase });
 
     new WalletPicker({
       providers: this.discoveredProviders,
