@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { page } from '$app/stores';
   import { authClient, authErrorMessage } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
@@ -110,8 +111,18 @@
 
   // Parse query params
   const preparedTransport = $page.url.searchParams.has('transportVersion');
-  const preparedVersion = $page.url.searchParams.get('transportVersion');
-  const preparedTicket = $page.url.searchParams.get('ticket') ?? '';
+  let dispatchReady = $state(false);
+  let preparedMode = $state(false);
+  let preparedFragment = $state('');
+  onMount(() => {
+    let stored: string | null = null;
+    try { stored = sessionStorage.getItem('openkey.delegate.tv2.pending'); } catch { /* The approval page reports unavailable tab storage. */ }
+    if (document.documentElement.dataset.preparedHandoff === '1' || stored !== null) {
+      preparedMode = true;
+      preparedFragment = stored ?? '';
+    }
+    dispatchReady = true;
+  });
   const did = $page.url.searchParams.get('did') || '';
   const jwkB64 = $page.url.searchParams.get('jwk') || '';
   const callback = $page.url.searchParams.get('callback') || '';
@@ -368,7 +379,7 @@
 
   // Reactively load keys when session becomes available
   $effect(() => {
-    if (!preparedTransport && $session.data && !keysLoaded) {
+    if (dispatchReady && !preparedMode && !preparedTransport && $session.data && !keysLoaded) {
       keysLoaded = true;
       loadKeys();
     }
@@ -391,7 +402,7 @@
   // 'select-key' step so revisiting the picker (Back, link-wallet round-trip)
   // doesn't trap the user in an auto-advance loop.
   $effect(() => {
-    if (preparedTransport || loading || preselectAttempted) return;
+    if (!dispatchReady || preparedMode || preparedTransport || loading || preselectAttempted) return;
     if (step !== 'select-key') return;
     preselectAttempted = true;
     const match = autoSelectKey(keys, expectedAddress);
@@ -1130,12 +1141,12 @@
   }
 </script>
 
-{#if preparedTransport}
-  {#if preparedVersion === '2'}
-    <PreparedHandoff ticket={preparedTicket} />
-  {:else}
-    <div role="alert" class="min-h-screen flex items-center justify-center">Unknown delegate transport version. Restart the CLI command.</div>
-  {/if}
+{#if !dispatchReady && !preparedTransport}
+  <div role="status" class="min-h-screen flex items-center justify-center">Loading delegation request…</div>
+{:else if preparedMode}
+  <PreparedHandoff encoded={preparedFragment} onClear={() => { preparedFragment = ''; }} />
+{:else if preparedTransport}
+  <div role="alert" class="min-h-screen flex items-center justify-center">Unsupported delegate transport version. Restart the CLI command.</div>
 {:else}
 <div class="min-h-screen bg-[#fafafa] flex flex-col items-center justify-center px-4 py-8">
   <div class="w-full max-w-sm flex flex-col items-center gap-6">

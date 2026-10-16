@@ -181,11 +181,12 @@ still receives `404 key_not_found`.
 
 ## Prepared-SIWE CLI handoff (transport v2)
 
-This separate `/delegate?transportVersion=2&ticket=<ticket>` mode does not
-prepare a new SIWE on the page and does not use delegation lookup codes.
-The CLI must have an independently verified Ethereum owner identity before
-its Node SDK prepares the SIWE; an unknown owner cannot use this mode.
-The CLI sends `POST /api/delegate/handoffs` with:
+Replica-enabled OpenKey sign-in uses
+`https://openkey.so/delegate#tv2=<unpadded base64url UTF-8 JSON>`. The CLI
+must have an explicit `--owner` or independently verified stored EIP-155
+owner identity before the Node SDK prepares the SIWE. An unknown owner
+cannot use v2; it never falls back to the legacy delegation flow. The CLI
+places the SDK's **exact** SIWE bytes and **public-only** Ed25519 JWK in:
 
 ```json
 {
@@ -199,53 +200,78 @@ The CLI sends `POST /api/delegate/handoffs` with:
     "keyId": "<optional OpenKey signing key ID>"
   },
   "delivery": {
+    "handoffId": "<CLI-generated 32-byte base64url ID>",
     "callback": "http://127.0.0.1:42317/callback/<22 base64url characters>",
-    "state": "<independent 32-byte base64url secret>",
-    "cancelSecret": "<different 32-byte base64url secret>"
+    "state": "<independent 32-byte base64url value>",
+    "cancelSecret": "<different 32-byte base64url value>"
   }
 }
 ```
 
-`presentation` may also be supplied in `request`; `callback` is optional for
-paste-only use. The body is limited to 64 KiB. The returned `ticket` is a
-32-byte opaque bearer link and expires within five minutes. It must not be
-put alongside the SIWE, JWK, state, or cancel secret in a URL. Only a public
-Ed25519 JWK is accepted. The callback, if present, is strictly an exact
-`http://127.0.0.1` or `http://[::1]` URL with port 1024–65535 and randomized
-`/callback/<22 base64url characters>` path; no query or fragment is allowed.
-Five creations per IP per five minutes are accepted.
+`presentation` may also be supplied in `request`; `callback` is optional
+for paste-only use. The CLI rejects a full URL over 8192 UTF-8 bytes with
+an explicit error, never a v1 fallback. The API claim body limit is 6 KiB.
+The fragment is not sent in HTTP requests or access logs, but trusted
+same-origin page JavaScript can read it, including `cancelSecret`. The
+document bootstrap removes it from the address immediately, using only
+tab-scoped `sessionStorage` to survive an OpenKey sign-in redirect. It is
+removed on claim, cancellation, error or timeout; never use `localStorage`.
+After a claim, a refresh cannot recover the request or signed result: the
+page asks for a new CLI sign-in. No request or private JWK is put in a
+query string.
 
-An authenticated `POST /api/delegate/handoffs/resolve` with `{ "ticket": "…" }`
-claims the ticket for the first OpenKey account. A refresh by that account
-works; another account is refused. Resolve returns the original request,
-callback and expiry, never the delivery state, cancel secret or signed result.
-The page shows the CLI session DID, exact host origin, requested spaces,
-abilities, expiry and original SIWE, plus a same-computer warning. The selected
-OpenKey key must match the requested `keyId` when present. Without `keyId`, the
-owner chooses among keys matching the SIWE signer address; the selected ID is
-echoed for display and audit, not used as cryptographic proof. After the user
-selects abilities, the existing authorize-sign prepare/preview/sign routes
-bind the ticket, key, public JWK, host and original SIWE to a single context.
-The page displays the preview's exact `signedMessage` before confirmation;
-full selection signs the original bytes, while narrowing changes only the
-permitted ReCap subset. There is no raw key mint or postapproval re-prepare.
+There is **no anonymous handoff creation** and no ticket resolve route.
+Only after OpenKey authentication does the page send
+`POST /api/delegate/handoffs/claim` with the decoded JSON above. It returns
+`{transportVersion:2,ticket:<handoffId>,expiresAt:<ISO>}`. The server
+validates canonical SIWE, public JWK and URI binding, exact host origin,
+optional key ID, callback, and independent delivery values. The SIWE
+`Issued At` must be no more than five minutes old (with 30 seconds of
+future clock tolerance); an expired SIWE is refused. The account owns
+the record at creation. A unique account/SIWE-nonce key prevents a
+second signing handoff, while database-serialized admission permits at
+most five new claims per authenticated account per five minutes. The
+approval request expires no later than five minutes after claim or the
+SIWE grant expiry, whichever is earlier. The user sees the **approval
+request expiry** and the **signed grant expiry** as separate clocks.
 
-Signing atomically consumes the ticket, even if browser delivery later fails.
-The sign response alone includes `deliveryState` and `selectedKeyId`; the page
-constructs `{transportVersion:2,state:deliveryState,selectedKeyId,result}`,
-where `result` has exactly `protocolVersion`, `address`, `signature`,
-`signedMessage`, `selectedActionKeys`, and `permissions`. The browser POSTs
-that JSON to the registered loopback callback with redirects disabled and
-accepts delivery only after the CLI returns `{ "accepted": true }`. Otherwise
-it offers the same in-memory JSON as one-line, unpadded base64url UTF-8 paste
-code. A refreshed page cannot retrieve the signature or sign again; restart
-the CLI command for a new prepared SIWE and ticket. There is no result polling
-endpoint. Before signing, the CLI may cancel with
-`POST /api/delegate/handoffs/cancel` carrying `{ticket,cancelSecret}`; the
-claimed browser account may cancel via `/cancel-claimed` carrying `{ticket}`.
-Wallet rejection before any finalize request leaves browser cancellation
-available. Once finalize might have been accepted, the page never retries
-signing. Neither cancellation nor a replay can recover a consumed result.
+The page shows the CLI session DID (display only), exact node host origin,
+requested spaces and abilities, original SIWE, and the warning "Only
+approve if you started this sign-in yourself on your own computer." The
+selected OpenKey key must match a requested `keyId`; otherwise the user
+chooses among account keys matching the SIWE address. The selected ID is
+echoed for audit, not cryptographic proof. Authorize-sign
+prepare/preview/sign bind the claimed handoff ID, key, public JWK, host
+and original SIWE to a single context. The page displays the preview's
+exact `signedMessage` before confirmation. Full selection signs the
+original bytes; narrowing changes only a permitted ReCap subset. There
+is no raw key mint or postapproval re-prepare.
+
+Signing atomically consumes the claim even if browser delivery fails.
+Only the successful signing response includes `deliveryState` and
+`selectedKeyId`. The page constructs
+`{transportVersion:2,state:deliveryState,selectedKeyId,result}`, where
+`result` has exactly `protocolVersion`, `address`, `signature`,
+`signedMessage`, `selectedActionKeys`, and `permissions`. The browser
+POSTs it to the registered randomized loopback callback, with redirects
+disabled; callback success requires the CLI's `{ "accepted": true }`
+receipt after SDK verification and durable session/profile commit.
+Otherwise the page offers the **same in-memory result** as a one-line
+unpadded base64url UTF-8 paste code. No endpoint retrieves a signed
+result by handoff ID.
+
+The callback must be exactly `http://127.0.0.1` or `http://[::1]`,
+port 1024–65535, path `/callback/<22 base64url characters>`, with no
+query, fragment or userinfo. After claim, the CLI can cancel via
+`POST /api/delegate/handoffs/cancel` with
+`{ticket:<handoffId>,cancelSecret}`; the authenticated page can use
+`/cancel-claimed` with `{ticket}`. Before claim, no server record exists
+to cancel. On CLI cancellation or timeout the CLI must immediately
+destroy the new candidate private JWK and callback state, preserving
+any previous profile key. A later approval of that old fragment has no
+held key and cannot pass the CLI state check. Wallet refusal before a
+finalize request leaves page cancellation available; after finalize
+might have succeeded, the page does not re-sign or retrieve a result.
 
 ## Request
 

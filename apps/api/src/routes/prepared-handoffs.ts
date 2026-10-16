@@ -27,26 +27,17 @@ export function createPreparedHandoffRouter(service: PreparedHandoffService = pr
     throw error;
   });
 
-  router.post('/', bodyLimit({
-    maxSize: 64 * 1024,
-    onError: (c) => c.json({ code: 'invalid_request', error: 'Handoff request exceeds 64 KiB' }, 400),
+  router.post('/claim', requireOpenKeyOriginForBearer, requireSession, bodyLimit({
+    maxSize: 6 * 1024,
+    onError: (c) => c.json({ code: 'invalid_request', error: 'Handoff request exceeds 6 KiB' }, 400),
   }), async (c) => {
     const raw = await c.req.text();
-    if (Buffer.byteLength(raw, 'utf8') > 64 * 1024) {
-      throw new PreparedHandoffError('invalid_request', 'Handoff request exceeds 64 KiB', 400);
+    if (Buffer.byteLength(raw, 'utf8') > 6 * 1024) {
+      throw new PreparedHandoffError('invalid_request', 'Handoff request exceeds 6 KiB', 400);
     }
     let body: unknown;
     try { body = JSON.parse(raw); } catch { throw new PreparedHandoffError('invalid_request', 'Invalid JSON request', 400); }
-    const ip = c.req.header('cf-connecting-ip') ?? c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown';
-    return c.json(await service.start(body, ip), 201);
-  });
-
-  router.post('/resolve', requireOpenKeyOriginForBearer, requireSession, async (c) => {
-    const body = await jsonRequest(c);
-    if (!body || typeof body !== 'object' || !('ticket' in body) || typeof body.ticket !== 'string') {
-      throw new PreparedHandoffError('invalid_request', 'ticket is required', 400);
-    }
-    return c.json(await service.resolve(body.ticket, c.get('user').id));
+    return c.json(await service.claim(body, c.get('user').id), 201);
   });
 
   router.post('/cancel-claimed', requireOpenKeyOriginForBearer, requireSession, async (c) => {

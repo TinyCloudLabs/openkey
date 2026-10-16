@@ -9,6 +9,19 @@
         document.documentElement.style.background = '#09090b';
         document.documentElement.style.colorScheme = 'dark';
       }
+      // The CLI approval request lives in the fragment, never the HTTP
+      // request. Remove it before the app or analytics can observe the URL;
+      // tab storage only carries it through an OpenKey sign-in redirect.
+      if (location.pathname === '/delegate' && location.hash.startsWith('#tv')) {
+        const fragment = location.hash;
+        history.replaceState(history.state, '', location.pathname + location.search);
+        document.documentElement.dataset.preparedHandoff = '1';
+        try {
+          sessionStorage.setItem('openkey.delegate.tv2.pending', fragment);
+        } catch {
+          document.documentElement.dataset.preparedHandoffStorageError = '1';
+        }
+      }
     </script>
     <link rel="icon" href="%sveltekit.assets%/favicon.ico" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />

@@ -96,20 +96,21 @@ model DeviceAuthorization {
 model PreparedHandoff {
   ticketHash       String   @id
   cancelSecretHash String
+  nonceHash        String
   request          Json
   callback         String?
   state            String
   expiresAt        DateTime
   requestedAt      DateTime
-  requestIpHash    String
   status           String   @default("PENDING")
-  ownerId          String?
+  ownerId          String
   contextTokenHash String?  @unique
   selectedKeyId    String?
 
-  owner User? @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  owner User @relation(fields: [ownerId], references: [id], onDelete: Cascade)
 
-  @@index([requestIpHash, requestedAt])
+  @@unique([ownerId, nonceHash])
+  @@index([ownerId, requestedAt])
   @@index([expiresAt])
   @@map("prepared_handoff")
 }

@@ -344,11 +344,11 @@ export function strictSessionDid(value: unknown): string {
  * delegation expects a separator, so a line search and the signed
  * delegation would disagree.
  */
-export function canonicalSiweFields(message: string): { uri: string; expirationTime: string } | null {
+export function canonicalSiweFields(message: string): { uri: string; expirationTime: string; issuedAt?: string; nonce: string } | null {
   try {
     const parsed = new SiweMessage(message);
     if (parsed.prepareMessage() !== message || !parsed.expirationTime) return null;
-    return { uri: parsed.uri, expirationTime: parsed.expirationTime };
+    return { uri: parsed.uri, expirationTime: parsed.expirationTime, issuedAt: parsed.issuedAt, nonce: parsed.nonce };
   } catch {
     return null;
   }

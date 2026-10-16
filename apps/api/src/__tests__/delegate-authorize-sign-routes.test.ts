@@ -37,6 +37,7 @@ const otherUser = { id: 'user_2', email: 'bob@example.test' };
 const jwk = { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' };
 
 let currentUser = user;
+let sessionAvailable = true;
 
 const keyRecord = {
   id: 'key_1',
@@ -72,6 +73,7 @@ const prisma = {
 replaceModules({
   '../middleware/session': () => ({
     requireSession: createMiddleware(async (c, next) => {
+      if (!sessionAvailable) return c.json({ error: 'Authentication required' }, 401);
       c.set('user', currentUser);
       c.set('session', {
         id: 'session_' + currentUser.id,
@@ -131,6 +133,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   currentUser = user;
+  sessionAvailable = true;
   manifestBindResult = { ok: false, reason: 'not configured' };
   resetContexts?.();
 });
@@ -972,13 +975,27 @@ describe('prepared handoff signing over HTTP', () => {
     const siwe = makePreparedSiwe();
     const state = Buffer.alloc(32, 1).toString('base64url');
     const cancelSecret = Buffer.alloc(32, 2).toString('base64url');
-    const handoff = await service.start({
+    // Imported after route-module replacements; a static import would load
+    // the real session middleware before this fixture installs its account.
+    const { createPreparedHandoffRouter } = await import('../routes/prepared-handoffs?authorize-sign-routes-isolated' as string);
+    const handoffRouter = createPreparedHandoffRouter(service);
+    const handoffId = Buffer.alloc(32, 3).toString('base64url');
+    const claimBody = JSON.stringify({
       transportVersion: 2,
       request: { protocolVersion: 1, siwe, jwk, host: 'https://node.tinycloud.xyz', keyId: keyRecord.id, sessionDid: 'display-only' },
-      delivery: { callback: 'http://127.0.0.1:42317/callback/AAAAAAAAAAAAAAAAAAAAAA', state, cancelSecret },
-    }, '198.51.100.10');
+      delivery: { handoffId, callback: 'http://127.0.0.1:42317/callback/AAAAAAAAAAAAAAAAAAAAAA', state, cancelSecret },
+    });
+    const oldCreate = await handoffRouter.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: claimBody });
+    expect(oldCreate.status).toBe(404);
+    sessionAvailable = false;
+    const unauthenticated = await handoffRouter.request('/claim', { method: 'POST', headers: { 'content-type': 'application/json' }, body: claimBody });
+    expect(unauthenticated.status).toBe(401);
+    sessionAvailable = true;
+    const claimRes = await handoffRouter.request('/claim', { method: 'POST', headers: { 'content-type': 'application/json' }, body: claimBody });
+    expect(claimRes.status).toBe(201);
+    const handoff = await claimRes.json() as { ticket: string };
     const ticket = handoff.ticket;
-    await service.resolve(ticket, user.id);
+    expect(ticket).toBe(handoffId);
     const prepareRes = await router.request('/authorize-sign-prepare', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -1031,15 +1048,14 @@ describe('prepared handoff signing over HTTP', () => {
     });
     expect(replay.status).toBeGreaterThanOrEqual(400);
     expect(JSON.stringify(await replay.json())).not.toContain(state);
-    // Ticket resolution cannot retrieve a signature, even after an approval.
-    const { createPreparedHandoffRouter } = await import('../routes/prepared-handoffs?authorize-sign-routes-isolated' as string);
-    const handoffRouter = createPreparedHandoffRouter(service);
+    // Neither a ticket read nor the retired resolve route can retrieve a
+    // signed result. The CLI receives it only through callback or paste.
     const readResult = await handoffRouter.request(`/${ticket}`, { method: 'GET' });
     expect(readResult.status).toBe(404);
     const resolveAgain = await handoffRouter.request('/resolve', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ticket }),
     });
-    expect(resolveAgain.status).toBe(409);
-    expect(JSON.stringify(await resolveAgain.json())).not.toContain(state);
+    expect(resolveAgain.status).toBe(404);
+    expect(await resolveAgain.text()).not.toContain(state);
   });
 });

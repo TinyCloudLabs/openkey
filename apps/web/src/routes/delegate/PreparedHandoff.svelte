@@ -1,32 +1,58 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
+  import { afterNavigate, replaceState } from '$app/navigation';
   import { authClient, authErrorMessage } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
   import { copyText } from '$lib/clipboard';
   import { parseCapabilityReview, defaultSelection, type CapabilityReviewModel } from '@openkey/capability-review';
   import { validatePreviewSelection } from '$lib/preview-review';
+  import { timeUntilExpiry } from '$lib/siwe-parser';
 
-  let { ticket }: { ticket: string } = $props();
+  let { encoded, onClear }: { encoded: string; onClear: () => void } = $props();
   const session = authClient.useSession();
   const apiUrl = import.meta.env.VITE_API_URL || '';
   type Request = { protocolVersion: 1; siwe: string; jwk: Record<string, unknown>; host: string; sessionDid: string; keyId?: string; presentation?: Record<string, unknown> };
-  type Handoff = { transportVersion: 2; request: Request; delivery: { callback?: string }; expiresAt: string };
+  type Claim = { transportVersion: 2; request: Request; delivery: { handoffId: string; state: string; cancelSecret: string; callback?: string } };
+  type Handoff = { request: Request; delivery: { callback?: string }; expiresAt: string };
   type Result = { protocolVersion: 1; address: string; signature: string; signedMessage: string; selectedActionKeys: string[]; permissions: unknown[] };
   type KeyChoice = { key: EthereumKey; review: CapabilityReviewModel };
+  const pendingKey = 'openkey.delegate.tv2.pending';
   function isRecord(value: unknown): value is Record<string, unknown> {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
   }
-  function isHandoff(value: Record<string, unknown>): value is Handoff {
-    if (!isRecord(value.request) || !isRecord(value.delivery)) return false;
+  function isClaim(value: unknown): value is Claim {
+    if (!isRecord(value) || !isRecord(value.request) || !isRecord(value.delivery)) return false;
     const request = value.request;
+    const delivery = value.delivery;
+    const opaque = (item: unknown) => typeof item === 'string' && /^[A-Za-z0-9_-]{43}$/.test(item);
     return value.transportVersion === 2 && request.protocolVersion === 1 &&
       typeof request.siwe === 'string' && typeof request.host === 'string' &&
       typeof request.sessionDid === 'string' && isRecord(request.jwk) &&
       (request.keyId === undefined || typeof request.keyId === 'string') &&
       (request.presentation === undefined || isRecord(request.presentation)) &&
-      (value.delivery.callback === undefined || typeof value.delivery.callback === 'string') &&
-      typeof value.expiresAt === 'string';
+      opaque(delivery.handoffId) && opaque(delivery.state) && opaque(delivery.cancelSecret) &&
+      (delivery.callback === undefined || (typeof delivery.callback === 'string' && validCallback(delivery.callback)));
   }
   let handoff = $state<Handoff | null>(null);
+  let pending = $state<Claim | null>(null);
+  let ticket = $state('');
+  let initialized = $state(false);
+  let pendingTimeout: ReturnType<typeof setTimeout> | undefined;
+  let routerReady = false;
+  let markerNeeded = false;
+  afterNavigate(() => {
+    routerReady = true;
+    if (markerNeeded) {
+      markerNeeded = false;
+      replaceState(`${location.pathname}?transportVersion=2`, {});
+    }
+  });
+  const signedExpiry = $derived.by(() => {
+    const value = handoff?.request.siwe.match(/^Expiration Time:[ \t]*(.+)$/m)?.[1]?.trim();
+    if (!value) return null;
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : { local: date.toLocaleString(), relative: timeUntilExpiry(value).text };
+  });
   let key = $state<EthereumKey | null>(null);
   let keyChoices = $state<KeyChoice[]>([]);
   let signingChain = $state('');
@@ -49,6 +75,55 @@
     if (!/^http:\/\/(?:127\.0\.0\.1|\[::1\]):[0-9]{4,5}\/callback\/[A-Za-z0-9_-]{22}$/.test(callback)) return false;
     const port = Number(new URL(callback).port);
     return port >= 1024 && port <= 65535;
+  }
+  function clearPending(): void {
+    if (pendingTimeout !== undefined) clearTimeout(pendingTimeout);
+    try { sessionStorage.removeItem(pendingKey); } catch { /* No persistent fallback for approval material. */ }
+    onClear();
+    if (routerReady) replaceState(`${location.pathname}?transportVersion=2`, {});
+    else markerNeeded = true;
+  }
+
+  onMount(() => {
+    try {
+      if (document.documentElement.dataset.preparedHandoffStorageError === '1') {
+        throw new Error('Tab storage is unavailable. Restart the CLI command.');
+      }
+      if (!encoded.startsWith('#tv2=')) throw new Error('Unsupported prepared sign-in transport. Restart the CLI command.');
+      if (new TextEncoder().encode(`${location.origin}${location.pathname}${location.search}${encoded}`).length > 8192) {
+        throw new Error('Prepared sign-in link is too large. Restart the CLI command.');
+      }
+      let value: unknown;
+      try {
+        const binary = atob(encoded.slice(5).replace(/-/g, '+').replace(/_/g, '/'));
+        const bytes = Uint8Array.from(binary, character => character.charCodeAt(0));
+        value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+      } catch {
+        throw new Error('Invalid prepared sign-in request. Restart the CLI command.');
+      }
+      if (!isClaim(value)) throw new Error('Invalid prepared sign-in request. Restart the CLI command.');
+      const issuedAt = /^Issued At:[ \t]*(.+)$/m.exec(value.request.siwe)?.[1]?.trim();
+      const remaining = Date.parse(issuedAt ?? '') + 300_000 - Date.now();
+      if (!Number.isFinite(remaining) || remaining <= 0) throw new Error('Prepared sign-in request expired. Restart the CLI command.');
+      pending = value;
+      pendingTimeout = setTimeout(() => {
+        pending = null;
+        clearPending();
+        error = 'Prepared sign-in request expired. Restart the CLI command.';
+      }, remaining);
+    } catch (cause) {
+      clearPending();
+      error = cause instanceof Error ? cause.message : 'Invalid prepared sign-in request. Restart the CLI command.';
+    } finally {
+      initialized = true;
+    }
+    return () => { if (pendingTimeout !== undefined) clearTimeout(pendingTimeout); };
+  });
+
+  function cancelPending(): void {
+    pending = null;
+    clearPending();
+    error = 'Approval cancelled. Restart the CLI command for a new sign-in.';
   }
 
   async function post(path: string, body: unknown): Promise<Record<string, unknown>> {
@@ -75,14 +150,22 @@
   async function load() {
     busy = true;
     try {
-      if (!ticket) throw new Error('Missing prepared sign-in ticket. Restart the CLI command.');
-      const resolved = await post('handoffs/resolve', { ticket });
-      if (!isHandoff(resolved)) {
-        throw new Error('Unknown prepared sign-in transport version. Restart the CLI command.');
+      const input = pending;
+      if (!input) throw new Error('Missing prepared sign-in request. Restart the CLI command.');
+      const claimed = await post('handoffs/claim', input);
+      if (pending !== input) throw new Error('Prepared sign-in request expired. Restart the CLI command.');
+      if (claimed.transportVersion !== 2 || claimed.ticket !== input.delivery.handoffId ||
+        typeof claimed.expiresAt !== 'string' || !Number.isFinite(Date.parse(claimed.expiresAt))) {
+        throw new Error('Invalid approval claim response. Restart the CLI command.');
       }
-      if (resolved.delivery.callback && !validCallback(resolved.delivery.callback)) {
-        throw new Error('The registered CLI callback is not a valid loopback address.');
-      }
+      ticket = input.delivery.handoffId;
+      const resolved: Handoff = {
+        request: input.request,
+        delivery: input.delivery.callback ? { callback: input.delivery.callback } : {},
+        expiresAt: claimed.expiresAt,
+      };
+      pending = null;
+      clearPending();
       const match = /(?:^|\n)([^\n]+) wants you to sign in with your Ethereum account:\n(0x[0-9a-fA-F]{40})(?:\n|$)/.exec(resolved.request.siwe);
       const chain = /^Chain ID: ([1-9][0-9]*)$/m.exec(resolved.request.siwe);
       if (!match || !chain) throw new Error('The prepared SIWE does not name a valid signer and chain.');
@@ -106,12 +189,14 @@
       handoff = resolved;
       if (choices.length === 1) chooseKey(choices[0]!);
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Could not resolve prepared sign-in.';
+      pending = null;
+      clearPending();
+      error = cause instanceof Error ? cause.message : 'Could not claim prepared sign-in.';
     } finally { busy = false; }
   }
 
   $effect(() => {
-    if ($session.data && !loaded) { loaded = true; void load(); }
+    if (initialized && pending && $session.data && !loaded) { loaded = true; void load(); }
   });
 
   function toggle(id: string) {
@@ -234,10 +319,15 @@
   <main class="w-full max-w-xl rounded-xl border border-surface-200 bg-white p-6 shadow-sm space-y-5">
     <header><h1 class="text-xl font-semibold text-surface-900">Prepared CLI sign-in</h1></header>
     {#if error}<p role="alert" class="rounded-lg bg-red-50 p-3 text-red-800">{error}</p>{/if}
-    {#if !$session.data}
+    {#if !initialized}
+      <p>Loading prepared sign-in…</p>
+    {:else if error && !handoff && !pending}
+      <p>Start a new CLI sign-in to review a new request.</p>
+    {:else if !$session.data}
       <p>Sign in to review this request.</p>
-      <a href={`/auth/login?redirect=${encodeURIComponent('/delegate?transportVersion=2&ticket=' + ticket)}`}>Continue with email</a>
+      <a href={`/auth/login?redirect=${encodeURIComponent('/delegate')}`}>Continue with email</a>
       <button disabled={signingIn} onclick={signIn}>Use a passkey instead</button>
+      <button onclick={cancelPending}>Cancel</button>
     {:else if busy && !handoff && !code}<p>Loading prepared sign-in…</p>
     {:else if handoff && phase === 'done'}
       {#if delivered}<p role="status">CLI accepted your sign-in. You can close this window.</p>
@@ -252,8 +342,13 @@
       <dl class="space-y-2 text-sm break-all">
         <div><dt class="font-semibold">Session DID (display only)</dt><dd>{handoff.request.sessionDid}</dd></div>
         <div><dt class="font-semibold">Node host</dt><dd>{handoff.request.host}</dd></div>
-        <div><dt class="font-semibold">Expires</dt><dd>{handoff.expiresAt}</dd></div>
+        <div><dt class="font-semibold">Approval request expires</dt><dd>{new Date(handoff.expiresAt).toLocaleString()}</dd></div>
       </dl>
+      {#if signedExpiry}
+        <div class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm"><dt class="font-semibold">Access granted until</dt><dd>{signedExpiry.local} ({signedExpiry.relative})</dd></div>
+      {:else}
+        <p role="alert" class="rounded-lg border border-red-300 bg-red-50 p-3 text-sm">No expiry set</p>
+      {/if}
       <h2 class="font-semibold">Choose an OpenKey signing key</h2>
       {#each keyChoices as choice (choice.key.id)}
         <button class="block w-full rounded-lg border p-3 text-left text-sm break-all" onclick={() => chooseKey(choice)}>{choice.key.label ?? `Key ${choice.key.keyIndex}`} · {choice.key.id} · {choice.key.address} (chain {signingChain})</button>
@@ -270,9 +365,14 @@
       <dl class="space-y-2 text-sm break-all">
         <div><dt class="font-semibold">Session DID (display only)</dt><dd>{handoff.request.sessionDid}</dd></div>
         <div><dt class="font-semibold">Node host</dt><dd>{handoff.request.host}</dd></div>
-        <div><dt class="font-semibold">Expires</dt><dd>{handoff.expiresAt}</dd></div>
+        <div><dt class="font-semibold">Approval request expires</dt><dd>{new Date(handoff.expiresAt).toLocaleString()}</dd></div>
         <div><dt class="font-semibold">Signing key</dt><dd>{key.address} (chain {signingChain})</dd></div>
       </dl>
+      {#if signedExpiry}
+        <div class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm"><dt class="font-semibold">Access granted until</dt><dd>{signedExpiry.local} ({signedExpiry.relative})</dd></div>
+      {:else}
+        <p role="alert" class="rounded-lg border border-red-300 bg-red-50 p-3 text-sm">No expiry set</p>
+      {/if}
       <h2 class="font-semibold">Requested abilities and spaces</h2>
       {#each model.permissions as grant}
         <div class="rounded-lg border p-3 text-sm">
