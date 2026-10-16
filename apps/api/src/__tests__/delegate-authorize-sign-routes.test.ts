@@ -131,7 +131,7 @@ beforeEach(() => {
   resetContexts?.();
 });
 
-function makePreparedSiwe(): string {
+function makePreparedSiwe(delegation?: { path: string; action: string }): string {
   const chainId = 1;
   const now = new Date();
   const spaceId = `tinycloud:pkh:eip155:${chainId}:${address}:default`;
@@ -150,6 +150,7 @@ function makePreparedSiwe(): string {
       capabilities: {
         [spaceId]: ['tinycloud.capabilities/read'],
       },
+      ...(delegation ? { delegation: { [delegation.path]: [delegation.action] } } : {}),
     } as any,
   });
   return prepared.siwe;
@@ -171,6 +172,42 @@ async function issuePrepareContext(): Promise<{
   expect(typeof body.authorizationContextToken).toBe('string');
   return { token: body.authorizationContextToken, siwe, allowed: body.allowedActionIds ?? [] };
 }
+
+describe('POST /authorize-sign-prepare delegation authority', () => {
+  test.each([
+    ['revoke', 'tinycloud.delegation/revoke'],
+    ['wildcard', 'tinycloud.delegation/*'],
+  ])('refuses space-root %s authority before offering approval', async (_name, action) => {
+    const res = await router.request('/authorize-sign-prepare', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        keyId: keyRecord.id,
+        siwe: makePreparedSiwe({ path: '', action }),
+        jwk,
+        host: 'https://node.tinycloud.xyz',
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json() as { code?: string }).code).toBe('REVOKE_GRANT_DISABLED');
+  });
+
+  test('keeps resource-scoped revocation available for explicit review', async () => {
+    const res = await router.request('/authorize-sign-prepare', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        keyId: keyRecord.id,
+        siwe: makePreparedSiwe({ path: 'grants/specific-grant', action: 'tinycloud.delegation/revoke' }),
+        jwk,
+        host: 'https://node.tinycloud.xyz',
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { allowedActionIds?: string[] };
+    expect(body.allowedActionIds).toContainEqual(expect.stringContaining('grants/specific-grant'));
+  });
+});
 
 describe('POST /authorize-sign-prepare manifest provenance', () => {
   test('propagates only server origin-bound manifest scope declarations', async () => {

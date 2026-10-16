@@ -45,6 +45,35 @@ export interface RecapEntry {
   path: string;
   actions: string[];
 }
+/** Root revocation authority may not be delegated, including through wildcards. */
+export function hasRootRevocationGrant(
+  entries: readonly Pick<RecapEntry, 'service' | 'path' | 'actions'>[],
+): boolean {
+  return entries.some((entry) =>
+    (entry.path === '' || entry.path === '/' || entry.path === '*') &&
+    (entry.service === 'delegation' || entry.service === 'tinycloud.delegation') &&
+    entry.actions.some((action) =>
+      action === 'tinycloud.delegation/revoke' ||
+      action === 'tinycloud.delegation/*' ||
+      action === '*',
+    ),
+  );
+}
+
+/** Only parseable delegation SIWEs are subject to this signing guard. */
+export function hasRootRevocationGrantInSiwe(message: unknown): boolean {
+  if (typeof message !== 'string') return false;
+  try {
+    return hasRootRevocationGrant(parsePreparedRecap(message));
+  } catch {
+    return false;
+  }
+}
+
+export const ROOT_REVOCATION_GRANT_DISABLED = {
+  error: 'Space-root delegation revocation grants are disabled',
+  code: 'REVOKE_GRANT_DISABLED',
+} as const;
 
 export interface PermissionActionOption {
   key: string;

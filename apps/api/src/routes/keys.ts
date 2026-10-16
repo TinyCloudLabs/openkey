@@ -14,6 +14,7 @@ import { createSealingContext, deriveKeyForRecord } from '../services/key-sealin
 import { deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, PrimaryKeyConflictError, setPrimaryKey } from '../services/primary-key';
 import { rejectNonBrowserControlRequest } from '../middleware/browser-control';
+import { hasRootRevocationGrantInSiwe, ROOT_REVOCATION_GRANT_DISABLED } from './delegate-session';
 
 import { log, logError } from '../log';
 const prisma = createPrismaClient();
@@ -291,6 +292,9 @@ keysRouter.post('/:keyId/sign', async (c) => {
 
   if (key.keyType === 'EXTERNAL') {
     return c.json({ error: 'External keys must be signed client-side' }, 400);
+  }
+  if (hasRootRevocationGrantInSiwe(body.message)) {
+    return c.json(ROOT_REVOCATION_GRANT_DISABLED, 400);
   }
 
   const sealingKey = await deriveKeyForRecord(tee, key);

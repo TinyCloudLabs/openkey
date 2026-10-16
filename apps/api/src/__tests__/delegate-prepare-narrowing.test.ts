@@ -3,6 +3,7 @@ import { parseRecapFromSiwe } from '@tinycloud/node-sdk-wasm';
 import {
   assertRequiredActions,
   DEFAULT_SESSION_ABILITIES,
+  hasRootRevocationGrant,
   prepareDelegationSession,
   sessionAbilitiesFromPermissions,
   type RecapEntry,
@@ -196,5 +197,18 @@ describe('assertRequiredActions follows the request baseline', () => {
     });
     expect(result.permissions.flatMap((p) => p.actions.map((a) => [a.ability, a.required]))).toEqual([['tinycloud.kv/list', false]]);
     expect(result.edited).toBe(false);
+  });
+});
+
+describe('delegation authority classifier', () => {
+  test.each([
+    ['', 'tinycloud.delegation/revoke', true],
+    ['/', 'tinycloud.delegation/revoke', true],
+    ['*', 'tinycloud.delegation/revoke', true],
+    ['', 'tinycloud.delegation/*', true],
+    ['', '*', true],
+    ['grants/specific-grant', 'tinycloud.delegation/revoke', false],
+  ])('classifies path %s action %s', (path, action, disabled) => {
+    expect(hasRootRevocationGrant([{ service: 'delegation', path, actions: [action] }])).toBe(disabled);
   });
 });

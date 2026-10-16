@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
+import { prepareSession } from '@tinycloud/node-sdk-wasm';
 import type { TinyCloudBootstrapOutcome } from '../services/tinycloud-bootstrap';
 import { mockModules, replaceModules } from './mock-module';
 
@@ -117,6 +118,20 @@ async function keysRouter() {
   return (await import('../routes/keys?keys-sign' as string)).keysRouter;
 }
 
+function delegationSiwe(path: string, action: string): string {
+  const now = new Date();
+  return prepareSession({
+    address,
+    chainId: 1,
+    domain: 'cli.tinycloud.xyz',
+    issuedAt: now.toISOString(),
+    expirationTime: new Date(now.getTime() + 3_600_000).toISOString(),
+    spaceId: `tinycloud:pkh:eip155:1:${address}:default`,
+    jwk: { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' },
+    abilities: { delegation: { [path]: [action] } },
+  }).siwe;
+}
+
 describe('keysRouter managed signing', () => {
   test('POST /:keyId/sign runs TinyCloud bootstrap before signing the approved message', async () => {
     const router = await keysRouter();
@@ -143,6 +158,33 @@ describe('keysRouter managed signing', () => {
       format: 'personal_sign',
     }));
     expect(tee.deriveKey).toHaveBeenCalledWith(`openkey/user/${user.id}/keys`);
+  });
+
+  test.each([
+    ['revoke', 'tinycloud.delegation/revoke'],
+    ['wildcard', 'tinycloud.delegation/*'],
+  ])('POST /:keyId/sign refuses space-root %s authority before unsealing', async (_name, action) => {
+    const router = await keysRouter();
+    const response = await router.request('/key_1/sign', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: delegationSiwe('', action) }),
+    });
+    expect(response.status).toBe(400);
+    expect((await response.json() as { code?: string }).code).toBe('REVOKE_GRANT_DISABLED');
+    expect(unseal).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
+  });
+
+  test('POST /:keyId/sign still signs a resource-scoped revocation request', async () => {
+    const router = await keysRouter();
+    const response = await router.request('/key_1/sign', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: delegationSiwe('grants/specific-grant', 'tinycloud.delegation/revoke') }),
+    });
+    expect(response.status).toBe(200);
+    expect(calls).toEqual(['bootstrap', 'sign']);
   });
 
   test('POST /:keyId/sign rejects external keys before unsealing', async () => {
