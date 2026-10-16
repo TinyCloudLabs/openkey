@@ -588,6 +588,7 @@ class IframeModal {
     if (opts.hideUntilLayout) {
       // Keep the iframe in the viewport and rendering: visibility:hidden
       // throttles its animation frames before the widget can measure review.
+      this.card.inert = true;
       this.card.style.opacity = '0';
       this.card.style.pointerEvents = 'none';
       this.card.style.animation = 'none';
@@ -692,6 +693,7 @@ class IframeModal {
   private revealFrame(): void {
     clearTimeout(this.revealTimer);
     this.revealTimer = undefined;
+    this.card.inert = false;
     this.iframe.style.opacity = '1';
     this.iframe.style.pointerEvents = 'auto';
     this.card.style.opacity = '1';

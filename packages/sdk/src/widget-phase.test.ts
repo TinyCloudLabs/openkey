@@ -6,6 +6,7 @@ type FakeElement = {
   tag: string;
   className?: string;
   style: Record<string, string>;
+  inert?: boolean;
   src: string;
   children: FakeElement[];
   contentWindow: { postMessage: (data: unknown, origin: string) => void };
@@ -158,6 +159,7 @@ describe('embedded Connect and Sign phases', () => {
       expect(card?.style.visibility).toBeUndefined();
       expect(card?.style.opacity).toBe('0');
       expect(card?.style.pointerEvents).toBe('none');
+      expect(card?.inert).toBe(true); // pointer-events alone does not block keyboard focus
       expect(card?.style.animation).toBe('none'); // no scale/slide under a newly enabled Approve
       h.send(frame, { type: 'openkey:ready', ...phase });
       h.send(frame, { type: 'openkey:resize', height: 740, layoutId: 1, requestId: 'stale', protocolVersion: 2 });
@@ -168,6 +170,7 @@ describe('embedded Connect and Sign phases', () => {
       expect(frame.style.opacity).toBe('1');
       expect(frame.style.pointerEvents).toBe('auto');
       expect(card?.style.opacity).toBe('1');
+      expect(card?.inert).toBe(false);
       expect(frame.style.transition).toBe('none');
       expect(frame.posts.at(-1)).toMatchObject({ type: 'openkey:layout-applied', height: 740, layoutId: 2, ...phase });
       h.send(frame, { type: 'openkey:layout-ready', layoutId: 2, ...phase });
@@ -197,6 +200,7 @@ describe('embedded Connect and Sign phases', () => {
       expect(frame.style.opacity).toBe('1');
       expect(frame.style.pointerEvents).toBe('auto');
       expect(card?.style.opacity).toBe('1');
+      expect(card?.inert).toBe(false);
       expect(frame.posts.some(p => typeof p === 'object' && p !== null && 'type' in p && p.type === 'openkey:layout-applied')).toBe(false);
       let settled = false;
       void signing.then(() => { settled = true; });
