@@ -1,5 +1,11 @@
 # @openkey/sdk
 
+## 0.12.1-beta.0
+
+### Patch Changes
+
+- d95d0bb: Stabilize embedded signing review and correlate widget phases (TC-1183).
+
 ## 0.12.0
 
 ### Patch Changes
