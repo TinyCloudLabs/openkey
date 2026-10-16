@@ -25,6 +25,9 @@ import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
 import { prepareSession } from '@tinycloud/node-sdk-wasm';
 import { mockModules, replaceModules } from './mock-module';
+import { verifyMessage } from 'ethers';
+import { PreparedHandoffService, MemoryPreparedHandoffStore } from '../services/prepared-handoff';
+import type { setPreparedHandoffServiceForTests } from '../routes/delegate';
 
 const privateKey = '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 const account = privateKeyToAccount(privateKey);
@@ -115,9 +118,10 @@ let manifestBindResult: {
 
 let router: typeof import('../routes/delegate')['delegateRouter'];
 let resetContexts: typeof import('../services/authorization-signing')['_resetAuthorizationContextStoreForTests'];
+let setHandoffService: typeof setPreparedHandoffServiceForTests;
 
 beforeAll(async () => {
-  ({ delegateRouter: router } = await import(
+  ({ delegateRouter: router, setPreparedHandoffServiceForTests: setHandoffService } = await import(
     '../routes/delegate?authorize-sign-routes-isolated' as string
   ));
   ({ _resetAuthorizationContextStoreForTests: resetContexts } = await import(
@@ -960,3 +964,82 @@ function multisetEqual(a: readonly unknown[], b: readonly unknown[]): boolean {
   for (let i = 0; i < sa.length; i += 1) if (sa[i] !== sb[i]) return false;
   return true;
 }
+
+describe('prepared handoff signing over HTTP', () => {
+  test.each([false, true])('signs only the bound %s selection and releases delivery state after success', async (narrow) => {
+    const service = new PreparedHandoffService(new MemoryPreparedHandoffStore());
+    setHandoffService(service);
+    const siwe = makePreparedSiwe();
+    const state = Buffer.alloc(32, 1).toString('base64url');
+    const cancelSecret = Buffer.alloc(32, 2).toString('base64url');
+    const handoff = await service.start({
+      transportVersion: 2,
+      request: { protocolVersion: 1, siwe, jwk, host: 'https://node.tinycloud.xyz', keyId: keyRecord.id, sessionDid: 'display-only' },
+      delivery: { callback: 'http://127.0.0.1:42317/callback/AAAAAAAAAAAAAAAAAAAAAA', state, cancelSecret },
+    }, '198.51.100.10');
+    const ticket = handoff.ticket;
+    await service.resolve(ticket, user.id);
+    const prepareRes = await router.request('/authorize-sign-prepare', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ticket, keyId: keyRecord.id, siwe, jwk, host: 'https://node.tinycloud.xyz' }),
+    });
+    expect(prepareRes.status).toBe(200);
+    const prepared = await prepareRes.json() as { authorizationContextToken: string; allowedActionIds: string[] };
+    const selectedActionIds = narrow
+      ? prepared.allowedActionIds.filter((id) => !id.includes('kv/put'))
+      : prepared.allowedActionIds;
+    if (narrow) expect(selectedActionIds.length).toBeLessThan(prepared.allowedActionIds.length);
+    const withoutTicket = await router.request('/authorize-sign-preview', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ authorizationContextToken: prepared.authorizationContextToken, selectedActionIds }),
+    });
+    expect(withoutTicket.status).toBe(400);
+    expect((await withoutTicket.json() as { code: string }).code).toBe('missing_ticket');
+    const previewRes = await router.request('/authorize-sign-preview', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ticket, authorizationContextToken: prepared.authorizationContextToken, selectedActionIds }),
+    });
+    expect(previewRes.status).toBe(200);
+    const preview = await previewRes.json() as { signedMessage: string; previewApprovalToken: string };
+    const signBody = { ticket, authorizationContextToken: prepared.authorizationContextToken,
+      previewApprovalToken: preview.previewApprovalToken, selectedActionIds, protocolVersion: 1 };
+    const signWithoutTicket = await router.request('/authorize-sign', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...signBody, ticket: undefined }),
+    });
+    expect(signWithoutTicket.status).toBe(400);
+    expect((await signWithoutTicket.json() as { code: string }).code).toBe('missing_ticket');
+    const signRes = await router.request('/authorize-sign', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(signBody),
+    });
+    expect(signRes.status).toBe(200);
+    const result = await signRes.json() as Record<string, unknown>;
+    expect(Object.keys(result).sort()).toEqual([
+      'protocolVersion', 'address', 'signature', 'signedMessage',
+      'selectedActionKeys', 'permissions', 'deliveryState', 'selectedKeyId',
+    ].sort());
+    expect(result.signedMessage).toBe(preview.signedMessage);
+    expect(narrow ? result.signedMessage !== siwe : result.signedMessage === siwe).toBe(true);
+    expect(result.deliveryState).toBe(state);
+    expect(result.selectedKeyId).toBe(keyRecord.id);
+    expect(verifyMessage(result.signedMessage as string, result.signature as string)).toBe(address);
+    const replay = await router.request('/authorize-sign', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(signBody),
+    });
+    expect(replay.status).toBeGreaterThanOrEqual(400);
+    expect(JSON.stringify(await replay.json())).not.toContain(state);
+    // Ticket resolution cannot retrieve a signature, even after an approval.
+    const { createPreparedHandoffRouter } = await import('../routes/prepared-handoffs?authorize-sign-routes-isolated' as string);
+    const handoffRouter = createPreparedHandoffRouter(service);
+    const readResult = await handoffRouter.request(`/${ticket}`, { method: 'GET' });
+    expect(readResult.status).toBe(404);
+    const resolveAgain = await handoffRouter.request('/resolve', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ticket }),
+    });
+    expect(resolveAgain.status).toBe(409);
+    expect(JSON.stringify(await resolveAgain.json())).not.toContain(state);
+  });
+});

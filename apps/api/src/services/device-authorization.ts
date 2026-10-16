@@ -320,7 +320,7 @@ const DEVICE_SESSION_JWK_FIELDS: Record<string, true> = { kty: true, crv: true, 
  * `null`-valued fields, a non-string or empty `kid`, and padded coordinates
  * are alternate spellings that must not be accepted silently.
  */
-function strictSessionDid(value: unknown): string {
+export function strictSessionDid(value: unknown): string {
   if (
     !value || typeof value !== 'object' || Array.isArray(value) ||
     Object.keys(value).some((field) => !Object.hasOwn(DEVICE_SESSION_JWK_FIELDS, field)) ||
@@ -344,7 +344,7 @@ function strictSessionDid(value: unknown): string {
  * delegation expects a separator, so a line search and the signed
  * delegation would disagree.
  */
-function canonicalSiweFields(message: string): { uri: string; expirationTime: string } | null {
+export function canonicalSiweFields(message: string): { uri: string; expirationTime: string } | null {
   try {
     const parsed = new SiweMessage(message);
     if (parsed.prepareMessage() !== message || !parsed.expirationTime) return null;

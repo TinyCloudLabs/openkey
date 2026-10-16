@@ -42,6 +42,7 @@ model User {
   developerAccount               DeveloperAccount?
   organizationMemberships        OrganizationMembership[]
   deviceAuthorizations           DeviceAuthorization[]
+  preparedHandoffs               PreparedHandoff[]
   tinyCloudNativeGrants          TinyCloudNativeGrant[]
 
   @@map("user")
@@ -89,6 +90,28 @@ model DeviceAuthorization {
   @@index([requestIpHash, requestedAt])
   @@index([status, transactionExpiresAt])
   @@map("device_authorization")
+}
+
+// Short-lived, ticket-only prepared SIWE handoff. No signed result is persisted.
+model PreparedHandoff {
+  ticketHash       String   @id
+  cancelSecretHash String
+  request          Json
+  callback         String?
+  state            String
+  expiresAt        DateTime
+  requestedAt      DateTime
+  requestIpHash    String
+  status           String   @default("PENDING")
+  ownerId          String?
+  contextTokenHash String?  @unique
+  selectedKeyId    String?
+
+  owner User? @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@index([requestIpHash, requestedAt])
+  @@index([expiresAt])
+  @@map("prepared_handoff")
 }
 
 // better-auth Session

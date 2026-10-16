@@ -179,6 +179,70 @@ spending the owner's context. Previously, unrelated keys yielded
 `400 user-mismatch` and spent the owner's context. A caller with no keys
 still receives `404 key_not_found`.
 
+## Prepared-SIWE CLI handoff (transport v2)
+
+This separate `/delegate?transportVersion=2&ticket=<ticket>` mode does not
+prepare a new SIWE on the page and does not use delegation lookup codes.
+The CLI must have an independently verified Ethereum owner identity before
+its Node SDK prepares the SIWE; an unknown owner cannot use this mode.
+The CLI sends `POST /api/delegate/handoffs` with:
+
+```json
+{
+  "transportVersion": 2,
+  "request": {
+    "protocolVersion": 1,
+    "siwe": "<exact SDK-prepared SIWE>",
+    "jwk": {"kty": "OKP", "crv": "Ed25519", "x": "<public coordinate>"},
+    "host": "https://node.example",
+    "sessionDid": "<display-only CLI session DID>",
+    "keyId": "<optional OpenKey signing key ID>"
+  },
+  "delivery": {
+    "callback": "http://127.0.0.1:42317/callback/<22 base64url characters>",
+    "state": "<independent 32-byte base64url secret>",
+    "cancelSecret": "<different 32-byte base64url secret>"
+  }
+}
+```
+
+`presentation` may also be supplied in `request`; `callback` is optional for
+paste-only use. The body is limited to 64 KiB. The returned `ticket` is a
+32-byte opaque bearer link and expires within five minutes. It must not be
+put alongside the SIWE, JWK, state, or cancel secret in a URL. Only a public
+Ed25519 JWK is accepted. The callback, if present, is strictly an exact
+`http://127.0.0.1` or `http://[::1]` URL with port 1024–65535 and randomized
+`/callback/<22 base64url characters>` path; no query or fragment is allowed.
+Five creations per IP per five minutes are accepted.
+
+An authenticated `POST /api/delegate/handoffs/resolve` with `{ "ticket": "…" }`
+claims the ticket for the first OpenKey account. A refresh by that account
+works; another account is refused. Resolve returns the original request,
+callback and expiry, never the delivery state, cancel secret or signed result.
+The page shows the CLI session DID, exact host origin, requested spaces,
+abilities, expiry and original SIWE, plus a same-computer warning. The selected
+OpenKey key must match the requested `keyId` when present. After the user
+selects abilities, the existing authorize-sign prepare/preview/sign routes
+bind the ticket, key, public JWK, host and original SIWE to a single context.
+The page displays the preview's exact `signedMessage` before confirmation;
+full selection signs the original bytes, while narrowing changes only the
+permitted ReCap subset. There is no raw key mint or postapproval re-prepare.
+
+Signing atomically consumes the ticket, even if browser delivery later fails.
+The sign response alone includes `deliveryState` and `selectedKeyId`; the page
+constructs `{transportVersion:2,state:deliveryState,selectedKeyId,result}`,
+where `result` has exactly `protocolVersion`, `address`, `signature`,
+`signedMessage`, `selectedActionKeys`, and `permissions`. The browser POSTs
+that JSON to the registered loopback callback with redirects disabled and
+accepts delivery only after the CLI returns `{ "accepted": true }`. Otherwise
+it offers the same in-memory JSON as one-line, unpadded base64url UTF-8 paste
+code. A refreshed page cannot retrieve the signature or sign again; restart
+the CLI command for a new prepared SIWE and ticket. There is no result polling
+endpoint. Before signing, the CLI may cancel with
+`POST /api/delegate/handoffs/cancel` carrying `{ticket,cancelSecret}`; the
+claimed browser account may cancel via `/cancel-claimed` carrying `{ticket}`.
+Neither cancellation nor a replay can recover a consumed result.
+
 ## Request
 
 `POST /api/device-authorizations` accepts `permissions` in the manifest shape

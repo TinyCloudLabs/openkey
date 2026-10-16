@@ -7,6 +7,7 @@
   import Card from '$lib/components/ui/card.svelte';
   import SiweMessage from '$lib/components/ui/siwe-message.svelte';
   import CliSigningAdapter from '$lib/components/signing/cli-signing-adapter.svelte';
+  import PreparedHandoff from './PreparedHandoff.svelte';
   import DeviceRequestNotice from '$lib/components/device/device-request-notice.svelte';
   import { approvedDevicePermissions, cleanConsentText, delegationPasteCode, readDelegatePermissionsParam, deviceRequestReason, loadVerifiedDeviceRequest } from '$lib/device-authorization';
   import DelegateLinkNotice from '$lib/components/delegate/delegate-link-notice.svelte';
@@ -108,6 +109,9 @@
   let linking = $state(false);
 
   // Parse query params
+  const preparedTransport = $page.url.searchParams.has('transportVersion');
+  const preparedVersion = $page.url.searchParams.get('transportVersion');
+  const preparedTicket = $page.url.searchParams.get('ticket') ?? '';
   const did = $page.url.searchParams.get('did') || '';
   const jwkB64 = $page.url.searchParams.get('jwk') || '';
   const callback = $page.url.searchParams.get('callback') || '';
@@ -364,7 +368,7 @@
 
   // Reactively load keys when session becomes available
   $effect(() => {
-    if ($session.data && !keysLoaded) {
+    if (!preparedTransport && $session.data && !keysLoaded) {
       keysLoaded = true;
       loadKeys();
     }
@@ -387,7 +391,7 @@
   // 'select-key' step so revisiting the picker (Back, link-wallet round-trip)
   // doesn't trap the user in an auto-advance loop.
   $effect(() => {
-    if (loading || preselectAttempted) return;
+    if (preparedTransport || loading || preselectAttempted) return;
     if (step !== 'select-key') return;
     preselectAttempted = true;
     const match = autoSelectKey(keys, expectedAddress);
@@ -1126,6 +1130,13 @@
   }
 </script>
 
+{#if preparedTransport}
+  {#if preparedVersion === '2'}
+    <PreparedHandoff ticket={preparedTicket} />
+  {:else}
+    <div role="alert" class="min-h-screen flex items-center justify-center">Unknown delegate transport version. Restart the CLI command.</div>
+  {/if}
+{:else}
 <div class="min-h-screen bg-[#fafafa] flex flex-col items-center justify-center px-4 py-8">
   <div class="w-full max-w-sm flex flex-col items-center gap-6">
     <!-- Logo mark -->
@@ -1629,3 +1640,4 @@
     </div>
   </div>
 </div>
+{/if}
