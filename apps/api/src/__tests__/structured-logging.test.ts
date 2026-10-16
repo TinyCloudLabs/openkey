@@ -282,6 +282,80 @@ describe('API structured logging', () => {
       else process.env.TINYCLOUD_URL = previousHost;
     }
   });
+
+  for (const status of [302, 307]) {
+    test(`blocks injected IDs from following ${status} redirects without replaying signed requests`, async () => {
+      const untrusted: Array<{ id: string | null; path: string }> = [];
+      const other = Bun.serve({
+        hostname: '127.0.0.1', port: 0,
+        fetch(request) {
+          untrusted.push({ id: request.headers.get('X-Request-Id'), path: new URL(request.url).pathname });
+          return new Response('untrusted');
+        },
+      });
+      const received: Array<{ id: string | null; authorization: string | null; body: string; path: string }> = [];
+      const node = Bun.serve({
+        hostname: '127.0.0.1', port: 0,
+        async fetch(request) {
+          const path = new URL(request.url).pathname;
+          received.push({
+            id: request.headers.get('X-Request-Id'), authorization: request.headers.get('Authorization'),
+            body: await request.text(), path,
+          });
+          if (path === '/same-origin-target') return new Response('same-origin');
+          return new Response(null, {
+            status,
+            headers: { Location: path === '/same-origin' ? '/same-origin-target' : `http://127.0.0.1:${other.port}/untrusted-target` },
+          });
+        },
+      });
+      const nodeOrigin = `http://127.0.0.1:${node.port}`;
+      const previousHost = process.env.TINYCLOUD_URL;
+      process.env.TINYCLOUD_URL = nodeOrigin;
+      const app = new Hono<ApiEnv>();
+      app.use('*', requestLogger);
+      const init = { method: 'POST', headers: { Authorization: 'Bearer redirect-canary' }, body: 'signed-request-body' };
+      const outcome = async (request: Promise<Response>) => {
+        try { return (await request).status; }
+        catch { return 'rejected'; }
+      };
+      app.get('/redirect-check', async (c) => c.json({
+        defaultFollow: await outcome(fetch(`${nodeOrigin}/default-follow`, init)),
+        requestFollow: await outcome(fetch(new Request(`${nodeOrigin}/request-follow`, { ...init, redirect: 'follow' }))),
+        overrideFollow: await outcome(fetch(new Request(`${nodeOrigin}/override-follow`, { ...init, redirect: 'manual' }), { redirect: 'follow' })),
+        manual: await outcome(fetch(`${nodeOrigin}/manual`, { ...init, redirect: 'manual' })),
+        requestManual: await outcome(fetch(new Request(`${nodeOrigin}/request-manual`, { ...init, redirect: 'manual' }))),
+        overrideManual: await outcome(fetch(new Request(`${nodeOrigin}/override-manual`, init), { redirect: 'manual' })),
+        explicitError: await outcome(fetch(`${nodeOrigin}/explicit-error`, { ...init, redirect: 'error' })),
+        sameOriginFollow: await outcome(fetch(`${nodeOrigin}/same-origin`, init)),
+      }));
+      try {
+        const response = await app.request('/redirect-check', { headers: { 'X-Request-Id': uuid } });
+        const results = await response.json();
+        expect(untrusted).toEqual([]);
+        expect(results).toEqual({
+          defaultFollow: 'rejected', requestFollow: 'rejected', overrideFollow: 'rejected',
+          manual: status, requestManual: status, overrideManual: status, explicitError: 'rejected', sameOriginFollow: 'rejected',
+        });
+        expect(received).toEqual([
+          '/default-follow', '/request-follow', '/override-follow', '/manual', '/request-manual', '/override-manual', '/explicit-error', '/same-origin',
+        ].map((path) => ({ id: uuid, authorization: 'Bearer redirect-canary', body: 'signed-request-body', path })));
+        // No injected ID outside request context: keep native redirect behavior.
+        expect((await fetch(`${nodeOrigin}/cross-origin`)).status).toBe(200);
+        expect((await fetch(`http://127.0.0.1:${other.port}/direct-untrusted`)).status).toBe(200);
+        expect(untrusted).toEqual([
+          { id: null, path: '/untrusted-target' }, { id: null, path: '/direct-untrusted' },
+        ]);
+        expect(output.join('\n')).not.toContain('redirect-canary');
+        expect(output.join('\n')).not.toContain('signed-request-body');
+      } finally {
+        node.stop(true);
+        other.stop(true);
+        if (previousHost === undefined) delete process.env.TINYCLOUD_URL;
+        else process.env.TINYCLOUD_URL = previousHost;
+      }
+    });
+  }
   test('fatal exceptions and rejections terminate a child server after safe logging', async () => {
     const loggerModule = new URL('../log.ts', import.meta.url).href;
     for (const kind of ['uncaught', 'rejection']) {

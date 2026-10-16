@@ -37,7 +37,10 @@ globalThis.fetch = Object.assign(function fetchWithRequestId(input: Parameters<t
   }
   const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
   headers.set('X-Request-Id', requestId);
-  return originalFetch(input, { ...init, headers });
+  // Native auto-follow carries custom headers across origins. Fail closed
+  // rather than replay signed requests; explicit manual/error modes still work.
+  const redirect = init?.redirect ?? (input instanceof Request ? input.redirect : 'follow');
+  return originalFetch(input, { ...init, headers, redirect: redirect === 'follow' ? 'error' : redirect });
 }, originalFetch);
 
 const EVENTS = {
