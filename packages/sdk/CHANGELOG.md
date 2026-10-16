@@ -1,5 +1,11 @@
 # @openkey/sdk
 
+## 0.12.1-beta.1
+
+### Patch Changes
+
+- 3102674: Keep the embedded Sign review measurable before enabling approval, and reveal a stalled frame without granting approval.
+
 ## 0.12.1-beta.0
 
 ### Patch Changes
