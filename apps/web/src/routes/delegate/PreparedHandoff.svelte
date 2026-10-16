@@ -68,6 +68,7 @@
   let delivered = $state(false);
   let error = $state('');
   let busy = $state(false);
+  let loginRequired = $state(false);
   let loaded = $state(false);
   let submitted = $state(false);
   let signingIn = $state(false);
@@ -197,7 +198,15 @@
   }
 
   $effect(() => {
-    if (initialized && pending && $session.data && !loaded) { loaded = true; void load(); }
+    if (!initialized || !pending || loaded || $session.isPending) return;
+    if (!$session.data) {
+      // A focus-triggered session refresh can finish before the email auth
+      // redirect. Do not consume the one-use claim in the page being left.
+      loginRequired = true;
+    } else if (!loginRequired) {
+      loaded = true;
+      void load();
+    }
   });
 
   function toggle(id: string) {
@@ -311,6 +320,7 @@
     try {
       const result = await authClient.signIn.passkey();
       if (result.error) error = authErrorMessage(result.error, 'Passkey sign-in failed');
+      else loginRequired = false;
     } catch (cause) { error = cause instanceof Error ? cause.message : 'Passkey sign-in failed'; }
     finally { signingIn = false; }
   }
@@ -324,10 +334,16 @@
       <p>Loading prepared sign-in…</p>
     {:else if error && !handoff && !pending}
       <p>Start a new CLI sign-in to review a new request.</p>
+    {:else if $session.isPending}
+      <p>Checking your OpenKey account…</p>
     {:else if !$session.data}
       <p>Sign in to review this request.</p>
       <a href={`/auth/login?redirect=${encodeURIComponent('/delegate?transportVersion=2')}`}>Continue with email</a>
       <button disabled={signingIn} onclick={signIn}>Use a passkey instead</button>
+      <button onclick={cancelPending}>Cancel</button>
+    {:else if loginRequired}
+      <p>Sign-in completed in this tab. Continue to review the prepared request.</p>
+      <button onclick={() => { loginRequired = false; }}>Continue to approval</button>
       <button onclick={cancelPending}>Cancel</button>
     {:else if busy && !handoff && !code}<p>Loading prepared sign-in…</p>
     {:else if handoff && phase === 'done'}

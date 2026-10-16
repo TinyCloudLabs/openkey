@@ -230,6 +230,11 @@ cancellation or error; never use `localStorage`. After a claim, a refresh
 cannot recover the request or signed result: the page asks for a new CLI
 sign-in. No request or private JWK is put in a query string.
 
+A session refresh in the original signed-out tab does not automatically
+claim before the sign-in redirect: the user explicitly continues there,
+or the authenticated return starts the claim in the new page. This avoids
+consuming the one-use handoff just before a full-page navigation.
+
 There is **no anonymous handoff creation** and no ticket resolve route.
 Only after OpenKey authentication does the page send
 `POST /api/delegate/handoffs/claim` with the decoded JSON above. It returns

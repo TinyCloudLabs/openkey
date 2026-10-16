@@ -128,6 +128,29 @@ test('v2 keeps the cleared fragment only in tab storage through sign-in and remo
   expect(calls.filter(call => call.path === '/api/delegate/handoffs/claim')).toHaveLength(1);
 });
 
+for (const continuation of ['same-tab', 'auth-return'] as const) {
+  test(`auth refresh on a signed-out request waits for deliberate ${continuation} continuation`, async ({ page }) => {
+    const calls = await setup(page, { authenticated: false });
+    await expect(page.getByText('Sign in to review this request.')).toBeVisible();
+    await page.route('**/api/auth/get-session', route => json(route, 200, {
+      session: { id: 's', userId: 'u', expiresAt: '2026-10-16T18:00:00.000Z' },
+      user: { id: 'u', email: 'owner@example.test' },
+    }));
+    await page.evaluate(async () => {
+      const modulePath = '/src/lib/auth-client.ts';
+      const { authClient } = await import(modulePath);
+      authClient.$store.notify('$sessionSignal');
+    });
+    await expect(page.getByRole('button', { name: 'Continue to approval' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Cancel' })).toBeVisible();
+    expect(calls.filter(call => call.path === '/api/delegate/handoffs/claim')).toHaveLength(0);
+    if (continuation === 'same-tab') await page.getByRole('button', { name: 'Continue to approval' }).click();
+    else await page.goto('/delegate?transportVersion=2');
+    await expect(page.getByText('Only approve if you started this sign-in yourself on your own computer.')).toBeVisible();
+    expect(calls.filter(call => call.path === '/api/delegate/handoffs/claim')).toHaveLength(1);
+  });
+}
+
 for (const entry of ['client', 'hash', 'conflict'] as const) {
   test(`v2 ${entry} navigation scrubs fragment and never enters legacy approval`, async ({ page }) => {
     const calls = await setup(page, { entry });
