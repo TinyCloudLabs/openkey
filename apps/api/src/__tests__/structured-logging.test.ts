@@ -2,6 +2,7 @@ import { createServer } from 'node:net';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { Hono } from 'hono';
 import { apiErrorHandler, betterAuthLog, log, logConfigInvalid, logError, requestLogger, withScheduledLogContext, type ApiEnv } from '../log';
+import requestIdVectors from './request-id-vectors.json';
 
 const output: string[] = [];
 const stdoutWrite = process.stdout.write;
@@ -78,10 +79,7 @@ describe('API structured logging', () => {
   });
 
   const uuid = 'a3b54a8d-9927-4c01-9a2e-5f4ec31e90b2';
-  for (const incoming of [
-    uuid, uuid.toUpperCase(),
-    ...[1, 2, 3, 5, 6, 7, 8].map((version) => uuid.replace('-4c01-', `-${version}c01-`)),
-  ]) {
+  for (const incoming of [2, 3, 5, 6].map((version) => uuid.replace('-4c01-', `-${version}c01-`))) {
     test(`accepts and canonicalizes UUID request ID ${incoming}`, async () => {
       const app = new Hono<ApiEnv>();
       app.use('*', requestLogger);
@@ -97,11 +95,7 @@ describe('API structured logging', () => {
   }
 
   for (const incoming of [
-    undefined, '', 'owner-canary@example.test', 'Bearer token-canary', uuid.replaceAll('-', ''),
-    `{${uuid}}`, `urn:uuid:${uuid}`, `${uuid}, ${uuid}`, `${uuid}suffix`, `${uuid.slice(0, 8)} ${uuid.slice(9)}`,
-    '00000000-0000-0000-0000-000000000000', 'ffffffff-ffff-ffff-ffff-ffffffffffff',
-    'a3b54a8d-9927-0c01-9a2e-5f4ec31e90b2', 'a3b54a8d-9927-4c01-7a2e-5f4ec31e90b2',
-    'a3b54a8d-9927-9c01-9a2e-5f4ec31e90b2', 'a3b54a8d-9927-4c01-ca2e-5f4ec31e90b2',
+    'owner-canary@example.test', 'Bearer token-canary', `urn:uuid:${uuid}`, `${uuid}suffix`, `${uuid.slice(0, 8)} ${uuid.slice(9)}`,
   ]) {
     test(`mints a UUID for absent or malformed ID ${JSON.stringify(incoming)}`, async () => {
       const app = new Hono<ApiEnv>();
@@ -116,6 +110,50 @@ describe('API structured logging', () => {
       expect(JSON.parse(output[0]!).request_id).toBe(minted);
       expect(JSON.parse(output[0]!).request_id_replaced).toBe(incoming !== undefined);
       if (incoming) expect(output.join('\n')).not.toContain(incoming);
+    });
+  }
+
+  // Canonical N0 corpus at 76bd10752a52f179ac2a49214f488236d02f8192.
+  for (const vector of requestIdVectors.cases) {
+    test(`canonical request-ID vector: ${vector.name}`, async () => {
+      const app = new Hono<ApiEnv>();
+      app.use('*', requestLogger);
+      app.get('/conformance', (c) => c.json({ requestId: c.get('requestId') }));
+      const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: app.fetch });
+      try {
+        const headers = new Headers();
+        for (const value of vector.incoming ?? []) headers.append(requestIdVectors.header, value);
+        const request = new Request(`http://127.0.0.1:${server.port}/conformance`, { headers });
+        const rawValue = vector.incoming?.join(', ') ?? null;
+        const normalizedByFetch = request.headers.get(requestIdVectors.header) !== rawValue;
+        if (normalizedByFetch) {
+          // Fetch Headers trims padding/newlines before middleware. Preserve
+          // the corpus's application-visible bytes, without weakening HTTP parsing.
+          const getHeader = request.headers.get.bind(request.headers);
+          request.headers.get = (name) => name.toLowerCase() === requestIdVectors.header ? rawValue : getHeader(name);
+        }
+        const response = normalizedByFetch ? await app.request(request) : await fetch(request);
+        const effectiveId = response.headers.get(requestIdVectors.header);
+        expect(response.status).toBe(200);
+        expect(effectiveId).toHaveLength(36);
+        expect(effectiveId).toMatch(new RegExp(requestIdVectors.wire_regex));
+        if (vector.accepted) expect(effectiveId).toBe(vector.normalized!);
+        if (vector.mint) {
+          expect(effectiveId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+          for (const value of vector.incoming ?? []) {
+            if (value) expect(output.join('\n')).not.toContain(JSON.stringify(value).slice(1, -1));
+          }
+        }
+        expect(await response.json()).toEqual({ requestId: effectiveId });
+        expect(output.map((line) => JSON.parse(line))).toEqual([
+          expect.objectContaining({
+            event: 'request', request_id: effectiveId, request_id_replaced: vector.request_id_replaced,
+            route: '/conformance', status: 200,
+          }),
+        ]);
+      } finally {
+        server.stop(true);
+      }
     });
   }
 

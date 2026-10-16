@@ -225,6 +225,10 @@ openkey/
 - **Redirect compatibility:** when this boundary injects an ID, default or explicit `redirect: 'follow'` becomes `redirect: 'error'`. Both cross-origin and same-origin automatic redirects reject before any second hop; this avoids native fetch forwarding the ID to an untrusted origin and avoids replaying/changing signed methods, authorization, or bodies. Explicit `manual` still returns the redirect response, and explicit `error` is unchanged, respecting init-over-Request precedence. Configure the final node URL rather than a redirecting alias. Calls without an injected ID retain native redirect behavior.
 - Keep the logger import first in the API entry point. Do not bundle the API or capture a request ID in a cached client. No Vector shipping, sink configuration, or production rollout is part of this correlation change.
 
+The test corpus `apps/api/src/__tests__/request-id-vectors.json` vendors the exact canonical N0 bytes from [`samgbafa/tinycloud-dev@76bd10752a52f179ac2a49214f488236d02f8192`](https://github.com/samgbafa/tinycloud-dev/blob/76bd10752a52f179ac2a49214f488236d02f8192/ops/logging/request-id-vectors.json), with SHA-256 `d995cd9065a9e1c51bc4d3ed041c3bf2a0363e9a04a90f1d07914437d8dd9a80`. The accompanying [request-ID contract](https://github.com/samgbafa/tinycloud-dev/blob/76bd10752a52f179ac2a49214f488236d02f8192/ops/logging/request-id.md) defines acceptance, typed replacement metadata and redirect isolation.
+
+All 30 canonical cases run against the actual middleware. Cases whose bytes survive Fetch header parsing use loopback HTTP, including repeated/identical fields; padding and trailing-newline cases preserve the corpus's raw application-visible value at the middleware boundary because Fetch trims those bytes before dispatch. HTTP parser normalization/rejection itself is unchanged. Separate tests cover versions 2/3/5/6, raw-token/PII canaries and the actual SDK edge.
+
 Focused regression coverage (no Docker or production services):
 
 ```bash
