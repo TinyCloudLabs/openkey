@@ -257,6 +257,7 @@
     if (!contentEl) return;
     const content = contentEl;
     let frame = 0;
+    let fallback: ReturnType<typeof setTimeout> | undefined;
     const measure = () => {
       if (origin === '*') return;
       const height = Math.max(content.scrollHeight, Math.ceil(content.getBoundingClientRect().height));
@@ -288,13 +289,27 @@
       const mutation = new MutationObserver(() => {
         layoutGate?.changed();
         cancelAnimationFrame(frame);
-        frame = requestAnimationFrame(measure);
+        clearTimeout(fallback);
+        // Hidden iframes can suspend rAF (and ResizeObserver delivery).
+        // A timer still measures the rendered review and starts the ACK gate.
+        frame = requestAnimationFrame(() => {
+          clearTimeout(fallback);
+          fallback = undefined;
+          measure();
+        });
+        fallback = setTimeout(() => {
+          cancelAnimationFrame(frame);
+          frame = 0;
+          fallback = undefined;
+          measure();
+        }, 150);
       });
       mutation.observe(content, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['open', 'class', 'style'] });
       return () => {
         observer.disconnect();
         mutation.disconnect();
         cancelAnimationFrame(frame);
+        clearTimeout(fallback);
       };
     }
     return () => observer.disconnect();
