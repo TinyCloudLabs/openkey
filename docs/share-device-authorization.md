@@ -209,20 +209,26 @@ places the SDK's **exact** SIWE bytes and **public-only** Ed25519 JWK in:
 ```
 
 `presentation` may also be supplied in `request`; `callback` is optional
-for paste-only use. The CLI rejects a full URL over 8192 UTF-8 bytes with
-an explicit error, never a v1 fallback. The API claim body limit is 6 KiB.
-The fragment is not sent in HTTP requests or access logs, but trusted
-same-origin page JavaScript can read it, including `cancelSecret`. The
-document bootstrap removes it from the address immediately. Client-side
-navigation and hash changes scrub it and reload before legacy approval can
-run. Only the bare `/delegate` authentication return or the internal
-`?transportVersion=2` marker resumes pending tab-scoped `sessionStorage`.
-An explicit v1 URL clears stale v2 tab data; a new v2 fragment replaces
-the old one. Pending data is
-removed on claim, cancellation, error or timeout; never use `localStorage`.
-After a claim, a refresh cannot recover the request or signed result: the
-page asks for a new CLI sign-in. No request or private JWK is put in a
-query string.
+for paste-only use. The CLI rejects a canonical full URL over 8192 UTF-8
+bytes with an explicit error, never a v1 fallback. The page applies the
+same limit without counting its internal navigation marker. The API claim
+body limit is 6 KiB. The fragment is not sent in HTTP requests or access
+logs, but trusted same-origin page JavaScript can read it, including
+`cancelSecret`.
+
+The document bootstrap removes the fragment immediately. Client-side
+navigation and hash changes scrub it and reload before legacy approval
+can run. A pending request survives sign-in only in tab-scoped
+`sessionStorage`, resumed by bare `/delegate` or the email sign-in's
+internal `?transportVersion=2` return marker. An explicit v1 URL clears
+stale v2 tab data; a new v2 fragment replaces the old one. A storage
+write failure attempts to clear stale data and shows a nonresumable error,
+never the old request. A document-level timer checks expiry on every
+page load and clears the pending payload after five minutes even while
+the user remains on the sign-in page. Data is also removed on claim,
+cancellation or error; never use `localStorage`. After a claim, a refresh
+cannot recover the request or signed result: the page asks for a new CLI
+sign-in. No request or private JWK is put in a query string.
 
 There is **no anonymous handoff creation** and no ticket resolve route.
 Only after OpenKey authentication does the page send

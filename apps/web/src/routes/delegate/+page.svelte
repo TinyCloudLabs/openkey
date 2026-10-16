@@ -112,6 +112,7 @@
 
   // Parse query params
   const preparedTransport = $page.url.searchParams.has('transportVersion');
+  let preparedStorageError = $state($page.url.searchParams.get('transportVersion') === 'storage-error');
   let dispatchReady = $state(false);
   let preparedMode = $state(false);
   let preparedFragment = $state('');
@@ -125,13 +126,28 @@
     // The document-head bootstrap does not run during SvelteKit navigation.
     // Scrub before persisting, then reload so the existing auth continuation
     // starts without ever entering the legacy delegation branch.
+    history.replaceState(history.state, '', location.pathname);
+    try {
+      sessionStorage.setItem('openkey.delegate.tv2.pending', fragment);
+    } catch {
+      try { sessionStorage.removeItem('openkey.delegate.tv2.pending'); } catch { /* No stale request is resumed from the error route. */ }
+      delete document.documentElement.dataset.preparedHandoff;
+      history.replaceState(history.state, '', `${location.pathname}?transportVersion=storage-error`);
+      location.reload();
+      return true;
+    }
     history.replaceState(history.state, '', `${location.pathname}?transportVersion=2`);
-    try { sessionStorage.setItem('openkey.delegate.tv2.pending', fragment); } catch { /* The explicit v2 marker prevents a v1 fallback. */ }
     location.reload();
     return true;
   }
   function dispatchClientNavigation(): boolean {
     if (captureClientFragment()) return true;
+    if (location.search === '?transportVersion=storage-error') {
+      preparedStorageError = true;
+      try { sessionStorage.removeItem('openkey.delegate.tv2.pending'); } catch { /* The error route cannot claim a stale request. */ }
+      delete document.documentElement.dataset.preparedHandoff;
+      return false;
+    }
     // The bare route is the only auth return that resumes tab-scoped v2.
     // A newly opened explicit legacy link wins over an older pending request.
     if (!location.search || location.search === '?transportVersion=2') return false;
@@ -150,9 +166,10 @@
     if (dispatchClientNavigation()) return;
     const onHashChange = () => { dispatchClientNavigation(); };
     window.addEventListener('hashchange', onHashChange);
+    if (document.documentElement.dataset.preparedHandoffStorageError === '1') preparedStorageError = true;
     let stored: string | null = null;
     try { stored = sessionStorage.getItem('openkey.delegate.tv2.pending'); } catch { /* The approval page reports unavailable tab storage. */ }
-    if (document.documentElement.dataset.preparedHandoff === '1' || stored !== null) {
+    if (!preparedStorageError && (document.documentElement.dataset.preparedHandoff === '1' || stored !== null)) {
       preparedMode = true;
       preparedFragment = stored ?? '';
     }
@@ -415,7 +432,7 @@
 
   // Reactively load keys when session becomes available
   $effect(() => {
-    if (dispatchReady && !preparedMode && !preparedTransport && $session.data && !keysLoaded) {
+    if (dispatchReady && !preparedMode && !preparedTransport && !preparedStorageError && $session.data && !keysLoaded) {
       keysLoaded = true;
       loadKeys();
     }
@@ -438,7 +455,7 @@
   // 'select-key' step so revisiting the picker (Back, link-wallet round-trip)
   // doesn't trap the user in an auto-advance loop.
   $effect(() => {
-    if (!dispatchReady || preparedMode || preparedTransport || loading || preselectAttempted) return;
+    if (!dispatchReady || preparedMode || preparedTransport || preparedStorageError || loading || preselectAttempted) return;
     if (step !== 'select-key') return;
     preselectAttempted = true;
     const match = autoSelectKey(keys, expectedAddress);
@@ -1179,6 +1196,8 @@
 
 {#if !dispatchReady && !preparedTransport}
   <div role="status" class="min-h-screen flex items-center justify-center">Loading delegation request…</div>
+{:else if preparedStorageError}
+  <div role="alert" class="min-h-screen flex items-center justify-center">Couldn't save this request. Restart the CLI command.</div>
 {:else if preparedMode}
   <PreparedHandoff encoded={preparedFragment} onClear={() => { preparedFragment = ''; }} />
 {:else if preparedTransport}

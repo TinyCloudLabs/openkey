@@ -7,6 +7,7 @@
   import { parseCapabilityReview, defaultSelection, type CapabilityReviewModel } from '@openkey/capability-review';
   import { validatePreviewSelection } from '$lib/preview-review';
   import { timeUntilExpiry } from '$lib/siwe-parser';
+  import { fitsPreparedLinkBudget } from '$lib/prepared-link';
 
   let { encoded, onClear }: { encoded: string; onClear: () => void } = $props();
   const session = authClient.useSession();
@@ -90,7 +91,7 @@
         throw new Error('Tab storage is unavailable. Restart the CLI command.');
       }
       if (!encoded.startsWith('#tv2=')) throw new Error('Unsupported prepared sign-in transport. Restart the CLI command.');
-      if (new TextEncoder().encode(`${location.origin}${location.pathname}${location.search}${encoded}`).length > 8192) {
+      if (!fitsPreparedLinkBudget(location, encoded)) {
         throw new Error('Prepared sign-in link is too large. Restart the CLI command.');
       }
       let value: unknown;
@@ -325,7 +326,7 @@
       <p>Start a new CLI sign-in to review a new request.</p>
     {:else if !$session.data}
       <p>Sign in to review this request.</p>
-      <a href={`/auth/login?redirect=${encodeURIComponent('/delegate')}`}>Continue with email</a>
+      <a href={`/auth/login?redirect=${encodeURIComponent('/delegate?transportVersion=2')}`}>Continue with email</a>
       <button disabled={signingIn} onclick={signIn}>Use a passkey instead</button>
       <button onclick={cancelPending}>Cancel</button>
     {:else if busy && !handoff && !code}<p>Loading prepared sign-in…</p>

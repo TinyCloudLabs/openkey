@@ -122,7 +122,7 @@ test('v2 keeps the cleared fragment only in tab storage through sign-in and remo
   expect(await page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey)).not.toBeNull();
   expect(calls.filter(call => call.path === '/api/delegate/handoffs/claim')).toHaveLength(0);
   await page.route('**/api/auth/get-session', route => json(route, 200, { session: { id: 's', userId: 'u', expiresAt: '2026-10-16T18:00:00.000Z' }, user: { id: 'u', email: 'owner@example.test' } }));
-  await page.goto('/delegate');
+  await page.goto('/delegate?transportVersion=2');
   await expect(page.getByText('Only approve if you started this sign-in yourself on your own computer.')).toBeVisible();
   expect(await page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey)).toBeNull();
   expect(calls.filter(call => call.path === '/api/delegate/handoffs/claim')).toHaveLength(1);
@@ -194,6 +194,54 @@ test('a newly navigated v2 fragment replaces the previous pending request', asyn
   expect(await page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey)).toBe(fragment);
 });
 
+test('a failed new-fragment storage write cannot resume the previous request', async ({ page }) => {
+  const calls = await setup(page, { authenticated: false });
+  const previous = await page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey);
+  expect(previous).not.toBeNull();
+  const replacement = JSON.parse(Buffer.from(previous!.slice(5), 'base64url').toString('utf8'));
+  replacement.delivery.handoffId = 'D'.repeat(43);
+  const fragment = `#tv2=${Buffer.from(JSON.stringify(replacement)).toString('base64url')}`;
+  await page.evaluate(({ value, storageKey }) => {
+    const original = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key: string, data: string) {
+      if (key === storageKey && data === value) throw new DOMException('Storage full', 'QuotaExceededError');
+      return original.call(this, key, data);
+    };
+    const link = document.createElement('a');
+    link.href = `${location.pathname}${location.search}${value}`;
+    link.textContent = 'Replace prepared sign-in';
+    document.body.append(link);
+  }, { value: fragment, storageKey: pendingKey });
+  await page.getByRole('link', { name: 'Replace prepared sign-in' }).click();
+  await expect(page.getByRole('alert')).toContainText(/couldn.t save this request|restart/i);
+  expect(new URL(page.url()).hash).toBe('');
+  await expect.poll(() => page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey).catch(() => 'navigating')).toBeNull();
+  expect(calls.filter(call => call.path === '/api/delegate/handoffs/claim')).toHaveLength(0);
+  await page.reload();
+  await expect(page.getByRole('alert')).toContainText(/couldn.t save this request|restart/i);
+});
+
+test('the document bootstrap also discards a previous request when storage replacement fails', async ({ page }) => {
+  const calls = await setup(page, { authenticated: false });
+  const previous = await page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey);
+  expect(previous).not.toBeNull();
+  const replacement = JSON.parse(Buffer.from(previous!.slice(5), 'base64url').toString('utf8'));
+  replacement.delivery.handoffId = 'D'.repeat(43);
+  const fragment = `#tv2=${Buffer.from(JSON.stringify(replacement)).toString('base64url')}`;
+  await page.addInitScript(({ value, storageKey }) => {
+    const original = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key: string, data: string) {
+      if (key === storageKey && data === value) throw new DOMException('Storage full', 'QuotaExceededError');
+      return original.call(this, key, data);
+    };
+  }, { value: fragment, storageKey: pendingKey });
+  await page.goto(`/delegate${fragment}`);
+  await expect(page.getByRole('alert')).toContainText(/couldn.t save this request|restart/i);
+  expect(new URL(page.url()).hash).toBe('');
+  expect(await page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey)).toBeNull();
+  expect(calls.filter(call => call.path === '/api/delegate/handoffs/claim')).toHaveLength(0);
+});
+
 test('cancel before authenticated claim clears only tab-scoped request data', async ({ page }) => {
   const calls = await setup(page, { authenticated: false });
   await expect(page.getByText('Sign in to review this request.')).toBeVisible();
@@ -220,6 +268,26 @@ test('an unauthenticated pending request is erased when its five-minute claim wi
   await expect(page.getByRole('alert')).toContainText(/expired|restart/i);
   expect(await page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey)).toBeNull();
 });
+
+for (const fullReload of [false, true]) {
+  test(`pending v2 tab data expires during ${fullReload ? 'full-document' : 'client'} sign-in navigation`, async ({ page }) => {
+    const calls = await setup(page, { authenticated: false });
+    await expect(page.getByText('Sign in to review this request.')).toBeVisible();
+    if (!fullReload) await page.evaluate(() => { (window as Window & { __sameDocument?: boolean }).__sameDocument = true; });
+    await page.getByRole('link', { name: 'Continue with email' }).click();
+    await expect(page).toHaveURL(/\/auth\/login\?redirect=/);
+    if (!fullReload) expect(await page.evaluate(() => (window as Window & { __sameDocument?: boolean }).__sameDocument)).toBe(true);
+    const returnTo = new URL(page.url()).searchParams.get('redirect');
+    expect(returnTo).toBe('/delegate?transportVersion=2');
+    if (fullReload) await page.reload();
+    expect(await page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey)).not.toBeNull();
+    await page.clock.fastForward(300_001);
+    await expect.poll(() => page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey)).toBeNull();
+    await page.goto(returnTo!);
+    await expect(page.getByRole('alert')).toContainText(/unsupported|restart/i);
+    expect(calls.filter(call => call.path === '/api/delegate/handoffs/claim')).toHaveLength(0);
+  });
+}
 
 test('oversized fragment and retired ticket-query transport never fall through to v1', async ({ page }) => {
   const paths: string[] = [];
