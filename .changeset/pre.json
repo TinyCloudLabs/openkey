@@ -38,6 +38,8 @@
     "smart-device-transactions",
     "stable-embedded-sign-review-web",
     "stable-embedded-sign-review",
+    "tc-1183-sign-handshake-web",
+    "tc-1183-sign-handshake",
     "tc-704-set-primary-key",
     "tc-802-agents-space",
     "tc-802-create-only-space-registry",
