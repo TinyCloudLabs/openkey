@@ -7,17 +7,47 @@ const key = {
   label: 'Selected', keyType: 'MANAGED', createdAt: '2026-01-01T00:00:00Z',
 };
 const message = `localhost:5779 wants you to sign in with your Ethereum account:\n${address}\n\nSign in\n\nURI: http://localhost:5779\nVersion: 1\nChain ID: 1\nNonce: 12345678\nIssued At: 2026-10-15T00:00:00.000Z`;
+const longMessage = message.replace('\n\nSign in\n\n', `\n\n${'Review details '.repeat(250)}\n\n`);
 
-// Serve the actual 0.12.1-beta.0 browser bundle from this checkout, not a protocol stub.
-for (const suspendFrames of [false, true]) {
-test(`SDK v2 Sign confirms layout with ${suspendFrames ? 'suspended' : 'normal'} animation frames`, async ({ page }) => {
+// Serve the actual workspace SDK bundle against the real local Sign widget.
+for (const scheduling of ['normal', 'suspended', 'stale-ack'] as const) {
+test(`SDK v2 Sign confirms layout with ${scheduling} frame scheduling`, async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
   await page.addInitScript(() => sessionStorage.setItem('openkey_session_token', 'fixture-session'));
-  if (suspendFrames) {
+  if (scheduling === 'suspended') {
     // A hidden cross-origin iframe can have animation frames suspended.
     await page.addInitScript(() => {
       if (location.pathname === '/widget/embed/sign') {
         window.requestAnimationFrame = () => 0;
       }
+    });
+  }
+  if (scheduling === 'stale-ack') {
+    // Browser layout can lag the host's style write by one message turn.
+    await page.addInitScript(() => {
+      if (location.pathname !== '/widget/embed/sign') return;
+      const nativeHeight = Object.getOwnPropertyDescriptor(window, 'innerHeight')?.get;
+      let deliveringAck = false;
+      (window as any).layoutAcks = [];
+      Object.defineProperty(window, 'innerHeight', {
+        configurable: true,
+        get() {
+          return deliveringAck ? 400 : (nativeHeight?.call(window) ?? document.documentElement.clientHeight);
+        },
+      });
+      window.addEventListener('message', (event) => {
+        if (event.data?.type !== 'openkey:layout-applied') return;
+        deliveringAck = true;
+        (window as any).layoutAcks.push(event.data.height);
+        const nextTurn = new MessageChannel();
+        nextTurn.port1.onmessage = () => {
+          deliveringAck = false;
+          window.dispatchEvent(new Event('resize'));
+          nextTurn.port1.close();
+          nextTurn.port2.close();
+        };
+        nextTurn.port2.postMessage(null);
+      });
     });
   }
   await page.route('**/__sdk_beta.mjs', (route) => route.fulfill({
@@ -54,13 +84,17 @@ test(`SDK v2 Sign confirms layout with ${suspendFrames ? 'suspended' : 'normal'}
     (window as any).signState = 'pending';
     (window as any).signOutcome = sdk.signMessage({ message: siwe, keyId: 'selected-key' })
       .then(() => { (window as any).signState = 'signed'; }, () => { (window as any).signState = 'rejected'; });
-  }, message);
+  }, scheduling === 'stale-ack' ? longMessage : message);
 
   await expect.poll(() => page.frames().find(frame => frame.url().includes('/widget/embed/sign?'))
     ?.locator('[role="dialog"]').count() ?? 0).toBe(1);
   const frame = page.frames().find(candidate => candidate.url().includes('/widget/embed/sign?'))!;
   const approve = frame.locator('button:has-text("Approve")');
   await expect.poll(() => page.evaluate(() => (window as any).widgetEvents.includes('openkey:resize'))).toBe(true);
+  if (scheduling === 'stale-ack') {
+    await expect.poll(() => frame.evaluate(() => (window as any).layoutAcks?.length ?? 0)).toBeGreaterThan(0);
+    expect(await frame.evaluate(() => (window as any).layoutAcks[0])).toBeGreaterThan(400);
+  }
   await expect.poll(() => page.evaluate(() => (window as any).widgetEvents.includes('openkey:layout-ready'))).toBe(true);
   await expect(approve).toBeEnabled();
   await expect.poll(() => page.evaluate(() => (window as any).signOutcome instanceof Promise)).toBe(true);

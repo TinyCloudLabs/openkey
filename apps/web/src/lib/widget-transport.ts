@@ -507,6 +507,7 @@ export function createWidgetTransport(opts: WidgetTransportOptions): WidgetTrans
 
 export interface IframeLayoutGate {
   canApprove: () => boolean;
+  isCurrent: (layoutId: number) => boolean;
   changed: () => void;
   measure: (height: number, reviewVisible: boolean) => void;
   applied: (height: number, layoutId: number) => void;
@@ -555,6 +556,7 @@ export function createIframeLayoutGate(
     }
   }
   return {
+    isCurrent: (candidateId) => visible && !timedOut && height > 0 && candidateId === layoutId,
     canApprove: () => ready,
     changed() {
       clear();
