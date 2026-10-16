@@ -15,6 +15,7 @@ const siwe = [
 const fullKey = `tinycloud.kv\0${space}\0notes/\0tinycloud.kv/get`;
 const syncKey = `tinycloud.kv\0${space}\0notes/\0tinycloud.kv/sync`;
 const key = { id: 'key-one', address, publicKey: '0x', keyIndex: 0, label: null, keyType: 'MANAGED', isPrimary: true, createdAt: '2026-10-16T17:00:00.000Z' };
+type KeyFixture = Omit<typeof key, 'label'> & { label: string | null };
 const rawResult = { protocolVersion: 1, address, signature: '0xsigned', signedMessage: siwe, selectedActionKeys: [fullKey, syncKey], permissions: [{ service: 'tinycloud.kv', space, path: 'notes/', actions: ['tinycloud.kv/get', 'tinycloud.kv/sync'] }] };
 const narrowedSiwe = siwe.replace(
   makeRecapResource({ [`${space}/kv/notes/`]: { 'tinycloud.kv/get': [{}], 'tinycloud.kv/sync': [{}] } }),
@@ -23,19 +24,24 @@ const narrowedSiwe = siwe.replace(
 const narrowedResult = { ...rawResult, signedMessage: narrowedSiwe, selectedActionKeys: [fullKey], permissions: [{ service: 'tinycloud.kv', space, path: 'notes/', actions: ['tinycloud.kv/get'] }] };
 const json = (route: Route, status: number, body: unknown) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 
-async function setup(page: Page, options: { keyId?: string; callback?: string; narrowed?: boolean; external?: boolean } = {}) {
+async function setup(page: Page, options: { keyId?: string; callback?: string; narrowed?: boolean; external?: boolean; keys?: KeyFixture[] } = {}) {
   const calls: Array<{ path: string; body: unknown }> = [];
+  let preparedKeyId = key.id;
   await page.route('**/api/**', (route) => {
     const path = new URL(route.request().url()).pathname;
     const body = route.request().postDataJSON?.() ?? {};
     calls.push({ path, body });
     if (path === '/api/auth/get-session') return json(route, 200, { session: { id: 's', userId: 'u', expiresAt: '2026-10-16T18:00:00.000Z' }, user: { id: 'u', email: 'owner@example.test' } });
-    if (path === '/api/keys') return json(route, 200, { keys: [{ ...key, keyType: options.external ? 'EXTERNAL' : 'MANAGED' }] });
+    if (path === '/api/keys') return json(route, 200, { keys: options.keys ?? [{ ...key, keyType: options.external ? 'EXTERNAL' : 'MANAGED' }] });
     if (path === '/api/delegate/handoffs/resolve') return json(route, 200, { transportVersion: 2, request: { protocolVersion: 1, siwe, jwk, host, sessionDid: 'did:key:cli-session', ...options.keyId ? { keyId: options.keyId } : {} }, delivery: { ...options.callback ? { callback: options.callback } : {} }, expiresAt: '2026-10-16T18:00:00.000Z' });
     if (path === '/api/delegate/handoffs/cancel-claimed') return json(route, 200, { cancelled: true });
-    if (path === '/api/delegate/authorize-sign-prepare') return json(route, 200, { authorizationContextToken: 'bound-context', allowedActionIds: [fullKey, syncKey], initialSelectionActionIds: [fullKey, syncKey], address });
+    if (path === '/api/delegate/authorize-sign-prepare') {
+      if (!body || typeof body !== 'object' || !('keyId' in body) || typeof body.keyId !== 'string') throw new Error('Missing prepared keyId');
+      preparedKeyId = body.keyId;
+      return json(route, 200, { authorizationContextToken: 'bound-context', allowedActionIds: [fullKey, syncKey], initialSelectionActionIds: [fullKey, syncKey], address });
+    }
     if (path === '/api/delegate/authorize-sign-preview') return json(route, 200, { ...(options.narrowed ? narrowedResult : rawResult), previewApprovalToken: 'approved-preview' });
-    if (path === '/api/delegate/authorize-sign') return json(route, 200, { ...(options.narrowed ? narrowedResult : rawResult), deliveryState: 'A'.repeat(43), selectedKeyId: key.id });
+    if (path === '/api/delegate/authorize-sign') return json(route, 200, { ...(options.narrowed ? narrowedResult : rawResult), deliveryState: 'A'.repeat(43), selectedKeyId: preparedKeyId });
     return json(route, 404, { error: `unexpected ${path}` });
   });
   await page.goto('/delegate?transportVersion=2&ticket=ticket-public');
@@ -65,6 +71,19 @@ test('v2 rejects a different requested key rather than invoking legacy prepare',
   expect(calls.filter(c => c.path === '/api/delegate/prepare' || c.path === '/api/delegate/authorize-sign-prepare')).toHaveLength(0);
 });
 
+test('v2 permits choosing an account-matching key when no keyId was requested', async ({ page }) => {
+  const second = { ...key, id: 'key-two', keyIndex: 1, label: 'Backup owner key', isPrimary: false };
+  const calls = await setup(page, { keys: [key, second] });
+  await expect(page.getByText('Choose an OpenKey signing key')).toBeVisible();
+  await page.getByRole('button', { name: /Backup owner key/ }).click();
+  await page.getByRole('button', { name: 'Preview signing message' }).click();
+  await page.getByRole('button', { name: 'Approve', exact: true }).click();
+  expect(calls.find(call => call.path === '/api/delegate/authorize-sign-prepare')?.body).toMatchObject({ keyId: second.id });
+  const envelope = JSON.parse(Buffer.from(await page.locator('textarea').inputValue(), 'base64url').toString('utf8'));
+  expect(envelope.selectedKeyId).toBe(second.id);
+  expect(envelope.result).toEqual(rawResult);
+});
+
 test('v2 narrowing previews the exact candidate and never signs a second time', async ({ page }) => {
   const calls = await setup(page, { narrowed: true });
   await page.getByRole('checkbox', { name: 'tinycloud.kv/sync' }).uncheck();
@@ -92,6 +111,23 @@ test('v2 callback delivers the envelope without exposing a paste code after CLI 
   await expect(page.getByText('CLI accepted your sign-in. You can close this window.')).toBeVisible();
   expect(delivered).toEqual({ transportVersion: 2, state: 'A'.repeat(43), selectedKeyId: key.id, result: rawResult });
   await expect(page.locator('textarea')).toHaveCount(0);
+});
+
+test('v2 failed callback offers the same signed result as paste without re-signing', async ({ page }) => {
+  const callback = 'http://127.0.0.1:43210/callback/abcdefghijklmnopqrstuv';
+  let attempted: unknown;
+  await page.route(callback, route => {
+    attempted = route.request().postDataJSON();
+    return json(route, 422, { accepted: false });
+  });
+  const calls = await setup(page, { callback });
+  await page.getByRole('button', { name: 'Preview signing message' }).click();
+  await page.getByRole('button', { name: 'Approve', exact: true }).click();
+  await expect(page.getByText(/Could not reach the CLI automatically/)).toBeVisible();
+  const paste = JSON.parse(Buffer.from(await page.locator('textarea').inputValue(), 'base64url').toString('utf8'));
+  expect(paste).toEqual(attempted);
+  expect(paste.result).toEqual(rawResult);
+  expect(calls.filter(call => call.path === '/api/delegate/authorize-sign')).toHaveLength(1);
 });
 
 test('v2 cancellation revokes the claimed handoff before signing', async ({ page }) => {
@@ -124,4 +160,22 @@ test('v2 external wallet signs the preview bytes and sends externalSignature', a
     externalSignature: '0xwallet-signature',
     selectedActionIds: [fullKey, syncKey],
   });
+});
+
+test('v2 wallet rejection leaves the unsigned ticket cancellable', async ({ page }) => {
+  await page.addInitScript(({ owner }) => {
+    Object.assign(window, { ethereum: { request: async ({ method }: { method: string }) => {
+      if (method === 'eth_requestAccounts') return [owner];
+      if (method === 'personal_sign') throw new Error('User rejected wallet approval');
+      throw new Error(`Unexpected wallet call ${method}`);
+    } } });
+  }, { owner: address });
+  const calls = await setup(page, { external: true });
+  await page.getByRole('button', { name: 'Preview signing message' }).click();
+  await page.getByRole('button', { name: 'Approve', exact: true }).click();
+  await expect(page.getByText('User rejected wallet approval')).toBeVisible();
+  await page.getByRole('button', { name: 'Cancel' }).click();
+  await expect(page.getByText(/Approval cancelled/)).toBeVisible();
+  expect(calls.filter(call => call.path === '/api/delegate/authorize-sign')).toHaveLength(0);
+  expect(calls.filter(call => call.path === '/api/delegate/handoffs/cancel-claimed')).toHaveLength(1);
 });

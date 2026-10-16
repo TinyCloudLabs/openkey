@@ -221,7 +221,9 @@ works; another account is refused. Resolve returns the original request,
 callback and expiry, never the delivery state, cancel secret or signed result.
 The page shows the CLI session DID, exact host origin, requested spaces,
 abilities, expiry and original SIWE, plus a same-computer warning. The selected
-OpenKey key must match the requested `keyId` when present. After the user
+OpenKey key must match the requested `keyId` when present. Without `keyId`, the
+owner chooses among keys matching the SIWE signer address; the selected ID is
+echoed for display and audit, not used as cryptographic proof. After the user
 selects abilities, the existing authorize-sign prepare/preview/sign routes
 bind the ticket, key, public JWK, host and original SIWE to a single context.
 The page displays the preview's exact `signedMessage` before confirmation;
@@ -241,7 +243,9 @@ the CLI command for a new prepared SIWE and ticket. There is no result polling
 endpoint. Before signing, the CLI may cancel with
 `POST /api/delegate/handoffs/cancel` carrying `{ticket,cancelSecret}`; the
 claimed browser account may cancel via `/cancel-claimed` carrying `{ticket}`.
-Neither cancellation nor a replay can recover a consumed result.
+Wallet rejection before any finalize request leaves browser cancellation
+available. Once finalize might have been accepted, the page never retries
+signing. Neither cancellation nor a replay can recover a consumed result.
 
 ## Request
 

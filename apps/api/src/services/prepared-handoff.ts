@@ -35,9 +35,8 @@ export type PreparedHandoffRecord = {
 };
 
 export interface PreparedHandoffStore {
-  create(record: PreparedHandoffRecord): Promise<void>;
+  createLimited(record: PreparedHandoffRecord, since: Date, limit: number): Promise<boolean>;
   find(ticketHash: string): Promise<PreparedHandoffRecord | null>;
-  countRecent(requestIpHash: string, since: Date): Promise<number>;
   claim(ticketHash: string, userId: string, now: Date): Promise<boolean>;
   bind(ticketHash: string, userId: string, contextTokenHash: string, selectedKeyId: string, now: Date): Promise<boolean>;
   reserve(ticketHash: string, userId: string, contextTokenHash: string, selectedKeyId: string, now: Date): Promise<boolean>;
@@ -113,12 +112,14 @@ export class PreparedHandoffService {
     const { request, delivery } = validateRequest(input);
     const now = this.now();
     const requestIpHash = digest(`prepared-handoff-ip\0${ip}`);
-    if (await this.store.countRecent(requestIpHash, new Date(now.getTime() - 300_000)) >= 5) fail('rate_limited', 'Too many handoffs from this IP', 429);
     const ticket = randomBytes(32).toString('base64url');
     const expiresAt = new Date(now.getTime() + 300_000);
-    await this.store.create({ ticketHash: digest(ticket), cancelSecretHash: digest(delivery.cancelSecret), request,
+    const record: PreparedHandoffRecord = { ticketHash: digest(ticket), cancelSecretHash: digest(delivery.cancelSecret), request,
       ...(delivery.callback ? { callback: delivery.callback } : {}), state: delivery.state, expiresAt,
-      requestedAt: now, requestIpHash, status: 'PENDING', ownerId: null, contextTokenHash: null, selectedKeyId: null });
+      requestedAt: now, requestIpHash, status: 'PENDING', ownerId: null, contextTokenHash: null, selectedKeyId: null };
+    if (!await this.store.createLimited(record, new Date(now.getTime() - 300_000), 5)) {
+      fail('rate_limited', 'Too many handoffs from this IP', 429);
+    }
     return { transportVersion: 2, ticket, expiresAt: expiresAt.toISOString() };
   }
 
@@ -234,9 +235,12 @@ export class PreparedHandoffService {
 
 export class MemoryPreparedHandoffStore implements PreparedHandoffStore {
   private readonly records = new Map<string, PreparedHandoffRecord>();
-  async create(record: PreparedHandoffRecord) { this.records.set(record.ticketHash, record); }
+  async createLimited(record: PreparedHandoffRecord, since: Date, limit: number) {
+    if ([...this.records.values()].filter(r => r.requestIpHash === record.requestIpHash && r.requestedAt >= since).length >= limit) return false;
+    this.records.set(record.ticketHash, record);
+    return true;
+  }
   async find(hash: string) { return this.records.get(hash) ?? null; }
-  async countRecent(ipHash: string, since: Date) { return [...this.records.values()].filter((r) => r.requestIpHash === ipHash && r.requestedAt >= since).length; }
   async claim(hash: string, userId: string, now: Date) {
     const r = this.records.get(hash);
     if (!r || r.status !== 'PENDING' || r.ownerId || r.expiresAt <= now) return false;

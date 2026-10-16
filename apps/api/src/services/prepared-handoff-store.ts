@@ -21,27 +21,34 @@ function fromRow(row: Row): PreparedHandoffRecord {
 
 export function createPrismaPreparedHandoffStore(database: PrismaClient): PreparedHandoffStore {
   return {
-    async create(record) {
-      // start() has already validated the incoming JSON, including its public JWK.
-      const request = record.request as unknown as Prisma.InputJsonValue;
-      await database.preparedHandoff.create({ data: {
-        ticketHash: record.ticketHash,
-        cancelSecretHash: record.cancelSecretHash,
-        request,
-        callback: record.callback,
-        state: record.state,
-        expiresAt: record.expiresAt,
-        requestedAt: record.requestedAt,
-        requestIpHash: record.requestIpHash,
-        status: record.status,
-      } });
+    createLimited(record, since, limit) {
+      // Serialize count and insert for one IP across API workers. PostgreSQL
+      // releases this transaction-scoped lock on success or rollback.
+      const lockId = BigInt.asIntN(64, BigInt(`0x${record.requestIpHash.slice(0, 16)}`));
+      return database.$transaction(async (transaction) => {
+        await transaction.$queryRaw`SELECT pg_advisory_xact_lock(${lockId})::text`;
+        const count = await transaction.preparedHandoff.count({
+          where: { requestIpHash: record.requestIpHash, requestedAt: { gte: since } },
+        });
+        if (count >= limit) return false;
+        const request = record.request as unknown as Prisma.InputJsonValue;
+        await transaction.preparedHandoff.create({ data: {
+          ticketHash: record.ticketHash,
+          cancelSecretHash: record.cancelSecretHash,
+          request,
+          callback: record.callback,
+          state: record.state,
+          expiresAt: record.expiresAt,
+          requestedAt: record.requestedAt,
+          requestIpHash: record.requestIpHash,
+          status: record.status,
+        } });
+        return true;
+      });
     },
     async find(ticketHash) {
       const row = await database.preparedHandoff.findUnique({ where: { ticketHash } });
       return row ? fromRow(row) : null;
-    },
-    countRecent(requestIpHash, since) {
-      return database.preparedHandoff.count({ where: { requestIpHash, requestedAt: { gte: since } } });
     },
     async claim(ticketHash, ownerId, now) {
       const result = await database.preparedHandoff.updateMany({

@@ -11,6 +11,7 @@
   type Request = { protocolVersion: 1; siwe: string; jwk: Record<string, unknown>; host: string; sessionDid: string; keyId?: string; presentation?: Record<string, unknown> };
   type Handoff = { transportVersion: 2; request: Request; delivery: { callback?: string }; expiresAt: string };
   type Result = { protocolVersion: 1; address: string; signature: string; signedMessage: string; selectedActionKeys: string[]; permissions: unknown[] };
+  type KeyChoice = { key: EthereumKey; review: CapabilityReviewModel };
   function isRecord(value: unknown): value is Record<string, unknown> {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
   }
@@ -27,6 +28,7 @@
   }
   let handoff = $state<Handoff | null>(null);
   let key = $state<EthereumKey | null>(null);
+  let keyChoices = $state<KeyChoice[]>([]);
   let signingChain = $state('');
   let model = $state<CapabilityReviewModel | null>(null);
   let selected = $state(new Set<string>());
@@ -63,6 +65,12 @@
   function selectedIds(): string[] {
     return model?.permissions.flatMap(grant => grant.actions.filter(action => selected.has(action.id)).map(action => action.id)) ?? [];
   }
+  function chooseKey(choice: KeyChoice) {
+    if (contextToken) return;
+    key = choice.key;
+    model = choice.review;
+    selected = defaultSelection(choice.review);
+  }
 
   async function load() {
     busy = true;
@@ -81,20 +89,22 @@
       signingChain = chain[1]!;
       const { keys } = await api.listKeys();
       const candidates = keys.filter(item => item.address.toLowerCase() === match[2]!.toLowerCase() && (!resolved.request.keyId || item.id === resolved.request.keyId));
-      if (candidates.length !== 1) throw new Error('Requested signing key is not available for this SIWE account and chain.');
-      key = candidates[0]!;
-      const review = parseCapabilityReview({
-        message: resolved.request.siwe,
-        signer: { label: key.label ?? `Key ${key.keyIndex}`, address: key.address, chainId: Number(chain[1]), provenance: key.keyType === 'EXTERNAL' ? 'external' : 'managed' },
-        editable: true,
-        metadataTrust: { status: 'unsigned', reason: 'No verified manifest supplied' },
-        reason: { text: '', source: 'none' },
-        requester: { displayName: match[1]!, verifiedOrigin: null, appId: null, manifestName: null, manifestNameProvenance: 'none', manifestId: null, manifestIdProvenance: 'none', manifestDigest: null, domainWarning: false, originWarning: false },
+      if (!candidates.length) throw new Error('Requested signing key is not available for this SIWE account and chain.');
+      const choices = candidates.map(candidate => {
+        const review = parseCapabilityReview({
+          message: resolved.request.siwe,
+          signer: { label: candidate.label ?? `Key ${candidate.keyIndex}`, address: candidate.address, chainId: Number(chain[1]), provenance: candidate.keyType === 'EXTERNAL' ? 'external' : 'managed' },
+          editable: true,
+          metadataTrust: { status: 'unsigned', reason: 'No verified manifest supplied' },
+          reason: { text: '', source: 'none' },
+          requester: { displayName: match[1]!, verifiedOrigin: null, appId: null, manifestName: null, manifestNameProvenance: 'none', manifestId: null, manifestIdProvenance: 'none', manifestDigest: null, domainWarning: false, originWarning: false },
+        });
+        if (review.protocol !== 'tinycloud-siwe-recap') throw new Error('The prepared SIWE contains no valid capability request.');
+        return { key: candidate, review };
       });
-      if (review.protocol !== 'tinycloud-siwe-recap') throw new Error('The prepared SIWE contains no valid capability request.');
-      model = review;
-      selected = defaultSelection(review);
+      keyChoices = choices;
       handoff = resolved;
+      if (choices.length === 1) chooseKey(choices[0]!);
     } catch (cause) {
       error = cause instanceof Error ? cause.message : 'Could not resolve prepared sign-in.';
     } finally { busy = false; }
@@ -147,7 +157,6 @@
 
   async function approve() {
     if (!handoff || !key || !previewToken || !contextToken || busy || submitted) return;
-    submitted = true;
     busy = true;
     error = '';
     try {
@@ -163,6 +172,7 @@
         if (typeof signature !== 'string') throw new Error('Wallet returned an invalid signature.');
         body.externalSignature = signature;
       }
+      submitted = true;
       const signed = await post('authorize-sign', body);
       if (signed.protocolVersion !== 1 || typeof signed.signature !== 'string' || typeof signed.address !== 'string' ||
           !Array.isArray(signed.selectedActionKeys) || !signed.selectedActionKeys.every(value => typeof value === 'string') ||
@@ -237,6 +247,24 @@
         <textarea readonly aria-label="Full delegation code" class="w-full h-28 break-all rounded-lg border p-2 font-mono text-xs" value={code}></textarea>
         <button onclick={() => copyText(code)}>Copy full code</button>
       {/if}
+    {:else if handoff && keyChoices.length > 1 && !key}
+      <p class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-amber-900">Only approve if you started this sign-in yourself on your own computer.</p>
+      <dl class="space-y-2 text-sm break-all">
+        <div><dt class="font-semibold">Session DID (display only)</dt><dd>{handoff.request.sessionDid}</dd></div>
+        <div><dt class="font-semibold">Node host</dt><dd>{handoff.request.host}</dd></div>
+        <div><dt class="font-semibold">Expires</dt><dd>{handoff.expiresAt}</dd></div>
+      </dl>
+      <h2 class="font-semibold">Choose an OpenKey signing key</h2>
+      {#each keyChoices as choice (choice.key.id)}
+        <button class="block w-full rounded-lg border p-3 text-left text-sm break-all" onclick={() => chooseKey(choice)}>{choice.key.label ?? `Key ${choice.key.keyIndex}`} · {choice.key.id} · {choice.key.address} (chain {signingChain})</button>
+      {/each}
+      <h2 class="font-semibold">Requested abilities and spaces</h2>
+      {#each keyChoices[0].review.permissions as grant}
+        <p class="break-all text-sm">{grant.service} · {grant.space} · {grant.path}: {grant.actions.map(action => action.ability).join(', ')}</p>
+      {/each}
+      <h2 class="font-semibold">Original SIWE message</h2>
+      <pre class="whitespace-pre-wrap break-all rounded-lg bg-surface-50 p-3 text-xs">{handoff.request.siwe}</pre>
+      <button disabled={busy || submitted} onclick={cancel}>Cancel</button>
     {:else if handoff && model && key}
       <p class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-amber-900">Only approve if you started this sign-in yourself on your own computer.</p>
       <dl class="space-y-2 text-sm break-all">

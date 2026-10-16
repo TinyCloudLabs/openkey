@@ -1,4 +1,8 @@
 import { describe, expect, test } from 'bun:test';
+import { readFile } from 'node:fs/promises';
+import { PGlite } from '@electric-sql/pglite';
+import { PrismaPGlite } from 'pglite-prisma-adapter';
+import { PrismaClient } from '@openkey/db';
 import { prepareSession } from '@tinycloud/node-sdk-wasm';
 import { privateKeyToAccount } from 'viem/accounts';
 import {
@@ -6,6 +10,7 @@ import {
   MemoryPreparedHandoffStore,
   type PreparedHandoffRequest,
 } from '../services/prepared-handoff';
+import { createPrismaPreparedHandoffStore } from '../services/prepared-handoff-store';
 
 const address = privateKeyToAccount('0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef').address;
 const jwk = { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' };
@@ -125,6 +130,45 @@ describe('prepared CLI handoff', () => {
     const loser = winner === 'context-1' ? 'context-2' : 'context-1';
     await expect(service.reserveSigning(ticket, 'owner', loser, 'key-one')).rejects.toMatchObject({ code: 'binding_mismatch' });
     await service.reserveSigning(ticket, 'owner', winner, 'key-one');
+  });
+
+  test('simultaneous creations cannot exceed the per-IP limit', async () => {
+    const { create } = setup();
+    for (let n = 0; n < 4; n++) await create();
+    const attempts = await Promise.allSettled([create(), create()]);
+    expect(attempts.filter(attempt => attempt.status === 'fulfilled')).toHaveLength(1);
+    expect(attempts.filter(attempt => attempt.status === 'rejected')).toHaveLength(1);
+    expect(attempts.find(attempt => attempt.status === 'rejected')).toMatchObject({
+      reason: { code: 'rate_limited' },
+    });
+  });
+
+  test('Prisma admission serializes the IP count and insert across service instances', async () => {
+    const database = new PGlite();
+    await database.waitReady;
+    let client: PrismaClient | undefined;
+    try {
+      await database.exec('CREATE TABLE "user" ("id" TEXT PRIMARY KEY)');
+      const migration = await readFile(new URL('../../../../packages/db/prisma/migrations/20261016_0001_prepared_siwe_handoff/migration.sql', import.meta.url), 'utf8');
+      await database.exec(migration);
+      client = new PrismaClient({ adapter: new PrismaPGlite(database) });
+      const first = new PreparedHandoffService(createPrismaPreparedHandoffStore(client));
+      const second = new PreparedHandoffService(createPrismaPreparedHandoffStore(client));
+      const input = { transportVersion: 2, request, delivery: { callback, state, cancelSecret } };
+      for (let n = 0; n < 4; n++) await first.start(input, '198.51.100.10');
+      const attempts = await Promise.allSettled([
+        first.start(input, '198.51.100.10'),
+        second.start(input, '198.51.100.10'),
+      ]);
+      expect(attempts.filter(attempt => attempt.status === 'fulfilled')).toHaveLength(1);
+      expect(attempts.find(attempt => attempt.status === 'rejected')).toMatchObject({
+        reason: { code: 'rate_limited' },
+      });
+      expect(await client.preparedHandoff.count()).toBe(5);
+    } finally {
+      await client?.$disconnect();
+      await database.close();
+    }
   });
 
   test('enforces expiry, per-IP rate limits, public JWK and exact loopback callback', async () => {
