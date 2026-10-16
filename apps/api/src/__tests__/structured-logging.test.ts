@@ -78,7 +78,10 @@ describe('API structured logging', () => {
   });
 
   const uuid = 'a3b54a8d-9927-4c01-9a2e-5f4ec31e90b2';
-  for (const incoming of [uuid, uuid.toUpperCase()]) {
+  for (const incoming of [
+    uuid, uuid.toUpperCase(),
+    ...[1, 2, 3, 5, 6, 7, 8].map((version) => uuid.replace('-4c01-', `-${version}c01-`)),
+  ]) {
     test(`accepts and canonicalizes UUID request ID ${incoming}`, async () => {
       const app = new Hono<ApiEnv>();
       app.use('*', requestLogger);
@@ -88,7 +91,7 @@ describe('API structured logging', () => {
       expect(response.headers.get('X-Request-Id')).toBe(expected);
       expect(await response.json()).toEqual({ requestId: expected });
       expect(output.map((line) => JSON.parse(line))).toEqual([
-        expect.objectContaining({ event: 'request', request_id: expected, route: '/accepted', status: 200 }),
+        expect.objectContaining({ event: 'request', request_id: expected, request_id_replaced: false, route: '/accepted', status: 200 }),
       ]);
     });
   }
@@ -98,7 +101,7 @@ describe('API structured logging', () => {
     `{${uuid}}`, `urn:uuid:${uuid}`, `${uuid}, ${uuid}`, `${uuid}suffix`, `${uuid.slice(0, 8)} ${uuid.slice(9)}`,
     '00000000-0000-0000-0000-000000000000', 'ffffffff-ffff-ffff-ffff-ffffffffffff',
     'a3b54a8d-9927-0c01-9a2e-5f4ec31e90b2', 'a3b54a8d-9927-4c01-7a2e-5f4ec31e90b2',
-    'a3b54a8d-9927-7c01-9a2e-5f4ec31e90b2',
+    'a3b54a8d-9927-9c01-9a2e-5f4ec31e90b2', 'a3b54a8d-9927-4c01-ca2e-5f4ec31e90b2',
   ]) {
     test(`mints a UUID for absent or malformed ID ${JSON.stringify(incoming)}`, async () => {
       const app = new Hono<ApiEnv>();
@@ -111,6 +114,7 @@ describe('API structured logging', () => {
       expect(minted).not.toBe(incoming);
       expect(await response.json()).toEqual({ requestId: minted });
       expect(JSON.parse(output[0]!).request_id).toBe(minted);
+      expect(JSON.parse(output[0]!).request_id_replaced).toBe(incoming !== undefined);
       if (incoming) expect(output.join('\n')).not.toContain(incoming);
     });
   }
@@ -211,8 +215,10 @@ describe('API structured logging', () => {
     const requests = lines.filter((line) => line.event === 'request');
     expect(requests.map((line) => line.status).sort()).toEqual([200, 200, 200, 200, 500]);
     expect(requests.every((line) => line.route === '/api/delegate/complete')).toBe(true);
+    expect(requests.filter((line) => line.request_id_replaced === true)).toHaveLength(1);
+    expect(requests.filter((line) => line.request_id_replaced === false)).toHaveLength(4);
     for (const requestId of [
-      uuid, '64e09578-4ca5-4d12-b172-2ef8762d04cb', '34db1e5b-6a32-4f70-9611-fc1e1f737975',
+      uuid, '64e09578-4ca5-7d12-b172-2ef8762d04cb', '34db1e5b-6a32-4f70-9611-fc1e1f737975',
     ]) expect(requests.filter((line) => line.request_id === requestId)).toHaveLength(1);
     expect(lines.find((line) => line.event === 'api_error')).toMatchObject({
       request_id: '34db1e5b-6a32-4f70-9611-fc1e1f737975', error_name: 'SyntaxError',

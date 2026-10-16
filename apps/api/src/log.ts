@@ -9,7 +9,7 @@ type ErrorFields = { error_name?: string; error_code?: string };
 type RequestContext = { requestId: string };
 
 const requestContext = new AsyncLocalStorage<RequestContext>();
-const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function configuredOriginMatches(origin: string, host: string | undefined): boolean {
   if (!host) return false;
@@ -95,10 +95,10 @@ function safeErrorFields(error: unknown): ErrorFields {
   }
 }
 
-function emit(level: LogLevel, event: EventName, fields: Record<string, string | number | undefined> = {}): void {
+function emit(level: LogLevel, event: EventName, fields: Record<string, string | number | boolean | undefined> = {}): void {
   if (typeof level !== 'string' || !Object.hasOwn(LEVELS, level)) return;
   const safeEvent: EventName = typeof event === 'string' && Object.hasOwn(EVENTS, event) ? event : 'unlisted_event';
-  const line: Record<string, string | number> = {
+  const line: Record<string, string | number | boolean> = {
     ts: new Date().toISOString(),
     level,
     event: safeEvent,
@@ -177,13 +177,15 @@ function routeTemplate(route: string | undefined): string {
 
 export const requestLogger: MiddlewareHandler<ApiEnv> = async (c, next) => {
   const incoming = c.req.header('X-Request-Id');
-  const requestId = incoming && REQUEST_ID.test(incoming) ? incoming.toLowerCase() : randomUUID();
+  const validIncoming = incoming !== undefined && REQUEST_ID.test(incoming);
+  const requestId = validIncoming ? incoming.toLowerCase() : randomUUID();
   const startedAt = performance.now();
   c.set('requestId', requestId);
   c.header('X-Request-Id', requestId);
   await requestContext.run({ requestId }, async () => {
     await next();
     emit('info', 'request', {
+      request_id_replaced: incoming !== undefined && !validIncoming,
       method: Object.hasOwn(METHODS, c.req.method) ? c.req.method : 'GET',
       route: routeTemplate(c.req.routePath),
       status: Number.isInteger(c.res.status) && c.res.status >= 100 && c.res.status <= 599 ? c.res.status : 500,

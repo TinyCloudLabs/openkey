@@ -423,7 +423,7 @@ test('TC-959 correlates real HTTP completion and SDK node activation without cha
     'owner-canary@example.test Bearer token-canary',
     undefined,
     'A3B54A8D-9927-4C01-9A2E-5F4EC31E90B2',
-    '64e09578-4ca5-4d12-b172-2ef8762d04cb',
+    '64E09578-4CA5-7D12-B172-2EF8762D04CB',
   ];
   try {
     const prepared = await Promise.all(incoming.map(() => prepare({ host: nodeOrigin, prefix: 'tc959' })));
