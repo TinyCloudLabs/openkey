@@ -81,3 +81,47 @@ jobs:
             --no-public-sysinfo \
             --compose docker-compose.prod.yml \
             --wait
+
+      - name: Verify ingress health and app port not public (TC-1012)
+        env:
+          INGRESS_URL: https://api.openkey.so
+          # openkey-api CVM app_id (Phala workspace openkey-secondary) and prod5 gateway domain.
+          RAW_APP_URL: https://b7d6e87778f73904a8f5fd26e4d0f1d1310234be-3001.dstack-pha-prod5.phala.network
+        run: |
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$INGRESS_URL/health" || true)
+            [ "$code" = "200" ] && break
+            echo "Waiting for $INGRESS_URL/health (got $code), attempt $i/30"
+            sleep 10
+          done
+          if [ "$code" != "200" ]; then
+            echo "::error::$INGRESS_URL/health returned $code, expected 200" >&2
+            exit 1
+          fi
+          # TC-1012: the Phala gateway must not serve the app port; only the ingress may.
+          # A closed port makes the gateway accept TLS and then close the stream (curl
+          # exit 52/56, no HTTP status). Any HTTP status means the port is published.
+          # Other curl errors (DNS, connect, TLS, timeout) prove nothing: retry.
+          raw_url="$RAW_APP_URL/health"
+          closed=0
+          for attempt in $(seq 1 10); do
+            rc=0
+            code=$(curl -sS -m 15 -o /dev/null -w '%{http_code}' "$raw_url" 2>/tmp/tc1012-curl.err) || rc=$?
+            if [ "$code" != "000" ]; then
+              echo "::error::TC-1012: $raw_url answered HTTP $code; the app port is published on the Phala gateway"
+              exit 1
+            fi
+            if [ "$rc" = 52 ] || [ "$rc" = 56 ]; then
+              closed=$((closed + 1))
+              [ "$closed" -ge 3 ] && break
+            else
+              echo "TC-1012 probe inconclusive (curl exit $rc): $(cat /tmp/tc1012-curl.err)"
+              closed=0
+            fi
+            sleep 5
+          done
+          if [ "$closed" -lt 3 ]; then
+            echo "::error::TC-1012: could not confirm $raw_url is closed (last curl exit $rc)"
+            exit 1
+          fi
+          echo "TC-1012: $raw_url is closed on the gateway (curl exit $rc, $closed consecutive)"
