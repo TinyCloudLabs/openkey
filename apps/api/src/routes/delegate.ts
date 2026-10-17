@@ -100,6 +100,13 @@ import { canonicalTrustedTinyCloudHost } from '../services/tinycloud-hosts';
 import { awaitTinyCloudBootstrapWithinBudget } from '../services/tinycloud-bootstrap-budget';
 import { deviceDelegationWindowError, deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, primaryKeyWhere } from '../services/primary-key';
+import { PreparedHandoffError } from '../services/prepared-handoff';
+import { preparedHandoffService } from './prepared-handoffs';
+import type { PreparedHandoffService } from '../services/prepared-handoff';
+let activePreparedHandoffService: PreparedHandoffService = preparedHandoffService;
+export function setPreparedHandoffServiceForTests(service: PreparedHandoffService): void {
+  activePreparedHandoffService = service;
+}
 
 const prisma = createPrismaClient();
 const tee = createTeeClient();
@@ -217,6 +224,36 @@ export function setDelegateSignerAuthMiddlewareForTests(
 }
 
 export const delegateRouter = new Hono<DelegateSignerContext>();
+delegateRouter.onError((error, c) => {
+  if (error instanceof PreparedHandoffError) return c.json({ code: error.code, error: error.message }, error.status);
+  throw error;
+});
+
+function handoffTicket(body: { ticket?: unknown; transportVersion?: unknown; callback?: unknown; delivery?: unknown; state?: unknown }): string | null {
+  if (body.transportVersion !== undefined && body.transportVersion !== 2) {
+    throw new PreparedHandoffError('invalid_transport_version', 'Unsupported handoff transport version', 400);
+  }
+  if (body.ticket === undefined) {
+    if (body.transportVersion === 2) throw new PreparedHandoffError('missing_ticket', 'Prepared handoff ticket is required', 400);
+    return null;
+  }
+  if (typeof body.ticket !== 'string' || !body.ticket) {
+    throw new PreparedHandoffError('missing_ticket', 'Prepared handoff ticket is required', 400);
+  }
+  if (body.callback !== undefined || body.delivery !== undefined || body.state !== undefined) {
+    throw new PreparedHandoffError('binding_mismatch', 'Delivery target is bound to the handoff', 403);
+  }
+  return body.ticket;
+}
+
+async function assertHandoffContext(ticket: string | null, userId: string, token: string, ticketHash?: string): Promise<void> {
+  if (!ticket && ticketHash) throw new PreparedHandoffError('missing_ticket', 'Prepared handoff ticket is required', 400);
+  if (!ticket) return;
+  const record = await activePreparedHandoffService.assertContext(ticket, userId, token);
+  if (!ticketHash || record.ticketHash !== ticketHash) {
+    throw new PreparedHandoffError('binding_mismatch', 'Authorization context does not belong to handoff', 403);
+  }
+}
 
 // Only the signer route accepts the narrow CoordinationOS OAuth principal.
 // Every other delegate endpoint retains the existing Better Auth session gate,
@@ -2240,6 +2277,10 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
      * `origin-bound`; any failure fails closed to `unsigned`.
      */
     reportedOrigin?: string;
+    ticket?: string;
+    transportVersion?: number;
+    callback?: unknown;
+    delivery?: unknown;
   }>();
   const deviceUnsupported = deviceTransactionUnsupportedError(body);
   if (deviceUnsupported) return c.json(deviceUnsupported, 400);
@@ -2250,6 +2291,13 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       400,
     );
   }
+  const ticket = handoffTicket(body);
+  const handoffTicketHash = ticket
+    ? await activePreparedHandoffService.assertRequest(ticket, user.id, {
+      keyId: body.keyId, siwe: body.siwe, jwk: body.jwk, host: body.host ?? '',
+      presentation: body.presentation, reportedOrigin: body.reportedOrigin,
+    })
+    : undefined;
 
   const key = await prisma.ethereumKey.findFirst({
     where: {
@@ -2516,6 +2564,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       initialSelectionActionIds,
       expirationTime: immutable.expirationTime,
       originalSiwe: body.siwe,
+      handoffTicketHash,
       metadataTrust,
       verifiedManifest,
     });
@@ -2525,6 +2574,12 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       { error: 'Failed to issue authorization context', code: 'authorization_context_failed' },
       500,
     );
+  }
+  if (ticket) {
+    await activePreparedHandoffService.bindContext(ticket, user.id, {
+      keyId: key.id, siwe: body.siwe, jwk: body.jwk, host: body.host ?? '',
+      authorizationContextToken: issued.token,
+    });
   }
 
   return c.json({
@@ -2603,9 +2658,15 @@ delegateRouter.post('/authorize-sign', async (c) => {
      * the peek+preview API (see /authorize-sign-preview).
      */
     externalSignature?: string;
+    ticket?: string;
+    transportVersion?: number;
+    callback?: unknown;
+    delivery?: unknown;
+    state?: unknown;
   }>();
   const deviceUnsupported = deviceTransactionUnsupportedError(body);
   if (deviceUnsupported) return c.json(deviceUnsupported, 400);
+  const ticket = handoffTicket(body);
 
   if (typeof body.authorizationContextToken !== 'string' || !body.authorizationContextToken) {
     return c.json(
@@ -2672,9 +2733,13 @@ delegateRouter.post('/authorize-sign', async (c) => {
   // validates every binding before the atomic consume just before signing.
   const preview = peekAuthorizationContext(body.authorizationContextToken);
   if (!preview.ok) {
+    if (ticket && preview.error === 'context-not-found') {
+      return c.json({ code: 'handoff_context_unavailable', error: 'Authorization context is unavailable on this server; cancel and restart with a new handoff.' }, 409);
+    }
     return c.json({ error: preview.message, code: preview.error }, 400);
   }
   const bound = preview.value;
+  await assertHandoffContext(ticket, user.id, body.authorizationContextToken, bound.handoffTicketHash);
   // Peek is not an authority check. Reject another account before any
   // selection-dependent response, even when it has the same external
   // wallet linked under a different spelling of the address.
@@ -2682,7 +2747,7 @@ delegateRouter.post('/authorize-sign', async (c) => {
     return c.json({ error: 'Authorization context bound to a different user', code: 'user_mismatch' }, 400);
   }
   const key = candidateKeys.find(
-    (k) => ensureEip55(k.address).toLowerCase() === bound.keyAddress.toLowerCase(),
+    (k) => k.id === bound.keyId && ensureEip55(k.address).toLowerCase() === bound.keyAddress.toLowerCase(),
   );
   if (!key) {
     return c.json({ error: 'Bound key not found', code: 'key_not_found' }, 404);
@@ -2753,6 +2818,7 @@ delegateRouter.post('/authorize-sign', async (c) => {
   const check = checkAuthorizationContext({
     token: body.authorizationContextToken,
     userId: user.id,
+    handoffTicketHash: bound.handoffTicketHash,
     keyId: key.id,
     keyAddress: boundAddress,
     jwk: bound.jwk,
@@ -2957,6 +3023,9 @@ delegateRouter.post('/authorize-sign', async (c) => {
   // synchronous call compares both, checks both expiries, then deletes both
   // without an await between either comparison and either deletion. Only
   // the winner of a concurrent race may proceed to signing.
+  // The database CAS is the cross-worker signing gate. No signing or state
+  // release can follow a lost race against cancellation or another context.
+  if (ticket) await activePreparedHandoffService.reserveSigning(ticket, user.id, body.authorizationContextToken, key.id);
   const consumed = consumeCheckedAuthorizationContext(check.claim, previewCheck.claim);
   if (!consumed.ok) {
     return c.json({ error: consumed.message, code: consumed.error }, 400);
@@ -2979,6 +3048,9 @@ delegateRouter.post('/authorize-sign', async (c) => {
   // during typecheck; permissionOptions may consume it in the future.
   void computePermissionKey;
 
+  const handoffDelivery = ticket
+    ? await activePreparedHandoffService.completeSigning(ticket, user.id, body.authorizationContextToken, key.id)
+    : null;
   return c.json({
     protocolVersion: 1,
     address: boundAddress,
@@ -2986,6 +3058,7 @@ delegateRouter.post('/authorize-sign', async (c) => {
     signedMessage,
     selectedActionKeys: effectiveSelectedActionKeys,
     permissions: effectiveGrants,
+    ...(handoffDelivery ?? {}),
   });
 });
 
@@ -3011,9 +3084,15 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
   const body = await c.req.json<{
     authorizationContextToken?: string;
     selectedActionIds?: unknown;
+    ticket?: string;
+    transportVersion?: number;
+    callback?: unknown;
+    delivery?: unknown;
+    state?: unknown;
   }>();
   const deviceUnsupported = deviceTransactionUnsupportedError(body);
   if (deviceUnsupported) return c.json(deviceUnsupported, 400);
+  const ticket = handoffTicket(body);
 
   if (typeof body.authorizationContextToken !== 'string' || !body.authorizationContextToken) {
     return c.json(
@@ -3031,9 +3110,13 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
 
   const preview = peekAuthorizationContext(body.authorizationContextToken);
   if (!preview.ok) {
+    if (ticket && preview.error === 'context-not-found') {
+      return c.json({ code: 'handoff_context_unavailable', error: 'Authorization context is unavailable on this server; cancel and restart with a new handoff.' }, 409);
+    }
     return c.json({ error: preview.message, code: preview.error }, 400);
   }
   const bound = preview.value;
+  await assertHandoffContext(ticket, user.id, body.authorizationContextToken, bound.handoffTicketHash);
   // The peek does not verify the caller. Cross-check the userId against
   // the authenticated session so a leaked token cannot be probed by a
   // different user.

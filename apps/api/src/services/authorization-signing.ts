@@ -22,11 +22,10 @@
 // verifies against different bytes — is rejected without spending the
 // context. The `edited` flag is IGNORED for authority decisions.
 //
-// The context is not persisted to the database — it lives in an in-process
-// map keyed by an opaque token. Restarting the API invalidates outstanding
-// prepared contexts; the widget must call /prepare again in that case. This
-// is intentional: prepared contexts are short-lived (5 minutes) and their
-// invalidation is a valid failure mode.
+// Contexts live in an in-process map rather than the database. Restarting
+// the API invalidates them. Legacy approvals can prepare again; a v2 handoff
+// binds exactly one context in the database and must be cancelled and restarted
+// with a new ticket when routed to a different worker or after a restart.
 
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 
@@ -76,6 +75,8 @@ export interface AuthorizationContextIssueInput {
    * caller-echoed SIWE.
    */
   originalSiwe?: string;
+  /** Only prepared-handoff contexts carry this DB ticket digest. */
+  handoffTicketHash?: string;
   /**
    * Server-decided trust for the presentation envelope. Bound at prepare
    * time so the widget cannot upgrade it in a later step. Display-only:
@@ -115,6 +116,7 @@ interface StoredContext {
   initialSelectionActionIds: string[];
   expirationTime: string;
   originalSiwe: string;
+  handoffTicketHash?: string;
   metadataTrust: {
     status: "verified" | "origin-bound" | "unsigned";
     reason: string;
@@ -325,6 +327,7 @@ export function issueAuthorizationContext(
     initialSelectionActionIds: [...input.initialSelectionActionIds].sort(),
     expirationTime: input.expirationTime,
     originalSiwe: input.originalSiwe ?? "",
+    handoffTicketHash: input.handoffTicketHash,
     metadataTrust,
     verifiedManifest: input.verifiedManifest,
   };
@@ -342,6 +345,7 @@ export function issueAuthorizationContext(
 }
 
 export type ConsumeError =
+  | "handoff-mismatch"
   | "context-not-found"
   | "context-expired"
   | "user-mismatch"
@@ -359,6 +363,8 @@ export type ConsumeError =
 export interface ConsumeInput {
   token: string;
   userId: string;
+  /** Required for handoff contexts; generic v1 completions cannot consume them. */
+  handoffTicketHash?: string;
   /**
    * Optional. When provided, must match the keyId bound at /prepare. When
    * absent, the check is skipped — key identity is still enforced via
@@ -638,6 +644,9 @@ function evaluateContext(
   if (stored.userId !== input.userId) {
     return { ok: false, error: "user-mismatch", message: "Authorization context bound to a different user." };
   }
+  if (stored.handoffTicketHash !== input.handoffTicketHash) {
+    return { ok: false, error: "handoff-mismatch", message: "Prepared handoff ticket does not match context." };
+  }
   if (input.keyId !== undefined && stored.keyId !== input.keyId) {
     return { ok: false, error: "key-mismatch", message: "Authorization context bound to a different key." };
   }
@@ -767,6 +776,7 @@ export interface PeekSuccess {
     host: string;
     spaceId: string;
     originalSiwe: string;
+    handoffTicketHash?: string;
     jwk: unknown;
     expirationTime: string;
     allowedActionIds: string[];
@@ -811,6 +821,7 @@ export function peekAuthorizationContext(token: string): PeekSuccess | PeekFailu
       host: stored.host,
       spaceId: stored.spaceId,
       originalSiwe: stored.originalSiwe,
+      handoffTicketHash: stored.handoffTicketHash,
       jwk: stored.jwk,
       expirationTime: stored.expirationTime,
       allowedActionIds: [...stored.allowedActionIds],

@@ -179,6 +179,115 @@ spending the owner's context. Previously, unrelated keys yielded
 `400 user-mismatch` and spent the owner's context. A caller with no keys
 still receives `404 key_not_found`.
 
+## Prepared-SIWE CLI handoff (transport v2)
+
+Replica-enabled OpenKey sign-in uses
+`https://openkey.so/delegate#tv2=<unpadded base64url UTF-8 JSON>`. The CLI
+must have an explicit `--owner` or independently verified stored EIP-155
+owner identity before the Node SDK prepares the SIWE. An unknown owner
+cannot use v2; it never falls back to the legacy delegation flow. The CLI
+places the SDK's **exact** SIWE bytes and **public-only** Ed25519 JWK in:
+
+```json
+{
+  "transportVersion": 2,
+  "request": {
+    "protocolVersion": 1,
+    "siwe": "<exact SDK-prepared SIWE>",
+    "jwk": {"kty": "OKP", "crv": "Ed25519", "x": "<public coordinate>"},
+    "host": "https://node.example",
+    "sessionDid": "<display-only CLI session DID>",
+    "keyId": "<optional OpenKey signing key ID>"
+  },
+  "delivery": {
+    "handoffId": "<CLI-generated 32-byte base64url ID>",
+    "callback": "http://127.0.0.1:42317/callback/<22 base64url characters>",
+    "state": "<independent 32-byte base64url value>",
+    "cancelSecret": "<different 32-byte base64url value>"
+  }
+}
+```
+
+`presentation` may also be supplied in `request`; `callback` is optional
+for paste-only use. The CLI rejects a canonical full URL over 8192 UTF-8
+bytes with an explicit error, never a v1 fallback. The page applies the
+same limit without counting its internal navigation marker. The API claim
+body limit is 6 KiB. The fragment is not sent in HTTP requests or access
+logs, but trusted same-origin page JavaScript can read it, including
+`cancelSecret`.
+
+The document bootstrap removes the fragment immediately. Client-side
+navigation and hash changes scrub it and reload before legacy approval
+can run. A pending request survives sign-in only in tab-scoped
+`sessionStorage`, resumed by bare `/delegate` or the email sign-in's
+internal `?transportVersion=2` return marker. An explicit v1 URL clears
+stale v2 tab data; a new v2 fragment replaces the old one. A storage
+write failure attempts to clear stale data and shows a nonresumable error,
+never the old request. A document-level timer checks expiry on every
+page load and clears the pending payload after five minutes even while
+the user remains on the sign-in page. Data is also removed on claim,
+cancellation or error; never use `localStorage`. After a claim, a refresh
+cannot recover the request or signed result: the page asks for a new CLI
+sign-in. No request or private JWK is put in a query string.
+
+A session refresh in the original signed-out tab does not automatically
+claim before the sign-in redirect: the user explicitly continues there,
+or the authenticated return starts the claim in the new page. This avoids
+consuming the one-use handoff just before a full-page navigation.
+
+There is **no anonymous handoff creation** and no ticket resolve route.
+Only after OpenKey authentication does the page send
+`POST /api/delegate/handoffs/claim` with the decoded JSON above. It returns
+`{transportVersion:2,ticket:<handoffId>,expiresAt:<ISO>}`. The server
+validates canonical SIWE, public JWK and URI binding, exact host origin,
+optional key ID, callback, and independent delivery values. The SIWE
+`Issued At` must be no more than five minutes old (with 30 seconds of
+future clock tolerance); an expired SIWE is refused. The account owns
+the record at creation. A unique account/SIWE-nonce key prevents a
+second signing handoff, while database-serialized admission permits at
+most five new claims per authenticated account per five minutes. The
+approval request expires no later than five minutes after claim or the
+SIWE grant expiry, whichever is earlier. The user sees the **approval
+request expiry** and the **signed grant expiry** as separate clocks.
+
+The page shows the CLI session DID (display only), exact node host origin,
+requested spaces and abilities, original SIWE, and the warning "Only
+approve if you started this sign-in yourself on your own computer." The
+selected OpenKey key must match a requested `keyId`; otherwise the user
+chooses among account keys matching the SIWE address. The selected ID is
+echoed for audit, not cryptographic proof. Authorize-sign
+prepare/preview/sign bind the claimed handoff ID, key, public JWK, host
+and original SIWE to a single context. The page displays the preview's
+exact `signedMessage` before confirmation. Full selection signs the
+original bytes; narrowing changes only a permitted ReCap subset. There
+is no raw key mint or postapproval re-prepare.
+
+Signing atomically consumes the claim even if browser delivery fails.
+Only the successful signing response includes `deliveryState` and
+`selectedKeyId`. The page constructs
+`{transportVersion:2,state:deliveryState,selectedKeyId,result}`, where
+`result` has exactly `protocolVersion`, `address`, `signature`,
+`signedMessage`, `selectedActionKeys`, and `permissions`. The browser
+POSTs it to the registered randomized loopback callback, with redirects
+disabled; callback success requires the CLI's `{ "accepted": true }`
+receipt after SDK verification and durable session/profile commit.
+Otherwise the page offers the **same in-memory result** as a one-line
+unpadded base64url UTF-8 paste code. No endpoint retrieves a signed
+result by handoff ID.
+
+The callback must be exactly `http://127.0.0.1` or `http://[::1]`,
+port 1024–65535, path `/callback/<22 base64url characters>`, with no
+query, fragment or userinfo. After claim, the CLI can cancel via
+`POST /api/delegate/handoffs/cancel` with
+`{ticket:<handoffId>,cancelSecret}`; the authenticated page can use
+`/cancel-claimed` with `{ticket}`. Before claim, no server record exists
+to cancel. On CLI cancellation or timeout the CLI must immediately
+destroy the new candidate private JWK and callback state, preserving
+any previous profile key. A later approval of that old fragment has no
+held key and cannot pass the CLI state check. Wallet refusal before a
+finalize request leaves page cancellation available; after finalize
+might have succeeded, the page does not re-sign or retrieve a result.
+
 ## Request
 
 `POST /api/device-authorizations` accepts `permissions` in the manifest shape

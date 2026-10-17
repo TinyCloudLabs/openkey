@@ -10,7 +10,8 @@ The API must run inside a TEE to secure private keys. Phala dstack provides AMD 
 
 ### CI/CD (Recommended)
 
-The API deploys automatically via GitHub Actions when changes are pushed to `main`.
+The release coordinator starts the API deployment manually from `main` using
+`gh workflow run deploy-api.yml --ref main`; merging does not start this workflow.
 
 #### Required GitHub Secrets
 
@@ -23,13 +24,13 @@ Set these in your repo's **Settings > Secrets and variables > Actions**:
 | `PHALA_CLOUD_API_KEY` | From [Phala Cloud Dashboard](https://cloud.phala.network/dashboard) > Avatar > API Tokens |
 | `DATABASE_URL` | Production PostgreSQL connection string used by the migration job |
 
-Every push to `main` is eligible for the serialized production API workflow;
-there is intentionally no path filter that can skip a migration or runtime
-contract change. The deploy fails closed when `DATABASE_URL` is absent or a migration or
+Only a manual dispatch from `main` starts the serialized production API workflow;
+there is no path filter that can skip a migration or runtime contract change.
+The deploy fails closed when `DATABASE_URL` is absent or a migration or
 security-guard verification fails. The database is migrated before the Phala
 CVM is updated. Production deploys must not use `prisma db push`: schema push
-does not execute tracked cutover migrations. Both manual deploys and the one-time baseline
-workflow refuse non-`main` refs and use the protected `production` environment.
+does not execute tracked cutover migrations. The production deploy and one-time
+baseline workflows refuse non-`main` refs and use the protected `production` environment.
 Normal production deploys require the reviewed
 `20260714_origin_main_schema_catchup` marker and no unresolved failed migration
 rows before Prisma may apply anything.
@@ -54,8 +55,11 @@ pending, production deploy permits these reviewed additive migrations:
 `20261005_0001_delegation_code_broker`,
 `20261007_0001_tinycloud_native_foundation`, and
 `20261007_0002_native_preparation_host`,
-`20261007_0003_tinycloud_native_token_guard`, and
-`20261012_0001_signin_polish_hints_branding`. The deploy verifies their frozen
+`20261007_0003_tinycloud_native_token_guard`,
+`20261012_0001_signin_polish_hints_branding`,
+`20261012_0002_native_session_proof_jti`, and
+`20261016_0001_prepared_siwe_handoff`. The last migration only adds a table,
+indexes, and a foreign key; it does not alter existing tables. The deploy verifies their frozen
 SQL checksums, the exact pending set, the baseline marker, and the physical
 pre-cutover custody table before temporarily excluding only the destructive
 TC-488 migration from a normal `prisma migrate deploy`. It then verifies
@@ -183,8 +187,20 @@ and publish matching SPF and DKIM records so mail reaches private-relay users.
 
 #### Trigger Conditions
 
-Deployments trigger on every push to `main` (serialized by the
-`production-api` concurrency group), or manually via **Actions > Deploy API to Phala Cloud > Run workflow**.
+The release coordinator manually dispatches **Actions > Deploy API to Phala Cloud >
+Run workflow** from `main` (`gh workflow run deploy-api.yml --ref main`).
+The `production-api` concurrency group serializes runs; non-`main` refs are refused.
+
+For a combined web/API prepared-handoff release, merging to `main` can publish
+the Pages `/delegate` page before the manual API deployment. The v2 page first
+checks the authenticated, non-cached `/api/delegate/handoffs/available` route;
+against an older API, it displays "not available yet" without submitting a
+claim or using v1 signing. The existing v1 flow is unaffected. Immediately
+dispatch `deploy-api.yml` after the merge: its migration step runs
+`bun run db:migrate:deploy:production` before deploying the Phala CVM. Confirm
+`/health` is ready and verify the v2 claim flow before relying on v2 sign-in.
+To require API-before-web with this main-only workflow, split the API/database
+and web changes into separate merges.
 
 ### Manual Deploy
 
