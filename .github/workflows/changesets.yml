@@ -88,3 +88,11 @@ jobs:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      # One GitHub Release per published package version, on the tag the step
+      # above just pushed: notes from the package CHANGELOG, prerelease for
+      # betas, "latest" only for a stable @openkey/sdk. Idempotent, and
+      # re-running on the same commit retries a Release that failed.
+      - name: Create GitHub Releases
+        run: node scripts/release/create-github-releases.mjs --points-at-head
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}

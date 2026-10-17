@@ -81,3 +81,13 @@ jobs:
             --no-public-sysinfo \
             --compose docker-compose.prod.yml \
             --wait
+
+      - name: Record deployed commit
+        run: |
+          {
+            echo "### Production API deployed"
+            echo ""
+            echo "Commit: [\`${GITHUB_SHA::7}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA})"
+            echo "Image: \`${{ env.DOCKER_IMAGE }}:${GITHUB_SHA}\`"
+            echo "Deployments: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/deployments/production"
+          } >> "$GITHUB_STEP_SUMMARY"
