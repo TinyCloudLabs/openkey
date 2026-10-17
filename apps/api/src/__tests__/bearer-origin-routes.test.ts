@@ -101,6 +101,7 @@ const sessionRoutes: Array<[string, string]> = [
   ['GET', '/api/organizations'],
   ['GET', '/api/console/organizations/org_1/overview'],
   ['POST', '/api/device-authorizations/tx_1/approve'],
+  ['POST', '/api/device-authorizations/tx_1/deny'],
 ];
 
 describe('session routes refuse a bearer from outside OpenKey', () => {

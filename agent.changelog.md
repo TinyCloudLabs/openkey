@@ -9,6 +9,14 @@ Track changes to agent-facing development guidance for OpenKey. Add a concise en
   `tinycloud:mcp` with user consent; explicit client limits and privileged signing scopes
   stay restricted. Existing connectors with a narrower stored allowlist must re-register.
   Added real-provider OAuth regression coverage to the normal API suite.
+- Device approvals (TC-1256) retain only the encrypted relay for ten minutes
+  after first redemption, bounded by the signed grant, so the same device
+  credential can recover a lost response. Startup and scheduled bounded sweeps
+  purge idle results; conditional expiry clearing preserves a concurrent
+  redemption across the approval deadline. Atomic consumption requires a
+  present relay and returns it from the updated row, so cleanup cannot make a
+  successful response unrecoverable. Owner-bound requests support authenticated
+  linked-key denial; unbound legacy requests still expire.
 
 ## 2026-10-13
 
@@ -33,9 +41,11 @@ Track changes to agent-facing development guidance for OpenKey. Add a concise en
 ## 2026-08-14
 
 - Added the OpenKey-owned Share device authorization contract and public cross-repository smoke.
-  Agents changing it must preserve one-time consumption, ten-minute transaction expiry, rate
-  limits, device-secret plus PKCE binding, end-to-end encryption to the CLI relay key, and the
-  existing delegation approval path. Relay-side encryption of plaintext is not sufficient.
+  Agents changing it must preserve atomic first redemption with bounded
+  same-credential recovery (TC-1256), ten-minute pending expiry, rate
+  limits, device-secret plus PKCE binding, end-to-end encryption to the CLI
+  relay key, and the existing delegation approval path. Relay-side
+  encryption of plaintext is not sufficient.
 
 ## 2026-05-17
 

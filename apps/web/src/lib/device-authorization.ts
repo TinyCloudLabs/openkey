@@ -18,6 +18,8 @@ export const SHARE_ONLY_DEVICE_REASON =
 export interface DeviceRequestRecord {
   id: string;
   userCode: string;
+  /** Public owner binding for requests that support authenticated denial. */
+  ownerDid?: string;
   sessionDid: string;
   publicJwk: Record<string, unknown>;
   relayPublicJwk: Record<string, unknown>;

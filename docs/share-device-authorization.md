@@ -302,6 +302,10 @@ reason it shows).
 `delegationTtlSeconds` must be between 60 seconds and 30 days. The
 approved delegation may expire at most `delegationTtlSeconds` after approval,
 and approval must happen before the ten-minute transaction deadline.
+`owner` is an optional `did:pkh:eip155:1:<address>` binding. New agent
+requests send the expected owner DID; older requests without it still start
+and can be approved. Pending public `/lookup` includes the owner when present,
+but never a device credential or encrypted relay.
 
 The legacy request, exactly `tinycloud.capabilities/read` on `applications`
 with an empty path, is still accepted and normalized as before.
@@ -366,6 +370,40 @@ migration. Rows written before TC-539 hold a bare permission array and are
 still read; their lifetime is derived from the stored deadline and capped at
 30 days.
 
+## Recovery and explicit denial
+
+The first approved `/token` redemption must occur before the ten-minute
+transaction deadline and the signed grant's expiry. An atomic update records
+`consumedAt` only while the encrypted relay is still present and returns the
+relay from the updated row, not an earlier read. If cleanup wins first, the
+device receives `expired_token` instead of an unrecoverable success. The same
+transaction ID, device secret and PKCE verifier then retrieve the identical
+relay and binding, including after the approval deadline, until the earlier of
+ten minutes after first redemption or signed grant expiry. Concurrent
+redemptions return that one persisted decision; OpenKey does not sign another
+grant. Approved and consumed requests disappear from public `/lookup`. At the
+recovery boundary `/token` returns `expired_token` (410) and clears the relay.
+A stale approved poll cannot clear a concurrently consumed relay: expiry
+clearing checks the current database status and deadline before writing, then
+reloads the winning decision. Startup and ten-second scheduled sweeps clear
+expired ciphertext
+even with no later device traffic. Each database batch clears at most 100 rows;
+the scheduler drains full batches and catches up again after downtime. Later
+starts also clear expired relays.
+
+An owner-bound pending request may be explicitly denied at
+`POST /api/device-authorizations/:transactionId/deny`. This route requires
+an OpenKey session and a linked, non-archived Ethereum key whose address
+matches the bound owner DID; external keys are linked through the existing
+wallet-signature challenge. Unknown, unbound, expired, already-settled and
+unrelated-account requests all return the same `not_found` (404) without
+request details. Approval and denial compete for the single pending-state
+transition. Only the correct device secret **and** PKCE verifier can read
+`access_denied` (403) on `/token`; the public code and `/lookup` cannot.
+An unbound legacy request has no safe owner proof, so it cannot be denied
+and remains pending until approval or its deadline. Closing a page is not
+a denial.
+
 ## Deployment and rollback
 
 Ship the web first, then the API. TC-539 is split so the web change
@@ -391,7 +429,7 @@ the new API, above), and roll both back together:
   for an in-flight transaction it prepares, signs, and activates the default
   abilities with the host before the old API refuses the binding. Before
   rolling back, stop new device starts and close pending rows, for example
-  `UPDATE device_authorization SET status = 'DENIED' WHERE status = 'PENDING';`,
+  `UPDATE device_authorization SET status = 'EXPIRED' WHERE status = 'PENDING';`,
   or wait out the ten-minute transaction window.
 
 ## Security invariants
@@ -404,16 +442,21 @@ the new API, above), and roll both back together:
   it.
 - Device secrets and PKCE verifiers are independently high entropy. Only their
   SHA-256 digests are stored.
-- Creation and polling are rate-limited. Transactions expire after ten minutes.
+- Pending approvals and first redemptions expire after ten minutes. Pending
+  polling is rate-limited; authenticated terminal recovery does not mint a
+  second grant or require another polling interval.
 - The browser derives an ECDH/HKDF key from the CLI relay public key and
   encrypts the approved delegation with AES-256-GCM before sending it to the
-  device API. The relay stores only that opaque envelope and consumes it once
-  with an atomic status transition; neither the relay nor its rows receive a
-  plaintext delegation or CLI private key.
+  device API. The relay stores only that opaque envelope; first redemption
+  is atomic and same-credential replay is bounded by the recovery TTL and
+  signed expiry. Neither the relay nor its rows receive a plaintext
+  delegation or CLI private key.
 - Share object retention remains seven days.
 
-The production database change is
-`20260814_0001_share_device_authorization`. `DEVICE_AUTH_ENCRYPTION_SECRET`
+The original production database change is
+`20260814_0001_share_device_authorization`; owner-bound denial additionally
+requires `20261015_0001_device_owner_binding` before the API serves new
+requests. `DEVICE_AUTH_ENCRYPTION_SECRET`
 may provide a dedicated secret for privacy-preserving request-IP rate-limit
 hashes; otherwise OpenKey uses `BETTER_AUTH_SECRET`. Production refuses to
 start the device route without one of those secrets.

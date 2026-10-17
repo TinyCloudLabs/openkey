@@ -24,6 +24,7 @@ const EVENTS = {
   tinycloud_bootstrap_background_failed: true, tinycloud_bootstrap_background_completed: true,
   tinycloud_bootstrap_space_registry_completed: true, native_par_valid_request_volume_threshold_reached: true,
   native_par_request_cleanup_failed: true, native_session_proof_cleanup_failed: true,
+  device_authorization_result_cleanup_failed: true,
   third_party_console: true, uncaught_exception: true, unhandled_rejection: true, config_invalid: true,
   unlisted_event: true,
 } as const satisfies Record<string, true>;

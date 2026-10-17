@@ -1,5 +1,9 @@
+import type { Prisma } from '@openkey/db';
+import { logError, withScheduledLogContext } from '../log';
 import {
   DEVICE_AUTH_MAX_DELEGATION_TTL_MS,
+  DEVICE_AUTH_RECOVERY_TTL_MS,
+  DEVICE_AUTH_RESULT_SWEEP_BATCH_SIZE,
   type DeviceAuthorizationRecord,
   type DeviceAuthorizationStore,
   type DevicePermission,
@@ -56,6 +60,7 @@ function fromDatabase(value: any): DeviceAuthorizationRecord {
     id: value.id,
     userCode: value.userCode,
     deviceSecretHash: value.deviceSecretHash,
+    ...(value.ownerDid ? { ownerDid: value.ownerDid } : {}),
     codeChallenge: value.codeChallenge,
     sessionDid: value.sessionDid,
     publicJwk: value.publicJwk,
@@ -74,6 +79,40 @@ function fromDatabase(value: any): DeviceAuthorizationRecord {
     ...(value.encryptedResult ? { encryptedResult: value.encryptedResult } : {}),
     ...(value.consumedAt ? { consumedAt: value.consumedAt } : {}),
   };
+}
+function expiredRelayWhere(now: Date): Prisma.DeviceAuthorizationWhereInput {
+  return {
+    encryptedResult: { not: null },
+    OR: [
+      { delegationExpiresAt: { lte: now } },
+      { status: 'APPROVED', transactionExpiresAt: { lte: now } },
+      { status: 'CONSUMED', consumedAt: { lte: new Date(now.getTime() - DEVICE_AUTH_RECOVERY_TTL_MS) } },
+    ],
+  };
+}
+
+/** Runs immediately on startup, then independently of device traffic. Each
+ * query is bounded; repeating full batches drains a backlog without overlap. */
+export function startDeviceAuthorizationResultSweep(
+  store: DeviceAuthorizationStore,
+  now: () => Date = () => new Date(),
+): { started: Promise<void>; stop: () => void } {
+  let running = false;
+  async function sweep(): Promise<void> {
+    if (running) return;
+    running = true;
+    try {
+      while (await store.purgeExpiredResults(now()) === DEVICE_AUTH_RESULT_SWEEP_BATCH_SIZE) { /* drain */ }
+    } catch (error) {
+      withScheduledLogContext(() => logError('error', 'device_authorization_result_cleanup_failed', error));
+    } finally {
+      running = false;
+    }
+  }
+  const started = sweep();
+  const timer = setInterval(sweep, 10_000);
+  timer.unref();
+  return { started, stop: () => clearInterval(timer) };
 }
 
 export function createPrismaDeviceAuthorizationStore(database: any): DeviceAuthorizationStore {
@@ -120,23 +159,55 @@ export function createPrismaDeviceAuthorizationStore(database: any): DeviceAutho
         return result.count === 1;
       });
     },
-    async consumeApproved(id) {
-      return database.$transaction(async (tx: any) => {
-        const value = await tx.deviceAuthorization.findFirst({
-          where: { id, status: 'APPROVED', consumedAt: null },
+    async deny(id, userId, now) {
+      return database.$transaction(async (tx: Prisma.TransactionClient) => {
+        const pending = { id, status: 'PENDING', transactionExpiresAt: { gt: now } };
+        const record = await tx.deviceAuthorization.findFirst({ where: pending });
+        if (!record?.ownerDid) return false;
+        const address = /^did:pkh:eip155:1:(0x[0-9a-fA-F]{40})$/.exec(record.ownerDid)?.[1];
+        if (!address) return false;
+        const key = await tx.ethereumKey.findFirst({
+          where: { userId, address: { equals: address, mode: 'insensitive' }, archivedAt: null },
+          select: { id: true },
         });
-        if (!value) return null;
-        const updated = await tx.deviceAuthorization.updateMany({
-          where: { id, status: 'APPROVED', consumedAt: null },
-          data: {
-            status: 'CONSUMED',
-            consumedAt: new Date(),
-            encryptedResult: null,
-          },
+        if (!key) return false;
+        const result = await tx.deviceAuthorization.updateMany({
+          where: { ...pending, ownerDid: record.ownerDid },
+          data: { status: 'DENIED', approvedByUserId: userId },
         });
-        if (updated.count !== 1) return null;
-        return fromDatabase(value);
+        return result.count === 1;
       });
+    },
+    async consumeApproved(id, now) {
+      // The ciphertext must still be present at the same atomic transition.
+      // A cleanup winner leaves no consumable row; return only the row that
+      // UPDATE ... RETURNING actually wrote, never a prior SELECT snapshot.
+      const [value] = await database.deviceAuthorization.updateManyAndReturn({
+        where: {
+          id, status: 'APPROVED', consumedAt: null, encryptedResult: { not: null },
+          transactionExpiresAt: { gt: now }, delegationExpiresAt: { gt: now },
+        },
+        data: { status: 'CONSUMED', consumedAt: now },
+      });
+      return value ? fromDatabase(value) : null;
+    },
+    async purgeResult(id, now) {
+      await database.deviceAuthorization.updateMany({
+        where: { id, ...expiredRelayWhere(now) },
+        data: { encryptedResult: null },
+      });
+    },
+    async purgeExpiredResults(now) {
+      const where = expiredRelayWhere(now);
+      const rows: { id: string }[] = await database.deviceAuthorization.findMany({
+        where, select: { id: true }, orderBy: { id: 'asc' }, take: DEVICE_AUTH_RESULT_SWEEP_BATCH_SIZE,
+      });
+      if (rows.length === 0) return 0;
+      const result = await database.deviceAuthorization.updateMany({
+        where: { ...where, id: { in: rows.map((row) => row.id) } },
+        data: { encryptedResult: null },
+      });
+      return result.count;
     },
   };
 }

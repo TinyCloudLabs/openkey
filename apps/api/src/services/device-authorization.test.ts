@@ -17,6 +17,7 @@ import { SiweMessage } from 'siwe';
 const digest = (value: string) => createHash('sha256').update(value).digest('base64url');
 const deviceSecret = 'device-secret-with-at-least-256-bits-of-entropy';
 const codeVerifier = 'pkce-verifier-with-at-least-256-bits-of-entropy';
+const ownerDid = 'did:pkh:eip155:1:0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed';
 
 // The TC-539 acceptance scope: the CLI's built-in publishing manifest in the
 // owner's default space.
@@ -28,9 +29,9 @@ function publishingPermissions(): DevicePermission[] {
   ];
 }
 
-function fixture() {
+function fixture(controlsOwner: (userId: string, owner: string) => boolean = () => false) {
   let nowMs = Date.UTC(2026, 7, 14, 12, 0, 0);
-  const store = new MemoryDeviceAuthorizationStore();
+  const store = new MemoryDeviceAuthorizationStore(controlsOwner);
   const service = new DeviceAuthorizationService(store, {
     verificationOrigin: 'https://openkey.so',
     encryptionSecret: 'test-device-authorization-secret-is-long-enough',
@@ -90,48 +91,157 @@ function encryptedApproval(
 }
 
 describe('OpenKey device authorization service', () => {
-  test('delivers an end-to-end encrypted relay result exactly once without plaintext disclosure', async () => {
+  test('recovers the identical encrypted relay after a lost response and client restart past the approval deadline', async () => {
     const input = fixture();
     const transaction = await input.service.start(input.request, '203.0.113.9');
     expect(transaction.userCode).toMatch(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
     expect(transaction.verificationUri).toBe('https://openkey.so/device');
     expect((await input.service.lookup(transaction.userCode))?.sessionDid).toBe(input.request.sessionDid);
 
-    expect(await input.service.poll({
-      transactionId: transaction.transactionId,
-      deviceSecret: 'device-secret-with-at-least-256-bits-of-entropy',
-      codeVerifier: 'pkce-verifier-with-at-least-256-bits-of-entropy',
-    })).toEqual({ status: 'pending', interval: 2 });
-
+    const credentials = { transactionId: transaction.transactionId, deviceSecret, codeVerifier };
+    expect(await input.service.poll(credentials)).toEqual({ status: 'pending', interval: 2 });
     const approval = encryptedApproval(input, transaction);
     await input.service.approve(transaction.transactionId, 'user-1', approval);
-    const stored = await input.store.findById(transaction.transactionId);
-    expect(JSON.parse(stored?.encryptedResult ?? 'null')).toEqual(approval.relay);
-    expect(JSON.stringify(stored)).not.toContain('delegationHeader');
-
     input.advance(2000);
-    const approved = await input.service.poll({
-      transactionId: transaction.transactionId,
-      deviceSecret: 'device-secret-with-at-least-256-bits-of-entropy',
-      codeVerifier: 'pkce-verifier-with-at-least-256-bits-of-entropy',
-    });
-    expect(approved.status).toBe('approved');
-    if (approved.status === 'approved') {
-      expect(approved.relay).toEqual(approval.relay);
-      expect(approved.binding).toMatchObject({
+    const lostResponse = await input.service.poll(credentials);
+    expect(lostResponse).toMatchObject({
+      status: 'approved',
+      relay: approval.relay,
+      binding: {
         transactionId: transaction.transactionId,
         sessionDid: input.request.sessionDid,
         nodeOrigin: input.request.nodeOrigin,
         shareOrigin: input.request.shareOrigin,
-      });
+      },
+    });
+    const firstRedemption = (await input.store.findById(transaction.transactionId))?.consumedAt;
+    expect(firstRedemption).toBeInstanceOf(Date);
+    expect(JSON.stringify(await input.store.findById(transaction.transactionId))).not.toContain('delegationHeader');
+    expect(await input.service.lookup(transaction.userCode)).toBeNull();
+
+    // The HTTP reply vanished before the CLI could journal it. Restart with
+    // only the saved device credential and verifier, after approval closes.
+    input.advance(DEVICE_AUTH_TRANSACTION_TTL_MS - 1000);
+    const restarted = new DeviceAuthorizationService(input.store, {
+      verificationOrigin: 'https://openkey.so',
+      encryptionSecret: 'test-device-authorization-secret-is-long-enough',
+      now: input.now,
+    });
+    expect(await restarted.poll(credentials)).toEqual(lostResponse);
+    expect((await input.store.findById(transaction.transactionId))?.consumedAt).toEqual(firstRedemption);
+  });
+
+  test('serializes two approved token calls and replays only the first persisted decision', async () => {
+    const input = fixture();
+    const transaction = await input.service.start(input.request, '203.0.113.10');
+    const approval = encryptedApproval(input, transaction);
+    await input.service.approve(transaction.transactionId, 'user-1', approval);
+    const credentials = { transactionId: transaction.transactionId, deviceSecret, codeVerifier };
+    const [first, second] = await Promise.all([input.service.poll(credentials), input.service.poll(credentials)]);
+    expect(first).toEqual(second);
+    expect(first.status === 'approved' && first.relay).toEqual(approval.relay);
+    expect(JSON.parse((await input.store.findById(transaction.transactionId))?.encryptedResult ?? 'null')).toEqual(approval.relay);
+  });
+
+  test('purges the relay at the recovery boundary or signed grant expiry and returns stable expiry', async () => {
+    for (const grantLifetime of [30_000, 60 * 60 * 1000]) {
+      const input = fixture();
+      const transaction = await input.service.start(input.request, `203.0.113.${grantLifetime}`);
+      await input.service.approve(
+        transaction.transactionId,
+        'user-1',
+        encryptedApproval(input, transaction, input.request.permissions, new Date(input.now().getTime() + grantLifetime)),
+      );
+      const credentials = { transactionId: transaction.transactionId, deviceSecret, codeVerifier };
+      const first = await input.service.poll(credentials);
+      const recoveryWindow = Math.min(grantLifetime, 10 * 60 * 1000);
+      input.advance(recoveryWindow - 1);
+      expect(await input.service.poll(credentials)).toEqual(first);
+      input.advance(1);
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        await expect(input.service.poll(credentials)).rejects.toMatchObject({ code: 'expired_token', status: 410 });
+      }
+      expect((await input.store.findById(transaction.transactionId))?.encryptedResult).toBeUndefined();
     }
-    expect(await input.store.findById(transaction.transactionId)).not.toHaveProperty('encryptedResult');
-    input.advance(2000);
-    await expect(input.service.poll({
-      transactionId: transaction.transactionId,
-      deviceSecret: 'device-secret-with-at-least-256-bits-of-entropy',
-      codeVerifier: 'pkce-verifier-with-at-least-256-bits-of-entropy',
-    })).rejects.toMatchObject({ code: 'invalid_grant', status: 409 });
+  });
+
+  test('a later device start clears unclaimed expired relays without knowing their device credentials', async () => {
+    const input = fixture();
+    const consumed = await input.service.start(input.request, '203.0.113.16');
+    await input.service.approve(consumed.transactionId, 'user-1', encryptedApproval(input, consumed));
+    await input.service.poll({ transactionId: consumed.transactionId, deviceSecret, codeVerifier });
+    expect((await input.store.findById(consumed.transactionId))?.encryptedResult).toBeDefined();
+    input.advance(10 * 60 * 1000);
+    await input.service.start(input.request, '203.0.113.17');
+    expect((await input.store.findById(consumed.transactionId))?.encryptedResult).toBeUndefined();
+  });
+
+  test('a public code and wrong device credentials cannot retrieve the approved relay', async () => {
+    const input = fixture();
+    const transaction = await input.service.start({ ...input.request, owner: ownerDid }, '203.0.113.12');
+    const pending = await input.service.lookup(transaction.userCode);
+    expect(pending).toMatchObject({ ownerDid, sessionDid: input.request.sessionDid });
+    for (const field of ['deviceSecretHash', 'codeChallenge', 'requestIpHash', 'encryptedResult']) {
+      expect(pending).not.toHaveProperty(field);
+    }
+    await input.service.approve(transaction.transactionId, 'user-owner', encryptedApproval(input, transaction));
+    expect(await input.service.lookup(transaction.userCode)).toBeNull();
+    for (const credentials of [
+      { transactionId: transaction.transactionId, deviceSecret: 'wrong-secret', codeVerifier },
+      { transactionId: transaction.transactionId, deviceSecret, codeVerifier: 'wrong-verifier' },
+    ]) {
+      await expect(input.service.poll(credentials)).rejects.toMatchObject({ code: 'invalid_grant', status: 401 });
+    }
+    await expect(input.service.poll({ transactionId: transaction.userCode, deviceSecret, codeVerifier }))
+      .rejects.toMatchObject({ code: 'expired_token', status: 410 });
+    expect((await input.store.findById(transaction.transactionId))?.status).toBe('approved');
+    expect((await input.service.poll({ transactionId: transaction.transactionId, deviceSecret, codeVerifier })).status).toBe('approved');
+  });
+
+  test('only a proven owner can deny a bound request; only its device credential receives denial', async () => {
+    const input = fixture((userId, owner) => userId === 'user-owner' && owner === ownerDid);
+    const transaction = await input.service.start({ ...input.request, owner: ownerDid }, '203.0.113.13');
+    for (const id of [transaction.transactionId, 'unknown', transaction.userCode]) {
+      await expect(input.service.deny(id, 'unrelated-user')).rejects.toMatchObject({ code: 'not_found', status: 404 });
+    }
+    expect((await input.store.findById(transaction.transactionId))?.status).toBe('pending');
+    await input.service.deny(transaction.transactionId, 'user-owner');
+    expect(await input.service.lookup(transaction.userCode)).toBeNull();
+    await expect(input.service.poll({ transactionId: transaction.transactionId, deviceSecret: 'wrong-secret', codeVerifier }))
+      .rejects.toMatchObject({ code: 'invalid_grant', status: 401 });
+    await expect(input.service.poll({ transactionId: transaction.transactionId, deviceSecret, codeVerifier }))
+      .rejects.toMatchObject({ code: 'access_denied', status: 403 });
+    expect((await input.store.findById(transaction.transactionId))?.encryptedResult).toBeUndefined();
+  });
+
+  test('an unbound legacy request cannot be denied and expires without a denial event', async () => {
+    const input = fixture(() => true);
+    const transaction = await input.service.start(input.request, '203.0.113.14');
+    await expect(input.service.deny(transaction.transactionId, 'user-owner'))
+      .rejects.toMatchObject({ code: 'not_found', status: 404 });
+    expect(await input.service.poll({ transactionId: transaction.transactionId, deviceSecret, codeVerifier }))
+      .toEqual({ status: 'pending', interval: 2 });
+    input.advance(DEVICE_AUTH_TRANSACTION_TTL_MS);
+    await expect(input.service.poll({ transactionId: transaction.transactionId, deviceSecret, codeVerifier }))
+      .rejects.toMatchObject({ code: 'expired_token', status: 410 });
+  });
+
+  test('approval and owner denial race to one terminal device decision', async () => {
+    const input = fixture((userId, owner) => userId === 'user-owner' && owner === ownerDid);
+    const transaction = await input.service.start({ ...input.request, owner: ownerDid }, '203.0.113.15');
+    const outcome = await Promise.allSettled([
+      input.service.approve(transaction.transactionId, 'user-owner', encryptedApproval(input, transaction)),
+      input.service.deny(transaction.transactionId, 'user-owner'),
+    ]);
+    expect(outcome.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    const record = await input.store.findById(transaction.transactionId);
+    if (record?.status === 'approved') {
+      expect((await input.service.poll({ transactionId: transaction.transactionId, deviceSecret, codeVerifier })).status).toBe('approved');
+    } else {
+      expect(record?.status).toBe('denied');
+      await expect(input.service.poll({ transactionId: transaction.transactionId, deviceSecret, codeVerifier }))
+        .rejects.toMatchObject({ code: 'access_denied', status: 403 });
+    }
   });
 
   test('binds the transaction to both the device secret and PKCE verifier', async () => {
