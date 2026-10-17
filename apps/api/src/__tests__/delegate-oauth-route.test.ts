@@ -443,6 +443,32 @@ test('tinycloud:manage-key silently signs a canonical TinyCloud SIWE/ReCap throu
   expect(decisions).toHaveLength(0);
 });
 
+test.each([
+  ['slash root revoke', '/', 'tinycloud.delegation/revoke'],
+  ['revoke', '', 'tinycloud.delegation/revoke'],
+  ['wildcard', '', 'tinycloud.delegation/*'],
+])('tinycloud:manage-key refuses space-root %s authority without signing', async (_name, path, action) => {
+  token.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
+  client.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
+  const response = await sign(signingBody({
+    abilities: { delegation: { [path]: [action] } },
+  }));
+  expect(response.status).toBe(400);
+  expect(await response.json()).toMatchObject({ approved: false, code: 'REVOKE_GRANT_DISABLED' });
+  expect(signerCalls).toBe(0);
+});
+
+test('tinycloud:manage-key permits resource-scoped revocation signing', async () => {
+  token.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
+  client.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
+  const response = await sign(signingBody({
+    abilities: { delegation: { 'grants/specific-grant': ['tinycloud.delegation/revoke'] } },
+  }));
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({ approved: true });
+  expect(signerCalls).toBe(1);
+});
+
 test('app-managed signing uses the OAuth consent before a user creates a durable grant', async () => {
   token.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
   client.scopes = ['openid', 'keys', 'tinycloud:manage-key'];

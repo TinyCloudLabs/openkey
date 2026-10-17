@@ -47,6 +47,9 @@ import {
   type DelegationPermissionEntry,
   type RecapEntry,
   type SessionAbilities,
+  hasRootRevocationGrant,
+  hasRootRevocationGrantInSiwe,
+  ROOT_REVOCATION_GRANT_DISABLED,
 } from './delegate-session';
 import { log, logError } from '../log';
 
@@ -818,6 +821,9 @@ delegateRouter.post('/sign', async (c) => {
     // intentionally ignored. The OAuth token's user binding selects exactly
     // one canonical key at the database boundary.
     const candidate = body as Record<string, unknown>;
+    if (hasRootRevocationGrantInSiwe(candidate.message)) {
+      return c.json({ approved: false, code: ROOT_REVOCATION_GRANT_DISABLED.code, reason: ROOT_REVOCATION_GRANT_DISABLED.error }, 400);
+    }
     try {
       const result = await withTinyCloudManageKeySigningPolicy(prisma, {
         userId: principal.userId, clientId: principal.clientId, request: body,
@@ -1092,6 +1098,9 @@ delegateRouter.post('/sign', async (c) => {
       'outside_bootstrap_allowlist',
     ));
   }
+  if (hasRootRevocationGrant(entries)) {
+    return c.json({ approved: false, code: ROOT_REVOCATION_GRANT_DISABLED.code, reason: ROOT_REVOCATION_GRANT_DISABLED.error }, 400);
+  }
 
   const autoSignDecision = evaluateAutoSignPolicy(
     autoSignPreference.autoSignEnabled,
@@ -1255,6 +1264,9 @@ delegateRouter.post('/', async (c) => {
       return c.json(delegateErrorResponse(err, 'Invalid permissions', 'invalid_permissions'), 400);
     }
   }
+  if (permissions && hasRootRevocationGrant(permissions)) {
+    return c.json(ROOT_REVOCATION_GRANT_DISABLED, 400);
+  }
   let expiryMs: number;
   try {
     expiryMs = resolveDelegationExpiryMs(body.expiry);
@@ -1371,6 +1383,9 @@ delegateRouter.post('/', async (c) => {
         { error: e instanceof Error ? e.message : 'Bound SIWE could not be re-parsed', code: 'bound_siwe_parse_failed' },
         500,
       );
+    }
+    if (hasRootRevocationGrant(preparedEntries)) {
+      return c.json(ROOT_REVOCATION_GRANT_DISABLED, 400);
     }
     let baseline: SessionAbilities;
     try {
@@ -1584,6 +1599,9 @@ delegateRouter.post('/', async (c) => {
   } catch (e) {
     return c.json(delegateErrorResponse(e, 'Failed to prepare delegation', 'delegation_prepare_failed'), 400);
   }
+  if (hasRootRevocationGrantInSiwe(preparedResult.prepared.siwe)) {
+    return c.json(ROOT_REVOCATION_GRANT_DISABLED, 400);
+  }
 
   const expirationTime = signedSiweExpirationTime(preparedResult.prepared.siwe);
   if (!expirationTime) {
@@ -1714,6 +1732,9 @@ delegateRouter.post('/prepare', async (c) => {
       return c.json(delegateErrorResponse(err, 'Invalid permissions', 'invalid_permissions'), 400);
     }
   }
+  if (permissions && hasRootRevocationGrant(permissions)) {
+    return c.json(ROOT_REVOCATION_GRANT_DISABLED, 400);
+  }
   let expiryMs: number;
   try {
     expiryMs = resolveDelegationExpiryMs(body.expiry);
@@ -1739,6 +1760,9 @@ delegateRouter.post('/prepare', async (c) => {
     });
   } catch (e) {
     return c.json(delegateErrorResponse(e, 'Failed to prepare delegation', 'delegation_prepare_failed'), 400);
+  }
+  if (hasRootRevocationGrantInSiwe(preparedResult.prepared.siwe)) {
+    return c.json(ROOT_REVOCATION_GRANT_DISABLED, 400);
   }
 
   const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
@@ -1929,6 +1953,9 @@ delegateRouter.post('/complete', async (c) => {
       return c.json(delegateErrorResponse(err, 'Invalid permissions', 'invalid_permissions'), 400);
     }
   }
+  if (baselinePermissions && hasRootRevocationGrant(baselinePermissions)) {
+    return c.json(ROOT_REVOCATION_GRANT_DISABLED, 400);
+  }
 
   if (typeof body.prepared.siwe !== 'string') {
     return c.json({ error: 'prepared.siwe must be a string' }, 400);
@@ -1951,6 +1978,9 @@ delegateRouter.post('/complete', async (c) => {
   let baseline: SessionAbilities;
   try {
     const entries = parsePreparedRecap(body.prepared.siwe);
+    if (hasRootRevocationGrant(entries)) {
+      return c.json(ROOT_REVOCATION_GRANT_DISABLED, 400);
+    }
     baseline = baselinePermissions
       ? sessionAbilitiesFromPermissions(baselinePermissions, {
           address: signedFields.address,
@@ -2332,6 +2362,9 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       },
       400,
     );
+  }
+  if (hasRootRevocationGrant(originalEntries)) {
+    return c.json(ROOT_REVOCATION_GRANT_DISABLED, 400);
   }
   if (originalEntries.length === 0) {
     return c.json(
@@ -2789,6 +2822,9 @@ delegateRouter.post('/authorize-sign', async (c) => {
       500,
     );
   }
+  if (hasRootRevocationGrant(originalEntries)) {
+    return c.json(ROOT_REVOCATION_GRANT_DISABLED, 400);
+  }
   // Parse chainId from the bound original SIWE — never hard-code.
   const chainIdMatch = bound.originalSiwe.match(/^Chain ID:\s*(\d+)\s*$/m);
   const chainId = chainIdMatch?.[1] ? Number(chainIdMatch[1]) : 1;
@@ -3010,6 +3046,9 @@ delegateRouter.post('/authorize-sign', async (c) => {
   // would throw "permissions disagree with selectedActionKeys" before
   // ever displaying anything to the user.
   const effectiveEntries = parsePreparedRecap(signedMessage);
+  if (hasRootRevocationGrant(effectiveEntries)) {
+    return c.json(ROOT_REVOCATION_GRANT_DISABLED, 400);
+  }
   const effectiveGrants = effectiveEntries.map((entry) => ({
     service: canonicalizeServiceName(entry.service),
     space: entry.space,
@@ -3133,6 +3172,9 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
       500,
     );
   }
+  if (hasRootRevocationGrant(originalEntries)) {
+    return c.json(ROOT_REVOCATION_GRANT_DISABLED, 400);
+  }
   const chainIdMatch = bound.originalSiwe.match(/^Chain ID:\s*(\d+)\s*$/m);
   const chainId = chainIdMatch?.[1] ? Number(chainIdMatch[1]) : 1;
   const immutable = extractImmutableSiweFields(bound.originalSiwe, {
@@ -3242,6 +3284,9 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
   // rationale — the widget's `validatePreviewSelection` requires the
   // per-permission projection to equal the returned selected keys).
   const previewEntries = parsePreparedRecap(preparedSignedMessage);
+  if (hasRootRevocationGrant(previewEntries)) {
+    return c.json(ROOT_REVOCATION_GRANT_DISABLED, 400);
+  }
   const previewGrants = previewEntries.map((entry) => ({
     service: canonicalizeServiceName(entry.service),
     space: entry.space,

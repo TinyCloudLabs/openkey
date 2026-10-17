@@ -14,6 +14,7 @@ import { createSealingContext, deriveKeyForRecord } from '../services/key-sealin
 import { deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, PrimaryKeyConflictError, setPrimaryKey } from '../services/primary-key';
 import { rejectNonBrowserControlRequest } from '../middleware/browser-control';
+import { hasRootRevocationGrantInSiwe, ROOT_REVOCATION_GRANT_DISABLED } from './delegate-session';
 
 import { log, logError } from '../log';
 const prisma = createPrismaClient();
@@ -292,6 +293,20 @@ keysRouter.post('/:keyId/sign', async (c) => {
   if (key.keyType === 'EXTERNAL') {
     return c.json({ error: 'External keys must be signed client-side' }, 400);
   }
+  const format = body.format ?? 'personal_sign';
+  if (format !== 'raw' && format !== 'personal_sign') {
+    return c.json({ error: 'Unsupported signing format', code: 'INVALID_SIGN_MESSAGE' }, 400);
+  }
+  if (typeof body.message !== 'string' ||
+    (format === 'raw' && !/^0x(?:[0-9a-fA-F]{2})*$/.test(body.message))) {
+    return c.json({ error: 'Invalid signing message', code: 'INVALID_SIGN_MESSAGE' }, 400);
+  }
+  const signedMessage = format === 'raw'
+    ? Buffer.from(body.message.slice(2), 'hex').toString('utf8')
+    : body.message;
+  if (hasRootRevocationGrantInSiwe(signedMessage)) {
+    return c.json(ROOT_REVOCATION_GRANT_DISABLED, 400);
+  }
 
   const sealingKey = await deriveKeyForRecord(tee, key);
   const privateKey = await unseal(key.sealedBlob!, sealingKey) as Hex;
@@ -300,7 +315,6 @@ keysRouter.post('/:keyId/sign', async (c) => {
   const account = createWalletFromPrivateKey(privateKey);
 
   // personal_sign adds EIP-191 prefix, raw signs the message directly
-  const format = body.format || 'personal_sign';
   // Bound bootstrap's synchronous wait; background work keeps its existing lock/heartbeat.
   const bootstrap = await awaitTinyCloudBootstrapWithinBudget(
     ensureTinyCloudBootstrapForApprovedSign({ prisma, userId: user.id, key, privateKey, message: body.message, format }),
