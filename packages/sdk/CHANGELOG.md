@@ -1,5 +1,13 @@
 # @openkey/sdk
 
+## 0.12.1
+
+### Patch Changes
+
+- d95d0bb: Stabilize embedded signing review and correlate widget phases (TC-1183).
+- 3102674: Keep the embedded Sign review measurable before enabling approval, and reveal a stalled frame without granting approval.
+  - @openkey/core@0.12.1
+
 ## 0.12.1-beta.1
 
 ### Patch Changes
