@@ -16,6 +16,8 @@ export function readinessHandler(check: ReadinessCheck = checkApiReadiness) {
       // connection error on this unauthenticated public endpoint.
       return c.json({ status: 'not_ready' }, 503);
     }
-    return c.json({ status: 'ok', tee: resolveTeeMode() });
+    // TEE_MODE selects a client, not the guest OS. Image identity and hardening
+    // cannot be inferred without independently trusted runtime metadata.
+    return c.json({ status: 'ok', tee_mode: resolveTeeMode(), os_image: 'unknown' });
   };
 }
