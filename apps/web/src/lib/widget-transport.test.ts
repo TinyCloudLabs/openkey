@@ -745,14 +745,18 @@ describe('v2 embedded review layout', () => {
     gate.measure(720, true);
     expect(gate.canApprove()).toBe(false);
     const first = resizes[0]!;
+    expect(gate.isCurrent(first[1])).toBe(true);
+    expect(gate.isCurrent(first[1] + 1)).toBe(false);
     gate.applied(first[0], first[1]);
     vi.advanceTimersByTime(120);
     expect(gate.canApprove()).toBe(true);
     gate.changed();
     expect(gate.canApprove()).toBe(false);
+    expect(gate.isCurrent(first[1])).toBe(false);
     gate.measure(620, true);
     const second = resizes[1]!;
     expect(second[1]).toBeGreaterThan(first[1]);
+    expect(gate.isCurrent(second[1])).toBe(true);
     gate.applied(first[0], first[1]); // same height, old layout: still blocked
     vi.advanceTimersByTime(120);
     expect(gate.canApprove()).toBe(false);
@@ -778,6 +782,7 @@ describe('v2 embedded review layout', () => {
       gate.measure(810, true);
       vi.advanceTimersByTime(5000);
       expect(timedOut).toBe(1);
+      expect(gate.isCurrent(resizes[0]![1])).toBe(false);
       gate.applied(600, resizes[0]![1]);
       gate.changed();
       gate.measure(810, true);

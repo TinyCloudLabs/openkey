@@ -56,6 +56,7 @@
   let layoutReady = $state(false);
   let layoutError = $state('');
   let layoutGate: IframeLayoutGate | null = null;
+  let pendingLayoutAck: { height: number; layoutId: number } | null = null;
   let keyReadGeneration = 0;
   let keyOwnerToken: string | null = null;
   let keyOwnerSessionId: string | undefined;
@@ -106,6 +107,18 @@
   const phaseKeyId = v2 ? $page.url.searchParams.get('keyId') : null;
   const passkeysSupported = passkeysSupportedFromParams($page.url.searchParams);
 
+  function applyPendingLayout() {
+    const ack = pendingLayoutAck;
+    if (!ack) return;
+    if (!layoutGate?.isCurrent(ack.layoutId)) {
+      pendingLayoutAck = null;
+      return;
+    }
+    if (window.innerHeight + 1 < ack.height) return;
+    pendingLayoutAck = null;
+    layoutGate.applied(ack.height, ack.layoutId);
+  }
+
   $effect(() => {
     if (typeof window !== 'undefined' && !initialized) {
       initialized = true;
@@ -120,7 +133,10 @@
                 transport?.emitLayoutSignal(ready, layoutId);
                 layoutReady = ready;
               },
-              () => { layoutError = 'Review layout could not be confirmed. Cancel and try again.'; },
+              () => {
+                pendingLayoutAck = null;
+                layoutError = 'Review layout could not be confirmed. Cancel and try again.';
+              },
             );
           }
           transport = createWidgetTransport({
@@ -131,12 +147,20 @@
             onRequest: handleTransportRequest,
             onClose: handleTransportClose,
             onLayoutApplied: (height, layoutId) => {
-              if (window.innerHeight + 1 >= height) layoutGate?.applied(height, layoutId);
+              // A valid ACK may arrive before the iframe observes its new viewport.
+              // Apply only the current revision once that viewport catches up.
+              if (!layoutGate?.isCurrent(layoutId)) return;
+              pendingLayoutAck = { height, layoutId };
+              applyPendingLayout();
             },
             onInvalid: (reason, event) => {
               console.warn('[embed sign widget] invalid message:', reason, event.origin);
             },
           });
+          if (v2) {
+            window.addEventListener('resize', applyPendingLayout);
+            window.visualViewport?.addEventListener('resize', applyPendingLayout);
+          }
           transport.emitReady();
         } catch (e) {
           console.warn('[embed sign widget] transport init failed:', e);
@@ -159,6 +183,8 @@
     return () => {
       transport?.destroy();
       window.removeEventListener('message', handleMessage);
+      window.removeEventListener('resize', applyPendingLayout);
+      window.visualViewport?.removeEventListener('resize', applyPendingLayout);
       layoutGate?.destroy();
       transport = null;
     };
@@ -201,6 +227,7 @@
       keyReadSessionId === (inIframe ? null : $session.data?.session?.id);
     // An early key result may have been measured before transport bound its
     // request ID. Reissue the layout after binding this request.
+    pendingLayoutAck = null;
     layoutGate?.changed();
     if (!sameRead) {
       keyReadGeneration++;
@@ -287,6 +314,7 @@
     observer.observe(content);
     if (v2) {
       const mutation = new MutationObserver(() => {
+        pendingLayoutAck = null;
         layoutGate?.changed();
         cancelAnimationFrame(frame);
         clearTimeout(fallback);
