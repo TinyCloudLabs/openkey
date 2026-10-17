@@ -164,6 +164,22 @@ describe('primary flag on managed delegations (POST /api/delegate)', () => {
   });
 });
 
+describe('the key the user approved stays bound (POST /api/delegate)', () => {
+  test('a consent for the non-primary key cannot be signed by the primary key', async () => {
+    const prepared = await prepare(secondaryKey.id);
+    const res = await post('/', {
+      keyId: primaryKey.id, jwk, host, prefix: 'default',
+      prepared: prepared.prepared,
+      authorizationContextToken: prepared.authorizationContext.token,
+      selectedActionIds: prepared.selectedActionKeys,
+      protocolVersion: 1,
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('key-mismatch');
+    expect(res.body.signature).toBeUndefined();
+  });
+});
+
 describe('primary flag on wallet delegations (POST /api/delegate/complete)', () => {
   test('is false for an external wallet', async () => {
     const res = await completeWith(externalKey.id, wallet);

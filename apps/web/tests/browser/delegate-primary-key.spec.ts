@@ -1,6 +1,7 @@
-// TC-703: with several keys and no owner named, `/delegate` signs in with the
-// primary key unless the user explicitly asks for a different one. Every API
-// call is answered by `page.route`; no API server runs.
+// TC-703: `/delegate` labels the primary key and keeps other keys behind "Use a
+// different key". With several keys and no owner named, the user picks the
+// signing key; nothing is preselected. Every API call is answered by
+// `page.route`; no API server runs.
 
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { encodeBase64UrlJson } from '../../src/lib/device-authorization';
@@ -67,24 +68,15 @@ const approve = (page: Page) => page.getByRole('button', { name: 'Approve', exac
 const keyButton = (page: Page, name: RegExp) => page.getByRole('button', { name });
 
 test.describe('TC-703 primary key picker', () => {
-  test('with no owner named, the primary key is preselected', async ({ page }) => {
+  test('with no owner named and several keys, the user picks; a non-primary key can sign', async ({ page }) => {
     const prepared = await mock(page, threeKeys);
     await page.goto(noOwner);
-    await expect(approve(page)).toBeEnabled();
-    expect(prepared).toEqual(['key_0']);
-    await expect(page.getByLabel('Signing key')).toContainText('Key 0');
-    await expect(page.getByLabel('Signing key')).toContainText('0xd559...f412');
-  });
 
-  test('Back shows the primary key; another key needs "Use a different key"', async ({ page }) => {
-    const prepared = await mock(page, threeKeys);
-    await page.goto(noOwner);
-    await expect(approve(page)).toBeEnabled();
-    await page.getByRole('button', { name: 'Cancel', exact: true }).click();
-
-    // No auto-advance loop: the picker stays, offering only the primary key.
+    // The picker shows; no key is prepared until the user chooses one.
     await expect(page.getByText('Sign in with your primary key')).toBeVisible();
     await expect(keyButton(page, /Key 0/)).toContainText('Primary');
+    await expect(approve(page)).toHaveCount(0);
+    expect(prepared).toEqual([]);
     await expect(keyButton(page, /Key 1/)).toHaveCount(0);
     await expect(keyButton(page, /Key 2/)).toHaveCount(0);
     await expect(page.getByRole('button', { name: /Generate/ })).toHaveCount(0);
@@ -100,7 +92,12 @@ test.describe('TC-703 primary key picker', () => {
     await keyButton(page, /Key 1/).click();
     await expect(approve(page)).toBeEnabled();
     await expect(page.getByLabel('Signing key')).toContainText('Key 1');
-    expect(prepared).toEqual(['key_0', 'key_1']);
+    expect(prepared).toEqual(['key_1']);
+
+    // Back returns to the picker without auto-advancing.
+    await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(page.getByText('Sign in with your primary key')).toBeVisible();
+    expect(prepared).toEqual(['key_1']);
   });
 
   test('a named owner still wins, with the primary key labelled in the list', async ({ page }) => {
@@ -139,6 +136,7 @@ test.describe('TC-703 primary key picker', () => {
   test('the paste code carries the primary flag from the API unchanged', async ({ page }) => {
     await mock(page, threeKeys, { primary: true });
     await page.goto(noOwner);
+    await keyButton(page, /Key 0/).click();
     await approve(page).click();
     const code = await page.locator('textarea').inputValue();
     const payload = JSON.parse(Buffer.from(code, 'base64').toString('utf8')) as Record<string, unknown>;
@@ -153,6 +151,7 @@ test.describe('TC-703 primary key picker', () => {
       return route.fulfill({ status: 200, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type' }, body: '{"success":true}' });
     });
     await page.goto(`${noOwner}&callback=${encodeURIComponent('http://127.0.0.1:47123/callback')}`);
+    await keyButton(page, /Key 0/).click();
     await approve(page).click();
     await expect(page.getByText('You can close this window and return to the CLI.')).toBeVisible();
     expect(delivered).not.toBeNull();

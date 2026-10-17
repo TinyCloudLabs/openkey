@@ -27,9 +27,10 @@ describe('autoSelectKey (TC-659)', () => {
   });
 });
 
-describe('primary key preselection (TC-703)', () => {
-  test('preselects the primary key when the request names no wallet', () => {
-    expect(autoSelectKey([a, primary, b, external], null)).toBe(primary);
+describe('primary key never skips the picker', () => {
+  test('several keys and no requested wallet show the picker, even with a primary key', () => {
+    expect(autoSelectKey([a, primary, b, external], null)).toBeNull();
+    expect(autoSelectKey([primary, b], null)).toBeNull();
   });
   test('a named wallet still wins over the primary key', () => {
     expect(autoSelectKey([a, primary, b], b.address.toLowerCase())).toBe(b);
