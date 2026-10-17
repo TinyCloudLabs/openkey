@@ -1,0 +1,48 @@
+# Cloudflare Pages deploys main through its GitHub integration, which reports
+# only a check run ("Cloudflare Pages: <project>"), not a GitHub Deployment.
+# Mirror each finished main-branch Pages check run as a Deployment so the
+# repo's Deployments view shows web/demo deploys next to the API one.
+# Read-only on the deploy itself: nothing here triggers or changes a Pages build.
+name: Record Pages deployments
+
+on:
+  check_run:
+    types: [completed]
+
+permissions:
+  contents: read
+  deployments: write
+
+jobs:
+  record:
+    if: >-
+      github.event.check_run.app.slug == 'cloudflare-workers-and-pages' &&
+      startsWith(github.event.check_run.name, 'Cloudflare Pages: ') &&
+      github.event.check_run.check_suite.head_branch == 'main' &&
+      contains(fromJSON('["success","failure","timed_out","cancelled"]'), github.event.check_run.conclusion)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create GitHub Deployment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHECK_NAME: ${{ github.event.check_run.name }}
+          CONCLUSION: ${{ github.event.check_run.conclusion }}
+          DETAILS_URL: ${{ github.event.check_run.details_url }}
+          SHA: ${{ github.event.check_run.head_sha }}
+        run: |
+          set -euo pipefail
+          project="${CHECK_NAME#Cloudflare Pages: }"
+          environment="pages-${project}"
+          # A re-delivered check run must not add a second record for the same commit.
+          existing=$(gh api "repos/${GITHUB_REPOSITORY}/deployments?sha=${SHA}&environment=${environment}" --jq 'length')
+          if [ "$existing" != "0" ]; then
+            echo "Deployment for ${environment} @ ${SHA} already recorded."
+            exit 0
+          fi
+          id=$(jq -n --arg ref "$SHA" --arg env "$environment" --arg desc "Cloudflare Pages: ${project}" \
+            '{ref: $ref, environment: $env, description: $desc, auto_merge: false, required_contexts: [], production_environment: true}' \
+            | gh api -X POST "repos/${GITHUB_REPOSITORY}/deployments" --input - --jq .id)
+          if [ "$CONCLUSION" = "success" ]; then state=success; else state=failure; fi
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/deployments/${id}/statuses" \
+            -f state="$state" -f log_url="$DETAILS_URL" >/dev/null
+          echo "Recorded ${environment} @ ${SHA}: ${state}" >> "$GITHUB_STEP_SUMMARY"

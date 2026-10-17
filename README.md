@@ -211,7 +211,8 @@ OpenKey is designed to run on:
 - **API**: Phala dstack (TEE-secured compute)
 - **Web**: Cloudflare Pages
 
-See [docs/deployment.md](docs/deployment.md) for deployment instructions.
+See [docs/deployment.md](docs/deployment.md) for deployment instructions and
+[docs/releases.md](docs/releases.md) for where npm, GitHub Releases and Deployments show up.
 
 ## Tech Stack
 
