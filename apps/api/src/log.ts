@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { ErrorHandler, MiddlewareHandler } from 'hono';
+import { TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS } from './services/tinycloud-hosts';
 
 export type ApiEnv = { Variables: { requestId: string } };
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
@@ -8,6 +9,40 @@ type ErrorFields = { error_name?: string; error_code?: string };
 type RequestContext = { requestId: string };
 
 const requestContext = new AsyncLocalStorage<RequestContext>();
+const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function configuredOriginMatches(origin: string, host: string | undefined): boolean {
+  if (!host) return false;
+  try { return new URL(host).origin === origin; }
+  catch { return false; }
+}
+
+// The pinned node SDK captures global fetch and has no transport hook for
+// sign-in/hosting. Install before dependencies, like the console boundary below.
+// Resolve context per call: cached SDK clients must not retain a prior request ID.
+const originalFetch = globalThis.fetch;
+globalThis.fetch = Object.assign(function fetchWithRequestId(input: Parameters<typeof fetch>[0], init?: RequestInit) {
+  const requestId = requestContext.getStore()?.requestId;
+  if (!requestId || !REQUEST_ID.test(requestId)) return originalFetch(input, init);
+  let origin: string;
+  try {
+    origin = new URL(input instanceof Request ? input.url : input).origin;
+  } catch {
+    return originalFetch(input, init);
+  }
+  if (!TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS.has(origin) &&
+      !configuredOriginMatches(origin, process.env.TINYCLOUD_URL) &&
+      !configuredOriginMatches(origin, process.env.TINYCLOUD_BOOTSTRAP_HOST)) {
+    return originalFetch(input, init);
+  }
+  const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+  headers.set('X-Request-Id', requestId);
+  // Native auto-follow carries custom headers across origins. Fail closed
+  // rather than replay signed requests; explicit manual/error modes still work.
+  const redirect = init?.redirect ?? (input instanceof Request ? input.redirect : 'follow');
+  return originalFetch(input, { ...init, headers, redirect: redirect === 'follow' ? 'error' : redirect });
+}, originalFetch);
+
 const EVENTS = {
   better_auth: true, otp_delivery_unconfigured: true, auth_key_generated: true, auth_key_generation_failed: true,
   auth_email_signup_confirmation_required: true, auth_email_signup_confirmed: true, auth_email_signup_refused: true,
@@ -60,10 +95,10 @@ function safeErrorFields(error: unknown): ErrorFields {
   }
 }
 
-function emit(level: LogLevel, event: EventName, fields: Record<string, string | number | undefined> = {}): void {
+function emit(level: LogLevel, event: EventName, fields: Record<string, string | number | boolean | undefined> = {}): void {
   if (typeof level !== 'string' || !Object.hasOwn(LEVELS, level)) return;
   const safeEvent: EventName = typeof event === 'string' && Object.hasOwn(EVENTS, event) ? event : 'unlisted_event';
-  const line: Record<string, string | number> = {
+  const line: Record<string, string | number | boolean> = {
     ts: new Date().toISOString(),
     level,
     event: safeEvent,
@@ -141,13 +176,16 @@ function routeTemplate(route: string | undefined): string {
 }
 
 export const requestLogger: MiddlewareHandler<ApiEnv> = async (c, next) => {
-  const requestId = randomUUID();
+  const incoming = c.req.header('X-Request-Id');
+  const validIncoming = incoming !== undefined && REQUEST_ID.test(incoming);
+  const requestId = validIncoming ? incoming.toLowerCase() : randomUUID();
   const startedAt = performance.now();
   c.set('requestId', requestId);
   c.header('X-Request-Id', requestId);
   await requestContext.run({ requestId }, async () => {
     await next();
     emit('info', 'request', {
+      request_id_replaced: incoming !== undefined && !validIncoming,
       method: Object.hasOwn(METHODS, c.req.method) ? c.req.method : 'GET',
       route: routeTemplate(c.req.routePath),
       status: Number.isInteger(c.res.status) && c.res.status >= 100 && c.res.status <= 599 ? c.res.status : 500,
