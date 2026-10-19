@@ -157,7 +157,7 @@ type Approval = {
 
 async function approve(selection: 'exact' | 'narrowed' = 'exact', withRequiredAction = true): Promise<Approval> {
   const siwe = originalSiwe(withRequiredAction);
-  const prepared = await post('/authorize-sign-prepare', { keyId: currentKey.id, siwe, jwk, host });
+  const prepared = await post('/authorize-sign-prepare', { keyId: currentKey.id, siwe, jwk, host, requestOrigin: 'https://openkey.so' });
   expect(prepared.status).toBe(200);
   const allowed = stringArray(prepared.body.allowedActionIds);
   const selected = selection === 'narrowed' ? allowed.filter((id) => !id.includes('kv/put')) : allowed;

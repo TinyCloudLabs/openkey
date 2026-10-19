@@ -78,6 +78,7 @@ import {
   type AuthorizationContextClaim,
 } from '../services/authorization-signing';
 import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
+import { checkSiweOrigin } from '../services/siwe-origin';
 import { fetchAndBindWellKnownManifest } from '../services/manifest-origin-fetch';
 import { signManagedKey, unsealManagedKey } from '../services/managed-key-signing';
 import {
@@ -2277,6 +2278,13 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
      * `origin-bound`; any failure fails closed to `unsigned`.
      */
     reportedOrigin?: string;
+    /**
+     * The origin the widget verified from the postMessage sender. A
+     * SIWE-shaped `siwe` must name exactly this origin (domain and web URI);
+     * absent or unattributed is refused. Distinct from `reportedOrigin`,
+     * which only drives the optional manifest origin-bind.
+     */
+    requestOrigin?: string;
     ticket?: string;
     transportVersion?: number;
     callback?: unknown;
@@ -2292,6 +2300,16 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     );
   }
   const ticket = handoffTicket(body);
+  // TC-1486: refuse a SIWE that names a different site than the verified
+  // requester, or that arrives unattributed. Prepared-handoff tickets are
+  // exempt: their request was bound at claim time and the requester is a
+  // local CLI, not a browser origin.
+  if (!ticket && typeof body.siwe === 'string') {
+    const siweCheck = checkSiweOrigin(body.siwe, body.requestOrigin);
+    if (siweCheck.siwe && !siweCheck.ok) {
+      return c.json({ error: siweCheck.message, code: 'siwe_origin_refused', reason: siweCheck.code }, 403);
+    }
+  }
   const handoffTicketHash = ticket
     ? await activePreparedHandoffService.assertRequest(ticket, user.id, {
       keyId: body.keyId, siwe: body.siwe, jwk: body.jwk, host: body.host ?? '',

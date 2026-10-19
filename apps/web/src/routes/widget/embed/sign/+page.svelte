@@ -17,7 +17,9 @@
     annotateAppScopedGrants,
     type CapabilityReviewModel,
     type DeclaredAppScope,
+    checkSiweOrigin,
   } from '@openkey/capability-review';
+  import SiweOriginRefusal from '$lib/components/signing/siwe-origin-refusal.svelte';
   import {
     createIframeLayoutGate,
     type IframeLayoutGate,
@@ -645,6 +647,7 @@
   // Sol CRITICAL-1: preview step for iframe.
   async function requestPreview(): Promise<void> {
     if (!key || !message) return;
+    if (siweRefusal) return;
     if (!canUseAuthorizeSignFn()) return;
     if (v2 && !layoutGate?.canApprove()) return;
     if (!currentKeyBelongsToSession()) return;
@@ -669,6 +672,7 @@
               host: messageHost,
               presentation: requestPresentation ?? undefined,
               reportedOrigin: reportedOriginForPrepare,
+              requestOrigin: origin === '*' ? undefined : origin,
             }),
           },
         );
@@ -804,6 +808,10 @@
 
   async function approveAndSign() {
     if (!key || !message) return;
+    if (siweRefusal) {
+      error = siweRefusal.message;
+      return;
+    }
     if (v2 && !layoutGate?.canApprove()) return;
     if (!currentKeyBelongsToSession()) return;
     // Fail-closed: refuse to sign a malformed ReCap regardless of path.
@@ -878,7 +886,7 @@
 
       // Exact-byte signing cannot narrow the request: show every parsed
       // action and report the full set rather than a UI-only selection.
-      const result = await api.signMessage(key.id, message);
+      const result = await api.signMessage(key.id, message, origin === '*' ? undefined : origin);
       const effectivePermissions = reviewModel
         ? reviewModel.permissions.map((grant) => ({
             service: grant.service,
@@ -909,6 +917,29 @@
   function invalidatePreviewForSelectionEdit() {
     previewSignedMessage = null;
     previewApproved = false;
+  }
+
+  // TC-1486: a SIWE-shaped message that does not name the verified requesting
+  // origin (or arrives unattributed) is never signed and has no override.
+  // Every signing path re-checks this; the server enforces it too.
+  const siweRefusal = $derived.by(() => {
+    if (!message) return null;
+    const check = checkSiweOrigin(message, origin);
+    return check.siwe && !check.ok ? check : null;
+  });
+  let refusalReported = false;
+  $effect(() => {
+    if (!siweRefusal || refusalReported) return;
+    refusalReported = true;
+    sendResponse({
+      type: 'openkey:sign:response',
+      success: false,
+      error: { code: 'UNKNOWN', message: `SIWE_ORIGIN_REFUSED: ${siweRefusal.code}` },
+    });
+  });
+
+  function closeRefused() {
+    sendClose();
   }
 
   function cancel() {
@@ -994,7 +1025,9 @@
 
   <!-- Card body -->
   <div class="bg-white border border-surface-200 rounded-2xl shadow-sm p-5">
-    {#if !isAuthenticated}
+    {#if siweRefusal}
+      <SiweOriginRefusal reason={siweRefusal.message} code={siweRefusal.code} onclose={closeRefused} />
+    {:else if !isAuthenticated}
       <EmbeddedSignIn
         prompt="Sign in to review and sign this message"
         onauthenticated={() => { embedAuthenticated = true; }}
