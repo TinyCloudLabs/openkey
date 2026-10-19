@@ -157,7 +157,7 @@ type Approval = {
 
 async function approve(selection: 'exact' | 'narrowed' = 'exact', withRequiredAction = true): Promise<Approval> {
   const siwe = originalSiwe(withRequiredAction);
-  const prepared = await post('/authorize-sign-prepare', { keyId: currentKey.id, siwe, jwk, host });
+  const prepared = await post('/authorize-sign-prepare', { keyId: currentKey.id, siwe, jwk, host, requestOrigin: 'https://openkey.so' });
   expect(prepared.status).toBe(200);
   const allowed = stringArray(prepared.body.allowedActionIds);
   const selected = selection === 'narrowed' ? allowed.filter((id) => !id.includes('kv/put')) : allowed;
@@ -269,10 +269,12 @@ describe('authorize-sign checks every binding before consuming context and previ
   });
 
   const contextFaults: Array<{
-    name: string; code: string; field: string; change: (value: unknown, approval: Approval) => unknown;
+    name: string; code: string; status?: number; field: string; change: (value: unknown, approval: Approval) => unknown;
   }> = [
     { name: 'user', code: 'user_mismatch', field: 'userId', change: () => otherUser.id },
-    { name: 'key identity', code: 'key-mismatch', field: 'keyId', change: () => 'another_key' },
+    // Signer lookup is restricted to the authenticated user's keys. An unknown
+    // bound ID returns 404 without revealing whether another account owns it.
+    { name: 'key identity', code: 'key_not_found', status: 404, field: 'keyId', change: () => 'another_key' },
     { name: 'JWK digest', code: 'jwk-mismatch', field: 'jwkDigest', change: () => '0'.repeat(64) },
     { name: 'immutable header digest', code: 'immutable-fields-changed', field: 'immutableFieldsDigest', change: () => '0'.repeat(64) },
     { name: 'baseline digest', code: 'baseline-digest-mismatch', field: 'baselineAbilitiesDigest', change: () => '0'.repeat(64) },
@@ -287,7 +289,7 @@ describe('authorize-sign checks every binding before consuming context and previ
       record[fault.field] = fault.change(original, approval);
       try {
         const refused = await post('/authorize-sign', approval.body);
-        expect(refused.status).toBe(400);
+        expect(refused.status).toBe(fault.status ?? 400);
         expect(refused.body.code).toBe(fault.code);
         expect(refused.body.signature).toBeUndefined();
         noSignatureIssued();

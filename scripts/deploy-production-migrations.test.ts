@@ -168,6 +168,29 @@ describe('production migration deployment mode', () => {
     })).toThrow(`Stored migration checksum differs from the reviewed ${googleLinkStepUp}`);
   });
 
+  test('permits the prepared SIWE handoff migration while TC-488 remains parked', async () => {
+    const name = '20261016_0001_prepared_siwe_handoff';
+    const directories = [baseline.migration_name, ...tc492, device, name];
+    expect(selectProductionMigrationMode({
+      migrations: [baseline],
+      migrationDirectories: directories,
+      managedAccountTableExists: true,
+    })).toBe('pre-tc488-additive');
+    expect(partitionPreTc488Migrations([...tc492, device, name])).toEqual({
+      apply: [...tc492.filter((entry) => entry !== tc488), device, name],
+      park: [tc488],
+    });
+    const checksum = createHash('sha256').update(await readFile(
+      join(import.meta.dir, '../packages/db/prisma/migrations', name, 'migration.sql'),
+    )).digest('hex');
+    expect(checksum).toBe('645d931e10dbd068da7f7243dcbe995f1af6f0e339b98d082264c8153bfec9ec');
+    expect(() => selectProductionMigrationMode({
+      migrations: [baseline, { migration_name: name, checksum: 'unreviewed', finished_at: new Date(), rolled_back_at: null }],
+      migrationDirectories: directories,
+      managedAccountTableExists: true,
+    })).toThrow(`Stored migration checksum differs from the reviewed ${name}`);
+  });
+
   test('accepts the real sign-in polish migration in the branch migration list before TC-488', async () => {
     const migrationsRoot = join(import.meta.dir, '../packages/db/prisma/migrations');
     const directories = (await readdir(migrationsRoot, { withFileTypes: true }))

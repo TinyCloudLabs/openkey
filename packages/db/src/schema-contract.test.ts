@@ -57,6 +57,24 @@ test('accepts the required contract while destructive TC-488 remains pending', a
   expect(await checkRuntimeSchemaContract(database(validRows))).toEqual({ ready: true });
 });
 
+test('requires the prepared handoff table migration before serving approval traffic', async () => {
+  const handoff = '20261016_0001_prepared_siwe_handoff';
+  expect(await checkRuntimeSchemaContract(database(validRows.filter(row => row.migration_name !== handoff)))).toEqual({
+    ready: false,
+    reason: 'migration-missing',
+  });
+  expect(await checkRuntimeSchemaContract(database(validRows.map(row =>
+    row.migration_name === handoff ? { ...row, finished_at: null } : row)))).toEqual({
+    ready: false,
+    reason: 'migration-unfinished',
+  });
+  expect(await checkRuntimeSchemaContract(database(validRows.map(row =>
+    row.migration_name === handoff ? { ...row, checksum: 'wrong' } : row)))).toEqual({
+    ready: false,
+    reason: 'migration-checksum-mismatch',
+  });
+});
+
 test('covers every committed post-baseline migration except the explicit TC-488 gate', async () => {
   const migrationDirectory = join(import.meta.dir, '../prisma/migrations');
   const committed = (await readdir(migrationDirectory, { withFileTypes: true }))

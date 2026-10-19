@@ -30,6 +30,10 @@
   const origin = resolveWidgetOrigin($page.url.searchParams.get('origin'));
   const hasEoa = $page.url.searchParams.get('hasEoa') === 'true';
   const passkeysSupported = passkeysSupportedFromParams($page.url.searchParams);
+  const requestId = $page.url.searchParams.get('requestId');
+  const protocolVersion = $page.url.searchParams.get('protocolVersion') === '2' && requestId ? 2 : null;
+  const phase = protocolVersion === 2 && requestId ? { requestId, protocolVersion } : {};
+  let layoutId = 0;
 
   $effect(() => {
     if (typeof window !== 'undefined' && !initialized) {
@@ -37,7 +41,7 @@
 
       window.addEventListener('message', handleMessage);
 
-      if (origin) window.parent.postMessage({ type: 'openkey:ready' }, origin);
+      if (origin) window.parent.postMessage({ type: 'openkey:ready', ...phase }, origin);
     }
   });
 
@@ -46,7 +50,7 @@
     if (!contentEl) return;
     const observer = new ResizeObserver(() => {
       const height = contentEl!.scrollHeight;
-      if (origin) window.parent.postMessage({ type: 'openkey:resize', height }, origin);
+      if (origin) window.parent.postMessage({ type: 'openkey:resize', height, ...phase, ...(protocolVersion === 2 ? { layoutId: ++layoutId } : {}) }, origin);
     });
     observer.observe(contentEl);
     return () => observer.disconnect();
@@ -62,12 +66,13 @@
 
   function handleMessage(event: MessageEvent) {
     if (!isFromWidgetCounterparty(event, origin, window.parent)) return;
+    if (protocolVersion === 2 &&
+        (event.data?.requestId !== requestId || event.data?.protocolVersion !== protocolVersion)) return;
     if (event.data?.type === 'openkey:auth:request') {
       appName = event.data.appName || 'Unknown App';
     }
     if (event.data?.type === 'openkey:link-wallet:result') {
       if (event.data.success) {
-        // Refresh key list after successful wallet link
         keysLoaded = false;
         loadKeys().then(() => { keysLoaded = true; });
       }
@@ -109,7 +114,7 @@
 
   function linkWallet() {
     // In embed mode, delegate wallet linking to parent SDK
-    if (origin) window.parent.postMessage({ type: 'openkey:link-wallet:delegate' }, origin);
+    if (origin) window.parent.postMessage({ type: 'openkey:link-wallet:delegate', ...phase }, origin);
   }
 
   function register() {
@@ -199,11 +204,11 @@
   }
 
   function sendResponse(data: object) {
-    if (origin) window.parent.postMessage(data, origin);
+    if (origin) window.parent.postMessage({ ...data, ...phase }, origin);
   }
 
   function sendClose() {
-    if (origin) window.parent.postMessage({ type: 'openkey:close' }, origin);
+    if (origin) window.parent.postMessage({ type: 'openkey:close', ...phase }, origin);
   }
 
   function formatAddress(address: string): string {

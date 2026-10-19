@@ -1,0 +1,22 @@
+name: Changeset validation
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  changesets:
+    name: Validate changesets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun test scripts/check-changesets.test.mjs
+      - run: bun scripts/check-changesets.mjs

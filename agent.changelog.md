@@ -3,6 +3,13 @@
 Track changes to agent-facing development guidance for OpenKey. Add a concise entry when
 `agent.dev.md` or related agent workflow expectations change.
 
+## 2026-10-15
+
+- MCP scope registration defaults now match discovery. Omitted-scope clients can request
+  `tinycloud:mcp` with user consent; explicit client limits and privileged signing scopes
+  stay restricted. Existing connectors with a narrower stored allowlist must re-register.
+  Added real-provider OAuth regression coverage to the normal API suite.
+
 ## 2026-10-13
 
 - `TEE_MODE` fails closed (TC-966). Only `production` (dstack) and an explicit `development`

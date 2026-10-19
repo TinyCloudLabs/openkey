@@ -40,6 +40,10 @@ const signinPolishMigration = '20261012_0001_signin_polish_hints_branding';
 const signinPolishChecksum = 'd09960dda6ae76472c61629283b4030131d47b5f0f5cd7d79a3d02c0c5bf0e96';
 const googleLinkStepUpMigration = '20261015_0001_google_link_step_up';
 const googleLinkStepUpChecksum = '3ed9b8b09a918a86c68fa2d0eb1563ebc169bd070a7c3b72641ca9d3d64ca945';
+const preparedHandoffMigration = '20261016_0001_prepared_siwe_handoff';
+const preparedHandoffChecksum = '645d931e10dbd068da7f7243dcbe995f1af6f0e339b98d082264c8153bfec9ec';
+const appSignInDayMigration = '20261019_0001_app_sign_in_day';
+const appSignInDayChecksum = 'a2f56caea9cd46aebccfb4d369e0223cf8338d07ac685a0dce145b4c3c90bb29';
 // Reviewed expand-only migrations that may run while TC-488 stays parked.
 const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
   [deviceMigration, deviceChecksum],
@@ -50,6 +54,8 @@ const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
   [nativeSessionProofJtiMigration, nativeSessionProofJtiChecksum],
   [signinPolishMigration, signinPolishChecksum],
   [googleLinkStepUpMigration, googleLinkStepUpChecksum],
+  [preparedHandoffMigration, preparedHandoffChecksum],
+  [appSignInDayMigration, appSignInDayChecksum],
 ]);
 
 export type MigrationRow = {

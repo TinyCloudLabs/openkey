@@ -17,7 +17,7 @@ const EVENTS = {
   oauth_client_scopes_update_failed: true, api_starting: true, request: true, api_error: true,
   delegate_session_activation_warning: true, delegate_session_activation_failed: true,
   delegate_authorization_context_issue_failed: true, delegate_space_setup_notice_failed: true,
-  delegate_origin_bind_failed: true, tinycloud_bootstrap_failed: true, primary_key_changed: true,
+  delegate_origin_bind_failed: true, tinycloud_bootstrap_failed: true, primary_key_changed: true, key_quote_failed: true,
   native_consent_peer_lookup_failed: true, native_consent_key_unseal_failed: true,
   native_consent_activation_after_host_setup_failed: true, native_consent_host_delegation_rejected: true,
   native_consent_activation_did_not_host_space: true, native_consent_host_activation_failed: true,
@@ -25,6 +25,7 @@ const EVENTS = {
   tinycloud_bootstrap_background_failed: true, tinycloud_bootstrap_background_completed: true,
   tinycloud_bootstrap_space_registry_completed: true, native_par_valid_request_volume_threshold_reached: true,
   native_par_request_cleanup_failed: true, native_session_proof_cleanup_failed: true,
+  scoreboard_protocol_users_call: true, app_sign_in_record_failed: true,
   third_party_console: true, uncaught_exception: true, unhandled_rejection: true, config_invalid: true,
   unlisted_event: true,
 } as const satisfies Record<string, true>;
@@ -34,7 +35,8 @@ const ERROR_CODES: Record<string, true> = {
   P2002: true, P2025: true, P2010: true, P2034: true, tinycloud_bootstrap_failed: true,
   tinycloud_bootstrap_crashed: true, tinycloud_bootstrap_in_progress: true,
   tinycloud_bootstrap_expired_request: true, BETTER_AUTH_URL: true, signup_token_invalid: true,
-  signup_account_exists: true,
+  signup_account_exists: true, quote_report_data_mismatch: true, quote_key_custody_mismatch: true,
+  quote_format_invalid: true,
 };
 const LEVELS: Record<string, true> = { debug: true, info: true, warn: true, error: true };
 const METHODS: Record<string, true> = {
@@ -78,6 +80,15 @@ function emit(level: LogLevel, event: EventName, fields: Record<string, string |
 export function log(level: LogLevel, event: EventName, errorCode?: string): void {
   const safeCode = typeof errorCode === 'string' && Object.hasOwn(ERROR_CODES, errorCode) ? errorCode : undefined;
   emit(level, event, { error_code: safeCode });
+}
+
+/** Event with numeric fields only (status, count): never ids, addresses or tokens. */
+export function logMetric(
+  level: 'info' | 'warn' | 'error',
+  event: EventName,
+  fields: { status?: number; count?: number },
+): void {
+  emit(level, event, { status: fields.status, count: fields.count });
 }
 
 export function logError(level: 'warn' | 'error', event: EventName, error: unknown): void {

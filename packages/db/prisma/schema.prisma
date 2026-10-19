@@ -36,12 +36,14 @@ model User {
   oauthAccessTokens              OauthAccessToken[]
   oauthRefreshTokens             OauthRefreshToken[]
   oauthConsents                  OauthConsent[]
+  appSignInDays                  AppSignInDay[]
   tinyCloudManageKeyAppPreferences TinyCloudManageKeyAppPreference[]
   tinyCloudManageKeyControlEvents  TinyCloudManageKeyControlEvent[]
   tinyCloudManageKeySigningDecisions TinyCloudManageKeySigningDecision[]
   developerAccount               DeveloperAccount?
   organizationMemberships        OrganizationMembership[]
   deviceAuthorizations           DeviceAuthorization[]
+  preparedHandoffs               PreparedHandoff[]
   tinyCloudNativeGrants          TinyCloudNativeGrant[]
 
   @@map("user")
@@ -89,6 +91,29 @@ model DeviceAuthorization {
   @@index([requestIpHash, requestedAt])
   @@index([status, transactionExpiresAt])
   @@map("device_authorization")
+}
+
+// Short-lived, ticket-only prepared SIWE handoff. No signed result is persisted.
+model PreparedHandoff {
+  ticketHash       String   @id
+  cancelSecretHash String
+  nonceHash        String
+  request          Json
+  callback         String?
+  state            String
+  expiresAt        DateTime
+  requestedAt      DateTime
+  status           String   @default("PENDING")
+  ownerId          String
+  contextTokenHash String?  @unique
+  selectedKeyId    String?
+
+  owner User @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@unique([ownerId, nonceHash])
+  @@index([ownerId, requestedAt])
+  @@index([expiresAt])
+  @@map("prepared_handoff")
 }
 
 // better-auth Session
@@ -775,4 +800,20 @@ model PlanEntitlements {
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "plan_entitlements_org_fkey")
 
   @@map("plan_entitlements")
+}
+
+// TC-1483: one row per (user, app origin, UTC day) sign-in. Counting only: no
+// IP, user agent, DID, address or message content. Rows older than 35 days are
+// deleted (services/app-sign-in.ts). origin is scheme://host[:port], or
+// "unknown" when the delegation request carries no app origin.
+model AppSignInDay {
+  userId String
+  origin String
+  day    DateTime @db.Date
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, origin, day])
+  @@index([day])
+  @@map("app_sign_in_day")
 }

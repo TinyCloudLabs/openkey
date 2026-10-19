@@ -25,6 +25,9 @@ import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
 import { prepareSession } from '@tinycloud/node-sdk-wasm';
 import { mockModules, replaceModules } from './mock-module';
+import { verifyMessage } from 'ethers';
+import { PreparedHandoffService, MemoryPreparedHandoffStore } from '../services/prepared-handoff';
+import type { setPreparedHandoffServiceForTests } from '../routes/delegate';
 
 const privateKey = '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 const account = privateKeyToAccount(privateKey);
@@ -34,6 +37,7 @@ const otherUser = { id: 'user_2', email: 'bob@example.test' };
 const jwk = { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' };
 
 let currentUser = user;
+let sessionAvailable = true;
 
 const keyRecord = {
   id: 'key_1',
@@ -69,6 +73,7 @@ const prisma = {
 replaceModules({
   '../middleware/session': () => ({
     requireSession: createMiddleware(async (c, next) => {
+      if (!sessionAvailable) return c.json({ error: 'Authentication required' }, 401);
       c.set('user', currentUser);
       c.set('session', {
         id: 'session_' + currentUser.id,
@@ -115,9 +120,10 @@ let manifestBindResult: {
 
 let router: typeof import('../routes/delegate')['delegateRouter'];
 let resetContexts: typeof import('../services/authorization-signing')['_resetAuthorizationContextStoreForTests'];
+let setHandoffService: typeof setPreparedHandoffServiceForTests;
 
 beforeAll(async () => {
-  ({ delegateRouter: router } = await import(
+  ({ delegateRouter: router, setPreparedHandoffServiceForTests: setHandoffService } = await import(
     '../routes/delegate?authorize-sign-routes-isolated' as string
   ));
   ({ _resetAuthorizationContextStoreForTests: resetContexts } = await import(
@@ -127,6 +133,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   currentUser = user;
+  sessionAvailable = true;
   manifestBindResult = { ok: false, reason: 'not configured' };
   resetContexts?.();
 });
@@ -164,7 +171,7 @@ async function issuePrepareContext(): Promise<{
   const res = await router.request('/authorize-sign-prepare', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ keyId: keyRecord.id, siwe, jwk, host: 'https://node.tinycloud.xyz' }),
+    body: JSON.stringify({ keyId: keyRecord.id, siwe, jwk, host: 'https://node.tinycloud.xyz', requestOrigin: 'https://openkey.so' }),
   });
   expect(res.status).toBe(200);
   const body = await res.json() as any;
@@ -200,6 +207,7 @@ describe('POST /authorize-sign-prepare manifest provenance', () => {
         siwe: makePreparedSiwe(),
         jwk,
         reportedOrigin: 'https://listen.tinycloud.xyz',
+        requestOrigin: 'https://openkey.so',
         presentation: {
           protocolVersion: 1,
           displayName: 'Caller-controlled fallback',
@@ -714,7 +722,7 @@ describe('POST /authorize-sign — caveat semantics for narrowing', () => {
     const prepRes = await router.request('/authorize-sign-prepare', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ keyId: keyRecord.id, siwe: richSiwe, jwk, host: 'https://node.tinycloud.xyz' }),
+      body: JSON.stringify({ keyId: keyRecord.id, siwe: richSiwe, jwk, host: 'https://node.tinycloud.xyz', requestOrigin: 'https://openkey.so' }),
     });
     expect(prepRes.status).toBe(200);
     const prep = await prepRes.json() as any;
@@ -798,7 +806,7 @@ describe('POST /authorize-sign — caveat semantics for narrowing', () => {
     const prepRes = await router.request('/authorize-sign-prepare', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ keyId: keyRecord.id, siwe: richSiwe, jwk, host: 'https://node.tinycloud.xyz' }),
+      body: JSON.stringify({ keyId: keyRecord.id, siwe: richSiwe, jwk, host: 'https://node.tinycloud.xyz', requestOrigin: 'https://openkey.so' }),
     });
     expect(prepRes.status).toBe(200);
     const prep = await prepRes.json() as any;
@@ -960,3 +968,138 @@ function multisetEqual(a: readonly unknown[], b: readonly unknown[]): boolean {
   for (let i = 0; i < sa.length; i += 1) if (sa[i] !== sb[i]) return false;
   return true;
 }
+
+describe('prepared handoff signing over HTTP', () => {
+  test.each([false, true])('signs only the bound %s selection and releases delivery state after success', async (narrow) => {
+    const service = new PreparedHandoffService(new MemoryPreparedHandoffStore());
+    setHandoffService(service);
+    const siwe = makePreparedSiwe();
+    const state = Buffer.alloc(32, 1).toString('base64url');
+    const cancelSecret = Buffer.alloc(32, 2).toString('base64url');
+    // Imported after route-module replacements; a static import would load
+    // the real session middleware before this fixture installs its account.
+    const { createPreparedHandoffRouter } = await import('../routes/prepared-handoffs?authorize-sign-routes-isolated' as string);
+    const handoffRouter = createPreparedHandoffRouter(service);
+    const handoffId = Buffer.alloc(32, 3).toString('base64url');
+    const claimBody = JSON.stringify({
+      transportVersion: 2,
+      request: { protocolVersion: 1, siwe, jwk, host: 'https://node.tinycloud.xyz', keyId: keyRecord.id, sessionDid: 'display-only' },
+      delivery: { handoffId, callback: 'http://127.0.0.1:42317/callback/AAAAAAAAAAAAAAAAAAAAAA', state, cancelSecret },
+    });
+    const oldCreate = await handoffRouter.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: claimBody });
+    expect(oldCreate.status).toBe(404);
+    sessionAvailable = false;
+    const unauthenticated = await handoffRouter.request('/claim', { method: 'POST', headers: { 'content-type': 'application/json' }, body: claimBody });
+    expect(unauthenticated.status).toBe(401);
+    const availabilityUnauthenticated = await handoffRouter.request('/available');
+    expect(availabilityUnauthenticated.status).toBe(401);
+    sessionAvailable = true;
+    const availability = await handoffRouter.request('/available');
+    expect(availability.status).toBe(200);
+    expect(await availability.json()).toEqual({ transportVersion: 2 });
+    const claimRes = await handoffRouter.request('/claim', { method: 'POST', headers: { 'content-type': 'application/json' }, body: claimBody });
+    expect(claimRes.status).toBe(201);
+    const handoff = await claimRes.json() as { ticket: string };
+    const ticket = handoff.ticket;
+    expect(ticket).toBe(handoffId);
+    const prepareRes = await router.request('/authorize-sign-prepare', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ticket, keyId: keyRecord.id, siwe, jwk, host: 'https://node.tinycloud.xyz', requestOrigin: 'https://openkey.so' }),
+    });
+    expect(prepareRes.status).toBe(200);
+    const prepared = await prepareRes.json() as { authorizationContextToken: string; allowedActionIds: string[] };
+    const selectedActionIds = narrow
+      ? prepared.allowedActionIds.filter((id) => !id.includes('kv/put'))
+      : prepared.allowedActionIds;
+    if (narrow) expect(selectedActionIds.length).toBeLessThan(prepared.allowedActionIds.length);
+    const withoutTicket = await router.request('/authorize-sign-preview', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ authorizationContextToken: prepared.authorizationContextToken, selectedActionIds }),
+    });
+    expect(withoutTicket.status).toBe(400);
+    expect((await withoutTicket.json() as { code: string }).code).toBe('missing_ticket');
+    const previewRes = await router.request('/authorize-sign-preview', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ticket, authorizationContextToken: prepared.authorizationContextToken, selectedActionIds }),
+    });
+    expect(previewRes.status).toBe(200);
+    const preview = await previewRes.json() as { signedMessage: string; previewApprovalToken: string };
+    const signBody = { ticket, authorizationContextToken: prepared.authorizationContextToken,
+      previewApprovalToken: preview.previewApprovalToken, selectedActionIds, protocolVersion: 1 };
+    const signWithoutTicket = await router.request('/authorize-sign', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...signBody, ticket: undefined }),
+    });
+    expect(signWithoutTicket.status).toBe(400);
+    expect((await signWithoutTicket.json() as { code: string }).code).toBe('missing_ticket');
+    const signRes = await router.request('/authorize-sign', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(signBody),
+    });
+    expect(signRes.status).toBe(200);
+    const result = await signRes.json() as Record<string, unknown>;
+    expect(Object.keys(result).sort()).toEqual([
+      'protocolVersion', 'address', 'signature', 'signedMessage',
+      'selectedActionKeys', 'permissions', 'deliveryState', 'selectedKeyId',
+    ].sort());
+    expect(result.signedMessage).toBe(preview.signedMessage);
+    expect(narrow ? result.signedMessage !== siwe : result.signedMessage === siwe).toBe(true);
+    expect(result.deliveryState).toBe(state);
+    expect(result.selectedKeyId).toBe(keyRecord.id);
+    expect(verifyMessage(result.signedMessage as string, result.signature as string)).toBe(address);
+    const replay = await router.request('/authorize-sign', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(signBody),
+    });
+    expect(replay.status).toBeGreaterThanOrEqual(400);
+    expect(JSON.stringify(await replay.json())).not.toContain(state);
+    // Neither a ticket read nor the retired resolve route can retrieve a
+    // signed result. The CLI receives it only through callback or paste.
+    const readResult = await handoffRouter.request(`/${ticket}`, { method: 'GET' });
+    expect(readResult.status).toBe(404);
+    const resolveAgain = await handoffRouter.request('/resolve', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ticket }),
+    });
+    expect(resolveAgain.status).toBe(404);
+    expect(await resolveAgain.text()).not.toContain(state);
+  });
+});
+
+describe('POST /authorize-sign-prepare SIWE origin guard (TC-1486)', () => {
+  async function prepare(siwe: string, requestOrigin?: string) {
+    const res = await router.request('/authorize-sign-prepare', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ keyId: keyRecord.id, siwe, jwk, host: 'https://node.tinycloud.xyz', requestOrigin }),
+    });
+    return { status: res.status, body: await res.json() as any };
+  }
+
+  test('a delegation SIWE whose domain is the requesting origin is prepared', async () => {
+    expect((await prepare(makePreparedSiwe(), 'https://openkey.so')).status).toBe(200);
+  });
+
+  test('a SIWE claiming another relying party is refused and no context is issued', async () => {
+    const hostile = makePreparedSiwe().replace('openkey.so wants you', 'internal.tinycloud.xyz wants you');
+    const { status, body } = await prepare(hostile, 'https://evil.example');
+    expect(status).toBe(403);
+    expect(body).toMatchObject({ code: 'siwe_origin_refused', reason: 'domain-mismatch' });
+    expect(body.authorizationContextToken).toBeUndefined();
+  });
+
+  test('an unattributed requester is refused', async () => {
+    for (const origin of [undefined, '*']) {
+      const { status, body } = await prepare(makePreparedSiwe(), origin);
+      expect(status).toBe(403);
+      expect(body).toMatchObject({ reason: 'unattributed-origin' });
+    }
+  });
+
+  test('a web URI naming another origin is refused even when the domain matches', async () => {
+    const hostile = makePreparedSiwe().replace(/^URI: .*$/m, 'URI: https://evil.example');
+    const { status, body } = await prepare(hostile, 'https://openkey.so');
+    expect(status).toBe(403);
+    expect(body).toMatchObject({ reason: 'uri-mismatch' });
+  });
+});

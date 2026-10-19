@@ -1,5 +1,6 @@
 <script lang="ts">
   import { page } from '$app/stores';
+  import { tick } from 'svelte';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
   import { getSessionToken, isEmbedContext } from '$lib/embed-passkey';
@@ -16,8 +17,12 @@
     annotateAppScopedGrants,
     type CapabilityReviewModel,
     type DeclaredAppScope,
+    checkSiweOrigin,
   } from '@openkey/capability-review';
+  import SiweOriginRefusal from '$lib/components/signing/siwe-origin-refusal.svelte';
   import {
+    createIframeLayoutGate,
+    type IframeLayoutGate,
     createWidgetTransport,
     type WidgetRequest,
     type WidgetTransport,
@@ -28,6 +33,7 @@
 
   let message = $state('');
   let messageProtocolVersion = $state<number | null>(null);
+  let authorizationProtocolVersion = $state<number | null>(null);
   let messageJwk = $state<Record<string, unknown> | null>(null);
   // Sol MAJOR-2: bind the TinyCloud host into /authorize-sign-prepare
   // so /authorize-sign cannot swap hosts.
@@ -40,6 +46,7 @@
   let sessionChecked = $state(false);
   let initialized = $state(false);
   let keyFetched = $state(false);
+  let keyError = $state('');
   let contentEl = $state<HTMLDivElement | undefined>(undefined);
   let embedAuthenticated = $state(typeof window !== 'undefined' && !!getSessionToken());
   let reviewModel = $state<CapabilityReviewModel | null>(null);
@@ -48,6 +55,15 @@
   let reviewEditing = $state(false);
   let currentRequestId = $state<string | null>(null);
   let transport: WidgetTransport | null = null;
+  let layoutReady = $state(false);
+  let layoutError = $state('');
+  let layoutGate: IframeLayoutGate | null = null;
+  let pendingLayoutAck: { height: number; layoutId: number } | null = null;
+  let keyReadGeneration = 0;
+  let keyOwnerToken: string | null = null;
+  let keyOwnerSessionId: string | undefined;
+  let keyReadToken: string | null = null;
+  let keyReadSessionId: string | null | undefined;
   // Presentation envelope forwarded by the SDK. Display-only. Trust is
   // set only from the server prepare response (see below).
   let requestPresentation = $state<Record<string, unknown> | null>(null);
@@ -88,24 +104,65 @@
   const isAuthenticated = $derived(inIframe ? embedAuthenticated : !!$session.data);
 
   const origin = $page.url.searchParams.get('origin') || '*';
+  const v2 = $page.url.searchParams.get('protocolVersion') === '2';
+  const phaseRequestId = v2 ? $page.url.searchParams.get('requestId') : null;
+  const phaseKeyId = v2 ? $page.url.searchParams.get('keyId') : null;
   const passkeysSupported = passkeysSupportedFromParams($page.url.searchParams);
+
+  function applyPendingLayout() {
+    const ack = pendingLayoutAck;
+    if (!ack) return;
+    if (!layoutGate?.isCurrent(ack.layoutId)) {
+      pendingLayoutAck = null;
+      return;
+    }
+    if (window.innerHeight + 1 < ack.height) return;
+    pendingLayoutAck = null;
+    layoutGate.applied(ack.height, ack.layoutId);
+  }
 
   $effect(() => {
     if (typeof window !== 'undefined' && !initialized) {
       initialized = true;
 
-      // Sol continuation contract: shared transport for real origins.
-      if (origin !== '*') {
+      // V2 phases must be pinned to their URL identity before ready is sent.
+      if (origin !== '*' && (!v2 || (phaseRequestId && phaseKeyId))) {
         try {
+          if (v2) {
+            layoutGate = createIframeLayoutGate(
+              (height, layoutId) => transport?.emitResize(height, layoutId),
+              (ready, layoutId) => {
+                transport?.emitLayoutSignal(ready, layoutId);
+                layoutReady = ready;
+              },
+              () => {
+                pendingLayoutAck = null;
+                layoutError = 'Review layout could not be confirmed. Cancel and try again.';
+              },
+            );
+          }
           transport = createWidgetTransport({
             origin,
             container: 'iframe',
+            protocolVersion: v2 ? 2 : 1,
+            requestId: phaseRequestId ?? undefined,
             onRequest: handleTransportRequest,
             onClose: handleTransportClose,
+            onLayoutApplied: (height, layoutId) => {
+              // A valid ACK may arrive before the iframe observes its new viewport.
+              // Apply only the current revision once that viewport catches up.
+              if (!layoutGate?.isCurrent(layoutId)) return;
+              pendingLayoutAck = { height, layoutId };
+              applyPendingLayout();
+            },
             onInvalid: (reason, event) => {
               console.warn('[embed sign widget] invalid message:', reason, event.origin);
             },
           });
+          if (v2) {
+            window.addEventListener('resize', applyPendingLayout);
+            window.visualViewport?.addEventListener('resize', applyPendingLayout);
+          }
           transport.emitReady();
         } catch (e) {
           console.warn('[embed sign widget] transport init failed:', e);
@@ -127,6 +184,10 @@
   $effect(() => {
     return () => {
       transport?.destroy();
+      window.removeEventListener('message', handleMessage);
+      window.removeEventListener('resize', applyPendingLayout);
+      window.visualViewport?.removeEventListener('resize', applyPendingLayout);
+      layoutGate?.destroy();
       transport = null;
     };
   });
@@ -153,10 +214,38 @@
       });
       return;
     }
+    if (v2 && request.data.keyId !== phaseKeyId) {
+      transport?.respond({
+        type: 'openkey:sign:response',
+        requestId: request.requestId,
+        protocolVersion: 2,
+        success: false,
+        error: { code: 'UNKNOWN', message: 'Selected key does not match this signing phase.' },
+      });
+      return;
+    }
+    const sameRead = v2 && keyFetched && request.data.keyId === phaseKeyId &&
+      keyReadToken === getSessionToken() &&
+      keyReadSessionId === (inIframe ? null : $session.data?.session?.id);
+    // An early key result may have been measured before transport bound its
+    // request ID. Reissue the layout after binding this request.
+    pendingLayoutAck = null;
+    layoutGate?.changed();
+    if (!sameRead) {
+      keyReadGeneration++;
+      key = null;
+      keyOwnerToken = null;
+      keyOwnerSessionId = undefined;
+      keyError = '';
+      keyFetched = false;
+    }
     const data = request.data;
     currentRequestId = request.requestId;
     message = String(data.message ?? '');
     messageProtocolVersion = request.protocolVersion;
+    authorizationProtocolVersion = v2
+      ? (data.authorizationProtocolVersion === 1 ? 1 : null)
+      : request.protocolVersion;
     messageJwk = (data.jwk as Record<string, unknown>) ?? null;
     messageHost = typeof data.host === 'string' ? data.host : '';
     keyId = typeof data.keyId === 'string' ? data.keyId : null;
@@ -174,7 +263,7 @@
     reviewModel = null;
     reviewSourceMessage = null;
     reviewSelection = new Set();
-    keyFetched = false;
+    // The URL-selected key read is reused when the verified session is unchanged.
     // A sessionToken in the request is ignored: the session comes only from
     // OpenKey-origin storage or cookies (TC-688).
     // Reset preview state on a fresh request.
@@ -189,70 +278,129 @@
     // parent already closed us
   }
 
-  // ResizeObserver to notify parent of height changes. Target the configured
-  // origin — never '*'. If origin is unknown ('*'), the widget does not emit
-  // resize messages (the parent will not receive them, but a wildcard target
-  // would leak DOM sizing info to any listener on any origin).
+  // Measure natural content height, including review text below the initial
+  // iframe viewport. The host may constrain its own viewport and scroll it.
+  // A mutation immediately revokes approval even if text changes without
+  // changing height; layoutId prevents late same-height acks from reopening it.
   $effect(() => {
     if (!contentEl) return;
-    const observer = new ResizeObserver(() => {
+    const content = contentEl;
+    let frame = 0;
+    let fallback: ReturnType<typeof setTimeout> | undefined;
+    const measure = () => {
       if (origin === '*') return;
-      const height = contentEl!.scrollHeight;
+      const height = Math.max(content.scrollHeight, Math.ceil(content.getBoundingClientRect().height));
+      if (v2) {
+        const review = content.querySelector('[role="dialog"]');
+        layoutGate?.measure(
+          height,
+          (!!review && review.getClientRects().length > 0 && getComputedStyle(review).visibility === 'visible') ||
+          ((!isAuthenticated || !!keyError) && content.getClientRects().length > 0),
+        );
+        return;
+      }
       if (currentRequestId && messageProtocolVersion !== null) {
-        // Versioned request: the resize carries its correlation. Route
-        // through the transport (which enforces origin + validated source)
-        // when available.
         if (transport) {
           transport.emitResize(height);
         } else {
-          // Sol MAJOR-5 (final): the fallback resize (used only when the
-          // shared transport failed to construct) MUST carry the same
-          // correlation the transport enforces: `requestId` bound to the
-          // active request AND the negotiated `protocolVersion`.
           window.parent.postMessage(
-            {
-              type: 'openkey:resize',
-              height,
-              protocolVersion: messageProtocolVersion,
-              requestId: currentRequestId,
-            },
+            { type: 'openkey:resize', height, protocolVersion: messageProtocolVersion, requestId: currentRequestId },
             origin,
           );
         }
         return;
       }
-      // TC-647: no versioned request is bound (an unversioned
-      // `signMessage`, or bootstrap before the request arrives). Send a
-      // plain resize to the configured origin. The SDK applies it only on
-      // a modal with no versioned request and only from this iframe; a
-      // modal bound to a versioned request drops it.
       window.parent.postMessage({ type: 'openkey:resize', height }, origin);
-    });
-    observer.observe(contentEl);
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(content);
+    if (v2) {
+      const mutation = new MutationObserver(() => {
+        pendingLayoutAck = null;
+        layoutGate?.changed();
+        cancelAnimationFrame(frame);
+        clearTimeout(fallback);
+        // Hidden iframes can suspend rAF (and ResizeObserver delivery).
+        // A timer still measures the rendered review and starts the ACK gate.
+        frame = requestAnimationFrame(() => {
+          clearTimeout(fallback);
+          fallback = undefined;
+          measure();
+        });
+        fallback = setTimeout(() => {
+          cancelAnimationFrame(frame);
+          frame = 0;
+          fallback = undefined;
+          measure();
+        }, 150);
+      });
+      mutation.observe(content, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['open', 'class', 'style'] });
+      return () => {
+        observer.disconnect();
+        mutation.disconnect();
+        cancelAnimationFrame(frame);
+        clearTimeout(fallback);
+      };
+    }
     return () => observer.disconnect();
   });
 
-  // Reactively update loading state when session becomes available
   $effect(() => {
     if (isAuthenticated && !sessionChecked) {
       sessionChecked = true;
       loading = false;
     }
   });
-
-  // Reactively fetch key when session becomes available and we have a keyId
+  // Authentication and a prefetched key error can render before transport
+  // binds its request ID. Measure the current step after that binding so
+  // the hidden host frame always exposes Sign In or Cancel.
   $effect(() => {
-    if (isAuthenticated && keyId && !keyFetched && !key) {
-      keyFetched = true;
-      api.getKey(keyId).then(result => {
-        key = result.key;
-      }).catch(() => {
-        // Key not found
-      });
-    }
+    if (!v2 || !requestSealed || (isAuthenticated && !keyError)) return;
+    void tick().then(() => {
+      if ((isAuthenticated && !keyError) || !contentEl) return;
+      layoutGate?.measure(
+        Math.max(contentEl.scrollHeight, Math.ceil(contentEl.getBoundingClientRect().height)),
+        true,
+      );
+    });
   });
 
-  async function handleMessage(event: MessageEvent) {
+  $effect(() => {
+    const selectedId = keyId ?? phaseKeyId;
+    if (!isAuthenticated || !selectedId || (!v2 && !requestSealed) || keyFetched) return;
+    keyFetched = true;
+    const requestId = currentRequestId ?? phaseRequestId;
+    const token = getSessionToken();
+    const sessionId = inIframe ? null : $session.data?.session?.id;
+    keyReadToken = token;
+    keyReadSessionId = sessionId;
+    const generation = ++keyReadGeneration;
+    api.getKey(selectedId).then(({ key: found }) => {
+      if (generation !== keyReadGeneration || (keyId ?? phaseKeyId) !== selectedId ||
+          (currentRequestId ?? phaseRequestId) !== requestId) return;
+      if (
+        getSessionToken() !== token ||
+        (inIframe ? null : $session.data?.session?.id) !== sessionId ||
+        found.id !== selectedId
+      ) {
+        keyError = 'Selected key could not be loaded for this session.';
+        return;
+      }
+      // Detail endpoint is owner-scoped and selects only public columns.
+      key = {
+        id: found.id, address: found.address, publicKey: found.publicKey,
+        keyIndex: found.keyIndex, label: found.label, keyType: found.keyType,
+        createdAt: found.createdAt, archivedAt: found.archivedAt, isPrimary: found.isPrimary,
+      };
+      keyOwnerToken = token;
+      keyOwnerSessionId = sessionId ?? undefined;
+    }).catch(() => {
+      if (generation === keyReadGeneration && getSessionToken() === token) keyError = 'Selected key could not be loaded.';
+    });
+  });
+
+  function handleMessage(event: MessageEvent) {
+    if (v2) return;
     // Sol continuation contract: versioned messages are handled by the
     // shared transport (when a real origin is present). This listener only
     // handles the wildcard-origin compat path and unversioned legacy
@@ -281,8 +429,14 @@
         console.warn('[embed sign widget] refusing overlapping legacy request');
         return;
       }
+      keyReadGeneration++;
+      key = null;
+      keyOwnerToken = null;
+      keyOwnerSessionId = undefined;
+      keyError = '';
       message = event.data.message;
       messageProtocolVersion = incomingProtocolVersion;
+      authorizationProtocolVersion = incomingProtocolVersion;
       messageJwk = event.data.jwk ?? null;
       messageHost = typeof event.data.host === 'string' ? event.data.host : '';
       keyId = event.data.keyId || null;
@@ -295,15 +449,8 @@
       keyFetched = false;
       requestSealed = true;
 
-      if (keyId && isAuthenticated) {
-        try {
-          const result = await api.getKey(keyId);
-          key = result.key;
-          keyFetched = true;
-        } catch {
-          // Key not found
-        }
-      }
+      // The single reactive key loader handles legacy and versioned
+      // requests once the current authenticated session is available.
       // reviewModel is built by a $effect below (Sol MAJOR-8) that waits
       // for `key` to be loaded before rendering a review with the real
       // signer address.
@@ -317,10 +464,7 @@
       reviewModel = null;
       return;
     }
-    const canEdit =
-      messageProtocolVersion !== null &&
-      messageProtocolVersion >= 1 &&
-      origin !== '*';
+    const canEdit = authorizationProtocolVersion === 1 && origin !== '*';
     // Sol MAJOR-8: derive REAL origin/domain warning facts rather than
     // hard-coding them to false.
     let siweDomainForModel: string | null = null;
@@ -465,8 +609,7 @@
 
   function canUseAuthorizeSignFn(): boolean {
     return (
-      messageProtocolVersion !== null &&
-      messageProtocolVersion >= 1 &&
+      authorizationProtocolVersion === 1 &&
       origin !== '*' &&
       reviewModel !== null &&
       reviewModel.protocol === 'tinycloud-siwe-recap'
@@ -486,10 +629,28 @@
     return out;
   }
 
+  function currentKeyBelongsToSession(): boolean {
+    if (
+      isAuthenticated &&
+      key?.id === keyId &&
+      getSessionToken() === keyOwnerToken &&
+      (inIframe || $session.data?.session?.id === keyOwnerSessionId)
+    ) return true;
+    keyReadGeneration++;
+    key = null;
+    keyError = 'Signing session changed. Cancel and try again.';
+    layoutGate?.changed();
+    error = 'Signing session changed. Cancel and try again.';
+    return false;
+  }
+
   // Sol CRITICAL-1: preview step for iframe.
   async function requestPreview(): Promise<void> {
     if (!key || !message) return;
+    if (siweRefusal) return;
     if (!canUseAuthorizeSignFn()) return;
+    if (v2 && !layoutGate?.canApprove()) return;
+    if (!currentKeyBelongsToSession()) return;
     previewing = true;
     error = '';
     previewApproved = false;
@@ -511,6 +672,7 @@
               host: messageHost,
               presentation: requestPresentation ?? undefined,
               reportedOrigin: reportedOriginForPrepare,
+              requestOrigin: origin === '*' ? undefined : origin,
             }),
           },
         );
@@ -646,6 +808,12 @@
 
   async function approveAndSign() {
     if (!key || !message) return;
+    if (siweRefusal) {
+      error = siweRefusal.message;
+      return;
+    }
+    if (v2 && !layoutGate?.canApprove()) return;
+    if (!currentKeyBelongsToSession()) return;
     // Fail-closed: refuse to sign a malformed ReCap regardless of path.
     // Silently signing exact bytes for a decoded-to-nothing ReCap would
     // drop the caller's capability payload without their consent.
@@ -716,16 +884,15 @@
         return;
       }
 
-      // Legacy exact-byte path (no narrowing).
-      const result = await api.signMessage(key.id, message);
+      // Exact-byte signing cannot narrow the request: show every parsed
+      // action and report the full set rather than a UI-only selection.
+      const result = await api.signMessage(key.id, message, origin === '*' ? undefined : origin);
       const effectivePermissions = reviewModel
         ? reviewModel.permissions.map((grant) => ({
             service: grant.service,
             space: grant.space,
             path: grant.path,
-            actions: grant.actions
-              .filter((action) => reviewSelection.has(action.id))
-              .map((action) => action.ability),
+            actions: grant.actions.map((action) => action.ability),
           }))
         : undefined;
       sendResponse({
@@ -734,7 +901,9 @@
         signature: result.signature,
         address: result.address,
         signedMessage: message,
-        selectedActionKeys: reviewModel ? Array.from(reviewSelection) : undefined,
+        selectedActionKeys: reviewModel
+          ? reviewModel.permissions.flatMap((grant) => grant.actions.map((action) => action.id))
+          : undefined,
         permissions: effectivePermissions,
       });
       sendClose();
@@ -750,7 +919,31 @@
     previewApproved = false;
   }
 
+  // TC-1486: a SIWE-shaped message that does not name the verified requesting
+  // origin (or arrives unattributed) is never signed and has no override.
+  // Every signing path re-checks this; the server enforces it too.
+  const siweRefusal = $derived.by(() => {
+    if (!message) return null;
+    const check = checkSiweOrigin(message, origin);
+    return check.siwe && !check.ok ? check : null;
+  });
+  let refusalReported = false;
+  $effect(() => {
+    if (!siweRefusal || refusalReported) return;
+    refusalReported = true;
+    sendResponse({
+      type: 'openkey:sign:response',
+      success: false,
+      error: { code: 'UNKNOWN', message: `SIWE_ORIGIN_REFUSED: ${siweRefusal.code}` },
+    });
+  });
+
+  function closeRefused() {
+    sendClose();
+  }
+
   function cancel() {
+    keyReadGeneration++;
     sendResponse({
       type: 'openkey:sign:response',
       success: false,
@@ -832,7 +1025,9 @@
 
   <!-- Card body -->
   <div class="bg-white border border-surface-200 rounded-2xl shadow-sm p-5">
-    {#if !isAuthenticated}
+    {#if siweRefusal}
+      <SiweOriginRefusal reason={siweRefusal.message} code={siweRefusal.code} onclose={closeRefused} />
+    {:else if !isAuthenticated}
       <EmbeddedSignIn
         prompt="Sign in to review and sign this message"
         onauthenticated={() => { embedAuthenticated = true; }}
@@ -848,7 +1043,8 @@
       </div>
     {:else if !key}
       <div class="flex flex-col items-center justify-center text-center text-surface-500 py-4">
-        <p class="text-sm">Please connect first to sign messages.</p>
+        <p class="text-sm">{keyError || (requestSealed && keyFetched ? 'Loading selected key...' : 'Please connect first to sign messages.')}</p>
+        <Button variant="secondary" size="sm" class="rounded-xl" onclick={cancel}>Cancel</Button>
       </div>
     {:else if reviewModel}
       <!--
@@ -863,9 +1059,10 @@
       <IframeSigningAdapter
         model={reviewModel}
         initialSelection={reviewSelection}
+        layoutBlocked={v2 && !layoutReady}
         transport={{
           approving: signing || previewing,
-          error,
+          error: error || layoutError,
           canUseAuthorizeSign: canUseAuthorizeSignFn(),
           previewReady: Boolean(previewToken && previewSignedMessage && previewApprovalToken),
           requestPreview,

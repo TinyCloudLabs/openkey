@@ -17,7 +17,9 @@ import { passkeyProxyRouter } from './routes/passkey-proxy';
 import { secretsRouter } from './routes/secrets';
 import { variablesRouter } from './routes/variables';
 import { delegateRouter } from './routes/delegate';
+import { preparedHandoffRouter } from './routes/prepared-handoffs';
 import { internalMetricsRouter } from './routes/internal-metrics';
+import { scoreboardMetricsRouter } from './routes/scoreboard-metrics';
 import { organizationsRouter } from './routes/organizations';
 import { tenantConsoleRouter } from './routes/tenant-console';
 import { deviceAuthorizationRouter } from './routes/device-authorization';
@@ -199,12 +201,15 @@ app.route('/api/admin/oauth', oauthAdminRouter);
 
 // Internal metrics route (protected by INTERNAL_METRICS_TOKEN)
 app.route('/api/internal/metrics', internalMetricsRouter);
+// Counts-only scoreboard metrics (protected by OPENKEY_METRICS_READ_TOKEN)
+app.route('/api/internal/scoreboard', scoreboardMetricsRouter);
 
 // Secrets and variables routes (TinyCloud-backed)
 app.route('/api/secrets', secretsRouter);
 app.route('/api/variables', variablesRouter);
 
 // Delegate route (CLI auth flow)
+app.route('/api/delegate/handoffs', preparedHandoffRouter);
 app.route('/api/delegate', delegateRouter);
 app.route('/api/oauth/tinycloud/requests', createNativeDelegationConsentRouter(authPrisma));
 app.route('/api/oauth/tinycloud', createOauthBrandingRouter(authPrisma));

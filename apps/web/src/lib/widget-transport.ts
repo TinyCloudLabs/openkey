@@ -54,10 +54,14 @@ export interface WidgetTransportOptions {
    * such messages silently.
    */
   onInvalid?: (reason: InvalidReason, event: MessageEvent) => void;
+  /** V2 only: acknowledged height/revision from the exact parent frame. */
+  onLayoutApplied?: (height: number, layoutId: number) => void;
   /**
    * Optional protocol version override. Defaults to 1.
    */
   protocolVersion?: number;
+  /** V2 iframe phase identity supplied by the URL, before the request arrives. */
+  requestId?: string;
 }
 
 export type InvalidReason =
@@ -74,14 +78,16 @@ export type InvalidReason =
   // Close/resize messages must also correlate to the same protocol
   // version and must not carry unknown/incorrect discriminants.
   | "invalid-close"
-  | "invalid-resize";
+  | "invalid-resize"
+  | "invalid-layout";
 
 export type WidgetMessageType =
   | "openkey:ready"
   | "openkey:sign:request"
   | "openkey:sign:response"
   | "openkey:close"
-  | "openkey:resize";
+  | "openkey:resize"
+  | "openkey:layout-applied";
 
 /**
  * Well-formed sign request as delivered to the widget. The transport
@@ -133,7 +139,9 @@ export interface WidgetTransport {
   /** Send a response to a completed request. */
   respond: (response: WidgetResponse) => void;
   /** Broadcast a new content height (iframe resize hook). */
-  emitResize: (height: number) => void;
+  emitResize: (height: number, layoutId?: number) => void;
+  /** V2-only layout freeze/invalidation signalling for the host. */
+  emitLayoutSignal: (ready: boolean, layoutId: number) => void;
   /** Close the channel (caller-side cleanup). */
   destroy: () => void;
 }
@@ -162,6 +170,9 @@ export function createWidgetTransport(opts: WidgetTransportOptions): WidgetTrans
     );
   }
   const protocolVersion = opts.protocolVersion ?? 1;
+  if (protocolVersion === 2 && (!opts.requestId || opts.container !== "iframe")) {
+    throw new Error("V2 iframe transport requires the URL phase requestId.");
+  }
 
   // Sol MAJOR-4 (continuation): track the current active request so we can
   // correlate close messages to it. Set when a well-formed sign request
@@ -182,6 +193,21 @@ export function createWidgetTransport(opts: WidgetTransportOptions): WidgetTrans
     const data = event.data;
     if (!data || typeof data !== "object") return;
     const type = (data as { type?: unknown }).type;
+    if (type === "openkey:layout-applied" && protocolVersion === 2) {
+      const ack = data as Record<string, unknown>;
+      if (
+        ack.requestId !== opts.requestId ||
+        ack.requestId !== activeRequestId ||
+        ack.protocolVersion !== 2 ||
+        typeof ack.height !== "number" || !Number.isFinite(ack.height) || ack.height <= 0 ||
+        typeof ack.layoutId !== "number" || !Number.isSafeInteger(ack.layoutId) || ack.layoutId < 1
+      ) {
+        opts.onInvalid?.("invalid-layout", event);
+        return;
+      }
+      opts.onLayoutApplied?.(ack.height, ack.layoutId);
+      return;
+    }
     if (type !== "openkey:sign:request" && type !== "openkey:close") {
       opts.onInvalid?.("unknown-message-type", event);
       return;
@@ -225,6 +251,10 @@ export function createWidgetTransport(opts: WidgetTransportOptions): WidgetTrans
       opts.onInvalid?.("wrong-protocol-version", event);
       return;
     }
+    if (protocolVersion === 2 && requestId !== opts.requestId) {
+      opts.onInvalid?.("invalid-payload", event);
+      return;
+    }
     // Sol MAJOR-8: runtime-validate the sign-request payload before
     // handing it to the handler. Unknown/malformed fields make the
     // widget refuse to render — we do NOT let the handler run against
@@ -249,6 +279,13 @@ export function createWidgetTransport(opts: WidgetTransportOptions): WidgetTrans
       return;
     }
     if (payload.host !== undefined && typeof payload.host !== "string") {
+      opts.onInvalid?.("invalid-payload", event);
+      return;
+    }
+    if (
+      payload.authorizationProtocolVersion !== undefined &&
+      payload.authorizationProtocolVersion !== 1
+    ) {
       opts.onInvalid?.("invalid-payload", event);
       return;
     }
@@ -380,7 +417,12 @@ export function createWidgetTransport(opts: WidgetTransportOptions): WidgetTrans
       // The parent may lock this down further by expecting an origin here
       // too; the ready message carries no privileged data but MUST still
       // go to the configured origin (never "*").
-      expectedWindow.postMessage({ type: "openkey:ready", protocolVersion }, opts.origin);
+      expectedWindow.postMessage(
+        protocolVersion === 2
+          ? { type: "openkey:ready", protocolVersion, requestId: opts.requestId }
+          : { type: "openkey:ready", protocolVersion },
+        opts.origin,
+      );
     },
     respond(response) {
       // Sol MAJOR-4 (continuation): clear active-request tracking after
@@ -414,7 +456,7 @@ export function createWidgetTransport(opts: WidgetTransportOptions): WidgetTrans
         );
       }
     },
-    emitResize(height) {
+    emitResize(height, layoutId) {
       // Sol final continuation contract requirement 5: resize messages MUST
       // correlate to the active request AND to the widget's protocol
       // version. A resize event that lacks the current `requestId` (or that
@@ -430,12 +472,29 @@ export function createWidgetTransport(opts: WidgetTransportOptions): WidgetTrans
         // arrives.
         return;
       }
+      if (
+        protocolVersion === 2 &&
+        (typeof layoutId !== "number" || !Number.isSafeInteger(layoutId) || layoutId < 1)
+      ) return;
       expectedWindow.postMessage(
         {
           type: "openkey:resize",
           height,
           protocolVersion,
           requestId: activeRequestId,
+          ...(protocolVersion === 2 ? { layoutId } : {}),
+        },
+        opts.origin,
+      );
+    },
+    emitLayoutSignal(ready, layoutId) {
+      if (protocolVersion !== 2 || activeRequestId === null) return;
+      expectedWindow.postMessage(
+        {
+          type: ready ? "openkey:layout-ready" : "openkey:layout-invalidated",
+          protocolVersion,
+          requestId: activeRequestId,
+          layoutId,
         },
         opts.origin,
       );
@@ -443,6 +502,101 @@ export function createWidgetTransport(opts: WidgetTransportOptions): WidgetTrans
     destroy() {
       window.removeEventListener("message", handler);
     },
+  };
+}
+
+export interface IframeLayoutGate {
+  canApprove: () => boolean;
+  isCurrent: (layoutId: number) => boolean;
+  changed: () => void;
+  measure: (height: number, reviewVisible: boolean) => void;
+  applied: (height: number, layoutId: number) => void;
+  destroy: () => void;
+}
+
+/**
+ * Embedded v2 consent only becomes actionable after the parent has applied
+ * the exact measured revision and the rendered review has stopped changing.
+ */
+export function createIframeLayoutGate(
+  emitResize: (height: number, layoutId: number) => void,
+  onReady: (ready: boolean, layoutId: number) => void,
+  onTimeout?: () => void,
+): IframeLayoutGate {
+  let height = 0;
+  let layoutId = 0;
+  let applied = false;
+  let visible = false;
+  let ready = false;
+  let stable = false;
+  let timer: NodeJS.Timeout | undefined;
+  let timeoutTimer: NodeJS.Timeout | undefined;
+  let timedOut = false;
+
+  function setReady(next: boolean) {
+    if (ready !== next) {
+      ready = next;
+      onReady(next, layoutId);
+    }
+  }
+  function clear() {
+    clearTimeout(timer);
+    clearTimeout(timeoutTimer);
+    timeoutTimer = undefined;
+    timer = undefined;
+    stable = false;
+    applied = false;
+    setReady(false);
+  }
+  function check() {
+    if (visible && stable && applied && !timedOut && height > 0) {
+      clearTimeout(timeoutTimer);
+      timeoutTimer = undefined;
+      setReady(true);
+    }
+  }
+  return {
+    isCurrent: (candidateId) => visible && !timedOut && height > 0 && candidateId === layoutId,
+    canApprove: () => ready,
+    changed() {
+      clear();
+      height = 0;
+      visible = false;
+    },
+    measure(nextHeight: number, reviewVisible: boolean) {
+      if (timedOut) return;
+      if (!reviewVisible || !Number.isFinite(nextHeight) || nextHeight <= 0) {
+        clear();
+        visible = false;
+        return;
+      }
+      if (ready && nextHeight === height) return;
+      if (nextHeight === height && visible && timer !== undefined) return;
+      if (nextHeight === height && visible && stable) return;
+      clear();
+      height = nextHeight;
+      visible = true;
+      layoutId += 1;
+      emitResize(height, layoutId);
+      timeoutTimer = setTimeout(() => {
+        timeoutTimer = undefined;
+        timedOut = true;
+        clearTimeout(timer);
+        timer = undefined;
+        onTimeout?.();
+      }, 5000);
+      timer = setTimeout(() => {
+        timer = undefined;
+        stable = true;
+        check();
+      }, 100);
+    },
+    applied(nextHeight: number, nextLayoutId: number) {
+      if (!Number.isFinite(nextHeight) || nextHeight <= 0 || nextLayoutId !== layoutId) return;
+      applied = true;
+      check();
+    },
+    destroy: clear,
   };
 }
 

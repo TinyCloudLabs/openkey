@@ -9,6 +9,45 @@
         document.documentElement.style.background = '#09090b';
         document.documentElement.style.colorScheme = 'dark';
       }
+      // The CLI approval request lives in the fragment, never the HTTP
+      // request. Scrub before page code can observe it. Keep only tab-scoped
+      // data across auth navigation, with an expiry timer in every document.
+      {
+        const pendingKey = 'openkey.delegate.tv2.pending';
+        if (location.pathname === '/delegate' && location.hash.startsWith('#tv')) {
+          const fragment = location.hash;
+          history.replaceState(history.state, '', location.pathname);
+          document.documentElement.dataset.preparedHandoff = '1';
+          try {
+            sessionStorage.setItem(pendingKey, fragment);
+            history.replaceState(history.state, '', location.pathname + '?transportVersion=2');
+          } catch {
+            try { sessionStorage.removeItem(pendingKey); } catch { /* Fail closed below even if storage is unavailable. */ }
+            history.replaceState(history.state, '', location.pathname + '?transportVersion=storage-error');
+            document.documentElement.dataset.preparedHandoffStorageError = '1';
+          }
+        }
+        try {
+          const stored = sessionStorage.getItem(pendingKey);
+          if (stored && stored.startsWith('#tv2=') && stored.length <= 8192) {
+            const bytes = Uint8Array.from(atob(stored.slice(5).replace(/-/g, '+').replace(/_/g, '/')), char => char.charCodeAt(0));
+            const request = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+            const issuedAt = /^Issued At:[ \t]*(.+)$/m.exec(request.request.siwe)?.[1]?.trim();
+            const expiresAt = Date.parse(issuedAt || '') + 300_000;
+            if (Number.isFinite(expiresAt)) {
+              const clearIfCurrent = () => {
+                try { if (sessionStorage.getItem(pendingKey) === stored) sessionStorage.removeItem(pendingKey); }
+                catch { /* The approval page also checks expiry before claiming. */ }
+              };
+              if (expiresAt <= Date.now()) {
+                if (location.pathname !== '/delegate') clearIfCurrent();
+              } else {
+                setTimeout(clearIfCurrent, expiresAt - Date.now());
+              }
+            }
+          }
+        } catch { /* Malformed requests are rejected and cleared by /delegate. */ }
+      }
     </script>
     <link rel="icon" href="%sveltekit.assets%/favicon.ico" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />

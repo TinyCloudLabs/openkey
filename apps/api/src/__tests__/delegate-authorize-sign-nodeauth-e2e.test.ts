@@ -177,7 +177,7 @@ describe('OpenKey ↔ NodeUserAuthorization e2e', () => {
     const prepRes = await router.request('/authorize-sign-prepare', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ keyId: keyRecord.id, siwe, jwk, host: 'https://node.tinycloud.xyz' }),
+      body: JSON.stringify({ keyId: keyRecord.id, siwe, jwk, host: 'https://node.tinycloud.xyz', requestOrigin: 'https://example.com' }),
     });
     expect(prepRes.status).toBe(200);
     const prepBody = await prepRes.json() as any;
@@ -249,7 +249,7 @@ describe('OpenKey ↔ NodeUserAuthorization e2e', () => {
     const prepRes = await router.request('/authorize-sign-prepare', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ keyId: keyRecord.id, siwe, jwk, host: 'https://node.tinycloud.xyz' }),
+      body: JSON.stringify({ keyId: keyRecord.id, siwe, jwk, host: 'https://node.tinycloud.xyz', requestOrigin: 'https://example.com' }),
     });
     expect(prepRes.status).toBe(200);
     const prepBody = await prepRes.json() as any;
@@ -333,7 +333,7 @@ describe('OpenKey ↔ NodeUserAuthorization e2e', () => {
     const prepRes = await router.request('/authorize-sign-prepare', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ keyId: keyRecord.id, siwe, jwk, host: 'https://node.tinycloud.xyz' }),
+      body: JSON.stringify({ keyId: keyRecord.id, siwe, jwk, host: 'https://node.tinycloud.xyz', requestOrigin: 'https://example.com' }),
     });
     const prepBody = await prepRes.json() as any;
     const previewRes = await router.request('/authorize-sign-preview', {
@@ -425,7 +425,7 @@ describe('OpenKey ↔ NodeUserAuthorization e2e', () => {
     const prepRes = await router.request('/authorize-sign-prepare', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ keyId: keyRecord.id, siwe, jwk, host: 'https://node.tinycloud.xyz' }),
+      body: JSON.stringify({ keyId: keyRecord.id, siwe, jwk, host: 'https://node.tinycloud.xyz', requestOrigin: 'https://example.com' }),
     });
     const prepBody = await prepRes.json() as any;
     const previewRes = await router.request('/authorize-sign-preview', {

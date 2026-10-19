@@ -174,7 +174,7 @@ Users authenticate once with OpenKey, then your app receives:
 |----------|-------------|
 | `POST /api/keys/generate` | Create new Ethereum key |
 | `GET /api/keys` | List user's keys |
-| `POST /api/keys/:id/sign` | Sign a message |
+| `POST /api/keys/:id/sign` | Sign a message. A SIWE (EIP-4361) message is signed only if `requestOrigin` (the verified origin of the asking site) equals its domain and URI origin; otherwise `403 siwe_origin_refused`. Non-SIWE messages are unchanged. |
 | `POST /api/keys/:id/sign-typed-data` | Sign EIP-712 typed data |
 | `GET /api/keys/:id/quote` | Get TEE attestation |
 
@@ -211,7 +211,8 @@ OpenKey is designed to run on:
 - **API**: Phala dstack (TEE-secured compute)
 - **Web**: Cloudflare Pages
 
-See [docs/deployment.md](docs/deployment.md) for deployment instructions.
+See [docs/deployment.md](docs/deployment.md) for deployment instructions and
+[docs/releases.md](docs/releases.md) for where npm, GitHub Releases and Deployments show up.
 
 ## Tech Stack
 

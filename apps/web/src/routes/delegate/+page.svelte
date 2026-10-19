@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
+  import { afterNavigate } from '$app/navigation';
   import { page } from '$app/stores';
   import { authClient, authErrorMessage } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
@@ -7,6 +9,7 @@
   import Card from '$lib/components/ui/card.svelte';
   import SiweMessage from '$lib/components/ui/siwe-message.svelte';
   import CliSigningAdapter from '$lib/components/signing/cli-signing-adapter.svelte';
+  import PreparedHandoff from './PreparedHandoff.svelte';
   import DeviceRequestNotice from '$lib/components/device/device-request-notice.svelte';
   import { approvedDevicePermissions, cleanConsentText, delegationPasteCode, readDelegatePermissionsParam, deviceRequestReason, loadVerifiedDeviceRequest } from '$lib/device-authorization';
   import DelegateLinkNotice from '$lib/components/delegate/delegate-link-notice.svelte';
@@ -108,6 +111,71 @@
   let linking = $state(false);
 
   // Parse query params
+  const preparedTransport = $page.url.searchParams.has('transportVersion');
+  let preparedStorageError = $state($page.url.searchParams.get('transportVersion') === 'storage-error');
+  let dispatchReady = $state(false);
+  let preparedMode = $state(false);
+  let preparedFragment = $state('');
+  let reloadingFragment = false;
+  function captureClientFragment(): boolean {
+    if (reloadingFragment) return true;
+    if (!location.hash.startsWith('#tv')) return false;
+    reloadingFragment = true;
+    dispatchReady = false;
+    const fragment = location.hash;
+    // The document-head bootstrap does not run during SvelteKit navigation.
+    // Scrub before persisting, then reload so the existing auth continuation
+    // starts without ever entering the legacy delegation branch.
+    history.replaceState(history.state, '', location.pathname);
+    try {
+      sessionStorage.setItem('openkey.delegate.tv2.pending', fragment);
+    } catch {
+      try { sessionStorage.removeItem('openkey.delegate.tv2.pending'); } catch { /* No stale request is resumed from the error route. */ }
+      delete document.documentElement.dataset.preparedHandoff;
+      history.replaceState(history.state, '', `${location.pathname}?transportVersion=storage-error`);
+      location.reload();
+      return true;
+    }
+    history.replaceState(history.state, '', `${location.pathname}?transportVersion=2`);
+    location.reload();
+    return true;
+  }
+  function dispatchClientNavigation(): boolean {
+    if (captureClientFragment()) return true;
+    if (location.search === '?transportVersion=storage-error') {
+      preparedStorageError = true;
+      try { sessionStorage.removeItem('openkey.delegate.tv2.pending'); } catch { /* The error route cannot claim a stale request. */ }
+      delete document.documentElement.dataset.preparedHandoff;
+      return false;
+    }
+    // The bare route is the only auth return that resumes tab-scoped v2.
+    // A newly opened explicit legacy link wins over an older pending request.
+    if (!location.search || location.search === '?transportVersion=2') return false;
+    let stored: string | null = null;
+    try { stored = sessionStorage.getItem('openkey.delegate.tv2.pending'); } catch { /* No persistent fallback. */ }
+    if (stored === null && !preparedMode && document.documentElement.dataset.preparedHandoff !== '1') return false;
+    try { sessionStorage.removeItem('openkey.delegate.tv2.pending'); } catch { /* No persistent fallback. */ }
+    delete document.documentElement.dataset.preparedHandoff;
+    dispatchReady = false;
+    // Reinitialize the legacy query-bound state even for same-route SPA links.
+    location.reload();
+    return true;
+  }
+  afterNavigate(() => { if (typeof window !== 'undefined') dispatchClientNavigation(); });
+  onMount(() => {
+    if (dispatchClientNavigation()) return;
+    const onHashChange = () => { dispatchClientNavigation(); };
+    window.addEventListener('hashchange', onHashChange);
+    if (document.documentElement.dataset.preparedHandoffStorageError === '1') preparedStorageError = true;
+    let stored: string | null = null;
+    try { stored = sessionStorage.getItem('openkey.delegate.tv2.pending'); } catch { /* The approval page reports unavailable tab storage. */ }
+    if (!preparedStorageError && (document.documentElement.dataset.preparedHandoff === '1' || stored !== null)) {
+      preparedMode = true;
+      preparedFragment = stored ?? '';
+    }
+    dispatchReady = true;
+    return () => window.removeEventListener('hashchange', onHashChange);
+  });
   const did = $page.url.searchParams.get('did') || '';
   const jwkB64 = $page.url.searchParams.get('jwk') || '';
   const callback = $page.url.searchParams.get('callback') || '';
@@ -364,7 +432,7 @@
 
   // Reactively load keys when session becomes available
   $effect(() => {
-    if ($session.data && !keysLoaded) {
+    if (dispatchReady && !preparedMode && !preparedTransport && !preparedStorageError && $session.data && !keysLoaded) {
       keysLoaded = true;
       loadKeys();
     }
@@ -387,7 +455,7 @@
   // 'select-key' step so revisiting the picker (Back, link-wallet round-trip)
   // doesn't trap the user in an auto-advance loop.
   $effect(() => {
-    if (loading || preselectAttempted) return;
+    if (!dispatchReady || preparedMode || preparedTransport || preparedStorageError || loading || preselectAttempted) return;
     if (step !== 'select-key') return;
     preselectAttempted = true;
     const match = autoSelectKey(keys, expectedAddress);
@@ -1126,6 +1194,15 @@
   }
 </script>
 
+{#if !dispatchReady && !preparedTransport}
+  <div role="status" class="min-h-screen flex items-center justify-center">Loading delegation request…</div>
+{:else if preparedStorageError}
+  <div role="alert" class="min-h-screen flex items-center justify-center">Couldn't save this request. Restart the CLI command.</div>
+{:else if preparedMode}
+  <PreparedHandoff encoded={preparedFragment} onClear={() => { preparedFragment = ''; }} />
+{:else if preparedTransport}
+  <div role="alert" class="min-h-screen flex items-center justify-center">Unsupported delegate transport version. Restart the CLI command.</div>
+{:else}
 <div class="min-h-screen bg-[#fafafa] flex flex-col items-center justify-center px-4 py-8">
   <div class="w-full max-w-sm flex flex-col items-center gap-6">
     <!-- Logo mark -->
@@ -1629,3 +1706,4 @@
     </div>
   </div>
 </div>
+{/if}

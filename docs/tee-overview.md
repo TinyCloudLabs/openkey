@@ -164,10 +164,14 @@ function createProductionClient(): TeeClient {
       const result = await client.getKey(path);
       return sha256(result.key);
     },
-    async getQuote(data: string): Promise<string> {
+    async getQuote(binding: string): Promise<TeeQuote> {
+      // REPORTDATA holds 64 bytes: quote SHA-256(binding), zero-padded by dstack
+      const digest = sha256(binding);
       const client = await getDstackClient();
-      const result = await client.getQuote(data);
-      return result.quote;
+      const result = await client.getQuote(digest);
+      // reject unless the echoed report_data AND the quote's own REPORTDATA
+      // (TDX v4: bytes 568..632) both equal digest || 32 zero bytes
+      return { quote: result.quote, eventLog: result.event_log, reportDataSha256: hex(digest) };
     },
     isInTee: () => true,
   };
@@ -182,8 +186,8 @@ function createMockClient(): TeeClient {
       // SHA256(devKey + path) - deterministic for testing
       return sha256(devKey + path);
     },
-    async getQuote(_data: string): Promise<string> {
-      return 'mock-tdx-quote-for-development';
+    async getQuote(binding: string): Promise<TeeQuote> {
+      return { quote: 'mock-tdx-quote-for-development', eventLog: '[]', reportDataSha256: hex(sha256(binding)) };
     },
     isInTee: () => false,
   };
@@ -240,18 +244,73 @@ unrecoverable, so it is frozen (TC-964):
 
 ### Attestation Endpoint
 
-Clients can verify a key is in a real TEE:
+`GET /api/keys/:keyId/quote[?nonce=<hex>]` (signed-in session, own managed
+key) returns a quote binding the key's address to the measured OpenKey code.
 
 ```typescript
-// GET /keys/:keyId/quote
-const quote = await tee.getQuote(JSON.stringify({
+// nonce: optional, 16-64 bytes as lowercase hex, else 400 invalid_nonce
+// EXTERNAL (linked-wallet) keys: 400, never quoted
+// Custody: unseal the key in the TEE; if its address is not key.address → 503
+const binding = JSON.stringify({
+  type: 'openkey.key-quote',
+  version: 1,
+  nonce,                            // caller's nonce, or null
   address: key.address,
-  userId: user.id,
   timestamp: Date.now(),
-}));
+});
+const quote = await tee.getQuote(binding); // 503 quote_unavailable if it throws
 
-return { quote, isInTee: tee.isInTee() };
+return {
+  quote: quote.quote,               // hex TDX quote
+  eventLog: quote.eventLog,         // for RTMR replay
+  binding,                          // the exact preimage
+  bindingSha256: quote.reportDataSha256,
+  address: key.address,
+  inTee: tee.isInTee(),
+};
 ```
+
+A 200 means: code with this measurement unsealed the private key for
+`address` and asked dstack to quote SHA-256 of `binding`. dstack quotes at most
+64 bytes of report data, which is why the binding is hashed.
+
+**OpenKey checks the binding is present; you must verify the quote.** Before
+answering 200, the production client requires the guest agent's echoed
+`report_data` and the quote's own REPORTDATA field (TDX v4: 48-byte header,
+then TD report body offset 520; Intel TDX DCAP Quoting Library API, Appendix
+A, "Version 4 Quote Format") to equal `bindingSha256` followed by 32 zero
+bytes. That is a structural check only: OpenKey does not verify the quote's
+signature, certificate chain or TCB status.
+`packages/tee/tests/dstack-quote.test.ts` covers the contract against a fake
+guest agent.
+
+To verify a response:
+
+1. Send a fresh random nonce. Without one, the quote proves only that measured
+   code produced the binding at some unknown time: it can be replayed, and
+   `timestamp` is host-controlled time that the quote does not authenticate.
+2. Verify the quote (dstack-verifier or Intel DCAP) and require an acceptable
+   TCB status, such as `UpToDate`. A good TCB status is not enough on its own.
+3. Check the TD report body yourself, since quote verification does not
+   apply relying-party policy (Intel TDX DCAP Quoting Library API, §2.3.2 and
+   Appendix A.3.4): TDATTRIBUTES must have the debug bit (TUD) clear, because
+   a debug TD's memory is readable by the host, and must carry the attributes
+   the approved dstack OS configuration expects.
+4. Check MRTD and RTMR0-2 against the published dstack OS image for the
+   deployed version.
+5. Replay `eventLog` to RTMR3. Its `compose-hash` is SHA-256 of the full
+   app-compose JSON that dstack deployed, not of `docker-compose.prod.yml`
+   alone; it embeds the compose file with runner settings and `allowed_envs`.
+   Compare it with a trusted expected hash of that exact manifest (computed as
+   in the pinned SDK's `getComposeHash`), then check the manifest's embedded
+   compose file pins the expected image digests. Its `app-id` and
+   `key-provider` must be OpenKey's.
+6. Read REPORTDATA from the verified quote, not the JSON: it must equal
+   SHA-256 of the UTF-8 `binding` followed by 32 zero bytes. `bindingSha256`
+   is a convenience.
+7. `JSON.parse(binding)` must have `type === 'openkey.key-quote'`,
+   `version === 1`, your nonce and the expected `address`.
+8. Reject `inTee: false` and the development mock quote.
 
 ### Environment Configuration
 

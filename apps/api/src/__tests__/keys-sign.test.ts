@@ -391,4 +391,121 @@ describe('keysRouter managed signing', () => {
     resolveBootstrap({ status: 'complete' });
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
+  describe('TC-1486 SIWE origin guard', () => {
+    const siwe = (domain: string, uri: string) => [
+      `${domain} wants you to sign in with your Ethereum account:`,
+      address,
+      '',
+      'Sign in',
+      '',
+      `URI: ${uri}`,
+      'Version: 1',
+      'Chain ID: 1',
+      'Nonce: abcdef12345678',
+      'Issued At: 2026-10-19T00:00:00.000Z',
+    ].join('\n');
+    const internal = 'https://internal.tinycloud.xyz';
+    const hex = (text: string) => `0x${Buffer.from(text, 'utf8').toString('hex')}`;
+
+    async function sign(body: Record<string, unknown>) {
+      const router = await keysRouter();
+      return router.request('/key_1/sign', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    }
+
+    function expectNothingSigned() {
+      expect(calls).toEqual([]);
+      expect(unseal).not.toHaveBeenCalled();
+      expect(ensureTinyCloudBootstrapForApprovedSign).not.toHaveBeenCalled();
+    }
+
+    test('a SIWE naming the requesting origin signs', async () => {
+      const response = await sign({ message: siwe('internal.tinycloud.xyz', internal), requestOrigin: internal });
+      expect(response.status).toBe(200);
+      expect(calls).toEqual(['bootstrap', 'sign']);
+    });
+
+    test('a mismatched domain is refused before the key is unsealed', async () => {
+      const response = await sign({ message: siwe('internal.tinycloud.xyz', internal), requestOrigin: 'https://evil.example' });
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({ code: 'siwe_origin_refused', reason: 'domain-mismatch' });
+      expectNothingSigned();
+    });
+
+    test('a mismatched URI with a matching domain is refused', async () => {
+      const response = await sign({ message: siwe('internal.tinycloud.xyz', 'https://evil.example'), requestOrigin: internal });
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({ reason: 'uri-mismatch' });
+      expectNothingSigned();
+    });
+
+    test('a SIWE with no verified origin is refused', async () => {
+      for (const requestOrigin of [undefined, '*', '']) {
+        const response = await sign({ message: siwe('internal.tinycloud.xyz', internal), requestOrigin });
+        expect(response.status).toBe(403);
+        await expect(response.json()).resolves.toMatchObject({ reason: 'unattributed-origin' });
+      }
+      expectNothingSigned();
+    });
+
+    test('SIWE text hidden in a hex message is refused for both formats', async () => {
+      const message = hex(siwe('internal.tinycloud.xyz', internal));
+      for (const format of ['raw', 'personal_sign']) {
+        const response = await sign({ message, format, requestOrigin: 'https://evil.example' });
+        expect(response.status).toBe(403);
+      }
+      expectNothingSigned();
+    });
+
+    test('a non-string message is rejected with 400 before anything is unsealed', async () => {
+      for (const message of [[104, 105], { raw: hex(siwe('internal.tinycloud.xyz', internal)) }, 5, null]) {
+        for (const format of ['raw', 'personal_sign']) {
+          const response = await sign({ message, format, requestOrigin: internal });
+          expect(response.status).toBe(400);
+        }
+      }
+      expectNothingSigned();
+    });
+
+    test('raw input that is not even-length 0x hex is rejected with 400', async () => {
+      for (const message of ['hello', '0xabc', '0xzz']) {
+        const response = await sign({ message, format: 'raw' });
+        expect(response.status).toBe(400);
+      }
+      expectNothingSigned();
+    });
+
+    test('valid 0x hex of a foreign-domain SIWE is refused as raw', async () => {
+      const response = await sign({ message: hex(siwe('internal.tinycloud.xyz', internal)), format: 'raw', requestOrigin: 'https://evil.example' });
+      expect(response.status).toBe(403);
+      expectNothingSigned();
+    });
+
+    test('a ucan: URI SIWE signs when the domain matches and is refused when it does not', async () => {
+      const message = siwe('account.tinycloud.xyz', 'ucan:bafyreib2rxk3rybk3aobmv5cjuql3bm2twh4jo5uxgf5kpqcsgzz7nazxe');
+      const ok = await sign({ message, requestOrigin: 'https://account.tinycloud.xyz' });
+      expect(ok.status).toBe(200);
+      calls.length = 0;
+      const refused = await sign({ message, requestOrigin: 'https://evil.example' });
+      expect(refused.status).toBe(403);
+      await expect(refused.json()).resolves.toMatchObject({ reason: 'domain-mismatch' });
+    });
+
+    test('a web origin cannot claim openkey.so', async () => {
+      const message = siwe('openkey.so', 'did:key:z6Mk');
+      const response = await sign({ message, requestOrigin: 'https://attacker.example' });
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({ reason: 'domain-mismatch' });
+      expectNothingSigned();
+    });
+
+    test('a non-SIWE message signs without any origin', async () => {
+      const response = await sign({ message: 'just a plain message' });
+      expect(response.status).toBe(200);
+      expect(calls).toEqual(['bootstrap', 'sign']);
+    });
+  });
 });

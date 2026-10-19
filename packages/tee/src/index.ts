@@ -4,8 +4,62 @@ import { createHash, createCipheriv, createDecipheriv, randomBytes } from 'crypt
 // Types
 export interface TeeClient {
   deriveKey(path: string): Promise<Uint8Array>;
-  getQuote(data: string): Promise<string>;
+  /**
+   * Quote SHA-256 of `binding` (UTF-8). TDX REPORTDATA holds 64 bytes, so the
+   * quote carries the 32-byte digest followed by 32 zero bytes.
+   */
+  getQuote(binding: string): Promise<TeeQuote>;
   isInTee(): boolean;
+}
+
+export interface TeeQuote {
+  /** Hex TDX quote. */
+  quote: string;
+  /** dstack event log (JSON), for RTMR replay. */
+  eventLog: string;
+  /** Hex SHA-256 of the binding: the first 32 bytes of the quote's REPORTDATA. */
+  reportDataSha256: string;
+}
+
+/**
+ * A dstack answer that is not a quote over the binding's digest. `code` (an
+ * allowlisted log field) separates a quote we can't parse from one over
+ * other report data.
+ */
+class QuoteBindingError extends Error {
+  constructor(
+    message: string,
+    readonly code: 'quote_report_data_mismatch' | 'quote_format_invalid' = 'quote_report_data_mismatch',
+  ) {
+    super(message);
+  }
+}
+
+// TDX quote layout, Intel TDX DCAP Quoting Library API, Appendix A ("Version
+// 4 Quote Format"): a 48-byte header (version u16 LE at 0, TEE type u32 LE at
+// 4, 0x81 for TDX), the 584-byte TD Quote Body, then a u32 LE signature-data
+// length and that many bytes. REPORTDATA is the last 64 bytes of the body
+// (body offset 520). dstack emits version 4 quotes.
+const QUOTE_HEADER_LENGTH = 48;
+const TD_QUOTE_BODY_LENGTH = 584;
+const TD_REPORT_DATA_OFFSET = QUOTE_HEADER_LENGTH + 520;
+
+/**
+ * The REPORTDATA of a structurally complete TDX v4 quote. Checks layout only;
+ * it does not verify the quote's signature or certificates.
+ */
+function quoteReportData(quote: Buffer): Buffer {
+  const signatureLengthAt = QUOTE_HEADER_LENGTH + TD_QUOTE_BODY_LENGTH;
+  if (quote.length < signatureLengthAt + 4) {
+    throw new QuoteBindingError(`dstack quote is truncated (${quote.length} bytes)`, 'quote_format_invalid');
+  }
+  if (quote.readUInt16LE(0) !== 4 || quote.readUInt32LE(4) !== 0x81) {
+    throw new QuoteBindingError('dstack quote is not a TDX version 4 quote', 'quote_format_invalid');
+  }
+  if (quote.length - (signatureLengthAt + 4) < quote.readUInt32LE(signatureLengthAt)) {
+    throw new QuoteBindingError('dstack quote signature data is truncated', 'quote_format_invalid');
+  }
+  return quote.subarray(TD_REPORT_DATA_OFFSET, TD_REPORT_DATA_OFFSET + 64);
 }
 
 export interface DeriveKeyResult {
@@ -78,10 +132,25 @@ function createProductionClient(): TeeClient {
       return new Uint8Array(hash);
     },
 
-    async getQuote(data: string): Promise<string> {
+    async getQuote(binding: string): Promise<TeeQuote> {
+      const digest = createHash('sha256').update(binding, 'utf8').digest();
       const client = await getDstackClient();
-      const result = await client.getQuote(data);
-      return result.quote;
+      const result = await client.getQuote(digest);
+      const expected = Buffer.concat([digest, Buffer.alloc(32)]);
+      // The guest agent's echo is a cheap sanity check; the binding that
+      // matters is the REPORTDATA inside the quote. Verifiers still verify the
+      // quote itself.
+      if (result.report_data?.replace(/^0x/, '').toLowerCase() !== expected.toString('hex')) {
+        throw new QuoteBindingError('dstack echoed report data does not match the binding');
+      }
+      const quote = result.quote.replace(/^0x/, '');
+      if (!/^(?:[0-9a-fA-F]{2})+$/.test(quote)) {
+        throw new QuoteBindingError('dstack quote is not hex', 'quote_format_invalid');
+      }
+      if (!quoteReportData(Buffer.from(quote, 'hex')).equals(expected)) {
+        throw new QuoteBindingError('dstack quote REPORTDATA does not match the binding');
+      }
+      return { quote, eventLog: result.event_log, reportDataSha256: digest.toString('hex') };
     },
 
     isInTee: () => true,
@@ -105,8 +174,12 @@ function createMockClient(): TeeClient {
       return new Uint8Array(hash);
     },
 
-    async getQuote(_data: string): Promise<string> {
-      return 'mock-tdx-quote-for-development';
+    async getQuote(binding: string): Promise<TeeQuote> {
+      return {
+        quote: 'mock-tdx-quote-for-development',
+        eventLog: '[]',
+        reportDataSha256: createHash('sha256').update(binding, 'utf8').digest('hex'),
+      };
     },
 
     isInTee: () => false,
