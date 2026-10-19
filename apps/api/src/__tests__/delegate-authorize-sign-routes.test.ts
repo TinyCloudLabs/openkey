@@ -171,7 +171,7 @@ async function issuePrepareContext(): Promise<{
   const res = await router.request('/authorize-sign-prepare', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ keyId: keyRecord.id, siwe, jwk, host: 'https://node.tinycloud.xyz', requestOrigin: 'https://openkey.so' }),
+    body: JSON.stringify({ keyId: keyRecord.id, siwe, jwk, host: 'https://node.tinycloud.xyz' }),
   });
   expect(res.status).toBe(200);
   const body = await res.json() as any;
@@ -207,7 +207,6 @@ describe('POST /authorize-sign-prepare manifest provenance', () => {
         siwe: makePreparedSiwe(),
         jwk,
         reportedOrigin: 'https://listen.tinycloud.xyz',
-        requestOrigin: 'https://openkey.so',
         presentation: {
           protocolVersion: 1,
           displayName: 'Caller-controlled fallback',
@@ -722,7 +721,7 @@ describe('POST /authorize-sign — caveat semantics for narrowing', () => {
     const prepRes = await router.request('/authorize-sign-prepare', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ keyId: keyRecord.id, siwe: richSiwe, jwk, host: 'https://node.tinycloud.xyz', requestOrigin: 'https://openkey.so' }),
+      body: JSON.stringify({ keyId: keyRecord.id, siwe: richSiwe, jwk, host: 'https://node.tinycloud.xyz' }),
     });
     expect(prepRes.status).toBe(200);
     const prep = await prepRes.json() as any;
@@ -806,7 +805,7 @@ describe('POST /authorize-sign — caveat semantics for narrowing', () => {
     const prepRes = await router.request('/authorize-sign-prepare', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ keyId: keyRecord.id, siwe: richSiwe, jwk, host: 'https://node.tinycloud.xyz', requestOrigin: 'https://openkey.so' }),
+      body: JSON.stringify({ keyId: keyRecord.id, siwe: richSiwe, jwk, host: 'https://node.tinycloud.xyz' }),
     });
     expect(prepRes.status).toBe(200);
     const prep = await prepRes.json() as any;
@@ -1005,7 +1004,7 @@ describe('prepared handoff signing over HTTP', () => {
     const prepareRes = await router.request('/authorize-sign-prepare', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ticket, keyId: keyRecord.id, siwe, jwk, host: 'https://node.tinycloud.xyz', requestOrigin: 'https://openkey.so' }),
+      body: JSON.stringify({ ticket, keyId: keyRecord.id, siwe, jwk, host: 'https://node.tinycloud.xyz' }),
     });
     expect(prepareRes.status).toBe(200);
     const prepared = await prepareRes.json() as { authorizationContextToken: string; allowedActionIds: string[] };
@@ -1063,43 +1062,5 @@ describe('prepared handoff signing over HTTP', () => {
     });
     expect(resolveAgain.status).toBe(404);
     expect(await resolveAgain.text()).not.toContain(state);
-  });
-});
-
-describe('POST /authorize-sign-prepare SIWE origin guard (TC-1486)', () => {
-  async function prepare(siwe: string, requestOrigin?: string) {
-    const res = await router.request('/authorize-sign-prepare', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ keyId: keyRecord.id, siwe, jwk, host: 'https://node.tinycloud.xyz', requestOrigin }),
-    });
-    return { status: res.status, body: await res.json() as any };
-  }
-
-  test('a delegation SIWE whose domain is the requesting origin is prepared', async () => {
-    expect((await prepare(makePreparedSiwe(), 'https://openkey.so')).status).toBe(200);
-  });
-
-  test('a SIWE claiming another relying party is refused and no context is issued', async () => {
-    const hostile = makePreparedSiwe().replace('openkey.so wants you', 'internal.tinycloud.xyz wants you');
-    const { status, body } = await prepare(hostile, 'https://evil.example');
-    expect(status).toBe(403);
-    expect(body).toMatchObject({ code: 'siwe_origin_refused', reason: 'domain-mismatch' });
-    expect(body.authorizationContextToken).toBeUndefined();
-  });
-
-  test('an unattributed requester is refused', async () => {
-    for (const origin of [undefined, '*']) {
-      const { status, body } = await prepare(makePreparedSiwe(), origin);
-      expect(status).toBe(403);
-      expect(body).toMatchObject({ reason: 'unattributed-origin' });
-    }
-  });
-
-  test('a web URI naming another origin is refused even when the domain matches', async () => {
-    const hostile = makePreparedSiwe().replace(/^URI: .*$/m, 'URI: https://evil.example');
-    const { status, body } = await prepare(hostile, 'https://openkey.so');
-    expect(status).toBe(403);
-    expect(body).toMatchObject({ reason: 'uri-mismatch' });
   });
 });

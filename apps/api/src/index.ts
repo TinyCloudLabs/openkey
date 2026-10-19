@@ -19,7 +19,6 @@ import { variablesRouter } from './routes/variables';
 import { delegateRouter } from './routes/delegate';
 import { preparedHandoffRouter } from './routes/prepared-handoffs';
 import { internalMetricsRouter } from './routes/internal-metrics';
-import { scoreboardMetricsRouter } from './routes/scoreboard-metrics';
 import { organizationsRouter } from './routes/organizations';
 import { tenantConsoleRouter } from './routes/tenant-console';
 import { deviceAuthorizationRouter } from './routes/device-authorization';
@@ -201,8 +200,6 @@ app.route('/api/admin/oauth', oauthAdminRouter);
 
 // Internal metrics route (protected by INTERNAL_METRICS_TOKEN)
 app.route('/api/internal/metrics', internalMetricsRouter);
-// Counts-only scoreboard metrics (protected by OPENKEY_METRICS_READ_TOKEN)
-app.route('/api/internal/scoreboard', scoreboardMetricsRouter);
 
 // Secrets and variables routes (TinyCloud-backed)
 app.route('/api/secrets', secretsRouter);
