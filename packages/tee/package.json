@@ -32,6 +32,6 @@
   "devDependencies": {
     "nostr-tools": "^2.24.1",
     "tsup": "^8.0.0",
-    "typescript": "^7.0.2"
+    "typescript": "^6.0.0"
   }
 }
