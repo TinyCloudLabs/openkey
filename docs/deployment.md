@@ -163,6 +163,8 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `CORS_ORIGIN` | `https://openkey.so,https://console.openkey.so` |
 | `ADMIN_API_KEY` | Bearer token for organization plan fixtures and app registration |
 | `INTERNAL_METRICS_TOKEN` | Bearer token for internal metrics |
+| `OPENKEY_METRICS_READ_TOKEN` | Separate read-only bearer for `/api/internal/scoreboard/*` (counts only: `POST /protocol-users`, `GET /app-users`). Unset = 503 |
+| `SCOREBOARD_EXCLUDE_USER_IDS` / `SCOREBOARD_EXCLUDE_CLIENT_IDS` | Comma-separated team/QA/agent user ids and internal OAuth client ids excluded from scoreboard counts |
 | `TINYCLOUD_BOOTSTRAP_HOST` | Trusted TinyCloud node used for canonical user-key bootstrap |
 | `CLOUDFLARE_API_TOKEN` | For SSL certificate management |
 | `DSTACK_GATEWAY_DOMAIN` | Phala gateway base domain (e.g. `dstack-pha-prod5.phala.network`); the ingress CNAMEs `api.openkey.so` to `gateway.<base>` (never `_.<base>`, which Android cannot resolve) |

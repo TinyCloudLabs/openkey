@@ -102,6 +102,7 @@ import { deviceDelegationWindowError, deviceTransactionUnsupportedError } from '
 import { isPrimaryKey, primaryKeyWhere } from '../services/primary-key';
 import { PreparedHandoffError } from '../services/prepared-handoff';
 import { preparedHandoffService } from './prepared-handoffs';
+import { normalizeAppOrigin, recordAppSignIn } from '../services/app-sign-in';
 import type { PreparedHandoffService } from '../services/prepared-handoff';
 let activePreparedHandoffService: PreparedHandoffService = preparedHandoffService;
 export function setPreparedHandoffServiceForTests(service: PreparedHandoffService): void {
@@ -1107,6 +1108,8 @@ delegateRouter.post('/sign', async (c) => {
   }
 
   const signature = await signManagedKey(key, key.sealedBlob, body.message);
+  // The route is called from the app's own page, so Origin is the app origin.
+  await recordAppSignIn(prisma, user.id, c.req.header('origin'));
   return c.json({
     approved: true,
     signature,
@@ -1535,6 +1538,7 @@ delegateRouter.post('/', async (c) => {
       actions: [...entry.actions],
     }));
 
+    await recordAppSignIn(prisma, user.id, bound.appOrigin);
     return c.json({
       delegationHeader: session.delegationHeader,
       delegationCid: session.delegationCid,
@@ -1636,6 +1640,8 @@ delegateRouter.post('/', async (c) => {
     actions: [...entry.actions],
   }));
 
+  // The legacy path carries no app origin, so this records `unknown`.
+  await recordAppSignIn(prisma, user.id, undefined);
   return c.json({
     delegationHeader: session.delegationHeader,
     delegationCid: session.delegationCid,
@@ -2007,6 +2013,7 @@ delegateRouter.post('/complete', async (c) => {
   }
 
   let contextClaim: AuthorizationContextClaim | undefined;
+  let signInAppOrigin: string | undefined;
   // Versioned callers: the `completeSessionSetup` input, built only from the
   // signed SIWE and the bound context (see below).
   let versionedSessionInput: Record<string, unknown> | undefined;
@@ -2015,6 +2022,8 @@ delegateRouter.post('/complete', async (c) => {
     if (typeof body.authorizationContextToken !== 'string') {
       return c.json({ error: 'authorizationContextToken must be a string' }, 400);
     }
+    const peekedContext = peekAuthorizationContext(body.authorizationContextToken);
+    if (peekedContext.ok) signInAppOrigin = peekedContext.value.appOrigin;
     if (!Array.isArray(body.selectedActionIds) || body.selectedActionIds.some((id) => typeof id !== 'string')) {
       return c.json({ error: 'selectedActionIds must be a string[] when authorizationContextToken is provided' }, 400);
     }
@@ -2178,6 +2187,7 @@ delegateRouter.post('/complete', async (c) => {
     actions: [...entry.actions],
   }));
 
+  await recordAppSignIn(prisma, user.id, signInAppOrigin);
   return c.json({
     delegationHeader: session.delegationHeader,
     delegationCid: session.delegationCid,
@@ -2567,6 +2577,9 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       handoffTicketHash,
       metadataTrust,
       verifiedManifest,
+      // The widget-reported sender origin of the requesting app. Used only for
+      // the per-sign-in count record; never for trust or authority.
+      appOrigin: normalizeAppOrigin(body.reportedOrigin) ?? undefined,
     });
   } catch (issueErr) {
     logError('warn', 'delegate_authorization_context_issue_failed', issueErr);
@@ -3051,6 +3064,7 @@ delegateRouter.post('/authorize-sign', async (c) => {
   const handoffDelivery = ticket
     ? await activePreparedHandoffService.completeSigning(ticket, user.id, body.authorizationContextToken, key.id)
     : null;
+  await recordAppSignIn(prisma, user.id, bound.appOrigin);
   return c.json({
     protocolVersion: 1,
     address: boundAddress,

@@ -36,6 +36,7 @@ model User {
   oauthAccessTokens              OauthAccessToken[]
   oauthRefreshTokens             OauthRefreshToken[]
   oauthConsents                  OauthConsent[]
+  appSignInDays                  AppSignInDay[]
   tinyCloudManageKeyAppPreferences TinyCloudManageKeyAppPreference[]
   tinyCloudManageKeyControlEvents  TinyCloudManageKeyControlEvent[]
   tinyCloudManageKeySigningDecisions TinyCloudManageKeySigningDecision[]
@@ -796,4 +797,20 @@ model PlanEntitlements {
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "plan_entitlements_org_fkey")
 
   @@map("plan_entitlements")
+}
+
+// TC-1483: one row per (user, app origin, UTC day) sign-in. Counting only: no
+// IP, user agent, DID, address or message content. Rows older than 35 days are
+// deleted (services/app-sign-in.ts). origin is scheme://host[:port], or
+// "unknown" when the delegation request carries no app origin.
+model AppSignInDay {
+  userId String
+  origin String
+  day    DateTime @db.Date
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, origin, day])
+  @@index([day])
+  @@map("app_sign_in_day")
 }

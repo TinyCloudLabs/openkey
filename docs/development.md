@@ -96,6 +96,7 @@ Optional (features degrade gracefully without these):
 | `RESEND_API_KEY` | Email OTP delivery (without it, OTPs print to console) |
 | `ADMIN_API_KEY` | Protect admin endpoints (OAuth client registration) |
 | `INTERNAL_METRICS_TOKEN` | Protect internal metrics endpoints |
+| `OPENKEY_METRICS_READ_TOKEN` | Read-only bearer for `/api/internal/scoreboard/*` (TC-1483) |
 | `TINYCLOUD_BOOTSTRAP_HOST` | TinyCloud node used to bootstrap a user's canonical signer space |
 | `VITE_CONSOLE_ORIGIN` | Optional console origin. Leave unset locally to keep the account and console journey on one Vite host; set to `https://console.openkey.so` in production. |
 | `VITE_ACCOUNT_ORIGIN` | Set alongside `VITE_CONSOLE_ORIGIN` only when testing the split-host journey locally (the portless example supplies both). |
