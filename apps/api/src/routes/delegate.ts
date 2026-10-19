@@ -1109,7 +1109,7 @@ delegateRouter.post('/sign', async (c) => {
 
   const signature = await signManagedKey(key, key.sealedBlob, body.message);
   // The route is called from the app's own page, so Origin is the app origin.
-  await recordAppSignIn(prisma, user.id, c.req.header('origin'));
+  recordAppSignIn(prisma, user.id, c.req.header('origin'));
   return c.json({
     approved: true,
     signature,
@@ -1538,7 +1538,7 @@ delegateRouter.post('/', async (c) => {
       actions: [...entry.actions],
     }));
 
-    await recordAppSignIn(prisma, user.id, bound.appOrigin);
+    recordAppSignIn(prisma, user.id, bound.appOrigin);
     return c.json({
       delegationHeader: session.delegationHeader,
       delegationCid: session.delegationCid,
@@ -1641,7 +1641,7 @@ delegateRouter.post('/', async (c) => {
   }));
 
   // The legacy path carries no app origin, so this records `unknown`.
-  await recordAppSignIn(prisma, user.id, undefined);
+  recordAppSignIn(prisma, user.id, undefined);
   return c.json({
     delegationHeader: session.delegationHeader,
     delegationCid: session.delegationCid,
@@ -2187,7 +2187,7 @@ delegateRouter.post('/complete', async (c) => {
     actions: [...entry.actions],
   }));
 
-  await recordAppSignIn(prisma, user.id, signInAppOrigin);
+  recordAppSignIn(prisma, user.id, signInAppOrigin);
   return c.json({
     delegationHeader: session.delegationHeader,
     delegationCid: session.delegationCid,
@@ -3064,7 +3064,7 @@ delegateRouter.post('/authorize-sign', async (c) => {
   const handoffDelivery = ticket
     ? await activePreparedHandoffService.completeSigning(ticket, user.id, body.authorizationContextToken, key.id)
     : null;
-  await recordAppSignIn(prisma, user.id, bound.appOrigin);
+  recordAppSignIn(prisma, user.id, bound.appOrigin);
   return c.json({
     protocolVersion: 1,
     address: boundAddress,

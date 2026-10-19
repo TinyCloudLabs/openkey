@@ -2,10 +2,10 @@ import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { mockModules } from './mock-module';
 
 await mockModules({
-  '@openkey/db': () => ({ createPrismaClient: () => ({}) }),
+  '@openkey/db': () => ({ createPrismaClient: () => ({ $queryRaw: async () => [] }) }),
 });
 
-const { countAppUsers, countProtocolUsers, exclusionsFromEnv, scoreboardMetricsRouter } = await import(
+const { countAppUsers, countProtocolUsers, exclusionsFromEnv, fetchNodeOwners, resetScoreboardRateLimitForTests, scoreboardMetricsRouter } = await import(
   '../routes/scoreboard-metrics?tc1483' as string
 );
 
@@ -91,21 +91,35 @@ test('exclusion lists come from config', () => {
   expect([...clientIds]).toEqual(['c']);
 });
 
-const saved = process.env.OPENKEY_METRICS_READ_TOKEN;
-const savedInternal = process.env.INTERNAL_METRICS_TOKEN;
-beforeEach(() => { process.env.OPENKEY_METRICS_READ_TOKEN = 'read-token'; });
-afterEach(() => {
-  if (saved === undefined) delete process.env.OPENKEY_METRICS_READ_TOKEN; else process.env.OPENKEY_METRICS_READ_TOKEN = saved;
-  if (savedInternal === undefined) delete process.env.INTERNAL_METRICS_TOKEN; else process.env.INTERNAL_METRICS_TOKEN = savedInternal;
+const envKeys = ['OPENKEY_METRICS_READ_TOKEN', 'INTERNAL_METRICS_TOKEN', 'NODE_STATS_URL', 'NODE_STATS_READ_TOKEN'] as const;
+const savedEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
+const realFetch = globalThis.fetch;
+beforeEach(() => {
+  process.env.OPENKEY_METRICS_READ_TOKEN = 'read-token';
+  process.env.NODE_STATS_URL = 'https://node.example/admin/stats';
+  process.env.NODE_STATS_READ_TOKEN = 'node-token';
+  resetScoreboardRateLimitForTests();
 });
+afterEach(() => {
+  for (const key of envKeys) {
+    if (savedEnv[key] === undefined) delete process.env[key]; else process.env[key] = savedEnv[key];
+  }
+  globalThis.fetch = realFetch;
+});
+
+const getProtocolUsers = () => scoreboardMetricsRouter.request('/protocol-users', { headers: { Authorization: 'Bearer read-token' } });
+const stubNode = (respond: (url: string, init: RequestInit) => Response | Promise<Response>) => {
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  globalThis.fetch = (async (url: string, init: RequestInit) => { calls.push({ url, init }); return respond(url, init); }) as unknown as typeof fetch;
+  return calls;
+};
 
 test('the endpoints refuse without the read token, with a wrong token, or when unconfigured', async () => {
   const request = (path: string, init: RequestInit) => scoreboardMetricsRouter.request(path, init);
-  const body = JSON.stringify({ addresses: [] });
-  for (const [path, method] of [['/protocol-users', 'POST'], ['/app-users', 'GET']] as const) {
-    expect((await request(path, { method, body: method === 'POST' ? body : undefined })).status).toBe(401);
-    expect((await request(path, { method, headers: { Authorization: 'Bearer wrong-token' }, body: method === 'POST' ? body : undefined })).status).toBe(401);
-    expect((await request(path, { method, headers: { Authorization: 'Basic read-token' }, body: method === 'POST' ? body : undefined })).status).toBe(401);
+  for (const path of ['/protocol-users', '/app-users']) {
+    expect((await request(path, {})).status).toBe(401);
+    expect((await request(path, { headers: { Authorization: 'Bearer wrong-token' } })).status).toBe(401);
+    expect((await request(path, { headers: { Authorization: 'Basic read-token' } })).status).toBe(401);
   }
   // The general internal-metrics token is not accepted here.
   process.env.INTERNAL_METRICS_TOKEN = 'internal-token';
@@ -114,14 +128,66 @@ test('the endpoints refuse without the read token, with a wrong token, or when u
   expect((await request('/app-users', { headers: { Authorization: 'Bearer read-token' } })).status).toBe(503);
 });
 
-test('protocol-users rejects malformed bodies and returns only a count shape', async () => {
-  const post = (body: unknown) => scoreboardMetricsRouter.request('/protocol-users', {
-    method: 'POST', headers: { Authorization: 'Bearer read-token' }, body: typeof body === 'string' ? body : JSON.stringify(body),
+test('protocol-users takes no input: POST is gone and a query or body cannot supply addresses', async () => {
+  const calls = stubNode(() => Response.json({ owners: [] }));
+  const post = await scoreboardMetricsRouter.request('/protocol-users', {
+    method: 'POST', headers: { Authorization: 'Bearer read-token' }, body: JSON.stringify({ addresses: ['0x0000000000000000000000000000000000000001'] }),
   });
-  expect((await post('not json')).status).toBe(400);
-  expect((await post({ addresses: 'nope' })).status).toBe(400);
-  expect((await post({ addresses: ['0x123'] })).status).toBe(400);
-  const ok = await post({ addresses: [] });
-  expect(ok.status).toBe(200);
-  expect(await ok.json()).toEqual({ count: 0 });
+  expect(post.status).toBe(404);
+  expect(calls).toHaveLength(0);
+});
+
+test('protocol-users fetches owners from the node with the stats token and returns only {count}', async () => {
+  const calls = stubNode(() => Response.json({ owners: ['0x0000000000000000000000000000000000000001'] }));
+  const res = await getProtocolUsers();
+  expect(res.status).toBe(200);
+  expect(await res.json()).toEqual({ count: 0 }); // database client is the empty mock: no accounts match
+  expect(calls).toHaveLength(1);
+  expect(calls[0]!.url).toBe('https://node.example/admin/stats');
+  expect((calls[0]!.init.headers as Record<string, string>).Authorization).toBe('Bearer node-token');
+});
+
+test('protocol-users answers 503, never a partial count, when the node is unset, errors, or returns a bad body', async () => {
+  stubNode(() => new Response('boom', { status: 500 }));
+  expect((await getProtocolUsers()).status).toBe(503);
+  stubNode(() => Response.json({ owners: ['0x0000000000000000000000000000000000000001', 'nope'] }));
+  expect((await getProtocolUsers()).status).toBe(503);
+  stubNode(() => Response.json({ other: [] }));
+  expect((await getProtocolUsers()).status).toBe(503);
+  stubNode(() => { throw new Error('network'); });
+  expect((await getProtocolUsers()).status).toBe(503);
+  const calls = stubNode(() => Response.json({ owners: [] }));
+  delete process.env.NODE_STATS_URL;
+  expect((await getProtocolUsers()).status).toBe(503);
+  process.env.NODE_STATS_URL = 'https://node.example/admin/stats';
+  delete process.env.NODE_STATS_READ_TOKEN;
+  expect((await getProtocolUsers()).status).toBe(503);
+  expect(calls).toHaveLength(0);
+});
+
+test('fetchNodeOwners rejects an oversized owner list', async () => {
+  const owners = Array.from({ length: 200_001 }, () => '0x0000000000000000000000000000000000000001');
+  const env = { NODE_STATS_URL: 'https://node.example/admin/stats', NODE_STATS_READ_TOKEN: 't' };
+  await expect(fetchNodeOwners(env, (async () => Response.json({ owners })) as unknown as typeof fetch)).rejects.toThrow();
+});
+
+test('protocol-users is capped at 30 calls a minute per process (429), and each call is audit-logged without addresses', async () => {
+  stubNode(() => Response.json({ owners: ['0x00000000000000000000000000000000000000aa'] }));
+  const lines: string[] = [];
+  const write = process.stdout.write;
+  process.stdout.write = ((chunk: string | Uint8Array) => { lines.push(String(chunk)); return true; }) as typeof process.stdout.write;
+  const statuses: number[] = [];
+  try {
+    for (let i = 0; i < 32; i++) statuses.push((await getProtocolUsers()).status);
+  } finally {
+    process.stdout.write = write;
+  }
+  expect(statuses.slice(0, 30).every((s) => s === 200)).toBe(true);
+  expect(statuses.slice(30)).toEqual([429, 429]);
+  const audit = lines.filter((l) => l.includes('scoreboard_protocol_users_call')).map((l) => JSON.parse(l));
+  expect(audit).toHaveLength(32);
+  expect(audit[0]).toMatchObject({ status: 200, count: 0 });
+  expect(audit[31]).toMatchObject({ status: 429 });
+  expect(lines.join('')).not.toContain('00000000000000000000000000000000000000aa');
+  expect(lines.join('')).not.toContain('read-token');
 });

@@ -1,15 +1,23 @@
 import { timingSafeEqual } from 'crypto';
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
+import { logMetric } from '../log';
 
-// TC-1483: counts-only metrics for the scoreboard, behind their own read-only
-// bearer (OPENKEY_METRICS_READ_TOKEN). Responses never carry user ids, emails,
-// addresses or origins. Addresses arrive in the request body, are mapped in
-// memory, and are not stored or logged.
+// TC-1483: counts-only metrics for the scoreboard, behind their own bearer
+// (OPENKEY_METRICS_READ_TOKEN). The token grants aggregate counts only:
+// responses never carry user ids, emails, addresses or origins, and no
+// endpoint takes caller-chosen addresses. `GET /protocol-users` takes no input;
+// OpenKey fetches the data-owning owner addresses itself from the node's
+// read-only `GET /admin/stats` (NODE_STATS_URL + NODE_STATS_READ_TOKEN), maps
+// them to accounts in memory, and returns `{count}`. Addresses are neither
+// stored nor logged.
 
 const prisma = createPrismaClient();
 
 const MAX_ADDRESSES = 200_000;
+const NODE_STATS_TIMEOUT_MS = 15_000;
+const PROTOCOL_USERS_LIMIT_PER_MINUTE = 30;
+const RATE_WINDOW_MS = 60_000;
 const ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
 const ACTIVE_WINDOW_DAYS = 7;
 
@@ -63,6 +71,57 @@ export async function countProtocolUsers(
   return new Set(rows.map((row) => row.userId).filter((id) => !exclusions.userIds.has(id))).size;
 }
 
+/**
+ * Owner addresses with stored data, from the node's `GET /admin/stats`:
+ *   200 { "owners": ["0x<40 hex>", ...] }
+ * Any other status, a bad body, a timeout or missing config throws: callers
+ * answer 503 and never use a partial list.
+ */
+export async function fetchNodeOwners(
+  env: Record<string, string | undefined> = process.env,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string[]> {
+  const url = env.NODE_STATS_URL;
+  const token = env.NODE_STATS_READ_TOKEN;
+  if (!url || !token) throw new Error('node stats not configured');
+  const response = await fetchImpl(url, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+    redirect: 'error',
+    signal: AbortSignal.timeout(NODE_STATS_TIMEOUT_MS),
+  });
+  if (!response.ok) throw new Error('node stats request failed');
+  const body = (await response.json()) as { owners?: unknown } | null;
+  const owners = body?.owners;
+  if (
+    !Array.isArray(owners)
+    || owners.length > MAX_ADDRESSES
+    || owners.some((owner) => typeof owner !== 'string' || !ADDRESS_PATTERN.test(owner))
+  ) {
+    throw new Error('node stats response invalid');
+  }
+  return owners as string[];
+}
+
+let rateWindowStart = 0;
+let rateWindowCalls = 0;
+
+/** Per-process fixed-window cap on `GET /protocol-users`. True when the call may proceed. */
+function takeProtocolUsersSlot(now = Date.now()): boolean {
+  if (now - rateWindowStart >= RATE_WINDOW_MS) {
+    rateWindowStart = now;
+    rateWindowCalls = 0;
+  }
+  rateWindowCalls += 1;
+  return rateWindowCalls <= PROTOCOL_USERS_LIMIT_PER_MINUTE;
+}
+
+/** Test hook. */
+export function resetScoreboardRateLimitForTests(): void {
+  rateWindowStart = 0;
+  rateWindowCalls = 0;
+}
+
 export async function countAppUsers(
   database: ScoreboardDatabase,
   exclusions: ScoreboardExclusions,
@@ -105,22 +164,26 @@ scoreboardMetricsRouter.use('*', async (c, next) => {
   await next();
 });
 
-scoreboardMetricsRouter.post('/protocol-users', async (c) => {
-  let body: unknown;
+scoreboardMetricsRouter.get('/protocol-users', async (c) => {
+  if (!takeProtocolUsersSlot()) {
+    logMetric('warn', 'scoreboard_protocol_users_call', { status: 429 });
+    return c.json({ error: 'Rate limit exceeded' }, 429);
+  }
+  let owners: string[];
   try {
-    body = await c.req.json();
+    owners = await fetchNodeOwners();
   } catch {
-    return c.json({ error: 'Body must be JSON' }, 400);
+    logMetric('warn', 'scoreboard_protocol_users_call', { status: 503 });
+    return c.json({ error: 'Node stats unavailable' }, 503);
   }
-  const addresses = (body as { addresses?: unknown } | null)?.addresses;
-  if (
-    !Array.isArray(addresses)
-    || addresses.length > MAX_ADDRESSES
-    || addresses.some((address) => typeof address !== 'string' || !ADDRESS_PATTERN.test(address))
-  ) {
-    return c.json({ error: `addresses must be an array of at most ${MAX_ADDRESSES} 0x addresses` }, 400);
+  let count: number;
+  try {
+    count = await countProtocolUsers(prisma as unknown as ScoreboardDatabase, owners, exclusionsFromEnv());
+  } catch (error) {
+    logMetric('error', 'scoreboard_protocol_users_call', { status: 500 });
+    throw error;
   }
-  const count = await countProtocolUsers(prisma as unknown as ScoreboardDatabase, addresses, exclusionsFromEnv());
+  logMetric('info', 'scoreboard_protocol_users_call', { status: 200, count });
   return c.json({ count });
 });
 

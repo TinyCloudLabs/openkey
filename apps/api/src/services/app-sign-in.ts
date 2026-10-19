@@ -1,3 +1,5 @@
+import { logMetric } from '../log';
+
 // TC-1483: one row per (userId, app origin, UTC day), for scoreboard counts.
 // Stores nothing else: no IP, user agent, DID, address or message content.
 
@@ -50,34 +52,62 @@ export async function pruneAppSignIns(database: AppSignInDatabase, now = new Dat
 
 let lastPruneAt = 0;
 
-/** Test hook: forget the last prune time. */
-export function resetAppSignInPruneClock(): void {
+const FAILURE_LOG_INTERVAL_MS = 60_000;
+let failuresSinceLog = 0;
+let lastFailureLogAt = 0;
+
+function noteRecordFailure(error: unknown): void {
+  // A concurrent first sign-in of the day hits the PK: expected, not a failure.
+  if ((error as { code?: unknown } | null)?.code === 'P2002') return;
+  failuresSinceLog += 1;
+  const now = Date.now();
+  if (now - lastFailureLogAt < FAILURE_LOG_INTERVAL_MS) return;
+  lastFailureLogAt = now;
+  const count = failuresSinceLog;
+  failuresSinceLog = 0;
+  logMetric('warn', 'app_sign_in_record_failed', { count });
+}
+
+/** Test hook: forget the prune and failure-log clocks. */
+export function resetAppSignInStateForTests(): void {
   lastPruneAt = 0;
+  failuresSinceLog = 0;
+  lastFailureLogAt = 0;
 }
 
 /**
- * Record a sign-in. Upsert on (userId, origin, day), so repeat sign-ins the
- * same day add no rows. Never throws: a metrics write must not fail a sign-in.
- * Expired rows are pruned at most once an hour per process.
+ * Upsert on (userId, origin, day), so repeat sign-ins the same day add no
+ * rows. Expired rows are pruned at most once an hour per process. Rejects on
+ * DB errors: sign-in paths use `recordAppSignIn`.
  */
-export async function recordAppSignIn(
+export async function writeAppSignIn(
   database: AppSignInDatabase,
   userId: string,
   appOrigin: unknown,
   now = new Date(),
 ): Promise<void> {
   const origin = normalizeAppOrigin(appOrigin) ?? UNKNOWN_APP_ORIGIN;
-  try {
-    await database.appSignInDay.upsert({
-      where: { userId_origin_day: { userId, origin, day: utcDay(now) } },
-      create: { userId, origin, day: utcDay(now) },
-      update: {},
-    });
-    if (now.getTime() - lastPruneAt >= PRUNE_INTERVAL_MS) {
-      lastPruneAt = now.getTime();
-      await pruneAppSignIns(database, now);
-    }
-  } catch {
-    // Concurrent first sign-in of the day (unique violation) or a DB outage.
+  await database.appSignInDay.upsert({
+    where: { userId_origin_day: { userId, origin, day: utcDay(now) } },
+    create: { userId, origin, day: utcDay(now) },
+    update: {},
+  });
+  if (now.getTime() - lastPruneAt >= PRUNE_INTERVAL_MS) {
+    lastPruneAt = now.getTime();
+    await pruneAppSignIns(database, now);
   }
+}
+
+/**
+ * Fire-and-forget sign-in record: returns immediately and never rejects, so a
+ * metrics write cannot delay or fail a sign-in. Do not await. Failures are
+ * counted and logged at most once a minute (count only, no ids).
+ */
+export function recordAppSignIn(
+  database: AppSignInDatabase,
+  userId: string,
+  appOrigin: unknown,
+  now = new Date(),
+): void {
+  void writeAppSignIn(database, userId, appOrigin, now).catch(noteRecordFailure);
 }
