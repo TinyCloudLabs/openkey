@@ -44,14 +44,14 @@
     "npm-pub": "npm config set registry https://registry.npmjs.org/"
   },
   "devDependencies": {
-    "@changesets/cli": "^2.27.1",
+    "@changesets/cli": "^3.0.3",
     "@changesets/read": "0.6.6",
     "@rollup/rollup-darwin-x64": "^4.57.1",
     "@tailwindcss/vite": "^4.1.18",
-    "portless": "^0.14.0",
+    "portless": "^0.15.6",
     "tailwindcss": "^4.1.18",
     "turbo": "^2.3.0",
-    "typescript": "^6.0.0"
+    "typescript": "^7.0.2"
   },
   "packageManager": "bun@1.2.0",
   "dependencies": {
@@ -62,7 +62,7 @@
     "better-auth": "^1.6.9",
     "bits-ui": "^2.15.2",
     "clsx": "^2.1.1",
-    "dotenv": "^17.2.3",
+    "dotenv": "^18.0.0",
     "hono": "^4.11.3",
     "nanostores": "^1.2.0",
     "resend": "^6.6.0",

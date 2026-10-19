@@ -24,6 +24,6 @@
   },
   "devDependencies": {
     "@tinycloud/bootstrap": "2.8.0-beta.1",
-    "typescript": "^6.0.0"
+    "typescript": "^7.0.2"
   }
 }
