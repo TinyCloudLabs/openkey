@@ -355,9 +355,8 @@
   // True when the user has explicitly chosen to proceed with a non-matching
   // wallet via the override path on the key picker.
   let overrideMismatch = $state(false);
-  // With no wallet named, the picker offers the primary key; the other keys
+  // With no wallet named, KeyPicker offers the primary key; the other keys
   // (separate account owners) stay hidden until the user asks for them.
-  // The shared KeyPicker owns the layout.
   let showOtherKeys = $state(false);
   const selectedMatchesExpected = $derived(
     !expectedAddress ||

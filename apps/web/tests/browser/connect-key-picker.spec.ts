@@ -99,4 +99,34 @@ test.describe('TC-1496 connect widgets use the shared key picker', () => {
     await button(frame, /Key 2/).click();
     await expect.poll(() => responses(page).then((list) => list.map((m) => m.keyId))).toEqual(['key_2']);
   });
+
+  test('popup widget: generate and link-wallet stay reachable behind "Use a different key"', async ({ page }) => {
+    await mockApi(page, keys);
+    await page.goto(`/widget/connect?origin=${encodeURIComponent(origin)}`);
+    await expect(page.getByRole('button', { name: /Generate New Key/ })).toHaveCount(0);
+    await page.getByRole('button', { name: 'Use a different key' }).click();
+    await expect(page.getByRole('button', { name: /Generate New Key/ })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Link External Wallet' })).toBeVisible();
+  });
+
+  test('popup widget: without a primary key every key is listed', async ({ page }) => {
+    await mockApi(page, keys.map((k) => ({ ...k, isPrimary: false })));
+    await page.goto(`/widget/connect?origin=${encodeURIComponent(origin)}`);
+    await expect(page.getByText('Select a key to connect:')).toBeVisible();
+    for (const name of [/Key 0/, /Key 1/, /Key 2/]) await expect(button(page, name)).toBeVisible();
+    await expect(page.getByText('Primary', { exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Use a different key' })).toHaveCount(0);
+  });
+
+  test('popup widget: a single key is returned without showing the picker', async ({ page }) => {
+    await mockApi(page, [keys[0]]);
+    await page.addInitScript(() => {
+      const received: Message[] = [];
+      const recording: Recording = window;
+      recording.received = received;
+      Object.defineProperty(window, 'opener', { value: { postMessage: (data: Message) => received.push(data), closed: false }, configurable: true });
+    });
+    await page.goto(`/widget/connect?origin=${encodeURIComponent(origin)}`);
+    await expect.poll(() => responses(page).then((list) => list.map((m) => m.keyId))).toEqual(['key_0']);
+  });
 });
