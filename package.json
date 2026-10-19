@@ -2,7 +2,10 @@
   "name": "openkey",
   "private": true,
   "license": "SEE LICENSE IN LICENSE.md",
-  "workspaces": ["apps/*", "packages/*"],
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
     "dev": "turbo dev",
     "dev:api": "turbo dev --filter @openkey/api",
@@ -66,5 +69,8 @@
     "tailwind-merge": "^3.4.0",
     "tailwind-variants": "^3.2.2",
     "viem": "^2.43.5"
+  },
+  "overrides": {
+    "undici": "7.29.1"
   }
 }
