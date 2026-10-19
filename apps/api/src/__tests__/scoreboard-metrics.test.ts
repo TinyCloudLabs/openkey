@@ -171,6 +171,37 @@ test('fetchNodeOwners rejects an oversized owner list', async () => {
   await expect(fetchNodeOwners(env, (async () => Response.json({ owners })) as unknown as typeof fetch)).rejects.toThrow();
 });
 
+const nodeEnv = { NODE_STATS_URL: 'https://node.example/admin/stats', NODE_STATS_READ_TOKEN: 't' };
+
+test('fetchNodeOwners rejects an oversize Content-Length without reading the body', async () => {
+  const f = (async () => new Response('{"owners":[]}', { headers: { 'content-length': String(17 * 1024 * 1024) } })) as unknown as typeof fetch;
+  await expect(fetchNodeOwners(nodeEnv, f)).rejects.toThrow('too large');
+});
+
+test('fetchNodeOwners aborts an oversize streamed body without Content-Length', async () => {
+  let pulled = 0;
+  const chunk = new Uint8Array(1024 * 1024);
+  const stream = new ReadableStream<Uint8Array>({ pull(c) { pulled += 1; c.enqueue(chunk); } });
+  const f = (async () => new Response(stream)) as unknown as typeof fetch;
+  await expect(fetchNodeOwners(nodeEnv, f)).rejects.toThrow('too large');
+  expect(pulled).toBeLessThan(25);
+});
+
+test('fetchNodeOwners single-flights concurrent calls', async () => {
+  let n = 0;
+  const f = (async () => { n += 1; await new Promise((r) => setTimeout(r, 20)); return Response.json({ owners: [] }); }) as unknown as typeof fetch;
+  await Promise.all([fetchNodeOwners(nodeEnv, f), fetchNodeOwners(nodeEnv, f), fetchNodeOwners(nodeEnv, f)]);
+  expect(n).toBe(1);
+});
+
+test('fetchNodeOwners requires https, allowing http localhost only in development', async () => {
+  const f = (async () => Response.json({ owners: [] })) as unknown as typeof fetch;
+  const http = { ...nodeEnv, NODE_STATS_URL: 'http://localhost:8000/admin/stats' };
+  await expect(fetchNodeOwners({ ...http, NODE_ENV: 'production' }, f)).rejects.toThrow('https');
+  await expect(fetchNodeOwners({ ...nodeEnv, NODE_STATS_URL: 'http://node.example/x', NODE_ENV: 'development' }, f)).rejects.toThrow('https');
+  await expect(fetchNodeOwners({ ...http, NODE_ENV: 'development' }, f)).resolves.toEqual([]);
+});
+
 test('protocol-users is capped at 30 calls a minute per process (429), and each call is audit-logged without addresses', async () => {
   stubNode(() => Response.json({ owners: ['0x00000000000000000000000000000000000000aa'] }));
   const lines: string[] = [];

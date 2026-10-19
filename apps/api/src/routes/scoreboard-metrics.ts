@@ -7,7 +7,7 @@ import { logMetric } from '../log';
 // (OPENKEY_METRICS_READ_TOKEN). The token grants aggregate counts only:
 // responses never carry user ids, emails, addresses or origins, and no
 // endpoint takes caller-chosen addresses. `GET /protocol-users` takes no input;
-// OpenKey fetches the data-owning owner addresses itself from the node's
+// OpenKey fetches the owner addresses (owners with data beyond the automatic `account` space; account-only owners excluded) itself from the node's
 // read-only `GET /admin/stats` (NODE_STATS_URL + NODE_STATS_READ_TOKEN), maps
 // them to accounts in memory, and returns `{count}`. Addresses are neither
 // stored nor logged.
@@ -15,6 +15,7 @@ import { logMetric } from '../log';
 const prisma = createPrismaClient();
 
 const MAX_ADDRESSES = 200_000;
+const MAX_NODE_RESPONSE_BYTES = 16 * 1024 * 1024;
 const NODE_STATS_TIMEOUT_MS = 15_000;
 const PROTOCOL_USERS_LIMIT_PER_MINUTE = 30;
 const RATE_WINDOW_MS = 60_000;
@@ -72,18 +73,66 @@ export async function countProtocolUsers(
 }
 
 /**
- * Owner addresses with stored data, from the node's `GET /admin/stats`:
+ * Owner addresses with data beyond the automatic `account` space (account-only
+ * owners are excluded), from the node's `GET /admin/stats`:
  *   200 { "owners": ["0x<40 hex>", ...] }
- * Any other status, a bad body, a timeout or missing config throws: callers
- * answer 503 and never use a partial list.
+ * Any other status, a bad body, an oversized body, a timeout, a non-https URL
+ * or missing config throws: callers answer 503 and never use a partial list.
+ * Concurrent calls share one in-flight node request.
  */
-export async function fetchNodeOwners(
+export function fetchNodeOwners(
   env: Record<string, string | undefined> = process.env,
   fetchImpl: typeof fetch = fetch,
+): Promise<string[]> {
+  if (!inflightOwners) {
+    inflightOwners = loadNodeOwners(env, fetchImpl).finally(() => { inflightOwners = null; });
+  }
+  return inflightOwners;
+}
+
+let inflightOwners: Promise<string[]> | null = null;
+
+function assertAllowedStatsUrl(raw: string, env: Record<string, string | undefined>): void {
+  let url: URL;
+  try { url = new URL(raw); } catch { throw new Error('node stats url invalid'); }
+  if (url.protocol === 'https:') return;
+  const localDev = env.NODE_ENV === 'development'
+    && url.protocol === 'http:'
+    && (url.hostname === 'localhost' || url.hostname === '127.0.0.1');
+  if (!localDev) throw new Error('node stats url must be https');
+}
+
+async function readCappedBody(response: Response): Promise<string> {
+  const declared = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > MAX_NODE_RESPONSE_BYTES) {
+    await response.body?.cancel().catch(() => {});
+    throw new Error('node stats response too large');
+  }
+  if (!response.body) return '';
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_NODE_RESPONSE_BYTES) {
+      await reader.cancel().catch(() => {});
+      throw new Error('node stats response too large');
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+async function loadNodeOwners(
+  env: Record<string, string | undefined>,
+  fetchImpl: typeof fetch,
 ): Promise<string[]> {
   const url = env.NODE_STATS_URL;
   const token = env.NODE_STATS_READ_TOKEN;
   if (!url || !token) throw new Error('node stats not configured');
+  assertAllowedStatsUrl(url, env);
   const response = await fetchImpl(url, {
     method: 'GET',
     headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
@@ -91,7 +140,7 @@ export async function fetchNodeOwners(
     signal: AbortSignal.timeout(NODE_STATS_TIMEOUT_MS),
   });
   if (!response.ok) throw new Error('node stats request failed');
-  const body = (await response.json()) as { owners?: unknown } | null;
+  const body = JSON.parse(await readCappedBody(response)) as { owners?: unknown } | null;
   const owners = body?.owners;
   if (
     !Array.isArray(owners)
