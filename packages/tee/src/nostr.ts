@@ -4,8 +4,8 @@
 // keys in wallet.ts: Nostr identities are signed with BIP-340 Schnorr
 // signatures, not ECDSA, and use x-only (32-byte) public keys.
 import { createHash } from 'crypto';
-import { schnorr } from '@noble/curves/secp256k1';
-import { bytesToHex, hexToBytes } from '@noble/curves/abstract/utils';
+import { schnorr } from '@noble/curves/secp256k1.js';
+import { bytesToHex, hexToBytes } from '@noble/curves/utils.js';
 import { bech32 } from '@scure/base';
 import { unseal } from './index';
 
@@ -50,12 +50,12 @@ function normalizeHex(value: string): string {
 /**
  * Generate a new Nostr keypair.
  *
- * Uses the noble library's own secret-key generator (`schnorr.utils.randomPrivateKey`),
+ * Uses the noble library's own secret-key generator (`schnorr.utils.randomSecretKey`),
  * which draws uniform randomness over the scalar field rather than truncating raw
  * random bytes - the standard noble-curves technique for unbiased key generation.
  */
 export function generateNostrKeypair(): NostrKeypair {
-  const secretKey = schnorr.utils.randomPrivateKey();
+  const secretKey = schnorr.utils.randomSecretKey();
   try {
     const pubkeyBytes = schnorr.getPublicKey(secretKey);
     const pubkeyHex = bytesToHex(pubkeyBytes);
