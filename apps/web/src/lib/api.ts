@@ -222,10 +222,14 @@ export const api = {
     });
   },
 
-  async signMessage(keyId: string, message: string): Promise<{ signature: string; address: string }> {
+  async signMessage(
+    keyId: string,
+    message: string,
+    requestOrigin?: string,
+  ): Promise<{ signature: string; address: string }> {
     return fetchAPI(`/api/keys/${keyId}/sign`, {
       method: 'POST',
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({ message, requestOrigin }),
     });
   },
 

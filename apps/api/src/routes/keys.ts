@@ -13,6 +13,7 @@ import { awaitTinyCloudBootstrapWithinBudget } from '../services/tinycloud-boots
 import { createSealingContext, deriveKeyForRecord } from '../services/key-sealing';
 import { deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, PrimaryKeyConflictError, setPrimaryKey } from '../services/primary-key';
+import { checkSignableMessage } from '../services/siwe-origin';
 import { rejectNonBrowserControlRequest } from '../middleware/browser-control';
 
 import { log, logError } from '../log';
@@ -277,9 +278,20 @@ keysRouter.post('/:keyId/sign', async (c) => {
   const body = await c.req.json<{
     message: string;
     format?: 'raw' | 'personal_sign'; // default: personal_sign
+    /** Verified origin of the requesting site; required for SIWE-shaped messages. */
+    requestOrigin?: string;
   }>();
   const deviceUnsupported = deviceTransactionUnsupportedError(body);
   if (deviceUnsupported) return c.json(deviceUnsupported, 400);
+  // TC-1486: a SIWE-shaped message is signable only for the origin it names.
+  // `requestOrigin` is the postMessage sender the widget verified; absent
+  // means unattributed, which is refused. Checked before the key is unsealed.
+  if (typeof body.message === 'string') {
+    const siweCheck = checkSignableMessage(body.message, body.requestOrigin);
+    if (siweCheck.siwe && !siweCheck.ok) {
+      return c.json({ error: siweCheck.message, code: 'siwe_origin_refused', reason: siweCheck.code }, 403);
+    }
+  }
 
   const key = await prisma.ethereumKey.findFirst({
     where: { id: keyId, userId: user.id, archivedAt: null },

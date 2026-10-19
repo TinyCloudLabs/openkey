@@ -15,7 +15,9 @@
     annotateAppScopedGrants,
     type CapabilityReviewModel,
     type DeclaredAppScope,
+    checkSiweOrigin,
   } from '@openkey/capability-review';
+  import SiweOriginRefusal from '$lib/components/signing/siwe-origin-refusal.svelte';
   import {
     createWidgetTransport,
     type WidgetRequest,
@@ -564,6 +566,7 @@
   // before /authorize-sign consumes the token.
   async function requestPreview(): Promise<void> {
     if (!key || !message) return;
+    if (siweRefusal) return;
     if (!canUseAuthorizeSignFn()) return;
     previewing = true;
     error = '';
@@ -595,6 +598,7 @@
               host: messageHost,
               presentation: requestPresentation ?? undefined,
               reportedOrigin: reportedOriginForPrepare,
+              requestOrigin: origin === '*' ? undefined : origin,
             }),
           },
         );
@@ -743,6 +747,10 @@
   // and consumes the token.
   async function approveAndSign() {
     if (!key || !message) return;
+    if (siweRefusal) {
+      error = siweRefusal.message;
+      return;
+    }
     // Fail-closed: refuse to sign a malformed ReCap regardless of path.
     if (!isProtocolSignable()) {
       error =
@@ -819,7 +827,7 @@
       // Legacy exact-byte path: signs the caller's exact `message`. The
       // capabilities in the response are the caller's original set (no
       // narrowing happened server-side).
-      const result = await api.signMessage(key.id, message);
+      const result = await api.signMessage(key.id, message, origin === '*' ? undefined : origin);
       const effectivePermissions = reviewModel
         ? reviewModel.permissions.map((grant) => ({
             service: grant.service,
@@ -858,6 +866,31 @@
     // Keep the context token: the /authorize-sign-preview call handles a
     // stale selection safely (it re-derives the SIWE without consuming).
     previewApproved = false;
+  }
+
+  // TC-1486: a SIWE-shaped message that does not name the verified requesting
+  // origin (or arrives unattributed) is never signed and has no override.
+  // Every signing path below re-checks this; the server enforces it too.
+  const siweRefusal = $derived.by(() => {
+    if (!message) return null;
+    const check = checkSiweOrigin(message, origin);
+    return check.siwe && !check.ok ? check : null;
+  });
+  let refusalReported = false;
+  $effect(() => {
+    if (!siweRefusal || refusalReported) return;
+    refusalReported = true;
+    // Tell the requester right away so its promise settles; the message is
+    // generic on purpose (it may be an unattributed '*' recipient).
+    sendResponse({
+      type: 'openkey:sign:response',
+      success: false,
+      error: { code: 'UNKNOWN', message: `SIWE_ORIGIN_REFUSED: ${siweRefusal.code}` },
+    });
+  });
+
+  function closeRefused() {
+    sendClose();
   }
 
   function cancel() {
@@ -961,7 +994,9 @@
     </button>
   </header>
 
-  {#if !$session.data}
+  {#if siweRefusal}
+    <SiweOriginRefusal reason={siweRefusal.message} code={siweRefusal.code} onclose={closeRefused} />
+  {:else if !$session.data}
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
       <p class="mb-4">Sign in to sign messages</p>
       <Button href={withPasskeysFlag(`/auth/login?redirect=/widget/sign?origin=${encodeURIComponent(origin)}`, passkeysSupported)}>Sign In</Button>
