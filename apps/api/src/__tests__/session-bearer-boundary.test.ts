@@ -168,7 +168,7 @@ describe('bearer session tokens from outside OpenKey (TC-688)', () => {
   test('the OpenKey embedded widget can still sign with its bearer', async () => {
     const response = await call('POST', '/api/keys/key_1/sign-typed-data', {
       authorization: `Bearer ${SESSION_TOKEN}`, origin: OPENKEY_ORIGIN,
-    }, { domain: {}, types: {}, primaryType: 'Mail', message: {} });
+    }, { domain: {}, types: { Mail: [{ name: 'contents', type: 'string' }] }, primaryType: 'Mail', message: { contents: 'hi' } });
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ signature: '0xsig', address: '0x0000000000000000000000000000000000000001' });
     expect(signCalls).toBe(1);

@@ -4,7 +4,7 @@ import { createPrismaClient } from '@openkey/db';
 import { createTeeClient, seal, unseal, generatePrivateKey, getAddressFromPrivateKey, type TeeQuote } from '@openkey/tee';
 import { requireSession, type SessionContext } from '../middleware/session';
 import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
-import { verifyMessage } from 'viem';
+import { validateTypedData, verifyMessage } from 'viem';
 import type { Hex } from 'viem';
 import {
   ensureTinyCloudBootstrapForApprovedSign,
@@ -363,6 +363,19 @@ keysRouter.post('/:keyId/sign-typed-data', async (c) => {
 
   if (key.keyType === 'EXTERNAL') {
     return c.json({ error: 'External keys must be signed client-side' }, 400);
+  }
+
+  // viem rejects malformed typed data (e.g. `uint`/`int` aliases instead of
+  // `uint256`/`int256`); that is a client error, not a server failure.
+  try {
+    validateTypedData({
+      domain: body.domain,
+      types: body.types,
+      primaryType: body.primaryType,
+      message: body.message,
+    });
+  } catch (error) {
+    return c.json({ error: `Invalid typed data: ${error instanceof Error ? error.message.split('\n')[0] : 'validation failed'}` }, 400);
   }
 
   // Unseal and sign
