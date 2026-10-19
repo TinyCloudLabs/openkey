@@ -96,6 +96,9 @@ Optional (features degrade gracefully without these):
 | `RESEND_API_KEY` | Email OTP delivery (without it, OTPs print to console) |
 | `ADMIN_API_KEY` | Protect admin endpoints (OAuth client registration) |
 | `INTERNAL_METRICS_TOKEN` | Protect internal metrics endpoints |
+| `OPENKEY_METRICS_READ_TOKEN` | Bearer for `/api/internal/scoreboard/*` (TC-1483); aggregate counts only |
+| `NODE_STATS_URL` / `NODE_STATS_READ_TOKEN` | Node `GET /admin/stats` URL and read-only bearer, used by `/api/internal/scoreboard/protocol-users` (TC-1483). Counts owners with data beyond the automatic `account` space; account-only owners are excluded. Must be `https:`; `http://localhost`/`127.0.0.1` allowed only with `NODE_ENV=development` |
+| `SCOREBOARD_EXCLUDE_USER_IDS` / `SCOREBOARD_EXCLUDE_CLIENT_IDS` | Comma-separated team/QA/agent user ids and internal OAuth client ids excluded from scoreboard counts |
 | `TINYCLOUD_BOOTSTRAP_HOST` | TinyCloud node used to bootstrap a user's canonical signer space |
 | `VITE_CONSOLE_ORIGIN` | Optional console origin. Leave unset locally to keep the account and console journey on one Vite host; set to `https://console.openkey.so` in production. |
 | `VITE_ACCOUNT_ORIGIN` | Set alongside `VITE_CONSOLE_ORIGIN` only when testing the split-host journey locally (the portless example supplies both). |
