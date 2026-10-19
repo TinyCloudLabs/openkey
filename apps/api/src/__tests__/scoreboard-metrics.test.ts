@@ -187,6 +187,19 @@ test('fetchNodeOwners aborts an oversize streamed body without Content-Length', 
   expect(pulled).toBeLessThan(25);
 });
 
+test('fetchNodeOwners sends identity encoding, disables decompression, and rejects encoded responses unread', async () => {
+  let init: RequestInit & { decompress?: boolean } = {};
+  let pulled = false;
+  const stream = new ReadableStream<Uint8Array>({ pull(ctrl) { pulled = true; ctrl.enqueue(new Uint8Array(8)); ctrl.close(); } }, { highWaterMark: 0 });
+  const f = (async (_u: string, i: RequestInit) => { init = i; return new Response(stream, { headers: { 'content-encoding': 'gzip' } }); }) as unknown as typeof fetch;
+  await expect(fetchNodeOwners(nodeEnv, f)).rejects.toThrow('encoded');
+  expect(pulled).toBe(false);
+  expect(init.decompress).toBe(false);
+  expect((init.headers as Record<string, string>)['Accept-Encoding']).toBe('identity');
+  const ok = (async () => new Response('{"owners":[]}', { headers: { 'content-encoding': 'identity' } })) as unknown as typeof fetch;
+  await expect(fetchNodeOwners(nodeEnv, ok)).resolves.toEqual([]);
+});
+
 test('fetchNodeOwners single-flights concurrent calls', async () => {
   let n = 0;
   const f = (async () => { n += 1; await new Promise((r) => setTimeout(r, 20)); return Response.json({ owners: [] }); }) as unknown as typeof fetch;

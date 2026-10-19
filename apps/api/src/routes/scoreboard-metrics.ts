@@ -135,11 +135,18 @@ async function loadNodeOwners(
   assertAllowedStatsUrl(url, env);
   const response = await fetchImpl(url, {
     method: 'GET',
-    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json', 'Accept-Encoding': 'identity' },
+    // Bun's fetch inflates gzip before the stream reader; the byte cap must see wire bytes.
+    decompress: false,
     redirect: 'error',
     signal: AbortSignal.timeout(NODE_STATS_TIMEOUT_MS),
   });
   if (!response.ok) throw new Error('node stats request failed');
+  const encoding = response.headers.get('content-encoding')?.trim().toLowerCase();
+  if (encoding && encoding !== 'identity') {
+    await response.body?.cancel().catch(() => {});
+    throw new Error('node stats response encoded');
+  }
   const body = JSON.parse(await readCappedBody(response)) as { owners?: unknown } | null;
   const owners = body?.owners;
   if (
