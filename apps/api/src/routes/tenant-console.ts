@@ -80,6 +80,7 @@ export function createTenantConsoleRouter(db: PrismaClient, dependencies: Tenant
   });
   const overview = async (c: Context<TenantConsoleContext>) => {
     const organizationId = c.req.param('organizationId');
+    if (!organizationId) return error(c, 404, 'NOT_FOUND', 'Organization not found');
     const organization = await db.organization.findUnique({ where: { id: organizationId }, select: { id: true, name: true, plan: true, billingState: true, createdAt: true, updatedAt: true } });
     if (!organization) return error(c, 404, 'NOT_FOUND', 'Organization not found');
     const [entitlements, apps, members] = await Promise.all([resolvePlanEntitlements(db, organizationId), db.oauthClient.count({ where: { organizationId } }), db.organizationMembership.count({ where: activeMembershipWhere(organizationId, new Date()) })]);
