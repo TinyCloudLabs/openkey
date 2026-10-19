@@ -135,10 +135,11 @@ export function checkSiweOrigin(text: string, requestOrigin: string | null | und
     } catch {
       return refusal('uri-mismatch', 'This sign-in message has a malformed URI, so it will not be signed.');
     }
-    // A `did:` URI names the delegated session key (TinyCloud delegation
-    // SIWE). It carries no web origin, so it cannot impersonate another
-    // site; the domain check above is what binds the message to the origin.
-    if (uri.protocol === 'did:') continue;
+    // A `did:` or `ucan:` URI names the delegated session key or the revoked
+    // UCAN (TinyCloud delegation / owner-revocation SIWE). It carries no web
+    // origin, so it cannot impersonate another site; the domain check above
+    // is what binds the message to the origin.
+    if (uri.protocol === 'did:' || uri.protocol === 'ucan:') continue;
     if (
       (uri.protocol !== 'https:' && uri.protocol !== 'http:') ||
       uri.username ||

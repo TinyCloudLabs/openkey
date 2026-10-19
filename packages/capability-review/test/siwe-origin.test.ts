@@ -64,6 +64,21 @@ describe("checkSiweOrigin: accepted", () => {
   });
 });
 
+describe("checkSiweOrigin: ucan URIs and openkey.so", () => {
+  const ACCOUNT = "https://account.tinycloud.xyz";
+  const ucan = "ucan:bafyreib2rxk3rybk3aobmv5cjuql3bm2twh4jo5uxgf5kpqcsgzz7nazxe";
+
+  test("owner-revocation SIWE (ucan: URI) is bound by its domain", () => {
+    expect(checkSiweOrigin(siwe({ domain: "account.tinycloud.xyz", uri: ucan }), ACCOUNT)).toEqual({ siwe: true, ok: true });
+    refusedWith(siwe({ domain: "account.tinycloud.xyz", uri: ucan }), "https://evil.example", "domain-mismatch");
+  });
+
+  test("a web origin cannot claim the native issuer openkey.so", () => {
+    refusedWith(siwe({ domain: "openkey.so", uri: "did:key:z6Mk" }), "https://attacker.example", "domain-mismatch");
+    refusedWith(siwe({ domain: "openkey.so", uri: "https://openkey.so" }), "https://attacker.example", "domain-mismatch");
+  });
+});
+
 describe("checkSiweOrigin: refused", () => {
   test("mismatched domain is refused", () => {
     refusedWith(siwe({ domain: "internal.tinycloud.xyz", uri: "https://evil.example" }), "https://evil.example", "domain-mismatch");

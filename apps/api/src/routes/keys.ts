@@ -286,11 +286,18 @@ keysRouter.post('/:keyId/sign', async (c) => {
   // TC-1486: a SIWE-shaped message is signable only for the origin it names.
   // `requestOrigin` is the postMessage sender the widget verified; absent
   // means unattributed, which is refused. Checked before the key is unsealed.
-  if (typeof body.message === 'string') {
-    const siweCheck = checkSignableMessage(body.message, body.requestOrigin);
-    if (siweCheck.siwe && !siweCheck.ok) {
-      return c.json({ error: siweCheck.message, code: 'siwe_origin_refused', reason: siweCheck.code }, 403);
-    }
+  // The guard must see exactly what the signer will cover, so the shape is
+  // validated first: `message` is a string, and `raw` input is even-length
+  // `0x` hex (decoded for the guard below).
+  if (typeof body.message !== 'string') {
+    return c.json({ error: 'message must be a string' }, 400);
+  }
+  if (body.format === 'raw' && !/^0x(?:[0-9a-fA-F]{2})*$/.test(body.message)) {
+    return c.json({ error: 'raw message must be even-length 0x hex' }, 400);
+  }
+  const siweCheck = checkSignableMessage(body.message, body.requestOrigin);
+  if (siweCheck.siwe && !siweCheck.ok) {
+    return c.json({ error: siweCheck.message, code: 'siwe_origin_refused', reason: siweCheck.code }, 403);
   }
 
   const key = await prisma.ethereumKey.findFirst({
