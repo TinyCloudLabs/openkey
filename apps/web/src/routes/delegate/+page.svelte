@@ -6,6 +6,7 @@
   import { api, type EthereumKey } from '$lib/api';
   import { copyText } from '$lib/clipboard';
   import Button from '$lib/components/ui/button.svelte';
+  import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import SiweMessage from '$lib/components/ui/siwe-message.svelte';
   import CliSigningAdapter from '$lib/components/signing/cli-signing-adapter.svelte';
@@ -24,7 +25,7 @@
   } from '$lib/delegate-link-policy';
   import { preparedMatchesSelection, reviewSelectionToActionKeys } from '$lib/delegate-review-selection';
   import { expectedSigner } from '$lib/delegate-expected-signer';
-  import { autoSelectKey, keyPickerLayout } from '$lib/delegate-key-selection';
+  import { autoSelectKey } from '$lib/delegate-key-selection';
   import {
     parseSpaceSetup,
     spaceReadinessResult,
@@ -356,7 +357,7 @@
   let overrideMismatch = $state(false);
   // With no wallet named, the picker offers the primary key; the other keys
   // (separate account owners) stay hidden until the user asks for them.
-  const pickerLayout = $derived(keyPickerLayout(keys, expectedAddress));
+  // The shared KeyPicker owns the layout.
   let showOtherKeys = $state(false);
   const selectedMatchesExpected = $derived(
     !expectedAddress ||
@@ -1600,84 +1601,31 @@
             </Button>
           </div>
         {:else}
-          {#snippet keyButton(key: EthereumKey)}
-            {@const isExpected = !!expectedAddress && key.address.toLowerCase() === expectedAddress}
-            {@const isMismatch = !!expectedAddress && !isExpected}
-            <button
-              class="flex justify-between items-center p-4 bg-white border rounded-xl cursor-pointer transition-all group"
-              class:border-surface-900={isExpected}
-              class:bg-surface-50={isExpected}
-              class:border-surface-200={!isExpected}
-              class:hover:border-surface-900={!isMismatch}
-              class:hover:bg-surface-50={!isMismatch}
-              class:opacity-60={isMismatch && !overrideMismatch}
-              disabled={isMismatch && !overrideMismatch}
-              onclick={() => onKeySelect(key)}
-            >
-              <span class="font-medium flex items-center gap-2">
-                {key.label || `Key ${key.keyIndex}`}
-                {#if key.keyType === 'EXTERNAL'}
-                  <span class="text-xs font-medium px-1.5 py-0.5 rounded-md bg-surface-100 text-surface-500">(External)</span>
-                {/if}
-                {#if key.isPrimary}
-                  <span class="text-xs font-medium px-1.5 py-0.5 rounded-md bg-surface-900 text-white">Primary</span>
-                {/if}
-                {#if isExpected}
-                  <span class="text-xs font-medium px-1.5 py-0.5 rounded-md bg-emerald-100 text-emerald-700">Requested</span>
-                {/if}
-              </span>
-              <code class="font-mono text-surface-400 text-sm">{formatAddress(key.address)}</code>
-            </button>
-          {/snippet}
-
-          {#if pickerLayout.kind === 'primary'}
-            <!--
-              TC-703: no wallet named, so lead with the primary key. Another
-              key is a different account owner; offer it only on request.
-            -->
-            <div class="flex flex-col gap-3">
-              <p class="text-surface-500 text-sm">Sign in with your primary key:</p>
-              {@render keyButton(pickerLayout.primary)}
-              {#if showOtherKeys}
-                <div class="w-full bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-xl text-sm" role="note">
-                  Each key is a separate account owner, with its own data and spaces. Signing in with a different key does not give the CLI the data in your primary key.
-                </div>
-                {#each pickerLayout.others as key}
-                  {@render keyButton(key)}
-                {/each}
-                <Button variant="secondary" onclick={showLinkWallet} class="rounded-xl">
-                  Link External Wallet
-                </Button>
-              {:else}
+          <KeyPicker
+            {keys}
+            {expectedAddress}
+            {overrideMismatch}
+            bind:showOtherKeys
+            onselect={onKeySelect}
+            primaryHeading="Sign in with your primary key:"
+            listHeading="Select a key to authorize:"
+            otherKeysWarning="Each key is a separate account owner, with its own data and spaces. Signing in with a different key does not give the CLI the data in your primary key."
+          >
+            {#snippet actions()}
+              {#if expectedAddress && !overrideMismatch && !keys.some((k) => k.address.toLowerCase() === expectedAddress)}
                 <button
                   type="button"
                   class="text-xs text-surface-500 hover:text-surface-900 transition-colors bg-transparent border-none cursor-pointer underline self-start"
-                  onclick={() => (showOtherKeys = true)}
+                  onclick={() => (overrideMismatch = true)}
                 >
-                  Use a different key
+                  Continue with a different wallet anyway
                 </button>
               {/if}
-            </div>
-          {:else}
-          <div class="flex flex-col gap-3">
-            <p class="text-surface-500 text-sm">Select a key to authorize:</p>
-            {#each pickerLayout.keys as key}
-              {@render keyButton(key)}
-            {/each}
-            {#if expectedAddress && !overrideMismatch && !keys.some((k) => k.address.toLowerCase() === expectedAddress)}
-              <button
-                type="button"
-                class="text-xs text-surface-500 hover:text-surface-900 transition-colors bg-transparent border-none cursor-pointer underline self-start"
-                onclick={() => (overrideMismatch = true)}
-              >
-                Continue with a different wallet anyway
-              </button>
-            {/if}
-            <Button variant="secondary" onclick={showLinkWallet} class="rounded-xl">
-              Link External Wallet
-            </Button>
-          </div>
-          {/if}
+              <Button variant="secondary" onclick={showLinkWallet} class="rounded-xl">
+                Link External Wallet
+              </Button>
+            {/snippet}
+          </KeyPicker>
         {/if}
       {/if}
     </Card>

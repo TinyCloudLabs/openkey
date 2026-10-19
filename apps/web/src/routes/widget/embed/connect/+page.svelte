@@ -8,6 +8,7 @@
   import EmbeddedSignIn from '$lib/components/auth/embedded-sign-in.svelte';
   import { passkeysSupportedFromParams } from '$lib/passkey-support';
   import Button from '$lib/components/ui/button.svelte';
+  import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
 
   const session = authClient.useSession();
   const inIframe = typeof window !== 'undefined' && isEmbedContext();
@@ -16,6 +17,7 @@
   let loading = $state(true);
   let appName = $state('');
   let selectedKey = $state<EthereumKey | null>(null);
+  let showOtherKeys = $state(false);
   let error = $state('');
   let keysLoaded = $state(false);
   let initialized = $state(false);
@@ -211,10 +213,6 @@
     if (origin) window.parent.postMessage({ type: 'openkey:close', ...phase }, origin);
   }
 
-  function formatAddress(address: string): string {
-    return `${address.slice(0, 6)}...${address.slice(-4)}`;
-  }
-
 </script>
 
 <div bind:this={contentEl} class="flex flex-col gap-4 bg-[#fafafa] p-4 rounded-2xl">
@@ -264,38 +262,24 @@
         </Button>
       </div>
     {:else}
-      <div class="flex flex-col gap-2.5">
-        <p class="text-surface-500 text-sm">Select a key to connect:</p>
-        {#each keys as key}
-          <button
-            class="flex justify-between items-center p-3.5 bg-white border border-surface-200 rounded-xl text-surface-900 cursor-pointer transition-all hover:border-surface-900 hover:bg-surface-50"
-            class:border-surface-900={selectedKey?.id === key.id}
-            class:bg-surface-50={selectedKey?.id === key.id}
-            onclick={() => selectKey(key)}
-          >
-            <span class="font-medium text-sm flex items-center gap-2">
-              {key.label || `Key ${key.keyIndex}`}
-              {#if key.keyType === 'EXTERNAL'}
-                <span class="text-xs font-medium px-1.5 py-0.5 rounded-md bg-surface-100 text-surface-500">(External)</span>
-              {/if}
-            </span>
-            <div class="flex items-center gap-2">
-              <code class="font-mono text-surface-400 text-xs">{formatAddress(key.address)}</code>
-              {#if selectedKey?.id === key.id}
-                <svg class="w-4 h-4 text-surface-900" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-              {/if}
-            </div>
-          </button>
-        {/each}
-        <Button variant="secondary" size="sm" onclick={generateAndSelect} class="rounded-xl">
-          + Generate New Key
-        </Button>
-        <Button variant="secondary" size="sm" onclick={linkWallet} class="rounded-xl">
-          Link External Wallet
-        </Button>
-      </div>
+      <KeyPicker
+        {keys}
+        compact
+        bind:showOtherKeys
+        selectedId={selectedKey?.id ?? null}
+        onselect={selectKey}
+        primaryHeading="Connect with your primary key:"
+        listHeading="Select a key to connect:"
+      >
+        {#snippet actions()}
+          <Button variant="secondary" size="sm" onclick={generateAndSelect} class="rounded-xl">
+            + Generate New Key
+          </Button>
+          <Button variant="secondary" size="sm" onclick={linkWallet} class="rounded-xl">
+            Link External Wallet
+          </Button>
+        {/snippet}
+      </KeyPicker>
     {/if}
   </div>
 
