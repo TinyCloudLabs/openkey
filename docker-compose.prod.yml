@@ -37,7 +37,7 @@ services:
       # Cloudflare Turnstile server-side verification for new-account sign-up.
       # Unset = new sign-ups pause (fail closed); sign-in is unaffected.
       - TURNSTILE_SECRET_KEY=${TURNSTILE_SECRET_KEY:-}
-      # Public hostname the Turnstile widget runs on. Unset = hostname not checked.
+      # Public hostname the Turnstile widget runs on. Required in production (unset = new sign-ups pause); outside production, unset = hostname not checked.
       - TURNSTILE_EXPECTED_HOSTNAME=${TURNSTILE_EXPECTED_HOSTNAME:-}
       # QA registration exemption (server-checked, rotatable). Unset = disabled.
       - OPENKEY_QA_REGISTRATION_SECRET=${OPENKEY_QA_REGISTRATION_SECRET:-}

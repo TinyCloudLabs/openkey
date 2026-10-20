@@ -62,11 +62,10 @@ async function presentedQaSecret(): Promise<string | null> {
   }
 }
 
-// Cloudflare uses the visitor address as a signal. The proxy header is read when present.
+// Cloudflare uses the visitor address as a signal. Only cf-connecting-ip is trusted:
+// Cloudflare sets it at the edge, while x-forwarded-for is client-controlled.
 function clientIp(request: Request | undefined): string | undefined {
-  const connecting = request?.headers.get('cf-connecting-ip');
-  if (connecting) return connecting;
-  return request?.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || undefined;
+  return request?.headers.get('cf-connecting-ip') || undefined;
 }
 
 // Verifies the widget token. Only a definite success passes. A refused token
