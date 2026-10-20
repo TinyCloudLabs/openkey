@@ -22,8 +22,8 @@ const changeset = (bumps) =>
     .join("\n")}\n---\n\nChange.\n`;
 const pkg = (name, version, extra = {}) =>
   `${JSON.stringify({ name, version, ...extra }, null, 2)}\n`;
-const pre = (initialVersions, changesets = []) =>
-  `${JSON.stringify({ mode: "pre", tag: "beta", initialVersions, changesets }, null, 2)}\n`;
+// Changesets 3 writes only mode and tag; consumed changesets live in .changeset/pre/.
+const pre = () => `${JSON.stringify({ mode: "pre", tag: "beta" }, null, 2)}\n`;
 
 function repository(t) {
   const dir = mkdtempSync(join(tmpdir(), "major-signoff-"));
@@ -129,10 +129,11 @@ test("pr: private packages are not releases", (t) => {
 
 test("pr: graduating a new major out of pre mode needs a sign-off", (t) => {
   const repo = repository(t);
-  const base = repo.commit("beta", {
-    ".changeset/pre.json": pre({ "@x/a": "0.9.0" }),
-    "packages/a/package.json": pkg("@x/a", "1.0.0-beta.3"),
+  repo.commit("enter pre", {
+    ".changeset/pre.json": pre(),
+    "packages/a/package.json": pkg("@x/a", "0.9.0"),
   });
+  const base = repo.commit("beta", { "packages/a/package.json": pkg("@x/a", "1.0.0-beta.3") });
   repo.git("checkout", "--quiet", "-b", "release");
   const head = repo.commit(
     "release",
@@ -175,12 +176,12 @@ test("pr: a version PR for an unapproved major changeset fails", (t) => {
   assert.match(result.stderr, /@x\/a: packages\/a\/package\.json: 1\.2\.0 -> 2\.0\.0/);
 });
 
-test("beta: an unadmitted major changeset needs a sign-off in this cycle", (t) => {
+test("beta: a pending major changeset needs a sign-off in this cycle", (t) => {
   const repo = repository(t);
   repo.commit("approve-major-release: @x/a");
   repo.commit("enter pre", {
-    ".changeset/pre.json": pre({ "@x/a": "1.2.0" }, ["old-major"]),
-    ".changeset/old-major.md": changeset({ "@x/b": "major" }),
+    ".changeset/pre.json": pre(),
+    ".changeset/pre/old-major.md": changeset({ "@x/b": "major" }),
     "packages/a/package.json": pkg("@x/a", "1.2.0"),
   });
   repo.commit("feat", { ".changeset/big.md": changeset({ "@x/a": "major" }) });
@@ -198,7 +199,11 @@ test("stable: graduating a new major needs a sign-off in this cycle", (t) => {
   const repo = repository(t);
   repo.commit("approve-major-release: @x/a");
   repo.commit("enter pre", {
-    ".changeset/pre.json": pre({ "@x/a": "0.9.0", "@x/b": "2.1.0" }),
+    ".changeset/pre.json": pre(),
+    "packages/a/package.json": pkg("@x/a", "0.9.0"),
+    "packages/b/package.json": pkg("@x/b", "2.1.0"),
+  });
+  repo.commit("beta", {
     "packages/a/package.json": pkg("@x/a", "1.0.0-beta.4"),
     "packages/b/package.json": pkg("@x/b", "2.2.0-beta.1"),
   });

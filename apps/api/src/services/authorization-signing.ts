@@ -97,6 +97,8 @@ export interface AuthorizationContextIssueInput {
    * always the server's derived, size-bounded, sanitized version.
    */
   verifiedManifest?: VerifiedManifestFields;
+  /** Normalised requesting-app origin, for the per-sign-in count record only. */
+  appOrigin?: string;
 }
 
 interface StoredContext {
@@ -122,6 +124,7 @@ interface StoredContext {
     reason: string;
   };
   verifiedManifest?: VerifiedManifestFields;
+  appOrigin?: string;
 }
 
 const store = new Map<string, StoredContext>();
@@ -330,6 +333,7 @@ export function issueAuthorizationContext(
     handoffTicketHash: input.handoffTicketHash,
     metadataTrust,
     verifiedManifest: input.verifiedManifest,
+    appOrigin: input.appOrigin,
   };
   store.set(token, stored);
 
@@ -781,6 +785,7 @@ export interface PeekSuccess {
     expirationTime: string;
     allowedActionIds: string[];
     initialSelectionActionIds: string[];
+    appOrigin?: string;
   };
 }
 
@@ -826,6 +831,7 @@ export function peekAuthorizationContext(token: string): PeekSuccess | PeekFailu
       expirationTime: stored.expirationTime,
       allowedActionIds: [...stored.allowedActionIds],
       initialSelectionActionIds: [...stored.initialSelectionActionIds],
+      appOrigin: stored.appOrigin,
     },
   };
 }
