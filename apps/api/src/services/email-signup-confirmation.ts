@@ -18,7 +18,7 @@ import { setSessionCookie } from 'better-auth/cookies';
 import { parseUserOutput } from 'better-auth/db';
 import { getCurrentAuthContext } from '@better-auth/core/context';
 import type { PrismaClient } from '@openkey/db';
-import { log } from '../log';
+import { log, logQaAccountCreated } from '../log';
 import { QA_REGISTRATION_HEADER, qaEligibleEmail, qaRegistrationAuthorized } from './qa-registration';
 import { verifyTurnstileToken } from './turnstile';
 
@@ -180,7 +180,7 @@ export function emailSignupConfirmation(database: PrismaClient) {
           if (await ctx.context.internalAdapter.findUserByEmail(email)) throw accountExists();
           throw error;
         }
-        if (pending.value === VALUE_QA_EXEMPT) log('info', 'auth_email_signup_qa_account_created');
+        if (pending.value === VALUE_QA_EXEMPT) logQaAccountCreated(user.id);
         const session = await ctx.context.internalAdapter.createSession(user.id);
         await setSessionCookie(ctx, { session, user });
         log('info', 'auth_email_signup_confirmed');

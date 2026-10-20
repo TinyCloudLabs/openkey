@@ -129,6 +129,11 @@ export function logMetric(
   emit(level, event, { status: fields.status, count: fields.count });
 }
 
+/** QA-exempt account creation only: logs the account id (never the email) so counts can exclude test accounts. */
+export function logQaAccountCreated(userId: string): void {
+  emit('info', 'auth_email_signup_qa_account_created', { user_id: userId });
+}
+
 export type RequestedSpaceHosted = 'yes' | 'no' | 'timeout';
 
 /**
