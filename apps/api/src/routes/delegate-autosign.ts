@@ -16,7 +16,8 @@ export interface RecapEntry {
 
 export type AutoSignPolicyCode =
   | 'auto_sign_disabled'
-  | 'outside_bootstrap_allowlist';
+  | 'outside_bootstrap_allowlist'
+  | 'owner_only_path';
 
 export type AutoSignPolicyDecision =
   | { allowed: true }
@@ -86,6 +87,65 @@ function denied(reason: string): AutoSignPolicyDecision {
   return { allowed: false, code: 'outside_bootstrap_allowlist', reason };
 }
 
+// Paths whose writes must come from the owner's own passkey session, never
+// from Auto-Sign (TC-884). The Courier approval loop rests on this: a request
+// or order only counts when the owner approved it with a passkey tap. A ReCap
+// cannot carve an exception out of a broader grant, so any Auto-Sign request
+// that could write here, including a whole-space grant, is refused.
+// Compared lowercase, as raw string prefixes, so a name that merely starts
+// the same way is refused too; over-refusing only costs a passkey tap.
+const OWNER_ONLY_SPACE = 'agents';
+const OWNER_ONLY_PATHS: readonly string[] = [
+  'xyz.tinycloud.courier/me/approvals',
+  'xyz.tinycloud.courier/me/orders',
+];
+const READ_ONLY_KV_VERBS: Record<string, true> = { get: true, list: true, metadata: true };
+
+function pathReachesOwnerOnly(path: string): boolean {
+  const normalized = path.toLowerCase().replace(/^\/+/, '');
+  // Forms the node might normalize differently from a string comparison are
+  // refused rather than interpreted.
+  if (normalized.includes('%') || normalized.includes('\\')) {
+    return true;
+  }
+  const segments = normalized.split('/');
+  const ambiguous = segments.some((segment, index) => (
+    segment === '.' ||
+    segment === '..' ||
+    (segment === '' && index < segments.length - 1)
+  ));
+  if (ambiguous) {
+    return true;
+  }
+  return OWNER_ONLY_PATHS.some((owned) => (
+    owned.startsWith(normalized) || normalized.startsWith(owned)
+  ));
+}
+
+function evaluateOwnerOnlyPaths(entries: RecapEntry[]): AutoSignPolicyDecision {
+  for (const entry of entries) {
+    if (
+      fullServiceName(entry.service) !== 'tinycloud.kv' ||
+      spaceNameFromId(entry.space) !== OWNER_ONLY_SPACE
+    ) {
+      continue;
+    }
+    // Anything that is not a plain read counts as a write, so an unknown
+    // verb fails closed.
+    const writes = entry.actions.some((action) => (
+      READ_ONLY_KV_VERBS[action.slice(action.lastIndexOf('/') + 1).toLowerCase()] !== true
+    ));
+    if (writes && pathReachesOwnerOnly(entry.path)) {
+      return {
+        allowed: false,
+        code: 'owner_only_path',
+        reason: 'Writes to Courier approvals and orders need a passkey approval, not Auto-Sign',
+      };
+    }
+  }
+  return { allowed: true };
+}
+
 function bootstrapSpaceForRequest({ address, chainId, spaceId }: ScopeEvaluationInput): {
   space: BootstrapSpaceName;
   expectedSpaceId: string;
@@ -104,6 +164,11 @@ function bootstrapSpaceForRequest({ address, chainId, spaceId }: ScopeEvaluation
 }
 
 export function evaluateBootstrapSessionScope(input: ScopeEvaluationInput): AutoSignPolicyDecision {
+  const ownerOnly = evaluateOwnerOnlyPaths(input.entries);
+  if (!ownerOnly.allowed) {
+    return ownerOnly;
+  }
+
   const bootstrapSpace = bootstrapSpaceForRequest(input);
   if ('allowed' in bootstrapSpace) {
     return bootstrapSpace;
@@ -160,6 +225,11 @@ export function evaluateBootstrapSigningScope(
   input: SigningScopeEvaluationInput,
   allowlist: readonly BootstrapAllowlistEntry[] = BOOTSTRAP_ALLOWLIST,
 ): AutoSignPolicyDecision {
+  const ownerOnly = evaluateOwnerOnlyPaths(input.entries);
+  if (!ownerOnly.allowed) {
+    return ownerOnly;
+  }
+
   if (isHostSigningScope(input.entries)) {
     const spaceId = scopeSpaceId(input.entries);
     if (!spaceId) {
