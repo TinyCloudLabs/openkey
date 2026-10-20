@@ -39,7 +39,7 @@ services:
       - TURNSTILE_SECRET_KEY=${TURNSTILE_SECRET_KEY:-}
       # Public hostname the Turnstile widget runs on. Unset = hostname not checked.
       - TURNSTILE_EXPECTED_HOSTNAME=${TURNSTILE_EXPECTED_HOSTNAME:-}
-      # QA registration bypass (server-checked, rotatable). Unset = disabled.
+      # QA registration exemption (server-checked, rotatable). Unset = disabled.
       - OPENKEY_QA_REGISTRATION_SECRET=${OPENKEY_QA_REGISTRATION_SECRET:-}
       - OPENKEY_QA_REGISTRATION_SECRET_PREVIOUS=${OPENKEY_QA_REGISTRATION_SECRET_PREVIOUS:-}
     restart: unless-stopped
