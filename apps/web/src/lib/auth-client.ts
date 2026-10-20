@@ -47,7 +47,7 @@ export function authErrorMessage(error: { message?: unknown } | null | undefined
  * way `signIn.emailOtp` does, so this refreshes `useSession` itself.
  */
 export async function confirmEmailSignUp(
-  body: { email: string; signupToken: string; oauth_query?: string },
+  body: { email: string; signupToken: string; turnstileToken?: string; oauth_query?: string },
   onSuccess?: (context: { data: unknown }) => void,
 ) {
   const result = await authClient.$fetch(SIGN_UP_EMAIL_OTP_PATH, { method: 'POST', body, onSuccess });

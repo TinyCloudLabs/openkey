@@ -1,0 +1,5 @@
+{
+  "description": "Internal test and QA accounts excluded from scoreboard counts. Counts only; not a security control and never consulted for authentication. Entries are exact ids.",
+  "userIds": [],
+  "clientIds": []
+}

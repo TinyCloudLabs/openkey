@@ -2,6 +2,7 @@ import { timingSafeEqual } from 'crypto';
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { logMetric } from '../log';
+import TEST_ACCOUNTS from '../../config/test-accounts.json';
 
 // TC-1483: counts-only metrics for the scoreboard, behind their own bearer
 // (OPENKEY_METRICS_READ_TOKEN). The token grants aggregate counts only:
@@ -46,6 +47,18 @@ export function exclusionsFromEnv(env: Record<string, string | undefined> = proc
   return {
     userIds: parseList(env.SCOREBOARD_EXCLUDE_USER_IDS),
     clientIds: parseList(env.SCOREBOARD_EXCLUDE_CLIENT_IDS),
+  };
+}
+
+/** Env lists plus the count-only test-account registry. The registry is not a security control. */
+export function scoreboardExclusions(
+  env: Record<string, string | undefined> = process.env,
+  registry: { userIds: readonly string[]; clientIds: readonly string[] } = TEST_ACCOUNTS,
+): ScoreboardExclusions {
+  const fromEnv = exclusionsFromEnv(env);
+  return {
+    userIds: new Set([...fromEnv.userIds, ...registry.userIds.map((id) => id.trim()).filter(Boolean)]),
+    clientIds: new Set([...fromEnv.clientIds, ...registry.clientIds.map((id) => id.trim()).filter(Boolean)]),
   };
 }
 
@@ -234,7 +247,7 @@ scoreboardMetricsRouter.get('/protocol-users', async (c) => {
   }
   let count: number;
   try {
-    count = await countProtocolUsers(prisma as unknown as ScoreboardDatabase, owners, exclusionsFromEnv());
+    count = await countProtocolUsers(prisma as unknown as ScoreboardDatabase, owners, scoreboardExclusions());
   } catch (error) {
     logMetric('error', 'scoreboard_protocol_users_call', { status: 500 });
     throw error;
@@ -244,6 +257,6 @@ scoreboardMetricsRouter.get('/protocol-users', async (c) => {
 });
 
 scoreboardMetricsRouter.get('/app-users', async (c) => {
-  const counts = await countAppUsers(prisma as unknown as ScoreboardDatabase, exclusionsFromEnv());
+  const counts = await countAppUsers(prisma as unknown as ScoreboardDatabase, scoreboardExclusions());
   return c.json(counts);
 });

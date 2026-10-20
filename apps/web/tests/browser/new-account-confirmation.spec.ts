@@ -30,10 +30,20 @@ const session = {
 
 const RETURNING = 'returning@example.test';
 
+// TC-1632: stands in for Cloudflare's widget so the check resolves without network.
+// reset() issues a fresh token, as the real widget does after each attempt.
+const TURNSTILE_STUB = `window.turnstile = {
+  render(el, opts) { window.__tsOpts = opts; setTimeout(() => opts.callback('test-turnstile-token'), 0); return 'widget-1'; },
+  reset() { setTimeout(() => window.__tsOpts.callback('test-turnstile-token'), 0); },
+  remove() {},
+};`;
+
 async function mockNewAccount(page: Page, signUp: (route: Route, body: Record<string, unknown>) => unknown) {
   const signUps: Record<string, unknown>[] = [];
   const signIns: Record<string, unknown>[] = [];
   let signedIn = false;
+  await page.route('https://challenges.cloudflare.com/**', (route) =>
+    route.fulfill({ contentType: 'application/javascript', body: TURNSTILE_STUB }));
   await page.route('**/api/**', (route) => {
     const url = new URL(route.request().url());
     const path = url.pathname;
@@ -117,6 +127,31 @@ test('login: an expired confirmation sends the user back for a new code', async 
   await expect(page.getByRole('alert')).toContainText('This confirmation has expired');
 });
 
+test('login: a failed check or a paused registration keeps the sign-up token and asks again', async ({ page }) => {
+  const answers = [
+    { status: 400, body: { code: 'TURNSTILE_FAILED', message: 'Verification failed. Complete the check again.' } },
+    { status: 503, body: { code: 'REGISTRATION_PAUSED', message: 'Sign-ups are paused for a moment. Try again shortly.' } },
+  ];
+  const { signUps } = await mockNewAccount(page, (route) => {
+    const answer = answers.shift();
+    return answer ? json(route, answer.body, answer.status) : json(route, { token: 't', user: session.user });
+  });
+  await page.goto('/auth/login');
+  await verifyOnLogin(page);
+
+  const confirmation = page.getByTestId('new-account-confirmation');
+  await confirmation.getByRole('button', { name: 'Create a new account' }).click();
+  await expect(page.getByRole('alert')).toContainText('Verification failed');
+  await expect(confirmation).toBeVisible();
+
+  await confirmation.getByRole('button', { name: 'Create a new account' }).click();
+  await expect(page.getByRole('alert')).toContainText('Sign-ups are paused');
+  await expect(confirmation).toBeVisible();
+
+  expect(signUps.map((body) => body.signupToken)).toEqual(['signup-token-1', 'signup-token-1']);
+  expect(signUps.map((body) => body.turnstileToken)).toEqual(['test-turnstile-token', 'test-turnstile-token']);
+});
+
 test('embedded connect: an unknown email asks first, and Create carries the token', async ({ page }) => {
   const { signUps } = await mockNewAccount(page, (route) =>
     route.fulfill({ status: 200, contentType: 'application/json', headers: { 'set-auth-token': 'session-1' }, body: JSON.stringify({ token: 'session-1', user: session.user }) }));
@@ -137,7 +172,7 @@ test('embedded connect: an unknown email asks first, and Create carries the toke
 
   await confirmation.getByRole('button', { name: 'Create a new account' }).click();
   await expect.poll(() => page.evaluate(() => sessionStorage.getItem('openkey_session_token'))).toBe('session-1');
-  expect(signUps).toEqual([{ email: EMAIL, signupToken: 'signup-token-1' }]);
+  expect(signUps).toEqual([{ email: EMAIL, signupToken: 'signup-token-1', turnstileToken: 'test-turnstile-token' }]);
 });
 
 test('login: a created account is signed in for pages that read the session', async ({ page }) => {

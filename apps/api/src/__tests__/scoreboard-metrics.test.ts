@@ -5,7 +5,7 @@ await mockModules({
   '@openkey/db': () => ({ createPrismaClient: () => ({ $queryRaw: async () => [] }) }),
 });
 
-const { countAppUsers, countProtocolUsers, exclusionsFromEnv, fetchNodeOwners, resetScoreboardRateLimitForTests, scoreboardMetricsRouter } = await import(
+const { countAppUsers, countProtocolUsers, exclusionsFromEnv, fetchNodeOwners, resetScoreboardRateLimitForTests, scoreboardExclusions, scoreboardMetricsRouter } = await import(
   '../routes/scoreboard-metrics?tc1483' as string
 );
 
@@ -89,6 +89,13 @@ test('exclusion lists come from config', () => {
   const { userIds, clientIds } = exclusionsFromEnv({ SCOREBOARD_EXCLUDE_USER_IDS: ' a, b ,,', SCOREBOARD_EXCLUDE_CLIENT_IDS: 'c' });
   expect([...userIds]).toEqual(['a', 'b']);
   expect([...clientIds]).toEqual(['c']);
+});
+
+test('the test-account registry adds to env exclusions, trimmed and deduped', () => {
+  const registry = { userIds: ['c', ' a ', ''], clientIds: ['z'] };
+  const { userIds, clientIds } = scoreboardExclusions({ SCOREBOARD_EXCLUDE_USER_IDS: 'a, b' }, registry);
+  expect([...userIds].sort()).toEqual(['a', 'b', 'c']);
+  expect([...clientIds]).toEqual(['z']);
 });
 
 const envKeys = ['OPENKEY_METRICS_READ_TOKEN', 'INTERNAL_METRICS_TOKEN', 'NODE_STATS_URL', 'NODE_STATS_READ_TOKEN'] as const;

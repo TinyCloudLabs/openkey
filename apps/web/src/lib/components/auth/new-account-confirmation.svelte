@@ -1,5 +1,6 @@
 <script lang="ts">
   import Button from '$lib/components/ui/button.svelte';
+  import TurnstileWidget from './turnstile-widget.svelte';
 
   // TC-1114: shown after a verified code for an email with no account. Nothing
   // exists yet; only "Create a new account" makes one.
@@ -7,7 +8,9 @@
     email: string;
     busy?: boolean;
     creating?: boolean;
-    oncreate: () => void;
+    /** TC-1632: show the verification check before creating the account. */
+    challenge?: boolean;
+    oncreate: (turnstileToken: string | null) => void;
     ondifferentemail: () => void;
     /** Omitted where passkeys are unavailable. */
     onpasskey?: () => void;
@@ -15,7 +18,21 @@
     onrecover?: () => void;
   }
 
-  let { email, busy = false, creating = false, oncreate, ondifferentemail, onpasskey, onrecover }: Props = $props();
+  let {
+    email,
+    busy = false,
+    creating = false,
+    challenge = false,
+    oncreate,
+    ondifferentemail,
+    onpasskey,
+    onrecover,
+  }: Props = $props();
+
+  let turnstileToken = $state<string | null>(null);
+  let widget = $state<{ reset: () => void }>();
+
+  const canCreate = $derived(!challenge || turnstileToken !== null);
 
   const alternatives = $derived(
     onpasskey && onrecover
@@ -26,6 +43,15 @@
           ? 'recover your account'
           : 'use the email on your existing account',
   );
+
+  function create() {
+    if (!canCreate) return;
+    const token = challenge ? turnstileToken : null;
+    // Tokens are single-use: a new check is needed for every attempt.
+    turnstileToken = null;
+    widget?.reset();
+    oncreate(token);
+  }
 </script>
 
 <div class="flex w-full flex-col gap-3 text-center" data-testid="new-account-confirmation">
@@ -33,7 +59,10 @@
     No OpenKey account for <span class="block break-words">{email}</span>
   </h2>
   <p class="mb-2 text-sm text-surface-500">Create a new account, or {alternatives}?</p>
-  <Button onclick={oncreate} disabled={busy} aria-busy={creating} class="w-full rounded-xl">
+  {#if challenge}
+    <TurnstileWidget bind:this={widget} onverify={(token) => (turnstileToken = token)} onexpire={() => (turnstileToken = null)} />
+  {/if}
+  <Button onclick={create} disabled={busy || !canCreate} aria-busy={creating} class="w-full rounded-xl">
     {creating ? 'Creating account…' : 'Create a new account'}
   </Button>
   {#if onpasskey}

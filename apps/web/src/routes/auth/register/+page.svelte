@@ -5,13 +5,14 @@
   import { authClient, API_BASE, authErrorMessage, confirmEmailSignUp } from '$lib/auth-client';
   import { api } from '$lib/api';
   import { setSessionToken } from '$lib/embed-passkey';
-  import { newAccountSignupToken } from '$lib/email-signup';
+  import { keepsSignupToken, newAccountNeedsChallenge, newAccountSignupToken } from '$lib/email-signup';
   import {
     loadConfiguredSocialProviders,
     signInWithSocialPopup,
     type SocialProviderId,
   } from '$lib/social-auth';
   import SocialButtons from '$lib/components/auth/social-buttons.svelte';
+  import NewAccountConfirmation from '$lib/components/auth/new-account-confirmation.svelte';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
@@ -20,11 +21,12 @@
 
   let email = $state('');
   let otp = $state('');
-  let step = $state<'email' | 'otp' | 'passkey' | 'success'>(getInitialStep());
+  let step = $state<'email' | 'otp' | 'confirm' | 'passkey' | 'success'>(getInitialStep());
   const initialReturnTo = getInitialReturnTo();
   let loading = $state(false);
   let error = $state('');
   let registeredSessionToken = $state<string | null>(null);
+  let pendingSignupToken = $state<string | null>(null);
   let providers = $state<SocialProviderId[]>([]);
   let loadingProvider = $state<SocialProviderId | null>(null);
 
@@ -109,8 +111,15 @@
     try {
       const result = await authClient.signIn.emailOtp({ email, otp });
       // This page is the explicit "create an account" choice, so a verified
-      // code for a new email confirms the sign-up straight away (TC-1114).
+      // code for a new email confirms the sign-up straight away (TC-1114),
+      // unless the API asks for the Turnstile check first (TC-1632).
       const signupToken = newAccountSignupToken(result.error);
+      if (signupToken && newAccountNeedsChallenge(result.error)) {
+        pendingSignupToken = signupToken;
+        otp = '';
+        step = 'confirm';
+        return;
+      }
       const outcome = signupToken
         ? await confirmEmailSignUp({ email, signupToken })
         : result;
@@ -121,6 +130,36 @@
       }
     } catch (e: any) {
       error = e.message || 'Invalid code';
+    } finally {
+      loading = false;
+    }
+  }
+
+  // TC-1632: confirm after the check. A retryable failure keeps the token and
+  // stays on this step; any other failure returns to the email step.
+  async function confirmNewAccount(turnstileToken: string | null) {
+    if (!pendingSignupToken) return;
+    loading = true;
+    error = '';
+    try {
+      const outcome = await confirmEmailSignUp({
+        email,
+        signupToken: pendingSignupToken,
+        turnstileToken: turnstileToken ?? undefined,
+      });
+      if (outcome.error && keepsSignupToken(outcome.error)) {
+        error = authErrorMessage(outcome.error, 'Could not create your account');
+        return;
+      }
+      pendingSignupToken = null;
+      if (outcome.error) {
+        error = authErrorMessage(outcome.error, 'Could not create your account');
+        step = 'email';
+      } else {
+        step = 'passkey';
+      }
+    } catch (e: any) {
+      error = e.message || 'Could not create your account';
     } finally {
       loading = false;
     }
@@ -359,6 +398,22 @@
         <Button variant="ghost" onclick={() => { step = 'email'; error = ''; }} class="w-full mt-2">
           Back
         </Button>
+      {/if}
+
+      {#if step === 'confirm'}
+        {#if error}
+          <div class="bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl mb-6 text-sm" role="alert">
+            {error}
+          </div>
+        {/if}
+        <NewAccountConfirmation
+          {email}
+          busy={loading}
+          creating={loading}
+          challenge
+          oncreate={confirmNewAccount}
+          ondifferentemail={() => { step = 'email'; pendingSignupToken = null; error = ''; }}
+        />
       {/if}
 
       {#if step === 'passkey'}

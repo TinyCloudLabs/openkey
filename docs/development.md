@@ -248,6 +248,7 @@ The tests include a real loopback HTTP `/api/delegate/complete` â†’ pinned SDK â
 - SvelteKit 5 with Tailwind CSS 4.
 - Deployed to Cloudflare Pages.
 - `VITE_API_URL` env var points to the API. Defaults to `http://localhost:3001` in dev.
+- `VITE_TURNSTILE_SITE_KEY` is the public Turnstile site key for new-account sign-up (TC-1632). Dev uses Cloudflare's test key from `.env.example`. Test keys do not prove a human, and the widget still runs.
 
 ### Database
 

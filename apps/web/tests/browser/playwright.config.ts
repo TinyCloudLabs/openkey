@@ -56,6 +56,8 @@ export default defineConfig({
     url: 'http://localhost:5779/__parity_harness',
     cwd: '../..',
     reuseExistingServer: !process.env.CI,
+    // Cloudflare's public test site key; the browser spec stubs the widget script.
+    env: { VITE_TURNSTILE_SITE_KEY: '1x00000000000000000000AA' },
     timeout: 180000,
   },
 

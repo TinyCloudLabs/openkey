@@ -176,6 +176,9 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `ADMIN_API_KEY` | Bearer token for organization plan fixtures and app registration |
 | `INTERNAL_METRICS_TOKEN` | Bearer token for internal metrics |
 | `OPENKEY_METRICS_READ_TOKEN` | Separate bearer for `/api/internal/scoreboard/*`. Grants **aggregate counts only** (`GET /protocol-users` -> `{count}`, `GET /app-users` -> `{total, active7d}`); neither endpoint takes input, so the token cannot be used to look up addresses or accounts. `/protocol-users` is capped at 30 calls/min per process (429) and audit-logged (status and count only). Unset = 503 |
+| `TURNSTILE_SECRET_KEY` | Cloudflare Turnstile secret for new-account sign-up (passkey and email). The API checks each token with siteverify before the sign-up is completed. Unset = new sign-ups return 503 "Try again shortly" (fail closed); sign-in is unaffected. The site key is `VITE_TURNSTILE_SITE_KEY` at web build time |
+| `TURNSTILE_EXPECTED_HOSTNAME` | Optional. Public hostname the Turnstile widget runs on. When set, a token whose siteverify hostname differs is rejected. Unset = hostname not checked. Set it in production once the hostname is confirmed |
+| `OPENKEY_QA_REGISTRATION_SECRET` / `OPENKEY_QA_REGISTRATION_SECRET_PREVIOUS` | Server-checked QA bypass for the Turnstile step on new-account sign-up, compared in constant time. The current and previous values are both accepted during rotation. Unset = disabled. Never set outside QA environments; never expose to the browser |
 | `NODE_STATS_URL` / `NODE_STATS_READ_TOKEN` | Full URL of the node's read-only `GET /admin/stats` (TC-1482) and its read-only bearer. OpenKey fetches the owner addresses from it for `/protocol-users` (owners with data beyond the automatic `account` space; account-only owners are excluded). The URL must be `https:`; the response is capped at 16 MiB and concurrent calls share one node request; unset or failing node = 503, never a partial count. Expected response: `200 {"owners": ["0x<40 hex>", ...]}` |
 | `SCOREBOARD_EXCLUDE_USER_IDS` / `SCOREBOARD_EXCLUDE_CLIENT_IDS` | Comma-separated team/QA/agent user ids and internal OAuth client ids excluded from scoreboard counts |
 | `TINYCLOUD_BOOTSTRAP_HOST` | Trusted TinyCloud node used for canonical user-key bootstrap |
@@ -273,6 +276,9 @@ The SvelteKit frontend deploys to Cloudflare Pages using the `@sveltejs/adapter-
 3. Set environment variables:
    - `VITE_API_URL`: URL of your deployed API (e.g., `https://api.openkey.so`)
    - `VITE_CONSOLE_ORIGIN=https://console.openkey.so`
+   - `VITE_TURNSTILE_SITE_KEY`: public Turnstile site key for the
+     new-account check (TC-1632). Not a secret. Without it the widget shows
+     "Verification is unavailable right now" and new sign-ups cannot finish.
    - Optional, for deployments outside production (staging MCP, extra
      TinyCloud nodes): `VITE_DELEGATE_CALLBACK_URLS` (comma-separated app
      callback endpoints such as `https://mcp.staging.example/connect/callback`)

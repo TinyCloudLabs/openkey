@@ -21,8 +21,9 @@
   import { api } from '$lib/api';
   import SocialButtons from '$lib/components/auth/social-buttons.svelte';
   import { passkeysSupportedFromParams } from '$lib/passkey-support';
-  import { newAccountSignupToken } from '$lib/email-signup';
+  import { keepsSignupToken, newAccountNeedsChallenge, newAccountSignupToken } from '$lib/email-signup';
   import NewAccountConfirmation from '$lib/components/auth/new-account-confirmation.svelte';
+  import TurnstileWidget from '$lib/components/auth/turnstile-widget.svelte';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
@@ -71,6 +72,12 @@
   let oauthRedirectUrl: string | undefined;
   // Proof of the verified code, spent only if the user creates the account.
   let signupToken = $state<string | null>(null);
+  // TC-1632: the check is required unless the API answers turnstileRequired: false.
+  let signupChallenge = $state(true);
+  // The native layout draws its own create button, so it tracks its own token.
+  let nativeTurnstileToken = $state<string | null>(null);
+  let nativeWidget = $state<{ reset: () => void }>();
+  const nativeCanCreate = $derived(!signupChallenge || nativeTurnstileToken !== null);
   let creating = $state(false);
 
   function getOAuthQuery(): string | undefined {
@@ -236,6 +243,7 @@
         if (token) {
           // The code is verified but no account exists: ask before creating one.
           signupToken = token;
+          signupChallenge = newAccountNeedsChallenge(result.error);
           otp = '';
           step = 'newAccount';
         } else if (native && result.error.code === 'INVALID_OTP') {
@@ -257,13 +265,21 @@
     }
   }
 
-  async function createAccount() {
+  async function createAccount(turnstileToken: string | null) {
     if (!signupToken) return;
     loading = true;
     creating = true;
     error = '';
     try {
-      const result = await confirmEmailSignUp({ email, signupToken, oauth_query: getOAuthQuery() }, keepOAuthRedirect);
+      const result = await confirmEmailSignUp(
+        { email, signupToken, turnstileToken: turnstileToken ?? undefined, oauth_query: getOAuthQuery() },
+        keepOAuthRedirect,
+      );
+      if (result.error && keepsSignupToken(result.error)) {
+        // The token is still unspent: complete the check and confirm again.
+        error = authErrorMessage(result.error, 'Could not create your account');
+        return;
+      }
       signupToken = null;
       if (result.error) {
         // Expired or already used: the user starts again with a new code.
@@ -278,6 +294,14 @@
       loading = false;
       creating = false;
     }
+  }
+
+  function createFromNativeButton() {
+    if (!nativeCanCreate) return;
+    const token = signupChallenge ? nativeTurnstileToken : null;
+    nativeTurnstileToken = null;
+    nativeWidget?.reset();
+    createAccount(token);
   }
 
   // Recovery is email sign-in plus a new passkey; it continues the OAuth
@@ -460,7 +484,10 @@
         Create a new account{passkeysSupported ? ', or sign in with your passkey or recover your account' : ''}?
       </p>
       <div class="nb-stack">
-        <button type="button" class="nb-button nb-primary" onclick={createAccount} disabled={loading}>
+        {#if signupChallenge}
+          <TurnstileWidget bind:this={nativeWidget} onverify={(token) => (nativeTurnstileToken = token)} onexpire={() => (nativeTurnstileToken = null)} />
+        {/if}
+        <button type="button" class="nb-button nb-primary" onclick={createFromNativeButton} disabled={loading || !nativeCanCreate}>
           {creating ? 'Creating account…' : 'Create a new account'}
         </button>
         {#if passkeysSupported}
@@ -659,6 +686,7 @@
           {email}
           busy={loading}
           {creating}
+          challenge={signupChallenge}
           oncreate={createAccount}
           ondifferentemail={useDifferentEmail}
           onpasskey={passkeysSupported ? signInWithPasskey : undefined}

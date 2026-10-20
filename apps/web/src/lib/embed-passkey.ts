@@ -3,7 +3,7 @@
 // that return a challengeToken + sessionToken in the JSON body.
 
 import { startAuthentication, startRegistration } from '@simplewebauthn/browser';
-import { newAccountSignupToken, SIGN_UP_EMAIL_OTP_PATH } from './email-signup';
+import { newAccountNeedsChallenge, newAccountSignupToken, SIGN_UP_EMAIL_OTP_PATH } from './email-signup';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
@@ -42,7 +42,7 @@ export async function embedSendEmailOtp(
 }
 
 /** Signed in, or verified for an email with no account yet (TC-1114). */
-export type EmbedEmailOtpResult = { sessionToken: string } | { signupToken: string };
+export type EmbedEmailOtpResult = { sessionToken: string } | { signupToken: string; turnstileRequired: boolean };
 
 export async function embedVerifyEmailOtp(
   email: string,
@@ -58,7 +58,7 @@ export async function embedVerifyEmailOtp(
   });
   const body = await response.json().catch(() => null);
   const signupToken = newAccountSignupToken(body);
-  if (signupToken) return { signupToken };
+  if (signupToken) return { signupToken, turnstileRequired: newAccountNeedsChallenge(body) };
   return { sessionToken: persistEmbeddedSession(response, body, 'Invalid code', persistToken) };
 }
 
@@ -66,6 +66,7 @@ export async function embedVerifyEmailOtp(
 export async function embedCreateAccount(
   email: string,
   signupToken: string,
+  turnstileToken: string | null,
   fetchImpl: typeof fetch = fetch,
   persistToken: (token: string) => void = setSessionToken,
 ): Promise<string> {
@@ -73,7 +74,7 @@ export async function embedCreateAccount(
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({ email, signupToken }),
+    body: JSON.stringify({ email, signupToken, turnstileToken: turnstileToken ?? undefined }),
   });
   const body = await response.json().catch(() => null);
   return persistEmbeddedSession(response, body, 'Could not create your account', persistToken);
@@ -81,12 +82,12 @@ export async function embedCreateAccount(
 
 function persistEmbeddedSession(
   response: Response,
-  body: { message?: string; error?: string; token?: string; session?: { token?: string } } | null,
+  body: { code?: string; message?: string; error?: string; token?: string; session?: { token?: string } } | null,
   failure: string,
   persistToken: (token: string) => void,
 ): string {
   if (!response.ok) {
-    throw new Error(body?.message || body?.error || failure);
+    throw Object.assign(new Error(body?.message || body?.error || failure), { code: body?.code });
   }
   const sessionToken =
     response.headers.get('set-auth-token')
