@@ -1,18 +1,4 @@
 {
   "mode": "pre",
-  "tag": "beta",
-  "initialVersions": {
-    "@openkey/api": "0.0.4",
-    "@openkey/web": "0.0.2",
-    "@openkey/capability-review": "0.3.0",
-    "@openkey/cli": "0.1.5",
-    "@openkey/core": "0.12.1",
-    "@openkey/db": "0.0.3",
-    "@openkey/sdk": "0.12.1",
-    "@openkey/sdk-capacitor": "0.1.0",
-    "@openkey/sdk-react-native": "0.12.1",
-    "@openkey/tee": "0.0.3",
-    "@openkey/types": "0.8.10"
-  },
-  "changesets": []
+  "tag": "beta"
 }
