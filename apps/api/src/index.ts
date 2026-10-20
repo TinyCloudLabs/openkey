@@ -40,6 +40,7 @@ import {
   withNativeDelegationMetadata,
 } from './services/native-delegation/public-protocol';
 import { turnstileConfigProblem } from './services/turnstile';
+import { loadTestAccountRegistry } from './services/qa-registration';
 
 
 const betterAuthUrl = process.env.BETTER_AUTH_URL;
@@ -54,6 +55,8 @@ try {
 const turnstileProblem = turnstileConfigProblem();
 if (turnstileProblem === 'missing_secret' || turnstileProblem === 'test_secret') logConfigInvalid('TURNSTILE_SECRET_KEY');
 if (turnstileProblem === 'missing_hostname') logConfigInvalid('TURNSTILE_EXPECTED_HOSTNAME');
+// TC-1632: an unparseable registry means no QA exemptions and no scoreboard exclusions.
+if (loadTestAccountRegistry().problem) logConfigInvalid('TEST_ACCOUNT_REGISTRY_JSON');
 
 // Create Hono app
 const app = new Hono<ApiEnv>();

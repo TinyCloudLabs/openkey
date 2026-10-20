@@ -130,10 +130,17 @@ afterAll(() => {
 
 const originalEnv = { ...process.env };
 
-// TC-1632: QA secrets meet the minimum length; the email is QA-eligible under config/test-accounts.json.
+// TC-1632: QA secrets meet the minimum length; the email is QA-eligible under the synthetic registry below.
 const QA_CURRENT_SECRET = 'c'.repeat(43);
 const QA_PREVIOUS_SECRET = 'p'.repeat(43);
-const QA_ELIGIBLE_EMAIL = 'tcqa-7f3a@mailinator.com';
+// Synthetic registry for these tests only. Real patterns are supplied at runtime, never in the repo.
+const QA_REGISTRY_JSON = JSON.stringify({
+  userIds: [],
+  clientIds: [],
+  emailDomains: ['example.test'],
+  patterns: [{ name: 'fixture-qa', regex: '^qa-fixture-[a-z0-9]+@example\\.test$', qaEligible: true }],
+});
+const QA_ELIGIBLE_EMAIL = 'qa-fixture-7f3a@example.test';
 
 beforeEach(() => {
   rows = [];
@@ -141,6 +148,7 @@ beforeEach(() => {
   nextId = 0;
   siteverifyCalls = 0;
   requestHeaders = null;
+  process.env.TEST_ACCOUNT_REGISTRY_JSON = QA_REGISTRY_JSON;
   siteverifyResponse = () => new Response(JSON.stringify({ success: true, action: 'email-signup' }), { status: 200 });
   process.env.TURNSTILE_SECRET_KEY = 'turnstile-secret';
   process.env.OPENKEY_QA_REGISTRATION_SECRET = QA_CURRENT_SECRET;

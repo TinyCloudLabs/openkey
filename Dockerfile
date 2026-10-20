@@ -43,7 +43,6 @@ ENV TEE_MODE=production
 # Copy source files - no bundling to preserve AsyncLocalStorage
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/apps/api/src ./apps/api/src
-COPY --from=builder /app/apps/api/config ./apps/api/config
 COPY --from=builder /app/apps/api/package.json ./apps/api/
 COPY --from=builder /app/packages/tee/dist ./packages/tee/dist
 COPY --from=builder /app/packages/tee/package.json ./packages/tee/

@@ -2,8 +2,7 @@ import { timingSafeEqual } from 'crypto';
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { logMetric } from '../log';
-import TEST_ACCOUNTS from '../../config/test-accounts.json';
-import { qaEligibleEmail } from '../services/qa-registration';
+import { loadTestAccountRegistry, qaEligibleEmail } from '../services/qa-registration';
 
 // TC-1483: counts-only metrics for the scoreboard, behind their own bearer
 // (OPENKEY_METRICS_READ_TOKEN). The token grants aggregate counts only:
@@ -54,7 +53,7 @@ export function exclusionsFromEnv(env: Record<string, string | undefined> = proc
 /** Env lists plus the count-only test-account registry. The registry is not a security control. */
 export function scoreboardExclusions(
   env: Record<string, string | undefined> = process.env,
-  registry: { userIds: readonly string[]; clientIds: readonly string[] } = TEST_ACCOUNTS,
+  registry: { userIds: readonly string[]; clientIds: readonly string[] } = loadTestAccountRegistry().registry,
 ): ScoreboardExclusions {
   const fromEnv = exclusionsFromEnv(env);
   return {
@@ -64,14 +63,19 @@ export function scoreboardExclusions(
 }
 
 /**
- * Accounts whose email matches a QA-eligible pattern (config/test-accounts.json).
- * A counting exclusion only; it grants no access. The SQL prefilter assumes every
- * eligible pattern is a mailinator.com address: a new domain needs this prefilter updated.
+ * Accounts whose email matches a QA-eligible pattern in the test-account registry.
+ * A counting exclusion only; it grants no access. The SQL prefilter narrows rows to
+ * the registry's emailDomains, so every QA-eligible pattern must match one of them.
+ * An empty emailDomains list means no QA exclusions.
  */
-export async function qaAccountIds(database: ScoreboardDatabase): Promise<string[]> {
+export async function qaAccountIds(
+  database: ScoreboardDatabase,
+  registry: { emailDomains: readonly string[]; qaEligiblePatterns: readonly RegExp[] } = loadTestAccountRegistry().registry,
+): Promise<string[]> {
+  if (registry.emailDomains.length === 0) return [];
   const rows = await database.$queryRaw<Array<{ id: string; email: string }>>`
-    SELECT id, email FROM "User" WHERE email ILIKE '%@mailinator.com'`;
-  return rows.filter((row) => qaEligibleEmail(row.email)).map((row) => row.id);
+    SELECT id, email FROM "User" WHERE lower(split_part(email, '@', 2)) = ANY(${[...registry.emailDomains]})`;
+  return rows.filter((row) => qaEligibleEmail(row.email, registry.qaEligiblePatterns)).map((row) => row.id);
 }
 
 /** Env lists, registry and QA-eligible accounts, for counting. */

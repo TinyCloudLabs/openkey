@@ -4,9 +4,14 @@ import { mockModules } from './mock-module';
 await mockModules({});
 
 // Query-string import: each test file gets its own module instance (mock-module.ts).
-const { qaEligibleEmail, qaRegistrationAuthorized, qaRegistrationSecretTooShort, QA_REGISTRATION_HEADER, QA_SECRET_MIN_LENGTH } = await import(
-  '../services/qa-registration?tc1632-qa' as string
-);
+const {
+  parseTestAccountRegistry,
+  qaEligibleEmail,
+  qaRegistrationAuthorized,
+  qaRegistrationSecretTooShort,
+  QA_REGISTRATION_HEADER,
+  QA_SECRET_MIN_LENGTH,
+} = await import('../services/qa-registration?tc1632-qa' as string);
 
 // Secrets are base64url of 32 random bytes in practice: 43 characters.
 const CURRENT = 'c'.repeat(43);
@@ -63,15 +68,54 @@ test('an unset or minimum-length secret is not reported as too short', () => {
   expect(qaRegistrationSecretTooShort(env)).toBe(false);
 });
 
+// Synthetic fixtures only: real registry values are supplied at runtime, never in the repo.
+const fixtureRegistry = parseTestAccountRegistry(
+  JSON.stringify({
+    userIds: [],
+    clientIds: [],
+    emailDomains: ['example.test'],
+    patterns: [
+      { name: 'fixture-qa', regex: '^fixture-qa-[a-z0-9]+@example\\.test$', qaEligible: true },
+      { name: 'fixture-reference', regex: '^fixture-ref[a-z0-9]+@example\\.test$', qaEligible: false },
+    ],
+  }),
+).registry;
+
 test('only emails matching a QA-eligible pattern are eligible', () => {
-  expect(qaEligibleEmail('tcqa-7f3a@mailinator.com')).toBe(true);
-  expect(qaEligibleEmail('TCQA-7F3A@mailinator.com')).toBe(true);
-  expect(qaEligibleEmail('qa-clr-0123456789ab@mailinator.com')).toBe(true);
-  expect(qaEligibleEmail('tc1384qa-abc123@mailinator.com')).toBe(true);
+  expect(qaEligibleEmail('fixture-qa-7f3a@example.test', fixtureRegistry.qaEligiblePatterns)).toBe(true);
+  expect(qaEligibleEmail('FIXTURE-QA-7F3A@example.test', fixtureRegistry.qaEligiblePatterns)).toBe(true);
 });
 
 test('a pattern marked not eligible, and any other address, is not QA-eligible', () => {
-  expect(qaEligibleEmail('qaabcdefghijklmno@mailinator.com')).toBe(false);
-  expect(qaEligibleEmail('new@example.com')).toBe(false);
-  expect(qaEligibleEmail('tcqa-7f3a@mailinator.com.evil.example')).toBe(false);
+  expect(qaEligibleEmail('fixture-ref0123@example.test', fixtureRegistry.qaEligiblePatterns)).toBe(false);
+  expect(qaEligibleEmail('new@example.com', fixtureRegistry.qaEligiblePatterns)).toBe(false);
+  expect(qaEligibleEmail('fixture-qa-7f3a@example.test.evil.example', fixtureRegistry.qaEligiblePatterns)).toBe(false);
+});
+
+test('an unset registry is empty and not a problem', () => {
+  const unset = parseTestAccountRegistry(undefined);
+  expect(unset.problem).toBe(false);
+  expect(unset.registry.qaEligiblePatterns).toEqual([]);
+  expect(unset.registry.emailDomains).toEqual([]);
+});
+
+test('invalid registry JSON, shape, or pattern yields an empty registry and a problem, never a throw', () => {
+  const invalid = [
+    '{not json',
+    '[]',
+    JSON.stringify({ userIds: [], clientIds: [], patterns: 'nope' }),
+    JSON.stringify({ userIds: [], clientIds: [], patterns: [{ name: 'bad', regex: '[', qaEligible: true }] }),
+  ];
+  for (const raw of invalid) {
+    const load = parseTestAccountRegistry(raw);
+    expect(load.problem).toBe(true);
+    expect(load.registry.qaEligiblePatterns).toEqual([]);
+    expect(load.registry.emailDomains).toEqual([]);
+  }
+});
+
+test('email domains are lowercased and default to empty when absent', () => {
+  const load = parseTestAccountRegistry(JSON.stringify({ userIds: [], clientIds: [], patterns: [], emailDomains: ['Example.TEST'] }));
+  expect(load.registry.emailDomains).toEqual(['example.test']);
+  expect(parseTestAccountRegistry(JSON.stringify({ userIds: [], clientIds: [], patterns: [] })).registry.emailDomains).toEqual([]);
 });
