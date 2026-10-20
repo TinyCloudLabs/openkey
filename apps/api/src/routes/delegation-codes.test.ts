@@ -24,7 +24,7 @@ function fixture() {
       records.set(code, { delegation: value, expiresAt });
       return true;
     },
-    async get(code) { lookups.push(code); return records.get(code) ?? null; },
+    async consume(code) { lookups.push(code); const record = records.get(code); records.delete(code); return record ?? null; },
     async deleteExpired(before) {
       for (const [code, record] of records) if (record.expiresAt <= before) records.delete(code);
     },
@@ -47,8 +47,8 @@ async function issue(app: Hono) {
 }
 
 describe('delegation short-code broker', () => {
-  test('returns the same public delegation through an eight-character code, then expires it', async () => {
-    const { app, advance } = fixture();
+  test('returns the public delegation once, then the code is gone', async () => {
+    const { app } = fixture();
     const created = await app.request('/api/delegation-codes', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ delegation }),
@@ -60,9 +60,40 @@ describe('delegation short-code broker', () => {
     const fetched = await app.request(path);
     expect(fetched.status).toBe(200);
     expect(await fetched.json()).toEqual({ delegation });
-    expect((await app.request(path)).status).toBe(200);
-    advance(10 * 60 * 1000);
-    expect((await app.request(path)).status).toBe(404);
+    const again = await app.request(path);
+    expect(again.status).toBe(404);
+    expect(await again.json()).toEqual({ error: 'Not found' });
+  });
+
+  test('a redeemed code answers exactly like an unknown one', async () => {
+    const { app } = fixture();
+    const { code } = await issue(app);
+    await app.request(`/api/delegation-codes/${code}`);
+    const redeemed = await app.request(`/api/delegation-codes/${code}`);
+    const unknown = await app.request('/api/delegation-codes/sf23-22cs');
+    expect(redeemed.status).toBe(404);
+    expect(unknown.status).toBe(404);
+    expect(await redeemed.text()).toBe(await unknown.text());
+  });
+
+  test('of concurrent redeems of one code, exactly one receives the delegation', async () => {
+    const { app } = fixture();
+    const { code } = await issue(app);
+    const responses = await Promise.all(Array.from({ length: 10 }, () => app.request(`/api/delegation-codes/${code}`)));
+    const statuses = responses.map((response) => response.status);
+    expect(statuses.filter((status) => status === 200)).toHaveLength(1);
+    expect(statuses.filter((status) => status === 404)).toHaveLength(9);
+  });
+
+  test('caps lookups globally per minute, so rotating client address headers does not bypass it', async () => {
+    const { app, advance } = fixture();
+    const lookup = (address: string) => app.request('/api/delegation-codes/sf23-22cs', { headers: { 'cf-connecting-ip': address } });
+    for (let index = 0; index < 60; index += 1) expect((await lookup(`203.0.113.${index}`)).status).toBe(404);
+    const limited = await lookup('198.51.100.7');
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get('retry-after')).toBe('60');
+    advance(60 * 1000);
+    expect((await lookup('203.0.113.9')).status).toBe(404);
   });
 
   test('refuses a delegation containing private JWK material', async () => {
@@ -143,8 +174,8 @@ describe('upper-case delegation short codes', () => {
 
   test('a code issued in lower case before the change redeems in any case', async () => {
     const { app, records, now } = fixture();
-    records.set('sf23-22cs', { delegation, expiresAt: new Date(now() + 10 * 60 * 1000) });
     for (const variant of ['sf23-22cs', 'SF23-22CS', 'Sf23-22cS']) {
+      records.set('sf23-22cs', { delegation, expiresAt: new Date(now() + 5 * 60 * 1000) });
       const fetched = await app.request(`/api/delegation-codes/${variant}`);
       expect(fetched.status).toBe(200);
       expect(await fetched.json()).toEqual({ delegation });
@@ -153,19 +184,24 @@ describe('upper-case delegation short codes', () => {
 
   test('every case variant of one code resolves to the same lookup key', async () => {
     const { app, lookups } = fixture();
-    const { code } = await issue(app);
-    const variants = [code, code.toLowerCase(), [...code].map((c, i) => (i % 2 ? c.toLowerCase() : c)).join('')];
-    for (const variant of variants) expect((await app.request(`/api/delegation-codes/${variant}`)).status).toBe(200);
-    expect(new Set(lookups)).toEqual(new Set([code.toLowerCase()]));
+    for (const spelling of ['lower', 'upper', 'mixed'] as const) {
+      const { code } = await issue(app);
+      const variant = spelling === 'lower' ? code.toLowerCase()
+        : spelling === 'upper' ? code
+          : [...code].map((c, i) => (i % 2 ? c.toLowerCase() : c)).join('');
+      expect((await app.request(`/api/delegation-codes/${variant}`)).status).toBe(200);
+      expect(lookups.at(-1)).toBe(code.toLowerCase());
+    }
   });
 
-  test('keeps the ten-minute expiry for every case variant', async () => {
+  test('keeps the five-minute expiry for every case variant', async () => {
     const { app, now, advance } = fixture();
     const { code, expiresAt } = await issue(app);
-    expect(Date.parse(expiresAt) - now()).toBe(10 * 60 * 1000);
-    advance(10 * 60 * 1000 - 1);
-    for (const variant of [code, code.toLowerCase()]) expect((await app.request(`/api/delegation-codes/${variant}`)).status).toBe(200);
-    advance(1);
-    for (const variant of [code, code.toLowerCase()]) expect((await app.request(`/api/delegation-codes/${variant}`)).status).toBe(404);
+    expect(Date.parse(expiresAt) - now()).toBe(5 * 60 * 1000);
+    advance(5 * 60 * 1000 - 1);
+    expect((await app.request(`/api/delegation-codes/${code.toLowerCase()}`)).status).toBe(200);
+    const late = await issue(app);
+    advance(5 * 60 * 1000);
+    expect((await app.request(`/api/delegation-codes/${late.code}`)).status).toBe(404);
   });
 });
