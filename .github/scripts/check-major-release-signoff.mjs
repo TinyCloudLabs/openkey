@@ -11,9 +11,10 @@
 //                     commits approves that package. A version PR that consumes
 //                     a major changeset also accepts the sign-off that changeset
 //                     was merged with.
-//   beta              Before publishing betas: changesets not yet admitted to
-//                     .changeset/pre.json may not declare `major` unless a
-//                     commit in this pre-release cycle approves the package.
+//   beta              Before publishing betas: pending changesets (those still in
+//                     .changeset/, not yet moved to .changeset/pre/ by a version
+//                     PR) may not declare `major` unless a commit in this
+//                     pre-release cycle approves the package.
 //   stable            Before graduating betas: no package may leave pre mode at
 //                     a higher major than it entered unless a commit in this
 //                     pre-release cycle approves it.
@@ -135,9 +136,16 @@ function rangeFrom(commit, rev = "HEAD") {
 }
 
 // The current pre-release cycle starts with the commit that added pre.json.
+// Changesets 3 no longer records `initialVersions` in pre.json, so the version
+// a package entered pre mode at is its version in that commit.
 function cycleRange() {
   const start = addedIn(".changeset/pre.json");
   return start ? rangeFrom(start) : "HEAD";
+}
+
+function versionAtCycleStart(start, path, name) {
+  const entry = start ? parseJson(show(start, path)) : undefined;
+  return entry?.name === name ? parseVersion(entry.version) : undefined;
 }
 
 function record(majors, name, reason) {
@@ -146,8 +154,6 @@ function record(majors, name, reason) {
 }
 
 function unadmittedMajorChangesets(majors) {
-  const pre = parseJson(read(".changeset/pre.json"));
-  const admitted = new Set(pre?.changesets ?? []);
   let names = [];
   try {
     names = readdirSync(".changeset");
@@ -156,7 +162,7 @@ function unadmittedMajorChangesets(majors) {
   }
   for (const name of names.sort()) {
     const path = `.changeset/${name}`;
-    if (!isChangeset(path) || admitted.has(name.slice(0, -3))) continue;
+    if (!isChangeset(path)) continue;
     for (const pkg of changesetMajors(read(path))) record(majors, pkg, `major in ${path}`);
   }
 }
@@ -172,7 +178,10 @@ function prMajors(base, head) {
     for (const name of changesetMajors(show(head, path))) record(majors, name, `major in ${path}`);
   }
 
-  const pre = parseJson(show(mergeBase, ".changeset/pre.json"));
+  const cycleStart =
+    show(mergeBase, ".changeset/pre.json") === undefined
+      ? undefined
+      : addedIn(".changeset/pre.json", mergeBase);
   for (const path of lines(git("diff", "--name-only", mergeBase, head))) {
     if (!/(^|\/)package\.json$/.test(path) || path.split("/").includes("node_modules")) continue;
     const after = parseJson(show(head, path));
@@ -183,7 +192,7 @@ function prMajors(base, head) {
     if (!next || !baseline) continue;
     // Graduating from pre mode compares against the version pre mode began at.
     if (!next.prerelease && baseline.prerelease) {
-      baseline = parseVersion(pre?.initialVersions?.[after.name]) ?? baseline;
+      baseline = versionAtCycleStart(cycleStart, path, after.name) ?? baseline;
     }
     if (next.major > baseline.major) {
       record(majors, after.name, `${path}: ${baseline.raw} -> ${next.raw}`);
@@ -224,6 +233,7 @@ function betaMajors() {
 
 function stableMajors() {
   const pre = parseJson(read(".changeset/pre.json"));
+  const cycleStart = pre ? addedIn(".changeset/pre.json") : undefined;
   const majors = new Map();
   if (pre) {
     for (const path of lines(git("ls-files", "*package.json"))) {
@@ -231,7 +241,7 @@ function stableMajors() {
       const pkg = parseJson(read(path));
       if (!pkg?.name || pkg.private === true) continue;
       const current = parseVersion(pkg.version);
-      const initial = parseVersion(pre.initialVersions?.[pkg.name]);
+      const initial = versionAtCycleStart(cycleStart, path, pkg.name);
       if (current && initial && current.major > initial.major) {
         record(majors, pkg.name, `entered pre mode at ${initial.raw}, graduates to ${current.release}`);
       }

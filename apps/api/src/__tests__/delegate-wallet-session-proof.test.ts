@@ -34,8 +34,8 @@ interface PreparedResponse {
 }
 
 // The TinyCloud CLI (@tinycloud/cli 1.1.0) verifies sessions with
-// node-sdk-wasm 1.7.7, the first build that exports validatePersistedSession.
-// The API keeps building sessions with its own pinned 1.7.4. The verifier is
+// node-sdk-wasm 1.7.7 (validatePersistedSession). The API builds sessions with
+// its own pinned node-sdk-wasm, 1.7.6 at the time of writing. The verifier is
 // resolved from packages/sdk-capacitor, which declares @tinycloud/web-sdk
 // 3.1.0 (-> node-sdk 3.1.0 -> node-sdk-wasm 1.7.7), as its
 // verify-production test does.
