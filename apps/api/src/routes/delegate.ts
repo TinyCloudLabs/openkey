@@ -24,7 +24,7 @@ import {
   entriesForSelectedActions,
   permissionKey as computePermissionKey,
 } from './delegate-session';
-import { activateSessionWithHost } from '@tinycloud/sdk-core';
+import { activateSessionWithinTimeout } from '../services/tinycloud-node-timeouts';
 import { BOOTSTRAP_SPACE_NAMES, CAPABILITIES } from '@tinycloud/bootstrap';
 import {
   delegateErrorResponse,
@@ -148,6 +148,12 @@ type SpaceReadiness = { spaceReady: boolean | null; spaceError?: string; spacePe
 /** `spaceError` when the approval's space was still being hosted at the timeout. */
 const REQUESTED_SPACE_TIMEOUT_ERROR = 'tinycloud_requested_space_timeout';
 
+function setupFailureMessage(failure: { errorCode: string; errorMessage: string }): string {
+  return failure.errorCode === 'tinycloud_bootstrap_crashed'
+    ? `TinyCloud account setup failed: ${failure.errorMessage}.`
+    : `TinyCloud account setup failed (${failure.errorCode}): ${failure.errorMessage}.`;
+}
+
 async function finishManagedSpaceOnboarding(input: {
   userId: string;
   key: {
@@ -163,8 +169,6 @@ async function finishManagedSpaceOnboarding(input: {
   address: string;
   chainId: number;
   spaceId: string;
-  /** The session delegation this approval signed. Re-activating it is how the node confirms the space is hosted. */
-  delegationHeader: { Authorization: string };
   skipped: boolean;
 }): Promise<SpaceReadiness> {
   if (!input.skipped) return { spaceReady: true };
@@ -197,7 +201,7 @@ async function finishManagedSpaceOnboarding(input: {
         host: setup.bootstrapHost,
         chainId: input.chainId,
         // Hosts only this space before responding; the other spaces and the seeding follow in the background run.
-        requestedSpace: { space: setup.space, delegationHeader: input.delegationHeader, alreadyHosted, report },
+        requestedSpace: { space: setup.space, alreadyHosted, report },
       });
     });
     switch (result.status) {
@@ -211,13 +215,11 @@ async function finishManagedSpaceOnboarding(input: {
         return { spaceReady: null, spacePending: true, spaceError: REQUESTED_SPACE_TIMEOUT_ERROR };
       case 'skipped':
         return { spaceReady: false, spaceError: 'TinyCloud account setup failed.' };
+      // The first run failed and a background retry is scheduled: keep the client waiting with the reason.
+      case 'retrying':
+        return { spaceReady: null, spacePending: true, spaceError: setupFailureMessage(result) };
       case 'failed':
-        return {
-          spaceReady: false,
-          spaceError: result.errorCode === 'tinycloud_bootstrap_crashed'
-            ? `TinyCloud account setup failed: ${result.errorMessage}.`
-            : `TinyCloud account setup failed (${result.errorCode}): ${result.errorMessage}.`,
-        };
+        return { spaceReady: false, spaceError: setupFailureMessage(result) };
     }
   } catch (error) {
     return {
@@ -1533,7 +1535,7 @@ delegateRouter.post('/', async (c) => {
     let hostActivated = false;
     let spaceReadiness: SpaceReadiness = { spaceReady: null };
     try {
-      const activationResult = await activateSessionWithHost(host, session.delegationHeader);
+      const activationResult = await activateSessionWithinTimeout(host, session.delegationHeader);
       hostActivated = activationResult.success;
       if (hostActivated) {
         spaceReadiness = await finishManagedSpaceOnboarding({
@@ -1543,7 +1545,6 @@ delegateRouter.post('/', async (c) => {
           address,
           chainId,
           spaceId: bound.spaceId,
-          delegationHeader: session.delegationHeader,
           skipped: Boolean(activationResult.skipped?.includes(bound.spaceId)),
         });
       }
@@ -1630,7 +1631,7 @@ delegateRouter.post('/', async (c) => {
   let hostActivated = false;
   let spaceReadiness: SpaceReadiness = { spaceReady: null };
   try {
-    const activationResult = await activateSessionWithHost(host, session.delegationHeader);
+    const activationResult = await activateSessionWithinTimeout(host, session.delegationHeader);
     hostActivated = activationResult.success;
     if (hostActivated) {
       spaceReadiness = await finishManagedSpaceOnboarding({
@@ -1640,7 +1641,6 @@ delegateRouter.post('/', async (c) => {
         address,
         chainId,
         spaceId: preparedResult.spaceId,
-        delegationHeader: session.delegationHeader,
         skipped: Boolean(activationResult.skipped?.includes(preparedResult.spaceId)),
       });
     }
@@ -2183,7 +2183,7 @@ delegateRouter.post('/complete', async (c) => {
   let hostActivated = false;
   let spaceReady: boolean | null = null;
   try {
-    const activationResult = await activateSessionWithHost(body.host, session.delegationHeader);
+    const activationResult = await activateSessionWithinTimeout(body.host, session.delegationHeader);
     hostActivated = activationResult.success;
     if (hostActivated) spaceReady = !activationResult.skipped?.includes(spaceId);
     if (!hostActivated) {

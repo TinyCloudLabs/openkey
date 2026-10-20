@@ -143,6 +143,8 @@ export type RequestedSpaceResult =
   /** Hosting did not finish within the timeout; the run continues in the background. */
   | { status: 'timeout' }
   | { status: 'skipped' }
+  /** The first run failed and a background retry is scheduled; `failed` means no retry will follow. */
+  | { status: 'retrying'; errorCode: string; errorMessage: string }
   | { status: 'failed'; errorCode: string; errorMessage: string };
 
 export interface RequestedSpaceAttempt {
@@ -214,9 +216,13 @@ export async function hostRequestedSpaceWithinBudget(
     clearTimeout(timer);
   }
 
+  const delays = options.retryDelaysMs ?? tinyCloudBootstrapRetryDelaysMs();
+  // A failure a retry is about to try again is not final: the client keeps waiting, with the reason.
+  if (result.status === 'failed' && delays.length > 0 && !NON_RETRYABLE_ERROR_CODES[result.errorCode]) {
+    result = { ...result, status: 'retrying' };
+  }
   const requestedSpaceHosted: RequestedSpaceHosted =
     result.status === 'hosted' ? 'yes' : result.status === 'timeout' ? 'timeout' : 'no';
-  const delays = options.retryDelaysMs ?? tinyCloudBootstrapRetryDelaysMs();
   void (async () => {
     let outcome = await firstRun;
     let attemptStartedAt = startedAt;

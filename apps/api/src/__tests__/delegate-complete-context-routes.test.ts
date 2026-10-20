@@ -1033,9 +1033,8 @@ describe('TC-1608 requested space', () => {
       expect(result.body).not.toHaveProperty('spaceError');
       expect(ensureTinyCloudBootstrap).toHaveBeenCalledTimes(1);
       const [setup] = ensureTinyCloudBootstrap.mock.calls[0] as unknown as [Record<string, any>];
-      // The space asked for, and the session this approval signed (re-activated to confirm hosting).
+      // The space this approval is for, not yet confirmed by an earlier attempt.
       expect(setup.requestedSpace).toMatchObject({ space: 'agents', alreadyHosted: false });
-      expect(setup.requestedSpace.delegationHeader).toEqual(result.body.delegationHeader);
     });
   }
 

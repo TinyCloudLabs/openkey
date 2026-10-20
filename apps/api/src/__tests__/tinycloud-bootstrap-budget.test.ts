@@ -192,6 +192,23 @@ describe('TC-1608 requested space within its timeout', () => {
       .toEqual({ status: 'failed', errorCode: 'tinycloud_bootstrap_crashed', errorMessage: 'database unavailable' });
   });
 
+  test('a failure a retry will try again is "retrying"; it is "failed" when none will follow', async () => {
+    const answer = (errorCode: string, retryDelaysMs: readonly number[]) =>
+      hostRequestedSpaceWithinBudget(async () => failed(errorCode), { timeoutMs: 1000, retryDelaysMs });
+    const retrying = (errorCode: string) => ({ status: 'retrying' as const, errorCode, errorMessage: `${errorCode} happened` });
+    const final = (errorCode: string) => ({ status: 'failed' as const, errorCode, errorMessage: `${errorCode} happened` });
+
+    expect(await answer('tinycloud_bootstrap_failed', [0])).toEqual(retrying('tinycloud_bootstrap_failed'));
+    expect(await answer('tinycloud_bootstrap_node_timeout', [0])).toEqual(retrying('tinycloud_bootstrap_node_timeout'));
+    expect(await answer('tinycloud_bootstrap_failed', [])).toEqual(final('tinycloud_bootstrap_failed'));
+    // What a retry cannot fix is final even when retries are configured.
+    expect(await answer('tinycloud_bootstrap_expired_request', [0])).toEqual(final('tinycloud_bootstrap_expired_request'));
+    expect(await answer('tinycloud_bootstrap_untrusted_host', [0])).toEqual(final('tinycloud_bootstrap_untrusted_host'));
+    // Let the background logs land (two runs each for the two retried answers, one for the rest)
+    // before the next test reads the shared output.
+    await until(() => output.length === 7);
+  });
+
   test('retries a failed run after each delay until it succeeds, carrying the confirmed space forward', async () => {
     const attempts: RequestedSpaceAttempt[] = [];
     const outcomes = [failed('tinycloud_bootstrap_failed'), failed('tinycloud_bootstrap_node_timeout'), { status: 'complete' } as const];

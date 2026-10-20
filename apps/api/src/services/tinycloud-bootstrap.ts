@@ -29,6 +29,7 @@ import {
 } from '@tinycloud/node-sdk-wasm';
 import type { PrismaClient } from '@openkey/db';
 import { DEFAULT_TINYCLOUD_BOOTSTRAP_HOST, TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS } from './tinycloud-hosts';
+import { tinyCloudBootstrapNodeCallTimeoutMs, tinyCloudBootstrapNodeInvokeTimeoutMs } from './tinycloud-node-timeouts';
 import { kvSpaceRegistryStore, registerMissingBootstrapSpaces } from './tinycloud-space-registry';
 
 import { log } from '../log';
@@ -44,27 +45,6 @@ const MIN_USEFUL_SIWE_TTL_MS = 5_000;
 const BOOTSTRAP_DOMAIN = 'cli.tinycloud.xyz';
 const NETWORK_CREATE_ACTION = ENCRYPTION.NETWORK_CREATE;
 const NETWORK_ADMIN_TYPE = 'tinycloud.encryption.network-admin/v1';
-
-// Every request to the TinyCloud node is bounded, so a hung call fails the run and
-// releases its lock instead of holding it through the heartbeat (TC-1608).
-const DEFAULT_NODE_CALL_TIMEOUT_MS = 15_000;
-const DEFAULT_NODE_INVOKE_TIMEOUT_MS = 30_000;
-const MAX_NODE_TIMEOUT_MS = 60_000;
-
-function nodeTimeoutMs(value: string | undefined, fallback: number): number {
-  const configured = value?.trim() ? Number(value) : NaN;
-  return Number.isFinite(configured) && configured > 0 ? Math.min(configured, MAX_NODE_TIMEOUT_MS) : fallback;
-}
-
-/** Peer id, host delegation and session activation. Read per call from TINYCLOUD_BOOTSTRAP_NODE_TIMEOUT_MS. */
-export function tinyCloudBootstrapNodeCallTimeoutMs(env: Record<string, string | undefined> = process.env): number {
-  return nodeTimeoutMs(env.TINYCLOUD_BOOTSTRAP_NODE_TIMEOUT_MS, DEFAULT_NODE_CALL_TIMEOUT_MS);
-}
-
-/** Schema, seed and encryption-network requests. Read per call from TINYCLOUD_BOOTSTRAP_NODE_INVOKE_TIMEOUT_MS. */
-export function tinyCloudBootstrapNodeInvokeTimeoutMs(env: Record<string, string | undefined> = process.env): number {
-  return nodeTimeoutMs(env.TINYCLOUD_BOOTSTRAP_NODE_INVOKE_TIMEOUT_MS, DEFAULT_NODE_INVOKE_TIMEOUT_MS);
-}
 
 type PrismaLike = Pick<PrismaClient, 'user' | 'tinyCloudBootstrapState'>;
 
@@ -156,8 +136,6 @@ export type TinyCloudBootstrapRequestedSpaceReport = { status: 'hosted' } | Tiny
 export interface TinyCloudBootstrapRequestedSpace {
   /** Canonical bootstrap space name, already checked against the approved space id. */
   space: BootstrapSpaceName;
-  /** The client's session delegation OpenKey already signed. Re-activating it confirms the space is hosted. */
-  delegationHeader: { Authorization: string };
   /** An earlier attempt of this approval already had the node confirm the space: do not host it again. */
   alreadyHosted?: boolean;
   /** Called once per attempt that hosts the space: the node confirmed it, or hosting it failed. */
@@ -670,9 +648,11 @@ async function runTinyCloudBootstrap(input: TinyCloudBootstrapRunInput): Promise
 
 /**
  * Host the space the client asked for, before anything else in the run: peer id, the host SIWE
- * signed by the managed key (the same createHostDelegation the full run uses), submit it, then
- * confirm by re-activating the client's own session delegation, which the node skips while the
- * space is not hosted. No other signature and no other ability is involved. Reports once.
+ * signed by the managed key (the same createHostDelegation the full run uses), then submit it.
+ * The node confirms by listing the space under `activated` in its response to that host
+ * delegation. (Re-sending the client's session delegation would not confirm anything: a
+ * delegation the node already holds is answered with an empty `skipped`.) No other signature and
+ * no other ability is involved. Reports once.
  */
 async function hostRequestedSpaceFirst(
   input: TinyCloudBootstrapRunInput,
@@ -684,12 +664,10 @@ async function hostRequestedSpaceFirst(
     if (!step) {
       throw new Error(`TinyCloud bootstrap host policy for ${requested.space} is missing`);
     }
-    await submitRequiredHostDelegation(input.tinycloudHost, await createHostDelegation(input, step));
-
-    const activation = await nodeActivateSession(input.tinycloudHost, requested.delegationHeader);
-    if (!activation.success || !activation.skipped || activation.skipped.includes(step.spaceId)) {
+    const activated = await submitRequiredHostDelegation(input.tinycloudHost, await createHostDelegation(input, step));
+    if (!activated?.includes(step.spaceId)) {
       throw new TinyCloudBootstrapError(
-        `TinyCloud node did not host ${requested.space} after its host delegation: ${activation.error ?? 'space was skipped'}`,
+        `TinyCloud node accepted the host delegation for ${requested.space} but did not report the space as hosted.`,
         'tinycloud_bootstrap_space_not_hosted',
       );
     }
@@ -792,11 +770,24 @@ function shortService(service: string): string {
   return service.startsWith('tinycloud.') ? service.slice('tinycloud.'.length) : service;
 }
 
-async function submitRequiredHostDelegation(host: string, headers: Record<string, string>): Promise<void> {
+/**
+ * POST a host delegation. Returns the spaces the node lists as `activated`, or undefined when a
+ * 2xx response carries no readable list. A fresh host SIWE is a new delegation, so a node that
+ * hosted its space lists that space as activated.
+ */
+async function submitRequiredHostDelegation(host: string, headers: Record<string, string>): Promise<string[] | undefined> {
   const response = await nodeFetch(`${host}/delegate`, { method: 'POST', headers }, tinyCloudBootstrapNodeCallTimeoutMs());
   if (!response.ok) {
     const error = await response.text().catch(() => response.statusText);
     throw new Error(`Failed to submit host delegation: ${error || 'unknown error'}`);
+  }
+  // Read the body outside the parse guard: a timeout while reading must fail the call, not look like "nothing activated".
+  const text = await response.text();
+  try {
+    const body = JSON.parse(text) as { activated?: unknown };
+    return Array.isArray(body.activated) ? body.activated.map(String) : undefined;
+  } catch {
+    return undefined;
   }
 }
 

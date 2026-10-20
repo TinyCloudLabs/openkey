@@ -292,16 +292,16 @@ describe('TC-1608 the requested space is hosted before the approval responds', (
     ]);
   });
 
-  test('a node that refuses the host delegation reports the failure, then the background retry hosts it', async () => {
-    process.env.TINYCLOUD_BOOTSTRAP_RETRY_DELAYS_MS = '60,60';
+  test('a node that refuses the host delegation keeps the client waiting while a retry is scheduled, then the retry hosts it', async () => {
+    process.env.TINYCLOUD_BOOTSTRAP_RETRY_DELAYS_MS = '150,150';
     node.hostStatus = 503;
 
     const approved = await approveDefault();
 
-    expect(approved.body).toMatchObject({ hostActivated: true, spaceReady: false });
+    // A failure that will be retried is not final: null + pending, with the reason.
+    expect(approved.body).toMatchObject({ hostActivated: true, spaceReady: null, spacePending: true });
     expect(approved.body.spaceError).toContain('tinycloud_bootstrap_failed');
     expect(approved.body.spaceError).toContain('Failed to submit host delegation');
-    expect(approved.body).not.toHaveProperty('spacePending');
     expect(node.hosted.size).toBe(0);
 
     await until(() => backgroundLogs().length >= 1, 'the first failure to be logged');
@@ -312,6 +312,48 @@ describe('TC-1608 the requested space is hosted before the approval responds', (
       ['tinycloud_bootstrap_background_failed', 1],
       ['tinycloud_bootstrap_background_completed', 2],
     ]);
+  });
+
+  test('the same failure is final when no retry will follow', async () => {
+    node.hostStatus = 503; // retries are off in this file unless a test turns them on
+
+    const approved = await approveDefault();
+
+    expect(approved.body).toMatchObject({ hostActivated: true, spaceReady: false });
+    expect(approved.body.spaceError).toContain('Failed to submit host delegation');
+    expect(approved.body).not.toHaveProperty('spacePending');
+  });
+
+  // The node's answer to the host delegation is the confirmation: `activated` must list the space.
+  // The session delegation the route already sent is a delegation the node holds, so re-sending it
+  // answers `skipped: []` whether or not the space is hosted and would confirm nothing.
+  test('a node that accepts the host delegation without activating the space is not reported ready', async () => {
+    node.hostActivates = false;
+
+    const approved = await approveDefault();
+
+    expect(approved.body).toMatchObject({ hostActivated: true, spaceReady: false });
+    expect(approved.body.spaceError).toContain('(tinycloud_bootstrap_space_not_hosted)');
+    expect(node.hosted.size).toBe(0);
+    await until(() => state?.status === 'failed', 'the failure to be recorded');
+    expect(state).toMatchObject({ status: 'failed', failureCode: 'tinycloud_bootstrap_space_not_hosted' });
+    // The route's own activation of the session delegation was answered, and re-sending a known
+    // delegation gives the same empty `skipped`: nothing here can pass for confirmation.
+    expect(node.sessionPosts).toHaveLength(1);
+  });
+
+  test('an unconfirmed space is retried and reported ready only once the node lists it', async () => {
+    process.env.TINYCLOUD_BOOTSTRAP_RETRY_DELAYS_MS = '150';
+    node.hostActivates = false;
+
+    const approved = await approveDefault();
+    expect(approved.body).toMatchObject({ spaceReady: null, spacePending: true });
+    expect(approved.body.spaceError).toContain('tinycloud_bootstrap_space_not_hosted');
+
+    await until(() => backgroundLogs().length >= 1, 'the first failure to be logged');
+    node.hostActivates = true;
+    await until(() => state?.status === 'complete', 'the retry to complete');
+    expect([...node.hosted].sort()).toEqual(SPACES.map(spaceId).sort());
   });
 });
 
@@ -469,5 +511,20 @@ describe('TC-1608 a hung node call is aborted and releases the lock', () => {
     expect(next.body.spaceReady).toBe(true);
     await until(() => state?.status === 'complete', 'the next run to complete');
     expect([...node.hosted].sort()).toEqual(SPACES.map(spaceId).sort());
+  });
+
+  test("the route's own session activation is bounded too: a hung node does not hold the signed delegation back", async () => {
+    process.env.TINYCLOUD_BOOTSTRAP_NODE_TIMEOUT_MS = '100';
+    node.beforeSession = () => new Promise<void>(() => {}); // the node never answers the activation
+
+    const start = performance.now();
+    const approved = await approveDefault();
+
+    expect(performance.now() - start).toBeLessThan(2000);
+    expect(approved.status).toBe(200);
+    // The client still gets the delegation; it is told the node did not activate it, and no setup ran.
+    expect(approved.body.delegationHeader?.Authorization).toBeString();
+    expect(approved.body).toMatchObject({ hostActivated: false, spaceReady: null });
+    expect(state).toBeNull();
   });
 });

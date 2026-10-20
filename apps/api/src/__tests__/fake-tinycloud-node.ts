@@ -1,8 +1,9 @@
 // A loopback stand-in for the TinyCloud node endpoints the TinyCloud bootstrap uses (TC-1608).
-// It keeps the one piece of node state the bootstrap depends on: which spaces are hosted. A
-// host delegation (a SIWE granting `tinycloud.space/host`) hosts its space; a session
-// delegation is "skipped" for every space that is not hosted yet, exactly as the real node
-// answers a delegation-only activation. Every request is recorded, so a test can count the
+// It keeps the node state the bootstrap depends on: which spaces are hosted, and which delegations
+// the node already holds. A fresh host delegation (a SIWE granting `tinycloud.space/host`) hosts its
+// space and lists it as `activated`; a fresh session delegation is `skipped` for every space that is
+// not hosted yet; a delegation the node already holds is answered with empty `activated` and
+// `skipped`, as the real node does (v1.21.5). Every request is recorded, so a test can count the
 // host delegations a space received.
 
 export const FAKE_PEER_ID = 'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK';
@@ -24,8 +25,14 @@ export interface FakeTinyCloudNode {
   beforeHost?: (spaceId: string) => Promise<void>;
   /** Awaited before a peer-id response; a pending promise is a hung node. */
   beforePeer?: (spaceId: string) => Promise<void>;
+  /** Awaited before a session delegation is answered; a pending promise is a hung node. */
+  beforeSession?: () => Promise<void>;
   /** Status for host delegations: anything but 200 makes the node refuse to host the space. */
   hostStatus: number;
+  /** false: the node answers a host delegation with 200 but neither hosts the space nor lists it as activated. */
+  hostActivates: boolean;
+  /** Delegations (by authorization header) the node already stores, like the real node's content-addressed rows. */
+  known: Set<string>;
   /** Status for /invoke and encryption requests: 200 unless a test makes the node fail the seeding. */
   invokeStatus: number;
   stop: () => void;
@@ -55,11 +62,13 @@ export function startFakeTinyCloudNode(): FakeTinyCloudNode {
   const node: FakeTinyCloudNode = {
     url: '',
     hosted: new Set(),
+    known: new Set(),
     hostPosts: [],
     sessionPosts: [],
     peerGets: [],
     invokes: 0,
     hostStatus: 200,
+    hostActivates: true,
     invokeStatus: 200,
     stop: () => server.stop(true),
   };
@@ -80,16 +89,24 @@ export function startFakeTinyCloudNode(): FakeTinyCloudNode {
         const att = recapOf(authorization);
         const resources = Object.entries(att);
         const hostResource = resources.find(([, abilities]) => 'tinycloud.space/host' in abilities);
+        const known = node.known.has(authorization);
         if (hostResource) {
           const spaceId = hostResource[0].replace(/\/space$/, '');
           node.hostPosts.push({ spaceId, authorization });
           await node.beforeHost?.(spaceId);
           if (node.hostStatus !== 200) return new Response('node refused the host delegation', { status: node.hostStatus });
+          if (known || !node.hostActivates) return Response.json({ cid: 'bafy-host', activated: [], skipped: [] });
+          node.known.add(authorization);
           node.hosted.add(spaceId);
           return Response.json({ cid: 'bafy-host', activated: [spaceId], skipped: [] });
         }
         const spaceIds = [...new Set(resources.map(([resource]) => resource.split('/')[0]!))];
         for (const spaceId of spaceIds) node.sessionPosts.push({ spaceId, authorization });
+        await node.beforeSession?.();
+        // tinycloud-core db.rs:1873-1884, 2907-2913: a delegation the node already holds is answered
+        // from its row, with nothing activated and nothing skipped, whether or not its space is hosted.
+        if (known) return Response.json({ cid: 'bafy-session', activated: [], skipped: [] });
+        node.known.add(authorization);
         return Response.json({
           cid: 'bafy-session',
           activated: spaceIds.filter((spaceId) => node.hosted.has(spaceId)),
