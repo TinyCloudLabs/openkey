@@ -40,7 +40,7 @@ import {
   withNativeDelegationMetadata,
 } from './services/native-delegation/public-protocol';
 import { turnstileConfigProblem } from './services/turnstile';
-import { loadTestAccountRegistry } from './services/qa-registration';
+import { loadTestAccountRegistry, qaRegistrationSecretTooShort } from './services/qa-registration';
 
 
 const betterAuthUrl = process.env.BETTER_AUTH_URL;
@@ -57,6 +57,8 @@ if (turnstileProblem === 'missing_secret' || turnstileProblem === 'test_secret')
 if (turnstileProblem === 'missing_hostname') logConfigInvalid('TURNSTILE_EXPECTED_HOSTNAME');
 // TC-1632: an unparseable registry means no QA exemptions and no scoreboard exclusions.
 if (loadTestAccountRegistry().problem) logConfigInvalid('TEST_ACCOUNT_REGISTRY_JSON');
+// A QA secret shorter than the minimum is ignored, so the exemption is silently off without this.
+if (qaRegistrationSecretTooShort()) logConfigInvalid('OPENKEY_QA_REGISTRATION_SECRET');
 
 // Create Hono app
 const app = new Hono<ApiEnv>();
