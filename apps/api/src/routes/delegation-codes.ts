@@ -41,22 +41,25 @@ export interface DelegationCodeStore {
   deleteExpired(before: Date): Promise<void>;
 }
 
-const LOOKUP_LIMIT_PER_WINDOW = 30;
+const LOOKUP_LIMIT_PER_MINUTE = 60;
 const LOOKUP_WINDOW_MS = 60 * 1000;
-const LOOKUP_BUCKET_LIMIT = 10_000;
 
-/** Fixed one-minute window per client address, bounded map. Returns seconds until retry, or 0 when the lookup may proceed. */
-function createLookupLimiter(now: () => Date) {
-  const buckets = new Map<string, { count: number; resetAt: number }>();
-  return (client: string): number => {
+/**
+ * Global fixed one-minute window over all GET redeems. Client addresses come from request headers that callers can set
+ * (api.openkey.so is not behind Cloudflare), so the limit is deliberately not keyed on them. Returns seconds until
+ * retry, or 0 when the lookup may proceed.
+ */
+function createGlobalLookupLimiter(now: () => Date) {
+  let windowStart = 0;
+  let count = 0;
+  return (): number => {
     const current = now().getTime();
-    const prior = buckets.get(client);
-    const bucket = prior && prior.resetAt > current ? prior : { count: 0, resetAt: current + LOOKUP_WINDOW_MS };
-    if (bucket.count >= LOOKUP_LIMIT_PER_WINDOW) return Math.max(1, Math.ceil((bucket.resetAt - current) / 1000));
-    bucket.count += 1;
-    buckets.delete(client);
-    buckets.set(client, bucket);
-    if (buckets.size > LOOKUP_BUCKET_LIMIT) buckets.delete(buckets.keys().next().value!);
+    if (current - windowStart >= LOOKUP_WINDOW_MS) {
+      windowStart = current;
+      count = 0;
+    }
+    if (count >= LOOKUP_LIMIT_PER_MINUTE) return Math.max(1, Math.ceil((windowStart + LOOKUP_WINDOW_MS - current) / 1000));
+    count += 1;
     return 0;
   };
 }
@@ -68,7 +71,7 @@ export function createDelegationCodeRouter(input: {
 }) {
   const router = new Hono();
   const now = input.now ?? (() => new Date());
-  const takeLookupSlot = createLookupLimiter(now);
+  const takeLookupSlot = createGlobalLookupLimiter(now);
 
   router.post('/', input.sessionMiddleware, async (c) => {
     const body = await c.req.json().catch(() => null);
@@ -109,8 +112,7 @@ export function createDelegationCodeRouter(input: {
 
   router.get('/:code', async (c) => {
     c.header('Cache-Control', 'no-store');
-    const client = c.req.header('cf-connecting-ip') ?? c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown';
-    const retryAfter = takeLookupSlot(client);
+    const retryAfter = takeLookupSlot();
     if (retryAfter > 0) {
       c.header('Retry-After', String(retryAfter));
       return c.json({ error: 'Rate limit exceeded' }, 429);

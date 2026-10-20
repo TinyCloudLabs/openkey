@@ -85,14 +85,13 @@ describe('delegation short-code broker', () => {
     expect(statuses.filter((status) => status === 404)).toHaveLength(9);
   });
 
-  test('limits lookups per client address and resets after the window', async () => {
+  test('caps lookups globally per minute, so rotating client address headers does not bypass it', async () => {
     const { app, advance } = fixture();
     const lookup = (address: string) => app.request('/api/delegation-codes/sf23-22cs', { headers: { 'cf-connecting-ip': address } });
-    for (let index = 0; index < 30; index += 1) expect((await lookup('203.0.113.9')).status).toBe(404);
-    const limited = await lookup('203.0.113.9');
+    for (let index = 0; index < 60; index += 1) expect((await lookup(`203.0.113.${index}`)).status).toBe(404);
+    const limited = await lookup('198.51.100.7');
     expect(limited.status).toBe(429);
     expect(limited.headers.get('retry-after')).toBe('60');
-    expect((await lookup('198.51.100.7')).status).toBe(404);
     advance(60 * 1000);
     expect((await lookup('203.0.113.9')).status).toBe(404);
   });
