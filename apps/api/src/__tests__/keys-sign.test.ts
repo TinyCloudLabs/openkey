@@ -297,7 +297,7 @@ describe('keysRouter managed signing', () => {
       expect(logOutput).toHaveLength(1);
       const line = JSON.parse(logOutput[0]!);
       expect(line).toMatchObject({ level: 'error', event: 'tinycloud_bootstrap_background_failed', error_code: 'tinycloud_bootstrap_crashed', request_id: 'startup' });
-      expect(Object.keys(line).sort()).toEqual(['error_code', 'event', 'level', 'request_id', 'ts']);
+      expect(Object.keys(line).sort()).toEqual(['attempt', 'duration_ms', 'error_code', 'event', 'level', 'request_id', 'ts']);
       expect(logOutput.join('\n')).not.toContain('privateKey');
       expect(logOutput.join('\n')).not.toContain(privateKey);
       expect(logOutput.join('\n')).not.toContain(keyRecord.sealedBlob!);

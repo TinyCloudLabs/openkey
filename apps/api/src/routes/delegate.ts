@@ -98,7 +98,7 @@ import {
 } from '../services/coordinationos-signing-audit';
 import { validateTinyCloudManageKeyRequest } from '../services/tinycloud-manage-key-policy';
 import { canonicalTrustedTinyCloudHost } from '../services/tinycloud-hosts';
-import { awaitTinyCloudBootstrapWithinBudget } from '../services/tinycloud-bootstrap-budget';
+import { hostRequestedSpaceWithinBudget } from '../services/tinycloud-bootstrap-budget';
 import { deviceDelegationWindowError, deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, primaryKeyWhere } from '../services/primary-key';
 import { PreparedHandoffError } from '../services/prepared-handoff';
@@ -114,7 +114,8 @@ const prisma = createPrismaClient();
 const tee = createTeeClient();
 
 type SpaceSetupPlan = 'setup' | 'auto-sign-off' | 'external-wallet';
-type ManagedSpaceSetup = { space: string; plan: SpaceSetupPlan; bootstrapHost: string };
+type BootstrapSpaceName = (typeof BOOTSTRAP_SPACE_NAMES)[number];
+type ManagedSpaceSetup = { space: BootstrapSpaceName; plan: SpaceSetupPlan; bootstrapHost: string };
 
 async function managedSpaceSetupPlan(input: {
   userId: string;
@@ -124,9 +125,9 @@ async function managedSpaceSetupPlan(input: {
   chainId: number;
   spaceId: string;
 }): Promise<ManagedSpaceSetup | null> {
-  const name = input.spaceId.slice(input.spaceId.lastIndexOf(':') + 1);
+  const name = input.spaceId.slice(input.spaceId.lastIndexOf(':') + 1) as BootstrapSpaceName;
   if (
-    !BOOTSTRAP_SPACE_NAMES.includes(name as (typeof BOOTSTRAP_SPACE_NAMES)[number]) ||
+    !BOOTSTRAP_SPACE_NAMES.includes(name) ||
     input.spaceId !== makeSpaceId(input.address, input.chainId, name)
   ) return null;
 
@@ -144,6 +145,9 @@ async function managedSpaceSetupPlan(input: {
 }
 type SpaceReadiness = { spaceReady: boolean | null; spaceError?: string; spacePending?: true };
 
+/** `spaceError` when the approval's space was still being hosted at the timeout. */
+const REQUESTED_SPACE_TIMEOUT_ERROR = 'tinycloud_requested_space_timeout';
+
 async function finishManagedSpaceOnboarding(input: {
   userId: string;
   key: {
@@ -159,6 +163,8 @@ async function finishManagedSpaceOnboarding(input: {
   address: string;
   chainId: number;
   spaceId: string;
+  /** The session delegation this approval signed. Re-activating it is how the node confirms the space is hosted. */
+  delegationHeader: { Authorization: string };
   skipped: boolean;
 }): Promise<SpaceReadiness> {
   if (!input.skipped) return { spaceReady: true };
@@ -177,26 +183,42 @@ async function finishManagedSpaceOnboarding(input: {
     if (!input.privateKey && !input.key.sealedBlob) {
       return { spaceReady: false, spaceError: 'TinyCloud account setup failed: managed key has no sealed key data.' };
     }
-    const privateKey = input.privateKey ?? await unsealManagedKey(input.key, input.key.sealedBlob!);
-    const outcome = await awaitTinyCloudBootstrapWithinBudget(
-      ensureTinyCloudBootstrap({
+    // The first run uses this key and drops it; each background retry unseals again, so the
+    // plaintext key is never held across a retry's wait.
+    let firstRunKey: string | undefined = input.privateKey ?? await unsealManagedKey(input.key, input.key.sealedBlob!);
+    const result = await hostRequestedSpaceWithinBudget(async ({ alreadyHosted, report }) => {
+      const privateKey = firstRunKey ?? await unsealManagedKey(input.key, input.key.sealedBlob!);
+      firstRunKey = undefined;
+      return ensureTinyCloudBootstrap({
         prisma,
         userId: input.userId,
         key: { id: input.key.id, address: input.key.address, keyType: input.key.keyType },
         privateKey,
         host: setup.bootstrapHost,
         chainId: input.chainId,
-      }),
-    );
-    if (outcome.status === 'complete') return { spaceReady: true };
-    // Still running here or under another approval's lock: the lock/cache finishes it once.
-    if (outcome.status === 'pending' || (outcome.status === 'failed' && outcome.errorCode === 'tinycloud_bootstrap_in_progress')) {
-      return { spaceReady: null, spacePending: true };
+        // Hosts only this space before responding; the other spaces and the seeding follow in the background run.
+        requestedSpace: { space: setup.space, delegationHeader: input.delegationHeader, alreadyHosted, report },
+      });
+    });
+    switch (result.status) {
+      case 'hosted':
+      case 'complete':
+        return { spaceReady: true };
+      // Still running here or under another approval's lock: the lock/cache finishes it once.
+      case 'pending':
+        return { spaceReady: null, spacePending: true };
+      case 'timeout':
+        return { spaceReady: null, spacePending: true, spaceError: REQUESTED_SPACE_TIMEOUT_ERROR };
+      case 'skipped':
+        return { spaceReady: false, spaceError: 'TinyCloud account setup failed.' };
+      case 'failed':
+        return {
+          spaceReady: false,
+          spaceError: result.errorCode === 'tinycloud_bootstrap_crashed'
+            ? `TinyCloud account setup failed: ${result.errorMessage}.`
+            : `TinyCloud account setup failed (${result.errorCode}): ${result.errorMessage}.`,
+        };
     }
-    if (outcome.status === 'failed' && outcome.errorCode === 'tinycloud_bootstrap_crashed') {
-      return { spaceReady: false, spaceError: `TinyCloud account setup failed: ${outcome.errorMessage}.` };
-    }
-    return { spaceReady: false, spaceError: `TinyCloud account setup failed${outcome.status === 'failed' ? ` (${outcome.errorCode}): ${outcome.errorMessage}` : ''}.` };
   } catch (error) {
     return {
       spaceReady: false,
@@ -1521,6 +1543,7 @@ delegateRouter.post('/', async (c) => {
           address,
           chainId,
           spaceId: bound.spaceId,
+          delegationHeader: session.delegationHeader,
           skipped: Boolean(activationResult.skipped?.includes(bound.spaceId)),
         });
       }
@@ -1617,6 +1640,7 @@ delegateRouter.post('/', async (c) => {
         address,
         chainId,
         spaceId: preparedResult.spaceId,
+        delegationHeader: session.delegationHeader,
         skipped: Boolean(activationResult.skipped?.includes(preparedResult.spaceId)),
       });
     }

@@ -377,6 +377,28 @@ describe('ensureTinyCloudBootstrapForApprovedSign', () => {
     expect(state).toMatchObject({ status: 'failed', failureCode: 'tinycloud_bootstrap_failed' });
   });
 
+  test('keeps the failure reason while a retry holds the lock, and clears it only on success', async () => {
+    executor.mockImplementationOnce(async () => {
+      throw new Error('node unreachable');
+    });
+    const input = { prisma, userId, key, privateKey, host: tinycloudHost, chainId };
+    await ensureTinyCloudBootstrap(input);
+    expect(state).toMatchObject({ status: 'failed', failureReason: 'node unreachable' });
+
+    let seenDuringRetry: unknown;
+    executor.mockImplementationOnce(async () => {
+      seenDuringRetry = { ...state };
+    });
+    expect(await ensureTinyCloudBootstrap(input)).toEqual({ status: 'complete' });
+
+    expect(seenDuringRetry).toMatchObject({
+      status: 'in_progress',
+      failureCode: 'tinycloud_bootstrap_failed',
+      failureReason: 'node unreachable',
+    });
+    expect(state).toMatchObject({ status: 'complete', failureCode: null, failureReason: null });
+  });
+
   test('returns a skipped outcome when auto-sign is disabled', async () => {
     autoSignEnabled = false;
 
