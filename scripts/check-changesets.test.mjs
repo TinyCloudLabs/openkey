@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -28,8 +28,6 @@ function fixture(changesets) {
   mkdirSync(join(directory, 'packages/web'), { recursive: true });
   symlinkSync(join(repo, 'node_modules'), join(directory, 'node_modules'), 'dir');
   writeFileSync(join(directory, 'package.json'), JSON.stringify({ private: true, workspaces: ['packages/*'] }));
-  // @manypkg/get-packages 3 (changesets 3) only recognises a workspace root that has a lockfile.
-  writeFileSync(join(directory, 'bun.lock'), '');
   writeFileSync(join(directory, 'packages/sdk/package.json'), JSON.stringify({ name: '@openkey/sdk', version: '0.12.0' }));
   writeFileSync(join(directory, 'packages/web/package.json'), JSON.stringify({ name: '@openkey/web', version: '0.0.2' }));
   writeFileSync(join(directory, '.changeset/config.json'), JSON.stringify({ baseBranch: 'main', ignore: ['@openkey/web'] }));
@@ -52,11 +50,13 @@ function versionFixture() {
   if (branch.status !== 0) throw new Error(branch.stderr);
   writeFileSync(join(directory, 'packages/sdk/package.json'), JSON.stringify({ name: '@openkey/sdk', version: '0.12.1-beta.1' }));
   writeFileSync(join(directory, 'packages/sdk/CHANGELOG.md'), '# 0.12.1-beta.1\n\nSDK fix.\n');
-  // Changesets 3 keeps no consumed-changeset list; it moves them to .changeset/pre/.
-  mkdirSync(join(directory, '.changeset/pre'));
-  renameSync(join(directory, '.changeset/sdk.md'), join(directory, '.changeset/pre/sdk.md'));
-  writeFileSync(join(directory, '.changeset/pre.json'), JSON.stringify({ mode: 'pre', tag: 'beta' }));
-  for (const args of [['add', '-A', '.changeset', 'packages/sdk'], ['-c', 'user.name=CI', '-c', 'user.email=ci@example.test', 'commit', '-m', 'version packages']]) {
+  writeFileSync(join(directory, '.changeset/pre.json'), JSON.stringify({
+    mode: 'pre',
+    tag: 'beta',
+    initialVersions: { '@openkey/sdk': '0.12.0', '@openkey/web': '0.0.2' },
+    changesets: ['sdk'],
+  }));
+  for (const args of [['add', '.changeset/pre.json', 'packages/sdk'], ['-c', 'user.name=CI', '-c', 'user.email=ci@example.test', 'commit', '-m', 'version packages']]) {
     const git = spawnSync('git', args, { cwd: directory, encoding: 'utf8' });
     if (git.status !== 0) throw new Error(git.stderr);
   }
