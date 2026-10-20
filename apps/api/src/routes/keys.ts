@@ -10,6 +10,7 @@ import {
   ensureTinyCloudBootstrapForApprovedSign,
 } from '../services/tinycloud-bootstrap';
 import { awaitTinyCloudBootstrapWithinBudget } from '../services/tinycloud-bootstrap-budget';
+import { personalKeyWhere } from '../services/primary-key';
 import { createSealingContext, deriveKeyForRecord } from '../services/key-sealing';
 import { deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, PrimaryKeyConflictError, setPrimaryKey } from '../services/primary-key';
@@ -114,7 +115,7 @@ keysRouter.post('/link', async (c) => {
 
   // Get next key index for this user
   const lastKey = await prisma.ethereumKey.findFirst({
-    where: { userId: user.id },
+    where: personalKeyWhere(user.id),
     orderBy: { keyIndex: 'desc' },
   });
   const keyIndex = (lastKey?.keyIndex ?? -1) + 1;
@@ -147,7 +148,7 @@ keysRouter.post('/link', async (c) => {
 async function listKeysWithPrimary(userId: string, includeArchived: boolean) {
   const keys = await prisma.ethereumKey.findMany({
     where: {
-      userId,
+      ...personalKeyWhere(userId),
       ...(includeArchived ? {} : { archivedAt: null }),
     },
     select: {
@@ -185,7 +186,7 @@ keysRouter.post('/generate', async (c) => {
 
   // Get next key index for this user
   const lastKey = await prisma.ethereumKey.findFirst({
-    where: { userId: user.id },
+    where: personalKeyWhere(user.id),
     orderBy: { keyIndex: 'desc' },
   });
   const keyIndex = (lastKey?.keyIndex ?? -1) + 1;
@@ -230,7 +231,7 @@ keysRouter.get('/:keyId', async (c) => {
   const keyId = c.req.param('keyId');
 
   const key = await prisma.ethereumKey.findFirst({
-    where: { id: keyId, userId: user.id },
+    where: { id: keyId, ...personalKeyWhere(user.id) },
     select: {
       id: true,
       address: true,
@@ -259,7 +260,7 @@ keysRouter.patch('/:keyId', async (c) => {
   const body = await c.req.json<{ label: string }>();
 
   const key = await prisma.ethereumKey.updateMany({
-    where: { id: keyId, userId: user.id, archivedAt: null },
+    where: { id: keyId, ...personalKeyWhere(user.id), archivedAt: null },
     data: { label: body.label },
   });
 
@@ -301,7 +302,7 @@ keysRouter.post('/:keyId/sign', async (c) => {
   }
 
   const key = await prisma.ethereumKey.findFirst({
-    where: { id: keyId, userId: user.id, archivedAt: null },
+    where: { id: keyId, ...personalKeyWhere(user.id), archivedAt: null },
   });
 
   if (!key) {
@@ -354,7 +355,7 @@ keysRouter.post('/:keyId/sign-typed-data', async (c) => {
   }>();
 
   const key = await prisma.ethereumKey.findFirst({
-    where: { id: keyId, userId: user.id, archivedAt: null },
+    where: { id: keyId, ...personalKeyWhere(user.id), archivedAt: null },
   });
 
   if (!key) {
@@ -411,7 +412,7 @@ keysRouter.get('/:keyId/quote', async (c) => {
   }
 
   const key = await prisma.ethereumKey.findFirst({
-    where: { id: keyId, userId: user.id, archivedAt: null },
+    where: { id: keyId, ...personalKeyWhere(user.id), archivedAt: null },
   });
 
   if (!key) {
@@ -515,7 +516,7 @@ keysRouter.post('/:keyId/archive', async (c) => {
 
   const archivedAt = new Date();
   const key = await prisma.ethereumKey.updateMany({
-    where: { id: keyId, userId: user.id, archivedAt: null },
+    where: { id: keyId, ...personalKeyWhere(user.id), archivedAt: null },
     data: { archivedAt },
   });
 
@@ -532,7 +533,7 @@ keysRouter.post('/:keyId/unarchive', async (c) => {
   const keyId = c.req.param('keyId');
 
   const key = await prisma.ethereumKey.updateMany({
-    where: { id: keyId, userId: user.id, archivedAt: { not: null } },
+    where: { id: keyId, ...personalKeyWhere(user.id), archivedAt: { not: null } },
     data: { archivedAt: null },
   });
 

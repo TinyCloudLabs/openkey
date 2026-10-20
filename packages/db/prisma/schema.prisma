@@ -45,6 +45,7 @@ model User {
   deviceAuthorizations           DeviceAuthorization[]
   preparedHandoffs               PreparedHandoff[]
   tinyCloudNativeGrants          TinyCloudNativeGrant[]
+  keyGrants                      KeyGrant[]
 
   @@map("user")
 }
@@ -206,6 +207,16 @@ enum KeyType {
   EXTERNAL
 }
 
+enum KeyCustody {
+  PERSONAL
+  ORG
+}
+
+enum KeyGrantRole {
+  OWNER
+  ADMIN
+}
+
 // Ethereum keys - managed (sealed with TEE) or external (user-provided address)
 model EthereumKey {
   id             String     @id @default(cuid())
@@ -218,6 +229,7 @@ model EthereumKey {
   // for these legacy rows.
   sealingContext String?    @unique(map: "ethereum_keys_sealingContext_key")
   keyType        KeyType    @default(MANAGED)
+  custody        KeyCustody @default(PERSONAL)
   // The single TEE-managed identity exposed to OIDC applications through
   // tinycloud:manage-key. A partial unique index in the migration enforces
   // at most one active canonical key for each user.
@@ -229,9 +241,72 @@ model EthereumKey {
 
   user                    User?                     @relation(fields: [userId], references: [id], onDelete: SetNull)
   tinyCloudBootstrapState TinyCloudBootstrapState[]
+  orgKey                  OrgKey?
+  keyGrants               KeyGrant[]
+  orgKeySignatureAudits   OrgKeySignatureAudit[]
 
   @@unique([id, userId], map: "ethereum_keys_id_userId_key")
   @@map("ethereum_keys")
+}
+
+// Organization-custodied key record. The key itself is an EthereumKey with
+// custody = ORG and userId = NULL; access is only through KeyGrant rows.
+model OrgKey {
+  keyId         String   @id
+  orgId         String
+  orgName       String
+  controllerDid String
+  createdAt     DateTime @default(now())
+
+  key EthereumKey @relation(fields: [keyId], references: [id], onDelete: Restrict)
+
+  @@index([orgId])
+  @@map("org_keys")
+}
+
+// Grant of one role on one ORG key to one user. Revocation sets revokedAt;
+// rows are never deleted. Partial unique index (migration) allows one active OWNER per key.
+model KeyGrant {
+  id              String       @id @default(cuid())
+  keyId           String
+  role            KeyGrantRole
+  granteeUserId   String?
+  invitedEmail    String?
+  invitedByUserId String?
+  invitedAt       DateTime     @default(now())
+  acceptedAt      DateTime?
+  revokedAt       DateTime?
+  revokedByUserId String?
+  createdAt       DateTime     @default(now())
+
+  key     EthereumKey @relation(fields: [keyId], references: [id], onDelete: Restrict)
+  signatureAudits OrgKeySignatureAudit[]
+  grantee User?       @relation(fields: [granteeUserId], references: [id], onDelete: Restrict)
+
+  @@index([keyId])
+  @@index([granteeUserId])
+  @@map("key_grants")
+}
+
+// One row per org-key signature, written in the same transaction as the signature
+// (K1 D4.6). actorUserId has no FK so audit history survives account deletion.
+// passkeyAssertionHash is unique: a consumed passkey assertion cannot sign twice.
+model OrgKeySignatureAudit {
+  id                   String   @id @default(cuid())
+  keyId                String
+  grantId              String
+  actorUserId          String
+  origin               String
+  messageDigest        String
+  passkeyAssertionHash String   @unique(map: "org_key_signature_audits_passkeyAssertionHash_key")
+  createdAt            DateTime @default(now())
+
+  key   EthereumKey @relation(fields: [keyId], references: [id], onDelete: Restrict)
+  grant KeyGrant    @relation(fields: [grantId], references: [id], onDelete: Restrict)
+
+  @@index([keyId])
+  @@index([grantId])
+  @@map("org_key_signature_audits")
 }
 
 // Nostr identities - secp256k1 Schnorr (BIP-340 / NIP-01), structurally

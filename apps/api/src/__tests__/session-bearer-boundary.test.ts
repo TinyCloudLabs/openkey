@@ -14,6 +14,9 @@ let sessionResolutions = 0;
 let signCalls = 0;
 let deletedUsers: string[] = [];
 let lastPasskeyAt: Date | null = null;
+let ownerGrantCount = 0;
+let ownerGrantQueries: unknown[] = [];
+let adminRevocations: unknown[] = [];
 let sessionLookups: unknown[] = [];
 
 const tx = {
@@ -23,6 +26,10 @@ const tx = {
   session: { deleteMany: async () => ({ count: 1 }) },
   account: { deleteMany: async () => ({ count: 1 }) },
   verification: { deleteMany: async () => ({ count: 0 }) },
+  keyGrant: {
+    count: async (args: { where: unknown }) => { ownerGrantQueries.push(args); return ownerGrantCount; },
+    updateMany: async (args: unknown) => { adminRevocations.push(args); return { count: 0 }; },
+  },
   user: { delete: async ({ where }: { where: { id: string } }) => { deletedUsers.push(where.id); return {}; } },
 };
 
@@ -104,6 +111,9 @@ beforeEach(() => {
   deletedUsers = [];
   lastPasskeyAt = null;
   sessionLookups = [];
+  ownerGrantCount = 0;
+  ownerGrantQueries = [];
+  adminRevocations = [];
 });
 
 // Mounted exactly as apps/api/src/index.ts mounts them.
@@ -246,6 +256,30 @@ describe('account controls (TC-689)', () => {
     lastPasskeyAt = new Date(Date.now() - 60_000);
     const response = await call('POST', '/api/account/delete', { origin: OPENKEY_ORIGIN }, { confirmation: 'DELETE MY ACCOUNT' });
     expect(response.status).toBe(200);
+    expect(deletedUsers).toEqual(['user_1']);
+  });
+
+  test('delete refuses an account that owns an organization key (TC-1518 D1)', async () => {
+    lastPasskeyAt = new Date(Date.now() - 60_000);
+    ownerGrantCount = 1;
+    const response = await call('POST', '/api/account/delete', { origin: OPENKEY_ORIGIN }, { confirmation: 'DELETE MY ACCOUNT' });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: 'Account owns an organization key' });
+    expect(ownerGrantQueries).toEqual([{ where: { granteeUserId: 'user_1', role: 'OWNER', revokedAt: null } }]);
+    expect(adminRevocations).toEqual([]);
+    expect(deletedUsers).toEqual([]);
+  });
+
+  test('delete revokes ADMIN grants and detaches the grantee before deleting the user', async () => {
+    lastPasskeyAt = new Date(Date.now() - 60_000);
+    const response = await call('POST', '/api/account/delete', { origin: OPENKEY_ORIGIN }, { confirmation: 'DELETE MY ACCOUNT' });
+    expect(response.status).toBe(200);
+    expect(adminRevocations).toEqual([
+      expect.objectContaining({
+        where: { granteeUserId: 'user_1', role: 'ADMIN', revokedAt: null },
+        data: expect.objectContaining({ revokedByUserId: 'user_1', granteeUserId: null }),
+      }),
+    ]);
     expect(deletedUsers).toEqual(['user_1']);
   });
 
