@@ -68,6 +68,7 @@ const CONFIG_KEYS: Record<string, true> = { BETTER_AUTH_URL: true };
 const ERROR_CODES: Record<string, true> = {
   P2002: true, P2025: true, P2010: true, P2034: true, tinycloud_bootstrap_failed: true,
   tinycloud_bootstrap_crashed: true, tinycloud_bootstrap_in_progress: true,
+  tinycloud_bootstrap_node_timeout: true, tinycloud_bootstrap_space_not_hosted: true,
   tinycloud_bootstrap_expired_request: true, BETTER_AUTH_URL: true, signup_token_invalid: true,
   signup_account_exists: true, quote_report_data_mismatch: true, quote_key_custody_mismatch: true,
   quote_format_invalid: true,
@@ -123,6 +124,25 @@ export function logMetric(
   fields: { status?: number; count?: number },
 ): void {
   emit(level, event, { status: fields.status, count: fields.count });
+}
+
+export type RequestedSpaceHosted = 'yes' | 'no' | 'timeout';
+
+/**
+ * Outcome of a TinyCloud bootstrap run that finished after (or apart from) the response: which
+ * attempt it was, how long that attempt took, and whether the approval's requested space was
+ * hosted before the response. Numbers, a closed string set and allow-listed codes only.
+ */
+export function logTinyCloudBootstrapBackground(
+  event: 'tinycloud_bootstrap_background_failed' | 'tinycloud_bootstrap_background_completed',
+  fields: { errorCode?: string; durationMs: number; attempt: number; requestedSpaceHosted?: RequestedSpaceHosted },
+): void {
+  emit(event === 'tinycloud_bootstrap_background_failed' ? 'error' : 'info', event, {
+    error_code: typeof fields.errorCode === 'string' && Object.hasOwn(ERROR_CODES, fields.errorCode) ? fields.errorCode : undefined,
+    duration_ms: Number.isFinite(fields.durationMs) ? Math.max(0, Math.round(fields.durationMs)) : undefined,
+    attempt: fields.attempt,
+    requested_space_hosted: fields.requestedSpaceHosted,
+  });
 }
 
 export function logError(level: 'warn' | 'error', event: EventName, error: unknown): void {
