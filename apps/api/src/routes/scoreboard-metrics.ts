@@ -30,6 +30,7 @@ type DistinctUsers = {
 
 export type ScoreboardDatabase = {
   $queryRaw<T>(query: TemplateStringsArray, ...values: unknown[]): Promise<T>;
+  user: { findMany(args: Record<string, unknown>): Promise<Array<{ id: string; email: string }>> };
   oauthAccessToken: DistinctUsers;
   oauthRefreshToken: DistinctUsers;
   oauthConsent: DistinctUsers;
@@ -64,7 +65,7 @@ export function scoreboardExclusions(
 
 /**
  * Accounts whose email matches a QA-eligible pattern in the test-account registry.
- * A counting exclusion only; it grants no access. The SQL prefilter narrows rows to
+ * A counting exclusion only; it grants no access. The database prefilter (Prisma `where`) narrows rows to
  * the registry's emailDomains, so every QA-eligible pattern must match one of them.
  * An empty emailDomains list means no QA exclusions.
  */
@@ -73,8 +74,12 @@ export async function qaAccountIds(
   registry: { emailDomains: readonly string[]; qaEligiblePatterns: readonly RegExp[] } = loadTestAccountRegistry().registry,
 ): Promise<string[]> {
   if (registry.emailDomains.length === 0) return [];
-  const rows = await database.$queryRaw<Array<{ id: string; email: string }>>`
-    SELECT id, email FROM "User" WHERE lower(split_part(email, '@', 2)) = ANY(${[...registry.emailDomains]})`;
+  // Typed Prisma delegate: Prisma maps the model to its @@map'd table name ("user").
+  // Raw SQL against "User" fails on Postgres (P2010) because the table is named "user".
+  const rows = await database.user.findMany({
+    where: { OR: registry.emailDomains.map((domain) => ({ email: { endsWith: `@${domain}`, mode: 'insensitive' } })) },
+    select: { id: true, email: true },
+  });
   return rows.filter((row) => qaEligibleEmail(row.email, registry.qaEligiblePatterns)).map((row) => row.id);
 }
 

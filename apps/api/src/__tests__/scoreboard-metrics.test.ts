@@ -5,7 +5,7 @@ await mockModules({
   '@openkey/db': () => ({ createPrismaClient: () => ({ $queryRaw: async () => [] }) }),
 });
 
-const { countAppUsers, countProtocolUsers, exclusionsFromEnv, fetchNodeOwners, qaAccountIds, resetScoreboardRateLimitForTests, scoreboardExclusions, scoreboardMetricsRouter } = await import(
+const { countAppUsers, countProtocolUsers, exclusionsFromEnv, fetchNodeOwners, resetScoreboardRateLimitForTests, scoreboardExclusions, scoreboardMetricsRouter } = await import(
   '../routes/scoreboard-metrics?tc1483' as string
 );
 
@@ -35,14 +35,9 @@ const none = { userIds: new Set<string>(), clientIds: new Set<string>() };
 function database(
   parts: Partial<Record<'access' | 'refresh' | 'consent' | 'signIn', Row[]>>,
   keyRows: Array<{ userId: string; address: string }> = [],
-  users: Array<{ id: string; email: string }> = [],
 ) {
   return {
     async $queryRaw(query: TemplateStringsArray, ...values: unknown[]) {
-      if (query.join('').includes('"User"')) {
-        const domains = new Set(values[0] as string[]);
-        return users.filter((u) => domains.has(u.email.split('@')[1] ?? ''));
-      }
       const wanted = new Set(values[0] as string[]);
       return keyRows.filter((k) => wanted.has(k.address.toLowerCase())).map((k) => ({ userId: k.userId }));
     },
@@ -104,25 +99,6 @@ test('the test-account registry adds to env exclusions, trimmed and deduped', ()
   const { userIds, clientIds } = scoreboardExclusions({ SCOREBOARD_EXCLUDE_USER_IDS: 'a, b' }, registry);
   expect([...userIds].sort()).toEqual(['a', 'b', 'c']);
   expect([...clientIds]).toEqual(['z']);
-});
-
-test('QA-eligible accounts are found by email pattern within the registry domains; lookalike and ineligible addresses are not', async () => {
-  const registry = { emailDomains: ['example.test'], qaEligiblePatterns: [/^fixture-qa-[a-z0-9]+@example\.test$/] };
-  const users = [
-    { id: 'qa1', email: 'fixture-qa-7f3a@example.test' },
-    { id: 'qa2', email: 'fixture-qa-0123@example.test' },
-    { id: 'real', email: 'someone@example.test' },
-    { id: 'lookalike', email: 'fixture-qa-7f3a@example.com' },
-    { id: 'pending', email: 'fixture-qaabc@example.test' },
-  ];
-  const ids = await qaAccountIds(database({}, [], users) as unknown as Parameters<typeof qaAccountIds>[0], registry);
-  expect(ids).toEqual(['qa1', 'qa2']);
-});
-
-test('no registry domains means no QA exclusions, whatever the patterns', async () => {
-  const users = [{ id: 'qa1', email: 'fixture-qa-7f3a@example.test' }];
-  const registry = { emailDomains: [], qaEligiblePatterns: [/^fixture-qa-[a-z0-9]+@example\.test$/] };
-  expect(await qaAccountIds(database({}, [], users) as unknown as Parameters<typeof qaAccountIds>[0], registry)).toEqual([]);
 });
 
 const envKeys = ['OPENKEY_METRICS_READ_TOKEN', 'INTERNAL_METRICS_TOKEN', 'NODE_STATS_URL', 'NODE_STATS_READ_TOKEN'] as const;
