@@ -14,7 +14,8 @@ echo "=== Publishing OpenKey packages ==="
 # end up with "workspace:*" in their dependencies which breaks consumers.
 ./scripts/resolve-workspace-deps.sh
 
-# Publish with changesets
-bun changeset publish --access public
+# Publish with changesets (public access comes from .changeset/config.json;
+# changesets 3 rejects a --access flag)
+bun changeset publish
 
 echo "=== Publishing complete ==="
