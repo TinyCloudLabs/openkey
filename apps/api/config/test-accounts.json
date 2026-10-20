@@ -1,5 +1,11 @@
 {
-  "description": "Internal test and QA accounts excluded from scoreboard counts. Counts only; not a security control and never consulted for authentication. Entries are exact ids.",
+  "description": "Internal test and QA accounts. Entries in userIds and clientIds are excluded from scoreboard counts (exact ids). Patterns match new-account emails for the QA sign-up exemption: a pattern with qaEligible true exempts an account only together with the QA registration secret, and a pattern never exempts by itself. Patterns with qaEligible false are reference only.",
   "userIds": [],
-  "clientIds": []
+  "clientIds": [],
+  "patterns": [
+    { "name": "tc1384-passkey-throwaway", "regex": "^tc1384qa-[^@]+@mailinator\\.com$", "qaEligible": true },
+    { "name": "tcqa-per-run", "regex": "^tcqa[^@]+@mailinator\\.com$", "qaEligible": true },
+    { "name": "qa-clr-email-otp", "regex": "^qa-clr-[a-f0-9]{12}@mailinator\\.com$", "qaEligible": true },
+    { "name": "qa-m-multi-key", "regex": "^qa[a-z0-9]{15}@mailinator\\.com$", "qaEligible": false }
+  ]
 }

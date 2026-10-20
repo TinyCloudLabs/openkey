@@ -27,6 +27,8 @@ declare global {
 export const TURNSTILE_ACTION = 'email-signup';
 
 const SCRIPT_URL = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+/** A stalled script must fail visibly instead of leaving the step waiting forever. */
+const SCRIPT_TIMEOUT_MS = 10_000;
 
 let loading: Promise<TurnstileApi> | null = null;
 
@@ -40,15 +42,19 @@ export function loadTurnstile(): Promise<TurnstileApi> {
     const script = document.createElement('script');
     script.src = SCRIPT_URL;
     script.async = true;
-    script.onload = () => {
-      if (window.turnstile) resolve(window.turnstile);
-      else reject(new Error('Verification did not load.'));
-    };
-    script.onerror = () => {
+    const fail = () => {
+      clearTimeout(timer);
       loading = null;
       script.remove();
       reject(new Error('Verification did not load.'));
     };
+    const timer = setTimeout(fail, SCRIPT_TIMEOUT_MS);
+    script.onload = () => {
+      clearTimeout(timer);
+      if (window.turnstile) resolve(window.turnstile);
+      else fail();
+    };
+    script.onerror = fail;
     document.head.appendChild(script);
   });
   return loading;

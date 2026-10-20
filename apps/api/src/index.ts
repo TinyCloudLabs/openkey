@@ -39,6 +39,7 @@ import {
   protocolAwareCors,
   withNativeDelegationMetadata,
 } from './services/native-delegation/public-protocol';
+import { turnstileConfigProblem } from './services/turnstile';
 
 
 const betterAuthUrl = process.env.BETTER_AUTH_URL;
@@ -49,6 +50,10 @@ try {
   logConfigInvalid('BETTER_AUTH_URL');
   throw new Error('Invalid API configuration');
 }
+// TC-1632: log a Turnstile setup that would pause new-account sign-ups at runtime.
+const turnstileProblem = turnstileConfigProblem();
+if (turnstileProblem === 'missing_secret' || turnstileProblem === 'test_secret') logConfigInvalid('TURNSTILE_SECRET_KEY');
+if (turnstileProblem === 'missing_hostname') logConfigInvalid('TURNSTILE_EXPECTED_HOSTNAME');
 
 // Create Hono app
 const app = new Hono<ApiEnv>();

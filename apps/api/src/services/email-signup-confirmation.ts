@@ -19,7 +19,7 @@ import { parseUserOutput } from 'better-auth/db';
 import { getCurrentAuthContext } from '@better-auth/core/context';
 import type { PrismaClient } from '@openkey/db';
 import { log } from '../log';
-import { QA_REGISTRATION_HEADER, qaRegistrationAuthorized } from './qa-registration';
+import { QA_REGISTRATION_HEADER, qaEligibleEmail, qaRegistrationAuthorized } from './qa-registration';
 import { verifyTurnstileToken } from './turnstile';
 
 export const NEW_ACCOUNT_CONFIRMATION_REQUIRED = 'NEW_ACCOUNT_CONFIRMATION_REQUIRED';
@@ -62,9 +62,16 @@ async function presentedQaSecret(): Promise<string | null> {
   }
 }
 
+// Cloudflare uses the visitor address as a signal. The proxy header is read when present.
+function clientIp(request: Request | undefined): string | undefined {
+  const connecting = request?.headers.get('cf-connecting-ip');
+  if (connecting) return connecting;
+  return request?.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || undefined;
+}
+
 // Verifies the widget token. Only a definite success passes. A refused token
 // leaves the sign-up token unspent so the visitor can complete the check again.
-async function requireTurnstile(token: unknown): Promise<void> {
+async function requireTurnstile(token: unknown, remoteIp?: string): Promise<void> {
   if (typeof token !== 'string' || !token) {
     log('warn', 'auth_email_signup_turnstile_refused', 'turnstile_required');
     throw new APIError('BAD_REQUEST', {
@@ -72,7 +79,7 @@ async function requireTurnstile(token: unknown): Promise<void> {
       message: 'Complete the verification check to create your account.',
     });
   }
-  const outcome = await verifyTurnstileToken(token);
+  const outcome = await verifyTurnstileToken(token, process.env, remoteIp);
   if (outcome === 'success') {
     log('info', 'auth_email_signup_turnstile_verified');
     return;
@@ -102,7 +109,7 @@ export function emailSignupConfirmation(database: PrismaClient) {
             create: {
               before: async (user: { email: string }, context: { path?: string } | null) => {
                 if (context?.path !== '/sign-in/email-otp') return;
-                const qaExempt = qaRegistrationAuthorized(await presentedQaSecret());
+                const qaExempt = qaRegistrationAuthorized(await presentedQaSecret()) && qaEligibleEmail(user.email);
                 const now = new Date();
                 const signupToken = randomBytes(32).toString('base64url');
                 await database.verification.deleteMany({
@@ -147,10 +154,11 @@ export function emailSignupConfirmation(database: PrismaClient) {
           log('warn', 'auth_email_signup_refused', 'signup_token_invalid');
           throw refused();
         }
-        if (pending.value !== VALUE_QA_EXEMPT) await requireTurnstile(body.turnstileToken);
+        if (pending.value !== VALUE_QA_EXEMPT) await requireTurnstile(body.turnstileToken, clientIp(ctx.request));
         // One DELETE is the single-use gate: concurrent confirmations race on
-        // the same row and only one sees it.
-        const consumed = await database.verification.deleteMany({ where: { id: pending.id } });
+        // the same row and only one sees it. The expiry predicate applies here
+        // too, so a token that lapses during the Turnstile check creates nothing.
+        const consumed = await database.verification.deleteMany({ where: { id: pending.id, expiresAt: { gt: new Date() } } });
         if (consumed.count !== 1) {
           log('warn', 'auth_email_signup_refused', 'signup_token_invalid');
           throw refused();
@@ -172,6 +180,7 @@ export function emailSignupConfirmation(database: PrismaClient) {
           if (await ctx.context.internalAdapter.findUserByEmail(email)) throw accountExists();
           throw error;
         }
+        if (pending.value === VALUE_QA_EXEMPT) log('info', 'auth_email_signup_qa_account_created');
         const session = await ctx.context.internalAdapter.createSession(user.id);
         await setSessionCookie(ctx, { session, user });
         log('info', 'auth_email_signup_confirmed');

@@ -130,6 +130,11 @@ afterAll(() => {
 
 const originalEnv = { ...process.env };
 
+// TC-1632: QA secrets meet the minimum length; the email is QA-eligible under config/test-accounts.json.
+const QA_CURRENT_SECRET = 'c'.repeat(43);
+const QA_PREVIOUS_SECRET = 'p'.repeat(43);
+const QA_ELIGIBLE_EMAIL = 'tcqa-7f3a@mailinator.com';
+
 beforeEach(() => {
   rows = [];
   users = [];
@@ -138,16 +143,16 @@ beforeEach(() => {
   requestHeaders = null;
   siteverifyResponse = () => new Response(JSON.stringify({ success: true, action: 'email-signup' }), { status: 200 });
   process.env.TURNSTILE_SECRET_KEY = 'turnstile-secret';
-  process.env.OPENKEY_QA_REGISTRATION_SECRET = 'qa-current-secret';
-  process.env.OPENKEY_QA_REGISTRATION_SECRET_PREVIOUS = 'qa-previous-secret';
+  process.env.OPENKEY_QA_REGISTRATION_SECRET = QA_CURRENT_SECRET;
+  process.env.OPENKEY_QA_REGISTRATION_SECRET_PREVIOUS = QA_PREVIOUS_SECRET;
 });
 
 afterEach(() => {
   process.env = { ...originalEnv };
 });
 
-const QA = { 'x-openkey-qa-registration': 'qa-current-secret' };
-const PATTERN_LIKE_EMAIL = 'qaabcdefghijklmno@mailinator.com';
+const QA = { 'x-openkey-qa-registration': QA_CURRENT_SECRET };
+const PATTERN_LIKE_EMAIL = QA_ELIGIBLE_EMAIL;
 
 test('a new email without the QA secret is challenged with a single-use token', async () => {
   const issued = await issueToken('new@example.com');
@@ -159,14 +164,26 @@ test('a new email without the QA secret is challenged with a single-use token', 
 
 test('the QA secret marks the token exempt and the challenge is reported as not required', async () => {
   requestHeaders = QA;
-  const issued = await issueToken('new@example.com');
+  const issued = await issueToken(QA_ELIGIBLE_EMAIL);
   expect(issued.turnstileRequired).toBe(false);
   expect(rows[0]!.value).toBe('email-signup-qa');
 });
 
 test('the previous QA secret is honored during rotation', async () => {
-  requestHeaders = { 'x-openkey-qa-registration': 'qa-previous-secret' };
-  expect((await issueToken('new@example.com')).turnstileRequired).toBe(false);
+  requestHeaders = { 'x-openkey-qa-registration': QA_PREVIOUS_SECRET };
+  expect((await issueToken(QA_ELIGIBLE_EMAIL)).turnstileRequired).toBe(false);
+});
+
+test('the QA secret does not exempt an email outside the QA-eligible patterns', async () => {
+  requestHeaders = QA;
+  expect((await issueToken('new@example.com')).turnstileRequired).toBe(true);
+  expect(rows[0]!.value).toBe('email-signup');
+});
+
+test('a QA secret shorter than the minimum length is ignored', async () => {
+  process.env.OPENKEY_QA_REGISTRATION_SECRET = 'qa-current-secret';
+  requestHeaders = { 'x-openkey-qa-registration': 'qa-current-secret' };
+  expect((await issueToken(QA_ELIGIBLE_EMAIL)).turnstileRequired).toBe(true);
 });
 
 test('a wrong QA secret is indistinguishable from none: challenged', async () => {
@@ -245,16 +262,16 @@ test('a challenged token with a verified Turnstile token creates the account and
 
 test('the QA-exempt token creates the account without calling Cloudflare', async () => {
   requestHeaders = QA;
-  const { signupToken } = await issueToken('new@example.com');
-  const ok = (await confirm({ email: 'new@example.com', signupToken })) as Confirmed;
-  expect(ok.user.email).toBe('new@example.com');
+  const { signupToken } = await issueToken(QA_ELIGIBLE_EMAIL);
+  const ok = (await confirm({ email: QA_ELIGIBLE_EMAIL, signupToken })) as Confirmed;
+  expect(ok.user.email).toBe(QA_ELIGIBLE_EMAIL);
   expect(siteverifyCalls).toBe(0);
   expect(users).toHaveLength(1);
 });
 
 test('a token is bound to its email: another email is refused even when exempt', async () => {
   requestHeaders = QA;
-  const { signupToken } = await issueToken('new@example.com');
+  const { signupToken } = await issueToken(QA_ELIGIBLE_EMAIL);
   const reply = await errorOf(() => confirm({ email: 'other@example.com', signupToken }));
   expect(reply.code).toBe(INVALID_SIGNUP_TOKEN);
   expect(users).toHaveLength(0);
@@ -262,9 +279,9 @@ test('a token is bound to its email: another email is refused even when exempt',
 
 test('a spent token cannot create a second account', async () => {
   requestHeaders = QA;
-  const { signupToken } = await issueToken('new@example.com');
-  await confirm({ email: 'new@example.com', signupToken });
-  const reply = await errorOf(() => confirm({ email: 'new@example.com', signupToken }));
+  const { signupToken } = await issueToken(QA_ELIGIBLE_EMAIL);
+  await confirm({ email: QA_ELIGIBLE_EMAIL, signupToken });
+  const reply = await errorOf(() => confirm({ email: QA_ELIGIBLE_EMAIL, signupToken }));
   expect(reply.code).toBe(INVALID_SIGNUP_TOKEN);
   expect(users).toHaveLength(1);
 });
@@ -275,4 +292,15 @@ test('an email that already has an account is refused after the Turnstile check 
   const reply = await errorOf(() => confirm({ email: 'new@example.com', signupToken, turnstileToken: 'good' }));
   expect(reply.code).toBe(ACCOUNT_ALREADY_EXISTS);
   expect(siteverifyCalls).toBe(1);
+});
+
+test('a token that lapses while Cloudflare is checked creates no account', async () => {
+  const { signupToken } = await issueToken('new@example.com');
+  siteverifyResponse = () => {
+    rows[0]!.expiresAt = new Date(Date.now() - 1000);
+    return new Response(JSON.stringify({ success: true, action: 'email-signup' }), { status: 200 });
+  };
+  const reply = await errorOf(() => confirm({ email: 'new@example.com', signupToken, turnstileToken: 'good' }));
+  expect(reply.code).toBe(INVALID_SIGNUP_TOKEN);
+  expect(users).toHaveLength(0);
 });

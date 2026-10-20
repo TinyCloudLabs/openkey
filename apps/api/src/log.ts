@@ -47,7 +47,7 @@ const EVENTS = {
   better_auth: true, otp_delivery_unconfigured: true, auth_key_generated: true, auth_key_generation_failed: true,
   auth_email_signup_confirmation_required: true, auth_email_signup_confirmed: true, auth_email_signup_refused: true,
   auth_email_signup_qa_exempt: true, auth_email_signup_turnstile_verified: true, auth_email_signup_turnstile_refused: true,
-  auth_email_signup_turnstile_unavailable: true,
+  auth_email_signup_turnstile_unavailable: true, auth_email_signup_qa_account_created: true,
   analytics_token_exchange_failed: true, analytics_unique_user_failed: true, analytics_token_tracking_failed: true,
   analytics_authorization_failed: true, analytics_authorization_tracking_failed: true, oauth_client_scopes_updated: true,
   oauth_client_scopes_update_failed: true, api_starting: true, request: true, api_error: true,
@@ -66,7 +66,7 @@ const EVENTS = {
   unlisted_event: true,
 } as const satisfies Record<string, true>;
 type EventName = keyof typeof EVENTS;
-const CONFIG_KEYS: Record<string, true> = { BETTER_AUTH_URL: true };
+const CONFIG_KEYS: Record<string, true> = { BETTER_AUTH_URL: true, TURNSTILE_SECRET_KEY: true, TURNSTILE_EXPECTED_HOSTNAME: true };
 const ERROR_CODES: Record<string, true> = {
   P2002: true, P2025: true, P2010: true, P2034: true, tinycloud_bootstrap_failed: true,
   tinycloud_bootstrap_crashed: true, tinycloud_bootstrap_in_progress: true,

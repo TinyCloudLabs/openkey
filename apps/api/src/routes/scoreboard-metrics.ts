@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { logMetric } from '../log';
 import TEST_ACCOUNTS from '../../config/test-accounts.json';
+import { qaEligibleEmail } from '../services/qa-registration';
 
 // TC-1483: counts-only metrics for the scoreboard, behind their own bearer
 // (OPENKEY_METRICS_READ_TOKEN). The token grants aggregate counts only:
@@ -60,6 +61,24 @@ export function scoreboardExclusions(
     userIds: new Set([...fromEnv.userIds, ...registry.userIds.map((id) => id.trim()).filter(Boolean)]),
     clientIds: new Set([...fromEnv.clientIds, ...registry.clientIds.map((id) => id.trim()).filter(Boolean)]),
   };
+}
+
+/**
+ * Accounts whose email matches a QA-eligible pattern (config/test-accounts.json).
+ * A counting exclusion only; it grants no access. The SQL prefilter assumes every
+ * eligible pattern is a mailinator.com address: a new domain needs this prefilter updated.
+ */
+export async function qaAccountIds(database: ScoreboardDatabase): Promise<string[]> {
+  const rows = await database.$queryRaw<Array<{ id: string; email: string }>>`
+    SELECT id, email FROM "User" WHERE email ILIKE '%@mailinator.com'`;
+  return rows.filter((row) => qaEligibleEmail(row.email)).map((row) => row.id);
+}
+
+/** Env lists, registry and QA-eligible accounts, for counting. */
+async function currentExclusions(database: ScoreboardDatabase): Promise<ScoreboardExclusions> {
+  const base = scoreboardExclusions();
+  const qa = await qaAccountIds(database);
+  return { userIds: new Set([...base.userIds, ...qa]), clientIds: base.clientIds };
 }
 
 function authorized(authHeader: string | undefined): boolean {
@@ -247,7 +266,8 @@ scoreboardMetricsRouter.get('/protocol-users', async (c) => {
   }
   let count: number;
   try {
-    count = await countProtocolUsers(prisma as unknown as ScoreboardDatabase, owners, scoreboardExclusions());
+    const database = prisma as unknown as ScoreboardDatabase;
+    count = await countProtocolUsers(database, owners, await currentExclusions(database));
   } catch (error) {
     logMetric('error', 'scoreboard_protocol_users_call', { status: 500 });
     throw error;
@@ -257,6 +277,7 @@ scoreboardMetricsRouter.get('/protocol-users', async (c) => {
 });
 
 scoreboardMetricsRouter.get('/app-users', async (c) => {
-  const counts = await countAppUsers(prisma as unknown as ScoreboardDatabase, scoreboardExclusions());
+  const database = prisma as unknown as ScoreboardDatabase;
+  const counts = await countAppUsers(database, await currentExclusions(database));
   return c.json(counts);
 });

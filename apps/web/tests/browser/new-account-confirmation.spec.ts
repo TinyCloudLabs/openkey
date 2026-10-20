@@ -152,6 +152,41 @@ test('login: a failed check or a paused registration keeps the sign-up token and
   expect(signUps.map((body) => body.turnstileToken)).toEqual(['test-turnstile-token', 'test-turnstile-token']);
 });
 
+// TC-1632: the first check reports an error. The user retries on the same screen,
+// and the sign-up token is never spent by a failed check.
+const ERROR_THEN_SOLVE_STUB = `window.turnstile = {
+  render(el, opts) {
+    if (!document.body.dataset.rendered) {
+      document.body.dataset.rendered = '1';
+      setTimeout(() => opts['error-callback'](), 0);
+    }
+    document.addEventListener('test-solve', () => opts.callback('test-turnstile-token'));
+    return 'widget-1';
+  },
+  reset() { document.body.dataset.resets = String(Number(document.body.dataset.resets ?? 0) + 1); },
+  remove() {},
+};`;
+
+test('login: a check that reports an error offers a retry on the same screen, and the sign-up token is kept', async ({ page }) => {
+  const { signUps } = await mockNewAccount(page, (route) => json(route, { token: 't', user: session.user }));
+  await page.route('https://challenges.cloudflare.com/**', (route) =>
+    route.fulfill({ contentType: 'application/javascript', body: ERROR_THEN_SOLVE_STUB }));
+  await page.goto('/auth/login');
+  await verifyOnLogin(page);
+
+  const confirmation = page.getByTestId('new-account-confirmation');
+  await expect(page.getByRole('alert')).toContainText("Verification didn't complete. Try again.");
+  await expect(page.locator('body')).toHaveAttribute('data-resets', '1');
+  await expect(confirmation.getByRole('button', { name: 'Create a new account' })).toBeDisabled();
+  expect(signUps).toHaveLength(0);
+
+  await page.evaluate(() => document.dispatchEvent(new Event('test-solve')));
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await confirmation.getByRole('button', { name: 'Create a new account' }).click();
+  await expect.poll(() => signUps.length).toBe(1);
+  expect(signUps[0]).toMatchObject({ email: EMAIL, signupToken: 'signup-token-1', turnstileToken: 'test-turnstile-token' });
+});
+
 test('embedded connect: an unknown email asks first, and Create carries the token', async ({ page }) => {
   const { signUps } = await mockNewAccount(page, (route) =>
     route.fulfill({ status: 200, contentType: 'application/json', headers: { 'set-auth-token': 'session-1' }, body: JSON.stringify({ token: 'session-1', user: session.user }) }));

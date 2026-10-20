@@ -5,7 +5,7 @@ await mockModules({
   '@openkey/db': () => ({ createPrismaClient: () => ({ $queryRaw: async () => [] }) }),
 });
 
-const { countAppUsers, countProtocolUsers, exclusionsFromEnv, fetchNodeOwners, resetScoreboardRateLimitForTests, scoreboardExclusions, scoreboardMetricsRouter } = await import(
+const { countAppUsers, countProtocolUsers, exclusionsFromEnv, fetchNodeOwners, qaAccountIds, resetScoreboardRateLimitForTests, scoreboardExclusions, scoreboardMetricsRouter } = await import(
   '../routes/scoreboard-metrics?tc1483' as string
 );
 
@@ -32,9 +32,14 @@ const now = new Date('2026-10-19T12:00:00Z');
 const daysAgo = (n: number) => new Date(now.getTime() - n * 86_400_000);
 const none = { userIds: new Set<string>(), clientIds: new Set<string>() };
 
-function database(parts: Partial<Record<'access' | 'refresh' | 'consent' | 'signIn', Row[]>>, keyRows: Array<{ userId: string; address: string }> = []) {
+function database(
+  parts: Partial<Record<'access' | 'refresh' | 'consent' | 'signIn', Row[]>>,
+  keyRows: Array<{ userId: string; address: string }> = [],
+  users: Array<{ id: string; email: string }> = [],
+) {
   return {
-    async $queryRaw(_q: TemplateStringsArray, ...values: unknown[]) {
+    async $queryRaw(query: TemplateStringsArray, ...values: unknown[]) {
+      if (query.join('').includes('"User"')) return users.filter((u) => u.email.endsWith('@mailinator.com'));
       const wanted = new Set(values[0] as string[]);
       return keyRows.filter((k) => wanted.has(k.address.toLowerCase())).map((k) => ({ userId: k.userId }));
     },
@@ -96,6 +101,17 @@ test('the test-account registry adds to env exclusions, trimmed and deduped', ()
   const { userIds, clientIds } = scoreboardExclusions({ SCOREBOARD_EXCLUDE_USER_IDS: 'a, b' }, registry);
   expect([...userIds].sort()).toEqual(['a', 'b', 'c']);
   expect([...clientIds]).toEqual(['z']);
+});
+
+test('QA-eligible accounts are found by email pattern; lookalike and ineligible addresses are not', async () => {
+  const users = [
+    { id: 'qa1', email: 'tcqa-7f3a@mailinator.com' },
+    { id: 'qa2', email: 'qa-clr-0123456789ab@mailinator.com' },
+    { id: 'real', email: 'someone@mailinator.com' },
+    { id: 'lookalike', email: 'tcqa-7f3a@example.com' },
+    { id: 'pending', email: 'qaabcdefghijklmno@mailinator.com' },
+  ];
+  expect(await qaAccountIds(database({}, [], users) as unknown as Parameters<typeof qaAccountIds>[0])).toEqual(['qa1', 'qa2']);
 });
 
 const envKeys = ['OPENKEY_METRICS_READ_TOKEN', 'INTERNAL_METRICS_TOKEN', 'NODE_STATS_URL', 'NODE_STATS_READ_TOKEN'] as const;

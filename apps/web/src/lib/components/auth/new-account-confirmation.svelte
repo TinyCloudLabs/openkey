@@ -31,6 +31,7 @@
 
   let turnstileToken = $state<string | null>(null);
   let widget = $state<{ reset: () => void }>();
+  let verificationFailed = $state(false);
 
   const canCreate = $derived(!challenge || turnstileToken !== null);
 
@@ -49,6 +50,7 @@
     const token = challenge ? turnstileToken : null;
     // Tokens are single-use: a new check is needed for every attempt.
     turnstileToken = null;
+    verificationFailed = false;
     widget?.reset();
     oncreate(token);
   }
@@ -60,7 +62,22 @@
   </h2>
   <p class="mb-2 text-sm text-surface-500">Create a new account, or {alternatives}?</p>
   {#if challenge}
-    <TurnstileWidget bind:this={widget} onverify={(token) => (turnstileToken = token)} onexpire={() => (turnstileToken = null)} />
+    <TurnstileWidget
+      bind:this={widget}
+      onverify={(token) => {
+        turnstileToken = token;
+        verificationFailed = false;
+      }}
+      onexpire={() => (turnstileToken = null)}
+      onerror={() => {
+        turnstileToken = null;
+        verificationFailed = true;
+        widget?.reset();
+      }}
+    />
+    {#if verificationFailed}
+      <p class="text-sm text-red-600" role="alert">Verification didn't complete. Try again.</p>
+    {/if}
   {/if}
   <Button onclick={create} disabled={busy || !canCreate} aria-busy={creating} class="w-full rounded-xl">
     {creating ? 'Creating account…' : 'Create a new account'}

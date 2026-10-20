@@ -485,7 +485,16 @@
       </p>
       <div class="nb-stack">
         {#if signupChallenge}
-          <TurnstileWidget bind:this={nativeWidget} onverify={(token) => (nativeTurnstileToken = token)} onexpire={() => (nativeTurnstileToken = null)} />
+          <TurnstileWidget
+            bind:this={nativeWidget}
+            onverify={(token) => (nativeTurnstileToken = token)}
+            onexpire={() => (nativeTurnstileToken = null)}
+            onerror={() => {
+              nativeTurnstileToken = null;
+              error = "Verification didn't complete. Try again.";
+              nativeWidget?.reset();
+            }}
+          />
         {/if}
         <button type="button" class="nb-button nb-primary" onclick={createFromNativeButton} disabled={loading || !nativeCanCreate}>
           {creating ? 'Creating account…' : 'Create a new account'}

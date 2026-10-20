@@ -9,9 +9,11 @@
   interface Props {
     onverify: (token: string) => void;
     onexpire: () => void;
+    /** Challenge failed or timed out; the parent offers a retry on the same screen. */
+    onerror: () => void;
   }
 
-  let { onverify, onexpire }: Props = $props();
+  let { onverify, onexpire, onerror }: Props = $props();
 
   const siteKey = turnstileSiteKey();
   let container = $state<HTMLDivElement>();
@@ -32,8 +34,8 @@
           appearance: 'interaction-only',
           callback: onverify,
           'expired-callback': onexpire,
-          'error-callback': onexpire,
-          'timeout-callback': onexpire,
+          'error-callback': onerror,
+          'timeout-callback': onerror,
         });
       })
       .catch(() => {
