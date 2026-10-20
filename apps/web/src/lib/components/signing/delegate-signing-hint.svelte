@@ -5,6 +5,6 @@
 
 {#if show}
   <p class="text-surface-500 text-sm" role="status">
-    Your browser may ask to connect to devices on your network: choose Allow to finish in your terminal. If it doesn't finish, a code will appear here to enter in your terminal.
+    Your browser may ask to connect to devices on your local network. Choose Allow to finish in your terminal. If it doesn't finish, a code will appear here for you to enter in your terminal.
   </p>
 {/if}
