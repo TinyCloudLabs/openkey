@@ -26,6 +26,7 @@
   import { preparedMatchesSelection, reviewSelectionToActionKeys } from '$lib/delegate-review-selection';
   import { expectedSigner } from '$lib/delegate-expected-signer';
   import { autoSelectKey } from '$lib/delegate-key-selection';
+  import { DELEGATE_SIGNING_HINT } from '$lib/delegate-signing-hint';
   import {
     parseSpaceSetup,
     spaceReadinessResult,
@@ -1449,6 +1450,9 @@
           >
             {spaceSetupNoticeText(spaceSetup)}
           </div>
+        {/if}
+        {#if delegating}
+          <p class="text-surface-500 text-sm" role="status">{DELEGATE_SIGNING_HINT}</p>
         {/if}
         {/if}
         {/snippet}
