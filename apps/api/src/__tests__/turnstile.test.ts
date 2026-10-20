@@ -71,6 +71,23 @@ test('a failed check with no error codes is rejected', async () => {
   expect(await verifyTurnstileToken('token-1', env)).toBe('rejected');
 });
 
+test('a token longer than the widget limit is rejected without calling Cloudflare', async () => {
+  stubSiteverify(() => json({ success: true, action: TURNSTILE_ACTION }));
+  expect(await verifyTurnstileToken('t'.repeat(2049), env)).toBe('rejected');
+  expect(calls).toHaveLength(0);
+});
+
+test('a token at the length limit is still sent to Cloudflare', async () => {
+  stubSiteverify(() => json({ success: true, action: TURNSTILE_ACTION }));
+  expect(await verifyTurnstileToken('t'.repeat(2048), env)).toBe('success');
+  expect(calls).toHaveLength(1);
+});
+
+test('an error code this service does not recognise is a rejection, not unavailable', async () => {
+  stubSiteverify(() => json({ success: false, 'error-codes': ['something-new'] }));
+  expect(await verifyTurnstileToken('token-1', env)).toBe('rejected');
+});
+
 test('a missing or invalid secret on our side is unavailable, not a visitor failure', async () => {
   stubSiteverify(() => json({ success: false, 'error-codes': ['invalid-input-secret'] }));
   expect(await verifyTurnstileToken('token-1', env)).toBe('unavailable');
