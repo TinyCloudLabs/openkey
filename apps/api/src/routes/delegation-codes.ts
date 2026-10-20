@@ -6,7 +6,8 @@ import { createPrismaClient } from '@openkey/db';
 // broker shipped lower-cases to before its GET, so codes issued before codes
 // were shown in upper case still redeem. Responses carry the upper-case form.
 const CODE_ALPHABET = 'abcdefghijklmnopqrstuvwxyz234567';
-const CODE_TTL_MS = 10 * 60 * 1000;
+// Five minutes: the CLI's browser-callback wait is also five minutes, and a person types a pasted code right after seeing it.
+const CODE_TTL_MS = 5 * 60 * 1000;
 const PUBLIC_DELEGATION_FIELDS: Record<string, true> = {
   delegationHeader: true,
   delegationCid: true,
@@ -35,8 +36,29 @@ const PUBLIC_JWK_FIELDS: Record<string, true> = { kty: true, crv: true, x: true,
 
 export interface DelegationCodeStore {
   create(code: string, delegation: unknown, expiresAt: Date): Promise<boolean>;
-  get(code: string): Promise<{ delegation: unknown; expiresAt: Date } | null>;
+  // Removes the code and returns it. Must be atomic: at most one caller gets a record for a given code.
+  consume(code: string): Promise<{ delegation: unknown; expiresAt: Date } | null>;
   deleteExpired(before: Date): Promise<void>;
+}
+
+const LOOKUP_LIMIT_PER_WINDOW = 30;
+const LOOKUP_WINDOW_MS = 60 * 1000;
+const LOOKUP_BUCKET_LIMIT = 10_000;
+
+/** Fixed one-minute window per client address, bounded map. Returns seconds until retry, or 0 when the lookup may proceed. */
+function createLookupLimiter(now: () => Date) {
+  const buckets = new Map<string, { count: number; resetAt: number }>();
+  return (client: string): number => {
+    const current = now().getTime();
+    const prior = buckets.get(client);
+    const bucket = prior && prior.resetAt > current ? prior : { count: 0, resetAt: current + LOOKUP_WINDOW_MS };
+    if (bucket.count >= LOOKUP_LIMIT_PER_WINDOW) return Math.max(1, Math.ceil((bucket.resetAt - current) / 1000));
+    bucket.count += 1;
+    buckets.delete(client);
+    buckets.set(client, bucket);
+    if (buckets.size > LOOKUP_BUCKET_LIMIT) buckets.delete(buckets.keys().next().value!);
+    return 0;
+  };
 }
 
 export function createDelegationCodeRouter(input: {
@@ -46,6 +68,7 @@ export function createDelegationCodeRouter(input: {
 }) {
   const router = new Hono();
   const now = input.now ?? (() => new Date());
+  const takeLookupSlot = createLookupLimiter(now);
 
   router.post('/', input.sessionMiddleware, async (c) => {
     const body = await c.req.json().catch(() => null);
@@ -86,11 +109,18 @@ export function createDelegationCodeRouter(input: {
 
   router.get('/:code', async (c) => {
     c.header('Cache-Control', 'no-store');
+    const client = c.req.header('cf-connecting-ip') ?? c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown';
+    const retryAfter = takeLookupSlot(client);
+    if (retryAfter > 0) {
+      c.header('Retry-After', String(retryAfter));
+      return c.json({ error: 'Rate limit exceeded' }, 429);
+    }
     const code = c.req.param('code').toLowerCase();
     if (!/^[a-z2-7]{4}-[a-z2-7]{4}$/.test(code)) {
       return c.json({ error: 'Not found' }, 404);
     }
-    const record = await input.store.get(code);
+    // Redeeming removes the code: a second redeem, an expired code and an unknown code all get the same 404.
+    const record = await input.store.consume(code);
     if (!record || record.expiresAt <= now()) {
       return c.json({ error: 'Not found' }, 404);
     }
@@ -112,8 +142,13 @@ export function createPrismaDelegationCodeStore(): DelegationCodeStore {
         throw error;
       }
     },
-    async get(code) {
-      return prisma.delegationCode.findUnique({ where: { code }, select: { delegation: true, expiresAt: true } });
+    async consume(code) {
+      try {
+        return await prisma.delegationCode.delete({ where: { code }, select: { delegation: true, expiresAt: true } });
+      } catch (error) {
+        if (error && typeof error === 'object' && 'code' in error && error.code === 'P2025') return null;
+        throw error;
+      }
     },
     async deleteExpired(before) {
       await prisma.delegationCode.deleteMany({ where: { expiresAt: { lte: before } } });
