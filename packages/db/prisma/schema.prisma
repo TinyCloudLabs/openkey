@@ -46,6 +46,7 @@ model User {
   preparedHandoffs               PreparedHandoff[]
   tinyCloudNativeGrants          TinyCloudNativeGrant[]
   keyGrants                      KeyGrant[]
+  orgKeySignChallenges           OrgKeySignChallenge[]
 
   @@map("user")
 }
@@ -244,6 +245,7 @@ model EthereumKey {
   orgKey                  OrgKey?
   keyGrants               KeyGrant[]
   orgKeySignatureAudits   OrgKeySignatureAudit[]
+  orgKeySignChallenges    OrgKeySignChallenge[]
 
   @@unique([id, userId], map: "ethereum_keys_id_userId_key")
   @@map("ethereum_keys")
@@ -281,6 +283,7 @@ model KeyGrant {
 
   key     EthereumKey @relation(fields: [keyId], references: [id], onDelete: Restrict)
   signatureAudits OrgKeySignatureAudit[]
+  signChallenges OrgKeySignChallenge[]
   grantee User?       @relation(fields: [granteeUserId], references: [id], onDelete: Restrict)
 
   @@index([keyId])
@@ -298,6 +301,8 @@ model OrgKeySignatureAudit {
   actorUserId          String
   origin               String
   messageDigest        String
+  role                 KeyGrantRole
+  messageKind          String
   passkeyAssertionHash String   @unique(map: "org_key_signature_audits_passkeyAssertionHash_key")
   createdAt            DateTime @default(now())
 
@@ -307,6 +312,29 @@ model OrgKeySignatureAudit {
   @@index([keyId])
   @@index([grantId])
   @@map("org_key_signature_audits")
+}
+
+// Single-use server nonce for a fresh-passkey org-key signing challenge (K2a F2).
+// The signing transaction sets consumedAt; expiresAt bounds the window.
+model OrgKeySignChallenge {
+  id            String     @id @default(cuid())
+  userId        String
+  keyId         String
+  grantId       String
+  nonce         String     @unique(map: "org_key_sign_challenges_nonce_key")
+  messageDigest String
+  expiresAt     DateTime
+  consumedAt    DateTime?
+  createdAt     DateTime   @default(now())
+
+  user  User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  key   EthereumKey @relation(fields: [keyId], references: [id], onDelete: Restrict)
+  grant KeyGrant    @relation(fields: [grantId], references: [id], onDelete: Restrict)
+
+  @@index([userId])
+  @@index([keyId])
+  @@index([grantId])
+  @@map("org_key_sign_challenges")
 }
 
 // Nostr identities - secp256k1 Schnorr (BIP-340 / NIP-01), structurally

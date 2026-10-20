@@ -2,7 +2,7 @@ import { createHash, generateKeyPairSync, randomBytes, sign, type KeyObject } fr
 import type { AuthenticationResponseJSON } from '@simplewebauthn/server';
 import type { PrismaClient } from '@openkey/db';
 import type { TeeClient } from '@openkey/tee';
-import { createOrgKey, ORG_KEY_ORIGIN, orgKeySignChallenge } from '../services/org-keys';
+import { createOrgKey, ORG_KEY_ORIGIN } from '../services/org-keys';
 
 // Shared fixtures for the org-key service and route tests. Not a test file.
 // The fake Prisma client models only the operators org-keys.ts uses, and its
@@ -35,6 +35,8 @@ export function fakeDb() {
     grants: [] as Row[],
     passkeys: [] as Row[],
     audits: [] as Row[],
+    challenges: [] as Row[],
+    sessions: [] as Row[],
   };
   const fail = { auditInsert: false };
   let sequence = 0;
@@ -49,6 +51,9 @@ export function fakeDb() {
   const isNotCondition = (condition: unknown): condition is { isNot: unknown } =>
     typeof condition === 'object' && condition !== null && 'isNot' in condition;
 
+  const isGtCondition = (condition: unknown): condition is { gt: Date } =>
+    typeof condition === 'object' && condition !== null && 'gt' in condition;
+
   const matches = (row: Row, where: Where): boolean =>
     Object.entries(where).every(([field, condition]) => {
       if (field === 'key' || field === 'orgKey') {
@@ -58,6 +63,7 @@ export function fakeDb() {
         }
         return target !== null && matches(target, condition as Where);
       }
+      if (isGtCondition(condition)) return (row[field] as Date).getTime() > condition.gt.getTime();
       if (isNotCondition(condition)) {
         return condition.isNot === null ? row[field] != null : row[field] !== condition.isNot;
       }
@@ -98,14 +104,39 @@ export function fakeDb() {
       findMany: async ({ where }: { where: Where }) =>
         state.grants.filter((row) => matches(row, where)).map(withRelations),
     },
+    // Models the FOR SHARE read in signOrgKeyMessage: values are grantId, keyId, userId
+    // in statement order. The lock itself is covered by the real-Postgres test.
+    $queryRaw: async (_strings: TemplateStringsArray, ...values: unknown[]) => {
+      const [grantId, keyId, userId] = values;
+      return state.grants
+        .filter((row) => row.id === grantId && row.keyId === keyId && row.granteeUserId === userId && row.revokedAt == null)
+        .map((row) => ({ id: row.id, role: row.role }));
+    },
+    orgKeySignChallenge: {
+      create: async ({ data }: { data: Row }) => {
+        const row = { id: next('challenge'), consumedAt: null, ...data };
+        state.challenges.push(row);
+        return row;
+      },
+      findFirst: async ({ where }: { where: Where }) => state.challenges.find((row) => matches(row, where)) ?? null,
+      updateMany: async ({ where, data }: { where: Where; data: Row }) => {
+        const rows = state.challenges.filter((row) => matches(row, where));
+        for (const row of rows) Object.assign(row, data);
+        return { count: rows.length };
+      },
+    },
     passkey: {
       findFirst: async ({ where }: { where: Where }) => state.passkeys.find((row) => matches(row, where)) ?? null,
+      findMany: async ({ where }: { where: Where }) => state.passkeys.filter((row) => matches(row, where)),
       update: async ({ where, data }: { where: Where; data: Row }) => {
         const row = state.passkeys.find((passkey) => passkey.id === where.id);
         if (!row) throw new Error('fake db: passkey not found');
         Object.assign(row, data);
         return row;
       },
+    },
+    session: {
+      findFirst: async ({ where }: { where: Where }) => state.sessions.find((row) => matches(row, where)) ?? null,
     },
     orgKeySignatureAudit: {
       create: async ({ data }: { data: Row }) => {
@@ -159,10 +190,6 @@ export function addPasskey(state: { passkeys: Row[] }, userId: string, counter =
   return { credentialID, privateKey };
 }
 
-export function challengeFor(keyId: string, grantId: string, message: string): string {
-  return orgKeySignChallenge(keyId, grantId, message).toString('base64url');
-}
-
 export function assertionFor(
   passkey: PasskeyFixture,
   challenge: string,
@@ -205,9 +232,16 @@ export async function setupOrgKey(options: { counter?: number } = {}) {
     userId: 'user_1',
     orgId: 'org_1',
     orgName: 'Acme',
-    controllerDid: 'did:example:acme',
     label: null,
   });
   const passkey = addPasskey(state, 'user_1', options.counter ?? 0);
+  addSession(state, 'user_1');
   return { db, state, fail, tee, key, passkey };
+}
+
+// A session row for the requireFreshPasskey gate. lastPasskeyAt defaults to now.
+export function addSession(state: { sessions: Row[] }, userId: string, lastPasskeyAt: Date | null = new Date()) {
+  const row = { id: 'session_1', userId, lastPasskeyAt, expiresAt: new Date(Date.now() + 60 * 60 * 1000) };
+  state.sessions.push(row);
+  return row;
 }

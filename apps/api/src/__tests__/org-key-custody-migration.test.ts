@@ -53,11 +53,13 @@ async function insertOrgKey(): Promise<string> {
   return keyId;
 }
 
-async function insertGrant(keyId: string, role: 'OWNER' | 'ADMIN', userId: string, revokedAt: string | null = null) {
+async function insertGrant(keyId: string, role: 'OWNER' | 'ADMIN', userId: string, revokedAt: string | null = null): Promise<string> {
+  const id = `grant-${nextSequence()}`;
   await database.query(
     `INSERT INTO "key_grants" ("id", "keyId", "role", "granteeUserId", "revokedAt") VALUES ($1, $2, $3, $4, $5)`,
-    [`grant-${nextSequence()}`, keyId, role, userId, revokedAt],
+    [id, keyId, role, userId, revokedAt],
   );
+  return id;
 }
 
 beforeAll(async () => {
@@ -149,5 +151,78 @@ describe('org key grants (TC-1518 D2)', () => {
     const keyId = await insertOrgKey();
     await expect(database.query(`DELETE FROM "ethereum_keys" WHERE "id" = $1`, [keyId]))
       .rejects.toThrow(/org_keys_keyId_fkey|key_grants_keyId_fkey/);
+  });
+});
+
+describe('org key signing challenges and audit columns (TC-1518 K2a)', () => {
+  async function insertChallenge(options: { nonce: string; keyId: string; grantId: string; userId?: string }) {
+    await database.query(
+      `INSERT INTO "org_key_sign_challenges" ("id", "userId", "keyId", "grantId", "nonce", "messageDigest", "expiresAt")
+       VALUES ($1, $2, $3, $4, $5, 'digest', now() + interval '5 minutes')`,
+      [`challenge-${nextSequence()}`, options.userId ?? 'owner-a', options.keyId, options.grantId, options.nonce],
+    );
+  }
+
+  test('a challenge nonce is unique across all challenges', async () => {
+    const keyId = await insertOrgKey();
+    const grantId = await insertGrant(keyId, 'OWNER', 'owner-a');
+    await insertChallenge({ nonce: 'nonce-unique-1', keyId, grantId });
+    await expect(insertChallenge({ nonce: 'nonce-unique-1', keyId, grantId }))
+      .rejects.toThrow(/org_key_sign_challenges_nonce_key/);
+  });
+
+  test('a challenge must reference an existing key and grant', async () => {
+    const keyId = await insertOrgKey();
+    const grantId = await insertGrant(keyId, 'OWNER', 'owner-a');
+    await expect(insertChallenge({ nonce: 'nonce-fk-1', keyId: 'no-such-key', grantId }))
+      .rejects.toThrow(/org_key_sign_challenges_keyId_fkey/);
+    await expect(insertChallenge({ nonce: 'nonce-fk-2', keyId, grantId: 'no-such-grant' }))
+      .rejects.toThrow(/org_key_sign_challenges_grantId_fkey/);
+  });
+
+  test('deleting a user removes that user\'s challenges', async () => {
+    await database.exec(`INSERT INTO "user" ("id", "email", "updatedAt") VALUES ('owner-c', 'owner-c@example.test', now())`);
+    const keyId = await insertOrgKey();
+    const grantId = await insertGrant(keyId, 'OWNER', 'owner-a');
+    await insertChallenge({ nonce: 'nonce-cascade-1', keyId, grantId, userId: 'owner-c' });
+    await database.query(`DELETE FROM "user" WHERE "id" = 'owner-c'`);
+    const rows = await database.query<{ count: string }>(
+      `SELECT count(*)::text AS "count" FROM "org_key_sign_challenges" WHERE "nonce" = 'nonce-cascade-1'`,
+    );
+    expect(rows.rows[0]?.count).toBe('0');
+  });
+
+  test('an audit row without a grant role is rejected', async () => {
+    const keyId = await insertOrgKey();
+    const grantId = await insertGrant(keyId, 'OWNER', 'owner-a');
+    await expect(database.query(
+      `INSERT INTO "org_key_signature_audits" ("id", "keyId", "grantId", "actorUserId", "origin", "messageDigest", "passkeyAssertionHash", "messageKind")
+       VALUES ('audit-no-role', $1, $2, 'owner-a', 'https://openkey.test', 'digest', 'hash-no-role', 'k4.kind')`,
+      [keyId, grantId],
+    )).rejects.toThrow(/null value in column "role"/);
+  });
+
+  test('an audit row without a message kind is rejected', async () => {
+    const keyId = await insertOrgKey();
+    const grantId = await insertGrant(keyId, 'OWNER', 'owner-a');
+    await expect(database.query(
+      `INSERT INTO "org_key_signature_audits" ("id", "keyId", "grantId", "actorUserId", "origin", "messageDigest", "passkeyAssertionHash", "role")
+       VALUES ('audit-no-kind', $1, $2, 'owner-a', 'https://openkey.test', 'digest', 'hash-no-kind', 'OWNER')`,
+      [keyId, grantId],
+    )).rejects.toThrow(/null value in column "messageKind"/);
+  });
+
+  test('an audit row with a grant role and message kind is accepted', async () => {
+    const keyId = await insertOrgKey();
+    const grantId = await insertGrant(keyId, 'OWNER', 'owner-a');
+    await database.query(
+      `INSERT INTO "org_key_signature_audits" ("id", "keyId", "grantId", "actorUserId", "origin", "messageDigest", "passkeyAssertionHash", "role", "messageKind")
+       VALUES ('audit-ok', $1, $2, 'owner-a', 'https://openkey.test', 'digest', 'hash-ok', 'OWNER', 'k4.kind')`,
+      [keyId, grantId],
+    );
+    const rows = await database.query<{ role: string; messageKind: string }>(
+      `SELECT "role", "messageKind" FROM "org_key_signature_audits" WHERE "id" = 'audit-ok'`,
+    );
+    expect(rows.rows[0]).toEqual({ role: 'OWNER', messageKind: 'k4.kind' });
   });
 });

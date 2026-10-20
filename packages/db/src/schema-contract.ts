@@ -42,6 +42,8 @@ export const requiredRuntimeMigrationChecksums = new Map<string, string>([
   ['20261012_0002_native_session_proof_jti', 'e3b40f3045fbc715556496226d8b60b7eca318fe58df4ba45392665bfd88ff6b'],
   ['20261016_0001_prepared_siwe_handoff', '645d931e10dbd068da7f7243dcbe995f1af6f0e339b98d082264c8153bfec9ec'],
   ['20261019_0001_app_sign_in_day', 'a2f56caea9cd46aebccfb4d369e0223cf8338d07ac685a0dce145b4c3c90bb29'],
+  ['20261021_0001_org_key_custody', '2c9f0a53affc841a7f0a7d1b6f8b865f4c4ef0277e0e140e1f81cd76f1d97f23'],
+  ['20261021_0002_org_key_sign_challenges', '045b0c9c8dc4d00d50d227eb1faa731118122696ff989031c1b9eff18cc075c1'],
 ]);
 
 export type SchemaContractDatabase = {

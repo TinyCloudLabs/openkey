@@ -124,6 +124,7 @@ keysRouter.post('/link', async (c) => {
   const key = await prisma.ethereumKey.create({
     data: {
       userId: user.id,
+      custody: 'PERSONAL',
       address: body.address,
       publicKey: body.address,
       keyType: 'EXTERNAL',
@@ -205,6 +206,7 @@ keysRouter.post('/generate', async (c) => {
   const key = await prisma.ethereumKey.create({
     data: {
       userId: user.id,
+      custody: 'PERSONAL',
       address,
       publicKey: address, // For Ethereum, address is derived from public key
       sealedBlob,

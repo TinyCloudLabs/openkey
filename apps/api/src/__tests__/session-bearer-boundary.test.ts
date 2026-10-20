@@ -274,12 +274,16 @@ describe('account controls (TC-689)', () => {
     lastPasskeyAt = new Date(Date.now() - 60_000);
     const response = await call('POST', '/api/account/delete', { origin: OPENKEY_ORIGIN }, { confirmation: 'DELETE MY ACCOUNT' });
     expect(response.status).toBe(200);
-    expect(adminRevocations).toEqual([
+    expect(adminRevocations).toEqual(expect.arrayContaining([
       expect.objectContaining({
         where: { granteeUserId: 'user_1', role: 'ADMIN', revokedAt: null },
         data: expect.objectContaining({ revokedByUserId: 'user_1', granteeUserId: null }),
       }),
-    ]);
+      expect.objectContaining({
+        where: { granteeUserId: 'user_1', revokedAt: { not: null } },
+        data: { granteeUserId: null },
+      }),
+    ]));
     expect(deletedUsers).toEqual(['user_1']);
   });
 

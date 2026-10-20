@@ -43,3 +43,6 @@ jobs:
 
       - name: API tests
         run: bun test apps/api/src/__tests__
+
+      - name: Migration deploy and schema contract tests
+        run: bun test scripts/deploy-production-migrations.test.ts packages/db/src/schema-contract.test.ts

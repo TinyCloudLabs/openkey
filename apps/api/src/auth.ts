@@ -422,6 +422,7 @@ export const auth = betterAuth({
             await prisma.ethereumKey.create({
               data: {
                 userId: user.id,
+                custody: 'PERSONAL',
                 address,
                 publicKey: address,
                 sealedBlob,

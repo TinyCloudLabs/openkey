@@ -278,12 +278,18 @@ accountRouter.post('/delete', async (c) => {
     });
     if (activeOwnerGrants > 0) return { kind: 'owner_grant' as const };
 
-    // ADMIN grants do not block deletion. Revoke them and detach the grantee:
+    // Active ADMIN grants do not block deletion: revoke them and detach the grantee.
     // key_grants.granteeUserId is ON DELETE RESTRICT, so the user row cannot be
-    // deleted while it points at one. The revoked row and its audit history are kept.
+    // deleted while any grant still points at it.
     await tx.keyGrant.updateMany({
       where: { granteeUserId: user.id, role: 'ADMIN', revokedAt: null },
       data: { revokedAt: new Date(), revokedByUserId: user.id, granteeUserId: null },
+    });
+    // Grants revoked earlier still point at the user. Detach them too; revokedAt and
+    // revokedByUserId stay, so the revocation record is kept without the grantee link.
+    await tx.keyGrant.updateMany({
+      where: { granteeUserId: user.id, revokedAt: { not: null } },
+      data: { granteeUserId: null },
     });
 
     // Delete all ethereum keys (sealed blobs will be unrecoverable)
