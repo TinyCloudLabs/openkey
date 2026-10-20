@@ -26,7 +26,8 @@
   import { preparedMatchesSelection, reviewSelectionToActionKeys } from '$lib/delegate-review-selection';
   import { expectedSigner } from '$lib/delegate-expected-signer';
   import { autoSelectKey } from '$lib/delegate-key-selection';
-  import { DELEGATE_SIGNING_HINT } from '$lib/delegate-signing-hint';
+  import DelegateSigningHint from '$lib/components/signing/delegate-signing-hint.svelte';
+  import { shouldShowLoopbackHint } from '$lib/delegate-signing-hint';
   import {
     parseSpaceSetup,
     spaceReadinessResult,
@@ -81,6 +82,7 @@
   let spaceSetup = $state<SpaceSetupNotice | null>(null);
   let spaceReadiness = $state<ReturnType<typeof spaceReadinessResult>>(null);
   let callbackFailed = $state(false);
+  let callbackInFlight = $state(false);
   let copied = $state(false);
   let step = $state<'select-key' | 'link-wallet' | 'consent' | 'choose-wallet' | 'done'>('select-key');
   let preparedData = $state<any>(null);
@@ -313,6 +315,9 @@
     : hostCheck?.ok === false ? hostCheck.reason : '';
   if (linkPolicyError) error = linkPolicyError;
   const approvedCallback = callbackCheck?.ok ? callbackCheck.callback : null;
+  const showLoopbackHint = $derived(
+    shouldShowLoopbackHint({ delegating, approvedCallback, deviceTransactionId, callbackInFlight, pasteCode }),
+  );
   const hostNeedsAcknowledgment = hostCheck?.ok === true && !hostCheck.recognized;
   let hostAcknowledged = $state(false);
   const delegationExpiresAt = $derived(/^Expiration Time:\s*(.+)$/m.exec(siweMessage)?.[1]?.trim() ?? '');
@@ -1105,6 +1110,7 @@
     }
 
     if (approvedCallback) {
+      callbackInFlight = true;
       try {
         const cbRes = await fetch(approvedCallback, {
           method: 'POST',
@@ -1123,6 +1129,8 @@
         return;
       } catch {
         callbackFailed = true;
+      } finally {
+        callbackInFlight = false;
       }
     }
 
@@ -1451,9 +1459,7 @@
             {spaceSetupNoticeText(spaceSetup)}
           </div>
         {/if}
-        {#if delegating}
-          <p class="text-surface-500 text-sm" role="status">{DELEGATE_SIGNING_HINT}</p>
-        {/if}
+        <DelegateSigningHint show={showLoopbackHint} />
         {/if}
         {/snippet}
 
