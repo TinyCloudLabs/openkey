@@ -399,7 +399,7 @@ function classifyOrThrow(message: string, ctx: OrgSpaceContext): OrgSpaceClassif
       if (actual.length !== wanted.length || actual.some((key, i) => key !== wanted[i])) {
         throw new OrgSpaceRefusal('org_space_resource_refused');
       }
-      // The URI is the node-staged host did:key for this space.
+      // Shape-only: the URI must be an ed25519 did:key. It is not bound to the node-staged host DID.
       if (!isEd25519DidKey(p.uri)) throw new OrgSpaceRefusal('org_space_recipient_refused');
       break;
     }
