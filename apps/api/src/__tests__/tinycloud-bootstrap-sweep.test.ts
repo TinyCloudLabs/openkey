@@ -15,7 +15,7 @@ import {
   TinyCloudBootstrapError,
   trustedTinyCloudBootstrapHost,
 } from '../services/tinycloud-bootstrap';
-import { SWEEP_RETRYABLE_CODES } from '../services/tinycloud-bootstrap-budget';
+import { hostRequestedSpaceWithinBudget, SWEEP_RETRYABLE_CODES } from '../services/tinycloud-bootstrap-budget';
 import { startTinyCloudBootstrapSweep, sweepTinyCloudBootstrapOnce, type SweepOptions } from '../services/tinycloud-bootstrap-sweep';
 
 const MIN = 60_000;
@@ -610,12 +610,12 @@ describe('TinyCloud bootstrap background sweep', () => {
       setSystemTime(at(5 * MIN));
       const sweeping = sweepTinyCloudBootstrapOnce({ prisma: pg.prisma, resolveKey: async () => PRIVATE_KEY });
       await sweepStarted.promise;
-      const approved = await approveOn(pg.prisma, 91);
+      const approved = await hostRequestedSpaceWithinBudget(() => approveOn(pg.prisma, 91), { timeoutMs: 5_000, retryDelaysMs: [] });
       release.resolve();
       const summary = await sweeping;
 
       expect(summary.claimed).toBe(1);
-      expect(approved).toMatchObject({ status: 'failed', errorCode: 'tinycloud_bootstrap_in_progress' });
+      expect(approved).toEqual({ status: 'pending', errorCode: 'tinycloud_bootstrap_in_progress' });
       expect(executions).toBe(1);
       expect(await pgliteStateOf(pg.prisma, 91)).toMatchObject({ status: 'complete', sweepAttempts: 3 });
     } finally {
