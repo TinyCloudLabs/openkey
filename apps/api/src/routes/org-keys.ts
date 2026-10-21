@@ -6,7 +6,6 @@ import { requireSession, type SessionContext } from '../middleware/session';
 import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
 import { requireFreshPasskey } from '../services/passkey-freshness';
 import {
-  classifyOrgKeyMessage,
   createOrgKey,
   findActiveOrgGrant,
   findOrgKeyForUser,
@@ -52,11 +51,10 @@ async function readJson<T>(c: Context): Promise<T | null> {
   }
 }
 
-// K1 D4.1: a missing Origin header, the opaque origin "null", and any origin
-// outside ORG_KEY_ORIGINS are all refused. Returns the accepted origin or null.
-function allowedOrigin(c: Context): string | null {
-  const origin = c.req.header('origin');
-  return origin !== undefined && ORG_KEY_ORIGINS.includes(origin) ? origin : null;
+// K1 D4.1: the requesting origin comes from the page in the request body and must be
+// exactly one of ORG_KEY_ORIGINS. A missing, non-string, or other origin returns null.
+function requestingOriginOf(value: unknown): string | null {
+  return typeof value === 'string' && ORG_KEY_ORIGINS.includes(value) ? value : null;
 }
 
 export function createOrgKeysRouter(deps: OrgKeysRouterDeps) {
@@ -83,9 +81,12 @@ export function createOrgKeysRouter(deps: OrgKeysRouterDeps) {
   orgKeysRouter.post('/', async (c) => {
     const stale = await requireFreshPasskey(c, ORG_KEY_CREATE_PASSKEY_MAX_AGE_MS, prisma);
     if (stale) return stale;
-    const body = await readJson<{ orgId?: unknown; orgName?: unknown; controllerDid?: unknown; label?: unknown }>(c);
+    const body = await readJson<{ orgId?: unknown; orgName?: unknown; slug?: unknown; issuerDid?: unknown; controllerDid?: unknown; label?: unknown }>(c);
     if (!body || !isNonEmptyString(body.orgId) || !isNonEmptyString(body.orgName)) {
       return c.json({ error: 'orgId and orgName are required' }, 400);
+    }
+    if (!isNonEmptyString(body.slug) || !isNonEmptyString(body.issuerDid)) {
+      return c.json({ error: 'slug and issuerDid are required', code: 'org_record_incomplete' }, 400);
     }
     if (body.controllerDid !== undefined) {
       return c.json({ error: 'controllerDid is derived from the key address and cannot be supplied', code: 'controller_did_not_accepted' }, 400);
@@ -96,6 +97,8 @@ export function createOrgKeysRouter(deps: OrgKeysRouterDeps) {
         userId: c.get('user').id,
         orgId: body.orgId,
         orgName: body.orgName,
+        slug: body.slug,
+        issuerDid: body.issuerDid,
         label,
       });
       return c.json({ key: created }, 201);
@@ -105,30 +108,36 @@ export function createOrgKeysRouter(deps: OrgKeysRouterDeps) {
     }
   });
 
-  // Issues the single-use signing challenge (K2a F2). The server records a
-  // nonce bound to keyId, the caller's active grant, and the message digest.
-  // The client signs over the derived challenge and returns the nonce to /sign.
+  // Issues the single-use signing challenge (K2a F2, K4 D3). The server records a
+  // nonce bound to keyId, the caller's active grant, the message digest, and the
+  // requesting origin. The response carries the rendered statement text the consent
+  // screen must show. The client signs the challenge and returns the nonce to /sign.
   // K1 D4.1 order: active grant, origin, message classification.
   orgKeysRouter.post('/:keyId/sign-challenge', async (c) => {
     const user = c.get('user');
     const keyId = c.req.param('keyId');
-    const body = await readJson<{ message?: unknown }>(c);
+    const body = await readJson<{ message?: unknown; requestingOrigin?: unknown }>(c);
     if (!body || !isNonEmptyString(body.message)) return c.json({ error: 'message is required' }, 400);
 
     const grant = await findActiveOrgGrant(prisma, user.id, keyId);
     if (!grant) return c.json({ error: 'Forbidden', code: 'no_active_grant' }, 403);
 
-    if (allowedOrigin(c) === null) return c.json({ error: 'Origin not allowed', code: 'origin_not_allowed' }, 403);
+    const origin = requestingOriginOf(body.requestingOrigin);
+    if (origin === null) return c.json({ error: 'Origin not allowed', code: 'origin_not_allowed' }, 403);
 
-    const classification = classifyOrgKeyMessage(body.message);
-    if (!classification.ok) return c.json({ error: 'Message refused', code: classification.refusal }, 403);
-
-    const issued = await issueOrgKeySignChallenge(prisma, {
-      userId: user.id,
-      keyId,
-      grantId: grant.grantId,
-      message: body.message,
-    });
+    let issued: Awaited<ReturnType<typeof issueOrgKeySignChallenge>>;
+    try {
+      issued = await issueOrgKeySignChallenge(prisma, {
+        userId: user.id,
+        keyId,
+        grantId: grant.grantId,
+        message: body.message,
+        origin,
+      });
+    } catch (error) {
+      if (error instanceof OrgKeyRefusal) return c.json({ error: error.message, code: error.code }, error.status);
+      throw error;
+    }
     const passkeys = await prisma.passkey.findMany({
       where: { userId: user.id },
       select: { credentialID: true },
@@ -137,18 +146,19 @@ export function createOrgKeysRouter(deps: OrgKeysRouterDeps) {
       nonce: issued.nonce,
       challenge: issued.challenge,
       expiresAt: issued.expiresAt.toISOString(),
+      kind: issued.kind,
+      text: issued.text,
       allowCredentials: passkeys.map((passkey) => ({ id: passkey.credentialID, type: 'public-key' })),
     });
   });
 
-  // K1 D4.1 order: active grant (403), origin (403), message classification
-  // (403), then the fresh passkey, single-use challenge, audit, and signature.
-  // The classifier refuses every message until K4 defines the signable kinds,
-  // so this route currently returns 403 for all messages.
+  // K1 D4.1 order: active grant (403), origin (403), message classification and
+  // the fresh passkey, single-use challenge, audit, and signature. Classification runs
+  // in the service, against the stored record, so a refused message is refused there.
   orgKeysRouter.post('/:keyId/sign', async (c) => {
     const user = c.get('user');
     const keyId = c.req.param('keyId');
-    const body = await readJson<{ nonce?: unknown; message?: unknown; assertion?: unknown }>(c);
+    const body = await readJson<{ nonce?: unknown; message?: unknown; assertion?: unknown; requestingOrigin?: unknown }>(c);
     if (!body || !isNonEmptyString(body.nonce) || !isNonEmptyString(body.message)) {
       return c.json({ error: 'nonce and message are required' }, 400);
     }
@@ -159,11 +169,8 @@ export function createOrgKeysRouter(deps: OrgKeysRouterDeps) {
     const grant = await findActiveOrgGrant(prisma, user.id, keyId);
     if (!grant) return c.json({ error: 'Forbidden', code: 'no_active_grant' }, 403);
 
-    const origin = allowedOrigin(c);
+    const origin = requestingOriginOf(body.requestingOrigin);
     if (origin === null) return c.json({ error: 'Origin not allowed', code: 'origin_not_allowed' }, 403);
-
-    const classification = classifyOrgKeyMessage(body.message);
-    if (!classification.ok) return c.json({ error: 'Message refused', code: classification.refusal }, 403);
 
     const relyingParty = webauthn();
     try {
@@ -173,7 +180,6 @@ export function createOrgKeysRouter(deps: OrgKeysRouterDeps) {
         nonce: body.nonce,
         origin,
         message: body.message,
-        messageKind: classification.kind,
         assertion: body.assertion as AuthenticationResponseJSON,
         rpID: relyingParty.rpID,
         expectedOrigin: relyingParty.origin,

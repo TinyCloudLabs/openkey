@@ -81,6 +81,7 @@ import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
 import { checkSiweOrigin } from '../services/siwe-origin';
 import { fetchAndBindWellKnownManifest } from '../services/manifest-origin-fetch';
 import { signManagedKey, unsealManagedKey } from '../services/managed-key-signing';
+import { namesIssuerStatement } from '../services/org-issuer-statement';
 import {
   canonicalizeCoordinationosOrigin,
   evaluateCoordinationosSessionRequest,
@@ -921,6 +922,23 @@ delegateRouter.post('/sign', async (c) => {
         purpose: typeof candidate.purpose === 'string' ? candidate.purpose : null,
         type: typeof candidate.type === 'string' ? candidate.type : null,
         siweDigest: typeof candidate.message === 'string' ? sha256Hex(candidate.message) : null,
+      }));
+    }
+    // K1 D3: an issuer statement is refused before the key lookup, grant consumption,
+    // and unseal. This branch signs with an unsealed key directly, so the
+    // managed-key-signing guard does not cover it.
+    if (typeof candidate.message === 'string' && namesIssuerStatement(candidate.message)) {
+      return auditDenial('issuer_statement_not_personal', sparseCoordinationosEvidence({
+        oauthAccessTokenId: principal.oauthAccessTokenId,
+        tokenDigest: principal.tokenDigest,
+        clientId: principal.clientId,
+        userId: principal.userId,
+        keyId: typeof candidate.keyId === 'string' ? candidate.keyId : null,
+        origin: canonicalizeCoordinationosOrigin(c.req.header('origin')),
+        chainId: typeof candidate.chainId === 'number' ? candidate.chainId : null,
+        purpose: typeof candidate.purpose === 'string' ? candidate.purpose : null,
+        type: typeof candidate.type === 'string' ? candidate.type : null,
+        siweDigest: sha256Hex(candidate.message),
       }));
     }
 

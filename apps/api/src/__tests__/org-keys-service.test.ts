@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
 import { verifyMessage, type Hex } from 'viem';
 import type { AuthenticationResponseJSON } from '@simplewebauthn/server';
@@ -11,12 +11,39 @@ import {
   signOrgKeyMessage,
   type OrgKeySignInput,
 } from '../services/org-keys';
-import { asPrisma, assertionFor, ORIGIN, RP_ID, setupOrgKey } from './org-keys-fixtures';
-
-const MESSAGE = 'Sign in to the org console, nonce 42';
-const KIND = 'test-kind';
+import { canonicalJson, ISSUER_STATEMENT_KIND, parseIssuerStatement, renderIssuerStatement } from '../services/org-issuer-statement';
+import { addRs256Passkey, asPrisma, assertionFor, ISSUER_DID, ORIGIN, RP_ID, setupOrgKey, SLUG } from './org-keys-fixtures';
 
 type Ctx = Awaited<ReturnType<typeof setupOrgKey>>;
+
+// Canonical authorize statement for this org key. The controller comes from the
+// key that setupOrgKey generated (a fresh key per call), so it is read from ctx.
+// `overrides` varies one field, for tests that need two distinct statements.
+function statementFor(ctx: Ctx, overrides: Record<string, unknown> = {}): string {
+  return canonicalJson({
+    action: 'authorize',
+    alg: 'EdDSA',
+    audience: ORIGIN,
+    controller: ctx.key.controllerDid,
+    issuerDid: ISSUER_DID,
+    kid: `${ISSUER_DID}#issuing-1`,
+    nonce: '00112233445566778899aabbccddeeff',
+    notBefore: '2026-10-20T09:00:00Z',
+    orgId: 'org_1',
+    profiles: ['tinycloud.org-membership/v1'],
+    publicKey: 'QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI',
+    seq: 1,
+    slug: SLUG,
+    type: 'tinycloud.org-issuer-authorization/v1',
+    vcts: ['opencredentials.org-membership/v1', 'tinycloud.org-badge/v1'],
+    ...overrides,
+  });
+}
+
+// The text the org key signs (EIP-191). The server renders it from the same canonical input.
+function signedTextFor(message: string): string {
+  return renderIssuerStatement(parseIssuerStatement(message, [ORIGIN]), message);
+}
 
 const P256_N = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
 
@@ -54,11 +81,12 @@ async function issue(ctx: Ctx, message: string) {
     userId: 'user_1',
     keyId: ctx.key.keyId,
     grantId: ctx.key.grantId,
+    origin: ORIGIN,
     message,
   });
 }
 
-// A signing request for MESSAGE with a freshly issued server nonce and a
+// A signing request for `message` with a freshly issued server nonce and a
 // passkey assertion over that nonce's challenge.
 async function signInput(
   ctx: Ctx,
@@ -73,7 +101,6 @@ async function signInput(
     nonce: issued.nonce,
     origin: ORIGIN,
     message,
-    messageKind: KIND,
     assertion: assertionFor(ctx.passkey, issued.challenge, assertionOptions),
     rpID: RP_ID,
     expectedOrigin: ORIGIN,
@@ -95,14 +122,33 @@ async function expectRefusal(promise: Promise<unknown>, status: number, code: st
 }
 
 describe('org key signing service', () => {
+  // The statement kill switch (K4 D1) is default OFF. Each test enables it; the
+  // default-off test below turns it off explicitly.
+  const originalStatementFlag = process.env.ORG_ISSUER_STATEMENT_ENABLED;
+  beforeEach(() => {
+    process.env.ORG_ISSUER_STATEMENT_ENABLED = 'true';
+  });
+  afterAll(() => {
+    if (originalStatementFlag === undefined) delete process.env.ORG_ISSUER_STATEMENT_ENABLED;
+    else process.env.ORG_ISSUER_STATEMENT_ENABLED = originalStatementFlag;
+  });
+
+  test('refuses statement signing while ORG_ISSUER_STATEMENT_ENABLED is off, and stores no challenge', async () => {
+    process.env.ORG_ISSUER_STATEMENT_ENABLED = 'false';
+    const ctx = await setupOrgKey();
+    await expectRefusal(issue(ctx, statementFor(ctx)), 403, 'unsupported_message_kind');
+    expect(ctx.state.challenges).toHaveLength(0);
+  });
+
   test('signs under a fresh passkey and records one audit row with actor, grant, origin, digest, role, and kind', async () => {
     const ctx = await setupOrgKey();
-    const result = await sign(ctx, await signInput(ctx, MESSAGE));
+    const message = statementFor(ctx);
+    const result = await sign(ctx, await signInput(ctx, message));
 
     expect(result.address).toBe(ctx.key.address);
-    expect(await verifyMessage({ address: ctx.key.address as Hex, message: MESSAGE, signature: result.signature })).toBe(
-      true,
-    );
+    expect(
+      await verifyMessage({ address: ctx.key.address as Hex, message: signedTextFor(message), signature: result.signature }),
+    ).toBe(true);
 
     expect(ctx.state.audits).toHaveLength(1);
     expect(ctx.state.audits[0]).toMatchObject({
@@ -110,16 +156,30 @@ describe('org key signing service', () => {
       grantId: ctx.key.grantId,
       actorUserId: 'user_1',
       origin: ORIGIN,
-      messageDigest: createHash('sha256').update(MESSAGE, 'utf8').digest('hex'),
+      messageDigest: createHash('sha256').update(message, 'utf8').digest('hex'),
       role: 'OWNER',
-      messageKind: KIND,
+      messageKind: ISSUER_STATEMENT_KIND,
     });
     expect(ctx.state.passkeys[0]?.counter).toBe(1);
   });
 
+  test('signs under an RS256 passkey: Better Auth registers RS256 alongside ES256, and the signature is not refused as passkey_invalid', async () => {
+    const base = await setupOrgKey();
+    const rs256 = addRs256Passkey(base.state, 'user_1');
+    const ctx: Ctx = { ...base, passkey: rs256 };
+    const message = statementFor(ctx);
+    const result = await sign(ctx, await signInput(ctx, message));
+
+    expect(
+      await verifyMessage({ address: ctx.key.address as Hex, message: signedTextFor(message), signature: result.signature }),
+    ).toBe(true);
+    expect(ctx.state.audits).toHaveLength(1);
+    expect(ctx.state.passkeys.find((row) => row.credentialID === rs256.credentialID)?.counter).toBe(1);
+  });
+
   test('refuses a malformed assertion before any challenge is consumed', async () => {
     const ctx = await setupOrgKey();
-    const input = await signInput(ctx, MESSAGE);
+    const input = await signInput(ctx, statementFor(ctx));
     const malformed = { ...input.assertion, id: undefined } as unknown as OrgKeySignInput['assertion'];
 
     await expectRefusal(sign(ctx, { ...input, assertion: malformed }), 403, 'passkey_invalid');
@@ -129,7 +189,7 @@ describe('org key signing service', () => {
 
   test('refuses an empty nonce', async () => {
     const ctx = await setupOrgKey();
-    const input = await signInput(ctx, MESSAGE);
+    const input = await signInput(ctx, statementFor(ctx));
 
     await expectRefusal(sign(ctx, { ...input, nonce: '' }), 403, 'challenge_invalid');
     expect(ctx.state.audits).toHaveLength(0);
@@ -137,7 +197,7 @@ describe('org key signing service', () => {
 
   test('refuses a nonce the server never issued', async () => {
     const ctx = await setupOrgKey();
-    const input = await signInput(ctx, MESSAGE);
+    const input = await signInput(ctx, statementFor(ctx));
 
     await expectRefusal(sign(ctx, { ...input, nonce: 'never-issued' }), 403, 'challenge_invalid');
     expect(ctx.state.audits).toHaveLength(0);
@@ -145,9 +205,9 @@ describe('org key signing service', () => {
 
   test('refuses a nonce issued for a different message and leaves it unconsumed', async () => {
     const ctx = await setupOrgKey();
-    const input = await signInput(ctx, 'message A');
+    const input = await signInput(ctx, statementFor(ctx, { seq: 1 }));
 
-    await expectRefusal(sign(ctx, { ...input, message: 'message B' }), 403, 'challenge_invalid');
+    await expectRefusal(sign(ctx, { ...input, message: statementFor(ctx, { seq: 2 }) }), 403, 'challenge_invalid');
     expect(ctx.state.challenges[0]?.consumedAt).toBeNull();
     expect(ctx.state.audits).toHaveLength(0);
     expect(ctx.state.passkeys[0]?.counter).toBe(0);
@@ -155,7 +215,7 @@ describe('org key signing service', () => {
 
   test('refuses a nonce issued for a different key', async () => {
     const ctx = await setupOrgKey();
-    const input = await signInput(ctx, MESSAGE);
+    const input = await signInput(ctx, statementFor(ctx));
 
     await expectRefusal(sign(ctx, { ...input, keyId: 'other_key' }), 403, 'challenge_invalid');
     expect(ctx.state.audits).toHaveLength(0);
@@ -163,17 +223,18 @@ describe('org key signing service', () => {
 
   test('binds the challenge preimage to the grant, so an assertion over another grant fails', async () => {
     const ctx = await setupOrgKey();
-    const issued = await issue(ctx, MESSAGE);
+    const message = statementFor(ctx);
+    const issued = await issue(ctx, message);
     const overOtherGrant = orgKeySignChallenge({
       keyId: ctx.key.keyId,
       grantId: 'other_grant',
       nonce: issued.nonce,
-      messageDigest: messageDigestHex(MESSAGE),
+      messageDigest: messageDigestHex(message),
     }).toString('base64url');
 
     await expectRefusal(
       sign(ctx, {
-        ...(await signInput(ctx, MESSAGE)),
+        ...(await signInput(ctx, message)),
         nonce: issued.nonce,
         assertion: assertionFor(ctx.passkey, overOtherGrant),
       }),
@@ -185,7 +246,7 @@ describe('org key signing service', () => {
 
   test('refuses an expired nonce', async () => {
     const ctx = await setupOrgKey();
-    const input = await signInput(ctx, MESSAGE);
+    const input = await signInput(ctx, statementFor(ctx));
     ctx.state.challenges[0] = { ...ctx.state.challenges[0], expiresAt: new Date(Date.now() - 1) };
 
     await expectRefusal(sign(ctx, input), 403, 'challenge_expired');
@@ -194,7 +255,7 @@ describe('org key signing service', () => {
 
   test('refuses an assertion for a different origin', async () => {
     const ctx = await setupOrgKey();
-    const input = await signInput(ctx, MESSAGE, { origin: 'https://evil.example' });
+    const input = await signInput(ctx, statementFor(ctx), { origin: 'https://evil.example' });
 
     await expectRefusal(sign(ctx, input), 403, 'passkey_invalid');
     expect(ctx.state.audits).toHaveLength(0);
@@ -202,14 +263,14 @@ describe('org key signing service', () => {
 
   test('refuses a user-verification-free assertion', async () => {
     const ctx = await setupOrgKey();
-    const input = await signInput(ctx, MESSAGE, { userVerified: false });
+    const input = await signInput(ctx, statementFor(ctx), { userVerified: false });
 
     await expectRefusal(sign(ctx, input), 403, 'passkey_invalid');
   });
 
   test('refuses a signature counter that does not advance', async () => {
     const ctx = await setupOrgKey({ counter: 5 });
-    const input = await signInput(ctx, MESSAGE, { counter: 1 });
+    const input = await signInput(ctx, statementFor(ctx), { counter: 1 });
 
     await expectRefusal(sign(ctx, input), 403, 'passkey_invalid');
     expect(ctx.state.passkeys[0]?.counter).toBe(5);
@@ -220,13 +281,13 @@ describe('org key signing service', () => {
     const ctx = await setupOrgKey();
     ctx.state.passkeys[0] = { ...ctx.state.passkeys[0], userId: 'user_2' };
 
-    await expectRefusal(sign(ctx, await signInput(ctx, MESSAGE)), 403, 'passkey_required');
+    await expectRefusal(sign(ctx, await signInput(ctx, statementFor(ctx))), 403, 'passkey_required');
     expect(ctx.state.audits).toHaveLength(0);
   });
 
   test('refuses once the grant is revoked, even with a valid assertion, and leaves the nonce unconsumed', async () => {
     const ctx = await setupOrgKey();
-    const input = await signInput(ctx, MESSAGE);
+    const input = await signInput(ctx, statementFor(ctx));
     ctx.state.grants[0] = { ...ctx.state.grants[0], revokedAt: new Date() };
 
     await expectRefusal(sign(ctx, input), 403, 'grant_revoked');
@@ -236,7 +297,7 @@ describe('org key signing service', () => {
 
   test('refuses a replayed request once its nonce is consumed', async () => {
     const ctx = await setupOrgKey({ counter: 0 });
-    const input = await signInput(ctx, MESSAGE, { counter: 0 });
+    const input = await signInput(ctx, statementFor(ctx), { counter: 0 });
 
     await sign(ctx, input);
     await expectRefusal(sign(ctx, input), 403, 'challenge_consumed');
@@ -245,26 +306,28 @@ describe('org key signing service', () => {
 
   test('accepts a high-s signature: the service does not refuse by s form', async () => {
     const ctx = await setupOrgKey({ counter: 0 });
-    const issued = await issue(ctx, MESSAGE);
+    const message = statementFor(ctx);
+    const issued = await issue(ctx, message);
     const base = assertionFor(ctx.passkey, issued.challenge, { counter: 0 });
 
     const result = await sign(ctx, {
-      ...(await signInput(ctx, MESSAGE)),
+      ...(await signInput(ctx, message)),
       nonce: issued.nonce,
       assertion: withSForm(base, 'high'),
     });
 
-    expect(await verifyMessage({ address: ctx.key.address as Hex, message: MESSAGE, signature: result.signature })).toBe(
-      true,
-    );
+    expect(
+      await verifyMessage({ address: ctx.key.address as Hex, message: signedTextFor(message), signature: result.signature }),
+    ).toBe(true);
     expect(ctx.state.audits).toHaveLength(1);
   });
 
   test('refuses the low-s twin of a consumed assertion through the canonical hash, even with an unconsumed nonce', async () => {
     const ctx = await setupOrgKey({ counter: 0 });
-    const issued = await issue(ctx, MESSAGE);
+    const message = statementFor(ctx);
+    const issued = await issue(ctx, message);
     const base = assertionFor(ctx.passkey, issued.challenge, { counter: 0 });
-    const request = { ...(await signInput(ctx, MESSAGE)), nonce: issued.nonce };
+    const request = { ...(await signInput(ctx, message)), nonce: issued.nonce };
 
     await sign(ctx, { ...request, assertion: withSForm(base, 'high') });
     // Simulates a challenge row left unconsumed, so only the audit's canonical
@@ -277,19 +340,19 @@ describe('org key signing service', () => {
 
   test('canonical signature hash is equal for both s forms and differs across signatures', async () => {
     const ctx = await setupOrgKey();
-    const issued = await issue(ctx, MESSAGE);
+    const issued = await issue(ctx, statementFor(ctx));
     const first = assertionFor(ctx.passkey, issued.challenge);
     const second = assertionFor(ctx.passkey, issued.challenge, { counter: 2 });
 
-    const low = canonicalSignatureHash(withSForm(first, 'low').response.signature);
-    const high = canonicalSignatureHash(withSForm(first, 'high').response.signature);
+    const low = canonicalSignatureHash(withSForm(first, 'low').response.signature, true);
+    const high = canonicalSignatureHash(withSForm(first, 'high').response.signature, true);
     expect(high).toBe(low);
-    expect(canonicalSignatureHash(second.response.signature)).not.toBe(low);
+    expect(canonicalSignatureHash(second.response.signature, true)).not.toBe(low);
   });
 
   test('rolls back the passkey counter and the nonce, and returns no signature, when the audit insert fails', async () => {
     const ctx = await setupOrgKey();
-    const input = await signInput(ctx, MESSAGE);
+    const input = await signInput(ctx, statementFor(ctx));
     ctx.fail.auditInsert = true;
 
     await expect(sign(ctx, input)).rejects.toThrow('injected audit insert failure');

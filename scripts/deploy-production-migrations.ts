@@ -46,6 +46,8 @@ const orgKeyCustodyMigration = '20261021_0001_org_key_custody';
 const orgKeyCustodyChecksum = '2c9f0a53affc841a7f0a7d1b6f8b865f4c4ef0277e0e140e1f81cd76f1d97f23';
 const orgKeySignChallengesMigration = '20261021_0002_org_key_sign_challenges';
 const orgKeySignChallengesChecksum = '045b0c9c8dc4d00d50d227eb1faa731118122696ff989031c1b9eff18cc075c1';
+const orgKeyIssuerStatementMigration = '20261021_0003_org_key_issuer_statement';
+const orgKeyIssuerStatementChecksum = 'fdd5155f7f6731d51d88bbc7ad3cbd2d5b0e4420378ff290a1fe1f91142deefe';
 // Reviewed expand-only migrations that may run while TC-488 stays parked.
 const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
   [deviceMigration, deviceChecksum],
@@ -58,6 +60,7 @@ const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
   [preparedHandoffMigration, preparedHandoffChecksum],
   [appSignInDayMigration, appSignInDayChecksum],
   [orgKeySignChallengesMigration, orgKeySignChallengesChecksum],
+  [orgKeyIssuerStatementMigration, orgKeyIssuerStatementChecksum],
   [orgKeyCustodyMigration, orgKeyCustodyChecksum],
 ]);
 
@@ -341,6 +344,13 @@ async function deployAdditiveMigrationsBeforeTc488(
     one_active_owner_index: boolean;
     signature_audit_table: boolean;
     signature_audit_hash_index: boolean;
+    signature_audit_role_column: boolean;
+    signature_audit_message_kind_column: boolean;
+    challenges_table: boolean;
+    challenges_nonce_index: boolean;
+    challenges_origin_column: boolean;
+    org_keys_slug_column: boolean;
+    org_keys_issuer_did_column: boolean;
   }>>(`
     SELECT
       EXISTS (SELECT 1 FROM information_schema.columns
@@ -351,7 +361,19 @@ async function deployAdditiveMigrationsBeforeTc488(
       to_regclass('public."key_grants"') IS NOT NULL AS key_grants_table,
       to_regclass('public."key_grants_one_active_owner_per_key"') IS NOT NULL AS one_active_owner_index,
       to_regclass('public."org_key_signature_audits"') IS NOT NULL AS signature_audit_table,
-      to_regclass('public."org_key_signature_audits_passkeyAssertionHash_key"') IS NOT NULL AS signature_audit_hash_index
+      to_regclass('public."org_key_signature_audits_passkeyAssertionHash_key"') IS NOT NULL AS signature_audit_hash_index,
+      EXISTS (SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'org_key_signature_audits' AND column_name = 'role') AS signature_audit_role_column,
+      EXISTS (SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'org_key_signature_audits' AND column_name = 'messageKind') AS signature_audit_message_kind_column,
+      to_regclass('public."org_key_sign_challenges"') IS NOT NULL AS challenges_table,
+      to_regclass('public."org_key_sign_challenges_nonce_key"') IS NOT NULL AS challenges_nonce_index,
+      EXISTS (SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'org_key_sign_challenges' AND column_name = 'origin') AS challenges_origin_column,
+      EXISTS (SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'org_keys' AND column_name = 'slug') AS org_keys_slug_column,
+      EXISTS (SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'org_keys' AND column_name = 'issuerDid') AS org_keys_issuer_did_column
   `);
   const org = orgCustody[0];
   if (
@@ -361,7 +383,14 @@ async function deployAdditiveMigrationsBeforeTc488(
     !org.key_grants_table ||
     !org.one_active_owner_index ||
     !org.signature_audit_table ||
-    !org.signature_audit_hash_index
+    !org.signature_audit_hash_index ||
+    !org.signature_audit_role_column ||
+    !org.signature_audit_message_kind_column ||
+    !org.challenges_table ||
+    !org.challenges_nonce_index ||
+    !org.challenges_origin_column ||
+    !org.org_keys_slug_column ||
+    !org.org_keys_issuer_did_column
   ) {
     throw new Error('Pre-TC-488 org custody physical schema verification failed');
   }

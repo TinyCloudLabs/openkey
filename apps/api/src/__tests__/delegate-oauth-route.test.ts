@@ -850,6 +850,18 @@ describe('CoordinationOS OAuth signer route', () => {
     }
   });
 
+  test('an issuer statement sent to the CoordinationOS signer is audited as a denial and never signed', async () => {
+    decisions = [];
+    await expectRouteDenial(
+      { ...signingBody(), message: 'tinycloud.org-issuer-authorization/v1\n{"action":"authorize","orgId":"org_1"}' },
+      403,
+      'issuer_statement_not_personal',
+    );
+    expect(signerCalls).toBe(0);
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]).toMatchObject({ decision: 'DENY', reasonCode: 'issuer_statement_not_personal' });
+  });
+
   test('OAuth transport and authentication denials are audited before signing', async () => {
     const cases: Array<{
       body: unknown;
@@ -1190,6 +1202,7 @@ describe('CoordinationOS OAuth signer route', () => {
       issued_at_invalid: 403,
       session_expired: 403,
       session_ttl_exceeded: 403,
+      issuer_statement_not_personal: 403,
       nonce_replayed: 409,
       token_consumed: 409,
       audit_write_failed: 500,

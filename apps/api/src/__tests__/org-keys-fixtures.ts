@@ -10,6 +10,9 @@ import { createOrgKey, ORG_KEY_ORIGIN } from '../services/org-keys';
 
 export const RP_ID = 'openkey.test';
 export const ORIGIN = ORG_KEY_ORIGIN;
+// Statement binding for org keys created by setupOrgKey (K4 D2: slug and issuerDid are required).
+export const SLUG = 'acme';
+export const ISSUER_DID = 'did:web:acme.orgs.test';
 
 type Row = { [field: string]: unknown };
 type Where = { [field: string]: unknown };
@@ -54,6 +57,9 @@ export function fakeDb() {
   const isGtCondition = (condition: unknown): condition is { gt: Date } =>
     typeof condition === 'object' && condition !== null && 'gt' in condition;
 
+  const isLtCondition = (condition: unknown): condition is { lt: Date } =>
+    typeof condition === 'object' && condition !== null && 'lt' in condition;
+
   const matches = (row: Row, where: Where): boolean =>
     Object.entries(where).every(([field, condition]) => {
       if (field === 'key' || field === 'orgKey') {
@@ -64,6 +70,7 @@ export function fakeDb() {
         return target !== null && matches(target, condition as Where);
       }
       if (isGtCondition(condition)) return (row[field] as Date).getTime() > condition.gt.getTime();
+      if (isLtCondition(condition)) return (row[field] as Date).getTime() < condition.lt.getTime();
       if (isNotCondition(condition)) {
         return condition.isNot === null ? row[field] != null : row[field] !== condition.isNot;
       }
@@ -90,6 +97,7 @@ export function fakeDb() {
         state.orgKeys.push(row);
         return row;
       },
+      findUnique: async ({ where }: { where: Where }) => state.orgKeys.find((row) => row.keyId === where.keyId) ?? null,
     },
     keyGrant: {
       create: async ({ data }: { data: Row }) => {
@@ -123,6 +131,11 @@ export function fakeDb() {
         const rows = state.challenges.filter((row) => matches(row, where));
         for (const row of rows) Object.assign(row, data);
         return { count: rows.length };
+      },
+      deleteMany: async ({ where }: { where: Where }) => {
+        const before = state.challenges.length;
+        state.challenges = state.challenges.filter((row) => !matches(row, where));
+        return { count: before - state.challenges.length };
       },
     },
     passkey: {
@@ -190,6 +203,40 @@ export function addPasskey(state: { passkeys: Row[] }, userId: string, counter =
   return { credentialID, privateKey };
 }
 
+// CBOR head for a major type and unsigned argument (RFC 8949 section 3).
+function cborHead(major: number, value: number): number[] {
+  if (value < 24) return [(major << 5) | value];
+  if (value < 256) return [(major << 5) | 24, value];
+  return [(major << 5) | 25, value >> 8, value & 0xff];
+}
+
+// Creates an RSA-2048 passkey with RS256 (alg -257), the algorithm Better Auth
+// also registers (`[-8, -7, -257]`). Stored as a COSE_Key in standard base64.
+export function addRs256Passkey(state: { passkeys: Row[] }, userId: string, counter = 0): PasskeyFixture {
+  const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const jwk = publicKey.export({ format: 'jwk' }) as { n: string; e: string };
+  const n = Buffer.from(jwk.n, 'base64url');
+  const e = Buffer.from(jwk.e, 'base64url');
+  // CBOR map {1: 3 (RSA), 3: -257 (RS256), -1: n, -2: e}
+  const cose = Buffer.concat([
+    Buffer.from([...cborHead(5, 4), 0x01, 0x03, 0x03, ...cborHead(1, 256), 0x20]),
+    Buffer.from([...cborHead(2, n.length)]),
+    n,
+    Buffer.from([0x21]),
+    Buffer.from([...cborHead(2, e.length)]),
+    e,
+  ]);
+  const credentialID = randomBytes(16).toString('base64url');
+  state.passkeys.push({
+    id: `passkey_${state.passkeys.length + 1}`,
+    userId,
+    credentialID,
+    publicKey: cose.toString('base64'),
+    counter,
+  });
+  return { credentialID, privateKey };
+}
+
 export function assertionFor(
   passkey: PasskeyFixture,
   challenge: string,
@@ -232,6 +279,8 @@ export async function setupOrgKey(options: { counter?: number } = {}) {
     userId: 'user_1',
     orgId: 'org_1',
     orgName: 'Acme',
+    slug: SLUG,
+    issuerDid: ISSUER_DID,
     label: null,
   });
   const passkey = addPasskey(state, 'user_1', options.counter ?? 0);

@@ -3,11 +3,14 @@ import { createMiddleware } from 'hono/factory';
 import { Hono } from 'hono';
 import { mockModules, replaceModules } from './mock-module';
 import type * as OrgKeysRoutes from '../routes/org-keys';
-import { addSession, asPrisma, fakeTee, ORIGIN, RP_ID, setupOrgKey } from './org-keys-fixtures';
+import { addSession, asPrisma, fakeTee, ISSUER_DID, ORIGIN, RP_ID, SLUG, setupOrgKey } from './org-keys-fixtures';
+import { signedTextFor, statementFor } from './org-issuer-statement-fixtures';
+import { ISSUER_STATEMENT_KIND } from '../services/org-issuer-statement';
 
 const user = { id: 'user_1', email: 'test@example.com' };
 const MESSAGE = 'Sign in to the org console, nonce 42';
 const otherOrigin = 'https://evil.example';
+const ORG_BODY = { orgId: 'org_2', orgName: 'Beta', slug: SLUG, issuerDid: ISSUER_DID };
 
 replaceModules({
   '../middleware/session': () => ({
@@ -24,9 +27,12 @@ await mockModules({
 });
 
 const originalFlag = process.env.ORG_KEY_CUSTODY_ENABLED;
+const originalStatementFlag = process.env.ORG_ISSUER_STATEMENT_ENABLED;
 afterAll(() => {
   if (originalFlag === undefined) delete process.env.ORG_KEY_CUSTODY_ENABLED;
   else process.env.ORG_KEY_CUSTODY_ENABLED = originalFlag;
+  if (originalStatementFlag === undefined) delete process.env.ORG_ISSUER_STATEMENT_ENABLED;
+  else process.env.ORG_ISSUER_STATEMENT_ENABLED = originalStatementFlag;
 });
 
 // Loaded after mockModules so the route captures the mocked db and tee. A file-specific
@@ -66,36 +72,30 @@ function addPersonalKeyWithGrant(state: { keys: Record<string, unknown>[]; grant
   });
 }
 
-// `origin: null` sends no Origin header at all.
-function headersFor(origin: string | null): Record<string, string> {
-  const headers: Record<string, string> = { 'content-type': 'application/json' };
-  if (origin !== null) headers.origin = origin;
-  return headers;
-}
-
-const signChallenge = (app: Hono, keyId: string, origin: string | null, body: unknown = { message: MESSAGE }) =>
-  app.request(`/api/org-keys/${keyId}/sign-challenge`, {
+const postJson = (app: Hono, path: string, body: unknown) =>
+  app.request(path, {
     method: 'POST',
-    headers: headersFor(origin),
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
 
-const sign = (
-  app: Hono,
-  keyId: string,
-  origin: string | null,
-  body: unknown = { nonce: 'nonce_1', message: MESSAGE, assertion: {} },
-) =>
-  app.request(`/api/org-keys/${keyId}/sign`, {
-    method: 'POST',
-    headers: headersFor(origin),
-    body: JSON.stringify(body),
+// The origin is the browser-reported `requestingOrigin` in the JSON body. An
+// undefined value is omitted from the JSON, which is the "missing" case.
+const signChallenge = (app: Hono, keyId: string, requestingOrigin: string | undefined, message = MESSAGE) =>
+  postJson(app, `/api/org-keys/${keyId}/sign-challenge`, { message, requestingOrigin });
+
+const sign = (app: Hono, keyId: string, requestingOrigin: string | undefined) =>
+  postJson(app, `/api/org-keys/${keyId}/sign`, {
+    nonce: 'nonce_1',
+    message: MESSAGE,
+    assertion: {},
+    requestingOrigin,
   });
 
-// Every Origin the allowlist must refuse: missing, opaque, other site, and the
+// Every origin the allowlist must refuse: missing, opaque, other site, and the
 // scheme, port, and trailing-slash near-misses of the real origin.
-const refusedOrigins: [string, string | null][] = [
-  ['missing Origin', null],
+const refusedOrigins: [string, string | undefined][] = [
+  ['missing requestingOrigin', undefined],
   ['opaque null origin', 'null'],
   ['other site', otherOrigin],
   ['scheme swap', ORIGIN.replace(/^https:/, 'http:')],
@@ -105,6 +105,8 @@ const refusedOrigins: [string, string | null][] = [
 
 beforeEach(() => {
   process.env.ORG_KEY_CUSTODY_ENABLED = 'true';
+  // Default-off: statement signing stays disabled unless a test enables it.
+  process.env.ORG_ISSUER_STATEMENT_ENABLED = 'false';
 });
 
 describe('org key routes', () => {
@@ -146,15 +148,7 @@ describe('org key routes', () => {
 
     expect((await app.request('/api/org-keys')).status).toBe(404);
     expect((await app.request(`/api/org-keys/${ctx.key.keyId}`)).status).toBe(404);
-    expect(
-      (
-        await app.request('/api/org-keys', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ orgId: 'o', orgName: 'O' }),
-        })
-      ).status,
-    ).toBe(404);
+    expect((await postJson(app, '/api/org-keys', { orgId: 'o', orgName: 'O' })).status).toBe(404);
     expect(ctx.state.keys).toHaveLength(1);
   });
 
@@ -162,15 +156,15 @@ describe('org key routes', () => {
     const ctx = await setupOrgKey();
     const app = await appFor(ctx);
 
-    const response = await app.request('/api/org-keys', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ orgId: 'org_2', orgName: 'Beta' }),
-    });
+    const response = await postJson(app, '/api/org-keys', ORG_BODY);
     expect(response.status).toBe(201);
     const body = (await response.json()) as { key: { keyId: string; address: string; controllerDid: string } };
     const created = ctx.state.keys.find((key) => key.id === body.key.keyId);
     expect(created).toMatchObject({ custody: 'ORG' });
+    expect(ctx.state.orgKeys.find((row) => row.keyId === body.key.keyId)).toMatchObject({
+      slug: SLUG,
+      issuerDid: ISSUER_DID,
+    });
     expect(
       ctx.state.grants.some(
         (grant) => grant.keyId === body.key.keyId && grant.role === 'OWNER' && grant.granteeUserId === 'user_1',
@@ -183,14 +177,9 @@ describe('org key routes', () => {
     const ctx = await setupOrgKey();
     const app = await appFor(ctx);
 
-    const response = await app.request('/api/org-keys', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        orgId: 'org_2',
-        orgName: 'Beta',
-        controllerDid: 'did:pkh:eip155:1:0x0000000000000000000000000000000000000001',
-      }),
+    const response = await postJson(app, '/api/org-keys', {
+      ...ORG_BODY,
+      controllerDid: 'did:pkh:eip155:1:0x0000000000000000000000000000000000000001',
     });
     expect(response.status).toBe(400);
     expect(await response.json()).toMatchObject({ code: 'controller_did_not_accepted' });
@@ -201,12 +190,18 @@ describe('org key routes', () => {
     const ctx = await setupOrgKey();
     const app = await appFor(ctx);
 
-    const response = await app.request('/api/org-keys', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ orgId: 'org_2' }),
-    });
+    const response = await postJson(app, '/api/org-keys', { orgId: 'org_2' });
     expect(response.status).toBe(400);
+    expect(ctx.state.keys).toHaveLength(1);
+  });
+
+  test('POST without slug or issuerDid is refused as org_record_incomplete and creates no key', async () => {
+    const ctx = await setupOrgKey();
+    const app = await appFor(ctx);
+
+    const response = await postJson(app, '/api/org-keys', { orgId: 'org_2', orgName: 'Beta' });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ code: 'org_record_incomplete' });
     expect(ctx.state.keys).toHaveLength(1);
   });
 
@@ -215,11 +210,7 @@ describe('org key routes', () => {
     const app = await appFor(ctx);
     ctx.state.sessions[0] = { ...ctx.state.sessions[0], lastPasskeyAt: new Date(Date.now() - 10 * 60 * 1000) };
 
-    const response = await app.request('/api/org-keys', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ orgId: 'org_2', orgName: 'Beta' }),
-    });
+    const response = await postJson(app, '/api/org-keys', ORG_BODY);
     expect(response.status).toBe(403);
     expect(await response.json()).toMatchObject({ code: 'passkey_step_up_required' });
     expect(ctx.state.keys).toHaveLength(1);
@@ -231,11 +222,7 @@ describe('org key routes', () => {
     ctx.state.sessions.length = 0;
     addSession(ctx.state, 'user_1', null);
 
-    const response = await app.request('/api/org-keys', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ orgId: 'org_2', orgName: 'Beta' }),
-    });
+    const response = await postJson(app, '/api/org-keys', ORG_BODY);
     expect(response.status).toBe(403);
     expect(await response.json()).toMatchObject({ code: 'passkey_step_up_required' });
     expect(ctx.state.keys).toHaveLength(1);
@@ -264,6 +251,20 @@ describe('org key routes', () => {
     });
   }
 
+  test('an Origin header does not stand in for the body requestingOrigin', async () => {
+    const ctx = await setupOrgKey();
+    const app = await appFor(ctx);
+
+    const response = await app.request(`/api/org-keys/${ctx.key.keyId}/sign-challenge`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: ORIGIN },
+      body: JSON.stringify({ message: MESSAGE }),
+    });
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ code: 'origin_not_allowed' });
+    expect(ctx.state.challenges).toHaveLength(0);
+  });
+
   test('sign on a personal key is refused as no active org grant', async () => {
     const ctx = await setupOrgKey();
     addPersonalKeyWithGrant(ctx.state);
@@ -275,14 +276,19 @@ describe('org key routes', () => {
     expect(ctx.state.audits).toHaveLength(0);
   });
 
-  test('sign refuses every message in K2a (fail closed) and records no audit', async () => {
+  test('a challenge issued while statement signing was on cannot be signed after the flag is turned off', async () => {
+    process.env.ORG_ISSUER_STATEMENT_ENABLED = 'true';
     const ctx = await setupOrgKey();
     const app = await appFor(ctx);
+    const message = statementFor(ctx.key);
+    const issued = (await (await signChallenge(app, ctx.key.keyId, ORIGIN, message)).json()) as { nonce: string };
+    process.env.ORG_ISSUER_STATEMENT_ENABLED = 'false';
 
-    const response = await sign(app, ctx.key.keyId, ORIGIN, {
-      nonce: 'nonce_1',
-      message: MESSAGE,
-      assertion: {},
+    const response = await postJson(app, `/api/org-keys/${ctx.key.keyId}/sign`, {
+      nonce: issued.nonce,
+      message,
+      assertion: { id: 'cred_1', response: { signature: 'AAAA' } },
+      requestingOrigin: ORIGIN,
     });
     expect(response.status).toBe(403);
     expect(await response.json()).toMatchObject({ code: 'unsupported_message_kind' });
@@ -290,7 +296,7 @@ describe('org key routes', () => {
     expect(ctx.state.passkeys[0]?.counter).toBe(0);
   });
 
-  test('sign-challenge refuses every message in K2a (fail closed) and issues no challenge', async () => {
+  test('sign-challenge refuses every message while statement signing is off and issues no challenge', async () => {
     const ctx = await setupOrgKey();
     const app = await appFor(ctx);
 
@@ -300,11 +306,27 @@ describe('org key routes', () => {
     expect(ctx.state.challenges).toHaveLength(0);
   });
 
+  test('with statement signing enabled, sign-challenge returns the exact text the org key will sign', async () => {
+    process.env.ORG_ISSUER_STATEMENT_ENABLED = 'true';
+    const ctx = await setupOrgKey();
+    const app = await appFor(ctx);
+    const message = statementFor(ctx.key);
+
+    const response = await signChallenge(app, ctx.key.keyId, ORIGIN, message);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { kind: string; text: string; nonce: string };
+    expect(body.kind).toBe(ISSUER_STATEMENT_KIND);
+    expect(body.text).toBe(signedTextFor(message));
+    expect(body.nonce).toEqual(expect.any(String));
+    expect(ctx.state.challenges).toHaveLength(1);
+    expect(ctx.state.challenges[0]).toMatchObject({ origin: ORIGIN });
+  });
+
   test('sign-challenge requires a message', async () => {
     const ctx = await setupOrgKey();
     const app = await appFor(ctx);
 
-    const response = await signChallenge(app, ctx.key.keyId, ORIGIN, {});
+    const response = await postJson(app, `/api/org-keys/${ctx.key.keyId}/sign-challenge`, { requestingOrigin: ORIGIN });
     expect(response.status).toBe(400);
   });
 
@@ -312,7 +334,11 @@ describe('org key routes', () => {
     const ctx = await setupOrgKey();
     const app = await appFor(ctx);
 
-    const response = await sign(app, ctx.key.keyId, otherOrigin, { message: MESSAGE, assertion: {} });
+    const response = await postJson(app, `/api/org-keys/${ctx.key.keyId}/sign`, {
+      message: MESSAGE,
+      assertion: {},
+      requestingOrigin: otherOrigin,
+    });
     expect(response.status).toBe(400);
     expect(ctx.state.audits).toHaveLength(0);
   });

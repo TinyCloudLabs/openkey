@@ -1,7 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { getAddress, type Hex } from 'viem';
 import { verifyAuthenticationResponse, type AuthenticationResponseJSON } from '@simplewebauthn/server';
-import type { PrismaClient } from '@openkey/db';
+import { cose, decodeCredentialPublicKey } from '@simplewebauthn/server/helpers';
+import type { Prisma, PrismaClient } from '@openkey/db';
 import {
   createWalletFromPrivateKey,
   generatePrivateKey,
@@ -11,6 +12,7 @@ import {
   type TeeClient,
 } from '@openkey/tee';
 import { createSealingContext, deriveKeyForRecord } from './key-sealing';
+import { classifyIssuerStatement, ISSUER_STATEMENT_KIND, namesIssuerStatement, type IssuerStatementRecord } from './org-issuer-statement';
 
 // Capability flag for organization key custody (TC-1518). Default off: the
 // org-key routes answer 404 until the flag is set to "true".
@@ -18,6 +20,15 @@ export const ORG_KEY_CUSTODY_FLAG = 'ORG_KEY_CUSTODY_ENABLED';
 
 export function isOrgKeyCustodyEnabled(env: Record<string, string | undefined> = process.env): boolean {
   return env[ORG_KEY_CUSTODY_FLAG] === 'true';
+}
+
+// K4 kill switch for issuer-statement signing (kind 1). Separate from the custody flag so
+// statement signing can be disabled while the org-key routes stay up. Default off: a
+// statement is refused as an unsupported message kind.
+export const ORG_ISSUER_STATEMENT_FLAG = 'ORG_ISSUER_STATEMENT_ENABLED';
+
+export function isIssuerStatementSigningEnabled(env: Record<string, string | undefined> = process.env): boolean {
+  return env[ORG_ISSUER_STATEMENT_FLAG] === 'true';
 }
 
 // K1 D4.1: origins from which an org-key signing request may originate.
@@ -125,6 +136,8 @@ export type CreateOrgKeyInput = {
   userId: string;
   orgId: string;
   orgName: string;
+  slug: string;
+  issuerDid: string;
   label?: string | null;
 };
 
@@ -160,7 +173,14 @@ export async function createOrgKey(prisma: PrismaClient, tee: TeeClient, input: 
       select: { id: true, address: true, label: true },
     });
     await tx.orgKey.create({
-      data: { keyId: key.id, orgId: input.orgId, orgName: input.orgName, controllerDid },
+      data: {
+        keyId: key.id,
+        orgId: input.orgId,
+        orgName: input.orgName,
+        slug: input.slug,
+        issuerDid: input.issuerDid,
+        controllerDid,
+      },
     });
     const grant = await tx.keyGrant.create({
       data: {
@@ -176,19 +196,33 @@ export async function createOrgKey(prisma: PrismaClient, tee: TeeClient, input: 
   });
 }
 
-export type OrgKeyMessageClassification = { ok: true; kind: string } | { ok: false; refusal: string };
+export type OrgKeyMessageClassification =
+  | { ok: true; kind: string; action: string; text: string }
+  | { ok: false; refusal: string };
 
-// K1 D7 refusals, then the D3 allowlist. The allowlist of signable kinds is
-// empty until K4 defines the issuer-statement and org-space SIWE+ReCap kinds, so
-// every message is refused here. The ok branch is the K4 extension point.
-export function classifyOrgKeyMessage(message: string): OrgKeyMessageClassification {
+// K1 D7 refusals run first and are unconditional. Then the D3 allowlist: the only
+// signable kind is the issuer statement (kind 1), and only while the K4 kill switch
+// is on. Every other message is refused as unsupported.
+export function classifyOrgKeyMessage(
+  message: string,
+  context: { record: IssuerStatementRecord; requestingOrigin: string; env?: Record<string, string | undefined> },
+): OrgKeyMessageClassification {
   if (message.includes('account-binding/v1') || message.includes('org-binding/v1')) {
     return { ok: false, refusal: 'binding_bytes_refused' };
   }
   if (message.includes('tinycloud.credentials/')) {
     return { ok: false, refusal: 'credentials_capability_refused' };
   }
-  return { ok: false, refusal: 'unsupported_message_kind' };
+  if (!namesIssuerStatement(message) || !isIssuerStatementSigningEnabled(context.env)) {
+    return { ok: false, refusal: 'unsupported_message_kind' };
+  }
+  const result = classifyIssuerStatement(message, {
+    record: context.record,
+    requestingOrigin: context.requestingOrigin,
+    allowedAudiences: ORG_KEY_ORIGINS,
+  });
+  if (!result.ok) return { ok: false, refusal: result.refusal };
+  return { ok: true, kind: ISSUER_STATEMENT_KIND, action: result.action, text: result.text };
 }
 
 export function messageDigestHex(message: string): string {
@@ -214,20 +248,51 @@ export function orgKeySignChallenge(parts: {
   return hash.digest();
 }
 
+// The stored record a statement is bound to. Null when the key does not exist.
+export async function loadOrgKeyRecord(prisma: PrismaClient, keyId: string): Promise<IssuerStatementRecord | null> {
+  return prisma.orgKey.findUnique({
+    where: { keyId },
+    select: { orgId: true, slug: true, issuerDid: true, controllerDid: true },
+  });
+}
+
 // Records a server nonce for one signing request. The stored row is the only
-// source of keyId, grantId, and message digest at signing time.
+// source of keyId, grantId, message digest, and origin at signing time. The message
+// is classified here, so a refused message never receives a challenge.
 export async function issueOrgKeySignChallenge(
   prisma: PrismaClient,
-  input: { userId: string; keyId: string; grantId: string; message: string },
-): Promise<{ nonce: string; challenge: string; expiresAt: Date }> {
+  input: { userId: string; keyId: string; grantId: string; message: string; origin: string },
+): Promise<{ nonce: string; challenge: string; expiresAt: Date; kind: string; text: string }> {
+  const record = await loadOrgKeyRecord(prisma, input.keyId);
+  if (!record) throw new OrgKeyRefusal(404, 'key_not_found', 'Key not found');
+  const classification = classifyOrgKeyMessage(input.message, { record, requestingOrigin: input.origin });
+  if (!classification.ok) throw new OrgKeyRefusal(403, classification.refusal, 'Message is not signable by this key');
+
+  // Expired challenges can never be used. Dropping them keeps the table bounded.
+  await prisma.orgKeySignChallenge.deleteMany({ where: { expiresAt: { lt: new Date() } } });
+
   const nonce = randomBytes(32).toString('base64url');
   const messageDigest = messageDigestHex(input.message);
   const expiresAt = new Date(Date.now() + ORG_KEY_CHALLENGE_TTL_MS);
   await prisma.orgKeySignChallenge.create({
-    data: { userId: input.userId, keyId: input.keyId, grantId: input.grantId, nonce, messageDigest, expiresAt },
+    data: {
+      userId: input.userId,
+      keyId: input.keyId,
+      grantId: input.grantId,
+      origin: input.origin,
+      nonce,
+      messageDigest,
+      expiresAt,
+    },
   });
   const challenge = orgKeySignChallenge({ keyId: input.keyId, grantId: input.grantId, nonce, messageDigest });
-  return { nonce, challenge: challenge.toString('base64url'), expiresAt };
+  return {
+    nonce,
+    challenge: challenge.toString('base64url'),
+    expiresAt,
+    kind: classification.kind,
+    text: classification.text,
+  };
 }
 
 export type OrgKeySignInput = {
@@ -236,7 +301,6 @@ export type OrgKeySignInput = {
   nonce: string;
   origin: string;
   message: string;
-  messageKind: string;
   assertion: AuthenticationResponseJSON;
   rpID: string;
   expectedOrigin: string;
@@ -279,12 +343,42 @@ function to32Bytes(value: bigint): Buffer {
 }
 
 // Both (r, s) and (r, n - s) verify under ECDSA, and authenticators are not
-// required to emit low-s. Hashing the canonical form (r, min(s, n - s)) gives
-// both variants one audit hash, so the unique index blocks the second one.
-export function canonicalSignatureHash(signatureBase64url: string): string {
-  const { r, s } = parseDerSignature(Buffer.from(signatureBase64url, 'base64url'));
+// required to emit low-s. For ES256 the hash covers the canonical form (r, min(s, n - s)),
+// so both variants share one audit hash and the unique index blocks the second one.
+// Other algorithms hash the raw signature bytes. RSA PKCS#1 v1.5 is deterministic, so the
+// bytes identify one assertion. EdDSA uniqueness depends on the verifier rejecting non-canonical S.
+// The branch follows the stored COSE algorithm, not the signature shape.
+export function canonicalSignatureHash(signatureBase64url: string, es256: boolean): string {
+  const signature = Buffer.from(signatureBase64url, 'base64url');
+  if (!es256) return createHash('sha256').update(signature).digest('hex');
+  const { r, s } = parseDerSignature(signature);
   const canonicalS = s > P256_ORDER - s ? P256_ORDER - s : s;
   return createHash('sha256').update(Buffer.concat([to32Bytes(r), to32Bytes(canonicalS)])).digest('hex');
+}
+
+// The COSE algorithm the stored passkey verifies with.
+export function passkeyUsesEs256(publicKeyBase64: string): boolean {
+  try {
+    return decodeCredentialPublicKey(Buffer.from(publicKeyBase64, 'base64')).get(cose.COSEKEYS.alg) === cose.COSEALG.ES256;
+  } catch {
+    throw new OrgKeyRefusal(403, 'passkey_invalid', 'Passkey public key cannot be decoded');
+  }
+}
+
+// F3: lock the grant row FOR SHARE. A concurrent revoke takes a conflicting
+// row lock, so it waits for this transaction to commit, or this read sees
+// the revoke and refuses. Revocation must not interleave with a signature.
+// Exported so the lock can be exercised on real Postgres (F-C).
+export async function lockActiveGrant(
+  tx: Prisma.TransactionClient,
+  input: { grantId: string; keyId: string; userId: string },
+): Promise<{ id: string; role: 'OWNER' | 'ADMIN' } | null> {
+  const [grant] = await tx.$queryRaw<{ id: string; role: 'OWNER' | 'ADMIN' }[]>`
+    SELECT id, role FROM "key_grants"
+    WHERE id = ${input.grantId} AND "keyId" = ${input.keyId}
+      AND "granteeUserId" = ${input.userId} AND "revokedAt" IS NULL
+    FOR SHARE`;
+  return grant ?? null;
 }
 
 // Verifies the fresh passkey and the server challenge, consumes the challenge,
@@ -309,13 +403,21 @@ export async function signOrgKeyMessage(
   const challenge = await prisma.orgKeySignChallenge.findFirst({
     where: { nonce: input.nonce, userId: input.userId, keyId: input.keyId },
   });
-  if (!challenge || challenge.messageDigest !== messageDigestHex(input.message)) {
+  // F-A: the challenge is bound to the origin it was issued for. A request from
+  // any other origin, or for any other message, does not match the challenge.
+  if (!challenge || challenge.messageDigest !== messageDigestHex(input.message) || challenge.origin !== input.origin) {
     throw new OrgKeyRefusal(403, 'challenge_invalid', 'Signing challenge does not match this request');
   }
   if (challenge.consumedAt) throw new OrgKeyRefusal(403, 'challenge_consumed', 'Signing challenge was already used');
   if (challenge.expiresAt.getTime() <= Date.now()) {
     throw new OrgKeyRefusal(403, 'challenge_expired', 'Signing challenge has expired');
   }
+
+  // F-F: the message kind is derived here from the stored record. No caller-supplied kind is trusted.
+  const record = await loadOrgKeyRecord(prisma, input.keyId);
+  if (!record) throw new OrgKeyRefusal(404, 'key_not_found', 'Key not found');
+  const classification = classifyOrgKeyMessage(input.message, { record, requestingOrigin: input.origin });
+  if (!classification.ok) throw new OrgKeyRefusal(403, classification.refusal, 'Message is not signable by this key');
 
   const passkey = await prisma.passkey.findFirst({
     where: { userId: input.userId, credentialID: input.assertion.id },
@@ -348,19 +450,13 @@ export async function signOrgKeyMessage(
     throw new OrgKeyRefusal(403, 'passkey_invalid', 'Passkey assertion did not verify');
   }
 
-  const assertionHash = canonicalSignatureHash(input.assertion.response.signature);
+  const assertionHash = canonicalSignatureHash(input.assertion.response.signature, passkeyUsesEs256(passkey.publicKey));
   const messageDigest = messageDigestHex(input.message);
 
   try {
     return await prisma.$transaction(async (tx) => {
-      // F3: lock the grant row FOR SHARE. A concurrent revoke takes a conflicting
-      // row lock, so it waits for this transaction to commit, or this read sees
-      // the revoke and refuses. Revocation must not interleave with a signature.
-      const [grant] = await tx.$queryRaw<{ id: string; role: 'OWNER' | 'ADMIN' }[]>`
-        SELECT id, role FROM "key_grants"
-        WHERE id = ${challenge.grantId} AND "keyId" = ${input.keyId}
-          AND "granteeUserId" = ${input.userId} AND "revokedAt" IS NULL
-        FOR SHARE`;
+      // F3: the grant row is locked FOR SHARE for the rest of the transaction.
+      const grant = await lockActiveGrant(tx, { grantId: challenge.grantId, keyId: input.keyId, userId: input.userId });
       if (!grant) throw new OrgKeyRefusal(403, 'grant_revoked', 'No active grant on this key');
 
       // Single use: the challenge is consumed only if still unused and unexpired.
@@ -391,7 +487,7 @@ export async function signOrgKeyMessage(
           origin: input.origin,
           messageDigest,
           role: grant.role,
-          messageKind: input.messageKind,
+          messageKind: classification.kind,
           passkeyAssertionHash: assertionHash,
         },
       });
@@ -404,7 +500,8 @@ export async function signOrgKeyMessage(
         sealingKey.fill(0);
       }
       const account = createWalletFromPrivateKey(privateKey);
-      const signature = await account.signMessage({ message: input.message });
+      // The rendered statement text is what the consent screen showed. It is signed, not the raw JSON.
+      const signature = await account.signMessage({ message: classification.text });
       return { signature, address: key.address };
     });
   } catch (error) {

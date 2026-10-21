@@ -4,7 +4,7 @@ import { createPrismaClient } from '@openkey/db';
 import { createTeeClient, seal, unseal, generatePrivateKey, getAddressFromPrivateKey, type TeeQuote } from '@openkey/tee';
 import { requireSession, type SessionContext } from '../middleware/session';
 import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
-import { validateTypedData, verifyMessage } from 'viem';
+import { hexToString, validateTypedData, verifyMessage } from 'viem';
 import type { Hex } from 'viem';
 import {
   ensureTinyCloudBootstrapForApprovedSign,
@@ -15,6 +15,7 @@ import { createSealingContext, deriveKeyForRecord } from '../services/key-sealin
 import { deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, PrimaryKeyConflictError, setPrimaryKey } from '../services/primary-key';
 import { checkSignableMessage } from '../services/siwe-origin';
+import { namesIssuerStatement } from '../services/org-issuer-statement';
 import { rejectNonBrowserControlRequest } from '../middleware/browser-control';
 
 import { log, logError } from '../log';
@@ -301,6 +302,11 @@ keysRouter.post('/:keyId/sign', async (c) => {
   const siweCheck = checkSignableMessage(body.message, body.requestOrigin);
   if (siweCheck.siwe && !siweCheck.ok) {
     return c.json({ error: siweCheck.message, code: 'siwe_origin_refused', reason: siweCheck.code }, 403);
+  }
+  // K1 D3: an issuer statement is signable only through the org route, never here.
+  const signedText = body.format === 'raw' ? hexToString(body.message as Hex) : body.message;
+  if (namesIssuerStatement(signedText)) {
+    return c.json({ error: 'issuer statements are signed through the organization route', code: 'issuer_statement_not_personal' }, 403);
   }
 
   const key = await prisma.ethereumKey.findFirst({
