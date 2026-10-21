@@ -13,6 +13,7 @@ import {
 } from '@openkey/tee';
 import { createSealingContext, deriveKeyForRecord } from './key-sealing';
 import { checkHandle, classifyIssuerStatement, ISSUER_STATEMENT_KIND, IssuerStatementRefusal, issuerDidForOrgId, namesIssuerStatement, type IssuerStatementRecord } from './org-issuer-statement';
+import { primaryKeyWhere } from './primary-key';
 import { classifyOrgSpaceMessage, isOrgSpaceSigningEnabled, namesOrgSpaceMessage, roleSatisfies, type OrgRole } from './org-space-signing';
 
 // Capability flag for organization key custody (TC-1518). Default off: the
@@ -214,7 +215,13 @@ export type OrgKeyMessageClassification =
   | { ok: false; refusal: string };
 
 // Kind 2 signing context: the grant the signer holds on this key, matched against the challenge.
-export type OrgKeyGrantContext = { grantId: string; role: OrgRole };
+export type OrgKeyGrantContext = { grantId: string; role: OrgRole; adminAddress: string | null };
+
+// The org-space admin is the grantee's canonical TinyCloud key. Null when the grantee has none.
+async function loadCanonicalAddress(prisma: PrismaClient, userId: string): Promise<string | null> {
+  const key = await prisma.ethereumKey.findFirst({ where: primaryKeyWhere(userId), select: { address: true } });
+  return key ? getAddress(key.address) : null;
+}
 
 // K1 D7 refusals run first and are unconditional. Then the D3 allowlist: kind 1 (the issuer
 // statement, while the K4 kill switch is on) and kind 2 (the org-space message, while
@@ -238,10 +245,12 @@ export function classifyOrgKeyMessage(
     if (!isOrgSpaceSigningEnabled(context.env) || !context.grant || !context.record.key) {
       return { ok: false, refusal: 'unsupported_message_kind' };
     }
+    if (!context.grant.adminAddress) return { ok: false, refusal: 'org_space_admin_key_missing' };
     const org = classifyOrgSpaceMessage(message, {
       allowedOrigins: ORG_KEY_ORIGINS,
       requestingOrigin: context.requestingOrigin,
       address: getAddress(context.record.key.address),
+      adminAddress: getAddress(context.grant.adminAddress),
       grantId: context.grant.grantId,
       role: context.grant.role,
     });
@@ -306,10 +315,11 @@ export async function issueOrgKeySignChallenge(
 ): Promise<{ nonce: string; challenge: string; expiresAt: Date; kind: string; text: string }> {
   const record = await loadOrgKeyRecord(prisma, input.keyId);
   if (!record) throw new OrgKeyRefusal(404, 'key_not_found', 'Key not found');
+  const adminAddress = await loadCanonicalAddress(prisma, input.userId);
   const classification = classifyOrgKeyMessage(input.message, {
     record,
     requestingOrigin: input.origin,
-    grant: { grantId: input.grantId, role: input.role },
+    grant: { grantId: input.grantId, role: input.role, adminAddress },
   });
   if (!classification.ok) throw new OrgKeyRefusal(403, classification.refusal, 'Message is not signable by this key');
 
@@ -471,10 +481,11 @@ export async function signOrgKeyMessage(
   if (!activeGrant || activeGrant.grantId !== challenge.grantId) {
     throw new OrgKeyRefusal(403, 'grant_revoked', 'No active grant on this key');
   }
+  const adminAddress = await loadCanonicalAddress(prisma, input.userId);
   const classification = classifyOrgKeyMessage(input.message, {
     record,
     requestingOrigin: input.origin,
-    grant: { grantId: activeGrant.grantId, role: activeGrant.role },
+    grant: { grantId: activeGrant.grantId, role: activeGrant.role, adminAddress },
   });
   if (!classification.ok) throw new OrgKeyRefusal(403, classification.refusal, 'Message is not signable by this key');
   const requiredRole = classification.role;

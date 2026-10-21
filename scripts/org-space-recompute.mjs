@@ -91,7 +91,7 @@ function isEd25519DidKey(did) {
   return bytes !== null && bytes.length === 34 && bytes[0] === 0xed && bytes[1] === 0x01;
 }
 function kvPathOf(space, resource) {
-  const prefix = `${space}/kv/v1/`;
+  const prefix = `${space}/kv/`;
   return resource.startsWith(prefix) ? resource.slice(prefix.length) : null;
 }
 // Ceiling entries are prefixes. A path must sit strictly beneath one of them.
@@ -150,7 +150,9 @@ function parse(message) {
     throw malformed();
   }
   if (!isObj(payload)) throw malformed();
-  if (Object.keys(payload).sort().join(',') !== 'att,fct') throw malformed();
+  if (Object.keys(payload).sort().join(',') !== 'att,fct,prf') throw malformed();
+  // Delegation chains are not signable in v1: prf must be the empty array.
+  if (!Array.isArray(payload.prf) || payload.prf.length !== 0) throw malformed();
 
   const fct = payload.fct;
   if (!Array.isArray(fct) || fct.length !== 1 || !isObj(fct[0])) throw malformed();
@@ -186,24 +188,33 @@ function parse(message) {
 }
 
 // ---- render -----------------------------------------------------------------
-function renderStatement(p) {
-  const space = spaceIdFor(p.address);
-  const validity = `Valid from ${p.issuedAt} until ${p.expirationTime}.`;
-  if (p.fact.class === 'space-host') {
-    return `Host org space ${space} and its ${SHARED_INDEX} schema. Requires OWNER role. ${validity}`;
-  }
-  if (p.fact.class === 'kv-delegation') {
-    const entries = p.att
-      .map((a) => `${a.ability.slice('tinycloud.kv/'.length)} ${kvPathOf(space, a.resource) ?? ''}`)
-      .sort()
-      .join(', ');
-    return `Grant ${p.uri} ${entries} in org space ${space}. Requires ADMIN or OWNER role. ${validity}`;
-  }
+// Human line names the org and the admin. The node's ReCap statement suffix follows it.
+function humanLine(p) {
+  const admin = p.fact.adminAccount;
+  if (p.fact.class === 'space-host') return `Host org ${p.address} space for admin ${admin}.`;
+  if (p.fact.class === 'kv-delegation') return `Grant ${p.uri} kv access in org ${p.address} space for admin ${admin}.`;
   if (p.fact.class === 'delegation-revoke') {
     const cid = p.att[0].resource.slice('urn:cid:'.length);
-    return `Revoke delegation ${cid} in org space ${space}. Requires OWNER role. ${validity}`;
+    return `Revoke delegation ${cid} in org ${p.address} space for admin ${admin}.`;
   }
   throw new Refusal('org_space_class_not_enabled');
+}
+// Node statement suffix: one clause per grant, sorted by resource then ability.
+function recapClauses(att) {
+  const sorted = [...att].sort((a, b) => {
+    if (a.resource !== b.resource) return a.resource < b.resource ? -1 : 1;
+    if (a.ability === b.ability) return 0;
+    return a.ability < b.ability ? -1 : 1;
+  });
+  return sorted
+    .map(({ resource, ability }, i) => {
+      const cut = ability.lastIndexOf('/');
+      return `(${i + 1}) '${ability.slice(0, cut)}': '${ability.slice(cut + 1)}' for '${resource}'.`;
+    })
+    .join(' ');
+}
+function statementOf(p) {
+  return `${humanLine(p)} I further authorize the stated URI to perform the following actions on my behalf: ${recapClauses(p.att)}`;
 }
 function render(p) {
   const resources = {};
@@ -211,13 +222,15 @@ function render(p) {
   const payload = {
     att: resources,
     fct: [{ [FACT]: { adminAccount: p.fact.adminAccount, class: p.fact.class, grantId: p.fact.grantId } }],
+    prf: [],
   };
   const b64 = Buffer.from(canonical(payload), 'utf8').toString('base64url');
+  const validity = null;
   return [
     `${p.domain} wants you to sign in with your Ethereum account:`,
     p.address,
     '',
-    renderStatement(p),
+    statementOf(p),
     '',
     `URI: ${p.uri}`,
     'Version: 1',
@@ -242,7 +255,7 @@ function classify(message, ctx) {
   if (!ctx.allowedOrigins.includes(ctx.requestingOrigin)) throw new Refusal('org_space_origin_mismatch');
   if (p.domain !== new URL(ctx.requestingOrigin).host) throw new Refusal('org_space_origin_mismatch');
   if (p.address !== ctx.address) throw new Refusal('org_space_address_mismatch');
-  if (p.fact.adminAccount !== adminAccountFor(ctx.address)) throw new Refusal('org_space_grant_mismatch');
+  if (p.fact.adminAccount !== adminAccountFor(ctx.adminAddress)) throw new Refusal('org_space_grant_mismatch');
   if (p.fact.grantId !== ctx.grantId) throw new Refusal('org_space_grant_mismatch');
 
   const space = spaceIdFor(ctx.address);
@@ -258,15 +271,15 @@ function classify(message, ctx) {
   if (derivedClass !== declared) throw new Refusal('org_space_class_mismatch');
 
   if (declared === 'space-host') {
-    for (const { resource, ability } of p.att) {
-      const ok =
-        (ability === HOST && resource === `${space}/space`) ||
-        (ability === SCHEMA && resource === `${space}/sql/${SHARED_INDEX}`);
-      if (!ok) throw new Refusal('org_space_resource_refused');
+    // Exact grant set: space host plus shared-index schema. Host-only and schema-only are refused.
+    const wanted = [`${HOST}|${space}/space`, `${SCHEMA}|${space}/sql/${SHARED_INDEX}`].sort();
+    const actual = p.att.map(({ resource, ability }) => `${ability}|${resource}`).sort();
+    if (actual.length !== wanted.length || actual.some((k, i) => k !== wanted[i])) {
+      throw new Refusal('org_space_resource_refused');
     }
-    if (p.uri !== space) throw new Refusal('org_space_resource_refused');
+    if (!isEd25519DidKey(p.uri)) throw new Refusal('org_space_recipient_refused');
   } else if (declared === 'kv-delegation') {
-    const ceiling = kvCeiling(ctx.address);
+    const ceiling = kvCeiling(ctx.adminAddress);
     for (const { resource, ability } of p.att) {
       const path = kvPathOf(space, resource);
       const permitted =

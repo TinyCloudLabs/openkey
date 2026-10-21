@@ -1,3 +1,4 @@
+import './tee-dev-env';
 import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
 import { verifyMessage, type Hex } from 'viem';
@@ -15,9 +16,12 @@ import {
 } from '../services/org-keys';
 import { canonicalJson, ISSUER_STATEMENT_KIND, parseIssuerStatement, renderIssuerStatement } from '../services/org-issuer-statement';
 import { adminAccountFor, renderOrgSpaceMessage, spaceIdFor } from '../services/org-space-signing';
-import { addEd25519Passkey, addRs256Passkey, asPrisma, assertionFor, ISSUER_DID, ORG_ID, ORIGIN, RP_ID, setupOrgKey, SLUG } from './org-keys-fixtures';
+import { addEd25519Passkey, addRs256Passkey, asPrisma, assertionFor, CANONICAL_ADMIN_ADDRESS, ISSUER_DID, ORG_ID, ORIGIN, RP_ID, setupOrgKey, SLUG } from './org-keys-fixtures';
 
 type Ctx = Awaited<ReturnType<typeof setupOrgKey>>;
+
+// An Ed25519 did:key: the space-host recipient the node stages for the org space.
+const DID_KEY = 'did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooWp';
 
 // A kind 2 (org-space) message the classifier accepts for this org key: space-host on
 // the key's own space, from the credentials.org origin.
@@ -27,7 +31,7 @@ function orgSpaceMessageFor(ctx: Ctx): string {
   return renderOrgSpaceMessage({
     domain: new URL(ORIGIN).host,
     address: ctx.key.address,
-    uri: space,
+    uri: DID_KEY,
     nonce: 'abcdefgh12',
     issuedAt: new Date(now).toISOString(),
     expirationTime: new Date(now + 60 * 60 * 1000).toISOString(),
@@ -35,7 +39,7 @@ function orgSpaceMessageFor(ctx: Ctx): string {
       { resource: `${space}/space`, ability: 'tinycloud.space/host' },
       { resource: `${space}/sql/shared-index`, ability: 'tinycloud.sql/admin' },
     ],
-    fact: { adminAccount: adminAccountFor(ctx.key.address), class: 'space-host', grantId: ctx.key.grantId },
+    fact: { adminAccount: adminAccountFor(CANONICAL_ADMIN_ADDRESS), class: 'space-host', grantId: ctx.key.grantId },
   });
 }
 
@@ -183,7 +187,7 @@ describe('org key signing service', () => {
       return classifyOrgKeyMessage(message, {
         record: withKey ? { ...row, key: { address: ctx.key.address } } : row,
         requestingOrigin: origin,
-        ...(withGrant ? { grant: { grantId: ctx.key.grantId, role: 'OWNER' as const } } : {}),
+        ...(withGrant ? { grant: { grantId: ctx.key.grantId, role: 'OWNER' as const, adminAddress: CANONICAL_ADMIN_ADDRESS } } : {}),
       });
     }
 

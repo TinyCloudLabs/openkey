@@ -11,6 +11,7 @@ type Vector = {
     allowedOrigins: string[];
     requestingOrigin: string;
     address: string;
+    adminAddress: string;
     grantId: string;
     role: OrgRole;
     now: string;
@@ -27,6 +28,7 @@ describe('org-space golden vectors', () => {
         allowedOrigins: v.ctx.allowedOrigins,
         requestingOrigin: v.ctx.requestingOrigin,
         address: v.ctx.address,
+        adminAddress: v.ctx.adminAddress,
         grantId: v.ctx.grantId,
         role: v.ctx.role,
         now: new Date(v.ctx.now),

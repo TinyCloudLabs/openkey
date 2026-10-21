@@ -17,7 +17,10 @@ export function orgSpaceMessageText(origin = ORG_SPACE_TEST_ORIGIN, address = OR
     nonce: 'abcdefgh12',
     issuedAt: new Date().toISOString(),
     expirationTime: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-    att: [{ resource: `${space}/space`, ability: 'tinycloud.space/host' }],
+    att: [
+      { resource: `${space}/space`, ability: 'tinycloud.space/host' },
+      { resource: `${space}/sql/shared-index`, ability: 'tinycloud.sql/admin' },
+    ],
     fact: { adminAccount: adminAccountFor(address), class: 'space-host', grantId: 'grant_1' },
   });
 }

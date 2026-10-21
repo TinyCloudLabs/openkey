@@ -1,3 +1,4 @@
+import './tee-dev-env';
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
 import { Hono } from 'hono';
@@ -71,6 +72,11 @@ function addPersonalKeyWithGrant(state: { keys: Record<string, unknown>[]; grant
     role: 'OWNER',
     revokedAt: null,
   });
+}
+
+// Counts ORG keys only: setupOrgKey also seeds the grantee's canonical PERSONAL key.
+function orgKeyCount(ctx: Ctx): number {
+  return ctx.state.keys.filter((key) => key.custody === 'ORG').length;
 }
 
 const postJson = (app: Hono, path: string, body: unknown) =>
@@ -150,7 +156,7 @@ describe('org key routes', () => {
     expect((await app.request('/api/org-keys')).status).toBe(404);
     expect((await app.request(`/api/org-keys/${ctx.key.keyId}`)).status).toBe(404);
     expect((await postJson(app, '/api/org-keys', { orgId: 'o', orgName: 'O' })).status).toBe(404);
-    expect(ctx.state.keys).toHaveLength(1);
+    expect(orgKeyCount(ctx)).toBe(1);
   });
 
   test('POST creates an ORG key and an OWNER grant for the caller after a fresh passkey', async () => {
@@ -184,7 +190,7 @@ describe('org key routes', () => {
     });
     expect(response.status).toBe(400);
     expect(await response.json()).toMatchObject({ code: 'controller_did_not_accepted' });
-    expect(ctx.state.keys).toHaveLength(1);
+    expect(orgKeyCount(ctx)).toBe(1);
   });
 
   test('POST rejects a body missing required fields', async () => {
@@ -193,7 +199,7 @@ describe('org key routes', () => {
 
     const response = await postJson(app, '/api/org-keys', { orgId: 'org_2' });
     expect(response.status).toBe(400);
-    expect(ctx.state.keys).toHaveLength(1);
+    expect(orgKeyCount(ctx)).toBe(1);
   });
 
   test('POST without slug is refused as org_record_incomplete and creates no key', async () => {
@@ -203,7 +209,7 @@ describe('org key routes', () => {
     const response = await postJson(app, '/api/org-keys', { orgId: ORG_BODY_ORG_ID, orgName: 'Beta' });
     expect(response.status).toBe(400);
     expect(await response.json()).toMatchObject({ code: 'org_record_incomplete' });
-    expect(ctx.state.keys).toHaveLength(1);
+    expect(orgKeyCount(ctx)).toBe(1);
   });
 
   test('POST refuses a supplied issuerDid and creates no key', async () => {
@@ -213,7 +219,7 @@ describe('org key routes', () => {
     const response = await postJson(app, '/api/org-keys', { ...ORG_BODY, issuerDid: ISSUER_DID });
     expect(response.status).toBe(400);
     expect(await response.json()).toMatchObject({ code: 'invalid_field' });
-    expect(ctx.state.keys).toHaveLength(1);
+    expect(orgKeyCount(ctx)).toBe(1);
   });
 
   test('POST refuses an orgId that is not a canonical OrgId and creates no key', async () => {
@@ -223,7 +229,7 @@ describe('org key routes', () => {
     const response = await postJson(app, '/api/org-keys', { ...ORG_BODY, orgId: 'org_2' });
     expect(response.status).toBe(400);
     expect(await response.json()).toMatchObject({ code: 'invalid_field' });
-    expect(ctx.state.keys).toHaveLength(1);
+    expect(orgKeyCount(ctx)).toBe(1);
   });
 
   test('POST refuses a reserved slug and creates no key', async () => {
@@ -233,7 +239,7 @@ describe('org key routes', () => {
     const response = await postJson(app, '/api/org-keys', { ...ORG_BODY, slug: 'admin' });
     expect(response.status).toBe(400);
     expect(await response.json()).toMatchObject({ code: 'invalid_field' });
-    expect(ctx.state.keys).toHaveLength(1);
+    expect(orgKeyCount(ctx)).toBe(1);
   });
 
   test('F7: POST without a passkey verified in the last 5 minutes is refused and creates no key', async () => {
@@ -244,7 +250,7 @@ describe('org key routes', () => {
     const response = await postJson(app, '/api/org-keys', ORG_BODY);
     expect(response.status).toBe(403);
     expect(await response.json()).toMatchObject({ code: 'passkey_step_up_required' });
-    expect(ctx.state.keys).toHaveLength(1);
+    expect(orgKeyCount(ctx)).toBe(1);
   });
 
   test('F7: POST is refused when the session has never recorded a passkey verification', async () => {
@@ -256,7 +262,7 @@ describe('org key routes', () => {
     const response = await postJson(app, '/api/org-keys', ORG_BODY);
     expect(response.status).toBe(403);
     expect(await response.json()).toMatchObject({ code: 'passkey_step_up_required' });
-    expect(ctx.state.keys).toHaveLength(1);
+    expect(orgKeyCount(ctx)).toBe(1);
   });
 
   for (const [label, origin] of refusedOrigins) {

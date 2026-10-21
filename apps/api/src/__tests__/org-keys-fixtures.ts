@@ -294,7 +294,12 @@ export function assertionFor(
   };
 }
 
-// An ORG key owned by user_1 (OWNER grant), with one passkey for user_1.
+// The grantee's canonical TinyCloud key (user_1's primary MANAGED PERSONAL key). The org
+// space admin is this key, not the org key (classifier `adminAddress`). Anvil account 1.
+export const CANONICAL_ADMIN_ADDRESS = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8';
+
+// An ORG key owned by user_1 (OWNER grant), with one passkey for user_1 and the grantee's
+// canonical key, so admin binding resolves.
 export async function setupOrgKey(options: { counter?: number } = {}) {
   const { db, state, fail } = fakeDb();
   const tee = fakeTee();
@@ -303,6 +308,19 @@ export async function setupOrgKey(options: { counter?: number } = {}) {
     orgId: ORG_ID,
     orgName: 'Acme',
     slug: SLUG,
+    label: null,
+  });
+  state.keys.push({
+    id: 'key_canonical_user_1',
+    userId: 'user_1',
+    custody: 'PERSONAL',
+    keyType: 'MANAGED',
+    archivedAt: null,
+    isCanonicalTinyCloud: true,
+    address: CANONICAL_ADMIN_ADDRESS,
+    publicKey: CANONICAL_ADMIN_ADDRESS,
+    sealedBlob: null,
+    sealingContext: null,
     label: null,
   });
   const passkey = addPasskey(state, 'user_1', options.counter ?? 0);

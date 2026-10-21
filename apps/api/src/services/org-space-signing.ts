@@ -153,7 +153,8 @@ export function parseOrgSpaceMessage(message: string): OrgSpaceParsed {
   if (!b64) throw malformed();
 
   const payload = decodeRecapPayload(b64);
-  if (Object.keys(payload).sort().join(',') !== 'att,fct') throw malformed();
+  if (Object.keys(payload).sort().join(',') !== 'att,fct,prf') throw malformed();
+  if (!Array.isArray(payload.prf) || payload.prf.length !== 0) throw malformed();
 
   const fct = payload.fct;
   if (!Array.isArray(fct) || fct.length !== 1 || !isPlainObject(fct[0])) throw malformed();
@@ -193,31 +194,52 @@ export function parseOrgSpaceMessage(message: string): OrgSpaceParsed {
   };
 }
 
+// Each segment starts with an alphanumeric, `_` or `-`, so `.` and `..` cannot be segments.
+// The node accepts arbitrary strings here (probed: `shared/../x/`, `a*b`, `a%20b`); this
+// grammar is a deliberate narrowing so the prefix ceiling cannot be escaped by traversal.
+const KV_PATH = /^[A-Za-z0-9_-][A-Za-z0-9._-]*(\/[A-Za-z0-9_-][A-Za-z0-9._-]*)*\/?$/;
+
 function kvPathOf(space: string, resource: string): string | null {
-  const prefix = `${space}/kv/v1/`;
-  return resource.startsWith(prefix) ? resource.slice(prefix.length) : null;
+  const prefix = `${space}/kv/`;
+  if (!resource.startsWith(prefix)) return null;
+  const path = resource.slice(prefix.length);
+  return KV_PATH.test(path) ? path : null;
 }
 
-function renderStatement(p: OrgSpaceParsed): string {
-  const space = spaceIdFor(p.address);
-  const validity = `Valid from ${p.issuedAt} until ${p.expirationTime}.`;
+// The human line names the org and the admin. The node's ReCap statement follows it.
+function humanLine(p: OrgSpaceParsed): string {
+  const admin = p.fact.adminAccount;
   switch (p.fact.class) {
     case 'space-host':
-      return `Host org space ${space} and its ${SHARED_INDEX_DB} schema. Requires OWNER role. ${validity}`;
-    case 'kv-delegation': {
-      const entries = p.att
-        .map((a) => `${a.ability.slice('tinycloud.kv/'.length)} ${kvPathOf(space, a.resource) ?? ''}`)
-        .sort()
-        .join(', ');
-      return `Grant ${p.uri} ${entries} in org space ${space}. Requires ADMIN or OWNER role. ${validity}`;
-    }
+      return `Host org ${p.address} space for admin ${admin}.`;
+    case 'kv-delegation':
+      return `Grant ${p.uri} kv access in org ${p.address} space for admin ${admin}.`;
     case 'delegation-revoke': {
       const cid = p.att[0]?.resource.slice('urn:cid:'.length) ?? '';
-      return `Revoke delegation ${cid} in org space ${space}. Requires OWNER role. ${validity}`;
+      return `Revoke delegation ${cid} in org ${p.address} space for admin ${admin}.`;
     }
     default:
       throw new OrgSpaceRefusal('org_space_class_not_enabled');
   }
+}
+
+// Mirrors the node's ReCap statement suffix: one clause per grant, in resource then ability order.
+function recapClauses(att: OrgSpaceAtt[]): string {
+  const sorted = [...att].sort((a, b) => {
+    if (a.resource !== b.resource) return a.resource < b.resource ? -1 : 1;
+    if (a.ability === b.ability) return 0;
+    return a.ability < b.ability ? -1 : 1;
+  });
+  return sorted
+    .map(({ resource, ability }, i) => {
+      const cut = ability.lastIndexOf('/');
+      return `(${i + 1}) '${ability.slice(0, cut)}': '${ability.slice(cut + 1)}' for '${resource}'.`;
+    })
+    .join(' ');
+}
+
+function statementOf(p: OrgSpaceParsed): string {
+  return `${humanLine(p)} I further authorize the stated URI to perform the following actions on my behalf: ${recapClauses(p.att)}`;
 }
 
 // The one canonical text for a set of fields. This is the consent text, and it is the
@@ -230,13 +252,14 @@ export function renderOrgSpaceMessage(p: OrgSpaceParsed): string {
   const payload = {
     att: resources,
     fct: [{ [ORG_SPACE_FACT]: { adminAccount: p.fact.adminAccount, class: p.fact.class, grantId: p.fact.grantId } }],
+    prf: [],
   };
   const b64 = Buffer.from(canonicalJson(payload), 'utf8').toString('base64url');
   return [
     `${p.domain} wants you to sign in with your Ethereum account:`,
     p.address,
     '',
-    renderStatement(p),
+    statementOf(p),
     '',
     `URI: ${p.uri}`,
     'Version: 1',
@@ -247,6 +270,31 @@ export function renderOrgSpaceMessage(p: OrgSpaceParsed): string {
     'Resources:',
     `- urn:recap:${b64}`,
   ].join('\n');
+}
+
+// RFC 3339 date-time with a Z or +hh:mm / -hh:mm offset. Returns epoch milliseconds, or null.
+// Date.parse is not used: it accepts formats outside RFC 3339.
+export function parseRfc3339Ms(value: string): number | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d{1,3})?(Z|[+-]\d{2}:\d{2})$/.exec(value);
+  if (!m) return null;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  const hour = Number(m[4]);
+  const minute = Number(m[5]);
+  const second = Number(m[6]);
+  const millis = m[7] ? Number(m[7].slice(1).padEnd(3, '0')) : 0;
+  if (month < 1 || month > 12 || hour > 23 || minute > 59 || second > 59) return null;
+  const epoch = Date.UTC(year, month - 1, day, hour, minute, second, millis);
+  const date = new Date(epoch);
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
+  const zone = m[8] ?? 'Z';
+  if (zone === 'Z') return epoch;
+  const offsetHours = Number(zone.slice(1, 3));
+  const offsetMinutes = Number(zone.slice(4, 6));
+  if (offsetHours > 23 || offsetMinutes > 59) return null;
+  const offset = (offsetHours * 60 + offsetMinutes) * 60_000;
+  return zone[0] === '+' ? epoch - offset : epoch + offset;
 }
 
 // Ed25519 did:key: multibase base58btc 'z', multicodec varint 0xed 0x01, 32-byte key.
@@ -278,6 +326,7 @@ export type OrgSpaceContext = {
   allowedOrigins: readonly string[];
   requestingOrigin: string;
   address: string;
+  adminAddress: string;
   grantId: string;
   role: OrgRole;
   now?: Date;
@@ -325,7 +374,7 @@ function classifyOrThrow(message: string, ctx: OrgSpaceContext): OrgSpaceClassif
   if (!ctx.allowedOrigins.includes(ctx.requestingOrigin)) throw new OrgSpaceRefusal('org_space_origin_mismatch');
   if (p.domain !== new URL(ctx.requestingOrigin).host) throw new OrgSpaceRefusal('org_space_origin_mismatch');
   if (p.address !== ctx.address) throw new OrgSpaceRefusal('org_space_address_mismatch');
-  if (p.fact.adminAccount !== adminAccountFor(ctx.address)) throw new OrgSpaceRefusal('org_space_grant_mismatch');
+  if (p.fact.adminAccount !== adminAccountFor(ctx.adminAddress)) throw new OrgSpaceRefusal('org_space_grant_mismatch');
   if (p.fact.grantId !== ctx.grantId) throw new OrgSpaceRefusal('org_space_grant_mismatch');
 
   const space = spaceIdFor(ctx.address);
@@ -343,17 +392,19 @@ function classifyOrThrow(message: string, ctx: OrgSpaceContext): OrgSpaceClassif
 
   switch (declaredClass) {
     case 'space-host': {
-      for (const { resource, ability } of p.att) {
-        const ok =
-          (ability === HOST_ABILITY && resource === `${space}/space`) ||
-          (ability === SCHEMA_ABILITY && resource === `${space}/sql/${SHARED_INDEX_DB}`);
-        if (!ok) throw new OrgSpaceRefusal('org_space_resource_refused');
+      // The host flow signs exactly the space grant and the shared-index schema grant.
+      // Host-only and schema-only messages are refused.
+      const wanted = [`${HOST_ABILITY}|${space}/space`, `${SCHEMA_ABILITY}|${space}/sql/${SHARED_INDEX_DB}`].sort();
+      const actual = p.att.map(({ resource, ability }) => `${ability}|${resource}`).sort();
+      if (actual.length !== wanted.length || actual.some((key, i) => key !== wanted[i])) {
+        throw new OrgSpaceRefusal('org_space_resource_refused');
       }
-      if (p.uri !== space) throw new OrgSpaceRefusal('org_space_resource_refused');
+      // The URI is the node-staged host did:key for this space.
+      if (!isEd25519DidKey(p.uri)) throw new OrgSpaceRefusal('org_space_recipient_refused');
       break;
     }
     case 'kv-delegation': {
-      const ceiling = kvCeiling(ctx.address);
+      const ceiling = kvCeiling(ctx.adminAddress);
       for (const { resource, ability } of p.att) {
         const path = kvPathOf(space, resource);
         // Ceiling entries are prefixes; a path must sit at or beneath one of them.
@@ -382,11 +433,12 @@ function classifyOrThrow(message: string, ctx: OrgSpaceContext): OrgSpaceClassif
 
   // Lifetime and time window. issuedAt must be within the clock skew of now.
   const now = (ctx.now ?? new Date()).getTime();
-  const issued = Date.parse(p.issuedAt);
-  const expires = Date.parse(p.expirationTime);
-  if (!Number.isFinite(issued) || !Number.isFinite(expires)) throw new OrgSpaceRefusal('org_space_time_invalid');
+  const issued = parseRfc3339Ms(p.issuedAt);
+  const expires = parseRfc3339Ms(p.expirationTime);
+  if (issued === null || expires === null) throw new OrgSpaceRefusal('org_space_time_invalid');
   if (Math.abs(issued - now) > ORG_SPACE_CLOCK_SKEW_MS) throw new OrgSpaceRefusal('org_space_time_invalid');
-  if (expires <= now || expires <= issued) throw new OrgSpaceRefusal('org_space_time_invalid');
+  if (expires <= now) throw new OrgSpaceRefusal('org_space_time_invalid');
+  if (expires <= issued) throw new OrgSpaceRefusal('org_space_time_invalid');
   if (expires - issued > ORG_SPACE_MAX_LIFETIME_MS) throw new OrgSpaceRefusal('org_space_lifetime_exceeded');
 
   // Rebuild from the fields. Any difference from the input is refused as not canonical.
