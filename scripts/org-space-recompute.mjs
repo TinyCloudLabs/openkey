@@ -7,6 +7,13 @@
 // Signature recovery uses viem, loaded from apps/api, so the signer check is independent too.
 //
 // Usage: node scripts/org-space-recompute.mjs [path/to/vectors.json]
+//
+// Node cross-check: the four accepted vectors were also parsed by the TinyCloud node's own
+// siwe-recap parser at tinycloud-node commit 966fa5edeccf848c0846078b247e51f833e58037. The harness
+// (build steps, fixtures, verify loop) lives outside this repo at
+// ~/scratch/tc1437/plans/k6-rt-harness/README.md. The node parser checks recap structure and that the
+// statement matches the decoded resources; it does not check signatures or the classifier's refusal rules,
+// so this script remains the source of the expected outcomes.
 
 import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
