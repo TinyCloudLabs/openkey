@@ -495,3 +495,47 @@ describe("unknown cross-user schema grants stay literal", () => {
     expect(buildStatement(grant).primaryText).toMatch(/^Perform /);
   });
 });
+
+describe("schema-only copy pins the owner and the space", () => {
+  // Account index: classifyRecapEntry returns bootstrap-sql for path "account".
+  it("account index schema-only grant names the TinyCloud account", () => {
+    const grant = makeGrant({
+      family: "bootstrap-sql",
+      service: "tinycloud.sql",
+      space: ACCOUNT_SPACE,
+      path: "account",
+      abilities: ["tinycloud.sql/schema"],
+    });
+    expect(buildStatement(grant).primaryText).toBe(
+      "Create, change and delete tables in your TinyCloud account",
+    );
+  });
+
+  it("another user's default data schema-only grant names their TinyCloud data", () => {
+    const grant = makeGrant({
+      family: "cross-app-data",
+      service: "tinycloud.sql",
+      space: DEFAULT_SPACE,
+      path: "*",
+      abilities: ["tinycloud.sql/schema"],
+      ownedBySelf: false,
+    });
+    expect(buildStatement(grant).primaryText).toBe(
+      "Create, change and delete tables in another user's TinyCloud data",
+    );
+  });
+
+  it("another user's application data schema-only grant names their application data", () => {
+    const grant = makeGrant({
+      family: "cross-app-data",
+      service: "tinycloud.sql",
+      space: APPS_SPACE,
+      path: "*",
+      abilities: ["tinycloud.sql/schema"],
+      ownedBySelf: false,
+    });
+    expect(buildStatement(grant).primaryText).toBe(
+      "Create, change and delete tables in another user's application data",
+    );
+  });
+});

@@ -498,9 +498,6 @@ function schemaOnlyStatementText(
   if (spaceName === "applications" && grant.family === "own-app-data") {
     return "Create, change and delete this app's tables";
   }
-  if (spaceName === "default" && grant.family === "bootstrap-sql") {
-    return "Create, change and delete your TinyCloud tables";
-  }
   if (spaceName === "account" && grant.family === "bootstrap-sql") {
     return "Create, change and delete tables in your TinyCloud account";
   }
