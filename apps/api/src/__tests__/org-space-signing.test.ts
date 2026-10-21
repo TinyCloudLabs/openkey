@@ -217,6 +217,22 @@ describe('kind 2 accepts canonical node-format messages', () => {
     expect(await recoverMessageAddress({ message, signature })).toBe(ADDRESS);
     expect(acceptOf(message).ok).toBe(true);
   });
+
+  it('a kv-delegation message is signed by the org key, recovers to it, and is accepted under ADMIN', async () => {
+    const message = renderOrgSpaceMessage(kvParsed([{ resource: `${SPACE}/kv/config/`, ability: 'tinycloud.kv/get' }]));
+    const account = privateKeyToAccount(ANVIL_KEY);
+    const signature = await account.signMessage({ message });
+    expect(await recoverMessageAddress({ message, signature })).toBe(ADDRESS);
+    expect(acceptOf(message, ctx('ADMIN')).kind).toBe('org-space/kv-delegation');
+  });
+
+  it('a delegation-revoke message is signed by the org key, recovers to it, and is accepted under OWNER', async () => {
+    const message = renderOrgSpaceMessage(revokeParsed(CID));
+    const account = privateKeyToAccount(ANVIL_KEY);
+    const signature = await account.signMessage({ message });
+    expect(await recoverMessageAddress({ message, signature })).toBe(ADDRESS);
+    expect(acceptOf(message, ctx('OWNER')).kind).toBe('org-space/delegation-revoke');
+  });
 });
 
 describe('kind 2 role gate (role is the locked grant role, not the caller claim)', () => {
@@ -438,6 +454,16 @@ describe('kind 2 time and lifetime gates', () => {
 
   it('an expiration at or before issuedAt is refused, even when after now', () => {
     const message = renderOrgSpaceMessage(hostParsed({ issuedAt: at(3 * 60_000), expirationTime: at(2 * 60_000) }));
+    expect(refusalOf(message)).toBe('org_space_time_invalid');
+  });
+
+  it('an expiration exactly equal to now is refused', () => {
+    const message = renderOrgSpaceMessage(hostParsed({ issuedAt: at(-4 * 60_000), expirationTime: at(0) }));
+    expect(refusalOf(message)).toBe('org_space_time_invalid');
+  });
+
+  it('an expiration exactly equal to issuedAt is refused, even when after now', () => {
+    const message = renderOrgSpaceMessage(hostParsed({ issuedAt: at(2 * 60_000), expirationTime: at(2 * 60_000) }));
     expect(refusalOf(message)).toBe('org_space_time_invalid');
   });
 
