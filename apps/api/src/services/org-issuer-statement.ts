@@ -19,7 +19,6 @@ const ISSUER_HOST_SUFFIX = '.orgs.credentials.org';
 const CONTROLLER_PREFIX = 'did:pkh:eip155:1:';
 
 export type IssuerStatementAction = 'authorize' | 'retire' | 'revoke';
-const ACTIONS: readonly IssuerStatementAction[] = ['authorize', 'retire', 'revoke'];
 
 const FIELDS: Record<IssuerStatementAction, readonly string[]> = {
   authorize: [
@@ -226,7 +225,7 @@ export function parseIssuerStatement(input: string, allowedAudiences: readonly s
   if (!has(obj, 'type')) refuse('missing_field', 'missing field type');
   if (obj.type !== ISSUER_STATEMENT_TYPE) refuse('unknown_type', 'unknown statement type');
   if (!has(obj, 'action')) refuse('missing_field', 'missing field action');
-  if (typeof obj.action !== 'string' || !ACTIONS.includes(obj.action as IssuerStatementAction)) {
+  if (typeof obj.action !== 'string' || !Object.hasOwn(FIELDS, obj.action)) {
     refuse('unknown_action', 'unknown statement action');
   }
   const action = obj.action as IssuerStatementAction;
