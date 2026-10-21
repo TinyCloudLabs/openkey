@@ -81,7 +81,8 @@ the page limits what it does with one:
   HTTPS origin plus exact path, with any query
   (`REGISTERED_CALLBACK_ENDPOINTS` in
   `apps/web/src/lib/delegate-link-policy.ts`, currently
-  `https://mcp.tinycloud.xyz/connect/callback`, plus
+  `https://mcp.tinycloud.xyz/connect/callback` and
+  `https://mcp.tinycloud.xyz/chatgpt/connect/callback`, plus
   `VITE_DELEGATE_CALLBACK_URLS` for other deployments). Any other callback
   refuses the request before a key is prepared. The page POSTs with
   `redirect: 'error'`, so a redirect cannot forward the delegation. Without a

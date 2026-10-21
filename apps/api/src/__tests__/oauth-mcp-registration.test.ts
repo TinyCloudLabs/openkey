@@ -110,9 +110,9 @@ if (process.env.OPENKEY_MCP_OAUTH_TEST_CHILD !== '1') {
     return (await response.json() as { client_id: string }).client_id;
   }
 
-  async function authorize(clientId: string, scope: string, authenticated = false) {
+  async function authorize(clientId: string, scope: string, authenticated = false, targetResource = resource) {
     const query = new URLSearchParams({
-      client_id: clientId, response_type: 'code', redirect_uri: callback, scope, resource,
+      client_id: clientId, response_type: 'code', redirect_uri: callback, scope, resource: targetResource,
       state: 'mcp-state', code_challenge: await generateCodeChallenge(verifier), code_challenge_method: 'S256',
     });
     const response = await call(`/oauth2/authorize?${query}`, {}, authenticated);
@@ -121,12 +121,12 @@ if (process.env.OPENKEY_MCP_OAUTH_TEST_CHILD !== '1') {
   }
 
   describe('MCP dynamic client scope boundaries', () => {
-    test('omitted registration scopes allow MCP only after login and owner consent', async () => {
+    test.each([resource, 'https://mcp.tinycloud.xyz/chatgpt/mcp'])('%s requires login and owner consent before issuing resource-bound MCP tokens', async (targetResource) => {
       const clientId = await register();
-      const login = await authorize(clientId, requestedScope);
+      const login = await authorize(clientId, requestedScope, false, targetResource);
       expect(login.searchParams.get('error')).toBeNull();
       expect(login.origin + login.pathname).toBe('https://openkey.test/auth/login');
-      const consent = await authorize(clientId, requestedScope, true);
+      const consent = await authorize(clientId, requestedScope, true, targetResource);
       expect(consent.origin + consent.pathname).toBe('https://openkey.test/oauth/consent');
       expect(await prisma.oauthConsent.count({ where: { clientId } })).toBe(0);
       expect(await prisma.oauthAccessToken.count({ where: { clientId } })).toBe(0);
@@ -146,23 +146,25 @@ if (process.env.OPENKEY_MCP_OAUTH_TEST_CHILD !== '1') {
         method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({
           client_id: clientId, grant_type: 'authorization_code', code: code!,
-          redirect_uri: callback, code_verifier: verifier, resource,
+          redirect_uri: callback, code_verifier: verifier, resource: targetResource,
         }),
       });
       expect(exchanged.status, await exchanged.clone().text()).toBe(200);
       const tokens = await exchanged.json() as { access_token: string; refresh_token: string };
       const jwks = await (await call('/jwks')).json() as JSONWebKeySet;
-      const { payload } = await jwtVerify(tokens.access_token, createLocalJWKSet(jwks), { issuer, audience: resource });
+      const { payload } = await jwtVerify(tokens.access_token, createLocalJWKSet(jwks), { issuer, audience: targetResource });
+      const otherResource = targetResource === resource ? 'https://mcp.tinycloud.xyz/chatgpt/mcp' : resource;
+      await expect(jwtVerify(tokens.access_token, createLocalJWKSet(jwks), { issuer, audience: otherResource })).rejects.toThrow();
       expect(payload.sub).toBe('mcp-owner');
       expect(payload.scope).toBe(requestedScope);
       expect(payload['https://tinycloud.xyz/owner_dids']).toEqual([`did:pkh:eip155:1:${ownerAddress}`]);
       const refreshed = await call('/oauth2/token', {
         method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ client_id: clientId, grant_type: 'refresh_token', refresh_token: tokens.refresh_token, resource }),
+        body: new URLSearchParams({ client_id: clientId, grant_type: 'refresh_token', refresh_token: tokens.refresh_token, resource: targetResource }),
       });
       expect(refreshed.status, await refreshed.clone().text()).toBe(200);
       const renewed = await refreshed.json() as { access_token: string };
-      const { payload: renewedClaims } = await jwtVerify(renewed.access_token, createLocalJWKSet(jwks), { issuer, audience: resource });
+      const { payload: renewedClaims } = await jwtVerify(renewed.access_token, createLocalJWKSet(jwks), { issuer, audience: targetResource });
       expect(renewedClaims.scope).toBe(requestedScope);
       expect(renewedClaims['https://tinycloud.xyz/owner_dids']).toEqual(payload['https://tinycloud.xyz/owner_dids']);
     });
