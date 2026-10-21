@@ -27,7 +27,7 @@ async function fetchAPI<T>(path: string, options: RequestInit = {}): Promise<T> 
     const message = typeof detail === 'string' ? detail : detail?.message;
     const failure = new Error(message || `HTTP ${res.status}`);
     Object.assign(failure, {
-      code: detail?.code,
+      code: detail?.code ?? error?.code,
       status: res.status,
       policyEpoch: typeof error?.policyEpoch === 'number' ? error.policyEpoch : undefined,
     });
@@ -35,6 +35,18 @@ async function fetchAPI<T>(path: string, options: RequestInit = {}): Promise<T> 
   }
 
   return res.json();
+}
+
+// Org-key fresh-passkey signing (TC-1520). `text` is the server-rendered statement
+// the consent screen must show; the signature covers exactly this text.
+export interface OrgKeySignChallenge {
+  nonce: string;
+  challenge: string;
+  expiresAt: string;
+  kind: string;
+  text: string;
+  rpId: string;
+  allowCredentials: { id: string; type: 'public-key' }[];
 }
 
 // Nostr identity + signing types (secp256k1 Schnorr / BIP-340) - structurally
@@ -238,6 +250,26 @@ export const api = {
     data: { domain: any; types: any; primaryType: string; message: any }
   ): Promise<{ signature: string; address: string }> {
     return fetchAPI(`/api/keys/${keyId}/sign-typed-data`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  },
+
+  async orgKeySignChallenge(
+    keyId: string,
+    data: { message: string; requestingOrigin: string },
+  ): Promise<OrgKeySignChallenge> {
+    return fetchAPI(`/api/org-keys/${encodeURIComponent(keyId)}/sign-challenge`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  },
+
+  async orgKeySign(
+    keyId: string,
+    data: { nonce: string; message: string; assertion: unknown; requestingOrigin: string },
+  ): Promise<{ signature: string; address: string }> {
+    return fetchAPI(`/api/org-keys/${encodeURIComponent(keyId)}/sign`, {
       method: 'POST',
       body: JSON.stringify(data),
     });
