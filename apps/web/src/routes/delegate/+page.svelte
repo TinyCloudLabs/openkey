@@ -26,6 +26,8 @@
   import { preparedMatchesSelection, reviewSelectionToActionKeys } from '$lib/delegate-review-selection';
   import { expectedSigner } from '$lib/delegate-expected-signer';
   import { autoSelectKey } from '$lib/delegate-key-selection';
+  import DelegateSigningHint from '$lib/components/signing/delegate-signing-hint.svelte';
+  import { shouldShowLoopbackHint } from '$lib/delegate-signing-hint';
   import {
     parseSpaceSetup,
     spaceReadinessResult,
@@ -80,6 +82,7 @@
   let spaceSetup = $state<SpaceSetupNotice | null>(null);
   let spaceReadiness = $state<ReturnType<typeof spaceReadinessResult>>(null);
   let callbackFailed = $state(false);
+  let callbackInFlight = $state(false);
   let copied = $state(false);
   let step = $state<'select-key' | 'link-wallet' | 'consent' | 'choose-wallet' | 'done'>('select-key');
   let preparedData = $state<any>(null);
@@ -312,6 +315,9 @@
     : hostCheck?.ok === false ? hostCheck.reason : '';
   if (linkPolicyError) error = linkPolicyError;
   const approvedCallback = callbackCheck?.ok ? callbackCheck.callback : null;
+  const showLoopbackHint = $derived(
+    shouldShowLoopbackHint({ delegating, approvedCallback, deviceTransactionId, callbackInFlight, pasteCode }),
+  );
   const hostNeedsAcknowledgment = hostCheck?.ok === true && !hostCheck.recognized;
   let hostAcknowledged = $state(false);
   const delegationExpiresAt = $derived(/^Expiration Time:\s*(.+)$/m.exec(siweMessage)?.[1]?.trim() ?? '');
@@ -1104,6 +1110,7 @@
     }
 
     if (approvedCallback) {
+      callbackInFlight = true;
       try {
         const cbRes = await fetch(approvedCallback, {
           method: 'POST',
@@ -1122,6 +1129,8 @@
         return;
       } catch {
         callbackFailed = true;
+      } finally {
+        callbackInFlight = false;
       }
     }
 
@@ -1242,7 +1251,7 @@
             {#if shortCode}
               <div class="w-full rounded-xl bg-surface-50 border border-surface-200 px-3 py-4">
                 <div class="font-mono text-2xl font-semibold tracking-widest text-surface-900 select-all">{shortCode}</div>
-                <p class="text-surface-500 text-xs mt-2">Valid for 10 minutes</p>
+                <p class="text-surface-500 text-xs mt-2">Use within 5 minutes. Works once.</p>
               </div>
               <button
                 class="mt-3 rounded-lg border border-surface-200 bg-surface-50 px-4 py-2 text-sm font-medium text-surface-900 hover:bg-surface-100"
@@ -1450,6 +1459,7 @@
             {spaceSetupNoticeText(spaceSetup)}
           </div>
         {/if}
+        <DelegateSigningHint show={showLoopbackHint} />
         {/if}
         {/snippet}
 
