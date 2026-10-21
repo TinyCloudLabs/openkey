@@ -351,10 +351,10 @@ describe('TinyCloud bootstrap background sweep', () => {
     }
   });
 
-  test('9. other bootstrap versions, other hosts, and rows older than seven days are not touched', async () => {
+  test('9. other bootstrap versions, other hosts, and rows older than thirty days are not touched', async () => {
     seedRow(50, { bootstrapVersion: '@tinycloud/bootstrap:other' });
     seedRow(51, { tinycloudHost: 'https://other.example.com' });
-    seedRow(52, { checkedAt: at(-8 * DAY) });
+    seedRow(52, { checkedAt: at(-31 * DAY) });
 
     setSystemTime(at(5 * MIN));
     await sweep();

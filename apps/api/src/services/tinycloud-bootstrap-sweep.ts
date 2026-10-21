@@ -13,7 +13,7 @@ const SWEEP_TICK_MS = 60_000;
 /** Wait after the failure (or stale lock) before sweep attempt N+1. The length is also the attempt cap. */
 const SWEEP_DELAYS_MS: readonly number[] = [5 * 60_000, 30 * 60_000, 2 * 3_600_000, 6 * 3_600_000];
 const SWEEP_BATCH = 10;
-const SWEEP_MAX_AGE_MS = 7 * 24 * 3_600_000;
+const SWEEP_MAX_AGE_MS = 30 * 24 * 3_600_000;
 
 interface SweepKey {
   id: string;
