@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, setSystemTime, spyOn, test } from 'bun:test';
-import { readFile } from 'node:fs/promises';
+import { afterEach, beforeAll, beforeEach, describe, expect, setSystemTime, spyOn, test } from 'bun:test';
+import { readdir, readFile } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
 import { PrismaPGlite } from 'pglite-prisma-adapter';
 import { PrismaClient } from '@openkey/db';
@@ -159,6 +159,107 @@ async function sweepOnNode(node: FakeTinyCloudNode, n: number, run: () => Promis
   process.env.TINYCLOUD_BOOTSTRAP_HOST = node.url;
   seedRow(n, { tinycloudHost: node.url, checkedAt: at(-60 * MIN) });
   return run();
+}
+
+let migratedDump: Blob | undefined;
+
+/** The repo's migration chain applied in directory order; the PGlite tests run against this schema. */
+async function buildMigratedTemplate(): Promise<PGlite> {
+  const root = new URL('../../../../packages/db/prisma/migrations/', import.meta.url);
+  const names = (await readdir(root, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort();
+  const template = new PGlite();
+  await template.waitReady;
+  for (const name of names) {
+    await template.exec(await readFile(new URL(`${name}/migration.sql`, root), 'utf8'));
+  }
+  return template;
+}
+
+beforeAll(async () => {
+  const template = await buildMigratedTemplate();
+  migratedDump = await template.dumpDataDir();
+  await template.close();
+}, 120_000);
+
+/** A fresh database loaded from the migrated schema dump, with a Prisma client on top; each PGlite test owns one. */
+async function pgliteStore(): Promise<{ database: PGlite; prisma: PrismaClient; close: () => Promise<void> }> {
+  if (!migratedDump) throw new Error('migrated schema was not built');
+  const database = new PGlite({ loadDataDir: migratedDump });
+  await database.waitReady;
+  const prisma = new PrismaClient({ adapter: new PrismaPGlite(database) });
+  return {
+    database,
+    prisma,
+    close: async () => {
+      await prisma.$disconnect();
+      await database.close();
+    },
+  };
+}
+
+/** A failed, retryable row for key-n, written through Prisma so the schema's own required fields and defaults apply. */
+async function seedPgliteRow(prisma: PrismaClient, n: number): Promise<void> {
+  await prisma.user.create({ data: { id: `user-${n}`, email: `user-${n}@example.test` } });
+  await prisma.ethereumKey.create({
+    data: { id: `key-${n}`, userId: `user-${n}`, address: ADDRESS, publicKey: '', sealedBlob: 'sealed' },
+  });
+  await prisma.tinyCloudBootstrapState.create({
+    data: {
+      id: `state-${n}`,
+      userId: `user-${n}`,
+      keyId: `key-${n}`,
+      address: ADDRESS,
+      chainId: 1,
+      tinycloudHost: HOST,
+      bootstrapVersion: TINYCLOUD_BOOTSTRAP_VERSION,
+      status: 'failed',
+      checkedAt: at(-3 * 60 * MIN),
+      failureCode: 'tinycloud_bootstrap_node_timeout',
+      failureReason: 'node timed out',
+      sweepAttempts: 2,
+    },
+  });
+}
+
+function pgliteStateOf(prisma: PrismaClient, n: number) {
+  return prisma.tinyCloudBootstrapState.findFirst({ where: { keyId: `key-${n}` } });
+}
+
+function approveOn(prisma: PrismaClient, n: number) {
+  return ensureTinyCloudBootstrap({
+    prisma,
+    userId: `user-${n}`,
+    key: { id: `key-${n}`, address: ADDRESS, keyType: 'MANAGED' },
+    privateKey: PRIVATE_KEY,
+    host: HOST,
+    chainId: 1,
+  });
+}
+
+/** Runs `afterFind` after the real candidate `findMany` resolves and before the sweep claims. */
+function afterCandidateRead(prisma: PrismaClient, afterFind: () => Promise<void>): PrismaClient {
+  return new Proxy(prisma, {
+    get(target, property) {
+      if (property !== 'tinyCloudBootstrapState') return Reflect.get(target, property, target);
+      const delegate = target.tinyCloudBootstrapState;
+      return new Proxy(delegate, {
+        get(delegateTarget, method) {
+          const value = Reflect.get(delegateTarget, method, delegateTarget);
+          if (method !== 'findMany' || typeof value !== 'function') {
+            return typeof value === 'function' ? value.bind(delegateTarget) : value;
+          }
+          return async (args: unknown) => {
+            const found = await value.call(delegateTarget, args);
+            await afterFind();
+            return found;
+          };
+        },
+      });
+    },
+  });
 }
 
 beforeEach(() => {
@@ -462,46 +563,9 @@ describe('TinyCloud bootstrap background sweep', () => {
   });
 
   test('13. an approval claim racing the sweep wins on Prisma (PGlite)', async () => {
-    const database = new PGlite();
-    await database.waitReady;
-    let client: PrismaClient | undefined;
+    const pg = await pgliteStore();
     try {
-      await database.exec(`
-        CREATE TYPE "KeyType" AS ENUM ('MANAGED', 'EXTERNAL');
-        CREATE TABLE "user" ("id" TEXT PRIMARY KEY, "autoSignEnabled" BOOLEAN NOT NULL DEFAULT true);
-        CREATE TABLE "ethereum_keys" ("id" TEXT PRIMARY KEY, "userId" TEXT, "address" TEXT NOT NULL,
-          "publicKey" TEXT NOT NULL DEFAULT '', "sealedBlob" TEXT, "sealingContext" TEXT,
-          "keyType" "KeyType" NOT NULL DEFAULT 'MANAGED', "isCanonicalTinyCloud" BOOLEAN NOT NULL DEFAULT false,
-          "keyIndex" INTEGER NOT NULL DEFAULT 0, "label" TEXT, "archivedAt" TIMESTAMP(3),
-          "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP);
-        CREATE TABLE "tinycloud_bootstrap_state" ("id" TEXT PRIMARY KEY, "userId" TEXT NOT NULL,
-          "keyId" TEXT NOT NULL, "address" TEXT NOT NULL, "chainId" INTEGER NOT NULL,
-          "tinycloudHost" TEXT NOT NULL, "bootstrapVersion" TEXT NOT NULL, "status" TEXT NOT NULL,
-          "attemptId" TEXT, "lockExpiresAt" TIMESTAMP(3), "checkedAt" TIMESTAMP(3) NOT NULL,
-          "completedAt" TIMESTAMP(3), "failureCode" TEXT, "failureReason" TEXT,
-          "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          CONSTRAINT "tinycloud_bootstrap_state_keyId_chainId_tinycloudHost_bootstrapVersion_key"
-            UNIQUE ("keyId", "chainId", "tinycloudHost", "bootstrapVersion"));
-      `);
-      const migration = await readFile(
-        new URL('../../../../packages/db/prisma/migrations/20261021_0001_tinycloud_bootstrap_sweep_attempts/migration.sql', import.meta.url),
-        'utf8',
-      );
-      await database.exec(migration);
-      await database.query(`INSERT INTO "user" ("id") VALUES ('user-90')`);
-      await database.query(
-        `INSERT INTO "ethereum_keys" ("id", "userId", "address", "sealedBlob") VALUES ('key-90', 'user-90', $1, 'sealed')`,
-        [ADDRESS],
-      );
-      await database.query(
-        `INSERT INTO "tinycloud_bootstrap_state" ("id", "userId", "keyId", "address", "chainId", "tinycloudHost", "bootstrapVersion", "status", "checkedAt", "failureCode", "failureReason", "sweepAttempts")
-         VALUES ('state-90', 'user-90', 'key-90', $1, 1, $2, $3, 'failed', $4, 'tinycloud_bootstrap_node_timeout', 'node timed out', 2)`,
-        [ADDRESS, HOST, TINYCLOUD_BOOTSTRAP_VERSION, at(-3 * 60 * MIN).toISOString()],
-      );
-      client = new PrismaClient({ adapter: new PrismaPGlite(database) });
-      const prisma = client;
-
+      await seedPgliteRow(pg.prisma, 90);
       const approvalStarted = deferred();
       const release = deferred();
       setTinyCloudBootstrapExecutorForTests(async () => {
@@ -511,39 +575,13 @@ describe('TinyCloud bootstrap background sweep', () => {
       });
 
       let approval: Promise<unknown> | undefined;
-      const racingPrisma = new Proxy(prisma, {
-        get(target, property) {
-          if (property !== 'tinyCloudBootstrapState') return Reflect.get(target, property, target);
-          const delegate = target.tinyCloudBootstrapState;
-          return new Proxy(delegate, {
-            get(delegateTarget, method) {
-              const value = Reflect.get(delegateTarget, method, delegateTarget);
-              if (method !== 'findMany' || typeof value !== 'function') {
-                return typeof value === 'function' ? value.bind(delegateTarget) : value;
-              }
-              return async (args: unknown) => {
-                const found = await value.call(delegateTarget, args);
-                approval = ensureTinyCloudBootstrap({
-                  prisma,
-                  userId: 'user-90',
-                  key: { id: 'key-90', address: ADDRESS, keyType: 'MANAGED' },
-                  privateKey: PRIVATE_KEY,
-                  host: HOST,
-                  chainId: 1,
-                });
-                await approvalStarted.promise;
-                return found;
-              };
-            },
-          });
-        },
+      const racing = afterCandidateRead(pg.prisma, async () => {
+        approval = approveOn(pg.prisma, 90);
+        await approvalStarted.promise;
       });
 
       setSystemTime(at(5 * MIN));
-      const summary = await sweepTinyCloudBootstrapOnce({
-        prisma: racingPrisma as unknown as PrismaClient,
-        resolveKey: async () => PRIVATE_KEY,
-      });
+      const summary = await sweepTinyCloudBootstrapOnce({ prisma: racing, resolveKey: async () => PRIVATE_KEY });
       release.resolve();
       const approved = await approval;
 
@@ -551,14 +589,65 @@ describe('TinyCloud bootstrap background sweep', () => {
       expect(summary.skipped).toBe(1);
       expect(executions).toBe(1);
       expect(approved).toMatchObject({ status: 'complete' });
-      const state = await prisma.tinyCloudBootstrapState.findUnique({
-        where: { keyId_chainId_tinycloudHost_bootstrapVersion: { keyId: 'key-90', chainId: 1, tinycloudHost: HOST, bootstrapVersion: TINYCLOUD_BOOTSTRAP_VERSION } },
-      });
-      expect(state?.sweepAttempts).toBe(0);
-      expect(state?.status).toBe('complete');
+      expect(await pgliteStateOf(pg.prisma, 90)).toMatchObject({ status: 'complete', sweepAttempts: 0 });
     } finally {
-      await client?.$disconnect();
-      await database.close();
+      await pg.close();
+    }
+  });
+
+  test('13a. a sweep claim that lands first leaves the approval waiting; nothing double-signs (PGlite)', async () => {
+    const pg = await pgliteStore();
+    try {
+      await seedPgliteRow(pg.prisma, 91);
+      const sweepStarted = deferred();
+      const release = deferred();
+      setTinyCloudBootstrapExecutorForTests(async () => {
+        executions += 1;
+        sweepStarted.resolve();
+        await release.promise;
+      });
+
+      setSystemTime(at(5 * MIN));
+      const sweeping = sweepTinyCloudBootstrapOnce({ prisma: pg.prisma, resolveKey: async () => PRIVATE_KEY });
+      await sweepStarted.promise;
+      const approved = await approveOn(pg.prisma, 91);
+      release.resolve();
+      const summary = await sweeping;
+
+      expect(summary.claimed).toBe(1);
+      expect(approved).toMatchObject({ status: 'failed', errorCode: 'tinycloud_bootstrap_in_progress' });
+      expect(executions).toBe(1);
+      expect(await pgliteStateOf(pg.prisma, 91)).toMatchObject({ status: 'complete', sweepAttempts: 3 });
+    } finally {
+      await pg.close();
+    }
+  });
+
+  test('13b. auto-sign switched off between the candidate read and the claim updates nothing (PGlite)', async () => {
+    const pg = await pgliteStore();
+    try {
+      await seedPgliteRow(pg.prisma, 92);
+      const racing = afterCandidateRead(pg.prisma, async () => {
+        await pg.prisma.user.update({ where: { id: 'user-92' }, data: { autoSignEnabled: false } });
+      });
+      let unseals = 0;
+
+      setSystemTime(at(5 * MIN));
+      const summary = await sweepTinyCloudBootstrapOnce({
+        prisma: racing,
+        resolveKey: async () => {
+          unseals += 1;
+          return PRIVATE_KEY;
+        },
+      });
+
+      expect(summary.claimed).toBe(0);
+      expect(summary.skipped).toBe(1);
+      expect(unseals).toBe(0);
+      expect(executions).toBe(0);
+      expect(await pgliteStateOf(pg.prisma, 92)).toMatchObject({ status: 'failed', attemptId: null, sweepAttempts: 2 });
+    } finally {
+      await pg.close();
     }
   });
 
