@@ -146,6 +146,15 @@ describe('org key signing service', () => {
     expect(ctx.state.challenges).toHaveLength(0);
   });
 
+  test.each(['toString', 'constructor', '__proto__'])(
+    'refuses the prototype-named action %s as unknown_action, and stores no challenge',
+    async (action) => {
+      const ctx = await setupOrgKey();
+      await expectRefusal(issue(ctx, statementFor(ctx, { action })), 403, 'unknown_action');
+      expect(ctx.state.challenges).toHaveLength(0);
+    },
+  );
+
   test('refuses org-binding bytes, and stores no challenge', async () => {
     const ctx = await setupOrgKey();
     await expectRefusal(issue(ctx, 'org-binding/v1 bound to another org'), 403, 'binding_bytes_refused');
