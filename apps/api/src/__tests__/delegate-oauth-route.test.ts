@@ -1165,28 +1165,56 @@ describe('CoordinationOS OAuth signer route', () => {
     expect(signerCalls).toBe(0);
   });
 
-  test('tinycloud:manage-key refuses an issuer statement with message_rejected and never signs', async () => {
+  // The issuer-statement type string must be refused by the signer even when the
+  // request is a valid SIWE that passes parsePreparedRecap and the Auto-Sign policy.
+  // Non-SIWE inputs stop in the parser and never reach managed-key-signing.ts.
+  const ISSUER_TYPE_LITERAL = 'tinycloud.org-issuer-authorization/v1';
+  const withTypeInStatementLine = (message: string) => {
+    const next = message.replace(
+      '\n\nI further authorize',
+      `\n\n${ISSUER_TYPE_LITERAL} I further authorize`,
+    );
+    expect(next).not.toBe(message);
+    return next;
+  };
+  const withTypeInUriPath = (message: string) => {
+    const next = message.replace(/^URI: (\S+)$/m, `URI: $1/${ISSUER_TYPE_LITERAL}`);
+    expect(next).not.toBe(message);
+    return next;
+  };
+
+  test.each([
+    ['statement line', withTypeInStatementLine],
+    ['URI path', withTypeInUriPath],
+  ])('tinycloud:manage-key refuses an issuer type in the %s with message_rejected and never signs', async (_label, inject) => {
     token.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
     client.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
-    const response = await sign({
-      ...signingBody(),
-      message: 'tinycloud.org-issuer-authorization/v1\n{"action":"authorize"}',
-    });
+    const body = signingBody();
+    const response = await sign({ ...body, message: inject(body.message) });
     expect(response.status).toBe(400);
-    expect(await response.json()).toMatchObject({ approved: false, code: 'message_rejected' });
+    expect(await response.json()).toMatchObject({
+      approved: false,
+      code: 'message_rejected',
+      reason: 'issuer_statement_not_personal',
+    });
     expect(signerCalls).toBe(0);
     expect(executionOrder).not.toContain('sign');
   });
 
-  test('Better Auth auto-sign never signs an issuer statement', async () => {
+  test.each([
+    ['statement line', withTypeInStatementLine],
+    ['URI path', withTypeInUriPath],
+  ])('Better Auth auto-sign refuses an issuer type in the %s with message_rejected and never signs', async (_label, inject) => {
     betterAuthSession = true;
     autoSignEnabled = true;
-    const response = await sign({
-      ...bootstrapSigningBody(),
-      message: 'tinycloud.org-issuer-authorization/v1\n{"action":"authorize"}',
-    }, null);
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ approved: false, needsApproval: true });
+    const body = bootstrapSigningBody();
+    const response = await sign({ ...body, message: inject(body.message) }, null);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      approved: false,
+      code: 'message_rejected',
+      reason: 'issuer_statement_not_personal',
+    });
     expect(signerCalls).toBe(0);
     expect(executionOrder).not.toContain('sign');
   });

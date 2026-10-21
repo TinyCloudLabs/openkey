@@ -511,6 +511,7 @@ export async function signOrgKeyMessage(
           role: grant.role,
           messageKind: classification.kind,
           passkeyAssertionHash: assertionHash,
+          challengeId: challenge.id,
         },
       });
 

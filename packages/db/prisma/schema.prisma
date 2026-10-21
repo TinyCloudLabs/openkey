@@ -306,6 +306,7 @@ model OrgKeySignatureAudit {
   role                 KeyGrantRole
   messageKind          String
   passkeyAssertionHash String   @unique(map: "org_key_signature_audits_passkeyAssertionHash_key")
+  challengeId          String?
   createdAt            DateTime @default(now())
 
   key   EthereumKey @relation(fields: [keyId], references: [id], onDelete: Restrict)

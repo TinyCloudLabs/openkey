@@ -45,6 +45,7 @@ export const requiredRuntimeMigrationChecksums = new Map<string, string>([
   ['20261021_0001_org_key_custody', '2c9f0a53affc841a7f0a7d1b6f8b865f4c4ef0277e0e140e1f81cd76f1d97f23'],
   ['20261021_0002_org_key_sign_challenges', '045b0c9c8dc4d00d50d227eb1faa731118122696ff989031c1b9eff18cc075c1'],
   ['20261021_0003_org_key_issuer_statement', 'fdd5155f7f6731d51d88bbc7ad3cbd2d5b0e4420378ff290a1fe1f91142deefe'],
+  ['20261021_0004_org_key_signature_audit_challenge', '65b720e9384a14bed8cf95e64f869201e1e271864f58250dffc5e7b763ef06e3'],
 ]);
 
 export type SchemaContractDatabase = {

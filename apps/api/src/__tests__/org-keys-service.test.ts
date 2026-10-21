@@ -195,6 +195,9 @@ describe('org key signing service', () => {
       role: 'OWNER',
       messageKind: ISSUER_STATEMENT_KIND,
     });
+    const challengeId = ctx.state.challenges[0]?.id;
+    expect(challengeId).toEqual(expect.any(String));
+    expect(ctx.state.audits[0]?.challengeId).toBe(challengeId);
     expect(ctx.state.passkeys[0]?.counter).toBe(1);
   });
 

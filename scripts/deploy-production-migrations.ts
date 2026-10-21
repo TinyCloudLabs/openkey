@@ -48,6 +48,8 @@ const orgKeySignChallengesMigration = '20261021_0002_org_key_sign_challenges';
 const orgKeySignChallengesChecksum = '045b0c9c8dc4d00d50d227eb1faa731118122696ff989031c1b9eff18cc075c1';
 const orgKeyIssuerStatementMigration = '20261021_0003_org_key_issuer_statement';
 const orgKeyIssuerStatementChecksum = 'fdd5155f7f6731d51d88bbc7ad3cbd2d5b0e4420378ff290a1fe1f91142deefe';
+const orgKeySignatureAuditChallengeMigration = '20261021_0004_org_key_signature_audit_challenge';
+const orgKeySignatureAuditChallengeChecksum = '65b720e9384a14bed8cf95e64f869201e1e271864f58250dffc5e7b763ef06e3';
 // Reviewed expand-only migrations that may run while TC-488 stays parked.
 const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
   [deviceMigration, deviceChecksum],
@@ -61,6 +63,7 @@ const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
   [appSignInDayMigration, appSignInDayChecksum],
   [orgKeySignChallengesMigration, orgKeySignChallengesChecksum],
   [orgKeyIssuerStatementMigration, orgKeyIssuerStatementChecksum],
+  [orgKeySignatureAuditChallengeMigration, orgKeySignatureAuditChallengeChecksum],
   [orgKeyCustodyMigration, orgKeyCustodyChecksum],
 ]);
 

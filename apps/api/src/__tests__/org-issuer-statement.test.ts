@@ -274,4 +274,38 @@ describe('issuer statement parser grammar and boundaries (F1/F2)', () => {
     );
     expect(refusalCode(() => issuerDidForOrgId('org_2'))).toBe('invalid_field');
   });
+
+  it('refuses a 43-character publicKey whose final character carries non-zero padding bits', () => {
+    const canonical = BASE_AUTHORIZE.publicKey as string;
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+    const index = alphabet.indexOf(canonical.at(-1) as string);
+    // A canonical 32-byte key ends in a character whose two low bits are zero.
+    expect(index & 3).toBe(0);
+    const tampered = `${canonical.slice(0, -1)}${alphabet[index + 1]}`;
+    // Node's base64url decoder ignores the padding bits, so only the re-encode check refuses this.
+    expect(Buffer.from(tampered, 'base64url').equals(Buffer.from(canonical, 'base64url'))).toBe(true);
+    expect(classify(authorizeWith({ publicKey: tampered }))).toEqual({ ok: false, refusal: 'invalid_field' });
+  });
+
+  it('refuses an orgId outside the lowercase base32 OrgId grammar', () => {
+    for (const orgId of [
+      'OCEIRCEIRCEIRCEIRCEIRCEIRCE',
+      'oceirceirceirceirceirceirc',
+      'oceirceirceirceirceirceircea',
+      'oceirceirceirceirceirceirc1',
+    ]) {
+      expect(classify(authorizeWith({ orgId }))).toEqual({ ok: false, refusal: 'invalid_field' });
+    }
+  });
+
+  it('refuses a nonce that is not exactly 32 lowercase hex characters', () => {
+    for (const nonce of [
+      '0123456789ABCDEF0123456789ABCDEF',
+      '0123456789abcdef0123456789abcde',
+      '0123456789abcdef0123456789abcdef0',
+      '0123456789abcdef0123456789abcdeg',
+    ]) {
+      expect(classify(authorizeWith({ nonce }))).toEqual({ ok: false, refusal: 'invalid_field' });
+    }
+  });
 });
