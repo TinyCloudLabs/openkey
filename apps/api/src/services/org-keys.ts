@@ -13,6 +13,7 @@ import {
 } from '@openkey/tee';
 import { createSealingContext, deriveKeyForRecord } from './key-sealing';
 import { checkHandle, classifyIssuerStatement, ISSUER_STATEMENT_KIND, IssuerStatementRefusal, issuerDidForOrgId, namesIssuerStatement, type IssuerStatementRecord } from './org-issuer-statement';
+import { classifyOrgSpaceMessage, isOrgSpaceSigningEnabled, namesOrgSpaceMessage, roleSatisfies, type OrgRole } from './org-space-signing';
 
 // Capability flag for organization key custody (TC-1518). Default off: the
 // org-key routes answer 404 until the flag is set to "true".
@@ -209,21 +210,43 @@ export async function createOrgKey(prisma: PrismaClient, tee: TeeClient, input: 
 }
 
 export type OrgKeyMessageClassification =
-  | { ok: true; kind: string; action: string; text: string }
+  | { ok: true; kind: string; action: string; text: string; role?: OrgRole }
   | { ok: false; refusal: string };
 
-// K1 D7 refusals run first and are unconditional. Then the D3 allowlist: the only
-// signable kind is the issuer statement (kind 1), and only while the K4 kill switch
-// is on. Every other message is refused as unsupported.
+// Kind 2 signing context: the grant the signer holds on this key, matched against the challenge.
+export type OrgKeyGrantContext = { grantId: string; role: OrgRole };
+
+// K1 D7 refusals run first and are unconditional. Then the D3 allowlist: kind 1 (the issuer
+// statement, while the K4 kill switch is on) and kind 2 (the org-space message, while
+// ORG_SPACE_SIGNING_ENABLED is on). Every other message is refused as unsupported.
 export function classifyOrgKeyMessage(
   message: string,
-  context: { record: IssuerStatementRecord; requestingOrigin: string; env?: Record<string, string | undefined> },
+  context: {
+    record: IssuerStatementRecord & { key?: { address: string } };
+    requestingOrigin: string;
+    env?: Record<string, string | undefined>;
+    grant?: OrgKeyGrantContext;
+  },
 ): OrgKeyMessageClassification {
   if (message.includes('account-binding/v1') || message.includes('org-binding/v1')) {
     return { ok: false, refusal: 'binding_bytes_refused' };
   }
   if (message.includes('tinycloud.credentials/')) {
     return { ok: false, refusal: 'credentials_capability_refused' };
+  }
+  if (namesOrgSpaceMessage(message)) {
+    if (!isOrgSpaceSigningEnabled(context.env) || !context.grant || !context.record.key) {
+      return { ok: false, refusal: 'unsupported_message_kind' };
+    }
+    const org = classifyOrgSpaceMessage(message, {
+      allowedOrigins: ORG_KEY_ORIGINS,
+      requestingOrigin: context.requestingOrigin,
+      address: getAddress(context.record.key.address),
+      grantId: context.grant.grantId,
+      role: context.grant.role,
+    });
+    if (!org.ok) return { ok: false, refusal: org.refusal };
+    return { ok: true, kind: org.kind, action: org.action, text: org.text, role: org.role };
   }
   if (!namesIssuerStatement(message) || !isIssuerStatementSigningEnabled(context.env)) {
     return { ok: false, refusal: 'unsupported_message_kind' };
@@ -264,10 +287,13 @@ export function orgKeySignChallenge(parts: {
 }
 
 // The stored record a statement is bound to. Null when the key does not exist.
-export async function loadOrgKeyRecord(prisma: PrismaClient, keyId: string): Promise<IssuerStatementRecord | null> {
+export async function loadOrgKeyRecord(
+  prisma: PrismaClient,
+  keyId: string,
+): Promise<(IssuerStatementRecord & { key: { address: string } }) | null> {
   return prisma.orgKey.findUnique({
     where: { keyId },
-    select: { orgId: true, slug: true, issuerDid: true, controllerDid: true },
+    select: { orgId: true, slug: true, issuerDid: true, controllerDid: true, key: { select: { address: true } } },
   });
 }
 
@@ -276,11 +302,15 @@ export async function loadOrgKeyRecord(prisma: PrismaClient, keyId: string): Pro
 // is classified here, so a refused message never receives a challenge.
 export async function issueOrgKeySignChallenge(
   prisma: PrismaClient,
-  input: { userId: string; keyId: string; grantId: string; message: string; origin: string },
+  input: { userId: string; keyId: string; grantId: string; role: OrgRole; message: string; origin: string },
 ): Promise<{ nonce: string; challenge: string; expiresAt: Date; kind: string; text: string }> {
   const record = await loadOrgKeyRecord(prisma, input.keyId);
   if (!record) throw new OrgKeyRefusal(404, 'key_not_found', 'Key not found');
-  const classification = classifyOrgKeyMessage(input.message, { record, requestingOrigin: input.origin });
+  const classification = classifyOrgKeyMessage(input.message, {
+    record,
+    requestingOrigin: input.origin,
+    grant: { grantId: input.grantId, role: input.role },
+  });
   if (!classification.ok) throw new OrgKeyRefusal(403, classification.refusal, 'Message is not signable by this key');
 
   // Expired challenges can never be used. Dropping them keeps the table bounded.
@@ -437,8 +467,17 @@ export async function signOrgKeyMessage(
   // F-F: the message kind is derived here from the stored record. No caller-supplied kind is trusted.
   const record = await loadOrgKeyRecord(prisma, input.keyId);
   if (!record) throw new OrgKeyRefusal(404, 'key_not_found', 'Key not found');
-  const classification = classifyOrgKeyMessage(input.message, { record, requestingOrigin: input.origin });
+  const activeGrant = await findActiveOrgGrant(prisma, input.userId, input.keyId);
+  if (!activeGrant || activeGrant.grantId !== challenge.grantId) {
+    throw new OrgKeyRefusal(403, 'grant_revoked', 'No active grant on this key');
+  }
+  const classification = classifyOrgKeyMessage(input.message, {
+    record,
+    requestingOrigin: input.origin,
+    grant: { grantId: activeGrant.grantId, role: activeGrant.role },
+  });
   if (!classification.ok) throw new OrgKeyRefusal(403, classification.refusal, 'Message is not signable by this key');
+  const requiredRole = classification.role;
 
   const passkey = await prisma.passkey.findFirst({
     where: { userId: input.userId, credentialID: input.assertion.id },
@@ -480,6 +519,9 @@ export async function signOrgKeyMessage(
       // F3: the grant row is locked FOR SHARE for the rest of the transaction.
       const grant = await lockActiveGrant(tx, { grantId: challenge.grantId, keyId: input.keyId, userId: input.userId });
       if (!grant) throw new OrgKeyRefusal(403, 'grant_revoked', 'No active grant on this key');
+      if (requiredRole && !roleSatisfies(grant.role as OrgRole, requiredRole)) {
+        throw new OrgKeyRefusal(403, 'org_space_role_insufficient', 'The signing role no longer satisfies this message');
+      }
 
       // Single use: the challenge is consumed only if still unused and unexpired.
       // A concurrent request that loses this race gets challenge_consumed; the

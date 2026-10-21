@@ -133,6 +133,7 @@ export function createOrgKeysRouter(deps: OrgKeysRouterDeps) {
         userId: user.id,
         keyId,
         grantId: grant.grantId,
+        role: grant.role,
         message: body.message,
         origin,
       });
