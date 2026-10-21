@@ -16,6 +16,7 @@
 // sentence themselves.
 
 import type { CapabilityGrant } from "./model.js";
+import { DECRYPT_DEFAULT_KEY_STATEMENT } from "./copy.js";
 import { isMetadataOnlyAccess } from "./action-semantics.js";
 import {
   CANONICAL_APP_SCOPE_SECRET_ABILITIES,
@@ -206,6 +207,14 @@ function resourceOf(grant: CapabilityGrant): string {
   if (grant.path) return `${grant.space}/${grant.path}`;
   return grant.space;
 }
+
+/**
+ * Raw encryption network URI for the account's `default` key, e.g.
+ * `urn:tinycloud:encryption:did:pkh:eip155:1:0x<40 hex>:default`. Only a
+ * raw URN with no sub-path matches; per-share or other named networks do not.
+ */
+const DEFAULT_KEY_NETWORK_URN =
+  /^urn:tinycloud:encryption:did:pkh:eip155:\d+:0x[0-9a-fA-F]{40}:default$/;
 
 /** Fallback statement for anything the catalog does not recognize. */
 function fallbackStatement(grant: CapabilityGrant): StatementEntry {
@@ -1050,7 +1059,9 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
     }
     if (verbs.onlyDecrypt || (verbs.hasDecrypt && !verbs.hasCreate)) {
       return {
-        primaryText: "Decrypt protected data",
+        primaryText: DEFAULT_KEY_NETWORK_URN.test(resource)
+          ? DECRYPT_DEFAULT_KEY_STATEMENT
+          : "Decrypt protected data",
         service,
         resource,
       };
