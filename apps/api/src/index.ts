@@ -21,6 +21,7 @@ import { preparedHandoffRouter } from './routes/prepared-handoffs';
 import { internalMetricsRouter } from './routes/internal-metrics';
 import { scoreboardMetricsRouter } from './routes/scoreboard-metrics';
 import { organizationsRouter } from './routes/organizations';
+import { orgKeysRouter } from './routes/org-keys';
 import { tenantConsoleRouter } from './routes/tenant-console';
 import { deviceAuthorizationRouter } from './routes/device-authorization';
 import { createDelegationCodeRouter, createPrismaDelegationCodeStore } from './routes/delegation-codes';
@@ -222,6 +223,9 @@ app.route('/api/delegation-codes', createDelegationCodeRouter({
 // Developer Organizations own OAuth application configuration and membership only.
 app.route('/api/organizations', organizationsRouter);
 app.route('/api/console/organizations', tenantConsoleRouter);
+
+// Organization keys are separate from personal keys under /api/keys (TC-1518).
+app.route('/api/org-keys', orgKeysRouter);
 
 // 404 handler
 app.notFound((c) => c.json({ error: 'Not found' }, 404));

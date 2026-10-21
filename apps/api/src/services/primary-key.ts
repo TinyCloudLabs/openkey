@@ -27,13 +27,22 @@ export function isPrimaryKey(key: {
 }
 
 /**
+ * The database filter for a user's personal keys. ORG-custodied keys have no
+ * personal owner and are reachable only through `services/org-keys.ts`, so
+ * every personal-path reader of `ethereumKey` uses this filter (TC-1518 D1).
+ */
+export function personalKeyWhere(userId: string) {
+  return { userId, custody: 'PERSONAL' as const };
+}
+
+/**
  * The database filter for a user's primary (canonical TinyCloud) key. Every
  * reader of the canonical identity uses it: the OAuth canonical identity
  * claim and `tinycloud:manage-key` signing.
  */
 export function primaryKeyWhere(userId: string) {
   return {
-    userId,
+    ...personalKeyWhere(userId),
     keyType: 'MANAGED' as const,
     archivedAt: null,
     isCanonicalTinyCloud: true,
@@ -88,7 +97,7 @@ export async function setPrimaryKey(
       if (!user) return { kind: 'not_found' as const };
 
       const target = await tx.ethereumKey.findFirst({
-        where: { id: keyId, userId },
+        where: { id: keyId, ...personalKeyWhere(userId) },
         select: { ...publicKeySelect, userId: true, sealedBlob: true, sealingContext: true },
       });
       if (!target) return { kind: 'not_found' as const };
@@ -116,11 +125,11 @@ export async function setPrimaryKey(
       }
 
       await tx.ethereumKey.updateMany({
-        where: { userId, isCanonicalTinyCloud: true, id: { not: target.id } },
+        where: { ...personalKeyWhere(userId), isCanonicalTinyCloud: true, id: { not: target.id } },
         data: { isCanonicalTinyCloud: false },
       });
       const updated = await tx.ethereumKey.updateManyAndReturn({
-        where: { id: target.id, userId, keyType: 'MANAGED', archivedAt: null },
+        where: { id: target.id, ...personalKeyWhere(userId), keyType: 'MANAGED', archivedAt: null },
         data: { isCanonicalTinyCloud: true },
         select: publicKeySelect,
       });
