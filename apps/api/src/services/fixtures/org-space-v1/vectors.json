@@ -1,0 +1,268 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "space-host-owner",
+      "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      "signature": "0x9a48b76e748bcb1c87ed44b98cdc7c02b6dd358621318745643fac57d4e294094557edd694d3e55f924a5dc95d998da9226b0d519f63dd75b6dbdca31f323dcb1b",
+      "message": "credentials.org wants you to sign in with your Ethereum account:\n0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\n\nHost org space tinycloud:pkh:eip155:1:0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266:org and its shared-index schema. Requires OWNER role. Valid from 2026-05-01T12:00:00.000Z until 2026-05-02T12:00:00.000Z.\n\nURI: tinycloud:pkh:eip155:1:0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266:org\nVersion: 1\nChain ID: 1\nNonce: abcdefgh12\nIssued At: 2026-05-01T12:00:00.000Z\nExpiration Time: 2026-05-02T12:00:00.000Z\nResources:\n- urn:recap:eyJhdHQiOnsidGlueWNsb3VkOnBraDplaXAxNTU6MToweGYzOUZkNmU1MWFhZDg4RjZGNGNlNmFCODgyNzI3OWNmZkZiOTIyNjY6b3JnL3NwYWNlIjp7InRpbnljbG91ZC5zcGFjZS9ob3N0Ijpbe31dfSwidGlueWNsb3VkOnBraDplaXAxNTU6MToweGYzOUZkNmU1MWFhZDg4RjZGNGNlNmFCODgyNzI3OWNmZkZiOTIyNjY6b3JnL3NxbC9zaGFyZWQtaW5kZXgiOnsidGlueWNsb3VkLnNxbC9hZG1pbiI6W3t9XX19LCJmY3QiOlt7Im9yZy1zcGFjZSI6eyJhZG1pbkFjY291bnQiOiJkaWQ6cGtoOmVpcDE1NToxOjB4ZjM5RmQ2ZTUxYWFkODhGNkY0Y2U2YUI4ODI3Mjc5Y2ZmRmI5MjI2NiIsImNsYXNzIjoic3BhY2UtaG9zdCIsImdyYW50SWQiOiJncmFudF9vd25lcl8xIn19XX0",
+      "ctx": {
+        "allowedOrigins": [
+          "https://credentials.org"
+        ],
+        "requestingOrigin": "https://credentials.org",
+        "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+        "grantId": "grant_owner_1",
+        "role": "OWNER",
+        "now": "2026-05-01T12:00:00.000Z"
+      },
+      "expected": {
+        "ok": true,
+        "kind": "org-space/space-host",
+        "role": "OWNER"
+      }
+    },
+    {
+      "name": "kv-delegation-admin",
+      "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      "signature": "0x11f15d94602711490c03b3f928f8a39905375a56947cb0425ef8553d0c3d174112f49949b8672ac551905f48adad9bff13b386a4d407a8ee003b405ff1ceb9ad1b",
+      "message": "credentials.org wants you to sign in with your Ethereum account:\n0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\n\nGrant did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooWp get shared/notes.txt, put shared/0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266/notes.txt in org space tinycloud:pkh:eip155:1:0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266:org. Requires ADMIN or OWNER role. Valid from 2026-05-01T12:00:00.000Z until 2026-05-02T12:00:00.000Z.\n\nURI: did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooWp\nVersion: 1\nChain ID: 1\nNonce: abcdefgh12\nIssued At: 2026-05-01T12:00:00.000Z\nExpiration Time: 2026-05-02T12:00:00.000Z\nResources:\n- urn:recap:eyJhdHQiOnsidGlueWNsb3VkOnBraDplaXAxNTU6MToweGYzOUZkNmU1MWFhZDg4RjZGNGNlNmFCODgyNzI3OWNmZkZiOTIyNjY6b3JnL2t2L3YxL3NoYXJlZC8weGYzOUZkNmU1MWFhZDg4RjZGNGNlNmFCODgyNzI3OWNmZkZiOTIyNjYvbm90ZXMudHh0Ijp7InRpbnljbG91ZC5rdi9wdXQiOlt7fV19LCJ0aW55Y2xvdWQ6cGtoOmVpcDE1NToxOjB4ZjM5RmQ2ZTUxYWFkODhGNkY0Y2U2YUI4ODI3Mjc5Y2ZmRmI5MjI2Njpvcmcva3YvdjEvc2hhcmVkL25vdGVzLnR4dCI6eyJ0aW55Y2xvdWQua3YvZ2V0Ijpbe31dfX0sImZjdCI6W3sib3JnLXNwYWNlIjp7ImFkbWluQWNjb3VudCI6ImRpZDpwa2g6ZWlwMTU1OjE6MHhmMzlGZDZlNTFhYWQ4OEY2RjRjZTZhQjg4MjcyNzljZmZGYjkyMjY2IiwiY2xhc3MiOiJrdi1kZWxlZ2F0aW9uIiwiZ3JhbnRJZCI6ImdyYW50X293bmVyXzEifX1dfQ",
+      "ctx": {
+        "allowedOrigins": [
+          "https://credentials.org"
+        ],
+        "requestingOrigin": "https://credentials.org",
+        "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+        "grantId": "grant_owner_1",
+        "role": "ADMIN",
+        "now": "2026-05-01T12:00:00.000Z"
+      },
+      "expected": {
+        "ok": true,
+        "kind": "org-space/kv-delegation",
+        "role": "ADMIN"
+      }
+    },
+    {
+      "name": "delegation-revoke-owner",
+      "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      "signature": "0x98957b1c16e7e6f74c933723db81653ffeb2bf08cceaac1fa5380b7e0ac1d24e1f52c338955307767eae5a7331a50346b2b3e1d47152baeb2f3984cb962e9cd21b",
+      "message": "credentials.org wants you to sign in with your Ethereum account:\n0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\n\nRevoke delegation bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymzdp6v6b6rdgyz3m in org space tinycloud:pkh:eip155:1:0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266:org. Requires OWNER role. Valid from 2026-05-01T12:00:00.000Z until 2026-05-02T12:00:00.000Z.\n\nURI: tinycloud:pkh:eip155:1:0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266:org\nVersion: 1\nChain ID: 1\nNonce: abcdefgh12\nIssued At: 2026-05-01T12:00:00.000Z\nExpiration Time: 2026-05-02T12:00:00.000Z\nResources:\n- urn:recap:eyJhdHQiOnsidXJuOmNpZDpiYWZrcmVpZ2gyYWtpc2NhaWxkY3FhYnN5ZzNkZnI2Y2h1M2ZncHJlZ2l5bXpkcDZ2NmI2cmRneXozbSI6eyJ0aW55Y2xvdWQuZGVsZWdhdGlvbi9yZXZva2UiOlt7fV19fSwiZmN0IjpbeyJvcmctc3BhY2UiOnsiYWRtaW5BY2NvdW50IjoiZGlkOnBraDplaXAxNTU6MToweGYzOUZkNmU1MWFhZDg4RjZGNGNlNmFCODgyNzI3OWNmZkZiOTIyNjYiLCJjbGFzcyI6ImRlbGVnYXRpb24tcmV2b2tlIiwiZ3JhbnRJZCI6ImdyYW50X293bmVyXzEifX1dfQ",
+      "ctx": {
+        "allowedOrigins": [
+          "https://credentials.org"
+        ],
+        "requestingOrigin": "https://credentials.org",
+        "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+        "grantId": "grant_owner_1",
+        "role": "OWNER",
+        "now": "2026-05-01T12:00:00.000Z"
+      },
+      "expected": {
+        "ok": true,
+        "kind": "org-space/delegation-revoke",
+        "role": "OWNER"
+      }
+    },
+    {
+      "name": "refuse-credentials-capability",
+      "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      "signature": "0x1178aa351dd0d86781994de652bfa5d455b447c1128cbfd1f1983ca2ad1a8e4166d4f7ddd429f03b2880df4cff8eb82df2c6bf3b1737fd8131ed2a189d9989fd1c",
+      "message": "credentials.org wants you to sign in with your Ethereum account:\n0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\n\nplaceholder statement\n\nURI: tinycloud:pkh:eip155:1:0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266:org\nVersion: 1\nChain ID: 1\nNonce: abcdefgh12\nIssued At: 2026-05-01T12:00:00.000Z\nExpiration Time: 2026-05-02T12:00:00.000Z\nResources:\n- urn:recap:eyJhdHQiOnsidGlueWNsb3VkOnBraDplaXAxNTU6MToweGYzOUZkNmU1MWFhZDg4RjZGNGNlNmFCODgyNzI3OWNmZkZiOTIyNjY6b3JnL3NwYWNlIjp7InRpbnljbG91ZC5jcmVkZW50aWFscy9pc3N1ZSI6W3t9XX19LCJmY3QiOlt7Im9yZy1zcGFjZSI6eyJhZG1pbkFjY291bnQiOiJkaWQ6cGtoOmVpcDE1NToxOjB4ZjM5RmQ2ZTUxYWFkODhGNkY0Y2U2YUI4ODI3Mjc5Y2ZmRmI5MjI2NiIsImNsYXNzIjoic3BhY2UtaG9zdCIsImdyYW50SWQiOiJncmFudF9vd25lcl8xIn19XX0",
+      "ctx": {
+        "allowedOrigins": [
+          "https://credentials.org"
+        ],
+        "requestingOrigin": "https://credentials.org",
+        "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+        "grantId": "grant_owner_1",
+        "role": "OWNER",
+        "now": "2026-05-01T12:00:00.000Z"
+      },
+      "expected": {
+        "ok": false,
+        "code": "credentials_capability_refused"
+      }
+    },
+    {
+      "name": "refuse-renewal-key-class-not-enabled",
+      "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      "signature": "0xec8fa1cfa0181f677fd1cd4e3d552be480ebb8c76962af783161353e8eba2d9602297c1c4116820d46302cc1ba4d4e1601bbdf006fc251eec6463cd5740b35c91b",
+      "message": "credentials.org wants you to sign in with your Ethereum account:\n0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\n\nplaceholder statement\n\nURI: tinycloud:pkh:eip155:1:0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266:org\nVersion: 1\nChain ID: 1\nNonce: abcdefgh12\nIssued At: 2026-05-01T12:00:00.000Z\nExpiration Time: 2026-05-02T12:00:00.000Z\nResources:\n- urn:recap:eyJhdHQiOnsidGlueWNsb3VkOnBraDplaXAxNTU6MToweGYzOUZkNmU1MWFhZDg4RjZGNGNlNmFCODgyNzI3OWNmZkZiOTIyNjY6b3JnL2t2L3YxL3NoYXJlZC8weGYzOUZkNmU1MWFhZDg4RjZGNGNlNmFCODgyNzI3OWNmZkZiOTIyNjYvayI6eyJ0aW55Y2xvdWQua3YvcHV0Ijpbe31dfX0sImZjdCI6W3sib3JnLXNwYWNlIjp7ImFkbWluQWNjb3VudCI6ImRpZDpwa2g6ZWlwMTU1OjE6MHhmMzlGZDZlNTFhYWQ4OEY2RjRjZTZhQjg4MjcyNzljZmZGYjkyMjY2IiwiY2xhc3MiOiJyZW5ld2FsLWtleSIsImdyYW50SWQiOiJncmFudF9vd25lcl8xIn19XX0",
+      "ctx": {
+        "allowedOrigins": [
+          "https://credentials.org"
+        ],
+        "requestingOrigin": "https://credentials.org",
+        "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+        "grantId": "grant_owner_1",
+        "role": "OWNER",
+        "now": "2026-05-01T12:00:00.000Z"
+      },
+      "expected": {
+        "ok": false,
+        "code": "org_space_class_not_enabled"
+      }
+    },
+    {
+      "name": "refuse-mixed-classes",
+      "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      "signature": "0xf92235277195103c03630fd57fd1202689b1a5a3eec92daf0745139b3ba6fb2733eca4c8d6a8c3c629e955cf2d7b7474b886ce46d6b6ac94b0a664c8e34e3aaa1b",
+      "message": "credentials.org wants you to sign in with your Ethereum account:\n0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\n\nplaceholder statement\n\nURI: tinycloud:pkh:eip155:1:0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266:org\nVersion: 1\nChain ID: 1\nNonce: abcdefgh12\nIssued At: 2026-05-01T12:00:00.000Z\nExpiration Time: 2026-05-02T12:00:00.000Z\nResources:\n- urn:recap:eyJhdHQiOnsidGlueWNsb3VkOnBraDplaXAxNTU6MToweGYzOUZkNmU1MWFhZDg4RjZGNGNlNmFCODgyNzI3OWNmZkZiOTIyNjY6b3JnL3NwYWNlIjp7InRpbnljbG91ZC5zcGFjZS9ob3N0Ijpbe31dfSwidGlueWNsb3VkOnBraDplaXAxNTU6MToweGYzOUZkNmU1MWFhZDg4RjZGNGNlNmFCODgyNzI3OWNmZkZiOTIyNjY6b3JnL2t2L3YxL3NoYXJlZC9ub3Rlcy50eHQiOnsidGlueWNsb3VkLmt2L2dldCI6W3t9XX19LCJmY3QiOlt7Im9yZy1zcGFjZSI6eyJhZG1pbkFjY291bnQiOiJkaWQ6cGtoOmVpcDE1NToxOjB4ZjM5RmQ2ZTUxYWFkODhGNkY0Y2U2YUI4ODI3Mjc5Y2ZmRmI5MjI2NiIsImNsYXNzIjoic3BhY2UtaG9zdCIsImdyYW50SWQiOiJncmFudF9vd25lcl8xIn19XX0",
+      "ctx": {
+        "allowedOrigins": [
+          "https://credentials.org"
+        ],
+        "requestingOrigin": "https://credentials.org",
+        "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+        "grantId": "grant_owner_1",
+        "role": "OWNER",
+        "now": "2026-05-01T12:00:00.000Z"
+      },
+      "expected": {
+        "ok": false,
+        "code": "org_space_mixed_classes"
+      }
+    },
+    {
+      "name": "refuse-role-insufficient-host-admin",
+      "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      "signature": "0x9a48b76e748bcb1c87ed44b98cdc7c02b6dd358621318745643fac57d4e294094557edd694d3e55f924a5dc95d998da9226b0d519f63dd75b6dbdca31f323dcb1b",
+      "message": "credentials.org wants you to sign in with your Ethereum account:\n0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\n\nHost org space tinycloud:pkh:eip155:1:0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266:org and its shared-index schema. Requires OWNER role. Valid from 2026-05-01T12:00:00.000Z until 2026-05-02T12:00:00.000Z.\n\nURI: tinycloud:pkh:eip155:1:0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266:org\nVersion: 1\nChain ID: 1\nNonce: abcdefgh12\nIssued At: 2026-05-01T12:00:00.000Z\nExpiration Time: 2026-05-02T12:00:00.000Z\nResources:\n- urn:recap:eyJhdHQiOnsidGlueWNsb3VkOnBraDplaXAxNTU6MToweGYzOUZkNmU1MWFhZDg4RjZGNGNlNmFCODgyNzI3OWNmZkZiOTIyNjY6b3JnL3NwYWNlIjp7InRpbnljbG91ZC5zcGFjZS9ob3N0Ijpbe31dfSwidGlueWNsb3VkOnBraDplaXAxNTU6MToweGYzOUZkNmU1MWFhZDg4RjZGNGNlNmFCODgyNzI3OWNmZkZiOTIyNjY6b3JnL3NxbC9zaGFyZWQtaW5kZXgiOnsidGlueWNsb3VkLnNxbC9hZG1pbiI6W3t9XX19LCJmY3QiOlt7Im9yZy1zcGFjZSI6eyJhZG1pbkFjY291bnQiOiJkaWQ6cGtoOmVpcDE1NToxOjB4ZjM5RmQ2ZTUxYWFkODhGNkY0Y2U2YUI4ODI3Mjc5Y2ZmRmI5MjI2NiIsImNsYXNzIjoic3BhY2UtaG9zdCIsImdyYW50SWQiOiJncmFudF9vd25lcl8xIn19XX0",
+      "ctx": {
+        "allowedOrigins": [
+          "https://credentials.org"
+        ],
+        "requestingOrigin": "https://credentials.org",
+        "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+        "grantId": "grant_owner_1",
+        "role": "ADMIN",
+        "now": "2026-05-01T12:00:00.000Z"
+      },
+      "expected": {
+        "ok": false,
+        "code": "org_space_role_insufficient"
+      }
+    },
+    {
+      "name": "refuse-origin-mismatch",
+      "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      "signature": "0x9a48b76e748bcb1c87ed44b98cdc7c02b6dd358621318745643fac57d4e294094557edd694d3e55f924a5dc95d998da9226b0d519f63dd75b6dbdca31f323dcb1b",
+      "message": "credentials.org wants you to sign in with your Ethereum account:\n0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\n\nHost org space tinycloud:pkh:eip155:1:0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266:org and its shared-index schema. Requires OWNER role. Valid from 2026-05-01T12:00:00.000Z until 2026-05-02T12:00:00.000Z.\n\nURI: tinycloud:pkh:eip155:1:0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266:org\nVersion: 1\nChain ID: 1\nNonce: abcdefgh12\nIssued At: 2026-05-01T12:00:00.000Z\nExpiration Time: 2026-05-02T12:00:00.000Z\nResources:\n- urn:recap:eyJhdHQiOnsidGlueWNsb3VkOnBraDplaXAxNTU6MToweGYzOUZkNmU1MWFhZDg4RjZGNGNlNmFCODgyNzI3OWNmZkZiOTIyNjY6b3JnL3NwYWNlIjp7InRpbnljbG91ZC5zcGFjZS9ob3N0Ijpbe31dfSwidGlueWNsb3VkOnBraDplaXAxNTU6MToweGYzOUZkNmU1MWFhZDg4RjZGNGNlNmFCODgyNzI3OWNmZkZiOTIyNjY6b3JnL3NxbC9zaGFyZWQtaW5kZXgiOnsidGlueWNsb3VkLnNxbC9hZG1pbiI6W3t9XX19LCJmY3QiOlt7Im9yZy1zcGFjZSI6eyJhZG1pbkFjY291bnQiOiJkaWQ6cGtoOmVpcDE1NToxOjB4ZjM5RmQ2ZTUxYWFkODhGNkY0Y2U2YUI4ODI3Mjc5Y2ZmRmI5MjI2NiIsImNsYXNzIjoic3BhY2UtaG9zdCIsImdyYW50SWQiOiJncmFudF9vd25lcl8xIn19XX0",
+      "ctx": {
+        "allowedOrigins": [
+          "https://credentials.org"
+        ],
+        "requestingOrigin": "https://evil.example",
+        "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+        "grantId": "grant_owner_1",
+        "role": "OWNER",
+        "now": "2026-05-01T12:00:00.000Z"
+      },
+      "expected": {
+        "ok": false,
+        "code": "org_space_origin_mismatch"
+      }
+    },
+    {
+      "name": "refuse-address-mismatch",
+      "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      "signature": "0x9a48b76e748bcb1c87ed44b98cdc7c02b6dd358621318745643fac57d4e294094557edd694d3e55f924a5dc95d998da9226b0d519f63dd75b6dbdca31f323dcb1b",
+      "message": "credentials.org wants you to sign in with your Ethereum account:\n0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\n\nHost org space tinycloud:pkh:eip155:1:0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266:org and its shared-index schema. Requires OWNER role. Valid from 2026-05-01T12:00:00.000Z until 2026-05-02T12:00:00.000Z.\n\nURI: tinycloud:pkh:eip155:1:0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266:org\nVersion: 1\nChain ID: 1\nNonce: abcdefgh12\nIssued At: 2026-05-01T12:00:00.000Z\nExpiration Time: 2026-05-02T12:00:00.000Z\nResources:\n- urn:recap:eyJhdHQiOnsidGlueWNsb3VkOnBraDplaXAxNTU6MToweGYzOUZkNmU1MWFhZDg4RjZGNGNlNmFCODgyNzI3OWNmZkZiOTIyNjY6b3JnL3NwYWNlIjp7InRpbnljbG91ZC5zcGFjZS9ob3N0Ijpbe31dfSwidGlueWNsb3VkOnBraDplaXAxNTU6MToweGYzOUZkNmU1MWFhZDg4RjZGNGNlNmFCODgyNzI3OWNmZkZiOTIyNjY6b3JnL3NxbC9zaGFyZWQtaW5kZXgiOnsidGlueWNsb3VkLnNxbC9hZG1pbiI6W3t9XX19LCJmY3QiOlt7Im9yZy1zcGFjZSI6eyJhZG1pbkFjY291bnQiOiJkaWQ6cGtoOmVpcDE1NToxOjB4ZjM5RmQ2ZTUxYWFkODhGNkY0Y2U2YUI4ODI3Mjc5Y2ZmRmI5MjI2NiIsImNsYXNzIjoic3BhY2UtaG9zdCIsImdyYW50SWQiOiJncmFudF9vd25lcl8xIn19XX0",
+      "ctx": {
+        "allowedOrigins": [
+          "https://credentials.org"
+        ],
+        "requestingOrigin": "https://credentials.org",
+        "address": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+        "grantId": "grant_owner_1",
+        "role": "OWNER",
+        "now": "2026-05-01T12:00:00.000Z"
+      },
+      "expected": {
+        "ok": false,
+        "code": "org_space_address_mismatch"
+      }
+    },
+    {
+      "name": "refuse-grant-mismatch",
+      "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      "signature": "0x9a48b76e748bcb1c87ed44b98cdc7c02b6dd358621318745643fac57d4e294094557edd694d3e55f924a5dc95d998da9226b0d519f63dd75b6dbdca31f323dcb1b",
+      "message": "credentials.org wants you to sign in with your Ethereum account:\n0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\n\nHost org space tinycloud:pkh:eip155:1:0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266:org and its shared-index schema. Requires OWNER role. Valid from 2026-05-01T12:00:00.000Z until 2026-05-02T12:00:00.000Z.\n\nURI: tinycloud:pkh:eip155:1:0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266:org\nVersion: 1\nChain ID: 1\nNonce: abcdefgh12\nIssued At: 2026-05-01T12:00:00.000Z\nExpiration Time: 2026-05-02T12:00:00.000Z\nResources:\n- urn:recap:eyJhdHQiOnsidGlueWNsb3VkOnBraDplaXAxNTU6MToweGYzOUZkNmU1MWFhZDg4RjZGNGNlNmFCODgyNzI3OWNmZkZiOTIyNjY6b3JnL3NwYWNlIjp7InRpbnljbG91ZC5zcGFjZS9ob3N0Ijpbe31dfSwidGlueWNsb3VkOnBraDplaXAxNTU6MToweGYzOUZkNmU1MWFhZDg4RjZGNGNlNmFCODgyNzI3OWNmZkZiOTIyNjY6b3JnL3NxbC9zaGFyZWQtaW5kZXgiOnsidGlueWNsb3VkLnNxbC9hZG1pbiI6W3t9XX19LCJmY3QiOlt7Im9yZy1zcGFjZSI6eyJhZG1pbkFjY291bnQiOiJkaWQ6cGtoOmVpcDE1NToxOjB4ZjM5RmQ2ZTUxYWFkODhGNkY0Y2U2YUI4ODI3Mjc5Y2ZmRmI5MjI2NiIsImNsYXNzIjoic3BhY2UtaG9zdCIsImdyYW50SWQiOiJncmFudF9vd25lcl8xIn19XX0",
+      "ctx": {
+        "allowedOrigins": [
+          "https://credentials.org"
+        ],
+        "requestingOrigin": "https://credentials.org",
+        "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+        "grantId": "grant_other",
+        "role": "OWNER",
+        "now": "2026-05-01T12:00:00.000Z"
+      },
+      "expected": {
+        "ok": false,
+        "code": "org_space_grant_mismatch"
+      }
+    },
+    {
+      "name": "refuse-time-skew",
+      "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      "signature": "0x1727e52ce303633ecdda8db8fae3ce82dea4355e6f0edae2b3464af1796f87230f4a0c723ef868fdaf662e9a58ab2ef75e28b6709a388f14f960c5f10dc50c751c",
+      "message": "credentials.org wants you to sign in with your Ethereum account:\n0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\n\nHost org space tinycloud:pkh:eip155:1:0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266:org and its shared-index schema. Requires OWNER role. Valid from 2026-05-01T12:10:00.000Z until 2026-05-01T13:10:00.000Z.\n\nURI: tinycloud:pkh:eip155:1:0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266:org\nVersion: 1\nChain ID: 1\nNonce: abcdefgh12\nIssued At: 2026-05-01T12:10:00.000Z\nExpiration Time: 2026-05-01T13:10:00.000Z\nResources:\n- urn:recap:eyJhdHQiOnsidGlueWNsb3VkOnBraDplaXAxNTU6MToweGYzOUZkNmU1MWFhZDg4RjZGNGNlNmFCODgyNzI3OWNmZkZiOTIyNjY6b3JnL3NwYWNlIjp7InRpbnljbG91ZC5zcGFjZS9ob3N0Ijpbe31dfSwidGlueWNsb3VkOnBraDplaXAxNTU6MToweGYzOUZkNmU1MWFhZDg4RjZGNGNlNmFCODgyNzI3OWNmZkZiOTIyNjY6b3JnL3NxbC9zaGFyZWQtaW5kZXgiOnsidGlueWNsb3VkLnNxbC9hZG1pbiI6W3t9XX19LCJmY3QiOlt7Im9yZy1zcGFjZSI6eyJhZG1pbkFjY291bnQiOiJkaWQ6cGtoOmVpcDE1NToxOjB4ZjM5RmQ2ZTUxYWFkODhGNkY0Y2U2YUI4ODI3Mjc5Y2ZmRmI5MjI2NiIsImNsYXNzIjoic3BhY2UtaG9zdCIsImdyYW50SWQiOiJncmFudF9vd25lcl8xIn19XX0",
+      "ctx": {
+        "allowedOrigins": [
+          "https://credentials.org"
+        ],
+        "requestingOrigin": "https://credentials.org",
+        "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+        "grantId": "grant_owner_1",
+        "role": "OWNER",
+        "now": "2026-05-01T12:00:00.000Z"
+      },
+      "expected": {
+        "ok": false,
+        "code": "org_space_time_invalid"
+      }
+    },
+    {
+      "name": "refuse-lifetime-exceeded",
+      "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      "signature": "0xefb014511ef3d742c7569a7544c3aa20ec78f0f8a004025e93de943c3ce449382cdada36d1749c9ba77b5be956aeeba930f8f48f883b2209462f3a4cd3c6f0411b",
+      "message": "credentials.org wants you to sign in with your Ethereum account:\n0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\n\nHost org space tinycloud:pkh:eip155:1:0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266:org and its shared-index schema. Requires OWNER role. Valid from 2026-05-01T12:00:00.000Z until 2026-06-01T12:00:00.000Z.\n\nURI: tinycloud:pkh:eip155:1:0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266:org\nVersion: 1\nChain ID: 1\nNonce: abcdefgh12\nIssued At: 2026-05-01T12:00:00.000Z\nExpiration Time: 2026-06-01T12:00:00.000Z\nResources:\n- urn:recap:eyJhdHQiOnsidGlueWNsb3VkOnBraDplaXAxNTU6MToweGYzOUZkNmU1MWFhZDg4RjZGNGNlNmFCODgyNzI3OWNmZkZiOTIyNjY6b3JnL3NwYWNlIjp7InRpbnljbG91ZC5zcGFjZS9ob3N0Ijpbe31dfSwidGlueWNsb3VkOnBraDplaXAxNTU6MToweGYzOUZkNmU1MWFhZDg4RjZGNGNlNmFCODgyNzI3OWNmZkZiOTIyNjY6b3JnL3NxbC9zaGFyZWQtaW5kZXgiOnsidGlueWNsb3VkLnNxbC9hZG1pbiI6W3t9XX19LCJmY3QiOlt7Im9yZy1zcGFjZSI6eyJhZG1pbkFjY291bnQiOiJkaWQ6cGtoOmVpcDE1NToxOjB4ZjM5RmQ2ZTUxYWFkODhGNkY0Y2U2YUI4ODI3Mjc5Y2ZmRmI5MjI2NiIsImNsYXNzIjoic3BhY2UtaG9zdCIsImdyYW50SWQiOiJncmFudF9vd25lcl8xIn19XX0",
+      "ctx": {
+        "allowedOrigins": [
+          "https://credentials.org"
+        ],
+        "requestingOrigin": "https://credentials.org",
+        "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+        "grantId": "grant_owner_1",
+        "role": "OWNER",
+        "now": "2026-05-01T12:00:00.000Z"
+      },
+      "expected": {
+        "ok": false,
+        "code": "org_space_lifetime_exceeded"
+      }
+    },
+    {
+      "name": "refuse-non-canonical-key-order",
+      "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      "signature": "0x6bc6877f3375682d3a5cac1e48af5c23b3937e01eccf8ebd2f1c8c1026c13d2048ea550350ea97c12b2e6116d833992a0d6b1d1f69eb60f36d9574ce188e76601c",
+      "message": "credentials.org wants you to sign in with your Ethereum account:\n0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\n\nplaceholder statement\n\nURI: tinycloud:pkh:eip155:1:0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266:org\nVersion: 1\nChain ID: 1\nNonce: abcdefgh12\nIssued At: 2026-05-01T12:00:00.000Z\nExpiration Time: 2026-05-02T12:00:00.000Z\nResources:\n- urn:recap:eyJmY3QiOlt7Im9yZy1zcGFjZSI6eyJncmFudElkIjoiZ3JhbnRfb3duZXJfMSIsImNsYXNzIjoic3BhY2UtaG9zdCIsImFkbWluQWNjb3VudCI6ImRpZDpwa2g6ZWlwMTU1OjE6MHhmMzlGZDZlNTFhYWQ4OEY2RjRjZTZhQjg4MjcyNzljZmZGYjkyMjY2In19XSwiYXR0Ijp7InRpbnljbG91ZDpwa2g6ZWlwMTU1OjE6MHhmMzlGZDZlNTFhYWQ4OEY2RjRjZTZhQjg4MjcyNzljZmZGYjkyMjY2Om9yZy9zcWwvc2hhcmVkLWluZGV4Ijp7InRpbnljbG91ZC5zcWwvYWRtaW4iOlt7fV19LCJ0aW55Y2xvdWQ6cGtoOmVpcDE1NToxOjB4ZjM5RmQ2ZTUxYWFkODhGNkY0Y2U2YUI4ODI3Mjc5Y2ZmRmI5MjI2Njpvcmcvc3BhY2UiOnsidGlueWNsb3VkLnNwYWNlL2hvc3QiOlt7fV19fX0",
+      "ctx": {
+        "allowedOrigins": [
+          "https://credentials.org"
+        ],
+        "requestingOrigin": "https://credentials.org",
+        "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+        "grantId": "grant_owner_1",
+        "role": "OWNER",
+        "now": "2026-05-01T12:00:00.000Z"
+      },
+      "expected": {
+        "ok": false,
+        "code": "org_space_not_canonical"
+      }
+    }
+  ]
+}
