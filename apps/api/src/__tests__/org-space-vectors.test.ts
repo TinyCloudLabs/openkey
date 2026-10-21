@@ -13,6 +13,7 @@ type Vector = {
     address: string;
     adminAddress: string;
     grantId: string;
+    nodeHostDid: string | null;
     role: OrgRole;
     now: string;
   };
@@ -32,6 +33,7 @@ describe('org-space golden vectors', () => {
         grantId: v.ctx.grantId,
         role: v.ctx.role,
         now: new Date(v.ctx.now),
+        nodeHostDid: v.ctx.nodeHostDid,
       });
       if (v.expected.ok) {
         expect(result).toMatchObject({ ok: true, kind: v.expected.kind, role: v.expected.role });

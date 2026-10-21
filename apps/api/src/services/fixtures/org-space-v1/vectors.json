@@ -15,6 +15,7 @@
         "adminAddress": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
         "grantId": "grant_owner_1",
         "role": "OWNER",
+        "nodeHostDid": "did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooWp",
         "now": "2026-05-01T12:00:00.000Z"
       },
       "expected": {
@@ -37,6 +38,7 @@
         "adminAddress": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
         "grantId": "grant_owner_1",
         "role": "ADMIN",
+        "nodeHostDid": "did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooWp",
         "now": "2026-05-01T12:00:00.000Z"
       },
       "expected": {
@@ -59,6 +61,7 @@
         "adminAddress": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
         "grantId": "grant_owner_1",
         "role": "OWNER",
+        "nodeHostDid": "did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooWp",
         "now": "2026-05-01T12:00:00.000Z"
       },
       "expected": {
@@ -81,6 +84,7 @@
         "adminAddress": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
         "grantId": "grant_owner_1",
         "role": "OWNER",
+        "nodeHostDid": "did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooWp",
         "now": "2026-05-01T12:00:00.000Z"
       },
       "expected": {
@@ -103,6 +107,7 @@
         "adminAddress": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
         "grantId": "grant_owner_1",
         "role": "OWNER",
+        "nodeHostDid": "did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooWp",
         "now": "2026-05-01T12:00:00.000Z"
       },
       "expected": {
@@ -124,6 +129,7 @@
         "adminAddress": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
         "grantId": "grant_owner_1",
         "role": "OWNER",
+        "nodeHostDid": "did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooWp",
         "now": "2026-05-01T12:00:00.000Z"
       },
       "expected": {
@@ -145,6 +151,7 @@
         "adminAddress": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
         "grantId": "grant_owner_1",
         "role": "OWNER",
+        "nodeHostDid": "did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooWp",
         "now": "2026-05-01T12:00:00.000Z"
       },
       "expected": {
@@ -166,6 +173,7 @@
         "adminAddress": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
         "grantId": "grant_owner_1",
         "role": "ADMIN",
+        "nodeHostDid": "did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooWp",
         "now": "2026-05-01T12:00:00.000Z"
       },
       "expected": {
@@ -187,6 +195,7 @@
         "adminAddress": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
         "grantId": "grant_owner_1",
         "role": "OWNER",
+        "nodeHostDid": "did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooWp",
         "now": "2026-05-01T12:00:00.000Z"
       },
       "expected": {
@@ -208,6 +217,7 @@
         "adminAddress": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
         "grantId": "grant_owner_1",
         "role": "OWNER",
+        "nodeHostDid": "did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooWp",
         "now": "2026-05-01T12:00:00.000Z"
       },
       "expected": {
@@ -229,6 +239,7 @@
         "adminAddress": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
         "grantId": "grant_other",
         "role": "OWNER",
+        "nodeHostDid": "did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooWp",
         "now": "2026-05-01T12:00:00.000Z"
       },
       "expected": {
@@ -250,6 +261,7 @@
         "adminAddress": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
         "grantId": "grant_owner_1",
         "role": "OWNER",
+        "nodeHostDid": "did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooWp",
         "now": "2026-05-01T12:00:00.000Z"
       },
       "expected": {
@@ -271,6 +283,7 @@
         "adminAddress": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
         "grantId": "grant_owner_1",
         "role": "OWNER",
+        "nodeHostDid": "did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooWp",
         "now": "2026-05-01T12:00:00.000Z"
       },
       "expected": {
@@ -292,6 +305,7 @@
         "adminAddress": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
         "grantId": "grant_owner_1",
         "role": "OWNER",
+        "nodeHostDid": "did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooWp",
         "now": "2026-05-01T12:00:00.000Z"
       },
       "expected": {
@@ -313,6 +327,7 @@
         "adminAddress": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
         "grantId": "grant_owner_1",
         "role": "OWNER",
+        "nodeHostDid": "did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooWp",
         "now": "2026-05-01T12:00:00.000Z"
       },
       "expected": {
@@ -334,6 +349,7 @@
         "adminAddress": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
         "grantId": "grant_owner_1",
         "role": "OWNER",
+        "nodeHostDid": "did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooWp",
         "now": "2026-05-01T12:00:00.000Z"
       },
       "expected": {
@@ -355,6 +371,7 @@
         "adminAddress": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
         "grantId": "grant_owner_1",
         "role": "OWNER",
+        "nodeHostDid": "did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooWp",
         "now": "2026-05-01T12:00:00.000Z"
       },
       "expected": {
@@ -376,6 +393,7 @@
         "adminAddress": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
         "grantId": "grant_owner_1",
         "role": "OWNER",
+        "nodeHostDid": "did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooWp",
         "now": "2026-05-01T12:00:00.000Z"
       },
       "expected": {
@@ -397,6 +415,7 @@
         "adminAddress": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
         "grantId": "grant_owner_1",
         "role": "OWNER",
+        "nodeHostDid": "did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooWp",
         "now": "2026-05-01T12:00:00.000Z"
       },
       "expected": {
@@ -418,6 +437,7 @@
         "adminAddress": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
         "grantId": "grant_owner_1",
         "role": "OWNER",
+        "nodeHostDid": "did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooWp",
         "now": "2026-05-01T12:00:00.000Z"
       },
       "expected": {

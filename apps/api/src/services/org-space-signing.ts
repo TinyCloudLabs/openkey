@@ -329,6 +329,8 @@ export type OrgSpaceContext = {
   adminAddress: string;
   grantId: string;
   role: OrgRole;
+  // Host DID the node staged for the org space. The space-host URI must equal it. Null when unavailable.
+  nodeHostDid: string | null;
   now?: Date;
 };
 
@@ -347,6 +349,17 @@ function abilityClass(ability: string, resource: string, space: string): OrgSpac
   if (ability.startsWith('tinycloud.hooks/')) return 'hook';
   if (ability.startsWith('tinycloud.encryption/')) return 'encryption';
   return null;
+}
+
+// The class the message declares, or null when it does not parse. Gates nothing:
+// classifyOrgSpaceMessage makes every refusal decision.
+export function declaredOrgSpaceClass(message: string): OrgSpaceClass | null {
+  try {
+    const declared = parseOrgSpaceMessage(message).fact.class;
+    return (ORG_SPACE_CLASSES as readonly string[]).includes(declared) ? (declared as OrgSpaceClass) : null;
+  } catch {
+    return null;
+  }
 }
 
 // Classification runs in fixed order. The first failing check decides the refusal.
@@ -399,8 +412,12 @@ function classifyOrThrow(message: string, ctx: OrgSpaceContext): OrgSpaceClassif
       if (actual.length !== wanted.length || actual.some((key, i) => key !== wanted[i])) {
         throw new OrgSpaceRefusal('org_space_resource_refused');
       }
-      // Shape-only: the URI must be an ed25519 did:key. It is not bound to the node-staged host DID.
-      if (!isEd25519DidKey(p.uri)) throw new OrgSpaceRefusal('org_space_recipient_refused');
+      // The URI must be the host DID the node staged for this org space. A missing or invalid
+      // staged DID is unavailable: refused, never accepted on shape alone.
+      if (ctx.nodeHostDid === null || !isEd25519DidKey(ctx.nodeHostDid)) {
+        throw new OrgSpaceRefusal('org_space_host_unavailable');
+      }
+      if (p.uri !== ctx.nodeHostDid) throw new OrgSpaceRefusal('org_space_recipient_refused');
       break;
     }
     case 'kv-delegation': {

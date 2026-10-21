@@ -800,7 +800,7 @@ async function activateRequiredSession(host: string, session: BootstrapSession):
   }
 }
 
-async function nodeFetchPeerId(host: string, spaceId: string): Promise<string> {
+export async function nodeFetchPeerId(host: string, spaceId: string): Promise<string> {
   const response = await nodeFetch(
     `${host}/peer/generate/${encodeURIComponent(spaceId)}`,
     {},

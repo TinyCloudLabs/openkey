@@ -14,7 +14,8 @@ import {
 import { createSealingContext, deriveKeyForRecord } from './key-sealing';
 import { checkHandle, classifyIssuerStatement, ISSUER_STATEMENT_KIND, IssuerStatementRefusal, issuerDidForOrgId, namesIssuerStatement, type IssuerStatementRecord } from './org-issuer-statement';
 import { primaryKeyWhere } from './primary-key';
-import { classifyOrgSpaceMessage, isOrgSpaceSigningEnabled, namesOrgSpaceMessage, roleSatisfies, type OrgRole } from './org-space-signing';
+import { classifyOrgSpaceMessage, declaredOrgSpaceClass, isOrgSpaceSigningEnabled, namesOrgSpaceMessage, roleSatisfies, spaceIdFor, type OrgRole } from './org-space-signing';
+import { resolveOrgSpaceHostDid } from './org-space-host-did';
 
 // Capability flag for organization key custody (TC-1518). Default off: the
 // org-key routes answer 404 until the flag is set to "true".
@@ -223,6 +224,14 @@ async function loadCanonicalAddress(prisma: PrismaClient, userId: string): Promi
   return key ? getAddress(key.address) : null;
 }
 
+// The org-space host DID is resolved only for a declared space-host message, and only while the
+// org-space flag is on. Every other message gets null and never reaches the host check.
+async function orgSpaceNodeHostDid(message: string, record: { key?: { address: string } }): Promise<string | null> {
+  if (!isOrgSpaceSigningEnabled() || declaredOrgSpaceClass(message) !== 'space-host') return null;
+  if (!record.key) return null;
+  return resolveOrgSpaceHostDid(spaceIdFor(getAddress(record.key.address)));
+}
+
 // K1 D7 refusals run first and are unconditional. Then the D3 allowlist: kind 1 (the issuer
 // statement, while the K4 kill switch is on) and kind 2 (the org-space message, while
 // ORG_SPACE_SIGNING_ENABLED is on). Every other message is refused as unsupported.
@@ -233,6 +242,7 @@ export function classifyOrgKeyMessage(
     requestingOrigin: string;
     env?: Record<string, string | undefined>;
     grant?: OrgKeyGrantContext;
+    nodeHostDid: string | null;
   },
 ): OrgKeyMessageClassification {
   if (message.includes('account-binding/v1') || message.includes('org-binding/v1')) {
@@ -253,6 +263,7 @@ export function classifyOrgKeyMessage(
       adminAddress: getAddress(context.grant.adminAddress),
       grantId: context.grant.grantId,
       role: context.grant.role,
+      nodeHostDid: context.nodeHostDid,
     });
     if (!org.ok) return { ok: false, refusal: org.refusal };
     return { ok: true, kind: org.kind, action: org.action, text: org.text, role: org.role };
@@ -320,6 +331,7 @@ export async function issueOrgKeySignChallenge(
     record,
     requestingOrigin: input.origin,
     grant: { grantId: input.grantId, role: input.role, adminAddress },
+    nodeHostDid: await orgSpaceNodeHostDid(input.message, record),
   });
   if (!classification.ok) throw new OrgKeyRefusal(403, classification.refusal, 'Message is not signable by this key');
 
@@ -486,6 +498,7 @@ export async function signOrgKeyMessage(
     record,
     requestingOrigin: input.origin,
     grant: { grantId: activeGrant.grantId, role: activeGrant.role, adminAddress },
+    nodeHostDid: await orgSpaceNodeHostDid(input.message, record),
   });
   if (!classification.ok) throw new OrgKeyRefusal(403, classification.refusal, 'Message is not signable by this key');
   const requiredRole = classification.role;

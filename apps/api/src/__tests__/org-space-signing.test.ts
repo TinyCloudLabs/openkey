@@ -55,6 +55,7 @@ function ctx(role: OrgRole = 'OWNER', overrides: Partial<ClassifyCtx> = {}): Cla
     address: ADDRESS,
     adminAddress: ADMIN_ADDRESS,
     grantId: GRANT,
+    nodeHostDid: DID_KEY,
     role,
     now: NOW,
     ...overrides,
@@ -262,6 +263,15 @@ describe('kind 2 accepts canonical node-format messages', () => {
 describe('kind 2 role gate (role is the locked grant role, not the caller claim)', () => {
   it('space-host requires OWNER: ADMIN is refused', () => {
     expect(refusalOf(renderOrgSpaceMessage(hostParsed()), ctx('ADMIN'))).toBe('org_space_role_insufficient');
+  });
+
+  it('space-host is refused as unavailable when the node stages no host DID', () => {
+    expect(refusalOf(renderOrgSpaceMessage(hostParsed()), ctx('OWNER', { nodeHostDid: null }))).toBe('org_space_host_unavailable');
+  });
+
+  it('space-host is refused as unavailable when the staged host DID is not an ed25519 did:key', () => {
+    const pkh = 'did:pkh:eip155:1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8';
+    expect(refusalOf(renderOrgSpaceMessage(hostParsed()), ctx('OWNER', { nodeHostDid: pkh }))).toBe('org_space_host_unavailable');
   });
 
   it('delegation-revoke requires OWNER: ADMIN is refused', () => {
@@ -484,8 +494,9 @@ describe('kind 2 resource and recipient gates', () => {
 
   it('an ed25519 did:key built by the test encoder is accepted as recipient', () => {
     // Control: shows the test encoder produces the shape the classifier accepts.
-    const message = renderOrgSpaceMessage(hostParsed({ uri: didKeyOf(ED25519_BODY) }));
-    expect(acceptOf(message).ok).toBe(true);
+    const staged = didKeyOf(ED25519_BODY);
+    const message = renderOrgSpaceMessage(hostParsed({ uri: staged }));
+    expect(acceptOf(message, ctx('OWNER', { nodeHostDid: staged })).ok).toBe(true);
   });
 
   it('revoke resource without the urn:cid: prefix is refused even when the tail is a valid CID', () => {

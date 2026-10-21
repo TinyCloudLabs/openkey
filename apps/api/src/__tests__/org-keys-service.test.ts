@@ -16,12 +16,21 @@ import {
 } from '../services/org-keys';
 import { canonicalJson, ISSUER_STATEMENT_KIND, parseIssuerStatement, renderIssuerStatement } from '../services/org-issuer-statement';
 import { adminAccountFor, renderOrgSpaceMessage, spaceIdFor } from '../services/org-space-signing';
+import { setOrgSpaceHostDidFetchForTests } from '../services/org-space-host-did';
 import { addEd25519Passkey, addRs256Passkey, asPrisma, assertionFor, CANONICAL_ADMIN_ADDRESS, ISSUER_DID, ORG_ID, ORIGIN, RP_ID, setupOrgKey, SLUG } from './org-keys-fixtures';
 
 type Ctx = Awaited<ReturnType<typeof setupOrgKey>>;
 
 // An Ed25519 did:key: the space-host recipient the node stages for the org space.
 const DID_KEY = 'did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooWp';
+
+beforeEach(() => {
+  setOrgSpaceHostDidFetchForTests(async () => DID_KEY);
+});
+
+afterEach(() => {
+  setOrgSpaceHostDidFetchForTests();
+});
 
 // A kind 2 (org-space) message the classifier accepts for this org key: space-host on
 // the key's own space, from the credentials.org origin.
@@ -187,6 +196,7 @@ describe('org key signing service', () => {
       return classifyOrgKeyMessage(message, {
         record: withKey ? { ...row, key: { address: ctx.key.address } } : row,
         requestingOrigin: origin,
+        nodeHostDid: DID_KEY,
         ...(withGrant ? { grant: { grantId: ctx.key.grantId, role: 'OWNER' as const, adminAddress: CANONICAL_ADMIN_ADDRESS } } : {}),
       });
     }
