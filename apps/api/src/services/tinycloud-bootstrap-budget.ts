@@ -162,6 +162,16 @@ const NON_RETRYABLE_ERROR_CODES: Record<string, true> = {
   tinycloud_bootstrap_in_progress: true,
 };
 
+/**
+ * Failure codes the background sweep retries. Allowlist, not denylist: a code the sweep does not
+ * know about (including null) is never retried without an explicit decision here.
+ */
+export const SWEEP_RETRYABLE_CODES: readonly string[] = [
+  'tinycloud_bootstrap_node_timeout',
+  'tinycloud_bootstrap_failed',
+  'tinycloud_bootstrap_space_not_hosted',
+];
+
 function requestedSpaceFromOutcome(outcome: TinyCloudBootstrapOutcome): RequestedSpaceResult {
   if (outcome.status !== 'failed') return { status: outcome.status };
   return outcome.errorCode === 'tinycloud_bootstrap_in_progress'
