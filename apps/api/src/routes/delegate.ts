@@ -82,6 +82,7 @@ import { checkSiweOrigin } from '../services/siwe-origin';
 import { fetchAndBindWellKnownManifest } from '../services/manifest-origin-fetch';
 import { signManagedKey, unsealManagedKey } from '../services/managed-key-signing';
 import { namesIssuerStatement } from '../services/org-issuer-statement';
+import { namesOrgSpaceMessage } from '../services/org-space-signing';
 import {
   canonicalizeCoordinationosOrigin,
   evaluateCoordinationosSessionRequest,
@@ -859,6 +860,11 @@ delegateRouter.post('/sign', async (c) => {
           did: `did:pkh:eip155:1:${ensureEip55(key.address)}`,
           spaceId: `tinycloud:pkh:eip155:1:${ensureEip55(key.address)}:applications`,
         };
+        // Kind 2 (org-space) is refused before the ReCap policy and unseal, so the
+        // personal route reports the org-space reason rather than a generic ReCap rejection.
+        if (typeof candidate.message === 'string' && namesOrgSpaceMessage(candidate.message)) {
+          throw new Error('message_rejected:org_space_not_personal');
+        }
         const policy = validateTinyCloudManageKeyRequest({ type: candidate.type, chainId: candidate.chainId, message: candidate.message, identity });
         if (!policy.allowed) throw new Error(`message_rejected:${policy.reason}`);
         const signature = await signManagedKey(key, key.sealedBlob, candidate.message as string);
@@ -929,6 +935,21 @@ delegateRouter.post('/sign', async (c) => {
     // managed-key-signing guard does not cover it.
     if (typeof candidate.message === 'string' && namesIssuerStatement(candidate.message)) {
       return auditDenial('issuer_statement_not_personal', sparseCoordinationosEvidence({
+        oauthAccessTokenId: principal.oauthAccessTokenId,
+        tokenDigest: principal.tokenDigest,
+        clientId: principal.clientId,
+        userId: principal.userId,
+        keyId: typeof candidate.keyId === 'string' ? candidate.keyId : null,
+        origin: canonicalizeCoordinationosOrigin(c.req.header('origin')),
+        chainId: typeof candidate.chainId === 'number' ? candidate.chainId : null,
+        purpose: typeof candidate.purpose === 'string' ? candidate.purpose : null,
+        type: typeof candidate.type === 'string' ? candidate.type : null,
+        siweDigest: sha256Hex(candidate.message),
+      }));
+    }
+    // Kind 2 (org-space) is refused on the personal route, before the key lookup and unseal.
+    if (typeof candidate.message === 'string' && namesOrgSpaceMessage(candidate.message)) {
+      return auditDenial('org_space_not_personal', sparseCoordinationosEvidence({
         oauthAccessTokenId: principal.oauthAccessTokenId,
         tokenDigest: principal.tokenDigest,
         clientId: principal.clientId,
@@ -1125,6 +1146,12 @@ delegateRouter.post('/sign', async (c) => {
 
   if (!autoSignPreference) {
     return c.json({ approved: false, reason: 'User not found' }, 404);
+  }
+
+  // K1 D3 / T3: kind 2 (org-space) is never a personal bootstrap request. Refuse it here,
+  // before the bootstrap parse, so it cannot fall through to the approval prompt below.
+  if (namesOrgSpaceMessage(body.message)) {
+    return c.json({ approved: false, code: 'message_rejected', reason: 'org_space_not_personal' }, 400);
   }
 
   let entries: RecapEntry[];

@@ -16,6 +16,7 @@ import { deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, PrimaryKeyConflictError, setPrimaryKey } from '../services/primary-key';
 import { checkSignableMessage } from '../services/siwe-origin';
 import { namesIssuerStatement } from '../services/org-issuer-statement';
+import { namesOrgSpaceMessage } from '../services/org-space-signing';
 import { rejectNonBrowserControlRequest } from '../middleware/browser-control';
 
 import { log, logError } from '../log';
@@ -308,6 +309,9 @@ keysRouter.post('/:keyId/sign', async (c) => {
   if (namesIssuerStatement(signedText)) {
     return c.json({ error: 'issuer statements are signed through the organization route', code: 'issuer_statement_not_personal' }, 403);
   }
+  if (namesOrgSpaceMessage(signedText)) {
+    return c.json({ error: 'organization space messages are signed through the organization route', code: 'org_space_not_personal' }, 403);
+  }
 
   const key = await prisma.ethereumKey.findFirst({
     where: { id: keyId, ...personalKeyWhere(user.id), archivedAt: null },
@@ -372,6 +376,9 @@ keysRouter.post('/:keyId/sign-typed-data', async (c) => {
   });
   if (namesIssuerStatement(typedDataText)) {
     return c.json({ error: 'issuer statements are signed through the organization route', code: 'issuer_statement_not_personal' }, 403);
+  }
+  if (namesOrgSpaceMessage(typedDataText)) {
+    return c.json({ error: 'organization space messages are signed through the organization route', code: 'org_space_not_personal' }, 403);
   }
 
   const key = await prisma.ethereumKey.findFirst({
