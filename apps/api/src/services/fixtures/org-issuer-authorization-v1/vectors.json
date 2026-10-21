@@ -1,0 +1,20 @@
+[
+  {
+    "name": "authorize",
+    "statement": "{\"action\":\"authorize\",\"alg\":\"EdDSA\",\"audience\":\"https://credentials.org\",\"controller\":\"did:pkh:eip155:1:0x1234567890123456789012345678901234567890\",\"issuerDid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org\",\"kid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org#issuing-1\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"notBefore\":\"2026-10-20T09:00:00Z\",\"orgId\":\"oceirceirceirceirceirceirce\",\"profiles\":[\"tinycloud.org-membership/v1\"],\"publicKey\":\"QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI\",\"seq\":1,\"slug\":\"acme-labs\",\"type\":\"tinycloud.org-issuer-authorization/v1\",\"vcts\":[\"opencredentials.org-membership/v1\",\"tinycloud.org-badge/v1\"]}",
+    "text": "credentials.org asks your org key to AUTHORISE an issuing key.\n\nAction: authorize\nOrg: acme-labs (oceirceirceirceirceirceirce)\nController: did:pkh:eip155:1:0x1234567890123456789012345678901234567890\nIssuer: did:web:oceirceirceirceirceirceirce.orgs.credentials.org\nKey id: did:web:oceirceirceirceirceirceirce.orgs.credentials.org#issuing-1\nPublic key: QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI\nCredential types: opencredentials.org-membership/v1, tinycloud.org-badge/v1\nProfiles: tinycloud.org-membership/v1\nFrom: 2026-10-20T09:00:00Z\nAudience: https://credentials.org\nSequence: 1\nNonce: 00112233445566778899aabbccddeeff\nStatement: tinycloud.org-issuer-authorization/v1 RDHfTB8y4aNv4cFrHqsdtMiZAVTWs9xubwrRBjo2k6s",
+    "digest": "RDHfTB8y4aNv4cFrHqsdtMiZAVTWs9xubwrRBjo2k6s"
+  },
+  {
+    "name": "retire",
+    "statement": "{\"action\":\"retire\",\"audience\":\"https://credentials.org\",\"controller\":\"did:pkh:eip155:1:0x1234567890123456789012345678901234567890\",\"issuerDid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org\",\"kid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org#issuing-1\",\"nonce\":\"102132435465768798a9bacbdcedfe0f\",\"orgId\":\"oceirceirceirceirceirceirce\",\"retiredAt\":\"2026-11-01T00:00:00Z\",\"seq\":2,\"slug\":\"acme-labs\",\"type\":\"tinycloud.org-issuer-authorization/v1\"}",
+    "text": "credentials.org asks your org key to RETIRE an issuing key (it stops issuing; existing credentials keep working).\n\nAction: retire\nOrg: acme-labs (oceirceirceirceirceirceirce)\nController: did:pkh:eip155:1:0x1234567890123456789012345678901234567890\nIssuer: did:web:oceirceirceirceirceirceirce.orgs.credentials.org\nKey id: did:web:oceirceirceirceirceirceirce.orgs.credentials.org#issuing-1\nRetire at: 2026-11-01T00:00:00Z\nAudience: https://credentials.org\nSequence: 2\nNonce: 102132435465768798a9bacbdcedfe0f\nStatement: tinycloud.org-issuer-authorization/v1 5BkSavNz4DpqSS5174KV4UsHTvn7Pdg2R9CzR7lhEUU",
+    "digest": "5BkSavNz4DpqSS5174KV4UsHTvn7Pdg2R9CzR7lhEUU"
+  },
+  {
+    "name": "revoke",
+    "statement": "{\"action\":\"revoke\",\"audience\":\"https://credentials.org\",\"controller\":\"did:pkh:eip155:1:0x1234567890123456789012345678901234567890\",\"issuerDid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org\",\"kid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org#issuing-1\",\"nonce\":\"203142536475869708192a3b4c5d6e7f\",\"notAfter\":\"2026-12-01T00:00:00Z\",\"orgId\":\"oceirceirceirceirceirceirce\",\"seq\":3,\"slug\":\"acme-labs\",\"type\":\"tinycloud.org-issuer-authorization/v1\"}",
+    "text": "credentials.org asks your org key to REVOKE an issuing key (STOP issuing now; ask TinyCloud to invalidate its credentials).\n\nAction: revoke\nOrg: acme-labs (oceirceirceirceirceirceirce)\nController: did:pkh:eip155:1:0x1234567890123456789012345678901234567890\nIssuer: did:web:oceirceirceirceirceirceirce.orgs.credentials.org\nKey id: did:web:oceirceirceirceirceirceirce.orgs.credentials.org#issuing-1\nInvalidate at: 2026-12-01T00:00:00Z\nAudience: https://credentials.org\nSequence: 3\nNonce: 203142536475869708192a3b4c5d6e7f\nStatement: tinycloud.org-issuer-authorization/v1 4QcdU1LMF9p1s9Y3rujStpazxPljuazMzTZUEOb1bGM",
+    "digest": "4QcdU1LMF9p1s9Y3rujStpazxPljuazMzTZUEOb1bGM"
+  }
+]

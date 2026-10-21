@@ -81,6 +81,7 @@ import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
 import { checkSiweOrigin } from '../services/siwe-origin';
 import { fetchAndBindWellKnownManifest } from '../services/manifest-origin-fetch';
 import { signManagedKey, unsealManagedKey } from '../services/managed-key-signing';
+import { namesIssuerStatement } from '../services/org-issuer-statement';
 import {
   canonicalizeCoordinationosOrigin,
   evaluateCoordinationosSessionRequest,
@@ -100,7 +101,7 @@ import { validateTinyCloudManageKeyRequest } from '../services/tinycloud-manage-
 import { canonicalTrustedTinyCloudHost } from '../services/tinycloud-hosts';
 import { hostRequestedSpaceWithinBudget } from '../services/tinycloud-bootstrap-budget';
 import { deviceDelegationWindowError, deviceTransactionUnsupportedError } from './device-delegation-window';
-import { isPrimaryKey, primaryKeyWhere } from '../services/primary-key';
+import { isPrimaryKey, personalKeyWhere, primaryKeyWhere } from '../services/primary-key';
 import { PreparedHandoffError } from '../services/prepared-handoff';
 import { preparedHandoffService } from './prepared-handoffs';
 import { normalizeAppOrigin, recordAppSignIn } from '../services/app-sign-in';
@@ -923,10 +924,27 @@ delegateRouter.post('/sign', async (c) => {
         siweDigest: typeof candidate.message === 'string' ? sha256Hex(candidate.message) : null,
       }));
     }
+    // K1 D3: an issuer statement is refused before the key lookup, grant consumption,
+    // and unseal. This branch signs with an unsealed key directly, so the
+    // managed-key-signing guard does not cover it.
+    if (typeof candidate.message === 'string' && namesIssuerStatement(candidate.message)) {
+      return auditDenial('issuer_statement_not_personal', sparseCoordinationosEvidence({
+        oauthAccessTokenId: principal.oauthAccessTokenId,
+        tokenDigest: principal.tokenDigest,
+        clientId: principal.clientId,
+        userId: principal.userId,
+        keyId: typeof candidate.keyId === 'string' ? candidate.keyId : null,
+        origin: canonicalizeCoordinationosOrigin(c.req.header('origin')),
+        chainId: typeof candidate.chainId === 'number' ? candidate.chainId : null,
+        purpose: typeof candidate.purpose === 'string' ? candidate.purpose : null,
+        type: typeof candidate.type === 'string' ? candidate.type : null,
+        siweDigest: sha256Hex(candidate.message),
+      }));
+    }
 
     const key = typeof candidate.keyId === 'string'
       ? await prisma.ethereumKey.findUnique({
-          where: { id: candidate.keyId },
+          where: { id: candidate.keyId, custody: 'PERSONAL' },
           select: {
             id: true,
             userId: true,
@@ -1070,7 +1088,7 @@ delegateRouter.post('/sign', async (c) => {
 
   const key = await prisma.ethereumKey.findFirst({
     where: {
-      userId: user.id,
+      ...personalKeyWhere(user.id),
       archivedAt: null,
       ...(body.keyId
         ? { id: body.keyId }
@@ -1132,7 +1150,16 @@ delegateRouter.post('/sign', async (c) => {
     return c.json(openKeyApprovalRequired(autoSignDecision.reason, autoSignDecision.code));
   }
 
-  const signature = await signManagedKey(key, key.sealedBlob, body.message);
+  let signature: string;
+  try {
+    signature = await signManagedKey(key, key.sealedBlob, body.message);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '';
+    if (message.startsWith('message_rejected:')) {
+      return c.json({ approved: false, code: 'message_rejected', reason: message.slice('message_rejected:'.length) }, 400);
+    }
+    throw error;
+  }
   // The route is called from the app's own page, so Origin is the app origin.
   recordAppSignIn(prisma, user.id, c.req.header('origin'));
   return c.json({
@@ -1169,7 +1196,7 @@ delegateRouter.post('/host', async (c) => {
   }
 
   const key = await prisma.ethereumKey.findFirst({
-    where: { id: body.keyId, userId: user.id, archivedAt: null },
+    where: { id: body.keyId, ...personalKeyWhere(user.id), archivedAt: null },
   });
 
   if (!key) {
@@ -1255,7 +1282,7 @@ delegateRouter.post('/', async (c) => {
   }
 
   const key = await prisma.ethereumKey.findFirst({
-    where: { id: body.keyId, userId: user.id, archivedAt: null },
+    where: { id: body.keyId, ...personalKeyWhere(user.id), archivedAt: null },
   });
 
   if (!key) {
@@ -1725,7 +1752,7 @@ delegateRouter.post('/prepare', async (c) => {
   }
 
   const key = await prisma.ethereumKey.findFirst({
-    where: { id: body.keyId, userId: user.id, archivedAt: null },
+    where: { id: body.keyId, ...personalKeyWhere(user.id), archivedAt: null },
   });
 
   if (!key) {
@@ -2026,7 +2053,7 @@ delegateRouter.post('/complete', async (c) => {
   // record for the signing address. External wallets, and addresses this
   // user does not hold, are never primary.
   const signerKey = await prisma.ethereumKey.findFirst({
-    where: { userId: user.id, address: { equals: preparedAddress, mode: 'insensitive' }, archivedAt: null },
+    where: { ...personalKeyWhere(user.id), address: { equals: preparedAddress, mode: 'insensitive' }, archivedAt: null },
     select: { keyType: true, isCanonicalTinyCloud: true, archivedAt: true },
   });
   const primary = signerKey ? isPrimaryKey(signerKey) : false;
@@ -2354,7 +2381,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
   const key = await prisma.ethereumKey.findFirst({
     where: {
       id: body.keyId,
-      userId: user.id,
+      ...personalKeyWhere(user.id),
       archivedAt: null,
     },
     select: {
@@ -2767,7 +2794,7 @@ delegateRouter.post('/authorize-sign', async (c) => {
   // require a caller-supplied signature.
   const candidateKeys = await prisma.ethereumKey.findMany({
     where: {
-      userId: user.id,
+      ...personalKeyWhere(user.id),
       archivedAt: null,
     },
     select: {

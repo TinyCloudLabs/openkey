@@ -42,6 +42,14 @@ const preparedHandoffMigration = '20261016_0001_prepared_siwe_handoff';
 const preparedHandoffChecksum = '645d931e10dbd068da7f7243dcbe995f1af6f0e339b98d082264c8153bfec9ec';
 const appSignInDayMigration = '20261019_0001_app_sign_in_day';
 const appSignInDayChecksum = 'a2f56caea9cd46aebccfb4d369e0223cf8338d07ac685a0dce145b4c3c90bb29';
+const orgKeyCustodyMigration = '20261021_0001_org_key_custody';
+const orgKeyCustodyChecksum = '2c9f0a53affc841a7f0a7d1b6f8b865f4c4ef0277e0e140e1f81cd76f1d97f23';
+const orgKeySignChallengesMigration = '20261021_0002_org_key_sign_challenges';
+const orgKeySignChallengesChecksum = '045b0c9c8dc4d00d50d227eb1faa731118122696ff989031c1b9eff18cc075c1';
+const orgKeyIssuerStatementMigration = '20261021_0003_org_key_issuer_statement';
+const orgKeyIssuerStatementChecksum = 'fdd5155f7f6731d51d88bbc7ad3cbd2d5b0e4420378ff290a1fe1f91142deefe';
+const orgKeySignatureAuditChallengeMigration = '20261021_0004_org_key_signature_audit_challenge';
+const orgKeySignatureAuditChallengeChecksum = '65b720e9384a14bed8cf95e64f869201e1e271864f58250dffc5e7b763ef06e3';
 // Reviewed expand-only migrations that may run while TC-488 stays parked.
 const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
   [deviceMigration, deviceChecksum],
@@ -53,6 +61,10 @@ const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
   [signinPolishMigration, signinPolishChecksum],
   [preparedHandoffMigration, preparedHandoffChecksum],
   [appSignInDayMigration, appSignInDayChecksum],
+  [orgKeySignChallengesMigration, orgKeySignChallengesChecksum],
+  [orgKeyIssuerStatementMigration, orgKeyIssuerStatementChecksum],
+  [orgKeySignatureAuditChallengeMigration, orgKeySignatureAuditChallengeChecksum],
+  [orgKeyCustodyMigration, orgKeyCustodyChecksum],
 ]);
 
 export type MigrationRow = {
@@ -326,6 +338,64 @@ async function deployAdditiveMigrationsBeforeTc488(
     !verified.request_login_method_column
   ) {
     throw new Error('Pre-TC-488 additive physical schema verification failed');
+  }
+  const orgCustody = await database.$queryRawUnsafe<Array<{
+    custody_column: boolean;
+    custody_check: boolean;
+    org_keys_table: boolean;
+    key_grants_table: boolean;
+    one_active_owner_index: boolean;
+    signature_audit_table: boolean;
+    signature_audit_hash_index: boolean;
+    signature_audit_role_column: boolean;
+    signature_audit_message_kind_column: boolean;
+    challenges_table: boolean;
+    challenges_nonce_index: boolean;
+    challenges_origin_column: boolean;
+    org_keys_slug_column: boolean;
+    org_keys_issuer_did_column: boolean;
+  }>>(`
+    SELECT
+      EXISTS (SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'ethereum_keys' AND column_name = 'custody') AS custody_column,
+      EXISTS (SELECT 1 FROM pg_constraint
+        WHERE conname = 'ethereum_keys_custody_org_shape_check' AND contype = 'c') AS custody_check,
+      to_regclass('public."org_keys"') IS NOT NULL AS org_keys_table,
+      to_regclass('public."key_grants"') IS NOT NULL AS key_grants_table,
+      to_regclass('public."key_grants_one_active_owner_per_key"') IS NOT NULL AS one_active_owner_index,
+      to_regclass('public."org_key_signature_audits"') IS NOT NULL AS signature_audit_table,
+      to_regclass('public."org_key_signature_audits_passkeyAssertionHash_key"') IS NOT NULL AS signature_audit_hash_index,
+      EXISTS (SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'org_key_signature_audits' AND column_name = 'role') AS signature_audit_role_column,
+      EXISTS (SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'org_key_signature_audits' AND column_name = 'messageKind') AS signature_audit_message_kind_column,
+      to_regclass('public."org_key_sign_challenges"') IS NOT NULL AS challenges_table,
+      to_regclass('public."org_key_sign_challenges_nonce_key"') IS NOT NULL AS challenges_nonce_index,
+      EXISTS (SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'org_key_sign_challenges' AND column_name = 'origin') AS challenges_origin_column,
+      EXISTS (SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'org_keys' AND column_name = 'slug') AS org_keys_slug_column,
+      EXISTS (SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'org_keys' AND column_name = 'issuerDid') AS org_keys_issuer_did_column
+  `);
+  const org = orgCustody[0];
+  if (
+    !org?.custody_column ||
+    !org.custody_check ||
+    !org.org_keys_table ||
+    !org.key_grants_table ||
+    !org.one_active_owner_index ||
+    !org.signature_audit_table ||
+    !org.signature_audit_hash_index ||
+    !org.signature_audit_role_column ||
+    !org.signature_audit_message_kind_column ||
+    !org.challenges_table ||
+    !org.challenges_nonce_index ||
+    !org.challenges_origin_column ||
+    !org.org_keys_slug_column ||
+    !org.org_keys_issuer_did_column
+  ) {
+    throw new Error('Pre-TC-488 org custody physical schema verification failed');
   }
   await assertNativeDelegationSchema(database);
 

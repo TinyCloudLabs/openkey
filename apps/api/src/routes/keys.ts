@@ -4,16 +4,18 @@ import { createPrismaClient } from '@openkey/db';
 import { createTeeClient, seal, unseal, generatePrivateKey, getAddressFromPrivateKey, type TeeQuote } from '@openkey/tee';
 import { requireSession, type SessionContext } from '../middleware/session';
 import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
-import { validateTypedData, verifyMessage } from 'viem';
+import { hexToString, validateTypedData, verifyMessage } from 'viem';
 import type { Hex } from 'viem';
 import {
   ensureTinyCloudBootstrapForApprovedSign,
 } from '../services/tinycloud-bootstrap';
 import { awaitTinyCloudBootstrapWithinBudget } from '../services/tinycloud-bootstrap-budget';
+import { personalKeyWhere } from '../services/primary-key';
 import { createSealingContext, deriveKeyForRecord } from '../services/key-sealing';
 import { deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, PrimaryKeyConflictError, setPrimaryKey } from '../services/primary-key';
 import { checkSignableMessage } from '../services/siwe-origin';
+import { namesIssuerStatement } from '../services/org-issuer-statement';
 import { rejectNonBrowserControlRequest } from '../middleware/browser-control';
 
 import { log, logError } from '../log';
@@ -114,7 +116,7 @@ keysRouter.post('/link', async (c) => {
 
   // Get next key index for this user
   const lastKey = await prisma.ethereumKey.findFirst({
-    where: { userId: user.id },
+    where: personalKeyWhere(user.id),
     orderBy: { keyIndex: 'desc' },
   });
   const keyIndex = (lastKey?.keyIndex ?? -1) + 1;
@@ -123,6 +125,7 @@ keysRouter.post('/link', async (c) => {
   const key = await prisma.ethereumKey.create({
     data: {
       userId: user.id,
+      custody: 'PERSONAL',
       address: body.address,
       publicKey: body.address,
       keyType: 'EXTERNAL',
@@ -147,7 +150,7 @@ keysRouter.post('/link', async (c) => {
 async function listKeysWithPrimary(userId: string, includeArchived: boolean) {
   const keys = await prisma.ethereumKey.findMany({
     where: {
-      userId,
+      ...personalKeyWhere(userId),
       ...(includeArchived ? {} : { archivedAt: null }),
     },
     select: {
@@ -185,7 +188,7 @@ keysRouter.post('/generate', async (c) => {
 
   // Get next key index for this user
   const lastKey = await prisma.ethereumKey.findFirst({
-    where: { userId: user.id },
+    where: personalKeyWhere(user.id),
     orderBy: { keyIndex: 'desc' },
   });
   const keyIndex = (lastKey?.keyIndex ?? -1) + 1;
@@ -204,6 +207,7 @@ keysRouter.post('/generate', async (c) => {
   const key = await prisma.ethereumKey.create({
     data: {
       userId: user.id,
+      custody: 'PERSONAL',
       address,
       publicKey: address, // For Ethereum, address is derived from public key
       sealedBlob,
@@ -230,7 +234,7 @@ keysRouter.get('/:keyId', async (c) => {
   const keyId = c.req.param('keyId');
 
   const key = await prisma.ethereumKey.findFirst({
-    where: { id: keyId, userId: user.id },
+    where: { id: keyId, ...personalKeyWhere(user.id) },
     select: {
       id: true,
       address: true,
@@ -259,7 +263,7 @@ keysRouter.patch('/:keyId', async (c) => {
   const body = await c.req.json<{ label: string }>();
 
   const key = await prisma.ethereumKey.updateMany({
-    where: { id: keyId, userId: user.id, archivedAt: null },
+    where: { id: keyId, ...personalKeyWhere(user.id), archivedAt: null },
     data: { label: body.label },
   });
 
@@ -299,9 +303,14 @@ keysRouter.post('/:keyId/sign', async (c) => {
   if (siweCheck.siwe && !siweCheck.ok) {
     return c.json({ error: siweCheck.message, code: 'siwe_origin_refused', reason: siweCheck.code }, 403);
   }
+  // K1 D3: an issuer statement is signable only through the org route, never here.
+  const signedText = body.format === 'raw' ? hexToString(body.message as Hex) : body.message;
+  if (namesIssuerStatement(signedText)) {
+    return c.json({ error: 'issuer statements are signed through the organization route', code: 'issuer_statement_not_personal' }, 403);
+  }
 
   const key = await prisma.ethereumKey.findFirst({
-    where: { id: keyId, userId: user.id, archivedAt: null },
+    where: { id: keyId, ...personalKeyWhere(user.id), archivedAt: null },
   });
 
   if (!key) {
@@ -353,8 +362,20 @@ keysRouter.post('/:keyId/sign-typed-data', async (c) => {
     message: any;
   }>();
 
+  // K1 D3: a personal key never signs a payload naming the issuer statement type,
+  // in any field. Refused before any key lookup or unseal, like /sign.
+  const typedDataText = JSON.stringify({
+    domain: body.domain,
+    types: body.types,
+    primaryType: body.primaryType,
+    message: body.message,
+  });
+  if (namesIssuerStatement(typedDataText)) {
+    return c.json({ error: 'issuer statements are signed through the organization route', code: 'issuer_statement_not_personal' }, 403);
+  }
+
   const key = await prisma.ethereumKey.findFirst({
-    where: { id: keyId, userId: user.id, archivedAt: null },
+    where: { id: keyId, ...personalKeyWhere(user.id), archivedAt: null },
   });
 
   if (!key) {
@@ -411,7 +432,7 @@ keysRouter.get('/:keyId/quote', async (c) => {
   }
 
   const key = await prisma.ethereumKey.findFirst({
-    where: { id: keyId, userId: user.id, archivedAt: null },
+    where: { id: keyId, ...personalKeyWhere(user.id), archivedAt: null },
   });
 
   if (!key) {
@@ -515,7 +536,7 @@ keysRouter.post('/:keyId/archive', async (c) => {
 
   const archivedAt = new Date();
   const key = await prisma.ethereumKey.updateMany({
-    where: { id: keyId, userId: user.id, archivedAt: null },
+    where: { id: keyId, ...personalKeyWhere(user.id), archivedAt: null },
     data: { archivedAt },
   });
 
@@ -532,7 +553,7 @@ keysRouter.post('/:keyId/unarchive', async (c) => {
   const keyId = c.req.param('keyId');
 
   const key = await prisma.ethereumKey.updateMany({
-    where: { id: keyId, userId: user.id, archivedAt: { not: null } },
+    where: { id: keyId, ...personalKeyWhere(user.id), archivedAt: { not: null } },
     data: { archivedAt: null },
   });
 

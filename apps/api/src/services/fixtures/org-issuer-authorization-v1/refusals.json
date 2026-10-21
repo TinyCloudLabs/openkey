@@ -1,0 +1,122 @@
+[
+  {
+    "name": "duplicate_key",
+    "input": "{\"action\":\"authorize\",\"alg\":\"EdDSA\",\"audience\":\"https://credentials.org\",\"controller\":\"did:pkh:eip155:1:0x1234567890123456789012345678901234567890\",\"issuerDid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org\",\"kid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org#issuing-1\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"notBefore\":\"2026-10-20T09:00:00Z\",\"orgId\":\"oceirceirceirceirceirceirce\",\"profiles\":[\"tinycloud.org-membership/v1\"],\"publicKey\":\"QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI\",\"seq\":1,\"seq\":1,\"slug\":\"acme-labs\",\"type\":\"tinycloud.org-issuer-authorization/v1\",\"vcts\":[\"opencredentials.org-membership/v1\",\"tinycloud.org-badge/v1\"]}",
+    "code": "non_canonical"
+  },
+  {
+    "name": "default_spacing",
+    "input": "{\"action\": \"authorize\", \"alg\": \"EdDSA\", \"audience\": \"https://credentials.org\", \"controller\": \"did:pkh:eip155:1:0x1234567890123456789012345678901234567890\", \"issuerDid\": \"did:web:oceirceirceirceirceirceirce.orgs.credentials.org\", \"kid\": \"did:web:oceirceirceirceirceirceirce.orgs.credentials.org#issuing-1\", \"nonce\": \"00112233445566778899aabbccddeeff\", \"notBefore\": \"2026-10-20T09:00:00Z\", \"orgId\": \"oceirceirceirceirceirceirce\", \"profiles\": [\"tinycloud.org-membership/v1\"], \"publicKey\": \"QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI\", \"seq\": 1, \"slug\": \"acme-labs\", \"type\": \"tinycloud.org-issuer-authorization/v1\", \"vcts\": [\"opencredentials.org-membership/v1\", \"tinycloud.org-badge/v1\"]}",
+    "code": "non_canonical"
+  },
+  {
+    "name": "reversed_key_order",
+    "input": "{\"vcts\":[\"opencredentials.org-membership/v1\",\"tinycloud.org-badge/v1\"],\"type\":\"tinycloud.org-issuer-authorization/v1\",\"slug\":\"acme-labs\",\"seq\":1,\"publicKey\":\"QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI\",\"profiles\":[\"tinycloud.org-membership/v1\"],\"orgId\":\"oceirceirceirceirceirceirce\",\"notBefore\":\"2026-10-20T09:00:00Z\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"kid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org#issuing-1\",\"issuerDid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org\",\"controller\":\"did:pkh:eip155:1:0x1234567890123456789012345678901234567890\",\"audience\":\"https://credentials.org\",\"alg\":\"EdDSA\",\"action\":\"authorize\"}",
+    "code": "non_canonical"
+  },
+  {
+    "name": "seq_as_float",
+    "input": "{\"action\":\"authorize\",\"alg\":\"EdDSA\",\"audience\":\"https://credentials.org\",\"controller\":\"did:pkh:eip155:1:0x1234567890123456789012345678901234567890\",\"issuerDid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org\",\"kid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org#issuing-1\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"notBefore\":\"2026-10-20T09:00:00Z\",\"orgId\":\"oceirceirceirceirceirceirce\",\"profiles\":[\"tinycloud.org-membership/v1\"],\"publicKey\":\"QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI\",\"seq\":1.0,\"slug\":\"acme-labs\",\"type\":\"tinycloud.org-issuer-authorization/v1\",\"vcts\":[\"opencredentials.org-membership/v1\",\"tinycloud.org-badge/v1\"]}",
+    "code": "non_canonical"
+  },
+  {
+    "name": "not_json",
+    "input": "{",
+    "code": "not_json"
+  },
+  {
+    "name": "not_object",
+    "input": "[]",
+    "code": "not_object"
+  },
+  {
+    "name": "extra_field",
+    "input": "{\"action\":\"authorize\",\"alg\":\"EdDSA\",\"audience\":\"https://credentials.org\",\"controller\":\"did:pkh:eip155:1:0x1234567890123456789012345678901234567890\",\"extra\":\"x\",\"issuerDid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org\",\"kid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org#issuing-1\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"notBefore\":\"2026-10-20T09:00:00Z\",\"orgId\":\"oceirceirceirceirceirceirce\",\"profiles\":[\"tinycloud.org-membership/v1\"],\"publicKey\":\"QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI\",\"seq\":1,\"slug\":\"acme-labs\",\"type\":\"tinycloud.org-issuer-authorization/v1\",\"vcts\":[\"opencredentials.org-membership/v1\",\"tinycloud.org-badge/v1\"]}",
+    "code": "unknown_field"
+  },
+  {
+    "name": "missing_slug",
+    "input": "{\"action\":\"authorize\",\"alg\":\"EdDSA\",\"audience\":\"https://credentials.org\",\"controller\":\"did:pkh:eip155:1:0x1234567890123456789012345678901234567890\",\"issuerDid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org\",\"kid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org#issuing-1\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"notBefore\":\"2026-10-20T09:00:00Z\",\"orgId\":\"oceirceirceirceirceirceirce\",\"profiles\":[\"tinycloud.org-membership/v1\"],\"publicKey\":\"QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI\",\"seq\":1,\"type\":\"tinycloud.org-issuer-authorization/v1\",\"vcts\":[\"opencredentials.org-membership/v1\",\"tinycloud.org-badge/v1\"]}",
+    "code": "missing_field"
+  },
+  {
+    "name": "unknown_type",
+    "input": "{\"action\":\"authorize\",\"alg\":\"EdDSA\",\"audience\":\"https://credentials.org\",\"controller\":\"did:pkh:eip155:1:0x1234567890123456789012345678901234567890\",\"issuerDid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org\",\"kid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org#issuing-1\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"notBefore\":\"2026-10-20T09:00:00Z\",\"orgId\":\"oceirceirceirceirceirceirce\",\"profiles\":[\"tinycloud.org-membership/v1\"],\"publicKey\":\"QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI\",\"seq\":1,\"slug\":\"acme-labs\",\"type\":\"tinycloud.org-issuer-authorization/v2\",\"vcts\":[\"opencredentials.org-membership/v1\",\"tinycloud.org-badge/v1\"]}",
+    "code": "unknown_type"
+  },
+  {
+    "name": "unknown_action",
+    "input": "{\"action\":\"rotate\",\"alg\":\"EdDSA\",\"audience\":\"https://credentials.org\",\"controller\":\"did:pkh:eip155:1:0x1234567890123456789012345678901234567890\",\"issuerDid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org\",\"kid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org#issuing-1\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"notBefore\":\"2026-10-20T09:00:00Z\",\"orgId\":\"oceirceirceirceirceirceirce\",\"profiles\":[\"tinycloud.org-membership/v1\"],\"publicKey\":\"QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI\",\"seq\":1,\"slug\":\"acme-labs\",\"type\":\"tinycloud.org-issuer-authorization/v1\",\"vcts\":[\"opencredentials.org-membership/v1\",\"tinycloud.org-badge/v1\"]}",
+    "code": "unknown_action"
+  },
+  {
+    "name": "kid_wrong_name",
+    "input": "{\"action\":\"authorize\",\"alg\":\"EdDSA\",\"audience\":\"https://credentials.org\",\"controller\":\"did:pkh:eip155:1:0x1234567890123456789012345678901234567890\",\"issuerDid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org\",\"kid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org#issuer-1\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"notBefore\":\"2026-10-20T09:00:00Z\",\"orgId\":\"oceirceirceirceirceirceirce\",\"profiles\":[\"tinycloud.org-membership/v1\"],\"publicKey\":\"QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI\",\"seq\":1,\"slug\":\"acme-labs\",\"type\":\"tinycloud.org-issuer-authorization/v1\",\"vcts\":[\"opencredentials.org-membership/v1\",\"tinycloud.org-badge/v1\"]}",
+    "code": "invalid_field"
+  },
+  {
+    "name": "kid_leading_zero",
+    "input": "{\"action\":\"authorize\",\"alg\":\"EdDSA\",\"audience\":\"https://credentials.org\",\"controller\":\"did:pkh:eip155:1:0x1234567890123456789012345678901234567890\",\"issuerDid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org\",\"kid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org#issuing-01\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"notBefore\":\"2026-10-20T09:00:00Z\",\"orgId\":\"oceirceirceirceirceirceirce\",\"profiles\":[\"tinycloud.org-membership/v1\"],\"publicKey\":\"QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI\",\"seq\":1,\"slug\":\"acme-labs\",\"type\":\"tinycloud.org-issuer-authorization/v1\",\"vcts\":[\"opencredentials.org-membership/v1\",\"tinycloud.org-badge/v1\"]}",
+    "code": "invalid_field"
+  },
+  {
+    "name": "wrong_audience",
+    "input": "{\"action\":\"authorize\",\"alg\":\"EdDSA\",\"audience\":\"https://example.com\",\"controller\":\"did:pkh:eip155:1:0x1234567890123456789012345678901234567890\",\"issuerDid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org\",\"kid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org#issuing-1\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"notBefore\":\"2026-10-20T09:00:00Z\",\"orgId\":\"oceirceirceirceirceirceirce\",\"profiles\":[\"tinycloud.org-membership/v1\"],\"publicKey\":\"QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI\",\"seq\":1,\"slug\":\"acme-labs\",\"type\":\"tinycloud.org-issuer-authorization/v1\",\"vcts\":[\"opencredentials.org-membership/v1\",\"tinycloud.org-badge/v1\"]}",
+    "code": "invalid_field"
+  },
+  {
+    "name": "seq_zero",
+    "input": "{\"action\":\"authorize\",\"alg\":\"EdDSA\",\"audience\":\"https://credentials.org\",\"controller\":\"did:pkh:eip155:1:0x1234567890123456789012345678901234567890\",\"issuerDid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org\",\"kid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org#issuing-1\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"notBefore\":\"2026-10-20T09:00:00Z\",\"orgId\":\"oceirceirceirceirceirceirce\",\"profiles\":[\"tinycloud.org-membership/v1\"],\"publicKey\":\"QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI\",\"seq\":0,\"slug\":\"acme-labs\",\"type\":\"tinycloud.org-issuer-authorization/v1\",\"vcts\":[\"opencredentials.org-membership/v1\",\"tinycloud.org-badge/v1\"]}",
+    "code": "invalid_field"
+  },
+  {
+    "name": "empty_vcts",
+    "input": "{\"action\":\"authorize\",\"alg\":\"EdDSA\",\"audience\":\"https://credentials.org\",\"controller\":\"did:pkh:eip155:1:0x1234567890123456789012345678901234567890\",\"issuerDid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org\",\"kid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org#issuing-1\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"notBefore\":\"2026-10-20T09:00:00Z\",\"orgId\":\"oceirceirceirceirceirceirce\",\"profiles\":[\"tinycloud.org-membership/v1\"],\"publicKey\":\"QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI\",\"seq\":1,\"slug\":\"acme-labs\",\"type\":\"tinycloud.org-issuer-authorization/v1\",\"vcts\":[]}",
+    "code": "invalid_field"
+  },
+  {
+    "name": "vcts_c0_escape",
+    "input": "{\"action\":\"authorize\",\"alg\":\"EdDSA\",\"audience\":\"https://credentials.org\",\"controller\":\"did:pkh:eip155:1:0x1234567890123456789012345678901234567890\",\"issuerDid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org\",\"kid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org#issuing-1\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"notBefore\":\"2026-10-20T09:00:00Z\",\"orgId\":\"oceirceirceirceirceirceirce\",\"profiles\":[\"tinycloud.org-membership/v1\"],\"publicKey\":\"QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI\",\"seq\":1,\"slug\":\"acme-labs\",\"type\":\"tinycloud.org-issuer-authorization/v1\",\"vcts\":[\"opencredentials.org-membership/v1\\u0007\"]}",
+    "code": "non_printable"
+  },
+  {
+    "name": "vcts_c1_raw",
+    "input": "{\"action\":\"authorize\",\"alg\":\"EdDSA\",\"audience\":\"https://credentials.org\",\"controller\":\"did:pkh:eip155:1:0x1234567890123456789012345678901234567890\",\"issuerDid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org\",\"kid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org#issuing-1\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"notBefore\":\"2026-10-20T09:00:00Z\",\"orgId\":\"oceirceirceirceirceirceirce\",\"profiles\":[\"tinycloud.org-membership/v1\"],\"publicKey\":\"QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI\",\"seq\":1,\"slug\":\"acme-labs\",\"type\":\"tinycloud.org-issuer-authorization/v1\",\"vcts\":[\"opencredentials.org-membership/v1\"]}",
+    "code": "non_printable"
+  },
+  {
+    "name": "vcts_bidi_raw",
+    "input": "{\"action\":\"authorize\",\"alg\":\"EdDSA\",\"audience\":\"https://credentials.org\",\"controller\":\"did:pkh:eip155:1:0x1234567890123456789012345678901234567890\",\"issuerDid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org\",\"kid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org#issuing-1\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"notBefore\":\"2026-10-20T09:00:00Z\",\"orgId\":\"oceirceirceirceirceirceirce\",\"profiles\":[\"tinycloud.org-membership/v1\"],\"publicKey\":\"QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI\",\"seq\":1,\"slug\":\"acme-labs\",\"type\":\"tinycloud.org-issuer-authorization/v1\",\"vcts\":[\"opencredentials.org-membership/v1‮\"]}",
+    "code": "non_printable"
+  },
+  {
+    "name": "vcts_non_ascii_raw",
+    "input": "{\"action\":\"authorize\",\"alg\":\"EdDSA\",\"audience\":\"https://credentials.org\",\"controller\":\"did:pkh:eip155:1:0x1234567890123456789012345678901234567890\",\"issuerDid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org\",\"kid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org#issuing-1\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"notBefore\":\"2026-10-20T09:00:00Z\",\"orgId\":\"oceirceirceirceirceirceirce\",\"profiles\":[\"tinycloud.org-membership/v1\"],\"publicKey\":\"QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI\",\"seq\":1,\"slug\":\"acme-labs\",\"type\":\"tinycloud.org-issuer-authorization/v1\",\"vcts\":[\"opencredentials.org-membershíp/v1\"]}",
+    "code": "non_printable"
+  },
+  {
+    "name": "time_space_separator",
+    "input": "{\"action\":\"authorize\",\"alg\":\"EdDSA\",\"audience\":\"https://credentials.org\",\"controller\":\"did:pkh:eip155:1:0x1234567890123456789012345678901234567890\",\"issuerDid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org\",\"kid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org#issuing-1\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"notBefore\":\"2026-10-20 09:00:00Z\",\"orgId\":\"oceirceirceirceirceirceirce\",\"profiles\":[\"tinycloud.org-membership/v1\"],\"publicKey\":\"QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI\",\"seq\":1,\"slug\":\"acme-labs\",\"type\":\"tinycloud.org-issuer-authorization/v1\",\"vcts\":[\"opencredentials.org-membership/v1\",\"tinycloud.org-badge/v1\"]}",
+    "code": "invalid_field"
+  },
+  {
+    "name": "time_numeric_offset",
+    "input": "{\"action\":\"authorize\",\"alg\":\"EdDSA\",\"audience\":\"https://credentials.org\",\"controller\":\"did:pkh:eip155:1:0x1234567890123456789012345678901234567890\",\"issuerDid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org\",\"kid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org#issuing-1\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"notBefore\":\"2026-10-20T09:00:00+00:00\",\"orgId\":\"oceirceirceirceirceirceirce\",\"profiles\":[\"tinycloud.org-membership/v1\"],\"publicKey\":\"QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI\",\"seq\":1,\"slug\":\"acme-labs\",\"type\":\"tinycloud.org-issuer-authorization/v1\",\"vcts\":[\"opencredentials.org-membership/v1\",\"tinycloud.org-badge/v1\"]}",
+    "code": "invalid_field"
+  },
+  {
+    "name": "time_fraction",
+    "input": "{\"action\":\"authorize\",\"alg\":\"EdDSA\",\"audience\":\"https://credentials.org\",\"controller\":\"did:pkh:eip155:1:0x1234567890123456789012345678901234567890\",\"issuerDid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org\",\"kid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org#issuing-1\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"notBefore\":\"2026-10-20T09:00:00.000Z\",\"orgId\":\"oceirceirceirceirceirceirce\",\"profiles\":[\"tinycloud.org-membership/v1\"],\"publicKey\":\"QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI\",\"seq\":1,\"slug\":\"acme-labs\",\"type\":\"tinycloud.org-issuer-authorization/v1\",\"vcts\":[\"opencredentials.org-membership/v1\",\"tinycloud.org-badge/v1\"]}",
+    "code": "invalid_field"
+  },
+  {
+    "name": "time_impossible_date",
+    "input": "{\"action\":\"authorize\",\"alg\":\"EdDSA\",\"audience\":\"https://credentials.org\",\"controller\":\"did:pkh:eip155:1:0x1234567890123456789012345678901234567890\",\"issuerDid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org\",\"kid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org#issuing-1\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"notBefore\":\"2026-02-30T00:00:00Z\",\"orgId\":\"oceirceirceirceirceirceirce\",\"profiles\":[\"tinycloud.org-membership/v1\"],\"publicKey\":\"QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI\",\"seq\":1,\"slug\":\"acme-labs\",\"type\":\"tinycloud.org-issuer-authorization/v1\",\"vcts\":[\"opencredentials.org-membership/v1\",\"tinycloud.org-badge/v1\"]}",
+    "code": "invalid_field"
+  },
+  {
+    "name": "issuer_of_other_org",
+    "input": "{\"action\":\"authorize\",\"alg\":\"EdDSA\",\"audience\":\"https://credentials.org\",\"controller\":\"did:pkh:eip155:1:0x1234567890123456789012345678901234567890\",\"issuerDid\":\"did:web:oeirceirceirceirceirceircei.orgs.credentials.org\",\"kid\":\"did:web:oceirceirceirceirceirceirce.orgs.credentials.org#issuing-1\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"notBefore\":\"2026-10-20T09:00:00Z\",\"orgId\":\"oceirceirceirceirceirceirce\",\"profiles\":[\"tinycloud.org-membership/v1\"],\"publicKey\":\"QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI\",\"seq\":1,\"slug\":\"acme-labs\",\"type\":\"tinycloud.org-issuer-authorization/v1\",\"vcts\":[\"opencredentials.org-membership/v1\",\"tinycloud.org-badge/v1\"]}",
+    "code": "binding_mismatch"
+  }
+]

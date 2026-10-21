@@ -509,6 +509,56 @@ describe('keysRouter managed signing', () => {
     });
   });
 
+  describe('K1 D3 issuer statement refusal', () => {
+    const statement = 'tinycloud.org-issuer-authorization/v1\n{"action":"authorize","orgId":"org_1"}';
+    const hex = (text: string) => `0x${Buffer.from(text, 'utf8').toString('hex')}`;
+
+    async function sign(body: Record<string, unknown>) {
+      const router = await keysRouter();
+      return router.request('/key_1/sign', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    }
+
+    test('an issuer statement sent as personal_sign is refused before any key lookup or unseal', async () => {
+      const response = await sign({ message: statement, format: 'personal_sign' });
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({ code: 'issuer_statement_not_personal' });
+      expect(prisma.ethereumKey.findFirst).not.toHaveBeenCalled();
+      expect(calls).toEqual([]);
+      expect(unseal).not.toHaveBeenCalled();
+    });
+
+    test('an issuer statement hidden in raw hex is refused before any key lookup or unseal', async () => {
+      const response = await sign({ message: hex(statement), format: 'raw' });
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({ code: 'issuer_statement_not_personal' });
+      expect(prisma.ethereumKey.findFirst).not.toHaveBeenCalled();
+      expect(calls).toEqual([]);
+      expect(unseal).not.toHaveBeenCalled();
+    });
+
+    test('an issuer statement named in a typed-data field is refused before any key lookup or unseal', async () => {
+      const router = await keysRouter();
+      const response = await router.request('/key_1/sign-typed-data', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          domain: { name: 'Test', version: '1', chainId: 1 },
+          types: { Note: [{ name: 'text', type: 'string' }] },
+          primaryType: 'Note',
+          message: { text: statement },
+        }),
+      });
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({ code: 'issuer_statement_not_personal' });
+      expect(prisma.ethereumKey.findFirst).not.toHaveBeenCalled();
+      expect(unseal).not.toHaveBeenCalled();
+    });
+  });
+
   describe('POST /:keyId/sign-typed-data', () => {
     const typedData = (valueType: string) => ({
       domain: { name: 'Test', version: '1', chainId: 1 },
