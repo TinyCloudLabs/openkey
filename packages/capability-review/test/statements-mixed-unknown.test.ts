@@ -539,3 +539,21 @@ describe("schema-only copy pins the owner and the space", () => {
     );
   });
 });
+
+describe("unrecognized schema spellings stay literal", () => {
+  // verbOf("tinycloud.kv/schema") is "schema", but the ability is not in
+  // SQL_RECOGNIZED_ABILITIES. Without the set check, friendly copy would leak.
+  it("another user's default schema under a kv-prefixed ability stays literal", () => {
+    const grant = makeGrant({
+      family: "cross-app-data",
+      service: "tinycloud.sql",
+      space: DEFAULT_SPACE,
+      path: "*",
+      abilities: ["tinycloud.kv/schema"],
+      ownedBySelf: false,
+    });
+    expect(buildStatement(grant).primaryText).toBe(
+      "Perform tinycloud.kv/schema on tinycloud.sql",
+    );
+  });
+});
