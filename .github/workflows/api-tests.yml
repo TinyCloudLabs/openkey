@@ -1,7 +1,8 @@
 # Runs the whole API unit suite in one `bun test` process, the way a developer
 # runs it. Files share bun's module registry there, so a module mock that leaks
 # out of one file breaks another; apps/api/src/__tests__/mock-module.ts scopes
-# mocks to their file (TC-928). No secrets, database, or network services.
+# mocks to their file (TC-928). No secrets. The only service is a throwaway
+# Postgres container, used by the real-Postgres grant-lock tests (TC-1518 F-C).
 name: API tests
 
 on:
@@ -18,6 +19,20 @@ jobs:
     name: API test suite
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      OPENKEY_TEST_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/postgres
     steps:
       - uses: actions/checkout@v4
 
@@ -43,6 +58,12 @@ jobs:
 
       - name: API tests
         run: bun test apps/api/src/__tests__
+
+      - name: Ethereum key access lint
+        run: bun scripts/lint-ethereum-key-access.ts
+
+      - name: Ethereum key access lint tests
+        run: bun test scripts/lint-ethereum-key-access.test.ts
 
       - name: Migration deploy and schema contract tests
         run: bun test scripts/deploy-production-migrations.test.ts packages/db/src/schema-contract.test.ts

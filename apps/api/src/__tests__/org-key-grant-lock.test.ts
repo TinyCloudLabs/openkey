@@ -1,21 +1,25 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
-import { readFile, readdir } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { Client } from 'pg';
+import { createPrismaClient } from '@openkey/db';
+import type { Prisma, PrismaClient } from '@openkey/db';
+import { lockActiveGrant } from '../services/org-keys';
 
-// TC-1518 F3: signing takes FOR SHARE on the grant row inside its transaction, and
-// revocation is an UPDATE on the same row. The two must not interleave. Runs against
-// a real Postgres (OPENKEY_TEST_POSTGRES_URL) in a throwaway schema built from the
-// tracked migration chain.
+// Real-Postgres coverage for the grant lock that signing takes (TC-1518 F3, F-C).
+// The signing side calls the production lockActiveGrant. The revoke side writes
+// through Prisma, the same path a revoke uses. Raw SQL is limited to schema setup
+// and lock-wait observation. Runs when OPENKEY_TEST_POSTGRES_URL is set; in CI the
+// URL is required, so a missing URL fails the run instead of skipping it.
 const postgresUrl = process.env.OPENKEY_TEST_POSTGRES_URL;
 const root = resolve(import.meta.dir, '../../../..');
 
-// Same predicate as the grant lock in services/org-keys.ts (signing transaction).
-const LOCK_GRANT_SQL = `SELECT id, role FROM "key_grants"
-  WHERE id = $1 AND "keyId" = $2 AND "granteeUserId" = $3 AND "revokedAt" IS NULL
-  FOR SHARE`;
-const REVOKE_GRANT_SQL = `UPDATE "key_grants" SET "revokedAt" = now() WHERE id = $1`;
+if (process.env.CI && !postgresUrl) {
+  test('OPENKEY_TEST_POSTGRES_URL is set in CI', () => {
+    throw new Error('OPENKEY_TEST_POSTGRES_URL is required in CI so the grant-lock tests run against Postgres');
+  });
+}
 
 const sealingContext = `${'0'.repeat(42)}A`;
 
@@ -25,35 +29,44 @@ const sealingContext = `${'0'.repeat(42)}A`;
 async function waitUntilLockWaiting(observer: Client, pid: number) {
   for (let attempt = 0; attempt < 500; attempt++) {
     const row = await observer.query<{ wait_event_type: string | null }>(
-      `SELECT wait_event_type FROM pg_stat_activity WHERE pid = $1`,
+      'SELECT wait_event_type FROM pg_stat_activity WHERE pid = $1',
       [pid],
     );
     if (row.rows[0]?.wait_event_type === 'Lock') return;
+    // Real-time poll on purpose: the lock wait happens in a separate Postgres backend,
+    // which fake timers in this process cannot advance.
     await Bun.sleep(5);
   }
   throw new Error(`backend ${pid} never waited on a lock`);
 }
 
+async function backendPid(tx: Prisma.TransactionClient): Promise<number> {
+  const [row] = await tx.$queryRaw<{ pid: number }[]>`SELECT pg_backend_pid() AS pid`;
+  if (!row) throw new Error('pg_backend_pid returned no row');
+  return row.pid;
+}
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 describe.skipIf(!postgresUrl)('org key grant lock (TC-1518 F3, real Postgres)', () => {
   const schema = `tc1518_f3_${randomUUID().replaceAll('-', '')}`;
-  const clients: Client[] = [];
-  let admin: Client;
   const keyId = 'org-key-f3';
   const revokedFirst = 'grant-f3-a';
   const revokedSecond = 'grant-f3-b';
-
-  async function connect(): Promise<{ client: Client; pid: number }> {
-    const client = new Client({ connectionString: postgresUrl });
-    await client.connect();
-    await client.query(`SET search_path TO "${schema}"`);
-    clients.push(client);
-    const { rows } = await client.query<{ pid: number }>('SELECT pg_backend_pid() AS pid');
-    return { client, pid: rows[0]!.pid };
-  }
+  let admin: Client;
+  let prisma: PrismaClient;
 
   beforeAll(async () => {
-    ({ client: admin } = await connect());
+    admin = new Client({ connectionString: postgresUrl });
+    await admin.connect();
     await admin.query(`CREATE SCHEMA "${schema}"`);
+    await admin.query(`SET search_path TO "${schema}"`);
     const migrations = (await readdir(join(root, 'packages/db/prisma/migrations'), { withFileTypes: true }))
       .filter((entry) => entry.isDirectory())
       .map((entry) => entry.name)
@@ -77,31 +90,44 @@ describe.skipIf(!postgresUrl)('org key grant lock (TC-1518 F3, real Postgres)', 
       `INSERT INTO "key_grants" ("id", "keyId", "role", "granteeUserId") VALUES ($1, $2, 'OWNER', 'owner-a'), ($3, $2, 'ADMIN', 'owner-a')`,
       [revokedFirst, keyId, revokedSecond],
     );
-  });
+    prisma = createPrismaClient({ connectionString: postgresUrl, schema });
+    // Applying every migration is not a fast path; the default 5s hook timeout is too
+    // tight when the suite runs against the same Postgres in parallel. Not a sleep.
+  }, 60_000);
 
   afterAll(async () => {
-    for (const client of clients) await client.end().catch(() => undefined);
-    const cleanup = new Client({ connectionString: postgresUrl });
-    await cleanup.connect();
-    await cleanup.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
-    await cleanup.end();
+    await prisma?.$disconnect();
+    await admin?.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => undefined);
+    await admin?.end();
   });
 
   test('a revoke waits for an in-flight signing transaction to commit', async () => {
-    const signer = await connect();
-    const revoker = await connect();
+    const locked = deferred();
+    const release = deferred();
+    const signing = prisma.$transaction(async (tx) => {
+      const grant = await lockActiveGrant(tx, { grantId: revokedFirst, keyId, userId: 'owner-a' });
+      locked.resolve();
+      await release.promise;
+      return grant;
+    });
+    await locked.promise;
 
-    await signer.client.query('BEGIN');
-    const locked = await signer.client.query(LOCK_GRANT_SQL, [revokedFirst, keyId, 'owner-a']);
-    expect(locked.rows).toHaveLength(1);
+    const revoking = prisma.$transaction(async (tx) => {
+      const pid = await backendPid(tx);
+      // Prisma queries run on then(); Promise.resolve starts this one without awaiting it.
+      const update = Promise.resolve(
+        tx.keyGrant.update({ where: { id: revokedFirst }, data: { revokedAt: new Date() } }),
+      );
+      try {
+        await waitUntilLockWaiting(admin, pid);
+      } finally {
+        release.resolve();
+      }
+      await update;
+    });
 
-    await revoker.client.query('BEGIN');
-    const revoke = revoker.client.query(REVOKE_GRANT_SQL, [revokedFirst]);
-    await waitUntilLockWaiting(admin, revoker.pid);
-
-    await signer.client.query('COMMIT');
-    await revoke;
-    await revoker.client.query('COMMIT');
+    await Promise.all([signing, revoking]);
+    expect(await signing).toEqual({ id: revokedFirst, role: 'OWNER' });
 
     const after = await admin.query<{ revokedAt: Date | null }>(
       `SELECT "revokedAt" FROM "key_grants" WHERE id = $1`,
@@ -111,19 +137,27 @@ describe.skipIf(!postgresUrl)('org key grant lock (TC-1518 F3, real Postgres)', 
   });
 
   test('a signing transaction that starts during an uncommitted revoke sees the revoke and refuses', async () => {
-    const revoker = await connect();
-    const signer = await connect();
+    const revokeWritten = deferred();
+    const commitRevoke = deferred();
+    const revoking = prisma.$transaction(async (tx) => {
+      await tx.keyGrant.update({ where: { id: revokedSecond }, data: { revokedAt: new Date() } });
+      revokeWritten.resolve();
+      await commitRevoke.promise;
+    });
+    await revokeWritten.promise;
 
-    await revoker.client.query('BEGIN');
-    await revoker.client.query(REVOKE_GRANT_SQL, [revokedSecond]);
+    const signing = prisma.$transaction(async (tx) => {
+      const pid = await backendPid(tx);
+      const lock = lockActiveGrant(tx, { grantId: revokedSecond, keyId, userId: 'owner-a' });
+      try {
+        await waitUntilLockWaiting(admin, pid);
+      } finally {
+        commitRevoke.resolve();
+      }
+      return lock;
+    });
 
-    await signer.client.query('BEGIN');
-    const lock = signer.client.query(LOCK_GRANT_SQL, [revokedSecond, keyId, 'owner-a']);
-    await waitUntilLockWaiting(admin, signer.pid);
-
-    await revoker.client.query('COMMIT');
-    const result = await lock;
-    await signer.client.query('ROLLBACK');
-    expect(result.rows).toHaveLength(0);
+    expect(await signing).toBeNull();
+    await revoking;
   });
 });
