@@ -145,6 +145,30 @@ function acceptOf(message: string, options: ClassifyCtx = ctx()) {
   return result;
 }
 
+const B58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+
+// Test-only encoder, so tests can build did:key strings with arbitrary bodies.
+function base58Encode(bytes: Uint8Array): string {
+  let n = BigInt(0);
+  for (const b of bytes) n = n * BigInt(256) + BigInt(b);
+  let out = '';
+  while (n > BigInt(0)) {
+    out = B58_ALPHABET[Number(n % BigInt(58))] + out;
+    n /= BigInt(58);
+  }
+  for (const b of bytes) {
+    if (b !== 0) break;
+    out = `1${out}`;
+  }
+  return out;
+}
+
+function didKeyOf(body: Uint8Array): string {
+  return `did:key:z${base58Encode(body)}`;
+}
+
+const ED25519_BODY = Buffer.concat([Buffer.from([0xed, 0x01]), Buffer.alloc(32, 7)]);
+
 describe('kind 2 feature flag and personal-route detection', () => {
   it('is on only for the literal string true', () => {
     expect(isOrgSpaceSigningEnabled({ ORG_SPACE_SIGNING_ENABLED: 'true' })).toBe(true);
@@ -427,6 +451,65 @@ describe('kind 2 resource and recipient gates', () => {
     const message = renderOrgSpaceMessage(revokeParsed(CID, { uri: spaceIdFor(ADMIN_ADDRESS) }));
     expect(refusalOf(message)).toBe('org_space_resource_refused');
   });
+
+  it('an origin outside the allow list is refused even when the SIWE domain matches', () => {
+    const message = renderOrgSpaceMessage(hostParsed());
+    expect(refusalOf(message, ctx('OWNER', { allowedOrigins: ['https://other.example'] }))).toBe('org_space_origin_mismatch');
+  });
+
+  it('a hook ability inside a space-host grant is refused as a class that is not enabled', () => {
+    const message = renderOrgSpaceMessage(hostParsed({ att: [{ resource: `${SPACE}/hooks/run`, ability: 'tinycloud.hooks/run' }] }));
+    expect(refusalOf(message)).toBe('org_space_class_not_enabled');
+  });
+
+  it('an encryption ability inside a space-host grant is refused as a class that is not enabled', () => {
+    const message = renderOrgSpaceMessage(hostParsed({ att: [{ resource: `${SPACE}/encryption/key`, ability: 'tinycloud.encryption/wrap' }] }));
+    expect(refusalOf(message)).toBe('org_space_class_not_enabled');
+  });
+
+  it('a did:key whose body is one byte too long is refused as recipient', () => {
+    const message = renderOrgSpaceMessage(hostParsed({ uri: didKeyOf(Buffer.concat([ED25519_BODY, Buffer.from([0])])) }));
+    expect(refusalOf(message)).toBe('org_space_recipient_refused');
+  });
+
+  it('a did:key with a secp256k1 multicodec prefix is refused as recipient', () => {
+    const body = Buffer.concat([Buffer.from([0xe7, 0x01]), Buffer.alloc(32, 7)]);
+    expect(refusalOf(renderOrgSpaceMessage(hostParsed({ uri: didKeyOf(body) })))).toBe('org_space_recipient_refused');
+  });
+
+  it('a did:key with an extra leading 1 in its base58 body is refused as recipient', () => {
+    const message = renderOrgSpaceMessage(hostParsed({ uri: `did:key:z1${base58Encode(ED25519_BODY)}` }));
+    expect(refusalOf(message)).toBe('org_space_recipient_refused');
+  });
+
+  it('an ed25519 did:key built by the test encoder is accepted as recipient', () => {
+    // Control: shows the test encoder produces the shape the classifier accepts.
+    const message = renderOrgSpaceMessage(hostParsed({ uri: didKeyOf(ED25519_BODY) }));
+    expect(acceptOf(message).ok).toBe(true);
+  });
+
+  it('revoke resource without the urn:cid: prefix is refused even when the tail is a valid CID', () => {
+    const message = renderOrgSpaceMessage(
+      revokeParsed(CID, { att: [{ resource: `abcdefgh${CID}`, ability: 'tinycloud.delegation/revoke' }] }),
+    );
+    expect(refusalOf(message)).toBe('org_space_resource_refused');
+  });
+
+  it('revoke of a CID shorter than the minimum length is refused', () => {
+    expect(refusalOf(renderOrgSpaceMessage(revokeParsed('bafkrei')))).toBe('org_space_resource_refused');
+  });
+
+  it('kv paths with control, bidi, query, or fragment characters are refused', () => {
+    for (const ch of ['\r', '\u2028', '\u2029', '\u202e', '?', '#']) {
+      const message = renderOrgSpaceMessage(kvParsed([{ resource: `${SPACE}/kv/shared/${ADMIN_ADDRESS}/a${ch}b/`, ability: 'tinycloud.kv/put' }]));
+      expect(refusalOf(message, ctx('ADMIN'))).toBe('org_space_resource_refused');
+    }
+  });
+
+  it('a line feed in a kv resource is refused as malformed by the message parser', () => {
+    const message = renderOrgSpaceMessage(kvParsed([{ resource: `${SPACE}/kv/shared/${ADMIN_ADDRESS}/a\nb/`, ability: 'tinycloud.kv/put' }]));
+    expect(refusalOf(message, ctx('ADMIN'))).toBe('org_space_malformed');
+  });
 });
 
 describe('kind 2 time and lifetime gates', () => {
@@ -503,6 +586,14 @@ describe('kind 2 RFC 3339 parser', () => {
 
   it('rejects impossible calendar dates', () => {
     expect(parseRfc3339Ms('2026-02-30T00:00:00Z')).toBeNull();
+  });
+
+  it('rejects a leap second', () => {
+    expect(parseRfc3339Ms('2026-05-01T12:00:60Z')).toBeNull();
+  });
+
+  it('rejects a numeric offset whose hour is out of range', () => {
+    expect(parseRfc3339Ms('2026-05-01T12:00:00+24:00')).toBeNull();
   });
 });
 
