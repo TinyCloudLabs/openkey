@@ -471,6 +471,10 @@ function schemaOnlyStatementText(
   spaceName: string | null,
 ): string | null {
   if (!SQL_SERVICES.has(grant.service)) return null;
+  // Unknown families must reach the literal fallback in buildStatement, which
+  // gates on classification before any friendly copy. Ownership never
+  // upgrades an unknown shape into schema wording.
+  if (grant.family === "unknown") return null;
   if (grant.actions.length === 0) return null;
   if (
     !grant.actions.every(

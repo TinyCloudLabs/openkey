@@ -464,3 +464,34 @@ describe("secret catalog SQL schema gets its own row", () => {
     ]);
   });
 });
+
+describe("unknown cross-user schema grants stay literal", () => {
+  // schemaOnlyStatementText must not reach friendly copy for a shape the
+  // classifier does not recognise, even when the owner is another user.
+  it("another user's account root with [schema] renders the literal fallback", () => {
+    const grant = makeGrant({
+      family: "unknown",
+      service: "tinycloud.sql",
+      space: ACCOUNT_SPACE,
+      path: "",
+      abilities: ["tinycloud.sql/schema"],
+      ownedBySelf: false,
+    });
+    expect(buildStatement(grant).primaryText).toMatch(/^Perform /);
+    expect(buildStatements(grant).map((s) => s.primaryText)).toEqual([
+      buildStatement(grant).primaryText,
+    ]);
+  });
+
+  it("another user's public space with [schema] renders the literal fallback", () => {
+    const grant = makeGrant({
+      family: "unknown",
+      service: "tinycloud.sql",
+      space: `tinycloud:pkh:eip155:1:${ACCOUNT}:public`,
+      path: "*",
+      abilities: ["tinycloud.sql/schema"],
+      ownedBySelf: false,
+    });
+    expect(buildStatement(grant).primaryText).toMatch(/^Perform /);
+  });
+});
