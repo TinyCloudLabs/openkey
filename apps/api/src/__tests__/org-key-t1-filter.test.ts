@@ -5,6 +5,7 @@
 import { beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
 import type { keysRouter } from '../routes/keys';
+import type * as Auth from '../auth';
 import { mockModules, replaceModules } from './mock-module';
 
 type Row = Record<string, unknown>;
@@ -17,12 +18,13 @@ const personalKey: Row = {
   publicKey: '0x', keyType: 'MANAGED', keyIndex: 0, label: null, isCanonicalTinyCloud: true,
   archivedAt: null, createdAt, sealedBlob: 'sealed',
 };
-// K1 T2: an ORG row has no userId and is EXTERNAL with no sealed blob. Access to
-// it comes through an active OWNER grant, which these personal-key routes never read.
+// K1 T2: an ORG row has no userId, is MANAGED, and carries a sealing context and
+// sealed blob. The shape CHECK in 20261021_0001 requires each of these. Access to it
+// comes through an active OWNER grant, which these personal-key routes never read.
 const orgKey: Row = {
   id: 'key_org', userId: null, custody: 'ORG', address: `0x${'2'.repeat(40)}`,
-  publicKey: '0x', keyType: 'EXTERNAL', keyIndex: 0, label: 'org', isCanonicalTinyCloud: false,
-  archivedAt: null, createdAt, sealedBlob: null,
+  publicKey: '0x', keyType: 'MANAGED', keyIndex: 0, label: 'org', isCanonicalTinyCloud: false,
+  archivedAt: null, createdAt, sealedBlob: 'sealed-org', sealingContext: `${'B'.repeat(42)}A`,
 };
 
 let rows: Row[] = [];
@@ -84,14 +86,16 @@ await mockModules({
 });
 
 let router: typeof keysRouter;
-let buildKeyClaims: typeof import('../auth').buildKeyClaims;
+let buildKeyClaims: typeof Auth.buildKeyClaims;
 
 beforeAll(async () => {
   // auth.ts reads these at load time; the fake DB needs no real values.
   process.env.BETTER_AUTH_URL ??= 'https://api.test.example';
   process.env.BETTER_AUTH_SECRET ??= 'org-key-t1-test-secret-000000000000';
+  // Loaded after mockModules() so the routers bind to the fakes. The query-string
+  // specifier gives this file its own module instances, not a shared cached copy.
   ({ keysRouter: router } = await import('../routes/keys?org-key-t1-keys' as string));
-  ({ buildKeyClaims } = (await import('../auth?org-key-t1-auth' as string)) as typeof import('../auth'));
+  ({ buildKeyClaims } = (await import('../auth?org-key-t1-auth' as string)) as typeof Auth);
 });
 
 // The OAuth keys claim reads only through the injected DB, so the fake store drives it.
