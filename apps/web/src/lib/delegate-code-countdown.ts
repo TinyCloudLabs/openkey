@@ -1,10 +1,9 @@
 // Countdown for the CLI paste code on /delegate.
 //
-// The server returns `expiresAt` as an absolute instant. The device clock is
-// read once, when the response arrives, to turn that instant into a remaining
-// duration. Every later tick is measured on the monotonic clock
-// (performance.now()), so the displayed time does not move with wall-clock
-// changes after receipt.
+// The start value is the server's `expiresAt` minus the server's own `Date`
+// response header, so the device clock never sets it. Every later tick is
+// measured on the monotonic clock (performance.now()), so the displayed time
+// does not move with wall-clock changes after receipt.
 
 export const CODE_EXPIRED_TEXT = 'Code expired: start again in the CLI.';
 export const CODE_ONE_MINUTE_ANNOUNCEMENT = '1 minute left to use this code.';
@@ -40,14 +39,18 @@ export function formatCodeCountdown(remainingMs: number): string {
 }
 
 /**
- * Remaining milliseconds until the server's `expiresAt`, read against the device
- * clock at `receivedAtMs`. Returns null for an unparseable instant, and 0 once
- * it has passed. This is the only reading that depends on the device clock.
+ * Remaining milliseconds until `expiresAt`, measured on the server's clock:
+ * `expiresAt` minus the `Date` header of the same response. Returns null when
+ * either value is missing or unparseable, or when the result is outside
+ * (0, 6 minutes]. The caller then shows no countdown. The device clock is never read.
  */
-export function remainingFromExpiry(expiresAt: string, receivedAtMs: number = Date.now()): number | null {
+export function remainingFromServerClock(expiresAt: string, serverDate: string | null): number | null {
   const expiryMs = Date.parse(expiresAt);
-  if (!Number.isFinite(expiryMs)) return null;
-  return Math.max(0, expiryMs - receivedAtMs);
+  const serverNowMs = serverDate === null ? NaN : Date.parse(serverDate);
+  if (!Number.isFinite(expiryMs) || !Number.isFinite(serverNowMs)) return null;
+  const remainingMs = expiryMs - serverNowMs;
+  if (remainingMs <= 0 || remainingMs > 6 * 60_000) return null;
+  return remainingMs;
 }
 
 /**

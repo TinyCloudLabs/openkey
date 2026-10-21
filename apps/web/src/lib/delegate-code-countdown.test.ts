@@ -4,7 +4,7 @@ import {
   CODE_EXPIRED_TEXT,
   CODE_ONE_MINUTE_ANNOUNCEMENT,
   formatCodeCountdown,
-  remainingFromExpiry,
+  remainingFromServerClock,
   startCodeCountdown,
   type CodeCountdownClock,
   type CodeCountdownSnapshot,
@@ -67,17 +67,49 @@ describe('formatCodeCountdown', () => {
   });
 });
 
-describe('remainingFromExpiry', () => {
-  test('returns the milliseconds left until the server instant', () => {
-    expect(remainingFromExpiry('2026-10-05T00:05:00.000Z', Date.parse('2026-10-05T00:00:00.000Z'))).toBe(300_000);
+describe('remainingFromServerClock', () => {
+  const EXPIRES = '2026-10-05T00:05:00.000Z';
+  const SERVER_DATE = 'Mon, 05 Oct 2026 00:00:00 GMT';
+
+  test('returns the time left measured from the server Date header', () => {
+    expect(remainingFromServerClock(EXPIRES, SERVER_DATE)).toBe(300_000);
   });
 
-  test('clamps an already-passed instant to zero', () => {
-    expect(remainingFromExpiry('2026-10-05T00:00:00.000Z', Date.parse('2026-10-05T00:05:00.000Z'))).toBe(0);
+  test('does not change with a fast or slow device clock', () => {
+    const realNow = Date.now;
+    const serverMs = Date.parse(SERVER_DATE);
+    try {
+      const results: (number | null)[] = [];
+      for (const deviceMs of [serverMs + 3_600_000, serverMs - 3_600_000]) {
+        Date.now = () => deviceMs;
+        results.push(remainingFromServerClock(EXPIRES, SERVER_DATE));
+      }
+      expect(results).toEqual([300_000, 300_000]);
+    } finally {
+      Date.now = realNow;
+    }
   });
 
-  test('returns null for an unparseable instant', () => {
-    expect(remainingFromExpiry('not a date', 0)).toBeNull();
+  test('returns null when the server Date header is missing or unparseable', () => {
+    expect(remainingFromServerClock(EXPIRES, null)).toBeNull();
+    expect(remainingFromServerClock(EXPIRES, 'not a date')).toBeNull();
+  });
+
+  test('returns null for an unparseable expiresAt', () => {
+    expect(remainingFromServerClock('not a date', SERVER_DATE)).toBeNull();
+  });
+
+  test('returns null at or past expiry', () => {
+    expect(remainingFromServerClock('2026-10-05T00:00:00.000Z', SERVER_DATE)).toBeNull();
+    expect(remainingFromServerClock('2025-10-05T00:00:00.000Z', SERVER_DATE)).toBeNull();
+  });
+
+  test('returns null when the remaining time exceeds six minutes', () => {
+    expect(remainingFromServerClock('2026-10-05T00:06:01.000Z', SERVER_DATE)).toBeNull();
+  });
+
+  test('accepts exactly six minutes', () => {
+    expect(remainingFromServerClock('2026-10-05T00:06:00.000Z', SERVER_DATE)).toBe(360_000);
   });
 });
 
