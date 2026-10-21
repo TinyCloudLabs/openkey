@@ -307,6 +307,17 @@ describe('org key routes', () => {
     expect(ctx.state.audits).toHaveLength(0);
   });
 
+  test('sign-challenge on a personal key is refused as no active org grant and issues no challenge', async () => {
+    const ctx = await setupOrgKey();
+    addPersonalKeyWithGrant(ctx.state);
+    const app = await appFor(ctx);
+
+    const response = await signChallenge(app, 'personal_1', ORIGIN);
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ code: 'no_active_grant' });
+    expect(ctx.state.challenges).toHaveLength(0);
+  });
+
   test('a challenge issued while statement signing was on cannot be signed after the flag is turned off', async () => {
     process.env.ORG_ISSUER_STATEMENT_ENABLED = 'true';
     const ctx = await setupOrgKey();

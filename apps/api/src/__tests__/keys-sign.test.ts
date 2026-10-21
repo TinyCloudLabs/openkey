@@ -3,6 +3,7 @@ import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
 import type { TinyCloudBootstrapOutcome } from '../services/tinycloud-bootstrap';
 import { mockModules, replaceModules } from './mock-module';
+import { orgSpaceMessageText } from './org-space-fixtures';
 
 // Keep the bootstrap sync budget short so the pending-path test is fast.
 // The shared helper reads this per request. Restored afterwards: other files
@@ -554,6 +555,42 @@ describe('keysRouter managed signing', () => {
       });
       expect(response.status).toBe(403);
       await expect(response.json()).resolves.toMatchObject({ code: 'issuer_statement_not_personal' });
+      expect(prisma.ethereumKey.findFirst).not.toHaveBeenCalled();
+      expect(unseal).not.toHaveBeenCalled();
+    });
+
+    test('an org-space message sent as personal_sign is refused before any key lookup or unseal', async () => {
+      const response = await sign({ message: orgSpaceMessageText(), format: 'personal_sign', requestOrigin: 'https://internal.tinycloud.xyz' });
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({ code: 'org_space_not_personal' });
+      expect(prisma.ethereumKey.findFirst).not.toHaveBeenCalled();
+      expect(calls).toEqual([]);
+      expect(unseal).not.toHaveBeenCalled();
+    });
+
+    test('an org-space message hidden in raw hex is refused before any key lookup or unseal', async () => {
+      const response = await sign({ message: hex(orgSpaceMessageText()), format: 'raw', requestOrigin: 'https://internal.tinycloud.xyz' });
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({ code: 'org_space_not_personal' });
+      expect(prisma.ethereumKey.findFirst).not.toHaveBeenCalled();
+      expect(calls).toEqual([]);
+      expect(unseal).not.toHaveBeenCalled();
+    });
+
+    test('an org-space message named in a typed-data field is refused before any key lookup or unseal', async () => {
+      const router = await keysRouter();
+      const response = await router.request('/key_1/sign-typed-data', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          domain: { name: 'Test', version: '1', chainId: 1 },
+          types: { Note: [{ name: 'text', type: 'string' }] },
+          primaryType: 'Note',
+          message: { text: orgSpaceMessageText() },
+        }),
+      });
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({ code: 'org_space_not_personal' });
       expect(prisma.ethereumKey.findFirst).not.toHaveBeenCalled();
       expect(unseal).not.toHaveBeenCalled();
     });

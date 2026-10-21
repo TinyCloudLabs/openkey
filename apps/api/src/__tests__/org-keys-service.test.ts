@@ -1,10 +1,12 @@
-import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
 import { verifyMessage, type Hex } from 'viem';
 import type { AuthenticationResponseJSON } from '@simplewebauthn/server';
 import {
   canonicalSignatureHash,
+  classifyOrgKeyMessage,
   issueOrgKeySignChallenge,
+  loadOrgKeyRecord,
   messageDigestHex,
   OrgKeyRefusal,
   orgKeySignChallenge,
@@ -12,9 +14,30 @@ import {
   type OrgKeySignInput,
 } from '../services/org-keys';
 import { canonicalJson, ISSUER_STATEMENT_KIND, parseIssuerStatement, renderIssuerStatement } from '../services/org-issuer-statement';
+import { adminAccountFor, renderOrgSpaceMessage, spaceIdFor } from '../services/org-space-signing';
 import { addEd25519Passkey, addRs256Passkey, asPrisma, assertionFor, ISSUER_DID, ORG_ID, ORIGIN, RP_ID, setupOrgKey, SLUG } from './org-keys-fixtures';
 
 type Ctx = Awaited<ReturnType<typeof setupOrgKey>>;
+
+// A kind 2 (org-space) message the classifier accepts for this org key: space-host on
+// the key's own space, from the credentials.org origin.
+function orgSpaceMessageFor(ctx: Ctx): string {
+  const space = spaceIdFor(ctx.key.address);
+  const now = Date.now();
+  return renderOrgSpaceMessage({
+    domain: new URL(ORIGIN).host,
+    address: ctx.key.address,
+    uri: space,
+    nonce: 'abcdefgh12',
+    issuedAt: new Date(now).toISOString(),
+    expirationTime: new Date(now + 60 * 60 * 1000).toISOString(),
+    att: [
+      { resource: `${space}/space`, ability: 'tinycloud.space/host' },
+      { resource: `${space}/sql/shared-index`, ability: 'tinycloud.sql/admin' },
+    ],
+    fact: { adminAccount: adminAccountFor(ctx.key.address), class: 'space-host', grantId: ctx.key.grantId },
+  });
+}
 
 // Canonical authorize statement for this org key. The controller comes from the
 // key that setupOrgKey generated (a fresh key per call), so it is read from ctx.
@@ -81,6 +104,7 @@ async function issue(ctx: Ctx, message: string) {
     userId: 'user_1',
     keyId: ctx.key.keyId,
     grantId: ctx.key.grantId,
+    role: 'OWNER',
     origin: ORIGIN,
     message,
   });
@@ -138,6 +162,69 @@ describe('org key signing service', () => {
     const ctx = await setupOrgKey();
     await expectRefusal(issue(ctx, statementFor(ctx)), 403, 'unsupported_message_kind');
     expect(ctx.state.challenges).toHaveLength(0);
+  });
+
+  describe('org-space signing flag', () => {
+    const originalOrgSpaceFlag = process.env.ORG_SPACE_SIGNING_ENABLED;
+    afterEach(() => {
+      if (originalOrgSpaceFlag === undefined) delete process.env.ORG_SPACE_SIGNING_ENABLED;
+      else process.env.ORG_SPACE_SIGNING_ENABLED = originalOrgSpaceFlag;
+    });
+
+    // Runs the classifier gate on the key's stored record. The fake Prisma client ignores
+    // the `key` relation select, so the key address is added the way real Prisma returns it.
+    async function classifyFor(
+      ctx: Ctx,
+      message: string,
+      { origin = ORIGIN, withGrant = true, withKey = true }: { origin?: string; withGrant?: boolean; withKey?: boolean } = {},
+    ) {
+      const row = await loadOrgKeyRecord(asPrisma(ctx.db), ctx.key.keyId);
+      if (!row) throw new Error('org key record missing from fixture');
+      return classifyOrgKeyMessage(message, {
+        record: withKey ? { ...row, key: { address: ctx.key.address } } : row,
+        requestingOrigin: origin,
+        ...(withGrant ? { grant: { grantId: ctx.key.grantId, role: 'OWNER' as const } } : {}),
+      });
+    }
+
+    test('refuses an org-space message while ORG_SPACE_SIGNING_ENABLED is off', async () => {
+      process.env.ORG_SPACE_SIGNING_ENABLED = 'false';
+      const ctx = await setupOrgKey();
+      expect(await classifyFor(ctx, orgSpaceMessageFor(ctx))).toEqual({ ok: false, refusal: 'unsupported_message_kind' });
+    });
+
+    test('accepts the same org-space message once ORG_SPACE_SIGNING_ENABLED is on', async () => {
+      process.env.ORG_SPACE_SIGNING_ENABLED = 'true';
+      const ctx = await setupOrgKey();
+      expect(await classifyFor(ctx, orgSpaceMessageFor(ctx))).toMatchObject({ ok: true, kind: 'org-space/space-host' });
+    });
+
+    test('refuses an org-space message with no active grant while the flag is on', async () => {
+      process.env.ORG_SPACE_SIGNING_ENABLED = 'true';
+      const ctx = await setupOrgKey();
+      expect(await classifyFor(ctx, orgSpaceMessageFor(ctx), { withGrant: false })).toEqual({
+        ok: false,
+        refusal: 'unsupported_message_kind',
+      });
+    });
+
+    test('refuses an org-space message when the org key record carries no key address while the flag is on', async () => {
+      process.env.ORG_SPACE_SIGNING_ENABLED = 'true';
+      const ctx = await setupOrgKey();
+      expect(await classifyFor(ctx, orgSpaceMessageFor(ctx), { withKey: false })).toEqual({
+        ok: false,
+        refusal: 'unsupported_message_kind',
+      });
+    });
+
+    test('returns the org-space refusal for an origin outside the allowlist, instead of accepting the message', async () => {
+      process.env.ORG_SPACE_SIGNING_ENABLED = 'true';
+      const ctx = await setupOrgKey();
+      expect(await classifyFor(ctx, orgSpaceMessageFor(ctx), { origin: 'https://evil.example' })).toMatchObject({
+        ok: false,
+        refusal: 'org_space_origin_mismatch',
+      });
+    });
   });
 
   test('refuses account-binding bytes even when the message also names the statement, and stores no challenge', async () => {
@@ -237,6 +324,36 @@ describe('org key signing service', () => {
     await expectRefusal(sign(ctx, { ...input, assertion: malformed }), 403, 'passkey_invalid');
     expect(ctx.state.challenges[0]?.consumedAt).toBeNull();
     expect(ctx.state.audits).toHaveLength(0);
+  });
+
+  test('refuses a DER signature whose outer tag is not SEQUENCE, even when its integers are valid', async () => {
+    const ctx = await setupOrgKey();
+    const input = await signInput(ctx, statementFor(ctx));
+    const der = Buffer.from(input.assertion.response.signature, 'base64url');
+    expect(der[0]).toBe(0x30);
+    const wrongTag = Buffer.from(der);
+    wrongTag[0] = 0x31;
+    const assertion = { ...input.assertion, response: { ...input.assertion.response, signature: wrongTag.toString('base64url') } };
+
+    await expectRefusal(sign(ctx, { ...input, assertion }), 403, 'passkey_invalid');
+    expect(ctx.state.audits).toHaveLength(0);
+  });
+
+  test('canonicalSignatureHash refuses a DER blob whose outer tag is not SEQUENCE, and accepts the same blob with the tag fixed', () => {
+    // SEQUENCE { INTEGER 1, INTEGER 1 }. The two blobs differ only in the outer tag byte.
+    const body = [0x02, 0x01, 0x01, 0x02, 0x01, 0x01];
+    const good = Buffer.from([0x30, body.length, ...body]).toString('base64url');
+    const wrongTag = Buffer.from([0x31, body.length, ...body]).toString('base64url');
+
+    expect(() => canonicalSignatureHash(good, true)).not.toThrow();
+    let caught: unknown;
+    try {
+      canonicalSignatureHash(wrongTag, true);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(OrgKeyRefusal);
+    expect(caught).toMatchObject({ status: 403, code: 'passkey_invalid' });
   });
 
   test('refuses an empty nonce', async () => {
@@ -348,6 +465,27 @@ describe('org key signing service', () => {
     expect(ctx.state.audits).toHaveLength(0);
   });
 
+  test('refuses a sign attempt when the grant was replaced after the challenge was issued, and leaves the nonce unconsumed', async () => {
+    const ctx = await setupOrgKey();
+    const input = await signInput(ctx, statementFor(ctx));
+    ctx.state.grants[0] = { ...ctx.state.grants[0], revokedAt: new Date() };
+    ctx.state.grants.push({ ...ctx.state.grants[0], id: 'grant_replacement', revokedAt: null });
+
+    await expectRefusal(sign(ctx, input), 403, 'grant_revoked');
+    expect(ctx.state.challenges[0]?.consumedAt).toBeNull();
+    expect(ctx.state.audits).toHaveLength(0);
+  });
+
+  test('reports a stale grant as grant_revoked before it checks the passkey, so an unregistered credential does not change the refusal', async () => {
+    const ctx = await setupOrgKey();
+    const input = await signInput(ctx, statementFor(ctx));
+    ctx.state.grants[0] = { ...ctx.state.grants[0], revokedAt: new Date() };
+    ctx.state.grants.push({ ...ctx.state.grants[0], id: 'grant_replacement', revokedAt: null });
+
+    await expectRefusal(sign(ctx, { ...input, assertion: { ...input.assertion, id: 'unregistered_credential' } }), 403, 'grant_revoked');
+    expect(ctx.state.challenges[0]?.consumedAt).toBeNull();
+  });
+
   test('refuses a replayed request once its nonce is consumed', async () => {
     const ctx = await setupOrgKey({ counter: 0 });
     const input = await signInput(ctx, statementFor(ctx), { counter: 0 });
@@ -355,6 +493,41 @@ describe('org key signing service', () => {
     await sign(ctx, input);
     await expectRefusal(sign(ctx, input), 403, 'challenge_consumed');
     expect(ctx.state.audits).toHaveLength(1);
+  });
+
+  test('refuses when the grant is revoked between the active-grant read and the signing lock, and leaves the nonce unconsumed', async () => {
+    const ctx = await setupOrgKey();
+    const input = await signInput(ctx, statementFor(ctx));
+    // The FOR SHARE lock read sees no active row: a revoke landed after the active-grant read.
+    Object.assign(ctx.db, { $queryRaw: async () => [] });
+
+    await expectRefusal(sign(ctx, input), 403, 'grant_revoked');
+    expect(ctx.state.challenges[0]?.consumedAt).toBeNull();
+    expect(ctx.state.audits).toHaveLength(0);
+  });
+
+  test('refuses an org-space message when the grant is downgraded to ADMIN between the active-grant read and the signing lock', async () => {
+    const originalFlag = process.env.ORG_SPACE_SIGNING_ENABLED;
+    process.env.ORG_SPACE_SIGNING_ENABLED = 'true';
+    try {
+      const ctx = await setupOrgKey();
+      // The fake client drops the `key` relation (see classifyFor), so the record gets its key here.
+      const findRecord = ctx.db.orgKey.findUnique;
+      ctx.db.orgKey.findUnique = async (args) => {
+        const row = await findRecord(args);
+        return row ? { ...row, key: { address: ctx.key.address } } : row;
+      };
+      const input = await signInput(ctx, orgSpaceMessageFor(ctx));
+      // Space-host requires OWNER. The lock read sees the grant downgraded to ADMIN.
+      Object.assign(ctx.db, { $queryRaw: async () => [{ id: ctx.key.grantId, role: 'ADMIN' }] });
+
+      await expectRefusal(sign(ctx, input), 403, 'org_space_role_insufficient');
+      expect(ctx.state.challenges[0]?.consumedAt).toBeNull();
+      expect(ctx.state.audits).toHaveLength(0);
+    } finally {
+      if (originalFlag === undefined) delete process.env.ORG_SPACE_SIGNING_ENABLED;
+      else process.env.ORG_SPACE_SIGNING_ENABLED = originalFlag;
+    }
   });
 
   test('accepts a high-s signature: the service does not refuse by s form', async () => {

@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, test } from 'bun:test';
 import type { signManagedKey as SignManagedKey } from '../services/managed-key-signing';
 import { ISSUER_STATEMENT_TYPE } from '../services/org-issuer-statement';
+import { orgSpaceMessageText } from './org-space-fixtures';
 
 // The sealed blob is deliberately not a valid sealed record. If the refusal ran
 // after unseal, the error would be an unseal failure, not the refusal code. A
@@ -29,6 +30,18 @@ describe('personal managed-key signing refuses issuer statements (K1 D3)', () =>
     const text = `prefix ${ISSUER_STATEMENT_TYPE} suffix`;
     await expect(signManagedKey(key, garbageBlob, text)).rejects.toThrow(
       'message_rejected:issuer_statement_not_personal',
+    );
+  });
+
+  test('refuses an org-space message before unseal', async () => {
+    await expect(signManagedKey(key, garbageBlob, orgSpaceMessageText())).rejects.toThrow(
+      'message_rejected:org_space_not_personal',
+    );
+  });
+
+  test('refuses an org-space message embedded inside a larger message', async () => {
+    await expect(signManagedKey(key, garbageBlob, `prefix ${orgSpaceMessageText()} suffix`)).rejects.toThrow(
+      'message_rejected:org_space_not_personal',
     );
   });
 });

@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { orgSpaceMessageText } from './org-space-fixtures';
 import { createHash } from 'node:crypto';
 import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
@@ -862,6 +863,14 @@ describe('CoordinationOS OAuth signer route', () => {
     expect(decisions[0]).toMatchObject({ decision: 'DENY', reasonCode: 'issuer_statement_not_personal' });
   });
 
+  test('an org-space message sent to the CoordinationOS signer is audited as a denial and never signed', async () => {
+    decisions = [];
+    await expectRouteDenial({ ...signingBody(), message: orgSpaceMessageText(configuredOrigin) }, 403, 'org_space_not_personal');
+    expect(signerCalls).toBe(0);
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]).toMatchObject({ decision: 'DENY', reasonCode: 'org_space_not_personal' });
+  });
+
   test('OAuth transport and authentication denials are audited before signing', async () => {
     const cases: Array<{
       body: unknown;
@@ -1219,6 +1228,34 @@ describe('CoordinationOS OAuth signer route', () => {
     expect(executionOrder).not.toContain('sign');
   });
 
+  test('tinycloud:manage-key refuses an org-space message with message_rejected and never signs', async () => {
+    token.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
+    client.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
+    const response = await sign({ ...signingBody(), message: orgSpaceMessageText(configuredOrigin, address) });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      approved: false,
+      code: 'message_rejected',
+      reason: 'org_space_not_personal',
+    });
+    expect(signerCalls).toBe(0);
+    expect(executionOrder).not.toContain('sign');
+  });
+
+  test('Better Auth auto-sign refuses an org-space message with message_rejected and never signs', async () => {
+    betterAuthSession = true;
+    autoSignEnabled = true;
+    const response = await sign({ ...bootstrapSigningBody(), message: orgSpaceMessageText(configuredOrigin) }, null);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      approved: false,
+      code: 'message_rejected',
+      reason: 'org_space_not_personal',
+    });
+    expect(signerCalls).toBe(0);
+    expect(executionOrder).not.toContain('sign');
+  });
+
   test('the complete stable-code status map matches the contract', () => {
     expect(COORDINATIONOS_DENIAL_STATUS).toEqual({
       malformed_json: 400,
@@ -1257,6 +1294,7 @@ describe('CoordinationOS OAuth signer route', () => {
       session_expired: 403,
       session_ttl_exceeded: 403,
       issuer_statement_not_personal: 403,
+      org_space_not_personal: 403,
       nonce_replayed: 409,
       token_consumed: 409,
       audit_write_failed: 500,
