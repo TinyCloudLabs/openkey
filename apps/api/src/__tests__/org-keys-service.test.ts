@@ -512,8 +512,11 @@ describe('org key signing service', () => {
     try {
       const ctx = await setupOrgKey();
       // The fake client drops the `key` relation (see classifyFor), so the record gets its key here.
-      const findRecord = ctx.db.orgKey.findUnique;
-      ctx.db.orgKey.findUnique = async (args) => {
+      const orgKey = ctx.db.orgKey as {
+        findUnique: (args: unknown) => Promise<Record<string, unknown> | null>;
+      };
+      const findRecord = orgKey.findUnique;
+      orgKey.findUnique = async (args) => {
         const row = await findRecord(args);
         return row ? { ...row, key: { address: ctx.key.address } } : row;
       };
