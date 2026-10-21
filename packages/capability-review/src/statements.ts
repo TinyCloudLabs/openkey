@@ -489,6 +489,9 @@ function schemaOnlyStatementText(
   if (spaceName === "default" && grant.family === "bootstrap-sql") {
     return "Create, change and delete your TinyCloud tables";
   }
+  if (spaceName === "account" && grant.family === "bootstrap-sql") {
+    return "Create, change and delete tables in your TinyCloud account";
+  }
   if (grant.family === "own-app-data" || grant.family === "cross-app-data") {
     return "Create, change and delete tables in application data";
   }
@@ -560,6 +563,14 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
   // would render KV/secret copy for a grant whose wire form actually
   // targets a different backend surface.
   if (grant.serviceMismatch === true) {
+    return fallbackStatement(grant);
+  }
+  // Schema is never folded into another row. A mixed schema grant falls back
+  // to the literal wire tuple here; buildStatements() renders the split rows.
+  if (
+    grant.actions.some((a) => verbOf(a.ability) === "schema") &&
+    grant.actions.some((a) => verbOf(a.ability) !== "schema")
+  ) {
     return fallbackStatement(grant);
   }
 

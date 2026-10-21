@@ -109,4 +109,13 @@ describe("buildStatements — schema gets its own row", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]!.primaryText.startsWith("Perform ")).toBe(true);
   });
+
+  it("buildStatement fails closed on a mixed schema grant instead of dropping schema", () => {
+    const stmt = buildStatement(
+      sqlGrant(["tinycloud.sql/read", "tinycloud.sql/schema"]),
+    );
+    expect(stmt.primaryText).toBe(
+      "Perform tinycloud.sql/read, tinycloud.sql/schema on tinycloud.sql",
+    );
+  });
 });

@@ -23,6 +23,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   buildStatement,
+  buildStatements,
   type CapabilityAction,
   type CapabilityGrant,
 } from "../src/index.js";
@@ -379,7 +380,7 @@ describe("buildStatement — happy-path friendly copy preserved", () => {
     );
   });
 
-  it("SQL account with [read, schema] yields the combined copy", () => {
+  it("SQL account with [read, schema] splits schema into its own row", () => {
     const grant = makeGrant({
       family: "bootstrap-sql",
       service: "tinycloud.sql",
@@ -388,8 +389,9 @@ describe("buildStatement — happy-path friendly copy preserved", () => {
       abilities: ["tinycloud.sql/read", "tinycloud.sql/schema"],
       severity: "attention",
     });
-    expect(buildStatement(grant).primaryText).toBe(
+    expect(buildStatements(grant).map((s) => s.primaryText)).toEqual([
       "Manage your TinyCloud account",
-    );
+      "Create, change and delete tables in your TinyCloud account",
+    ]);
   });
 });
