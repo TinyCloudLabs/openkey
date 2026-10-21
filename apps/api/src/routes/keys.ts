@@ -362,6 +362,18 @@ keysRouter.post('/:keyId/sign-typed-data', async (c) => {
     message: any;
   }>();
 
+  // K1 D3: a personal key never signs a payload naming the issuer statement type,
+  // in any field. Refused before any key lookup or unseal, like /sign.
+  const typedDataText = JSON.stringify({
+    domain: body.domain,
+    types: body.types,
+    primaryType: body.primaryType,
+    message: body.message,
+  });
+  if (namesIssuerStatement(typedDataText)) {
+    return c.json({ error: 'issuer statements are signed through the organization route', code: 'issuer_statement_not_personal' }, 403);
+  }
+
   const key = await prisma.ethereumKey.findFirst({
     where: { id: keyId, ...personalKeyWhere(user.id), archivedAt: null },
   });

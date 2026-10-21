@@ -1,5 +1,5 @@
 import { canonicalJson, parseIssuerStatement, renderIssuerStatement } from '../services/org-issuer-statement';
-import { ISSUER_DID, ORIGIN, SLUG } from './org-keys-fixtures';
+import { ISSUER_DID, ORG_ID, ORIGIN, SLUG } from './org-keys-fixtures';
 
 // Canonical authorize statement for an org key. The controller comes from the key
 // that setupOrgKey generated (a fresh key per call), so it is read from the key
@@ -18,7 +18,7 @@ export function statementFor(
     kid: `${ISSUER_DID}#issuing-1`,
     nonce: '00112233445566778899aabbccddeeff',
     notBefore: '2026-10-20T09:00:00Z',
-    orgId: 'org_1',
+    orgId: ORG_ID,
     profiles: ['tinycloud.org-membership/v1'],
     publicKey: 'QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI',
     seq: 1,

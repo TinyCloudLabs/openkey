@@ -12,7 +12,7 @@ import {
   type OrgKeySignInput,
 } from '../services/org-keys';
 import { canonicalJson, ISSUER_STATEMENT_KIND, parseIssuerStatement, renderIssuerStatement } from '../services/org-issuer-statement';
-import { addRs256Passkey, asPrisma, assertionFor, ISSUER_DID, ORIGIN, RP_ID, setupOrgKey, SLUG } from './org-keys-fixtures';
+import { addEd25519Passkey, addRs256Passkey, asPrisma, assertionFor, ISSUER_DID, ORG_ID, ORIGIN, RP_ID, setupOrgKey, SLUG } from './org-keys-fixtures';
 
 type Ctx = Awaited<ReturnType<typeof setupOrgKey>>;
 
@@ -29,7 +29,7 @@ function statementFor(ctx: Ctx, overrides: Record<string, unknown> = {}): string
     kid: `${ISSUER_DID}#issuing-1`,
     nonce: '00112233445566778899aabbccddeeff',
     notBefore: '2026-10-20T09:00:00Z',
-    orgId: 'org_1',
+    orgId: ORG_ID,
     profiles: ['tinycloud.org-membership/v1'],
     publicKey: 'QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI',
     seq: 1,
@@ -140,6 +140,32 @@ describe('org key signing service', () => {
     expect(ctx.state.challenges).toHaveLength(0);
   });
 
+  test('refuses account-binding bytes even when the message also names the statement, and stores no challenge', async () => {
+    const ctx = await setupOrgKey();
+    await expectRefusal(issue(ctx, `${statementFor(ctx)}\naccount-binding/v1`), 403, 'binding_bytes_refused');
+    expect(ctx.state.challenges).toHaveLength(0);
+  });
+
+  test('refuses org-binding bytes, and stores no challenge', async () => {
+    const ctx = await setupOrgKey();
+    await expectRefusal(issue(ctx, 'org-binding/v1 bound to another org'), 403, 'binding_bytes_refused');
+    expect(ctx.state.challenges).toHaveLength(0);
+  });
+
+  test('refuses a SIWE that carries a tinycloud.credentials capability, and stores no challenge', async () => {
+    const ctx = await setupOrgKey();
+    const siwe = [
+      'example.com wants you to sign in with your Ethereum account:',
+      '0x0000000000000000000000000000000000000001',
+      '',
+      'URI: https://example.com',
+      'Resources:',
+      '- tinycloud.credentials/present',
+    ].join('\n');
+    await expectRefusal(issue(ctx, siwe), 403, 'credentials_capability_refused');
+    expect(ctx.state.challenges).toHaveLength(0);
+  });
+
   test('signs under a fresh passkey and records one audit row with actor, grant, origin, digest, role, and kind', async () => {
     const ctx = await setupOrgKey();
     const message = statementFor(ctx);
@@ -175,6 +201,20 @@ describe('org key signing service', () => {
     ).toBe(true);
     expect(ctx.state.audits).toHaveLength(1);
     expect(ctx.state.passkeys.find((row) => row.credentialID === rs256.credentialID)?.counter).toBe(1);
+  });
+
+  test('signs under an Ed25519 (EdDSA) passkey through the raw-signature path, without a SHA-256 pre-hash', async () => {
+    const base = await setupOrgKey();
+    const ed = addEd25519Passkey(base.state, 'user_1');
+    const ctx: Ctx = { ...base, passkey: ed };
+    const message = statementFor(ctx);
+    const result = await sign(ctx, await signInput(ctx, message));
+
+    expect(
+      await verifyMessage({ address: ctx.key.address as Hex, message: signedTextFor(message), signature: result.signature }),
+    ).toBe(true);
+    expect(ctx.state.audits).toHaveLength(1);
+    expect(ctx.state.passkeys.find((row) => row.credentialID === ed.credentialID)?.counter).toBe(1);
   });
 
   test('refuses a malformed assertion before any challenge is consumed', async () => {
@@ -230,6 +270,7 @@ describe('org key signing service', () => {
       grantId: 'other_grant',
       nonce: issued.nonce,
       messageDigest: messageDigestHex(message),
+      origin: ORIGIN,
     }).toString('base64url');
 
     await expectRefusal(

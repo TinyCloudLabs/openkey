@@ -1165,6 +1165,32 @@ describe('CoordinationOS OAuth signer route', () => {
     expect(signerCalls).toBe(0);
   });
 
+  test('tinycloud:manage-key refuses an issuer statement with message_rejected and never signs', async () => {
+    token.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
+    client.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
+    const response = await sign({
+      ...signingBody(),
+      message: 'tinycloud.org-issuer-authorization/v1\n{"action":"authorize"}',
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ approved: false, code: 'message_rejected' });
+    expect(signerCalls).toBe(0);
+    expect(executionOrder).not.toContain('sign');
+  });
+
+  test('Better Auth auto-sign never signs an issuer statement', async () => {
+    betterAuthSession = true;
+    autoSignEnabled = true;
+    const response = await sign({
+      ...bootstrapSigningBody(),
+      message: 'tinycloud.org-issuer-authorization/v1\n{"action":"authorize"}',
+    }, null);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ approved: false, needsApproval: true });
+    expect(signerCalls).toBe(0);
+    expect(executionOrder).not.toContain('sign');
+  });
+
   test('the complete stable-code status map matches the contract', () => {
     expect(COORDINATIONOS_DENIAL_STATUS).toEqual({
       malformed_json: 400,

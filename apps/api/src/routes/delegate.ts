@@ -1150,7 +1150,16 @@ delegateRouter.post('/sign', async (c) => {
     return c.json(openKeyApprovalRequired(autoSignDecision.reason, autoSignDecision.code));
   }
 
-  const signature = await signManagedKey(key, key.sealedBlob, body.message);
+  let signature: string;
+  try {
+    signature = await signManagedKey(key, key.sealedBlob, body.message);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '';
+    if (message.startsWith('message_rejected:')) {
+      return c.json({ approved: false, code: 'message_rejected', reason: message.slice('message_rejected:'.length) }, 400);
+    }
+    throw error;
+  }
   // The route is called from the app's own page, so Origin is the app origin.
   recordAppSignIn(prisma, user.id, c.req.header('origin'));
   return c.json({

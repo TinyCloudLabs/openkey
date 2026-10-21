@@ -2,18 +2,22 @@ import { describe, expect, it } from 'bun:test';
 import { createHash } from 'node:crypto';
 import { privateKeyToAccount } from 'viem/accounts';
 import { recoverMessageAddress, type Hex } from 'viem';
-import authorizeVectors from './fixtures/org-issuer-authorization-v1/vectors.json';
-import signedVectors from './fixtures/org-issuer-authorization-v1/signed-vectors.json';
-import refusalCases from './fixtures/org-issuer-authorization-v1/refusals.json';
+import authorizeVectors from '../services/fixtures/org-issuer-authorization-v1/vectors.json';
+import signedVectors from '../services/fixtures/org-issuer-authorization-v1/signed-vectors.json';
+import refusalCases from '../services/fixtures/org-issuer-authorization-v1/refusals.json';
 import {
   canonicalJson,
+  checkHandle,
   classifyIssuerStatement,
+  issuerDidForOrgId,
   issuerStatementDigest,
+  IssuerStatementRefusal,
+  MAX_STATEMENT_BYTES,
   namesIssuerStatement,
   parseIssuerStatement,
   renderIssuerStatement,
   type IssuerStatementRecord,
-} from './org-issuer-statement';
+} from '../services/org-issuer-statement';
 
 const ORIGIN = 'https://credentials.org';
 const ALLOWED = [ORIGIN];
@@ -169,5 +173,105 @@ describe('statement digest domain', () => {
       .update(statement, 'utf8')
       .digest('base64url');
     expect(issuerStatementDigest(statement)).toBe(expected);
+  });
+});
+
+const BASE_AUTHORIZE = JSON.parse(authorizeVector.statement) as Record<string, unknown>;
+
+// Canonical JSON of the authorize fixture with some fields replaced.
+function authorizeWith(patch: Record<string, unknown>): string {
+  return canonicalJson({ ...BASE_AUTHORIZE, ...patch });
+}
+
+// Returns the refusal code, or null when the call succeeds.
+function refusalCode(fn: () => unknown): string | null {
+  try {
+    fn();
+    return null;
+  } catch (error) {
+    if (error instanceof IssuerStatementRefusal) return error.code;
+    throw error;
+  }
+}
+
+describe('issuer statement parser grammar and boundaries (F1/F2)', () => {
+  const MEMBERSHIP = 'opencredentials.org-membership/v1';
+  const BADGE = 'tinycloud.org-badge/v1';
+
+  it('refuses input over the 16 KiB limit and leaves the limit itself to the JSON checks', () => {
+    expect(classify('x'.repeat(MAX_STATEMENT_BYTES + 1))).toEqual({ ok: false, refusal: 'oversize' });
+    expect(classify('x'.repeat(MAX_STATEMENT_BYTES))).toEqual({ ok: false, refusal: 'not_json' });
+  });
+
+  it('refuses a duplicated vcts or profiles entry', () => {
+    expect(classify(authorizeWith({ vcts: [MEMBERSHIP, MEMBERSHIP] }))).toEqual({ ok: false, refusal: 'invalid_field' });
+    expect(classify(authorizeWith({ profiles: [MEMBERSHIP, MEMBERSHIP] }))).toEqual({ ok: false, refusal: 'invalid_field' });
+  });
+
+  it('refuses list entries outside the <prefix>/v<N> grammar', () => {
+    expect(classify(authorizeWith({ vcts: ['opencredentials.org-membership'] }))).toEqual({ ok: false, refusal: 'invalid_field' });
+    expect(classify(authorizeWith({ vcts: ['Membership/v1'] }))).toEqual({ ok: false, refusal: 'invalid_field' });
+  });
+
+  it('accepts distinct well-formed list entries in the order given', () => {
+    const statement = parseIssuerStatement(authorizeWith({ vcts: [MEMBERSHIP, BADGE] }), ALLOWED);
+    expect(statement).toMatchObject({ vcts: [MEMBERSHIP, BADGE] });
+  });
+
+  it('refuses a publicKey that is not a canonical 32-byte key', () => {
+    const short = Buffer.alloc(31, 0xbb).toString('base64url');
+    const padded = `${BASE_AUTHORIZE.publicKey as string}=`;
+    expect(classify(authorizeWith({ publicKey: short }))).toEqual({ ok: false, refusal: 'invalid_field' });
+    expect(classify(authorizeWith({ publicKey: padded }))).toEqual({ ok: false, refusal: 'invalid_field' });
+  });
+
+  it('refuses a controller that is not EIP-55 checksummed and accepts the checksummed form', () => {
+    const checksummed = '0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed';
+    const lower = checksummed.toLowerCase();
+    expect(classify(authorizeWith({ controller: `did:pkh:eip155:1:${lower}` }))).toEqual({ ok: false, refusal: 'invalid_field' });
+    expect(parseIssuerStatement(authorizeWith({ controller: `did:pkh:eip155:1:${checksummed}` }), ALLOWED))
+      .toMatchObject({ controller: `did:pkh:eip155:1:${checksummed}` });
+  });
+
+  it('refuses action names that exist only on Object.prototype as unknown_action', () => {
+    for (const action of ['toString', 'constructor', '__proto__', 'hasOwnProperty']) {
+      expect(classify(authorizeWith({ action }))).toEqual({ ok: false, refusal: 'unknown_action' });
+    }
+  });
+
+  it('refuses a kid under another issuer DID even when issuerDid names this org', () => {
+    const otherKid = 'did:web:oeirceirceirceirceirceircei.orgs.credentials.org#issuing-1';
+    expect(classify(authorizeWith({ kid: otherKid }))).toEqual({ ok: false, refusal: 'invalid_field' });
+  });
+
+  it('refuses an issuerDid of another org even when the kid is under that same DID', () => {
+    const otherDid = 'did:web:oeirceirceirceirceirceircei.orgs.credentials.org';
+    expect(classify(authorizeWith({ issuerDid: otherDid, kid: `${otherDid}#issuing-1` }))).toEqual({
+      ok: false,
+      refusal: 'binding_mismatch',
+    });
+  });
+
+  it('refuses any alg other than EdDSA', () => {
+    for (const alg of ['ES256', 'eddsa', 'none']) {
+      expect(classify(authorizeWith({ alg }))).toEqual({ ok: false, refusal: 'invalid_field' });
+    }
+  });
+
+  it('checks slug handles for length, reserved dash patterns, reserved names, and OrgId shape', () => {
+    expect(checkHandle('acme-labs', 'slug')).toBe('acme-labs');
+    expect(refusalCode(() => checkHandle('ab', 'slug'))).toBe('invalid_field');
+    expect(refusalCode(() => checkHandle('a'.repeat(64), 'slug'))).toBe('invalid_field');
+    expect(refusalCode(() => checkHandle('xn--acme', 'slug'))).toBe('invalid_field');
+    expect(refusalCode(() => checkHandle('ac--me', 'slug'))).toBe('invalid_field');
+    expect(refusalCode(() => checkHandle('admin', 'slug'))).toBe('invalid_field');
+    expect(refusalCode(() => checkHandle('oceirceirceirceirceirceirce', 'slug'))).toBe('invalid_field');
+  });
+
+  it('derives the issuer DID only from a valid OrgId', () => {
+    expect(issuerDidForOrgId('oceirceirceirceirceirceirce')).toBe(
+      'did:web:oceirceirceirceirceirceirce.orgs.credentials.org',
+    );
+    expect(refusalCode(() => issuerDidForOrgId('org_2'))).toBe('invalid_field');
   });
 });

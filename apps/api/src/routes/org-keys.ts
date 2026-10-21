@@ -85,8 +85,11 @@ export function createOrgKeysRouter(deps: OrgKeysRouterDeps) {
     if (!body || !isNonEmptyString(body.orgId) || !isNonEmptyString(body.orgName)) {
       return c.json({ error: 'orgId and orgName are required' }, 400);
     }
-    if (!isNonEmptyString(body.slug) || !isNonEmptyString(body.issuerDid)) {
-      return c.json({ error: 'slug and issuerDid are required', code: 'org_record_incomplete' }, 400);
+    if (!isNonEmptyString(body.slug)) {
+      return c.json({ error: 'slug is required', code: 'org_record_incomplete' }, 400);
+    }
+    if (body.issuerDid !== undefined) {
+      return c.json({ error: 'issuerDid is derived from orgId and cannot be supplied', code: 'invalid_field' }, 400);
     }
     if (body.controllerDid !== undefined) {
       return c.json({ error: 'controllerDid is derived from the key address and cannot be supplied', code: 'controller_did_not_accepted' }, 400);
@@ -98,7 +101,6 @@ export function createOrgKeysRouter(deps: OrgKeysRouterDeps) {
         orgId: body.orgId,
         orgName: body.orgName,
         slug: body.slug,
-        issuerDid: body.issuerDid,
         label,
       });
       return c.json({ key: created }, 201);
@@ -148,6 +150,7 @@ export function createOrgKeysRouter(deps: OrgKeysRouterDeps) {
       expiresAt: issued.expiresAt.toISOString(),
       kind: issued.kind,
       text: issued.text,
+      rpId: webauthn().rpID,
       allowCredentials: passkeys.map((passkey) => ({ id: passkey.credentialID, type: 'public-key' })),
     });
   });

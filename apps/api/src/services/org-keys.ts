@@ -12,7 +12,7 @@ import {
   type TeeClient,
 } from '@openkey/tee';
 import { createSealingContext, deriveKeyForRecord } from './key-sealing';
-import { classifyIssuerStatement, ISSUER_STATEMENT_KIND, namesIssuerStatement, type IssuerStatementRecord } from './org-issuer-statement';
+import { checkHandle, classifyIssuerStatement, ISSUER_STATEMENT_KIND, IssuerStatementRefusal, issuerDidForOrgId, namesIssuerStatement, type IssuerStatementRecord } from './org-issuer-statement';
 
 // Capability flag for organization key custody (TC-1518). Default off: the
 // org-key routes answer 404 until the flag is set to "true".
@@ -137,7 +137,6 @@ export type CreateOrgKeyInput = {
   orgId: string;
   orgName: string;
   slug: string;
-  issuerDid: string;
   label?: string | null;
 };
 
@@ -147,10 +146,23 @@ export function controllerDidForAddress(address: string): string {
   return `did:pkh:eip155:1:${getAddress(address)}`;
 }
 
+// Validates org identity before any key material is generated (T1 D1, D2). The issuer DID is
+// derived from the OrgId; a caller-supplied issuerDid is never trusted.
+function deriveOrgIdentity(orgId: string, slug: string): string {
+  try {
+    checkHandle(slug, 'slug');
+    return issuerDidForOrgId(orgId);
+  } catch (error) {
+    if (error instanceof IssuerStatementRefusal) throw new OrgKeyRefusal(400, error.code, error.message);
+    throw error;
+  }
+}
+
 // Creates an ORG-custodied key with the caller as its OWNER (K1 D2). The key has
 // no personal owner (userId NULL), a per-key sealing context, and is never the
 // canonical TinyCloud key.
 export async function createOrgKey(prisma: PrismaClient, tee: TeeClient, input: CreateOrgKeyInput) {
+  const issuerDid = deriveOrgIdentity(input.orgId, input.slug);
   const privateKey = generatePrivateKey();
   const address = getAddressFromPrivateKey(privateKey);
   const controllerDid = controllerDidForAddress(address);
@@ -178,7 +190,7 @@ export async function createOrgKey(prisma: PrismaClient, tee: TeeClient, input: 
         orgId: input.orgId,
         orgName: input.orgName,
         slug: input.slug,
-        issuerDid: input.issuerDid,
+        issuerDid,
         controllerDid,
       },
     });
@@ -231,15 +243,18 @@ export function messageDigestHex(message: string): string {
 
 // The fresh-passkey challenge (K1 D4.5, K2a F2): sha256 over the domain and the
 // parts, each part prefixed by its u32be byte length so no two inputs share a
-// preimage. The nonce is server-generated and single-use (see issueOrgKeySignChallenge).
+// preimage. The requesting origin is one of the parts, so the passkey signature
+// commits to the origin the consent screen showed. The nonce is server-generated
+// and single-use (see issueOrgKeySignChallenge).
 export function orgKeySignChallenge(parts: {
   keyId: string;
   grantId: string;
   nonce: string;
   messageDigest: string;
+  origin: string;
 }): Buffer {
   const hash = createHash('sha256');
-  for (const part of [ORG_KEY_SIGN_DOMAIN, parts.keyId, parts.grantId, parts.nonce, parts.messageDigest]) {
+  for (const part of [ORG_KEY_SIGN_DOMAIN, parts.keyId, parts.grantId, parts.nonce, parts.messageDigest, parts.origin]) {
     const bytes = Buffer.from(part, 'utf8');
     const length = Buffer.alloc(4);
     length.writeUInt32BE(bytes.length);
@@ -285,7 +300,13 @@ export async function issueOrgKeySignChallenge(
       expiresAt,
     },
   });
-  const challenge = orgKeySignChallenge({ keyId: input.keyId, grantId: input.grantId, nonce, messageDigest });
+  const challenge = orgKeySignChallenge({
+    keyId: input.keyId,
+    grantId: input.grantId,
+    nonce,
+    messageDigest,
+    origin: input.origin,
+  });
   return {
     nonce,
     challenge: challenge.toString('base64url'),
@@ -433,6 +454,7 @@ export async function signOrgKeyMessage(
         grantId: challenge.grantId,
         nonce: challenge.nonce,
         messageDigest: challenge.messageDigest,
+        origin: challenge.origin,
       }).toString('base64url'),
       expectedOrigin: input.expectedOrigin,
       expectedRPID: input.rpID,

@@ -11,8 +11,11 @@ import { createOrgKey, ORG_KEY_ORIGIN } from '../services/org-keys';
 export const RP_ID = 'openkey.test';
 export const ORIGIN = ORG_KEY_ORIGIN;
 // Statement binding for org keys created by setupOrgKey (K4 D2: slug and issuerDid are required).
+// ORG_ID is a canonical OrgId (T1 D1) and ISSUER_DID is derived from it (T1 D2), as in
+// services/fixtures/org-issuer-authorization-v1/vectors.json.
 export const SLUG = 'acme';
-export const ISSUER_DID = 'did:web:acme.orgs.test';
+export const ORG_ID = 'oceirceirceirceirceirceirce';
+export const ISSUER_DID = `did:web:${ORG_ID}.orgs.credentials.org`;
 
 type Row = { [field: string]: unknown };
 type Where = { [field: string]: unknown };
@@ -237,6 +240,25 @@ export function addRs256Passkey(state: { passkeys: Row[] }, userId: string, coun
   return { credentialID, privateKey };
 }
 
+// Creates an Ed25519 passkey with EdDSA (alg -8), the OKP key type that the
+// raw-signature verification path handles. Stored as a COSE_Key in standard base64.
+export function addEd25519Passkey(state: { passkeys: Row[] }, userId: string, counter = 0): PasskeyFixture {
+  const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+  const jwk = publicKey.export({ format: 'jwk' }) as { x: string };
+  const x = Buffer.from(jwk.x, 'base64url');
+  // CBOR map {1: 1 (OKP), 3: -8 (EdDSA), -1: 6 (Ed25519), -2: x}
+  const cose = Buffer.concat([Buffer.from([0xa4, 0x01, 0x01, 0x03, 0x27, 0x20, 0x06, 0x21, 0x58, 0x20]), x]);
+  const credentialID = randomBytes(16).toString('base64url');
+  state.passkeys.push({
+    id: `passkey_${state.passkeys.length + 1}`,
+    userId,
+    credentialID,
+    publicKey: cose.toString('base64'),
+    counter,
+  });
+  return { credentialID, privateKey };
+}
+
 export function assertionFor(
   passkey: PasskeyFixture,
   challenge: string,
@@ -253,11 +275,12 @@ export function assertionFor(
     Buffer.from([flags]),
     counter,
   ]);
-  const signature = sign(
-    'sha256',
-    Buffer.concat([authenticatorData, createHash('sha256').update(clientDataJSON).digest()]),
-    passkey.privateKey,
-  );
+  const signedData = Buffer.concat([authenticatorData, createHash('sha256').update(clientDataJSON).digest()]);
+  // Ed25519 signs the message itself; ECDSA and RSA sign its SHA-256 digest.
+  const signature =
+    passkey.privateKey.asymmetricKeyType === 'ed25519'
+      ? sign(null, signedData, passkey.privateKey)
+      : sign('sha256', signedData, passkey.privateKey);
   return {
     id: passkey.credentialID,
     rawId: passkey.credentialID,
@@ -277,10 +300,9 @@ export async function setupOrgKey(options: { counter?: number } = {}) {
   const tee = fakeTee();
   const key = await createOrgKey(asPrisma(db), tee, {
     userId: 'user_1',
-    orgId: 'org_1',
+    orgId: ORG_ID,
     orgName: 'Acme',
     slug: SLUG,
-    issuerDid: ISSUER_DID,
     label: null,
   });
   const passkey = addPasskey(state, 'user_1', options.counter ?? 0);

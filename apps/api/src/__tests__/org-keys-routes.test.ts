@@ -10,7 +10,8 @@ import { ISSUER_STATEMENT_KIND } from '../services/org-issuer-statement';
 const user = { id: 'user_1', email: 'test@example.com' };
 const MESSAGE = 'Sign in to the org console, nonce 42';
 const otherOrigin = 'https://evil.example';
-const ORG_BODY = { orgId: 'org_2', orgName: 'Beta', slug: SLUG, issuerDid: ISSUER_DID };
+const ORG_BODY_ORG_ID = `o${'a'.repeat(26)}`;
+const ORG_BODY = { orgId: ORG_BODY_ORG_ID, orgName: 'Beta', slug: SLUG };
 
 replaceModules({
   '../middleware/session': () => ({
@@ -163,7 +164,7 @@ describe('org key routes', () => {
     expect(created).toMatchObject({ custody: 'ORG' });
     expect(ctx.state.orgKeys.find((row) => row.keyId === body.key.keyId)).toMatchObject({
       slug: SLUG,
-      issuerDid: ISSUER_DID,
+      issuerDid: `did:web:${ORG_BODY_ORG_ID}.orgs.credentials.org`,
     });
     expect(
       ctx.state.grants.some(
@@ -195,13 +196,43 @@ describe('org key routes', () => {
     expect(ctx.state.keys).toHaveLength(1);
   });
 
-  test('POST without slug or issuerDid is refused as org_record_incomplete and creates no key', async () => {
+  test('POST without slug is refused as org_record_incomplete and creates no key', async () => {
     const ctx = await setupOrgKey();
     const app = await appFor(ctx);
 
-    const response = await postJson(app, '/api/org-keys', { orgId: 'org_2', orgName: 'Beta' });
+    const response = await postJson(app, '/api/org-keys', { orgId: ORG_BODY_ORG_ID, orgName: 'Beta' });
     expect(response.status).toBe(400);
     expect(await response.json()).toMatchObject({ code: 'org_record_incomplete' });
+    expect(ctx.state.keys).toHaveLength(1);
+  });
+
+  test('POST refuses a supplied issuerDid and creates no key', async () => {
+    const ctx = await setupOrgKey();
+    const app = await appFor(ctx);
+
+    const response = await postJson(app, '/api/org-keys', { ...ORG_BODY, issuerDid: ISSUER_DID });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ code: 'invalid_field' });
+    expect(ctx.state.keys).toHaveLength(1);
+  });
+
+  test('POST refuses an orgId that is not a canonical OrgId and creates no key', async () => {
+    const ctx = await setupOrgKey();
+    const app = await appFor(ctx);
+
+    const response = await postJson(app, '/api/org-keys', { ...ORG_BODY, orgId: 'org_2' });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ code: 'invalid_field' });
+    expect(ctx.state.keys).toHaveLength(1);
+  });
+
+  test('POST refuses a reserved slug and creates no key', async () => {
+    const ctx = await setupOrgKey();
+    const app = await appFor(ctx);
+
+    const response = await postJson(app, '/api/org-keys', { ...ORG_BODY, slug: 'admin' });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ code: 'invalid_field' });
     expect(ctx.state.keys).toHaveLength(1);
   });
 

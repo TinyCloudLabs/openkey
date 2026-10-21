@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, test } from 'bun:test';
-import type { signManagedKey as SignManagedKey } from './managed-key-signing';
-import { ISSUER_STATEMENT_TYPE } from './org-issuer-statement';
+import type { signManagedKey as SignManagedKey } from '../services/managed-key-signing';
+import { ISSUER_STATEMENT_TYPE } from '../services/org-issuer-statement';
 
 // The sealed blob is deliberately not a valid sealed record. If the refusal ran
 // after unseal, the error would be an unseal failure, not the refusal code. A
@@ -14,7 +14,7 @@ beforeAll(async () => {
   // managed-key-signing.ts calls createTeeClient() at import time, which reads
   // TEE_MODE. It must be set before the module loads, so the import is dynamic.
   process.env.TEE_MODE ??= 'development';
-  ({ signManagedKey } = await import('./managed-key-signing'));
+  ({ signManagedKey } = await import('../services/managed-key-signing'));
 });
 
 describe('personal managed-key signing refuses issuer statements (K1 D3)', () => {

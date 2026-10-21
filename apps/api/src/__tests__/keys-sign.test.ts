@@ -539,6 +539,24 @@ describe('keysRouter managed signing', () => {
       expect(calls).toEqual([]);
       expect(unseal).not.toHaveBeenCalled();
     });
+
+    test('an issuer statement named in a typed-data field is refused before any key lookup or unseal', async () => {
+      const router = await keysRouter();
+      const response = await router.request('/key_1/sign-typed-data', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          domain: { name: 'Test', version: '1', chainId: 1 },
+          types: { Note: [{ name: 'text', type: 'string' }] },
+          primaryType: 'Note',
+          message: { text: statement },
+        }),
+      });
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({ code: 'issuer_statement_not_personal' });
+      expect(prisma.ethereumKey.findFirst).not.toHaveBeenCalled();
+      expect(unseal).not.toHaveBeenCalled();
+    });
   });
 
   describe('POST /:keyId/sign-typed-data', () => {
