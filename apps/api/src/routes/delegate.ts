@@ -100,7 +100,7 @@ import { validateTinyCloudManageKeyRequest } from '../services/tinycloud-manage-
 import { canonicalTrustedTinyCloudHost } from '../services/tinycloud-hosts';
 import { hostRequestedSpaceWithinBudget } from '../services/tinycloud-bootstrap-budget';
 import { deviceDelegationWindowError, deviceTransactionUnsupportedError } from './device-delegation-window';
-import { isPrimaryKey, primaryKeyWhere } from '../services/primary-key';
+import { isPrimaryKey, personalKeyWhere, primaryKeyWhere } from '../services/primary-key';
 import { PreparedHandoffError } from '../services/prepared-handoff';
 import { preparedHandoffService } from './prepared-handoffs';
 import { normalizeAppOrigin, recordAppSignIn } from '../services/app-sign-in';
@@ -926,7 +926,7 @@ delegateRouter.post('/sign', async (c) => {
 
     const key = typeof candidate.keyId === 'string'
       ? await prisma.ethereumKey.findUnique({
-          where: { id: candidate.keyId },
+          where: { id: candidate.keyId, custody: 'PERSONAL' },
           select: {
             id: true,
             userId: true,
@@ -1070,7 +1070,7 @@ delegateRouter.post('/sign', async (c) => {
 
   const key = await prisma.ethereumKey.findFirst({
     where: {
-      userId: user.id,
+      ...personalKeyWhere(user.id),
       archivedAt: null,
       ...(body.keyId
         ? { id: body.keyId }
@@ -1169,7 +1169,7 @@ delegateRouter.post('/host', async (c) => {
   }
 
   const key = await prisma.ethereumKey.findFirst({
-    where: { id: body.keyId, userId: user.id, archivedAt: null },
+    where: { id: body.keyId, ...personalKeyWhere(user.id), archivedAt: null },
   });
 
   if (!key) {
@@ -1255,7 +1255,7 @@ delegateRouter.post('/', async (c) => {
   }
 
   const key = await prisma.ethereumKey.findFirst({
-    where: { id: body.keyId, userId: user.id, archivedAt: null },
+    where: { id: body.keyId, ...personalKeyWhere(user.id), archivedAt: null },
   });
 
   if (!key) {
@@ -1725,7 +1725,7 @@ delegateRouter.post('/prepare', async (c) => {
   }
 
   const key = await prisma.ethereumKey.findFirst({
-    where: { id: body.keyId, userId: user.id, archivedAt: null },
+    where: { id: body.keyId, ...personalKeyWhere(user.id), archivedAt: null },
   });
 
   if (!key) {
@@ -2026,7 +2026,7 @@ delegateRouter.post('/complete', async (c) => {
   // record for the signing address. External wallets, and addresses this
   // user does not hold, are never primary.
   const signerKey = await prisma.ethereumKey.findFirst({
-    where: { userId: user.id, address: { equals: preparedAddress, mode: 'insensitive' }, archivedAt: null },
+    where: { ...personalKeyWhere(user.id), address: { equals: preparedAddress, mode: 'insensitive' }, archivedAt: null },
     select: { keyType: true, isCanonicalTinyCloud: true, archivedAt: true },
   });
   const primary = signerKey ? isPrimaryKey(signerKey) : false;
@@ -2354,7 +2354,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
   const key = await prisma.ethereumKey.findFirst({
     where: {
       id: body.keyId,
-      userId: user.id,
+      ...personalKeyWhere(user.id),
       archivedAt: null,
     },
     select: {
@@ -2767,7 +2767,7 @@ delegateRouter.post('/authorize-sign', async (c) => {
   // require a caller-supplied signature.
   const candidateKeys = await prisma.ethereumKey.findMany({
     where: {
-      userId: user.id,
+      ...personalKeyWhere(user.id),
       archivedAt: null,
     },
     select: {
