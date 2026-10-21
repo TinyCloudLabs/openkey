@@ -267,6 +267,8 @@ describe('TinyCloud bootstrap background sweep', () => {
     seedRow(4);
     setSystemTime(at(5 * MIN));
     await sweep();
+    expect(executions).toBe(1);
+    expect(rowOf(4).sweepAttempts).toBe(1);
 
     const row = rowOf(4);
     expect(row.status).toBe('complete');
@@ -325,16 +327,18 @@ describe('TinyCloud bootstrap background sweep', () => {
       'some_unknown_code',
     ];
     codes.forEach((failureCode, i) => seedRow(30 + i, { failureCode }));
+    seedRow(36);
 
     setSystemTime(at(5 * MIN));
     const summary = await sweep();
 
-    expect(summary.claimed).toBe(0);
-    expect(executions).toBe(0);
+    expect(summary.claimed).toBe(1);
+    expect(executions).toBe(1);
     for (let i = 0; i < codes.length; i += 1) {
       expect(rowOf(30 + i).status).toBe('failed');
       expect(rowOf(30 + i).sweepAttempts).toBe(0);
     }
+    expect(rowOf(36).status).toBe('complete');
   });
 
   test('8. each retryable code is swept exactly once', async () => {
@@ -355,12 +359,14 @@ describe('TinyCloud bootstrap background sweep', () => {
     seedRow(50, { bootstrapVersion: '@tinycloud/bootstrap:other' });
     seedRow(51, { tinycloudHost: 'https://other.example.com' });
     seedRow(52, { checkedAt: at(-31 * DAY) });
+    seedRow(53);
 
     setSystemTime(at(5 * MIN));
     await sweep();
 
-    expect(executions).toBe(0);
+    expect(executions).toBe(1);
     for (const n of [50, 51, 52]) expect(rowOf(n).sweepAttempts).toBe(0);
+    expect(rowOf(53).sweepAttempts).toBe(1);
   });
 
   test('10a. auto-sign off, archived, external, and sealed-less keys are never claimed or unsealed', async () => {
@@ -368,6 +374,7 @@ describe('TinyCloud bootstrap background sweep', () => {
     seedRow(61, { archivedAt: at(-DAY) });
     seedRow(62, { keyType: 'EXTERNAL' });
     seedRow(63, { sealedBlob: null });
+    seedRow(65);
     let unseals = 0;
 
     setSystemTime(at(5 * MIN));
@@ -378,13 +385,15 @@ describe('TinyCloud bootstrap background sweep', () => {
       },
     });
 
-    expect(executions).toBe(0);
-    expect(unseals).toBe(0);
+    expect(executions).toBe(1);
+    expect(unseals).toBe(1);
     for (const n of [60, 61, 62, 63]) expect(rowOf(n).sweepAttempts).toBe(0);
+    expect(rowOf(65).sweepAttempts).toBe(1);
   });
 
   test('10b. auto-sign switched off between the read and the claim signs nothing', async () => {
     seedRow(64);
+    seedRow(66);
     store.hooks.onFindMany = () => {
       const user = store.users.get('user-64');
       if (user) user.autoSignEnabled = false;
@@ -399,10 +408,11 @@ describe('TinyCloud bootstrap background sweep', () => {
       },
     });
 
-    expect(summary.claimed).toBe(0);
-    expect(executions).toBe(0);
-    expect(unseals).toBe(0);
+    expect(summary.claimed).toBe(1);
+    expect(executions).toBe(1);
+    expect(unseals).toBe(1);
     expect(rowOf(64).sweepAttempts).toBe(0);
+    expect(rowOf(66).status).toBe('complete');
   });
 
   test('11. an unseal failure spends an attempt and ends at the cap', async () => {
@@ -433,6 +443,7 @@ describe('TinyCloud bootstrap background sweep', () => {
 
   test('12. a row locked by a concurrent writer after the read is skipped', async () => {
     const row = seedRow(80);
+    seedRow(81);
     store.hooks.onFindMany = () => {
       row.status = 'in_progress';
       row.lockExpiresAt = at(10 * MIN);
@@ -442,11 +453,12 @@ describe('TinyCloud bootstrap background sweep', () => {
     setSystemTime(at(5 * MIN));
     const summary = await sweep();
 
-    expect(summary.claimed).toBe(0);
+    expect(summary.claimed).toBe(1);
     expect(summary.skipped).toBe(1);
-    expect(executions).toBe(0);
+    expect(executions).toBe(1);
     expect(rowOf(80).sweepAttempts).toBe(0);
     expect(rowOf(80).attemptId).toBe('held-elsewhere');
+    expect(rowOf(81).status).toBe('complete');
   });
 
   test('13. an approval claim racing the sweep wins on Prisma (PGlite)', async () => {
@@ -483,9 +495,9 @@ describe('TinyCloud bootstrap background sweep', () => {
         [ADDRESS],
       );
       await database.query(
-        `INSERT INTO "tinycloud_bootstrap_state" ("id", "userId", "keyId", "address", "chainId", "tinycloudHost", "bootstrapVersion", "status", "checkedAt", "failureCode", "failureReason")
-         VALUES ('state-90', 'user-90', 'key-90', $1, 1, $2, $3, 'failed', $4, 'tinycloud_bootstrap_node_timeout', 'node timed out')`,
-        [ADDRESS, HOST, TINYCLOUD_BOOTSTRAP_VERSION, at(-MIN).toISOString()],
+        `INSERT INTO "tinycloud_bootstrap_state" ("id", "userId", "keyId", "address", "chainId", "tinycloudHost", "bootstrapVersion", "status", "checkedAt", "failureCode", "failureReason", "sweepAttempts")
+         VALUES ('state-90', 'user-90', 'key-90', $1, 1, $2, $3, 'failed', $4, 'tinycloud_bootstrap_node_timeout', 'node timed out', 2)`,
+        [ADDRESS, HOST, TINYCLOUD_BOOTSTRAP_VERSION, at(-3 * 60 * MIN).toISOString()],
       );
       client = new PrismaClient({ adapter: new PrismaPGlite(database) });
       const prisma = client;
@@ -558,6 +570,7 @@ describe('TinyCloud bootstrap background sweep', () => {
     await sweep();
 
     expect(rowOf(100).status).toBe('complete');
+    expect(rowOf(100).sweepAttempts).toBe(1);
     expect(rowOf(101).status).toBe('in_progress');
     expect(rowOf(101).sweepAttempts).toBe(0);
     expect(executions).toBe(1);
@@ -605,6 +618,8 @@ describe('TinyCloud bootstrap background sweep', () => {
           .map((post) => Object.entries(recapOf(post.authorization)).map(([key, value]) => `${key}:${Object.keys(value).sort().join(',')}`).sort().join('|'))
           .sort(),
       });
+      expect(approvalNode.sessionPosts.length).toBeGreaterThan(0);
+      expect(sweepNode.sessionPosts.length).toBeGreaterThan(0);
       expect(shape(sweepNode)).toEqual(shape(approvalNode));
     } finally {
       approvalNode.stop();
@@ -658,6 +673,10 @@ describe('TinyCloud bootstrap background sweep', () => {
     setSystemTime(at(5 * MIN));
     await sweep();
     expect(logLines().filter((line) => String(line.event).startsWith('tinycloud_bootstrap_sweep'))).toHaveLength(0);
+
+    seedRow(170);
+    await sweep();
+    expect(sweepEvents('tinycloud_bootstrap_sweep_tick')).toHaveLength(1);
   });
 
   test('19. sweep log lines carry only allowlisted fields and no key, user, address, or failure text', async () => {
@@ -702,6 +721,10 @@ describe('TinyCloud bootstrap background sweep', () => {
     expect(summary).toEqual({ candidates: 0, claimed: 0, healed: 0, still_failed: 0, skipped: 0 });
     expect(executions).toBe(0);
     expect(rowOf(160).sweepAttempts).toBe(0);
+    delete process.env.TINYCLOUD_BOOTSTRAP_SWEEP;
+    expect((await sweep()).claimed).toBe(1);
+    expect(executions).toBe(1);
+    expect(rowOf(160).sweepAttempts).toBe(1);
   });
 
   test('20b. the timer starts once, is unref\'d, and never overlaps ticks', async () => {
@@ -715,6 +738,7 @@ describe('TinyCloud bootstrap background sweep', () => {
       },
     } as unknown as PrismaClient;
     const timers = spyOn(globalThis, 'setInterval');
+    const clears = spyOn(globalThis, 'clearInterval');
 
     const stop = startTinyCloudBootstrapSweep({ prisma: hanging });
     startTinyCloudBootstrapSweep({ prisma: hanging });
@@ -728,9 +752,12 @@ describe('TinyCloud bootstrap background sweep', () => {
       tick();
       await Bun.sleep(10);
       expect(findManyCalls).toBe(1);
+      stop();
+      expect(clears).toHaveBeenCalledWith(handle);
     } finally {
       stop();
       timers.mockRestore();
+      clears.mockRestore();
     }
   });
 });
