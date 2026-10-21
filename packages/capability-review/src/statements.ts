@@ -480,6 +480,14 @@ function schemaOnlyStatementText(
   ) {
     return null;
   }
+  if (isSecretsSpace(grant.space)) {
+    // Secret catalog SQL: schema gets its own row. The catalog's "manage"
+    // copy does not name tables, so create/change/delete is stated here.
+    if (grant.ownedBySelf !== true && grant.ownedBySelf !== false) return null;
+    const owner = grant.ownedBySelf === false ? "another user's" : "your";
+    const scope = grant.path === "" ? "entire " : "";
+    return `Create, change and delete tables in ${owner} ${scope}secret catalog`;
+  }
   if (grant.ownedBySelf === false && !isSecretsSpace(grant.space)) {
     return `Create, change and delete tables in ${otherUserSubject(spaceName)}`;
   }

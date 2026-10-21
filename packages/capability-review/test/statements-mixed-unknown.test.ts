@@ -395,3 +395,72 @@ describe("buildStatement — happy-path friendly copy preserved", () => {
     ]);
   });
 });
+
+describe("secret catalog SQL schema gets its own row", () => {
+  // Secret Manager's manifest requests tinycloud.sql on `secrets`/`default`
+  // with [read, write, schema]. The catalog row must keep its existing copy,
+  // and schema must be stated, not hidden inside "manage".
+  it("Secret Manager grant keeps 'View and manage' and adds a schema row", () => {
+    const grant = makeGrant({
+      family: "secret-mutation",
+      service: "tinycloud.sql",
+      space: SECRETS_SPACE,
+      path: "default",
+      abilities: [
+        "tinycloud.sql/read",
+        "tinycloud.sql/write",
+        "tinycloud.sql/schema",
+      ],
+    });
+    expect(buildStatements(grant).map((s) => s.primaryText)).toEqual([
+      "View and manage your secret catalog",
+      "Create, change and delete tables in your secret catalog",
+    ]);
+  });
+
+  it("another user's secret catalog schema row names the other user", () => {
+    const grant = makeGrant({
+      family: "secret-mutation",
+      service: "tinycloud.sql",
+      space: SECRETS_SPACE,
+      path: "default",
+      abilities: [
+        "tinycloud.sql/read",
+        "tinycloud.sql/write",
+        "tinycloud.sql/schema",
+      ],
+      ownedBySelf: false,
+    });
+    expect(buildStatements(grant).map((s) => s.primaryText)).toEqual([
+      "View and manage another user's secret catalog",
+      "Create, change and delete tables in another user's secret catalog",
+    ]);
+  });
+
+  it("schema-only secret catalog grant states table rights", () => {
+    const grant = makeGrant({
+      family: "secret-mutation",
+      service: "tinycloud.sql",
+      space: SECRETS_SPACE,
+      path: "default",
+      abilities: ["tinycloud.sql/schema"],
+    });
+    expect(buildStatements(grant).map((s) => s.primaryText)).toEqual([
+      "Create, change and delete tables in your secret catalog",
+    ]);
+  });
+
+  it("root-scope secret catalog schema row says entire catalog", () => {
+    const grant = makeGrant({
+      family: "secret-mutation",
+      service: "tinycloud.sql",
+      space: SECRETS_SPACE,
+      path: "",
+      abilities: ["tinycloud.sql/read", "tinycloud.sql/schema"],
+    });
+    expect(buildStatements(grant).map((s) => s.primaryText)).toEqual([
+      "Manage your entire secret catalog",
+      "Create, change and delete tables in your entire secret catalog",
+    ]);
+  });
+});
