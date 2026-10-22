@@ -291,8 +291,38 @@ describe('OpenKey device authorization service', () => {
     const { space: _omitted, ...rawWithoutSpace } = raw;
     for (const entry of [raw, rawWithoutSpace]) {
       await expect(input.service.start({ ...input.request, permissions: [...publishingPermissions(), entry] } as never, '198.51.100.8'))
-        .rejects.toMatchObject({ code: 'invalid_scope', status: 400, message: expect.stringContaining('service is not available over device authorization') });
+        .rejects.toMatchObject({ code: 'invalid_scope', status: 400 });
     }
+  });
+
+  test('admits the exact device encryption entry: tinycloud.encryption, space default, empty path, decrypt', async () => {
+    const input = fixture();
+    const exact = { service: 'tinycloud.encryption', space: 'default', path: '', actions: ['tinycloud.encryption/decrypt'] };
+    await expect(input.service.start({ ...input.request, permissions: [...publishingPermissions(), exact] }, '198.51.100.9'))
+      .resolves.toBeDefined();
+  });
+
+  test('refuses an encryption entry outside the exact shape with invalid_scope', async () => {
+    const input = fixture();
+    const exact = { service: 'tinycloud.encryption', space: 'default', path: '', actions: ['tinycloud.encryption/decrypt'] };
+    const rejected: Array<[string, object, string]> = [
+      ['non-default space', { ...exact, space: 'encryption' }, 'must be default for tinycloud.encryption'],
+      ['non-empty path', { ...exact, path: 'x' }, 'must be empty for tinycloud.encryption'],
+      ['other ability', { ...exact, actions: ['tinycloud.encryption/encrypt'] }, 'must be exactly tinycloud.encryption/decrypt'],
+      ['wildcard ability', { ...exact, actions: ['tinycloud.encryption/*'] }, 'must be exactly tinycloud.encryption/decrypt'],
+      ['two abilities', { ...exact, actions: ['tinycloud.encryption/decrypt', 'tinycloud.encryption/decrypt'] }, 'must be exactly tinycloud.encryption/decrypt'],
+    ];
+    for (const [label, entry, message] of rejected) {
+      await expect(input.service.start({ ...input.request, permissions: [...publishingPermissions(), entry] } as never, '198.51.100.10'), label)
+        .rejects.toMatchObject({ code: 'invalid_scope', status: 400, message: expect.stringContaining(message) });
+    }
+  });
+
+  test('refuses a second tinycloud.encryption entry in one device request', async () => {
+    const input = fixture();
+    const exact = { service: 'tinycloud.encryption', space: 'default', path: '', actions: ['tinycloud.encryption/decrypt'] };
+    await expect(input.service.start({ ...input.request, permissions: [...publishingPermissions(), exact, exact] } as never, '198.51.100.11'))
+      .rejects.toMatchObject({ code: 'invalid_scope', status: 400, message: expect.stringContaining('allows one tinycloud.encryption entry') });
   });
 
   test('requires tinycloud.capabilities/read on path "" instead of adding it silently', async () => {
