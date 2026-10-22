@@ -63,6 +63,16 @@ A request whose only entry is a raw `tinycloud.encryption` decrypt on the approv
 - A device-shaped lone default decrypt already succeeds at base (see the golden table). Only the raw own-network shape needed admission.
 - A named network, a named key, or a second entry is refused as today.
 - The consent text for the single decrypt row is asserted against the output of `parseCapabilityReview` and `buildStatements` in `@openkey/capability-review`. The copy is unchanged.
+- Explicit lifetime is required. `body.expiry` must be present and at most 3600 s. A request with no expiry, or above 3600 s, is not admitted. Under enforce ON it gets the fixed refusal from the pre-check.
+- A bundled decrypt with `network.create` in the same request is not admitted under admit ON. The routes test `a bundled decrypt with network.create is not admitted and keeps the single-space refusal` asserts 400 with `permissions must belong to a single space`.
+
+## Turn-on order
+
+1. `DECRYPT_STEPUP_ADMIT=on`. Additive: only the lone own-network shape at one hour is admitted.
+2. Clients move: every decrypt request carries an explicit `expiry` of at most 3600 s, and no decrypt shares an entry with another action.
+3. `DECRYPT_LIFETIME_ENFORCE_NON_DEVICE=on`. The cap.
+
+`DECRYPT_LIFETIME_ENFORCE_NON_DEVICE=on` without `DECRYPT_STEPUP_ADMIT=on` logs `WARNING: DECRYPT_LIFETIME_ENFORCE_NON_DEVICE=on without DECRYPT_STEPUP_ADMIT=on; lone own-network decrypt requests are refused`. Startup logs both flag states once per process (`decryptLifetimeFlagLines`, `logDecryptLifetimeFlagOnce`).
 
 ## Flag-OFF golden table
 
@@ -82,6 +92,7 @@ Covered: `POST /prepare` (lone device default decrypt, lone own-network raw decr
 
 - CLI default login manifest: `packages/cli/src/auth/owner-key.ts:59-66` (checkout `js-sdk-tc1466`) has kv, sql, and capabilities only. No decrypt. VERIFIED in that checkout.
 - Share sign-in manifest: `share/src/share/openkey-session.ts:194` bundles `{ service: "tinycloud.encryption", actions: ["decrypt", "network.create"], skipPrefix: true }` with `sessionExpirationMs: 60*60*1000` (`:211`). Decrypt and network.create share one entry. VERIFIED in the share checkout. How `skipPrefix` short names expand is NOT PROVEN.
+- Under enforce ON, the Share entry above is refused. Its decrypt action shares an entry with `network.create`, which fails the single-action check at `services/decrypt-lifetime-policy.ts:121`. Share must put decrypt in its own entry with an explicit expiry of at most 3600 s before enforce is turned on. Share's change is not part of this branch.
 - Listen, Secret Manager, js-sdk web and node: post to `/api/delegate/sign` (`packages/client/src/openkey.ts:125`, `packages/web-sdk/src/openkey-session.ts:21`, `packages/node-sdk/src/TinyCloudNode.ts:374`). Which branch the SDK selects for decrypt requests: NOT PROVEN.
 
 ## Paths NOT PROVEN
