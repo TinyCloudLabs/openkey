@@ -1528,6 +1528,11 @@ delegateRouter.post('/', async (c) => {
     const deviceWindow = await deviceDelegationWindowError(body, { host, signedSiwe: bound.originalSiwe });
     if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
 
+    // TC-1456 S5 (DESIGN-v5 §3.3b): refuse a held credentials presentation before consuming the context or signing.
+    if (heldPresentSigningEnabled() && refusesHeldPresentation(bound.originalSiwe)) {
+      return c.json({ error: 'held credentials presentation is not available for this request', code: 'held_presentation_refused' }, 403);
+    }
+
     // About to sign: consume the context atomically, only if it is still
     // the exact one checked above, so a concurrent approval or a replay
     // cannot sign it a second time.
@@ -1642,6 +1647,11 @@ delegateRouter.post('/', async (c) => {
   }
   const deviceWindow = await deviceDelegationWindowError(body, { host, signedSiwe: preparedResult.prepared.siwe });
   if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
+
+  // TC-1456 S5 (DESIGN-v5 §3.3b): refuse a held credentials presentation before the managed key signs it.
+  if (heldPresentSigningEnabled() && refusesHeldPresentation(preparedResult.prepared.siwe)) {
+    return c.json({ error: 'held credentials presentation is not available for this request', code: 'held_presentation_refused' }, 403);
+  }
 
   const signature = await signManagedKey(key, key.sealedBlob, preparedResult.prepared.siwe);
 
