@@ -7,11 +7,17 @@
  * own equivalent rule in `device-authorization.ts` and is not routed through
  * this module.
  *
- * The enforcement flag is read on every call. Only the exact strings `true`
- * and `1` turn enforcement on; any other value leaves it off.
+ * Both flags are read on every call. Only the exact strings `true` and `1`
+ * turn a flag on; any other value leaves it off.
+ *
+ * `DECRYPT_STEPUP_ADMIT` admits a lone raw decrypt on the approver's own
+ * `default` network with an explicit lifetime of at most one hour. It only
+ * turns a refused request into a successful one.
+ * `DECRYPT_LIFETIME_ENFORCE_NON_DEVICE` applies the cap described above.
  */
 
 export const DECRYPT_LIFETIME_FLAG = 'DECRYPT_LIFETIME_ENFORCE_NON_DEVICE';
+export const DECRYPT_STEPUP_ADMIT_FLAG = 'DECRYPT_STEPUP_ADMIT';
 export const DECRYPT_ENTRY_MAX_LIFETIME_SECONDS = 60 * 60;
 export const DECRYPT_LIFETIME_REFUSAL = 'a decrypt approval lasts at most one hour';
 
@@ -55,16 +61,40 @@ export function decryptLifetimeEnforcementEnabled(env: NodeJS.ProcessEnv = proce
   return value === 'true' || value === '1';
 }
 
+export function decryptStepupAdmitEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const value = env[DECRYPT_STEPUP_ADMIT_FLAG];
+  return value === 'true' || value === '1';
+}
+
 let flagStateLogged = false;
 
-/** Logs the flag state once per process. Logs the state only, never any other value. */
+/**
+ * Lines describing both flag states, with a warning when enforcement is on
+ * without admission: lone own-network decrypt requests are then refused.
+ */
+export function decryptLifetimeFlagLines(env: NodeJS.ProcessEnv = process.env): string[] {
+  const enforce = decryptLifetimeEnforcementEnabled(env);
+  const admit = decryptStepupAdmitEnabled(env);
+  const lines = [
+    `${DECRYPT_STEPUP_ADMIT_FLAG}=${admit ? 'on' : 'off'}`,
+    `${DECRYPT_LIFETIME_FLAG}=${enforce ? 'on' : 'off'}`,
+  ];
+  if (enforce && !admit) {
+    lines.push(
+      `WARNING: ${DECRYPT_LIFETIME_FLAG}=on without ${DECRYPT_STEPUP_ADMIT_FLAG}=on; lone own-network decrypt requests are refused`,
+    );
+  }
+  return lines;
+}
+
+/** Logs the flag lines once per process; states only, never any other value. */
 export function logDecryptLifetimeFlagOnce(
   log: (line: string) => void = (line) => console.log(line),
   env: NodeJS.ProcessEnv = process.env,
 ): void {
   if (flagStateLogged) return;
   flagStateLogged = true;
-  log(`${DECRYPT_LIFETIME_FLAG}=${decryptLifetimeEnforcementEnabled(env) ? 'on' : 'off'}`);
+  for (const line of decryptLifetimeFlagLines(env)) log(line);
 }
 
 function isDecryptAction(entry: DecryptPolicyEntry, action: string): boolean {

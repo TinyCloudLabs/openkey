@@ -2,15 +2,23 @@ import { describe, expect, test } from 'bun:test';
 import {
   DECRYPT_LIFETIME_FLAG,
   DECRYPT_LIFETIME_REFUSAL,
+  DECRYPT_STEPUP_ADMIT_FLAG,
   DecryptLifetimeError,
   assertDecryptLifetime,
   assertDecryptLifetimeIfEnforced,
   decryptLifetimeEnforcementEnabled,
+  decryptLifetimeFlagLines,
+  decryptStepupAdmitEnabled,
   logDecryptLifetimeFlagOnce,
   type DecryptPolicyEntry,
 } from '../services/decrypt-lifetime-policy';
 
 const ON = { [DECRYPT_LIFETIME_FLAG]: 'true' } as NodeJS.ProcessEnv;
+const ADMIT_ON = { [DECRYPT_STEPUP_ADMIT_FLAG]: 'true' } as NodeJS.ProcessEnv;
+const BOTH_ON = {
+  [DECRYPT_LIFETIME_FLAG]: 'true',
+  [DECRYPT_STEPUP_ADMIT_FLAG]: 'true',
+} as NodeJS.ProcessEnv;
 const OFF = {} as NodeJS.ProcessEnv;
 const NOW = Date.UTC(2026, 0, 1, 12, 0, 0);
 const WEEK_SECONDS = 7 * 24 * 60 * 60;
@@ -64,16 +72,56 @@ describe('decrypt lifetime flag parse', () => {
     ['0 ', false],
     ['true', true],
     ['1', true],
-  ])('value %p enables enforcement: %p', (value, expected) => {
+  ])('enforce value %p enables enforcement: %p', (value, expected) => {
     const env = value === undefined ? {} : { [DECRYPT_LIFETIME_FLAG]: value };
     expect(decryptLifetimeEnforcementEnabled(env as NodeJS.ProcessEnv)).toBe(expected);
   });
 
-  test('startup log prints the state exactly once, on the first call only', () => {
+  test.each([
+    [undefined, false],
+    ['', false],
+    ['false', false],
+    ['0', false],
+    ['TRUE', false],
+    ['yes', false],
+    [' true', false],
+    ['TRUE ', false],
+    ['True', false],
+    ['on', false],
+    ['true', true],
+    ['1', true],
+  ])('admit value %p enables admission: %p', (value, expected) => {
+    const env = value === undefined ? {} : { [DECRYPT_STEPUP_ADMIT_FLAG]: value };
+    expect(decryptStepupAdmitEnabled(env as NodeJS.ProcessEnv)).toBe(expected);
+  });
+});
+
+describe('startup flag log', () => {
+  test('both flags off print both states and no warning', () => {
+    expect(decryptLifetimeFlagLines(OFF)).toEqual([`${DECRYPT_STEPUP_ADMIT_FLAG}=off`, `${DECRYPT_LIFETIME_FLAG}=off`]);
+  });
+
+  test('admit on with enforce off prints both states and no warning', () => {
+    expect(decryptLifetimeFlagLines(ADMIT_ON)).toEqual([`${DECRYPT_STEPUP_ADMIT_FLAG}=on`, `${DECRYPT_LIFETIME_FLAG}=off`]);
+  });
+
+  test('both on print both states and no warning', () => {
+    expect(decryptLifetimeFlagLines(BOTH_ON)).toEqual([`${DECRYPT_STEPUP_ADMIT_FLAG}=on`, `${DECRYPT_LIFETIME_FLAG}=on`]);
+  });
+
+  test('enforce on without admit prints the warning', () => {
+    const lines = decryptLifetimeFlagLines(ON);
+    expect(lines).toHaveLength(3);
+    expect(lines[2]).toBe(
+      `WARNING: ${DECRYPT_LIFETIME_FLAG}=on without ${DECRYPT_STEPUP_ADMIT_FLAG}=on; lone own-network decrypt requests are refused`,
+    );
+  });
+
+  test('the once logger prints the state exactly once, on the first call only', () => {
     const lines: string[] = [];
     logDecryptLifetimeFlagOnce((line) => lines.push(line), ON);
-    logDecryptLifetimeFlagOnce((line) => lines.push(line), OFF);
-    expect(lines).toEqual([`${DECRYPT_LIFETIME_FLAG}=on`]);
+    logDecryptLifetimeFlagOnce((line) => lines.push(line), BOTH_ON);
+    expect(lines).toEqual(decryptLifetimeFlagLines(ON));
   });
 });
 
