@@ -23,6 +23,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   buildStatement,
+  buildStatements,
   type CapabilityAction,
   type CapabilityGrant,
 } from "../src/index.js";
@@ -379,7 +380,7 @@ describe("buildStatement — happy-path friendly copy preserved", () => {
     );
   });
 
-  it("SQL account with [read, schema] yields the combined copy", () => {
+  it("SQL account with [read, schema] splits schema into its own row", () => {
     const grant = makeGrant({
       family: "bootstrap-sql",
       service: "tinycloud.sql",
@@ -388,8 +389,171 @@ describe("buildStatement — happy-path friendly copy preserved", () => {
       abilities: ["tinycloud.sql/read", "tinycloud.sql/schema"],
       severity: "attention",
     });
-    expect(buildStatement(grant).primaryText).toBe(
+    expect(buildStatements(grant).map((s) => s.primaryText)).toEqual([
       "Manage your TinyCloud account",
+      "Create, change and delete tables in your TinyCloud account",
+    ]);
+  });
+});
+
+describe("secret catalog SQL schema gets its own row", () => {
+  // Secret Manager's manifest requests tinycloud.sql on `secrets`/`default`
+  // with [read, write, schema]. The catalog row must keep its existing copy,
+  // and schema must be stated, not hidden inside "manage".
+  it("Secret Manager grant keeps 'View and manage' and adds a schema row", () => {
+    const grant = makeGrant({
+      family: "secret-mutation",
+      service: "tinycloud.sql",
+      space: SECRETS_SPACE,
+      path: "default",
+      abilities: [
+        "tinycloud.sql/read",
+        "tinycloud.sql/write",
+        "tinycloud.sql/schema",
+      ],
+    });
+    expect(buildStatements(grant).map((s) => s.primaryText)).toEqual([
+      "View and manage your secret catalog",
+      "Create, change and delete tables in your secret catalog",
+    ]);
+  });
+
+  it("another user's secret catalog schema row names the other user", () => {
+    const grant = makeGrant({
+      family: "secret-mutation",
+      service: "tinycloud.sql",
+      space: SECRETS_SPACE,
+      path: "default",
+      abilities: [
+        "tinycloud.sql/read",
+        "tinycloud.sql/write",
+        "tinycloud.sql/schema",
+      ],
+      ownedBySelf: false,
+    });
+    expect(buildStatements(grant).map((s) => s.primaryText)).toEqual([
+      "View and manage another user's secret catalog",
+      "Create, change and delete tables in another user's secret catalog",
+    ]);
+  });
+
+  it("schema-only secret catalog grant states table rights", () => {
+    const grant = makeGrant({
+      family: "secret-mutation",
+      service: "tinycloud.sql",
+      space: SECRETS_SPACE,
+      path: "default",
+      abilities: ["tinycloud.sql/schema"],
+    });
+    expect(buildStatements(grant).map((s) => s.primaryText)).toEqual([
+      "Create, change and delete tables in your secret catalog",
+    ]);
+  });
+
+  it("root-scope secret catalog schema row says entire catalog", () => {
+    const grant = makeGrant({
+      family: "secret-mutation",
+      service: "tinycloud.sql",
+      space: SECRETS_SPACE,
+      path: "",
+      abilities: ["tinycloud.sql/read", "tinycloud.sql/schema"],
+    });
+    expect(buildStatements(grant).map((s) => s.primaryText)).toEqual([
+      "Manage your entire secret catalog",
+      "Create, change and delete tables in your entire secret catalog",
+    ]);
+  });
+});
+
+describe("unknown cross-user schema grants stay literal", () => {
+  // schemaOnlyStatementText must not reach friendly copy for a shape the
+  // classifier does not recognise, even when the owner is another user.
+  it("another user's account root with [schema] renders the literal fallback", () => {
+    const grant = makeGrant({
+      family: "unknown",
+      service: "tinycloud.sql",
+      space: ACCOUNT_SPACE,
+      path: "",
+      abilities: ["tinycloud.sql/schema"],
+      ownedBySelf: false,
+    });
+    expect(buildStatement(grant).primaryText).toMatch(/^Perform /);
+    expect(buildStatements(grant).map((s) => s.primaryText)).toEqual([
+      buildStatement(grant).primaryText,
+    ]);
+  });
+
+  it("another user's public space with [schema] renders the literal fallback", () => {
+    const grant = makeGrant({
+      family: "unknown",
+      service: "tinycloud.sql",
+      space: `tinycloud:pkh:eip155:1:${ACCOUNT}:public`,
+      path: "*",
+      abilities: ["tinycloud.sql/schema"],
+      ownedBySelf: false,
+    });
+    expect(buildStatement(grant).primaryText).toMatch(/^Perform /);
+  });
+});
+
+describe("schema-only copy pins the owner and the space", () => {
+  // Account index: classifyRecapEntry returns bootstrap-sql for path "account".
+  it("account index schema-only grant names the TinyCloud account", () => {
+    const grant = makeGrant({
+      family: "bootstrap-sql",
+      service: "tinycloud.sql",
+      space: ACCOUNT_SPACE,
+      path: "account",
+      abilities: ["tinycloud.sql/schema"],
+    });
+    expect(buildStatement(grant).primaryText).toBe(
+      "Create, change and delete tables in your TinyCloud account",
+    );
+  });
+
+  it("another user's default data schema-only grant names their TinyCloud data", () => {
+    const grant = makeGrant({
+      family: "cross-app-data",
+      service: "tinycloud.sql",
+      space: DEFAULT_SPACE,
+      path: "*",
+      abilities: ["tinycloud.sql/schema"],
+      ownedBySelf: false,
+    });
+    expect(buildStatement(grant).primaryText).toBe(
+      "Create, change and delete tables in another user's TinyCloud data",
+    );
+  });
+
+  it("another user's application data schema-only grant names their application data", () => {
+    const grant = makeGrant({
+      family: "cross-app-data",
+      service: "tinycloud.sql",
+      space: APPS_SPACE,
+      path: "*",
+      abilities: ["tinycloud.sql/schema"],
+      ownedBySelf: false,
+    });
+    expect(buildStatement(grant).primaryText).toBe(
+      "Create, change and delete tables in another user's application data",
+    );
+  });
+});
+
+describe("unrecognized schema spellings stay literal", () => {
+  // verbOf("tinycloud.kv/schema") is "schema", but the ability is not in
+  // SQL_RECOGNIZED_ABILITIES. Without the set check, friendly copy would leak.
+  it("another user's default schema under a kv-prefixed ability stays literal", () => {
+    const grant = makeGrant({
+      family: "cross-app-data",
+      service: "tinycloud.sql",
+      space: DEFAULT_SPACE,
+      path: "*",
+      abilities: ["tinycloud.kv/schema"],
+      ownedBySelf: false,
+    });
+    expect(buildStatement(grant).primaryText).toBe(
+      "Perform tinycloud.kv/schema on tinycloud.sql",
     );
   });
 });
