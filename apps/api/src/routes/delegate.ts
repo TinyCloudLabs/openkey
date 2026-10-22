@@ -10,7 +10,12 @@ import {
   type DelegateSignerContext,
 } from '../middleware/delegate-signer-auth';
 import { withTinyCloudManageKeySigningPolicy } from '../services/tinycloud-manage-key-control';
-import { decryptLifetimeEnforcementEnabled, decryptLifetimeRefusal } from '../services/decrypt-lifetime-policy';
+import {
+  DECRYPT_ENTRY_MAX_LIFETIME_SECONDS,
+  decryptLifetimeEnforcementEnabled,
+  decryptLifetimeRefusal,
+  decryptStepupAdmitEnabled,
+} from '../services/decrypt-lifetime-policy';
 import type { Hex } from 'viem';
 import { verifyMessage } from 'ethers';
 import {
@@ -1646,7 +1651,13 @@ delegateRouter.post('/', async (c) => {
       actionKeys: normalizeStringArray(body.actionKeys, 'actionKeys'),
       permissionKeys: normalizeStringArray(body.permissionKeys, 'permissionKeys'),
       permissions,
-      loneOwnDefaultDecrypt: decryptLifetimeEnforcementEnabled() && body.deviceTransactionId === undefined,
+      // Admission needs an explicit lifetime of at most one hour; any other
+      // request keeps the existing refusal.
+      loneOwnDefaultDecrypt:
+        decryptStepupAdmitEnabled() &&
+        body.deviceTransactionId === undefined &&
+        body.expiry !== undefined &&
+        expiryMs <= DECRYPT_ENTRY_MAX_LIFETIME_SECONDS * 1000,
       expiryMs,
     });
   } catch (e) {
@@ -1819,7 +1830,13 @@ delegateRouter.post('/prepare', async (c) => {
       permissionKeys: normalizeStringArray(body.permissionKeys, 'permissionKeys'),
       permissions,
       deviceTransaction: body.deviceTransactionId !== undefined,
-      loneOwnDefaultDecrypt: decryptLifetimeEnforcementEnabled() && body.deviceTransactionId === undefined,
+      // Admission needs an explicit lifetime of at most one hour; any other
+      // request keeps the existing refusal.
+      loneOwnDefaultDecrypt:
+        decryptStepupAdmitEnabled() &&
+        body.deviceTransactionId === undefined &&
+        body.expiry !== undefined &&
+        expiryMs <= DECRYPT_ENTRY_MAX_LIFETIME_SECONDS * 1000,
       expiryMs,
     });
   } catch (e) {
