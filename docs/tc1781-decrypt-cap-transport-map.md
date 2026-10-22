@@ -49,7 +49,28 @@ Line numbers are at `b665471`. "killed" means a mutation of that guard made a te
 | N | `services/tinycloud-bootstrap.ts` 803–804 | unreachable | NOT COVERED. Unreachable with the shipped manifest. |
 | O | `services/tinycloud-bootstrap.ts` 823–824 | unreachable | NOT COVERED. Unreachable with the shipped manifest. |
 
-Lone-decrypt admission (`/delegate`, flag ON) is covered in the commits listed in the PR body, not in this table.
+## Lone own-network decrypt admission (flag ON only)
+
+A request whose only entry is a raw `tinycloud.encryption` decrypt on the approving account's own `:default` network is admitted when its explicit lifetime is at most 3600 s. The opt-in (`loneOwnDefaultDecrypt`) is set per route on `POST /` and `POST /prepare`. Native-delegation callers (`routes/native-delegation-consent.ts:43`, `services/native-delegation/renew-revoke.ts:269`) pass no opt-in and are unchanged.
+
+- The owner is resolved server-side from the signer (`defaultEncryptionNetworkUrn`). No caller-supplied owner or network is read. The prefix is forced to `default` for the admitted shape only.
+- Device transactions (`deviceTransactionId` present) are excluded on both `/` and `/prepare`. `/` also runs `deviceDelegationWindowError`, so the exclusion is enforced at the opt-in. `services/device-authorization.ts` and its tests are unchanged.
+- The predicate reuses `isRawEncryptionPermission`, which canonicalises service names. A `service: 'encryption'` form is admitted under the same rule.
+- A device-shaped lone default decrypt already succeeds at base (see the golden table). Only the raw own-network shape needed admission.
+- A named network, a named key, or a second entry is refused as today.
+- The consent text for the single decrypt row is asserted against the output of `parseCapabilityReview` and `buildStatements` in `@openkey/capability-review`. The copy is unchanged.
+
+## Flag-OFF golden table
+
+`apps/api/src/__tests__/fixtures/delegate-flag-off-golden.json` was recorded from origin/main `3cdfa5a` with a throwaway copy of the test, which is not committed. `delegate-flag-off-golden.test.ts` replays the same requests on this branch with the flag unset and compares normalised responses. Normalisation: `Authorization` header to `<authorization>`; `Nonce: …` to `Nonce: <nonce>`; ISO timestamps to `<iso>`; `0x` plus 130 hex characters to `<sig>`; UUIDs to `<uuid>`; `oks_…` to `oks_<token>`; `bafk…` to `<cid>`. Two recorder runs were identical after normalisation. Forcing the flag ON makes the golden test fail.
+
+## /complete fail-closed (ruling 4)
+
+`decryptRefusalForSignedSiwe` (`routes/delegate-session.ts` ~:278) returns `null` before parsing when the flag is OFF. The refusal for an unparseable SIWE that contains `urn:recap:` is therefore ON-only. OFF behaviour is unchanged and covered by the golden table. Under ON, a SIWE without `urn:recap:` passes through.
+
+## Test isolation
+
+`delegate-decrypt-lifetime-routes.test.ts` stubs `routes/device-delegation-window` (`deviceDelegationWindowError` returns `null`) in its own `mockModules` call, after the `@openkey/tee` mock. Other route tests replace the `routes/device-authorization` binding, and bun caches it across files, so the device window check threw `assertDelegationWindow is not a function` in the full run. The stub covers only the window check. The device-transaction test asserts the opt-in exclusion; the window check is covered by `delegate-device-window-routes.test.ts`.
 
 ## Client-side reach (external repos, read at local checkouts; not re-verified against main)
 
