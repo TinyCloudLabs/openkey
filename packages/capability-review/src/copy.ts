@@ -53,6 +53,64 @@ export const FAMILY_LABEL: Record<CapabilityFamily, string> = {
 export const DECRYPT_DEFAULT_KEY_STATEMENT =
   "Decrypt anything encrypted with your account's default key — including your Secrets and every private share — whenever this app gets hold of the encrypted copy, until this access expires.";
 
+/** Named-key verbs that carry consent copy. */
+export type NamedKeyVerb = "create" | "decrypt" | "block" | "unblock" | "delete";
+
+const DELETE_REFUSED_TEMPLATE =
+  "Delete the key {path}: only you can do this, with your wallet, as a separate step. This request is refused.";
+
+/**
+ * Named-key consent sentences, one per verb and resource shape. `{path}` is
+ * the key path (a prefix keeps its trailing `/`) and `{network}` the network
+ * name, both filled verbatim by renderNamedKeySentence. `null` means no
+ * approved wording: the row renders the literal fallback instead.
+ */
+export const NAMED_KEY_STATEMENTS: Record<
+  NamedKeyVerb,
+  { key: string | null; prefix: string | null }
+> = {
+  create: {
+    key: "Create the encryption key {path} in your account's {network} network.",
+    prefix:
+      "Create encryption keys under {path} in your account's {network} network.",
+  },
+  decrypt: {
+    key: "Decrypt anything encrypted with your key {path} in your account's {network} network, whenever this app gets hold of the encrypted copy, until this access expires.",
+    prefix:
+      "Decrypt anything encrypted with any of your keys under {path} in your account's {network} network, whenever this app gets hold of the encrypted copy, until this access expires.",
+  },
+  block: {
+    key: "Block the key {path} in your account's {network} network, so it can no longer decrypt. You can unblock it later.",
+    prefix:
+      "Block every key under {path} in your account's {network} network, so none of them can decrypt. You can unblock them later.",
+  },
+  unblock: {
+    key: "Unblock the key {path} in your account's {network} network, so it can decrypt again.",
+    prefix:
+      "Unblock every key under {path} in your account's {network} network, so they can decrypt again.",
+  },
+  delete: {
+    key: DELETE_REFUSED_TEMPLATE,
+    prefix: DELETE_REFUSED_TEMPLATE,
+  },
+};
+
+/**
+ * Fill a named-key template. Split/join rather than String.replace so a `$`
+ * in a network name is never read as a replacement pattern.
+ */
+export function renderNamedKeySentence(
+  template: string,
+  keyPath: string,
+  network: string,
+): string {
+  return template
+    .split("{path}")
+    .join(keyPath)
+    .split("{network}")
+    .join(network);
+}
+
 export const PROTOCOL_HEADLINE: Record<RequestProtocol, string> = {
   "legacy-message": "Sign message",
   "siwe-plain": "Sign in with Ethereum",

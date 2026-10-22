@@ -16,7 +16,9 @@
 // sentence themselves.
 
 import type { CapabilityGrant } from "./model.js";
-import { DECRYPT_DEFAULT_KEY_STATEMENT } from "./copy.js";
+import { DECRYPT_DEFAULT_KEY_STATEMENT, NAMED_KEY_STATEMENTS, renderNamedKeySentence } from "./copy.js";
+import type { NamedKeyVerb } from "./copy.js";
+import { ENCRYPTION_URN_PREFIX, parseEncryptionResource } from "./encryption-resource.js";
 import { isMetadataOnlyAccess } from "./action-semantics.js";
 import {
   CANONICAL_APP_SCOPE_SECRET_ABILITIES,
@@ -47,6 +49,11 @@ export interface StatementEntry {
    * space) shown alongside the service. Rendered as-is.
    */
   resource: string;
+  /**
+   * Set only on key.delete rows: marks a row this review does not offer to
+   * approve. Absent on every other row.
+   */
+  neverApprovable?: boolean;
 }
 
 /** Family/action-aware structural verb classification. */
@@ -419,7 +426,74 @@ const ENCRYPTION_RECOGNIZED_ABILITIES = new Set<string>([
   "encryption/network.create",
   "tinycloud.encryption/network.revoke",
   "encryption/network.revoke",
+  "tinycloud.encryption/key.create",
+  "encryption/key.create",
+  "tinycloud.encryption/key.block",
+  "encryption/key.block",
+  "tinycloud.encryption/key.unblock",
+  "encryption/key.unblock",
+  "tinycloud.encryption/key.delete",
+  "encryption/key.delete",
 ]);
+
+/** Named-key abilities and the consent verb each one renders. */
+const NAMED_KEY_VERB_BY_ABILITY: Record<string, NamedKeyVerb> = {
+  "tinycloud.encryption/decrypt": "decrypt",
+  "encryption/decrypt": "decrypt",
+  "tinycloud.encryption/key.create": "create",
+  "encryption/key.create": "create",
+  "tinycloud.encryption/key.block": "block",
+  "encryption/key.block": "block",
+  "tinycloud.encryption/key.unblock": "unblock",
+  "encryption/key.unblock": "unblock",
+  "tinycloud.encryption/key.delete": "delete",
+  "encryption/key.delete": "delete",
+};
+
+/**
+ * A key-shaped encryption grant: the URN carries a key path after the network,
+ * e.g. `urn:tinycloud:encryption:<owner>:<network>/<path>`. splitResourceUri
+ * leaves such URNs whole in `space` with `path` "", so the check reads `space`.
+ * Network-shaped grants keep their existing wording.
+ */
+function isNamedKeyGrant(grant: CapabilityGrant): boolean {
+  return (
+    ENCRYPTION_SERVICES.has(grant.service) &&
+    grant.space.startsWith(ENCRYPTION_URN_PREFIX) &&
+    grant.space.includes("/", ENCRYPTION_URN_PREFIX.length)
+  );
+}
+
+/**
+ * Consent row for one named-key ability. Anything the strict parser, the
+ * ability table, or the copy table does not cover renders the literal
+ * fallback, so no sentence is shown for an unrecognized shape.
+ */
+function buildNamedKeyStatement(grant: CapabilityGrant): StatementEntry {
+  const resource = resourceOf(grant);
+  const parsed = parseEncryptionResource(resource);
+  const action = grant.actions.length === 1 ? grant.actions[0] : undefined;
+  const verb =
+    action !== undefined &&
+    Object.hasOwn(NAMED_KEY_VERB_BY_ABILITY, action.ability)
+      ? NAMED_KEY_VERB_BY_ABILITY[action.ability]
+      : undefined;
+  if (parsed === null || parsed.kind === "network" || verb === undefined) {
+    return fallbackStatement(grant);
+  }
+  const template = NAMED_KEY_STATEMENTS[verb][parsed.kind];
+  if (template === null) return fallbackStatement(grant);
+  return {
+    primaryText: renderNamedKeySentence(
+      template,
+      parsed.keyPath,
+      parsed.network,
+    ),
+    service: grant.service,
+    resource,
+    ...(verb === "delete" ? { neverApprovable: true } : {}),
+  };
+}
 
 /**
  * Fail-closed gate for the KV / SQL / encryption family/service branches
@@ -547,6 +621,12 @@ function splitsDefaultKeyDecrypt(grant: CapabilityGrant): boolean {
  * renders only the non-schema part of a mixed grant.
  */
 export function buildStatements(grant: CapabilityGrant): StatementEntry[] {
+  // Each named-key ability gets its own row, so no sentence covers two.
+  if (isNamedKeyGrant(grant) && grant.actions.length > 1) {
+    return grant.actions.map((action) =>
+      buildStatement({ ...grant, actions: [action] }),
+    );
+  }
   if (splitsDefaultKeyDecrypt(grant)) {
     return [
       buildStatement({
@@ -618,6 +698,11 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
   if (grant.serviceMismatch === true) {
     return fallbackStatement(grant);
   }
+  // Key-shaped encryption grants (see isNamedKeyGrant) render per-verb copy.
+  if (isNamedKeyGrant(grant)) {
+    return buildNamedKeyStatement(grant);
+  }
+
   // Schema is never folded into another row. A mixed schema grant falls back
   // to the literal wire tuple here; buildStatements() renders the split rows.
   if (
