@@ -378,6 +378,16 @@ describe('decryptRefusalForSignedSiwe', () => {
     expect(refusalFor('Please decrypt the vault for the team.')).toBeNull();
   });
 
+  test('passes a SIWE whose resources carry no urn:recap entry while the flag is on', () => {
+    setFlag('true');
+    expect(refusalFor(siweWith('- https://example.test/resource'))).toBeNull();
+  });
+
+  test('passes a SIWE with an unparseable resource line that has no urn:recap while the flag is on', () => {
+    setFlag('true');
+    expect(refusalFor(siweWith('- !!!not-a-recap!!!'))).toBeNull();
+  });
+
   test('returns null for an unparseable recap while the flag is off', () => {
     setFlag(undefined);
     expect(refusalFor(siweWith('- urn:recap:!!!not-a-recap!!!'))).toBeNull();
