@@ -1064,6 +1064,43 @@ describe('prepared handoff signing over HTTP', () => {
     expect(resolveAgain.status).toBe(404);
     expect(await resolveAgain.text()).not.toContain(state);
   });
+
+  test('refuses a handoff presentation whose request origin claims a first-party host, when the flag is on', async () => {
+    const priorFlag = process.env.HELD_PRESENT_SIGNING_ENABLED;
+    process.env.HELD_PRESENT_SIGNING_ENABLED = 'true';
+    try {
+      const service = new PreparedHandoffService(new MemoryPreparedHandoffStore());
+      setHandoffService(service);
+      const siwe = presentSiwe('share.tinycloud.xyz');
+      const state = Buffer.alloc(32, 4).toString('base64url');
+      const cancelSecret = Buffer.alloc(32, 5).toString('base64url');
+      const handoffId = Buffer.alloc(32, 6).toString('base64url');
+      // Same isolated handoff router as the test above.
+      const { createPreparedHandoffRouter } = await import('../routes/prepared-handoffs?authorize-sign-routes-isolated' as string);
+      const handoffRouter = createPreparedHandoffRouter(service);
+      const claimRes = await handoffRouter.request('/claim', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          transportVersion: 2,
+          request: { protocolVersion: 1, siwe, jwk, host: 'https://node.tinycloud.xyz', keyId: keyRecord.id, sessionDid: 'display-only' },
+          delivery: { handoffId, callback: 'http://127.0.0.1:42317/callback/AAAAAAAAAAAAAAAAAAAAAA', state, cancelSecret },
+        }),
+      });
+      expect(claimRes.status).toBe(201);
+      const { ticket } = await claimRes.json() as { ticket: string };
+      const prepareRes = await router.request('/authorize-sign-prepare', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ticket, keyId: keyRecord.id, siwe, jwk, host: 'https://node.tinycloud.xyz', requestOrigin: 'https://share.tinycloud.xyz' }),
+      });
+      expect(prepareRes.status).toBe(403);
+      expect(await prepareRes.json()).toMatchObject({ code: 'held_presentation_refused' });
+    } finally {
+      if (priorFlag === undefined) delete process.env.HELD_PRESENT_SIGNING_ENABLED;
+      else process.env.HELD_PRESENT_SIGNING_ENABLED = priorFlag;
+    }
+  });
 });
 
 describe('POST /authorize-sign-prepare SIWE origin guard (TC-1486)', () => {
@@ -1104,6 +1141,29 @@ describe('POST /authorize-sign-prepare SIWE origin guard (TC-1486)', () => {
   });
 });
 
+// A delegation SIWE whose ReCap grants tinycloud.credentials/present. The
+// domain is openkey.so unless a first-party domain is given.
+function presentSiwe(domain = 'openkey.so'): string {
+  const now = new Date();
+  const spaceId = `tinycloud:pkh:eip155:1:${address}:default`;
+  const abilities: Parameters<typeof prepareSession>[0]['abilities'] = {
+    credentials: {
+      [`${spaceId}/credentials/mail`]: ['tinycloud.credentials/present'],
+    },
+  };
+  const prepared = prepareSession({
+    address,
+    chainId: 1,
+    domain,
+    issuedAt: now.toISOString(),
+    expirationTime: new Date(now.getTime() + 3_600_000).toISOString(),
+    spaceId,
+    jwk,
+    abilities,
+  });
+  return prepared.siwe;
+}
+
 describe('authorize-sign held presentation origin rules (TC-1456 S5)', () => {
   const originalFlag = process.env.HELD_PRESENT_SIGNING_ENABLED;
   afterEach(() => {
@@ -1111,28 +1171,6 @@ describe('authorize-sign held presentation origin rules (TC-1456 S5)', () => {
     else process.env.HELD_PRESENT_SIGNING_ENABLED = originalFlag;
   });
 
-  // A delegation SIWE whose ReCap grants tinycloud.credentials/present. The
-  // domain is openkey.so unless a first-party domain is given.
-  function presentSiwe(domain = 'openkey.so'): string {
-    const now = new Date();
-    const spaceId = `tinycloud:pkh:eip155:1:${address}:default`;
-    const abilities: Parameters<typeof prepareSession>[0]['abilities'] = {
-      credentials: {
-        [`${spaceId}/credentials/mail`]: ['tinycloud.credentials/present'],
-      },
-    };
-    const prepared = prepareSession({
-      address,
-      chainId: 1,
-      domain,
-      issuedAt: now.toISOString(),
-      expirationTime: new Date(now.getTime() + 3_600_000).toISOString(),
-      spaceId,
-      jwk,
-      abilities,
-    });
-    return prepared.siwe;
-  }
 
   type RouteBody = {
     authorizationContextToken?: string;
