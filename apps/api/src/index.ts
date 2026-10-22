@@ -27,7 +27,7 @@ import { createDelegationCodeRouter, createPrismaDelegationCodeStore } from './r
 import { requireSession } from './middleware/session';
 import { trackAuthorization, trackTokenExchange, trackUniqueUser } from './analytics';
 import { configuredSocialProviderIds } from './social-providers';
-import { corsOriginPolicy } from './origin-policy';
+import { API_EXPOSED_HEADERS, corsOriginPolicy } from './origin-policy';
 import { readinessHandler } from './readiness';
 import { createProviderInterceptors } from './services/native-delegation/interceptors';
 import { providerTokenOptions } from './services/native-delegation/provider-tokens';
@@ -75,7 +75,7 @@ app.use('/api/delegate/sign', cors({
 app.use('*', protocolAwareCors(cors({
   origin: corsOriginPolicy('http://localhost:5173'),
   credentials: true,
-  exposeHeaders: ['set-auth-token'],
+  exposeHeaders: API_EXPOSED_HEADERS,
 })));
 
 // Health check: traffic is accepted only when the database migration contract
