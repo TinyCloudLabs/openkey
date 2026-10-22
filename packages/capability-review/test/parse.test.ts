@@ -47,6 +47,7 @@ import {
   SECRETS_MUTATION_REQUEST,
   SECRETS_READ_REQUEST,
   UNKNOWN_SERVICE_REQUEST,
+  makeRecapResource,
 } from "./fixtures/index.js";
 
 const signer: SignerInfo = {
@@ -839,5 +840,47 @@ describe("family label copy", () => {
     expect(label).toBe("Another user's data");
     expect(label).not.toMatch(/0x[0-9a-fA-F]{6,}/);
     expect(label).not.toContain("path=");
+  });
+});
+
+describe("consent expiry comes from the header Expiration Time line", () => {
+  // EIP-4361 puts the free-text statement before the URI line and the header
+  // fields after it. A statement line that mimics `Expiration Time:` must not
+  // set the consent expiry.
+  const recap = makeRecapResource({
+    [FIXTURE_META.ownSpace]: { "tinycloud.kv/get": [{}] },
+  });
+
+  function messageWith(statementLines: string[], headerExpiry: string | null): string {
+    return [
+      "cli.tinycloud.xyz wants you to sign in with your Ethereum account:",
+      FIXTURE_META.address,
+      "",
+      ...statementLines,
+      "",
+      "URI: https://cli.tinycloud.xyz",
+      "Version: 1",
+      `Chain ID: ${FIXTURE_META.chainId}`,
+      "Nonce: abcdef123456",
+      `Issued At: ${FIXTURE_META.issuedAt}`,
+      ...(headerExpiry === null ? [] : [`Expiration Time: ${headerExpiry}`]),
+      "Resources:",
+      `- ${recap}`,
+    ].join("\n");
+  }
+
+  it("reads the expiry from the header line after URI, not a statement line", () => {
+    const message = messageWith(
+      ["Expiration Time: 2099-01-01T00:00:00Z"],
+      FIXTURE_META.expirationTime,
+    );
+    const model = parseCapabilityReview(ctx({ message }));
+    expect(model.expiry).toBe(FIXTURE_META.expirationTime);
+  });
+
+  it("reports no expiry when the only Expiration Time line sits in the statement", () => {
+    const message = messageWith(["Expiration Time: 2099-01-01T00:00:00Z"], null);
+    const model = parseCapabilityReview(ctx({ message }));
+    expect(model.expiry).toBeNull();
   });
 });

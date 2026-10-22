@@ -159,6 +159,19 @@ function firstMatch(re: RegExp, text: string): string | null {
   return m && m[1] ? m[1] : null;
 }
 
+/**
+ * EIP-4361 puts the free-text statement before the `URI:` line and the header
+ * fields (including `Expiration Time:`) after it. A statement line can mimic
+ * `Expiration Time:`, so only the last `URI:` line anchors the header and
+ * `Expiration Time:` is read from the text after it.
+ */
+function headerExpirationTime(message: string): string | null {
+  let uri: RegExpMatchArray | null = null;
+  for (const m of message.matchAll(/^URI: (.+)$/gm)) uri = m;
+  if (!uri || uri.index === undefined) return null;
+  return firstMatch(SIWE_EXPIRATION_LINE, message.slice(uri.index + uri[0].length));
+}
+
 function parseImmutableSiweFields(
   message: string,
   signer: SignerInfo,
@@ -168,7 +181,7 @@ function parseImmutableSiweFields(
   const chainRaw = firstMatch(SIWE_CHAIN_LINE, message);
   const nonce = firstMatch(SIWE_NONCE_LINE, message);
   const issuedAt = firstMatch(SIWE_ISSUED_LINE, message);
-  const expirationTime = firstMatch(SIWE_EXPIRATION_LINE, message);
+  const expirationTime = headerExpirationTime(message);
   if (!domain || !addrMatch || !chainRaw || !nonce || !issuedAt || !expirationTime) {
     return null;
   }
@@ -797,7 +810,7 @@ export function parseCapabilityReview(
 
   // 2. Parse SIWE-level fields.
   const immutable = parseImmutableSiweFields(ctx.message, ctx.signer);
-  const expiration = firstMatch(SIWE_EXPIRATION_LINE, ctx.message);
+  const expiration = headerExpirationTime(ctx.message);
 
   const { entries, warnings: recapWarnings } = parseRecapResources(ctx.message);
   warnings.push(...recapWarnings);
