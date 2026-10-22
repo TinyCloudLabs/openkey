@@ -4,8 +4,9 @@ import {
   grantsHeldPresent,
   heldPresentOriginRefusal,
   heldPresentSigningEnabled,
+  NO_VERIFIED_ORIGIN_REASON,
   refusesHeldPresentation,
-} from './held-presentation-refusal';
+} from '../services/held-presentation-refusal';
 import { privateKeyToAccount } from 'viem/accounts';
 
 const ADDRESS = privateKeyToAccount('0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef').address;
@@ -120,12 +121,16 @@ describe('heldPresentOriginRefusal', () => {
     expect(heldPresentOriginRefusal(siweWith({}), FIRST_PARTY)).toBeNull();
   });
 
-  test('refuses a SIWE with no verified origin', () => {
-    expect(heldPresentOriginRefusal(siweWith({}), undefined)).not.toBeNull();
+  test('refuses a SIWE with no verified origin, with the no-origin reason', () => {
+    expect(heldPresentOriginRefusal(siweWith({}), undefined)).toBe(NO_VERIFIED_ORIGIN_REASON);
   });
 
   test('refuses an origin that is not first-party', () => {
     expect(heldPresentOriginRefusal(siweWith({}), 'https://preview.share.tinycloud.xyz')).not.toBeNull();
+  });
+
+  test('refuses a host that only ends with a first-party host, even with a matching domain', () => {
+    expect(heldPresentOriginRefusal(siweWith({ domain: 'evil-share.tinycloud.xyz' }), 'https://evil-share.tinycloud.xyz')).not.toBeNull();
   });
 
   test('refuses a non-https origin even when its host matches', () => {
@@ -152,6 +157,6 @@ describe('heldPresentOriginRefusal', () => {
 describe('CLI handoff requester', () => {
   // temporary: the CLI/agent requester is designed in a follow-up; remove or change this test deliberately then.
   test('temporary: a held presentation with no verified origin is refused', () => {
-    expect(heldPresentOriginRefusal(siweWith({}), undefined)).not.toBeNull();
+    expect(heldPresentOriginRefusal(siweWith({}), undefined)).toBe(NO_VERIFIED_ORIGIN_REASON);
   });
 });

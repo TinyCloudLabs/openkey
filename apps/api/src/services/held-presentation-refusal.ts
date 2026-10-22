@@ -119,13 +119,15 @@ export function refusesHeldPresentation(message: string): boolean {
 /** Origins whose held presentations may be signed (DESIGN-v5 §3.2.3). Exo and preview hosts are excluded. */
 export const FIRST_PARTY_ORIGINS: readonly string[] = ['https://share.tinycloud.xyz'];
 
+export const NO_VERIFIED_ORIGIN_REASON = 'no verified origin (CLI handoff or missing context)';
+
 /**
  * D-5 (DESIGN-v5 §3.2.3): a held presentation may only be signed when the
  * verified origin is first-party and the SIWE `Scheme:` (absent = https) and
  * `domain` equal that origin exactly. Returns a refusal reason, or null.
  */
 export function heldPresentOriginRefusal(siweText: string, verifiedOrigin: string | undefined): string | null {
-  if (!verifiedOrigin) return 'no verified origin (CLI handoff or missing context)';
+  if (!verifiedOrigin) return NO_VERIFIED_ORIGIN_REASON;
   if (!FIRST_PARTY_ORIGINS.includes(verifiedOrigin)) return 'origin is not a first-party origin';
   let siwe: SiweMessage;
   try {
