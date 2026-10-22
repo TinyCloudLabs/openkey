@@ -215,9 +215,9 @@ async function finishManagedSpaceOnboarding(input: {
       case 'hosted':
       case 'complete':
         return { spaceReady: true };
-      // Still running here or under another approval's lock: the lock/cache finishes it once.
+      // Another run holds the lock (an approval's or the sweep's) and will host the space: keep waiting.
       case 'pending':
-        return { spaceReady: null, spacePending: true };
+        return { spaceReady: null, spacePending: true, spaceError: result.errorCode };
       case 'timeout':
         return { spaceReady: null, spacePending: true, spaceError: REQUESTED_SPACE_TIMEOUT_ERROR };
       case 'skipped':
