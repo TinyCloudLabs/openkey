@@ -18,6 +18,9 @@ export const DEVICE_AUTH_MAX_PERMISSIONS = 16;
 export const DEVICE_AUTH_MAX_REASON_LENGTH = 200;
 /** Tolerance for clock differences between API instances when signing. */
 export const DEVICE_AUTH_CLOCK_SKEW_MS = 5_000;
+// A decrypt grant is short-lived: one hour at most, and only as the sole entry
+// of a device request. Enforced at start and again on the stored record.
+const DECRYPT_ENTRY_MAX_LIFETIME_SECONDS = 60 * 60;
 
 export interface DevicePermission {
   service: string;
@@ -471,6 +474,14 @@ export function deviceRequestPermissions(value: unknown): DevicePermission[] {
     }
     return { service, space, path, actions: [...unique] };
   });
+  if (encryptionEntries > 0) {
+    // The decrypt entry is the whole request: no capabilities/read rides along
+    // and nothing else is granted in the same device request.
+    if (permissions.length > 1) {
+      throw scopeError('the tinycloud.encryption decrypt entry must be the only permission in a device request');
+    }
+    return permissions;
+  }
   if (!permissions.some((permission) => permission.service === 'tinycloud.capabilities')) {
     throw scopeError(
       'permissions must include tinycloud.capabilities/read with path "" in the requested space; every OpenKey delegation carries it and it cannot be unchecked',
@@ -493,6 +504,16 @@ function requestReason(value: unknown): string | undefined {
     throw new DeviceAuthorizationError('invalid_request', `reason must be at most ${DEVICE_AUTH_MAX_REASON_LENGTH} characters`, 400);
   }
   return normalized || undefined;
+}
+
+function hasDecryptEntry(permissions: readonly DevicePermission[]): boolean {
+  return permissions.some((permission) => permission.service === 'tinycloud.encryption');
+}
+
+function assertDecryptLifetime(permissions: readonly DevicePermission[], ttlSeconds: number): void {
+  if (hasDecryptEntry(permissions) && ttlSeconds > DECRYPT_ENTRY_MAX_LIFETIME_SECONDS) {
+    throw new DeviceAuthorizationError('invalid_request', 'the decrypt entry needs a lifetime of at most one hour', 400);
+  }
 }
 
 /**
@@ -526,7 +547,7 @@ function approvedPermissionSubset(requested: DevicePermission[], value: unknown)
     const actions = approvedByResource.get(resourceKey(permission));
     return actions ? [{ ...permission, actions: permission.actions.filter((action) => actions.has(action)) }] : [];
   });
-  if (!canonical.some((permission) => permission.service === 'tinycloud.capabilities')) {
+  if (!hasDecryptEntry(requested) && !canonical.some((permission) => permission.service === 'tinycloud.capabilities')) {
     throw new DeviceAuthorizationError('invalid_result', 'approved permissions must keep tinycloud.capabilities/read', 400);
   }
   if (!jsonEqual(canonical, value)) {
@@ -608,6 +629,7 @@ function validateRelayApproval(record: DeviceAuthorizationRecord, value: unknown
   const delegationExpiresAt = typeof bound.delegationExpiresAt === 'string'
     ? new Date(bound.delegationExpiresAt)
     : new Date(Number.NaN);
+  assertDecryptLifetime(record.permissions, record.delegationTtlSeconds);
   // The lifetime starts at approval: never longer than the requested TTL
   // from now, and never past the transaction deadline plus that TTL.
   if (
@@ -675,6 +697,7 @@ export class DeviceAuthorizationService {
     const permissions = deviceRequestPermissions(input.permissions);
     const reason = requestReason(input.reason);
     const delegationTtlSeconds = requestedTtlSeconds(input.delegationTtlSeconds);
+    assertDecryptLifetime(permissions, delegationTtlSeconds);
     const nodeOrigin = canonicalOrigin(input.nodeOrigin, 'nodeOrigin');
     const shareOrigin = canonicalOrigin(input.shareOrigin, 'shareOrigin');
     const requestIpHash = sha256(`device-auth-ip\0${this.options.encryptionSecret}\0${requestIp}`);
@@ -760,9 +783,11 @@ export class DeviceAuthorizationService {
     if (input.nodeOrigin !== record.nodeOrigin || jwkDid !== record.sessionDid || signedDid !== record.sessionDid) {
       throw new DeviceAuthorizationError('invalid_request', 'delegation does not match the device request', 400);
     }
+    // A decrypt grant gets no clock-skew allowance: its bound is strict.
+    const skewMs = hasDecryptEntry(record.permissions) ? 0 : DEVICE_AUTH_CLOCK_SKEW_MS;
     if (
       Number.isNaN(expiresAt) ||
-      expiresAt > now.getTime() + record.delegationTtlSeconds * 1000 + DEVICE_AUTH_CLOCK_SKEW_MS ||
+      expiresAt > now.getTime() + record.delegationTtlSeconds * 1000 + skewMs ||
       expiresAt > record.delegationExpiresAt.getTime()
     ) {
       throw new DeviceAuthorizationError('invalid_request', 'delegation lifetime exceeds the device request', 400);
