@@ -6,6 +6,8 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
+import { buildStatements, DECRYPT_DEFAULT_KEY_STATEMENT, parseCapabilityReview } from '@openkey/capability-review';
+import type { ParseContext } from '@openkey/capability-review';
 import type { delegateRouter, setDelegateSignerAuthMiddlewareForTests } from '../routes/delegate';
 import type { decryptRefusalForSignedSiwe, prepareDelegationSession } from '../routes/delegate-session';
 import type { _resetAuthorizationContextStoreForTests } from '../services/authorization-signing';
@@ -404,6 +406,36 @@ describe('flag ON: lone own-network decrypt is admitted at one hour', () => {
     const remaining = expiresInSeconds(prepared.body.prepared.siwe);
     expect(remaining).toBeGreaterThan(3500);
     expect(remaining).toBeLessThanOrEqual(3600);
+  });
+
+  test('/prepare shows the lone own-network decrypt with only the default-key consent statement', async () => {
+    const prepared = await post('/prepare', { keyId: managedKey.id, jwk, host, permissions: decryptOnly, expiry: '1h' });
+    expect(prepared.status).toBe(200);
+    const context: ParseContext = {
+      message: prepared.body.prepared.siwe,
+      signer: { label: 'Test signer', address: wallet.address, chainId: 1, provenance: 'managed' },
+      editable: true,
+      metadataTrust: { status: 'unsigned', reason: 'no manifest' },
+      reason: { text: '', source: 'none' },
+      requester: {
+        displayName: 'cli.tinycloud.xyz',
+        verifiedOrigin: 'https://cli.tinycloud.xyz',
+        appId: null,
+        manifestName: null,
+        manifestNameProvenance: 'none',
+        manifestId: null,
+        manifestIdProvenance: 'none',
+        manifestDigest: null,
+        domainWarning: false,
+        originWarning: false,
+      },
+      requesterAddress: null,
+      requesterVerified: false,
+    };
+    const statements = parseCapabilityReview(context)
+      .permissions.flatMap((permission) => buildStatements(permission))
+      .map((row) => row.primaryText);
+    expect(statements).toEqual([DECRYPT_DEFAULT_KEY_STATEMENT]);
   });
 
   test('wallet /prepare and /complete approve the lone decrypt at one hour', async () => {
