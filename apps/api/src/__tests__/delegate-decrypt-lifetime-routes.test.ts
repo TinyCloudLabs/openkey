@@ -62,6 +62,12 @@ await mockModules({
   }),
   '@tinycloud/sdk-core': () => ({ activateSessionWithHost }),
 });
+await mockModules({
+  // This file asserts the device-transaction opt-in exclusion; the window check
+  // has its own tests. Stubbed here because a module-level service it loads is
+  // replaced by other route tests, and bun caches that binding across files.
+  '../routes/device-delegation-window': () => ({ deviceDelegationWindowError: async () => null }),
+});
 
 let router: typeof delegateRouter;
 let resetContexts: typeof _resetAuthorizationContextStoreForTests;
