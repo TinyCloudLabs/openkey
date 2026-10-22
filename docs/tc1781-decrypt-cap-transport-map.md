@@ -29,7 +29,7 @@ Other paths not in the table: `services/managed-key-signing.ts:13-20` is a gener
 
 ## Guard status and NOT COVERED reasons
 
-Line numbers are at `b665471`. "killed" means a mutation of that guard made a test fail. "survived" means no test failed. Each guard stays in place as defence in depth.
+Rows A–O: line numbers at `b665471`. Rows P–S: line numbers at `03032dc`. "killed" means a mutation of that guard made a test fail. "survived" means no test failed. Each guard stays in place as defence in depth.
 
 | Guard | Location | Result | Reason |
 |---|---|---|---|
@@ -48,6 +48,10 @@ Line numbers are at `b665471`. "killed" means a mutation of that guard made a te
 | M | `routes/keys.ts` 307–308 | killed | |
 | N | `services/tinycloud-bootstrap.ts` 803–804 | unreachable | NOT COVERED. Unreachable with the shipped manifest. |
 | O | `services/tinycloud-bootstrap.ts` 823–824 | unreachable | NOT COVERED. Unreachable with the shipped manifest. |
+| P | `routes/delegate.ts` 1657 (`POST /`, admit opt-in) | killed | `decryptStepupAdmitEnabled() &&` forced to `false &&`. `bun test src/__tests__/delegate-decrypt-lifetime-routes.test.ts`: 2 fail, 51 pass, of 53. |
+| Q | `routes/delegate.ts` 1836 (`POST /prepare`, admit opt-in) | killed | Same forced false. Routes test: 5 fail, 48 pass, of 53. |
+| R | `routes/delegate-session.ts` 606 (`admitLoneDecrypt`) | killed | Line 606 forced to `false;`. Routes test: 9 fail, 44 pass, of 53. |
+| S | `services/decrypt-lifetime-policy.ts` 82 (startup warning) | killed | `if (enforce && !admit) {` forced to `if (false) {`. `bun test src/__tests__/decrypt-lifetime-policy.test.ts`: 1 fail, 48 pass, of 49. |
 
 ## Lone own-network decrypt admission (flag ON only)
 
@@ -62,7 +66,9 @@ A request whose only entry is a raw `tinycloud.encryption` decrypt on the approv
 
 ## Flag-OFF golden table
 
-`apps/api/src/__tests__/fixtures/delegate-flag-off-golden.json` was recorded from origin/main `3cdfa5a` with a throwaway copy of the test, which is not committed. `delegate-flag-off-golden.test.ts` replays the same requests on this branch with the flag unset and compares normalised responses. Normalisation: `Authorization` header to `<authorization>`; `Nonce: …` to `Nonce: <nonce>`; ISO timestamps to `<iso>`; `0x` plus 130 hex characters to `<sig>`; UUIDs to `<uuid>`; `oks_…` to `oks_<token>`; `bafk…` to `<cid>`. Two recorder runs were identical after normalisation. Forcing the flag ON makes the golden test fail.
+`apps/api/src/__tests__/fixtures/delegate-flag-off-golden.json` holds responses recorded from origin/main `3cdfa5a` with both flags unset. The recorder was a throwaway copy of the test and is not committed. `delegate-flag-off-golden.test.ts` replays the same requests on this branch with both flags unset and compares the serialised, normalised responses to the table with `toBe` on `JSON.stringify`. Normalisation: `Authorization` header to `<authorization>`; `Nonce: …` to `Nonce: <nonce>`; ISO timestamps to `<iso>`; `0x` plus 130 hex characters to `<sig>`; UUIDs to `<uuid>`; `oks_…` to `oks_<token>`; `bafk…` to `<cid>`.
+
+Covered: `POST /prepare` (lone device default decrypt, lone own-network raw decrypt, foreign-network and named-key raw decrypt, device plus own-network, kv plus raw decrypt, and kv only, at the expiries listed in the test), `POST /` with a managed key, and `POST /complete`. The fixture holds 17 recorded responses. Not covered: `POST /sign`, `POST /host`, `POST /authorize-sign-prepare`, `POST /authorize-sign`, `keys.ts` sign, and bootstrap. Those sites are listed as NOT COVERED or unreachable in the guard table.
 
 ## /complete fail-closed (ruling 4)
 
