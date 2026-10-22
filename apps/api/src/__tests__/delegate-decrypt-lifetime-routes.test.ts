@@ -1,7 +1,9 @@
-// TC-1781: decrypt lifetime cap on non-device `/delegate` transports, behind
-// DECRYPT_LIFETIME_ENFORCE_NON_DEVICE. Flag OFF keeps existing behaviour. Flag
-// ON refuses a decrypt entry that is not alone or has no explicit lifetime of
-// at most one hour, before any signing or side effect.
+// TC-1781: decrypt lifetime cap on non-device `/delegate` transports, behind two
+// independent flags. DECRYPT_STEPUP_ADMIT admits a lone own-network decrypt with
+// an explicit lifetime of at most one hour. DECRYPT_LIFETIME_ENFORCE_NON_DEVICE
+// refuses a decrypt entry that is not alone or has no explicit lifetime of at
+// most one hour, before any signing or side effect. Both off keeps existing
+// behaviour.
 
 import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
@@ -100,24 +102,34 @@ beforeAll(async () => {
 });
 
 const FLAG = 'DECRYPT_LIFETIME_ENFORCE_NON_DEVICE';
+const ADMIT = 'DECRYPT_STEPUP_ADMIT';
 const REFUSAL = 'a decrypt approval lasts at most one hour';
 const SINGLE_SPACE = 'permissions must belong to a single space';
 let savedFlag: string | undefined;
+let savedAdmit: string | undefined;
 
 function setFlag(value: string | undefined) {
   if (value === undefined) delete process.env[FLAG];
   else process.env[FLAG] = value;
 }
 
+function setAdmit(value: string | undefined) {
+  if (value === undefined) delete process.env[ADMIT];
+  else process.env[ADMIT] = value;
+}
+
 beforeEach(() => {
   savedFlag = process.env[FLAG];
+  savedAdmit = process.env[ADMIT];
   setFlag(undefined);
+  setAdmit(undefined);
   resetContexts?.();
   activateSessionWithHost.mockClear();
 });
 
 afterEach(() => {
   setFlag(savedFlag);
+  setAdmit(savedAdmit);
 });
 
 const space = `tinycloud:pkh:eip155:1:${wallet.address}:secrets`;
@@ -405,9 +417,10 @@ const NAMED_NETWORK = `urn:tinycloud:encryption:did:pkh:eip155:1:${wallet.addres
 const ownDefaultSpace = `tinycloud:pkh:eip155:1:${wallet.address}:default`;
 const ownDefaultNetwork = `urn:tinycloud:encryption:did:pkh:eip155:1:${wallet.address}:default`;
 
-describe('flag ON: lone own-network decrypt is admitted at one hour', () => {
+describe('both flags ON: lone own-network decrypt is admitted at one hour', () => {
   beforeEach(() => {
     setFlag('true');
+    setAdmit('true');
   });
 
   test('legacy approval signs the lone own-network decrypt at one hour', async () => {
@@ -516,11 +529,114 @@ describe('flag ON: lone own-network decrypt is admitted at one hour', () => {
     expect(activateSessionWithHost).not.toHaveBeenCalled();
   });
 
-  test('flag OFF keeps the lone own-network decrypt on the single-space refusal', async () => {
+  test('both flags OFF keep the lone own-network decrypt on the single-space refusal', async () => {
     setFlag(undefined);
+    setAdmit(undefined);
     const res = await post('/prepare', { keyId: managedKey.id, jwk, host, permissions: decryptOnly, expiry: '1h' });
     expect(res.status).toBe(400);
     expect(res.body.error).toBe(SINGLE_SPACE);
+  });
+});
+
+describe('admit ON, enforce OFF: lone own-network decrypt admitted; other requests unchanged', () => {
+  beforeEach(() => {
+    setAdmit('true');
+  });
+
+  test('legacy approval signs the lone own-network decrypt at an explicit one hour', async () => {
+    const res = await post('/', { keyId: managedKey.id, jwk, host, permissions: decryptOnly, expiry: '1h' });
+    expect(res.status).toBe(200);
+  });
+
+  test('/prepare admits the lone decrypt at an explicit 3600 seconds on the own default network', async () => {
+    const prepared = await post('/prepare', { keyId: managedKey.id, jwk, host, permissions: decryptOnly, expiry: '3600s' });
+    expect(prepared.status).toBe(200);
+    expect(prepared.body.prepared.siwe).toContain(ownDefaultNetwork);
+  });
+
+  test('wallet /prepare and /complete approve the lone decrypt at one hour', async () => {
+    const prepared = await post('/prepare', { keyId: externalKey.id, jwk, host, permissions: decryptOnly, expiry: '1h' });
+    expect(prepared.status).toBe(200);
+    const res = await walletComplete(prepared.body, decryptOnly);
+    expect(res.status).toBe(200);
+  });
+
+  test('the lone decrypt at 3601 seconds keeps the single-space refusal before activation', async () => {
+    const res = await post('/', { keyId: managedKey.id, jwk, host, permissions: decryptOnly, expiry: '3601s' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe(SINGLE_SPACE);
+    expect(activateSessionWithHost).not.toHaveBeenCalled();
+  });
+
+  test('the lone decrypt with no explicit expiry keeps the single-space refusal', async () => {
+    const res = await post('/prepare', { keyId: managedKey.id, jwk, host, permissions: decryptOnly });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe(SINGLE_SPACE);
+    expect(res.body.prepared).toBeUndefined();
+  });
+
+  test('a device transaction does not admit the lone own-network decrypt', async () => {
+    const res = await post('/prepare', {
+      keyId: managedKey.id,
+      jwk,
+      host,
+      permissions: decryptOnly,
+      expiry: '1h',
+      deviceTransactionId: 'dt_1',
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe(SINGLE_SPACE);
+  });
+
+  test('a lone decrypt on a named key keeps the single-space refusal at one hour', async () => {
+    const permissions = [{ ...decrypt, path: NAMED_NETWORK }];
+    const res = await post('/prepare', { keyId: managedKey.id, jwk, host, permissions, expiry: '1h' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe(SINGLE_SPACE);
+  });
+
+  test('a bundled decrypt with network.create is not admitted and keeps the single-space refusal', async () => {
+    const res = await post('/', { keyId: managedKey.id, jwk, host, permissions: bundledDecrypt });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe(SINGLE_SPACE);
+  });
+
+  test('decrypt beside other entries signs at one hour without the cap', async () => {
+    const res = await post('/', { keyId: managedKey.id, jwk, host, permissions: request, expiry: '1h' });
+    expect(res.status).toBe(200);
+  });
+});
+
+describe('admit OFF, enforce ON: lone own-network decrypt refused', () => {
+  beforeEach(() => {
+    setFlag('true');
+  });
+
+  test('legacy approval refuses the lone decrypt at one hour with the single-space rule', async () => {
+    const res = await post('/', { keyId: managedKey.id, jwk, host, permissions: decryptOnly, expiry: '1h' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe(SINGLE_SPACE);
+    expect(activateSessionWithHost).not.toHaveBeenCalled();
+  });
+
+  test('/prepare refuses the lone decrypt at one hour and returns no prepared session', async () => {
+    const res = await post('/prepare', { keyId: managedKey.id, jwk, host, permissions: decryptOnly, expiry: '1h' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe(SINGLE_SPACE);
+    expect(res.body.prepared).toBeUndefined();
+  });
+
+  test('the lone decrypt at 3601 seconds keeps the fixed refusal', async () => {
+    const res = await post('/prepare', { keyId: managedKey.id, jwk, host, permissions: decryptOnly, expiry: '3601s' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe(REFUSAL);
+  });
+
+  test('the lone decrypt at the 7-day default keeps the fixed refusal', async () => {
+    const res = await post('/', { keyId: managedKey.id, jwk, host, permissions: decryptOnly });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe(REFUSAL);
+    expect(activateSessionWithHost).not.toHaveBeenCalled();
   });
 });
 

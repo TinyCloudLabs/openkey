@@ -191,8 +191,10 @@ function normalise(value: unknown, key = ''): unknown {
 
 describe('flag OFF: golden behaviour', () => {
   test('every recorded request answers as origin/main 3cdfa5a did', async () => {
-    const previousFlag = process.env.DECRYPT_LIFETIME_ENFORCE_NON_DEVICE;
+    const savedEnforce = process.env.DECRYPT_LIFETIME_ENFORCE_NON_DEVICE;
+    const savedAdmit = process.env.DECRYPT_STEPUP_ADMIT;
     delete process.env.DECRYPT_LIFETIME_ENFORCE_NON_DEVICE;
+    delete process.env.DECRYPT_STEPUP_ADMIT;
     try {
       const actual: Record<string, unknown> = {};
       for (const [name, run] of Object.entries(cases)) {
@@ -200,9 +202,11 @@ describe('flag OFF: golden behaviour', () => {
         const result = await run();
         actual[name] = normalise(result);
       }
-      expect(actual).toEqual(golden as Record<string, unknown>);
+      // Serialised comparison: key order and undefined-valued keys count, unlike toEqual.
+      expect(JSON.stringify(actual)).toBe(JSON.stringify(golden));
     } finally {
-      if (previousFlag !== undefined) process.env.DECRYPT_LIFETIME_ENFORCE_NON_DEVICE = previousFlag;
+      if (savedEnforce !== undefined) process.env.DECRYPT_LIFETIME_ENFORCE_NON_DEVICE = savedEnforce;
+      if (savedAdmit !== undefined) process.env.DECRYPT_STEPUP_ADMIT = savedAdmit;
       setSystemTime();
     }
   });
