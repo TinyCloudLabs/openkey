@@ -1197,3 +1197,26 @@ describe('CoordinationOS OAuth signer route', () => {
     });
   });
 });
+
+test('tinycloud:manage-key refuses a decrypt approval longer than one hour while the flag is on', async () => {
+  token.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
+  client.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
+  const network = `urn:tinycloud:encryption:did:pkh:eip155:1:${address}:default`;
+  const body = signingBody({
+    abilities: { encryption: { [network]: ['tinycloud.encryption/decrypt'] } },
+    expirationTime: new Date(Date.now() + 7 * 24 * 3_600_000).toISOString(),
+  });
+  process.env.DECRYPT_LIFETIME_ENFORCE_NON_DEVICE = 'true';
+  try {
+    const response = await sign(body);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      approved: false,
+      code: 'invalid_request',
+      reason: 'a decrypt approval lasts at most one hour',
+    });
+    expect(signerCalls).toBe(0);
+  } finally {
+    delete process.env.DECRYPT_LIFETIME_ENFORCE_NON_DEVICE;
+  }
+});
