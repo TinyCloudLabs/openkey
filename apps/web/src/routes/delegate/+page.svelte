@@ -28,6 +28,8 @@
   import { autoSelectKey } from '$lib/delegate-key-selection';
   import DelegateSigningHint from '$lib/components/signing/delegate-signing-hint.svelte';
   import { shouldShowLoopbackHint } from '$lib/delegate-signing-hint';
+  import { startCodeCountdown, remainingFromServerClock, type CodeCountdownSnapshot } from '$lib/delegate-code-countdown';
+  import { closeThisTab, browserCloseEnvironment } from '$lib/delegate-close-tab';
   import {
     parseSpaceSetup,
     spaceReadinessResult,
@@ -91,6 +93,35 @@
   let permissionOptions = $state<DelegatePermission[]>([]);
   let selectedActionKeys = $state<string[]>([]);
   let editingPermissions = $state(false);
+  let codeDeadline = $state<number | null>(null);
+  let codeCountdown = $state<CodeCountdownSnapshot | null>(null);
+  let codeAnnouncement = $state('');
+  let closeStuck = $state(false);
+  let cancelCloseAttempt: (() => void) | null = null;
+
+  // Countdown for the short code. Stopped when the deadline changes or the page is destroyed.
+  $effect(() => {
+    const deadline = codeDeadline;
+    if (deadline === null) return;
+    codeAnnouncement = '';
+    return startCodeCountdown({
+      deadline,
+      onUpdate: (snapshot) => {
+        codeCountdown = snapshot;
+        if (snapshot.announcement) codeAnnouncement = snapshot.announcement;
+      },
+    });
+  });
+
+  // Cancels a pending Close check when the page is destroyed.
+  $effect(() => () => cancelCloseAttempt?.());
+
+  function requestClose() {
+    cancelCloseAttempt?.();
+    cancelCloseAttempt = closeThisTab(browserCloseEnvironment(), () => {
+      closeStuck = true;
+    });
+  }
   let updatingPermissions = $state(false);
   let permissionsEdited = $state(false);
   let authorizationContextToken = $state<string | null>(null);
@@ -1148,7 +1179,14 @@
       });
       if (response.ok) {
         const result = await response.json();
-        if (/^[a-z2-7]{4}-[a-z2-7]{4}$/i.test(result.code)) shortCode = result.code.toUpperCase();
+        const remainingMs = typeof result.expiresAt === 'string'
+          ? remainingFromServerClock(result.expiresAt, response.headers.get('date'))
+          : null;
+        if (/^[a-z2-7]{4}-[a-z2-7]{4}$/i.test(result.code)) {
+          shortCode = result.code.toUpperCase();
+          // Read at receipt: the countdown runs on the monotonic clock from here.
+          if (remainingMs !== null) codeDeadline = performance.now() + remainingMs;
+        }
       }
     } catch {
       // The full delegation remains available when the broker is unreachable.
@@ -1253,11 +1291,17 @@
             {/if}
             {#if shortCode}
               <div class="w-full rounded-xl bg-surface-50 border border-surface-200 px-3 py-4">
-                <div class="font-mono text-2xl font-semibold tracking-widest text-surface-900 select-all">{shortCode}</div>
-                <p class="text-surface-500 text-xs mt-2">Use within 5 minutes. Works once.</p>
+                <div class="font-mono text-2xl font-semibold tracking-widest select-all {codeCountdown?.expired ? 'text-surface-400 line-through' : 'text-surface-900'}">{shortCode}</div>
+                {#if codeCountdown}
+                  <p role="timer" aria-live="off" class="text-sm mt-2 {codeCountdown.expired ? 'font-medium text-amber-900' : 'text-surface-600'}">{codeCountdown.text}</p>
+                  <p class="text-surface-500 text-xs mt-1">Works once.</p>
+                {:else}
+                  <p class="text-surface-600 text-sm mt-2">Use within 5 minutes. Works once.</p>
+                {/if}
               </div>
+              <p class="sr-only" role="status" aria-live="polite">{codeAnnouncement}</p>
               <button
-                class="mt-3 rounded-lg border border-surface-200 bg-surface-50 px-4 py-2 text-sm font-medium text-surface-900 hover:bg-surface-100"
+                class="mt-3 rounded-lg border border-surface-200 bg-surface-50 px-4 py-2 text-sm font-medium text-surface-900 hover:bg-surface-100 disabled:cursor-not-allowed disabled:opacity-50"
                 onclick={() => copyCode(shortCode)}
                 aria-label="Copy short code"
               >{copied ? 'Copied' : 'Copy code'}</button>
@@ -1282,6 +1326,14 @@
                 aria-label="Copy full delegation code"
               >{copied ? 'Copied' : 'Copy full code'}</button>
             </details>
+            {#if closeStuck}
+              <p class="text-surface-600 text-sm mt-4">You can close this tab.</p>
+            {:else}
+              <button
+                class="mt-4 rounded-lg border border-surface-200 bg-surface-50 px-4 py-2 text-sm font-medium text-surface-900 hover:bg-surface-100"
+                onclick={requestClose}
+              >Close</button>
+            {/if}
           {:else}
             <h2 class="text-lg font-semibold text-surface-900 mb-2">Authenticated</h2>
             <p class="text-surface-500 text-sm">You can close this window and return to the CLI.</p>
