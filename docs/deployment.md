@@ -158,7 +158,7 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `BETTER_AUTH_SECRET` | 32+ character random secret for session encryption |
 | `BETTER_AUTH_URL` | `https://api.openkey.so` |
 | `OAUTH_DYNAMIC_CLIENT_REGISTRATION` | Keep `true` for MCP clients that register automatically; set `false` only as an emergency disable |
-| `OAUTH_VALID_AUDIENCES` | Comma-separated additional OAuth resource URLs; production includes `https://mcp.tinycloud.xyz/mcp` |
+| `OAUTH_VALID_AUDIENCES` | Comma-separated additional OAuth resource URLs; code includes the exact broad `https://mcp.tinycloud.xyz/mcp` and public `https://mcp.tinycloud.xyz/chatgpt/mcp` audiences. Preserve any additional configured resources. |
 | `WEBAUTHN_RP_ID` | `openkey.so` |
 | `WEBAUTHN_ORIGIN` | `https://openkey.so` |
 | `CONSOLE_ORIGIN` | `https://console.openkey.so` |
@@ -277,8 +277,11 @@ The SvelteKit frontend deploys to Cloudflare Pages using the `@sveltejs/adapter-
      TinyCloud nodes): `VITE_DELEGATE_CALLBACK_URLS` (comma-separated app
      callback endpoints such as `https://mcp.staging.example/connect/callback`)
      and `VITE_DELEGATE_NODE_ORIGINS` (comma-separated HTTPS node origins).
-     Production needs neither: the hosted MCP endpoint and the
-     `node`/`tee.node.tinycloud.xyz` nodes are built in. See
+     Production needs neither for the first-party MCP services: the exact
+     `/connect/callback` and `/chatgpt/connect/callback` endpoints on
+     `https://mcp.tinycloud.xyz` and the `node`/`tee.node.tinycloud.xyz` nodes
+     are built in. The public ChatGPT candidate needs both this web registration
+     and the API audience update deployed; neither establishes ChatGPT acceptance. See
      `docs/share-device-authorization.md` ("Ordinary `/delegate` links").
 
 4. Deploy
