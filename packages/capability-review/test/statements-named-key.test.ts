@@ -4,6 +4,7 @@
 
 import { describe, expect, it } from "bun:test";
 
+import { DECRYPT_DEFAULT_KEY_STATEMENT } from "../src/copy.js";
 import {
   buildStatement,
   buildStatements,
@@ -148,11 +149,91 @@ describe("malformed named-key resources fall back to generic rows", () => {
   for (const space of malformed) {
     it(`uses the generic fallback for ${space}`, () => {
       const grant = namedGrant(space, [ABILITY.decrypt, ABILITY.delete]);
-      const texts = buildStatements(grant).map((row) => row.primaryText);
-      expect(texts).toEqual([
+      const rows = buildStatements(grant);
+      expect(rows.map((row) => row.primaryText)).toEqual([
         "Perform tinycloud.encryption/decrypt on tinycloud.encryption",
-        "Perform tinycloud.encryption/key.delete on tinycloud.encryption",
+        `Delete the key ${space}: only you can do this, with your wallet, as a separate step. This request is refused.`,
       ]);
+      expect(rows[0]?.neverApprovable).not.toBe(true);
+      expect(rows[1]?.neverApprovable).toBe(true);
+    });
+  }
+});
+
+function shapeGrant(
+  shape: "A" | "B",
+  resource: string,
+  abilities: string[],
+): CapabilityGrant {
+  // Shape A: the URN is the whole `space`. Shape B: `space` is the raw
+  // "encryption" service name and the URN sits in `path`.
+  return shape === "A"
+    ? namedGrant(resource, abilities)
+    : { ...namedGrant("encryption", abilities), path: resource };
+}
+
+describe("named-key routing: shape A and shape B resolve identically", () => {
+  for (const shape of ["A", "B"] as const) {
+    it(`shape ${shape} exact key routes to the key sentence and keeps the URN`, () => {
+      const row = buildStatement(shapeGrant(shape, KEY, [ABILITY.decrypt]));
+      expect(row.primaryText).toBe(KEY_SENTENCE.decrypt);
+      expect(row.resource).toBe(KEY);
+    });
+
+    it(`shape ${shape} prefix routes to the prefix sentence and keeps the URN`, () => {
+      const row = buildStatement(shapeGrant(shape, PREFIX, [ABILITY.decrypt]));
+      expect(row.primaryText).toBe(PREFIX_SENTENCE.decrypt);
+      expect(row.resource).toBe(PREFIX);
+    });
+
+    it(`shape ${shape} bare network keeps the default-key decrypt copy`, () => {
+      expect(
+        buildStatement(shapeGrant(shape, NETWORK, [ABILITY.decrypt])).primaryText,
+      ).toBe(DECRYPT_DEFAULT_KEY_STATEMENT);
+    });
+
+    it(`shape ${shape} malformed URN renders the literal fallback, not friendly copy`, () => {
+      expect(
+        buildStatement(shapeGrant(shape, `${NETWORK}/apps//x`, [ABILITY.decrypt]))
+          .primaryText,
+      ).toBe("Perform tinycloud.encryption/decrypt on tinycloud.encryption");
+    });
+  }
+});
+
+describe("key.delete fails closed on every encryption resource shape", () => {
+  const cases = [
+    ["exact key", KEY],
+    ["prefix", PREFIX],
+    ["malformed", `${NETWORK}/apps//x`],
+  ] as const;
+  for (const shape of ["A", "B"] as const) {
+    for (const [label, resource] of cases) {
+      it(`shape ${shape} ${label} delete is never approvable and refused`, () => {
+        const row = buildStatement(shapeGrant(shape, resource, [ABILITY.delete]));
+        expect(row.neverApprovable).toBe(true);
+        expect(row.primaryText).toContain("This request is refused.");
+      });
+    }
+  }
+
+  it("a delete on a non-URN resource is still never approvable and refused", () => {
+    const row = buildStatement(namedGrant("default", [ABILITY.delete]));
+    expect(row.neverApprovable).toBe(true);
+    expect(row.primaryText).toContain("This request is refused.");
+  });
+
+  for (const shape of ["A", "B"] as const) {
+    it(`shape ${shape} mixed decrypt and delete: only the delete row is never approvable`, () => {
+      const rows = buildStatements(
+        shapeGrant(shape, KEY, [ABILITY.decrypt, ABILITY.delete]),
+      );
+      expect(rows.map((row) => row.primaryText)).toEqual([
+        KEY_SENTENCE.decrypt,
+        KEY_SENTENCE.delete,
+      ]);
+      expect(rows[0]?.neverApprovable).not.toBe(true);
+      expect(rows[1]?.neverApprovable).toBe(true);
     });
   }
 });

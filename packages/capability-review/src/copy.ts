@@ -56,7 +56,7 @@ export const DECRYPT_DEFAULT_KEY_STATEMENT =
 /** Named-key verbs that carry consent copy. */
 export type NamedKeyVerb = "create" | "decrypt" | "block" | "unblock" | "delete";
 
-const DELETE_REFUSED_TEMPLATE =
+export const DELETE_REFUSED_TEMPLATE =
   "Delete the key {path}: only you can do this, with your wallet, as a separate step. This request is refused.";
 
 /**
