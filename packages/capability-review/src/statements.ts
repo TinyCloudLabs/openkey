@@ -21,6 +21,7 @@ import {
   DELETE_REFUSED_TEMPLATE,
   LITERAL_TRUNCATE_CHARS,
   NAMED_KEY_STATEMENTS,
+  renderLiteral,
   renderNamedKeySentence,
 } from "./copy.js";
 import type { NamedKeyVerb } from "./copy.js";
@@ -230,19 +231,39 @@ function resourceOf(grant: CapabilityGrant): string {
 const DEFAULT_KEY_NETWORK_URN =
   /^urn:tinycloud:encryption:did:pkh:eip155:\d+:0x[0-9a-fA-F]{40}:default$/;
 
+/**
+ * True when `space`, `path` or `resourceService` carries an encryption URN
+ * that fails the strict parse. Such a grant's literal text is untrusted, so
+ * every displayed value is escaped and the resource is capped.
+ */
+function hasFailingEncryptionUrn(grant: CapabilityGrant): boolean {
+  return [grant.space, grant.path, grant.resourceService ?? ""].some(
+    (value) =>
+      value.startsWith(ENCRYPTION_URN_PREFIX) &&
+      parseEncryptionResource(value) === null,
+  );
+}
+
 /** Fallback statement for anything the catalog does not recognize. */
 function fallbackStatement(grant: CapabilityGrant): StatementEntry {
   // Grant actions are CapabilityAction objects; join their ability
   // strings for the literal fallback text. Never invent friendly
   // semantics from a shape we don't recognize.
-  const actionList = grant.actions.map((a) => a.ability).join(", ");
-  const resource = resourceOf(grant);
+  const failing = hasFailingEncryptionUrn(grant);
+  // A failing encryption URN is untrusted literal text: escape every displayed
+  // value, and cap the resource.
+  const show = (text: string): string => (failing ? renderLiteral(text) : text);
+  const actionList = grant.actions.map((a) => show(a.ability)).join(", ");
+  const service = show(grant.service);
+  const resource = failing
+    ? renderLiteral(resourceOf(grant), LITERAL_TRUNCATE_CHARS)
+    : resourceOf(grant);
   return {
     primaryText:
       actionList.length > 0
-        ? `Perform ${actionList} on ${grant.service}`
-        : `Access ${grant.service}`,
-    service: grant.service,
+        ? `Perform ${actionList} on ${service}`
+        : `Access ${service}`,
+    service,
     resource,
   };
 }
@@ -548,10 +569,11 @@ function buildKeyDeleteStatement(
           "",
           LITERAL_TRUNCATE_CHARS,
         );
+  const failing = hasFailingEncryptionUrn(grant);
   return {
     primaryText,
-    service: grant.service,
-    resource,
+    service: failing ? renderLiteral(grant.service) : grant.service,
+    resource: failing ? renderLiteral(resource, LITERAL_TRUNCATE_CHARS) : resource,
     neverApprovable: true,
   };
 }

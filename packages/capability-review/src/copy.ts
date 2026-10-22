@@ -96,8 +96,9 @@ export const NAMED_KEY_STATEMENTS: Record<
 };
 
 /**
- * Escape every UTF-16 code unit outside printable ASCII (0x20-0x7E) as
- * `\uXXXX`, and cap the output at `maxChars` characters, ending with `…`.
+ * Escape every UTF-16 code unit outside printable ASCII (0x20-0x7E) and every
+ * backslash as `\uXXXX`, so escape-looking text in a resource stays visible.
+ * Cap the output at `maxChars` characters, ending with `…`.
  * Literal text from a resource is untrusted: control, bidi-override,
  * zero-width, newline and non-ASCII characters render visibly instead of
  * altering the sentence. Grammar-valid text is ASCII and is unchanged.
@@ -107,9 +108,11 @@ export function renderLiteral(text: string, maxChars?: number): string {
   for (let i = 0; i < text.length; i += 1) {
     const code = text.charCodeAt(i);
     const piece =
-      code >= 0x20 && code <= 0x7e
-        ? text.charAt(i)
-        : `\\u${code.toString(16).padStart(4, "0")}`;
+      code === 0x5c
+        ? "\\u005C"
+        : code >= 0x20 && code <= 0x7e
+          ? text.charAt(i)
+          : `\\u${code.toString(16).padStart(4, "0")}`;
     if (maxChars !== undefined && out.length + piece.length > maxChars) {
       return `${out}…`;
     }

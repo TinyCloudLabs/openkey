@@ -246,7 +246,7 @@ describe("literal resource text in refusals is escaped and capped", () => {
       `Delete the key ${NETWORK}/apps/\\u202ex: only you can do this, with your wallet, as a separate step. This request is refused.`,
     );
     expect(row.primaryText).not.toContain("\u202e");
-    expect(row.resource).toBe(resource);
+    expect(row.resource).toBe(`${NETWORK}/apps/\\u202ex`);
     expect(row.neverApprovable).toBe(true);
   });
 
@@ -282,7 +282,7 @@ describe("literal resource text in refusals is escaped and capped", () => {
     expect(row.primaryText).toBe(
       `Delete the key ${resource.slice(0, 120)}…: only you can do this, with your wallet, as a separate step. This request is refused.`,
     );
-    expect(row.resource).toBe(resource);
+    expect(row.resource).toBe(`${resource.slice(0, 120)}…`);
   });
 
   it("leaves a valid key.delete sentence byte-for-byte unchanged", () => {
@@ -290,4 +290,66 @@ describe("literal resource text in refusals is escaped and capped", () => {
       KEY_SENTENCE.delete,
     );
   });
+
+  it("escapes a literal backslash so escape-looking text stays visible", () => {
+    const row = buildStatement(
+      namedGrant(`${NETWORK}/apps/\\u202ex//`, [ABILITY.delete]),
+    );
+    expect(row.primaryText).toContain("apps/\\u005Cu202ex//");
+    expect(row.primaryText).not.toContain("\\u202e");
+  });
+});
+
+describe("failing encryption URNs: every displayed string is printable ASCII", () => {
+  const SEG31 = "a".repeat(31);
+  const PATH_256 = [...Array.from({ length: 7 }, () => SEG31), "a".repeat(32)].join(
+    "/",
+  );
+  const keyUrn = (rest: string): string =>
+    `urn:tinycloud:encryption:${OWNER}:default/${rest}`;
+  // TEST-VECTORS.md v0.4 REJECT vectors 7-21: each must fail the strict parse.
+  const rejects: Array<[string, string]> = [
+    ["7", keyUrn("apps/x//")],
+    ["8", keyUrn("apps//x")],
+    ["9", `urn:tinycloud:encryption:${OWNER}:default//apps`],
+    ["10", keyUrn("Apps/x")],
+    ["11", keyUrn("apps/../x")],
+    ["12", keyUrn("apps/./x")],
+    ["13", keyUrn("apps/a%2Fb")],
+    ["14", keyUrn("apps/a:b")],
+    ["15", keyUrn("apps/a b")],
+    ["16", keyUrn("apps/caf\u00e9")],
+    ["17", keyUrn("a/a/a/a/a/a/a/a/a")],
+    ["18", keyUrn("a".repeat(65))],
+    ["19", keyUrn(PATH_256)],
+    ["20", keyUrn(".hidden")],
+    ["21", keyUrn("-x")],
+  ];
+  // The only non-ASCII character a displayed string may hold is the single
+  // truncation mark `…`, where a literal was capped.
+  function expectPrintableAscii(text: string): void {
+    expect(text.split("…").length - 1).toBeLessThanOrEqual(1);
+    expect(text.replace("…", "")).toMatch(/^[\x20-\x7e]*$/);
+  }
+  const abilities = [
+    ABILITY.decrypt,
+    ABILITY.create,
+    ABILITY.delete,
+    "tinycloud.encryption/unknown",
+  ];
+  for (const [vector, uri] of rejects) {
+    for (const shape of ["A", "B"] as const) {
+      for (const ability of abilities) {
+        it(`vector ${vector}, shape ${shape}, ${ability}: no displayed string holds raw text`, () => {
+          const rows = buildStatements(shapeGrant(shape, uri, [ability]));
+          expect(rows.length).toBeGreaterThan(0);
+          for (const row of rows) {
+            expectPrintableAscii(row.primaryText);
+            expectPrintableAscii(row.service);
+            expectPrintableAscii(row.resource);
+          }
+        });
+      }
+    }
+  }
 });
