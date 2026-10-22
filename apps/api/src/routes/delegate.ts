@@ -10,6 +10,13 @@ import {
   type DelegateSignerContext,
 } from '../middleware/delegate-signer-auth';
 import { withTinyCloudManageKeySigningPolicy } from '../services/tinycloud-manage-key-control';
+import {
+  grantsHeldPresent,
+  heldPresentOriginRefusal,
+  heldPresentSigningEnabled,
+  isHeldCredentialsService,
+  refusesHeldPresentation,
+} from '../services/held-presentation-refusal';
 import type { Hex } from 'viem';
 import { verifyMessage } from 'ethers';
 import {
@@ -387,6 +394,10 @@ function validatePermissions(permissions: unknown): PermissionEntry[] {
     const e = entry as Record<string, unknown>;
     if (typeof e.service !== 'string' || !e.service) {
       throw new Error(`permissions[${index}].service is required`);
+    }
+    // TC-1456 S5 (DESIGN-v5 §3.3b): the held credentials service is never delegable.
+    if (isHeldCredentialsService(e.service) && heldPresentSigningEnabled()) {
+      throw new Error(`permissions[${index}].service credentials cannot be delegated`);
     }
     const isRawEncryption = isRawEncryptionPermission(e);
     if (!isRawEncryption && (typeof e.space !== 'string' || !e.space)) {
@@ -844,6 +855,10 @@ delegateRouter.post('/sign', async (c) => {
     // intentionally ignored. The OAuth token's user binding selects exactly
     // one canonical key at the database boundary.
     const candidate = body as Record<string, unknown>;
+    // TC-1456 S5 (DESIGN-v5 §3.3b): refuse held credentials presentations before any signing.
+    if (heldPresentSigningEnabled() && typeof candidate.message === 'string' && refusesHeldPresentation(candidate.message)) {
+      return c.json({ approved: false, code: 'held_presentation_refused', reason: 'The held credentials presentation cannot be signed by this client.' }, 403);
+    }
     try {
       const result = await withTinyCloudManageKeySigningPolicy(prisma, {
         userId: principal.userId, clientId: principal.clientId, request: body,
@@ -954,6 +969,9 @@ delegateRouter.post('/sign', async (c) => {
       },
     });
     if (!policy.allowed) return auditDenial(policy.code, policy.evidence);
+    if (heldPresentSigningEnabled() && typeof candidate.message === 'string' && refusesHeldPresentation(candidate.message)) {
+      return auditDenial('held_presentation_refused', policy.evidence);
+    }
     if (!key || !key.sealedBlob || !policy.evidence.nonceDigest) {
       return auditDenial('key_unavailable', policy.evidence);
     }
@@ -1068,6 +1086,10 @@ delegateRouter.post('/sign', async (c) => {
     }, 400);
   }
 
+  // TC-1456 S5 (DESIGN-v5 §3.3b): refuse held credentials presentations before key lookup or unseal.
+  if (heldPresentSigningEnabled() && refusesHeldPresentation(body.message)) {
+    return c.json({ approved: false, code: 'held_presentation_refused', reason: 'The held credentials presentation cannot be signed by this client.' }, 403);
+  }
   const key = await prisma.ethereumKey.findFirst({
     where: {
       userId: user.id,
@@ -2030,6 +2052,10 @@ delegateRouter.post('/complete', async (c) => {
     select: { keyType: true, isCanonicalTinyCloud: true, archivedAt: true },
   });
   const primary = signerKey ? isPrimaryKey(signerKey) : false;
+  // TC-1456 S5 (DESIGN-v5 §3.3b): external wallets (no user-held MANAGED key) may not complete a held credentials presentation.
+  if (heldPresentSigningEnabled() && signerKey?.keyType !== 'MANAGED' && refusesHeldPresentation(String(body.prepared.siwe ?? ''))) {
+    return c.json({ error: 'held credentials presentation is not available for external wallets', code: 'held_presentation_refused' }, 403);
+  }
 
   // Report the lifetime the wallet signed, never caller-supplied metadata.
   const expirationTime = signedSiweExpirationTime(body.prepared.siwe);
@@ -2344,6 +2370,14 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       return c.json({ error: siweCheck.message, code: 'siwe_origin_refused', reason: siweCheck.code }, 403);
     }
   }
+  // TC-1456 S5 (DESIGN-v5 §3.2.3): refuse a held presentation unless it has a
+  // first-party verified origin. Handoff tickets carry none and are refused.
+  if (heldPresentSigningEnabled() && grantsHeldPresent(body.siwe)) {
+    const presentRefusal = heldPresentOriginRefusal(body.siwe, ticket ? undefined : body.requestOrigin);
+    if (presentRefusal) {
+      return c.json({ error: `Held presentation refused: ${presentRefusal}`, code: 'held_presentation_refused' }, 403);
+    }
+  }
   const handoffTicketHash = ticket
     ? await activePreparedHandoffService.assertRequest(ticket, user.id, {
       keyId: body.keyId, siwe: body.siwe, jwk: body.jwk, host: body.host ?? '',
@@ -2622,6 +2656,9 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       // The widget-reported sender origin of the requesting app. Used only for
       // the per-sign-in count record; never for trust or authority.
       appOrigin: normalizeAppOrigin(body.reportedOrigin) ?? undefined,
+      // Verified origin for the held-presentation origin rules. Handoff
+      // tickets are a local CLI with no browser origin, so they carry none.
+      verifiedOrigin: ticket ? undefined : body.requestOrigin,
     });
   } catch (issueErr) {
     logError('warn', 'delegate_authorization_context_issue_failed', issueErr);
@@ -3009,6 +3046,15 @@ delegateRouter.post('/authorize-sign', async (c) => {
       );
     }
     signedMessage = narrowed.siwe;
+  }
+  // TC-1456 S5 (DESIGN-v5 §3.2.3): a held presentation is signed only for a
+  // first-party verified origin whose SIWE scheme and domain match it exactly.
+  // Handoff tickets carry no origin and are refused here.
+  if (heldPresentSigningEnabled() && grantsHeldPresent(signedMessage)) {
+    const presentRefusal = heldPresentOriginRefusal(signedMessage, bound.verifiedOrigin);
+    if (presentRefusal) {
+      return c.json({ error: `Held presentation refused: ${presentRefusal}`, code: 'held_presentation_refused' }, 403);
+    }
   }
 
   // Validate the single-use preview approval without consuming it. The

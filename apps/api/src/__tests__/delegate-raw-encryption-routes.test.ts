@@ -161,6 +161,21 @@ describe('wallet keys: /prepare + /complete', () => {
     expect(res.body.code).toBe('invalid_permissions');
   });
 
+  test('/prepare refuses a held credentials presentation permission when the flag is on', async () => {
+    const held = { service: 'tinycloud.credentials', space, path: 'applications/credentials/mail', actions: ['tinycloud.credentials/present'] };
+    const previous = process.env.HELD_PRESENT_SIGNING_ENABLED;
+    process.env.HELD_PRESENT_SIGNING_ENABLED = 'true';
+    try {
+      const res = await post('/prepare', { keyId: externalKey.id, jwk, host, permissions: [kvGet, held, capabilitiesRead] });
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('invalid_permissions');
+      expect(res.body.error).toContain('credentials cannot be delegated');
+    } finally {
+      if (previous === undefined) delete process.env.HELD_PRESENT_SIGNING_ENABLED;
+      else process.env.HELD_PRESENT_SIGNING_ENABLED = previous;
+    }
+  });
+
   test('/complete refuses forwarded permissions that differ from the prepared request', async () => {
     const prepared = await post('/prepare', { keyId: externalKey.id, jwk, host, permissions: request });
     const broader = [{ ...kvGet, actions: ['tinycloud.kv/get', 'tinycloud.kv/put'] }, decrypt, capabilitiesRead];

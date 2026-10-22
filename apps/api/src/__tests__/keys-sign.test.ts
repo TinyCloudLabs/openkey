@@ -1,3 +1,4 @@
+import { SiweMessage } from 'siwe';
 import { afterAll, afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
@@ -534,5 +535,81 @@ describe('keysRouter managed signing', () => {
       await expect(response.json()).resolves.toMatchObject({ error: expect.stringContaining('Invalid typed data') });
       expect(unseal).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('keysRouter held presentation refusal (TC-1456 S5)', () => {
+  const origin = 'https://share.tinycloud.xyz';
+  const space = `tinycloud:pkh:eip155:1:${address}:default`;
+  const presentRecap = `urn:recap:${Buffer.from(JSON.stringify({
+    att: { [`${space}/credentials/mail`]: { 'tinycloud.credentials/present': [{}] } },
+  })).toString('base64url')}`;
+  const presentSiwe = new SiweMessage({
+    domain: 'share.tinycloud.xyz',
+    address,
+    statement: 'Sign in to OpenKey',
+    uri: origin,
+    version: '1',
+    chainId: 1,
+    nonce: 'abcdefgh12',
+    issuedAt: '2025-01-01T00:00:00.000Z',
+    resources: [presentRecap],
+  }).prepareMessage();
+  const originalFlag = process.env.HELD_PRESENT_SIGNING_ENABLED;
+
+  afterEach(() => {
+    if (originalFlag === undefined) delete process.env.HELD_PRESENT_SIGNING_ENABLED;
+    else process.env.HELD_PRESENT_SIGNING_ENABLED = originalFlag;
+  });
+
+  async function postSign(body: Record<string, unknown>) {
+    const router = await keysRouter();
+    return router.request('/key_1/sign', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  test('refuses a held presentation before the key is unsealed when the flag is on', async () => {
+    process.env.HELD_PRESENT_SIGNING_ENABLED = 'true';
+    const response = await postSign({ message: presentSiwe, requestOrigin: origin });
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({ code: 'held_presentation_refused' });
+    expect(unseal).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
+  });
+
+  test('refuses the same presentation hidden in 0x hex for raw signing when the flag is on', async () => {
+    process.env.HELD_PRESENT_SIGNING_ENABLED = 'true';
+    const hex = `0x${Buffer.from(presentSiwe).toString('hex')}`;
+    const response = await postSign({ message: hex, format: 'raw', requestOrigin: origin });
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({ code: 'held_presentation_refused' });
+    expect(unseal).not.toHaveBeenCalled();
+  });
+
+  test('signs the same presentation when the flag is off, matching main', async () => {
+    delete process.env.HELD_PRESENT_SIGNING_ENABLED;
+    const response = await postSign({ message: presentSiwe, requestOrigin: origin });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ address, format: 'personal_sign' });
+  });
+
+  test('still signs holder-binding bytes when the flag is on', async () => {
+    process.env.HELD_PRESENT_SIGNING_ENABLED = 'true';
+    const response = await postSign({ message: 'tinycloud.credentials/holder-binding/v1\nholder: 0xabc' });
+
+    expect(response.status).toBe(200);
+  });
+
+  test('still signs account-binding bytes when the flag is on', async () => {
+    process.env.HELD_PRESENT_SIGNING_ENABLED = 'true';
+    const response = await postSign({ message: 'tinycloud.credentials/account-binding/v1\naccount: 0xabc' });
+
+    expect(response.status).toBe(200);
   });
 });

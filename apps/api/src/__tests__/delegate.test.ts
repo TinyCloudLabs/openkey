@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, test } from 'bun:test';
 import {
   delegateErrorResponse,
   normalizeDelegateReason,
@@ -97,6 +97,40 @@ describe('validatePermissions', () => {
         expected: 'non-empty string[]',
       },
     ]);
+  });
+});
+
+describe('validatePermissions held credentials (TC-1456 S5)', () => {
+  const original = process.env.HELD_PRESENT_SIGNING_ENABLED;
+  afterEach(() => {
+    if (original === undefined) delete process.env.HELD_PRESENT_SIGNING_ENABLED;
+    else process.env.HELD_PRESENT_SIGNING_ENABLED = original;
+  });
+
+  const credentialsEntry = [
+    {
+      service: 'credentials',
+      space: 'tinycloud:space:default',
+      path: 'mail',
+      actions: ['tinycloud.credentials/present'],
+    },
+  ];
+
+  test('refuses a credentials permission at validation when the flag is on', () => {
+    process.env.HELD_PRESENT_SIGNING_ENABLED = 'true';
+    const payload = invalidPermissionsPayload(credentialsEntry);
+    expect(payload).toMatchObject({ error: expect.stringContaining('credentials cannot be delegated') });
+  });
+
+  test('refuses the tinycloud.credentials service spelling when the flag is on', () => {
+    process.env.HELD_PRESENT_SIGNING_ENABLED = 'true';
+    const payload = invalidPermissionsPayload([{ ...credentialsEntry[0], service: 'tinycloud.credentials' }]);
+    expect(payload).toMatchObject({ error: expect.stringContaining('credentials cannot be delegated') });
+  });
+
+  test('does not apply the credentials denial when the flag is off', () => {
+    delete process.env.HELD_PRESENT_SIGNING_ENABLED;
+    expect(() => validatePermissions(credentialsEntry)).not.toThrow(/cannot be delegated/);
   });
 });
 

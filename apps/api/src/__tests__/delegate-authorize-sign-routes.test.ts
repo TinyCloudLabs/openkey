@@ -20,10 +20,10 @@
 // service — so a wire-format drift on the response envelope surfaces here
 // even when the internal helper tests still pass.
 
-import { beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
-import { prepareSession } from '@tinycloud/node-sdk-wasm';
+import { parseRecapFromSiwe, prepareSession } from '@tinycloud/node-sdk-wasm';
 import { mockModules, replaceModules } from './mock-module';
 import { verifyMessage } from 'ethers';
 import { PreparedHandoffService, MemoryPreparedHandoffStore } from '../services/prepared-handoff';
@@ -1101,5 +1101,114 @@ describe('POST /authorize-sign-prepare SIWE origin guard (TC-1486)', () => {
     const { status, body } = await prepare(hostile, 'https://openkey.so');
     expect(status).toBe(403);
     expect(body).toMatchObject({ reason: 'uri-mismatch' });
+  });
+});
+
+describe('authorize-sign held presentation origin rules (TC-1456 S5)', () => {
+  const originalFlag = process.env.HELD_PRESENT_SIGNING_ENABLED;
+  afterEach(() => {
+    if (originalFlag === undefined) delete process.env.HELD_PRESENT_SIGNING_ENABLED;
+    else process.env.HELD_PRESENT_SIGNING_ENABLED = originalFlag;
+  });
+
+  // A delegation SIWE whose ReCap grants tinycloud.credentials/present. The
+  // domain is openkey.so unless a first-party domain is given.
+  function presentSiwe(domain = 'openkey.so'): string {
+    const now = new Date();
+    const spaceId = `tinycloud:pkh:eip155:1:${address}:default`;
+    const abilities: Parameters<typeof prepareSession>[0]['abilities'] = {
+      credentials: {
+        [`${spaceId}/credentials/mail`]: ['tinycloud.credentials/present'],
+      },
+    };
+    const prepared = prepareSession({
+      address,
+      chainId: 1,
+      domain,
+      issuedAt: now.toISOString(),
+      expirationTime: new Date(now.getTime() + 3_600_000).toISOString(),
+      spaceId,
+      jwk,
+      abilities,
+    });
+    return prepared.siwe;
+  }
+
+  type RouteBody = {
+    authorizationContextToken?: string;
+    allowedActionIds?: string[];
+    code?: string;
+    signature?: string;
+  };
+  async function prepare(siwe: string, requestOrigin: string): Promise<{ status: number; body: RouteBody }> {
+    const res = await router.request('/authorize-sign-prepare', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ keyId: keyRecord.id, siwe, jwk, host: 'https://node.tinycloud.xyz', requestOrigin }),
+    });
+    return { status: res.status, body: await res.json() as RouteBody };
+  }
+
+  async function previewAndSign(token: string, allowed: string[]): Promise<{ status: number; body: RouteBody }> {
+    const previewRes = await router.request('/authorize-sign-preview', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ authorizationContextToken: token, selectedActionIds: allowed }),
+    });
+    const preview = await previewRes.json() as { previewApprovalToken: string };
+    const signRes = await router.request('/authorize-sign', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        authorizationContextToken: token,
+        previewApprovalToken: preview.previewApprovalToken,
+        selectedActionIds: allowed,
+        protocolVersion: 1,
+      }),
+    });
+    return { status: signRes.status, body: await signRes.json() as RouteBody };
+  }
+
+  test('prepares and signs a presentation from the first-party origin when the flag is on', async () => {
+    process.env.HELD_PRESENT_SIGNING_ENABLED = 'true';
+    const prep = await prepare(presentSiwe('share.tinycloud.xyz'), 'https://share.tinycloud.xyz');
+    expect(prep.status).toBe(200);
+    const signed = await previewAndSign(prep.body.authorizationContextToken ?? '', prep.body.allowedActionIds ?? []);
+    expect(signed.status).toBe(200);
+    expect(typeof signed.body.signature).toBe('string');
+  });
+
+  test('refuses a presentation whose verified origin is not first-party, at prepare, when the flag is on', async () => {
+    process.env.HELD_PRESENT_SIGNING_ENABLED = 'true';
+    const prep = await prepare(presentSiwe(), 'https://openkey.so');
+    expect(prep.status).toBe(403);
+    expect(prep.body).toMatchObject({ code: 'held_presentation_refused' });
+    expect(prep.body.authorizationContextToken).toBeUndefined();
+  });
+
+  test('refuses an http-scheme presentation from a first-party origin at prepare (TC-1486 origin guard refuses it first)', async () => {
+    process.env.HELD_PRESENT_SIGNING_ENABLED = 'true';
+    const httpScheme = presentSiwe('share.tinycloud.xyz').replace(/^share\.tinycloud\.xyz wants/m, 'http://share.tinycloud.xyz wants');
+    const prep = await prepare(httpScheme, 'https://share.tinycloud.xyz');
+    expect(prep.status).toBe(403);
+    expect(prep.body).toMatchObject({ code: 'siwe_origin_refused' });
+    expect(prep.body.authorizationContextToken).toBeUndefined();
+  });
+
+  test('prepares a non-first-party presentation when the flag is off, matching main', async () => {
+    delete process.env.HELD_PRESENT_SIGNING_ENABLED;
+    const prep = await prepare(presentSiwe(), 'https://openkey.so');
+    expect(prep.status).toBe(200);
+  });
+
+  test('refuses at authorize-sign a context prepared while the flag was off, once it is on', async () => {
+    delete process.env.HELD_PRESENT_SIGNING_ENABLED;
+    const prep = await prepare(presentSiwe(), 'https://openkey.so');
+    expect(prep.status).toBe(200);
+    process.env.HELD_PRESENT_SIGNING_ENABLED = 'true';
+    const signed = await previewAndSign(prep.body.authorizationContextToken ?? '', prep.body.allowedActionIds ?? []);
+    expect(signed.status).toBe(403);
+    expect(signed.body).toMatchObject({ code: 'held_presentation_refused' });
+    expect(signed.body.signature).toBeUndefined();
   });
 });

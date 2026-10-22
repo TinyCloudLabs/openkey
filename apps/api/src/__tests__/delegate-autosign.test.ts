@@ -1003,3 +1003,31 @@ describe('Auto-Sign owner-only Courier paths (TC-884)', () => {
     expect(signedMessages).toEqual([message]);
   });
 });
+
+describe('bootstrap allowlist excludes held credentials (TC-1456 S5)', () => {
+  // The held credentials service is not a bootstrap capability. Auto-Sign must
+  // deny it on both session and signing paths, whatever the space or path.
+  const credentialsEntry = {
+    service: 'tinycloud.credentials',
+    space: bootstrapSpaceId(address, chainId, 'default'),
+    path: 'mail',
+    actions: ['tinycloud.credentials/present'],
+  };
+
+  test('denies a credentials present grant on the session path', () => {
+    expect(evaluateBootstrapSessionScope({
+      address,
+      chainId,
+      spaceId: credentialsEntry.space,
+      entries: [credentialsEntry],
+    })).toMatchObject({ allowed: false, code: 'outside_bootstrap_allowlist' });
+  });
+
+  test('denies a credentials present grant on the signing path', () => {
+    expect(evaluateBootstrapSigningScope({
+      address,
+      chainId,
+      entries: [credentialsEntry],
+    })).toMatchObject({ allowed: false, code: 'outside_bootstrap_allowlist' });
+  });
+});
