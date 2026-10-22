@@ -23,6 +23,7 @@ import {
   DECRYPT_LIFETIME_REFUSAL,
   decryptLifetimeEnforcementEnabled,
   decryptLifetimeRefusal,
+  hasDecryptEntry,
   type DecryptLifetimeRefusal,
 } from '../services/decrypt-lifetime-policy';
 
@@ -281,7 +282,7 @@ export function decryptRefusalForSignedSiwe(siwe: string): DecryptLifetimeRefusa
   try {
     entries = parsePreparedRecap(siwe);
   } catch {
-    return siwe.includes('urn:recap:') ? { error: DECRYPT_LIFETIME_REFUSAL, code: 'invalid_request' } : null;
+    return /urn:recap:/i.test(siwe) ? { error: DECRYPT_LIFETIME_REFUSAL, code: 'invalid_request' } : null;
   }
   return decryptLifetimeRefusal({ entries, expiresAt: signedSiweExpirationTime(siwe) });
 }
@@ -329,6 +330,25 @@ export function isRawEncryptionPermission(
     typeof entry.path === 'string' &&
     entry.path.startsWith(RAW_ENCRYPTION_PREFIX)
   );
+}
+
+const UPPERCASE_URN_PREFIX = 'URN:';
+
+/**
+ * Refuses a raw encryption decrypt whose path starts with the uppercase `URN:`
+ * prefix. The raw-encryption rules recognise only the lowercase prefix, so the
+ * uppercase form is not validated and must not reach signing.
+ */
+export function assertNoUppercaseRawDecrypt(entries: readonly DelegationPermissionEntry[]): void {
+  for (const [index, entry] of entries.entries()) {
+    if (
+      canonicalizeServiceName(entry.service) === RAW_ENCRYPTION_SERVICE &&
+      entry.path.startsWith(UPPERCASE_URN_PREFIX) &&
+      hasDecryptEntry([entry])
+    ) {
+      throw new Error(`permissions[${index}].path must use the lowercase urn:tinycloud:encryption: prefix`);
+    }
+  }
 }
 
 const RAW_ENCRYPTION_NETWORK = /^urn:tinycloud:encryption:did:pkh:eip155:(\d+):(0x[0-9a-fA-F]{40}):([^:]*)$/;
@@ -624,8 +644,11 @@ export function prepareDelegationSession({
     jwk,
   };
 
+  const baselinePermissions = admitLoneDecrypt
+    ? [{ ...permissions![0]!, path: defaultEncryptionNetworkUrn({ address, chainId }) }]
+    : permissions;
   const baselineAbilities = isCliBaseline
-    ? sessionAbilitiesFromPermissions(permissions!, { address, chainId }, { deviceTransaction })
+    ? sessionAbilitiesFromPermissions(baselinePermissions!, { address, chainId }, { deviceTransaction })
     : DEFAULT_SESSION_ABILITIES;
 
   const baselinePrepared = prepareSession({

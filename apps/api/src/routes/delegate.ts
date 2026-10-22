@@ -49,6 +49,7 @@ import {
   normalizeStringArray,
   parsePreparedRecap,
   decryptRefusalForSignedSiwe,
+  assertNoUppercaseRawDecrypt,
   prepareDelegationSession,
   type DelegationJwk,
   type DelegationPermissionEntry,
@@ -387,7 +388,7 @@ function validatePermissions(permissions: unknown): PermissionEntry[] {
   if (!Array.isArray(permissions) || permissions.length === 0) {
     throw new Error('permissions must be a non-empty array');
   }
-  return permissions.map((entry, index) => {
+  const parsed = permissions.map((entry, index) => {
     if (!entry || typeof entry !== 'object') {
       throw new Error(`permissions[${index}] is not an object`);
     }
@@ -415,6 +416,10 @@ function validatePermissions(permissions: unknown): PermissionEntry[] {
       actions: e.actions as string[],
     };
   });
+  if (decryptStepupAdmitEnabled() || decryptLifetimeEnforcementEnabled()) {
+    assertNoUppercaseRawDecrypt(parsed);
+  }
+  return parsed;
 }
 
 /**

@@ -368,6 +368,50 @@ describe('authorize-sign transports: decrypt refusal', () => {
   });
 });
 
+const PREFIX_REFUSAL = 'permissions[0].path must use the lowercase urn:tinycloud:encryption: prefix';
+
+describe('uppercase URN prefix and lowercase address on the lone decrypt', () => {
+  const upperPrefixNetwork = `URN:${network.slice('urn:'.length)}`;
+  const lowerAddressNetwork = `urn:tinycloud:encryption:did:pkh:eip155:1:${wallet.address.toLowerCase()}:default`;
+
+  test('flag ON: legacy approval refuses an uppercase URN prefix with the prefix message', async () => {
+    setFlag('true');
+    setAdmit('true');
+    const res = await post('/', { keyId: managedKey.id, jwk, host, permissions: [{ ...decrypt, path: upperPrefixNetwork }], expiry: '1h' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe(PREFIX_REFUSAL);
+    expect(activateSessionWithHost).not.toHaveBeenCalled();
+  });
+
+  test('flag ON: enforce alone refuses /prepare with an uppercase URN prefix', async () => {
+    setFlag('true');
+    const res = await post('/prepare', { keyId: managedKey.id, jwk, host, permissions: [{ ...decrypt, path: upperPrefixNetwork }], expiry: '1h' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe(PREFIX_REFUSAL);
+    expect(res.body.prepared).toBeUndefined();
+  });
+
+  test('flag OFF: an uppercase URN prefix does not get the prefix message', async () => {
+    const res = await post('/prepare', { keyId: managedKey.id, jwk, host, permissions: [{ ...decrypt, path: upperPrefixNetwork }], expiry: '1h' });
+    expect(res.body.error).not.toBe(PREFIX_REFUSAL);
+  });
+
+  test('flag ON: the lone decrypt on a lowercase address signs the checksummed own default network', async () => {
+    setFlag('true');
+    setAdmit('true');
+    const prepared = await post('/prepare', { keyId: managedKey.id, jwk, host, permissions: [{ ...decrypt, path: lowerAddressNetwork }], expiry: '1h' });
+    expect(prepared.status).toBe(200);
+    expect(prepared.body.prepared.siwe).toContain(ownDefaultNetwork);
+    expect(prepared.body.prepared.siwe).not.toContain(lowerAddressNetwork);
+  });
+
+  test('flag OFF: the lowercase-address lone decrypt is not admitted', async () => {
+    const res = await post('/prepare', { keyId: managedKey.id, jwk, host, permissions: [{ ...decrypt, path: lowerAddressNetwork }], expiry: '1h' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe(SINGLE_SPACE);
+  });
+});
+
 describe('decryptRefusalForSignedSiwe', () => {
   const siweWith = (resources: string) =>
     [
@@ -409,6 +453,16 @@ describe('decryptRefusalForSignedSiwe', () => {
   test('returns null for an unparseable recap while the flag is off', () => {
     setFlag(undefined);
     expect(refusalFor(siweWith('- urn:recap:!!!not-a-recap!!!'))).toBeNull();
+  });
+
+  test('refuses an uppercase URN:RECAP: resource that cannot be parsed while the flag is on', () => {
+    setFlag('true');
+    expect(refusalFor(siweWith('- URN:RECAP:!!!not-a-recap!!!'))?.error).toBe(REFUSAL);
+  });
+
+  test('returns null for an uppercase unparseable recap while the flag is off', () => {
+    setFlag(undefined);
+    expect(refusalFor(siweWith('- URN:RECAP:!!!not-a-recap!!!'))).toBeNull();
   });
 });
 

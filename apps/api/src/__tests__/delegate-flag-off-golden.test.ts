@@ -1,9 +1,9 @@
 // TC-1781: with `DECRYPT_LIFETIME_ENFORCE_NON_DEVICE` unset, `/prepare`, `/`,
 // and `/complete` must answer exactly as they did before the flag existed.
 // The golden table in `fixtures/delegate-flag-off-golden.json` was recorded by
-// running this same request table against origin/main `3cdfa5a`; the
-// normalisation below only removes values that change per run (clock, nonces,
-// signatures, tokens).
+// running this same request table against origin/main `3cdfa5a`. Values that
+// vary per run are normalised (nonces, signatures, UUIDs, tokens, CIDs, the
+// auth header). The clock is fixed by `setSystemTime`, so timestamps are raw.
 
 import { beforeAll, beforeEach, describe, expect, mock, setSystemTime, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
@@ -164,19 +164,17 @@ const cases: Record<string, () => Promise<Result>> = {
 };
 
 const NONCE = /Nonce: \S+/g;
-const ISO = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g;
 const SIG = /0x[0-9a-fA-F]{130}/g;
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;
 const TOKEN = /oks_[0-9a-f]+/g;
 const CID = /bafk[a-z2-7]+/g;
 
-/** Strip per-run values (clock, nonce, signature, token, CID, auth header) so runs compare equal. */
+/** Strip per-run values (nonce, signature, UUID, token, CID, auth header) so runs compare equal. */
 function normalise(value: unknown, key = ''): unknown {
   if (typeof value === 'string') {
     if (key === 'Authorization') return '<authorization>';
     return value
       .replace(NONCE, 'Nonce: <nonce>')
-      .replace(ISO, '<iso>')
       .replace(SIG, '<sig>')
       .replace(UUID, '<uuid>')
       .replace(TOKEN, 'oks_<token>')
