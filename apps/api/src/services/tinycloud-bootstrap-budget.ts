@@ -138,8 +138,8 @@ export type RequestedSpaceResult =
   | { status: 'hosted' }
   /** Setup was already complete before this approval. */
   | { status: 'complete' }
-  /** Another approval's run holds the lock and will host it. */
-  | { status: 'pending' }
+  /** Another run holds the lock (an approval's or the sweep's) and will host the space. */
+  | { status: 'pending'; errorCode: 'tinycloud_bootstrap_in_progress' }
   /** Hosting did not finish within the timeout; the run continues in the background. */
   | { status: 'timeout' }
   | { status: 'skipped' }
@@ -162,10 +162,20 @@ const NON_RETRYABLE_ERROR_CODES: Record<string, true> = {
   tinycloud_bootstrap_in_progress: true,
 };
 
+/**
+ * Failure codes the background sweep retries. Allowlist, not denylist: a code the sweep does not
+ * know about (including null) is never retried without an explicit decision here.
+ */
+export const SWEEP_RETRYABLE_CODES: readonly string[] = [
+  'tinycloud_bootstrap_node_timeout',
+  'tinycloud_bootstrap_failed',
+  'tinycloud_bootstrap_space_not_hosted',
+];
+
 function requestedSpaceFromOutcome(outcome: TinyCloudBootstrapOutcome): RequestedSpaceResult {
   if (outcome.status !== 'failed') return { status: outcome.status };
   return outcome.errorCode === 'tinycloud_bootstrap_in_progress'
-    ? { status: 'pending' }
+    ? { status: 'pending', errorCode: 'tinycloud_bootstrap_in_progress' }
     : { status: 'failed', errorCode: outcome.errorCode, errorMessage: outcome.errorMessage };
 }
 

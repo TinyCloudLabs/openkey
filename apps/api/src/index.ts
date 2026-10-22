@@ -39,6 +39,7 @@ import {
   protocolAwareCors,
   withNativeDelegationMetadata,
 } from './services/native-delegation/public-protocol';
+import { startTinyCloudBootstrapSweep } from './services/tinycloud-bootstrap-sweep';
 
 
 const betterAuthUrl = process.env.BETTER_AUTH_URL;
@@ -257,6 +258,8 @@ const ALL_SCOPES = ['openid', 'email', 'keys', 'offline_access'];
 const port = parseInt(process.env.API_PORT || '3001');
 
 log('info', 'api_starting');
+// Retries failed TinyCloud account setup in the background. Off under tests; kill switch is read per tick.
+if (process.env.NODE_ENV !== 'test') startTinyCloudBootstrapSweep();
 
 export default {
   port,
