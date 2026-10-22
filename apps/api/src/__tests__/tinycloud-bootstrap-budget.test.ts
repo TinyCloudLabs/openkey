@@ -184,7 +184,9 @@ describe('TC-1608 requested space within its timeout', () => {
       hostRequestedSpaceWithinBudget(async () => outcome, { timeoutMs: 1000, retryDelaysMs: [] });
     expect(await answer({ status: 'complete' })).toEqual({ status: 'complete' });
     expect(await answer({ status: 'skipped' })).toEqual({ status: 'skipped' });
-    expect(await answer(failed('tinycloud_bootstrap_in_progress'))).toEqual({ status: 'pending' });
+    expect(await answer(failed('tinycloud_bootstrap_in_progress'))).toEqual({
+      status: 'pending', errorCode: 'tinycloud_bootstrap_in_progress',
+    });
     expect(await answer(failed('tinycloud_bootstrap_failed'))).toEqual({
       status: 'failed', errorCode: 'tinycloud_bootstrap_failed', errorMessage: 'tinycloud_bootstrap_failed happened',
     });
@@ -250,7 +252,9 @@ describe('TC-1608 requested space within its timeout', () => {
 
     output.length = 0;
     const contended = mock(async (): Promise<TinyCloudBootstrapOutcome> => failed('tinycloud_bootstrap_in_progress'));
-    expect(await hostRequestedSpaceWithinBudget(contended, { timeoutMs: 1000, retryDelaysMs: [0, 0] })).toEqual({ status: 'pending' });
+    expect(await hostRequestedSpaceWithinBudget(contended, { timeoutMs: 1000, retryDelaysMs: [0, 0] })).toEqual({
+      status: 'pending', errorCode: 'tinycloud_bootstrap_in_progress',
+    });
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(contended).toHaveBeenCalledTimes(1);
     expect(output).toHaveLength(0);

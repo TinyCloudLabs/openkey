@@ -955,8 +955,9 @@ describe('TC-945 bootstrap budget', () => {
     }) as any);
     const result = await managedApproval(host);
     expect(result.status).toBe(200);
-    expect(result.body).toMatchObject({ hostActivated: true, spaceReady: null, spacePending: true });
-    expect(result.body).not.toHaveProperty('spaceError');
+    expect(result.body).toMatchObject({
+      hostActivated: true, spaceReady: null, spacePending: true, spaceError: 'tinycloud_bootstrap_in_progress',
+    });
   });
   test('other bootstrap failures keep the error contract without a pending marker', async () => {
     ensureTinyCloudBootstrap.mockImplementationOnce(async () => ({
