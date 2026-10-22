@@ -5,6 +5,7 @@ import {
   cleanConsentText,
   decodeBase64UrlJson,
   decodeDelegatePermissionsParam,
+  decryptDefaultEntryLabel,
   readDelegatePermissionsParam,
   delegationPasteCode,
   deviceLifetimeOptions,
@@ -16,6 +17,7 @@ import {
   type DevicePermission,
   type DeviceRequestRecord,
 } from './device-authorization';
+import { DECRYPT_DEFAULT_KEY_STATEMENT } from '@openkey/capability-review';
 
 const space = 'tinycloud:pkh:eip155:1:0x0000000000000000000000000000000000000001:default';
 const signer = { address: '0x0000000000000000000000000000000000000001', chainId: 1 };
@@ -279,5 +281,40 @@ describe('loadVerifiedDeviceRequest', () => {
     }
     await expect(withLookup(null, () => loadVerifiedDeviceRequest('', 'ABCD-EFGH', link))).rejects.toThrow('invalid or expired');
     await expect(withLookup(server, () => loadVerifiedDeviceRequest('', '', link))).rejects.toThrow('invalid or expired');
+  });
+});
+
+describe('decryptDefaultEntryLabel', () => {
+  test('gives the exact default-network decrypt entry the consent sentence and its lifetime', () => {
+    const entry: DevicePermission = {
+      service: 'tinycloud.encryption',
+      space: 'default',
+      path: '',
+      actions: ['tinycloud.encryption/decrypt'],
+    };
+    expect(decryptDefaultEntryLabel(entry, 3600)).toEqual({
+      statement: DECRYPT_DEFAULT_KEY_STATEMENT,
+      lifetime: '1 hour',
+    });
+  });
+
+  test('leaves a kv entry without a label override', () => {
+    const entry: DevicePermission = {
+      service: 'tinycloud.kv',
+      space,
+      path: 'notes',
+      actions: ['tinycloud.kv/get'],
+    };
+    expect(decryptDefaultEntryLabel(entry, 3600)).toBeNull();
+  });
+
+  test('leaves an encryption entry on another space without a label override', () => {
+    const entry: DevicePermission = {
+      service: 'tinycloud.encryption',
+      space: 'encryption',
+      path: '',
+      actions: ['tinycloud.encryption/decrypt'],
+    };
+    expect(decryptDefaultEntryLabel(entry, 3600)).toBeNull();
   });
 });

@@ -61,7 +61,9 @@ export const SHARE_DEVICE_PERMISSIONS: readonly DevicePermission[] = Object.free
  *   the single encryption grant is the approving account's own `default`
  *   network: space `default`, empty path, and only `tinycloud.encryption/decrypt`;
  * - `tinycloud.capabilities/read` is required: every OpenKey delegation
- *   carries it, so it is never optional at consent.
+ *   carries it, so it is never optional at consent. One exception: a
+ *   decrypt-only request carries no capabilities entry, and the requirement
+ *   follows the request baseline as in TC-658 (`delegate-session.ts:236-258`).
  */
 export const DEVICE_FLOW_ABILITIES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   'tinycloud.kv': ['tinycloud.kv/get', 'tinycloud.kv/list', 'tinycloud.kv/metadata', 'tinycloud.kv/put', 'tinycloud.kv/del'],
