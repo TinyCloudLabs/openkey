@@ -1,20 +1,27 @@
 // Strict parser and containment for encryption resources (CONTRACT.md v0.2
-// §2-§3). Shape only: the owner DID is not verified and its casing is kept
-// exactly as written. Parsing never throws; anything outside the grammar
-// returns null.
+// §2-§3, grammar FB4). Shape only: the owner DID is not verified and its
+// casing is kept exactly as written. Parsing never throws; anything outside
+// the grammar returns null.
 
 export const ENCRYPTION_URN_PREFIX = "urn:tinycloud:encryption:";
 
-/** Maximum byte length of a key path, including a prefix's trailing `/`. */
+/**
+ * Maximum byte length of a key path. A prefix's single trailing `/` is not
+ * counted; the path before it is.
+ */
 const MAX_KEY_PATH_BYTES = 255;
 
-// Owner and network are ASCII printable, never containing `/` or whitespace.
-// The owner may contain `:` (did:pkh:eip155:1:0x...); the network may not.
-const BARE_NETWORK_RE = /^(did:[!-.0-9:;-~]+):([!-.0-9;-~]+)$/;
-
+// FB4 owner: a did with a lowercase method and ASCII id characters.
+const OWNER = "did:[a-z0-9]+:[A-Za-z0-9._:-]+";
+// FB4 network: anything except the URN and path delimiters, whitespace, and
+// percent escapes. The owner's `:` cannot be in the network, so the owner
+// greedily takes everything up to the last `:`.
+const NETWORK = "[^:/#?%\\s]+";
 const SEGMENT = "[a-z0-9][a-z0-9._-]{0,63}";
+
+const BARE_NETWORK_RE = new RegExp(`^(${OWNER}):(${NETWORK})$`);
 const KEY_RE = new RegExp(
-  `^(did:[!-.0-9:;-~]+):([!-.0-9;-~]+)/(${SEGMENT}(?:/${SEGMENT}){0,7}/?)$`,
+  `^(${OWNER}):(${NETWORK})/(${SEGMENT}(?:/${SEGMENT}){0,7})$`,
 );
 
 export type EncryptionResource =
@@ -44,16 +51,18 @@ export function parseEncryptionResource(
     if (ownerDid === undefined || network === undefined) return null;
     return { kind: "network", ownerDid, network };
   }
-  const keyed = KEY_RE.exec(body);
+  const isPrefix = body.endsWith("/");
+  const keyBody = isPrefix ? body.slice(0, -1) : body;
+  const keyed = KEY_RE.exec(keyBody);
   if (keyed === null) return null;
   const [, keyOwner, keyNetwork, keyPath] = keyed;
   if (keyOwner === undefined || keyNetwork === undefined) return null;
   if (keyPath === undefined || keyPath.length > MAX_KEY_PATH_BYTES) return null;
   return {
-    kind: keyPath.endsWith("/") ? "prefix" : "key",
+    kind: isPrefix ? "prefix" : "key",
     ownerDid: keyOwner,
     network: keyNetwork,
-    keyPath,
+    keyPath: isPrefix ? `${keyPath}/` : keyPath,
   };
 }
 
