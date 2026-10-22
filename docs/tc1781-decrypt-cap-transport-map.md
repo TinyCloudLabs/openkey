@@ -27,6 +27,30 @@ Legend: VERIFIED = read in code at this base. INFERENCE = not observed in code o
 
 Other paths not in the table: `services/managed-key-signing.ts:13-20` is a generic signer with no policy of its own. `services/tinycloud-bootstrap-sweep.ts:108` calls `ensureTinyCloudBootstrap`. `routes/delegate-autosign.ts` admits raw encryption only for `space === 'encryption'` with matching `rawAbilities` (:187-190, :259-262, :307-311). `routes/delegation-codes.ts` NOT READ.
 
+## Guard status and NOT COVERED reasons
+
+Line numbers are at `b665471`. "killed" means a mutation of that guard made a test fail. "survived" means no test failed. Each guard stays in place as defence in depth.
+
+| Guard | Location | Result | Reason |
+|---|---|---|---|
+| A | `routes/delegate.ts` 1531–1536 | killed | |
+| B | `routes/delegate.ts` 1630–1637 | killed | |
+| C | `routes/delegate.ts` 1661–1667 | survived | Backstop behind B. B is the check that runs first on this path. |
+| D | `routes/delegate.ts` 1804–1808 | killed | |
+| E | `routes/delegate.ts` 1825–1831 | survived | Backstop behind D. D is the check that runs first on this path. |
+| F | `routes/delegate.ts` 2098–2099 | killed | |
+| G | `routes/delegate.ts` 852 (manage-key OAuth `/sign`) | killed | |
+| H | `routes/delegate.ts` 968–973 | survived | NOT COVERED. CoordinationOS policy allows only `tinycloud.kv` (`services/coordinationos-session-policy.ts:159`), so no decrypt resource is admitted. |
+| I | `routes/delegate.ts` 1149–1152 | survived | NOT COVERED. The shipped manifest has no decrypt raw ability. `routes/delegate-autosign.ts` 300–325 accepts `tinycloud.encryption` only when a bootstrap candidate's `rawAbilities` match. |
+| J | `routes/delegate.ts` 1222–1223 (`/host`) | survived | NOT COVERED. `/host` takes no permission input, so a decrypt resource cannot reach the host SIWE. |
+| K | `routes/delegate.ts` 3140–3141 | killed | |
+| L | `routes/delegate.ts` 2459–2460 | killed | |
+| M | `routes/keys.ts` 307–308 | killed | |
+| N | `services/tinycloud-bootstrap.ts` 803–804 | unreachable | NOT COVERED. Unreachable with the shipped manifest. |
+| O | `services/tinycloud-bootstrap.ts` 823–824 | unreachable | NOT COVERED. Unreachable with the shipped manifest. |
+
+Lone-decrypt admission (`/delegate`, flag ON) is covered in the commits listed in the PR body, not in this table.
+
 ## Client-side reach (external repos, read at local checkouts; not re-verified against main)
 
 - CLI default login manifest: `packages/cli/src/auth/owner-key.ts:59-66` (checkout `js-sdk-tc1466`) has kv, sql, and capabilities only. No decrypt. VERIFIED in that checkout.
