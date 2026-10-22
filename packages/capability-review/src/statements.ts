@@ -16,6 +16,7 @@
 // sentence themselves.
 
 import type { CapabilityGrant } from "./model.js";
+import { DECRYPT_DEFAULT_KEY_STATEMENT } from "./copy.js";
 import { isMetadataOnlyAccess } from "./action-semantics.js";
 import {
   CANONICAL_APP_SCOPE_SECRET_ABILITIES,
@@ -206,6 +207,14 @@ function resourceOf(grant: CapabilityGrant): string {
   if (grant.path) return `${grant.space}/${grant.path}`;
   return grant.space;
 }
+
+/**
+ * Raw encryption network URI for the account's `default` key, e.g.
+ * `urn:tinycloud:encryption:did:pkh:eip155:1:0x<40 hex>:default`. Only a
+ * raw URN with no sub-path matches; per-share or other named networks do not.
+ */
+const DEFAULT_KEY_NETWORK_URN =
+  /^urn:tinycloud:encryption:did:pkh:eip155:\d+:0x[0-9a-fA-F]{40}:default$/;
 
 /** Fallback statement for anything the catalog does not recognize. */
 function fallbackStatement(grant: CapabilityGrant): StatementEntry {
@@ -508,6 +517,29 @@ function schemaOnlyStatementText(
 }
 
 /**
+ * A default-network grant that carries encryption setup and decrypt together.
+ * The combined phrase would present the default-key decrypt as setup-only, so
+ * `buildStatements` renders the setup verbs and the decrypt verbs as two rows.
+ */
+function splitsDefaultKeyDecrypt(grant: CapabilityGrant): boolean {
+  if (!ENCRYPTION_SERVICES.has(grant.service)) return false;
+  if (
+    grant.serviceMismatch === true ||
+    grant.appScopeNearMiss === true ||
+    grant.appScopedSecret
+  ) {
+    return false;
+  }
+  const verbs = classifyVerbs(grant.actions.map((a) => a.ability));
+  return (
+    verbs.hasCreate &&
+    verbs.hasDecrypt &&
+    !verbs.hasRevoke &&
+    DEFAULT_KEY_NETWORK_URN.test(resourceOf(grant))
+  );
+}
+
+/**
  * Statement rows for a grant. A KV/SQL grant that mixes `schema` with other
  * recognized abilities yields two rows: the read/update row for the other
  * abilities, and a separate row for schema. Schema is never merged into an
@@ -515,6 +547,18 @@ function schemaOnlyStatementText(
  * renders only the non-schema part of a mixed grant.
  */
 export function buildStatements(grant: CapabilityGrant): StatementEntry[] {
+  if (splitsDefaultKeyDecrypt(grant)) {
+    return [
+      buildStatement({
+        ...grant,
+        actions: grant.actions.filter((a) => !classifyVerbs([a.ability]).hasDecrypt),
+      }),
+      buildStatement({
+        ...grant,
+        actions: grant.actions.filter((a) => classifyVerbs([a.ability]).hasDecrypt),
+      }),
+    ];
+  }
   const schemaActions = grant.actions.filter(
     (a) => verbOf(a.ability) === "schema",
   );
@@ -1042,6 +1086,9 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
       return fallbackStatement(grant);
     }
     if (verbs.hasCreate && verbs.hasDecrypt) {
+      // A default-network combination is split by buildStatements; a single
+      // row must not present the default-key decrypt as setup-only.
+      if (DEFAULT_KEY_NETWORK_URN.test(resource)) return fallbackStatement(grant);
       return {
         primaryText: "Set up encrypted data access and decrypt protected data",
         service,
@@ -1050,7 +1097,9 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
     }
     if (verbs.onlyDecrypt || (verbs.hasDecrypt && !verbs.hasCreate)) {
       return {
-        primaryText: "Decrypt protected data",
+        primaryText: DEFAULT_KEY_NETWORK_URN.test(resource)
+          ? DECRYPT_DEFAULT_KEY_STATEMENT
+          : "Decrypt protected data",
         service,
         resource,
       };
