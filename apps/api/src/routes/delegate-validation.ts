@@ -1,3 +1,5 @@
+import { heldPresentSigningEnabled, isHeldCredentialsService } from '../services/held-presentation-refusal';
+
 export interface PermissionEntry {
   service: string;
   space: string;
@@ -149,6 +151,19 @@ export function validatePermissions(permissions: unknown): PermissionEntry[] {
           path: `permissions[${index}].actions`,
           message: 'Expected a non-empty array of action strings',
           expected: 'non-empty string[]',
+        }],
+      );
+    }
+
+    // TC-1456 S5 (DESIGN-v5 §3.3b): the held credentials service is never delegable.
+    if (isHeldCredentialsService(e.service) && heldPresentSigningEnabled()) {
+      throw new DelegateRequestError(
+        'invalid_permissions',
+        `permissions[${index}].service credentials cannot be delegated`,
+        [{
+          path: `permissions[${index}].service`,
+          message: 'The credentials service cannot be delegated',
+          value: e.service,
         }],
       );
     }

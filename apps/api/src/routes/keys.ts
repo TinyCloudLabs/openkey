@@ -9,6 +9,7 @@ import type { Hex } from 'viem';
 import {
   ensureTinyCloudBootstrapForApprovedSign,
 } from '../services/tinycloud-bootstrap';
+import { heldPresentSigningEnabled, refusesHeldPresentation } from '../services/held-presentation-refusal';
 import { awaitTinyCloudBootstrapWithinBudget } from '../services/tinycloud-bootstrap-budget';
 import { createSealingContext, deriveKeyForRecord } from '../services/key-sealing';
 import { deviceTransactionUnsupportedError } from './device-delegation-window';
@@ -298,6 +299,11 @@ keysRouter.post('/:keyId/sign', async (c) => {
   const siweCheck = checkSignableMessage(body.message, body.requestOrigin);
   if (siweCheck.siwe && !siweCheck.ok) {
     return c.json({ error: siweCheck.message, code: 'siwe_origin_refused', reason: siweCheck.code }, 403);
+  }
+  // TC-1456 S5 (DESIGN-v5 §3.3b): a held credentials presentation is refused
+  // before the key is unsealed. Flag-gated; off means main's behaviour.
+  if (heldPresentSigningEnabled() && refusesHeldPresentation(body.message)) {
+    return c.json({ error: 'held credentials presentation is not signable here', code: 'held_presentation_refused' }, 403);
   }
 
   const key = await prisma.ethereumKey.findFirst({

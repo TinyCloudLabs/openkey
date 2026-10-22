@@ -99,6 +99,8 @@ export interface AuthorizationContextIssueInput {
   verifiedManifest?: VerifiedManifestFields;
   /** Normalised requesting-app origin, for the per-sign-in count record only. */
   appOrigin?: string;
+  /** Browser origin the widget verified (postMessage sender). The only origin trusted for held presentation; never read from the request body. */
+  verifiedOrigin?: string;
 }
 
 interface StoredContext {
@@ -125,6 +127,7 @@ interface StoredContext {
   };
   verifiedManifest?: VerifiedManifestFields;
   appOrigin?: string;
+  verifiedOrigin?: string;
 }
 
 const store = new Map<string, StoredContext>();
@@ -334,6 +337,7 @@ export function issueAuthorizationContext(
     metadataTrust,
     verifiedManifest: input.verifiedManifest,
     appOrigin: input.appOrigin,
+    verifiedOrigin: input.verifiedOrigin,
   };
   store.set(token, stored);
 
@@ -786,6 +790,7 @@ export interface PeekSuccess {
     allowedActionIds: string[];
     initialSelectionActionIds: string[];
     appOrigin?: string;
+    verifiedOrigin?: string;
   };
 }
 
@@ -832,6 +837,7 @@ export function peekAuthorizationContext(token: string): PeekSuccess | PeekFailu
       allowedActionIds: [...stored.allowedActionIds],
       initialSelectionActionIds: [...stored.initialSelectionActionIds],
       appOrigin: stored.appOrigin,
+      verifiedOrigin: stored.verifiedOrigin,
     },
   };
 }

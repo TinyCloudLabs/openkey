@@ -42,6 +42,7 @@ export const FAMILY_LABEL: Record<CapabilityFamily, string> = {
   "duckdb-data": "DuckDB database",
   "database-admin": "Database administration",
   "file-data": "Files",
+  "held-credential-present": "Stored email credentials",
   unknown: "Unknown capability",
 };
 

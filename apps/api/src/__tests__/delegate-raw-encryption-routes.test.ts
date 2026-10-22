@@ -3,7 +3,7 @@
 // `space: "encryption"` — for managed keys (POST /) and wallet keys
 // (/prepare + /complete). Anything not requested is still refused.
 
-import { beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
 import type { delegateRouter, setDelegateSignerAuthMiddlewareForTests } from '../routes/delegate';
@@ -19,6 +19,7 @@ const keyBase = { userId: user.id, address: wallet.address, archivedAt: null, se
 const managedKey = { ...keyBase, id: 'key_managed', keyType: 'MANAGED', sealedBlob: 'sealed-blob' };
 const externalKey = { ...keyBase, id: 'key_ext', keyType: 'EXTERNAL', sealedBlob: null };
 const keys = [managedKey, externalKey];
+const unsealMock = mock(async () => walletKey);
 
 const prisma = {
   ethereumKey: {
@@ -48,7 +49,7 @@ await mockModules({
       getQuote: mock(async () => 'quote'),
       isInTee: () => false,
     }),
-    unseal: mock(async () => walletKey),
+    unseal: unsealMock,
     createWalletFromPrivateKey: (key: string) => privateKeyToAccount(key as `0x${string}`),
     generatePrivateKey: () => walletKey,
     getAddressFromPrivateKey: () => wallet.address,
@@ -81,6 +82,7 @@ beforeAll(async () => {
 beforeEach(() => {
   resetContexts?.();
   activateSessionWithHost.mockClear();
+  unsealMock.mockClear();
 });
 
 const space = `tinycloud:pkh:eip155:1:${wallet.address}:secrets`;
@@ -159,6 +161,21 @@ describe('wallet keys: /prepare + /complete', () => {
     const res = await post('/prepare', { keyId: externalKey.id, jwk, host, permissions: [kvGet, foreign, capabilitiesRead] });
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('invalid_permissions');
+  });
+
+  test('/prepare refuses a held credentials presentation permission when the flag is on', async () => {
+    const held = { service: 'tinycloud.credentials', space, path: 'applications/credentials/mail', actions: ['tinycloud.credentials/present'] };
+    const previous = process.env.HELD_PRESENT_SIGNING_ENABLED;
+    process.env.HELD_PRESENT_SIGNING_ENABLED = 'true';
+    try {
+      const res = await post('/prepare', { keyId: externalKey.id, jwk, host, permissions: [kvGet, held, capabilitiesRead] });
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('invalid_permissions');
+      expect(res.body.error).toContain('credentials cannot be delegated');
+    } finally {
+      if (previous === undefined) delete process.env.HELD_PRESENT_SIGNING_ENABLED;
+      else process.env.HELD_PRESENT_SIGNING_ENABLED = previous;
+    }
   });
 
   test('/complete refuses forwarded permissions that differ from the prepared request', async () => {
@@ -261,3 +278,127 @@ describe('managed keys: POST /', () => {
     expect(activateSessionWithHost).not.toHaveBeenCalled();
   });
 });
+
+describe('managed keys: held credentials presentation (TC-1456 S5)', () => {
+  // R08: a kv-service entry whose action is the held presentation. The
+  // permission check refuses it by action name before any SIWE is built.
+  const heldAsKv = { service: 'tinycloud.kv', space, path: 'credentials/held', actions: ['tinycloud.credentials/present'] };
+  const permissions = [kvGet, heldAsKv, capabilitiesRead];
+  const previous = process.env.HELD_PRESENT_SIGNING_ENABLED;
+
+  beforeEach(() => {
+    process.env.HELD_PRESENT_SIGNING_ENABLED = 'true';
+  });
+  afterEach(() => {
+    if (previous === undefined) delete process.env.HELD_PRESENT_SIGNING_ENABLED;
+    else process.env.HELD_PRESENT_SIGNING_ENABLED = previous;
+  });
+
+  test('the legacy approval refuses a held credentials action before signing', async () => {
+    const res = await post('/', { keyId: managedKey.id, jwk, host, permissions });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('invalid_permissions');
+    expect(activateSessionWithHost).not.toHaveBeenCalled();
+  });
+
+  test('/prepare refuses a held credentials action before building a signing context', async () => {
+    const res = await post('/prepare', { keyId: managedKey.id, jwk, host, permissions });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('invalid_permissions');
+  });
+
+  test('/complete refuses a held credentials action before signing', async () => {
+    // Placeholder prepared/signature: /complete checks permissions before either is used.
+    const res = await post('/complete', { prepared: { siwe: 'unused' }, signature: '0x00', keyId: managedKey.id, jwk, host, permissions });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('invalid_permissions');
+    expect(activateSessionWithHost).not.toHaveBeenCalled();
+  });
+});
+
+describe('managed and wallet keys: a kv path naming the held presentation reaches the byte guards (TC-1456 L-5)', () => {
+  // The permission check refuses held *actions* only. This entry's action is a
+  // plain kv/get, so the request reaches the byte-level guard on each route.
+  // The SIWE statement lists the path in clear text.
+  const heldPath = { service: 'tinycloud.kv', space, path: 'credentials/present', actions: ['tinycloud.kv/get'] };
+  const permissions = [heldPath, decrypt, capabilitiesRead];
+  const previous = process.env.HELD_PRESENT_SIGNING_ENABLED;
+
+  afterEach(() => {
+    if (previous === undefined) delete process.env.HELD_PRESENT_SIGNING_ENABLED;
+    else process.env.HELD_PRESENT_SIGNING_ENABLED = previous;
+  });
+
+  /** Prepares a managed-key context, then posts the token-bound approval. */
+  async function tokenBoundPost() {
+    const prepared = await post('/prepare', { keyId: managedKey.id, jwk, host, permissions });
+    expect(prepared.status).toBe(200);
+    unsealMock.mockClear();
+    return post('/', {
+      keyId: managedKey.id,
+      jwk,
+      host,
+      permissions,
+      prepared: prepared.body.prepared,
+      authorizationContextToken: prepared.body.authorizationContext.token,
+      selectedActionIds: prepared.body.selectedActionKeys,
+      protocolVersion: 1,
+    });
+  }
+
+  test('token-bound POST / refuses it with 403 before signing when the flag is on', async () => {
+    process.env.HELD_PRESENT_SIGNING_ENABLED = 'true';
+    const res = await tokenBoundPost();
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe('held_presentation_refused');
+    expect(unsealMock).not.toHaveBeenCalled();
+  });
+
+  test('token-bound POST / signs the same request with the flag off, as main does', async () => {
+    delete process.env.HELD_PRESENT_SIGNING_ENABLED;
+    const res = await tokenBoundPost();
+    expect(res.status).toBe(200);
+    expect(unsealMock).toHaveBeenCalledTimes(1);
+  });
+
+  test('legacy POST / refuses it with 403 before signing when the flag is on', async () => {
+    process.env.HELD_PRESENT_SIGNING_ENABLED = 'true';
+    unsealMock.mockClear();
+    const res = await post('/', { keyId: managedKey.id, jwk, host, permissions });
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe('held_presentation_refused');
+    expect(unsealMock).not.toHaveBeenCalled();
+  });
+
+  test('legacy POST / signs the same request with the flag off, as main does', async () => {
+    delete process.env.HELD_PRESENT_SIGNING_ENABLED;
+    unsealMock.mockClear();
+    const res = await post('/', { keyId: managedKey.id, jwk, host, permissions });
+    expect(res.status).toBe(200);
+    expect(unsealMock).toHaveBeenCalledTimes(1);
+  });
+
+  /** Prepares an external-wallet context, then completes it with a wallet signature. */
+  async function walletCompletePrepared() {
+    const prepared = await post('/prepare', { keyId: externalKey.id, jwk, host, permissions });
+    expect(prepared.status).toBe(200);
+    activateSessionWithHost.mockClear();
+    return walletComplete(prepared.body, permissions);
+  }
+
+  test('/complete refuses it for an external wallet with 403 and never activates the session when the flag is on', async () => {
+    process.env.HELD_PRESENT_SIGNING_ENABLED = 'true';
+    const res = await walletCompletePrepared();
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe('held_presentation_refused');
+    expect(activateSessionWithHost).not.toHaveBeenCalled();
+  });
+
+  test('/complete completes it for an external wallet with the flag off, as main does', async () => {
+    delete process.env.HELD_PRESENT_SIGNING_ENABLED;
+    const res = await walletCompletePrepared();
+    expect(res.status).toBe(200);
+    expect(activateSessionWithHost).toHaveBeenCalledTimes(1);
+  });
+});
+

@@ -1172,6 +1172,7 @@ describe('CoordinationOS OAuth signer route', () => {
       user_not_found: 403,
       email_not_verified: 403,
       key_not_found: 403,
+      held_presentation_refused: 403,
       wrong_user: 403,
       external_key_denied: 403,
       key_archived: 403,
@@ -1194,6 +1195,52 @@ describe('CoordinationOS OAuth signer route', () => {
       token_consumed: 409,
       audit_write_failed: 500,
       signer_failed: 500,
+    });
+  });
+
+  describe('held presentation refusal on the sign route (TC-1456 S5)', () => {
+    const originalFlag = process.env.HELD_PRESENT_SIGNING_ENABLED;
+    beforeEach(() => {
+      process.env.HELD_PRESENT_SIGNING_ENABLED = 'true';
+    });
+    afterEach(() => {
+      if (originalFlag === undefined) delete process.env.HELD_PRESENT_SIGNING_ENABLED;
+      else process.env.HELD_PRESENT_SIGNING_ENABLED = originalFlag;
+    });
+
+    // A sign body whose ReCap grants tinycloud.credentials/present.
+    function heldPresentBody() {
+      return signingBody({
+        abilities: {
+          credentials: {
+            [`tinycloud:pkh:eip155:1:${address}:applications/credentials/mail`]: ['tinycloud.credentials/present'],
+          },
+        },
+      });
+    }
+
+    // The CoordinationOS policy refuses credentials capabilities first
+    // (capability_escalation). The held guard after policy is defence in depth.
+    test('a CoordinationOS OAuth bearer cannot obtain a held presentation signature', async () => {
+      await expectRouteDenial(heldPresentBody(), 403, 'capability_escalation');
+      expect(signerCalls).toBe(0);
+    });
+
+    test('a tinycloud:manage-key client is refused before signing', async () => {
+      token.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
+      client.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
+      const response = await sign(heldPresentBody());
+      expect(response.status).toBe(403);
+      expect(await response.json()).toMatchObject({ code: 'held_presentation_refused' });
+      expect(signerCalls).toBe(0);
+    });
+
+    test('a Better Auth session is refused before key lookup or signing', async () => {
+      betterAuthSession = true;
+      const response = await sign(heldPresentBody(), null);
+      expect(response.status).toBe(403);
+      expect(await response.json()).toMatchObject({ code: 'held_presentation_refused' });
+      expect(signerCalls).toBe(0);
     });
   });
 });

@@ -451,6 +451,49 @@ function allActionsRecognizedForService(grant: CapabilityGrant): boolean {
   return true;
 }
 
+/** Context the caller knows about the request, not the grant. */
+export interface StatementContext {
+  /** Full verified request origin, or null when none was verified. */
+  verifiedOrigin: string | null;
+  /** SIWE Expiration Time as received, or null when absent. */
+  expiry: string | null;
+}
+
+const NO_STATEMENT_CONTEXT: StatementContext = {
+  verifiedOrigin: null,
+  expiry: null,
+};
+
+/**
+ * `YYYY-MM-DD HH:MM UTC`, or null when the SIWE value is absent or
+ * unparseable. The raw string is never echoed, so no message text reaches copy.
+ */
+function formatExpiryUtc(expiry: string | null): string | null {
+  if (expiry === null) return null;
+  const time = new Date(expiry);
+  if (Number.isNaN(time.getTime())) return null;
+  return `${time.toISOString().slice(0, 16).replace("T", " ")} UTC`;
+}
+
+/**
+ * Held `tinycloud.credentials/present` (TC-1456 S5). Names the verified origin
+ * in full; a missing origin reads as unverified. Never the manifest name, the
+ * SIWE domain, or any text from the message.
+ */
+function heldCredentialPresentStatement(
+  grant: CapabilityGrant,
+  context: StatementContext,
+): StatementEntry {
+  const who = context.verifiedOrigin ?? "An unverified requester";
+  const until = formatExpiryUtc(context.expiry);
+  const tail = until === null ? "with no expiry stated" : `until ${until}`;
+  return {
+    primaryText: `${who} wants to use your stored email credentials to open items shared with your email address, ${tail}.`,
+    service: grant.service,
+    resource: resourceOf(grant),
+  };
+}
+
 /**
  * Compute the deterministic statement for a grant. Match order:
  *   1. Encryption create + decrypt combined form (bundle across grants must
@@ -461,7 +504,10 @@ function allActionsRecognizedForService(grant: CapabilityGrant): boolean {
  *   3. Secret reads and mutations
  *   4. Anything else → literal fallback
  */
-export function buildStatement(grant: CapabilityGrant): StatementEntry {
+export function buildStatement(
+  grant: CapabilityGrant,
+  context: StatementContext = NO_STATEMENT_CONTEXT,
+): StatementEntry {
   const service = grant.service;
   const path = grant.path;
   const space = grant.space;
@@ -500,6 +546,12 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
   // family/service-shaped branch fires.
   if (grant.appScopeNearMiss) {
     return fallbackStatement(grant);
+  }
+
+  // Held credential presentation (TC-1456 S5, DESIGN-v5 §3.3b). classify sets
+  // this family only for `present` on the credentials service.
+  if (grant.family === "held-credential-present") {
+    return heldCredentialPresentStatement(grant, context);
   }
 
   // An app-scoped secret reaches this branch only after the exact,
