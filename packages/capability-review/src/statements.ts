@@ -19,6 +19,7 @@ import type { CapabilityGrant } from "./model.js";
 import {
   DECRYPT_DEFAULT_KEY_STATEMENT,
   DELETE_REFUSED_TEMPLATE,
+  LITERAL_TRUNCATE_CHARS,
   NAMED_KEY_STATEMENTS,
   renderNamedKeySentence,
 } from "./copy.js";
@@ -541,7 +542,12 @@ function buildKeyDeleteStatement(
           parsed.keyPath,
           parsed.network,
         )
-      : renderNamedKeySentence(DELETE_REFUSED_TEMPLATE, resource, "");
+      : renderNamedKeySentence(
+          DELETE_REFUSED_TEMPLATE,
+          resource,
+          "",
+          LITERAL_TRUNCATE_CHARS,
+        );
   return {
     primaryText,
     service: grant.service,

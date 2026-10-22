@@ -2,10 +2,10 @@
 // grammar) and the containment rule (§3). Vectors 1-35 follow TEST-VECTORS.md
 // (TC-1777, v0.4).
 //
-// NOT ENFORCED (vectors 23 and 24): the canonical owner byte-equality rule
-// (EIP-55 for did:pkh:eip155). This package has no EIP-55 helper and declares
-// no dependency that provides one, so a lowercase-owner key URN is accepted
-// here. Parsing is shape-only until that check is added.
+// Owner is SHAPE ONLY here. Vectors 23 and 24 need the canonical EIP-55 owner
+// byte check, which is enforced at API prepare, not in the consent parser, so
+// they are skipped rather than asserting the accepted behaviour as correct.
+// Network is narrower than FB4 on purpose (see encryption-resource.ts).
 
 import { describe, expect, it } from "bun:test";
 
@@ -69,13 +69,13 @@ describe("parseEncryptionResource: accepts", () => {
     expect(parseEncryptionResource(urn("apps/v1.2_x-y"))?.kind).toBe("key");
   });
 
-  it("non-default network", () => {
+  it("network named my-net-2 is accepted", () => {
     expect(
-      parseEncryptionResource(`urn:tinycloud:encryption:${OWNER}:team-2/apps/x`),
+      parseEncryptionResource(`urn:tinycloud:encryption:${OWNER}:my-net-2/apps/x`),
     ).toEqual({
       kind: "key",
       ownerDid: OWNER,
-      network: "team-2",
+      network: "my-net-2",
       keyPath: "apps/x",
     });
   });
@@ -93,17 +93,6 @@ describe("parseEncryptionResource: accepts", () => {
     });
   });
 
-  it("32: network with an uppercase letter is a different network", () => {
-    expect(
-      parseEncryptionResource(`urn:tinycloud:encryption:${OWNER}:Default/apps/x`),
-    ).toEqual({
-      kind: "key",
-      ownerDid: OWNER,
-      network: "Default",
-      keyPath: "apps/x",
-    });
-  });
-
   it("33: prefix whose 255-byte path excludes its trailing slash", () => {
     expect(parseEncryptionResource(urn(`${PATH_255}/`))).toEqual({
       kind: "prefix",
@@ -117,19 +106,26 @@ describe("parseEncryptionResource: accepts", () => {
     expect(parseEncryptionResource(urn("apps/x/"))?.kind).toBe("prefix");
   });
 
-  it("keeps lowercase owner casing exactly as written", () => {
+  // Vector 23: owner is not canonical (lowercase) in a key URN -> REJECT.
+  // Enforced at API prepare, not by this shape-only parser.
+  it.skip("23: lowercase owner in a key URN is rejected (canonical EIP-55 owner enforced at API prepare, not in the consent parser)", () => {
     const lowerOwner =
       "did:pkh:eip155:1:0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed";
     expect(
       parseEncryptionResource(
         `urn:tinycloud:encryption:${lowerOwner}:default/apps/x`,
       ),
-    ).toEqual({
-      kind: "key",
-      ownerDid: lowerOwner,
-      network: "default",
-      keyPath: "apps/x",
-    });
+    ).toBeNull();
+  });
+
+  // Vector 24: bare network with lowercase owner -> normalised to canonical O.
+  // Enforced at API prepare, not by this shape-only parser.
+  it.skip("24: bare network with lowercase owner normalises to canonical owner (canonical EIP-55 owner enforced at API prepare, not in the consent parser)", () => {
+    const lowerOwner =
+      "did:pkh:eip155:1:0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed";
+    expect(
+      parseEncryptionResource(`urn:tinycloud:encryption:${lowerOwner}:default`),
+    ).toEqual({ kind: "network", ownerDid: OWNER, network: "default" });
   });
 });
 
@@ -170,6 +166,14 @@ describe("parseEncryptionResource: rejects return null", () => {
     ["bare network with trailing slash", `urn:tinycloud:encryption:${OWNER}:default/`],
     ["missing urn prefix", `tinycloud:${OWNER}:default/apps/x`],
     ["prefix only", "urn:tinycloud:encryption:"],
+    ["32: uppercase network (keyed)", `urn:tinycloud:encryption:${OWNER}:Default/apps/x`],
+    ["32: uppercase network (bare)", `urn:tinycloud:encryption:${OWNER}:Default`],
+    ["non-ASCII network (keyed)", `urn:tinycloud:encryption:${OWNER}:déf/apps/x`],
+    ["non-ASCII network (bare)", `urn:tinycloud:encryption:${OWNER}:déf`],
+    ["network with a dot", `urn:tinycloud:encryption:${OWNER}:team.2/apps/x`],
+    ["network with an underscore", `urn:tinycloud:encryption:${OWNER}:team_2/apps/x`],
+    ["network with a bidi override", `urn:tinycloud:encryption:${OWNER}:def\u202eault/apps/x`],
+    ["network starting with a hyphen", `urn:tinycloud:encryption:${OWNER}:-net/apps/x`],
   ];
 
   for (const [name, uri] of rejects) {

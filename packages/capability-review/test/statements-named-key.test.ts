@@ -237,3 +237,57 @@ describe("key.delete fails closed on every encryption resource shape", () => {
     });
   }
 });
+
+describe("literal resource text in refusals is escaped and capped", () => {
+  it("escapes a bidi override in a malformed key.delete refusal", () => {
+    const resource = `${NETWORK}/apps/\u202ex`;
+    const row = buildStatement(namedGrant(resource, [ABILITY.delete]));
+    expect(row.primaryText).toBe(
+      `Delete the key ${NETWORK}/apps/\\u202ex: only you can do this, with your wallet, as a separate step. This request is refused.`,
+    );
+    expect(row.primaryText).not.toContain("\u202e");
+    expect(row.resource).toBe(resource);
+    expect(row.neverApprovable).toBe(true);
+  });
+
+  it("escapes a bidi override inside the network of a delete refusal", () => {
+    const row = buildStatement(
+      namedGrant(`urn:tinycloud:encryption:${OWNER}:def\u202eault/apps/x`, [
+        ABILITY.delete,
+      ]),
+    );
+    expect(row.primaryText).toContain("def\\u202eault/apps/x");
+    expect(row.primaryText).not.toContain("\u202e");
+  });
+
+  it("escapes a zero-width character in a malformed key.delete refusal", () => {
+    const row = buildStatement(
+      namedGrant(`${NETWORK}/apps/a\u200bx//`, [ABILITY.delete]),
+    );
+    expect(row.primaryText).toContain("apps/a\\u200bx//");
+    expect(row.primaryText).not.toContain("\u200b");
+  });
+
+  it("escapes a newline in a malformed key.delete refusal", () => {
+    const row = buildStatement(
+      namedGrant(`${NETWORK}/apps/a\nx//`, [ABILITY.delete]),
+    );
+    expect(row.primaryText).toContain("apps/a\\u000ax//");
+    expect(row.primaryText).not.toContain("\n");
+  });
+
+  it("truncates a 300-character malformed resource to 120 characters and an ellipsis", () => {
+    const resource = `${NETWORK}/${"x".repeat(300)}//`;
+    const row = buildStatement(namedGrant(resource, [ABILITY.delete]));
+    expect(row.primaryText).toBe(
+      `Delete the key ${resource.slice(0, 120)}…: only you can do this, with your wallet, as a separate step. This request is refused.`,
+    );
+    expect(row.resource).toBe(resource);
+  });
+
+  it("leaves a valid key.delete sentence byte-for-byte unchanged", () => {
+    expect(buildStatement(namedGrant(KEY, [ABILITY.delete])).primaryText).toBe(
+      KEY_SENTENCE.delete,
+    );
+  });
+});

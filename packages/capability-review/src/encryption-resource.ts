@@ -11,12 +11,16 @@ export const ENCRYPTION_URN_PREFIX = "urn:tinycloud:encryption:";
  */
 const MAX_KEY_PATH_BYTES = 255;
 
-// FB4 owner: a did with a lowercase method and ASCII id characters.
+// Owner: FB4 class. SHAPE ONLY: the parser does not check the canonical
+// EIP-55 byte form. That check is enforced at API prepare, not here, so a
+// lowercase owner is accepted by this parser (vectors 23/24 are skipped in
+// the tests, see test/encryption-resource.test.ts).
 const OWNER = "did:[a-z0-9]+:[A-Za-z0-9._:-]+";
-// FB4 network: anything except the URN and path delimiters, whitespace, and
-// percent escapes. The owner's `:` cannot be in the network, so the owner
-// greedily takes everything up to the last `:`.
-const NETWORK = "[^:/#?%\\s]+";
+// Network: deliberately narrower than FB4 (`[^:/#?%\s]+`). OpenKey's API
+// requires `^[a-z0-9][a-z0-9-]*$` (ENCRYPTION_NETWORK_NAME in
+// delegate-session.ts), and consent sentences print the network verbatim,
+// so non-ASCII, bidi, uppercase, or punctuated names fail closed here.
+const NETWORK = "[a-z0-9][a-z0-9-]*";
 const SEGMENT = "[a-z0-9][a-z0-9._-]{0,63}";
 
 const BARE_NETWORK_RE = new RegExp(`^(${OWNER}):(${NETWORK})$`);
