@@ -10,6 +10,7 @@ import {
   type DelegateSignerContext,
 } from '../middleware/delegate-signer-auth';
 import { withTinyCloudManageKeySigningPolicy } from '../services/tinycloud-manage-key-control';
+import { decryptLifetimeEnforcementEnabled, decryptLifetimeRefusal } from '../services/decrypt-lifetime-policy';
 import type { Hex } from 'viem';
 import { verifyMessage } from 'ethers';
 import {
@@ -42,6 +43,7 @@ import {
   isRequiredAction,
   normalizeStringArray,
   parsePreparedRecap,
+  decryptRefusalForSignedSiwe,
   prepareDelegationSession,
   type DelegationJwk,
   type DelegationPermissionEntry,
@@ -844,6 +846,12 @@ delegateRouter.post('/sign', async (c) => {
     // intentionally ignored. The OAuth token's user binding selects exactly
     // one canonical key at the database boundary.
     const candidate = body as Record<string, unknown>;
+    const manageKeyDecryptRefusal = typeof candidate.message === 'string'
+      ? decryptRefusalForSignedSiwe(candidate.message)
+      : null;
+    if (manageKeyDecryptRefusal) {
+      return c.json({ approved: false, code: 'invalid_request', reason: manageKeyDecryptRefusal.error }, 400);
+    }
     try {
       const result = await withTinyCloudManageKeySigningPolicy(prisma, {
         userId: principal.userId, clientId: principal.clientId, request: body,
@@ -956,6 +964,12 @@ delegateRouter.post('/sign', async (c) => {
     if (!policy.allowed) return auditDenial(policy.code, policy.evidence);
     if (!key || !key.sealedBlob || !policy.evidence.nonceDigest) {
       return auditDenial('key_unavailable', policy.evidence);
+    }
+    const coordinationosDecryptRefusal = typeof candidate.message === 'string'
+      ? decryptRefusalForSignedSiwe(candidate.message)
+      : null;
+    if (coordinationosDecryptRefusal) {
+      return c.json({ approved: false, code: 'invalid_request', reason: coordinationosDecryptRefusal.error }, 400);
     }
 
     let grant;
@@ -1132,6 +1146,11 @@ delegateRouter.post('/sign', async (c) => {
     return c.json(openKeyApprovalRequired(autoSignDecision.reason, autoSignDecision.code));
   }
 
+  const autoSignDecryptRefusal = decryptRefusalForSignedSiwe(body.message);
+  if (autoSignDecryptRefusal) {
+    return c.json({ approved: false, code: 'invalid_request', reason: autoSignDecryptRefusal.error }, 400);
+  }
+
   const signature = await signManagedKey(key, key.sealedBlob, body.message);
   // The route is called from the app's own page, so Origin is the app origin.
   recordAppSignIn(prisma, user.id, c.req.header('origin'));
@@ -1199,6 +1218,9 @@ delegateRouter.post('/host', async (c) => {
     spaceId,
     peerId: body.peerId,
   });
+
+  const hostDecryptRefusal = decryptRefusalForSignedSiwe(siwe);
+  if (hostDecryptRefusal) return c.json(hostDecryptRefusal, 400);
 
   const signature = await signManagedKey(key, key.sealedBlob, siwe);
   const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
@@ -1506,6 +1528,13 @@ delegateRouter.post('/', async (c) => {
     const deviceWindow = await deviceDelegationWindowError(body, { host, signedSiwe: bound.originalSiwe });
     if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
 
+    // Decrypt lifetime cap, checked before the context is consumed.
+    const boundDecryptRefusal = decryptLifetimeRefusal({
+      entries: preparedEntries,
+      expiresAt: expirationTime,
+    });
+    if (boundDecryptRefusal) return c.json(boundDecryptRefusal, 400);
+
     // About to sign: consume the context atomically, only if it is still
     // the exact one checked above, so a concurrent approval or a replay
     // cannot sign it a second time.
@@ -1598,6 +1627,14 @@ delegateRouter.post('/', async (c) => {
   // Legacy token-less path — unchanged behavior. The CLI and any older
   // callers that predate the versioned protocol land here and continue to
   // work as before.
+  // Cap runs on the raw request before prepare: the single-space validator in
+  // prepareDelegationSession would otherwise refuse a decrypt-only request with
+  // its own message. The check on the prepared SIWE below stays authoritative.
+  const requestDecryptRefusal = decryptLifetimeRefusal({
+    entries: permissions ?? [],
+    requestedTtlSeconds: expiryMs / 1000,
+  });
+  if (requestDecryptRefusal) return c.json(requestDecryptRefusal, 400);
   let preparedResult: ReturnType<typeof prepareDelegationSession>;
   try {
     preparedResult = prepareDelegationSession({
@@ -1621,6 +1658,13 @@ delegateRouter.post('/', async (c) => {
   const deviceWindow = await deviceDelegationWindowError(body, { host, signedSiwe: preparedResult.prepared.siwe });
   if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
 
+  if (decryptLifetimeEnforcementEnabled()) {
+    const legacyDecryptRefusal = decryptLifetimeRefusal({
+      entries: parsePreparedRecap(preparedResult.prepared.siwe),
+      expiresAt: expirationTime,
+    });
+    if (legacyDecryptRefusal) return c.json(legacyDecryptRefusal, 400);
+  }
   const signature = await signManagedKey(key, key.sealedBlob, preparedResult.prepared.siwe);
 
   const session = completeSessionSetup({
@@ -1757,6 +1801,11 @@ delegateRouter.post('/prepare', async (c) => {
     host,
   });
   if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
+  const requestDecryptRefusal = decryptLifetimeRefusal({
+    entries: permissions ?? [],
+    requestedTtlSeconds: expiryMs / 1000,
+  });
+  if (requestDecryptRefusal) return c.json(requestDecryptRefusal, 400);
   let preparedResult: ReturnType<typeof prepareDelegationSession>;
   try {
     preparedResult = prepareDelegationSession({
@@ -1772,6 +1821,13 @@ delegateRouter.post('/prepare', async (c) => {
     });
   } catch (e) {
     return c.json(delegateErrorResponse(e, 'Failed to prepare delegation', 'delegation_prepare_failed'), 400);
+  }
+  if (decryptLifetimeEnforcementEnabled()) {
+    const decryptRefusal = decryptLifetimeRefusal({
+      entries: parsePreparedRecap(preparedResult.prepared.siwe),
+      expiresAt: signedSiweExpirationTime(preparedResult.prepared.siwe),
+    });
+    if (decryptRefusal) return c.json(decryptRefusal, 400);
   }
 
   const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
@@ -2039,6 +2095,8 @@ delegateRouter.post('/complete', async (c) => {
   if (!expirationTime) {
     return c.json({ error: 'The signed SIWE must include a valid Expiration Time', code: 'missing_expiration_time' }, 400);
   }
+  const decryptRefusal = decryptRefusalForSignedSiwe(body.prepared.siwe);
+  if (decryptRefusal) return c.json(decryptRefusal, 400);
 
   let contextClaim: AuthorizationContextClaim | undefined;
   let signInAppOrigin: string | undefined;
@@ -2398,6 +2456,8 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       400,
     );
   }
+  const prepareDecryptRefusal = decryptRefusalForSignedSiwe(body.siwe);
+  if (prepareDecryptRefusal) return c.json(prepareDecryptRefusal, 400);
 
   const keyAddress = ensureEip55(key.address);
   // Sol MAJOR-2: parse chainId from the SIWE rather than hard-coding it.
@@ -3077,6 +3137,9 @@ delegateRouter.post('/authorize-sign', async (c) => {
   const effectiveSelectedActionKeys = effectiveEntries.flatMap((entry) =>
     entry.actions.map((action) => computeActionKey(entry, action)),
   );
+  const authorizeDecryptRefusal = decryptRefusalForSignedSiwe(signedMessage);
+  if (authorizeDecryptRefusal) return c.json(authorizeDecryptRefusal, 400);
+
   // Both checked claims still have to reference the stored records. This
   // synchronous call compares both, checks both expiries, then deletes both
   // without an await between either comparison and either deletion. Only

@@ -15,6 +15,7 @@ import { deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, PrimaryKeyConflictError, setPrimaryKey } from '../services/primary-key';
 import { checkSignableMessage } from '../services/siwe-origin';
 import { rejectNonBrowserControlRequest } from '../middleware/browser-control';
+import { decryptRefusalForSignedSiwe } from './delegate-session';
 
 import { log, logError } from '../log';
 const prisma = createPrismaClient();
@@ -299,6 +300,12 @@ keysRouter.post('/:keyId/sign', async (c) => {
   if (siweCheck.siwe && !siweCheck.ok) {
     return c.json({ error: siweCheck.message, code: 'siwe_origin_refused', reason: siweCheck.code }, 403);
   }
+  // Raw input is signed as bytes, so the same text the policy sees is decoded from them.
+  const signedText = body.format === 'raw'
+    ? Buffer.from(body.message.slice(2), 'hex').toString('utf8')
+    : body.message;
+  const signDecryptRefusal = decryptRefusalForSignedSiwe(signedText);
+  if (signDecryptRefusal) return c.json(signDecryptRefusal, 400);
 
   const key = await prisma.ethereumKey.findFirst({
     where: { id: keyId, userId: user.id, archivedAt: null },

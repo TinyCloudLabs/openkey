@@ -32,6 +32,7 @@ import { DEFAULT_TINYCLOUD_BOOTSTRAP_HOST, TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS } f
 import { tinyCloudBootstrapNodeCallTimeoutMs, tinyCloudBootstrapNodeInvokeTimeoutMs } from './tinycloud-node-timeouts';
 import { kvSpaceRegistryStore, registerMissingBootstrapSpaces } from './tinycloud-space-registry';
 import { SWEEP_RETRYABLE_CODES } from './tinycloud-bootstrap-budget';
+import { decryptRefusalForSignedSiwe } from '../routes/delegate-session';
 
 import { log } from '../log';
 export const TINYCLOUD_BOOTSTRAP_VERSION = `@tinycloud/bootstrap:${canonicalHashHex({
@@ -799,6 +800,8 @@ async function createBootstrapSession(
     abilities: abilitiesFromRequest(step.request),
     ...(step.rawAbilities ? { rawAbilities: step.rawAbilities } : {}),
   });
+  const sessionDecryptRefusal = decryptRefusalForSignedSiwe(prepared.siwe);
+  if (sessionDecryptRefusal) throw new Error(sessionDecryptRefusal.error);
   const signature = await signEthereumMessage(input.privateKey, prepared.siwe);
   const session = completeSessionSetup({ ...prepared, signature });
   return { space: step.space, spaceId: step.spaceId, session };
@@ -817,6 +820,8 @@ async function createHostDelegation(
     spaceId: step.spaceId,
     peerId,
   });
+  const hostDecryptRefusal = decryptRefusalForSignedSiwe(siwe);
+  if (hostDecryptRefusal) throw new Error(hostDecryptRefusal.error);
   const signature = await signEthereumMessage(input.privateKey, siwe);
   return siweToDelegationHeaders({ siwe, signature }) as Record<string, string>;
 }

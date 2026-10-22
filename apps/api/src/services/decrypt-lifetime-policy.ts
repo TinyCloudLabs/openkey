@@ -7,8 +7,8 @@
  * own equivalent rule in `device-authorization.ts` and is not routed through
  * this module.
  *
- * The enforcement flag is read on every call so tests can toggle it. Only the
- * exact strings `true` and `1` turn enforcement on; any other value is off.
+ * The enforcement flag is read on every call. Only the exact strings `true`
+ * and `1` turn enforcement on; any other value leaves it off.
  */
 
 export const DECRYPT_LIFETIME_FLAG = 'DECRYPT_LIFETIME_ENFORCE_NON_DEVICE';
@@ -33,6 +33,11 @@ export interface DecryptLifetimeInput {
   expiresAt?: Date | string | number | null;
   /** Signing time in epoch milliseconds. Defaults to Date.now(). */
   now?: number;
+}
+
+export interface DecryptLifetimeRefusal {
+  error: string;
+  code: 'invalid_request';
 }
 
 export class DecryptLifetimeError extends Error {
@@ -82,7 +87,8 @@ export function assertDecryptLifetime(input: DecryptLifetimeInput): void {
 
   if (input.entries.length !== 1) throw new DecryptLifetimeError();
   const [entry] = input.entries;
-  if (entry.actions.length !== 1 || !isDecryptAction(entry, entry.actions[0])) {
+  const [action] = entry?.actions ?? [];
+  if (!entry || entry.actions.length !== 1 || action === undefined || !isDecryptAction(entry, action)) {
     throw new DecryptLifetimeError();
   }
 
@@ -118,4 +124,23 @@ export function assertDecryptLifetimeIfEnforced(
 ): void {
   if (!decryptLifetimeEnforcementEnabled(env)) return;
   assertDecryptLifetime(input);
+}
+
+/**
+ * Route-facing form: returns the fixed refusal body when enforcement is on and
+ * the request is refused, otherwise null. Routes return it as a 400 before any
+ * build, sign, response, activation, or persistence step.
+ */
+export function decryptLifetimeRefusal(
+  input: DecryptLifetimeInput,
+  env: NodeJS.ProcessEnv = process.env,
+): DecryptLifetimeRefusal | null {
+  if (!decryptLifetimeEnforcementEnabled(env)) return null;
+  try {
+    assertDecryptLifetime(input);
+    return null;
+  } catch (error) {
+    if (error instanceof DecryptLifetimeError) return { error: error.message, code: 'invalid_request' };
+    throw error;
+  }
 }

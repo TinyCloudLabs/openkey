@@ -17,7 +17,14 @@ import { getAddress } from 'viem';
 import {
   DelegateRequestError,
   shortServiceName,
+  signedSiweExpirationTime,
 } from './delegate-validation';
+import {
+  DECRYPT_LIFETIME_REFUSAL,
+  decryptLifetimeEnforcementEnabled,
+  decryptLifetimeRefusal,
+  type DecryptLifetimeRefusal,
+} from '../services/decrypt-lifetime-policy';
 
 export type DelegationJwk = { kty: string; crv: string; x: string };
 export type AbilitiesMap = Record<string, Record<string, string[]>>;
@@ -261,6 +268,22 @@ export function assertRequiredActions(entries: RecapEntry[], baseline: SessionAb
 
 export function parsePreparedRecap(siwe: string): RecapEntry[] {
   return parseRecapFromSiwe(siwe) as RecapEntry[];
+}
+
+/**
+ * Refusal for a SIWE the server is about to sign. Null when the flag is off or
+ * the recap has no breaking decrypt entry. A `urn:recap:` resource that cannot be
+ * parsed is refused; text without one carries no decrypt entry.
+ */
+export function decryptRefusalForSignedSiwe(siwe: string): DecryptLifetimeRefusal | null {
+  if (!decryptLifetimeEnforcementEnabled()) return null;
+  let entries: RecapEntry[];
+  try {
+    entries = parsePreparedRecap(siwe);
+  } catch {
+    return siwe.includes('urn:recap:') ? { error: DECRYPT_LIFETIME_REFUSAL, code: 'invalid_request' } : null;
+  }
+  return decryptLifetimeRefusal({ entries, expiresAt: signedSiweExpirationTime(siwe) });
 }
 
 export function normalizeStringArray(value: unknown, name: string): string[] | undefined {
