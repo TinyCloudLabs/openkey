@@ -536,3 +536,44 @@ describe('keysRouter managed signing', () => {
     });
   });
 });
+
+describe('keysRouter decrypt lifetime refusal (TC-1781)', () => {
+  const FLAG = 'DECRYPT_LIFETIME_ENFORCE_NON_DEVICE';
+  const REFUSAL = 'a decrypt approval lasts at most one hour';
+  // An unparseable recap is refused only while the flag is on; the text is
+  // not SIWE-shaped, so the origin guard does not run first.
+  const message = 'Approve: - urn:recap:!!!not-a-recap!!!';
+  let savedFlag: string | undefined;
+
+  beforeEach(() => { savedFlag = process.env[FLAG]; });
+  afterEach(() => {
+    if (savedFlag === undefined) delete process.env[FLAG];
+    else process.env[FLAG] = savedFlag;
+  });
+
+  test('POST /:keyId/sign refuses the unparseable decrypt recap before unsealing while the flag is on', async () => {
+    process.env[FLAG] = 'true';
+    const router = await keysRouter();
+    const response = await router.request('/key_1/sign', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message }),
+    });
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ code: 'invalid_request', error: REFUSAL });
+    expect(unseal).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
+  });
+
+  test('POST /:keyId/sign signs the same message unchanged while the flag is off', async () => {
+    delete process.env[FLAG];
+    const router = await keysRouter();
+    const response = await router.request('/key_1/sign', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message }),
+    });
+    expect(response.status).toBe(200);
+    expect(calls).toEqual(['bootstrap', 'sign']);
+  });
+});

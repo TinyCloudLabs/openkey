@@ -291,6 +291,53 @@ describe('flag ON: refusal before any side effect', () => {
   });
 });
 
+describe('authorize-sign transports: decrypt refusal', () => {
+  // The SIWE is produced flag-off through /prepare, then sent to the
+  // authorize-sign routes with the flag on or switched on mid-flow.
+  const authorizeBody = (prepared: Record<string, any>) => ({
+    keyId: managedKey.id,
+    jwk,
+    host,
+    requestOrigin: 'https://cli.tinycloud.xyz',
+    siwe: prepared.prepared.siwe,
+  });
+
+  test('/authorize-sign-prepare refuses a decrypt SIWE at the 7-day default while the flag is on', async () => {
+    setFlag(undefined);
+    const prepared = await post('/prepare', { keyId: managedKey.id, jwk, host, permissions: request });
+    expect(prepared.status).toBe(200);
+
+    setFlag('true');
+    const res = await post('/authorize-sign-prepare', authorizeBody(prepared.body));
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe(REFUSAL);
+    expect(res.body.code).toBe('invalid_request');
+  });
+
+  test('/authorize-sign refuses a decrypt grant when the flag is switched on after its preview', async () => {
+    setFlag(undefined);
+    const prepared = await post('/prepare', { keyId: managedKey.id, jwk, host, permissions: request });
+    const context = await post('/authorize-sign-prepare', authorizeBody(prepared.body));
+    expect(context.status).toBe(200);
+    const selectedActionIds = context.body.allowedActionIds;
+    const preview = await post('/authorize-sign-preview', {
+      authorizationContextToken: context.body.authorizationContextToken,
+      selectedActionIds,
+    });
+    expect(preview.status).toBe(200);
+
+    setFlag('true');
+    const res = await post('/authorize-sign', {
+      authorizationContextToken: context.body.authorizationContextToken,
+      previewApprovalToken: preview.body.previewApprovalToken,
+      selectedActionIds,
+      protocolVersion: 1,
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe(REFUSAL);
+  });
+});
+
 describe('decryptRefusalForSignedSiwe', () => {
   const siweWith = (resources: string) =>
     [
