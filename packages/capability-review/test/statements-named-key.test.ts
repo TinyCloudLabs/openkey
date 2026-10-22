@@ -52,9 +52,9 @@ function namedGrant(space: string, abilities: string[]): CapabilityGrant {
 const KEY_SENTENCE = {
   create: "Create the encryption key apps/tinychat/x in your account's default network.",
   block:
-    "Block the key apps/tinychat/x in your account's default network, so it can no longer decrypt. You can unblock it later.",
+    "Block the key apps/tinychat/x in your account's default network, so nobody, you included, can decrypt with it until it is unblocked. You can unblock it later.",
   unblock:
-    "Unblock the key apps/tinychat/x in your account's default network, so it can decrypt again.",
+    "Unblock the key apps/tinychat/x in your account's default network, so it can decrypt again, even if you blocked it yourself.",
   decrypt:
     "Decrypt anything encrypted with your key apps/tinychat/x in your account's default network, whenever this app gets hold of the encrypted copy, until this access expires.",
   delete:
@@ -65,11 +65,11 @@ const PREFIX_SENTENCE = {
   create:
     "Create encryption keys under apps/tinychat/ in your account's default network.",
   block:
-    "Block every key under apps/tinychat/ in your account's default network, so none of them can decrypt. You can unblock them later.",
+    "Block every key under apps/tinychat/ in your account's default network, so nobody, you included, can decrypt with any of them until they are unblocked. You can unblock them later.",
   unblock:
-    "Unblock every key under apps/tinychat/ in your account's default network, so they can decrypt again.",
+    "Unblock every key under apps/tinychat/ in your account's default network, so they can decrypt again, even if you blocked them yourself.",
   decrypt:
-    "Decrypt anything encrypted with any of your keys under apps/tinychat/ in your account's default network, whenever this app gets hold of the encrypted copy, until this access expires.",
+    "Decrypt anything encrypted with any of your keys under apps/tinychat/ in your account's default network, including keys created later, whenever this app gets hold of the encrypted copy, until this access expires.",
   delete:
     "Delete the key apps/tinychat/: only you can do this, with your wallet, as a separate step. This request is refused.",
 } as const;
@@ -352,4 +352,19 @@ describe("failing encryption URNs: every displayed string is printable ASCII", (
       }
     }
   }
+
+  it("caps a 300-character unknown ability once, with one ellipsis", () => {
+    const ability = `tinycloud.encryption/${"u".repeat(300)}`;
+    const rows = buildStatements(
+      shapeGrant("A", keyUrn("apps/x//"), [ability]),
+    );
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expectPrintableAscii(row.primaryText);
+    }
+    expect(rows[0].primaryText.startsWith(`Perform ${ability.slice(0, 120)}…`)).toBe(
+      true,
+    );
+    expect(rows[0].primaryText).not.toContain("u".repeat(121));
+  });
 });

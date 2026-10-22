@@ -77,17 +77,17 @@ export const NAMED_KEY_STATEMENTS: Record<
   decrypt: {
     key: "Decrypt anything encrypted with your key {path} in your account's {network} network, whenever this app gets hold of the encrypted copy, until this access expires.",
     prefix:
-      "Decrypt anything encrypted with any of your keys under {path} in your account's {network} network, whenever this app gets hold of the encrypted copy, until this access expires.",
+      "Decrypt anything encrypted with any of your keys under {path} in your account's {network} network, including keys created later, whenever this app gets hold of the encrypted copy, until this access expires.",
   },
   block: {
-    key: "Block the key {path} in your account's {network} network, so it can no longer decrypt. You can unblock it later.",
+    key: "Block the key {path} in your account's {network} network, so nobody, you included, can decrypt with it until it is unblocked. You can unblock it later.",
     prefix:
-      "Block every key under {path} in your account's {network} network, so none of them can decrypt. You can unblock them later.",
+      "Block every key under {path} in your account's {network} network, so nobody, you included, can decrypt with any of them until they are unblocked. You can unblock them later.",
   },
   unblock: {
-    key: "Unblock the key {path} in your account's {network} network, so it can decrypt again.",
+    key: "Unblock the key {path} in your account's {network} network, so it can decrypt again, even if you blocked it yourself.",
     prefix:
-      "Unblock every key under {path} in your account's {network} network, so they can decrypt again.",
+      "Unblock every key under {path} in your account's {network} network, so they can decrypt again, even if you blocked them yourself.",
   },
   delete: {
     key: DELETE_REFUSED_TEMPLATE,
