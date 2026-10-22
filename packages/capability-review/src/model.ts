@@ -45,6 +45,7 @@ export type CapabilityFamily =
   | "duckdb-data"
   | "database-admin"
   | "file-data"
+  | "held-credential-present"
   | "unknown";
 
 /**

@@ -46,7 +46,22 @@ const serverPermissions: ServerPermissionOption[] = [
   { key: decryptKey, actions: [{ key: `${decryptKey}\0${DECRYPT}`, ability: DECRYPT, required: false }] },
 ];
 
-const model = parseCapabilityReview({ message: siwe, signer: { label: 'Key 0', address } } as never);
+const model = parseCapabilityReview({
+  message: siwe,
+  signer: { label: 'Key 0', address },
+  requester: {
+    displayName: 'cli.tinycloud.xyz',
+    verifiedOrigin: null,
+    appId: null,
+    manifestName: null,
+    manifestNameProvenance: 'none',
+    manifestId: null,
+    manifestIdProvenance: 'none',
+    manifestDigest: null,
+    domainWarning: false,
+    originWarning: false,
+  },
+} as never);
 const reviewActionId = (ability: string) => {
   const action = model.permissions.flatMap((grant) => grant.actions).find((candidate) => candidate.ability === ability);
   if (!action) throw new Error(`no review action for ${ability}`);

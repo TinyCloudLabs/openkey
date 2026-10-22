@@ -190,7 +190,10 @@
     >();
 
     for (const grant of selectedGrants) {
-      const statement = buildStatement(grant);
+      const statement = buildStatement(grant, {
+        verifiedOrigin: model.requester.verifiedOrigin,
+        expiry: model.expiry,
+      });
       const existing = grouped.get(statement.primaryText);
       if (existing) {
         if (severityRank[grant.severity] > severityRank[existing.severity]) {

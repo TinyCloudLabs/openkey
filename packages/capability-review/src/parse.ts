@@ -858,12 +858,19 @@ export function parseCapabilityReview(
 
   // 4. TinyCloud SIWE-ReCap: editable capabilities.
   const permissions = buildGrants(entries, ctx, ctx.signer);
+  // A held-credential presentation shows the verified origin as the requester,
+  // matching the copy in statements.ts. The manifest name is never used there.
+  const requester =
+    ctx.requester.verifiedOrigin !== null &&
+    permissions.some((grant) => grant.family === "held-credential-present")
+      ? { ...ctx.requester, displayName: ctx.requester.verifiedOrigin }
+      : ctx.requester;
   const protocol: RequestProtocol = "tinycloud-siwe-recap";
   return {
     version: 1,
     protocol,
     rawMessage: ctx.message,
-    requester: ctx.requester,
+    requester,
     reason: ctx.reason,
     signer: ctx.signer,
     expiry: expiration,

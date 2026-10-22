@@ -59,6 +59,11 @@ const SECRETS_SERVICES = new Set(["tinycloud.secrets", "secrets"]);
 
 const ENCRYPTION_SERVICES = new Set(["tinycloud.encryption", "encryption"]);
 
+const CREDENTIALS_SERVICES: Record<string, true> = {
+  "tinycloud.credentials": true,
+  credentials: true,
+};
+
 const MUTATION_VERBS = new Set([
   "put",
   "post",
@@ -216,6 +221,14 @@ function isSecretValueRead(actions: string[]): boolean {
   });
 }
 
+function isHeldCredentialPresent(service: string, actions: string[]): boolean {
+  return (
+    CREDENTIALS_SERVICES[service] === true &&
+    actions.length > 0 &&
+    actions.every((action) => verbOf(action) === "present")
+  );
+}
+
 export function classifyRecapEntry(entry: RecapEntryLike): {
   family: CapabilityFamily;
   displayLabel: string;
@@ -228,6 +241,18 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     spaceOwner !== null &&
     signerAddress !== null &&
     spaceOwner !== signerAddress;
+
+  // Stored email credentials presented to a verified origin. The family label
+  // never includes the manifest name, the SIWE domain, or message text.
+  if (
+    isHeldCredentialPresent(service, entry.actions) &&
+    entry.serviceMismatch !== true
+  ) {
+    return {
+      family: "held-credential-present",
+      displayLabel: "Present stored email credentials",
+    };
+  }
 
   // KV and SQL authority inside a TinyCloud secrets space reaches secret
   // data regardless of requester ownership. Classify it as a secret family
@@ -658,6 +683,8 @@ export function classifySeverityFromActions(
     case "space-read":
     case "duckdb-data":
       return "standard";
+    case "held-credential-present":
+      return "sensitive";
     case "unknown":
     default:
       // Fail-closed: an unknown service could be doing anything. Always
