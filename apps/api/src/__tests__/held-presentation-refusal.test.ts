@@ -52,6 +52,14 @@ describe('refusesHeldPresentation', () => {
     expect(refusesHeldPresentation(siwe(['urn:recap:e30']))).toBe(true);
   });
 
+  test('refuses a SIWE whose ReCap token has non-base64url characters (fail closed)', () => {
+    expect(refusesHeldPresentation(siwe(['urn:recap:@@@']))).toBe(true);
+  });
+
+  test('refuses a SIWE whose ReCap token has an empty body (fail closed)', () => {
+    expect(refusesHeldPresentation(siwe(['urn:recap:']))).toBe(true);
+  });
+
   test('refuses the literal credentials/present in the statement', () => {
     expect(refusesHeldPresentation(siwe([], 'Allow credentials/present for mail'))).toBe(true);
   });

@@ -7,7 +7,7 @@ import { decodeHexUtf8 } from './siwe-origin';
 export const HELD_PRESENT_SIGNING_FLAG = 'HELD_PRESENT_SIGNING_ENABLED';
 
 const SIWE_MARKER = ' wants you to sign in with your Ethereum account:';
-const RECAP_TOKEN = /urn:recap:[A-Za-z0-9_-]+/g;
+const RECAP_TOKEN = /urn:recap:\S*/g;
 const CREDENTIALS_SERVICE = 'credentials';
 const CREDENTIALS_ABILITY_PREFIX = 'tinycloud.credentials/';
 const PRESENT_LITERAL = 'credentials/present';
