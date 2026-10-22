@@ -251,15 +251,16 @@ function fallbackStatement(grant: CapabilityGrant): StatementEntry {
   // semantics from a shape we don't recognize.
   const failing = hasFailingEncryptionUrn(grant);
   // A failing encryption URN is untrusted literal text: escape every displayed
-  // value, and cap the ability list and the resource.
-  const show = (text: string): string => (failing ? renderLiteral(text) : text);
+  // value, and cap the ability list, service and resource.
   // Join raw ability strings first, so a failing grant's ability list is
   // escaped and capped once, with at most one `…`.
   const abilityText = grant.actions.map((a) => a.ability).join(", ");
   const actionList = failing
     ? renderLiteral(abilityText, LITERAL_TRUNCATE_CHARS)
     : abilityText;
-  const service = show(grant.service);
+  const service = failing
+    ? renderLiteral(grant.service, LITERAL_TRUNCATE_CHARS)
+    : grant.service;
   const resource = failing
     ? renderLiteral(resourceOf(grant), LITERAL_TRUNCATE_CHARS)
     : resourceOf(grant);
@@ -577,7 +578,9 @@ function buildKeyDeleteStatement(
   const failing = hasFailingEncryptionUrn(grant);
   return {
     primaryText,
-    service: failing ? renderLiteral(grant.service) : grant.service,
+    service: failing
+      ? renderLiteral(grant.service, LITERAL_TRUNCATE_CHARS)
+      : grant.service,
     resource: failing ? renderLiteral(resource, LITERAL_TRUNCATE_CHARS) : resource,
     neverApprovable: true,
   };

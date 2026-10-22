@@ -367,4 +367,17 @@ describe("failing encryption URNs: every displayed string is printable ASCII", (
     );
     expect(rows[0].primaryText).not.toContain("u".repeat(121));
   });
+
+  it("caps a 300-character service once, with one ellipsis, on fallback and key.delete rows", () => {
+    for (const ability of [ABILITY.decrypt, ABILITY.delete]) {
+      const grant = { ...shapeGrant("A", keyUrn("apps/x//"), [ability]), service: "x".repeat(300) };
+      const rows = buildStatements(grant);
+      expect(rows.length).toBeGreaterThan(0);
+      for (const row of rows) {
+        expectPrintableAscii(row.primaryText);
+        expectPrintableAscii(row.service);
+        expect(row.service).toBe(`${"x".repeat(120)}…`);
+      }
+    }
+  });
 });
