@@ -1,0 +1,673 @@
+{
+  "prepare lone device-shaped default decrypt, 3600s": {
+    "status": 200,
+    "body": {
+      "prepared": {
+        "jwk": {
+          "kty": "OKP",
+          "crv": "Ed25519",
+          "x": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        },
+        "spaceId": "tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default",
+        "siwe": "cli.tinycloud.xyz wants you to sign in with your Ethereum account:\n0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A\n\nI further authorize the stated URI to perform the following actions on my behalf: (1) 'tinycloud.encryption': 'decrypt' for 'tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/encryption'.\n\nURI: did:key:z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP#z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP\nVersion: 1\nChain ID: 1\nNonce: <nonce>\nIssued At: <iso>\nExpiration Time: <iso>\nResources:\n- urn:recap:eyJhdHQiOnsidGlueWNsb3VkOnBraDplaXAxNTU6MToweDE5RTdFMzc2RTdDMjEzQjdFN2U3ZTQ2Y2M3MEE1ZEQwODZEQWZmMkE6ZGVmYXVsdC9lbmNyeXB0aW9uIjp7InRpbnljbG91ZC5lbmNyeXB0aW9uL2RlY3J5cHQiOlt7fV19fSwicHJmIjpbXX0",
+        "verificationMethod": "did:key:z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP#z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP"
+      },
+      "spaceId": "tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default",
+      "spaceSetup": {
+        "space": "default",
+        "plan": "external-wallet"
+      },
+      "ownerDid": "did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+      "address": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+      "chainId": 1,
+      "host": "https://node.tinycloud.xyz",
+      "jwk": {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      },
+      "permissions": [
+        {
+          "key": "tinycloud.encryption\u0000tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default\u0000",
+          "service": "encryption",
+          "path": "",
+          "label": "encryption",
+          "resourcePath": "encryption",
+          "actions": [
+            {
+              "key": "tinycloud.encryption\u0000tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default\u0000\u0000tinycloud.encryption/decrypt",
+              "action": "decrypt",
+              "ability": "tinycloud.encryption/decrypt",
+              "required": false
+            }
+          ]
+        }
+      ],
+      "selectedActionKeys": [
+        "tinycloud.encryption\u0000tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default\u0000\u0000tinycloud.encryption/decrypt"
+      ],
+      "edited": false,
+      "authorizationContext": {
+        "token": "oks_<token>",
+        "expiresAt": "<iso>",
+        "baselineAbilitiesDigest": "f845083f3b11b9873eb9437624e5f425d50c5253ff140f2efa3445ffa27c8ae2"
+      }
+    }
+  },
+  "prepare lone device-shaped default decrypt, 3601s": {
+    "status": 200,
+    "body": {
+      "prepared": {
+        "jwk": {
+          "kty": "OKP",
+          "crv": "Ed25519",
+          "x": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        },
+        "spaceId": "tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default",
+        "siwe": "cli.tinycloud.xyz wants you to sign in with your Ethereum account:\n0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A\n\nI further authorize the stated URI to perform the following actions on my behalf: (1) 'tinycloud.encryption': 'decrypt' for 'tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/encryption'.\n\nURI: did:key:z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP#z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP\nVersion: 1\nChain ID: 1\nNonce: <nonce>\nIssued At: <iso>\nExpiration Time: <iso>\nResources:\n- urn:recap:eyJhdHQiOnsidGlueWNsb3VkOnBraDplaXAxNTU6MToweDE5RTdFMzc2RTdDMjEzQjdFN2U3ZTQ2Y2M3MEE1ZEQwODZEQWZmMkE6ZGVmYXVsdC9lbmNyeXB0aW9uIjp7InRpbnljbG91ZC5lbmNyeXB0aW9uL2RlY3J5cHQiOlt7fV19fSwicHJmIjpbXX0",
+        "verificationMethod": "did:key:z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP#z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP"
+      },
+      "spaceId": "tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default",
+      "spaceSetup": {
+        "space": "default",
+        "plan": "external-wallet"
+      },
+      "ownerDid": "did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+      "address": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+      "chainId": 1,
+      "host": "https://node.tinycloud.xyz",
+      "jwk": {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      },
+      "permissions": [
+        {
+          "key": "tinycloud.encryption\u0000tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default\u0000",
+          "service": "encryption",
+          "path": "",
+          "label": "encryption",
+          "resourcePath": "encryption",
+          "actions": [
+            {
+              "key": "tinycloud.encryption\u0000tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default\u0000\u0000tinycloud.encryption/decrypt",
+              "action": "decrypt",
+              "ability": "tinycloud.encryption/decrypt",
+              "required": false
+            }
+          ]
+        }
+      ],
+      "selectedActionKeys": [
+        "tinycloud.encryption\u0000tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default\u0000\u0000tinycloud.encryption/decrypt"
+      ],
+      "edited": false,
+      "authorizationContext": {
+        "token": "oks_<token>",
+        "expiresAt": "<iso>",
+        "baselineAbilitiesDigest": "f845083f3b11b9873eb9437624e5f425d50c5253ff140f2efa3445ffa27c8ae2"
+      }
+    }
+  },
+  "prepare lone device-shaped default decrypt, no expiry": {
+    "status": 200,
+    "body": {
+      "prepared": {
+        "jwk": {
+          "kty": "OKP",
+          "crv": "Ed25519",
+          "x": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        },
+        "spaceId": "tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default",
+        "siwe": "cli.tinycloud.xyz wants you to sign in with your Ethereum account:\n0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A\n\nI further authorize the stated URI to perform the following actions on my behalf: (1) 'tinycloud.encryption': 'decrypt' for 'tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/encryption'.\n\nURI: did:key:z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP#z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP\nVersion: 1\nChain ID: 1\nNonce: <nonce>\nIssued At: <iso>\nExpiration Time: <iso>\nResources:\n- urn:recap:eyJhdHQiOnsidGlueWNsb3VkOnBraDplaXAxNTU6MToweDE5RTdFMzc2RTdDMjEzQjdFN2U3ZTQ2Y2M3MEE1ZEQwODZEQWZmMkE6ZGVmYXVsdC9lbmNyeXB0aW9uIjp7InRpbnljbG91ZC5lbmNyeXB0aW9uL2RlY3J5cHQiOlt7fV19fSwicHJmIjpbXX0",
+        "verificationMethod": "did:key:z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP#z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP"
+      },
+      "spaceId": "tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default",
+      "spaceSetup": {
+        "space": "default",
+        "plan": "external-wallet"
+      },
+      "ownerDid": "did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+      "address": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+      "chainId": 1,
+      "host": "https://node.tinycloud.xyz",
+      "jwk": {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      },
+      "permissions": [
+        {
+          "key": "tinycloud.encryption\u0000tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default\u0000",
+          "service": "encryption",
+          "path": "",
+          "label": "encryption",
+          "resourcePath": "encryption",
+          "actions": [
+            {
+              "key": "tinycloud.encryption\u0000tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default\u0000\u0000tinycloud.encryption/decrypt",
+              "action": "decrypt",
+              "ability": "tinycloud.encryption/decrypt",
+              "required": false
+            }
+          ]
+        }
+      ],
+      "selectedActionKeys": [
+        "tinycloud.encryption\u0000tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default\u0000\u0000tinycloud.encryption/decrypt"
+      ],
+      "edited": false,
+      "authorizationContext": {
+        "token": "oks_<token>",
+        "expiresAt": "<iso>",
+        "baselineAbilitiesDigest": "f845083f3b11b9873eb9437624e5f425d50c5253ff140f2efa3445ffa27c8ae2"
+      }
+    }
+  },
+  "prepare lone own-network raw decrypt, 3600s": {
+    "status": 400,
+    "body": {
+      "error": "permissions must belong to a single space",
+      "code": "invalid_permissions",
+      "message": "permissions must belong to a single space",
+      "details": [
+        {
+          "path": "permissions[0].space",
+          "message": "All permissions must use the same space"
+        }
+      ]
+    }
+  },
+  "prepare lone own-network raw decrypt, 3601s": {
+    "status": 400,
+    "body": {
+      "error": "permissions must belong to a single space",
+      "code": "invalid_permissions",
+      "message": "permissions must belong to a single space",
+      "details": [
+        {
+          "path": "permissions[0].space",
+          "message": "All permissions must use the same space"
+        }
+      ]
+    }
+  },
+  "prepare lone own-network raw decrypt, no expiry": {
+    "status": 400,
+    "body": {
+      "error": "permissions must belong to a single space",
+      "code": "invalid_permissions",
+      "message": "permissions must belong to a single space",
+      "details": [
+        {
+          "path": "permissions[0].space",
+          "message": "All permissions must use the same space"
+        }
+      ]
+    }
+  },
+  "prepare lone foreign-network raw decrypt, 3600s": {
+    "status": 400,
+    "body": {
+      "error": "permissions must belong to a single space",
+      "code": "invalid_permissions",
+      "message": "permissions must belong to a single space",
+      "details": [
+        {
+          "path": "permissions[0].space",
+          "message": "All permissions must use the same space"
+        }
+      ]
+    }
+  },
+  "prepare lone named-key raw decrypt, 3600s": {
+    "status": 400,
+    "body": {
+      "error": "permissions must belong to a single space",
+      "code": "invalid_permissions",
+      "message": "permissions must belong to a single space",
+      "details": [
+        {
+          "path": "permissions[0].space",
+          "message": "All permissions must use the same space"
+        }
+      ]
+    }
+  },
+  "prepare two decrypt entries (device default + own raw), 3600s": {
+    "status": 200,
+    "body": {
+      "prepared": {
+        "jwk": {
+          "kty": "OKP",
+          "crv": "Ed25519",
+          "x": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        },
+        "spaceId": "tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default",
+        "siwe": "cli.tinycloud.xyz wants you to sign in with your Ethereum account:\n0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A\n\nI further authorize the stated URI to perform the following actions on my behalf: (1) 'tinycloud.encryption': 'decrypt' for 'tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/encryption'. (2) 'tinycloud.encryption': 'decrypt' for 'urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default'.\n\nURI: did:key:z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP#z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP\nVersion: 1\nChain ID: 1\nNonce: <nonce>\nIssued At: <iso>\nExpiration Time: <iso>\nResources:\n- urn:recap:eyJhdHQiOnsidGlueWNsb3VkOnBraDplaXAxNTU6MToweDE5RTdFMzc2RTdDMjEzQjdFN2U3ZTQ2Y2M3MEE1ZEQwODZEQWZmMkE6ZGVmYXVsdC9lbmNyeXB0aW9uIjp7InRpbnljbG91ZC5lbmNyeXB0aW9uL2RlY3J5cHQiOlt7fV19LCJ1cm46dGlueWNsb3VkOmVuY3J5cHRpb246ZGlkOnBraDplaXAxNTU6MToweDE5RTdFMzc2RTdDMjEzQjdFN2U3ZTQ2Y2M3MEE1ZEQwODZEQWZmMkE6ZGVmYXVsdCI6eyJ0aW55Y2xvdWQuZW5jcnlwdGlvbi9kZWNyeXB0Ijpbe31dfX0sInByZiI6W119",
+        "verificationMethod": "did:key:z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP#z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP"
+      },
+      "spaceId": "tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default",
+      "spaceSetup": {
+        "space": "default",
+        "plan": "external-wallet"
+      },
+      "ownerDid": "did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+      "address": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+      "chainId": 1,
+      "host": "https://node.tinycloud.xyz",
+      "jwk": {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      },
+      "permissions": [
+        {
+          "key": "tinycloud.encryption\u0000tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default\u0000",
+          "service": "encryption",
+          "path": "",
+          "label": "encryption",
+          "resourcePath": "encryption",
+          "actions": [
+            {
+              "key": "tinycloud.encryption\u0000tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default\u0000\u0000tinycloud.encryption/decrypt",
+              "action": "decrypt",
+              "ability": "tinycloud.encryption/decrypt",
+              "required": false
+            }
+          ]
+        },
+        {
+          "key": "tinycloud.encryption\u0000encryption\u0000urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default",
+          "service": "encryption",
+          "path": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default",
+          "label": "encryption",
+          "resourcePath": "encryption/urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default",
+          "actions": [
+            {
+              "key": "tinycloud.encryption\u0000encryption\u0000urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default\u0000tinycloud.encryption/decrypt",
+              "action": "decrypt",
+              "ability": "tinycloud.encryption/decrypt",
+              "required": false
+            }
+          ]
+        }
+      ],
+      "selectedActionKeys": [
+        "tinycloud.encryption\u0000tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default\u0000\u0000tinycloud.encryption/decrypt",
+        "tinycloud.encryption\u0000encryption\u0000urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default\u0000tinycloud.encryption/decrypt"
+      ],
+      "edited": false,
+      "authorizationContext": {
+        "token": "oks_<token>",
+        "expiresAt": "<iso>",
+        "baselineAbilitiesDigest": "5e7822d7896ccc6e5d755cc9a765d543f0395e0d367bf51ce0b853cb8bb0b1ad"
+      }
+    }
+  },
+  "prepare kv + raw decrypt, default expiry": {
+    "status": 200,
+    "body": {
+      "prepared": {
+        "jwk": {
+          "kty": "OKP",
+          "crv": "Ed25519",
+          "x": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        },
+        "spaceId": "tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets",
+        "siwe": "cli.tinycloud.xyz wants you to sign in with your Ethereum account:\n0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A\n\nI further authorize the stated URI to perform the following actions on my behalf: (1) 'tinycloud.capabilities': 'read' for 'tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets/capabilities'. (2) 'tinycloud.kv': 'get' for 'tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets/kv/vault/secrets/TC_FWD_TOKEN'. (3) 'tinycloud.encryption': 'decrypt' for 'urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default'.\n\nURI: did:key:z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP#z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP\nVersion: 1\nChain ID: 1\nNonce: <nonce>\nIssued At: <iso>\nExpiration Time: <iso>\nResources:\n- urn:recap:eyJhdHQiOnsidGlueWNsb3VkOnBraDplaXAxNTU6MToweDE5RTdFMzc2RTdDMjEzQjdFN2U3ZTQ2Y2M3MEE1ZEQwODZEQWZmMkE6c2VjcmV0cy9jYXBhYmlsaXRpZXMiOnsidGlueWNsb3VkLmNhcGFiaWxpdGllcy9yZWFkIjpbe31dfSwidGlueWNsb3VkOnBraDplaXAxNTU6MToweDE5RTdFMzc2RTdDMjEzQjdFN2U3ZTQ2Y2M3MEE1ZEQwODZEQWZmMkE6c2VjcmV0cy9rdi92YXVsdC9zZWNyZXRzL1RDX0ZXRF9UT0tFTiI6eyJ0aW55Y2xvdWQua3YvZ2V0Ijpbe31dfSwidXJuOnRpbnljbG91ZDplbmNyeXB0aW9uOmRpZDpwa2g6ZWlwMTU1OjE6MHgxOUU3RTM3NkU3QzIxM0I3RTdlN2U0NmNjNzBBNWREMDg2REFmZjJBOmRlZmF1bHQiOnsidGlueWNsb3VkLmVuY3J5cHRpb24vZGVjcnlwdCI6W3t9XX19LCJwcmYiOltdfQ",
+        "verificationMethod": "did:key:z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP#z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP"
+      },
+      "spaceId": "tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets",
+      "spaceSetup": {
+        "space": "secrets",
+        "plan": "external-wallet"
+      },
+      "ownerDid": "did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+      "address": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+      "chainId": 1,
+      "host": "https://node.tinycloud.xyz",
+      "jwk": {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      },
+      "permissions": [
+        {
+          "key": "tinycloud.capabilities\u0000tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets\u0000",
+          "service": "capabilities",
+          "path": "",
+          "label": "Capabilities",
+          "resourcePath": "capabilities",
+          "actions": [
+            {
+              "key": "tinycloud.capabilities\u0000tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets\u0000\u0000tinycloud.capabilities/read",
+              "action": "read",
+              "ability": "tinycloud.capabilities/read",
+              "required": true
+            }
+          ]
+        },
+        {
+          "key": "tinycloud.kv\u0000tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets\u0000vault/secrets/TC_FWD_TOKEN",
+          "service": "kv",
+          "path": "vault/secrets/TC_FWD_TOKEN",
+          "label": "Key-Value Storage",
+          "resourcePath": "kv/vault/secrets/TC_FWD_TOKEN",
+          "actions": [
+            {
+              "key": "tinycloud.kv\u0000tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets\u0000vault/secrets/TC_FWD_TOKEN\u0000tinycloud.kv/get",
+              "action": "get",
+              "ability": "tinycloud.kv/get",
+              "required": false
+            }
+          ]
+        },
+        {
+          "key": "tinycloud.encryption\u0000encryption\u0000urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default",
+          "service": "encryption",
+          "path": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default",
+          "label": "encryption",
+          "resourcePath": "encryption/urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default",
+          "actions": [
+            {
+              "key": "tinycloud.encryption\u0000encryption\u0000urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default\u0000tinycloud.encryption/decrypt",
+              "action": "decrypt",
+              "ability": "tinycloud.encryption/decrypt",
+              "required": false
+            }
+          ]
+        }
+      ],
+      "selectedActionKeys": [
+        "tinycloud.capabilities\u0000tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets\u0000\u0000tinycloud.capabilities/read",
+        "tinycloud.kv\u0000tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets\u0000vault/secrets/TC_FWD_TOKEN\u0000tinycloud.kv/get",
+        "tinycloud.encryption\u0000encryption\u0000urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default\u0000tinycloud.encryption/decrypt"
+      ],
+      "edited": false,
+      "authorizationContext": {
+        "token": "oks_<token>",
+        "expiresAt": "<iso>",
+        "baselineAbilitiesDigest": "42888688fd2291f161321184a78d761009e882fa4905afb7816756e31a8c4e1a"
+      }
+    }
+  },
+  "prepare kv + raw decrypt, 3601s": {
+    "status": 200,
+    "body": {
+      "prepared": {
+        "jwk": {
+          "kty": "OKP",
+          "crv": "Ed25519",
+          "x": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        },
+        "spaceId": "tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets",
+        "siwe": "cli.tinycloud.xyz wants you to sign in with your Ethereum account:\n0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A\n\nI further authorize the stated URI to perform the following actions on my behalf: (1) 'tinycloud.capabilities': 'read' for 'tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets/capabilities'. (2) 'tinycloud.kv': 'get' for 'tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets/kv/vault/secrets/TC_FWD_TOKEN'. (3) 'tinycloud.encryption': 'decrypt' for 'urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default'.\n\nURI: did:key:z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP#z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP\nVersion: 1\nChain ID: 1\nNonce: <nonce>\nIssued At: <iso>\nExpiration Time: <iso>\nResources:\n- urn:recap:eyJhdHQiOnsidGlueWNsb3VkOnBraDplaXAxNTU6MToweDE5RTdFMzc2RTdDMjEzQjdFN2U3ZTQ2Y2M3MEE1ZEQwODZEQWZmMkE6c2VjcmV0cy9jYXBhYmlsaXRpZXMiOnsidGlueWNsb3VkLmNhcGFiaWxpdGllcy9yZWFkIjpbe31dfSwidGlueWNsb3VkOnBraDplaXAxNTU6MToweDE5RTdFMzc2RTdDMjEzQjdFN2U3ZTQ2Y2M3MEE1ZEQwODZEQWZmMkE6c2VjcmV0cy9rdi92YXVsdC9zZWNyZXRzL1RDX0ZXRF9UT0tFTiI6eyJ0aW55Y2xvdWQua3YvZ2V0Ijpbe31dfSwidXJuOnRpbnljbG91ZDplbmNyeXB0aW9uOmRpZDpwa2g6ZWlwMTU1OjE6MHgxOUU3RTM3NkU3QzIxM0I3RTdlN2U0NmNjNzBBNWREMDg2REFmZjJBOmRlZmF1bHQiOnsidGlueWNsb3VkLmVuY3J5cHRpb24vZGVjcnlwdCI6W3t9XX19LCJwcmYiOltdfQ",
+        "verificationMethod": "did:key:z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP#z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP"
+      },
+      "spaceId": "tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets",
+      "spaceSetup": {
+        "space": "secrets",
+        "plan": "external-wallet"
+      },
+      "ownerDid": "did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+      "address": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+      "chainId": 1,
+      "host": "https://node.tinycloud.xyz",
+      "jwk": {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      },
+      "permissions": [
+        {
+          "key": "tinycloud.capabilities\u0000tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets\u0000",
+          "service": "capabilities",
+          "path": "",
+          "label": "Capabilities",
+          "resourcePath": "capabilities",
+          "actions": [
+            {
+              "key": "tinycloud.capabilities\u0000tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets\u0000\u0000tinycloud.capabilities/read",
+              "action": "read",
+              "ability": "tinycloud.capabilities/read",
+              "required": true
+            }
+          ]
+        },
+        {
+          "key": "tinycloud.kv\u0000tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets\u0000vault/secrets/TC_FWD_TOKEN",
+          "service": "kv",
+          "path": "vault/secrets/TC_FWD_TOKEN",
+          "label": "Key-Value Storage",
+          "resourcePath": "kv/vault/secrets/TC_FWD_TOKEN",
+          "actions": [
+            {
+              "key": "tinycloud.kv\u0000tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets\u0000vault/secrets/TC_FWD_TOKEN\u0000tinycloud.kv/get",
+              "action": "get",
+              "ability": "tinycloud.kv/get",
+              "required": false
+            }
+          ]
+        },
+        {
+          "key": "tinycloud.encryption\u0000encryption\u0000urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default",
+          "service": "encryption",
+          "path": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default",
+          "label": "encryption",
+          "resourcePath": "encryption/urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default",
+          "actions": [
+            {
+              "key": "tinycloud.encryption\u0000encryption\u0000urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default\u0000tinycloud.encryption/decrypt",
+              "action": "decrypt",
+              "ability": "tinycloud.encryption/decrypt",
+              "required": false
+            }
+          ]
+        }
+      ],
+      "selectedActionKeys": [
+        "tinycloud.capabilities\u0000tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets\u0000\u0000tinycloud.capabilities/read",
+        "tinycloud.kv\u0000tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets\u0000vault/secrets/TC_FWD_TOKEN\u0000tinycloud.kv/get",
+        "tinycloud.encryption\u0000encryption\u0000urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default\u0000tinycloud.encryption/decrypt"
+      ],
+      "edited": false,
+      "authorizationContext": {
+        "token": "oks_<token>",
+        "expiresAt": "<iso>",
+        "baselineAbilitiesDigest": "42888688fd2291f161321184a78d761009e882fa4905afb7816756e31a8c4e1a"
+      }
+    }
+  },
+  "prepare kv only, default expiry": {
+    "status": 200,
+    "body": {
+      "prepared": {
+        "jwk": {
+          "kty": "OKP",
+          "crv": "Ed25519",
+          "x": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        },
+        "spaceId": "tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets",
+        "siwe": "cli.tinycloud.xyz wants you to sign in with your Ethereum account:\n0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A\n\nI further authorize the stated URI to perform the following actions on my behalf: (1) 'tinycloud.capabilities': 'read' for 'tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets/capabilities'. (2) 'tinycloud.kv': 'get' for 'tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets/kv/vault/secrets/TC_FWD_TOKEN'.\n\nURI: did:key:z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP#z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP\nVersion: 1\nChain ID: 1\nNonce: <nonce>\nIssued At: <iso>\nExpiration Time: <iso>\nResources:\n- urn:recap:eyJhdHQiOnsidGlueWNsb3VkOnBraDplaXAxNTU6MToweDE5RTdFMzc2RTdDMjEzQjdFN2U3ZTQ2Y2M3MEE1ZEQwODZEQWZmMkE6c2VjcmV0cy9jYXBhYmlsaXRpZXMiOnsidGlueWNsb3VkLmNhcGFiaWxpdGllcy9yZWFkIjpbe31dfSwidGlueWNsb3VkOnBraDplaXAxNTU6MToweDE5RTdFMzc2RTdDMjEzQjdFN2U3ZTQ2Y2M3MEE1ZEQwODZEQWZmMkE6c2VjcmV0cy9rdi92YXVsdC9zZWNyZXRzL1RDX0ZXRF9UT0tFTiI6eyJ0aW55Y2xvdWQua3YvZ2V0Ijpbe31dfX0sInByZiI6W119",
+        "verificationMethod": "did:key:z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP#z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP"
+      },
+      "spaceId": "tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets",
+      "spaceSetup": {
+        "space": "secrets",
+        "plan": "external-wallet"
+      },
+      "ownerDid": "did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+      "address": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+      "chainId": 1,
+      "host": "https://node.tinycloud.xyz",
+      "jwk": {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      },
+      "permissions": [
+        {
+          "key": "tinycloud.capabilities\u0000tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets\u0000",
+          "service": "capabilities",
+          "path": "",
+          "label": "Capabilities",
+          "resourcePath": "capabilities",
+          "actions": [
+            {
+              "key": "tinycloud.capabilities\u0000tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets\u0000\u0000tinycloud.capabilities/read",
+              "action": "read",
+              "ability": "tinycloud.capabilities/read",
+              "required": true
+            }
+          ]
+        },
+        {
+          "key": "tinycloud.kv\u0000tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets\u0000vault/secrets/TC_FWD_TOKEN",
+          "service": "kv",
+          "path": "vault/secrets/TC_FWD_TOKEN",
+          "label": "Key-Value Storage",
+          "resourcePath": "kv/vault/secrets/TC_FWD_TOKEN",
+          "actions": [
+            {
+              "key": "tinycloud.kv\u0000tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets\u0000vault/secrets/TC_FWD_TOKEN\u0000tinycloud.kv/get",
+              "action": "get",
+              "ability": "tinycloud.kv/get",
+              "required": false
+            }
+          ]
+        }
+      ],
+      "selectedActionKeys": [
+        "tinycloud.capabilities\u0000tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets\u0000\u0000tinycloud.capabilities/read",
+        "tinycloud.kv\u0000tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets\u0000vault/secrets/TC_FWD_TOKEN\u0000tinycloud.kv/get"
+      ],
+      "edited": false,
+      "authorizationContext": {
+        "token": "oks_<token>",
+        "expiresAt": "<iso>",
+        "baselineAbilitiesDigest": "5ba95422d2d1f96dad8d33c34c800186be550b63de60586928fecf8ee82da9c4"
+      }
+    }
+  },
+  "managed approval lone own-network raw decrypt, 3600s": {
+    "status": 400,
+    "body": {
+      "error": "permissions must belong to a single space",
+      "code": "invalid_permissions",
+      "message": "permissions must belong to a single space",
+      "details": [
+        {
+          "path": "permissions[0].space",
+          "message": "All permissions must use the same space"
+        }
+      ]
+    }
+  },
+  "managed approval lone device-shaped default decrypt, 3600s": {
+    "status": 200,
+    "body": {
+      "delegationHeader": {
+        "Authorization": "<authorization>"
+      },
+      "delegationCid": "<cid>",
+      "spaceId": "tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default",
+      "ownerDid": "did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+      "verificationMethod": "did:key:z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP#z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP",
+      "jwk": {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      },
+      "address": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+      "chainId": 1,
+      "primary": false,
+      "hostActivated": true,
+      "spaceReady": true,
+      "edited": false,
+      "expirationTime": "<iso>",
+      "expiresAt": "<iso>",
+      "expiry": "<iso>",
+      "siwe": "cli.tinycloud.xyz wants you to sign in with your Ethereum account:\n0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A\n\nI further authorize the stated URI to perform the following actions on my behalf: (1) 'tinycloud.encryption': 'decrypt' for 'tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/encryption'.\n\nURI: did:key:z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP#z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP\nVersion: 1\nChain ID: 1\nNonce: <nonce>\nIssued At: <iso>\nExpiration Time: <iso>\nResources:\n- urn:recap:eyJhdHQiOnsidGlueWNsb3VkOnBraDplaXAxNTU6MToweDE5RTdFMzc2RTdDMjEzQjdFN2U3ZTQ2Y2M3MEE1ZEQwODZEQWZmMkE6ZGVmYXVsdC9lbmNyeXB0aW9uIjp7InRpbnljbG91ZC5lbmNyeXB0aW9uL2RlY3J5cHQiOlt7fV19fSwicHJmIjpbXX0",
+      "signature": "<sig>",
+      "signedMessage": "cli.tinycloud.xyz wants you to sign in with your Ethereum account:\n0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A\n\nI further authorize the stated URI to perform the following actions on my behalf: (1) 'tinycloud.encryption': 'decrypt' for 'tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/encryption'.\n\nURI: did:key:z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP#z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP\nVersion: 1\nChain ID: 1\nNonce: <nonce>\nIssued At: <iso>\nExpiration Time: <iso>\nResources:\n- urn:recap:eyJhdHQiOnsidGlueWNsb3VkOnBraDplaXAxNTU6MToweDE5RTdFMzc2RTdDMjEzQjdFN2U3ZTQ2Y2M3MEE1ZEQwODZEQWZmMkE6ZGVmYXVsdC9lbmNyeXB0aW9uIjp7InRpbnljbG91ZC5lbmNyeXB0aW9uL2RlY3J5cHQiOlt7fV19fSwicHJmIjpbXX0",
+      "permissions": [
+        {
+          "service": "encryption",
+          "space": "tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default",
+          "path": "",
+          "actions": [
+            "tinycloud.encryption/decrypt"
+          ]
+        }
+      ]
+    }
+  },
+  "managed approval kv + raw decrypt, default expiry": {
+    "status": 200,
+    "body": {
+      "delegationHeader": {
+        "Authorization": "<authorization>"
+      },
+      "delegationCid": "<cid>",
+      "spaceId": "tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets",
+      "ownerDid": "did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+      "verificationMethod": "did:key:z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP#z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP",
+      "jwk": {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      },
+      "address": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+      "chainId": 1,
+      "primary": false,
+      "hostActivated": true,
+      "spaceReady": true,
+      "edited": false,
+      "expirationTime": "<iso>",
+      "expiresAt": "<iso>",
+      "expiry": "<iso>",
+      "siwe": "cli.tinycloud.xyz wants you to sign in with your Ethereum account:\n0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A\n\nI further authorize the stated URI to perform the following actions on my behalf: (1) 'tinycloud.capabilities': 'read' for 'tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets/capabilities'. (2) 'tinycloud.kv': 'get' for 'tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets/kv/vault/secrets/TC_FWD_TOKEN'. (3) 'tinycloud.encryption': 'decrypt' for 'urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default'.\n\nURI: did:key:z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP#z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP\nVersion: 1\nChain ID: 1\nNonce: <nonce>\nIssued At: <iso>\nExpiration Time: <iso>\nResources:\n- urn:recap:eyJhdHQiOnsidGlueWNsb3VkOnBraDplaXAxNTU6MToweDE5RTdFMzc2RTdDMjEzQjdFN2U3ZTQ2Y2M3MEE1ZEQwODZEQWZmMkE6c2VjcmV0cy9jYXBhYmlsaXRpZXMiOnsidGlueWNsb3VkLmNhcGFiaWxpdGllcy9yZWFkIjpbe31dfSwidGlueWNsb3VkOnBraDplaXAxNTU6MToweDE5RTdFMzc2RTdDMjEzQjdFN2U3ZTQ2Y2M3MEE1ZEQwODZEQWZmMkE6c2VjcmV0cy9rdi92YXVsdC9zZWNyZXRzL1RDX0ZXRF9UT0tFTiI6eyJ0aW55Y2xvdWQua3YvZ2V0Ijpbe31dfSwidXJuOnRpbnljbG91ZDplbmNyeXB0aW9uOmRpZDpwa2g6ZWlwMTU1OjE6MHgxOUU3RTM3NkU3QzIxM0I3RTdlN2U0NmNjNzBBNWREMDg2REFmZjJBOmRlZmF1bHQiOnsidGlueWNsb3VkLmVuY3J5cHRpb24vZGVjcnlwdCI6W3t9XX19LCJwcmYiOltdfQ",
+      "signature": "<sig>",
+      "signedMessage": "cli.tinycloud.xyz wants you to sign in with your Ethereum account:\n0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A\n\nI further authorize the stated URI to perform the following actions on my behalf: (1) 'tinycloud.capabilities': 'read' for 'tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets/capabilities'. (2) 'tinycloud.kv': 'get' for 'tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets/kv/vault/secrets/TC_FWD_TOKEN'. (3) 'tinycloud.encryption': 'decrypt' for 'urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default'.\n\nURI: did:key:z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP#z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP\nVersion: 1\nChain ID: 1\nNonce: <nonce>\nIssued At: <iso>\nExpiration Time: <iso>\nResources:\n- urn:recap:eyJhdHQiOnsidGlueWNsb3VkOnBraDplaXAxNTU6MToweDE5RTdFMzc2RTdDMjEzQjdFN2U3ZTQ2Y2M3MEE1ZEQwODZEQWZmMkE6c2VjcmV0cy9jYXBhYmlsaXRpZXMiOnsidGlueWNsb3VkLmNhcGFiaWxpdGllcy9yZWFkIjpbe31dfSwidGlueWNsb3VkOnBraDplaXAxNTU6MToweDE5RTdFMzc2RTdDMjEzQjdFN2U3ZTQ2Y2M3MEE1ZEQwODZEQWZmMkE6c2VjcmV0cy9rdi92YXVsdC9zZWNyZXRzL1RDX0ZXRF9UT0tFTiI6eyJ0aW55Y2xvdWQua3YvZ2V0Ijpbe31dfSwidXJuOnRpbnljbG91ZDplbmNyeXB0aW9uOmRpZDpwa2g6ZWlwMTU1OjE6MHgxOUU3RTM3NkU3QzIxM0I3RTdlN2U0NmNjNzBBNWREMDg2REFmZjJBOmRlZmF1bHQiOnsidGlueWNsb3VkLmVuY3J5cHRpb24vZGVjcnlwdCI6W3t9XX19LCJwcmYiOltdfQ",
+      "permissions": [
+        {
+          "service": "capabilities",
+          "space": "tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets",
+          "path": "",
+          "actions": [
+            "tinycloud.capabilities/read"
+          ]
+        },
+        {
+          "service": "kv",
+          "space": "tinycloud:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:secrets",
+          "path": "vault/secrets/TC_FWD_TOKEN",
+          "actions": [
+            "tinycloud.kv/get"
+          ]
+        },
+        {
+          "service": "encryption",
+          "space": "encryption",
+          "path": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default",
+          "actions": [
+            "tinycloud.encryption/decrypt"
+          ]
+        }
+      ]
+    }
+  },
+  "complete with siwe containing urn:recap: that does not parse": {
+    "status": 400,
+    "body": {
+      "error": "Invalid delegation"
+    }
+  },
+  "complete with plain text siwe that does not parse": {
+    "status": 400,
+    "body": {
+      "error": "Invalid delegation"
+    }
+  }
+}
