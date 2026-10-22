@@ -14,6 +14,7 @@ import {
   grantsHeldPresent,
   heldPresentOriginRefusal,
   heldPresentSigningEnabled,
+  isHeldCredentialsAction,
   isHeldCredentialsService,
   refusesHeldPresentation,
 } from '../services/held-presentation-refusal';
@@ -411,6 +412,10 @@ function validatePermissions(permissions: unknown): PermissionEntry[] {
     }
     if (!Array.isArray(e.actions) || e.actions.some((a) => typeof a !== 'string')) {
       throw new Error(`permissions[${index}].actions must be a string[]`);
+    }
+    // TC-1456 S5 (DESIGN-v5 §3.3b): held credentials actions are never delegable, under any service name.
+    if (heldPresentSigningEnabled() && e.actions.some((a) => isHeldCredentialsAction(a))) {
+      throw new Error(`permissions[${index}].actions credentials cannot be delegated`);
     }
     return {
       service: e.service,

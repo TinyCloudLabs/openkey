@@ -26,6 +26,14 @@ export function isHeldCredentialsService(service: string): boolean {
 }
 
 /**
+ * True for any `tinycloud.credentials/` action, such as `tinycloud.credentials/present`.
+ * Used on permission entries whose service is not the credentials service.
+ */
+export function isHeldCredentialsAction(action: string): boolean {
+  return action.startsWith(CREDENTIALS_ABILITY_PREFIX);
+}
+
+/**
  * Decodes `urn:recap:<base64url JSON>` into resource -> ability names.
  * Returns null when the resource does not decode, so callers fail closed.
  */

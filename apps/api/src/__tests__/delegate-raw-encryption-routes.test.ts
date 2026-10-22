@@ -278,9 +278,8 @@ describe('managed keys: POST /', () => {
 });
 
 describe('managed keys: held credentials presentation (TC-1456 S5)', () => {
-  // A kv-service entry whose action is the held presentation, in the same
-  // space as the other entries (permissions must share one space). The
-  // service check is by name only, so the signed bytes must be what refuses it.
+  // R08: a kv-service entry whose action is the held presentation. The
+  // permission check refuses it by action name before any SIWE is built.
   const heldAsKv = { service: 'tinycloud.kv', space, path: 'credentials/held', actions: ['tinycloud.credentials/present'] };
   const permissions = [kvGet, heldAsKv, capabilitiesRead];
   const previous = process.env.HELD_PRESENT_SIGNING_ENABLED;
@@ -293,46 +292,24 @@ describe('managed keys: held credentials presentation (TC-1456 S5)', () => {
     else process.env.HELD_PRESENT_SIGNING_ENABLED = previous;
   });
 
-  test('the legacy approval refuses a held presentation before signing', async () => {
+  test('the legacy approval refuses a held credentials action before signing', async () => {
     const res = await post('/', { keyId: managedKey.id, jwk, host, permissions });
-    expect(res.status).toBe(403);
-    expect(res.body.code).toBe('held_presentation_refused');
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('invalid_permissions');
     expect(activateSessionWithHost).not.toHaveBeenCalled();
   });
 
-  test('the token-bound approval refuses a held presentation before signing', async () => {
-    const prepared = await post('/prepare', { keyId: managedKey.id, jwk, host, permissions });
-    expect(prepared.status).toBe(200);
-    const res = await post('/', {
-      keyId: managedKey.id,
-      jwk,
-      host,
-      permissions,
-      protocolVersion: 1,
-      prepared: prepared.body.prepared,
-      authorizationContextToken: prepared.body.authorizationContext.token,
-      selectedActionIds: prepared.body.selectedActionKeys,
-    });
-    expect(res.status).toBe(403);
-    expect(res.body.code).toBe('held_presentation_refused');
-    expect(activateSessionWithHost).not.toHaveBeenCalled();
+  test('/prepare refuses a held credentials action before building a signing context', async () => {
+    const res = await post('/prepare', { keyId: managedKey.id, jwk, host, permissions });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('invalid_permissions');
   });
 
-  test('/complete refuses a held presentation from a signer the user does not hold', async () => {
-    const prepared = await post('/prepare', { keyId: managedKey.id, jwk, host, permissions });
-    expect(prepared.status).toBe(200);
-    const res = await post('/complete', {
-      prepared: prepared.body.prepared,
-      signature: await wallet.signMessage({ message: prepared.body.prepared.siwe }),
-      host,
-      jwk,
-      edited: prepared.body.edited,
-      permissions,
-      authorizationContextToken: prepared.body.authorizationContext.token,
-      selectedActionIds: prepared.body.selectedActionKeys,
-    });
-    expect(res.status).toBe(403);
-    expect(res.body.code).toBe('held_presentation_refused');
+  test('/complete refuses a held credentials action before signing', async () => {
+    // Placeholder prepared/signature: /complete checks permissions before either is used.
+    const res = await post('/complete', { prepared: { siwe: 'unused' }, signature: '0x00', keyId: managedKey.id, jwk, host, permissions });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('invalid_permissions');
     expect(activateSessionWithHost).not.toHaveBeenCalled();
   });
 });
