@@ -325,11 +325,11 @@ describe("failing encryption URNs: every displayed string is printable ASCII", (
     ["20", keyUrn(".hidden")],
     ["21", keyUrn("-x")],
   ];
-  // The only non-ASCII character a displayed string may hold is the single
-  // truncation mark `…`, where a literal was capped.
-  function expectPrintableAscii(text: string): void {
-    expect(text.split("…").length - 1).toBeLessThanOrEqual(1);
-    expect(text.replace("…", "")).toMatch(/^[\x20-\x7e]*$/);
+  // The only non-printable-ASCII character a displayed string may hold is the
+  // fixed truncation mark `…`, at most one per capped piece in that string.
+  function expectDisplayable(text: string, maxMarks: number): void {
+    expect(text.split("…").length - 1).toBeLessThanOrEqual(maxMarks);
+    expect(text.replace(/…/g, "")).toMatch(/^[\x20-\x7e]*$/);
   }
   const abilities = [
     ABILITY.decrypt,
@@ -344,9 +344,9 @@ describe("failing encryption URNs: every displayed string is printable ASCII", (
           const rows = buildStatements(shapeGrant(shape, uri, [ability]));
           expect(rows.length).toBeGreaterThan(0);
           for (const row of rows) {
-            expectPrintableAscii(row.primaryText);
-            expectPrintableAscii(row.service);
-            expectPrintableAscii(row.resource);
+            expectDisplayable(row.primaryText, 3);
+            expectDisplayable(row.service, 3);
+            expectDisplayable(row.resource, 3);
           }
         });
       }
@@ -360,7 +360,7 @@ describe("failing encryption URNs: every displayed string is printable ASCII", (
     );
     expect(rows.length).toBeGreaterThan(0);
     for (const row of rows) {
-      expectPrintableAscii(row.primaryText);
+      expectDisplayable(row.primaryText, 1);
     }
     expect(rows[0].primaryText.startsWith(`Perform ${ability.slice(0, 120)}…`)).toBe(
       true,
@@ -374,10 +374,63 @@ describe("failing encryption URNs: every displayed string is printable ASCII", (
       const rows = buildStatements(grant);
       expect(rows.length).toBeGreaterThan(0);
       for (const row of rows) {
-        expectPrintableAscii(row.primaryText);
-        expectPrintableAscii(row.service);
+        expectDisplayable(row.primaryText, 1);
+        expectDisplayable(row.service, 1);
         expect(row.service).toBe(`${"x".repeat(120)}…`);
       }
     }
   });
+
+  // Combined case: a 300-char unknown ability and a 300-char service in one
+  // failing-URN row. Bound = fixed text (baseline row with short pieces) plus
+  // one 120-char cap and one `…` per capped piece.
+  for (const shape of ["A", "B"] as const) {
+    it(`shape ${shape}: 300-char unknown ability and service stay bounded`, () => {
+      const longAbility = `tinycloud.encryption/${"u".repeat(300)}`;
+      const shortAbility = "tinycloud.encryption/a";
+      const grant = {
+        ...shapeGrant(shape, keyUrn("apps/x//"), [longAbility]),
+        service: "x".repeat(300),
+      };
+      const base = {
+        ...shapeGrant(shape, keyUrn("apps/x//"), [shortAbility]),
+        service: "s",
+      };
+      const rows = buildStatements(grant);
+      const baseRows = buildStatements(base);
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.length).toBe(baseRows.length);
+      rows.forEach((row, i) => {
+        expectDisplayable(row.primaryText, 2);
+        const fixed =
+          baseRows[i].primaryText.length - shortAbility.length - "s".length;
+        expect(row.primaryText.length).toBeLessThanOrEqual(
+          fixed + 2 * (120 + 1),
+        );
+      });
+    });
+
+    it(`shape ${shape}: key.delete with 300-char service stays bounded`, () => {
+      const grant = {
+        ...shapeGrant(shape, keyUrn("apps/x//"), [ABILITY.delete]),
+        service: "x".repeat(300),
+      };
+      const base = {
+        ...shapeGrant(shape, keyUrn("apps/x//"), [ABILITY.delete]),
+        service: "s",
+      };
+      const rows = buildStatements(grant);
+      const baseRows = buildStatements(base);
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.length).toBe(baseRows.length);
+      rows.forEach((row, i) => {
+        expectDisplayable(row.primaryText, 2);
+        expectDisplayable(row.service, 1);
+        const fixed = baseRows[i].primaryText.length - "s".length;
+        expect(row.primaryText.length).toBeLessThanOrEqual(
+          fixed + 2 * (120 + 1),
+        );
+      });
+    });
+  }
 });
