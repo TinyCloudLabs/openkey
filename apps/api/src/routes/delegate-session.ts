@@ -440,6 +440,27 @@ export function isDeviceDefaultEncryptionEntry(entry: DelegationPermissionEntry)
 }
 
 /**
+ * A lone raw decrypt entry on the signer's own `default` encryption network:
+ * one entry, raw encryption service, decrypt as its only action, and the
+ * network URN resolved from the signer. Used only behind the
+ * `loneOwnDefaultDecrypt` opt-in.
+ */
+function isLoneOwnDefaultNetworkDecrypt(
+  permissions: DelegationPermissionEntry[],
+  signer: { address: string; chainId: number },
+): boolean {
+  const [entry] = permissions;
+  if (permissions.length !== 1 || entry === undefined) return false;
+  return (
+    isRawEncryptionPermission(entry) &&
+    (entry.space === undefined || entry.space === RAW_ENCRYPTION_SPACE) &&
+    entry.actions.length === 1 &&
+    entry.actions[0] === ENCRYPTION.DECRYPT &&
+    entry.path.toLowerCase() === defaultEncryptionNetworkUrn(signer).toLowerCase()
+  );
+}
+
+/**
  * Translate CLI permission entries into the ability maps `prepareSession()`
  * signs. Space abilities are keyed by short service name (`kv`, `sql`, …),
  * then `path → actions[]`; raw encryption entries become top-level
@@ -542,6 +563,12 @@ export interface PrepareDelegationSessionInput {
    * entry resolve to the signer's own network.
    */
   deviceTransaction?: boolean;
+  /**
+   * Opt-in: admit a lone raw decrypt entry on the signer's own `default`
+   * encryption network, prepared as a `default`-space request. Other callers
+   * keep the single-space rule.
+   */
+  loneOwnDefaultDecrypt?: boolean;
   /** Pre-validated, clamped delegation lifetime in milliseconds. */
   expiryMs: number;
   domain?: string;
@@ -568,15 +595,20 @@ export function prepareDelegationSession({
   permissionKeys,
   permissions,
   deviceTransaction,
+  loneOwnDefaultDecrypt,
   expiryMs,
   domain,
   nonce,
   issuedAt,
 }: PrepareDelegationSessionInput): PrepareDelegationSessionResult {
   const isCliBaseline = permissions !== undefined;
-  const effectivePrefix = isCliBaseline
-    ? spacePrefixFromPermissions(permissions!)
-    : prefix;
+  const admitLoneDecrypt =
+    isCliBaseline && loneOwnDefaultDecrypt === true && isLoneOwnDefaultNetworkDecrypt(permissions!, { address, chainId });
+  const effectivePrefix = admitLoneDecrypt
+    ? DEVICE_ENCRYPTION_SPACE
+    : isCliBaseline
+      ? spacePrefixFromPermissions(permissions!)
+      : prefix;
   const spaceId = makeSpaceId(address, chainId, effectivePrefix);
 
   const now = issuedAt ?? new Date();

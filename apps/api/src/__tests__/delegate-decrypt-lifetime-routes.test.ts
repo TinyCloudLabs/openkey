@@ -7,8 +7,9 @@ import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from '
 import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
 import type { delegateRouter, setDelegateSignerAuthMiddlewareForTests } from '../routes/delegate';
-import type { decryptRefusalForSignedSiwe } from '../routes/delegate-session';
+import type { decryptRefusalForSignedSiwe, prepareDelegationSession } from '../routes/delegate-session';
 import type { _resetAuthorizationContextStoreForTests } from '../services/authorization-signing';
+import { sessionDidForPublicJwk } from '../services/device-authorization';
 import { mockModules, replaceModules } from './mock-module';
 
 const walletKey = '0x1111111111111111111111111111111111111111111111111111111111111111';
@@ -29,6 +30,9 @@ const prisma = {
   },
   user: { findUnique: mock(async () => ({ autoSignEnabled: true })) },
   tinyCloudBootstrapState: {},
+  deviceAuthorization: {
+    findUnique: mock(async ({ where }: { where: { id?: string } }) => (where.id === deviceTransactionRow.id ? deviceTransactionRow : null)),
+  },
 };
 const activateSessionWithHost = mock(async () => ({ success: true }));
 
@@ -60,6 +64,7 @@ await mockModules({
 let router: typeof delegateRouter;
 let resetContexts: typeof _resetAuthorizationContextStoreForTests;
 let refusalFor: typeof decryptRefusalForSignedSiwe;
+let prepareDelegation: typeof prepareDelegationSession;
 
 beforeAll(async () => {
   let setSignerAuth: typeof setDelegateSignerAuthMiddlewareForTests;
@@ -72,6 +77,9 @@ beforeAll(async () => {
     '../services/authorization-signing?decrypt-lifetime-routes-isolated' as string
   ));
   ({ decryptRefusalForSignedSiwe: refusalFor } = await import(
+    '../routes/delegate-session?decrypt-lifetime-routes-isolated' as string
+  ));
+  ({ prepareDelegationSession: prepareDelegation } = await import(
     '../routes/delegate-session?decrypt-lifetime-routes-isolated' as string
   ));
   setSignerAuth(createMiddleware(async (c, next) => {
@@ -113,6 +121,17 @@ const capabilitiesRead = { service: 'tinycloud.capabilities', space, path: '', a
 // The CLI shape that carries a decrypt grant: decrypt is one entry among others.
 const request = [kvGet, decrypt, capabilitiesRead];
 const decryptOnly = [decrypt];
+// A pending device transaction whose window admits a one-hour decrypt, so the
+// device-window check passes and only the lone-decrypt opt-in differs.
+const deviceTransactionRow = {
+  id: 'dt_1',
+  status: 'PENDING',
+  sessionDid: sessionDidForPublicJwk(jwk),
+  nodeOrigin: host,
+  permissions: decryptOnly,
+  transactionExpiresAt: new Date(Date.now() + 10 * 60_000),
+  delegationExpiresAt: new Date(Date.now() + 10 * 60_000 + 3600_000),
+};
 // Session-bundle shape: decrypt and network.create in one entry.
 const bundledDecrypt = [
   { service: 'tinycloud.encryption', space: 'encryption', path: network, actions: [DECRYPT, 'tinycloud.encryption/network.create'] },
@@ -191,7 +210,7 @@ describe('flag OFF: non-device behaviour unchanged', () => {
     expect(res.status).toBe(200);
   });
 
-  test('a decrypt-only request is rejected by the existing single-space rule, with or without the flag', async () => {
+  test('with the flag off, a decrypt-only request is rejected by the single-space rule', async () => {
     const res = await post('/', { keyId: managedKey.id, jwk, host, permissions: decryptOnly, expiry: '1h' });
     expect(res.status).toBe(400);
     expect(res.body.error).toBe(SINGLE_SPACE);
@@ -215,15 +234,6 @@ describe('flag ON: refusal before any side effect', () => {
     const res = await post('/', { keyId: managedKey.id, jwk, host, permissions: decryptOnly, expiry: '61m' });
     expect(res.status).toBe(400);
     expect(res.body.error).toBe(REFUSAL);
-  });
-
-  // Gap, not acceptance: a lone decrypt entry at one hour passes the cap, but
-  // prepareDelegationSession still refuses it as a single-space violation.
-  // Reaching the step-up shape through /delegate needs a validator decision.
-  test('legacy approval at exactly one hour passes the cap and stops at the single-space rule', async () => {
-    const res = await post('/', { keyId: managedKey.id, jwk, host, permissions: decryptOnly, expiry: '1h' });
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBe(SINGLE_SPACE);
   });
 
   test('legacy approval refuses decrypt beside other entries, even at one hour', async () => {
@@ -369,5 +379,138 @@ describe('decryptRefusalForSignedSiwe', () => {
   test('returns null for an unparseable recap while the flag is off', () => {
     setFlag(undefined);
     expect(refusalFor(siweWith('- urn:recap:!!!not-a-recap!!!'))).toBeNull();
+  });
+});
+
+const OTHER_NETWORK = 'urn:tinycloud:encryption:did:pkh:eip155:1:0x000000000000000000000000000000000000dEaD:default';
+const NAMED_NETWORK = `urn:tinycloud:encryption:did:pkh:eip155:1:${wallet.address}:named`;
+const ownDefaultSpace = `tinycloud:pkh:eip155:1:${wallet.address}:default`;
+const ownDefaultNetwork = `urn:tinycloud:encryption:did:pkh:eip155:1:${wallet.address}:default`;
+
+describe('flag ON: lone own-network decrypt is admitted at one hour', () => {
+  beforeEach(() => {
+    setFlag('true');
+  });
+
+  test('legacy approval signs the lone own-network decrypt at one hour', async () => {
+    const res = await post('/', { keyId: managedKey.id, jwk, host, permissions: decryptOnly, expiry: '1h' });
+    expect(res.status).toBe(200);
+  });
+
+  test('/prepare prepares the lone decrypt on the own default network, expiring within one hour', async () => {
+    const prepared = await post('/prepare', { keyId: managedKey.id, jwk, host, permissions: decryptOnly, expiry: '1h' });
+    expect(prepared.status).toBe(200);
+    expect(prepared.body.prepared.siwe).toContain(ownDefaultNetwork);
+    const remaining = expiresInSeconds(prepared.body.prepared.siwe);
+    expect(remaining).toBeGreaterThan(3500);
+    expect(remaining).toBeLessThanOrEqual(3600);
+  });
+
+  test('wallet /prepare and /complete approve the lone decrypt at one hour', async () => {
+    const prepared = await post('/prepare', { keyId: externalKey.id, jwk, host, permissions: decryptOnly, expiry: '1h' });
+    expect(prepared.status).toBe(200);
+    const res = await walletComplete(prepared.body, decryptOnly);
+    expect(res.status).toBe(200);
+  });
+
+  test('/prepare refuses the lone decrypt at 3601 seconds with the fixed message', async () => {
+    const res = await post('/prepare', { keyId: managedKey.id, jwk, host, permissions: decryptOnly, expiry: '3601s' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe(REFUSAL);
+    expect(res.body.prepared).toBeUndefined();
+  });
+
+  test('legacy approval refuses the lone decrypt at 3601 seconds before activation', async () => {
+    const res = await post('/', { keyId: managedKey.id, jwk, host, permissions: decryptOnly, expiry: '3601s' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe(REFUSAL);
+    expect(activateSessionWithHost).not.toHaveBeenCalled();
+  });
+
+  test('a lone decrypt on another network keeps the single-space refusal at one hour', async () => {
+    const permissions = [{ ...decrypt, path: OTHER_NETWORK }];
+    const res = await post('/prepare', { keyId: managedKey.id, jwk, host, permissions, expiry: '1h' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe(SINGLE_SPACE);
+  });
+
+  test('a lone decrypt on a named key keeps the single-space refusal at one hour', async () => {
+    const permissions = [{ ...decrypt, path: NAMED_NETWORK }];
+    const res = await post('/prepare', { keyId: managedKey.id, jwk, host, permissions, expiry: '1h' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe(SINGLE_SPACE);
+  });
+
+  test('a device transaction does not admit the lone own-network decrypt', async () => {
+    const res = await post('/prepare', {
+      keyId: managedKey.id,
+      jwk,
+      host,
+      permissions: decryptOnly,
+      expiry: '1h',
+      deviceTransactionId: 'dt_1',
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe(SINGLE_SPACE);
+  });
+
+  test('a device transaction on the legacy approval does not admit the lone own-network decrypt', async () => {
+    const res = await post('/', {
+      keyId: managedKey.id,
+      jwk,
+      host,
+      permissions: decryptOnly,
+      expiry: '1h',
+      deviceTransactionId: 'dt_1',
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe(SINGLE_SPACE);
+    expect(activateSessionWithHost).not.toHaveBeenCalled();
+  });
+
+  test('flag OFF keeps the lone own-network decrypt on the single-space refusal', async () => {
+    setFlag(undefined);
+    const res = await post('/prepare', { keyId: managedKey.id, jwk, host, permissions: decryptOnly, expiry: '1h' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe(SINGLE_SPACE);
+  });
+});
+
+describe('prepareDelegationSession: lone own-network decrypt admission', () => {
+  const input = { address: wallet.address, chainId: 1, prefix: 'applications', jwk, expiryMs: 3600_000 };
+
+  test('admits the lone own-network decrypt on the default space when opted in', () => {
+    const result = prepareDelegation({ ...input, permissions: decryptOnly, loneOwnDefaultDecrypt: true });
+    expect(result.spaceId).toBe(ownDefaultSpace);
+  });
+
+  test('admits the own network when the path is lowercased', () => {
+    const permissions = [{ ...decrypt, path: decrypt.path.toLowerCase() }];
+    const result = prepareDelegation({ ...input, permissions, loneOwnDefaultDecrypt: true });
+    expect(result.spaceId).toBe(ownDefaultSpace);
+  });
+
+  test('keeps the single-space refusal without the opt-in', () => {
+    expect(() => prepareDelegation({ ...input, permissions: decryptOnly })).toThrow(SINGLE_SPACE);
+  });
+
+  test('does not admit a decrypt beside another entry, keeping the entry space', () => {
+    const result = prepareDelegation({ ...input, permissions: [decrypt, kvGet], loneOwnDefaultDecrypt: true });
+    expect(result.spaceId).toBe(space);
+  });
+
+  test('keeps the single-space refusal for a decrypt with an extra action', () => {
+    const permissions = [{ ...decrypt, actions: [DECRYPT, 'tinycloud.encryption/network.create'] }];
+    expect(() => prepareDelegation({ ...input, permissions, loneOwnDefaultDecrypt: true })).toThrow(SINGLE_SPACE);
+  });
+
+  test('keeps the single-space refusal for another network', () => {
+    const permissions = [{ ...decrypt, path: OTHER_NETWORK }];
+    expect(() => prepareDelegation({ ...input, permissions, loneOwnDefaultDecrypt: true })).toThrow(SINGLE_SPACE);
+  });
+
+  test('keeps the single-space refusal for a raw entry in another space', () => {
+    const permissions = [{ ...decrypt, space: 'secrets' }];
+    expect(() => prepareDelegation({ ...input, permissions, loneOwnDefaultDecrypt: true })).toThrow(SINGLE_SPACE);
   });
 });

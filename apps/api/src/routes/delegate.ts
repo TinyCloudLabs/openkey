@@ -1269,6 +1269,7 @@ delegateRouter.post('/', async (c) => {
     prepared?: any;
     authorizationContextToken?: string;
     selectedActionIds?: unknown;
+    deviceTransactionId?: unknown;
     protocolVersion?: number;
   }>();
 
@@ -1645,6 +1646,7 @@ delegateRouter.post('/', async (c) => {
       actionKeys: normalizeStringArray(body.actionKeys, 'actionKeys'),
       permissionKeys: normalizeStringArray(body.permissionKeys, 'permissionKeys'),
       permissions,
+      loneOwnDefaultDecrypt: decryptLifetimeEnforcementEnabled() && body.deviceTransactionId === undefined,
       expiryMs,
     });
   } catch (e) {
@@ -1817,6 +1819,7 @@ delegateRouter.post('/prepare', async (c) => {
       permissionKeys: normalizeStringArray(body.permissionKeys, 'permissionKeys'),
       permissions,
       deviceTransaction: body.deviceTransactionId !== undefined,
+      loneOwnDefaultDecrypt: decryptLifetimeEnforcementEnabled() && body.deviceTransactionId === undefined,
       expiryMs,
     });
   } catch (e) {
