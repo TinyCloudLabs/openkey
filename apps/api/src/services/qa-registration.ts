@@ -15,7 +15,7 @@ export type TestAccountRegistry = {
   qaEligiblePatterns: readonly RegExp[];
 };
 
-export type RegistryRefusal = 'unanchored_pattern' | 'public_mail_domain_pattern';
+export type RegistryRefusal = 'unanchored_pattern' | 'unqualified_domain_pattern' | 'public_mail_domain_pattern';
 
 export type RegistryLoad = { registry: TestAccountRegistry; problem: boolean; refusal?: RegistryRefusal };
 
@@ -32,7 +32,6 @@ export const PUBLIC_MAIL_DOMAINS: readonly string[] = [
   'proton.me',
   'protonmail.com',
 ];
-const PROBE_LOCAL_PARTS: readonly string[] = ['a', 'qa', 'qa-test', 'qa-fixture-7f3a', '0'];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -72,18 +71,29 @@ function isFullyAnchored(source: string): boolean {
   return true;
 }
 
-/** True when the pattern names a public mail domain or matches a sample address at one. */
-function matchesPublicMailDomain(pattern: RegExp): boolean {
-  const text = pattern.source.toLowerCase().replaceAll('\\', '');
-  if (PUBLIC_MAIL_DOMAINS.some((domain) => text.includes(domain))) return true;
-  return PUBLIC_MAIL_DOMAINS.some((domain) => PROBE_LOCAL_PARTS.some((local) => pattern.test(`${local}@${domain}`)));
+// The domain part of a QA-eligible pattern: `@`, two or more `[a-z0-9-]` labels joined by `\.`, then `$`.
+const LITERAL_DOMAIN_SUFFIX = /@((?:[a-z0-9-]+\\\.)+[a-z0-9-]+)\$$/;
+
+/**
+ * The literal domain a pattern ends with (`...@qa\.example\.com$` gives `qa.example.com`), or
+ * null when the part after the last `@` is anything but literal labels.
+ */
+function literalDomainOf(source: string): string | null {
+  const match = LITERAL_DOMAIN_SUFFIX.exec(source);
+  return match ? match[1]!.replaceAll('\\.', '.') : null;
+}
+
+/** True for a public mail domain or any subdomain of one. */
+function isPublicMailDomain(domain: string): boolean {
+  return PUBLIC_MAIL_DOMAINS.some((publicDomain) => domain === publicDomain || domain.endsWith(`.${publicDomain}`));
 }
 
 /**
  * Parses the registry JSON from TEST_ACCOUNT_REGISTRY_JSON. Unset means no registry
  * and is not a problem. Bad JSON, a bad shape, an uncompilable pattern, or a QA-eligible
- * pattern that is not anchored with `^...$` or that matches a public mail domain yields an
- * empty registry (no exemptions, no exclusions) with problem set. Never throws.
+ * pattern that is not anchored with `^...$`, does not end in `@<literal domain>$`, or ends in
+ * a public mail domain (or a subdomain of one) yields an empty registry (no exemptions, no
+ * exclusions) with problem set. Never throws.
  */
 export function parseTestAccountRegistry(raw: string | undefined): RegistryLoad {
   if (raw === undefined || raw.trim() === '') return { registry: EMPTY_REGISTRY, problem: false };
@@ -111,7 +121,9 @@ export function parseTestAccountRegistry(raw: string | undefined): RegistryLoad 
     }
     if (qaEligible) {
       if (!isFullyAnchored(compiled.source)) return { registry: EMPTY_REGISTRY, problem: true, refusal: 'unanchored_pattern' };
-      if (matchesPublicMailDomain(compiled)) return { registry: EMPTY_REGISTRY, problem: true, refusal: 'public_mail_domain_pattern' };
+      const domain = literalDomainOf(compiled.source);
+      if (domain === null) return { registry: EMPTY_REGISTRY, problem: true, refusal: 'unqualified_domain_pattern' };
+      if (isPublicMailDomain(domain)) return { registry: EMPTY_REGISTRY, problem: true, refusal: 'public_mail_domain_pattern' };
       qaEligiblePatterns.push(compiled);
     }
   }

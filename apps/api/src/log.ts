@@ -70,7 +70,7 @@ const EVENTS = {
 } as const satisfies Record<string, true>;
 type EventName = keyof typeof EVENTS;
 const CONFIG_KEYS: Record<string, true> = { BETTER_AUTH_URL: true, TURNSTILE_SECRET_KEY: true, TURNSTILE_EXPECTED_HOSTNAME: true, TEST_ACCOUNT_REGISTRY_JSON: true, OPENKEY_QA_REGISTRATION_SECRET: true };
-const CONFIG_REASONS: Record<string, true> = { unanchored_pattern: true, public_mail_domain_pattern: true };
+const CONFIG_REASONS: Record<string, true> = { unanchored_pattern: true, unqualified_domain_pattern: true, public_mail_domain_pattern: true };
 const ERROR_CODES: Record<string, true> = {
   P2002: true, P2025: true, P2010: true, P2034: true, tinycloud_bootstrap_failed: true,
   tinycloud_bootstrap_crashed: true, tinycloud_bootstrap_in_progress: true,
