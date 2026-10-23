@@ -745,19 +745,19 @@ describe('delegateRouter Auto-Sign integration', () => {
   });
 
   test.each([
-    ['account registry delete', 'tinycloud.kv', 'applications/', (resource: typeof BOOTSTRAP_SESSION_REQUESTS.default.resources[number]) => ({
+    ['account registry delete', 'tinycloud.kv', 'applications/', 200, 'outside_bootstrap_allowlist', (resource: typeof BOOTSTRAP_SESSION_REQUESTS.default.resources[number]) => ({
       ...resource,
       actions: [...resource.actions, 'tinycloud.kv/del'],
     })],
-    ['delegation action other than list', 'tinycloud.delegation', '', (resource: typeof BOOTSTRAP_SESSION_REQUESTS.default.resources[number]) => ({
+    ['delegation action other than list', 'tinycloud.delegation', '', 400, 'REVOKE_GRANT_DISABLED', (resource: typeof BOOTSTRAP_SESSION_REQUESTS.default.resources[number]) => ({
       ...resource,
       actions: ['tinycloud.delegation/revoke'],
     })],
-    ['capabilities action other than read', 'tinycloud.capabilities', '', (resource: typeof BOOTSTRAP_SESSION_REQUESTS.default.resources[number]) => ({
+    ['capabilities action other than read', 'tinycloud.capabilities', '', 200, 'outside_bootstrap_allowlist', (resource: typeof BOOTSTRAP_SESSION_REQUESTS.default.resources[number]) => ({
       ...resource,
       actions: ['tinycloud.capabilities/write'],
     })],
-  ])('POST /api/delegate/sign rejects %s from the canonical account bundle', async (_label, service, path, mutate) => {
+  ])('POST /api/delegate/sign rejects %s from the canonical account bundle', async (_label, service, path, status, code, mutate) => {
     const resource = BOOTSTRAP_SESSION_REQUESTS.default.resources.find(
       (candidate) => candidate.space === 'account' &&
         candidate.service === service &&
@@ -767,12 +767,12 @@ describe('delegateRouter Auto-Sign integration', () => {
     const message = bootstrapSessionSiweWithResources('default', [mutate(resource)]);
 
     const response = await postBootstrapMessage(message);
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({
-      approved: false,
-      needsApproval: true,
-      code: 'outside_bootstrap_allowlist',
-    });
+    expect(response.status).toBe(status);
+    await expect(response.json()).resolves.toMatchObject(
+      status === 400
+        ? { approved: false, code }
+        : { approved: false, needsApproval: true, code },
+    );
     expect(signedMessages).toEqual([]);
   });
 

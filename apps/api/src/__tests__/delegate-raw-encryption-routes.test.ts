@@ -6,6 +6,7 @@
 import { beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
+import { prepareSession } from '@tinycloud/node-sdk-wasm';
 import type { delegateRouter, setDelegateSignerAuthMiddlewareForTests } from '../routes/delegate';
 import type { _resetAuthorizationContextStoreForTests } from '../services/authorization-signing';
 import { mockModules, replaceModules } from './mock-module';
@@ -189,6 +190,62 @@ describe('wallet keys: /prepare + /complete', () => {
       const res = await walletComplete(prepared.body, forwarded);
       expect(res.status).toBe(200);
     }
+  });
+});
+
+describe('delegation authority in interactive approvals', () => {
+  test.each([
+    ['revoke', 'tinycloud.delegation/revoke'],
+    ['wildcard', 'tinycloud.delegation/*'],
+  ])('/prepare refuses space-root %s authority', async (_name, action) => {
+    const forbidden = { service: 'tinycloud.delegation', space, path: '', actions: [action] };
+    const res = await post('/prepare', { keyId: managedKey.id, jwk, host, permissions: [kvGet, forbidden] });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('REVOKE_GRANT_DISABLED');
+    expect(activateSessionWithHost).not.toHaveBeenCalled();
+  });
+
+  test('managed legacy signing refuses space-root revocation authority', async () => {
+    const forbidden = { service: 'tinycloud.delegation', space, path: '', actions: ['tinycloud.delegation/revoke'] };
+    const res = await post('/', { keyId: managedKey.id, jwk, host, permissions: [kvGet, forbidden] });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('REVOKE_GRANT_DISABLED');
+    expect(activateSessionWithHost).not.toHaveBeenCalled();
+  });
+
+  test('/complete refuses a signed space-root revocation grant even without /prepare', async () => {
+    const forbidden = { service: 'tinycloud.delegation', space, path: '', actions: ['tinycloud.delegation/revoke'] };
+    const now = new Date();
+    const prepared = prepareSession({
+      address: wallet.address,
+      chainId: 1,
+      domain: 'cli.tinycloud.xyz',
+      issuedAt: now.toISOString(),
+      expirationTime: new Date(now.getTime() + 3_600_000).toISOString(),
+      spaceId: space,
+      jwk,
+      abilities: {
+        kv: { [kvGet.path]: kvGet.actions },
+        delegation: { '': forbidden.actions },
+      },
+    });
+    const res = await post('/complete', {
+      prepared,
+      signature: await wallet.signMessage({ message: prepared.siwe }),
+      host,
+      jwk,
+      permissions: [kvGet, forbidden],
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('REVOKE_GRANT_DISABLED');
+    expect(activateSessionWithHost).not.toHaveBeenCalled();
+  });
+
+  test('a resource-scoped revocation approval remains available', async () => {
+    const scoped = { service: 'tinycloud.delegation', space, path: 'grants/specific-grant', actions: ['tinycloud.delegation/revoke'] };
+    const res = await post('/prepare', { keyId: managedKey.id, jwk, host, permissions: [kvGet, scoped] });
+    expect(res.status).toBe(200);
+    expect(res.body.prepared.siwe).toContain('grants/specific-grant');
   });
 });
 
