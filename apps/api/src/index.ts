@@ -28,6 +28,7 @@ import { requireSession } from './middleware/session';
 import { trackAuthorization, trackTokenExchange, trackUniqueUser } from './analytics';
 import { configuredSocialProviderIds } from './social-providers';
 import { API_EXPOSED_HEADERS, corsOriginPolicy } from './origin-policy';
+import { readBuildInfo } from './build-info';
 import { readinessHandler } from './readiness';
 import { createProviderInterceptors } from './services/native-delegation/interceptors';
 import { providerTokenOptions } from './services/native-delegation/provider-tokens';
@@ -80,7 +81,7 @@ app.use('*', protocolAwareCors(cors({
 
 // Health check: traffic is accepted only when the database migration contract
 // required by this Prisma client is present and checksum-verified.
-app.get('/health', readinessHandler());
+app.get('/health', readinessHandler(undefined, readBuildInfo));
 
 // Analytics middleware - runs BEFORE auth handler, uses next() to capture response
 // POST /api/auth/oauth2/token → track token exchange + unique user
