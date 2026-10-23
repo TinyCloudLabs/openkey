@@ -1,102 +1,75 @@
 import { describe, expect, test } from 'bun:test';
+import { validatePermissions } from '../routes/delegate-session';
 import {
   delegateErrorResponse,
   normalizeDelegateReason,
   signedSiweExpirationTime,
-  validatePermissions,
 } from '../routes/delegate-validation';
 
-function invalidPermissionsPayload(permissions: unknown) {
+const base = { service: 'kv', space: 'tinycloud:space:default', path: '', actions: ['tinycloud.kv/list'] };
+
+function refusalFor(permissions: unknown) {
   try {
     validatePermissions(permissions);
   } catch (err) {
     return delegateErrorResponse(err, 'Invalid permissions', 'invalid_permissions');
   }
 
-  throw new Error('Expected permissions to be invalid');
+  throw new Error('Expected permissions to be refused');
 }
 
 describe('validatePermissions', () => {
-  test('accepts fully qualified actions for short service names', () => {
-    const permissions = validatePermissions([
-      {
-        service: 'kv',
-        space: 'tinycloud:space:default',
-        path: '',
-        actions: ['tinycloud.kv/list'],
-      },
-    ]);
+  test('accepts an entry with no narrowing fields and drops unknown fields', () => {
+    const result = validatePermissions([{ ...base, skipPrefix: true, description: 'note' }]);
 
-    expect(permissions).toEqual([
-      {
-        service: 'kv',
-        space: 'tinycloud:space:default',
-        path: '',
-        actions: ['tinycloud.kv/list'],
-      },
-    ]);
+    expect(result).toEqual([base]);
+    expect(Object.keys(result[0] ?? {})).not.toContain('skipPrefix');
+    expect(Object.keys(result[0] ?? {})).not.toContain('description');
   });
 
-  test('rejects short actions with a field path and suggestion', () => {
-    const payload = invalidPermissionsPayload([
-      {
-        service: 'tinycloud.kv',
-        space: 'tinycloud:space:default',
-        path: '',
-        actions: ['list'],
-      },
-    ]);
+  test('accepts caveats that restrict nothing', () => {
+    expect(validatePermissions([{ ...base, caveats: [] }])).toEqual([base]);
+    expect(validatePermissions([{ ...base, caveats: [{}] }])).toEqual([base]);
+    expect(validatePermissions([{ ...base, caveats: undefined }])).toEqual([base]);
+  });
 
-    expect(payload.error).toBe('permissions[0].actions[0] must be fully qualified for service tinycloud.kv');
+  test.each<[string, unknown]>([
+    ['non-empty array', [{ maxSize: 10 }]],
+    ['string', 'x'],
+    ['number', 1],
+    ['null', null],
+    ['object', {}],
+    ['array of non-objects', [1]],
+  ])('refuses caveats given as %s', (_label, caveats) => {
+    const payload = refusalFor([{ ...base, caveats }]);
+
     expect(payload.code).toBe('invalid_permissions');
-    expect(payload.message).toBe(payload.error);
-    expect(payload.details).toEqual([
-      {
-        path: 'permissions[0].actions[0]',
-        message: 'Action must start with tinycloud.kv/ and include an action name',
-        value: 'list',
-        expectedPrefix: 'tinycloud.kv/',
-        suggestion: 'tinycloud.kv/list',
-      },
-    ]);
+    expect(payload.error).toContain('permissions[0]');
+    expect(payload.error).toContain('caveats');
   });
 
-  test('rejects actions that do not match the requested service', () => {
-    const payload = invalidPermissionsPayload([
-      {
-        service: 'kv',
-        space: 'tinycloud:space:default',
-        path: '',
-        actions: ['tinycloud.sql/read'],
-      },
-    ]);
+  test.each<[string, Record<string, unknown>]>([
+    ['expiry', { expiry: 1700000000 }],
+    ['expiryMs', { expiryMs: 1700000000000 }],
+    ['expiry null', { expiry: null }],
+    ['expiryMs null', { expiryMs: null }],
+  ])('refuses per-entry %s', (_label, extra) => {
+    const payload = refusalFor([{ ...base, ...extra }]);
 
-    expect(payload.error).toBe('permissions[0].actions[0] must be fully qualified for service kv');
     expect(payload.code).toBe('invalid_permissions');
-    expect(payload.details?.[0]?.path).toBe('permissions[0].actions[0]');
-    expect(payload.details?.[0]?.value).toBe('tinycloud.sql/read');
-    expect(payload.details?.[0]?.expectedPrefix).toBe('tinycloud.kv/');
-    expect(payload.details?.[0]?.suggestion).toBeUndefined();
+    expect(payload.error).toContain('permissions[0]');
+    expect(payload.error).toContain(`(${Object.keys(extra)[0]})`);
   });
 
-  test('rejects empty action lists before prepareSession', () => {
-    const payload = invalidPermissionsPayload([
-      {
-        service: 'kv',
-        space: 'tinycloud:space:default',
-        path: '',
-        actions: [],
-      },
-    ]);
+  test('refusal messages never contain the offending value', () => {
+    const payload = refusalFor([{ ...base, expiryMs: 1700000000000 }]);
 
-    expect(payload.error).toBe('permissions[0].actions must be a non-empty string[]');
-    expect(payload.details).toEqual([
-      {
-        path: 'permissions[0].actions',
-        message: 'Expected a non-empty array of action strings',
-        expected: 'non-empty string[]',
-      },
-    ]);
+    expect(payload.error).not.toContain('1700000000000');
+  });
+
+  test('refuses the whole request when any entry carries a refused field', () => {
+    expect(() => validatePermissions([base, { ...base, expiryMs: 5 }])).toThrow();
+    expect(() => validatePermissions([base, { ...base, caveats: [{ maxSize: 1 }] }])).toThrow();
   });
 });
 
