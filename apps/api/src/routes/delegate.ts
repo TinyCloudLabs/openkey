@@ -24,7 +24,7 @@ import {
   entriesForSelectedActions,
   permissionKey as computePermissionKey,
 } from './delegate-session';
-import { activateSessionWithHost } from '@tinycloud/sdk-core';
+import { activateSessionWithinTimeout } from '../services/tinycloud-node-timeouts';
 import { BOOTSTRAP_SPACE_NAMES, CAPABILITIES } from '@tinycloud/bootstrap';
 import {
   delegateErrorResponse,
@@ -98,7 +98,7 @@ import {
 } from '../services/coordinationos-signing-audit';
 import { validateTinyCloudManageKeyRequest } from '../services/tinycloud-manage-key-policy';
 import { canonicalTrustedTinyCloudHost } from '../services/tinycloud-hosts';
-import { awaitTinyCloudBootstrapWithinBudget } from '../services/tinycloud-bootstrap-budget';
+import { hostRequestedSpaceWithinBudget } from '../services/tinycloud-bootstrap-budget';
 import { deviceDelegationWindowError, deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, primaryKeyWhere } from '../services/primary-key';
 import { PreparedHandoffError } from '../services/prepared-handoff';
@@ -114,7 +114,8 @@ const prisma = createPrismaClient();
 const tee = createTeeClient();
 
 type SpaceSetupPlan = 'setup' | 'auto-sign-off' | 'external-wallet';
-type ManagedSpaceSetup = { space: string; plan: SpaceSetupPlan; bootstrapHost: string };
+type BootstrapSpaceName = (typeof BOOTSTRAP_SPACE_NAMES)[number];
+type ManagedSpaceSetup = { space: BootstrapSpaceName; plan: SpaceSetupPlan; bootstrapHost: string };
 
 async function managedSpaceSetupPlan(input: {
   userId: string;
@@ -124,9 +125,9 @@ async function managedSpaceSetupPlan(input: {
   chainId: number;
   spaceId: string;
 }): Promise<ManagedSpaceSetup | null> {
-  const name = input.spaceId.slice(input.spaceId.lastIndexOf(':') + 1);
+  const name = input.spaceId.slice(input.spaceId.lastIndexOf(':') + 1) as BootstrapSpaceName;
   if (
-    !BOOTSTRAP_SPACE_NAMES.includes(name as (typeof BOOTSTRAP_SPACE_NAMES)[number]) ||
+    !BOOTSTRAP_SPACE_NAMES.includes(name) ||
     input.spaceId !== makeSpaceId(input.address, input.chainId, name)
   ) return null;
 
@@ -143,6 +144,15 @@ async function managedSpaceSetupPlan(input: {
   return { space: name, plan: preference?.autoSignEnabled ? 'setup' : 'auto-sign-off', bootstrapHost };
 }
 type SpaceReadiness = { spaceReady: boolean | null; spaceError?: string; spacePending?: true };
+
+/** `spaceError` when the approval's space was still being hosted at the timeout. */
+const REQUESTED_SPACE_TIMEOUT_ERROR = 'tinycloud_requested_space_timeout';
+
+function setupFailureMessage(failure: { errorCode: string; errorMessage: string }): string {
+  return failure.errorCode === 'tinycloud_bootstrap_crashed'
+    ? `TinyCloud account setup failed: ${failure.errorMessage}.`
+    : `TinyCloud account setup failed (${failure.errorCode}): ${failure.errorMessage}.`;
+}
 
 async function finishManagedSpaceOnboarding(input: {
   userId: string;
@@ -177,26 +187,40 @@ async function finishManagedSpaceOnboarding(input: {
     if (!input.privateKey && !input.key.sealedBlob) {
       return { spaceReady: false, spaceError: 'TinyCloud account setup failed: managed key has no sealed key data.' };
     }
-    const privateKey = input.privateKey ?? await unsealManagedKey(input.key, input.key.sealedBlob!);
-    const outcome = await awaitTinyCloudBootstrapWithinBudget(
-      ensureTinyCloudBootstrap({
+    // The first run uses this key and drops it; each background retry unseals again, so the
+    // plaintext key is never held across a retry's wait.
+    let firstRunKey: string | undefined = input.privateKey ?? await unsealManagedKey(input.key, input.key.sealedBlob!);
+    const result = await hostRequestedSpaceWithinBudget(async ({ alreadyHosted, report }) => {
+      const privateKey = firstRunKey ?? await unsealManagedKey(input.key, input.key.sealedBlob!);
+      firstRunKey = undefined;
+      return ensureTinyCloudBootstrap({
         prisma,
         userId: input.userId,
         key: { id: input.key.id, address: input.key.address, keyType: input.key.keyType },
         privateKey,
         host: setup.bootstrapHost,
         chainId: input.chainId,
-      }),
-    );
-    if (outcome.status === 'complete') return { spaceReady: true };
-    // Still running here or under another approval's lock: the lock/cache finishes it once.
-    if (outcome.status === 'pending' || (outcome.status === 'failed' && outcome.errorCode === 'tinycloud_bootstrap_in_progress')) {
-      return { spaceReady: null, spacePending: true };
+        // Hosts only this space before responding; the other spaces and the seeding follow in the background run.
+        requestedSpace: { space: setup.space, alreadyHosted, report },
+      });
+    });
+    switch (result.status) {
+      case 'hosted':
+      case 'complete':
+        return { spaceReady: true };
+      // Another run holds the lock (an approval's or the sweep's) and will host the space: keep waiting.
+      case 'pending':
+        return { spaceReady: null, spacePending: true, spaceError: result.errorCode };
+      case 'timeout':
+        return { spaceReady: null, spacePending: true, spaceError: REQUESTED_SPACE_TIMEOUT_ERROR };
+      case 'skipped':
+        return { spaceReady: false, spaceError: 'TinyCloud account setup failed.' };
+      // The first run failed and a background retry is scheduled: keep the client waiting with the reason.
+      case 'retrying':
+        return { spaceReady: null, spacePending: true, spaceError: setupFailureMessage(result) };
+      case 'failed':
+        return { spaceReady: false, spaceError: setupFailureMessage(result) };
     }
-    if (outcome.status === 'failed' && outcome.errorCode === 'tinycloud_bootstrap_crashed') {
-      return { spaceReady: false, spaceError: `TinyCloud account setup failed: ${outcome.errorMessage}.` };
-    }
-    return { spaceReady: false, spaceError: `TinyCloud account setup failed${outcome.status === 'failed' ? ` (${outcome.errorCode}): ${outcome.errorMessage}` : ''}.` };
   } catch (error) {
     return {
       spaceReady: false,
@@ -1511,7 +1535,7 @@ delegateRouter.post('/', async (c) => {
     let hostActivated = false;
     let spaceReadiness: SpaceReadiness = { spaceReady: null };
     try {
-      const activationResult = await activateSessionWithHost(host, session.delegationHeader);
+      const activationResult = await activateSessionWithinTimeout(host, session.delegationHeader);
       hostActivated = activationResult.success;
       if (hostActivated) {
         spaceReadiness = await finishManagedSpaceOnboarding({
@@ -1607,7 +1631,7 @@ delegateRouter.post('/', async (c) => {
   let hostActivated = false;
   let spaceReadiness: SpaceReadiness = { spaceReady: null };
   try {
-    const activationResult = await activateSessionWithHost(host, session.delegationHeader);
+    const activationResult = await activateSessionWithinTimeout(host, session.delegationHeader);
     hostActivated = activationResult.success;
     if (hostActivated) {
       spaceReadiness = await finishManagedSpaceOnboarding({
@@ -1694,6 +1718,7 @@ delegateRouter.post('/prepare', async (c) => {
     permissions?: unknown;
     expiry?: unknown;
     reason?: unknown;
+    deviceTransactionId?: unknown;
   }>();
 
   if (!body.keyId || !body.jwk || !body.host) {
@@ -1742,6 +1767,7 @@ delegateRouter.post('/prepare', async (c) => {
       actionKeys: normalizeStringArray(body.actionKeys, 'actionKeys'),
       permissionKeys: normalizeStringArray(body.permissionKeys, 'permissionKeys'),
       permissions,
+      deviceTransaction: body.deviceTransactionId !== undefined,
       expiryMs,
     });
   } catch (e) {
@@ -1868,6 +1894,7 @@ delegateRouter.post('/complete', async (c) => {
     jwk: DelegationJwk;
     edited?: boolean;
     reason?: unknown;
+    deviceTransactionId?: unknown;
     /**
      * The CLI-supplied permissions that were the baseline for /prepare.
      * When present, this is used instead of DEFAULT_ABILITIES for the
@@ -1962,7 +1989,7 @@ delegateRouter.post('/complete', async (c) => {
       ? sessionAbilitiesFromPermissions(baselinePermissions, {
           address: signedFields.address,
           chainId: signedFields.chainId,
-        })
+        }, { deviceTransaction: body.deviceTransactionId !== undefined })
       : DEFAULT_SESSION_ABILITIES;
     assertBaselineSubset(entries, baseline);
     assertRequiredActions(entries, baseline);
@@ -2159,7 +2186,7 @@ delegateRouter.post('/complete', async (c) => {
   let hostActivated = false;
   let spaceReady: boolean | null = null;
   try {
-    const activationResult = await activateSessionWithHost(body.host, session.delegationHeader);
+    const activationResult = await activateSessionWithinTimeout(body.host, session.delegationHeader);
     hostActivated = activationResult.success;
     if (hostActivated) spaceReady = !activationResult.skipped?.includes(spaceId);
     if (!hostActivated) {

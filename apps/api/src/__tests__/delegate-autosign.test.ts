@@ -278,7 +278,7 @@ describe('evaluateBootstrapSessionScope', () => {
     expect(decision).toEqual({ allowed: true });
   });
 
-  test('accepts the agents bootstrap session and rejects an added KV sync action', () => {
+  test('refuses the agents bootstrap session as a write grant and rejects an added KV sync action', () => {
     const spaceId = bootstrapSpaceId(address, chainId, 'agents');
     const resources = BOOTSTRAP_SESSION_REQUESTS.agents.resources;
     const entries = resources.map((resource) => entry(
@@ -287,13 +287,22 @@ describe('evaluateBootstrapSessionScope', () => {
       resource.path,
       [...resource.actions],
     ));
-    expect(evaluateBootstrapSessionScope({ address, chainId, spaceId, entries })).toEqual({ allowed: true });
+    // Whole-space put/del would include Courier approvals and orders (TC-884).
+    expect(evaluateBootstrapSessionScope({ address, chainId, spaceId, entries })).toMatchObject({
+      allowed: false,
+      code: 'owner_only_path',
+    });
 
-    const syncEntries = [...entries];
+    const readOnly = entries.map((candidate) => ({
+      ...candidate,
+      actions: candidate.actions.filter((action) => !/\/(put|del)$/.test(action)),
+    }));
+    expect(evaluateBootstrapSessionScope({ address, chainId, spaceId, entries: readOnly })).toEqual({ allowed: true });
+
+    const syncEntries = readOnly.map((candidate) => ({ ...candidate, actions: [...candidate.actions] }));
     syncEntries.find((candidate) => candidate.service === 'tinycloud.kv')!.actions.push('tinycloud.kv/sync');
     expect(evaluateBootstrapSessionScope({ address, chainId, spaceId, entries: syncEntries })).toMatchObject({
       allowed: false,
-      code: 'outside_bootstrap_allowlist',
     });
   });
 
@@ -541,20 +550,6 @@ describe('evaluateAutoSignPolicy', () => {
 });
 
 describe('delegateRouter Auto-Sign integration', () => {
-  test('POST /api/delegate/sign accepts the agents bootstrap session SIWE', async () => {
-    const message = bootstrapSessionSiweWithResources(
-      'agents',
-      BOOTSTRAP_SESSION_REQUESTS.agents.resources,
-    );
-    const response = await postBootstrapMessage(message);
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({
-      approved: true,
-      signature: expect.stringMatching(/^0x[0-9a-f]+$/i),
-    });
-    expect(signedMessages).toEqual([message]);
-  });
-
   test('POST /api/delegate/sign accepts the widened default SIWE with account entries preceding default', async () => {
     const router = await delegateRouter();
     const resources = BOOTSTRAP_SESSION_REQUESTS.default.resources;
@@ -854,5 +849,157 @@ describe('delegateRouter Auto-Sign integration', () => {
       spaceId: `tinycloud:pkh:eip155:${chainId}:${address}:openkey`,
     });
     expect(signedMessages).toHaveLength(1);
+  });
+});
+
+describe('Auto-Sign owner-only Courier paths (TC-884)', () => {
+  const spaceId = bootstrapSpaceId(address, chainId, 'agents');
+  const kvActions = [
+    'tinycloud.kv/get',
+    'tinycloud.kv/put',
+    'tinycloud.kv/del',
+    'tinycloud.kv/list',
+    'tinycloud.kv/metadata',
+  ];
+  // An allowlist that would otherwise accept the path, so a refusal can only
+  // come from the owner-only rule.
+  const allowlistFor = (path: string): readonly BootstrapAllowlistEntry[] => [{
+    kind: 'session',
+    service: 'tinycloud.session',
+    space: 'agents',
+    actions: ['siwe'],
+    resources: [{ service: 'tinycloud.kv', space: 'agents', path, actions: kvActions }],
+  }];
+  const decide = (path: string, actions: string[]) => evaluateBootstrapSigningScope(
+    { address, chainId, entries: [entry('tinycloud.kv', spaceId, path, actions)] },
+    allowlistFor(path),
+  );
+
+  test.each([
+    'xyz.tinycloud.courier/me/approvals/',
+    'xyz.tinycloud.courier/me/approvals/01J0.json',
+    'xyz.tinycloud.courier/me/orders/',
+    'xyz.tinycloud.courier/me/orders/hunter.md',
+    'xyz.tinycloud.courier/me/orders',
+    'xyz.tinycloud.courier/me/',
+    'xyz.tinycloud.courier/',
+    'xyz.tinycloud.courier',
+    'xyz.tinycloud.cou',
+    '',
+    '/xyz.tinycloud.courier/me/approvals/x',
+    'XYZ.TinyCloud.Courier/ME/Approvals/x',
+    'xyz.tinycloud.courier/me/requests/../approvals/x',
+    'xyz.tinycloud.courier/me//approvals/x',
+    'xyz.tinycloud.courier/me/%61pprovals/x',
+  ])('refuses put and del on %p', (path) => {
+    for (const action of ['tinycloud.kv/put', 'tinycloud.kv/del']) {
+      expect(decide(path, [action])).toMatchObject({ allowed: false, code: 'owner_only_path' });
+    }
+    expect(decide(path, kvActions)).toMatchObject({ allowed: false, code: 'owner_only_path' });
+  });
+
+  test('refuses an unknown action verb where a write would reach the path', () => {
+    expect(decide('xyz.tinycloud.courier/me/orders/', ['tinycloud.kv/get', 'tinycloud.kv/constructor']))
+      .toMatchObject({ allowed: false, code: 'owner_only_path' });
+  });
+
+  test('refuses the whole request when only one entry reaches the path', () => {
+    const requests = 'xyz.tinycloud.courier/me/requests/';
+    const approvals = 'xyz.tinycloud.courier/me/approvals/';
+    const decision = evaluateBootstrapSigningScope(
+      {
+        address,
+        chainId,
+        entries: [
+          entry('tinycloud.kv', spaceId, requests, ['tinycloud.kv/put']),
+          entry('tinycloud.kv', spaceId, approvals, ['tinycloud.kv/put']),
+        ],
+      },
+      [{
+        ...allowlistFor(requests)[0]!,
+        resources: [
+          { service: 'tinycloud.kv', space: 'agents', path: requests, actions: kvActions },
+          { service: 'tinycloud.kv', space: 'agents', path: approvals, actions: kvActions },
+        ],
+      }],
+    );
+    expect(decision).toMatchObject({ allowed: false, code: 'owner_only_path' });
+  });
+
+  test.each([
+    'xyz.tinycloud.courier/me/requests/',
+    'xyz.tinycloud.courier/me/peers/',
+    'xyz.tinycloud.courier/me/mirror/',
+    'xyz.tinycloud.courier/me/state/',
+    'xyz.tinycloud.courier/to/hunter/',
+    'xyz.tinycloud.notes/',
+  ])('still allows put and del on %p', (path) => {
+    expect(decide(path, kvActions)).toEqual({ allowed: true });
+  });
+
+  test('still allows reads of approvals and orders', () => {
+    const reads = ['tinycloud.kv/get', 'tinycloud.kv/list', 'tinycloud.kv/metadata'];
+    expect(decide('xyz.tinycloud.courier/me/approvals/', reads)).toEqual({ allowed: true });
+    expect(decide('', reads)).toEqual({ allowed: true });
+  });
+
+  test('only applies to the agents space', () => {
+    const defaultSpaceId = bootstrapSpaceId(address, chainId, 'default');
+    const decision = evaluateBootstrapSigningScope({
+      address,
+      chainId,
+      entries: [entry('tinycloud.kv', defaultSpaceId, '', kvActions)],
+    });
+    expect(decision).toEqual({ allowed: true });
+  });
+
+  test('the real bootstrap allowlist refuses the whole-space agents write grant but takes read-only', () => {
+    const entries = BOOTSTRAP_SESSION_REQUESTS.agents.resources.map((resource) => entry(
+      resource.service,
+      spaceId,
+      resource.path,
+      [...resource.actions],
+    ));
+    expect(evaluateBootstrapSigningScope({ address, chainId, entries })).toMatchObject({
+      allowed: false,
+      code: 'owner_only_path',
+    });
+    const readOnly = entries.map((candidate) => ({
+      ...candidate,
+      actions: candidate.actions.filter((action) => !/\/(put|del)$/.test(action)),
+    }));
+    expect(evaluateBootstrapSigningScope({ address, chainId, entries: readOnly })).toEqual({ allowed: true });
+  });
+
+  test('POST /api/delegate/sign does not sign the whole-space agents write grant', async () => {
+    const message = bootstrapSessionSiweWithResources(
+      'agents',
+      BOOTSTRAP_SESSION_REQUESTS.agents.resources,
+    );
+    const response = await postBootstrapMessage(message);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      approved: false,
+      needsApproval: true,
+      code: 'owner_only_path',
+    });
+    expect(signedMessages).toEqual([]);
+  });
+
+  test('POST /api/delegate/sign still signs the read-only agents session SIWE', async () => {
+    const message = bootstrapSessionSiweWithResources(
+      'agents',
+      BOOTSTRAP_SESSION_REQUESTS.agents.resources.map((resource) => ({
+        ...resource,
+        actions: resource.actions.filter((action) => !/\/(put|del)$/.test(action)),
+      })),
+    );
+    const response = await postBootstrapMessage(message);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      approved: true,
+      signature: expect.stringMatching(/^0x[0-9a-f]+$/i),
+    });
+    expect(signedMessages).toEqual([message]);
   });
 });

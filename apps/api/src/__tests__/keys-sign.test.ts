@@ -297,7 +297,7 @@ describe('keysRouter managed signing', () => {
       expect(logOutput).toHaveLength(1);
       const line = JSON.parse(logOutput[0]!);
       expect(line).toMatchObject({ level: 'error', event: 'tinycloud_bootstrap_background_failed', error_code: 'tinycloud_bootstrap_crashed', request_id: 'startup' });
-      expect(Object.keys(line).sort()).toEqual(['error_code', 'event', 'level', 'request_id', 'ts']);
+      expect(Object.keys(line).sort()).toEqual(['attempt', 'duration_ms', 'error_code', 'event', 'level', 'request_id', 'ts']);
       expect(logOutput.join('\n')).not.toContain('privateKey');
       expect(logOutput.join('\n')).not.toContain(privateKey);
       expect(logOutput.join('\n')).not.toContain(keyRecord.sealedBlob!);
@@ -506,6 +506,33 @@ describe('keysRouter managed signing', () => {
       const response = await sign({ message: 'just a plain message' });
       expect(response.status).toBe(200);
       expect(calls).toEqual(['bootstrap', 'sign']);
+    });
+  });
+
+  describe('POST /:keyId/sign-typed-data', () => {
+    const typedData = (valueType: string) => ({
+      domain: { name: 'Test', version: '1', chainId: 1 },
+      types: { Transfer: [{ name: 'amount', type: valueType }] },
+      primaryType: 'Transfer',
+      message: { amount: '1' },
+    });
+    const signTyped = async (body: unknown) => (await keysRouter()).request('/key_1/sign-typed-data', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    test('signs a canonical uint256 type', async () => {
+      const response = await signTyped(typedData('uint256'));
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({ signature: expect.stringMatching(/^0x[0-9a-f]+$/i), address });
+    });
+
+    test('returns 400, before unsealing, for a uint alias viem rejects', async () => {
+      const response = await signTyped(typedData('uint'));
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({ error: expect.stringContaining('Invalid typed data') });
+      expect(unseal).not.toHaveBeenCalled();
     });
   });
 });

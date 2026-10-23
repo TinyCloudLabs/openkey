@@ -27,14 +27,11 @@ import {
   siweToDelegationHeaders,
   vault_sha256,
 } from '@tinycloud/node-sdk-wasm';
-import {
-  activateSessionWithHost,
-  fetchPeerId,
-  submitHostDelegation,
-} from '@tinycloud/sdk-core';
 import type { PrismaClient } from '@openkey/db';
 import { DEFAULT_TINYCLOUD_BOOTSTRAP_HOST, TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS } from './tinycloud-hosts';
+import { tinyCloudBootstrapNodeCallTimeoutMs, tinyCloudBootstrapNodeInvokeTimeoutMs } from './tinycloud-node-timeouts';
 import { kvSpaceRegistryStore, registerMissingBootstrapSpaces } from './tinycloud-space-registry';
+import { SWEEP_RETRYABLE_CODES } from './tinycloud-bootstrap-budget';
 
 import { log } from '../log';
 export const TINYCLOUD_BOOTSTRAP_VERSION = `@tinycloud/bootstrap:${canonicalHashHex({
@@ -78,8 +75,24 @@ export interface EnsureTinyCloudBootstrapInputCore {
   prisma: PrismaLike;
   userId: string;
   key: TinyCloudBootstrapKey;
-  privateKey: string;
+  /** Resolved inside the lock, so a sweep claim that loses never unseals the key. */
+  privateKey: string | (() => Promise<string>);
   host?: string;
+  /** The space this run is for: hosted first, inside the lock, and reported as soon as the node confirms it. */
+  requestedSpace?: TinyCloudBootstrapRequestedSpace;
+  /** Set by the background sweep: the lock is taken only if the row still matches what it observed. */
+  sweepClaim?: TinyCloudBootstrapSweepClaim;
+}
+
+/** A sweep's claim on one row: the state it observed, and a hook fired only once the lock is won. */
+export interface TinyCloudBootstrapSweepClaim {
+  observed: {
+    status: 'failed' | 'in_progress';
+    sweepAttempts: number;
+    checkedAt: Date;
+    attemptId: string | null;
+  };
+  onClaimed: () => void;
 }
 
 export class TinyCloudBootstrapError extends Error {
@@ -123,12 +136,37 @@ interface BootstrapSession {
   };
 }
 
-type TinyCloudBootstrapExecutor = (input: {
+export interface TinyCloudBootstrapRequestedSpaceFailure {
+  status: 'failed';
+  errorCode: string;
+  errorMessage: string;
+}
+
+export type TinyCloudBootstrapRequestedSpaceReport = { status: 'hosted' } | TinyCloudBootstrapRequestedSpaceFailure;
+
+/**
+ * The space the client's approval is for. The run hosts it first, inside its own lock,
+ * before the remaining spaces and the seeding (TC-1608).
+ */
+export interface TinyCloudBootstrapRequestedSpace {
+  /** Canonical bootstrap space name, already checked against the approved space id. */
+  space: BootstrapSpaceName;
+  /** An earlier attempt of this approval already had the node confirm the space: do not host it again. */
+  alreadyHosted?: boolean;
+  /** Called once per attempt that hosts the space: the node confirmed it, or hosting it failed. */
+  report: (report: TinyCloudBootstrapRequestedSpaceReport) => void;
+}
+
+interface TinyCloudBootstrapRunInput {
   address: string;
   chainId: number;
   privateKey: string;
   tinycloudHost: string;
-}) => Promise<void>;
+  /** Spaces already hosted by the requested-space step. The run neither signs nor submits their host delegation. */
+  skipHostSpaces?: readonly BootstrapSpaceName[];
+}
+
+type TinyCloudBootstrapExecutor = (input: TinyCloudBootstrapRunInput) => Promise<void>;
 
 type TinyCloudBootstrapProbe = TinyCloudBootstrapExecutor;
 
@@ -374,9 +412,18 @@ export async function ensureTinyCloudBootstrap(
     address: ensureEip55(input.key.address),
     chainId,
     tinycloudHost,
+    sweep: input.sweepClaim?.observed,
   });
 
   if (!locked) {
+    if (input.sweepClaim) {
+      // A sweep that loses the claim is not a failed run and does not wait: the holder owns the row.
+      return {
+        status: 'failed',
+        errorCode: 'tinycloud_bootstrap_in_progress',
+        errorMessage: 'TinyCloud account bootstrap is already in progress for this key.',
+      };
+    }
     await wait(BOOTSTRAP_WAIT_MS);
     const refreshed = await input.prisma.tinyCloudBootstrapState.findUnique({
       where: { keyId_chainId_tinycloudHost_bootstrapVersion: cacheKey },
@@ -390,22 +437,26 @@ export async function ensureTinyCloudBootstrap(
       errorMessage: 'TinyCloud account bootstrap is already in progress for this key.',
     };
   }
+  input.sweepClaim?.onClaimed();
 
   try {
     await withBootstrapLockHeartbeat(input.prisma, cacheKey, attemptId, async () => {
-      await bootstrapProbe({
+      const privateKey = await resolvePrivateKey(input.privateKey);
+      const runInput: TinyCloudBootstrapRunInput = {
         address: ensureEip55(input.key.address),
         chainId,
-        privateKey: input.privateKey,
+        privateKey,
         tinycloudHost,
-      });
+      };
+      const requested = input.requestedSpace;
+      if (requested) {
+        // Before the probe and the other spaces: the client waits for this space only.
+        if (!requested.alreadyHosted) await hostRequestedSpaceFirst(runInput, requested);
+        runInput.skipHostSpaces = [requested.space];
+      }
 
-      await bootstrapExecutor({
-        address: ensureEip55(input.key.address),
-        chainId,
-        privateKey: input.privateKey,
-        tinycloudHost,
-      });
+      await bootstrapProbe(runInput);
+      await bootstrapExecutor(runInput);
     });
 
     const completed = await input.prisma.tinyCloudBootstrapState.updateMany({
@@ -427,19 +478,20 @@ export async function ensureTinyCloudBootstrap(
     return { status: 'complete' };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
+    const errorCode = bootstrapFailureCode(error);
     await input.prisma.tinyCloudBootstrapState.updateMany({
       where: { ...cacheKey, attemptId },
       data: {
         status: 'failed',
         checkedAt: new Date(),
-        failureCode: 'tinycloud_bootstrap_failed',
+        failureCode: errorCode,
         failureReason: reason,
         lockExpiresAt: null,
       },
     });
     return {
       status: 'failed',
-      errorCode: 'tinycloud_bootstrap_failed',
+      errorCode,
       errorMessage: reason,
     };
   }
@@ -455,6 +507,7 @@ async function acquireBootstrapLock(
     address: string;
     chainId: number;
     tinycloudHost: string;
+    sweep?: TinyCloudBootstrapSweepClaim['observed'];
   },
 ): Promise<boolean> {
   const now = new Date();
@@ -465,6 +518,31 @@ async function acquireBootstrapLock(
     tinycloudHost: input.tinycloudHost,
     bootstrapVersion: TINYCLOUD_BOOTSTRAP_VERSION,
   };
+  if (input.sweep) {
+    // The claim matches only the state the sweep observed: a row changed by an approval or another tick matches nothing.
+    const observed = input.sweep;
+    const claimed = await prisma.tinyCloudBootstrapState.updateMany({
+      where: {
+        ...key,
+        status: observed.status,
+        sweepAttempts: observed.sweepAttempts,
+        checkedAt: observed.checkedAt,
+        attemptId: observed.attemptId,
+        failureCode: { in: [...SWEEP_RETRYABLE_CODES] },
+        ...(observed.status === 'in_progress' ? { lockExpiresAt: { lt: now } } : {}),
+        user: { is: { autoSignEnabled: true } },
+        key: { is: { keyType: 'MANAGED', archivedAt: null } },
+      },
+      data: {
+        status: 'in_progress',
+        attemptId: input.attemptId,
+        lockExpiresAt,
+        checkedAt: now,
+        sweepAttempts: { increment: 1 },
+      },
+    });
+    return claimed.count === 1;
+  }
 
   if (!input.state) {
     try {
@@ -502,17 +580,37 @@ async function acquireBootstrapLock(
         { lockExpiresAt: { lt: now } },
       ],
     },
+    // A failed state keeps its failureCode/failureReason while it is retried: they stay
+    // observable until the run completes (which clears them) or fails again.
     data: {
       status: 'in_progress',
       attemptId: input.attemptId,
       lockExpiresAt,
       checkedAt: now,
-      failureCode: null,
-      failureReason: null,
+      // Approval claims start a fresh sweep budget.
+      sweepAttempts: 0,
     },
   });
 
   return result.count === 1;
+}
+
+const PRIVATE_KEY_RESOLVE_TIMEOUT_MS = 5_000;
+
+/** Resolves a lazily unsealed key with a bound, so a stuck unseal fails the run instead of holding the lock. */
+async function resolvePrivateKey(privateKey: string | (() => Promise<string>)): Promise<string> {
+  if (typeof privateKey === 'string') return privateKey;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      privateKey(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('TinyCloud bootstrap key unseal timed out')), PRIVATE_KEY_RESOLVE_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 async function withBootstrapLockHeartbeat<T>(
@@ -567,12 +665,7 @@ async function refreshBootstrapLock(
   }
 }
 
-async function probeTinyCloudBootstrap(input: {
-  address: string;
-  chainId: number;
-  privateKey: string;
-  tinycloudHost: string;
-}): Promise<void> {
+async function probeTinyCloudBootstrap(input: TinyCloudBootstrapRunInput): Promise<void> {
   const accountStep = bootstrapSteps(input.address, input.chainId)
     .find((step): step is BootstrapSpaceStep => step.kind === 'session' && step.space === ACCOUNT_REGISTRY_SPACE);
   if (!accountStep) {
@@ -580,7 +673,7 @@ async function probeTinyCloudBootstrap(input: {
   }
 
   const session = await createBootstrapSession(input, accountStep);
-  const activation = await activateSessionWithHost(input.tinycloudHost, session.session.delegationHeader);
+  const activation = await nodeActivateSession(input.tinycloudHost, session.session.delegationHeader);
   if (!activation.success || activation.skipped?.includes(session.spaceId)) {
     return;
   }
@@ -588,19 +681,15 @@ async function probeTinyCloudBootstrap(input: {
   await invokeRaw(input.tinycloudHost, session, 'capabilities', '', CAPABILITIES.READ);
 }
 
-async function runTinyCloudBootstrap(input: {
-  address: string;
-  chainId: number;
-  privateKey: string;
-  tinycloudHost: string;
-}): Promise<void> {
+async function runTinyCloudBootstrap(input: TinyCloudBootstrapRunInput): Promise<void> {
+  const skipHostSpaces = new Set<string>(input.skipHostSpaces ?? []);
   const steps = bootstrapSteps(input.address, input.chainId);
   // Requests inside each Promise.all fire in array order — put the spaces
   // apps check first (applications, account) at the front so they are the
   // most likely to be hosted before the /sign sync budget expires.
   const sessionSteps = steps.filter(isSessionStep).sort(bySpacePriority);
   const hostSteps = steps
-    .filter((step): step is BootstrapSpaceStep => step.kind === 'host')
+    .filter((step): step is BootstrapSpaceStep => step.kind === 'host' && !skipHostSpaces.has(step.space))
     .sort(bySpacePriority);
 
   const [sessions, hostDelegations] = await Promise.all([
@@ -627,6 +716,50 @@ async function runTinyCloudBootstrap(input: {
     ensureEncryptionNetwork(input.tinycloudHost, accountSession, input.address, input.chainId),
     runSecretRecordsSchema(input.tinycloudHost, secretsSession, steps),
   ]);
+}
+
+/**
+ * Host the space the client asked for, before anything else in the run: peer id, the host SIWE
+ * signed by the managed key (the same createHostDelegation the full run uses), then submit it.
+ * The node confirms by listing the space under `activated` in its response to that host
+ * delegation. (Re-sending the client's session delegation would not confirm anything: a
+ * delegation the node already holds is answered with an empty `skipped`.) No other signature and
+ * no other ability is involved. Reports once.
+ */
+async function hostRequestedSpaceFirst(
+  input: TinyCloudBootstrapRunInput,
+  requested: TinyCloudBootstrapRequestedSpace,
+): Promise<void> {
+  try {
+    const step = bootstrapSteps(input.address, input.chainId)
+      .find((candidate): candidate is BootstrapSpaceStep => candidate.kind === 'host' && candidate.space === requested.space);
+    if (!step) {
+      throw new Error(`TinyCloud bootstrap host policy for ${requested.space} is missing`);
+    }
+    const activated = await submitRequiredHostDelegation(input.tinycloudHost, await createHostDelegation(input, step));
+    if (!activated?.includes(step.spaceId)) {
+      throw new TinyCloudBootstrapError(
+        `TinyCloud node accepted the host delegation for ${requested.space} but did not report the space as hosted.`,
+        'tinycloud_bootstrap_space_not_hosted',
+      );
+    }
+  } catch (error) {
+    requested.report({
+      status: 'failed',
+      errorCode: bootstrapFailureCode(error),
+      errorMessage: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
+  requested.report({ status: 'hosted' });
+}
+
+function bootstrapFailureCode(error: unknown): string {
+  if (error instanceof TinyCloudBootstrapError) return error.code;
+  // A node call aborted by its AbortSignal.timeout while its body was still being read.
+  return error instanceof Error && error.name === 'TimeoutError'
+    ? 'tinycloud_bootstrap_node_timeout'
+    : 'tinycloud_bootstrap_failed';
 }
 
 function isSessionStep(step: BootstrapStep): step is BootstrapSpaceStep {
@@ -675,7 +808,7 @@ async function createHostDelegation(
   input: { address: string; chainId: number; privateKey: string; tinycloudHost: string },
   step: BootstrapSpaceStep,
 ): Promise<Record<string, string>> {
-  const peerId = await fetchPeerId(input.tinycloudHost, step.spaceId);
+  const peerId = await nodeFetchPeerId(input.tinycloudHost, step.spaceId);
   const siwe = generateHostSIWEMessage({
     address: input.address,
     chainId: input.chainId,
@@ -709,19 +842,88 @@ function shortService(service: string): string {
   return service.startsWith('tinycloud.') ? service.slice('tinycloud.'.length) : service;
 }
 
-async function submitRequiredHostDelegation(host: string, headers: Record<string, string>): Promise<void> {
-  const result = await submitHostDelegation(host, headers);
-  if (!result.success) {
-    throw new Error(`Failed to submit host delegation: ${result.error ?? 'unknown error'}`);
+/**
+ * POST a host delegation. Returns the spaces the node lists as `activated`, or undefined when a
+ * 2xx response carries no readable list. A fresh host SIWE is a new delegation, so a node that
+ * hosted its space lists that space as activated.
+ */
+async function submitRequiredHostDelegation(host: string, headers: Record<string, string>): Promise<string[] | undefined> {
+  const response = await nodeFetch(`${host}/delegate`, { method: 'POST', headers }, tinyCloudBootstrapNodeCallTimeoutMs());
+  if (!response.ok) {
+    const error = await response.text().catch(() => response.statusText);
+    throw new Error(`Failed to submit host delegation: ${error || 'unknown error'}`);
+  }
+  // Read the body outside the parse guard: a timeout while reading must fail the call, not look like "nothing activated".
+  const text = await response.text();
+  try {
+    const body = JSON.parse(text) as { activated?: unknown };
+    return Array.isArray(body.activated) ? body.activated.map(String) : undefined;
+  } catch {
+    return undefined;
   }
 }
 
 async function activateRequiredSession(host: string, session: BootstrapSession): Promise<void> {
-  const result = await activateSessionWithHost(host, session.session.delegationHeader);
+  const result = await nodeActivateSession(host, session.session.delegationHeader);
   if (!result.success || result.skipped?.includes(session.spaceId)) {
     throw new Error(
       `Failed to activate bootstrap session for ${session.space}: ${result.error ?? 'space was skipped'}`,
     );
+  }
+}
+
+async function nodeFetchPeerId(host: string, spaceId: string): Promise<string> {
+  const response = await nodeFetch(
+    `${host}/peer/generate/${encodeURIComponent(spaceId)}`,
+    {},
+    tinyCloudBootstrapNodeCallTimeoutMs(),
+  );
+  if (!response.ok) {
+    const error = await response.text().catch(() => response.statusText);
+    throw new Error(`Failed to get peer ID: ${response.status} - ${error}`);
+  }
+  return response.text();
+}
+
+interface NodeActivation {
+  success: boolean;
+  /** Absent when a successful response carried no readable `skipped` list: the outcome is unconfirmed. */
+  skipped?: string[];
+  error?: string;
+}
+
+/** POST /delegate with a session delegation. The node lists spaces it does not host under `skipped`. */
+async function nodeActivateSession(host: string, delegationHeader: Record<string, string>): Promise<NodeActivation> {
+  const response = await nodeFetch(
+    `${host}/delegate`,
+    { method: 'POST', headers: delegationHeader },
+    tinyCloudBootstrapNodeCallTimeoutMs(),
+  );
+  if (!response.ok) {
+    return { success: false, error: await response.text().catch(() => response.statusText) };
+  }
+  // Read the body outside the parse guard: a timeout while reading must fail the call, not look like "nothing skipped".
+  const text = await response.text();
+  try {
+    const body = JSON.parse(text) as { skipped?: unknown };
+    return { success: true, skipped: Array.isArray(body.skipped) ? body.skipped.map(String) : [] };
+  } catch {
+    return { success: true };
+  }
+}
+
+async function nodeFetch(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const signal = AbortSignal.timeout(timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal });
+  } catch (error) {
+    if (signal.aborted) {
+      throw new TinyCloudBootstrapError(
+        `TinyCloud node request timed out after ${timeoutMs} ms.`,
+        'tinycloud_bootstrap_node_timeout',
+      );
+    }
+    throw error;
   }
 }
 
@@ -857,7 +1059,11 @@ async function ensureEncryptionNetwork(
 ): Promise<void> {
   const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
   const networkId = `urn:tinycloud:encryption:${ownerDid}:${BOOTSTRAP_ENCRYPTION_NETWORK_NAME}`;
-  const existing = await fetch(`${host}/encryption/networks/${encodeURIComponent(networkId)}`);
+  const existing = await nodeFetch(
+    `${host}/encryption/networks/${encodeURIComponent(networkId)}`,
+    {},
+    tinyCloudBootstrapNodeInvokeTimeoutMs(),
+  );
   if (existing.ok) {
     return;
   }
@@ -865,7 +1071,7 @@ async function ensureEncryptionNetwork(
     throw new Error(`Failed to check encryption network ${networkId}: HTTP ${existing.status}`);
   }
 
-  const info = await fetch(`${host}/info`);
+  const info = await nodeFetch(`${host}/info`, {}, tinyCloudBootstrapNodeInvokeTimeoutMs());
   if (!info.ok) {
     throw new Error(`Failed to fetch TinyCloud node info: HTTP ${info.status}`);
   }
@@ -897,14 +1103,14 @@ async function ensureEncryptionNetwork(
     [facts],
   ) as Record<string, string>;
   const authorization = await rewriteInvocationAudience(authorizationHeader(headers), nodeId, session.session.jwk);
-  const created = await fetch(`${host}/encryption/networks`, {
+  const created = await nodeFetch(`${host}/encryption/networks`, {
     method: 'POST',
     headers: {
       Authorization: authorization,
       'Content-Type': 'application/json',
     },
     body: canonicalizeJson(body),
-  });
+  }, tinyCloudBootstrapNodeInvokeTimeoutMs());
   if (!created.ok && created.status !== 409) {
     throw new Error(`Failed to create encryption network ${networkId}: HTTP ${created.status} ${await created.text()}`);
   }
@@ -935,11 +1141,11 @@ async function invokeJsonWithActions(
   body: Record<string, unknown>,
 ): Promise<void> {
   const headers = invokeAny(session.session, entries, undefined) as Record<string, string>;
-  const response = await fetch(`${host}/invoke`, {
+  const response = await nodeFetch(`${host}/invoke`, {
     method: 'POST',
     headers: { ...headers, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-  });
+  }, tinyCloudBootstrapNodeInvokeTimeoutMs());
   if (!response.ok) {
     throw new Error(`TinyCloud multi-action invocation failed: HTTP ${response.status} ${await response.text()}`);
   }
@@ -970,11 +1176,11 @@ async function invokeResponse(
   extraHeaders: Record<string, string> = {},
 ): Promise<Response> {
   const headers = invoke(session.session, service, path, action, undefined) as Record<string, string>;
-  return fetch(`${host}/invoke`, {
+  return nodeFetch(`${host}/invoke`, {
     method: 'POST',
     headers: { ...headers, ...extraHeaders },
     body,
-  });
+  }, tinyCloudBootstrapNodeInvokeTimeoutMs());
 }
 
 function requiredSession(

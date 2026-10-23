@@ -4,7 +4,20 @@ import { SECRETS_SPACE } from '@tinycloud/bootstrap';
 import { Wallet } from 'ethers';
 
 const TINYCLOUD_URL = process.env.TINYCLOUD_URL || 'https://node.tinycloud.xyz';
-const OPENKEY_LEGACY_SPACE = 'openkey';
+export const OPENKEY_LEGACY_SPACE = 'openkey';
+
+// node-sdk >= 2.11 adds the `account` registry space (kv, sql, delegation/list,
+// capabilities) to the sign-in SIWE unless this is false. These sessions only
+// need their own space, so keep the recap OpenKey's managed key signs narrow.
+export function createSessionNode(privateKey: string, prefix: string): TinyCloudNode {
+  return new TinyCloudNode({
+    host: TINYCLOUD_URL,
+    privateKey,
+    prefix,
+    autoCreateSpace: true,
+    includeAccountRegistryPermissions: false,
+  });
+}
 
 interface TinyCloudSession {
   tc: TinyCloudNode;       // legacy OpenKey-internal space for KV/variables
@@ -24,21 +37,11 @@ async function getSession(userId: string, privateKey: string): Promise<TinyCloud
   const wallet = new Wallet(`0x${privateKey}`);
 
   // Main space for variables/KV
-  const tc = new TinyCloudNode({
-    host: TINYCLOUD_URL,
-    privateKey,
-    prefix: OPENKEY_LEGACY_SPACE,
-    autoCreateSpace: true,
-  });
+  const tc = createSessionNode(privateKey, OPENKEY_LEGACY_SPACE);
   await tc.signIn();
 
   // Secrets space for vault
-  const secretsTc = new TinyCloudNode({
-    host: TINYCLOUD_URL,
-    privateKey,
-    prefix: SECRETS_SPACE,
-    autoCreateSpace: true,
-  });
+  const secretsTc = createSessionNode(privateKey, SECRETS_SPACE);
   await secretsTc.signIn();
   await secretsTc.vault.unlock(wallet);
 

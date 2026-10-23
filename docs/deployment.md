@@ -49,6 +49,18 @@ database URLs, or error details. The destructive
 deliberately not part of this runtime prerequisite and remains governed by its
 existing explicit operator gate.
 
+A ready response is `{ "status": "ok", "tee_mode": "production", "os_image": "unknown" }`
+(or `"tee_mode": "development"` for the explicitly configured local mock).
+`tee_mode` describes the configured client path: `production` selects dstack;
+it does **not** establish the guest OS image, production hardening, verified
+attestation, or dstack reachability. The API currently has no independently
+trusted OS-image identity, so `os_image` remains `unknown` in both modes.
+A known image requires trusted guest metadata and a reviewed identity mapping,
+not `TEE_MODE`, the SDK version, a past CVM observation, or HTTP query/header
+values. The legacy `tee` response field is removed; JSON-body consumers must
+migrate to `tee_mode` with these configuration-only semantics. HTTP-status
+health probes and the not-ready response are unchanged.
+
 While the separately authorized TC-488 destructive custody cutover remains
 pending, production deploy permits these reviewed additive migrations:
 `20260814_0001_share_device_authorization`,

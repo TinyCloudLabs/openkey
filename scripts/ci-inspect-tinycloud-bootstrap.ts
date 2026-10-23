@@ -27,7 +27,7 @@ async function main() {
 
   const prisma = createPrismaClient();
   try {
-    const [counts, eligibleKeys, states] = await Promise.all([
+    const [counts, eligibleKeys, states, failedStates] = await Promise.all([
       prisma.tinyCloudBootstrapState.groupBy({
         by: ['bootstrapVersion', 'status'],
         _count: true,
@@ -51,6 +51,16 @@ async function main() {
           completedAt: true,
         },
       }),
+      prisma.tinyCloudBootstrapState.findMany({
+        where: { status: 'failed' },
+        orderBy: { checkedAt: 'desc' },
+        take: 20,
+        select: {
+          bootstrapVersion: true,
+          checkedAt: true,
+          failureCode: true,
+        },
+      }),
     ]);
     console.log(JSON.stringify({
       counts: counts.map((row) => ({ bootstrapVersion: row.bootstrapVersion, status: row.status, count: row._count })),
@@ -62,6 +72,11 @@ async function main() {
         failureReason: sanitizeFailureReason(state.failureReason),
         checkedAt: state.checkedAt.toISOString(),
         completedAt: state.completedAt?.toISOString() ?? null,
+      })),
+      recentFailed: failedStates.map((state) => ({
+        bootstrapVersion: state.bootstrapVersion,
+        checkedAt: state.checkedAt.toISOString(),
+        failureCode: state.failureCode,
       })),
     }, null, 2));
   } finally {

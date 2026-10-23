@@ -16,6 +16,7 @@
 // sentence themselves.
 
 import type { CapabilityGrant } from "./model.js";
+import { DECRYPT_DEFAULT_KEY_STATEMENT } from "./copy.js";
 import { isMetadataOnlyAccess } from "./action-semantics.js";
 import {
   CANONICAL_APP_SCOPE_SECRET_ABILITIES,
@@ -206,6 +207,14 @@ function resourceOf(grant: CapabilityGrant): string {
   if (grant.path) return `${grant.space}/${grant.path}`;
   return grant.space;
 }
+
+/**
+ * Raw encryption network URI for the account's `default` key, e.g.
+ * `urn:tinycloud:encryption:did:pkh:eip155:1:0x<40 hex>:default`. Only a
+ * raw URN with no sub-path matches; per-share or other named networks do not.
+ */
+const DEFAULT_KEY_NETWORK_URN =
+  /^urn:tinycloud:encryption:did:pkh:eip155:\d+:0x[0-9a-fA-F]{40}:default$/;
 
 /** Fallback statement for anything the catalog does not recognize. */
 function fallbackStatement(grant: CapabilityGrant): StatementEntry {
@@ -451,6 +460,130 @@ function allActionsRecognizedForService(grant: CapabilityGrant): boolean {
   return true;
 }
 
+// Subject phrase for another user's data in `spaceName`.
+function otherUserSubject(spaceName: string | null): string {
+  const knownSubject: Record<string, string> = {
+    account: "account data",
+    applications: "application data",
+    default: "TinyCloud data",
+    public: "public data",
+  };
+  return spaceName
+    ? `another user's ${knownSubject[spaceName] ?? `${spaceName} data`}`
+    : "another user's TinyCloud data";
+}
+
+// Returns the statement text when a grant is schema-only and sits on a branch
+// that would otherwise fold schema into update copy. Null for anything else.
+function schemaOnlyStatementText(
+  grant: CapabilityGrant,
+  spaceName: string | null,
+): string | null {
+  if (!SQL_SERVICES.has(grant.service)) return null;
+  // Unknown families must reach the literal fallback in buildStatement, which
+  // gates on classification before any friendly copy. Ownership never
+  // upgrades an unknown shape into schema wording.
+  if (grant.family === "unknown") return null;
+  if (grant.actions.length === 0) return null;
+  if (
+    !grant.actions.every(
+      (a) =>
+        SQL_RECOGNIZED_ABILITIES.has(a.ability) && verbOf(a.ability) === "schema",
+    )
+  ) {
+    return null;
+  }
+  if (isSecretsSpace(grant.space)) {
+    // Secret catalog SQL: schema gets its own row. The catalog's "manage"
+    // copy does not name tables, so create/change/delete is stated here.
+    if (grant.ownedBySelf !== true && grant.ownedBySelf !== false) return null;
+    const owner = grant.ownedBySelf === false ? "another user's" : "your";
+    const scope = grant.path === "" ? "entire " : "";
+    return `Create, change and delete tables in ${owner} ${scope}secret catalog`;
+  }
+  if (grant.ownedBySelf === false && !isSecretsSpace(grant.space)) {
+    return `Create, change and delete tables in ${otherUserSubject(spaceName)}`;
+  }
+  if (spaceName === "applications" && grant.family === "own-app-data") {
+    return "Create, change and delete this app's tables";
+  }
+  if (spaceName === "account" && grant.family === "bootstrap-sql") {
+    return "Create, change and delete tables in your TinyCloud account";
+  }
+  if (grant.family === "own-app-data" || grant.family === "cross-app-data") {
+    return "Create, change and delete tables in application data";
+  }
+  return null;
+}
+
+/**
+ * A default-network grant that carries encryption setup and decrypt together.
+ * The combined phrase would present the default-key decrypt as setup-only, so
+ * `buildStatements` renders the setup verbs and the decrypt verbs as two rows.
+ */
+function splitsDefaultKeyDecrypt(grant: CapabilityGrant): boolean {
+  if (!ENCRYPTION_SERVICES.has(grant.service)) return false;
+  if (
+    grant.serviceMismatch === true ||
+    grant.appScopeNearMiss === true ||
+    grant.appScopedSecret
+  ) {
+    return false;
+  }
+  const verbs = classifyVerbs(grant.actions.map((a) => a.ability));
+  return (
+    verbs.hasCreate &&
+    verbs.hasDecrypt &&
+    !verbs.hasRevoke &&
+    DEFAULT_KEY_NETWORK_URN.test(resourceOf(grant))
+  );
+}
+
+/**
+ * Statement rows for a grant. A KV/SQL grant that mixes `schema` with other
+ * recognized abilities yields two rows: the read/update row for the other
+ * abilities, and a separate row for schema. Schema is never merged into an
+ * update row. Callers must render every returned row; `buildStatement` alone
+ * renders only the non-schema part of a mixed grant.
+ */
+export function buildStatements(grant: CapabilityGrant): StatementEntry[] {
+  if (splitsDefaultKeyDecrypt(grant)) {
+    return [
+      buildStatement({
+        ...grant,
+        actions: grant.actions.filter((a) => !classifyVerbs([a.ability]).hasDecrypt),
+      }),
+      buildStatement({
+        ...grant,
+        actions: grant.actions.filter((a) => classifyVerbs([a.ability]).hasDecrypt),
+      }),
+    ];
+  }
+  const schemaActions = grant.actions.filter(
+    (a) => verbOf(a.ability) === "schema",
+  );
+  const otherActions = grant.actions.filter(
+    (a) => verbOf(a.ability) !== "schema",
+  );
+  const splittable =
+    schemaActions.length > 0 &&
+    otherActions.length > 0 &&
+    SQL_SERVICES.has(grant.service) &&
+    grant.serviceMismatch !== true &&
+    grant.appScopeNearMiss !== true &&
+    !grant.appScopedSecret &&
+    grant.actions.every((a) => SQL_RECOGNIZED_ABILITIES.has(a.ability)) &&
+    schemaOnlyStatementText(
+      { ...grant, actions: schemaActions },
+      spaceNameOf(grant.space),
+    ) !== null;
+  if (!splittable) return [buildStatement(grant)];
+  return [
+    buildStatement({ ...grant, actions: otherActions }),
+    buildStatement({ ...grant, actions: schemaActions }),
+  ];
+}
+
 /**
  * Compute the deterministic statement for a grant. Match order:
  *   1. Encryption create + decrypt combined form (bundle across grants must
@@ -485,6 +618,14 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
   if (grant.serviceMismatch === true) {
     return fallbackStatement(grant);
   }
+  // Schema is never folded into another row. A mixed schema grant falls back
+  // to the literal wire tuple here; buildStatements() renders the split rows.
+  if (
+    grant.actions.some((a) => verbOf(a.ability) === "schema") &&
+    grant.actions.some((a) => verbOf(a.ability) !== "schema")
+  ) {
+    return fallbackStatement(grant);
+  }
 
   // Blocker 4 (Defect 2): near-miss short-circuit.
   //
@@ -500,6 +641,12 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
   // family/service-shaped branch fires.
   if (grant.appScopeNearMiss) {
     return fallbackStatement(grant);
+  }
+
+  // Schema-only SQL grants get their own row; see schemaOnlyStatementText.
+  const schemaText = schemaOnlyStatementText(grant, spaceName);
+  if (schemaText !== null) {
+    return { primaryText: schemaText, service, resource };
   }
 
   // An app-scoped secret reaches this branch only after the exact,
@@ -715,19 +862,11 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
     (KV_SERVICES.has(service) || SQL_SERVICES.has(service)) &&
     !isSecretsSpace(space)
   ) {
-    const knownSubject: Record<string, string> = {
-      account: "account data",
-      applications: "application data",
-      default: "TinyCloud data",
-      public: "public data",
-    };
-    const subject = spaceName
-      ? `another user's ${knownSubject[spaceName] ?? `${spaceName} data`}`
-      : "another user's TinyCloud data";
-    if (verbs.hasRead && (verbs.hasWrite || verbs.hasSchema)) {
+    const subject = otherUserSubject(spaceName);
+    if (verbs.hasRead && verbs.hasWrite) {
       return { primaryText: `Read and update ${subject}`, service, resource };
     }
-    if (verbs.hasWrite || verbs.hasSchema) {
+    if (verbs.hasWrite) {
       return { primaryText: `Update ${subject}`, service, resource };
     }
     if (verbs.hasRead || verbs.hasList || verbs.hasMetadata) {
@@ -840,14 +979,14 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
     grant.family === "own-app-data" &&
     (KV_SERVICES.has(service) || SQL_SERVICES.has(service))
   ) {
-    if (verbs.hasRead && (verbs.hasWrite || verbs.hasSchema)) {
+    if (verbs.hasRead && verbs.hasWrite) {
       return {
         primaryText: "Read and update application data",
         service,
         resource,
       };
     }
-    if (verbs.hasWrite || verbs.hasSchema) {
+    if (verbs.hasWrite) {
       return { primaryText: "Update application data", service, resource };
     }
     if (verbs.hasRead || verbs.hasList || verbs.hasMetadata) {
@@ -877,14 +1016,14 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
     (grant.family === "bootstrap-kv" || grant.family === "bootstrap-sql") &&
     (KV_SERVICES.has(service) || SQL_SERVICES.has(service))
   ) {
-    if (verbs.hasRead && (verbs.hasWrite || verbs.hasSchema)) {
+    if (verbs.hasRead && verbs.hasWrite) {
       return {
         primaryText: "Read and update your TinyCloud data",
         service,
         resource,
       };
     }
-    if (verbs.hasWrite || verbs.hasSchema) {
+    if (verbs.hasWrite) {
       return { primaryText: "Update your TinyCloud data", service, resource };
     }
     if (verbs.hasRead || verbs.hasList || verbs.hasMetadata) {
@@ -947,6 +1086,9 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
       return fallbackStatement(grant);
     }
     if (verbs.hasCreate && verbs.hasDecrypt) {
+      // A default-network combination is split by buildStatements; a single
+      // row must not present the default-key decrypt as setup-only.
+      if (DEFAULT_KEY_NETWORK_URN.test(resource)) return fallbackStatement(grant);
       return {
         primaryText: "Set up encrypted data access and decrypt protected data",
         service,
@@ -955,7 +1097,9 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
     }
     if (verbs.onlyDecrypt || (verbs.hasDecrypt && !verbs.hasCreate)) {
       return {
-        primaryText: "Decrypt protected data",
+        primaryText: DEFAULT_KEY_NETWORK_URN.test(resource)
+          ? DECRYPT_DEFAULT_KEY_STATEMENT
+          : "Decrypt protected data",
         service,
         resource,
       };

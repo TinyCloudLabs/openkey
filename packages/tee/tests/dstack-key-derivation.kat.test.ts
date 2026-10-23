@@ -39,7 +39,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { secp256k1 } from '@noble/curves/secp256k1';
+import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { keccak256 } from 'viem';
 
 const KNOWN_ANSWER = {
@@ -92,8 +92,10 @@ function v0DeriveKey(path: string): Buffer {
 function v0SignatureChain(purpose: string, derivedKey: Buffer): string[] {
   const pubkey = Buffer.from(secp256k1.getPublicKey(derivedKey, true)).toString('hex');
   const digest = keccak256(Buffer.from(`${purpose}:${pubkey}`), 'bytes');
-  const signature = secp256k1.sign(digest, SIMULATOR_APP_K256_KEY);
-  const link = Buffer.concat([signature.toCompactRawBytes(), Buffer.from([signature.recovery])]);
+  // noble v2 signs the unhashed message by default, so the keccak256 digest is
+  // passed with `prehash: false`. Its `recovered` format is `recid || r || s`.
+  const signature = Buffer.from(secp256k1.sign(digest, SIMULATOR_APP_K256_KEY, { prehash: false, format: 'recovered' }));
+  const link = Buffer.concat([signature.subarray(1), signature.subarray(0, 1)]);
   return [link.toString('hex'), SIMULATOR_APP_K256_SIGNATURE];
 }
 

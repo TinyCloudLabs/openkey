@@ -2,7 +2,10 @@
   "name": "openkey",
   "private": true,
   "license": "SEE LICENSE IN LICENSE.md",
-  "workspaces": ["apps/*", "packages/*"],
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
     "dev": "turbo dev",
     "dev:api": "turbo dev --filter @openkey/api",
@@ -41,11 +44,11 @@
     "npm-pub": "npm config set registry https://registry.npmjs.org/"
   },
   "devDependencies": {
-    "@changesets/cli": "^2.27.1",
-    "@changesets/read": "0.6.6",
+    "@changesets/cli": "^3.0.3",
+    "@changesets/read": "1.0.1",
     "@rollup/rollup-darwin-x64": "^4.57.1",
     "@tailwindcss/vite": "^4.1.18",
-    "portless": "^0.14.0",
+    "portless": "^0.15.6",
     "tailwindcss": "^4.1.18",
     "turbo": "^2.3.0",
     "typescript": "^6.0.0"
@@ -59,12 +62,15 @@
     "better-auth": "^1.6.9",
     "bits-ui": "^2.15.2",
     "clsx": "^2.1.1",
-    "dotenv": "^17.2.3",
+    "dotenv": "^18.0.0",
     "hono": "^4.11.3",
     "nanostores": "^1.2.0",
     "resend": "^6.6.0",
     "tailwind-merge": "^3.4.0",
     "tailwind-variants": "^3.2.2",
     "viem": "^2.43.5"
+  },
+  "overrides": {
+    "undici": "7.29.1"
   }
 }

@@ -6,6 +6,7 @@
   import { api, type EthereumKey } from '$lib/api';
   import { copyText } from '$lib/clipboard';
   import Button from '$lib/components/ui/button.svelte';
+  import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import SiweMessage from '$lib/components/ui/siwe-message.svelte';
   import CliSigningAdapter from '$lib/components/signing/cli-signing-adapter.svelte';
@@ -24,7 +25,11 @@
   } from '$lib/delegate-link-policy';
   import { preparedMatchesSelection, reviewSelectionToActionKeys } from '$lib/delegate-review-selection';
   import { expectedSigner } from '$lib/delegate-expected-signer';
-  import { autoSelectKey, keyPickerLayout } from '$lib/delegate-key-selection';
+  import { autoSelectKey } from '$lib/delegate-key-selection';
+  import DelegateSigningHint from '$lib/components/signing/delegate-signing-hint.svelte';
+  import { shouldShowLoopbackHint } from '$lib/delegate-signing-hint';
+  import { startCodeCountdown, remainingFromServerClock, type CodeCountdownSnapshot } from '$lib/delegate-code-countdown';
+  import { closeThisTab, browserCloseEnvironment } from '$lib/delegate-close-tab';
   import {
     parseSpaceSetup,
     spaceReadinessResult,
@@ -79,6 +84,7 @@
   let spaceSetup = $state<SpaceSetupNotice | null>(null);
   let spaceReadiness = $state<ReturnType<typeof spaceReadinessResult>>(null);
   let callbackFailed = $state(false);
+  let callbackInFlight = $state(false);
   let copied = $state(false);
   let step = $state<'select-key' | 'link-wallet' | 'consent' | 'choose-wallet' | 'done'>('select-key');
   let preparedData = $state<any>(null);
@@ -87,6 +93,35 @@
   let permissionOptions = $state<DelegatePermission[]>([]);
   let selectedActionKeys = $state<string[]>([]);
   let editingPermissions = $state(false);
+  let codeDeadline = $state<number | null>(null);
+  let codeCountdown = $state<CodeCountdownSnapshot | null>(null);
+  let codeAnnouncement = $state('');
+  let closeStuck = $state(false);
+  let cancelCloseAttempt: (() => void) | null = null;
+
+  // Countdown for the short code. Stopped when the deadline changes or the page is destroyed.
+  $effect(() => {
+    const deadline = codeDeadline;
+    if (deadline === null) return;
+    codeAnnouncement = '';
+    return startCodeCountdown({
+      deadline,
+      onUpdate: (snapshot) => {
+        codeCountdown = snapshot;
+        if (snapshot.announcement) codeAnnouncement = snapshot.announcement;
+      },
+    });
+  });
+
+  // Cancels a pending Close check when the page is destroyed.
+  $effect(() => () => cancelCloseAttempt?.());
+
+  function requestClose() {
+    cancelCloseAttempt?.();
+    cancelCloseAttempt = closeThisTab(browserCloseEnvironment(), () => {
+      closeStuck = true;
+    });
+  }
   let updatingPermissions = $state(false);
   let permissionsEdited = $state(false);
   let authorizationContextToken = $state<string | null>(null);
@@ -311,6 +346,9 @@
     : hostCheck?.ok === false ? hostCheck.reason : '';
   if (linkPolicyError) error = linkPolicyError;
   const approvedCallback = callbackCheck?.ok ? callbackCheck.callback : null;
+  const showLoopbackHint = $derived(
+    shouldShowLoopbackHint({ delegating, approvedCallback, deviceTransactionId, callbackInFlight, pasteCode }),
+  );
   const hostNeedsAcknowledgment = hostCheck?.ok === true && !hostCheck.recognized;
   let hostAcknowledged = $state(false);
   const delegationExpiresAt = $derived(/^Expiration Time:\s*(.+)$/m.exec(siweMessage)?.[1]?.trim() ?? '');
@@ -354,9 +392,8 @@
   // True when the user has explicitly chosen to proceed with a non-matching
   // wallet via the override path on the key picker.
   let overrideMismatch = $state(false);
-  // With no wallet named, the picker offers the primary key; the other keys
+  // With no wallet named, KeyPicker offers the primary key; the other keys
   // (separate account owners) stay hidden until the user asks for them.
-  const pickerLayout = $derived(keyPickerLayout(keys, expectedAddress));
   let showOtherKeys = $state(false);
   const selectedMatchesExpected = $derived(
     !expectedAddress ||
@@ -1076,7 +1113,10 @@
       if (typeof delegationExpiresAt !== 'string') throw new Error('The approved delegation has no expiry binding.');
       // The owner may have unchecked capabilities: bind and relay exactly
       // what the signed delegation grants, in the request's manifest form.
-      const approvedPermissions = approvedDevicePermissions(requestedPermissions, payload.permissions);
+      const approvedPermissions = approvedDevicePermissions(requestedPermissions, payload.permissions, {
+        address: payload.address,
+        chainId: payload.chainId,
+      });
       const relay = await encryptDeviceRelay({ ...payload, permissions: approvedPermissions });
       const response = await fetch(`${API_URL}/api/device-authorizations/${encodeURIComponent(deviceTransactionId)}/approve`, {
         method: 'POST',
@@ -1104,6 +1144,7 @@
     }
 
     if (approvedCallback) {
+      callbackInFlight = true;
       try {
         const cbRes = await fetch(approvedCallback, {
           method: 'POST',
@@ -1122,6 +1163,8 @@
         return;
       } catch {
         callbackFailed = true;
+      } finally {
+        callbackInFlight = false;
       }
     }
 
@@ -1136,7 +1179,14 @@
       });
       if (response.ok) {
         const result = await response.json();
-        if (/^[a-z2-7]{4}-[a-z2-7]{4}$/i.test(result.code)) shortCode = result.code.toUpperCase();
+        const remainingMs = typeof result.expiresAt === 'string'
+          ? remainingFromServerClock(result.expiresAt, response.headers.get('date'))
+          : null;
+        if (/^[a-z2-7]{4}-[a-z2-7]{4}$/i.test(result.code)) {
+          shortCode = result.code.toUpperCase();
+          // Read at receipt: the countdown runs on the monotonic clock from here.
+          if (remainingMs !== null) codeDeadline = performance.now() + remainingMs;
+        }
       }
     } catch {
       // The full delegation remains available when the broker is unreachable.
@@ -1241,11 +1291,17 @@
             {/if}
             {#if shortCode}
               <div class="w-full rounded-xl bg-surface-50 border border-surface-200 px-3 py-4">
-                <div class="font-mono text-2xl font-semibold tracking-widest text-surface-900 select-all">{shortCode}</div>
-                <p class="text-surface-500 text-xs mt-2">Valid for 10 minutes</p>
+                <div class="font-mono text-2xl font-semibold tracking-widest select-all {codeCountdown?.expired ? 'text-surface-400 line-through' : 'text-surface-900'}">{shortCode}</div>
+                {#if codeCountdown}
+                  <p role="timer" aria-live="off" class="text-sm mt-2 {codeCountdown.expired ? 'font-medium text-amber-900' : 'text-surface-600'}">{codeCountdown.text}</p>
+                  <p class="text-surface-500 text-xs mt-1">Works once.</p>
+                {:else}
+                  <p class="text-surface-600 text-sm mt-2">Use within 5 minutes. Works once.</p>
+                {/if}
               </div>
+              <p class="sr-only" role="status" aria-live="polite">{codeAnnouncement}</p>
               <button
-                class="mt-3 rounded-lg border border-surface-200 bg-surface-50 px-4 py-2 text-sm font-medium text-surface-900 hover:bg-surface-100"
+                class="mt-3 rounded-lg border border-surface-200 bg-surface-50 px-4 py-2 text-sm font-medium text-surface-900 hover:bg-surface-100 disabled:cursor-not-allowed disabled:opacity-50"
                 onclick={() => copyCode(shortCode)}
                 aria-label="Copy short code"
               >{copied ? 'Copied' : 'Copy code'}</button>
@@ -1270,6 +1326,14 @@
                 aria-label="Copy full delegation code"
               >{copied ? 'Copied' : 'Copy full code'}</button>
             </details>
+            {#if closeStuck}
+              <p class="text-surface-600 text-sm mt-4">You can close this tab.</p>
+            {:else}
+              <button
+                class="mt-4 rounded-lg border border-surface-200 bg-surface-50 px-4 py-2 text-sm font-medium text-surface-900 hover:bg-surface-100"
+                onclick={requestClose}
+              >Close</button>
+            {/if}
           {:else}
             <h2 class="text-lg font-semibold text-surface-900 mb-2">Authenticated</h2>
             <p class="text-surface-500 text-sm">You can close this window and return to the CLI.</p>
@@ -1450,6 +1514,7 @@
             {spaceSetupNoticeText(spaceSetup)}
           </div>
         {/if}
+        <DelegateSigningHint show={showLoopbackHint} />
         {/if}
         {/snippet}
 
@@ -1600,84 +1665,31 @@
             </Button>
           </div>
         {:else}
-          {#snippet keyButton(key: EthereumKey)}
-            {@const isExpected = !!expectedAddress && key.address.toLowerCase() === expectedAddress}
-            {@const isMismatch = !!expectedAddress && !isExpected}
-            <button
-              class="flex justify-between items-center p-4 bg-white border rounded-xl cursor-pointer transition-all group"
-              class:border-surface-900={isExpected}
-              class:bg-surface-50={isExpected}
-              class:border-surface-200={!isExpected}
-              class:hover:border-surface-900={!isMismatch}
-              class:hover:bg-surface-50={!isMismatch}
-              class:opacity-60={isMismatch && !overrideMismatch}
-              disabled={isMismatch && !overrideMismatch}
-              onclick={() => onKeySelect(key)}
-            >
-              <span class="font-medium flex items-center gap-2">
-                {key.label || `Key ${key.keyIndex}`}
-                {#if key.keyType === 'EXTERNAL'}
-                  <span class="text-xs font-medium px-1.5 py-0.5 rounded-md bg-surface-100 text-surface-500">(External)</span>
-                {/if}
-                {#if key.isPrimary}
-                  <span class="text-xs font-medium px-1.5 py-0.5 rounded-md bg-surface-900 text-white">Primary</span>
-                {/if}
-                {#if isExpected}
-                  <span class="text-xs font-medium px-1.5 py-0.5 rounded-md bg-emerald-100 text-emerald-700">Requested</span>
-                {/if}
-              </span>
-              <code class="font-mono text-surface-400 text-sm">{formatAddress(key.address)}</code>
-            </button>
-          {/snippet}
-
-          {#if pickerLayout.kind === 'primary'}
-            <!--
-              TC-703: no wallet named, so lead with the primary key. Another
-              key is a different account owner; offer it only on request.
-            -->
-            <div class="flex flex-col gap-3">
-              <p class="text-surface-500 text-sm">Sign in with your primary key:</p>
-              {@render keyButton(pickerLayout.primary)}
-              {#if showOtherKeys}
-                <div class="w-full bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-xl text-sm" role="note">
-                  Each key is a separate account owner, with its own data and spaces. Signing in with a different key does not give the CLI the data in your primary key.
-                </div>
-                {#each pickerLayout.others as key}
-                  {@render keyButton(key)}
-                {/each}
-                <Button variant="secondary" onclick={showLinkWallet} class="rounded-xl">
-                  Link External Wallet
-                </Button>
-              {:else}
+          <KeyPicker
+            {keys}
+            {expectedAddress}
+            {overrideMismatch}
+            bind:showOtherKeys
+            onselect={onKeySelect}
+            primaryHeading="Sign in with your primary key:"
+            listHeading="Select a key to authorize:"
+            otherKeysWarning="Each key is a separate account owner, with its own data and spaces. Signing in with a different key does not give the CLI the data in your primary key."
+          >
+            {#snippet actions()}
+              {#if expectedAddress && !overrideMismatch && !keys.some((k) => k.address.toLowerCase() === expectedAddress)}
                 <button
                   type="button"
                   class="text-xs text-surface-500 hover:text-surface-900 transition-colors bg-transparent border-none cursor-pointer underline self-start"
-                  onclick={() => (showOtherKeys = true)}
+                  onclick={() => (overrideMismatch = true)}
                 >
-                  Use a different key
+                  Continue with a different wallet anyway
                 </button>
               {/if}
-            </div>
-          {:else}
-          <div class="flex flex-col gap-3">
-            <p class="text-surface-500 text-sm">Select a key to authorize:</p>
-            {#each pickerLayout.keys as key}
-              {@render keyButton(key)}
-            {/each}
-            {#if expectedAddress && !overrideMismatch && !keys.some((k) => k.address.toLowerCase() === expectedAddress)}
-              <button
-                type="button"
-                class="text-xs text-surface-500 hover:text-surface-900 transition-colors bg-transparent border-none cursor-pointer underline self-start"
-                onclick={() => (overrideMismatch = true)}
-              >
-                Continue with a different wallet anyway
-              </button>
-            {/if}
-            <Button variant="secondary" onclick={showLinkWallet} class="rounded-xl">
-              Link External Wallet
-            </Button>
-          </div>
-          {/if}
+              <Button variant="secondary" onclick={showLinkWallet} class="rounded-xl">
+                Link External Wallet
+              </Button>
+            {/snippet}
+          </KeyPicker>
         {/if}
       {/if}
     </Card>

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { ErrorHandler, MiddlewareHandler } from 'hono';
+import { TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS } from './services/tinycloud-hosts';
 
 export type ApiEnv = { Variables: { requestId: string } };
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
@@ -8,6 +9,40 @@ type ErrorFields = { error_name?: string; error_code?: string };
 type RequestContext = { requestId: string };
 
 const requestContext = new AsyncLocalStorage<RequestContext>();
+const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function configuredOriginMatches(origin: string, host: string | undefined): boolean {
+  if (!host) return false;
+  try { return new URL(host).origin === origin; }
+  catch { return false; }
+}
+
+// The pinned node SDK captures global fetch and has no transport hook for
+// sign-in/hosting. Install before dependencies, like the console boundary below.
+// Resolve context per call: cached SDK clients must not retain a prior request ID.
+const originalFetch = globalThis.fetch;
+globalThis.fetch = Object.assign(function fetchWithRequestId(input: Parameters<typeof fetch>[0], init?: RequestInit) {
+  const requestId = requestContext.getStore()?.requestId;
+  if (!requestId || !REQUEST_ID.test(requestId)) return originalFetch(input, init);
+  let origin: string;
+  try {
+    origin = new URL(input instanceof Request ? input.url : input).origin;
+  } catch {
+    return originalFetch(input, init);
+  }
+  if (!TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS.has(origin) &&
+      !configuredOriginMatches(origin, process.env.TINYCLOUD_URL) &&
+      !configuredOriginMatches(origin, process.env.TINYCLOUD_BOOTSTRAP_HOST)) {
+    return originalFetch(input, init);
+  }
+  const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+  headers.set('X-Request-Id', requestId);
+  // Native auto-follow carries custom headers across origins. Fail closed
+  // rather than replay signed requests; explicit manual/error modes still work.
+  const redirect = init?.redirect ?? (input instanceof Request ? input.redirect : 'follow');
+  return originalFetch(input, { ...init, headers, redirect: redirect === 'follow' ? 'error' : redirect });
+}, originalFetch);
+
 const EVENTS = {
   better_auth: true, otp_delivery_unconfigured: true, auth_key_generated: true, auth_key_generation_failed: true,
   auth_email_signup_confirmation_required: true, auth_email_signup_confirmed: true, auth_email_signup_refused: true,
@@ -23,6 +58,9 @@ const EVENTS = {
   native_consent_activation_did_not_host_space: true, native_consent_host_activation_failed: true,
   oauth_client_create_failed: true, oauth_client_delete_failed: true, oauth_client_update_failed: true,
   tinycloud_bootstrap_background_failed: true, tinycloud_bootstrap_background_completed: true,
+  tinycloud_bootstrap_sweep_tick: true, tinycloud_bootstrap_sweep_healed: true,
+  tinycloud_bootstrap_sweep_still_failed: true, tinycloud_bootstrap_sweep_exhausted: true,
+  tinycloud_bootstrap_sweep_failed: true,
   tinycloud_bootstrap_space_registry_completed: true, native_par_valid_request_volume_threshold_reached: true,
   native_par_request_cleanup_failed: true, native_session_proof_cleanup_failed: true,
   scoreboard_protocol_users_call: true, app_sign_in_record_failed: true,
@@ -34,6 +72,7 @@ const CONFIG_KEYS: Record<string, true> = { BETTER_AUTH_URL: true };
 const ERROR_CODES: Record<string, true> = {
   P2002: true, P2025: true, P2010: true, P2034: true, tinycloud_bootstrap_failed: true,
   tinycloud_bootstrap_crashed: true, tinycloud_bootstrap_in_progress: true,
+  tinycloud_bootstrap_node_timeout: true, tinycloud_bootstrap_space_not_hosted: true,
   tinycloud_bootstrap_expired_request: true, BETTER_AUTH_URL: true, signup_token_invalid: true,
   signup_account_exists: true, quote_report_data_mismatch: true, quote_key_custody_mismatch: true,
   quote_format_invalid: true,
@@ -62,10 +101,10 @@ function safeErrorFields(error: unknown): ErrorFields {
   }
 }
 
-function emit(level: LogLevel, event: EventName, fields: Record<string, string | number | undefined> = {}): void {
+function emit(level: LogLevel, event: EventName, fields: Record<string, string | number | boolean | undefined> = {}): void {
   if (typeof level !== 'string' || !Object.hasOwn(LEVELS, level)) return;
   const safeEvent: EventName = typeof event === 'string' && Object.hasOwn(EVENTS, event) ? event : 'unlisted_event';
-  const line: Record<string, string | number> = {
+  const line: Record<string, string | number | boolean> = {
     ts: new Date().toISOString(),
     level,
     event: safeEvent,
@@ -89,6 +128,64 @@ export function logMetric(
   fields: { status?: number; count?: number },
 ): void {
   emit(level, event, { status: fields.status, count: fields.count });
+}
+
+export type RequestedSpaceHosted = 'yes' | 'no' | 'timeout';
+
+/**
+ * Outcome of a TinyCloud bootstrap run that finished after (or apart from) the response: which
+ * attempt it was, how long that attempt took, and whether the approval's requested space was
+ * hosted before the response. Numbers, a closed string set and allow-listed codes only.
+ */
+export function logTinyCloudBootstrapBackground(
+  event: 'tinycloud_bootstrap_background_failed' | 'tinycloud_bootstrap_background_completed',
+  fields: { errorCode?: string; durationMs: number; attempt: number; requestedSpaceHosted?: RequestedSpaceHosted },
+): void {
+  emit(event === 'tinycloud_bootstrap_background_failed' ? 'error' : 'info', event, {
+    error_code: typeof fields.errorCode === 'string' && Object.hasOwn(ERROR_CODES, fields.errorCode) ? fields.errorCode : undefined,
+    duration_ms: Number.isFinite(fields.durationMs) ? Math.max(0, Math.round(fields.durationMs)) : undefined,
+    attempt: fields.attempt,
+    requested_space_hosted: fields.requestedSpaceHosted,
+  });
+}
+
+export type TinyCloudBootstrapSweepEvent =
+  | 'tinycloud_bootstrap_sweep_tick'
+  | 'tinycloud_bootstrap_sweep_healed'
+  | 'tinycloud_bootstrap_sweep_still_failed'
+  | 'tinycloud_bootstrap_sweep_exhausted';
+
+/**
+ * Background sweep outcome: counts, attempt numbers, durations and allow-listed codes only. Never a
+ * row id, user, key, address, host, failure message or sealed material.
+ */
+export function logTinyCloudBootstrapSweep(
+  event: TinyCloudBootstrapSweepEvent,
+  fields: {
+    errorCode?: string;
+    durationMs?: number;
+    sweepAttempt?: number;
+    candidates?: number;
+    claimed?: number;
+    healed?: number;
+    stillFailed?: number;
+    skipped?: number;
+  },
+): void {
+  const level: LogLevel =
+    event === 'tinycloud_bootstrap_sweep_exhausted' ? 'error'
+    : event === 'tinycloud_bootstrap_sweep_still_failed' ? 'warn'
+    : 'info';
+  emit(level, event, {
+    error_code: typeof fields.errorCode === 'string' && Object.hasOwn(ERROR_CODES, fields.errorCode) ? fields.errorCode : undefined,
+    duration_ms: fields.durationMs !== undefined && Number.isFinite(fields.durationMs) ? Math.max(0, Math.round(fields.durationMs)) : undefined,
+    sweep_attempt: fields.sweepAttempt,
+    candidates: fields.candidates,
+    claimed: fields.claimed,
+    healed: fields.healed,
+    still_failed: fields.stillFailed,
+    skipped: fields.skipped,
+  });
 }
 
 export function logError(level: 'warn' | 'error', event: EventName, error: unknown): void {
@@ -152,13 +249,16 @@ function routeTemplate(route: string | undefined): string {
 }
 
 export const requestLogger: MiddlewareHandler<ApiEnv> = async (c, next) => {
-  const requestId = randomUUID();
+  const incoming = c.req.header('X-Request-Id');
+  const validIncoming = incoming !== undefined && REQUEST_ID.test(incoming);
+  const requestId = validIncoming ? incoming.toLowerCase() : randomUUID();
   const startedAt = performance.now();
   c.set('requestId', requestId);
   c.header('X-Request-Id', requestId);
   await requestContext.run({ requestId }, async () => {
     await next();
     emit('info', 'request', {
+      request_id_replaced: incoming !== undefined && !validIncoming,
       method: Object.hasOwn(METHODS, c.req.method) ? c.req.method : 'GET',
       route: routeTemplate(c.req.routePath),
       status: Number.isInteger(c.res.status) && c.res.status >= 100 && c.res.status <= 599 ? c.res.status : 500,

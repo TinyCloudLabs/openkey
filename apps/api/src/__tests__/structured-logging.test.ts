@@ -2,6 +2,7 @@ import { createServer } from 'node:net';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { Hono } from 'hono';
 import { apiErrorHandler, betterAuthLog, log, logConfigInvalid, logError, requestLogger, withScheduledLogContext, type ApiEnv } from '../log';
+import requestIdVectors from './request-id-vectors.json';
 
 const output: string[] = [];
 const stdoutWrite = process.stdout.write;
@@ -76,6 +77,85 @@ describe('API structured logging', () => {
     expect(output.join('\n')).not.toContain('key-secret');
     expect(output.join('\n')).not.toContain(canary);
   });
+
+  const uuid = 'a3b54a8d-9927-4c01-9a2e-5f4ec31e90b2';
+  for (const incoming of [2, 3, 5, 6].map((version) => uuid.replace('-4c01-', `-${version}c01-`))) {
+    test(`accepts and canonicalizes UUID request ID ${incoming}`, async () => {
+      const app = new Hono<ApiEnv>();
+      app.use('*', requestLogger);
+      app.get('/accepted', (c) => c.json({ requestId: c.get('requestId') }));
+      const response = await app.request('/accepted', { headers: { 'X-Request-Id': incoming } });
+      const expected = incoming.toLowerCase();
+      expect(response.headers.get('X-Request-Id')).toBe(expected);
+      expect(await response.json()).toEqual({ requestId: expected });
+      expect(output.map((line) => JSON.parse(line))).toEqual([
+        expect.objectContaining({ event: 'request', request_id: expected, request_id_replaced: false, route: '/accepted', status: 200 }),
+      ]);
+    });
+  }
+
+  for (const incoming of [
+    'owner-canary@example.test', 'Bearer token-canary', `urn:uuid:${uuid}`, `${uuid}suffix`, `${uuid.slice(0, 8)} ${uuid.slice(9)}`,
+  ]) {
+    test(`mints a UUID for absent or malformed ID ${JSON.stringify(incoming)}`, async () => {
+      const app = new Hono<ApiEnv>();
+      app.use('*', requestLogger);
+      app.get('/rejected', (c) => c.json({ requestId: c.get('requestId') }));
+      const headers: Record<string, string> = incoming === undefined ? {} : { 'X-Request-Id': incoming };
+      const response = await app.request('/rejected', { headers });
+      const minted = response.headers.get('X-Request-Id');
+      expect(minted).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      expect(minted).not.toBe(incoming);
+      expect(await response.json()).toEqual({ requestId: minted });
+      expect(JSON.parse(output[0]!).request_id).toBe(minted);
+      expect(JSON.parse(output[0]!).request_id_replaced).toBe(incoming !== undefined);
+      if (incoming) expect(output.join('\n')).not.toContain(incoming);
+    });
+  }
+
+  // Canonical N0 corpus at 76bd10752a52f179ac2a49214f488236d02f8192.
+  for (const vector of requestIdVectors.cases) {
+    test(`canonical request-ID vector: ${vector.name}`, async () => {
+      const app = new Hono<ApiEnv>();
+      app.use('*', requestLogger);
+      app.get('/conformance', (c) => c.json({ requestId: c.get('requestId') }));
+      const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: app.fetch });
+      try {
+        const headers = new Headers();
+        for (const value of vector.incoming ?? []) headers.append(requestIdVectors.header, value);
+        const request = new Request(`http://127.0.0.1:${server.port}/conformance`, { headers });
+        const rawValue = vector.incoming?.join(', ') ?? null;
+        const normalizedByFetch = request.headers.get(requestIdVectors.header) !== rawValue;
+        if (normalizedByFetch) {
+          // Fetch Headers trims padding/newlines before middleware. Preserve
+          // the corpus's application-visible bytes, without weakening HTTP parsing.
+          const getHeader = request.headers.get.bind(request.headers);
+          request.headers.get = (name) => name.toLowerCase() === requestIdVectors.header ? rawValue : getHeader(name);
+        }
+        const response = normalizedByFetch ? await app.request(request) : await fetch(request);
+        const effectiveId = response.headers.get(requestIdVectors.header);
+        expect(response.status).toBe(200);
+        expect(effectiveId).toHaveLength(36);
+        expect(effectiveId).toMatch(new RegExp(requestIdVectors.wire_regex));
+        if (vector.accepted) expect(effectiveId).toBe(vector.normalized!);
+        if (vector.mint) {
+          expect(effectiveId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+          for (const value of vector.incoming ?? []) {
+            if (value) expect(output.join('\n')).not.toContain(JSON.stringify(value).slice(1, -1));
+          }
+        }
+        expect(await response.json()).toEqual({ requestId: effectiveId });
+        expect(output.map((line) => JSON.parse(line))).toEqual([
+          expect.objectContaining({
+            event: 'request', request_id: effectiveId, request_id_replaced: vector.request_id_replaced,
+            route: '/conformance', status: 200,
+          }),
+        ]);
+      } finally {
+        server.stop(true);
+      }
+    });
+  }
 
   test('keeps post-response work associated with its originating concurrent request', async () => {
     const app = new Hono<ApiEnv>();
@@ -161,6 +241,165 @@ describe('API structured logging', () => {
     withScheduledLogContext(() => log('info', 'native_par_valid_request_volume_threshold_reached'));
     expect(output.map((line) => JSON.parse(line).request_id)).toEqual(['startup', 'scheduled']);
   });
+  test('keeps real HTTP completion logs and process sinks correlated without raw authority or PII', async () => {
+    const child = Bun.spawn([
+      process.execPath, 'test', './delegate-complete-context-routes.test.ts', '-t', 'TC-959 correlates',
+    ], { cwd: import.meta.dir, stdout: 'pipe', stderr: 'pipe' });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited, new Response(child.stdout).text(), new Response(child.stderr).text(),
+    ]);
+    expect(exitCode).toBe(0);
+    const lines = stdout.split('\n').filter((line) => line.startsWith('{')).map((line) => JSON.parse(line));
+    const requests = lines.filter((line) => line.event === 'request');
+    expect(requests.map((line) => line.status).sort()).toEqual([200, 200, 200, 200, 500]);
+    expect(requests.every((line) => line.route === '/api/delegate/complete')).toBe(true);
+    expect(requests.filter((line) => line.request_id_replaced === true)).toHaveLength(1);
+    expect(requests.filter((line) => line.request_id_replaced === false)).toHaveLength(4);
+    for (const requestId of [
+      uuid, '64e09578-4ca5-7d12-b172-2ef8762d04cb', '34db1e5b-6a32-4f70-9611-fc1e1f737975',
+    ]) expect(requests.filter((line) => line.request_id === requestId)).toHaveLength(1);
+    expect(lines.find((line) => line.event === 'api_error')).toMatchObject({
+      request_id: '34db1e5b-6a32-4f70-9611-fc1e1f737975', error_name: 'SyntaxError',
+    });
+    for (const canary of [
+      'owner-canary@example.test', 'token-canary', 'alice@example.test', 'did:pkh:',
+      '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+      'authorizationContextToken', 'Authorization', 'JSON Parse error',
+    ]) expect(`${stdout}${stderr}`).not.toContain(canary);
+  });
+
+  test('propagates only to node origins and preserves outbound Request and init semantics', async () => {
+    const received: Array<{ id: string | null; authorization: string | null; body: string; path: string }> = [];
+    const node = Bun.serve({
+      hostname: '127.0.0.1', port: 0,
+      async fetch(request) {
+        received.push({
+          id: request.headers.get('X-Request-Id'), authorization: request.headers.get('Authorization'),
+          body: await request.text(), path: new URL(request.url).pathname,
+        });
+        return new Response('ok');
+      },
+    });
+    const other = Bun.serve({
+      hostname: '127.0.0.1', port: 0,
+      fetch(request) { return Response.json({ id: request.headers.get('X-Request-Id') }); },
+    });
+    const nodeOrigin = `http://127.0.0.1:${node.port}`;
+    const previousHost = process.env.TINYCLOUD_URL;
+    process.env.TINYCLOUD_URL = nodeOrigin;
+    const app = new Hono<ApiEnv>();
+    app.use('*', requestLogger);
+    const { promise, resolve } = Promise.withResolvers<void>();
+    let background: Promise<void>;
+    app.get('/outbound', async (c) => {
+      await fetch(new Request(`${nodeOrigin}/request`, {
+        method: 'POST', headers: { Authorization: 'Bearer outbound-canary', 'X-Request-Id': 'stale-id' }, body: 'signed-body',
+      }));
+      await fetch(new Request(`${nodeOrigin}/override`, {
+        method: 'POST', headers: { Authorization: 'must-be-overridden' }, body: 'original-body',
+      }), { headers: { Authorization: 'Bearer override-canary' }, body: 'override-body' });
+      background = promise.then(async () => { await fetch(`${nodeOrigin}/background`); });
+      const thirdParty = await fetch(`http://127.0.0.1:${other.port}/third-party`);
+      await withScheduledLogContext(() => fetch(`${nodeOrigin}/scheduled`));
+      return c.json(await thirdParty.json());
+    });
+    try {
+      const response = await app.request('/outbound', { headers: { 'X-Request-Id': uuid } });
+      expect(await response.json()).toEqual({ id: null });
+      resolve();
+      await background!;
+      await fetch(`${nodeOrigin}/startup`);
+      expect(received).toEqual([
+        { id: uuid, authorization: 'Bearer outbound-canary', body: 'signed-body', path: '/request' },
+        { id: uuid, authorization: 'Bearer override-canary', body: 'override-body', path: '/override' },
+        { id: null, authorization: null, body: '', path: '/scheduled' },
+        { id: uuid, authorization: null, body: '', path: '/background' },
+        { id: null, authorization: null, body: '', path: '/startup' },
+      ]);
+      expect(output.join('\n')).not.toContain('outbound-canary');
+      expect(output.join('\n')).not.toContain('override-canary');
+    } finally {
+      resolve();
+      node.stop(true);
+      other.stop(true);
+      if (previousHost === undefined) delete process.env.TINYCLOUD_URL;
+      else process.env.TINYCLOUD_URL = previousHost;
+    }
+  });
+
+  for (const status of [302, 307]) {
+    test(`blocks injected IDs from following ${status} redirects without replaying signed requests`, async () => {
+      const untrusted: Array<{ id: string | null; path: string }> = [];
+      const other = Bun.serve({
+        hostname: '127.0.0.1', port: 0,
+        fetch(request) {
+          untrusted.push({ id: request.headers.get('X-Request-Id'), path: new URL(request.url).pathname });
+          return new Response('untrusted');
+        },
+      });
+      const received: Array<{ id: string | null; authorization: string | null; body: string; path: string }> = [];
+      const node = Bun.serve({
+        hostname: '127.0.0.1', port: 0,
+        async fetch(request) {
+          const path = new URL(request.url).pathname;
+          received.push({
+            id: request.headers.get('X-Request-Id'), authorization: request.headers.get('Authorization'),
+            body: await request.text(), path,
+          });
+          if (path === '/same-origin-target') return new Response('same-origin');
+          return new Response(null, {
+            status,
+            headers: { Location: path === '/same-origin' ? '/same-origin-target' : `http://127.0.0.1:${other.port}/untrusted-target` },
+          });
+        },
+      });
+      const nodeOrigin = `http://127.0.0.1:${node.port}`;
+      const previousHost = process.env.TINYCLOUD_URL;
+      process.env.TINYCLOUD_URL = nodeOrigin;
+      const app = new Hono<ApiEnv>();
+      app.use('*', requestLogger);
+      const init = { method: 'POST', headers: { Authorization: 'Bearer redirect-canary' }, body: 'signed-request-body' };
+      const outcome = async (request: Promise<Response>) => {
+        try { return (await request).status; }
+        catch { return 'rejected'; }
+      };
+      app.get('/redirect-check', async (c) => c.json({
+        defaultFollow: await outcome(fetch(`${nodeOrigin}/default-follow`, init)),
+        requestFollow: await outcome(fetch(new Request(`${nodeOrigin}/request-follow`, { ...init, redirect: 'follow' }))),
+        overrideFollow: await outcome(fetch(new Request(`${nodeOrigin}/override-follow`, { ...init, redirect: 'manual' }), { redirect: 'follow' })),
+        manual: await outcome(fetch(`${nodeOrigin}/manual`, { ...init, redirect: 'manual' })),
+        requestManual: await outcome(fetch(new Request(`${nodeOrigin}/request-manual`, { ...init, redirect: 'manual' }))),
+        overrideManual: await outcome(fetch(new Request(`${nodeOrigin}/override-manual`, init), { redirect: 'manual' })),
+        explicitError: await outcome(fetch(`${nodeOrigin}/explicit-error`, { ...init, redirect: 'error' })),
+        sameOriginFollow: await outcome(fetch(`${nodeOrigin}/same-origin`, init)),
+      }));
+      try {
+        const response = await app.request('/redirect-check', { headers: { 'X-Request-Id': uuid } });
+        const results = await response.json();
+        expect(untrusted).toEqual([]);
+        expect(results).toEqual({
+          defaultFollow: 'rejected', requestFollow: 'rejected', overrideFollow: 'rejected',
+          manual: status, requestManual: status, overrideManual: status, explicitError: 'rejected', sameOriginFollow: 'rejected',
+        });
+        expect(received).toEqual([
+          '/default-follow', '/request-follow', '/override-follow', '/manual', '/request-manual', '/override-manual', '/explicit-error', '/same-origin',
+        ].map((path) => ({ id: uuid, authorization: 'Bearer redirect-canary', body: 'signed-request-body', path })));
+        // No injected ID outside request context: keep native redirect behavior.
+        expect((await fetch(`${nodeOrigin}/cross-origin`)).status).toBe(200);
+        expect((await fetch(`http://127.0.0.1:${other.port}/direct-untrusted`)).status).toBe(200);
+        expect(untrusted).toEqual([
+          { id: null, path: '/untrusted-target' }, { id: null, path: '/direct-untrusted' },
+        ]);
+        expect(output.join('\n')).not.toContain('redirect-canary');
+        expect(output.join('\n')).not.toContain('signed-request-body');
+      } finally {
+        node.stop(true);
+        other.stop(true);
+        if (previousHost === undefined) delete process.env.TINYCLOUD_URL;
+        else process.env.TINYCLOUD_URL = previousHost;
+      }
+    });
+  }
   test('fatal exceptions and rejections terminate a child server after safe logging', async () => {
     const loggerModule = new URL('../log.ts', import.meta.url).href;
     for (const kind of ['uncaught', 'rejection']) {

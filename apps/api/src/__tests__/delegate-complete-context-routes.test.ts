@@ -3,11 +3,14 @@
 // request leaves the pending approval usable; a successful completion
 // consumes it exactly once, also under concurrent completions.
 
-import { afterEach, beforeAll, beforeEach, describe, expect, mock, setSystemTime, spyOn, test } from 'bun:test';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, setSystemTime, spyOn, test } from 'bun:test';
 import { createHash, generateKeyPairSync } from 'node:crypto';
 import { createMiddleware } from 'hono/factory';
+import { Hono } from 'hono';
+import { requestLogger, apiErrorHandler } from '../log';
+import type { ApiEnv } from '../log';
 import { privateKeyToAccount } from 'viem/accounts';
-import type { SpaceHostResult } from '@tinycloud/sdk-core';
+import type { SpaceHostResult, activateSessionWithHost as ActivateSessionWithHost } from '@tinycloud/sdk-core';
 import {
   DeviceAuthorizationService,
   MemoryDeviceAuthorizationStore,
@@ -55,6 +58,7 @@ const activateSessionWithHost = mock(async (_host: string, _header: { Authorizat
   success: true,
   status: 200,
 }));
+let realActivateSessionWithHost: typeof ActivateSessionWithHost;
 const ensureTinyCloudBootstrap = mock(async () => ({ status: 'complete' as const }));
 const isTinyCloudBootstrapComplete = mock(async () => bootstrapComplete);
 const deviceService = new DeviceAuthorizationService(new MemoryDeviceAuthorizationStore(), {
@@ -87,7 +91,10 @@ await mockModules({
     generatePrivateKey: () => privateKey,
     getAddressFromPrivateKey: () => account.address,
   }),
-  '@tinycloud/sdk-core': () => ({ activateSessionWithHost }),
+  '@tinycloud/sdk-core': (actual) => {
+    realActivateSessionWithHost = actual.activateSessionWithHost;
+    return { activateSessionWithHost };
+  },
   '../services/tinycloud-bootstrap': () => ({
     ensureTinyCloudBootstrap,
     isTinyCloudBootstrapComplete,
@@ -115,7 +122,14 @@ beforeAll(async () => {
     await next();
   }));
 });
+const savedRetryDelays = process.env.TINYCLOUD_BOOTSTRAP_RETRY_DELAYS_MS;
+afterAll(() => {
+  if (savedRetryDelays === undefined) delete process.env.TINYCLOUD_BOOTSTRAP_RETRY_DELAYS_MS;
+  else process.env.TINYCLOUD_BOOTSTRAP_RETRY_DELAYS_MS = savedRetryDelays;
+});
 beforeEach(() => {
+  // The retry of a failed setup (TC-1608) has its own tests; here a failed mock must not call back later.
+  process.env.TINYCLOUD_BOOTSTRAP_RETRY_DELAYS_MS = 'off';
   delete process.env.TINYCLOUD_BOOTSTRAP_HOST;
   resetContexts?.();
   currentUser = user;
@@ -392,6 +406,70 @@ async function completeBody(prepared: Record<string, any>, siwe: string = prepar
     selectedActionIds: prepared.selectedActionKeys,
   };
 }
+
+test('TC-959 correlates real HTTP completion and SDK node activation without changing signed authority', async () => {
+  const received: Array<{ requestId: string | null; authorization: string | null }> = [];
+  const node = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    fetch(request) {
+      received.push({ requestId: request.headers.get('X-Request-Id'), authorization: request.headers.get('Authorization') });
+      return Response.json({ activated: [], skipped: [] });
+    },
+  });
+  const nodeOrigin = `http://127.0.0.1:${node.port}`;
+  const previousHost = process.env.TINYCLOUD_URL;
+  process.env.TINYCLOUD_URL = nodeOrigin;
+  activateSessionWithHost.mockImplementation(realActivateSessionWithHost);
+  const app = new Hono<ApiEnv>();
+  app.use('*', requestLogger);
+  app.route('/api/delegate', router);
+  app.onError(apiErrorHandler);
+  const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: app.fetch });
+  const incoming = [
+    'owner-canary@example.test Bearer token-canary',
+    undefined,
+    'A3B54A8D-9927-4C01-9A2E-5F4EC31E90B2',
+    '64E09578-4CA5-7D12-B172-2EF8762D04CB',
+  ];
+  try {
+    const prepared = await Promise.all(incoming.map(() => prepare({ host: nodeOrigin, prefix: 'tc959' })));
+    const completed = await Promise.all(prepared.map(async (preparation, index) => {
+      const requestId = incoming[index];
+      const body = { ...await completeBody(preparation), host: nodeOrigin };
+      const response = await fetch(`http://127.0.0.1:${server.port}/api/delegate/complete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(requestId ? { 'X-Request-Id': requestId } : {}) },
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(200);
+      const result = await response.json() as Record<string, any>;
+      expect(result.hostActivated).toBe(true);
+      const correlationId = response.headers.get('X-Request-Id');
+      if (index >= 2) expect(correlationId).toBe(requestId!.toLowerCase());
+      else expect(correlationId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      expect(result.siwe).toBe(body.prepared.siwe);
+      expect(result.signature).toBe(body.signature);
+      const edge = received.find((entry) => entry.authorization === result.delegationHeader.Authorization);
+      expect(edge?.requestId).toBe(correlationId);
+      expect(correlationId).not.toBe(body.authorizationContextToken);
+      return correlationId;
+    }));
+    expect(new Set(completed).size).toBe(incoming.length);
+    const errorResponse = await fetch(`http://127.0.0.1:${server.port}/api/delegate/complete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Request-Id': '34db1e5b-6a32-4f70-9611-fc1e1f737975' },
+      body: '{',
+    });
+    expect(errorResponse.status).toBe(500);
+    expect(errorResponse.headers.get('X-Request-Id')).toBe('34db1e5b-6a32-4f70-9611-fc1e1f737975');
+  } finally {
+    server.stop(true);
+    node.stop(true);
+    if (previousHost === undefined) delete process.env.TINYCLOUD_URL;
+    else process.env.TINYCLOUD_URL = previousHost;
+  }
+});
 
 /** A fresh device transaction for the test session key and host. */
 async function startDeviceTransaction() {
@@ -822,15 +900,15 @@ describe('a CLI request without capabilities/read (TC-658)', () => {
 
 
 describe('TC-945 bootstrap budget', () => {
-  const savedBudget = process.env.TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS;
+  const savedBudget = process.env.TINYCLOUD_BOOTSTRAP_REQUESTED_SPACE_TIMEOUT_MS;
   const cleanups: Array<() => void> = [];
   beforeEach(() => {
-    process.env.TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS = '50';
+    process.env.TINYCLOUD_BOOTSTRAP_REQUESTED_SPACE_TIMEOUT_MS = '50';
     skipAgents();
   });
   afterEach(async () => {
-    if (savedBudget === undefined) delete process.env.TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS;
-    else process.env.TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS = savedBudget;
+    if (savedBudget === undefined) delete process.env.TINYCLOUD_BOOTSTRAP_REQUESTED_SPACE_TIMEOUT_MS;
+    else process.env.TINYCLOUD_BOOTSTRAP_REQUESTED_SPACE_TIMEOUT_MS = savedBudget;
     for (const cleanup of cleanups.splice(0)) cleanup();
     await new Promise((resolve) => setTimeout(resolve, 20));
   });
@@ -852,8 +930,12 @@ describe('TC-945 bootstrap budget', () => {
         const result = await approve(requestHost);
         expect(performance.now() - start).toBeLessThan(1000);
         expect(result.status).toBe(200);
-        expect(result.body).toMatchObject({ hostActivated: true, spaceReady: null, spacePending: true });
-        expect(result.body).not.toHaveProperty('spaceError');
+        expect(result.body).toMatchObject({
+          hostActivated: true,
+          spaceReady: null,
+          spacePending: true,
+          spaceError: 'tinycloud_requested_space_timeout',
+        });
         expect(result.body.delegationHeader?.Authorization).toBeString();
         expect(ensureTinyCloudBootstrap).toHaveBeenCalledWith(expect.objectContaining({ host: 'https://node.tinycloud.xyz' }));
         expect(unseal).toHaveBeenCalledTimes(2);
@@ -873,8 +955,9 @@ describe('TC-945 bootstrap budget', () => {
     }) as any);
     const result = await managedApproval(host);
     expect(result.status).toBe(200);
-    expect(result.body).toMatchObject({ hostActivated: true, spaceReady: null, spacePending: true });
-    expect(result.body).not.toHaveProperty('spaceError');
+    expect(result.body).toMatchObject({
+      hostActivated: true, spaceReady: null, spacePending: true, spaceError: 'tinycloud_bootstrap_in_progress',
+    });
   });
   test('other bootstrap failures keep the error contract without a pending marker', async () => {
     ensureTinyCloudBootstrap.mockImplementationOnce(async () => ({
@@ -914,8 +997,67 @@ describe('TC-945 bootstrap budget', () => {
       expect(unhandled).not.toHaveBeenCalled();
       expect(output).toHaveLength(1);
       const line = JSON.parse(output[0]!);
-      expect(line).toMatchObject({ level: 'error', event: 'tinycloud_bootstrap_background_failed', error_code: 'tinycloud_bootstrap_crashed', request_id: 'startup' });
-      expect(Object.keys(line).sort()).toEqual(['error_code', 'event', 'level', 'request_id', 'ts']);
+      expect(line).toMatchObject({
+        level: 'error',
+        event: 'tinycloud_bootstrap_background_failed',
+        error_code: 'tinycloud_bootstrap_crashed',
+        attempt: 1,
+        requested_space_hosted: 'timeout',
+        request_id: 'startup',
+      });
+      expect(Object.keys(line).sort()).toEqual(['attempt', 'duration_ms', 'error_code', 'event', 'level', 'request_id', 'requested_space_hosted', 'ts']);
     } finally { process.off('unhandledRejection', unhandled); process.stdout.write = originalWrite; }
+  });
+});
+
+// TC-1608: the route hands the setup the space the approval is for and the session it signed, and
+// answers as soon as that one space is reported, not when the whole setup ends.
+describe('TC-1608 requested space', () => {
+  const cleanups: Array<() => void> = [];
+  beforeEach(skipAgents);
+  afterEach(() => { for (const cleanup of cleanups.splice(0)) cleanup(); });
+  const wholeSetup = () => {
+    const { promise, resolve } = Promise.withResolvers<{ status: 'complete' }>();
+    cleanups.push(() => resolve({ status: 'complete' }));
+    return promise;
+  };
+
+  for (const [name, approve] of [['versioned', managedApproval], ['legacy', legacyApproval]] as const) {
+    test(`${name} approval answers ready once the node confirms the space, while the setup runs on`, async () => {
+      ensureTinyCloudBootstrap.mockImplementationOnce((async (input: any) => {
+        input.requestedSpace.report({ status: 'hosted' });
+        return wholeSetup();
+      }) as any);
+      const result = await approve(host);
+      expect(result.body).toMatchObject({ hostActivated: true, spaceReady: true });
+      expect(result.body).not.toHaveProperty('spacePending');
+      expect(result.body).not.toHaveProperty('spaceError');
+      expect(ensureTinyCloudBootstrap).toHaveBeenCalledTimes(1);
+      const [setup] = ensureTinyCloudBootstrap.mock.calls[0] as unknown as [Record<string, any>];
+      // The space this approval is for, not yet confirmed by an earlier attempt.
+      expect(setup.requestedSpace).toMatchObject({ space: 'agents', alreadyHosted: false });
+    });
+  }
+
+  test('a space the node did not confirm reports the failure with its code', async () => {
+    ensureTinyCloudBootstrap.mockImplementationOnce((async (input: any) => {
+      input.requestedSpace.report({
+        status: 'failed',
+        errorCode: 'tinycloud_bootstrap_space_not_hosted',
+        errorMessage: 'TinyCloud node did not host agents after its host delegation: space was skipped',
+      });
+      return wholeSetup();
+    }) as any);
+    const result = await managedApproval(host);
+    expect(result.body.spaceReady).toBe(false);
+    expect(result.body.spaceError).toContain('(tinycloud_bootstrap_space_not_hosted)');
+    expect(result.body).not.toHaveProperty('spacePending');
+  });
+
+  test('an approval for an already hosted space never starts the setup', async () => {
+    activateSessionWithHost.mockImplementation(async () => ({ success: true, skipped: [] }) as any);
+    const result = await managedApproval(host);
+    expect(result.body.spaceReady).toBe(true);
+    expect(ensureTinyCloudBootstrap).not.toHaveBeenCalled();
   });
 });

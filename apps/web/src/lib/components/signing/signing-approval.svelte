@@ -44,7 +44,7 @@
   } from "@openkey/capability-review";
   import {
     buildRenderPlan,
-    buildStatement,
+    buildStatements,
     grantReachesSecretDataOrDecryption,
     grantHeading,
     PROTOCOL_HEADLINE,
@@ -190,19 +190,20 @@
     >();
 
     for (const grant of selectedGrants) {
-      const statement = buildStatement(grant);
-      const existing = grouped.get(statement.primaryText);
-      if (existing) {
-        if (severityRank[grant.severity] > severityRank[existing.severity]) {
-          existing.severity = grant.severity;
+      for (const statement of buildStatements(grant)) {
+        const existing = grouped.get(statement.primaryText);
+        if (existing) {
+          if (severityRank[grant.severity] > severityRank[existing.severity]) {
+            existing.severity = grant.severity;
+          }
+        } else {
+          grouped.set(statement.primaryText, {
+            key: statement.primaryText,
+            primaryText: statement.primaryText,
+            severity: grant.severity,
+            unmapped: isUnmappedStatement(statement.primaryText),
+          });
         }
-      } else {
-        grouped.set(statement.primaryText, {
-          key: grant.id,
-          primaryText: statement.primaryText,
-          severity: grant.severity,
-          unmapped: isUnmappedStatement(statement.primaryText),
-        });
       }
     }
 

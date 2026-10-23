@@ -66,6 +66,9 @@ permissions:
 
 env:
   PHALA_CLI_VERSION: 1.1.19
+  # Production dstack OS the openkey-api CVM must run (the Phala KMS only releases app keys to this image).
+  PHALA_OS_IMAGE: dstack-0.5.12
+  PHALA_OS_IMAGE_HASH: 8db40cb23008d6213668b5816702d100b37b859a8a5bfd18d938ae3a1b3715bd
 
 jobs:
   preflight:
@@ -456,6 +459,21 @@ jobs:
           [ "$(phala --version)" = "v${PHALA_CLI_VERSION}+d2300dd" ]
           bun run db:generate
 
+      # Fail closed before the freeze if the CVM is not on the pinned production OS.
+      # To fix it, set the OS by hand: `phala api -X PATCH /cvms/<id>/os-image -F os_image_name=dstack-0.5.12`.
+      - name: Require production OS image on the CVM
+        env:
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+        run: |
+          set -euo pipefail
+          os=$(phala cvms get openkey-api --api-token "$PHALA_CLOUD_API_KEY" --json | jq -c '.os')
+          if ! jq -e --arg name "$PHALA_OS_IMAGE" --arg hash "$PHALA_OS_IMAGE_HASH" \
+            '.is_dev == false and .name == $name and .os_image_hash == $hash' <<<"$os" >/dev/null; then
+            echo "::error::openkey-api is not on the production OS image ${PHALA_OS_IMAGE} (${PHALA_OS_IMAGE_HASH}). Found: ${os}"
+            echo "Set the OS first with PATCH /cvms/<id>/os-image (os_image_name=${PHALA_OS_IMAGE}), then re-run. CI does not change the OS." >&2
+            exit 1
+          fi
+
       - name: Log in to Docker Hub
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
@@ -663,7 +681,7 @@ jobs:
             '.phase == "expanded" and .candidateDigestSha256 == $digest and .deterministicCandidateCount == $candidates and .existingCanonicalCount == $candidates and .unassignedCandidateCount == 0 and .selectionConflictCount == 0 and .predictedAddressChangeCount == 0 and .canonicalWithoutEligibleKeyCount == 0 and .tenantCustodyKeyCount == 0' \
             tc492-post.json >/dev/null
           sed -i "s|\${DOCKER_IMAGE}|skgbafa/openkey-api@${IMAGE_DIGEST}|g" docker-compose.prod.yml
-          phala deploy --api-token "$PHALA_CLOUD_API_KEY" --cvm-id openkey-api --compose docker-compose.prod.yml --no-public-logs --no-public-sysinfo --wait
+          phala deploy --api-token "$PHALA_CLOUD_API_KEY" --cvm-id openkey-api --compose docker-compose.prod.yml --no-public-logs --no-public-sysinfo --no-dev-os --image "$PHALA_OS_IMAGE" --wait
           phala ps openkey-api --api-token "$PHALA_CLOUD_API_KEY" --json > /tmp/containers-after.json
           EXPECTED_IMAGE="skgbafa/openkey-api@${IMAGE_DIGEST}" node <<'NODE'
           const fs = require('node:fs');
@@ -683,6 +701,19 @@ jobs:
           NODE
           rm -f /tmp/containers-after.json
           printf 'candidate-deployed\n' > tc492-phase.txt
+
+      # Fail closed if the deploy left the CVM on a different OS image.
+      - name: Verify production OS image after deploy
+        env:
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+        run: |
+          set -euo pipefail
+          os=$(phala cvms get openkey-api --api-token "$PHALA_CLOUD_API_KEY" --json | jq -c '.os')
+          if ! jq -e --arg name "$PHALA_OS_IMAGE" --arg hash "$PHALA_OS_IMAGE_HASH" \
+            '.is_dev == false and .name == $name and .os_image_hash == $hash' <<<"$os" >/dev/null; then
+            echo "::error::openkey-api is not on the production OS image ${PHALA_OS_IMAGE} (${PHALA_OS_IMAGE_HASH}) after deploy. Found: ${os}"
+            exit 1
+          fi
 
       - name: Recover old API when apply failed before the destructive boundary
         if: failure()

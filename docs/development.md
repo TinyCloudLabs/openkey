@@ -220,6 +220,30 @@ openkey/
 - Google sign-in uses verified email only. A new verified Google identity returns a five-minute, cookie-bound confirmation instead of creating an account; only `POST /api/auth/social/confirm` creates the account and session. A matching existing email does not link automatically. Sign in to that account, verify an email code through `POST /api/account/step-up/email-otp/send` and `/verify`, then link Google from Settings. The OAuth link state is also bound to that live, recently verified session at callback. Settings unlinks through `POST /api/account/social/unlink`, so an older valid session can use a fresh code without changing Better Auth's freshness policy for other routes. Unlinking is refused without a remaining usable sign-in method. A passkey sign-in does not replace the email-code step-up.
 - In dev mode (`TEE_MODE=development`), the TEE client uses deterministic mock keys instead of dstack.
 
+#### Request correlation (TC-959)
+
+- The API accepts a hyphenated RFC UUID version 1–8 `X-Request-Id` (RFC variant `8`, `9`, `a`, or `b`), case-insensitively, and normalizes it to lowercase. Missing, malformed, combined/duplicate, nil, invalid-version, and non-RFC-variant values get a fresh UUID v4. This incoming contract is shared with Tinychat and ptx-dev so a valid v7 ID is not replaced at an OpenKey boundary. The same ID appears in the response header and typed request/error logs, including error responses.
+- Typed request events include the boolean `request_id_replaced`: `true` only when a supplied header is rejected, `false` for a valid header or when an absent header causes minting. The rejected header text is never logged.
+- This is untrusted correlation metadata, not an identity or authorization claim. It never replaces SIWE nonces, authorization-context tokens, native request IDs, or server-generated signing/audit IDs. Do not put user identifiers or tokens in it.
+- `src/log.ts` is loaded before dependencies and wraps native fetch for the two trusted TinyCloud origins and the configured `TINYCLOUD_URL` / `TINYCLOUD_BOOTSTRAP_HOST` origins. This covers SDK-owned HTTP calls as well as direct calls without changing signed authorization headers or request bodies. Other destinations are unchanged. The ID is read from async context on each call, so cached clients and post-response work retain the correct originating request; startup/scheduled work does not send the `startup`/`scheduled` log labels as headers.
+- **Redirect compatibility:** when this boundary injects an ID, default or explicit `redirect: 'follow'` becomes `redirect: 'error'`. Both cross-origin and same-origin automatic redirects reject before any second hop; this avoids native fetch forwarding the ID to an untrusted origin and avoids replaying/changing signed methods, authorization, or bodies. Explicit `manual` still returns the redirect response, and explicit `error` is unchanged, respecting init-over-Request precedence. Configure the final node URL rather than a redirecting alias. Calls without an injected ID retain native redirect behavior.
+- Keep the logger import first in the API entry point. Do not bundle the API or capture a request ID in a cached client. No Vector shipping, sink configuration, or production rollout is part of this correlation change.
+
+The test corpus `apps/api/src/__tests__/request-id-vectors.json` vendors the exact canonical N0 bytes from [`samgbafa/tinycloud-dev@76bd10752a52f179ac2a49214f488236d02f8192`](https://github.com/samgbafa/tinycloud-dev/blob/76bd10752a52f179ac2a49214f488236d02f8192/ops/logging/request-id-vectors.json), with SHA-256 `d995cd9065a9e1c51bc4d3ed041c3bf2a0363e9a04a90f1d07914437d8dd9a80`. The accompanying [request-ID contract](https://github.com/samgbafa/tinycloud-dev/blob/76bd10752a52f179ac2a49214f488236d02f8192/ops/logging/request-id.md) defines acceptance, typed replacement metadata and redirect isolation.
+
+All 30 canonical cases run against the actual middleware. Cases whose bytes survive Fetch header parsing use loopback HTTP, including repeated/identical fields; padding and trailing-newline cases preserve the corpus's raw application-visible value at the middleware boundary because Fetch trims those bytes before dispatch. HTTP parser normalization/rejection itself is unchanged. Separate tests cover versions 2/3/5/6, raw-token/PII canaries and the actual SDK edge.
+
+Focused regression coverage (no Docker or production services):
+
+```bash
+bun run db:generate
+bun run build --filter @openkey/db --filter @openkey/tee
+bun test apps/api/src/__tests__/structured-logging.test.ts apps/api/src/__tests__/delegate-complete-context-routes.test.ts
+```
+
+The tests include a real loopback HTTP `/api/delegate/complete` → pinned SDK → node `/delegate` edge, concurrent accepted/minted IDs, unchanged signed authority, and child-process stdout/stderr leak checks. The complete API suite remains `bun test apps/api/src/__tests__`.
+
+
 ### Web (apps/web)
 
 - SvelteKit 5 with Tailwind CSS 4.

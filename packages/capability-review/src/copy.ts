@@ -45,6 +45,14 @@ export const FAMILY_LABEL: Record<CapabilityFamily, string> = {
   unknown: "Unknown capability",
 };
 
+/**
+ * Consent copy for a raw `tinycloud.encryption/decrypt` on the account's
+ * `:default` network. Single source of truth: statements.ts imports this
+ * constant and tests compare against it.
+ */
+export const DECRYPT_DEFAULT_KEY_STATEMENT =
+  "Decrypt anything encrypted with your account's default key — including your Secrets and every private share — whenever this app gets hold of the encrypted copy, until this access expires.";
+
 export const PROTOCOL_HEADLINE: Record<RequestProtocol, string> = {
   "legacy-message": "Sign message",
   "siwe-plain": "Sign in with Ethereum",
