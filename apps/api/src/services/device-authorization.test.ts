@@ -352,6 +352,16 @@ describe('OpenKey device authorization service', () => {
       .rejects.toMatchObject({ code: 'invalid_result', status: 400, message: expect.stringContaining('tinycloud.capabilities/read') });
   });
 
+  test('refuses kv entries plus the decrypt entry without capabilities/read at start', async () => {
+    const input = fixture();
+    const exact = { service: 'tinycloud.encryption', space: 'default', path: '', actions: ['tinycloud.encryption/decrypt'] };
+    const kvOnly = publishingPermissions().slice(0, 2);
+    for (const permissions of [[...kvOnly, exact], [exact, ...kvOnly]]) {
+      await expect(input.service.start({ ...input.request, permissions }, '198.51.100.20'))
+        .rejects.toMatchObject({ code: 'invalid_scope', status: 400, message: expect.stringContaining('tinycloud.capabilities/read') });
+    }
+  });
+
   test('refuses a decrypt entry beside kv entries in another space', async () => {
     const input = fixture();
     const exact = { service: 'tinycloud.encryption', space: 'default', path: '', actions: ['tinycloud.encryption/decrypt'] };
