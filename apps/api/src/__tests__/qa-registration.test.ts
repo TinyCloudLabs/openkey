@@ -190,7 +190,11 @@ test('a QA-eligible pattern whose domain is not a literal domain is refused at l
 });
 
 test('a QA-eligible pattern whose literal domain is a public mail domain or a subdomain of one is refused at load', () => {
-  const publicDomains = ['gmail.com', 'outlook.com', 'hotmail.com', 'yahoo.com', 'icloud.com', 'proton.me', 'protonmail.com'];
+  const publicDomains = [
+    'gmail.com', 'outlook.com', 'hotmail.com', 'yahoo.com', 'icloud.com', 'proton.me', 'protonmail.com',
+    'googlemail.com', 'aol.com', 'gmx.com', 'gmx.de', 'gmx.net', 'mail.com', 'yandex.com', 'yandex.ru',
+    'zoho.com', 'fastmail.com', 'fastmail.fm',
+  ];
   for (const domain of publicDomains) {
     const escaped = domain.replaceAll('.', '\\.');
     for (const regex of [`^qa-[a-z0-9]+@${escaped}$`, `^.+@${escaped}$`, `^qa-[0-9]+@eu\\.${escaped}$`]) {

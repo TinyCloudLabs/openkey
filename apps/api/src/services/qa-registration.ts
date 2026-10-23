@@ -22,15 +22,26 @@ export type RegistryLoad = { registry: TestAccountRegistry; problem: boolean; re
 const EMPTY_REGISTRY: TestAccountRegistry = { userIds: [], clientIds: [], emailDomains: [], qaEligiblePatterns: [] };
 const INVALID_REGISTRY: RegistryLoad = { registry: EMPTY_REGISTRY, problem: true };
 
-/** Addresses at these domains are never QA-eligible. */
+/** Addresses at these domains, or at a subdomain of one, are never QA-eligible. */
 export const PUBLIC_MAIL_DOMAINS: readonly string[] = [
   'gmail.com',
+  'googlemail.com',
   'outlook.com',
   'hotmail.com',
   'yahoo.com',
   'icloud.com',
   'proton.me',
   'protonmail.com',
+  'aol.com',
+  'gmx.com',
+  'gmx.de',
+  'gmx.net',
+  'mail.com',
+  'yandex.com',
+  'yandex.ru',
+  'zoho.com',
+  'fastmail.com',
+  'fastmail.fm',
 ];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
