@@ -41,6 +41,9 @@ import { resolveRequestUri } from './services/native-delegation/par';
 import { exchangeNativeCode, generateNativeRefreshToken, withNativeTokenGuardErrors } from './services/native-delegation/code-exchange';
 import { providerTokenOptions } from './services/native-delegation/provider-tokens';
 import { emailSignupConfirmation } from './services/email-signup-confirmation';
+import { hasFreshEmailStepUp } from './services/email-otp-step-up';
+import { googleSocialConfirmation } from './services/google-social-confirmation';
+import { assertCurrentGoogleLink, googleLinkStatePlugin } from './services/google-link-state';
 import { betterAuthLog, log, logError } from './log';
 
 export const prisma: PrismaClient = createPrismaClient();
@@ -171,6 +174,31 @@ const passkeyFreshnessPlugin = {
   },
 } satisfies BetterAuthPlugin;
 
+const accountLinkingStepUpPlugin = {
+  id: 'openkey-account-linking-step-up',
+  hooks: {
+    before: [{
+      matcher: (ctx) => ctx.path === '/link-social' || ctx.path === '/unlink-account',
+      handler: (async (ctx: { path: string; headers?: Headers }) => {
+        const session = ctx.headers ? await auth.api.getSession({ headers: ctx.headers }) : null;
+        if (!session || !await hasFreshEmailStepUp(prisma, session.session.id)) {
+          throw new APIError('FORBIDDEN', {
+            code: 'EMAIL_STEP_UP_REQUIRED',
+            message: 'Verify an email code before changing linked accounts.',
+          });
+        }
+        if (ctx.path === '/unlink-account' && !session.user.emailVerified
+          && await prisma.passkey.count({ where: { userId: session.user.id } }) === 0) {
+          throw new APIError('FORBIDDEN', {
+            code: 'LAST_SIGN_IN_METHOD',
+            message: 'Add a passkey or a deliverable verified email before unlinking this account.',
+          });
+        }
+      }) as AuthMiddleware,
+    }],
+  },
+} satisfies BetterAuthPlugin;
+
 // Better Auth's authorize endpoint otherwise strips extension query keys
 // before the OAuth handler sees them. PAR's resolver and the full-query guard
 // establish the native bindings; extending the schema keeps them signed.
@@ -197,6 +225,7 @@ export const auth = betterAuth({
 
   database: prismaAdapter(withNativeTokenGuardErrors(prisma), {
     provider: 'postgresql',
+    transaction: true,
   }),
 
   // Passwords stay disabled; email OTP is the default authentication path.
@@ -211,8 +240,20 @@ export const auth = betterAuth({
     storeSessionInDatabase: true, // Required for OAuth provider
   },
 
+  account: {
+    encryptOAuthTokens: true,
+    accountLinking: {
+      disableImplicitLinking: true,
+      allowDifferentEmails: true,
+      allowUnlinkingAll: true,
+    },
+  },
+
   plugins: [
     passkeyFreshnessPlugin,
+    accountLinkingStepUpPlugin,
+    googleLinkStatePlugin(prisma),
+    googleSocialConfirmation(prisma),
     // Passkeys are an encouraged optional sign-in and step-up method.
     passkey({
       rpID,
@@ -411,6 +452,14 @@ export const auth = betterAuth({
   databaseHooks: {
     user: {
       create: {
+        before: async (user) => {
+          if (user.emailVerified !== true) {
+            throw new APIError('FORBIDDEN', {
+              code: 'UNVERIFIED_EMAIL',
+              message: 'A verified email is required to create an OpenKey account.',
+            });
+          }
+        },
         after: async (user) => {
           try {
             const privateKey = generatePrivateKey();
@@ -437,6 +486,14 @@ export const auth = betterAuth({
           }
         },
       },
+    },
+    account: {
+      create: { before: async (account) => {
+        if (account.providerId === 'google') await assertCurrentGoogleLink(prisma, account.userId);
+      } },
+      update: { before: async () => {
+        await assertCurrentGoogleLink(prisma);
+      } },
     },
   },
 });

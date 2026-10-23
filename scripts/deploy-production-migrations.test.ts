@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
+  assertMigrationRecorded,
+  assertNoDuplicateAccountIdentities,
   partitionPreTc488Migrations,
   selectProductionMigrationMode,
   type MigrationRow,
@@ -21,6 +23,7 @@ const native = '20261007_0001_tinycloud_native_foundation';
 const nativeHost = '20261007_0002_native_preparation_host';
 const nativeTokenGuard = '20261007_0003_tinycloud_native_token_guard';
 const signinPolish = '20261012_0001_signin_polish_hints_branding';
+const googleLinkStepUp = '20261015_0001_google_link_step_up';
 const tc492 = [
   '20260805_0001_canonical_tinycloud_key',
   '20260805_0002_tinycloud_manage_key_app_preferences',
@@ -148,6 +151,88 @@ describe('production migration deployment mode', () => {
       migrationDirectories: directories,
       managedAccountTableExists: true,
     })).toThrow(`Stored migration checksum differs from the reviewed ${nativeTokenGuard}`);
+  });
+
+  test('permits the reviewed Google linking migration while TC-488 remains parked', () => {
+    const directories = [baseline.migration_name, ...tc492, googleLinkStepUp];
+    expect(selectProductionMigrationMode({
+      migrations: [baseline], migrationDirectories: directories, managedAccountTableExists: true,
+    })).toBe('pre-tc488-additive');
+    expect(partitionPreTc488Migrations([...tc492, googleLinkStepUp])).toEqual({
+      apply: [...tc492.filter((name) => name !== tc488), googleLinkStepUp],
+      park: [tc488],
+    });
+    expect(() => selectProductionMigrationMode({
+      migrations: [baseline, {
+        migration_name: googleLinkStepUp, checksum: 'unreviewed', finished_at: new Date(), rolled_back_at: null,
+      }],
+      migrationDirectories: directories, managedAccountTableExists: true,
+    })).toThrow(`Stored migration checksum differs from the reviewed ${googleLinkStepUp}`);
+  });
+
+  test('refuses the Google linking migration while duplicate account identities exist and reports only the count', async () => {
+    const queries: string[] = [];
+    const database = {
+      async $queryRawUnsafe<T>(query: string): Promise<T> {
+        queries.push(query);
+        return (query.includes('to_regclass')
+          ? [{ exists: true }]
+          : [{ duplicate_groups: 3 }]) as T;
+      },
+    };
+    const failure = await assertNoDuplicateAccountIdentities(database).then(() => null, (error: Error) => error);
+    expect(failure?.message).toBe(
+      `${googleLinkStepUp} cannot run: account has 3 duplicate (providerId, accountId) groups; resolve them before deploying`,
+    );
+    expect(queries).toHaveLength(2);
+  });
+
+  test('allows the Google linking migration when no duplicate account identities exist', async () => {
+    const database = {
+      async $queryRawUnsafe<T>(query: string): Promise<T> {
+        return (query.includes('to_regclass') ? [{ exists: true }] : [{ duplicate_groups: 0 }]) as T;
+      },
+    };
+    await expect(assertNoDuplicateAccountIdentities(database)).resolves.toBeUndefined();
+  });
+
+  test('skips the duplicate account check when the account table does not exist yet', async () => {
+    const queries: string[] = [];
+    const database = {
+      async $queryRawUnsafe<T>(query: string): Promise<T> {
+        queries.push(query);
+        return [{ exists: false }] as T;
+      },
+    };
+    await expect(assertNoDuplicateAccountIdentities(database)).resolves.toBeUndefined();
+    expect(queries).toHaveLength(1);
+  });
+
+  test('accepts the finished history row when a rolled-back attempt of the same migration exists', () => {
+    const reviewed = 'reviewed-checksum';
+    const rolledBack: MigrationRow = {
+      migration_name: googleLinkStepUp, checksum: reviewed, finished_at: null, rolled_back_at: new Date(),
+    };
+    const finished: MigrationRow = {
+      migration_name: googleLinkStepUp, checksum: reviewed, finished_at: new Date(), rolled_back_at: null,
+    };
+    expect(() => assertMigrationRecorded([rolledBack, finished], googleLinkStepUp, reviewed)).not.toThrow();
+    expect(() => assertMigrationRecorded([finished, rolledBack], googleLinkStepUp, reviewed)).not.toThrow();
+  });
+
+  test('rejects a migration whose only history rows are rolled back, unfinished, or carry another checksum', () => {
+    const rolledBack: MigrationRow = {
+      migration_name: googleLinkStepUp, checksum: 'reviewed-checksum', finished_at: null, rolled_back_at: new Date(),
+    };
+    const unfinished: MigrationRow = { ...rolledBack, rolled_back_at: null };
+    const otherChecksum: MigrationRow = {
+      ...rolledBack, checksum: 'other-checksum', finished_at: new Date(), rolled_back_at: null,
+    };
+    const message = `${googleLinkStepUp} was not recorded with the reviewed checksum`;
+    expect(() => assertMigrationRecorded([rolledBack], googleLinkStepUp, 'reviewed-checksum')).toThrow(message);
+    expect(() => assertMigrationRecorded([unfinished], googleLinkStepUp, 'reviewed-checksum')).toThrow(message);
+    expect(() => assertMigrationRecorded([rolledBack, otherChecksum], googleLinkStepUp, 'reviewed-checksum')).toThrow(message);
+    expect(() => assertMigrationRecorded([], googleLinkStepUp, 'reviewed-checksum')).toThrow(message);
   });
 
   test('permits the prepared SIWE handoff migration while TC-488 remains parked', async () => {

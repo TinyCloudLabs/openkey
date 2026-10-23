@@ -13,6 +13,7 @@ import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
 import { requireFreshPasskey } from '../services/passkey-freshness';
 import { rejectNonBrowserControlRequest } from '../middleware/browser-control';
 import { nativeDelegationLockResponse } from '../services/native-delegation/errors';
+import { sendAccountStepUpCode, verifyAccountStepUpCode } from '../services/email-otp-step-up';
 
 const prisma = createPrismaClient();
 
@@ -26,6 +27,64 @@ accountRouter.use('*', requireSession);
 // Account deletion needs a passkey verification on this session within the
 // last five minutes (TC-689).
 const ACCOUNT_DELETE_PASSKEY_MAX_AGE_MS = 5 * 60 * 1000;
+accountRouter.post('/step-up/email-otp/send', async (c) => {
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
+  const result = await sendAccountStepUpCode(prisma, c.get('session').id, c.get('user').email);
+  if (result === 'unavailable') return c.json({ error: 'Email delivery unavailable' }, 503);
+  return c.json({ status: true });
+});
+
+accountRouter.post('/step-up/email-otp/verify', async (c) => {
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
+  const body = await c.req.json().catch(() => null) as { code?: unknown } | null;
+  const valid = await verifyAccountStepUpCode(prisma, c.get('session').id, c.get('user').email, body?.code);
+  if (!valid) return c.json({ error: 'Invalid or expired account verification code' }, 400);
+  return c.json({ status: true });
+});
+
+// Better Auth's unlink endpoint also requires session.createdAt < 24 hours.
+// An email code proves freshness without refreshing the entire session (which
+// would weaken other sensitive endpoints), so Settings uses this Google route.
+accountRouter.post('/social/unlink', async (c) => {
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
+  const body = await c.req.json().catch(() => null) as { providerId?: unknown; accountId?: unknown } | null;
+  if (body?.providerId !== 'google' || typeof body.accountId !== 'string' || !body.accountId) {
+    return c.json({ error: 'A Google account is required' }, 400);
+  }
+  const accountId = body.accountId;
+  const current = c.get('session');
+  const outcome = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "session" WHERE id = ${current.id} FOR UPDATE`;
+    const session = await tx.session.findUnique({
+      where: { id: current.id },
+      select: { userId: true, expiresAt: true, lastEmailOtpAt: true, user: { select: { emailVerified: true } } },
+    });
+    const now = Date.now();
+    const verifiedAt = session?.lastEmailOtpAt?.getTime();
+    if (!session || session.userId !== c.get('user').id || session.expiresAt.getTime() <= now
+      || verifiedAt === undefined || verifiedAt > now || now - verifiedAt >= 5 * 60 * 1000) {
+      return 'EMAIL_STEP_UP_REQUIRED';
+    }
+    if (!session.user.emailVerified && await tx.passkey.count({ where: { userId: session.userId } }) === 0) {
+      return 'LAST_SIGN_IN_METHOD';
+    }
+    const account = await tx.account.findFirst({
+      where: { userId: session.userId, providerId: 'google', accountId },
+      select: { id: true },
+    });
+    if (!account) return 'ACCOUNT_NOT_FOUND';
+    await tx.account.delete({ where: { id: account.id } });
+    return 'UNLINKED';
+  });
+  if (outcome === 'EMAIL_STEP_UP_REQUIRED' || outcome === 'LAST_SIGN_IN_METHOD') {
+    return c.json({ error: outcome }, 403);
+  }
+  if (outcome === 'ACCOUNT_NOT_FOUND') return c.json({ error: outcome }, 404);
+  return c.json({ status: true });
+});
 
 // Get account info
 accountRouter.get('/', async (c) => {

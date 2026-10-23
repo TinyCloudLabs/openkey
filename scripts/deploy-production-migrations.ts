@@ -38,6 +38,8 @@ const brokerMigration = '20261005_0001_delegation_code_broker';
 const brokerChecksum = 'cc7dcc5365251f6b7c14caf38a892c998a28eb7c998531b7c3b669f4744744df';
 const signinPolishMigration = '20261012_0001_signin_polish_hints_branding';
 const signinPolishChecksum = 'd09960dda6ae76472c61629283b4030131d47b5f0f5cd7d79a3d02c0c5bf0e96';
+const googleLinkStepUpMigration = '20261015_0001_google_link_step_up';
+const googleLinkStepUpChecksum = '4848695c2de0e91f66e9e05e4ffa9537bfb62685cc37a925db121d1e7c3c0c4c';
 const preparedHandoffMigration = '20261016_0001_prepared_siwe_handoff';
 const preparedHandoffChecksum = '645d931e10dbd068da7f7243dcbe995f1af6f0e339b98d082264c8153bfec9ec';
 const appSignInDayMigration = '20261019_0001_app_sign_in_day';
@@ -53,6 +55,7 @@ const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
   [nativeTokenGuardMigration, nativeTokenGuardChecksum],
   [nativeSessionProofJtiMigration, nativeSessionProofJtiChecksum],
   [signinPolishMigration, signinPolishChecksum],
+  [googleLinkStepUpMigration, googleLinkStepUpChecksum],
   [preparedHandoffMigration, preparedHandoffChecksum],
   [appSignInDayMigration, appSignInDayChecksum],
   [tinycloudBootstrapSweepMigration, tinycloudBootstrapSweepChecksum],
@@ -137,6 +140,37 @@ export function partitionPreTc488Migrations(pendingMigrations: string[]) {
   };
 }
 
+type RawQueryClient = {
+  $queryRawUnsafe<T = unknown>(query: string, ...values: unknown[]): Promise<T>;
+};
+
+const accountTableExistsQuery = `SELECT to_regclass('public.account') IS NOT NULL AS "exists"`;
+const duplicateAccountIdentityCountQuery = `
+  SELECT count(*)::int AS duplicate_groups FROM (
+    SELECT "providerId", "accountId"
+    FROM "account"
+    GROUP BY "providerId", "accountId"
+    HAVING count(*) > 1
+  ) AS duplicate_account_identities
+`;
+
+// The google-link migration adds a unique index on account(providerId,
+// accountId). The check runs before `prisma migrate deploy` and reports only
+// the number of duplicate groups.
+export async function assertNoDuplicateAccountIdentities(database: RawQueryClient) {
+  const table = await database.$queryRawUnsafe<Array<{ exists: boolean }>>(accountTableExistsQuery);
+  if (table[0]?.exists !== true) return;
+  const rows = await database.$queryRawUnsafe<Array<{ duplicate_groups: number }>>(
+    duplicateAccountIdentityCountQuery,
+  );
+  const duplicateGroups = Number(rows[0]?.duplicate_groups ?? 0);
+  if (duplicateGroups > 0) {
+    throw new Error(
+      `${googleLinkStepUpMigration} cannot run: account has ${duplicateGroups} duplicate (providerId, accountId) groups; resolve them before deploying`,
+    );
+  }
+}
+
 function requirePostgresUrl() {
   const value = process.env.DATABASE_URL;
   if (!value?.match(/^postgres(ql)?:\/\//)) {
@@ -194,6 +228,18 @@ async function readState(database: ReturnType<typeof createPrismaClient>) {
   };
 }
 
+// A migration can have several history rows (for example a rolled-back attempt
+// followed by a finished one). The finished, not-rolled-back row is the one
+// that counts.
+export function assertMigrationRecorded(rows: MigrationRow[], name: string, checksum: string) {
+  const row = rows.find(
+    (candidate) => candidate.migration_name === name && candidate.finished_at && !candidate.rolled_back_at,
+  );
+  if (!row || row.checksum !== checksum) {
+    throw new Error(`${name} was not recorded with the reviewed checksum`);
+  }
+}
+
 async function deployAdditiveMigrationsBeforeTc488(
   database: ReturnType<typeof createPrismaClient>,
   pendingMigrations: string[],
@@ -225,10 +271,7 @@ async function deployAdditiveMigrationsBeforeTc488(
   );
   const expected = new Map([...tc492AdditiveMigrations, ...preTc488AdditiveMigrations]);
   for (const [name, checksum] of expected) {
-    const row = rows.find((candidate) => candidate.migration_name === name);
-    if (!row?.finished_at || row.rolled_back_at || row.checksum !== checksum) {
-      throw new Error(`${name} was not recorded with the reviewed checksum`);
-    }
+    assertMigrationRecorded(rows, name, checksum);
   }
 
   const physical = await database.$queryRawUnsafe<Array<{
@@ -255,6 +298,8 @@ async function deployAdditiveMigrationsBeforeTc488(
     oauth_client_theme_columns: number;
     request_login_hint_column: boolean;
     request_login_method_column: boolean;
+    session_last_email_otp_column: boolean;
+    account_provider_identity_index: boolean;
   }>>(`
     SELECT
       (SELECT COUNT(*)::int FROM information_schema.columns
@@ -300,7 +345,14 @@ async function deployAdditiveMigrationsBeforeTc488(
           AND column_name = 'loginHint' AND data_type = 'text') AS request_login_hint_column,
       EXISTS (SELECT 1 FROM information_schema.columns
         WHERE table_schema = 'public' AND table_name = 'tinycloud_native_request'
-          AND column_name = 'loginMethod' AND data_type = 'text') AS request_login_method_column
+          AND column_name = 'loginMethod' AND data_type = 'text') AS request_login_method_column,
+      EXISTS (SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'session'
+          AND column_name = 'lastEmailOtpAt' AND data_type = 'timestamp without time zone'
+          AND is_nullable = 'YES') AS session_last_email_otp_column,
+      EXISTS (SELECT 1 FROM pg_index
+        WHERE indexrelid = to_regclass('public."account_providerId_accountId_key"')
+          AND indisunique AND indisvalid) AS account_provider_identity_index
   `);
   const verified = physical[0];
   if (
@@ -326,7 +378,9 @@ async function deployAdditiveMigrationsBeforeTc488(
     !verified.broker_primary_key ||
     verified.oauth_client_theme_columns !== 2 ||
     !verified.request_login_hint_column ||
-    !verified.request_login_method_column
+    !verified.request_login_method_column ||
+    !verified.session_last_email_otp_column ||
+    !verified.account_provider_identity_index
   ) {
     throw new Error('Pre-TC-488 additive physical schema verification failed');
   }
@@ -352,6 +406,16 @@ async function main() {
   try {
     const state = await readState(database);
     const mode = selectProductionMigrationMode(state);
+    const successful = new Set(
+      state.migrations
+        .filter((row) => row.finished_at && !row.rolled_back_at)
+        .map((row) => row.migration_name),
+    );
+    const pending = state.migrationDirectories.filter((name) => !successful.has(name));
+    if (pending.includes(googleLinkStepUpMigration)) {
+      await assertNoDuplicateAccountIdentities(database);
+    }
+
     if (mode === 'full') {
       runBunScript('scripts/assert-production-migration-ready.ts');
       runBunScript('db:migrate:apply');
@@ -359,12 +423,6 @@ async function main() {
       return;
     }
 
-    const successful = new Set(
-      state.migrations
-        .filter((row) => row.finished_at && !row.rolled_back_at)
-        .map((row) => row.migration_name),
-    );
-    const pending = state.migrationDirectories.filter((name) => !successful.has(name));
     await deployAdditiveMigrationsBeforeTc488(database, pending);
   } finally {
     await database.$disconnect();
