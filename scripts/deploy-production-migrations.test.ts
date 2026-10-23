@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
+  assertNoDuplicateAccountIdentities,
   partitionPreTc488Migrations,
   selectProductionMigrationMode,
   type MigrationRow,
@@ -166,6 +167,44 @@ describe('production migration deployment mode', () => {
       }],
       migrationDirectories: directories, managedAccountTableExists: true,
     })).toThrow(`Stored migration checksum differs from the reviewed ${googleLinkStepUp}`);
+  });
+
+  test('refuses the Google linking migration while duplicate account identities exist and reports only the count', async () => {
+    const queries: string[] = [];
+    const database = {
+      async $queryRawUnsafe<T>(query: string): Promise<T> {
+        queries.push(query);
+        return (query.includes('to_regclass')
+          ? [{ exists: true }]
+          : [{ duplicate_groups: 3 }]) as T;
+      },
+    };
+    const failure = await assertNoDuplicateAccountIdentities(database).then(() => null, (error: Error) => error);
+    expect(failure?.message).toBe(
+      `${googleLinkStepUp} cannot run: account has 3 duplicate (providerId, accountId) groups; resolve them before deploying`,
+    );
+    expect(queries).toHaveLength(2);
+  });
+
+  test('allows the Google linking migration when no duplicate account identities exist', async () => {
+    const database = {
+      async $queryRawUnsafe<T>(query: string): Promise<T> {
+        return (query.includes('to_regclass') ? [{ exists: true }] : [{ duplicate_groups: 0 }]) as T;
+      },
+    };
+    await expect(assertNoDuplicateAccountIdentities(database)).resolves.toBeUndefined();
+  });
+
+  test('skips the duplicate account check when the account table does not exist yet', async () => {
+    const queries: string[] = [];
+    const database = {
+      async $queryRawUnsafe<T>(query: string): Promise<T> {
+        queries.push(query);
+        return [{ exists: false }] as T;
+      },
+    };
+    await expect(assertNoDuplicateAccountIdentities(database)).resolves.toBeUndefined();
+    expect(queries).toHaveLength(1);
   });
 
   test('permits the prepared SIWE handoff migration while TC-488 remains parked', async () => {
