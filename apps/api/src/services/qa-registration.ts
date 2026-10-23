@@ -15,10 +15,24 @@ export type TestAccountRegistry = {
   qaEligiblePatterns: readonly RegExp[];
 };
 
-export type RegistryLoad = { registry: TestAccountRegistry; problem: boolean };
+export type RegistryRefusal = 'unanchored_pattern' | 'public_mail_domain_pattern';
+
+export type RegistryLoad = { registry: TestAccountRegistry; problem: boolean; refusal?: RegistryRefusal };
 
 const EMPTY_REGISTRY: TestAccountRegistry = { userIds: [], clientIds: [], emailDomains: [], qaEligiblePatterns: [] };
 const INVALID_REGISTRY: RegistryLoad = { registry: EMPTY_REGISTRY, problem: true };
+
+/** Addresses at these domains are never QA-eligible. */
+export const PUBLIC_MAIL_DOMAINS: readonly string[] = [
+  'gmail.com',
+  'outlook.com',
+  'hotmail.com',
+  'yahoo.com',
+  'icloud.com',
+  'proton.me',
+  'protonmail.com',
+];
+const PROBE_LOCAL_PARTS: readonly string[] = ['a', 'qa', 'qa-test', 'qa-fixture-7f3a', '0'];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -29,8 +43,46 @@ function isStringArray(value: unknown): value is string[] {
 }
 
 /**
+ * True when the pattern is a single expression anchored at both ends: it starts with `^`,
+ * ends with an unescaped `$`, and has no `|` outside a group or character class.
+ */
+function isFullyAnchored(source: string): boolean {
+  if (!source.startsWith('^') || !source.endsWith('$')) return false;
+  let slashes = 0;
+  for (let i = source.length - 2; i >= 0 && source[i] === '\\'; i--) slashes++;
+  if (slashes % 2 === 1) return false;
+  let depth = 0;
+  let inClass = false;
+  for (let i = 0; i < source.length; i++) {
+    const char = source[i];
+    if (char === '\\') {
+      i++;
+    } else if (inClass) {
+      if (char === ']') inClass = false;
+    } else if (char === '[') {
+      inClass = true;
+    } else if (char === '(') {
+      depth++;
+    } else if (char === ')') {
+      depth--;
+    } else if (char === '|' && depth === 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** True when the pattern names a public mail domain or matches a sample address at one. */
+function matchesPublicMailDomain(pattern: RegExp): boolean {
+  const text = pattern.source.toLowerCase().replaceAll('\\', '');
+  if (PUBLIC_MAIL_DOMAINS.some((domain) => text.includes(domain))) return true;
+  return PUBLIC_MAIL_DOMAINS.some((domain) => PROBE_LOCAL_PARTS.some((local) => pattern.test(`${local}@${domain}`)));
+}
+
+/**
  * Parses the registry JSON from TEST_ACCOUNT_REGISTRY_JSON. Unset means no registry
- * and is not a problem. Bad JSON, a bad shape, or an uncompilable pattern yields an
+ * and is not a problem. Bad JSON, a bad shape, an uncompilable pattern, or a QA-eligible
+ * pattern that is not anchored with `^...$` or that matches a public mail domain yields an
  * empty registry (no exemptions, no exclusions) with problem set. Never throws.
  */
 export function parseTestAccountRegistry(raw: string | undefined): RegistryLoad {
@@ -57,7 +109,11 @@ export function parseTestAccountRegistry(raw: string | undefined): RegistryLoad 
     } catch {
       return INVALID_REGISTRY;
     }
-    if (qaEligible) qaEligiblePatterns.push(compiled);
+    if (qaEligible) {
+      if (!isFullyAnchored(compiled.source)) return { registry: EMPTY_REGISTRY, problem: true, refusal: 'unanchored_pattern' };
+      if (matchesPublicMailDomain(compiled)) return { registry: EMPTY_REGISTRY, problem: true, refusal: 'public_mail_domain_pattern' };
+      qaEligiblePatterns.push(compiled);
+    }
   }
   const domains = emailDomains.map((domain) => domain.toLowerCase());
   return { registry: { userIds, clientIds, emailDomains: domains, qaEligiblePatterns }, problem: false };

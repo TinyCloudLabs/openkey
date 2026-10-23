@@ -1,7 +1,7 @@
 import { createServer } from 'node:net';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { Hono } from 'hono';
-import { apiErrorHandler, betterAuthLog, log, logConfigInvalid, logError, requestLogger, withScheduledLogContext, type ApiEnv } from '../log';
+import { apiErrorHandler, betterAuthLog, log, logConfigInvalid, logError, logQaAccountCreated, requestLogger, withScheduledLogContext, type ApiEnv } from '../log';
 import requestIdVectors from './request-id-vectors.json';
 
 const output: string[] = [];
@@ -193,6 +193,30 @@ describe('API structured logging', () => {
     expect(output).toHaveLength(1);
     expect(line).toMatchObject({ event: 'config_invalid', error_code: 'BETTER_AUTH_URL', request_id: 'startup' });
     expect(output.join('\n')).not.toContain('canary-url-value');
+  });
+
+  test('adds a reason to an invalid configuration line only from the closed set', () => {
+    logConfigInvalid('TEST_ACCOUNT_REGISTRY_JSON', 'unanchored_pattern');
+    logConfigInvalid('TEST_ACCOUNT_REGISTRY_JSON', 'canary-reason-value');
+    const [withReason, unknownReason] = output.map((line) => JSON.parse(line));
+    expect(withReason).toMatchObject({ event: 'config_invalid', error_code: 'TEST_ACCOUNT_REGISTRY_JSON', reason: 'unanchored_pattern' });
+    expect(unknownReason).toMatchObject({ event: 'config_invalid', error_code: 'TEST_ACCOUNT_REGISTRY_JSON' });
+    expect(unknownReason.reason).toBeUndefined();
+    expect(output.join('\n')).not.toContain('canary-reason-value');
+  });
+
+  test('counts QA-exempt account creations per UTC day without logging addresses', () => {
+    const dayOne = new Date('2031-03-04T23:59:00Z');
+    logQaAccountCreated('user-a', dayOne);
+    logQaAccountCreated('user-b', dayOne);
+    logQaAccountCreated('user-c', new Date('2031-03-05T00:00:01Z'));
+    const counts = output.map((line) => JSON.parse(line)).filter((line) => line.event === 'auth_email_signup_qa_daily_count');
+    expect(counts.map((line) => [line.day, line.count])).toEqual([
+      ['2031-03-04', 1],
+      ['2031-03-04', 2],
+      ['2031-03-05', 1],
+    ]);
+    for (const line of counts) expect(Object.keys(line).sort()).toEqual(['count', 'day', 'event', 'level', 'request_id', 'ts']);
   });
   test('replaces an unknown runtime event with the fixed fallback', () => {
     const unlistedEvent = 'private-canary-event';

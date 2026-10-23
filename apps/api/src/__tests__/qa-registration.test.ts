@@ -119,3 +119,65 @@ test('email domains are lowercased and default to empty when absent', () => {
   expect(load.registry.emailDomains).toEqual(['example.test']);
   expect(parseTestAccountRegistry(JSON.stringify({ userIds: [], clientIds: [], patterns: [] })).registry.emailDomains).toEqual([]);
 });
+
+// Synthetic patterns only. Each raw registry has one QA-eligible pattern.
+const registryWith = (regex: string, qaEligible = true) =>
+  JSON.stringify({ userIds: [], clientIds: [], emailDomains: [], patterns: [{ name: 'fixture', regex, qaEligible }] });
+
+test('a QA-eligible pattern anchored at both ends is loaded and usable', () => {
+  for (const regex of ['^qa-[a-z0-9]+@example\\.test$', '^(?:qa-a|qa-b)@example\\.test$', '^qa-[|]x@example\\.test$']) {
+    const load = parseTestAccountRegistry(registryWith(regex));
+    expect(load.problem).toBe(false);
+    expect(load.refusal).toBeUndefined();
+    expect(load.registry.qaEligiblePatterns).toHaveLength(1);
+  }
+});
+
+test('a QA-eligible pattern that is not anchored at both ends is refused at load', () => {
+  const unanchored = [
+    'qa-[a-z0-9]+@example\\.test$',
+    '^qa-[a-z0-9]+@example\\.test',
+    'qa-[a-z0-9]+@example\\.test',
+    '^qa-[a-z0-9]+@example\\.test\\$',
+    '^qa-a@example\\.test$|qa-b@example\\.test',
+    '^qa-a@example\\.test|qa-b@example\\.test$',
+    '^qa-a@example\\.test$|^qa-b@example\\.test$',
+  ];
+  for (const regex of unanchored) {
+    const load = parseTestAccountRegistry(registryWith(regex));
+    expect(load.problem).toBe(true);
+    expect(load.refusal).toBe('unanchored_pattern');
+    expect(load.registry.qaEligiblePatterns).toEqual([]);
+    expect(load.registry.userIds).toEqual([]);
+  }
+});
+
+test('a QA-eligible pattern that matches a public mail domain is refused at load', () => {
+  const publicDomains = ['gmail.com', 'outlook.com', 'hotmail.com', 'yahoo.com', 'icloud.com', 'proton.me', 'protonmail.com'];
+  for (const domain of publicDomains) {
+    const escaped = domain.replace('.', '\\.');
+    for (const regex of [`^qa-[a-z0-9]+@${escaped}$`, `^.+@${escaped}$`, `^[a-z0-9-]+@[a-z]+\\.${domain.split('.')[1]}$`]) {
+      const load = parseTestAccountRegistry(registryWith(regex));
+      expect(load.problem).toBe(true);
+      expect(load.refusal).toBe('public_mail_domain_pattern');
+      expect(load.registry.qaEligiblePatterns).toEqual([]);
+    }
+  }
+  for (const regex of ['^.*$', '^.+@.+$', '^[a-z0-9-]+@[a-z.]+$']) {
+    const load = parseTestAccountRegistry(registryWith(regex));
+    expect(load.refusal).toBe('public_mail_domain_pattern');
+  }
+});
+
+test('a refused pattern leaves no email eligible for the exemption', async () => {
+  const { loadTestAccountRegistry } = await import('../services/qa-registration?tc1632-qa' as string);
+  const load = loadTestAccountRegistry({ TEST_ACCOUNT_REGISTRY_JSON: registryWith('^qa-[a-z0-9]+@gmail\\.com$') } as NodeJS.ProcessEnv);
+  expect(load.problem).toBe(true);
+  expect(qaEligibleEmail('qa-7f3a@gmail.com', load.registry.qaEligiblePatterns)).toBe(false);
+});
+
+test('the checks apply to QA-eligible patterns only', () => {
+  const load = parseTestAccountRegistry(registryWith('^.+@gmail\\.com', false));
+  expect(load.problem).toBe(false);
+  expect(load.registry.qaEligiblePatterns).toEqual([]);
+});

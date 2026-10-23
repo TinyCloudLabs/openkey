@@ -27,7 +27,7 @@ declare global {
 export const TURNSTILE_ACTION = 'email-signup';
 
 const SCRIPT_URL = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
-/** A stalled script must fail visibly instead of leaving the step waiting forever. */
+/** A stalled script fails visibly after this timeout, so the step never waits forever. */
 const SCRIPT_TIMEOUT_MS = 10_000;
 
 let loading: Promise<TurnstileApi> | null = null;

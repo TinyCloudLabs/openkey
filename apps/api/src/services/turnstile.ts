@@ -5,7 +5,7 @@
 // lets an account be created. Anything that stops the check from running
 // (no secret configured, network failure, timeout, server-side error, or a
 // production setup that cannot be checked safely) is "unavailable": the caller
-// pauses registration instead of skipping the check.
+// pauses registration.
 import { randomUUID } from 'node:crypto';
 
 export const TURNSTILE_ACTION = 'email-signup';
