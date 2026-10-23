@@ -53,6 +53,99 @@ export const FAMILY_LABEL: Record<CapabilityFamily, string> = {
 export const DECRYPT_DEFAULT_KEY_STATEMENT =
   "Decrypt anything encrypted with your account's default key — including your Secrets and every private share — whenever this app gets hold of the encrypted copy, until this access expires.";
 
+/** Named-key verbs that carry consent copy. */
+export type NamedKeyVerb = "create" | "decrypt" | "block" | "unblock" | "delete";
+
+export const DELETE_REFUSED_TEMPLATE =
+  "Delete the key {path}: only you can do this, with your wallet, as a separate step. This request is refused.";
+
+/**
+ * Named-key consent sentences, one per verb and resource shape. `{path}` is
+ * the key path (a prefix keeps its trailing `/`) and `{network}` the network
+ * name, both filled verbatim by renderNamedKeySentence. `null` means no
+ * approved wording: the row renders the literal fallback instead.
+ */
+export const NAMED_KEY_STATEMENTS: Record<
+  NamedKeyVerb,
+  { key: string | null; prefix: string | null }
+> = {
+  create: {
+    key: "Create the encryption key {path} in your account's {network} network.",
+    prefix:
+      "Create encryption keys under {path} in your account's {network} network.",
+  },
+  decrypt: {
+    key: "Decrypt anything encrypted with your key {path} in your account's {network} network, whenever this app gets hold of the encrypted copy, until this access expires.",
+    prefix:
+      "Decrypt anything encrypted with any of your keys under {path} in your account's {network} network, including keys created later, whenever this app gets hold of the encrypted copy, until this access expires.",
+  },
+  block: {
+    key: "Block the key {path} in your account's {network} network, so nobody, you included, can decrypt with it until it is unblocked. You can unblock it later.",
+    prefix:
+      "Block every key under {path} in your account's {network} network, so nobody, you included, can decrypt with any of them until they are unblocked. You can unblock them later.",
+  },
+  unblock: {
+    key: "Unblock the key {path} in your account's {network} network, so it can decrypt again, even if you blocked it yourself.",
+    prefix:
+      "Unblock every key under {path} in your account's {network} network, so they can decrypt again, even if you blocked them yourself.",
+  },
+  delete: {
+    key: DELETE_REFUSED_TEMPLATE,
+    prefix: DELETE_REFUSED_TEMPLATE,
+  },
+};
+
+/**
+ * Escape every UTF-16 code unit outside printable ASCII (0x20-0x7E) and every
+ * backslash as `\uXXXX`, so escape-looking text in a resource stays visible.
+ * Cap the output at `maxChars` characters, ending with `…`.
+ * Literal text from a resource is untrusted: control, bidi-override,
+ * zero-width, newline and non-ASCII characters render visibly instead of
+ * altering the sentence. Grammar-valid text is ASCII and is unchanged.
+ */
+export function renderLiteral(text: string, maxChars?: number): string {
+  let out = "";
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i);
+    const piece =
+      code === 0x5c
+        ? "\\u005C"
+        : code >= 0x20 && code <= 0x7e
+          ? text.charAt(i)
+          : `\\u${code.toString(16).padStart(4, "0")}`;
+    if (maxChars !== undefined && out.length + piece.length > maxChars) {
+      return `${out}…`;
+    }
+    out += piece;
+  }
+  return out;
+}
+
+/** Output-character cap for raw, unparsed resource text before `…`. */
+export const LITERAL_TRUNCATE_CHARS = 120;
+
+/**
+ * Fill a named-key template in one pass, so a `{network}` inside a path is
+ * never substituted again and `$` is never a replacement pattern. Every value
+ * goes through renderLiteral. `truncateAt` is passed only for raw text that
+ * did not parse; valid keys are never truncated.
+ */
+export function renderNamedKeySentence(
+  template: string,
+  keyPath: string,
+  network: string,
+  truncateAt?: number,
+): string {
+  const values = {
+    path: renderLiteral(keyPath, truncateAt),
+    network: renderLiteral(network),
+  };
+  return template.replace(
+    /\{(path|network)\}/g,
+    (_match, name: string) => (name === "path" ? values.path : values.network),
+  );
+}
+
 export const PROTOCOL_HEADLINE: Record<RequestProtocol, string> = {
   "legacy-message": "Sign message",
   "siwe-plain": "Sign in with Ethereum",

@@ -105,9 +105,11 @@ const SQL_NAMED_DATABASE_VERBS = new Set([
 ]);
 const DELEGATION_VERBS = new Set(["list", "status"]);
 const ENCRYPTION_NETWORK_VERBS = new Set(["network.create", "network.revoke"]);
+const ENCRYPTION_KEY_VERBS = new Set(["key.create", "key.block", "key.unblock", "key.delete"]);
 const ENCRYPTION_VERBS = new Set([
   ...ENCRYPTION_NETWORK_VERBS,
   ...DECRYPT_VERBS,
+  ...ENCRYPTION_KEY_VERBS,
 ]);
 
 // The verbs the secrets service is expected to carry. Any grant on

@@ -16,7 +16,17 @@
 // sentence themselves.
 
 import type { CapabilityGrant } from "./model.js";
-import { DECRYPT_DEFAULT_KEY_STATEMENT } from "./copy.js";
+import {
+  DECRYPT_DEFAULT_KEY_STATEMENT,
+  DELETE_REFUSED_TEMPLATE,
+  LITERAL_TRUNCATE_CHARS,
+  NAMED_KEY_STATEMENTS,
+  renderLiteral,
+  renderNamedKeySentence,
+} from "./copy.js";
+import type { NamedKeyVerb } from "./copy.js";
+import type { EncryptionResource } from "./encryption-resource.js";
+import { ENCRYPTION_URN_PREFIX, parseEncryptionResource } from "./encryption-resource.js";
 import { isMetadataOnlyAccess } from "./action-semantics.js";
 import {
   CANONICAL_APP_SCOPE_SECRET_ABILITIES,
@@ -47,6 +57,11 @@ export interface StatementEntry {
    * space) shown alongside the service. Rendered as-is.
    */
   resource: string;
+  /**
+   * Set only on key.delete rows: marks a row this review does not offer to
+   * approve. Absent on every other row.
+   */
+  neverApprovable?: boolean;
 }
 
 /** Family/action-aware structural verb classification. */
@@ -216,19 +231,45 @@ function resourceOf(grant: CapabilityGrant): string {
 const DEFAULT_KEY_NETWORK_URN =
   /^urn:tinycloud:encryption:did:pkh:eip155:\d+:0x[0-9a-fA-F]{40}:default$/;
 
+/**
+ * True when `space`, `path` or `resourceService` carries an encryption URN
+ * that fails the strict parse. Such a grant's literal text is untrusted, so
+ * every displayed value is escaped and the resource is capped.
+ */
+function hasFailingEncryptionUrn(grant: CapabilityGrant): boolean {
+  return [grant.space, grant.path, grant.resourceService ?? ""].some(
+    (value) =>
+      value.startsWith(ENCRYPTION_URN_PREFIX) &&
+      parseEncryptionResource(value) === null,
+  );
+}
+
 /** Fallback statement for anything the catalog does not recognize. */
 function fallbackStatement(grant: CapabilityGrant): StatementEntry {
   // Grant actions are CapabilityAction objects; join their ability
   // strings for the literal fallback text. Never invent friendly
   // semantics from a shape we don't recognize.
-  const actionList = grant.actions.map((a) => a.ability).join(", ");
-  const resource = resourceOf(grant);
+  const failing = hasFailingEncryptionUrn(grant);
+  // A failing encryption URN is untrusted literal text: escape every displayed
+  // value, and cap the ability list, service and resource.
+  // Join raw ability strings first, so a failing grant's ability list is
+  // escaped and capped once, with at most one `…`.
+  const abilityText = grant.actions.map((a) => a.ability).join(", ");
+  const actionList = failing
+    ? renderLiteral(abilityText, LITERAL_TRUNCATE_CHARS)
+    : abilityText;
+  const service = failing
+    ? renderLiteral(grant.service, LITERAL_TRUNCATE_CHARS)
+    : grant.service;
+  const resource = failing
+    ? renderLiteral(resourceOf(grant), LITERAL_TRUNCATE_CHARS)
+    : resourceOf(grant);
   return {
     primaryText:
       actionList.length > 0
-        ? `Perform ${actionList} on ${grant.service}`
-        : `Access ${grant.service}`,
-    service: grant.service,
+        ? `Perform ${actionList} on ${service}`
+        : `Access ${service}`,
+    service,
     resource,
   };
 }
@@ -419,7 +460,163 @@ const ENCRYPTION_RECOGNIZED_ABILITIES = new Set<string>([
   "encryption/network.create",
   "tinycloud.encryption/network.revoke",
   "encryption/network.revoke",
+  "tinycloud.encryption/key.create",
+  "encryption/key.create",
+  "tinycloud.encryption/key.block",
+  "encryption/key.block",
+  "tinycloud.encryption/key.unblock",
+  "encryption/key.unblock",
+  "tinycloud.encryption/key.delete",
+  "encryption/key.delete",
 ]);
+
+/**
+ * Named-key abilities and the consent verb each one renders. `key.delete` is
+ * absent on purpose: it never reaches this table (see buildKeyDeleteStatement).
+ */
+const NAMED_KEY_VERB_BY_ABILITY: Record<string, NamedKeyVerb> = {
+  "tinycloud.encryption/decrypt": "decrypt",
+  "encryption/decrypt": "decrypt",
+  "tinycloud.encryption/key.create": "create",
+  "encryption/key.create": "create",
+  "tinycloud.encryption/key.block": "block",
+  "encryption/key.block": "block",
+  "tinycloud.encryption/key.unblock": "unblock",
+  "encryption/key.unblock": "unblock",
+};
+
+const KEY_DELETE_ABILITIES = new Set<string>([
+  "tinycloud.encryption/key.delete",
+  "encryption/key.delete",
+]);
+
+function isKeyDeleteAction(action: { ability: string }): boolean {
+  return KEY_DELETE_ABILITIES.has(action.ability);
+}
+
+/**
+ * Encryption URN view of a grant. The URN is read from `space` (canonical:
+ * splitResourceUri leaves it whole with `path` "") or from `path` when `space`
+ * is the raw "encryption" service name. Any other placement, or a URN that
+ * fails the strict parse, is `invalid` and renders the literal fallback.
+ * `grant` is the canonical form, with the URN alone in `space`.
+ */
+type EncryptionUrnView =
+  | { kind: "none" }
+  | { kind: "invalid"; resource: string }
+  | {
+      kind: "urn";
+      resource: string;
+      parsed: EncryptionResource;
+      grant: CapabilityGrant;
+    };
+
+function canonicalEncryptionUrn(grant: CapabilityGrant): EncryptionUrnView {
+  if (!ENCRYPTION_SERVICES.has(grant.service)) return { kind: "none" };
+  const resourceService = grant.resourceService ?? "";
+  const inSpace = grant.space.startsWith(ENCRYPTION_URN_PREFIX);
+  const inPath = grant.path.startsWith(ENCRYPTION_URN_PREFIX);
+  const inService = resourceService.startsWith(ENCRYPTION_URN_PREFIX);
+  if (!inSpace && !inPath && !inService) return { kind: "none" };
+  const resource = inSpace
+    ? grant.space
+    : inPath
+      ? grant.path
+      : resourceService;
+  const shapeOk =
+    (inSpace && !inPath && !inService && resourceService === "") ||
+    (inPath &&
+      !inSpace &&
+      !inService &&
+      grant.space === "encryption" &&
+      resourceService === "");
+  const parsed = shapeOk ? parseEncryptionResource(resource) : null;
+  if (parsed === null) return { kind: "invalid", resource };
+  // Key and prefix URNs carry their whole path, so a stray `path` beside one
+  // is an unexpected placement. A network URN keeps `path` for the legacy
+  // network routing.
+  if (inSpace && grant.path !== "" && parsed.kind !== "network") {
+    return { kind: "invalid", resource };
+  }
+  return {
+    kind: "urn",
+    resource,
+    parsed,
+    grant: {
+      ...grant,
+      space: resource,
+      path: inSpace ? grant.path : "",
+      resourceService: null,
+    },
+  };
+}
+
+/**
+ * Fail-closed delete row. Every key.delete renders the refusal line and is
+ * never approvable. A parsed key or prefix names its own path and network;
+ * anything else names the raw resource string.
+ */
+function buildKeyDeleteStatement(
+  grant: CapabilityGrant,
+  view: EncryptionUrnView,
+): StatementEntry {
+  const resource = view.kind === "none" ? resourceOf(grant) : view.resource;
+  const parsed = view.kind === "urn" ? view.parsed : null;
+  const primaryText =
+    parsed !== null && parsed.kind !== "network"
+      ? renderNamedKeySentence(
+          DELETE_REFUSED_TEMPLATE,
+          parsed.keyPath,
+          parsed.network,
+        )
+      : renderNamedKeySentence(
+          DELETE_REFUSED_TEMPLATE,
+          resource,
+          "",
+          LITERAL_TRUNCATE_CHARS,
+        );
+  const failing = hasFailingEncryptionUrn(grant);
+  return {
+    primaryText,
+    service: failing
+      ? renderLiteral(grant.service, LITERAL_TRUNCATE_CHARS)
+      : grant.service,
+    resource: failing ? renderLiteral(resource, LITERAL_TRUNCATE_CHARS) : resource,
+    neverApprovable: true,
+  };
+}
+
+/**
+ * Consent row for one key-shaped encryption grant. Anything the ability table
+ * or the copy table does not cover renders the literal fallback, so no
+ * sentence is shown for an unrecognized shape.
+ */
+function buildNamedKeyStatement(
+  grant: CapabilityGrant,
+  parsed: EncryptionResource,
+  resource: string,
+): StatementEntry {
+  const action = grant.actions.length === 1 ? grant.actions[0] : undefined;
+  const verb =
+    action !== undefined &&
+    Object.hasOwn(NAMED_KEY_VERB_BY_ABILITY, action.ability)
+      ? NAMED_KEY_VERB_BY_ABILITY[action.ability]
+      : undefined;
+  if (parsed.kind === "network" || verb === undefined) {
+    return fallbackStatement(grant);
+  }
+  const template = NAMED_KEY_STATEMENTS[verb][parsed.kind];
+  if (template === null) return fallbackStatement(grant);
+  return {
+    primaryText: renderNamedKeySentence(
+      template,
+      parsed.keyPath,
+      parsed.network,
+    ),
+    service: grant.service,
+    resource,
+  };
+}
 
 /**
  * Fail-closed gate for the KV / SQL / encryption family/service branches
@@ -546,7 +743,30 @@ function splitsDefaultKeyDecrypt(grant: CapabilityGrant): boolean {
  * update row. Callers must render every returned row; `buildStatement` alone
  * renders only the non-schema part of a mixed grant.
  */
-export function buildStatements(grant: CapabilityGrant): StatementEntry[] {
+export function buildStatements(input: CapabilityGrant): StatementEntry[] {
+  // key.delete fails closed: each delete ability is its own never-approvable
+  // row, and any other abilities on the grant are rendered separately.
+  const deletes = input.actions.filter(isKeyDeleteAction);
+  if (deletes.length > 0) {
+    const others = input.actions.filter((a) => !isKeyDeleteAction(a));
+    return [
+      ...(others.length > 0 ? buildStatements({ ...input, actions: others }) : []),
+      ...deletes.map((action) => buildStatement({ ...input, actions: [action] })),
+    ];
+  }
+  const view = canonicalEncryptionUrn(input);
+  if (view.kind === "invalid") return [buildStatement(input)];
+  const grant = view.kind === "urn" ? view.grant : input;
+  // Each named-key ability gets its own row, so no sentence covers two.
+  if (
+    view.kind === "urn" &&
+    view.parsed.kind !== "network" &&
+    grant.actions.length > 1
+  ) {
+    return grant.actions.map((action) =>
+      buildStatement({ ...grant, actions: [action] }),
+    );
+  }
   if (splitsDefaultKeyDecrypt(grant)) {
     return [
       buildStatement({
@@ -594,7 +814,19 @@ export function buildStatements(grant: CapabilityGrant): StatementEntry[] {
  *   3. Secret reads and mutations
  *   4. Anything else → literal fallback
  */
-export function buildStatement(grant: CapabilityGrant): StatementEntry {
+export function buildStatement(input: CapabilityGrant): StatementEntry {
+  // key.delete fails closed: every delete row is never approvable and renders
+  // the refusal line, whatever its resource parses to.
+  const view = canonicalEncryptionUrn(input);
+  if (input.actions.some(isKeyDeleteAction)) {
+    return input.actions.length === 1
+      ? buildKeyDeleteStatement(input, view)
+      : { ...fallbackStatement(input), neverApprovable: true };
+  }
+  // A URN that fails the strict parse, or sits in an unexpected field, renders
+  // the literal fallback.
+  if (view.kind === "invalid") return fallbackStatement(input);
+  const grant = view.kind === "urn" ? view.grant : input;
   const service = grant.service;
   const path = grant.path;
   const space = grant.space;
@@ -618,6 +850,12 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
   if (grant.serviceMismatch === true) {
     return fallbackStatement(grant);
   }
+  // Key-shaped encryption grants render per-verb copy. A network URN falls
+  // through to the network branches below.
+  if (view.kind === "urn" && view.parsed.kind !== "network") {
+    return buildNamedKeyStatement(input, view.parsed, view.resource);
+  }
+
   // Schema is never folded into another row. A mixed schema grant falls back
   // to the literal wire tuple here; buildStatements() renders the split rows.
   if (
