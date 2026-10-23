@@ -208,9 +208,9 @@ async function finishManagedSpaceOnboarding(input: {
       case 'hosted':
       case 'complete':
         return { spaceReady: true };
-      // Still running here or under another approval's lock: the lock/cache finishes it once.
+      // Another run holds the lock (an approval's or the sweep's) and will host the space: keep waiting.
       case 'pending':
-        return { spaceReady: null, spacePending: true };
+        return { spaceReady: null, spacePending: true, spaceError: result.errorCode };
       case 'timeout':
         return { spaceReady: null, spacePending: true, spaceError: REQUESTED_SPACE_TIMEOUT_ERROR };
       case 'skipped':
@@ -1718,6 +1718,7 @@ delegateRouter.post('/prepare', async (c) => {
     permissions?: unknown;
     expiry?: unknown;
     reason?: unknown;
+    deviceTransactionId?: unknown;
   }>();
 
   if (!body.keyId || !body.jwk || !body.host) {
@@ -1766,6 +1767,7 @@ delegateRouter.post('/prepare', async (c) => {
       actionKeys: normalizeStringArray(body.actionKeys, 'actionKeys'),
       permissionKeys: normalizeStringArray(body.permissionKeys, 'permissionKeys'),
       permissions,
+      deviceTransaction: body.deviceTransactionId !== undefined,
       expiryMs,
     });
   } catch (e) {
@@ -1892,6 +1894,7 @@ delegateRouter.post('/complete', async (c) => {
     jwk: DelegationJwk;
     edited?: boolean;
     reason?: unknown;
+    deviceTransactionId?: unknown;
     /**
      * The CLI-supplied permissions that were the baseline for /prepare.
      * When present, this is used instead of DEFAULT_ABILITIES for the
@@ -1986,7 +1989,7 @@ delegateRouter.post('/complete', async (c) => {
       ? sessionAbilitiesFromPermissions(baselinePermissions, {
           address: signedFields.address,
           chainId: signedFields.chainId,
-        })
+        }, { deviceTransaction: body.deviceTransactionId !== undefined })
       : DEFAULT_SESSION_ABILITIES;
     assertBaselineSubset(entries, baseline);
     assertRequiredActions(entries, baseline);

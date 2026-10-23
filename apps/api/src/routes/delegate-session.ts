@@ -13,6 +13,7 @@ import {
   parseRecapFromSiwe,
 } from '@tinycloud/node-sdk-wasm';
 import { CAPABILITIES, ENCRYPTION, KV, SQL } from '@tinycloud/bootstrap';
+import { getAddress } from 'viem';
 import {
   DelegateRequestError,
   shortServiceName,
@@ -387,6 +388,34 @@ function assertRawEncryptionPermission(
   }
 }
 
+/** Service name of the device authorization encryption entry, exact on the wire. */
+const DEVICE_ENCRYPTION_SERVICE = 'tinycloud.encryption';
+/** Space name of the approving account's own default encryption network. */
+const DEVICE_ENCRYPTION_SPACE = 'default';
+
+/**
+ * URN of the signer's own `default` encryption network. Single producer for the
+ * device entry; owner DID uses the signer's chain and EIP-55 address.
+ */
+export function defaultEncryptionNetworkUrn(signer: { address: string; chainId: number }): string {
+  return `${RAW_ENCRYPTION_PREFIX}did:pkh:eip155:${signer.chainId}:${getAddress(signer.address)}:default`;
+}
+
+/**
+ * The exact device authorization encryption entry: service `tinycloud.encryption`,
+ * space `default`, path `""`, and only the decrypt action. Any other entry keeps
+ * its existing handling.
+ */
+export function isDeviceDefaultEncryptionEntry(entry: DelegationPermissionEntry): boolean {
+  return (
+    entry.service === DEVICE_ENCRYPTION_SERVICE &&
+    entry.space === DEVICE_ENCRYPTION_SPACE &&
+    entry.path === '' &&
+    entry.actions.length === 1 &&
+    entry.actions[0] === ENCRYPTION.DECRYPT
+  );
+}
+
 /**
  * Translate CLI permission entries into the ability maps `prepareSession()`
  * signs. Space abilities are keyed by short service name (`kv`, `sql`, …),
@@ -394,14 +423,32 @@ function assertRawEncryptionPermission(
  * `rawAbilities` keyed by network URN, after checking the signer owns the
  * network. Actions stay fully-qualified (`tinycloud.sql/read`) because the
  * SIWE recap stores them that way.
+ *
+ * With `deviceTransaction`, the exact default encryption entry (see
+ * `isDeviceDefaultEncryptionEntry`) resolves to the signer's own default
+ * network. Every other entry is handled as before.
  */
 export function sessionAbilitiesFromPermissions(
   permissions: DelegationPermissionEntry[],
   signer: { address: string; chainId: number },
+  options: { deviceTransaction?: boolean } = {},
 ): SessionAbilities {
   const abilities: AbilitiesMap = Object.create(null);
   const rawAbilities: RawAbilitiesMap = Object.create(null);
+  let deviceDefaultSeen = false;
   permissions.forEach((entry, index) => {
+    if (options.deviceTransaction && isDeviceDefaultEncryptionEntry(entry)) {
+      if (deviceDefaultSeen) {
+        throw new DelegateRequestError(
+          'invalid_permissions',
+          `permissions[${index}] repeats the default encryption entry; a device request carries one`,
+          [{ path: `permissions[${index}]`, message: 'Only one default encryption entry is allowed' }],
+        );
+      }
+      deviceDefaultSeen = true;
+      addActions(rawAbilities, defaultEncryptionNetworkUrn(signer), [ENCRYPTION.DECRYPT]);
+      return;
+    }
     if (isRawEncryptionPermission(entry)) {
       assertRawEncryptionPermission(entry, index, signer);
       addActions(rawAbilities, entry.path, entry.actions);
@@ -467,6 +514,11 @@ export interface PrepareDelegationSessionInput {
    * request before signing.
    */
   permissions?: DelegationPermissionEntry[];
+  /**
+   * Device authorization context. Only then does the exact default encryption
+   * entry resolve to the signer's own network.
+   */
+  deviceTransaction?: boolean;
   /** Pre-validated, clamped delegation lifetime in milliseconds. */
   expiryMs: number;
   domain?: string;
@@ -492,6 +544,7 @@ export function prepareDelegationSession({
   actionKeys,
   permissionKeys,
   permissions,
+  deviceTransaction,
   expiryMs,
   domain,
   nonce,
@@ -517,7 +570,7 @@ export function prepareDelegationSession({
   };
 
   const baselineAbilities = isCliBaseline
-    ? sessionAbilitiesFromPermissions(permissions!, { address, chainId })
+    ? sessionAbilitiesFromPermissions(permissions!, { address, chainId }, { deviceTransaction })
     : DEFAULT_SESSION_ABILITIES;
 
   const baselinePrepared = prepareSession({

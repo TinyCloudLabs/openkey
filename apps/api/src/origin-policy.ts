@@ -2,6 +2,10 @@ export type OriginPolicyEnvironment = Record<string, string | undefined>;
 
 export const DEFAULT_CONSOLE_ORIGIN = 'https://console.openkey.so';
 
+// Response headers the browser may read on credentialed cross-origin requests.
+// `Date` is the server clock the delegate page uses to start the code countdown.
+export const API_EXPOSED_HEADERS = ['set-auth-token', 'Date'];
+
 function isProduction(env: OriginPolicyEnvironment): boolean {
   return env.NODE_ENV === 'production' || env.TEE_MODE === 'production';
 }

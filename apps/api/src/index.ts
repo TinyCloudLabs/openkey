@@ -27,7 +27,7 @@ import { createDelegationCodeRouter, createPrismaDelegationCodeStore } from './r
 import { requireSession } from './middleware/session';
 import { trackAuthorization, trackTokenExchange, trackUniqueUser } from './analytics';
 import { configuredSocialProviderIds } from './social-providers';
-import { corsOriginPolicy } from './origin-policy';
+import { API_EXPOSED_HEADERS, corsOriginPolicy } from './origin-policy';
 import { readinessHandler } from './readiness';
 import { createProviderInterceptors } from './services/native-delegation/interceptors';
 import { providerTokenOptions } from './services/native-delegation/provider-tokens';
@@ -41,6 +41,7 @@ import {
 } from './services/native-delegation/public-protocol';
 import { turnstileConfigProblem } from './services/turnstile';
 import { loadTestAccountRegistry, qaRegistrationSecretTooShort } from './services/qa-registration';
+import { startTinyCloudBootstrapSweep } from './services/tinycloud-bootstrap-sweep';
 
 
 const betterAuthUrl = process.env.BETTER_AUTH_URL;
@@ -84,7 +85,7 @@ app.use('/api/delegate/sign', cors({
 app.use('*', protocolAwareCors(cors({
   origin: corsOriginPolicy('http://localhost:5173'),
   credentials: true,
-  exposeHeaders: ['set-auth-token'],
+  exposeHeaders: API_EXPOSED_HEADERS,
 })));
 
 // Health check: traffic is accepted only when the database migration contract
@@ -267,6 +268,8 @@ const ALL_SCOPES = ['openid', 'email', 'keys', 'offline_access'];
 const port = parseInt(process.env.API_PORT || '3001');
 
 log('info', 'api_starting');
+// Retries failed TinyCloud account setup in the background. Off under tests; kill switch is read per tick.
+if (process.env.NODE_ENV !== 'test') startTinyCloudBootstrapSweep();
 
 export default {
   port,

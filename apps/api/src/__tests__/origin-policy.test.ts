@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import {
+  API_EXPOSED_HEADERS,
   corsOriginPolicy,
   DEFAULT_CONSOLE_ORIGIN,
   resolveOriginPolicy,
@@ -79,5 +80,10 @@ describe('production console origin policy', () => {
     });
 
     expect(response.headers.get('access-control-allow-origin')).toBe('http://localhost:5173');
+  });
+
+  test('exposes Date to the page and keeps set-auth-token exposed', () => {
+    expect(API_EXPOSED_HEADERS).toContain('Date');
+    expect(API_EXPOSED_HEADERS).toContain('set-auth-token');
   });
 });

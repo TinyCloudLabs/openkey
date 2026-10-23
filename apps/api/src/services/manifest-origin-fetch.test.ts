@@ -159,7 +159,8 @@ describe("canonical well-known manifest binding", () => {
       permissions: bound.manifest?.declaredPermissions,
     });
 
-    expect(annotated.permissions[0]?.severity).toBe("standard");
+    // Manifest proof enriches the label only; severity stays "sensitive".
+    expect(annotated.permissions[0]?.severity).toBe("sensitive");
     expect(annotated.permissions[0]?.metadataLabel).toBe(
       "Secret: GOOGLE_MEET_TOKENS · Scope: listen",
     );
