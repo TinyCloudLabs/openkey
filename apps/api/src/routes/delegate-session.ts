@@ -18,7 +18,7 @@ import {
   DelegateRequestError,
   shortServiceName,
 } from './delegate-validation';
-import { logPermissionEntryUnknownField } from '../log';
+import { logPermissionEntryUnknownFields } from '../log';
 
 export type DelegationJwk = { kty: string; crv: string; x: string };
 export type AbilitiesMap = Record<string, Record<string, string[]>>;
@@ -320,17 +320,18 @@ const PERMISSION_ENTRY_FIELDS: Record<string, true> = {
  */
 const PERMISSION_ENTRY_REFUSAL = {
   caveats: (index: number) =>
-    `permissions[${index}] asks for a limit (caveats) that this approval cannot carry, so nothing was approved.`,
+    `permissions[${index}] includes a limit (caveats) that this approval can't carry, so a request that needs the limit can't be made this way. Nothing was approved.`,
   expiry: (index: number) =>
-    `permissions[${index}] sets its own expiry (expiry); set one expiry for the whole request instead. Nothing was approved.`,
+    `permissions[${index}] sets its own expiry (expiry). Set one expiry for the whole request instead. Nothing was approved.`,
   expiryMs: (index: number) =>
-    `permissions[${index}] sets its own expiry (expiryMs); set one expiry for the whole request instead. Nothing was approved.`,
+    `permissions[${index}] sets its own expiry (expiryMs). Set one expiry for the whole request instead. Nothing was approved.`,
 };
 
 /**
  * Validates the CLI `permissions[]` array. Narrowing fields this approval cannot carry (`caveats`
- * with restrictions, per-entry `expiry` / `expiryMs`) are refused, never silently dropped. Other
- * unknown entry fields are dropped and logged by name. Nothing is logged for a refused request.
+ * with restrictions, per-entry `expiry` / `expiryMs`) are refused with an error. Other unknown
+ * entry fields are dropped; their names are logged, capped per request (see
+ * `logPermissionEntryUnknownFields`). Nothing is logged for a refused request.
  */
 export function validatePermissions(permissions: unknown): DelegationPermissionEntry[] {
   if (!Array.isArray(permissions) || permissions.length === 0) {
@@ -383,9 +384,7 @@ export function validatePermissions(permissions: unknown): DelegationPermissionE
       actions: e.actions as string[],
     };
   });
-  for (const [field, count] of unknownFields) {
-    logPermissionEntryUnknownField(field, count);
-  }
+  logPermissionEntryUnknownFields(unknownFields);
   return entries;
 }
 

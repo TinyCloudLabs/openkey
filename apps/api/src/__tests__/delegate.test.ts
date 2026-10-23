@@ -44,8 +44,9 @@ describe('validatePermissions', () => {
     const payload = refusalFor([{ ...base, caveats }]);
 
     expect(payload.code).toBe('invalid_permissions');
-    expect(payload.error).toContain('permissions[0]');
-    expect(payload.error).toContain('caveats');
+    expect(payload.error).toBe(
+      `permissions[0] includes a limit (caveats) that this approval can't carry, so a request that needs the limit can't be made this way. Nothing was approved.`,
+    );
   });
 
   test.each<[string, Record<string, unknown>]>([
@@ -57,8 +58,9 @@ describe('validatePermissions', () => {
     const payload = refusalFor([{ ...base, ...extra }]);
 
     expect(payload.code).toBe('invalid_permissions');
-    expect(payload.error).toContain('permissions[0]');
-    expect(payload.error).toContain(`(${Object.keys(extra)[0]})`);
+    expect(payload.error).toBe(
+      `permissions[0] sets its own expiry (${Object.keys(extra)[0]}). Set one expiry for the whole request instead. Nothing was approved.`,
+    );
   });
 
   test('refusal messages never contain the offending value', () => {
