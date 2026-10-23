@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
+  assertMigrationRecorded,
   assertNoDuplicateAccountIdentities,
   partitionPreTc488Migrations,
   selectProductionMigrationMode,
@@ -205,6 +206,33 @@ describe('production migration deployment mode', () => {
     };
     await expect(assertNoDuplicateAccountIdentities(database)).resolves.toBeUndefined();
     expect(queries).toHaveLength(1);
+  });
+
+  test('accepts the finished history row when a rolled-back attempt of the same migration exists', () => {
+    const reviewed = 'reviewed-checksum';
+    const rolledBack: MigrationRow = {
+      migration_name: googleLinkStepUp, checksum: reviewed, finished_at: null, rolled_back_at: new Date(),
+    };
+    const finished: MigrationRow = {
+      migration_name: googleLinkStepUp, checksum: reviewed, finished_at: new Date(), rolled_back_at: null,
+    };
+    expect(() => assertMigrationRecorded([rolledBack, finished], googleLinkStepUp, reviewed)).not.toThrow();
+    expect(() => assertMigrationRecorded([finished, rolledBack], googleLinkStepUp, reviewed)).not.toThrow();
+  });
+
+  test('rejects a migration whose only history rows are rolled back, unfinished, or carry another checksum', () => {
+    const rolledBack: MigrationRow = {
+      migration_name: googleLinkStepUp, checksum: 'reviewed-checksum', finished_at: null, rolled_back_at: new Date(),
+    };
+    const unfinished: MigrationRow = { ...rolledBack, rolled_back_at: null };
+    const otherChecksum: MigrationRow = {
+      ...rolledBack, checksum: 'other-checksum', finished_at: new Date(), rolled_back_at: null,
+    };
+    const message = `${googleLinkStepUp} was not recorded with the reviewed checksum`;
+    expect(() => assertMigrationRecorded([rolledBack], googleLinkStepUp, 'reviewed-checksum')).toThrow(message);
+    expect(() => assertMigrationRecorded([unfinished], googleLinkStepUp, 'reviewed-checksum')).toThrow(message);
+    expect(() => assertMigrationRecorded([rolledBack, otherChecksum], googleLinkStepUp, 'reviewed-checksum')).toThrow(message);
+    expect(() => assertMigrationRecorded([], googleLinkStepUp, 'reviewed-checksum')).toThrow(message);
   });
 
   test('permits the prepared SIWE handoff migration while TC-488 remains parked', async () => {

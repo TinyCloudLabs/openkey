@@ -95,6 +95,18 @@ SELECT count(*) FROM (
 ) AS duplicate_groups;
 ```
 
+If the migration fails with `P3018`, nothing was applied: count the duplicate
+groups with the query above, resolve them, run
+`prisma migrate resolve --rolled-back 20261015_0001_google_link_step_up`, and
+redeploy. Never use `--applied`. The history then holds two rows for this
+migration (the rolled-back attempt and the finished one); the post-deploy check
+uses the finished row.
+
+A failed history row can still occur when `prisma migrate deploy` is run by
+hand without the count, or when a duplicate is inserted between the count and
+the index build. The previous image keeps serving and the schema is unchanged,
+and `P3009` stops every later deploy until that row is resolved as above.
+
 Rollback is an image-only redeploy: the previous image does not read the added
 column and ignores it. Redeploying an older commit stops at the migration step
 with "Production contains migration history absent from this checkout",

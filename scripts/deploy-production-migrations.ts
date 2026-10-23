@@ -228,6 +228,18 @@ async function readState(database: ReturnType<typeof createPrismaClient>) {
   };
 }
 
+// A migration can have several history rows (for example a rolled-back attempt
+// followed by a finished one). The finished, not-rolled-back row is the one
+// that counts.
+export function assertMigrationRecorded(rows: MigrationRow[], name: string, checksum: string) {
+  const row = rows.find(
+    (candidate) => candidate.migration_name === name && candidate.finished_at && !candidate.rolled_back_at,
+  );
+  if (!row || row.checksum !== checksum) {
+    throw new Error(`${name} was not recorded with the reviewed checksum`);
+  }
+}
+
 async function deployAdditiveMigrationsBeforeTc488(
   database: ReturnType<typeof createPrismaClient>,
   pendingMigrations: string[],
@@ -259,10 +271,7 @@ async function deployAdditiveMigrationsBeforeTc488(
   );
   const expected = new Map([...tc492AdditiveMigrations, ...preTc488AdditiveMigrations]);
   for (const [name, checksum] of expected) {
-    const row = rows.find((candidate) => candidate.migration_name === name);
-    if (!row?.finished_at || row.rolled_back_at || row.checksum !== checksum) {
-      throw new Error(`${name} was not recorded with the reviewed checksum`);
-    }
+    assertMigrationRecorded(rows, name, checksum);
   }
 
   const physical = await database.$queryRawUnsafe<Array<{
