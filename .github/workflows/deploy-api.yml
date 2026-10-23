@@ -54,6 +54,8 @@ jobs:
         with:
           context: .
           push: true
+          build-args: |
+            GIT_SHA=${{ github.sha }}
           cache-from: type=gha,scope=openkey-api-image
           cache-to: type=gha,mode=max,scope=openkey-api-image
           tags: |
