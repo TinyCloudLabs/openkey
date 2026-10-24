@@ -46,7 +46,6 @@ Object.assign(browserGlobals, {
   requestAnimationFrame: win.requestAnimationFrame.bind(win),
   cancelAnimationFrame: win.cancelAnimationFrame.bind(win),
 });
-win.document.hasFocus = () => true;
 
 // Dynamic imports: the browser globals above must exist before the Svelte
 // client runtime loads, and static imports are hoisted above them.

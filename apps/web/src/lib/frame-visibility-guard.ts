@@ -2,7 +2,7 @@
 //
 // Approve is available only after every watched part of the view (the summary
 // and the Approve button) has been fully visible and uncovered for a
-// continuous delay, with the page visible and focused. Any loss of
+// continuous delay, with the page visible. Any loss of
 // visibility, window blur or tab hide starts the delay again. A click is
 // accepted only if the newest visibility reports still say visible.
 //
@@ -166,14 +166,15 @@ export function watchFrameVisibility(
     }
   }
 
-  const pageVisibleNow = () => document.visibilityState === 'visible' && document.hasFocus();
-  const onFocusOrVisibility = () => {
+  // A frame that has not been clicked yet is not focused, so focus is not
+  // required; losing focus or visibility starts the delay again.
+  const pageVisibleNow = () => document.visibilityState === 'visible';
+  const onBlurOrVisibility = () => {
     guard.rearm();
     guard.setPageVisible(pageVisibleNow());
   };
-  window.addEventListener('blur', onFocusOrVisibility);
-  window.addEventListener('focus', onFocusOrVisibility);
-  document.addEventListener('visibilitychange', onFocusOrVisibility);
+  window.addEventListener('blur', onBlurOrVisibility);
+  document.addEventListener('visibilitychange', onBlurOrVisibility);
   guard.setPageVisible(pageVisibleNow());
   for (const target of targets) observer.observe(target.element);
 
@@ -186,9 +187,8 @@ export function watchFrameVisibility(
       return guard.allowed;
     },
     stop() {
-      window.removeEventListener('blur', onFocusOrVisibility);
-      window.removeEventListener('focus', onFocusOrVisibility);
-      document.removeEventListener('visibilitychange', onFocusOrVisibility);
+      window.removeEventListener('blur', onBlurOrVisibility);
+      document.removeEventListener('visibilitychange', onBlurOrVisibility);
       observer.disconnect();
       guard.stop();
     },

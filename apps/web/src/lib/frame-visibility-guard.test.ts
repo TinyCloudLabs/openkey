@@ -157,7 +157,7 @@ describe('createVisibilityGuard', () => {
 });
 
 // A browser stand-in: an observer whose records the test controls, a window
-// and a document with listeners, and a settable focus/visibility state.
+// and a document with listeners, and a settable visibility state.
 class FakeObserver {
   static instances: FakeObserver[] = [];
   trackVisibility = true;
@@ -184,7 +184,7 @@ describe('watchFrameVisibility', () => {
   const realGlobals = { IntersectionObserver: fakeGlobals.IntersectionObserver, window: fakeGlobals.window, document: fakeGlobals.document };
   let windowListeners: Record<string, Array<() => void>>;
   let documentListeners: Record<string, Array<() => void>>;
-  let doc: { visibilityState: string; hasFocus: () => boolean };
+  let doc: { visibilityState: string };
   const summary = { name: 'summary-element' } as unknown as Element;
   const button = { name: 'button-element' } as unknown as Element;
   const entry = (target: Element, state: VisibilityEntry) => ({ target, ...state }) as unknown as IntersectionObserverEntry;
@@ -194,7 +194,7 @@ describe('watchFrameVisibility', () => {
     FakeObserver.instances = [];
     windowListeners = {};
     documentListeners = {};
-    doc = { visibilityState: 'visible', hasFocus: () => true };
+    doc = { visibilityState: 'visible' };
     fakeGlobals.IntersectionObserver = FakeObserver;
     fakeGlobals.window = {
       addEventListener: (type: string, fn: () => void) => (windowListeners[type] ??= []).push(fn),
@@ -260,14 +260,8 @@ describe('watchFrameVisibility', () => {
     vi.advanceTimersByTime(VISIBILITY_ENABLE_DELAY_MS);
     expect(binding.allowed).toBe(true);
 
-    doc.hasFocus = () => false;
     windowListeners.blur!.forEach((fn) => fn());
     expect(binding.allowed).toBe(false);
-    vi.advanceTimersByTime(VISIBILITY_ENABLE_DELAY_MS * 5);
-    expect(binding.allowed).toBe(false);
-
-    doc.hasFocus = () => true;
-    windowListeners.focus!.forEach((fn) => fn());
     vi.advanceTimersByTime(VISIBILITY_ENABLE_DELAY_MS - 1);
     expect(binding.allowed).toBe(false);
     vi.advanceTimersByTime(1);
@@ -276,18 +270,22 @@ describe('watchFrameVisibility', () => {
     doc.visibilityState = 'hidden';
     documentListeners.visibilitychange!.forEach((fn) => fn());
     expect(binding.allowed).toBe(false);
+    vi.advanceTimersByTime(VISIBILITY_ENABLE_DELAY_MS * 5);
+    expect(binding.allowed).toBe(false);
     doc.visibilityState = 'visible';
     documentListeners.visibilitychange!.forEach((fn) => fn());
-    vi.advanceTimersByTime(VISIBILITY_ENABLE_DELAY_MS);
+    vi.advanceTimersByTime(VISIBILITY_ENABLE_DELAY_MS - 1);
+    expect(binding.allowed).toBe(false);
+    vi.advanceTimersByTime(1);
     expect(binding.allowed).toBe(true);
   });
 
-  test('a page that starts unfocused stays closed until focus', () => {
-    doc.hasFocus = () => false;
+  test('a frame that was never focused still opens, and gaining focus does not close it', () => {
     const { binding, observer } = start();
     showBoth(observer);
-    vi.advanceTimersByTime(VISIBILITY_ENABLE_DELAY_MS * 5);
-    expect(binding.allowed).toBe(false);
+    vi.advanceTimersByTime(VISIBILITY_ENABLE_DELAY_MS);
+    expect(binding.allowed).toBe(true);
+    expect(windowListeners.focus ?? []).toEqual([]);
   });
 
   test('confirmNow reads pending records: a click right after a cover is refused', () => {
@@ -337,7 +335,6 @@ describe('watchFrameVisibility', () => {
     binding.stop();
     expect(observer.disconnected).toBe(true);
     expect(windowListeners.blur).toEqual([]);
-    expect(windowListeners.focus).toEqual([]);
     expect(documentListeners.visibilitychange).toEqual([]);
   });
 });
