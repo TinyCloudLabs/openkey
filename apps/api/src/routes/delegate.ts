@@ -963,13 +963,10 @@ delegateRouter.post('/sign', async (c) => {
       },
     });
     if (!policy.allowed) return auditDenial(policy.code, policy.evidence);
-    const coordinationosAppKeyRefusal = typeof candidate.message === 'string' ? appKeyRefusalForSiwe(candidate.message) : null;
-    if (coordinationosAppKeyRefusal) {
-      return c.json({
-        approved: false,
-        code: appKeyRefusalCode(coordinationosAppKeyRefusal),
-        reason: appKeyRefusalMessage(coordinationosAppKeyRefusal, 'non_browser'),
-      }, appKeyRefusalStatus(coordinationosAppKeyRefusal));
+    // A message that names an app key or key.delete is outside the approved
+    // storage records: it is denied and recorded like every other denial.
+    if (typeof candidate.message === 'string' && appKeyRefusalForSiwe(candidate.message)) {
+      return auditDenial('wrong_capability', policy.evidence);
     }
     if (!key || !key.sealedBlob || !policy.evidence.nonceDigest) {
       return auditDenial('key_unavailable', policy.evidence);

@@ -43,13 +43,17 @@
     CapabilityReviewModel,
   } from "@openkey/capability-review";
   import {
+    appKeyAccessStatement,
+    appKeyNotGrantableStatements,
     buildRenderPlan,
     buildStatements,
+    grantIsAppKeyDecrypt,
     grantReachesSecretDataOrDecryption,
     grantHeading,
     PROTOCOL_HEADLINE,
     PROTOCOL_HINT,
     sensitiveCallout,
+    splitStatementCode,
   } from "@openkey/capability-review";
 
   interface Props {
@@ -186,6 +190,7 @@
         primaryText: string;
         severity: CapabilityGrant["severity"];
         unmapped: boolean;
+        codeSpans: boolean;
       }
     >();
 
@@ -202,6 +207,7 @@
             primaryText: statement.primaryText,
             severity: grant.severity,
             unmapped: isUnmappedStatement(statement.primaryText),
+            codeSpans: statement.codeSpans === true,
           });
         }
       }
@@ -215,6 +221,16 @@
   const sensitiveCount = $derived(
     selectedGrants.filter(grantReachesSecretDataOrDecryption).length,
   );
+
+  // App keys: the standing-access line follows the decrypt statements, and a
+  // `key.delete` action is listed even though it is never selected.
+  const appKeyAccessLine = $derived(
+    selectedGrants.some(grantIsAppKeyDecrypt) ? appKeyAccessStatement(model.expiry) : null,
+  );
+  const notGrantableStatements = $derived.by(() => {
+    const rows = model.permissions.flatMap(appKeyNotGrantableStatements);
+    return rows.filter((row, index) => rows.findIndex((other) => other.primaryText === row.primaryText) === index);
+  });
 
   function isSelected(action: CapabilityAction): boolean {
     return selection.has(action.id);
@@ -442,6 +458,14 @@
     </p>
   {/if}
 
+  {#snippet statementText(text: string, codeSpans: boolean)}
+    {#if codeSpans}
+      {#each splitStatementCode(text) as part}{#if part.code}<code class="mono">{part.text}</code>{:else}{part.text}{/if}{/each}
+    {:else}
+      {text}
+    {/if}
+  {/snippet}
+
   <!--
     Default summary: short list of deterministic statements.
     Never invents friendly semantics for unknown shapes (see statements.ts).
@@ -457,7 +481,7 @@
             data-severity={statement.severity}
           >
             <span class="statement-line">
-              <span class="statement-primary">{statement.primaryText}</span>
+              <span class="statement-primary">{@render statementText(statement.primaryText, statement.codeSpans)}</span>
               {#if statement.severity === "sensitive"}
                 <span class="summary-sensitive-pill">Sensitive</span>
               {/if}
@@ -471,6 +495,20 @@
           ? "No optional access selected."
           : "No capability payload — exact-byte signature only."}
       </p>
+    {/if}
+    {#if appKeyAccessLine}
+      <p class="summary-note">{appKeyAccessLine}</p>
+    {/if}
+    {#if notGrantableStatements.length > 0}
+      <ul class="summary-statements summary-not-granted">
+        {#each notGrantableStatements as statement (statement.primaryText)}
+          <li class="summary-statement" data-severity="sensitive">
+            <span class="statement-line">
+              <span class="statement-primary">{@render statementText(statement.primaryText, statement.codeSpans === true)}</span>
+            </span>
+          </li>
+        {/each}
+      </ul>
     {/if}
   </section>
 
@@ -934,6 +972,12 @@
     line-height: 1.3;
   }
   .summary-empty {
+    color: #475569;
+    font-size: 13px;
+    line-height: 1.45;
+    margin: 0;
+  }
+  .summary-note {
     color: #475569;
     font-size: 13px;
     line-height: 1.45;

@@ -302,7 +302,7 @@ keysRouter.post('/:keyId/sign', async (c) => {
   }
   const appKeyRefusal = appKeyRefusalForMessage(body.message);
   if (appKeyRefusal) {
-    return c.json(appKeyRefusalBody(appKeyRefusal, 'browser'), appKeyRefusalStatus(appKeyRefusal));
+    return c.json(appKeyRefusalBody(appKeyRefusal, 'non_browser'), appKeyRefusalStatus(appKeyRefusal));
   }
 
   const key = await prisma.ethereumKey.findFirst({

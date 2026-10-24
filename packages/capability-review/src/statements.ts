@@ -15,8 +15,14 @@
 // contract; UI callers MUST route through it rather than composing the
 // sentence themselves.
 
-import type { CapabilityGrant } from "./model.js";
-import { DECRYPT_DEFAULT_KEY_STATEMENT } from "./copy.js";
+import type { CapabilityAction, CapabilityGrant } from "./model.js";
+import {
+  APP_KEY_ABILITIES,
+  DECRYPT_DEFAULT_KEY_STATEMENT,
+  appKeyStatementText,
+  type AppKeyAbility,
+} from "./copy.js";
+import { APPS_SEGMENT, isAppsKeyResource, parseKeyResource } from "./key-resource.js";
 import { isMetadataOnlyAccess } from "./action-semantics.js";
 import {
   CANONICAL_APP_SCOPE_SECRET_ABILITIES,
@@ -47,6 +53,11 @@ export interface StatementEntry {
    * space) shown alongside the service. Rendered as-is.
    */
   resource: string;
+  /**
+   * True when the text between backticks in `primaryText` is a resource
+   * shown in monospace. Other statements never set it.
+   */
+  codeSpans?: true;
 }
 
 /** Family/action-aware structural verb classification. */
@@ -539,6 +550,73 @@ function splitsDefaultKeyDecrypt(grant: CapabilityGrant): boolean {
   );
 }
 
+/** The app key ability a wire ability names, byte-exact in either namespace. */
+function appKeyAbilityOf(ability: string): AppKeyAbility | null {
+  for (const name of APP_KEY_ABILITIES) {
+    if (ability === `tinycloud.encryption/${name}` || ability === `encryption/${name}`) return name;
+  }
+  return null;
+}
+
+/**
+ * Rows for an encryption grant on a key or prefix under `apps/`, one row per
+ * ability in a fixed order, each on its own. An ability that is not one of the
+ * five, and a resource under `apps/` that does not parse, keep the literal
+ * fallback. `null` for every other grant.
+ */
+function appKeyStatements(grant: CapabilityGrant): StatementEntry[] | null {
+  if (!ENCRYPTION_SERVICES.has(grant.service) || grant.serviceMismatch === true) return null;
+  const resource = resourceOf(grant);
+  if (!isAppsKeyResource(resource)) return null;
+  const parsed = parseKeyResource(resource);
+  if (!parsed || parsed.keyPath.split("/")[0] !== APPS_SEGMENT) return [fallbackStatement(grant)];
+  const target = {
+    path: parsed.isPrefix ? `${parsed.keyPath}/` : parsed.keyPath,
+    isPrefix: parsed.isPrefix,
+  };
+  const present = new Set<AppKeyAbility>();
+  const unrecognised: CapabilityAction[] = [];
+  for (const action of grant.actions) {
+    const name = appKeyAbilityOf(action.ability);
+    if (name) present.add(name);
+    else unrecognised.push(action);
+  }
+  const rows: StatementEntry[] = APP_KEY_ABILITIES.filter((name) => present.has(name)).map(
+    (name) => ({
+      primaryText: appKeyStatementText(name, target),
+      service: grant.service,
+      resource,
+      codeSpans: true,
+    }),
+  );
+  if (rows.length === 0 || unrecognised.length > 0) {
+    rows.push(fallbackStatement({ ...grant, actions: unrecognised.length > 0 ? unrecognised : grant.actions }));
+  }
+  return rows;
+}
+
+/**
+ * The `key.delete` rows of an app key grant, whether or not the action is
+ * selected. The action is shown and cannot be approved.
+ */
+export function appKeyNotGrantableStatements(grant: CapabilityGrant): StatementEntry[] {
+  const actions = grant.actions.filter((action) => appKeyAbilityOf(action.ability) === "key.delete");
+  return actions.length === 0 ? [] : (appKeyStatements({ ...grant, actions }) ?? []);
+}
+
+/** Does this grant let an app decrypt with keys under `apps/`? */
+export function grantIsAppKeyDecrypt(grant: CapabilityGrant): boolean {
+  return grant.family === "app-keys" && grant.actions.some((action) => appKeyAbilityOf(action.ability) === "decrypt");
+}
+
+/** A statement split at its backticks; the odd parts are the monospace text. */
+export function splitStatementCode(text: string): Array<{ text: string; code: boolean }> {
+  return text
+    .split("`")
+    .map((part, index) => ({ text: part, code: index % 2 === 1 }))
+    .filter((part) => part.text !== "");
+}
+
 /**
  * Statement rows for a grant. A KV/SQL grant that mixes `schema` with other
  * recognized abilities yields two rows: the read/update row for the other
@@ -547,6 +625,8 @@ function splitsDefaultKeyDecrypt(grant: CapabilityGrant): boolean {
  * renders only the non-schema part of a mixed grant.
  */
 export function buildStatements(grant: CapabilityGrant): StatementEntry[] {
+  const appKeyRows = appKeyStatements(grant);
+  if (appKeyRows) return appKeyRows;
   if (splitsDefaultKeyDecrypt(grant)) {
     return [
       buildStatement({
@@ -604,6 +684,8 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
   const verbs = classifyVerbs(abilityStrings);
   const resource = resourceOf(grant);
   const spaceName = spaceNameOf(space);
+  const appKeyRows = appKeyStatements(grant);
+  if (appKeyRows) return appKeyRows[0]!;
 
   // Blocker 4 follow-up (Defect 5): serviceMismatch short-circuit.
   //

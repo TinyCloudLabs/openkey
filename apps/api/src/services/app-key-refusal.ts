@@ -6,7 +6,7 @@
 // does not depend on how the wasm parser presents a resource. A message whose
 // ReCap cannot be read exactly is refused.
 
-import { isAppsKeyResource, parseKeyResource } from './key-resource';
+import { isAppsKeyResource, isKeyDeleteAbility, parseKeyResource } from './key-resource';
 import { decodeHexUtf8, isSiweShaped } from './siwe-origin';
 
 export type AppKeyRefusalReason = 'key_delete' | 'apps_key' | 'apps_key_unparsed' | 'recap_unreadable';
@@ -33,17 +33,12 @@ const NOT_DECLARED_MESSAGE =
 const KEY_DELETE_MESSAGE =
   "Apps can't be given permission to delete keys, so OpenKey didn't approve this request.";
 const NON_BROWSER_MESSAGE =
-  'App keys can only be requested from a website, not from the command line or a device sign-in.';
+  "App keys can only be requested through a website's sign-in, not from the command line or a device sign-in, so OpenKey didn't approve this request.";
 // The wording the delegate routes already use for a recap they cannot read.
 const UNREADABLE_RECAP_MESSAGE = 'Invalid SIWE recap';
 
 const RECAP_RESOURCE = /urn:recap:(\S*)/gi;
 const BASE64URL = /^[A-Za-z0-9_-]+={0,2}$/;
-
-/** `key.delete` under any namespace: the last `/`-separated part of the ability. */
-function isKeyDeleteAbility(ability: string): boolean {
-  return ability.slice(ability.lastIndexOf('/') + 1).toLowerCase() === 'key.delete';
-}
 
 /**
  * Does this JSON text repeat a key inside any one object? `JSON.parse` keeps
