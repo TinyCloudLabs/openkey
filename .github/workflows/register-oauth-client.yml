@@ -43,7 +43,7 @@ on:
         description: 'Brand accent color as #rrggbb (optional); on update, empty leaves unchanged and none clears'
         required: false
       tinycloud_native_delegation:
-        description: 'Native delegation ceiling JSON (optional). With client_id it replaces the stored ceiling; appId and siweDomain are kept from the stored ceiling and must be left out, e.g. {"version":1,"tinycloudHost":"https://tee.node.tinycloud.xyz","kv":{"paths":["com.example.app/data/"],"actions":["get","put"]},"sql":null}'
+        description: 'Native delegation ceiling JSON (optional). With client_id it replaces the stored ceiling; appId and siweDomain, if present, must equal the stored values (a different value is refused), e.g. {"version":1,"appId":"com.example.app","tinycloudHost":"https://tee.node.tinycloud.xyz","kv":{"paths":["com.example.app/data/"],"actions":["get","put"]},"sql":null}'
         required: false
       dry_run:
         description: 'Ceiling update only: the ceiling is written only when this is false; otherwise BEFORE, AFTER and the diff are printed and nothing is written (default true)'

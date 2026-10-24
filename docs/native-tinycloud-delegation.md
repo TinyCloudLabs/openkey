@@ -274,15 +274,16 @@ Set `client_id` together with `tinycloud_native_delegation` to replace that
 native client's ceiling with the value supplied (the same validation and
 whole-value replacement as the admin PATCH). A ceiling update changes only
 `tinycloudNativeDelegation`. For a client that already has a ceiling, `appId`
-and `siweDomain` are kept from the stored value: leave both out of the value
-supplied (a value that carries either one is refused, even when it matches the
-stored one), and `tinycloudHost` must equal the stored host. A client that has
-no ceiling yet takes its `appId` from the value. The run prints the BEFORE and
-AFTER ceiling, the kept `appId` and `siweDomain`, and the entry-level diff.
-Added entries are applied. A value that removes an existing kv path, sql
-database or action, or reduces a limit, is refused with the entries listed
-unless `allow_narrow` is set (`--allow-narrow` on the command line); no flag
-allows a change of `appId`, `siweDomain` or `tinycloudHost`.
+and `siweDomain` are kept from the stored value: a value supplied for either
+must equal the stored one (accepted as a no-op), so a ceiling copied from the
+stored value works as it is, and a different value is refused. `tinycloudHost`
+must equal the stored host. A client that has no ceiling yet takes its `appId`
+from the value. The run prints the BEFORE and AFTER ceiling, the kept `appId`
+and `siweDomain` (with a note when a supplied value equalled them), and the
+entry-level diff. Added entries are applied. A value that removes an existing
+kv path, sql database or action, or reduces a limit, is refused with the
+entries listed unless `allow_narrow` is set (`--allow-narrow` on the command
+line); no flag allows a change of `appId`, `siweDomain` or `tinycloudHost`.
 A ceiling update is a dry run unless it is applied explicitly: the script
 writes only with `--apply`, and the workflow passes `--apply` only when
 `dry_run` is exactly `false` (default `true`; an empty or any other value is a

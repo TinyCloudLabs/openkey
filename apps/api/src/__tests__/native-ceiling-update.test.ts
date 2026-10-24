@@ -333,24 +333,94 @@ describe('native ceiling update (PGlite, tracked migrations)', () => {
       expect(Object.hasOwn(validateNativeDelegationConfig(stored.tinycloudNativeDelegation, stored), 'siweDomain')).toBe(false);
     });
 
-    const passed: Array<[string, Record<string, string>]> = [
-      ['the same appId', { appId: APP }],
-      ['another appId', { appId: 'xyz.tinycloud.other' }],
-      ['the same siweDomain', { siweDomain: 'openkey.so' }],
-      ['another siweDomain', { siweDomain: 'example.test' }],
-      ['both', { appId: 'xyz.tinycloud.other', siweDomain: 'example.test' }],
+    const equal: Array<[string, Record<string, string>]> = [
+      ['the stored appId', { appId: APP }],
+      ['the stored siweDomain', { siweDomain: 'openkey.so' }],
+      ['both stored values', { appId: APP, siweDomain: 'openkey.so' }],
     ];
 
-    test.each(passed)('passing %s is refused, with or without allowNarrow, and nothing is written', async (_label, fields) => {
+    test.each(equal)('supplying %s is accepted as a no-op: the stored values are unchanged and are the written ones', async (_label, fields) => {
+      const client = await seed();
+      const { result, output } = await run(client.clientId, { ...suppliedCeiling(EXO_CEILING) as object, ...fields }, { identity: true });
+      expect(result.outcome).toBe('written');
+      expect(output).toContain(`KEPT (not changed by this run): appId = ${APP}; siweDomain = openkey.so`);
+      expect(output).toContain('EQUAL (no change): the supplied');
+      const stored = await row(client.clientId);
+      const config = validateNativeDelegationConfig(stored.tinycloudNativeDelegation, stored);
+      expect([config.appId, config.siweDomain]).toEqual([APP, 'openkey.so']);
+      expect(sortedJson(config)).toBe(sortedJson(EXO_CEILING));
+      const { tinycloudNativeDelegation: _storedCeiling, updatedAt: _storedAt, ...storedColumns } = stored;
+      const { tinycloudNativeDelegation: _seededCeiling, updatedAt: _seededAt, ...seededColumns } = client;
+      expect(storedColumns).toEqual(seededColumns);
+    });
+
+    test('a ceiling copied whole from the stored value, with the six Exo entries added, is applied as is', async () => {
+      const client = await seed();
+      const { result } = await run(client.clientId, EXO_CEILING, { identity: true });
+      expect(result.outcome).toBe('written');
+      const stored = await row(client.clientId);
+      expect(sortedJson(stored.tinycloudNativeDelegation)).toBe(sortedJson(EXO_CEILING));
+    });
+
+    test('a dry run with equal values prints the note and issues no UPDATE', async () => {
+      const client = await seed();
+      const snapshot = await row(client.clientId);
+      const { result, output } = await run(client.clientId, EXO_CEILING, { identity: true, dryRun: true });
+      expect(result.outcome).toBe('dry-run');
+      expect(output).toContain('EQUAL (no change): the supplied appId and siweDomain equal the stored value');
+      await expectUntouched(client.clientId, snapshot);
+    });
+
+    test('a custom stored siweDomain is kept when the same one is supplied', async () => {
+      const custom = { ...DOC_CEILING, siweDomain: 'custom.example' };
+      const client = await seed({ ceiling: custom });
+      await run(client.clientId, { ...EXO_CEILING, siweDomain: 'custom.example' }, { identity: true });
+      const stored = await row(client.clientId);
+      expect(validateNativeDelegationConfig(stored.tinycloudNativeDelegation, stored).siweDomain).toBe('custom.example');
+    });
+
+    test('the default siweDomain equals an absent stored one, and the stored value stays absent', async () => {
+      const { siweDomain: _siweDomain, ...bare } = DOC_CEILING;
+      const client = await seed({ ceiling: bare });
+      const { result } = await run(client.clientId, EXO_CEILING, { identity: true });
+      expect(result.outcome).toBe('written');
+      const stored = await row(client.clientId);
+      expect(Object.hasOwn(validateNativeDelegationConfig(stored.tinycloudNativeDelegation, stored), 'siweDomain')).toBe(false);
+    });
+
+    const different: Array<[string, Record<string, unknown>, string]> = [
+      ['another appId', { appId: 'xyz.tinycloud.other' }, `appId (stored: ${APP}; supplied: "xyz.tinycloud.other")`],
+      ['another siweDomain', { siweDomain: 'example.test' }, 'siweDomain (stored: openkey.so; supplied: "example.test")'],
+      ['both another appId and siweDomain', { appId: 'xyz.tinycloud.other', siweDomain: 'example.test' }, 'appId (stored'],
+      ['an appId that is not a string', { appId: 7 }, 'appId (stored'],
+    ];
+
+    test.each(different)('supplying %s is refused, with or without allowNarrow, and nothing is written', async (_label, fields, expected) => {
       const client = await seed();
       const snapshot = await row(client.clientId);
       for (const allowNarrow of [false, true]) {
         const failure = await run(client.clientId, { ...suppliedCeiling(EXO_CEILING) as object, ...fields }, { allowNarrow, identity: true })
           .catch((error: unknown) => error);
         expect(failure).toBeInstanceOf(NativeCeilingRefusedError);
-        expect((failure as Error).message).toContain('cannot be passed or changed');
+        expect((failure as Error).message).toContain(expected);
+        expect((failure as Error).message).toContain('cannot be changed');
       }
       await expectUntouched(client.clientId, snapshot);
+    });
+
+    test('a siweDomain that differs from a custom stored one, or from an absent one, is refused', async () => {
+      const { siweDomain: _siweDomain, ...bare } = DOC_CEILING;
+      const cases: Array<[unknown, string]> = [
+        [{ ...DOC_CEILING, siweDomain: 'custom.example' }, 'openkey.so'],
+        [bare, 'example.test'],
+      ];
+      for (const [ceiling, supplied] of cases) {
+        const client = await seed({ ceiling });
+        const snapshot = await row(client.clientId);
+        await expect(run(client.clientId, { ...EXO_CEILING, siweDomain: supplied }, { identity: true, allowNarrow: true }))
+          .rejects.toBeInstanceOf(NativeCeilingRefusedError);
+        await expectUntouched(client.clientId, snapshot);
+      }
     });
 
     test('a different tinycloudHost is refused even with allowNarrow', async () => {
@@ -367,8 +437,11 @@ describe('native ceiling update (PGlite, tracked migrations)', () => {
 
     test('a stored value that fails validation still keeps its appId', async () => {
       const client = await seed({ ceiling: { version: 9, appId: APP } });
-      await expect(run(client.clientId, EXO_CEILING, { identity: true })).rejects.toBeInstanceOf(NativeCeilingRefusedError);
-      const { result } = await run(client.clientId, EXO_CEILING);
+      const snapshot = await row(client.clientId);
+      await expect(run(client.clientId, { ...EXO_CEILING, appId: 'xyz.tinycloud.other' }, { identity: true }))
+        .rejects.toBeInstanceOf(NativeCeilingRefusedError);
+      await expectUntouched(client.clientId, snapshot);
+      const { result } = await run(client.clientId, EXO_CEILING, { identity: true });
       expect(result.outcome).toBe('written');
       expect(result.after.appId).toBe(APP);
     });
@@ -610,25 +683,28 @@ describe('ci-register-oauth-client.ts', () => {
     expect(await updatesOf(client.clientId)).toBe(1);
   }, 240_000);
 
-  test('appId and siweDomain cannot be passed for an existing client, and an update keeps them', async () => {
+  test('a different appId or siweDomain is refused, equal ones are accepted as they are, and the stored values are kept', async () => {
     const client = await withDatabase((prisma) => seedClient(prisma));
-    for (const extra of [{ appId: APP }, { appId: 'xyz.tinycloud.other' }, { siweDomain: 'example.test' }]) {
+    for (const extra of [{ appId: 'xyz.tinycloud.other' }, { siweDomain: 'example.test' }]) {
       const refused = await script(['--apply', '--allow-narrow'], {
         CLIENT_ID: client.clientId,
         CLIENT_TINYCLOUD_NATIVE_DELEGATION: JSON.stringify({ ...suppliedCeiling(EXO_CEILING) as object, ...extra }),
       });
       expect(refused.exitCode).toBe(1);
-      expect(refused.stderr).toContain('cannot be passed or changed');
+      expect(refused.stderr).toContain('cannot be changed');
     }
     expect(await storedOf(client.clientId)).toEqual(client);
     expect(await updatesOf(client.clientId)).toBe(0);
 
-    const applied = await script(['--apply'], ceilingEnv(client.clientId, EXO_CEILING));
+    // The full value, as copied from the stored ceiling with the new entries added.
+    const applied = await script(['--apply'], { CLIENT_ID: client.clientId, CLIENT_TINYCLOUD_NATIVE_DELEGATION: JSON.stringify(EXO_CEILING) });
     expect(applied.exitCode, applied.stderr).toBe(0);
     expect(applied.stdout).toContain(`KEPT (not changed by this run): appId = ${APP}; siweDomain = openkey.so`);
+    expect(applied.stdout).toContain('EQUAL (no change): the supplied appId and siweDomain equal the stored value');
     const stored = await storedOf(client.clientId);
     const config = validateNativeDelegationConfig(stored.tinycloudNativeDelegation, stored);
     expect([config.appId, config.siweDomain]).toEqual([APP, 'openkey.so']);
+    expect(await updatesOf(client.clientId)).toBe(1);
   }, 240_000);
 
   test('a ceiling cannot be combined with branding fields, and the flags need a ceiling', async () => {

@@ -31,12 +31,13 @@
  *   The value is validated by the same validator the admin API PATCH uses and
  *   replaces the stored tinycloudNativeDelegation; no other column changes. For
  *   a client that already has a ceiling, appId and siweDomain are kept from the
- *   stored value and must not be in the supplied one, and tinycloudHost must
- *   equal the stored host. The BEFORE and AFTER ceilings, the kept values and
- *   the entry-level diff are printed (ceiling config only). Adding entries is
- *   allowed. A value that removes a kv path, sql database or action, or reduces
- *   a limit, is refused unless --allow-narrow is passed; no flag allows a change
- *   of appId, siweDomain or tinycloudHost. It cannot be combined with branding,
+ *   stored value: a supplied value must equal the stored one (accepted as a
+ *   no-op) and a different one is refused, as is a different tinycloudHost.
+ *   The BEFORE and AFTER ceilings, the kept values and the entry-level diff are
+ *   printed (ceiling config only). Adding entries is allowed. A value that
+ *   removes a kv path, sql database or action, or reduces a limit, is refused
+ *   unless --allow-narrow is passed; no flag allows a change of appId,
+ *   siweDomain or tinycloudHost. It cannot be combined with branding,
  *   redirect URI, type or website values.
  *   A ceiling update is a dry run unless --apply is passed: without it the
  *   BEFORE, AFTER and diff are printed and nothing is written.

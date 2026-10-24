@@ -16,10 +16,11 @@ import {
  * receives its first one).
  *
  * The ceiling's identity is fixed for a client that already has one: `appId`
- * and `siweDomain` are kept from the stored ceiling and are not accepted in the
- * supplied value, and `tinycloudHost` must equal the stored one. Entries may be
- * added freely; removing a kv path, sql database or action, or reducing a
- * limit, needs `allowNarrow`. Only validated ceiling values are printed.
+ * and `siweDomain` are kept from the stored ceiling. A supplied value that
+ * carries either field is accepted only when it equals the stored one (a no-op);
+ * a different value is refused, and so is a different `tinycloudHost`. Entries
+ * may be added freely; removing a kv path, sql database or action, or reducing
+ * a limit, needs `allowNarrow`. Only validated ceiling values are printed.
  */
 
 // The production registration path: never accept loopback TinyCloud hosts,
@@ -172,19 +173,29 @@ export async function updateNativeCeiling(
     }
   }
 
-  // appId and siweDomain belong to the stored ceiling: they are not accepted in
-  // the supplied value and are carried over into the value that is validated.
+  // appId and siweDomain belong to the stored ceiling: a supplied value must equal
+  // the stored one, and the stored values are what is validated and written.
   const kept = storedKeptFields(client.tinycloudNativeDelegation);
+  const equalFields: string[] = [];
   let candidate = supplied;
   if (kept.appId !== undefined && supplied && typeof supplied === 'object' && !Array.isArray(supplied)) {
-    const passed = KEPT_FIELDS.filter((field) => Object.hasOwn(supplied, field));
-    if (passed.length > 0) {
+    // Parsed operator JSON; each kept field is compared as a plain value below.
+    const fields: Record<string, unknown> = supplied as Record<string, unknown>;
+    const differing: string[] = [];
+    for (const field of KEPT_FIELDS) {
+      if (!Object.hasOwn(fields, field)) continue;
+      const stored = kept[field] ?? (field === 'siweDomain' ? DEFAULT_SIWE_DOMAIN : undefined);
+      if (fields[field] === stored) equalFields.push(field);
+      else differing.push(`${field} (stored: ${stored}; supplied: ${JSON.stringify(fields[field])})`);
+    }
+    if (differing.length > 0) {
       throw new NativeCeilingRefusedError(
-        `${passed.join(' and ')} cannot be passed or changed for an existing client with a ceiling; ` +
-        'the stored values are kept. Remove them from the value. --allow-narrow does not apply. Nothing was written.',
+        `${differing.join(' and ')} cannot be changed for an existing client with a ceiling; ` +
+        '--allow-narrow does not apply. Nothing was written.',
       );
     }
-    candidate = { ...supplied, ...kept };
+    const { appId: _appId, siweDomain: _siweDomain, ...rest } = fields;
+    candidate = { ...rest, ...kept };
   }
 
   // The same validator as the admin API PATCH; a malformed value never reaches the write.
@@ -194,6 +205,7 @@ export async function updateNativeCeiling(
   log(`BEFORE: ${beforeNote}`);
   log(`AFTER: ${sortedJson(after)}`);
   log(`KEPT (not changed by this run): appId = ${after.appId}; siweDomain = ${after.siweDomain ?? `${DEFAULT_SIWE_DOMAIN} (default)`}`);
+  if (equalFields.length > 0) log(`EQUAL (no change): the supplied ${equalFields.join(' and ')} equal${equalFields.length === 1 ? 's' : ''} the stored value`);
 
   const diff = diffNativeCeilings(before, after);
   for (const line of diff.added) log(`  + ${line}`);
