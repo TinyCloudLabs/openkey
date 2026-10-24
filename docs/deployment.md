@@ -61,6 +61,8 @@ values. The legacy `tee` response field is removed; JSON-body consumers must
 migrate to `tee_mode` with these configuration-only semantics. HTTP-status
 health probes and the not-ready response are unchanged.
 
+A ready `/health` response also reports `version` (the `@openkey/api` package version) and `commit` (the `GIT_SHA` build argument, `unknown` when unset).
+
 While the separately authorized TC-488 destructive custody cutover remains
 pending, production deploy permits these reviewed additive migrations:
 `20260814_0001_share_device_authorization`,

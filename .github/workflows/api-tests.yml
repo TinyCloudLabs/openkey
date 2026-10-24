@@ -35,11 +35,12 @@ jobs:
         run: bun install --frozen-lockfile --ignore-scripts
 
       # The API imports @openkey/db and @openkey/tee from their built dist/,
-      # and @openkey/db needs the generated Prisma client.
+      # and @openkey/db needs the generated Prisma client. The tests that drive
+      # the signing pages' own code load @openkey/capability-review from its dist/.
       - name: Build packages
         run: |
           bun run db:generate
-          bun run build --filter @openkey/db --filter @openkey/tee
+          bun run build --filter @openkey/db --filter @openkey/tee --filter @openkey/capability-review
 
       - name: API tests
         run: bun test apps/api/src/__tests__

@@ -1222,6 +1222,7 @@ delegateRouter.post('/', async (c) => {
     actionKeys?: unknown;
     permissionKeys?: unknown;
     permissions?: unknown;
+    deviceTransactionId?: unknown;
     expiry?: unknown;
     reason?: unknown;
     /**
@@ -1395,7 +1396,7 @@ delegateRouter.post('/', async (c) => {
     let baseline: SessionAbilities;
     try {
       baseline = permissions
-        ? sessionAbilitiesFromPermissions(permissions, { address, chainId })
+        ? sessionAbilitiesFromPermissions(permissions, { address, chainId }, { deviceTransaction: body.deviceTransactionId !== undefined })
         : DEFAULT_SESSION_ABILITIES;
       assertBaselineSubset(preparedEntries, baseline);
       assertRequiredActions(preparedEntries, baseline);
@@ -1544,6 +1545,7 @@ delegateRouter.post('/', async (c) => {
       }
       if (!hostActivated) {
         log('warn', 'delegate_session_activation_warning');
+        if (activationResult.hostNotKnown) spaceReadiness = { spaceReady: false };
       }
     } catch (e) {
       logError('warn', 'delegate_session_activation_failed', e);
@@ -1602,6 +1604,7 @@ delegateRouter.post('/', async (c) => {
       actionKeys: normalizeStringArray(body.actionKeys, 'actionKeys'),
       permissionKeys: normalizeStringArray(body.permissionKeys, 'permissionKeys'),
       permissions,
+      deviceTransaction: body.deviceTransactionId !== undefined,
       expiryMs,
     });
   } catch (e) {
@@ -1643,6 +1646,7 @@ delegateRouter.post('/', async (c) => {
     }
     if (!hostActivated) {
       log('warn', 'delegate_session_activation_warning');
+      if (activationResult.hostNotKnown) spaceReadiness = { spaceReady: false };
     }
   } catch (e) {
     logError('warn', 'delegate_session_activation_failed', e);
@@ -2194,6 +2198,7 @@ delegateRouter.post('/complete', async (c) => {
     if (hostActivated) spaceReady = !activationResult.skipped?.includes(spaceId);
     if (!hostActivated) {
       log('warn', 'delegate_session_activation_warning');
+      if (activationResult.hostNotKnown) spaceReady = false;
     }
   } catch (e) {
     logError('warn', 'delegate_session_activation_failed', e);

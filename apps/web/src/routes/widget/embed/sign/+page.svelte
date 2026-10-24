@@ -9,7 +9,7 @@
   import Button from '$lib/components/ui/button.svelte';
   import IframeSigningAdapter from '$lib/components/signing/iframe-signing-adapter.svelte';
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
-  import { validatePreviewSelection } from '$lib/preview-review';
+  import { requestedActionIds, selectionFromPreview } from '$lib/widget-selection';
   import {
     parseCapabilityReview,
     parseSiweChainId,
@@ -617,16 +617,7 @@
   }
 
   function currentSelectedActionIds(): string[] {
-    if (!reviewModel) return [];
-    const out: string[] = [];
-    for (const grant of reviewModel.permissions) {
-      for (const action of grant.actions) {
-        if (reviewSelection.has(action.id)) {
-          out.push(action.id);
-        }
-      }
-    }
-    return out;
+    return requestedActionIds(reviewModel, reviewSelection);
   }
 
   function currentKeyBelongsToSession(): boolean {
@@ -766,7 +757,7 @@
           };
         }
       }
-      const requestedActionIds = currentSelectedActionIds();
+      const selectedIds = currentSelectedActionIds();
       const previewRes = await fetch(
         `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign-preview`,
         {
@@ -775,7 +766,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             authorizationContextToken: token,
-            selectedActionIds: requestedActionIds,
+            selectedActionIds: selectedIds,
           }),
         },
       );
@@ -793,7 +784,7 @@
       if (typeof previewResult.previewApprovalToken !== 'string' || !previewResult.previewApprovalToken) {
         throw new Error('authorize-sign-preview did not return a previewApprovalToken — server is out of date');
       }
-      reviewSelection = validatePreviewSelection(previewResult, requestedActionIds);
+      reviewSelection = selectionFromPreview(previewResult, selectedIds);
       previewSignedMessage = previewResult.signedMessage;
       previewApprovalToken = previewResult.previewApprovalToken;
     } catch (e: any) {
