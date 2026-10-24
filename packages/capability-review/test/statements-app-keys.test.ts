@@ -79,11 +79,11 @@ function rows(resource: string, abilities: string[]): string[] {
 
 describe("one row per ability, exact key", () => {
   it.each([
-    ["key.create", "Create the encryption key `apps/xyz.tinycloud.listen/k`."],
-    ["decrypt", "Decrypt data locked with the key `apps/xyz.tinycloud.listen/k`."],
-    ["key.block", "Block the key `apps/xyz.tinycloud.listen/k` so it can't be used to decrypt."],
-    ["key.unblock", "Unblock the key `apps/xyz.tinycloud.listen/k` so it can be used again."],
-    ["key.delete", "Delete the key `apps/xyz.tinycloud.listen/k`. Apps can't be given this permission."],
+    ["key.create", "Create the encryption key `k` for this app"],
+    ["decrypt", "Decrypt data locked with this app's key `k`"],
+    ["key.block", "Block this app's key `k` so it can't be used to decrypt"],
+    ["key.unblock", "Unblock this app's key `k` so it can be used again"],
+    ["key.delete", "Delete this app's key `k`. Apps can't be given this permission."],
   ])("%s", (ability, text) => {
     expect(rows(urn(KEY), [`${E}${ability}`])).toEqual([text]);
   });
@@ -91,40 +91,40 @@ describe("one row per ability, exact key", () => {
 
 describe("one row per ability, prefix", () => {
   it.each([
-    ["key.create", "Create new encryption keys under `apps/xyz.tinycloud.listen/`."],
-    ["decrypt", "Decrypt data locked with any key under `apps/xyz.tinycloud.listen/`."],
-    ["key.block", "Block any key under `apps/xyz.tinycloud.listen/` so it can't be used to decrypt."],
-    ["key.unblock", "Unblock any key under `apps/xyz.tinycloud.listen/` so it can be used again."],
+    ["key.create", "Create new encryption keys tied to this app"],
+    ["decrypt", "Decrypt data locked with this app's keys"],
+    ["key.block", "Block this app's encryption keys so they can't be used to decrypt"],
+    ["key.unblock", "Unblock this app's encryption keys so they can be used again"],
   ])("%s", (ability, text) => {
     expect(rows(urn(PREFIX), [`${E}${ability}`])).toEqual([text]);
   });
 
-  it("the prefix keeps its trailing slash", () => {
-    expect(rows(urn(PREFIX), [`${E}decrypt`])[0]).toContain("`apps/xyz.tinycloud.listen/`");
+  it("the raw path stays on the row's resource, with its trailing slash", () => {
+    expect(buildStatements(grantFor(urn(PREFIX), [`${E}decrypt`]))[0]!.resource).toContain("apps/xyz.tinycloud.listen/");
   });
 });
 
 describe("several abilities on one resource", () => {
   it("are listed separately, in a fixed order, never merged", () => {
     expect(rows(urn(KEY), [`${E}key.unblock`, `${E}decrypt`, `${E}key.create`, `${E}key.block`])).toEqual([
-      "Create the encryption key `apps/xyz.tinycloud.listen/k`.",
-      "Decrypt data locked with the key `apps/xyz.tinycloud.listen/k`.",
-      "Block the key `apps/xyz.tinycloud.listen/k` so it can't be used to decrypt.",
-      "Unblock the key `apps/xyz.tinycloud.listen/k` so it can be used again.",
+      "Create the encryption key `k` for this app",
+      "Decrypt data locked with this app's key `k`",
+      "Block this app's key `k` so it can't be used to decrypt",
+      "Unblock this app's key `k` so it can be used again",
     ]);
   });
 
   it("the short namespace gets the same rows", () => {
     expect(rows(urn(KEY), ["encryption/key.create", "encryption/decrypt"])).toEqual([
-      "Create the encryption key `apps/xyz.tinycloud.listen/k`.",
-      "Decrypt data locked with the key `apps/xyz.tinycloud.listen/k`.",
+      "Create the encryption key `k` for this app",
+      "Decrypt data locked with this app's key `k`",
     ]);
   });
 
   it("an ability that is not one of the five keeps the literal fallback beside the others", () => {
     const result = rows(urn(KEY), [`${E}decrypt`, `${E}key.rotate`]);
     expect(result).toHaveLength(2);
-    expect(result[0]).toBe("Decrypt data locked with the key `apps/xyz.tinycloud.listen/k`.");
+    expect(result[0]).toBe("Decrypt data locked with this app's key `k`");
     expect(result[1]).toStartWith("Perform ");
     expect(result[1]).toContain("key.rotate");
   });
@@ -241,14 +241,14 @@ describe("key.delete is listed and cannot be selected", () => {
   it("the not-grantable rows come from the unselected action", () => {
     const [grant] = model(urn(KEY), abilities).permissions;
     expect(appKeyNotGrantableStatements(grant!).map((row) => row.primaryText)).toEqual([
-      "Delete the key `apps/xyz.tinycloud.listen/k`. Apps can't be given this permission.",
+      "Delete this app's key `k`. Apps can't be given this permission.",
     ]);
     expect(appKeyNotGrantableStatements(grantFor(urn(KEY), [`${E}decrypt`]))).toEqual([]);
   });
 
   it("the delete row is first in buildStatement only when it is the only action", () => {
     const [grant] = model(urn(KEY), abilities).permissions;
-    expect(buildStatement(grant!).primaryText).toBe("Create the encryption key `apps/xyz.tinycloud.listen/k`.");
+    expect(buildStatement(grant!).primaryText).toBe("Create the encryption key `k` for this app");
   });
 });
 

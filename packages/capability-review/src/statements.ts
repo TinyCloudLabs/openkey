@@ -15,7 +15,8 @@
 // contract; UI callers MUST route through it rather than composing the
 // sentence themselves.
 
-import type { CapabilityAction, CapabilityGrant } from "./model.js";
+import type { CapabilityAction, CapabilityGrant, CapabilityReviewModel, PermissionSeverity } from "./model.js";
+import { appDisplayName } from "./app-identity.js";
 import {
   APP_KEY_ABILITIES,
   DECRYPT_DEFAULT_KEY_STATEMENT,
@@ -38,6 +39,8 @@ import {
 } from "./core-operations.js";
 
 export interface StatementEntry {
+  /** The severity of this row when it differs from the grant's: each app key ability is its own row. */
+  severity?: PermissionSeverity;
   /**
    * Primary sentence shown as the deterministic statement in the default
    * (summary) review view. Never contains a caller-supplied app name.
@@ -587,6 +590,7 @@ function appKeyStatements(grant: CapabilityGrant): StatementEntry[] | null {
       service: grant.service,
       resource,
       codeSpans: true,
+      severity: name === "decrypt" ? "sensitive" : "attention",
     }),
   );
   if (rows.length === 0 || unrecognised.length > 0) {
@@ -607,6 +611,46 @@ export function appKeyNotGrantableStatements(grant: CapabilityGrant): StatementE
 /** Does this grant let an app decrypt with keys under `apps/`? */
 export function grantIsAppKeyDecrypt(grant: CapabilityGrant): boolean {
   return grant.family === "app-keys" && grant.actions.some((action) => appKeyAbilityOf(action.ability) === "decrypt");
+}
+
+/** The app a request with app keys comes from; see `app-identity.ts`. */
+export interface AppKeyIdentity {
+  /** The verified manifest's name after `appDisplayName`, or `null`. */
+  name: string | null;
+  appId: string;
+  /** The verified origin, when there is one. */
+  origin: string | null;
+}
+
+/**
+ * The identity shown at the top of a request with app keys, `null` for any
+ * other request. The name needs a manifest that is verified or origin-bound;
+ * the id is the verified `app_id`, or the id the key resources name until the
+ * manifest is verified. Where the two disagree the name is left out and the id
+ * of the resources is shown.
+ */
+export function appKeyIdentity(model: CapabilityReviewModel): AppKeyIdentity | null {
+  const grants = model.permissions.filter((grant) => grant.family === "app-keys");
+  if (grants.length === 0) return null;
+  const named = new Set<string>();
+  for (const grant of grants) {
+    const parsed = parseKeyResource(resourceOf(grant));
+    const segments = parsed?.keyPath.split("/");
+    if (segments && segments[0] === "apps" && segments[1]) named.add(segments[1]);
+  }
+  const requester = model.requester;
+  const verifiedId = requester.appId;
+  const resourceId = named.size === 1 ? [...named][0]! : null;
+  const appId = verifiedId ?? resourceId;
+  if (!appId) return null;
+  const trusted =
+    requester.manifestNameProvenance === "verified" || requester.manifestNameProvenance === "origin-bound";
+  const consistent = resourceId === null || resourceId === appId;
+  return {
+    name: trusted && verifiedId !== null && consistent ? appDisplayName(requester.manifestName) : null,
+    appId: consistent ? appId : resourceId!,
+    origin: requester.verifiedOrigin,
+  };
 }
 
 /** A statement split at its backticks; the odd parts are the monospace text. */

@@ -167,16 +167,44 @@ const statementTexts = (target: HTMLElement) =>
   [...target.querySelectorAll('.summary-statement .statement-primary')].map((node) => node.textContent?.trim());
 
 describe('approval view for app keys', () => {
-  test('lists one row per ability with the path in monospace', () => {
+  test('lists one row per ability in words tied to the app, with no path', () => {
     const model = appKeyModel({ [urn('/apps/xyz.tinycloud.listen/')]: [`${E}key.create`, `${E}decrypt`] });
     const { target, cleanup } = render(model);
     expect(statementTexts(target)).toEqual([
-      'Create new encryption keys under apps/xyz.tinycloud.listen/.',
-      'Decrypt data locked with any key under apps/xyz.tinycloud.listen/.',
+      'Create new encryption keys tied to this app',
+      "Decrypt data locked with this app's keys",
+    ]);
+    expect(target.querySelectorAll('.summary-statement code.mono')).toHaveLength(0);
+    expect(target.querySelector('.summary')!.textContent).not.toContain('apps/xyz.tinycloud.listen');
+    cleanup();
+  });
+
+  test('names an exact key by its last segment in monospace', () => {
+    const model = appKeyModel({ [urn('/apps/xyz.tinycloud.listen/api-token')]: [`${E}key.create`, `${E}decrypt`] });
+    const { target, cleanup } = render(model);
+    expect(statementTexts(target)).toEqual([
+      'Create the encryption key api-token for this app',
+      "Decrypt data locked with this app's key api-token",
     ]);
     const code = [...target.querySelectorAll('.summary-statement code.mono')].map((node) => node.textContent);
-    expect(code).toEqual(['apps/xyz.tinycloud.listen/', 'apps/xyz.tinycloud.listen/']);
-    expect(target.querySelector('.summary')!.textContent).not.toContain('`');
+    expect(code).toEqual(['api-token', 'api-token']);
+    cleanup();
+  });
+
+  test.each([
+    ['a prefix', `/apps/xyz.tinycloud.listen/`, 'apps/xyz.tinycloud.listen/'],
+    ['an exact key', `/apps/xyz.tinycloud.listen/api-token`, 'apps/xyz.tinycloud.listen/api-token'],
+  ])('keeps the raw path of %s in Advanced details, expanded, though the rows no longer show it', (_name: string, rest: string, path: string) => {
+    const model = appKeyModel({ [urn(rest)]: [`${E}key.create`, `${E}decrypt`] });
+    const { target, cleanup } = render(model);
+    expect(target.querySelector('.summary')!.textContent).not.toContain(path);
+    const advanced = target.querySelector('details.advanced-details') as HTMLDetailsElement;
+    advanced.open = true;
+    flushSync();
+    expect(advanced.open).toBe(true);
+    const targets = [...advanced.querySelectorAll('.grant-target')];
+    expect(targets.map((node) => node.textContent?.trim())).toContain(`default/${path}`);
+    expect(targets.map((node) => node.getAttribute('title'))).toContain(urn(`/${path}`));
     cleanup();
   });
 
@@ -195,8 +223,8 @@ describe('approval view for app keys', () => {
     const model = appKeyModel({ [urn('/apps/x/k')]: [`${E}key.create`, `${E}key.delete`] });
     const { target, cleanup } = render(model, true);
     expect(statementTexts(target)).toEqual([
-      'Create the encryption key apps/x/k.',
-      "Delete the key apps/x/k. Apps can't be given this permission.",
+      'Create the encryption key k for this app',
+      "Delete this app's key k. Apps can't be given this permission.",
     ]);
     const boxes = [...target.querySelectorAll('input[type="checkbox"]')];
     expect(boxes).toHaveLength(1);

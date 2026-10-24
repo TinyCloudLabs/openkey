@@ -45,7 +45,10 @@
   import { formatAccessEnd } from "$lib/access-end";
   import {
     APP_KEY_GROUP_NOTE,
+    appDisplayName,
     appKeyAccessStatement,
+    appKeyIdentity,
+    appRequestingLine,
     FAMILY_LABEL,
     appKeyNotGrantableStatements,
     buildRenderPlan,
@@ -200,15 +203,16 @@
     for (const grant of selectedGrants) {
       for (const statement of buildStatements(grant)) {
         const existing = grouped.get(statement.primaryText);
+        const rowSeverity = statement.severity ?? grant.severity;
         if (existing) {
-          if (severityRank[grant.severity] > severityRank[existing.severity]) {
-            existing.severity = grant.severity;
+          if (severityRank[rowSeverity] > severityRank[existing.severity]) {
+            existing.severity = rowSeverity;
           }
         } else {
           grouped.set(statement.primaryText, {
             key: statement.primaryText,
             primaryText: statement.primaryText,
-            severity: grant.severity,
+            severity: rowSeverity,
             unmapped: isUnmappedStatement(statement.primaryText),
             codeSpans: statement.codeSpans === true,
           });
@@ -227,6 +231,21 @@
 
   // App keys: the standing-access line follows the decrypt statements, and a
   // `key.delete` action is listed even though it is never selected.
+  const identity = $derived(appKeyIdentity(model));
+  const originHost = $derived.by(() => {
+    const origin = model.requester.verifiedOrigin;
+    if (!origin) return null;
+    try {
+      return new URL(origin).host;
+    } catch {
+      return origin;
+    }
+  });
+  // Names that come from a manifest are app-supplied text: they are shown only
+  // after the display rules (`appDisplayName`), everywhere on this view.
+  const requesterName = $derived(appDisplayName(model.requester.displayName) ?? originHost ?? "");
+  const manifestNameShown = $derived(appDisplayName(model.requester.manifestName));
+  const requestedBy = $derived(originHost ?? requesterName);
   const appKeyAccessLine = $derived(
     selectedGrants.some(grantIsAppKeyDecrypt) ? appKeyAccessStatement(model.expiry, formatAccessEnd) : null,
   );
@@ -460,10 +479,23 @@
   tabindex="-1"
 >
   <header class="header">
-    <h2 id="signing-approval-headline" class="headline">{headline}</h2>
-    <p class="requester-line">
-      Requested by <span class="requester-name">{model.requester.displayName}</span>
-    </p>
+    {#if identity}
+      <!-- The app's name, then its id; the name never appears without the id. -->
+      {#if identity.name}
+        <h2 id="signing-approval-headline" class="headline app-name">{identity.name}</h2>
+        <p class="app-id mono">{identity.appId}</p>
+      {:else}
+        <h2 id="signing-approval-headline" class="headline app-id-headline mono">{identity.appId}</h2>
+      {/if}
+      <p class="requester-line">
+        Requested by <span class="requester-name">{requestedBy}</span>
+      </p>
+    {:else}
+      <h2 id="signing-approval-headline" class="headline">{headline}</h2>
+      <p class="requester-line">
+        Requested by <span class="requester-name">{requesterName}</span>
+      </p>
+    {/if}
     <p id="signing-approval-hint" class="hint">{hint}</p>
   </header>
 
@@ -474,7 +506,7 @@
   <!-- Reason only when a reason actually exists. -->
   {#if model.reason.source !== "none" && model.reason.text}
     <section class="reason" aria-label="Reason for request">
-      <div class="reason-label">Reason provided by {model.reason.source === "caller" ? "the requester" : model.requester.displayName}</div>
+      <div class="reason-label">Reason provided by {model.reason.source === "caller" ? "the requester" : requesterName}</div>
       <p class="reason-body">{model.reason.text}</p>
       {#if model.reason.source === "caller"}
         <p class="reason-untrusted">
@@ -517,6 +549,9 @@
     in Advanced details so the first viewport is useful to ordinary users.
   -->
   <section class="summary" aria-label="Requested access">
+    {#if identity && summaryStatements.length > 0}
+      <p class="summary-lead">{appRequestingLine(identity.name)}</p>
+    {/if}
     {#if summaryStatements.length > 0}
       <ul class="summary-statements">
         {#each summaryStatements as statement (statement.key)}
@@ -571,7 +606,7 @@
       <section class="identity" aria-label="Requester identity">
       <div class="row">
         <span class="label">Requester</span>
-        <span class="value">{model.requester.displayName}</span>
+        <span class="value">{requesterName}</span>
       </div>
 
       {#if model.requester.verifiedOrigin}
@@ -610,10 +645,10 @@
         a trusted label. Server code never marks a caller-echoed name as
         origin-bound — see the popup/embed prepare handlers.
       -->
-      {#if model.requester.manifestName}
+      {#if manifestNameShown}
         <div class="row">
           <span class="label">Manifest name</span>
-          <span class="value">{model.requester.manifestName}</span>
+          <span class="value">{manifestNameShown}</span>
           <span
             class="provenance-tag"
             data-provenance={model.requester.manifestNameProvenance}
@@ -918,6 +953,28 @@
     line-height: 1.5;
     color: #475569;
     margin: 0;
+  }
+  .app-name,
+  .app-id-headline {
+    unicode-bidi: isolate;
+    overflow-wrap: anywhere;
+  }
+  .app-id {
+    font-size: 13px;
+    line-height: 1.3;
+    color: #475569;
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+  .app-id-headline {
+    font-size: 17px;
+  }
+  .summary-lead {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 0 0 6px;
+    unicode-bidi: isolate;
+    overflow-wrap: anywhere;
   }
   .requester-line {
     font-size: 13px;

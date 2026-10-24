@@ -67,38 +67,47 @@ export type AppKeyAbility = (typeof APP_KEY_ABILITIES)[number];
 
 /**
  * Consent copy for one ability on an app key (an exact key) or an app key
- * prefix. `path` is the key path, or the prefix with its trailing `/`; the
- * text between backticks is shown in monospace.
+ * prefix. The rows say "this app", never the app's name, and never show the
+ * path: `path` is the key path, or the prefix with its trailing `/`, and an
+ * exact key is named by its last segment. The text between backticks is shown
+ * in monospace.
  */
 export function appKeyStatementText(
   ability: AppKeyAbility,
   target: { path: string; isPrefix: boolean },
 ): string {
-  const path = `\`${target.path}\``;
+  const keyName = `\`${target.path.slice(target.path.lastIndexOf("/") + 1)}\``;
   switch (ability) {
     case "key.create":
       return target.isPrefix
-        ? `Create new encryption keys under ${path}.`
-        : `Create the encryption key ${path}.`;
+        ? "Create new encryption keys tied to this app"
+        : `Create the encryption key ${keyName} for this app`;
     case "decrypt":
       return target.isPrefix
-        ? `Decrypt data locked with any key under ${path}.`
-        : `Decrypt data locked with the key ${path}.`;
+        ? "Decrypt data locked with this app's keys"
+        : `Decrypt data locked with this app's key ${keyName}`;
     case "key.block":
       return target.isPrefix
-        ? `Block any key under ${path} so it can't be used to decrypt.`
-        : `Block the key ${path} so it can't be used to decrypt.`;
+        ? "Block this app's encryption keys so they can't be used to decrypt"
+        : `Block this app's key ${keyName} so it can't be used to decrypt`;
     case "key.unblock":
       return target.isPrefix
-        ? `Unblock any key under ${path} so it can be used again.`
-        : `Unblock the key ${path} so it can be used again.`;
+        ? "Unblock this app's encryption keys so they can be used again"
+        : `Unblock this app's key ${keyName} so it can be used again`;
     case "key.delete":
-      return `Delete the key ${path}. Apps can't be given this permission.`;
+      return target.isPrefix
+        ? "Delete this app's encryption keys. Apps can't be given this permission."
+        : `Delete this app's key ${keyName}. Apps can't be given this permission.`;
   }
 }
 
 /** Shown while a request with app keys is being edited: the app keys are one unit. */
 export const APP_KEY_GROUP_NOTE = "App keys can only be approved together. Untick all of them, or keep them all.";
+
+/** The line above the rows of a request with app keys. */
+export function appRequestingLine(name: string | null): string {
+  return `${name ?? "This app"} is requesting:`;
+}
 
 export const APP_KEY_ACCESS_WITHOUT_EXPIRY = "This access lasts until it expires.";
 
