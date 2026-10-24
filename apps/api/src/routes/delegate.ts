@@ -81,6 +81,7 @@ import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
 import { checkSiweOrigin } from '../services/siwe-origin';
 import {
   APP_KEY_GROUP_PARTIAL_CODE,
+  APP_KEY_GROUP_PARTIAL_MESSAGE,
   admittedAppKeyActionIds,
   appKeyGroupPartial,
   appKeyRefusalBody,
@@ -2954,7 +2955,7 @@ delegateRouter.post('/authorize-sign', async (c) => {
     allowedActionIdSet(originalEntries),
     selectedActionIds,
   )) {
-    return c.json({ error: APP_KEY_GROUP_PARTIAL_CODE, code: APP_KEY_GROUP_PARTIAL_CODE }, 400);
+    return c.json({ error: APP_KEY_GROUP_PARTIAL_MESSAGE, code: APP_KEY_GROUP_PARTIAL_CODE }, 400);
   }
 
   // Sol MAJOR-4: attenuation-subset check against the caveat-inclusive
@@ -3309,7 +3310,7 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     allowedActionIdSet(originalEntries),
     selectedActionIds,
   )) {
-    return c.json({ error: APP_KEY_GROUP_PARTIAL_CODE, code: APP_KEY_GROUP_PARTIAL_CODE }, 400);
+    return c.json({ error: APP_KEY_GROUP_PARTIAL_MESSAGE, code: APP_KEY_GROUP_PARTIAL_CODE }, 400);
   }
   // Every requested selected action MUST be in the bound allowed set.
   const allowedSet = new Set(bound.allowedActionIds);

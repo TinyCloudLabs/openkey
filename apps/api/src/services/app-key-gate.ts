@@ -78,15 +78,17 @@ export function parseManifestKeys(appId: unknown, keys: unknown): ManifestKeys {
   return { status: 'valid', declarations };
 }
 
-const DOMAIN_LABEL = /^[a-z0-9-]+$/;
+// One to 63 characters, no leading or trailing hyphen.
+const DOMAIN_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const IPV4 = /^\d+\.\d+\.\d+\.\d+$/;
 
 /**
  * The host of an https origin, reversed label by label (`listen.tinycloud.xyz`
  * is `xyz.tinycloud.listen`), or `null` when the host cannot name an app: not
  * https, a port, userinfo, a path, an IP address, a trailing dot, fewer than
- * two labels, or a label outside `[a-z0-9-]` once the host is in its A-label
- * form.
+ * two labels, a last label of `localhost`, or a label that is empty, longer than
+ * 63 characters, starts or ends with a hyphen or has a character outside
+ * `[a-z0-9-]` once the host is in its A-label form.
  */
 function reversedHost(origin: string): string | null {
   if (origin.endsWith(':')) return null;
@@ -101,7 +103,8 @@ function reversedHost(origin: string): string | null {
   const host = url.hostname;
   if (host.startsWith('[') || host.endsWith('.') || IPV4.test(host)) return null;
   const labels = host.split('.');
-  if (labels.length < 2 || !labels.every((label) => DOMAIN_LABEL.test(label))) return null;
+  if (labels.length < 2 || labels[labels.length - 1] === 'localhost') return null;
+  if (!labels.every((label) => DOMAIN_LABEL.test(label))) return null;
   return labels.reverse().join('.');
 }
 
@@ -158,9 +161,15 @@ export type AppKeyAdmissionFailure =
   | 'origin'
   /** The app id does not belong to the origin's host. */
   | 'app_id'
-  /** No bound manifest, no `app_id`, or no valid `keys` block. */
-  | 'manifest'
-  /** The grant is not covered by the manifest, or is not the signer's own default network. */
+  /** The manifest was not fetched and matched to its digest. */
+  | 'manifest_unverified'
+  /** The manifest's `keys` block is not valid. */
+  | 'keys_unreadable'
+  /** The message has no usable `Expiration Time`. */
+  | 'no_expiry'
+  /** A resource is not the signer's own `default` network. */
+  | 'account_mismatch'
+  /** The manifest does not list the requested key, prefix or ability. */
   | 'not_declared';
 
 export type AppKeyAdmission =
@@ -213,17 +222,20 @@ export function admitAppKeys(input: AppKeyAdmissionInput): AppKeyAdmission {
   const origin = appKeyOrigin(input.requestOrigin, input.reportedOrigin);
   if (origin === null || !siweSchemeOk(input.siwe)) return fail('origin');
   const appId = input.declaredAppId;
-  if (!input.manifestBound || appId === undefined || !appIdValid(appId)) return fail('manifest');
+  if (!input.manifestBound) return fail('manifest_unverified');
+  if (appId === undefined || !appIdValid(appId)) return fail('not_declared');
   if (!hostBinding(origin, appId)) return fail('app_id');
   const keys = input.declaredKeys;
-  if (!keys || keys.status !== 'valid' || keys.declarations.length === 0) return fail('manifest');
-  if (input.expirationTime === '' || Number.isNaN(Date.parse(input.expirationTime))) return fail('not_declared');
+  if (keys?.status === 'invalid') return fail('keys_unreadable');
+  if (!keys || keys.status !== 'valid' || keys.declarations.length === 0) return fail('not_declared');
+  if (input.expirationTime === '' || Number.isNaN(Date.parse(input.expirationTime))) return fail('no_expiry');
   if (input.resources.length === 0) return fail('not_declared');
 
   const admitted: AdmittedAppKey[] = [];
   for (const [resource, abilities] of input.resources) {
     const parsed = parseKeyResource(resource);
-    if (!parsed || parsed.owner !== input.ownerDid || parsed.network !== 'default') return fail('not_declared');
+    if (!parsed) return fail('not_declared');
+    if (parsed.owner !== input.ownerDid || parsed.network !== 'default') return fail('account_mismatch');
     if (abilities.length === 0) return fail('not_declared');
     for (const ability of abilities) {
       const name = manifestAbility(ability);
@@ -241,5 +253,9 @@ export function admitAppKeys(input: AppKeyAdmissionInput): AppKeyAdmission {
 export function appKeyAdmissionRefusal(reason: AppKeyAdmissionFailure): AppKeyRefusal {
   if (reason === 'origin') return { reason: 'apps_key_origin' };
   if (reason === 'app_id') return { reason: 'apps_key_app_id' };
+  if (reason === 'manifest_unverified') return { reason: 'apps_key_manifest' };
+  if (reason === 'keys_unreadable') return { reason: 'apps_key_keys' };
+  if (reason === 'no_expiry') return { reason: 'apps_key_expiry' };
+  if (reason === 'account_mismatch') return { reason: 'apps_key_account' };
   return { reason: 'apps_key' };
 }

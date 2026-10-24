@@ -1,6 +1,7 @@
 import './tc1777-test-env';
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
+import { APP_KEY_GROUP_PARTIAL_MESSAGE, appKeyRefusalMessage } from '../services/app-key-refusal';
 import { bindWellKnownManifestBytes, canonicalManifestSha256Hex } from '../services/manifest-origin-fetch';
 import {
   admitAppKeys,
@@ -49,10 +50,21 @@ describe('shared vectors: hostBinding (every origin run with its own scheme, non
     ['an IPv4 address in hex form', 'https://0x7f.1'],
     ['an IPv6 address', 'https://[::1]'],
     ['an underscore in a label', 'https://li_sten.tinycloud.xyz'],
+    ['a host ending in localhost', 'https://listen.localhost'],
+    ['a label with a leading hyphen', 'https://-listen.tinycloud.xyz'],
+    ['a label with a trailing hyphen', 'https://listen-.tinycloud.xyz'],
+    ['a label of 64 characters', `https://${'a'.repeat(64)}.tinycloud.xyz`],
     ['not a URL', 'listen.tinycloud.xyz'],
     ['wss', 'wss://listen.tinycloud.xyz'],
   ])('does not bind %s', (_name, origin) => {
     expect(hostBinding(origin, 'xyz.tinycloud.listen')).toBe(false);
+  });
+
+  test('a label of 63 characters is an acceptable origin (no id that long exists), and a hyphen inside a label still binds', () => {
+    const label = 'a'.repeat(63);
+    expect(appKeyOrigin(`https://${label}.tinycloud.xyz`, `https://${label}.tinycloud.xyz`)).toBe(`https://${label}.tinycloud.xyz`);
+    expect(hostBinding('https://my-app.tinycloud.xyz', 'xyz.tinycloud.my-app')).toBe(true);
+    expect(hostBinding('https://xn--bcher-kva.example', 'example.xn--bcher-kva')).toBe(true);
   });
 
   test('an id binds only on a label boundary', () => {
@@ -113,6 +125,10 @@ describe('appKeyOrigin', () => {
     ['an IP address', 'https://127.0.0.1', 'https://127.0.0.1'],
     ['a single label', 'https://intranet', 'https://intranet'],
     ['a trailing dot', 'https://listen.tinycloud.xyz.', 'https://listen.tinycloud.xyz.'],
+    ['a host ending in localhost', 'https://listen.localhost', 'https://listen.localhost'],
+    ['a label with a leading hyphen', 'https://-listen.tinycloud.xyz', 'https://-listen.tinycloud.xyz'],
+    ['a label with a trailing hyphen', 'https://listen-.tinycloud.xyz', 'https://listen-.tinycloud.xyz'],
+    ['a label of 64 characters', `https://${'a'.repeat(64)}.tinycloud.xyz`, `https://${'a'.repeat(64)}.tinycloud.xyz`],
   ])('refuses %s', (_name, requestOrigin, reportedOrigin) => {
     expect(appKeyOrigin(requestOrigin, reportedOrigin)).toBeNull();
   });
@@ -207,22 +223,22 @@ describe('admitAppKeys', () => {
     ['an origin with a port', { requestOrigin: `${ORIGIN}:8443`, reportedOrigin: `${ORIGIN}:8443` }, 'origin'],
     ['a SIWE header with an http scheme', { siwe: `http://listen.tinycloud.xyz wants you to sign in with your Ethereum account:\n` }, 'origin'],
     ['a SIWE header with a port', { siwe: `listen.tinycloud.xyz:443 wants you to sign in with your Ethereum account:\n` }, 'origin'],
-    ['a manifest that is not origin-bound', { manifestBound: false }, 'manifest'],
-    ['a manifest with no app_id', { declaredAppId: undefined }, 'manifest'],
-    ['an app_id that is not a valid id', { declaredAppId: 'Xyz.App' }, 'manifest'],
+    ['a manifest that is not origin-bound', { manifestBound: false }, 'manifest_unverified'],
+    ['a manifest with no app_id', { declaredAppId: undefined }, 'not_declared'],
+    ['an app_id that is not a valid id', { declaredAppId: 'Xyz.App' }, 'not_declared'],
     ['an app id that belongs to another host', { declaredAppId: 'xyz.tinycloud.notes' }, 'app_id'],
     ['an app id that only starts with the host text', { declaredAppId: `${APP_ID}x` }, 'app_id'],
-    ['no keys block', { declaredKeys: undefined }, 'manifest'],
-    ['an absent keys block', { declaredKeys: { status: 'absent' } }, 'manifest'],
-    ['an invalid keys block', { declaredKeys: { status: 'invalid' } }, 'manifest'],
-    ['an empty keys block', { declaredKeys: { status: 'valid', declarations: [] } }, 'manifest'],
-    ['no Expiration Time', { expirationTime: '' }, 'not_declared'],
-    ['an Expiration Time that is not a date', { expirationTime: 'soon' }, 'not_declared'],
+    ['no keys block', { declaredKeys: undefined }, 'not_declared'],
+    ['an absent keys block', { declaredKeys: { status: 'absent' } }, 'not_declared'],
+    ['an invalid keys block', { declaredKeys: { status: 'invalid' } }, 'keys_unreadable'],
+    ['an empty keys block', { declaredKeys: { status: 'valid', declarations: [] } }, 'not_declared'],
+    ['no Expiration Time', { expirationTime: '' }, 'no_expiry'],
+    ['an Expiration Time that is not a date', { expirationTime: 'soon' }, 'no_expiry'],
     ['no apps/ resource', { resources: [] }, 'not_declared'],
-    ['another owner', { resources: [[urn(`/apps/${APP_ID}/`, 'did:pkh:eip155:1:0x0000000000000000000000000000000000000001'), [`${E}decrypt`]]] }, 'not_declared'],
-    ['a lower-case owner address', { resources: [[urn(`/apps/${APP_ID}/`, OWNER.toLowerCase()), [`${E}decrypt`]]] }, 'not_declared'],
-    ['another chain', { resources: [[urn(`/apps/${APP_ID}/`, `did:pkh:eip155:5:${ADDRESS}`), [`${E}decrypt`]]] }, 'not_declared'],
-    ['another network', { resources: [[urn(`/apps/${APP_ID}/`, OWNER, 'team'), [`${E}decrypt`]]] }, 'not_declared'],
+    ['another owner', { resources: [[urn(`/apps/${APP_ID}/`, 'did:pkh:eip155:1:0x0000000000000000000000000000000000000001'), [`${E}decrypt`]]] }, 'account_mismatch'],
+    ['a lower-case owner address', { resources: [[urn(`/apps/${APP_ID}/`, OWNER.toLowerCase()), [`${E}decrypt`]]] }, 'account_mismatch'],
+    ['another chain', { resources: [[urn(`/apps/${APP_ID}/`, `did:pkh:eip155:5:${ADDRESS}`), [`${E}decrypt`]]] }, 'account_mismatch'],
+    ['another network', { resources: [[urn(`/apps/${APP_ID}/`, OWNER, 'team'), [`${E}decrypt`]]] }, 'account_mismatch'],
     ['another app prefix', { resources: [[urn('/apps/xyz.tinycloud.notes/'), [`${E}decrypt`]]] }, 'not_declared'],
     ['a deeper prefix than the declared one', { resources: [[urn(`/apps/${APP_ID}/sub/`), [`${E}decrypt`]]] }, 'not_declared'],
     ['a key outside the app prefix', { resources: [[urn('/apps/xyz.tinycloud.listenx/k'), [`${E}decrypt`]]] }, 'not_declared'],
@@ -265,7 +281,11 @@ describe('admitAppKeys', () => {
   test('every refusal reason maps to its own refusal', () => {
     expect(appKeyAdmissionRefusal('origin')).toEqual({ reason: 'apps_key_origin' });
     expect(appKeyAdmissionRefusal('app_id')).toEqual({ reason: 'apps_key_app_id' });
-    for (const reason of ['non_browser', 'manifest', 'not_declared'] as const) {
+    expect(appKeyAdmissionRefusal('manifest_unverified')).toEqual({ reason: 'apps_key_manifest' });
+    expect(appKeyAdmissionRefusal('keys_unreadable')).toEqual({ reason: 'apps_key_keys' });
+    expect(appKeyAdmissionRefusal('no_expiry')).toEqual({ reason: 'apps_key_expiry' });
+    expect(appKeyAdmissionRefusal('account_mismatch')).toEqual({ reason: 'apps_key_account' });
+    for (const reason of ['non_browser', 'not_declared'] as const) {
       expect(appKeyAdmissionRefusal(reason)).toEqual({ reason: 'apps_key' });
     }
   });
@@ -306,5 +326,35 @@ describe('the manifest fetch reads the app-key fields of the fetched file', () =
       keys: [{ prefix: `apps/${APP_ID}/`, abilities: ['decrypt'] }, { path: `apps/${APP_ID}/k`, abilities: ['key.delete'] }],
     });
     expect(manifest.declaredKeys).toEqual({ status: 'invalid' });
+  });
+});
+
+describe('the words for each admission failure', () => {
+  const texts: Array<[Parameters<typeof appKeyAdmissionRefusal>[0], string]> = [
+    ['origin', "App keys can only be requested by the app's own website, so OpenKey didn't approve this request."],
+    ['app_id', "This app doesn't belong to this website, so OpenKey didn't approve its keys."],
+    ['manifest_unverified', "OpenKey couldn't check this website's app details, so it didn't approve this request."],
+    ['keys_unreadable', "This website's list of app keys can't be read, so OpenKey didn't approve this request."],
+    ['no_expiry', "This request doesn't say when access ends, so OpenKey didn't approve it."],
+    ['account_mismatch', "This request doesn't match your account, so OpenKey didn't approve it."],
+    ['not_declared', "This website doesn't list the key this app asked for, so OpenKey didn't approve it."],
+  ];
+
+  test.each(texts)('%s', (reason, text) => {
+    expect(appKeyRefusalMessage(appKeyAdmissionRefusal(reason), 'browser')).toBe(text);
+  });
+
+  test('a ticket gets the sign-in wording', () => {
+    expect(appKeyRefusalMessage(appKeyAdmissionRefusal('non_browser'), 'non_browser')).toBe(
+      "App keys can only be requested through a website's sign-in, not from the command line or a device sign-in, so OpenKey didn't approve this request.",
+    );
+  });
+
+  test('the partial selection text', () => {
+    expect(APP_KEY_GROUP_PARTIAL_MESSAGE).toBe("App keys can only be approved together, so OpenKey didn't approve this request.");
+  });
+
+  test('every text is different', () => {
+    expect(new Set(texts.map(([, text]) => text)).size).toBe(texts.length);
   });
 });

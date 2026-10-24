@@ -97,6 +97,9 @@ export function appKeyStatementText(
   }
 }
 
+/** Shown while a request with app keys is being edited: the app keys are one unit. */
+export const APP_KEY_GROUP_NOTE = "App keys can only be approved together. Untick all of them, or keep them all.";
+
 export const APP_KEY_ACCESS_WITHOUT_EXPIRY = "This access lasts until it expires.";
 
 /**

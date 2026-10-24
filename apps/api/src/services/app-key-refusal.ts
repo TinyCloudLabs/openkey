@@ -18,6 +18,14 @@ export type AppKeyRefusalReason =
   | 'apps_key_origin'
   /** The app id does not belong to the requesting site's host. */
   | 'apps_key_app_id'
+  /** The site's manifest could not be fetched and matched, or has no usable app id. */
+  | 'apps_key_manifest'
+  /** The site's `keys` block cannot be read. */
+  | 'apps_key_keys'
+  /** The message does not say when access ends. */
+  | 'apps_key_expiry'
+  /** The owner or network is not the signer's own account. */
+  | 'apps_key_account'
   | 'recap_unreadable';
 
 export interface AppKeyRefusal {
@@ -43,6 +51,14 @@ const ORIGIN_MESSAGE =
   "App keys can only be requested by the app's own website, so OpenKey didn't approve this request.";
 const APP_ID_MESSAGE =
   "This app doesn't belong to this website, so OpenKey didn't approve its keys.";
+const MANIFEST_MESSAGE =
+  "OpenKey couldn't check this website's app details, so it didn't approve this request.";
+const EXPIRY_MESSAGE = "This request doesn't say when access ends, so OpenKey didn't approve it.";
+const ACCOUNT_MESSAGE = "This request doesn't match your account, so OpenKey didn't approve it.";
+const KEYS_MESSAGE =
+  "This website's list of app keys can't be read, so OpenKey didn't approve this request.";
+const GROUP_PARTIAL_MESSAGE =
+  "App keys can only be approved together, so OpenKey didn't approve this request.";
 const KEY_DELETE_MESSAGE =
   "Apps can't be given permission to delete keys, so OpenKey didn't approve this request.";
 const NON_BROWSER_MESSAGE =
@@ -217,6 +233,10 @@ export function appKeyRefusalMessage(refusal: AppKeyRefusal, source: AppKeyReque
   if (refusal.reason === 'recap_unreadable') return UNREADABLE_RECAP_MESSAGE;
   if (source === 'browser' && refusal.reason === 'apps_key_origin') return ORIGIN_MESSAGE;
   if (source === 'browser' && refusal.reason === 'apps_key_app_id') return APP_ID_MESSAGE;
+  if (source === 'browser' && refusal.reason === 'apps_key_manifest') return MANIFEST_MESSAGE;
+  if (source === 'browser' && refusal.reason === 'apps_key_keys') return KEYS_MESSAGE;
+  if (source === 'browser' && refusal.reason === 'apps_key_expiry') return EXPIRY_MESSAGE;
+  if (source === 'browser' && refusal.reason === 'apps_key_account') return ACCOUNT_MESSAGE;
   return source === 'non_browser' ? NON_BROWSER_MESSAGE : NOT_DECLARED_MESSAGE;
 }
 
@@ -227,6 +247,9 @@ export function appKeyRefusalBody(
 ): { error: string; code: AppKeyRefusalCode } {
   return { error: appKeyRefusalMessage(refusal, source), code: appKeyRefusalCode(refusal) };
 }
+
+/** What the 400 for a partial app-key selection says. */
+export const APP_KEY_GROUP_PARTIAL_MESSAGE = GROUP_PARTIAL_MESSAGE;
 
 /** Code of the refusal for a narrowed selection that keeps an `apps/` row and drops anything else. */
 export const APP_KEY_GROUP_PARTIAL_CODE = 'app_key_group_partial';

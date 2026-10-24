@@ -160,6 +160,10 @@ function prepareBody(siwe: unknown) {
 const NOT_DECLARED = "This website doesn't list the key this app asked for, so OpenKey didn't approve it.";
 const ORIGIN_REFUSED = "App keys can only be requested by the app's own website, so OpenKey didn't approve this request.";
 const APP_ID_REFUSED = "This app doesn't belong to this website, so OpenKey didn't approve its keys.";
+const MANIFEST_REFUSED = "OpenKey couldn't check this website's app details, so it didn't approve this request.";
+const KEYS_REFUSED = "This website's list of app keys can't be read, so OpenKey didn't approve this request.";
+const ACCOUNT_REFUSED = "This request doesn't match your account, so OpenKey didn't approve it.";
+const PARTIAL_REFUSED = "App keys can only be approved together, so OpenKey didn't approve this request.";
 
 const PREFIX_URN = urn(`/apps/${APP_ID}/`);
 const PREFIX = { [PREFIX_URN]: ['tinycloud.encryption/key.create', 'tinycloud.encryption/decrypt'] };
@@ -238,7 +242,7 @@ describe('all or nothing: a selection that keeps an app-key row and drops anythi
     expect(selected.length).toBeLessThan(4);
     const preview = await post('/authorize-sign-preview', { authorizationContextToken: body.authorizationContextToken, selectedActionIds: selected });
     expect(preview.status).toBe(400);
-    expect(await preview.json()).toEqual({ error: 'app_key_group_partial', code: 'app_key_group_partial' });
+    expect(await preview.json()).toEqual({ error: PARTIAL_REFUSED, code: 'app_key_group_partial' });
     const sign = await post('/authorize-sign', { authorizationContextToken: body.authorizationContextToken, previewApprovalToken: 'okp_none', selectedActionIds: selected, protocolVersion: 1 });
     expect(sign.status).toBe(400);
     expect(await sign.json()).toMatchObject({ code: 'app_key_group_partial' });
@@ -282,27 +286,30 @@ describe('admission refusals at /authorize-sign-prepare', () => {
     ['an ability the manifest does not declare', { [PREFIX_URN]: ['tinycloud.encryption/key.block'] }],
     ['a deeper prefix', { [urn(`/apps/${APP_ID}/sub/`)]: ['tinycloud.encryption/decrypt'] }],
     ['another app prefix', { [urn('/apps/xyz.tinycloud.notes/')]: ['tinycloud.encryption/decrypt'] }],
-    ['another owner', { [urn(`/apps/${APP_ID}/`).replace(address, '0x0000000000000000000000000000000000000001')]: ['tinycloud.encryption/decrypt'] }],
-    ['another network', { [`urn:tinycloud:encryption:did:pkh:eip155:1:${address}:team/apps/${APP_ID}/`]: ['tinycloud.encryption/decrypt'] }],
   ])('%s (string 14)', async (_name, raw) => {
     await refused(siweWith(raw));
   });
 
-  test('the manifest is not origin-bound (string 14)', async () => {
-    manifestBindResult = { ok: false, reason: 'digest mismatch' };
-    await refused(siweWith(PREFIX));
+  test.each([
+    ['another owner', { [urn(`/apps/${APP_ID}/`).replace(address, '0x0000000000000000000000000000000000000001')]: ['tinycloud.encryption/decrypt'] }],
+    ['another network', { [`urn:tinycloud:encryption:did:pkh:eip155:1:${address}:team/apps/${APP_ID}/`]: ['tinycloud.encryption/decrypt'] }],
+  ])('%s: the request does not match the account (W3c)', async (_name, raw) => {
+    await refused(siweWith(raw), {}, ACCOUNT_REFUSED);
   });
 
-  test('no digest in the presentation (string 14)', async () => {
-    await refused(siweWith(PREFIX), { presentation: { displayName: 'Listen' } });
+  test('the manifest is not origin-bound: the app details cannot be checked (W3a)', async () => {
+    manifestBindResult = { ok: false, reason: 'digest mismatch' };
+    await refused(siweWith(PREFIX), {}, MANIFEST_REFUSED);
+  });
+
+  test('no digest in the presentation: the app details cannot be checked (W3a)', async () => {
+    await refused(siweWith(PREFIX), { presentation: { displayName: 'Listen' } }, MANIFEST_REFUSED);
   });
 
   test.each([
     ['no keys block', undefined],
     ['an empty keys block', []],
-    ['a keys block that declares key.delete', [{ prefix: `apps/${APP_ID}/`, abilities: ['decrypt', 'key.delete'] }]],
-    ['a keys block with a second prefix', [{ prefix: `apps/${APP_ID}/`, abilities: ['decrypt'] }, { prefix: `apps/${APP_ID}/`, abilities: ['key.create'] }]],
-  ])('%s (string 14)', async (_name, keys) => {
+  ])('%s: the key is not in the site\'s list (string 14)', async (_name, keys) => {
     manifestBindResult = {
       ok: true,
       fetchedDigest: 'a'.repeat(64),
@@ -311,7 +318,16 @@ describe('admission refusals at /authorize-sign-prepare', () => {
     await refused(siweWith(PREFIX));
   });
 
-  test('the manifest has only a camelCase appId (string 14)', async () => {
+  test.each([
+    ['a keys block that declares key.delete', [{ prefix: `apps/${APP_ID}/`, abilities: ['decrypt', 'key.delete'] }]],
+    ['a keys block with a second prefix', [{ prefix: `apps/${APP_ID}/`, abilities: ['decrypt'] }, { prefix: `apps/${APP_ID}/`, abilities: ['key.create'] }]],
+    ['a keys block that is not an array', 'apps/x'],
+  ])('%s: the list cannot be read (W3d)', async (_name, keys) => {
+    manifestBindResult = { ok: true, fetchedDigest: 'a'.repeat(64), manifest: declaredManifest(keys) };
+    await refused(siweWith(PREFIX), {}, KEYS_REFUSED);
+  });
+
+  test('the manifest has only a camelCase appId: the site does not list the key (string 14)', async () => {
     manifestBindResult = { ok: true, fetchedDigest: 'a'.repeat(64), manifest: { name: 'Listen', appId: APP_ID, declaredKeys: parseManifestKeys(APP_ID, [{ prefix: `apps/${APP_ID}/`, abilities: ['decrypt'] }]) } };
     await refused(siweWith(PREFIX));
   });

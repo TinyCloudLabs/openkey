@@ -43,7 +43,9 @@
     CapabilityReviewModel,
   } from "@openkey/capability-review";
   import {
+    APP_KEY_GROUP_NOTE,
     appKeyAccessStatement,
+    FAMILY_LABEL,
     appKeyNotGrantableStatements,
     buildRenderPlan,
     buildStatements,
@@ -244,9 +246,7 @@
     new Set(appKeyGrants.flatMap((grant) => grant.actions.filter((action) => action.editable).map((action) => action.id))),
   );
   const firstAppKeyGrantId = $derived(appKeyGrants[0]?.id ?? null);
-  const appKeyVerbs = $derived(
-    [...new Set(appKeyGrants.flatMap((grant) => grant.actions.filter((action) => action.editable).map((action) => action.verb)))].join(", "),
-  );
+
   const appKeysSelected = $derived([...appKeyActionIds].some((id) => selection.has(id)));
 
   function isLockedByAppKeys(action: CapabilityAction): boolean {
@@ -723,6 +723,9 @@
           {/if}
         </div>
 
+        {#if editing && appKeyGrants.length > 0}
+          <p class="app-key-note">{APP_KEY_GROUP_NOTE}</p>
+        {/if}
         {#each permissionSections as bucket (bucket.key)}
           <details
             class="severity-bucket"
@@ -777,7 +780,7 @@
                           onkeydown={handleAppKeysKeydown}
                           disabled={approveDisabled}
                         />
-                        <span class="verb">{appKeyVerbs}</span>
+                        <span class="verb">{FAMILY_LABEL["app-keys"]}</span>
                       </label>
                     {/if}
                     <ul class="action-list">
@@ -1031,6 +1034,12 @@
     font-size: 13px;
     line-height: 1.45;
     margin: 0;
+  }
+  .app-key-note {
+    margin: 0 0 8px;
+    color: #475569;
+    font-size: 13px;
+    line-height: 1.45;
   }
   .summary-note {
     color: #475569;

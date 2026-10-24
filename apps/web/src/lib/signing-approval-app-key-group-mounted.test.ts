@@ -277,11 +277,36 @@ describe('selection controls for a request with app keys', () => {
     cleanup();
   });
 
+  test('the edit view says the app keys are one unit, and labels their checkbox "App keys"', () => {
+    const { target, boxes, cleanup } = mountEditing(model, new Set(everyId));
+    expect(target.querySelector('.app-key-note')?.textContent).toBe(
+      'App keys can only be approved together. Untick all of them, or keep them all.',
+    );
+    const groupBox = boxes.find((box) => !box.disabled)!;
+    expect(groupBox.closest('label')?.textContent?.trim()).toBe('App keys');
+    cleanup();
+  });
+
+  test('the note is not shown outside the edit view', () => {
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const app = mount(Approval, {
+      target,
+      props: { model, selection: new Set(everyId), editing: false, onApprove() {}, onCancel() {}, onSelectionChange() {}, onEditingChange() {} },
+    });
+    flushSync();
+    expect(target.querySelector('.app-key-note')).toBeNull();
+    unmount(app);
+    target.remove();
+  });
+
   test('a request with no app keys keeps one checkbox per action', () => {
     const plain = reviewOf(siweWithResources([makeRecapResource({ [`${FIXTURE_META.ownSpace}/kv/data`]: { 'tinycloud.kv/get': [{}], 'tinycloud.kv/put': [{}] } })]));
-    const { boxes, cleanup } = mountEditing(plain, new Set(allActions(plain).map((action) => action.id)));
+    const { target, boxes, cleanup } = mountEditing(plain, new Set(allActions(plain).map((action) => action.id)));
+    expect(target.querySelector('.app-key-note')).toBeNull();
     expect(boxes).toHaveLength(2);
     expect(boxes.every((box) => !box.disabled)).toBe(true);
+    expect(plain.permissions.some((grant) => grant.family === 'app-keys')).toBe(false);
     cleanup();
   });
 
