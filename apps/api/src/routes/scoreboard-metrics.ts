@@ -2,6 +2,7 @@ import { timingSafeEqual } from 'crypto';
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { logMetric } from '../log';
+import { loadTestAccountRegistry, qaEligibleEmail } from '../services/qa-registration';
 
 // TC-1483: counts-only metrics for the scoreboard, behind their own bearer
 // (OPENKEY_METRICS_READ_TOKEN). The token grants aggregate counts only:
@@ -29,6 +30,7 @@ type DistinctUsers = {
 
 export type ScoreboardDatabase = {
   $queryRaw<T>(query: TemplateStringsArray, ...values: unknown[]): Promise<T>;
+  user: { findMany(args: Record<string, unknown>): Promise<Array<{ id: string; email: string }>> };
   oauthAccessToken: DistinctUsers;
   oauthRefreshToken: DistinctUsers;
   oauthConsent: DistinctUsers;
@@ -47,6 +49,45 @@ export function exclusionsFromEnv(env: Record<string, string | undefined> = proc
     userIds: parseList(env.SCOREBOARD_EXCLUDE_USER_IDS),
     clientIds: parseList(env.SCOREBOARD_EXCLUDE_CLIENT_IDS),
   };
+}
+
+/** Env lists plus the count-only test-account registry. The registry is not a security control. */
+export function scoreboardExclusions(
+  env: Record<string, string | undefined> = process.env,
+  registry: { userIds: readonly string[]; clientIds: readonly string[] } = loadTestAccountRegistry().registry,
+): ScoreboardExclusions {
+  const fromEnv = exclusionsFromEnv(env);
+  return {
+    userIds: new Set([...fromEnv.userIds, ...registry.userIds.map((id) => id.trim()).filter(Boolean)]),
+    clientIds: new Set([...fromEnv.clientIds, ...registry.clientIds.map((id) => id.trim()).filter(Boolean)]),
+  };
+}
+
+/**
+ * Accounts whose email matches a QA-eligible pattern in the test-account registry.
+ * A counting exclusion only; it grants no access. The database prefilter (Prisma `where`) narrows rows to
+ * the registry's emailDomains, so every QA-eligible pattern must match one of them.
+ * An empty emailDomains list means no QA exclusions.
+ */
+export async function qaAccountIds(
+  database: ScoreboardDatabase,
+  registry: { emailDomains: readonly string[]; qaEligiblePatterns: readonly RegExp[] } = loadTestAccountRegistry().registry,
+): Promise<string[]> {
+  if (registry.emailDomains.length === 0) return [];
+  // Typed Prisma delegate: Prisma maps the model to its @@map'd table name ("user").
+  // Raw SQL against "User" fails on Postgres (P2010) because the table is named "user".
+  const rows = await database.user.findMany({
+    where: { OR: registry.emailDomains.map((domain) => ({ email: { endsWith: `@${domain}`, mode: 'insensitive' } })) },
+    select: { id: true, email: true },
+  });
+  return rows.filter((row) => qaEligibleEmail(row.email, registry.qaEligiblePatterns)).map((row) => row.id);
+}
+
+/** Env lists, registry and QA-eligible accounts, for counting. */
+async function currentExclusions(database: ScoreboardDatabase): Promise<ScoreboardExclusions> {
+  const base = scoreboardExclusions();
+  const qa = await qaAccountIds(database);
+  return { userIds: new Set([...base.userIds, ...qa]), clientIds: base.clientIds };
 }
 
 function authorized(authHeader: string | undefined): boolean {
@@ -234,7 +275,8 @@ scoreboardMetricsRouter.get('/protocol-users', async (c) => {
   }
   let count: number;
   try {
-    count = await countProtocolUsers(prisma as unknown as ScoreboardDatabase, owners, exclusionsFromEnv());
+    const database = prisma as unknown as ScoreboardDatabase;
+    count = await countProtocolUsers(database, owners, await currentExclusions(database));
   } catch (error) {
     logMetric('error', 'scoreboard_protocol_users_call', { status: 500 });
     throw error;
@@ -244,6 +286,7 @@ scoreboardMetricsRouter.get('/protocol-users', async (c) => {
 });
 
 scoreboardMetricsRouter.get('/app-users', async (c) => {
-  const counts = await countAppUsers(prisma as unknown as ScoreboardDatabase, exclusionsFromEnv());
+  const database = prisma as unknown as ScoreboardDatabase;
+  const counts = await countAppUsers(database, await currentExclusions(database));
   return c.json(counts);
 });

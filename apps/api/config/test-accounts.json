@@ -1,0 +1,7 @@
+{
+  "description": "Test and QA account registry schema. Real values are not stored in this repository: the registry is read at runtime from the TEST_ACCOUNT_REGISTRY_JSON environment variable and validated at boot. userIds and clientIds are excluded from scoreboard counts (exact ids). emailDomains narrows the scoreboard lookup. A pattern with qaEligible true exempts an account from the sign-up check only together with the QA registration secret; a pattern never exempts by itself.",
+  "userIds": [],
+  "clientIds": [],
+  "emailDomains": [],
+  "patterns": []
+}

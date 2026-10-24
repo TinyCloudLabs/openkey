@@ -8,6 +8,7 @@
     embedVerifyEmailOtp,
     isEmbedContext,
   } from '$lib/embed-passkey';
+  import { keepsSignupToken } from '$lib/email-signup';
   import {
     loadConfiguredSocialProviders,
     signInWithSocialPopup,
@@ -45,6 +46,7 @@
   let email = $state('');
   let otp = $state('');
   let signupToken = $state<string | null>(null);
+  let signupChallenge = $state(true);
   let error = $state('');
   let busy = $state<BusyAction | null>(null);
   let providers = $state<SocialProviderId[]>([]);
@@ -73,6 +75,7 @@
       const result = await embedVerifyEmailOtp(email, otp);
       if ('signupToken' in result) {
         signupToken = result.signupToken;
+        signupChallenge = result.turnstileRequired;
         otp = '';
         step = 'new-account';
         return;
@@ -85,15 +88,20 @@
     }
   }
 
-  async function createAccount() {
+  async function createAccount(turnstileToken: string | null) {
     if (!signupToken) return;
     busy = 'create-account';
     error = '';
     try {
-      await embedCreateAccount(email, signupToken);
+      await embedCreateAccount(email, signupToken, turnstileToken);
       signupToken = null;
       onauthenticated();
     } catch (cause: any) {
+      if (keepsSignupToken(cause)) {
+        // The token is still unspent: complete the check and confirm again.
+        error = cause.message || 'Could not create your account';
+        return;
+      }
       // Expired or already used: the user starts again with a new code.
       signupToken = null;
       step = 'email';
@@ -240,6 +248,7 @@
       {email}
       busy={busy !== null}
       creating={busy === 'create-account'}
+      challenge={signupChallenge}
       oncreate={createAccount}
       ondifferentemail={() => { step = 'email'; signupToken = null; error = ''; }}
       onpasskey={passkeysSupported ? signInWithPasskey : undefined}

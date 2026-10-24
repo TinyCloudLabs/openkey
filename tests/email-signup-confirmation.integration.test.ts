@@ -39,6 +39,7 @@ if (!backend) {
             RESEND_API_KEY: '',
             GOOGLE_CLIENT_ID: '',
             GOOGLE_CLIENT_SECRET: '',
+            TURNSTILE_SECRET_KEY: '1x0000000000000000000000000000000AA',
           },
           stdout: 'pipe',
           stderr: 'pipe',
@@ -75,6 +76,12 @@ if (!backend) {
 
   function json(path: string, body: unknown) {
     return call(path, { method: 'POST', headers: { origin: WEB_ORIGIN, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  }
+
+  // Cloudflare's public test secret accepts any token (see apps/api/src/services/turnstile.ts).
+  const TURNSTILE_TEST_TOKEN = 'XXXX.DUMMY.TOKEN.XXXX';
+  function signUp(body: Record<string, unknown>) {
+    return json('/api/auth/sign-up/email-otp', { turnstileToken: TURNSTILE_TEST_TOKEN, ...body });
   }
 
   // A real code for any address, issued the way the send step stores it.
@@ -173,8 +180,10 @@ if (!backend) {
 
       expect(response.status).toBe(403);
       expect(body.code).toBe('NEW_ACCOUNT_CONFIRMATION_REQUIRED');
-      expect(typeof body.signupToken).toBe('string');
-      expect(Object.keys(body).sort()).toEqual(['code', 'message', 'signupToken']);
+      expect(Object.keys(body).sort()).toEqual(['code', 'message', 'signupToken', 'turnstileRequired']);
+      expect(body.message).toBe('No OpenKey account exists for this email.');
+      expect(body.turnstileRequired).toBe(true);
+      expect(body.signupToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
       expect(JSON.stringify(body)).not.toContain(email);
       expect(sessionCookie(response)).toBeUndefined();
       expect(await accountsFor(email)).toEqual({ users: 0, keys: 0 });
@@ -190,10 +199,22 @@ if (!backend) {
       expect((await again.json() as { code: string }).code).toBe('INVALID_OTP');
     });
 
+    test('a sign-up without a Turnstile token creates nothing and keeps the token', async () => {
+      const email = 'challenged@openkey.test';
+      const signupToken = await newAccountToken(email);
+      const missing = await json('/api/auth/sign-up/email-otp', { email, signupToken });
+      expect(missing.status).toBe(400);
+      expect((await missing.json() as { code: string }).code).toBe('TURNSTILE_REQUIRED');
+      expect(await accountsFor(email)).toEqual({ users: 0, keys: 0 });
+
+      // The same token completes once the check passes.
+      expect((await signUp({ email, signupToken })).status).toBe(200);
+    });
+
     test('confirming creates the account and its canonical key, and signs in', async () => {
       const email = 'Confirmed@OpenKey.test';
       const signupToken = await newAccountToken(email);
-      const response = await json('/api/auth/sign-up/email-otp', { email, signupToken });
+      const response = await signUp({ email, signupToken });
       const body = await response.json() as { token: string; user: { email: string; emailVerified: boolean } };
 
       expect(response.status).toBe(200);
@@ -263,7 +284,7 @@ if (!backend) {
         where: { identifier: { startsWith: 'openkey-email-signup:' } },
         data: { expiresAt: new Date(Date.now() - 1000) },
       });
-      const response = await json('/api/auth/sign-up/email-otp', { email, signupToken });
+      const response = await signUp({ email, signupToken });
       expect(response.status).toBe(400);
       expect((await response.json() as { code: string }).code).toBe('INVALID_SIGNUP_TOKEN');
       expect(await accountsFor(email)).toEqual({ users: 0, keys: 0 });
@@ -272,10 +293,10 @@ if (!backend) {
     test('a sign-up token is single-use, including under concurrent replay', async () => {
       const email = 'replayed@openkey.test';
       const signupToken = await newAccountToken(email);
-      const raced = await Promise.all([1, 2, 3].map(() => json('/api/auth/sign-up/email-otp', { email, signupToken })));
+      const raced = await Promise.all([1, 2, 3].map(() => signUp({ email, signupToken })));
       expect(raced.map((response) => response.status).sort()).toEqual([200, 400, 400]);
 
-      const replay = await json('/api/auth/sign-up/email-otp', { email, signupToken });
+      const replay = await signUp({ email, signupToken });
       expect(replay.status).toBe(400);
       expect((await replay.json() as { code: string }).code).toBe('INVALID_SIGNUP_TOKEN');
       expect(await accountsFor(email)).toEqual({ users: 1, keys: 1 });
@@ -285,20 +306,20 @@ if (!backend) {
       const email = 'verified@openkey.test';
       const signupToken = await newAccountToken(email);
       for (const other of ['victim@openkey.test', KNOWN, 'verified@openkey.test.evil']) {
-        const response = await json('/api/auth/sign-up/email-otp', { email: other, signupToken });
+        const response = await signUp({ email: other, signupToken });
         expect(response.status).toBe(400);
         expect((await response.json() as { code: string }).code).toBe('INVALID_SIGNUP_TOKEN');
       }
       expect(await accountsFor('victim@openkey.test')).toEqual({ users: 0, keys: 0 });
       // The rightful confirmation still works.
-      expect((await json('/api/auth/sign-up/email-otp', { email, signupToken })).status).toBe(200);
+      expect((await signUp({ email, signupToken })).status).toBe(200);
     });
 
     test('two verified codes for one email confirmed at once create one account', async () => {
       const email = 'two-tabs@openkey.test';
       const first = await newAccountToken(email);
       const second = await newAccountToken(email);
-      const responses = await Promise.all([first, second].map((signupToken) => json('/api/auth/sign-up/email-otp', { email, signupToken })));
+      const responses = await Promise.all([first, second].map((signupToken) => signUp({ email, signupToken })));
       expect(responses.map((response) => response.status).sort()).toEqual([200, 400]);
       const loser = responses.find((response) => response.status === 400)!;
       expect((await loser.json() as { code: string }).code).toBe('ACCOUNT_ALREADY_EXISTS');
@@ -309,7 +330,7 @@ if (!backend) {
       const email = 'raced-social@openkey.test';
       const signupToken = await newAccountToken(email);
       await prisma.user.create({ data: { id: randomUUID(), email, name: '', emailVerified: true } });
-      const response = await json('/api/auth/sign-up/email-otp', { email, signupToken });
+      const response = await signUp({ email, signupToken });
       expect(response.status).toBe(400);
       expect((await response.json() as { code: string }).code).toBe('ACCOUNT_ALREADY_EXISTS');
       expect(sessionCookie(response)).toBeUndefined();
@@ -346,8 +367,8 @@ if (!backend) {
     test('logs carry allowlisted events only and never the email', async () => {
       const email = 'private.person@openkey.test';
       const signupToken = await newAccountToken(email);
-      await json('/api/auth/sign-up/email-otp', { email: 'someone.else@openkey.test', signupToken });
-      await json('/api/auth/sign-up/email-otp', { email, signupToken });
+      await signUp({ email: 'someone.else@openkey.test', signupToken });
+      await signUp({ email, signupToken });
       const lines = output.flatMap((chunk) => chunk.split('\n')).filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>);
       const events = lines.map((line) => line.event);
       expect(events).toContain('auth_email_signup_confirmation_required');
@@ -384,7 +405,7 @@ if (!backend) {
       const { signupToken } = await signIn.json() as { signupToken: string };
       expect(await accountsFor(email)).toEqual({ users: 0, keys: 0 });
 
-      const confirmed = await json('/api/auth/sign-up/email-otp', { email, signupToken, oauth_query: oauthQuery });
+      const confirmed = await signUp({ email, signupToken, oauth_query: oauthQuery });
       expect(confirmed.status, await confirmed.clone().text()).toBe(200);
       const body = await confirmed.json() as { redirect?: boolean; url?: string };
       expect(body.redirect).toBe(true);
