@@ -79,6 +79,13 @@ import {
 } from '../services/authorization-signing';
 import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
 import { checkSiweOrigin } from '../services/siwe-origin';
+import {
+  appKeyRefusalBody,
+  appKeyRefusalCode,
+  appKeyRefusalForSiwe,
+  appKeyRefusalMessage,
+  appKeyRefusalStatus,
+} from '../services/app-key-refusal';
 import { fetchAndBindWellKnownManifest } from '../services/manifest-origin-fetch';
 import { signManagedKey, unsealManagedKey } from '../services/managed-key-signing';
 import {
@@ -826,6 +833,8 @@ delegateRouter.post('/sign', async (c) => {
         };
         const policy = validateTinyCloudManageKeyRequest({ type: candidate.type, chainId: candidate.chainId, message: candidate.message, identity });
         if (!policy.allowed) throw new Error(`message_rejected:${policy.reason}`);
+        const appKeyRefusal = appKeyRefusalForSiwe(candidate.message as string);
+        if (appKeyRefusal) throw new Error(`message_rejected:${appKeyRefusalMessage(appKeyRefusal, 'non_browser')}`);
         const signature = await signManagedKey(key, key.sealedBlob, candidate.message as string);
         return { signature, identity };
       });
@@ -920,6 +929,14 @@ delegateRouter.post('/sign', async (c) => {
       },
     });
     if (!policy.allowed) return auditDenial(policy.code, policy.evidence);
+    const coordinationosAppKeyRefusal = typeof candidate.message === 'string' ? appKeyRefusalForSiwe(candidate.message) : null;
+    if (coordinationosAppKeyRefusal) {
+      return c.json({
+        approved: false,
+        code: appKeyRefusalCode(coordinationosAppKeyRefusal),
+        reason: appKeyRefusalMessage(coordinationosAppKeyRefusal, 'non_browser'),
+      }, appKeyRefusalStatus(coordinationosAppKeyRefusal));
+    }
     if (!key || !key.sealedBlob || !policy.evidence.nonceDigest) {
       return auditDenial('key_unavailable', policy.evidence);
     }
@@ -1015,6 +1032,15 @@ delegateRouter.post('/sign', async (c) => {
       approved: false,
       reason: 'address, chainId, message, and type are required',
     }, 400);
+  }
+
+  const signAppKeyRefusal = appKeyRefusalForSiwe(body.message);
+  if (signAppKeyRefusal) {
+    return c.json({
+      approved: false,
+      code: appKeyRefusalCode(signAppKeyRefusal),
+      reason: appKeyRefusalMessage(signAppKeyRefusal, 'non_browser'),
+    }, appKeyRefusalStatus(signAppKeyRefusal));
   }
 
   let address: string;
@@ -1471,6 +1497,8 @@ delegateRouter.post('/', async (c) => {
     }
     const deviceWindow = await deviceDelegationWindowError(body, { host, signedSiwe: bound.originalSiwe });
     if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
+    const tokenAppKeyRefusal = appKeyRefusalForSiwe(bound.originalSiwe, preparedEntries);
+    if (tokenAppKeyRefusal) return c.json(appKeyRefusalBody(tokenAppKeyRefusal, 'non_browser'), appKeyRefusalStatus(tokenAppKeyRefusal));
 
     // About to sign: consume the context atomically, only if it is still
     // the exact one checked above, so a concurrent approval or a replay
@@ -1586,6 +1614,9 @@ delegateRouter.post('/', async (c) => {
   }
   const deviceWindow = await deviceDelegationWindowError(body, { host, signedSiwe: preparedResult.prepared.siwe });
   if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
+
+  const legacyAppKeyRefusal = appKeyRefusalForSiwe(preparedResult.prepared.siwe);
+  if (legacyAppKeyRefusal) return c.json(appKeyRefusalBody(legacyAppKeyRefusal, 'non_browser'), appKeyRefusalStatus(legacyAppKeyRefusal));
 
   const signature = await signManagedKey(key, key.sealedBlob, preparedResult.prepared.siwe);
 
@@ -1749,6 +1780,9 @@ delegateRouter.post('/prepare', async (c) => {
     ...preparedResult.prepared,
     jwk: body.jwk,
   };
+
+  const prepareAppKeyRefusal = appKeyRefusalForSiwe(preparedResult.prepared.siwe);
+  if (prepareAppKeyRefusal) return c.json(appKeyRefusalBody(prepareAppKeyRefusal, 'non_browser'), appKeyRefusalStatus(prepareAppKeyRefusal));
 
   // Issue an opaque single-use authorization context so /complete cannot
   // be replayed with a broader SIWE, a different key, or a different host.
@@ -1943,6 +1977,9 @@ delegateRouter.post('/complete', async (c) => {
     chainId: Number(body.prepared.chainId) || 1,
     spaceId: preparedSpaceId,
   });
+
+  const completeAppKeyRefusal = appKeyRefusalForSiwe(body.prepared.siwe);
+  if (completeAppKeyRefusal) return c.json(appKeyRefusalBody(completeAppKeyRefusal, 'non_browser'), appKeyRefusalStatus(completeAppKeyRefusal));
 
   // Authority-side validation always runs; the `edited` request field is
   // never trusted as an authority gate. Older callers omit both the
@@ -2302,6 +2339,9 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       400,
     );
   }
+  if (typeof body.siwe !== 'string') {
+    return c.json({ error: 'siwe must be a string', code: 'invalid_siwe' }, 400);
+  }
   const ticket = handoffTicket(body);
   // TC-1486: refuse a SIWE that names a different site than the verified
   // requester, or that arrives unattributed. Prepared-handoff tickets are
@@ -2363,6 +2403,10 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       },
       400,
     );
+  }
+  const prepareSignAppKeyRefusal = appKeyRefusalForSiwe(body.siwe, originalEntries);
+  if (prepareSignAppKeyRefusal) {
+    return c.json(appKeyRefusalBody(prepareSignAppKeyRefusal, ticket ? 'non_browser' : 'browser'), appKeyRefusalStatus(prepareSignAppKeyRefusal));
   }
 
   const keyAddress = ensureEip55(key.address);
@@ -3043,6 +3087,10 @@ delegateRouter.post('/authorize-sign', async (c) => {
   const effectiveSelectedActionKeys = effectiveEntries.flatMap((entry) =>
     entry.actions.map((action) => computeActionKey(entry, action)),
   );
+  const signedAppKeyRefusal = appKeyRefusalForSiwe(signedMessage, effectiveEntries);
+  if (signedAppKeyRefusal) {
+    return c.json(appKeyRefusalBody(signedAppKeyRefusal, ticket ? 'non_browser' : 'browser'), appKeyRefusalStatus(signedAppKeyRefusal));
+  }
   // Both checked claims still have to reference the stored records. This
   // synchronous call compares both, checks both expiries, then deletes both
   // without an await between either comparison and either deletion. Only
@@ -3267,6 +3315,10 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
   // rationale — the widget's `validatePreviewSelection` requires the
   // per-permission projection to equal the returned selected keys).
   const previewEntries = parsePreparedRecap(preparedSignedMessage);
+  const previewAppKeyRefusal = appKeyRefusalForSiwe(preparedSignedMessage, previewEntries);
+  if (previewAppKeyRefusal) {
+    return c.json(appKeyRefusalBody(previewAppKeyRefusal, ticket ? 'non_browser' : 'browser'), appKeyRefusalStatus(previewAppKeyRefusal));
+  }
   const previewGrants = previewEntries.map((entry) => ({
     service: canonicalizeServiceName(entry.service),
     space: entry.space,
