@@ -44,7 +44,8 @@ globalThis.fetch = Object.assign(function fetchWithRequestId(input: Parameters<t
 }, originalFetch);
 
 const EVENTS = {
-  better_auth: true, otp_delivery_unconfigured: true, auth_key_generated: true, auth_key_generation_failed: true,
+  better_auth: true, otp_delivery_unconfigured: true, otp_delivery_failed: true, auth_key_generated: true,
+  auth_key_generation_failed: true,
   auth_email_signup_confirmation_required: true, auth_email_signup_confirmed: true, auth_email_signup_refused: true,
   analytics_token_exchange_failed: true, analytics_unique_user_failed: true, analytics_token_tracking_failed: true,
   analytics_authorization_failed: true, analytics_authorization_tracking_failed: true, oauth_client_scopes_updated: true,
@@ -184,6 +185,26 @@ export function logTinyCloudBootstrapSweep(
     healed: fields.healed,
     still_failed: fields.stillFailed,
     skipped: fields.skipped,
+  });
+}
+
+const PROVIDER_ERROR_NAMES: Record<string, true> = {
+  invalid_idempotency_key: true, validation_error: true, missing_api_key: true, restricted_api_key: true,
+  invalid_api_key: true, not_found: true, method_not_allowed: true, invalid_idempotent_request: true,
+  concurrent_idempotent_requests: true, invalid_attachment: true, invalid_from_address: true, invalid_access: true,
+  invalid_parameter: true, invalid_region: true, missing_required_field: true, monthly_quota_exceeded: true,
+  daily_quota_exceeded: true, rate_limit_exceeded: true, security_error: true, application_error: true,
+  internal_server_error: true,
+};
+
+/** Email provider failure: its error name (closed set, else `other`) and HTTP status only. */
+export function logOtpDeliveryFailed(error: unknown): void {
+  const { name, statusCode } = (typeof error === 'object' && error !== null ? error : {}) as Record<string, unknown>;
+  emit('error', 'otp_delivery_failed', {
+    error_name: typeof name === 'string' && Object.hasOwn(PROVIDER_ERROR_NAMES, name) ? name : 'other',
+    status: typeof statusCode === 'number' && Number.isInteger(statusCode) && statusCode >= 100 && statusCode <= 599
+      ? statusCode
+      : undefined,
   });
 }
 

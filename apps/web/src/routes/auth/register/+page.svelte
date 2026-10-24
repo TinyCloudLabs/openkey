@@ -3,6 +3,7 @@
   import { page } from '$app/stores';
   import { onMount } from 'svelte';
   import { authClient, API_BASE, authErrorMessage, confirmEmailSignUp } from '$lib/auth-client';
+  import { sendCodeErrorMessage } from '$lib/send-code-error';
   import { api } from '$lib/api';
   import { setSessionToken } from '$lib/embed-passkey';
   import { newAccountSignupToken } from '$lib/email-signup';
@@ -92,7 +93,7 @@
     try {
       const result = await authClient.emailOtp.sendVerificationOtp({ email, type: 'sign-in' });
       if (result.error) {
-        error = authErrorMessage(result.error, 'Failed to send code');
+        error = sendCodeErrorMessage(result.error, { email, passkey: false, fallback: 'Failed to send code' });
       } else {
         step = 'otp';
       }

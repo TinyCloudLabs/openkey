@@ -42,6 +42,7 @@ import { exchangeNativeCode, generateNativeRefreshToken, withNativeTokenGuardErr
 import { providerTokenOptions } from './services/native-delegation/provider-tokens';
 import { emailSignupConfirmation } from './services/email-signup-confirmation';
 import { betterAuthLog, log, logError } from './log';
+import { emailOtpDelivery } from './services/email-otp-delivery';
 
 export const prisma: PrismaClient = createPrismaClient();
 const tee = createTeeClient();
@@ -53,6 +54,7 @@ const resend = process.env.RESEND_API_KEY
 
 // Environment-based configuration
 const isDev = process.env.NODE_ENV !== 'production' && process.env.TEE_MODE !== 'production';
+const otpDelivery = emailOtpDelivery(resend, isDev);
 const rpID = process.env.WEBAUTHN_RP_ID!;
 const origin = process.env.WEBAUTHN_ORIGIN!;
 
@@ -233,26 +235,7 @@ export const auth = betterAuth({
     // Email OTP is the default registration and sign-in method. A verified code
     // for an unknown email asks the user to confirm before an account exists.
     emailOTP({
-      async sendVerificationOTP({ email, otp, type }) {
-        if (!resend) {
-          if (isDev) log('warn', 'otp_delivery_unconfigured');
-          return;
-        }
-
-        await resend.emails.send({
-          from: 'OpenKey <noreply@openkey.so>',
-          to: email,
-          subject: 'Verify your OpenKey email',
-          html: `
-            <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 400px; margin: 0 auto; padding: 20px;">
-              <h2 style="color: #1a1a1a; margin-bottom: 24px;">Your verification code</h2>
-              <p style="font-size: 36px; font-weight: bold; letter-spacing: 8px; color: #667eea; margin: 32px 0; text-align: center;">${otp}</p>
-              <p style="color: #666; font-size: 14px;">This code expires in 5 minutes.</p>
-              <p style="color: #888; font-size: 12px; margin-top: 24px;">If you didn't request this, you can safely ignore this email.</p>
-            </div>
-          `,
-        });
-      },
+      sendVerificationOTP: otpDelivery.sendVerificationOTP,
       generateOTP({ email }: { email: string }) {
         if (process.env.TEE_MODE === 'development' && email === 'test@openkey.dev') {
           return '000000';
@@ -265,6 +248,7 @@ export const auth = betterAuth({
       // that may still be arriving or grouped into the same email thread.
       resendStrategy: 'reuse',
     }),
+    otpDelivery.plugin,
     emailSignupConfirmation(prisma),
 
     // Bearer plugin - returns session token in set-auth-token header
