@@ -215,3 +215,17 @@ test('framed: a frame with no size stays closed, and resizing it starts the dela
   // The harness transport prepares the preview first; either call is an approval.
   await expect.poll(() => approveCalls(page)).toContain('requestPreview');
 });
+
+test('framed: a frame only as tall as the action row keeps Approve closed', async ({ page }) => {
+  await setUp(page, NODE_PEER);
+  await page.goto('http://localhost:5800/');
+  await page.evaluate(() => {
+    const ok = document.getElementById('ok')!;
+    ok.style.height = '108px';
+  });
+  const frame = page.frameLocator('#ok');
+  await expect(frame.locator('.host-node-status[data-node-state="known"]')).toBeAttached();
+  // The page does not scroll to the buttons by itself: the summary stays above them.
+  await page.waitForTimeout(1500);
+  await expect(frame.locator('button.approve')).toBeDisabled();
+});
