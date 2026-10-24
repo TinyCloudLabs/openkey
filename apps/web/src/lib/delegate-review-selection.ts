@@ -25,11 +25,11 @@ export function reviewGrantId(serverKey: string): string {
 }
 
 /**
- * The server's action id for a capability-review action id, and back. The ids
- * differ only for a raw encryption network, in the same way as the grant ids
- * (`reviewGrantId`): `service\0<urn>\0\0ability` in the review model,
+ * The server's action id for a capability-review action id. An action id is
+ * its grant id, a NUL and the ability, so only a raw encryption network
+ * differs: `service\0<urn>\0\0ability` in the review model,
  * `service\0encryption\0<urn>\0ability` at `/authorize-sign-preview` and
- * `/authorize-sign`.
+ * `/authorize-sign`. `reviewGrantId` has no inverse, so this one is spelled out.
  */
 export function serverActionId(reviewId: string): string {
   const [service, space, path, ability] = reviewId.split('\0');
@@ -38,14 +38,13 @@ export function serverActionId(reviewId: string): string {
     : reviewId;
 }
 
+/** The capability-review action id for a server action id: its permission key through `reviewGrantId`, then the ability. */
 export function reviewActionId(serverId: string): string {
-  const [service, space, path, ability] = serverId.split('\0');
-  return service === RAW_ENCRYPTION_SERVICE && space === RAW_ENCRYPTION_SPACE && path?.startsWith(RAW_ENCRYPTION_PREFIX)
-    ? `${service}\0${path}\0\0${ability}`
-    : serverId;
+  const cut = serverId.lastIndexOf('\0');
+  return `${reviewGrantId(serverId.slice(0, cut))}\0${serverId.slice(cut + 1)}`;
 }
 
-/** The ids the approval view sends to the server for the selected actions. */
+/** The ids the signing pages send to the server for the selected actions. */
 export function selectedServerActionIds(
   model: CapabilityReviewModel,
   selection: ReadonlySet<string>,

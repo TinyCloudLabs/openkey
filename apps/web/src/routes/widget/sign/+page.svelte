@@ -545,7 +545,7 @@
     return reviewModel.protocol !== 'malformed-recap';
   }
 
-  // The ids of the current review selection as the server spells them.
+  // Convert the current review selection to canonical action IDs.
   function currentSelectedActionIds(): string[] {
     return requestedActionIds(reviewModel, reviewSelection);
   }

@@ -35,7 +35,7 @@ import {
   DEFAULT_SESSION_ABILITIES,
   SIWE_DOMAIN,
   sessionAbilitiesFromPermissions,
-  isRawEncryptionPermission,
+  validatePermissions,
   actionKey as computeActionKey,
   assertBaselineSubset,
   assertRequiredActions,
@@ -389,40 +389,6 @@ function resolveDelegationExpiryMs(input: unknown): number {
     throw new Error(`expiry must be a positive number, got ${input}`);
   }
   return Math.min(MAX_DELEGATION_EXPIRY_MS, Math.max(MIN_DELEGATION_EXPIRY_MS, raw));
-}
-
-function validatePermissions(permissions: unknown): PermissionEntry[] {
-  if (!Array.isArray(permissions) || permissions.length === 0) {
-    throw new Error('permissions must be a non-empty array');
-  }
-  return permissions.map((entry, index) => {
-    if (!entry || typeof entry !== 'object') {
-      throw new Error(`permissions[${index}] is not an object`);
-    }
-    const e = entry as Record<string, unknown>;
-    if (typeof e.service !== 'string' || !e.service) {
-      throw new Error(`permissions[${index}].service is required`);
-    }
-    const isRawEncryption = isRawEncryptionPermission(e);
-    if (!isRawEncryption && (typeof e.space !== 'string' || !e.space)) {
-      throw new Error(`permissions[${index}].space is required`);
-    }
-    if (e.space !== undefined && typeof e.space !== 'string') {
-      throw new Error(`permissions[${index}].space must be a string`);
-    }
-    if (typeof e.path !== 'string') {
-      throw new Error(`permissions[${index}].path must be a string`);
-    }
-    if (!Array.isArray(e.actions) || e.actions.some((a) => typeof a !== 'string')) {
-      throw new Error(`permissions[${index}].actions must be a string[]`);
-    }
-    return {
-      service: e.service,
-      ...(typeof e.space === 'string' ? { space: e.space } : {}),
-      path: e.path,
-      actions: e.actions as string[],
-    };
-  });
 }
 
 /**
@@ -1261,6 +1227,7 @@ delegateRouter.post('/', async (c) => {
     actionKeys?: unknown;
     permissionKeys?: unknown;
     permissions?: unknown;
+    deviceTransactionId?: unknown;
     expiry?: unknown;
     reason?: unknown;
     /**
@@ -1434,7 +1401,7 @@ delegateRouter.post('/', async (c) => {
     let baseline: SessionAbilities;
     try {
       baseline = permissions
-        ? sessionAbilitiesFromPermissions(permissions, { address, chainId })
+        ? sessionAbilitiesFromPermissions(permissions, { address, chainId }, { deviceTransaction: body.deviceTransactionId !== undefined })
         : DEFAULT_SESSION_ABILITIES;
       assertBaselineSubset(preparedEntries, baseline);
       assertRequiredActions(preparedEntries, baseline);
@@ -1583,6 +1550,7 @@ delegateRouter.post('/', async (c) => {
       }
       if (!hostActivated) {
         log('warn', 'delegate_session_activation_warning');
+        if (activationResult.hostNotKnown) spaceReadiness = { spaceReady: false };
       }
     } catch (e) {
       logError('warn', 'delegate_session_activation_failed', e);
@@ -1641,6 +1609,7 @@ delegateRouter.post('/', async (c) => {
       actionKeys: normalizeStringArray(body.actionKeys, 'actionKeys'),
       permissionKeys: normalizeStringArray(body.permissionKeys, 'permissionKeys'),
       permissions,
+      deviceTransaction: body.deviceTransactionId !== undefined,
       expiryMs,
     });
   } catch (e) {
@@ -1682,6 +1651,7 @@ delegateRouter.post('/', async (c) => {
     }
     if (!hostActivated) {
       log('warn', 'delegate_session_activation_warning');
+      if (activationResult.hostNotKnown) spaceReadiness = { spaceReady: false };
     }
   } catch (e) {
     logError('warn', 'delegate_session_activation_failed', e);
@@ -2233,6 +2203,7 @@ delegateRouter.post('/complete', async (c) => {
     if (hostActivated) spaceReady = !activationResult.skipped?.includes(spaceId);
     if (!hostActivated) {
       log('warn', 'delegate_session_activation_warning');
+      if (activationResult.hostNotKnown) spaceReady = false;
     }
   } catch (e) {
     logError('warn', 'delegate_session_activation_failed', e);

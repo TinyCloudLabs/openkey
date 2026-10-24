@@ -616,7 +616,6 @@
     );
   }
 
-  // The ids of the current review selection as the server spells them.
   function currentSelectedActionIds(): string[] {
     return requestedActionIds(reviewModel, reviewSelection);
   }
