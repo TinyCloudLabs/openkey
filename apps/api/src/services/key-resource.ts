@@ -91,6 +91,20 @@ export function keyPathOfResource(uri: string): string | null {
 // `<space>/encryption` with no path names no key and does not match.
 const SPACE_PATH_RESOURCE = /^tinycloud:[^/]*\/(?:tinycloud\.)?encryption\/(.*)$/is;
 
+// An encryption resource of either form, with or without a path: a key URN, a
+// bare network, or `<space>/encryption` / `<space>/tinycloud.encryption` with
+// an optional path.
+const SPACE_ENCRYPTION_RESOURCE = /^tinycloud:[^/]*\/(?:tinycloud\.)?encryption(?:\/|$)/i;
+
+/**
+ * Is this an encryption resource of any form? Rules that apply to every
+ * encryption resource, such as the one for `key.block`, use this and
+ * `isAppsKeyResource` to tell the app keys from the rest.
+ */
+export function isEncryptionResource(uri: string): boolean {
+  return uri.slice(0, KEY_RESOURCE_PREFIX.length).toLowerCase() === KEY_RESOURCE_PREFIX || SPACE_ENCRYPTION_RESOURCE.test(uri);
+}
+
 /**
  * The key path of a resource in either form: the text after the network of a
  * key URN (`keyPathOfResource`), or the path after the service segment of a

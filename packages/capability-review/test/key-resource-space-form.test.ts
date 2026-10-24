@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from "bun:test";
 
-import { isAppsKeyResource, keyPathOfAnyResource, parseKeyResource } from "../src/index.js";
+import { isAppsKeyResource, isEncryptionResource, keyPathOfAnyResource, parseKeyResource } from "../src/index.js";
 
 const OWNER = "did:pkh:eip155:1:0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed";
 const SPACE = "tinycloud:pkh:eip155:1:0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed:default";
@@ -43,5 +43,23 @@ describe("keyPathOfAnyResource", () => {
     expect(keyPathOfAnyResource(`${SPACE}/encryption/`)).toBe("");
     expect(keyPathOfAnyResource(`${SPACE}/encryption`)).toBeNull();
     expect(keyPathOfAnyResource(`${SPACE}/kv/secrets/x`)).toBeNull();
+  });
+});
+
+describe("isEncryptionResource", () => {
+  it.each([
+    [`urn:tinycloud:encryption:${OWNER}:default`, true],
+    [`urn:tinycloud:encryption:${OWNER}:default/secrets/x`, true],
+    [`URN:TINYCLOUD:ENCRYPTION:${OWNER}:default/apps/x`, true],
+    [`${SPACE}/encryption`, true],
+    [`${SPACE}/encryption/`, true],
+    [`${SPACE}/encryption/secrets/x`, true],
+    [`${SPACE}/tinycloud.encryption/secrets/x`, true],
+    [`${SPACE}/kv/encryption/x`, false],
+    [`${SPACE}/encryptionx/y`, false],
+    [`${SPACE}`, false],
+    [`${SPACE}/kv/apps/x`, false],
+  ])("%s is %s", (resource, expected) => {
+    expect(isEncryptionResource(resource)).toBe(expected);
   });
 });
