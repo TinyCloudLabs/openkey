@@ -1,0 +1,537 @@
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { PGlite } from '@electric-sql/pglite';
+import { PrismaPGlite } from 'pglite-prisma-adapter';
+import { PrismaClient, type OauthClient } from '@openkey/db';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { readdir, readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
+import {
+  NativeCeilingRefusedError,
+  diffNativeCeilings,
+  sortedJson,
+  updateNativeCeiling,
+} from '../services/native-delegation/ceiling-update';
+import { nativeDelegationJson, validateNativeDelegationConfig } from '../services/native-delegation/policy';
+
+// TC-1990: an existing client's native delegation ceiling can be replaced from
+// scripts/ci-register-oauth-client.ts. Runs on the tracked migration chain in
+// PGlite; an AFTER UPDATE trigger counts every UPDATE the database sees.
+
+// Every path this file writes lives under one temp dir, and HOME points at it.
+const realHome = homedir();
+const workDir = mkdtempSync('/var/tmp/tc1990.');
+const originalHome = process.env.HOME;
+process.env.HOME = workDir;
+if (process.env.HOME !== workDir || process.env.HOME === realHome || !workDir.startsWith('/var/tmp/tc1990.')) {
+  throw new Error('TC-1990 test sandbox is not active');
+}
+
+const databases: Array<{ close: () => Promise<void> }> = [];
+
+// Registered first so it runs after every test and cleans up whatever they made.
+afterAll(async () => {
+  for (const database of databases.splice(0)) await database.close().catch(() => undefined);
+  if (originalHome === undefined) delete process.env.HOME;
+  else process.env.HOME = originalHome;
+  rmSync(workDir, { recursive: true, force: true });
+});
+
+const root = resolve(import.meta.dir, '../../../..');
+const APP = 'xyz.tinycloud.tinychat';
+const HOST = 'https://tee.node.tinycloud.xyz';
+const NATIVE_REDIRECT = 'xyz.tinycloud.exo://openkey/callback';
+const DELEGATION_SCOPE = 'tinycloud:delegation';
+const BASE_SCOPES = ['openid', 'email', 'keys', 'offline_access', DELEGATION_SCOPE];
+
+// The example ceiling in docs/native-tinycloud-delegation.md.
+const DOC_CEILING = {
+  version: 1,
+  appId: APP,
+  tinycloudHost: HOST,
+  kv: {
+    paths: [`${APP}/threads/`, `${APP}/connectors/`],
+    actions: ['get', 'put', 'list', 'del', 'metadata'],
+  },
+  sql: {
+    databases: [`${APP}/threads`, `${APP}/canvas`, `${APP}/connectors`],
+    actions: ['read', 'write', 'schema'],
+  },
+  maxDelegationTtlSeconds: 3600,
+  grantLifetimeSeconds: 2592000,
+  siweDomain: 'openkey.so',
+};
+const EXO_KV = ['migrations/', 'exo/v1/requests/', 'exo/v1/jobs/'].map((path) => `${APP}/${path}`);
+const EXO_SQL = ['details', 'summaries', 'transcripts'].map((name) => `${APP}/${name}`);
+const EXO_CEILING = {
+  ...DOC_CEILING,
+  kv: { ...DOC_CEILING.kv, paths: [...DOC_CEILING.kv.paths, ...EXO_KV] },
+  sql: { ...DOC_CEILING.sql, databases: [...DOC_CEILING.sql.databases, ...EXO_SQL] },
+};
+
+async function migratedDatabase(database: PGlite) {
+  const directory = join(root, 'packages/db/prisma/migrations');
+  const migrations = (await readdir(directory, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
+  for (const migration of migrations) {
+    await database.exec(await readFile(join(directory, migration, 'migration.sql'), 'utf8'));
+  }
+}
+
+type SeedOptions = {
+  type?: string | null;
+  disabled?: boolean;
+  ceiling?: unknown;
+  extra?: Record<string, unknown>;
+};
+
+let sequence = 0;
+function seedClient(prisma: PrismaClient, options: SeedOptions = {}) {
+  sequence += 1;
+  const clientId = `ok_tc1990_${String(sequence).padStart(4, '0')}`;
+  const ceiling = 'ceiling' in options ? options.ceiling : DOC_CEILING;
+  return prisma.oauthClient.create({
+    data: {
+      id: `tc1990-${sequence}`,
+      clientId,
+      name: `TC-1990 client ${sequence}`,
+      redirectUris: [NATIVE_REDIRECT],
+      scopes: ceiling == null ? BASE_SCOPES.slice(0, 4) : BASE_SCOPES,
+      tinycloudNativeDelegation: ceiling == null ? undefined : ceiling as never,
+      disabled: options.disabled ?? false,
+      tokenEndpointAuthMethod: 'none',
+      type: options.type === undefined ? 'native' : options.type,
+      public: true,
+      contacts: [],
+      ...options.extra,
+    },
+  });
+}
+
+describe('native ceiling update (PGlite, tracked migrations)', () => {
+  let database: PGlite;
+  let prisma: PrismaClient;
+
+  async function updateCount() {
+    const { rows } = await database.query<{ count: number }>('SELECT count(*)::int AS count FROM tc1990_update_audit');
+    return rows[0]!.count;
+  }
+
+  /** Seeds, then forgets the seeding writes so the audit counts only what the run does. */
+  async function seed(options: SeedOptions = {}) {
+    const client = await seedClient(prisma, options);
+    await database.exec('DELETE FROM tc1990_update_audit');
+    return client;
+  }
+
+  async function run(clientId: string, ceiling: unknown, options: { dryRun?: boolean; allowNarrow?: boolean } = {}) {
+    const lines: string[] = [];
+    const result = await updateNativeCeiling(prisma, {
+      clientId,
+      rawCeiling: typeof ceiling === 'string' ? ceiling : JSON.stringify(ceiling),
+      dryRun: options.dryRun ?? false,
+      allowNarrow: options.allowNarrow ?? false,
+      log: (line) => lines.push(line),
+    });
+    return { result, output: lines.join('\n') };
+  }
+
+  async function row(clientId: string) {
+    return prisma.oauthClient.findUniqueOrThrow({ where: { clientId } });
+  }
+
+  async function expectUntouched(clientId: string, snapshot: OauthClient) {
+    expect(await row(clientId)).toEqual(snapshot);
+    expect(await updateCount()).toBe(0);
+  }
+
+  beforeAll(async () => {
+    expect(process.env.HOME).toBe(workDir);
+    expect(process.env.HOME).not.toBe(realHome);
+    database = new PGlite();
+    databases.push(database);
+    await migratedDatabase(database);
+    await database.exec(`
+      CREATE TABLE tc1990_update_audit (client_id text NOT NULL);
+      CREATE FUNCTION tc1990_record_update() RETURNS trigger AS $$
+      BEGIN INSERT INTO tc1990_update_audit (client_id) VALUES (OLD."clientId"); RETURN NEW; END
+      $$ LANGUAGE plpgsql;
+      CREATE TRIGGER tc1990_record_update AFTER UPDATE ON "oauth_client"
+        FOR EACH ROW EXECUTE FUNCTION tc1990_record_update();
+    `);
+    prisma = new PrismaClient({ adapter: new PrismaPGlite(database) });
+    databases.push({ close: () => prisma.$disconnect() });
+  }, 120_000);
+
+  describe('adding entries', () => {
+    test('adds the six Exo entries to the documented ceiling and stores exactly the validated value', async () => {
+      const client = await seed();
+      const { result, output } = await run(client.clientId, EXO_CEILING);
+
+      expect(result.outcome).toBe('written');
+      expect(result.diff.removed).toEqual([]);
+      expect(result.diff.added).toEqual([
+        ...EXO_KV.map((path) => `kv.paths: ${path}`),
+        ...EXO_SQL.map((name) => `sql.databases: ${name}`),
+      ].sort());
+      const stored = await row(client.clientId);
+      expect(stored.tinycloudNativeDelegation).toEqual(
+        nativeDelegationJson(validateNativeDelegationConfig(EXO_CEILING, stored)) as never,
+      );
+      expect(stored.scopes).toContain(DELEGATION_SCOPE);
+      expect(stored.redirectUris).toEqual([NATIVE_REDIRECT]);
+      expect(await updateCount()).toBe(1);
+      expect(output).toContain(`BEFORE: ${sortedJson(DOC_CEILING)}`);
+      expect(output).toContain(`AFTER: ${sortedJson(EXO_CEILING)}`);
+    });
+
+    test('a larger limit is a change, not a removal', async () => {
+      const client = await seed();
+      const { result } = await run(client.clientId, { ...DOC_CEILING, maxDelegationTtlSeconds: 7200 });
+      expect(result.outcome).toBe('written');
+      expect(result.diff).toEqual({ added: [], removed: [], changed: ['maxDelegationTtlSeconds: 3600 -> 7200'] });
+    });
+
+    test('a client without a ceiling receives one and the delegation scope', async () => {
+      const client = await seed({ ceiling: null });
+      expect(client.scopes).not.toContain(DELEGATION_SCOPE);
+      const { result, output } = await run(client.clientId, EXO_CEILING);
+      expect(result.outcome).toBe('written');
+      expect(output).toContain('BEFORE: none');
+      expect((await row(client.clientId)).scopes).toContain(DELEGATION_SCOPE);
+    });
+
+    test('the same ceiling, or the same entries in another order, writes nothing', async () => {
+      const client = await seed();
+      const reordered = { ...DOC_CEILING, kv: { ...DOC_CEILING.kv, paths: [...DOC_CEILING.kv.paths].reverse() } };
+      const snapshot = await row(client.clientId);
+      for (const ceiling of [DOC_CEILING, reordered]) {
+        const { result, output } = await run(client.clientId, ceiling);
+        expect(result.outcome).toBe('unchanged');
+        expect(output).toContain('No change');
+      }
+      await expectUntouched(client.clientId, snapshot);
+    });
+
+    test('a stored value that fails validation is replaced, and its raw content is not printed', async () => {
+      const client = await seed({ ceiling: { version: 9, marker: 'tc1990-raw-marker' } });
+      const { result, output } = await run(client.clientId, EXO_CEILING);
+      expect(result.outcome).toBe('written');
+      expect(output).toContain('BEFORE: not valid under the current policy');
+      expect(output).not.toContain('tc1990-raw-marker');
+    });
+  });
+
+  describe('narrowing', () => {
+    const rebased = (path: string) => path.replace(APP, 'xyz.tinycloud.other');
+    const cases: Array<[string, unknown, string[]]> = [
+      ['a kv path', { ...DOC_CEILING, kv: { ...DOC_CEILING.kv, paths: [`${APP}/threads/`] } }, [`kv.paths: ${APP}/connectors/`]],
+      ['a kv action', { ...DOC_CEILING, kv: { ...DOC_CEILING.kv, actions: ['get', 'put', 'list', 'del'] } }, ['kv.actions: metadata']],
+      ['a sql database', { ...DOC_CEILING, sql: { ...DOC_CEILING.sql, databases: [`${APP}/threads`, `${APP}/connectors`] } }, [`sql.databases: ${APP}/canvas`]],
+      ['a sql action', { ...DOC_CEILING, sql: { ...DOC_CEILING.sql, actions: ['read', 'write'] } }, ['sql.actions: schema']],
+      ['the whole sql section', { ...DOC_CEILING, sql: null }, [
+        `sql.databases: ${APP}/threads`, `sql.databases: ${APP}/canvas`, `sql.databases: ${APP}/connectors`,
+        'sql.actions: read', 'sql.actions: write', 'sql.actions: schema',
+      ]],
+      ['maxDelegationTtlSeconds', { ...DOC_CEILING, maxDelegationTtlSeconds: 1800 }, ['maxDelegationTtlSeconds: 3600 -> 1800']],
+      ['grantLifetimeSeconds', { ...DOC_CEILING, grantLifetimeSeconds: 86400 }, ['grantLifetimeSeconds: 2592000 -> 86400']],
+      ['the siweDomain', { ...DOC_CEILING, siweDomain: 'example.test' }, ['siweDomain: openkey.so -> example.test']],
+      ['the tinycloudHost', { ...DOC_CEILING, tinycloudHost: 'https://node.tinycloud.xyz' }, [`tinycloudHost: ${HOST} -> https://node.tinycloud.xyz`]],
+      ['the appId', {
+        ...DOC_CEILING,
+        appId: 'xyz.tinycloud.other',
+        kv: { ...DOC_CEILING.kv, paths: DOC_CEILING.kv.paths.map(rebased) },
+        sql: { ...DOC_CEILING.sql, databases: DOC_CEILING.sql.databases.map(rebased) },
+      }, [`appId: ${APP} -> xyz.tinycloud.other`, `kv.paths: ${APP}/threads/`, `sql.databases: ${APP}/canvas`]],
+    ];
+
+    test.each(cases)('removing %s is refused with the removed entries named, and nothing is written', async (_label, ceiling, removed) => {
+      const client = await seed();
+      const snapshot = await row(client.clientId);
+      const failure = await run(client.clientId, ceiling).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(NativeCeilingRefusedError);
+      for (const line of removed) expect((failure as Error).message).toContain(`  - ${line}`);
+      expect((failure as Error).message).toContain('--allow-narrow');
+      await expectUntouched(client.clientId, snapshot);
+    });
+
+    test.each(cases)('removing %s is applied with allowNarrow', async (_label, ceiling, removed) => {
+      const client = await seed();
+      const { result } = await run(client.clientId, ceiling, { allowNarrow: true });
+      expect(result.outcome).toBe('written');
+      for (const line of removed) expect(result.diff.removed).toContain(line);
+      const stored = await row(client.clientId);
+      expect(sortedJson(stored.tinycloudNativeDelegation)).toBe(sortedJson(validateNativeDelegationConfig(ceiling, stored)));
+      expect(await updateCount()).toBe(1);
+    });
+
+    test('a mixed value that adds and removes is refused as a whole', async () => {
+      const client = await seed();
+      const snapshot = await row(client.clientId);
+      const mixed = { ...EXO_CEILING, kv: { ...EXO_CEILING.kv, paths: EXO_CEILING.kv.paths.filter((path) => !path.endsWith('/threads/')) } };
+      await expect(run(client.clientId, mixed)).rejects.toBeInstanceOf(NativeCeilingRefusedError);
+      await expectUntouched(client.clientId, snapshot);
+    });
+  });
+
+  describe('malformed values', () => {
+    const { version: _version, ...withoutVersion } = DOC_CEILING;
+    const { appId: _appId, ...withoutAppId } = DOC_CEILING;
+    const { tinycloudHost: _host, ...withoutHost } = DOC_CEILING;
+    const { kv: _kv, ...withoutKv } = DOC_CEILING;
+    const malformed: Array<[string, unknown]> = [
+      ['text that is not JSON', 'not json {'],
+      ['an array', []],
+      ['null', null],
+      ['a string', 'text'],
+      ['version 2', { ...DOC_CEILING, version: 2 }],
+      ['no version', withoutVersion],
+      ['no appId', withoutAppId],
+      ['no tinycloudHost', withoutHost],
+      ['no kv', withoutKv],
+      ['only the new entries', { kv: { paths: EXO_KV, actions: ['get'] } }],
+      ['an unknown field', { ...DOC_CEILING, extra: true }],
+      ['a kv path outside the appId', { ...DOC_CEILING, kv: { ...DOC_CEILING.kv, paths: ['other.app/threads/'] } }],
+      ['an empty kv path list', { ...DOC_CEILING, kv: { ...DOC_CEILING.kv, paths: [] } }],
+      ['an unsupported action', { ...DOC_CEILING, kv: { ...DOC_CEILING.kv, actions: ['get', 'admin'] } }],
+      ['an untrusted host', { ...DOC_CEILING, tinycloudHost: 'https://untrusted.example' }],
+      ['a loopback host', { ...DOC_CEILING, tinycloudHost: 'http://localhost:8000' }],
+    ];
+
+    test.each(malformed)('refuses %s and writes nothing', async (_label, ceiling) => {
+      const client = await seed();
+      const snapshot = await row(client.clientId);
+      await expect(run(client.clientId, ceiling, { allowNarrow: true })).rejects.toBeInstanceOf(Error);
+      await expectUntouched(client.clientId, snapshot);
+    });
+  });
+
+  describe('dry run', () => {
+    test('prints BEFORE, AFTER and the diff, and issues no UPDATE', async () => {
+      const client = await seed();
+      const snapshot = await row(client.clientId);
+      const { result, output } = await run(client.clientId, EXO_CEILING, { dryRun: true });
+      expect(result.outcome).toBe('dry-run');
+      expect(output).toContain(`BEFORE: ${sortedJson(DOC_CEILING)}`);
+      expect(output).toContain(`AFTER: ${sortedJson(EXO_CEILING)}`);
+      for (const path of EXO_KV) expect(output).toContain(`  + kv.paths: ${path}`);
+      for (const name of EXO_SQL) expect(output).toContain(`  + sql.databases: ${name}`);
+      expect(output).toContain('DRY RUN: nothing written');
+      await expectUntouched(client.clientId, snapshot);
+      expect((await row(client.clientId)).updatedAt.getTime()).toBe(snapshot.updatedAt.getTime());
+    });
+
+    test('still refuses a removal without allowNarrow, and with it still writes nothing', async () => {
+      const client = await seed();
+      const snapshot = await row(client.clientId);
+      const narrower = { ...DOC_CEILING, sql: null };
+      await expect(run(client.clientId, narrower, { dryRun: true })).rejects.toBeInstanceOf(NativeCeilingRefusedError);
+      const { result, output } = await run(client.clientId, narrower, { dryRun: true, allowNarrow: true });
+      expect(result.outcome).toBe('dry-run');
+      expect(output).toContain(`  - sql.databases: ${APP}/canvas`);
+      await expectUntouched(client.clientId, snapshot);
+    });
+  });
+
+  describe('the client row', () => {
+    test('an unknown client_id is refused and no client is created', async () => {
+      await seed();
+      const before = await prisma.oauthClient.count();
+      await expect(run('ok_tc1990_missing', EXO_CEILING)).rejects.toThrow('Enabled OAuth client not found: ok_tc1990_missing');
+      expect(await prisma.oauthClient.count()).toBe(before);
+      expect(await updateCount()).toBe(0);
+    });
+
+    test('a disabled client is refused', async () => {
+      const client = await seed({ disabled: true });
+      const snapshot = await row(client.clientId);
+      await expect(run(client.clientId, EXO_CEILING)).rejects.toThrow('Enabled OAuth client not found');
+      await expectUntouched(client.clientId, snapshot);
+    });
+
+    test.each(['spa', 'web', null])('a client of type %p is refused', async (type) => {
+      const client = await seed({ type, ceiling: null });
+      const snapshot = await row(client.clientId);
+      await expect(run(client.clientId, EXO_CEILING)).rejects.toThrow('requires a native public client');
+      await expectUntouched(client.clientId, snapshot);
+    });
+  });
+
+  describe('output', () => {
+    test('BEFORE and AFTER carry only ceiling fields, never client credentials or metadata', async () => {
+      const client = await seed({
+        extra: {
+          clientSecret: 'tc1990-secret-hash-value',
+          softwareStatement: 'tc1990.statement.jwt',
+          metadata: { apiKey: 'tc1990-api-key-value' },
+          contacts: ['owner-tc1990@example.test'],
+          uri: 'https://tc1990.example.test',
+        },
+      });
+      const { output } = await run(client.clientId, EXO_CEILING);
+      for (const secret of ['tc1990-secret-hash-value', 'tc1990.statement.jwt', 'tc1990-api-key-value', 'owner-tc1990', 'tc1990.example.test']) {
+        expect(output).not.toContain(secret);
+      }
+      const allowed = new Set([
+        'version', 'appId', 'tinycloudHost', 'kv', 'paths', 'actions', 'sql', 'databases',
+        'maxDelegationTtlSeconds', 'grantLifetimeSeconds', 'siweDomain',
+      ]);
+      const keys = [...output.matchAll(/"([^"]+)":/g)].map((match) => match[1]!);
+      expect(keys.length).toBeGreaterThan(0);
+      expect(keys.filter((key) => !allowed.has(key))).toEqual([]);
+    });
+
+    test('printed ceilings are key-sorted regardless of the key order supplied', () => {
+      const shuffled = { siweDomain: 'openkey.so', kv: { actions: ['get'], paths: ['a/b/'] }, appId: 'a', version: 1 };
+      expect(Object.keys(JSON.parse(sortedJson(shuffled)))).toEqual(['appId', 'kv', 'siweDomain', 'version']);
+      expect(sortedJson(shuffled)).toBe(sortedJson({ version: 1, appId: 'a', kv: { paths: ['a/b/'], actions: ['get'] }, siweDomain: 'openkey.so' }));
+    });
+  });
+
+  describe('diffNativeCeilings', () => {
+    const client = { type: 'native', public: true, tokenEndpointAuthMethod: 'none' };
+    test('treats an absent siweDomain as the default domain', () => {
+      const withDefault = validateNativeDelegationConfig(DOC_CEILING, client);
+      const { siweDomain: _siwe, ...bare } = DOC_CEILING;
+      expect(diffNativeCeilings(withDefault, validateNativeDelegationConfig(bare, client))).toEqual({ added: [], removed: [], changed: [] });
+    });
+  });
+});
+
+describe('ci-register-oauth-client.ts', () => {
+  let directory: string;
+  const created: string[] = [];
+
+  async function openDatabase() {
+    const database = new PGlite(directory);
+    const prisma = new PrismaClient({ adapter: new PrismaPGlite(database) });
+    return {
+      prisma,
+      close: async () => {
+        await prisma.$disconnect();
+        await database.close();
+      },
+    };
+  }
+
+  /** Runs `fn` against the database, then releases it so the script can open it. */
+  async function withDatabase<T>(fn: (prisma: PrismaClient) => Promise<T>): Promise<T> {
+    const open = await openDatabase();
+    try {
+      return await fn(open.prisma);
+    } finally {
+      await open.close();
+    }
+  }
+
+  async function script(args: string[], env: Record<string, string>) {
+    const child = Bun.spawn([process.execPath, 'scripts/ci-register-oauth-client.ts', ...args], {
+      cwd: root,
+      // Only what the script needs; the caller's DATABASE_URL and other env never reach it.
+      env: { PATH: process.env.PATH ?? '', HOME: workDir, NODE_ENV: 'test', DATABASE_URL: `pglite:${directory}`, ...env },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    // A hung child must fail the test, not stall the suite; no deterministic clock applies to a subprocess.
+    const timer = setTimeout(() => child.kill(), 90_000);
+    try {
+      const [stdout, stderr, exitCode] = await Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+        child.exited,
+      ]);
+      return { stdout, stderr, exitCode };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  beforeAll(async () => {
+    expect(process.env.HOME).toBe(workDir);
+    expect(process.env.HOME).not.toBe(realHome);
+    directory = join(workDir, 'cli-db');
+    const database = new PGlite(directory);
+    try {
+      await migratedDatabase(database);
+    } finally {
+      await database.close();
+    }
+    created.push(directory);
+  }, 120_000);
+
+  const ceilingEnv = (clientId: string, ceiling: unknown) => ({
+    CLIENT_ID: clientId,
+    CLIENT_TINYCLOUD_NATIVE_DELEGATION: JSON.stringify(ceiling),
+  });
+
+  test('--dry-run prints BEFORE/AFTER and the diff and leaves the row alone', async () => {
+    const client = await withDatabase((prisma) => seedClient(prisma));
+    const result = await script(['--dry-run'], ceilingEnv(client.clientId, EXO_CEILING));
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stdout).toContain('BEFORE:');
+    expect(result.stdout).toContain('AFTER:');
+    expect(result.stdout).toContain(`  + kv.paths: ${EXO_KV[0]}`);
+    expect(result.stdout).toContain('DRY RUN: nothing written');
+    expect(result.stdout + result.stderr).not.toContain(directory);
+    const stored = await withDatabase((prisma) => prisma.oauthClient.findUniqueOrThrow({ where: { clientId: client.clientId } }));
+    expect(stored).toEqual(client);
+  }, 120_000);
+
+  test('without --dry-run the ceiling is replaced and read back', async () => {
+    const client = await withDatabase((prisma) => seedClient(prisma));
+    const result = await script([], ceilingEnv(client.clientId, EXO_CEILING));
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stdout).toContain('Written. The stored ceiling matches AFTER.');
+    expect(result.stdout).toContain(`CLIENT_ID=${client.clientId}`);
+    const stored = await withDatabase((prisma) => prisma.oauthClient.findUniqueOrThrow({ where: { clientId: client.clientId } }));
+    expect(sortedJson(stored.tinycloudNativeDelegation)).toBe(sortedJson(EXO_CEILING));
+  }, 120_000);
+
+  test('a removal exits non-zero without --allow-narrow and applies with it', async () => {
+    const client = await withDatabase((prisma) => seedClient(prisma));
+    const narrower = { ...DOC_CEILING, sql: null };
+    const refused = await script([], ceilingEnv(client.clientId, narrower));
+    expect(refused.exitCode).toBe(1);
+    expect(refused.stderr).toContain(`  - sql.databases: ${APP}/canvas`);
+    expect(refused.stderr).toContain('--allow-narrow');
+    const unchanged = await withDatabase((prisma) => prisma.oauthClient.findUniqueOrThrow({ where: { clientId: client.clientId } }));
+    expect(unchanged).toEqual(client);
+
+    const applied = await script(['--allow-narrow'], ceilingEnv(client.clientId, narrower));
+    expect(applied.exitCode, applied.stderr).toBe(0);
+    const stored = await withDatabase((prisma) => prisma.oauthClient.findUniqueOrThrow({ where: { clientId: client.clientId } }));
+    expect(validateNativeDelegationConfig(stored.tinycloudNativeDelegation, stored).sql).toBeNull();
+  }, 180_000);
+
+  test('a ceiling cannot be combined with branding fields, and the flags need a ceiling', async () => {
+    const client = await withDatabase((prisma) => seedClient(prisma));
+    const combined = await script([], { ...ceilingEnv(client.clientId, EXO_CEILING), CLIENT_ICON: 'https://example.test/icon.png' });
+    expect(combined.exitCode).toBe(1);
+    expect(combined.stderr).toContain('remove CLIENT_ICON');
+    const flagOnly = await script(['--dry-run'], { CLIENT_ID: client.clientId, CLIENT_ICON: 'https://example.test/icon.png' });
+    expect(flagOnly.exitCode).toBe(1);
+    expect(flagOnly.stderr).toContain('apply to ceiling updates only');
+    const unknown = await script(['--force'], ceilingEnv(client.clientId, EXO_CEILING));
+    expect(unknown.exitCode).toBe(1);
+    expect(unknown.stderr).toContain('Unknown argument: --force');
+    const stored = await withDatabase((prisma) => prisma.oauthClient.findUniqueOrThrow({ where: { clientId: client.clientId } }));
+    expect(stored).toEqual(client);
+  }, 180_000);
+
+  test('the branding update and create paths behave as before', async () => {
+    const client = await withDatabase((prisma) => seedClient(prisma));
+    const branding = await script([], { CLIENT_ID: client.clientId, CLIENT_ICON: 'https://example.test/icon.png' });
+    expect(branding.exitCode, branding.stderr).toBe(0);
+    expect(branding.stdout).toContain('Branding updated for enabled OAuth client');
+    const updated = await withDatabase((prisma) => prisma.oauthClient.findUniqueOrThrow({ where: { clientId: client.clientId } }));
+    expect(updated.icon).toBe('https://example.test/icon.png');
+    expect(updated.tinycloudNativeDelegation).toEqual(client.tinycloudNativeDelegation as never);
+
+    const name = `TC-1990 created ${Date.now()}`;
+    const create = await script([], { CLIENT_NAME: name, CLIENT_REDIRECT_URIS: 'xyz.tinycloud.created://cb' });
+    expect(create.exitCode, create.stderr).toBe(0);
+    expect(create.stdout).toContain(`OAuth client registered: ${name}`);
+    const createdRow = await withDatabase((prisma) => prisma.oauthClient.findFirst({ where: { name } }));
+    expect(createdRow?.tinycloudNativeDelegation).toBeNull();
+  }, 180_000);
+});

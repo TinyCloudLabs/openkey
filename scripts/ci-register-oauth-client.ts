@@ -14,15 +14,28 @@
  *   CLIENT_REDIRECT_URIS  Comma-separated redirect URIs (required on create)
  *   CLIENT_TYPE           "native" | "spa" (default "native")
  *   CLIENT_URI            Application website URL (optional)
- *   CLIENT_ID             Existing enabled client to update branding only. In
- *                         update mode, empty branding values are unchanged;
- *                         use `none` to clear icon or theme colours.
+ *   CLIENT_ID             Existing enabled client to update. Without a ceiling
+ *                         this updates branding only: empty branding values
+ *                         are unchanged; use `none` to clear icon or theme
+ *                         colours.
  *   CLIENT_ICON           HTTPS icon URL (optional)
  *   CLIENT_THEME_BACKGROUND_COLOR  #rrggbb (optional)
  *   CLIENT_THEME_ACCENT_COLOR      #rrggbb (optional)
  *   CLIENT_TINYCLOUD_NATIVE_DELEGATION
  *                         Native delegation ceiling JSON (optional; native
- *                         clients only). Adds tinycloud:delegation.
+ *                         clients only). Adds tinycloud:delegation. With
+ *                         CLIENT_ID it is the full replacement ceiling for that
+ *                         client (see below).
+ *
+ * Ceiling update (CLIENT_ID + CLIENT_TINYCLOUD_NATIVE_DELEGATION):
+ *   The value is validated by the same validator the admin API PATCH uses and
+ *   replaces the whole stored ceiling. The BEFORE and AFTER ceilings and the
+ *   entry-level diff are printed (ceiling config only). Adding entries is
+ *   allowed. A value that removes an entry, or reduces a limit, is refused
+ *   unless --allow-narrow is passed. It cannot be combined with branding,
+ *   redirect URI, type or website values.
+ *   --dry-run             Print BEFORE, AFTER and the diff; write nothing.
+ *   --allow-narrow        Permit a ceiling that removes or reduces entries.
  *
  * Idempotent: if an active client with the same name already exists, it is
  * printed and no new client is created.
@@ -31,6 +44,7 @@
 import { createPrismaClient, type Prisma } from '../packages/db/src/index';
 import { randomBytes } from 'crypto';
 import { TINYCLOUD_DELEGATION_SCOPE } from '../apps/api/src/oauth-config';
+import { updateNativeCeiling } from '../apps/api/src/services/native-delegation/ceiling-update';
 import {
   NativeDelegationPolicyError,
   validateNativeDelegationConfig,
@@ -101,13 +115,46 @@ function sameNativeDelegationConfig(
   }
 }
 
+function cliFlags(args: string[]): { dryRun: boolean; allowNarrow: boolean } {
+  const unknown = args.filter((arg) => arg !== '--dry-run' && arg !== '--allow-narrow');
+  if (unknown.length > 0) throw new Error(`Unknown argument: ${unknown.join(' ')}`);
+  return { dryRun: args.includes('--dry-run'), allowNarrow: args.includes('--allow-narrow') };
+}
+
 async function main() {
   required('DATABASE_URL');
   const clientIdToUpdate = process.env.CLIENT_ID?.trim();
+  const ceilingInput = process.env.CLIENT_TINYCLOUD_NATIVE_DELEGATION?.trim();
+  const flags = cliFlags(process.argv.slice(2));
+  if (clientIdToUpdate && ceilingInput) {
+    const incompatible = [
+      ['CLIENT_NAME', process.env.CLIENT_NAME],
+      ['CLIENT_ICON', process.env.CLIENT_ICON],
+      ['CLIENT_THEME_BACKGROUND_COLOR', process.env.CLIENT_THEME_BACKGROUND_COLOR],
+      ['CLIENT_THEME_ACCENT_COLOR', process.env.CLIENT_THEME_ACCENT_COLOR],
+      ['CLIENT_REDIRECT_URIS', process.env.CLIENT_REDIRECT_URIS],
+      ['CLIENT_URI', process.env.CLIENT_URI],
+      ['CLIENT_TYPE', process.env.CLIENT_TYPE],
+    ].filter(([, value]) => value?.trim());
+    if (incompatible.length > 0) {
+      throw new Error(`a ceiling update changes the ceiling only; remove ${incompatible.map(([key]) => key).join(', ')}`);
+    }
+    await updateNativeCeiling(prisma, {
+      clientId: clientIdToUpdate,
+      rawCeiling: ceilingInput,
+      dryRun: flags.dryRun,
+      allowNarrow: flags.allowNarrow,
+      log: (line) => console.log(line),
+    });
+    console.log(`CLIENT_ID=${clientIdToUpdate}`);
+    return;
+  }
+  if (flags.dryRun || flags.allowNarrow) {
+    throw new Error('--dry-run and --allow-narrow apply to ceiling updates only (CLIENT_ID with CLIENT_TINYCLOUD_NATIVE_DELEGATION)');
+  }
   const name = clientIdToUpdate ? process.env.CLIENT_NAME?.trim() || undefined : required('CLIENT_NAME');
   if (clientIdToUpdate) {
     const incompatible = [
-      ['CLIENT_TINYCLOUD_NATIVE_DELEGATION', process.env.CLIENT_TINYCLOUD_NATIVE_DELEGATION],
       ['CLIENT_REDIRECT_URIS', process.env.CLIENT_REDIRECT_URIS],
       ['CLIENT_URI', process.env.CLIENT_URI],
       ['CLIENT_TYPE', process.env.CLIENT_TYPE],

@@ -266,8 +266,21 @@ colors with `themeBackgroundColor` and `themeAccentColor` on client create or
 PATCH; each accepts `#rrggbb` or `null` to clear it. The
 `register-oauth-client.yml` workflow accepts `icon`,
 `theme_background_color`, and `theme_accent_color` when creating a client. Set
-`client_id` to update only that enabled client's name and branding; redirect
-URIs, scopes, type, and delegation ceiling stay untouched. Icons must use HTTPS.
+`client_id` without `tinycloud_native_delegation` to update only that enabled
+client's name and branding; redirect URIs, scopes, type, and delegation ceiling
+stay untouched. Icons must use HTTPS.
+
+Set `client_id` together with `tinycloud_native_delegation` to replace that
+native client's ceiling with the full value supplied (the same validation and
+whole-value replacement as the admin PATCH). The run prints the BEFORE and AFTER
+ceiling and the entry-level diff. Added entries are applied. A value that
+removes an existing kv path, sql database or action, or reduces a limit or
+changes `appId`, `tinycloudHost` or `siweDomain`, is refused with the entries
+listed unless `allow_narrow` is set (`--allow-narrow` on the command line).
+`dry_run` (default `true` in the workflow; `--dry-run` on the command line)
+prints the same output and writes nothing. Branding, redirect URI, type and
+website values cannot be combined with a ceiling update. For example,
+`CLIENT_ID=<id> CLIENT_TINYCLOUD_NATIVE_DELEGATION="$(cat ceiling.json)" bun scripts/ci-register-oauth-client.ts --dry-run`.
 
 On success OpenKey stores a `PENDING` request holding the public JWK, its
 thumbprint `sessionJkt` ([Session key thumbprint](#session-key-thumbprint)),

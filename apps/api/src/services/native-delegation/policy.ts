@@ -1,3 +1,4 @@
+import type { Prisma } from '@openkey/db';
 import { TINYCLOUD_DELEGATION_SCOPE } from '../../oauth-config';
 import { TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS } from '../tinycloud-hosts';
 import {
@@ -31,6 +32,11 @@ export interface NativeDelegationConfig {
   maxDelegationTtlSeconds: number;
   grantLifetimeSeconds: number;
   siweDomain?: string;
+}
+
+/** The JSON column value for a validated ceiling; shared by every writer. */
+export function nativeDelegationJson(config: NativeDelegationConfig): Prisma.InputJsonObject {
+  return config as unknown as Prisma.InputJsonObject;
 }
 
 export interface NativeDelegationClient {
