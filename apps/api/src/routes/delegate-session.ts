@@ -18,6 +18,7 @@ import {
   DelegateRequestError,
   shortServiceName,
 } from './delegate-validation';
+import { logPermissionEntryUnknownFields } from '../log';
 
 export type DelegationJwk = { kty: string; crv: string; x: string };
 export type AbilitiesMap = Record<string, Record<string, string[]>>;
@@ -306,6 +307,85 @@ export function isRawEncryptionPermission(
     typeof entry.path === 'string' &&
     entry.path.startsWith(RAW_ENCRYPTION_PREFIX)
   );
+}
+
+/** Entry fields this validator reads. Any other defined field is dropped and reported by name. */
+const PERMISSION_ENTRY_FIELDS: Record<string, true> = {
+  service: true, space: true, path: true, actions: true, caveats: true, expiry: true, expiryMs: true,
+};
+
+/**
+ * Refusal messages for narrowing fields this approval cannot carry. Each names the field and the
+ * entry index only, never a value.
+ */
+const PERMISSION_ENTRY_REFUSAL = {
+  caveats: (index: number) =>
+    `permissions[${index}] includes a limit (caveats) that this approval can't carry, so a request that needs the limit can't be made this way. Nothing was approved.`,
+  expiry: (index: number) =>
+    `permissions[${index}] sets its own expiry (expiry). Set one expiry for the whole request instead. Nothing was approved.`,
+  expiryMs: (index: number) =>
+    `permissions[${index}] sets its own expiry (expiryMs). Set one expiry for the whole request instead. Nothing was approved.`,
+};
+
+/**
+ * Validates the CLI `permissions[]` array. Narrowing fields this approval cannot carry (`caveats`
+ * with restrictions, per-entry `expiry` / `expiryMs`) are refused with an error. Other unknown
+ * entry fields are dropped; their names are logged, capped per request (see
+ * `logPermissionEntryUnknownFields`). Nothing is logged for a refused request.
+ */
+export function validatePermissions(permissions: unknown): DelegationPermissionEntry[] {
+  if (!Array.isArray(permissions) || permissions.length === 0) {
+    throw new Error('permissions must be a non-empty array');
+  }
+  const unknownFields = new Map<string, number>();
+  const entries = permissions.map((entry, index) => {
+    if (!entry || typeof entry !== 'object') {
+      throw new Error(`permissions[${index}] is not an object`);
+    }
+    const e = entry as Record<string, unknown>;
+    if (typeof e.service !== 'string' || !e.service) {
+      throw new Error(`permissions[${index}].service is required`);
+    }
+    const isRawEncryption = isRawEncryptionPermission(e);
+    if (!isRawEncryption && (typeof e.space !== 'string' || !e.space)) {
+      throw new Error(`permissions[${index}].space is required`);
+    }
+    if (e.space !== undefined && typeof e.space !== 'string') {
+      throw new Error(`permissions[${index}].space must be a string`);
+    }
+    if (typeof e.path !== 'string') {
+      throw new Error(`permissions[${index}].path must be a string`);
+    }
+    if (!Array.isArray(e.actions) || e.actions.some((a) => typeof a !== 'string')) {
+      throw new Error(`permissions[${index}].actions must be a string[]`);
+    }
+    const caveatsRestrictNothing =
+      e.caveats === undefined ||
+      (Array.isArray(e.caveats) &&
+        e.caveats.every((c) => c !== null && typeof c === 'object' && !Array.isArray(c) && Object.keys(c).length === 0));
+    if (!caveatsRestrictNothing) {
+      throw new Error(PERMISSION_ENTRY_REFUSAL.caveats(index));
+    }
+    if (e.expiry !== undefined) {
+      throw new Error(PERMISSION_ENTRY_REFUSAL.expiry(index));
+    }
+    if (e.expiryMs !== undefined) {
+      throw new Error(PERMISSION_ENTRY_REFUSAL.expiryMs(index));
+    }
+    for (const key of Object.keys(e)) {
+      if (e[key] !== undefined && !Object.hasOwn(PERMISSION_ENTRY_FIELDS, key)) {
+        unknownFields.set(key, (unknownFields.get(key) ?? 0) + 1);
+      }
+    }
+    return {
+      service: e.service,
+      ...(typeof e.space === 'string' ? { space: e.space } : {}),
+      path: e.path,
+      actions: e.actions as string[],
+    };
+  });
+  logPermissionEntryUnknownFields(unknownFields);
+  return entries;
 }
 
 const RAW_ENCRYPTION_NETWORK = /^urn:tinycloud:encryption:did:pkh:eip155:(\d+):(0x[0-9a-fA-F]{40}):([^:]*)$/;
