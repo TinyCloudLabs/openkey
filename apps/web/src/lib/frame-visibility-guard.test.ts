@@ -1,3 +1,4 @@
+// @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -7,14 +8,15 @@ import {
   isFramed,
   watchFrameVisibility,
   type VisibilityEntry,
-} from '../../../web/src/lib/frame-visibility-guard';
+} from './frame-visibility-guard';
 
 // No files are touched. HOME is pointed at a private dir (and put back); the
 // cleanup is registered first. Time is driven with fake timers.
 const PRIOR_HOME = process.env.HOME;
 const HOME = mkdtempSync(join('/var/tmp', 'tc1950.'));
 afterAll(() => {
-  process.env.HOME = PRIOR_HOME;
+  if (PRIOR_HOME === undefined) delete process.env.HOME;
+  else process.env.HOME = PRIOR_HOME;
   rmSync(HOME, { recursive: true, force: true });
 });
 process.env.HOME = HOME;
@@ -209,7 +211,10 @@ describe('watchFrameVisibility', () => {
   });
 
   afterEach(() => {
-    Object.assign(globalThis, realGlobals);
+    for (const [name, value] of Object.entries(realGlobals)) {
+      if (value === undefined) Reflect.deleteProperty(globalThis, name);
+      else fakeGlobals[name] = value;
+    }
   });
 
   function start() {
@@ -340,7 +345,8 @@ describe('watchFrameVisibility', () => {
 describe('isFramed', () => {
   const realWindow = fakeGlobals.window;
   afterEach(() => {
-    fakeGlobals.window = realWindow;
+    if (realWindow === undefined) Reflect.deleteProperty(globalThis, 'window');
+    else fakeGlobals.window = realWindow;
   });
 
   test('top-level is not framed, a different top or an unreadable top is', () => {

@@ -1,24 +1,30 @@
+// @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { afterAll, afterEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { SpaceHostFacts } from '@openkey/capability-review';
-import { TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS } from '../services/tinycloud-hosts';
-import { KNOWN_NODE_ORIGINS } from '../../../web/src/lib/delegate-link-policy';
+import { TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS } from '../../../api/src/services/tinycloud-hosts';
+import { KNOWN_NODE_ORIGINS } from './delegate-link-policy';
 import {
   fetchNodePeer,
   knownNodeOrigins,
   watchHostPeer,
   type PeerRecognitionState,
-} from '../../../web/src/lib/host-peer-recognition';
+} from './host-peer-recognition';
 
 // No files are touched. HOME is pointed at a private dir (and put back); the
 // cleanup is registered first.
 const PRIOR_HOME = process.env.HOME;
 const HOME = mkdtempSync(join('/var/tmp', 'tc1950.'));
 const realFetch = globalThis.fetch;
+// A stand-in `fetch`; the real type carries fields a stub does not need.
+const stubFetch = (stub: (url: string, init: RequestInit) => Promise<Response>) => {
+  globalThis.fetch = stub as unknown as typeof fetch;
+};
 afterAll(() => {
   globalThis.fetch = realFetch;
-  process.env.HOME = PRIOR_HOME;
+  if (PRIOR_HOME === undefined) delete process.env.HOME;
+  else process.env.HOME = PRIOR_HOME;
   rmSync(HOME, { recursive: true, force: true });
 });
 afterEach(() => {
@@ -53,10 +59,10 @@ describe('known node origins', () => {
 describe('fetchNodePeer', () => {
   test('asks the node for the key for the encoded space, without credentials or redirects', async () => {
     let seen: { url: string; init: RequestInit } | null = null;
-    globalThis.fetch = (async (url: string, init: RequestInit) => {
+    stubFetch(async (url, init) => {
       seen = { url, init };
       return new Response(`${PEER}\n`, { status: 200 });
-    }) as typeof fetch;
+    });
     const controller = new AbortController();
     expect(await fetchNodePeer('https://node.tinycloud.xyz', SPACE, controller.signal)).toBe(PEER);
     expect(seen!.url).toBe(`https://node.tinycloud.xyz/peer/generate/${encodeURIComponent(SPACE)}`);
@@ -66,9 +72,9 @@ describe('fetchNodePeer', () => {
   });
 
   test('a non-200 or an oversized answer is no key', async () => {
-    globalThis.fetch = (async () => new Response('nope', { status: 404 })) as typeof fetch;
+    stubFetch(async () => new Response('nope', { status: 404 }));
     expect(await fetchNodePeer('https://node.tinycloud.xyz', SPACE, new AbortController().signal)).toBeNull();
-    globalThis.fetch = (async () => new Response('x'.repeat(5_000), { status: 200 })) as typeof fetch;
+    stubFetch(async () => new Response('x'.repeat(5_000), { status: 200 }));
     expect(await fetchNodePeer('https://node.tinycloud.xyz', SPACE, new AbortController().signal)).toBeNull();
   });
 });
@@ -84,7 +90,7 @@ describe('watchHostPeer', () => {
   };
 
   test('checking, then known with the configured origin that matched', async () => {
-    globalThis.fetch = (async () => new Response(PEER, { status: 200 })) as typeof fetch;
+    stubFetch(async () => new Response(PEER, { status: 200 }));
     const { states, report } = collect();
     watchHostPeer(FACTS, undefined, report);
     expect(states).toEqual([{ state: 'checking' }]);
@@ -93,13 +99,15 @@ describe('watchHostPeer', () => {
   });
 
   test('another key, or a failing node, is other', async () => {
-    globalThis.fetch = (async () => new Response('did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH', { status: 200 })) as typeof fetch;
+    stubFetch(async () => new Response('did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH', { status: 200 }));
     const first = collect();
     watchHostPeer(FACTS, undefined, first.report);
     await settle();
     expect(first.states.at(-1)).toEqual({ state: 'other' });
 
-    globalThis.fetch = (async () => { throw new TypeError('Failed to fetch'); }) as typeof fetch;
+    stubFetch(async () => {
+      throw new TypeError('Failed to fetch');
+    });
     const second = collect();
     watchHostPeer(FACTS, undefined, second.report);
     await settle();
@@ -114,7 +122,7 @@ describe('watchHostPeer', () => {
   });
 
   test('cleanup drops a late answer', async () => {
-    globalThis.fetch = (async () => new Response(PEER, { status: 200 })) as typeof fetch;
+    stubFetch(async () => new Response(PEER, { status: 200 }));
     const { states, report } = collect();
     const stop = watchHostPeer(FACTS, undefined, report);
     stop();

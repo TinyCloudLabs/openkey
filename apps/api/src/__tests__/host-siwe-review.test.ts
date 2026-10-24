@@ -17,7 +17,8 @@ import {
 const PRIOR_HOME = process.env.HOME;
 const HOME = mkdtempSync(join('/var/tmp', 'tc1950.'));
 afterAll(() => {
-  process.env.HOME = PRIOR_HOME;
+  if (PRIOR_HOME === undefined) delete process.env.HOME;
+  else process.env.HOME = PRIOR_HOME;
   rmSync(HOME, { recursive: true, force: true });
 });
 process.env.HOME = HOME;

@@ -6,6 +6,7 @@
 // @ts-expect-error bun:test is a runtime-only module; tsc doesn't ship types
 import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -14,7 +15,8 @@ import { fileURLToPath } from 'node:url';
 const PRIOR_HOME = process.env.HOME;
 const HOME = mkdtempSync(join('/var/tmp', 'tc1950.'));
 afterAll(() => {
-  process.env.HOME = PRIOR_HOME;
+  if (PRIOR_HOME === undefined) delete process.env.HOME;
+  else process.env.HOME = PRIOR_HOME;
   rmSync(HOME, { recursive: true, force: true });
 });
 process.env.HOME = HOME;
@@ -51,8 +53,7 @@ win.document.hasFocus = () => true;
 const { compile } = await import('svelte/compiler');
 const { readFileSync, writeFileSync, mkdirSync } = await import('node:fs');
 const { pathToFileURL } = await import('node:url');
-const nodeModule = await import('node:module');
-const require = nodeModule.createRequire(import.meta.url);
+const require = createRequire(import.meta.url);
 const sveltePkgDir = dirname(require.resolve('svelte/package.json'));
 const svelteClient = (await import(pathToFileURL(join(sveltePkgDir, 'src/index-client.js')).href)) as {
   mount: (component: unknown, options: { target: Element; props: Record<string, unknown> }) => unknown;
@@ -157,8 +158,10 @@ interface Mounted {
 }
 
 function render(model: Review, extra: Record<string, unknown> = {}): Mounted {
-  const target = win.document.createElement('div') as unknown as HTMLElement;
-  win.document.body.appendChild(target as unknown as Node);
+  const created = win.document.createElement('div');
+  win.document.body.appendChild(created);
+  // happy-dom's element stands in for the DOM lib's element type.
+  const target = created as unknown as HTMLElement;
   let approveCalls = 0;
   const instance = mount(SigningApproval, {
     target,
@@ -448,8 +451,9 @@ describe('popup adapter looks the node up', () => {
   };
 
   function renderAdapter(model: Review): Mounted {
-    const target = win.document.createElement('div') as unknown as HTMLElement;
-    win.document.body.appendChild(target as unknown as Node);
+    const created = win.document.createElement('div');
+    win.document.body.appendChild(created);
+    const target = created as unknown as HTMLElement;
     const instance = mount(PopupAdapter, { target, props: { model, initialSelection: selectionOf(model), transport } });
     flushSync();
     return {
