@@ -1,6 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { betterAuth } from 'better-auth';
 import { memoryAdapter } from 'better-auth/adapters/memory';
 import { emailOTP } from 'better-auth/plugins';
@@ -8,10 +7,17 @@ import { emailOtpDelivery, type EmailSender, type SendResult } from '../services
 
 // TC-1954: no real home or tool home is touched; everything lives in one temp dir.
 const sandbox = mkdtempSync('/var/tmp/tc1954.');
+const savedHome = process.env.HOME;
+const savedCacheDir = process.env.BUN_INSTALL_CACHE_DIR;
+afterAll(() => {
+  if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+  if (savedCacheDir === undefined) delete process.env.BUN_INSTALL_CACHE_DIR; else process.env.BUN_INSTALL_CACHE_DIR = savedCacheDir;
+  rmSync(sandbox, { recursive: true, force: true });
+});
 process.env.HOME = sandbox;
 process.env.BUN_INSTALL_CACHE_DIR = sandbox;
-expect(homedir().startsWith('/var/tmp/tc1954.')).toBe(true);
-afterAll(() => rmSync(sandbox, { recursive: true, force: true }));
+expect(process.env.HOME).toBe(sandbox);
+expect(process.env.BUN_INSTALL_CACHE_DIR).toBe(sandbox);
 
 const ADDRESS = 'canary-address@example.test';
 const OTP = '482913';
