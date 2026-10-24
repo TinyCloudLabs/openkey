@@ -211,7 +211,7 @@ const untrustedHosts = [
   'http://node.tinycloud.xyz',
   'https://node.tinycloud.xyz:8443',
   'http://10.0.0.5:8080',
-  'http://169.254.169.254',
+  'http://192.168.1.10:8080',
 ];
 const loopbackHosts = ['http://127.0.0.1:8000', 'http://localhost:8000', 'http://[::1]:8000'];
 
