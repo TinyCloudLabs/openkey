@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from 'bun:test';
+import { afterAll, afterEach, describe, expect, test, vi } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import {
@@ -207,18 +207,31 @@ describe('recognizeHostPeer', () => {
     expect(await run(async () => '<html>nope</html>')).toEqual({ kind: 'other' });
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   test('a node that never answers is not confirmed once the timeout passes', async () => {
-    const started = Date.now();
-    expect(await run(never, { timeoutMs: 50 })).toEqual({ kind: 'other' });
-    expect(Date.now() - started).toBeLessThan(2_000);
+    vi.useFakeTimers();
+    const pending = run(never, { timeoutMs: 5_000 });
+    vi.advanceTimersByTime(4_999);
+    let settled = false;
+    void pending.then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    vi.advanceTimersByTime(1);
+    expect(await pending).toEqual({ kind: 'other' });
   });
 
   test('the timeout aborts requests still waiting', async () => {
+    vi.useFakeTimers();
     let aborted = false;
-    await run(
+    const pending = run(
       (_origin, _space, signal) => new Promise<string | null>(() => signal.addEventListener('abort', () => { aborted = true; })),
-      { timeoutMs: 20 },
+      { timeoutMs: 5_000 },
     );
+    vi.advanceTimersByTime(5_000);
+    await pending;
     expect(aborted).toBe(true);
   });
 
