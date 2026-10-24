@@ -42,8 +42,11 @@
     CapabilityGrant,
     CapabilityReviewModel,
   } from "@openkey/capability-review";
+  import { formatAccessEnd } from "$lib/access-end";
   import {
+    APP_KEY_GROUP_NOTE,
     appKeyAccessStatement,
+    FAMILY_LABEL,
     appKeyNotGrantableStatements,
     buildRenderPlan,
     buildStatements,
@@ -225,7 +228,7 @@
   // App keys: the standing-access line follows the decrypt statements, and a
   // `key.delete` action is listed even though it is never selected.
   const appKeyAccessLine = $derived(
-    selectedGrants.some(grantIsAppKeyDecrypt) ? appKeyAccessStatement(model.expiry) : null,
+    selectedGrants.some(grantIsAppKeyDecrypt) ? appKeyAccessStatement(model.expiry, formatAccessEnd) : null,
   );
   const notGrantableStatements = $derived.by(() => {
     const rows = model.permissions.flatMap(appKeyNotGrantableStatements);
@@ -236,8 +239,49 @@
     return selection.has(action.id);
   }
 
+  // The app keys of a request are approved with the rest of it or removed as
+  // a unit: the server refuses a selection that keeps an app-key action and
+  // drops any other action, so no control changes one without the other.
+  const appKeyGrants = $derived(model.permissions.filter((grant) => grant.family === "app-keys"));
+  const appKeyActionIds = $derived(
+    new Set(appKeyGrants.flatMap((grant) => grant.actions.filter((action) => action.editable).map((action) => action.id))),
+  );
+  const firstAppKeyGrantId = $derived(appKeyGrants[0]?.id ?? null);
+
+  const appKeysSelected = $derived([...appKeyActionIds].some((id) => selection.has(id)));
+
+  function isLockedByAppKeys(action: CapabilityAction): boolean {
+    return appKeysSelected && !appKeyActionIds.has(action.id);
+  }
+
+  function toggleAppKeys() {
+    const next = new Set(selection);
+    if (appKeysSelected) {
+      for (const id of appKeyActionIds) next.delete(id);
+    } else {
+      for (const grant of model.permissions) {
+        for (const action of grant.actions) {
+          if (action.editable) next.add(action.id);
+        }
+      }
+    }
+    onSelectionChange(next);
+  }
+
+  function handleAppKeysKeydown(event: KeyboardEvent) {
+    if (event.key === " " || event.key === "Enter") {
+      event.preventDefault();
+      toggleAppKeys();
+    }
+  }
+
   function toggle(action: CapabilityAction) {
     if (!action.editable) return;
+    if (appKeyActionIds.has(action.id)) {
+      toggleAppKeys();
+      return;
+    }
+    if (isLockedByAppKeys(action)) return;
     const next = new Set(selection);
     if (next.has(action.id)) next.delete(action.id);
     else next.add(action.id);
@@ -680,6 +724,9 @@
           {/if}
         </div>
 
+        {#if editing && appKeyGrants.length > 0}
+          <p class="app-key-note">{APP_KEY_GROUP_NOTE}</p>
+        {/if}
         {#each permissionSections as bucket (bucket.key)}
           <details
             class="severity-bucket"
@@ -725,17 +772,29 @@
                         This data belongs to another user.
                       </p>
                     {/if}
+                    {#if editing && grant.id === firstAppKeyGrantId}
+                      <label class="action-toggle app-key-group">
+                        <input
+                          type="checkbox"
+                          checked={appKeysSelected}
+                          onchange={toggleAppKeys}
+                          onkeydown={handleAppKeysKeydown}
+                          disabled={approveDisabled}
+                        />
+                        <span class="verb">{FAMILY_LABEL["app-keys"]}</span>
+                      </label>
+                    {/if}
                     <ul class="action-list">
                       {#each editing ? grant.actions : grant.actions.filter(isSelected) as action}
                         <li class="action">
-                          {#if editing && action.editable}
+                          {#if editing && action.editable && !appKeyActionIds.has(action.id)}
                             <label class="action-toggle">
                               <input
                                 type="checkbox"
                                 checked={isSelected(action)}
                                 onchange={() => toggle(action)}
                                 onkeydown={(e) => handleKeydown(e, action)}
-                                disabled={approveDisabled}
+                                disabled={approveDisabled || isLockedByAppKeys(action)}
                               />
                               <span class="verb">{action.verb}</span>
                             </label>
@@ -976,6 +1035,12 @@
     font-size: 13px;
     line-height: 1.45;
     margin: 0;
+  }
+  .app-key-note {
+    margin: 0 0 8px;
+    color: #475569;
+    font-size: 13px;
+    line-height: 1.45;
   }
   .summary-note {
     color: #475569;

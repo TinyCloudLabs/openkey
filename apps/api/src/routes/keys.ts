@@ -14,7 +14,7 @@ import { createSealingContext, deriveKeyForRecord } from '../services/key-sealin
 import { deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, PrimaryKeyConflictError, setPrimaryKey } from '../services/primary-key';
 import { checkSignableMessage } from '../services/siwe-origin';
-import { appKeyRefusalBody, appKeyRefusalForMessage, appKeyRefusalStatus } from '../services/app-key-refusal';
+import { appKeyRefusalBody, appKeyRefusalForMessage, appKeyRefusalStatus, blocksOutsideApps } from '../services/app-key-refusal';
 import { rejectNonBrowserControlRequest } from '../middleware/browser-control';
 
 import { log, logError } from '../log';
@@ -300,7 +300,8 @@ keysRouter.post('/:keyId/sign', async (c) => {
   if (siweCheck.siwe && !siweCheck.ok) {
     return c.json({ error: siweCheck.message, code: 'siwe_origin_refused', reason: siweCheck.code }, 403);
   }
-  const appKeyRefusal = appKeyRefusalForMessage(body.message);
+  const appKeyRefusal = appKeyRefusalForMessage(body.message)
+    ?? (blocksOutsideApps(body.message) ? ({ reason: 'apps_key' } as const) : null);
   if (appKeyRefusal) {
     return c.json(appKeyRefusalBody(appKeyRefusal, 'non_browser'), appKeyRefusalStatus(appKeyRefusal));
   }

@@ -7,7 +7,7 @@
   import { passkeysSupportedFromParams, withPasskeysFlag } from '$lib/passkey-support';
   import PopupSigningAdapter from '$lib/components/signing/popup-signing-adapter.svelte';
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
-  import { validatePreviewSelection } from '$lib/preview-review';
+  import { requestedActionIds, selectionFromPreview } from '$lib/widget-selection';
   import {
     parseCapabilityReview,
     parseSiweChainId,
@@ -545,18 +545,9 @@
     return reviewModel.protocol !== 'malformed-recap';
   }
 
-  // Convert the current review selection to canonical action IDs.
+  // The ids of the current review selection as the server spells them.
   function currentSelectedActionIds(): string[] {
-    if (!reviewModel) return [];
-    const out: string[] = [];
-    for (const grant of reviewModel.permissions) {
-      for (const action of grant.actions) {
-        if (reviewSelection.has(action.id)) {
-          out.push(action.id);
-        }
-      }
-    }
-    return out;
+    return requestedActionIds(reviewModel, reviewSelection);
   }
 
   // Sol CRITICAL-1: preview step. Issues (or re-uses) an authorization
@@ -699,7 +690,7 @@
           };
         }
       }
-      const requestedActionIds = currentSelectedActionIds();
+      const selectedIds = currentSelectedActionIds();
       const previewRes = await fetch(
         `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign-preview`,
         {
@@ -708,7 +699,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             authorizationContextToken: token,
-            selectedActionIds: requestedActionIds,
+            selectedActionIds: selectedIds,
           }),
         },
       );
@@ -725,7 +716,7 @@
       if (typeof previewResult.previewApprovalToken !== 'string' || !previewResult.previewApprovalToken) {
         throw new Error('authorize-sign-preview did not return a previewApprovalToken — server is out of date');
       }
-      reviewSelection = validatePreviewSelection(previewResult, requestedActionIds);
+      reviewSelection = selectionFromPreview(previewResult, selectedIds);
       previewSignedMessage = previewResult.signedMessage;
       previewApprovalToken = previewResult.previewApprovalToken;
     } catch (e: any) {

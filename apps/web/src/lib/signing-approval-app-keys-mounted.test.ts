@@ -6,6 +6,7 @@
 
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { afterAll, describe, expect, test } from 'bun:test';
+import { formatAccessEnd } from './access-end';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -182,7 +183,7 @@ describe('approval view for app keys', () => {
   test('states the signed expiry beneath decrypt rows only', () => {
     const decrypt = render(appKeyModel({ [urn('/apps/x/k')]: [`${E}decrypt`] }));
     expect(decrypt.target.querySelector('.summary-note')?.textContent).toBe(
-      `This access lasts until ${FIXTURE_META.expirationTime}.`,
+      `This access lasts until ${formatAccessEnd(FIXTURE_META.expirationTime)}.`,
     );
     decrypt.cleanup();
     const createOnly = render(appKeyModel({ [urn('/apps/x/k')]: [`${E}key.create`] }));
