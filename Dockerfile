@@ -52,6 +52,10 @@ COPY --from=builder /app/packages/db/prisma ./packages/db/prisma
 COPY --from=builder /app/packages/db/package.json ./packages/db/
 COPY --from=builder /app/package.json ./
 
+# Commit the image was built from; reported by GET /health as `commit`.
+ARG GIT_SHA=
+ENV GIT_SHA=${GIT_SHA}
+
 EXPOSE 3001
 
 CMD ["bun", "run", "apps/api/src/index.ts"]
