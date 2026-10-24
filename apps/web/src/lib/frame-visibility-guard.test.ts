@@ -329,14 +329,60 @@ describe('watchFrameVisibility', () => {
     expect(binding.allowed).toBe(false);
   });
 
-  test('a short frame: the action row below the fold is out of view and does not block', () => {
+  // The action row below the fold of a short frame: the owner scrolls inside
+  // the frame to reach it, and the delay runs from the moment it is in view.
+  const shortFrameEntries = (actionsTop: number, actionsInView: boolean) => [
+    viewEntry({ ...FULL, boundingClientRect: { width: 520, height: 600, top: 141, left: 0 }, intersectionRect: rect(520, 159) }),
+    actionsEntry(
+      actionsInView
+        ? { ...FULL, intersectionRect: rect(520, 108) }
+        : { ...FULL, isIntersecting: false, intersectionRatio: 0, isVisible: false, intersectionRect: rect(0, 0) },
+      actionsTop,
+    ),
+  ];
+
+  test('a short frame: the action row below the fold keeps Approve closed, however long it waits', () => {
     frameWindow.innerHeight = 300;
     const { binding, observer } = start();
-    observer.callback([
-      viewEntry({ ...FULL, boundingClientRect: { width: 520, height: 600, top: 141, left: 0 }, intersectionRect: rect(520, 159) }),
-      actionsEntry({ ...FULL, isIntersecting: false, intersectionRatio: 0, isVisible: false, intersectionRect: rect(0, 0) }, 520),
-    ]);
-    vi.advanceTimersByTime(VISIBILITY_ENABLE_DELAY_MS);
+    observer.callback(shortFrameEntries(520, false));
+    vi.advanceTimersByTime(VISIBILITY_ENABLE_DELAY_MS * 20);
+    expect(binding.allowed).toBe(false);
+  });
+
+  test('a target that is out of the frame stays closed for the whole delay after it comes into view', () => {
+    frameWindow.innerHeight = 300;
+    const { binding, observer, changes } = start();
+    observer.callback(shortFrameEntries(520, false));
+    // Long enough that an `out` target counted as visible would already have opened it.
+    vi.advanceTimersByTime(VISIBILITY_ENABLE_DELAY_MS * 5);
+    expect(binding.allowed).toBe(false);
+    // The owner scrolls the row into view; the delay starts now.
+    observer.callback(shortFrameEntries(180, true));
+    vi.advanceTimersByTime(VISIBILITY_ENABLE_DELAY_MS - 1);
+    expect(binding.allowed).toBe(false);
+    expect(binding.confirmNow()).toBe(false);
+    vi.advanceTimersByTime(1);
+    expect(binding.allowed).toBe(true);
+    expect(changes).toEqual([true]);
+  });
+
+  test('a frame with no size keeps Approve closed, and resizing it starts the delay from then', () => {
+    frameWindow.innerWidth = 0;
+    frameWindow.innerHeight = 0;
+    const { binding, observer } = start();
+    const empty = { ...FULL, isIntersecting: false, intersectionRatio: 0, isVisible: false, boundingClientRect: { width: 0, height: 0, top: 0, left: 0 }, intersectionRect: rect(0, 0) };
+    observer.callback([viewEntry(empty), actionsEntry(empty, 0)]);
+    vi.advanceTimersByTime(VISIBILITY_ENABLE_DELAY_MS * 20);
+    expect(binding.allowed).toBe(false);
+    // The frame is resized so the whole view is on screen.
+    frameWindow.innerWidth = 520;
+    frameWindow.innerHeight = 780;
+    showAll(observer);
+    expect(binding.allowed).toBe(false);
+    expect(binding.confirmNow()).toBe(false);
+    vi.advanceTimersByTime(VISIBILITY_ENABLE_DELAY_MS - 1);
+    expect(binding.allowed).toBe(false);
+    vi.advanceTimersByTime(1);
     expect(binding.allowed).toBe(true);
   });
 

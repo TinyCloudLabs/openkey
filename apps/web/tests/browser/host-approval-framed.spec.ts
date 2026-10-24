@@ -172,3 +172,46 @@ test('framed: a frame scrolled partly out of the embedding page closes it', asyn
   });
   await expect(frame.locator('button.approve')).toBeDisabled();
 });
+
+// The embedding page may size the frame to nothing, wait, and resize it later.
+// The delay runs from the moment the view is on screen, not before.
+async function approveCalls(page: Page): Promise<string[]> {
+  const harness = page.frames().find((frame) => frame.url().startsWith(HARNESS))!;
+  return harness.evaluate(() =>
+    ((window as unknown as { __openkeyParityHarness: { calls: Array<{ name: string }> } }).__openkeyParityHarness.calls).map((call) => call.name),
+  );
+}
+
+test('framed: a frame with no size stays closed, and resizing it starts the delay from then', async ({ page }) => {
+  await setUp(page, NODE_PEER);
+  await page.goto('http://localhost:5800/');
+  await page.evaluate(() => {
+    const ok = document.getElementById('ok')!;
+    ok.style.width = '0';
+    ok.style.height = '0';
+  });
+  const frame = page.frameLocator('#ok');
+  const approve = frame.locator('button.approve');
+  // Longer than the delay, with the node check finished: nothing is on screen.
+  await expect(frame.locator('.host-node-status[data-node-state="known"]')).toBeAttached();
+  await page.waitForTimeout(1500);
+  await expect(approve).toBeDisabled();
+
+  // Resize so Approve is on screen, and click it at once.
+  const resizedAt = Date.now();
+  await page.evaluate(() => {
+    const ok = document.getElementById('ok')!;
+    ok.style.width = '520px';
+    ok.style.height = '780px';
+  });
+  await expect(approve).toBeDisabled();
+  await approve.click({ force: true, timeout: 1000 }).catch(() => {});
+  expect(await approveCalls(page)).toEqual([]);
+
+  // It opens only after the delay has run from the resize.
+  await expect(approve).toBeEnabled();
+  expect(Date.now() - resizedAt).toBeGreaterThanOrEqual(600);
+  await approve.click();
+  // The harness transport prepares the preview first; either call is an approval.
+  await expect.poll(() => approveCalls(page)).toContain('requestPreview');
+});

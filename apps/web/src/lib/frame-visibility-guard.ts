@@ -8,9 +8,12 @@
 // Two parts of the view are watched: the whole view (the dialog) and its
 // action row. Each is `visible` (inside the frame and unobscured), `obscured`
 // (inside the frame but covered, faded, transformed or cropped by the
-// embedding page) or `out` (entirely outside the frame's own viewport, for
-// example scrolled away; it cannot be clicked until it is scrolled into view).
-// Only `obscured` blocks. Where the browser supports IntersectionObserver v2
+// embedding page) or `out` (entirely outside the frame's own viewport, or the
+// frame has no size). Only `visible` counts: Approve opens after both parts
+// have been `visible` together for the whole delay, and any other state closes
+// it and starts the delay again from the moment both are `visible`. A part
+// scrolled out of the frame is reached by scrolling inside the frame, and the
+// delay runs from then. Where the browser supports IntersectionObserver v2
 // (`trackVisibility`), `entry.isVisible` is what turns false when a target is
 // covered; `isIntersecting` stays true in that case. Without v2 only cropping
 // and scrolling away are detected.
@@ -200,7 +203,7 @@ export function watchFrameVisibility(
       const name = entry.target === targets.view ? 'view' : entry.target === targets.actions ? 'actions' : null;
       if (name === null) continue;
       const state = targetState(entry as VisibilityEntry, trackVisibility, { width: window.innerWidth, height: window.innerHeight });
-      guard.report(name, state !== 'obscured');
+      guard.report(name, state === 'visible');
     }
   }
 
