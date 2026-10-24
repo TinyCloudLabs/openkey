@@ -1,5 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { SiweMessage } from 'siwe';
+import { appKeyRefusalMessage } from './app-key-refusal';
 import {
   TINYCLOUD_DELEGATED_PATH,
   TINYCLOUD_DELEGATED_PATH_MAX_LENGTH,
@@ -435,6 +436,9 @@ export function deviceRequestPermissions(value: unknown): DevicePermission[] {
       encryptionEntries += 1;
       if (encryptionEntries > 1) throw scopeError('permissions allows one tinycloud.encryption entry');
       if (space !== 'default') throw scopeError(`${label}.space must be default for tinycloud.encryption`);
+      if (typeof path === 'string' && /^(?:apps(?:\/|$)|urn:tinycloud:encryption:)/i.test(path)) {
+        throw scopeError(appKeyRefusalMessage({ reason: 'apps_key' }, 'non_browser'));
+      }
       if (path !== '') throw scopeError(`${label}.path must be empty for tinycloud.encryption`);
       if (!Array.isArray(actions) || actions.length !== 1 || actions[0] !== 'tinycloud.encryption/decrypt') {
         throw scopeError(`${label}.actions must be exactly tinycloud.encryption/decrypt`);
