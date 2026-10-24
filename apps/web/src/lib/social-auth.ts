@@ -40,9 +40,10 @@ function browserPopupDependencies(): SocialPopupDependencies {
   };
 }
 
-export function socialPopupStartUrl(provider: SocialProviderId, origin: string): string {
+export function socialPopupStartUrl(provider: SocialProviderId, origin: string, action?: 'link'): string {
   const url = new URL('/auth/social/callback', origin);
   url.searchParams.set('provider', provider);
+  if (action) url.searchParams.set('action', action);
   return url.href;
 }
 
@@ -66,13 +67,14 @@ export function safeSocialAuthorizationUrl(
 export async function signInWithSocialPopup(
   provider: SocialProviderId,
   dependencies?: SocialPopupDependencies,
+  action?: 'link',
 ): Promise<string> {
   const deps = dependencies ?? browserPopupDependencies();
 
   // Open the same-origin starter page directly from the click. It initiates
   // Better Auth from the top-level popup so OAuth state cookies do not depend
   // on third-party cookie access from the embedding iframe.
-  const popup = deps.open(socialPopupStartUrl(provider, deps.origin));
+  const popup = deps.open(socialPopupStartUrl(provider, deps.origin, action));
   if (!popup) {
     throw new Error(`Your browser blocked the ${provider === 'google' ? 'Google' : 'Apple'} sign-in window. Allow popups, then try again.`);
   }

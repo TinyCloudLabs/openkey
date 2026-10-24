@@ -29,7 +29,7 @@
 
   // 'passkey' is the enrolment offer; 'passkeySignIn' and 'google' are native-mode landing steps.
   // 'newAccount' follows a verified code for an email with no account (TC-1114).
-  type Step = 'email' | 'otp' | 'newAccount' | 'passkey' | 'passkeySignIn' | 'google';
+  type Step = 'email' | 'otp' | 'newAccount' | 'socialNewAccount' | 'socialAccountExists' | 'passkey' | 'passkeySignIn' | 'google';
 
   // Native mode: the signed authorize query carries `tinycloud_request`, so the
   // sign-in is running in a system sheet opened by a native app.
@@ -38,7 +38,8 @@
   const passkeysSupported = passkeysSupportedFromParams($page.url.searchParams);
 
   function initialStep(): Step {
-    if (!native || native.socialError) return 'email';
+    if (!native) return 'email';
+    if (native.socialError) return $page.url.searchParams.has('continuation') ? 'google' : 'email';
     if (native.method === 'email' && native.hint) return 'otp';
     if (native.method === 'passkey' && passkeysSupported) return 'passkeySignIn';
     if (native.method === 'google') return 'google';
@@ -72,6 +73,8 @@
   // Proof of the verified code, spent only if the user creates the account.
   let signupToken = $state<string | null>(null);
   let creating = $state(false);
+  let socialContinuation = $state<string | null>(null);
+  let socialEmail = $state('');
 
   function getOAuthQuery(): string | undefined {
     return safeOAuthAuthorizeQuery($page.url.searchParams);
@@ -135,6 +138,28 @@
   // page load, and the code send is also keyed to the request in sessionStorage
   // so a reload never mails a second code.
   async function startNative(request: NonNullable<typeof native>) {
+    const token = $page.url.searchParams.get('continuation');
+    if (request.socialError && token) {
+      try {
+        const params = new URLSearchParams({ continuation: token, oauthQuery: request.signedQuery });
+        const response = await fetch(`${API_BASE}/api/auth/social/continuation?${params}`, {
+          credentials: 'include', headers: { Accept: 'application/json' },
+        });
+        if (!response.ok) throw new Error('This Google confirmation expired. Start sign-in again.');
+        const result = await response.json();
+        if (typeof result.email !== 'string'
+          || (result.outcome !== 'new_account' && result.outcome !== 'account_exists')) {
+          throw new Error('Invalid Google confirmation. Start sign-in again.');
+        }
+        socialContinuation = token;
+        socialEmail = result.email;
+        step = result.outcome === 'new_account' ? 'socialNewAccount' : 'socialAccountExists';
+      } catch (cause) {
+        error = cause instanceof Error ? cause.message : 'Google sign-in did not finish.';
+        step = 'email';
+      }
+      return;
+    }
     if (request.socialError) {
       error = 'Google sign-in did not finish. Continue with your email instead.';
       return;
@@ -280,6 +305,29 @@
     }
   }
 
+  async function createSocialAccount() {
+    if (!socialContinuation || !native) return;
+    loading = true;
+    creating = true;
+    error = '';
+    try {
+      const response = await fetch(`${API_BASE}/api/auth/social/confirm`, {
+        method: 'POST', credentials: 'include',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ continuation: socialContinuation, oauthQuery: native.signedQuery }),
+      });
+      const result = await response.json();
+      if (!response.ok || !result.token) throw new Error(result.message || 'Could not create your account.');
+      authClient.$store.notify('$sessionSignal');
+      handlePostSignIn();
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : 'Could not create your account.';
+    } finally {
+      loading = false;
+      creating = false;
+    }
+  }
+
   // Recovery is email sign-in plus a new passkey; it continues the OAuth
   // request or redirect this login page was serving.
   function recoverAccount() {
@@ -399,13 +447,41 @@
   }
 </script>
 
+<svelte:head>
+  <meta name="referrer" content="no-referrer" />
+</svelte:head>
+
 {#if native}
   <NativeShell clientId={native.clientId} heading={(name) => `Sign in to ${name}`}>
     {#if error}
       <div class="nb-error" role="alert">{error}</div>
     {/if}
 
-    {#if step === 'otp'}
+    {#if step === 'socialNewAccount'}
+      <p class="nb-lede">No OpenKey account for <strong>{socialEmail}</strong>.</p>
+      <p class="nb-lede">Create a new account, or use your existing sign-in method?</p>
+      <div class="nb-stack">
+        <button type="button" class="nb-button nb-primary" onclick={createSocialAccount} disabled={loading}>
+          {creating ? 'Creating account…' : 'Create a new account'}
+        </button>
+        {#if passkeysSupported}
+          <button type="button" class="nb-button" onclick={signInWithPasskey} disabled={loading}>Sign in with a passkey</button>
+          <button type="button" class="nb-button" onclick={recoverAccount} disabled={loading}>Recover your account</button>
+        {/if}
+        <button type="button" class="nb-link" onclick={() => { step = 'email'; email = ''; }}>Use a different email</button>
+      </div>
+    {:else if step === 'socialAccountExists'}
+      <p class="nb-lede">An OpenKey account already uses <strong>{socialEmail}</strong>.</p>
+      <p class="nb-lede">Sign in to it and verify with an email code to add Google in Settings.</p>
+      <div class="nb-stack">
+        <button type="button" class="nb-button nb-primary" onclick={() => { email = socialEmail; step = 'email'; }}>
+          Sign in to your account
+        </button>
+        {#if passkeysSupported}
+          <button type="button" class="nb-button" onclick={signInWithPasskey}>Sign in with a passkey</button>
+        {/if}
+      </div>
+    {:else if step === 'otp'}
       <p class="nb-lede">
         {#if codeSent}
           We sent a 6-digit code to <strong>{email}</strong>.

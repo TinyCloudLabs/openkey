@@ -69,7 +69,8 @@ pending, production deploy permits these reviewed additive migrations:
 `20261007_0002_native_preparation_host`,
 `20261007_0003_tinycloud_native_token_guard`,
 `20261012_0001_signin_polish_hints_branding`,
-`20261012_0002_native_session_proof_jti`, and
+`20261012_0002_native_session_proof_jti`,
+`20261015_0001_google_link_step_up`, and
 `20261016_0001_prepared_siwe_handoff`. The last migration only adds a table,
 indexes, and a foreign key; it does not alter existing tables. The deploy verifies their frozen
 SQL checksums, the exact pending set, the baseline marker, and the physical
@@ -79,6 +80,47 @@ the recorded checksums and physical schema, including the native preparation
 host column, sign-in hint and branding columns, and consent-withdrawal
 triggers. Any other pending migration fails closed. Once TC-488 is applied,
 deployments return to the full migration and schema-drift verification path.
+
+The `20261015_0001_google_link_step_up` migration runs as one transaction. It
+adds `session.lastEmailOtpAt` and the unique index
+`account_providerId_accountId_key` on `account("providerId", "accountId")`.
+Before `prisma migrate deploy`, the deploy script counts duplicate
+`("providerId", "accountId")` groups in `account` and stops when the count is
+above zero; the message carries only the count. Before the deploy window, run
+the same count against production:
+
+```sql
+SELECT count(*) FROM (
+  SELECT 1 FROM "account" GROUP BY "providerId", "accountId" HAVING count(*) > 1
+) AS duplicate_groups;
+```
+
+If the migration fails with `P3018`, nothing was applied: count the duplicate
+groups with the query above, resolve them, run
+`prisma migrate resolve --rolled-back 20261015_0001_google_link_step_up`, and
+redeploy. Never use `--applied`. The history then holds two rows for this
+migration (the rolled-back attempt and the finished one); the post-deploy check
+uses the finished row.
+
+A failed history row can still occur when `prisma migrate deploy` is run by
+hand without the count, or when a duplicate is inserted between the count and
+the index build. The previous image keeps serving and the schema is unchanged,
+and `P3009` stops every later deploy until that row is resolved as above.
+
+Rollback is an image-only redeploy: the previous image does not read the added
+column and ignores it. Redeploying an older commit stops at the migration step
+with "Production contains migration history absent from this checkout",
+because `_prisma_migrations` already records this migration. To revert the
+schema, together with a code revert that removes the migration directory:
+
+```sql
+BEGIN;
+DROP INDEX IF EXISTS "account_providerId_accountId_key";
+ALTER TABLE "session" DROP COLUMN IF EXISTS "lastEmailOtpAt";
+UPDATE "_prisma_migrations" SET rolled_back_at = now()
+  WHERE migration_name = '20261015_0001_google_link_step_up' AND rolled_back_at IS NULL;
+COMMIT;
+```
 
 The public native PAR endpoint validates the full request before allocating a
 row. An alert records when valid PAR volume reaches 10,000 requests per minute
@@ -187,6 +229,11 @@ Google and Apple must be configured with these exact production return URLs:
 
 - `https://api.openkey.so/api/auth/callback/google`
 - `https://api.openkey.so/api/auth/callback/apple`
+
+Google's explicit account-linking and new-account confirmation change the API
+and web together. Deploy both in one window after the reviewed migration is
+ready; the migration adds the session email-code timestamp and a unique
+provider/account identity index. This change does not enable Apple sign-in.
 
 Apple requires `APPLE_CLIENT_ID` to be the web Services ID. The API generates
 the ES256 client-secret JWT at runtime with a 180-day lifetime, below Apple's
