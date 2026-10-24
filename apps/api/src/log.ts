@@ -62,7 +62,7 @@ const EVENTS = {
   tinycloud_bootstrap_sweep_failed: true,
   tinycloud_bootstrap_space_registry_completed: true, native_par_valid_request_volume_threshold_reached: true,
   native_par_request_cleanup_failed: true, native_session_proof_cleanup_failed: true,
-  scoreboard_protocol_users_call: true, app_sign_in_record_failed: true,
+  scoreboard_protocol_users_call: true, app_sign_in_record_failed: true, permission_entry_unknown_field: true,
   third_party_console: true, uncaught_exception: true, unhandled_rejection: true, config_invalid: true,
   unlisted_event: true,
 } as const satisfies Record<string, true>;
@@ -127,6 +127,34 @@ export function logMetric(
   fields: { status?: number; count?: number },
 ): void {
   emit(level, event, { status: fields.status, count: fields.count });
+}
+
+const PERMISSION_FIELD_NAME = /^[A-Za-z0-9_.-]{1,64}$/;
+/** Distinct valid field names logged per request; further names are counted into one `other` line. */
+const PERMISSION_FIELD_NAME_CAP = 8;
+
+/**
+ * Logs the dropped `permissions[]` entry fields of one request, given each distinct field name with
+ * how many entries carried it. Field names only, never values. Per request: up to 8 valid names
+ * (first seen first), one `[invalid]` line for all non-conforming names (`count` = entries carrying
+ * them), and one `other` line whose `count` is the number of distinct valid names beyond the cap.
+ */
+export function logPermissionEntryUnknownFields(counts: ReadonlyMap<string, number>): void {
+  let logged = 0;
+  let overflow = 0;
+  let invalid = 0;
+  for (const [field, count] of counts) {
+    if (!PERMISSION_FIELD_NAME.test(field)) {
+      invalid += count;
+    } else if (logged < PERMISSION_FIELD_NAME_CAP) {
+      logged += 1;
+      emit('info', 'permission_entry_unknown_field', { field, count });
+    } else {
+      overflow += 1;
+    }
+  }
+  if (invalid > 0) emit('info', 'permission_entry_unknown_field', { field: '[invalid]', count: invalid });
+  if (overflow > 0) emit('info', 'permission_entry_unknown_field', { field: 'other', count: overflow });
 }
 
 export type RequestedSpaceHosted = 'yes' | 'no' | 'timeout';
