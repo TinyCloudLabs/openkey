@@ -1,6 +1,6 @@
 import type { Prisma } from '@openkey/db';
 import { TINYCLOUD_DELEGATION_SCOPE } from '../../oauth-config';
-import { TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS } from '../tinycloud-hosts';
+import { LOCAL_HOSTNAMES, TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS, localHostsAllowed } from '../tinycloud-hosts';
 import {
   TINYCLOUD_DELEGATED_PATH,
   TINYCLOUD_DELEGATED_PATH_MAX_LENGTH,
@@ -13,7 +13,6 @@ const SQL_ACTIONS = new Set(['read', 'write', 'schema']);
 const PATH_SEGMENT = /^[A-Za-z0-9._~@+=,:-]+$/;
 const APP_ID = /^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$/;
 const DNS_NAME = /^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/;
-const LOCAL_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]']);
 const MAX_LIST_ENTRIES = 32;
 export const DEFAULT_MAX_DELEGATION_TTL_SECONDS = 3600;
 export const DEFAULT_GRANT_LIFETIME_SECONDS = 30 * 24 * 60 * 60;
@@ -84,10 +83,6 @@ function seconds(value: unknown, label: string, min: number, max: number, fallba
     reject(`${label} must be an integer between ${min} and ${max} seconds`);
   }
   return resolved;
-}
-
-function localHostsAllowed(): boolean {
-  return process.env.NODE_ENV !== 'production' && process.env.TEE_MODE !== 'production';
 }
 
 function trustedHost(value: unknown, allowLocalHosts: boolean): string {
