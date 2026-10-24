@@ -37,7 +37,7 @@ export async function embedSendEmailOtp(
   });
   const body = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new Error(body?.message || body?.error || 'Failed to send code');
+    throw Object.assign(new Error(body?.message || body?.error || 'Failed to send code'), { code: body?.code });
   }
 }
 
