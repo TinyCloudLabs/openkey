@@ -1,0 +1,553 @@
+{
+  "description": "TC-1777 app-id vectors (node contract CN-9). SHARED by node, sdk-core and OpenKey: every implementation must pass ALL of them. appIdValid = validate ONLY (never lowercase, truncate or replace). appPrefix(id) = 'apps/' + id + '/'. prefixCovers(prefix,key) = key.startsWith(prefix) && key.length > prefix.length (plain byte compare; the trailing slash is significant). prefixCovers lists only grammar-valid key paths; keyPathsRefusedByGrammar lists paths refused by the key grammar itself (a prefix never covers them).",
+  "appIdRegex": "^[a-z0-9][a-z0-9._-]{0,63}$ (ASCII only; match the WHOLE string, a trailing newline fails)",
+  "appIdValid": [
+    {
+      "id": "a",
+      "valid": true
+    },
+    {
+      "id": "tinychat",
+      "valid": true
+    },
+    {
+      "id": "xyz.tinycloud.tinychat",
+      "valid": true
+    },
+    {
+      "id": "a-b.c",
+      "valid": true
+    },
+    {
+      "id": "0abc",
+      "valid": true
+    },
+    {
+      "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "valid": true
+    },
+    {
+      "id": "a.b.c",
+      "valid": true
+    },
+    {
+      "id": "a--b",
+      "valid": true
+    },
+    {
+      "id": "a..b",
+      "valid": true
+    },
+    {
+      "id": "x1",
+      "valid": true
+    },
+    {
+      "id": "foo_bar",
+      "valid": true
+    },
+    {
+      "id": "",
+      "valid": false,
+      "why": "empty"
+    },
+    {
+      "id": "Foo",
+      "valid": false,
+      "why": "uppercase is never lowercased (validate, do not transform)"
+    },
+    {
+      "id": "xyz.App",
+      "valid": false,
+      "why": "uppercase inside"
+    },
+    {
+      "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "valid": false,
+      "why": "65 chars"
+    },
+    {
+      "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "valid": false,
+      "why": "200 chars (old isAppId allowed 200)"
+    },
+    {
+      "id": "-foo",
+      "valid": false,
+      "why": "leading hyphen"
+    },
+    {
+      "id": ".foo",
+      "valid": false,
+      "why": "leading dot"
+    },
+    {
+      "id": "_foo",
+      "valid": false,
+      "why": "leading underscore"
+    },
+    {
+      "id": "foo/bar",
+      "valid": false,
+      "why": "slash"
+    },
+    {
+      "id": "foo/",
+      "valid": false,
+      "why": "trailing slash"
+    },
+    {
+      "id": "foo:bar",
+      "valid": false,
+      "why": "colon"
+    },
+    {
+      "id": "foo bar",
+      "valid": false,
+      "why": "space"
+    },
+    {
+      "id": " foo",
+      "valid": false,
+      "why": "leading space"
+    },
+    {
+      "id": "foo ",
+      "valid": false,
+      "why": "trailing space"
+    },
+    {
+      "id": "foo\n",
+      "valid": false,
+      "why": "trailing newline"
+    },
+    {
+      "id": "foö",
+      "valid": false,
+      "why": "non-ASCII letter (o with diaeresis)"
+    },
+    {
+      "id": "fоo",
+      "valid": false,
+      "why": "Cyrillic o homoglyph"
+    },
+    {
+      "id": "Kelvin",
+      "valid": false,
+      "why": "Kelvin sign U+212A"
+    },
+    {
+      "id": "foo​",
+      "valid": false,
+      "why": "zero width space"
+    },
+    {
+      "id": "foo%41",
+      "valid": false,
+      "why": "percent"
+    },
+    {
+      "id": "foo#x",
+      "valid": false,
+      "why": "hash"
+    },
+    {
+      "id": "foo?x",
+      "valid": false,
+      "why": "question mark"
+    },
+    {
+      "id": "foo\u0000",
+      "valid": false,
+      "why": "NUL"
+    },
+    {
+      "id": "İstanbul",
+      "valid": false,
+      "why": "dotted capital I"
+    },
+    {
+      "id": "foo\r",
+      "valid": false,
+      "why": "control char or fullwidth letter"
+    },
+    {
+      "id": "foo\t",
+      "valid": false,
+      "why": "control char or fullwidth letter"
+    },
+    {
+      "id": "ｆoo",
+      "valid": false,
+      "why": "control char or fullwidth letter"
+    },
+    {
+      "id": "xn--bcher-kva.example",
+      "valid": true
+    }
+  ],
+  "prefixCovers": [
+    {
+      "prefix": "apps/foo/",
+      "key": "apps/foo/x",
+      "covers": true
+    },
+    {
+      "prefix": "apps/foo/",
+      "key": "apps/foo/x/y",
+      "covers": true
+    },
+    {
+      "prefix": "apps/foo/",
+      "key": "apps/foo/x/y/z",
+      "covers": true
+    },
+    {
+      "prefix": "apps/foo/",
+      "key": "apps/foo",
+      "covers": false
+    },
+    {
+      "prefix": "apps/foo/",
+      "key": "apps/foobar/x",
+      "covers": false
+    },
+    {
+      "prefix": "apps/foo/",
+      "key": "apps/foo.bar/x",
+      "covers": false
+    },
+    {
+      "prefix": "apps/foo/",
+      "key": "apps/foo-bar/x",
+      "covers": false
+    },
+    {
+      "prefix": "apps/foo/",
+      "key": "apps/fo/x",
+      "covers": false
+    },
+    {
+      "prefix": "apps/foo/",
+      "key": "other/foo/x",
+      "covers": false
+    },
+    {
+      "prefix": "apps/foo/",
+      "key": "secrets/apps/foo/x",
+      "covers": false
+    },
+    {
+      "prefix": "apps/foo.bar/",
+      "key": "apps/foo.bar/x",
+      "covers": true
+    },
+    {
+      "prefix": "apps/foo_bar/",
+      "key": "apps/foo.bar/x",
+      "covers": false
+    },
+    {
+      "prefix": "apps/foo_bar/",
+      "key": "apps/foo-bar/x",
+      "covers": false
+    },
+    {
+      "prefix": "apps/foo_bar/",
+      "key": "apps/fooxbar/x",
+      "covers": false
+    },
+    {
+      "prefix": "apps/foo/x/",
+      "key": "apps/foo/x",
+      "covers": false
+    }
+  ],
+  "nodeKeyPathUnderApps": [
+    {
+      "keyPath": "apps/foo/x",
+      "accepted": true,
+      "why": "app key: apps/<id>/<name>"
+    },
+    {
+      "keyPath": "apps/foo/x/y",
+      "accepted": true,
+      "why": "deeper path"
+    },
+    {
+      "keyPath": "apps/foo",
+      "accepted": false,
+      "why": "only two segments under apps/: no key name"
+    },
+    {
+      "keyPath": "apps",
+      "accepted": false,
+      "why": "the reserved segment itself is not a key"
+    },
+    {
+      "keyPath": "apps/Foo/x",
+      "accepted": false,
+      "why": "uppercase segment fails the key grammar"
+    },
+    {
+      "keyPath": "apps/foo_bar/x",
+      "accepted": true,
+      "why": "underscore is in the segment class [a-z0-9._-]"
+    },
+    {
+      "keyPath": "apps/foo/x/",
+      "accepted": false,
+      "why": "trailing slash on a KEY path"
+    },
+    {
+      "keyPath": "secrets/x",
+      "accepted": true,
+      "why": "outside apps/: deterministic key, deletable must be false"
+    },
+    {
+      "keyPath": "appsx/y",
+      "accepted": true,
+      "why": "ordinary deterministic path (segment 1 is not exactly apps)"
+    },
+    {
+      "keyPath": "apps.x/y",
+      "accepted": true,
+      "why": "ordinary deterministic path"
+    }
+  ],
+  "keyPathsRefusedByGrammar": [
+    {
+      "keyPath": "apps/Foo/x",
+      "why": "not a valid key path (empty segment, uppercase, or trailing slash): refused before any prefix check; a prefix NEVER covers a path the grammar refuses"
+    },
+    {
+      "keyPath": "apps//x",
+      "why": "not a valid key path (empty segment, uppercase, or trailing slash): refused before any prefix check; a prefix NEVER covers a path the grammar refuses"
+    },
+    {
+      "keyPath": "apps/foo//x",
+      "why": "not a valid key path (empty segment, uppercase, or trailing slash): refused before any prefix check; a prefix NEVER covers a path the grammar refuses"
+    },
+    {
+      "keyPath": "apps/foo/",
+      "why": "not a valid key path (empty segment, uppercase, or trailing slash): refused before any prefix check; a prefix NEVER covers a path the grammar refuses"
+    }
+  ],
+  "prefixValid": [
+    {
+      "prefix": "apps/",
+      "valid": false
+    },
+    {
+      "prefix": "apps/foo/",
+      "valid": true
+    },
+    {
+      "prefix": "apps/foo/x/",
+      "valid": true
+    },
+    {
+      "prefix": "apps/Foo/",
+      "valid": false
+    },
+    {
+      "prefix": "apps/foo//",
+      "valid": false
+    },
+    {
+      "prefix": "appsx/",
+      "valid": true
+    },
+    {
+      "prefix": "apps.x/",
+      "valid": true
+    },
+    {
+      "prefix": "apps",
+      "valid": false
+    },
+    {
+      "prefix": "apps/foo",
+      "valid": false
+    }
+  ],
+  "deletePrefix": [
+    {
+      "prefix": "apps/foo/",
+      "accepted": true
+    },
+    {
+      "prefix": "apps/",
+      "accepted": false
+    },
+    {
+      "prefix": "apps/foo/x/",
+      "accepted": false
+    },
+    {
+      "prefix": "secrets/",
+      "accepted": false
+    },
+    {
+      "prefix": "apps/foo",
+      "accepted": false
+    }
+  ],
+  "createFlagMatchesPath": [
+    {
+      "keyPath": "apps/foo/x",
+      "deletable": false,
+      "accepted": false
+    },
+    {
+      "keyPath": "apps/foo/x",
+      "deletable": true,
+      "accepted": true
+    },
+    {
+      "keyPath": "secrets/x",
+      "deletable": true,
+      "accepted": false
+    },
+    {
+      "keyPath": "secrets/x",
+      "deletable": false,
+      "accepted": true
+    }
+  ],
+  "hostBinding": {
+    "rule": "origin must be https://<host>, default port, DNS name (no IP literal, no localhost, no trailing dot), lowercase A-label (WHATWG lowercasing applied first); R = host labels reversed joined by '.'; id bound iff id == R or id startsWith R + '.' | HOST SHAPE (added after the OpenKey scout): the host must have at least TWO labels (a single-label host such as `intranet` is NOT bound); the host is compared in its WHATWG A-label (punycode) ASCII form, lowercase; an id is bound iff it equals the reversed A-label host or starts with it plus '.'; a Unicode (U-label) id never matches: ids are ASCII by appIdValid.",
+    "cases": [
+      {
+        "origin": "https://listen.tinycloud.xyz",
+        "id": "xyz.tinycloud.listen",
+        "bound": true
+      },
+      {
+        "origin": "https://listen.tinycloud.xyz",
+        "id": "xyz.tinycloud.listen.digest",
+        "bound": true
+      },
+      {
+        "origin": "https://listen.tinycloud.xyz",
+        "id": "xyz.tinycloud",
+        "bound": false
+      },
+      {
+        "origin": "https://listen.tinycloud.xyz",
+        "id": "xyz.tinycloud.listenx",
+        "bound": false
+      },
+      {
+        "origin": "https://notes.tinycloud.xyz",
+        "id": "xyz.tinycloud.listen",
+        "bound": false
+      },
+      {
+        "origin": "https://alice.github.io",
+        "id": "io.github.bob.app",
+        "bound": false
+      },
+      {
+        "origin": "https://alice.github.io",
+        "id": "io.github.alice.app",
+        "bound": true
+      },
+      {
+        "origin": "https://listen.tinycloud.xyz:8443",
+        "id": "xyz.tinycloud.listen",
+        "bound": false
+      },
+      {
+        "origin": "http://listen.tinycloud.xyz",
+        "id": "xyz.tinycloud.listen",
+        "bound": false
+      },
+      {
+        "origin": "https://LISTEN.tinycloud.xyz",
+        "id": "xyz.tinycloud.listen",
+        "bound": true
+      },
+      {
+        "origin": "https://localhost",
+        "id": "localhost",
+        "bound": false
+      },
+      {
+        "origin": "https://127.0.0.1",
+        "id": "1.0.0.127",
+        "bound": false
+      },
+      {
+        "origin": "https://listen.tinycloud.xyz.",
+        "id": "xyz.tinycloud.listen",
+        "bound": false
+      },
+      {
+        "origin": "https://intranet",
+        "id": "intranet",
+        "bound": false
+      },
+      {
+        "origin": "https://xn--bcher-kva.example",
+        "id": "example.xn--bcher-kva",
+        "bound": true
+      },
+      {
+        "origin": "https://xn--bcher-kva.example",
+        "id": "example.bücher",
+        "bound": false
+      },
+      {
+        "origin": "https://bücher.example",
+        "id": "example.xn--bcher-kva",
+        "bound": true
+      },
+      {
+        "origin": "https://bücher.example",
+        "id": "example.bücher",
+        "bound": false
+      },
+      {
+        "origin": "https://a.b.example.com",
+        "id": "com.example.b.a",
+        "bound": true
+      },
+      {
+        "origin": "https://a.b.example.com",
+        "id": "com.example",
+        "bound": false
+      },
+      {
+        "origin": "https://example.com",
+        "id": "com.example",
+        "bound": true
+      },
+      {
+        "origin": "https://example.com",
+        "id": "com.example.app",
+        "bound": true
+      },
+      {
+        "origin": "https://EXAMPLE.com",
+        "id": "com.example.app",
+        "bound": true
+      }
+    ]
+  },
+  "deleteStatements": [
+    {
+      "owner": "did:pkh:eip155:1:0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed",
+      "network": "default",
+      "keyPath": "apps/foo/",
+      "statement": "Delete all TinyCloud keys under urn:tinycloud:encryption:did:pkh:eip155:1:0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed:default/apps/foo/. I further authorize the stated URI to perform the following actions on my behalf: (1) 'tinycloud.encryption': 'key.delete' for 'urn:tinycloud:encryption:did:pkh:eip155:1:0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed:default/apps/foo/'."
+    },
+    {
+      "owner": "did:pkh:eip155:1:0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed",
+      "network": "default",
+      "keyPath": "apps/foo/x",
+      "statement": "Delete the TinyCloud key urn:tinycloud:encryption:did:pkh:eip155:1:0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed:default/apps/foo/x. I further authorize the stated URI to perform the following actions on my behalf: (1) 'tinycloud.encryption': 'key.delete' for 'urn:tinycloud:encryption:did:pkh:eip155:1:0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed:default/apps/foo/x'."
+    }
+  ],
+  "deleteUriPrefix": "urn:tinycloud:encryption:key-delete:"
+}
