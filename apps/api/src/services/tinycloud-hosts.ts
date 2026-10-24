@@ -35,3 +35,21 @@ export function canonicalTrustedTinyCloudHost(raw: unknown, configuredHost: stri
   if (url.protocol !== 'https:' || url.origin !== candidate) return null;
   return TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS.has(candidate) ? configuredHost : null;
 }
+
+/**
+ * Whether OpenKey's server may send a session delegation to `raw` (TC-1949): an
+ * allowlisted TinyCloud node, or a loopback origin outside production.
+ */
+export function isKnownTinyCloudActivationHost(raw: unknown): boolean {
+  if (canonicalTrustedTinyCloudHost(raw, DEFAULT_TINYCLOUD_BOOTSTRAP_HOST) !== null) return true;
+  if (typeof raw !== 'string' || process.env.NODE_ENV === 'production') return false;
+  const origin = raw.endsWith('/') ? raw.slice(0, -1) : raw;
+  try {
+    const url = new URL(origin);
+    return (url.protocol === 'http:' || url.protocol === 'https:') &&
+      ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) &&
+      url.origin === origin;
+  } catch {
+    return false;
+  }
+}

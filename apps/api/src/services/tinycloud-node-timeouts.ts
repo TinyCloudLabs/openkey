@@ -1,4 +1,5 @@
 import { activateSessionWithHost, type SpaceHostResult } from '@tinycloud/sdk-core';
+import { isKnownTinyCloudActivationHost } from './tinycloud-hosts';
 
 // Every request OpenKey makes to the TinyCloud node on an approval is bounded, so a hung call
 // fails its run (and releases the setup lock) instead of holding an approval or the lock (TC-1608).
@@ -25,12 +26,16 @@ export function tinyCloudBootstrapNodeInvokeTimeoutMs(env: Record<string, string
  * The approval routes' own session activation, bounded like the setup's calls. sdk-core's
  * `activateSessionWithHost` takes no AbortSignal, so the wait is cut at the timeout and the request is
  * left to end on its own: it holds no lock and no state. A timeout rejects, which the routes already
- * report as `hostActivated: false` (the web page then activates on its own).
+ * report as `hostActivated: false` (the web page then activates on its own). Only known TinyCloud
+ * hosts are activated; any other host gets `success: false` without a request.
  */
 export async function activateSessionWithinTimeout(
   host: string,
   delegationHeader: { Authorization: string },
 ): Promise<SpaceHostResult> {
+  if (!isKnownTinyCloudActivationHost(host)) {
+    return { success: false, status: 0, error: 'Session activation only runs on known TinyCloud hosts.' };
+  }
   const signal = AbortSignal.timeout(tinyCloudBootstrapNodeCallTimeoutMs());
   const { promise: timedOut, reject } = Promise.withResolvers<never>();
   const onTimeout = () => reject(new Error('TinyCloud node session activation timed out.'));
