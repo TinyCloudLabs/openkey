@@ -180,8 +180,10 @@ if (!backend) {
 
       expect(response.status).toBe(403);
       expect(body.code).toBe('NEW_ACCOUNT_CONFIRMATION_REQUIRED');
-      expect(typeof body.signupToken).toBe('string');
       expect(Object.keys(body).sort()).toEqual(['code', 'message', 'signupToken', 'turnstileRequired']);
+      expect(body.message).toBe('No OpenKey account exists for this email.');
+      expect(body.turnstileRequired).toBe(true);
+      expect(body.signupToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
       expect(JSON.stringify(body)).not.toContain(email);
       expect(sessionCookie(response)).toBeUndefined();
       expect(await accountsFor(email)).toEqual({ users: 0, keys: 0 });
