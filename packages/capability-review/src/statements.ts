@@ -22,7 +22,7 @@ import {
   appKeyStatementText,
   type AppKeyAbility,
 } from "./copy.js";
-import { APPS_SEGMENT, isAppsKeyResource, parseKeyResource } from "./key-resource.js";
+import { isAppsKeyResource, parseKeyResource } from "./key-resource.js";
 import { isMetadataOnlyAccess } from "./action-semantics.js";
 import {
   CANONICAL_APP_SCOPE_SECRET_ABILITIES,
@@ -569,7 +569,7 @@ function appKeyStatements(grant: CapabilityGrant): StatementEntry[] | null {
   const resource = resourceOf(grant);
   if (!isAppsKeyResource(resource)) return null;
   const parsed = parseKeyResource(resource);
-  if (!parsed || parsed.keyPath.split("/")[0] !== APPS_SEGMENT) return [fallbackStatement(grant)];
+  if (!parsed) return [fallbackStatement(grant)];
   const target = {
     path: parsed.isPrefix ? `${parsed.keyPath}/` : parsed.keyPath,
     isPrefix: parsed.isPrefix,
