@@ -276,8 +276,11 @@ whole-value replacement as the admin PATCH). A ceiling update changes only
 `tinycloudNativeDelegation`. For a client that already has a ceiling, `appId`
 and `siweDomain` are kept from the stored value: a value supplied for either
 must equal the stored one (accepted as a no-op), so a ceiling copied from the
-stored value works as it is, and a different value is refused. `tinycloudHost`
-must equal the stored host. A client that has no ceiling yet takes its `appId`
+stored value works as it is, and a different value is refused. An absent stored
+`siweDomain` counts as `openkey.so`: supplying `openkey.so` is accepted and the
+written value stays without a `siweDomain`; any other value is refused.
+`tinycloudHost` must equal the stored host. A client that has no ceiling yet
+takes its `appId`
 from the value. The run prints the BEFORE and AFTER ceiling, the kept `appId`
 and `siweDomain` (with a note when a supplied value equalled them), and the
 entry-level diff. Added entries are applied. A value that removes an existing

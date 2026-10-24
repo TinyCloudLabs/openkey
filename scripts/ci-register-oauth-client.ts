@@ -32,7 +32,9 @@
  *   replaces the stored tinycloudNativeDelegation; no other column changes. For
  *   a client that already has a ceiling, appId and siweDomain are kept from the
  *   stored value: a supplied value must equal the stored one (accepted as a
- *   no-op) and a different one is refused, as is a different tinycloudHost.
+ *   no-op) and a different one is refused, as is a different tinycloudHost. An
+ *   absent stored siweDomain counts as openkey.so: supplying openkey.so is
+ *   accepted and the written value stays without one; any other value is refused.
  *   The BEFORE and AFTER ceilings, the kept values and the entry-level diff are
  *   printed (ceiling config only). Adding entries is allowed. A value that
  *   removes a kv path, sql database or action, or reduces a limit, is refused
