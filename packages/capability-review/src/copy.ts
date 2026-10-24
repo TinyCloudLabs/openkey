@@ -36,6 +36,7 @@ export const FAMILY_LABEL: Record<CapabilityFamily, string> = {
   "secret-mutation": "Named secret (mutate)",
   "encryption-key": "Encryption key material",
   "encryption-decrypt": "Decrypt encrypted content",
+  "app-keys": "App keys",
   "space-create": "Create a space",
   "space-read": "Space details",
   hooks: "Change notifications",
@@ -52,6 +53,64 @@ export const FAMILY_LABEL: Record<CapabilityFamily, string> = {
  */
 export const DECRYPT_DEFAULT_KEY_STATEMENT =
   "Decrypt anything encrypted with your account's default key — including your Secrets and every private share — whenever this app gets hold of the encrypted copy, until this access expires.";
+
+/** The abilities an app key grant can name, in the order their rows are shown. */
+export const APP_KEY_ABILITIES = [
+  "key.create",
+  "decrypt",
+  "key.block",
+  "key.unblock",
+  "key.delete",
+] as const;
+
+export type AppKeyAbility = (typeof APP_KEY_ABILITIES)[number];
+
+/**
+ * Consent copy for one ability on an app key (an exact key) or an app key
+ * prefix. `path` is the key path, or the prefix with its trailing `/`; the
+ * text between backticks is shown in monospace.
+ */
+export function appKeyStatementText(
+  ability: AppKeyAbility,
+  target: { path: string; isPrefix: boolean },
+): string {
+  const path = `\`${target.path}\``;
+  switch (ability) {
+    case "key.create":
+      return target.isPrefix
+        ? `Create new encryption keys under ${path}.`
+        : `Create the encryption key ${path}.`;
+    case "decrypt":
+      return target.isPrefix
+        ? `Decrypt data locked with any key under ${path}.`
+        : `Decrypt data locked with the key ${path}.`;
+    case "key.block":
+      return target.isPrefix
+        ? `Block any key under ${path} so it can't be used to decrypt.`
+        : `Block the key ${path} so it can't be used to decrypt.`;
+    case "key.unblock":
+      return target.isPrefix
+        ? `Unblock any key under ${path} so it can be used again.`
+        : `Unblock the key ${path} so it can be used again.`;
+    case "key.delete":
+      return `Delete the key ${path}. Apps can't be given this permission.`;
+  }
+}
+
+export const APP_KEY_ACCESS_WITHOUT_EXPIRY = "This access lasts until it expires.";
+
+/**
+ * Standing-access line for app-key decrypt. `expiry` is the signed SIWE
+ * `Expiration Time`. `formatExpiry` turns it into the text shown; without one
+ * the signed value is shown as written.
+ */
+export function appKeyAccessStatement(
+  expiry: string | null,
+  formatExpiry: (expiry: string) => string = (value) => value,
+): string {
+  if (expiry === null || Number.isNaN(Date.parse(expiry))) return APP_KEY_ACCESS_WITHOUT_EXPIRY;
+  return `This access lasts until ${formatExpiry(expiry)}.`;
+}
 
 export const PROTOCOL_HEADLINE: Record<RequestProtocol, string> = {
   "legacy-message": "Sign message",
