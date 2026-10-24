@@ -44,7 +44,7 @@ on:
         description: 'Native delegation ceiling JSON (optional). With client_id it is the full replacement ceiling, e.g. {"version":1,"appId":"com.example.app","tinycloudHost":"https://tee.node.tinycloud.xyz","kv":{"paths":["com.example.app/data/"],"actions":["get","put"]},"sql":null}'
         required: false
       dry_run:
-        description: 'Ceiling update only: print BEFORE, AFTER and the diff and write nothing (default true; set false to apply)'
+        description: 'Ceiling update only: the ceiling is written only when this is false; otherwise BEFORE, AFTER and the diff are printed and nothing is written (default true)'
         required: false
         type: boolean
         default: true
@@ -94,9 +94,10 @@ jobs:
           bun install --frozen-lockfile
           bun node_modules/.bin/prisma generate --schema=./packages/db/prisma/schema.prisma
           # dry_run and allow_narrow apply to ceiling updates (client_id with a ceiling) only.
+          # The script writes a ceiling only with --apply, passed only when dry_run is exactly "false".
           args=()
           if [ -n "$CLIENT_ID" ] && [ -n "$CLIENT_TINYCLOUD_NATIVE_DELEGATION" ]; then
-            if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+            if [ "$DRY_RUN" = "false" ]; then args+=(--apply); fi
             if [ "$ALLOW_NARROW" = "true" ]; then args+=(--allow-narrow); fi
           fi
           bun run scripts/ci-register-oauth-client.ts "${args[@]}"

@@ -277,10 +277,19 @@ ceiling and the entry-level diff. Added entries are applied. A value that
 removes an existing kv path, sql database or action, or reduces a limit or
 changes `appId`, `tinycloudHost` or `siweDomain`, is refused with the entries
 listed unless `allow_narrow` is set (`--allow-narrow` on the command line).
-`dry_run` (default `true` in the workflow; `--dry-run` on the command line)
-prints the same output and writes nothing. Branding, redirect URI, type and
-website values cannot be combined with a ceiling update. For example,
-`CLIENT_ID=<id> CLIENT_TINYCLOUD_NATIVE_DELEGATION="$(cat ceiling.json)" bun scripts/ci-register-oauth-client.ts --dry-run`.
+A ceiling update is a dry run unless it is applied explicitly: the script
+writes only with `--apply`, and the workflow passes `--apply` only when
+`dry_run` is exactly `false` (default `true`; an empty or any other value is a
+dry run). A dry run prints the same output and writes nothing. Branding,
+redirect URI, type and website values cannot be combined with a ceiling update.
+For example, a dry run, then the write, from the command line:
+`gh workflow run register-oauth-client.yml --repo TinyCloudLabs/openkey -f client_id=<id> -f tinycloud_native_delegation="$(cat ceiling.json)"`
+and the same with `-f dry_run=false` added. Set only `client_id`,
+`tinycloud_native_delegation` and optionally `dry_run` (and `allow_narrow`); do
+not set `type` or `name`, because the web form preselects `native` and the
+script refuses a ceiling update that carries `type` or `name`. Running the
+script directly: `CLIENT_ID=<id> CLIENT_TINYCLOUD_NATIVE_DELEGATION="$(cat ceiling.json)" bun scripts/ci-register-oauth-client.ts`
+(add `--apply` to write).
 
 On success OpenKey stores a `PENDING` request holding the public JWK, its
 thumbprint `sessionJkt` ([Session key thumbprint](#session-key-thumbprint)),

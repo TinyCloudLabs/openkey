@@ -173,7 +173,7 @@ export async function updateNativeCeiling(
   }
 
   if (options.dryRun) {
-    log('DRY RUN: nothing written.');
+    log('DRY RUN: nothing written. Pass --apply (workflow dry_run=false) to write.');
     return { outcome: 'dry-run', before, after, diff };
   }
 

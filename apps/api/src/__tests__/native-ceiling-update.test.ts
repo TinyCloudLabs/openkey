@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { PGlite } from '@electric-sql/pglite';
 import { PrismaPGlite } from 'pglite-prisma-adapter';
 import { PrismaClient, type OauthClient } from '@openkey/db';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -68,6 +68,16 @@ const EXO_CEILING = {
   kv: { ...DOC_CEILING.kv, paths: [...DOC_CEILING.kv.paths, ...EXO_KV] },
   sql: { ...DOC_CEILING.sql, databases: [...DOC_CEILING.sql.databases, ...EXO_SQL] },
 };
+
+// Records the client id of every UPDATE the database sees on oauth_client.
+const UPDATE_AUDIT_SQL = `
+  CREATE TABLE tc1990_update_audit (client_id text NOT NULL);
+  CREATE FUNCTION tc1990_record_update() RETURNS trigger AS $$
+  BEGIN INSERT INTO tc1990_update_audit (client_id) VALUES (OLD."clientId"); RETURN NEW; END
+  $$ LANGUAGE plpgsql;
+  CREATE TRIGGER tc1990_record_update AFTER UPDATE ON "oauth_client"
+    FOR EACH ROW EXECUTE FUNCTION tc1990_record_update();
+`;
 
 async function migratedDatabase(database: PGlite) {
   const directory = join(root, 'packages/db/prisma/migrations');
@@ -151,14 +161,7 @@ describe('native ceiling update (PGlite, tracked migrations)', () => {
     database = new PGlite();
     databases.push(database);
     await migratedDatabase(database);
-    await database.exec(`
-      CREATE TABLE tc1990_update_audit (client_id text NOT NULL);
-      CREATE FUNCTION tc1990_record_update() RETURNS trigger AS $$
-      BEGIN INSERT INTO tc1990_update_audit (client_id) VALUES (OLD."clientId"); RETURN NEW; END
-      $$ LANGUAGE plpgsql;
-      CREATE TRIGGER tc1990_record_update AFTER UPDATE ON "oauth_client"
-        FOR EACH ROW EXECUTE FUNCTION tc1990_record_update();
-    `);
+    await database.exec(UPDATE_AUDIT_SQL);
     prisma = new PrismaClient({ adapter: new PrismaPGlite(database) });
     databases.push({ close: () => prisma.$disconnect() });
   }, 120_000);
@@ -453,6 +456,7 @@ describe('ci-register-oauth-client.ts', () => {
     const database = new PGlite(directory);
     try {
       await migratedDatabase(database);
+      await database.exec(UPDATE_AUDIT_SQL);
     } finally {
       await database.close();
     }
@@ -464,53 +468,85 @@ describe('ci-register-oauth-client.ts', () => {
     CLIENT_TINYCLOUD_NATIVE_DELEGATION: JSON.stringify(ceiling),
   });
 
-  test('--dry-run prints BEFORE/AFTER and the diff and leaves the row alone', async () => {
+  /** How many UPDATE statements the database has seen for this client. */
+  async function updatesOf(clientId: string) {
+    const rows = await withDatabase((prisma) => prisma.$queryRawUnsafe<Array<{ count: number }>>(
+      'SELECT count(*)::int AS count FROM tc1990_update_audit WHERE client_id = $1', clientId,
+    ));
+    return rows[0]!.count;
+  }
+
+  async function storedOf(clientId: string) {
+    return withDatabase((prisma) => prisma.oauthClient.findUniqueOrThrow({ where: { clientId } }));
+  }
+
+  test.each([[[]], [['--dry-run']]])('arguments %p print BEFORE/AFTER and the diff and issue no UPDATE', async (args) => {
     const client = await withDatabase((prisma) => seedClient(prisma));
-    const result = await script(['--dry-run'], ceilingEnv(client.clientId, EXO_CEILING));
+    const result = await script(args, ceilingEnv(client.clientId, EXO_CEILING));
     expect(result.exitCode, result.stderr).toBe(0);
     expect(result.stdout).toContain('BEFORE:');
     expect(result.stdout).toContain('AFTER:');
     expect(result.stdout).toContain(`  + kv.paths: ${EXO_KV[0]}`);
     expect(result.stdout).toContain('DRY RUN: nothing written');
+    expect(result.stdout).not.toContain('Written.');
     expect(result.stdout + result.stderr).not.toContain(directory);
-    const stored = await withDatabase((prisma) => prisma.oauthClient.findUniqueOrThrow({ where: { clientId: client.clientId } }));
-    expect(stored).toEqual(client);
+    expect(await storedOf(client.clientId)).toEqual(client);
+    expect(await updatesOf(client.clientId)).toBe(0);
   }, 120_000);
 
-  test('without --dry-run the ceiling is replaced and read back', async () => {
+  test('--apply replaces the ceiling and reads it back', async () => {
     const client = await withDatabase((prisma) => seedClient(prisma));
-    const result = await script([], ceilingEnv(client.clientId, EXO_CEILING));
+    const result = await script(['--apply'], ceilingEnv(client.clientId, EXO_CEILING));
     expect(result.exitCode, result.stderr).toBe(0);
     expect(result.stdout).toContain('Written. The stored ceiling matches AFTER.');
     expect(result.stdout).toContain(`CLIENT_ID=${client.clientId}`);
-    const stored = await withDatabase((prisma) => prisma.oauthClient.findUniqueOrThrow({ where: { clientId: client.clientId } }));
+    const stored = await storedOf(client.clientId);
     expect(sortedJson(stored.tinycloudNativeDelegation)).toBe(sortedJson(EXO_CEILING));
+    expect(await updatesOf(client.clientId)).toBe(1);
   }, 120_000);
 
-  test('a removal exits non-zero without --allow-narrow and applies with it', async () => {
+  test('--apply and --dry-run together are refused and write nothing', async () => {
+    const client = await withDatabase((prisma) => seedClient(prisma));
+    const result = await script(['--apply', '--dry-run'], ceilingEnv(client.clientId, EXO_CEILING));
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('--apply and --dry-run cannot be combined');
+    expect(await storedOf(client.clientId)).toEqual(client);
+    expect(await updatesOf(client.clientId)).toBe(0);
+  }, 120_000);
+
+  test('a removal exits non-zero without --allow-narrow, and --apply with it writes', async () => {
     const client = await withDatabase((prisma) => seedClient(prisma));
     const narrower = { ...DOC_CEILING, sql: null };
-    const refused = await script([], ceilingEnv(client.clientId, narrower));
-    expect(refused.exitCode).toBe(1);
-    expect(refused.stderr).toContain(`  - sql.databases: ${APP}/canvas`);
-    expect(refused.stderr).toContain('--allow-narrow');
-    const unchanged = await withDatabase((prisma) => prisma.oauthClient.findUniqueOrThrow({ where: { clientId: client.clientId } }));
-    expect(unchanged).toEqual(client);
+    for (const args of [[], ['--apply']]) {
+      const refused = await script(args, ceilingEnv(client.clientId, narrower));
+      expect(refused.exitCode).toBe(1);
+      expect(refused.stderr).toContain(`  - sql.databases: ${APP}/canvas`);
+      expect(refused.stderr).toContain('--allow-narrow');
+      expect(await storedOf(client.clientId)).toEqual(client);
+    }
 
-    const applied = await script(['--allow-narrow'], ceilingEnv(client.clientId, narrower));
+    const allowedDry = await script(['--allow-narrow'], ceilingEnv(client.clientId, narrower));
+    expect(allowedDry.exitCode, allowedDry.stderr).toBe(0);
+    expect(allowedDry.stdout).toContain('DRY RUN: nothing written');
+    expect(await updatesOf(client.clientId)).toBe(0);
+
+    const applied = await script(['--allow-narrow', '--apply'], ceilingEnv(client.clientId, narrower));
     expect(applied.exitCode, applied.stderr).toBe(0);
-    const stored = await withDatabase((prisma) => prisma.oauthClient.findUniqueOrThrow({ where: { clientId: client.clientId } }));
+    const stored = await storedOf(client.clientId);
     expect(validateNativeDelegationConfig(stored.tinycloudNativeDelegation, stored).sql).toBeNull();
-  }, 180_000);
+    expect(await updatesOf(client.clientId)).toBe(1);
+  }, 240_000);
 
   test('a ceiling cannot be combined with branding fields, and the flags need a ceiling', async () => {
     const client = await withDatabase((prisma) => seedClient(prisma));
     const combined = await script([], { ...ceilingEnv(client.clientId, EXO_CEILING), CLIENT_ICON: 'https://example.test/icon.png' });
     expect(combined.exitCode).toBe(1);
     expect(combined.stderr).toContain('remove CLIENT_ICON');
-    const flagOnly = await script(['--dry-run'], { CLIENT_ID: client.clientId, CLIENT_ICON: 'https://example.test/icon.png' });
-    expect(flagOnly.exitCode).toBe(1);
-    expect(flagOnly.stderr).toContain('apply to ceiling updates only');
+    for (const flag of ['--apply', '--dry-run']) {
+      const flagOnly = await script([flag], { CLIENT_ID: client.clientId, CLIENT_ICON: 'https://example.test/icon.png' });
+      expect(flagOnly.exitCode).toBe(1);
+      expect(flagOnly.stderr).toContain('apply to ceiling updates only');
+    }
     const unknown = await script(['--force'], ceilingEnv(client.clientId, EXO_CEILING));
     expect(unknown.exitCode).toBe(1);
     expect(unknown.stderr).toContain('Unknown argument: --force');
@@ -534,4 +570,87 @@ describe('ci-register-oauth-client.ts', () => {
     const createdRow = await withDatabase((prisma) => prisma.oauthClient.findFirst({ where: { name } }));
     expect(createdRow?.tinycloudNativeDelegation).toBeNull();
   }, 180_000);
+});
+
+// TC-1990: the workflow's own "Register client" shell step, run with `bun` stubbed
+// to record its arguments, decides whether the script is told to write.
+describe('register-oauth-client.yml dry_run mapping', () => {
+  const workflow = readFileSync(join(root, '.github/workflows/register-oauth-client.yml'), 'utf8');
+  const stubDirectory = join(workDir, 'stub-bin');
+
+  function registerStepScript() {
+    const lines = workflow.split('\n');
+    const start = lines.findIndex((line) => line.trim() === '- name: Register client');
+    const run = lines.findIndex((line, index) => index > start && line.trim() === 'run: |');
+    expect(start).toBeGreaterThan(-1);
+    expect(run).toBeGreaterThan(start);
+    const indent = lines[run]!.indexOf('run:') + 2;
+    const body: string[] = [];
+    for (const line of lines.slice(run + 1)) {
+      if (line.trim() !== '' && line.search(/\S/) < indent) break;
+      body.push(line.slice(indent));
+    }
+    return body.join('\n');
+  }
+
+  /** The arguments the step passes to scripts/ci-register-oauth-client.ts. */
+  async function scriptArguments(env: Record<string, string>) {
+    const log = join(workDir, `stub-${sequence += 1}.log`);
+    const child = Bun.spawn([Bun.which('bash') ?? '/bin/bash', '-e', '-c', registerStepScript()], {
+      cwd: workDir,
+      env: { PATH: `${stubDirectory}:/usr/bin:/bin`, HOME: workDir, DATABASE_URL: 'stub-not-a-real-url', STUB_LOG: log, ...env },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const [stderr, exitCode] = await Promise.all([new Response(child.stderr).text(), child.exited]);
+    expect(exitCode, stderr).toBe(0);
+    const invocation = readFileSync(log, 'utf8').split('\n').filter((line) => line.includes('ci-register-oauth-client.ts'));
+    expect(invocation).toHaveLength(1);
+    return invocation[0]!.split('ci-register-oauth-client.ts')[1]!.trim().split(' ').filter(Boolean);
+  }
+
+  beforeAll(() => {
+    expect(process.env.HOME).toBe(workDir);
+    expect(process.env.HOME).not.toBe(realHome);
+    mkdirSync(stubDirectory);
+    writeFileSync(join(stubDirectory, 'bun'), '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$STUB_LOG"\n');
+    chmodSync(join(stubDirectory, 'bun'), 0o755);
+  });
+
+  const ceiling = { CLIENT_ID: 'ok_tc1990_mapping', CLIENT_TINYCLOUD_NATIVE_DELEGATION: '{"version":1}' };
+
+  test.each([
+    ['false', ['--apply']],
+    ['true', []],
+    ['', []],
+    ['False', []],
+    ['FALSE', []],
+    [' false', []],
+    ['0', []],
+    ['no', []],
+    ['maybe', []],
+  ])('a ceiling update with dry_run %p passes %p', async (dryRun, expected) => {
+    expect(await scriptArguments({ ...ceiling, DRY_RUN: dryRun })).toEqual(expected);
+  });
+
+  test('a ceiling update without a dry_run value passes no write flag', async () => {
+    expect(await scriptArguments({ ...ceiling })).toEqual([]);
+  });
+
+  test.each([
+    ['false', 'true', ['--apply', '--allow-narrow']],
+    ['true', 'true', ['--allow-narrow']],
+    ['false', 'false', ['--apply']],
+    ['false', '', ['--apply']],
+    ['false', 'yes', ['--apply']],
+  ])('dry_run %p with allow_narrow %p passes %p', async (dryRun, allowNarrow, expected) => {
+    expect(await scriptArguments({ ...ceiling, DRY_RUN: dryRun, ALLOW_NARROW: allowNarrow })).toEqual(expected);
+  });
+
+  test('create and branding runs never receive a flag, whatever dry_run says', async () => {
+    const flags = { DRY_RUN: 'false', ALLOW_NARROW: 'true' };
+    expect(await scriptArguments({ ...flags, CLIENT_NAME: 'App' })).toEqual([]);
+    expect(await scriptArguments({ ...flags, CLIENT_TINYCLOUD_NATIVE_DELEGATION: '{"version":1}' })).toEqual([]);
+    expect(await scriptArguments({ ...flags, CLIENT_ID: 'ok_tc1990_mapping', CLIENT_ICON: 'https://example.test/i.png' })).toEqual([]);
+  });
 });

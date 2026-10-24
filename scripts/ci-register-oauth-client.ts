@@ -34,7 +34,11 @@
  *   allowed. A value that removes an entry, or reduces a limit, is refused
  *   unless --allow-narrow is passed. It cannot be combined with branding,
  *   redirect URI, type or website values.
- *   --dry-run             Print BEFORE, AFTER and the diff; write nothing.
+ *   A ceiling update is a dry run unless --apply is passed: without it the
+ *   BEFORE, AFTER and diff are printed and nothing is written.
+ *   --apply               Write the ceiling.
+ *   --dry-run             Same as passing neither flag (accepted for clarity);
+ *                         cannot be combined with --apply.
  *   --allow-narrow        Permit a ceiling that removes or reduces entries.
  *
  * Idempotent: if an active client with the same name already exists, it is
@@ -115,10 +119,12 @@ function sameNativeDelegationConfig(
   }
 }
 
-function cliFlags(args: string[]): { dryRun: boolean; allowNarrow: boolean } {
-  const unknown = args.filter((arg) => arg !== '--dry-run' && arg !== '--allow-narrow');
+function cliFlags(args: string[]): { apply: boolean; dryRun: boolean; allowNarrow: boolean } {
+  const unknown = args.filter((arg) => arg !== '--apply' && arg !== '--dry-run' && arg !== '--allow-narrow');
   if (unknown.length > 0) throw new Error(`Unknown argument: ${unknown.join(' ')}`);
-  return { dryRun: args.includes('--dry-run'), allowNarrow: args.includes('--allow-narrow') };
+  const flags = { apply: args.includes('--apply'), dryRun: args.includes('--dry-run'), allowNarrow: args.includes('--allow-narrow') };
+  if (flags.apply && flags.dryRun) throw new Error('--apply and --dry-run cannot be combined');
+  return flags;
 }
 
 async function main() {
@@ -142,15 +148,15 @@ async function main() {
     await updateNativeCeiling(prisma, {
       clientId: clientIdToUpdate,
       rawCeiling: ceilingInput,
-      dryRun: flags.dryRun,
+      dryRun: !flags.apply,
       allowNarrow: flags.allowNarrow,
       log: (line) => console.log(line),
     });
     console.log(`CLIENT_ID=${clientIdToUpdate}`);
     return;
   }
-  if (flags.dryRun || flags.allowNarrow) {
-    throw new Error('--dry-run and --allow-narrow apply to ceiling updates only (CLIENT_ID with CLIENT_TINYCLOUD_NATIVE_DELEGATION)');
+  if (flags.apply || flags.dryRun || flags.allowNarrow) {
+    throw new Error('--apply, --dry-run and --allow-narrow apply to ceiling updates only (CLIENT_ID with CLIENT_TINYCLOUD_NATIVE_DELEGATION)');
   }
   const name = clientIdToUpdate ? process.env.CLIENT_NAME?.trim() || undefined : required('CLIENT_NAME');
   if (clientIdToUpdate) {
