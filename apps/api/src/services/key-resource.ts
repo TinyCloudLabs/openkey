@@ -86,9 +86,27 @@ export function keyPathOfResource(uri: string): string | null {
   return slash < 0 ? null : uri.slice(slash + 1);
 }
 
-/** Is this resource shaped like a key or prefix whose first segment is `apps`? */
+// The space-path form of an encryption resource: a space resource whose service
+// segment is `encryption` or `tinycloud.encryption`, in any space, then a path.
+// `<space>/encryption` with no path names no key and does not match.
+const SPACE_PATH_RESOURCE = /^tinycloud:[^/]*\/(?:tinycloud\.)?encryption\/(.*)$/is;
+
+/**
+ * The key path of a resource in either form: the text after the network of a
+ * key URN (`keyPathOfResource`), or the path after the service segment of a
+ * space resource. `null` when the resource has neither shape.
+ */
+export function keyPathOfAnyResource(uri: string): string | null {
+  const match = SPACE_PATH_RESOURCE.exec(uri);
+  return match ? match[1]! : keyPathOfResource(uri);
+}
+
+/**
+ * Is this resource shaped like a key or prefix whose first segment is `apps`,
+ * in either form? The comparison is case-insensitive.
+ */
 export function isAppsKeyResource(uri: string): boolean {
-  const path = keyPathOfResource(uri);
+  const path = keyPathOfAnyResource(uri);
   if (path === null) return false;
   const slash = path.indexOf("/");
   return (slash < 0 ? path : path.slice(0, slash)).toLowerCase() === APPS_SEGMENT;
