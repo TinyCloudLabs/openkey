@@ -1550,6 +1550,7 @@ delegateRouter.post('/', async (c) => {
       }
       if (!hostActivated) {
         log('warn', 'delegate_session_activation_warning');
+        if (activationResult.hostNotKnown) spaceReadiness = { spaceReady: false };
       }
     } catch (e) {
       logError('warn', 'delegate_session_activation_failed', e);
@@ -1646,6 +1647,7 @@ delegateRouter.post('/', async (c) => {
     }
     if (!hostActivated) {
       log('warn', 'delegate_session_activation_warning');
+      if (activationResult.hostNotKnown) spaceReadiness = { spaceReady: false };
     }
   } catch (e) {
     logError('warn', 'delegate_session_activation_failed', e);
@@ -2191,6 +2193,7 @@ delegateRouter.post('/complete', async (c) => {
     if (hostActivated) spaceReady = !activationResult.skipped?.includes(spaceId);
     if (!hostActivated) {
       log('warn', 'delegate_session_activation_warning');
+      if (activationResult.hostNotKnown) spaceReady = false;
     }
   } catch (e) {
     logError('warn', 'delegate_session_activation_failed', e);

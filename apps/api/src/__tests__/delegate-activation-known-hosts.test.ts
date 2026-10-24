@@ -214,11 +214,29 @@ const untrustedHosts = [
   'http://192.168.1.10:8080',
 ];
 const loopbackHosts = ['http://127.0.0.1:8000', 'http://localhost:8000', 'http://[::1]:8000'];
+// Origins the loopback rule accepts: an optional single trailing slash, either scheme.
+const loopbackOriginVariants = ['http://localhost:8787/', 'https://localhost:8787', 'http://127.0.0.1:8787/'];
+// Loopback names that are not exactly an origin, or not a loopback name.
+const nonOriginLoopbackHosts = [
+  'http://localhost:8787/path',
+  'http://localhost:8787//',
+  'http://localhost:8787?x=1',
+  'http://localhost:8787#f',
+  'http://user@localhost:8787',
+  'HTTP://LOCALHOST:8787',
+  'http://localhost:80',
+  'http://localhost.example:8787',
+  'http://0.0.0.0:8787',
+  'ftp://localhost:8787',
+];
 
 function expectNotActivated(result: PostResult) {
   expect(result.status).toBe(200);
   expect(result.body.hostActivated).toBe(false);
   expect(typeof result.body.delegationHeader?.Authorization).toBe('string');
+  expect(result.body.spaceReady).toBe(false);
+  expect(result.body.spaceError).toBeUndefined();
+  expect(result.body.spacePending).toBeUndefined();
   expect(activateSessionWithHost).not.toHaveBeenCalled();
   expect(ensureTinyCloudBootstrap).not.toHaveBeenCalled();
 }
@@ -268,10 +286,65 @@ for (const [label, run] of Object.entries(routes)) {
       });
     }
 
+    // Loopback is matched on the exact origin: one trailing slash is dropped, nothing else is.
+    for (const host of loopbackOriginVariants) {
+      test(`development: ${host} is activated`, async () => {
+        setDevelopment();
+        const result = await run(host);
+        expect(result.status).toBe(200);
+        expect(result.body.hostActivated).toBe(true);
+        expect(activateSessionWithHost).toHaveBeenCalledTimes(1);
+        expect(activateSessionWithHost.mock.calls[0]![0]).toBe(host);
+      });
+    }
+
+    for (const host of nonOriginLoopbackHosts) {
+      test(`development: ${host} is not contacted`, async () => {
+        setDevelopment();
+        expectNotActivated(await run(host));
+      });
+    }
+
+    test('development: loopback is not contacted when TEE_MODE is production', async () => {
+      setDevelopment();
+      process.env.TEE_MODE = 'production';
+      expectNotActivated(await run('http://127.0.0.1:8000'));
+    });
+
     test('production: a configured loopback bootstrap host does not make loopback requests contactable', async () => {
       setProduction();
       process.env.TINYCLOUD_BOOTSTRAP_HOST = 'http://127.0.0.1:8000';
       expectNotActivated(await run('http://127.0.0.1:8000'));
     });
+
+    // A known host whose activation fails or times out may still bring the space up: readiness stays unknown.
+    const knownHostFailures: Record<string, () => void> = {
+      'answers with a failure': () => {
+        activateSessionWithHost.mockImplementation(async () => ({ success: false, status: 503 }));
+      },
+      'rejects': () => {
+        activateSessionWithHost.mockImplementation(async () => { throw new Error('connection refused'); });
+      },
+      'times out': () => {
+        process.env.TINYCLOUD_BOOTSTRAP_NODE_TIMEOUT_MS = '20';
+        activateSessionWithHost.mockImplementation(() => new Promise<SpaceHostResult>(() => undefined));
+      },
+    };
+    for (const [failure, arrange] of Object.entries(knownHostFailures)) {
+      test(`production: a known host whose activation ${failure} reports spaceReady null`, async () => {
+        setProduction();
+        arrange();
+        try {
+          const result = await run('https://node.tinycloud.xyz');
+          expect(result.status).toBe(200);
+          expect(result.body.hostActivated).toBe(false);
+          expect(result.body.spaceReady).toBeNull();
+          expect(result.body.spacePending).toBeUndefined();
+          expect(activateSessionWithHost).toHaveBeenCalledTimes(1);
+        } finally {
+          delete process.env.TINYCLOUD_BOOTSTRAP_NODE_TIMEOUT_MS;
+        }
+      });
+    }
   });
 }

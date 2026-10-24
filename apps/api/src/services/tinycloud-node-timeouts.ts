@@ -27,14 +27,14 @@ export function tinyCloudBootstrapNodeInvokeTimeoutMs(env: Record<string, string
  * `activateSessionWithHost` takes no AbortSignal, so the wait is cut at the timeout and the request is
  * left to end on its own: it holds no lock and no state. A timeout rejects, which the routes already
  * report as `hostActivated: false` (the web page then activates on its own). Only known TinyCloud
- * hosts are activated; any other host gets `success: false` without a request.
+ * hosts are activated; any other host gets `success: false` and `hostNotKnown: true` without a request.
  */
 export async function activateSessionWithinTimeout(
   host: string,
   delegationHeader: { Authorization: string },
-): Promise<SpaceHostResult> {
+): Promise<SpaceHostResult & { hostNotKnown?: true }> {
   if (!isKnownTinyCloudActivationHost(host)) {
-    return { success: false, status: 0, error: 'Session activation only runs on known TinyCloud hosts.' };
+    return { success: false, status: 0, hostNotKnown: true, error: 'Session activation only runs on known TinyCloud hosts.' };
   }
   const signal = AbortSignal.timeout(tinyCloudBootstrapNodeCallTimeoutMs());
   const { promise: timedOut, reject } = Promise.withResolvers<never>();
