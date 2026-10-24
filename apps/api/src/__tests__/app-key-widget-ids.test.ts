@@ -1,7 +1,8 @@
 // The approval view's own action ids through prepare, preview and sign.
 //
 // The ids sent to /authorize-sign-preview and /authorize-sign here are the
-// ones the approval view sends: the ids of the review model that
+// ones the popup and the embedded page send, both through
+// `lib/widget-selection.ts`: the ids of the review model that
 // capability-review builds from the message (`parseCapabilityReview`), for the
 // selected actions. Nothing is written out by hand.
 
@@ -20,12 +21,9 @@ const { defaultSelection, parseCapabilityReview } = (await loadSource('../../../
   defaultSelection: (model: Selection) => Set<string>;
   parseCapabilityReview: (input: unknown) => Selection;
 };
-const { reviewActionId, selectedServerActionIds } = (await loadSource('../../../web/src/lib/delegate-review-selection.ts')) as {
-  reviewActionId: (serverId: string) => string;
-  selectedServerActionIds: (model: Selection, selection: ReadonlySet<string>) => string[];
-};
-const { validatePreviewSelection } = (await loadSource('../../../web/src/lib/preview-review.ts')) as {
-  validatePreviewSelection: (preview: Record<string, unknown>, requested: readonly string[]) => Set<string>;
+const { requestedActionIds, selectionFromPreview } = (await loadSource('../../../web/src/lib/widget-selection.ts')) as {
+  requestedActionIds: (model: Selection, selection: ReadonlySet<string>) => string[];
+  selectionFromPreview: (preview: Record<string, unknown>, requested: readonly string[]) => Set<string>;
 };
 
 const privateKey = '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
@@ -226,7 +224,7 @@ function reviewModel(siwe: string) {
 /**
  * The ids the approval view sends: the page's own `defaultSelection` of the
  * model, minus the abilities `drop` names, through its own
- * `selectedServerActionIds`.
+ * `requestedActionIds`.
  */
 function widgetIds(siwe: string, drop: (ability: string) => boolean = () => false): string[] {
   const model = reviewModel(siwe);
@@ -234,14 +232,13 @@ function widgetIds(siwe: string, drop: (ability: string) => boolean = () => fals
   for (const grant of model.permissions) {
     for (const action of grant.actions) if (drop(action.ability)) selection.delete(action.id);
   }
-  return selectedServerActionIds(model, selection);
+  return requestedActionIds(model, selection);
 }
 
-/** What the approval view does with a preview: the same validation, then back to its own ids. */
+/** What both signing pages do with a preview: the same validation, then the review selection it describes. */
 function previewAgrees(preview: Record<string, unknown>, requested: string[]): boolean {
   try {
-    const kept = [...validatePreviewSelection(preview, requested)].map(reviewActionId).sort();
-    return JSON.stringify(kept) === JSON.stringify(requested.map(reviewActionId).sort());
+    return selectionFromPreview(preview, requested).size === requested.length;
   } catch {
     return false;
   }
@@ -336,6 +333,25 @@ describe('the approval view\'s ids for app keys', () => {
     const { preview, previewBody } = await throughTheWidget(siwe, ids);
     expect(preview.status).toBe(400);
     expect(previewBody.code).toBe('app_key_group_partial');
+  });
+});
+
+describe('the order both signing pages follow', () => {
+  test('sign with the ids of the selection the preview returned', async () => {
+    for (const raw of [PREFIX, APPS_KEY, { [urn('')]: ['tinycloud.encryption/decrypt'] }]) {
+      const siwe = raw === PREFIX || raw === APPS_KEY ? siweWith(raw) : encryptionOnlySiwe(raw);
+      const model = reviewModel(siwe);
+      const requested = widgetIds(siwe);
+      const { authorizationContextToken, preview, previewBody } = await throughTheWidget(siwe, requested);
+      expect(preview.status).toBe(200);
+      // The page stores the selection the preview describes, then builds the sign ids from it.
+      const reviewSelection = selectionFromPreview(previewBody, requested);
+      expect([...reviewSelection].sort()).toEqual(model.permissions.flatMap((g) => g.actions.map((a) => a.id)).sort());
+      const signIds = requestedActionIds(model, reviewSelection);
+      expect([...signIds].sort()).toEqual([...requested].sort());
+      const sign = await post('/authorize-sign', { authorizationContextToken, previewApprovalToken: previewBody.previewApprovalToken, selectedActionIds: signIds, protocolVersion: 1 });
+      expect(sign.status).toBe(200);
+    }
   });
 });
 

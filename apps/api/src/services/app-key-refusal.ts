@@ -240,6 +240,18 @@ export function appKeyRefusalForMessage(message: string): AppKeyRefusal | null {
   return decoded === null ? null : appKeyRefusalForSiwe(decoded);
 }
 
+/**
+ * Does a message, as written or as UTF-8 when it is `0x` hex, carry `key.block`
+ * or `key.unblock` on an encryption resource outside `apps/`? A route that
+ * signs a message without a manifest cannot tell which app asks, so it refuses
+ * these whatever the origin.
+ */
+export function blocksOutsideApps(message: string): boolean {
+  if (blockResourcesOutsideApps(message).length > 0) return true;
+  const decoded = decodeHexUtf8(message);
+  return decoded !== null && blockResourcesOutsideApps(decoded).length > 0;
+}
+
 export function appKeyRefusalCode(refusal: AppKeyRefusal): AppKeyRefusalCode {
   if (refusal.reason === 'key_delete') return 'key_delete_not_grantable';
   return refusal.reason === 'recap_unreadable' ? 'invalid_siwe_recap' : 'app_key_grant_refused';

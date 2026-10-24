@@ -7,11 +7,7 @@
   import { passkeysSupportedFromParams, withPasskeysFlag } from '$lib/passkey-support';
   import PopupSigningAdapter from '$lib/components/signing/popup-signing-adapter.svelte';
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
-  import { validatePreviewSelection } from '$lib/preview-review';
-  import {
-    reviewActionId,
-    selectedServerActionIds,
-  } from '$lib/delegate-review-selection';
+  import { requestedActionIds, selectionFromPreview } from '$lib/widget-selection';
   import {
     parseCapabilityReview,
     parseSiweChainId,
@@ -551,7 +547,7 @@
 
   // The ids of the current review selection as the server spells them.
   function currentSelectedActionIds(): string[] {
-    return reviewModel ? selectedServerActionIds(reviewModel, reviewSelection) : [];
+    return requestedActionIds(reviewModel, reviewSelection);
   }
 
   // Sol CRITICAL-1: preview step. Issues (or re-uses) an authorization
@@ -694,7 +690,7 @@
           };
         }
       }
-      const requestedActionIds = currentSelectedActionIds();
+      const selectedIds = currentSelectedActionIds();
       const previewRes = await fetch(
         `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign-preview`,
         {
@@ -703,7 +699,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             authorizationContextToken: token,
-            selectedActionIds: requestedActionIds,
+            selectedActionIds: selectedIds,
           }),
         },
       );
@@ -720,9 +716,7 @@
       if (typeof previewResult.previewApprovalToken !== 'string' || !previewResult.previewApprovalToken) {
         throw new Error('authorize-sign-preview did not return a previewApprovalToken — server is out of date');
       }
-      reviewSelection = new Set(
-        [...validatePreviewSelection(previewResult, requestedActionIds)].map(reviewActionId),
-      );
+      reviewSelection = selectionFromPreview(previewResult, selectedIds);
       previewSignedMessage = previewResult.signedMessage;
       previewApprovalToken = previewResult.previewApprovalToken;
     } catch (e: any) {
