@@ -1,0 +1,189 @@
+// Visibility guard for the approval view while it is shown inside a frame.
+//
+// Approve is available only after every watched part of the view (the summary
+// and the Approve button) has been fully visible and uncovered for a
+// continuous delay, with the page visible and focused. Any loss of
+// visibility, window blur or tab hide starts the delay again. A click is
+// accepted only if the newest visibility reports still say visible.
+//
+// Where the browser supports IntersectionObserver v2 (`trackVisibility`),
+// `entry.isVisible` is required: it is the field that turns false when the
+// element is covered, faded or transformed. `isIntersecting` stays true in
+// those cases. Browsers without v2 are checked for cropping and scrolling
+// away (`isIntersecting` and the ratio) plus the delay.
+
+export const VISIBILITY_ENABLE_DELAY_MS = 600;
+export const VISIBILITY_TRACKING_DELAY_MS = 100;
+export const MIN_VISIBLE_RATIO = 0.99;
+
+/** The fields of an `IntersectionObserverEntry` the guard reads. */
+export interface VisibilityEntry {
+  isIntersecting: boolean;
+  intersectionRatio: number;
+  /** Present only where the browser supports IntersectionObserver v2. */
+  isVisible?: boolean;
+}
+
+export interface VisibilityGuard {
+  /** True once every target has stayed visible for the enable delay. */
+  readonly allowed: boolean;
+  report(target: string, entry: VisibilityEntry): void;
+  /** The page or window lost or regained visibility/focus. */
+  setPageVisible(visible: boolean): void;
+  /** Start the delay again from now. */
+  rearm(): void;
+  stop(): void;
+}
+
+export interface VisibilityGuardOptions {
+  targets: readonly string[];
+  /** The browser reports `isVisible` (IntersectionObserver v2). */
+  trackVisibility: boolean;
+  onChange: (allowed: boolean) => void;
+  enableDelayMs?: number;
+}
+
+export function isEntryVisible(entry: VisibilityEntry, trackVisibility: boolean): boolean {
+  if (!entry.isIntersecting || entry.intersectionRatio < MIN_VISIBLE_RATIO) return false;
+  return !trackVisibility || entry.isVisible === true;
+}
+
+export function createVisibilityGuard(options: VisibilityGuardOptions): VisibilityGuard {
+  const { targets, trackVisibility, onChange } = options;
+  const delay = options.enableDelayMs ?? VISIBILITY_ENABLE_DELAY_MS;
+  const visible: Record<string, boolean> = {};
+  let pageVisible = true;
+  let allowed = false;
+  let armed = false;
+  let cancelTimer = () => {};
+  let stopped = false;
+
+  const setAllowed = (next: boolean) => {
+    if (allowed === next) return;
+    allowed = next;
+    onChange(next);
+  };
+  const clearTimer = () => {
+    cancelTimer();
+    cancelTimer = () => {};
+    armed = false;
+  };
+  // Re-evaluate: not ready closes Approve at once; ready starts the delay.
+  const evaluate = () => {
+    if (stopped) return;
+    const ready = pageVisible && targets.every((target) => visible[target] === true);
+    if (!ready) {
+      clearTimer();
+      setAllowed(false);
+    } else if (!allowed && !armed) {
+      armed = true;
+      const id = setTimeout(() => {
+        armed = false;
+        setAllowed(true);
+      }, delay);
+      cancelTimer = () => clearTimeout(id);
+    }
+  };
+
+  return {
+    get allowed() {
+      return allowed;
+    },
+    report(target, entry) {
+      visible[target] = isEntryVisible(entry, trackVisibility);
+      evaluate();
+    },
+    setPageVisible(next) {
+      pageVisible = next;
+      evaluate();
+    },
+    rearm() {
+      clearTimer();
+      setAllowed(false);
+      evaluate();
+    },
+    stop() {
+      stopped = true;
+      clearTimer();
+    },
+  };
+}
+
+/** True inside a frame. A page that cannot compare itself with the top counts as framed. */
+export function isFramed(): boolean {
+  try {
+    return window.self !== window.top;
+  } catch {
+    return true;
+  }
+}
+
+export interface FrameVisibilityBinding {
+  readonly allowed: boolean;
+  /** Pull pending reports now; true only if Approve is still allowed. */
+  confirmNow(): boolean;
+  stop(): void;
+}
+
+export interface FrameVisibilityTarget {
+  name: string;
+  element: Element;
+}
+
+/**
+ * Watch `targets` with IntersectionObserver (v2 where supported) and the
+ * window's focus and visibility events, and feed a guard.
+ */
+export function watchFrameVisibility(
+  targets: readonly FrameVisibilityTarget[],
+  onChange: (allowed: boolean) => void,
+): FrameVisibilityBinding {
+  const names = new Map<Element, string>(targets.map((target) => [target.element, target.name]));
+  // `trackVisibility` makes the browser report `isVisible`; the property on
+  // the observer tells us whether it actually took effect.
+  const observer = new IntersectionObserver(
+    (entries) => feed(entries),
+    {
+      threshold: [0, 0.25, 0.5, 0.75, MIN_VISIBLE_RATIO, 1],
+      trackVisibility: true,
+      delay: VISIBILITY_TRACKING_DELAY_MS,
+    } as IntersectionObserverInit,
+  );
+  const trackVisibility = (observer as IntersectionObserver & { trackVisibility?: boolean }).trackVisibility === true;
+  const guard = createVisibilityGuard({ targets: targets.map((target) => target.name), trackVisibility, onChange });
+
+  function feed(entries: readonly IntersectionObserverEntry[]) {
+    for (const entry of entries) {
+      const name = names.get(entry.target);
+      if (name !== undefined) guard.report(name, entry as VisibilityEntry);
+    }
+  }
+
+  const pageVisibleNow = () => document.visibilityState === 'visible' && document.hasFocus();
+  const onFocusOrVisibility = () => {
+    guard.rearm();
+    guard.setPageVisible(pageVisibleNow());
+  };
+  window.addEventListener('blur', onFocusOrVisibility);
+  window.addEventListener('focus', onFocusOrVisibility);
+  document.addEventListener('visibilitychange', onFocusOrVisibility);
+  guard.setPageVisible(pageVisibleNow());
+  for (const target of targets) observer.observe(target.element);
+
+  return {
+    get allowed() {
+      return guard.allowed;
+    },
+    confirmNow() {
+      feed(observer.takeRecords());
+      return guard.allowed;
+    },
+    stop() {
+      window.removeEventListener('blur', onFocusOrVisibility);
+      window.removeEventListener('focus', onFocusOrVisibility);
+      document.removeEventListener('visibilitychange', onFocusOrVisibility);
+      observer.disconnect();
+      guard.stop();
+    },
+  };
+}
