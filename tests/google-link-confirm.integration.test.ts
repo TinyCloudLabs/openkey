@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
+import type { Server } from 'bun';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -28,6 +29,7 @@ if (!backend) {
           WEBAUTHN_ORIGIN: 'https://openkey.test',
           CORS_ORIGIN: 'https://openkey.test',
           ADMIN_API_KEY: 'tc1197-admin-key',
+          APPLE_SIGN_IN_ENABLED: 'false',
           RESEND_API_KEY: '',
           GOOGLE_CLIENT_ID: 'tc1197-google-client',
           GOOGLE_CLIENT_SECRET: 'tc1197-google-secret',
@@ -50,6 +52,7 @@ if (!backend) {
   const API = 'https://api.openkey.test';
   const ORIGIN = 'https://openkey.test';
   const originalFetch = globalThis.fetch;
+  let httpServer: Server<undefined>;
   const profiles = new Map<string, { sub: string; email: string; email_verified: boolean }>();
 
   function jwt(payload: object): string {
@@ -59,7 +62,7 @@ if (!backend) {
     return response.headers.getSetCookie().map((cookie) => cookie.split(';')[0]).join('; ');
   }
   function call(path: string, init: RequestInit = {}) {
-    return app.fetch(new Request(`${API}${path}`, init));
+    return originalFetch(`http://127.0.0.1:${httpServer.port}${path}`, { ...init, redirect: 'manual' });
   }
   function post(path: string, body: unknown, cookie = '') {
     return call(path, {
@@ -151,10 +154,18 @@ if (!backend) {
     prisma = createPrismaClient();
     ({ auth } = await import('../apps/api/src/auth'));
     app = (await import('../apps/api/src/index')).default;
+    httpServer = Bun.serve({
+      hostname: '127.0.0.1', port: 0,
+      fetch: (request) => {
+        const url = new URL(request.url);
+        return app.fetch(new Request(API + url.pathname + url.search, request));
+      },
+    });
   }, 120_000);
 
   afterAll(async () => {
     globalThis.fetch = originalFetch;
+    httpServer?.stop(true);
     await prisma?.$disconnect();
     if (admin) {
       await admin.query(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`);
@@ -222,6 +233,24 @@ if (!backend) {
       expect(await prisma.ethereumKey.count({ where: { userId: user.id, isCanonicalTinyCloud: true } })).toBe(1);
       expect(await prisma.account.count({ where: { userId: user.id, providerId: 'google', accountId: 'new-sub' } })).toBe(1);
       expect((await post('/api/auth/social/confirm', { continuation }, cookies(response))).status).toBe(400);
+    });
+
+    test('Google confirmation retains the #276 email OTP session flow when Apple is off', async () => {
+      const email = 'new-google-otp@openkey.test';
+      const { response } = await googleCallback({ sub: 'new-google-otp-sub', email, email_verified: true });
+      const continuation = new URL(response.headers.get('location')!).searchParams.get('continuation');
+      expect((await post('/api/auth/social/confirm', { continuation }, cookies(response))).status).toBe(200);
+      const user = await prisma.user.findUniqueOrThrow({ where: { email } });
+      expect(user.socialCreatedProvider).toBeNull();
+      await prisma.session.deleteMany({ where: { userId: user.id } });
+      const otp = await auth.api.createVerificationOTP({ body: { email, type: 'sign-in' } });
+      const signedIn = await post('/api/auth/sign-in/email-otp', { email, otp });
+      expect(signedIn.status).toBe(200);
+      const payload = await signedIn.json() as { token: string; user: { email: string } };
+      expect(Object.keys(payload).sort()).toEqual(['token', 'user']);
+      expect(payload.user.email).toBe(email);
+      expect(cookies(signedIn)).toContain('session_token=');
+      expect(await prisma.session.count({ where: { userId: user.id } })).toBe(1);
     });
 
     test('a provider identity claimed before confirmation leaves no orphan user or key', async () => {

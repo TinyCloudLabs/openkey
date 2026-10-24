@@ -206,11 +206,13 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `CONSOLE_ORIGIN` | `https://console.openkey.so` |
 | `GOOGLE_CLIENT_ID` | Google OAuth client ID |
 | `GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
-| `APPLE_CLIENT_ID` | Apple web Services ID |
+| `APPLE_SIGN_IN_ENABLED` | Hardcoded `false` in production Compose until Apple enrollment and Sam's separate enablement approval |
+| `APPLE_NATIVE_SIGN_IN_ENABLED` | Hardcoded `false`; stock native ID-token sign-in is permanently disabled |
+| `APPLE_CLIENT_ID` | Apple web Services ID (not a bundle identifier) |
 | `APPLE_TEAM_ID` | Apple Developer Team ID |
 | `APPLE_KEY_ID` | Sign in with Apple private-key ID |
 | `APPLE_PRIVATE_KEY` | Apple `.p8` ES256 private key (literal or escaped newlines) |
-| `APPLE_APP_BUNDLE_IDENTIFIER` | Optional native Apple app bundle identifier |
+| `APPLE_APP_BUNDLE_IDENTIFIERS` | Reserved comma-separated audiences for a future PAR-bound native flow; not active |
 | `TEE_MODE` | Not read from the env: `docker-compose.prod.yml` hardcodes `production`, and the API refuses to start otherwise (TC-966) |
 | `RESEND_API_KEY` | Resend API key for emails |
 | `API_PORT` | `3001` |
@@ -235,17 +237,36 @@ and web together. Deploy both in one window after the reviewed migration is
 ready; the migration adds the session email-code timestamp and a unique
 provider/account identity index. This change does not enable Apple sign-in.
 
-Apple requires `APPLE_CLIENT_ID` to be the web Services ID. The API generates
-the ES256 client-secret JWT at runtime with a 180-day lifetime, below Apple's
-six-month maximum; the `.p8` key remains API-only and must never be set as a
-`VITE_` variable. Apple rejects localhost, non-HTTPS domains, and invalid TLS,
-so use a registered HTTPS hostname for local testing.
+Apple is disabled by default even with credentials present. The production
+Compose file pins `APPLE_SIGN_IN_ENABLED=false`; enrollment and a separate
+authorization are required before changing that setting. Do not deploy or
+enable Apple as part of TC-1230.
 
-Apple provides email only on the first authorization. Preserve Better Auth's
-account and linking rows so later callbacks resolve the existing user by the
-Apple provider account. Before production, register the outbound sender and
-envelope-sender domains used by Resend in Apple's private email relay settings,
-and publish matching SPF and DKIM records so mail reaches private-relay users.
+The API mints an ES256 client-secret JWT for each Apple token exchange or
+revocation, valid for at most five minutes. The `.p8` key remains API-only and
+must never be set as a `VITE_` variable. The web callback trusts only the
+exchanged ID token's verified email, issuer, audience and lifetime; Apple's
+unsigned `user.email` is ignored. Returning identities use `(apple, sub)`,
+including callbacks without an email claim. New accounts need the existing
+cookie-bound social confirmation; linking and unlinking need current-session
+email OTP step-up. Apple refresh tokens are encrypted with their issuing
+Services ID. A confirmed Apple account sends a mailbox notice; its first
+email-OTP sign-in requires a separate linked-provider review before a session.
+Google accounts retain the existing email-OTP behavior while Apple is off.
+Refusing Apple review locks the account; TC-1231 owns enforcement across
+existing sessions, grants and signing before production enablement.
+
+Pending Apple confirmations and failed revocations use the OpenKey-owned
+`apple_social_continuation` table, not Better Auth's OTP verification table.
+The expiry/revocation worker starts even when Apple sign-in is disabled. If
+disabling Apple after use, retain the issuing Services ID, Team ID, key ID,
+private key, and Better Auth decryption secrets until pending grants are
+revoked or safely linked; removing them leaves encrypted retry rows uncleared.
+
+Apple rejects localhost, non-HTTPS domains and invalid TLS, so live provider
+testing requires a registered HTTPS hostname. Before production, register
+the outbound sender and envelope-sender domains used by Resend in Apple's
+private email relay settings, with matching SPF and DKIM.
 
 #### Trigger Conditions
 
