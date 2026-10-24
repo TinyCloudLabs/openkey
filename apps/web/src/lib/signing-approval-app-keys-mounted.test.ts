@@ -4,6 +4,7 @@
 // signing-approval.svelte in happy-dom, the way signing-approval-parity-mounted
 // does for the adapters.
 
+// @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { afterAll, describe, expect, test } from 'bun:test';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
