@@ -1230,6 +1230,7 @@ delegateRouter.post('/', async (c) => {
     actionKeys?: unknown;
     permissionKeys?: unknown;
     permissions?: unknown;
+    deviceTransactionId?: unknown;
     expiry?: unknown;
     reason?: unknown;
     /**
@@ -1403,7 +1404,7 @@ delegateRouter.post('/', async (c) => {
     let baseline: SessionAbilities;
     try {
       baseline = permissions
-        ? sessionAbilitiesFromPermissions(permissions, { address, chainId })
+        ? sessionAbilitiesFromPermissions(permissions, { address, chainId }, { deviceTransaction: body.deviceTransactionId !== undefined })
         : DEFAULT_SESSION_ABILITIES;
       assertBaselineSubset(preparedEntries, baseline);
       assertRequiredActions(preparedEntries, baseline);
@@ -1608,6 +1609,7 @@ delegateRouter.post('/', async (c) => {
       actionKeys: normalizeStringArray(body.actionKeys, 'actionKeys'),
       permissionKeys: normalizeStringArray(body.permissionKeys, 'permissionKeys'),
       permissions,
+      deviceTransaction: body.deviceTransactionId !== undefined,
       expiryMs,
     });
   } catch (e) {
