@@ -418,28 +418,19 @@
     }, 2000);
   }
 
-  // Framed approval: Approve opens only while the summary and the button are
+  // Framed approval: Approve opens only while the view and its action row are
   // fully visible and uncovered (see frame-visibility-guard.ts). Cancel is
   // never gated. A page that is not framed is not gated.
   const framed = typeof window !== "undefined" && isFramed();
-  let summaryElement = $state<HTMLElement | null>(null);
-  let approveElement = $state<HTMLButtonElement | null>(null);
+  let viewElement = $state<HTMLElement | null>(null);
+  let actionsElement = $state<HTMLElement | null>(null);
   let frameAllowed = $state(!framed);
   let frameGuard: FrameVisibilityBinding | null = null;
 
   $effect(() => {
-    if (!framed || !summaryElement || !approveElement) return;
-    const summary = summaryElement;
+    if (!framed || !viewElement || !actionsElement) return;
     const binding = watchFrameVisibility(
-      [
-        {
-          name: "summary",
-          element: summary,
-          // A summary taller than this frame can never be fully inside it.
-          minRatio: () => Math.min(0.99, (window.innerHeight - 8) / Math.max(1, summary.getBoundingClientRect().height)),
-        },
-        { name: "button", element: approveElement },
-      ],
+      { view: viewElement, actions: actionsElement },
       (allowed) => {
         frameAllowed = allowed;
       },
@@ -476,6 +467,7 @@
 
 <div
   class="signing-approval"
+  bind:this={viewElement}
   class:sticky-actions={stickyActions}
   role="dialog"
   aria-modal="true"
@@ -532,7 +524,7 @@
     Requester provenance and exact resource identifiers are deliberately kept
     in Advanced details so the first viewport is useful to ordinary users.
   -->
-  <section class="summary" aria-label="Requested access" bind:this={summaryElement}>
+  <section class="summary" aria-label="Requested access">
     {#if summaryStatements.length > 0}
       <ul class="summary-statements">
         {#each summaryStatements as statement (statement.key)}
@@ -904,11 +896,16 @@
   {/if}
   {#if approveBlockedReason}
     <p class="approve-blocked" role="status" aria-live="polite">{approveBlockedReason}</p>
-  {:else if frameBlocked}
-    <p class="approve-blocked" role="status" aria-live="polite">{WAIT_FOR_VISIBLE}</p>
+  {:else if framed}
+    <!--
+      Always present while framed and changed only through an attribute, so the
+      embedding page sees no content change and no new height when Approve
+      opens.
+    -->
+    <p class="approve-blocked frame-wait" id="frame-wait-status" data-waiting={frameBlocked}>{WAIT_FOR_VISIBLE}</p>
   {/if}
 
-  <footer class="actions">
+  <footer class="actions" bind:this={actionsElement}>
     <button
       type="button"
       class="cancel"
@@ -920,11 +917,10 @@
     <button
       type="button"
       class="approve"
-      bind:this={approveElement}
       onclick={handleApproveClick}
       disabled={approveButtonDisabled}
       aria-disabled={approveButtonDisabled}
-      aria-describedby={nodeChecking ? "host-node-status" : undefined}
+      aria-describedby={nodeChecking ? "host-node-status" : frameBlocked ? "frame-wait-status" : undefined}
     >
       {approveLabel}
     </button>
@@ -1561,6 +1557,9 @@
     line-height: 1.45;
     margin: 0;
     border: 1px solid #f2c0c0;
+  }
+  .frame-wait[data-waiting="false"] {
+    visibility: hidden;
   }
   .approve-blocked {
     color: #7c4a03;

@@ -280,6 +280,14 @@ describe('host approval rows', () => {
   });
 });
 
+interface ObserverState {
+  isIntersecting: boolean;
+  intersectionRatio: number;
+  isVisible: boolean;
+  intersectionRect: { width: number; height: number };
+  boundingClientRect: { width: number; height: number };
+}
+
 class FakeObserver {
   static latest: FakeObserver | null = null;
   trackVisibility = true;
@@ -297,15 +305,17 @@ class FakeObserver {
     this.pending = [];
     return taken;
   }
-  report(state: { isIntersecting: boolean; intersectionRatio: number; isVisible: boolean }) {
+  report(state: ObserverState) {
     this.callback(this.observed.map((target) => ({ target, ...state }) as unknown as IntersectionObserverEntry));
   }
-  entriesFor(state: { isIntersecting: boolean; intersectionRatio: number; isVisible: boolean }) {
+  entriesFor(state: ObserverState) {
     return this.observed.map((target) => ({ target, ...state }) as unknown as IntersectionObserverEntry);
   }
 }
-const FULL = { isIntersecting: true, intersectionRatio: 1, isVisible: true };
-const COVERED = { isIntersecting: true, intersectionRatio: 1, isVisible: false };
+// The whole view inside the frame, as the browser reports it.
+const frameSize = { width: win.innerWidth, height: win.innerHeight };
+const FULL = { isIntersecting: true, intersectionRatio: 1, isVisible: true, intersectionRect: frameSize, boundingClientRect: frameSize };
+const COVERED = { ...FULL, isVisible: false };
 const WAIT = 'Approve becomes available once this window is fully visible.';
 
 describe('framed Approve', () => {
@@ -337,14 +347,16 @@ describe('framed Approve', () => {
     const observer = FakeObserver.latest!;
     expect(observer.observed).toHaveLength(2);
     expect(mounted.approve.disabled).toBe(true);
-    expect(text(mounted.target.querySelector('.approve-blocked'))).toBe(WAIT);
+    expect(mounted.target.querySelector('.frame-wait')?.getAttribute('data-waiting')).toBe('true');
     observer.report(FULL);
     flushSync();
     tick(599);
     expect(mounted.approve.disabled).toBe(true);
     tick(1);
     expect(mounted.approve.disabled).toBe(false);
-    expect(mounted.target.querySelector('.approve-blocked')).toBeNull();
+    // The line stays in the layout, empty, so the height does not change when Approve opens.
+    expect(mounted.target.querySelector('.frame-wait')?.getAttribute('data-waiting')).toBe('false');
+    expect(text(mounted.target.querySelector('.frame-wait'))).toBe(WAIT);
   });
 
   test('a covered view (still intersecting) never opens', () => {
@@ -352,7 +364,7 @@ describe('framed Approve', () => {
     FakeObserver.latest!.report(COVERED);
     tick(10_000);
     expect(mounted.approve.disabled).toBe(true);
-    expect(text(mounted.target.querySelector('.approve-blocked'))).toBe(WAIT);
+    expect(mounted.target.querySelector('.frame-wait')?.getAttribute('data-waiting')).toBe('true');
   });
 
   test('Cancel is never gated', () => {

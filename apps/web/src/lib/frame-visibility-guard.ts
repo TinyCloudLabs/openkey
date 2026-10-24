@@ -1,20 +1,34 @@
 // Visibility guard for the approval view while it is shown inside a frame.
 //
-// Approve is available only after every watched part of the view (the summary
-// and the Approve button) has been fully visible and uncovered for a
-// continuous delay, with the page visible. Any loss of
+// Approve is available only after the view has stayed fully visible and
+// uncovered for a continuous delay, with the page visible. Any loss of
 // visibility, window blur or tab hide starts the delay again. A click is
 // accepted only if the newest visibility reports still say visible.
 //
-// Where the browser supports IntersectionObserver v2 (`trackVisibility`),
-// `entry.isVisible` is required: it is the field that turns false when the
-// element is covered, faded or transformed. `isIntersecting` stays true in
-// those cases. Browsers without v2 are checked for cropping and scrolling
-// away (`isIntersecting` and the ratio) plus the delay.
+// Two parts of the view are watched: the whole view (the dialog) and its
+// action row. Each is `visible` (inside the frame and unobscured), `obscured`
+// (inside the frame but covered, faded, transformed or cropped by the
+// embedding page) or `out` (entirely outside the frame's own viewport, for
+// example scrolled away; it cannot be clicked until it is scrolled into view).
+// Only `obscured` blocks. Where the browser supports IntersectionObserver v2
+// (`trackVisibility`), `entry.isVisible` is what turns false when a target is
+// covered; `isIntersecting` stays true in that case. Without v2 only cropping
+// and scrolling away are detected.
 
 export const VISIBILITY_ENABLE_DELAY_MS = 600;
 export const VISIBILITY_TRACKING_DELAY_MS = 100;
 export const MIN_VISIBLE_RATIO = 0.99;
+
+interface Size {
+  width: number;
+  height: number;
+}
+
+/** A box in the target's own viewport; `top` and `left` default to 0. */
+interface Box extends Size {
+  top?: number;
+  left?: number;
+}
 
 /** The fields of an `IntersectionObserverEntry` the guard reads. */
 export interface VisibilityEntry {
@@ -22,14 +36,15 @@ export interface VisibilityEntry {
   intersectionRatio: number;
   /** Present only where the browser supports IntersectionObserver v2. */
   isVisible?: boolean;
+  intersectionRect?: Box;
+  boundingClientRect?: Box;
 }
 
 export interface VisibilityGuard {
   /** True once every target has stayed visible for the enable delay. */
   readonly allowed: boolean;
-  /** `minRatio` lowers the bar for a target taller than the frame's own viewport. */
-  report(target: string, entry: VisibilityEntry, minRatio?: number): void;
-  /** The page or window lost or regained visibility/focus. */
+  report(target: string, visible: boolean): void;
+  /** The page became visible or hidden. */
   setPageVisible(visible: boolean): void;
   /** Start the delay again from now. */
   rearm(): void;
@@ -38,19 +53,45 @@ export interface VisibilityGuard {
 
 export interface VisibilityGuardOptions {
   targets: readonly string[];
-  /** The browser reports `isVisible` (IntersectionObserver v2). */
-  trackVisibility: boolean;
   onChange: (allowed: boolean) => void;
   enableDelayMs?: number;
 }
 
+/**
+ * A target counts as visible when it intersects at least `minRatio` of itself
+ * and, with IntersectionObserver v2, the browser reports it visible (not
+ * covered, faded or transformed).
+ */
 export function isEntryVisible(entry: VisibilityEntry, trackVisibility: boolean, minRatio = MIN_VISIBLE_RATIO): boolean {
   if (!entry.isIntersecting || entry.intersectionRatio < minRatio) return false;
   return !trackVisibility || entry.isVisible === true;
 }
 
+export type TargetState = "visible" | "obscured" | "out";
+
+/**
+ * Where a watched target stands. The part of it that lies inside the frame's
+ * own viewport must be all in view: nothing outside the frame (the embedding
+ * page) clips it and, with IntersectionObserver v2, nothing covers it. A
+ * target taller than the frame, or one that starts part-way down it, is judged
+ * by the part that fits. A target with no part inside the frame is `out`.
+ */
+export function targetState(entry: VisibilityEntry, trackVisibility: boolean, viewport: Size): TargetState {
+  const seen = entry.intersectionRect;
+  const whole = entry.boundingClientRect;
+  if (!seen || !whole) return "obscured";
+  const left = whole.left ?? 0;
+  const top = whole.top ?? 0;
+  const inFrameWidth = Math.min(left + whole.width, viewport.width) - Math.max(left, 0);
+  const inFrameHeight = Math.min(top + whole.height, viewport.height) - Math.max(top, 0);
+  if (inFrameWidth <= 0 || inFrameHeight <= 0) return "out";
+  if (!isEntryVisible(entry, trackVisibility, 0)) return "obscured";
+  const covers = seen.width >= inFrameWidth * MIN_VISIBLE_RATIO && seen.height >= inFrameHeight * MIN_VISIBLE_RATIO;
+  return covers ? "visible" : "obscured";
+}
+
 export function createVisibilityGuard(options: VisibilityGuardOptions): VisibilityGuard {
-  const { targets, trackVisibility, onChange } = options;
+  const { targets, onChange } = options;
   const delay = options.enableDelayMs ?? VISIBILITY_ENABLE_DELAY_MS;
   const visible: Record<string, boolean> = {};
   let pageVisible = true;
@@ -90,8 +131,8 @@ export function createVisibilityGuard(options: VisibilityGuardOptions): Visibili
     get allowed() {
       return allowed;
     },
-    report(target, entry, minRatio) {
-      visible[target] = isEntryVisible(entry, trackVisibility, minRatio);
+    report(target, isVisible) {
+      visible[target] = isVisible;
       evaluate();
     },
     setPageVisible(next) {
@@ -126,28 +167,21 @@ export interface FrameVisibilityBinding {
   stop(): void;
 }
 
-export interface FrameVisibilityTarget {
-  name: string;
-  element: Element;
-  /**
-   * Ratio this target must reach. Defaults to `MIN_VISIBLE_RATIO`. A target
-   * taller than the frame's own viewport can never be fully inside it, so the
-   * caller may ask for the share of it that fits.
-   */
-  minRatio?: () => number;
+export interface FrameVisibilityTargets {
+  /** The whole approval view. */
+  view: Element;
+  /** The row holding Approve and Cancel. */
+  actions: Element;
 }
 
 /**
- * Watch `targets` with IntersectionObserver (v2 where supported) and the
- * window's focus and visibility events, and feed a guard.
+ * Watch the view and its action row with IntersectionObserver (v2 where
+ * supported) and the window's blur and visibility events, and feed a guard.
  */
 export function watchFrameVisibility(
-  targets: readonly FrameVisibilityTarget[],
+  targets: FrameVisibilityTargets,
   onChange: (allowed: boolean) => void,
 ): FrameVisibilityBinding {
-  const byElement = new Map<Element, FrameVisibilityTarget>(targets.map((target) => [target.element, target]));
-  // `trackVisibility` makes the browser report `isVisible`; the property on
-  // the observer tells us whether it actually took effect.
   const observer = new IntersectionObserver(
     (entries) => feed(entries),
     {
@@ -156,13 +190,17 @@ export function watchFrameVisibility(
       delay: VISIBILITY_TRACKING_DELAY_MS,
     } as IntersectionObserverInit,
   );
+  // `trackVisibility` makes the browser report `isVisible`; the property on
+  // the observer tells us whether it actually took effect.
   const trackVisibility = (observer as IntersectionObserver & { trackVisibility?: boolean }).trackVisibility === true;
-  const guard = createVisibilityGuard({ targets: targets.map((target) => target.name), trackVisibility, onChange });
+  const guard = createVisibilityGuard({ targets: ['view', 'actions'], onChange });
 
   function feed(entries: readonly IntersectionObserverEntry[]) {
     for (const entry of entries) {
-      const target = byElement.get(entry.target);
-      if (target !== undefined) guard.report(target.name, entry as VisibilityEntry, target.minRatio?.());
+      const name = entry.target === targets.view ? 'view' : entry.target === targets.actions ? 'actions' : null;
+      if (name === null) continue;
+      const state = targetState(entry as VisibilityEntry, trackVisibility, { width: window.innerWidth, height: window.innerHeight });
+      guard.report(name, state !== 'obscured');
     }
   }
 
@@ -176,7 +214,8 @@ export function watchFrameVisibility(
   window.addEventListener('blur', onBlurOrVisibility);
   document.addEventListener('visibilitychange', onBlurOrVisibility);
   guard.setPageVisible(pageVisibleNow());
-  for (const target of targets) observer.observe(target.element);
+  observer.observe(targets.view);
+  observer.observe(targets.actions);
 
   return {
     get allowed() {
