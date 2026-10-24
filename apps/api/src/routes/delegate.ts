@@ -35,7 +35,7 @@ import {
   DEFAULT_SESSION_ABILITIES,
   SIWE_DOMAIN,
   sessionAbilitiesFromPermissions,
-  isRawEncryptionPermission,
+  validatePermissions,
   actionKey as computeActionKey,
   assertBaselineSubset,
   assertRequiredActions,
@@ -381,40 +381,6 @@ function resolveDelegationExpiryMs(input: unknown): number {
     throw new Error(`expiry must be a positive number, got ${input}`);
   }
   return Math.min(MAX_DELEGATION_EXPIRY_MS, Math.max(MIN_DELEGATION_EXPIRY_MS, raw));
-}
-
-function validatePermissions(permissions: unknown): PermissionEntry[] {
-  if (!Array.isArray(permissions) || permissions.length === 0) {
-    throw new Error('permissions must be a non-empty array');
-  }
-  return permissions.map((entry, index) => {
-    if (!entry || typeof entry !== 'object') {
-      throw new Error(`permissions[${index}] is not an object`);
-    }
-    const e = entry as Record<string, unknown>;
-    if (typeof e.service !== 'string' || !e.service) {
-      throw new Error(`permissions[${index}].service is required`);
-    }
-    const isRawEncryption = isRawEncryptionPermission(e);
-    if (!isRawEncryption && (typeof e.space !== 'string' || !e.space)) {
-      throw new Error(`permissions[${index}].space is required`);
-    }
-    if (e.space !== undefined && typeof e.space !== 'string') {
-      throw new Error(`permissions[${index}].space must be a string`);
-    }
-    if (typeof e.path !== 'string') {
-      throw new Error(`permissions[${index}].path must be a string`);
-    }
-    if (!Array.isArray(e.actions) || e.actions.some((a) => typeof a !== 'string')) {
-      throw new Error(`permissions[${index}].actions must be a string[]`);
-    }
-    return {
-      service: e.service,
-      ...(typeof e.space === 'string' ? { space: e.space } : {}),
-      path: e.path,
-      actions: e.actions as string[],
-    };
-  });
 }
 
 /**
