@@ -57,17 +57,12 @@ export function isPrefixPath(path: string): boolean {
 }
 
 /**
- * Plain byte comparison on valid paths: the prefix must be longer-or-equal
- * to its own text and strictly shorter than the key. A path the grammar
- * refuses is never covered.
+ * Plain byte comparison on valid paths. A prefix ends in `/` and a key never
+ * does, so a key that starts with the prefix is longer than it. A path the
+ * grammar refuses is never covered.
  */
 export function prefixCovers(prefix: string, key: string): boolean {
-  return (
-    isPrefixPath(prefix) &&
-    isKeyPath(key) &&
-    key.startsWith(prefix) &&
-    key.length > prefix.length
-  );
+  return isPrefixPath(prefix) && isKeyPath(key) && key.startsWith(prefix);
 }
 
 /** Parse a key or prefix URN. Bare networks and anything invalid give `null`. */
