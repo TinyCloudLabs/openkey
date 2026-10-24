@@ -236,8 +236,51 @@
     return selection.has(action.id);
   }
 
+  // The app keys of a request are approved with the rest of it or removed as
+  // a unit: the server refuses a selection that keeps an app-key action and
+  // drops any other action, so no control changes one without the other.
+  const appKeyGrants = $derived(model.permissions.filter((grant) => grant.family === "app-keys"));
+  const appKeyActionIds = $derived(
+    new Set(appKeyGrants.flatMap((grant) => grant.actions.filter((action) => action.editable).map((action) => action.id))),
+  );
+  const firstAppKeyGrantId = $derived(appKeyGrants[0]?.id ?? null);
+  const appKeyVerbs = $derived(
+    [...new Set(appKeyGrants.flatMap((grant) => grant.actions.filter((action) => action.editable).map((action) => action.verb)))].join(", "),
+  );
+  const appKeysSelected = $derived([...appKeyActionIds].some((id) => selection.has(id)));
+
+  function isLockedByAppKeys(action: CapabilityAction): boolean {
+    return appKeysSelected && !appKeyActionIds.has(action.id);
+  }
+
+  function toggleAppKeys() {
+    const next = new Set(selection);
+    if (appKeysSelected) {
+      for (const id of appKeyActionIds) next.delete(id);
+    } else {
+      for (const grant of model.permissions) {
+        for (const action of grant.actions) {
+          if (action.editable) next.add(action.id);
+        }
+      }
+    }
+    onSelectionChange(next);
+  }
+
+  function handleAppKeysKeydown(event: KeyboardEvent) {
+    if (event.key === " " || event.key === "Enter") {
+      event.preventDefault();
+      toggleAppKeys();
+    }
+  }
+
   function toggle(action: CapabilityAction) {
     if (!action.editable) return;
+    if (appKeyActionIds.has(action.id)) {
+      toggleAppKeys();
+      return;
+    }
+    if (isLockedByAppKeys(action)) return;
     const next = new Set(selection);
     if (next.has(action.id)) next.delete(action.id);
     else next.add(action.id);
@@ -725,17 +768,29 @@
                         This data belongs to another user.
                       </p>
                     {/if}
+                    {#if editing && grant.id === firstAppKeyGrantId}
+                      <label class="action-toggle app-key-group">
+                        <input
+                          type="checkbox"
+                          checked={appKeysSelected}
+                          onchange={toggleAppKeys}
+                          onkeydown={handleAppKeysKeydown}
+                          disabled={approveDisabled}
+                        />
+                        <span class="verb">{appKeyVerbs}</span>
+                      </label>
+                    {/if}
                     <ul class="action-list">
                       {#each editing ? grant.actions : grant.actions.filter(isSelected) as action}
                         <li class="action">
-                          {#if editing && action.editable}
+                          {#if editing && action.editable && !appKeyActionIds.has(action.id)}
                             <label class="action-toggle">
                               <input
                                 type="checkbox"
                                 checked={isSelected(action)}
                                 onchange={() => toggle(action)}
                                 onkeydown={(e) => handleKeydown(e, action)}
-                                disabled={approveDisabled}
+                                disabled={approveDisabled || isLockedByAppKeys(action)}
                               />
                               <span class="verb">{action.verb}</span>
                             </label>
