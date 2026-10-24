@@ -27,7 +27,8 @@ export interface VisibilityEntry {
 export interface VisibilityGuard {
   /** True once every target has stayed visible for the enable delay. */
   readonly allowed: boolean;
-  report(target: string, entry: VisibilityEntry): void;
+  /** `minRatio` lowers the bar for a target taller than the frame's own viewport. */
+  report(target: string, entry: VisibilityEntry, minRatio?: number): void;
   /** The page or window lost or regained visibility/focus. */
   setPageVisible(visible: boolean): void;
   /** Start the delay again from now. */
@@ -43,8 +44,8 @@ export interface VisibilityGuardOptions {
   enableDelayMs?: number;
 }
 
-export function isEntryVisible(entry: VisibilityEntry, trackVisibility: boolean): boolean {
-  if (!entry.isIntersecting || entry.intersectionRatio < MIN_VISIBLE_RATIO) return false;
+export function isEntryVisible(entry: VisibilityEntry, trackVisibility: boolean, minRatio = MIN_VISIBLE_RATIO): boolean {
+  if (!entry.isIntersecting || entry.intersectionRatio < minRatio) return false;
   return !trackVisibility || entry.isVisible === true;
 }
 
@@ -89,8 +90,8 @@ export function createVisibilityGuard(options: VisibilityGuardOptions): Visibili
     get allowed() {
       return allowed;
     },
-    report(target, entry) {
-      visible[target] = isEntryVisible(entry, trackVisibility);
+    report(target, entry, minRatio) {
+      visible[target] = isEntryVisible(entry, trackVisibility, minRatio);
       evaluate();
     },
     setPageVisible(next) {
@@ -128,6 +129,12 @@ export interface FrameVisibilityBinding {
 export interface FrameVisibilityTarget {
   name: string;
   element: Element;
+  /**
+   * Ratio this target must reach. Defaults to `MIN_VISIBLE_RATIO`. A target
+   * taller than the frame's own viewport can never be fully inside it, so the
+   * caller may ask for the share of it that fits.
+   */
+  minRatio?: () => number;
 }
 
 /**
@@ -138,13 +145,13 @@ export function watchFrameVisibility(
   targets: readonly FrameVisibilityTarget[],
   onChange: (allowed: boolean) => void,
 ): FrameVisibilityBinding {
-  const names = new Map<Element, string>(targets.map((target) => [target.element, target.name]));
+  const byElement = new Map<Element, FrameVisibilityTarget>(targets.map((target) => [target.element, target]));
   // `trackVisibility` makes the browser report `isVisible`; the property on
   // the observer tells us whether it actually took effect.
   const observer = new IntersectionObserver(
     (entries) => feed(entries),
     {
-      threshold: [0, 0.25, 0.5, 0.75, MIN_VISIBLE_RATIO, 1],
+      threshold: [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, MIN_VISIBLE_RATIO, 1],
       trackVisibility: true,
       delay: VISIBILITY_TRACKING_DELAY_MS,
     } as IntersectionObserverInit,
@@ -154,8 +161,8 @@ export function watchFrameVisibility(
 
   function feed(entries: readonly IntersectionObserverEntry[]) {
     for (const entry of entries) {
-      const name = names.get(entry.target);
-      if (name !== undefined) guard.report(name, entry as VisibilityEntry);
+      const target = byElement.get(entry.target);
+      if (target !== undefined) guard.report(target.name, entry as VisibilityEntry, target.minRatio?.());
     }
   }
 

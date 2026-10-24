@@ -313,6 +313,20 @@ describe('watchFrameVisibility', () => {
     expect(binding.allowed).toBe(true);
   });
 
+  test('a target taller than the frame only has to reach the ratio its caller asks for', () => {
+    const changes: boolean[] = [];
+    watchFrameVisibility(
+      [{ name: 'summary', element: summary, minRatio: () => 0.6 }, { name: 'button', element: button }],
+      (allowed) => changes.push(allowed),
+    );
+    const observer = FakeObserver.instances[0]!;
+    observer.callback([entry(summary, { ...FULL, intersectionRatio: 0.7 }), entry(button, FULL)]);
+    vi.advanceTimersByTime(VISIBILITY_ENABLE_DELAY_MS);
+    expect(changes).toEqual([true]);
+    observer.callback([entry(summary, { ...FULL, intersectionRatio: 0.5 })]);
+    expect(changes).toEqual([true, false]);
+  });
+
   test('stop removes the listeners and disconnects', () => {
     const { binding, observer } = start();
     binding.stop();

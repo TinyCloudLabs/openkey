@@ -50,7 +50,16 @@
     PROTOCOL_HEADLINE,
     PROTOCOL_HINT,
     sensitiveCallout,
+    abbreviateDid,
+    abbreviateSpaceId,
+    readSpaceHostFacts,
   } from "@openkey/capability-review";
+  import type { PeerRecognitionState } from "$lib/host-peer-recognition";
+  import {
+    isFramed,
+    watchFrameVisibility,
+    type FrameVisibilityBinding,
+  } from "$lib/frame-visibility-guard";
 
   interface Props {
     model: CapabilityReviewModel;
@@ -74,6 +83,12 @@
     context?: Snippet;
     /** Show which key signs; for users who chose one of several keys. */
     showSigner?: boolean;
+    /**
+     * Lookup state for the node key on a host approval. Leave unset where the
+     * key on the request is not a node (the `/delegate` session grant): the
+     * view then shows the space only.
+     */
+    peerRecognition?: PeerRecognitionState | null;
     onApprove: () => void;
     onCancel: () => void;
     onSelectionChange: (next: Set<string>) => void;
@@ -94,6 +109,7 @@
     cancelText = "Cancel",
     context,
     showSigner = false,
+    peerRecognition = null,
     onApprove,
     onCancel,
     onSelectionChange,
@@ -348,8 +364,7 @@
     return copied;
   }
 
-  async function copyRawMessage() {
-    const text = model.rawMessage;
+  async function writeClipboard(text: string): Promise<boolean> {
     let copied = false;
     if (
       typeof navigator !== "undefined" &&
@@ -371,14 +386,83 @@
         copied = false;
       }
     }
+    return copied;
+  }
+
+  async function copyRawMessage() {
+    const copied = await writeClipboard(model.rawMessage);
     copyState = copied ? "copied" : "failed";
     setTimeout(() => {
       copyState = "idle";
     }, 2000);
   }
 
+  // Space and node rows on a host approval. Derived from the bytes that are
+  // signed (`model.rawMessage`), for the grants currently selected.
+  const COPY_SPACE_ID = "Copy space ID";
+  const COPY_NODE_ID = "Copy node ID";
+  const COPIED = "Copied";
+  const NODE_CHECKING = "Checking the node…";
+  const NODE_NOT_CONFIRMED = "Not confirmed as a known TinyCloud node";
+  const NODE_NOT_CONFIRMED_NOTE = "Approving lets this node store and serve your new space.";
+  const WAIT_FOR_VISIBLE = "Approve becomes available once this window is fully visible.";
+
+  const hostFacts = $derived(readSpaceHostFacts(model, selection));
+  let copiedValue = $state<string | null>(null);
+
+  async function copyValue(value: string) {
+    if (!(await writeClipboard(value))) return;
+    copiedValue = value;
+    setTimeout(() => {
+      if (copiedValue === value) copiedValue = null;
+    }, 2000);
+  }
+
+  // Framed approval: Approve opens only while the summary and the button are
+  // fully visible and uncovered (see frame-visibility-guard.ts). Cancel is
+  // never gated. A page that is not framed is not gated.
+  const framed = typeof window !== "undefined" && isFramed();
+  let summaryElement = $state<HTMLElement | null>(null);
+  let approveElement = $state<HTMLButtonElement | null>(null);
+  let frameAllowed = $state(!framed);
+  let frameGuard: FrameVisibilityBinding | null = null;
+
+  $effect(() => {
+    if (!framed || !summaryElement || !approveElement) return;
+    const summary = summaryElement;
+    const binding = watchFrameVisibility(
+      [
+        {
+          name: "summary",
+          element: summary,
+          // A summary taller than this frame can never be fully inside it.
+          minRatio: () => Math.min(0.99, (window.innerHeight - 8) / Math.max(1, summary.getBoundingClientRect().height)),
+        },
+        { name: "button", element: approveElement },
+      ],
+      (allowed) => {
+        frameAllowed = allowed;
+      },
+    );
+    frameGuard = binding;
+    return () => {
+      binding.stop();
+      frameGuard = null;
+      frameAllowed = false;
+    };
+  });
+
+  function handleApproveClick(event: MouseEvent) {
+    if (framed && (!event.isTrusted || !frameGuard?.confirmNow())) return;
+    onApprove();
+  }
+
+  const nodeChecking = $derived(peerRecognition?.state === "checking");
+  const frameBlocked = $derived(framed && !frameAllowed);
   const approveDisabled = $derived(approving || isMalformedRecap);
-  const approveButtonDisabled = $derived(layoutBlocked || approveDisabled || Boolean(approveBlockedReason));
+  const approveButtonDisabled = $derived(
+    layoutBlocked || approveDisabled || Boolean(approveBlockedReason) || nodeChecking || frameBlocked,
+  );
   const approveLabel = $derived(
     isMalformedRecap
       ? "Cannot approve"
@@ -448,7 +532,7 @@
     Requester provenance and exact resource identifiers are deliberately kept
     in Advanced details so the first viewport is useful to ordinary users.
   -->
-  <section class="summary" aria-label="Requested access">
+  <section class="summary" aria-label="Requested access" bind:this={summaryElement}>
     {#if summaryStatements.length > 0}
       <ul class="summary-statements">
         {#each summaryStatements as statement (statement.key)}
@@ -471,6 +555,60 @@
           ? "No optional access selected."
           : "No capability payload — exact-byte signature only."}
       </p>
+    {/if}
+
+    {#if hostFacts}
+      <dl class="host-facts">
+        {#each hostFacts.spaces as space (space.spaceId)}
+          <div class="host-fact">
+            <dt class="host-fact-label">Space</dt>
+            <dd class="host-fact-value">
+              {#if space.spaceName}
+                <span class="host-fact-name">{space.spaceName}</span>
+              {/if}
+              <code class="mono" title={space.spaceId}>{space.spaceName ? abbreviateSpaceId(space.spaceId) : space.spaceId}</code>
+              <button
+                type="button"
+                class="copy-btn"
+                aria-label={copiedValue === space.spaceId ? COPIED : COPY_SPACE_ID}
+                title={copiedValue === space.spaceId ? COPIED : COPY_SPACE_ID}
+                onclick={() => copyValue(space.spaceId)}
+              >
+                {copiedValue === space.spaceId ? COPIED : COPY_SPACE_ID}
+              </button>
+            </dd>
+          </div>
+        {/each}
+        {#if hostFacts.peerDid && peerRecognition}
+          <div class="host-fact">
+            <dt class="host-fact-label">Node ID</dt>
+            <dd class="host-fact-value">
+              <code class="mono" title={hostFacts.peerDid}>{abbreviateDid(hostFacts.peerDid)}</code>
+              <button
+                type="button"
+                class="copy-btn"
+                aria-label={copiedValue === hostFacts.peerDid ? COPIED : COPY_NODE_ID}
+                title={copiedValue === hostFacts.peerDid ? COPIED : COPY_NODE_ID}
+                onclick={() => copyValue(hostFacts.peerDid ?? "")}
+              >
+                {copiedValue === hostFacts.peerDid ? COPIED : COPY_NODE_ID}
+              </button>
+            </dd>
+          </div>
+        {/if}
+      </dl>
+      {#if hostFacts.peerDid && peerRecognition}
+        <div class="host-node-status" id="host-node-status" role="status" aria-live="polite" data-node-state={peerRecognition.state}>
+          {#if peerRecognition.state === "checking"}
+            <p class="host-marker">{NODE_CHECKING}</p>
+          {:else if peerRecognition.state === "known"}
+            <p class="host-marker">Known TinyCloud node at <span class="mono">{peerRecognition.origin}</span></p>
+          {:else}
+            <p class="host-marker">{NODE_NOT_CONFIRMED}</p>
+            <p class="host-marker-note">{NODE_NOT_CONFIRMED_NOTE}</p>
+          {/if}
+        </div>
+      {/if}
     {/if}
   </section>
 
@@ -766,6 +904,8 @@
   {/if}
   {#if approveBlockedReason}
     <p class="approve-blocked" role="status" aria-live="polite">{approveBlockedReason}</p>
+  {:else if frameBlocked}
+    <p class="approve-blocked" role="status" aria-live="polite">{WAIT_FOR_VISIBLE}</p>
   {/if}
 
   <footer class="actions">
@@ -780,9 +920,11 @@
     <button
       type="button"
       class="approve"
-      onclick={onApprove}
+      bind:this={approveElement}
+      onclick={handleApproveClick}
       disabled={approveButtonDisabled}
       aria-disabled={approveButtonDisabled}
+      aria-describedby={nodeChecking ? "host-node-status" : undefined}
     >
       {approveLabel}
     </button>
@@ -938,6 +1080,70 @@
     font-size: 13px;
     line-height: 1.45;
     margin: 0;
+  }
+  .host-facts {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 0;
+    padding-top: 8px;
+    border-top: 1px solid #e2e8f0;
+  }
+  .host-fact {
+    display: grid;
+    grid-template-columns: 72px minmax(0, 1fr);
+    gap: 4px 10px;
+    align-items: start;
+  }
+  .host-fact-label {
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.6;
+    color: #475569;
+  }
+  .host-fact-value {
+    margin: 0;
+    min-width: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 8px;
+    overflow-wrap: anywhere;
+  }
+  .host-fact-name {
+    font-size: 13px;
+    font-weight: 700;
+    color: #0f172a;
+  }
+  .host-node-status {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 10px;
+    border: 1px solid #cbd5e1;
+    border-radius: 10px;
+    background: #fff;
+    font-size: 13px;
+    line-height: 1.45;
+    color: #0f172a;
+  }
+  .host-node-status[data-node-state="known"] {
+    border-color: #a7d7b8;
+    background: #f3fbf6;
+  }
+  .host-node-status[data-node-state="other"] {
+    border-color: #f1d28a;
+    background: #fffaf0;
+  }
+  .host-marker {
+    margin: 0;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+  }
+  .host-marker-note {
+    margin: 0;
+    font-size: 12px;
+    color: #475569;
   }
   .advanced-details {
     background: #fff;
