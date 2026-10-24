@@ -1,6 +1,7 @@
 import './tc1777-test-env';
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
+import { appIdValid } from '../services/key-resource';
 import { APP_KEY_GROUP_PARTIAL_MESSAGE, appKeyRefusalMessage } from '../services/app-key-refusal';
 import { bindWellKnownManifestBytes, canonicalManifestSha256Hex } from '../services/manifest-origin-fetch';
 import {
@@ -356,5 +357,29 @@ describe('the words for each admission failure', () => {
 
   test('every text is different', () => {
     expect(new Set(texts.map(([, text]) => text)).size).toBe(texts.length);
+  });
+});
+
+describe('a QA site at keys-qa.tinycloud.xyz with the app id xyz.tinycloud.keys-qa', () => {
+  const QA_APP_ID = 'xyz.tinycloud.keys-qa';
+  const QA_ORIGIN = 'https://keys-qa.tinycloud.xyz';
+
+  test('an interior hyphen in a label is a valid app id and a bound host', () => {
+    expect(appIdValid(QA_APP_ID)).toBe(true);
+    expect(appKeyOrigin(QA_ORIGIN, QA_ORIGIN)).toBe(QA_ORIGIN);
+    expect(hostBinding(QA_ORIGIN, QA_APP_ID)).toBe(true);
+  });
+
+  test('the same host does not bind another app id, and the app id does not bind another host', () => {
+    expect(hostBinding(QA_ORIGIN, 'xyz.tinycloud.keys')).toBe(false);
+    expect(hostBinding('https://keys.tinycloud.xyz', QA_APP_ID)).toBe(false);
+  });
+
+  test('the manifest the site serves yields the declared app id and keys', () => {
+    const manifest = { app_id: QA_APP_ID, name: 'Keys QA', keys: [{ prefix: `apps/${QA_APP_ID}/`, abilities: ['key.create', 'decrypt'] }] };
+    const result = bindWellKnownManifestBytes(new TextEncoder().encode(JSON.stringify(manifest)), canonicalManifestSha256Hex(manifest));
+    expect(result.ok).toBe(true);
+    expect(result.manifest!.declaredAppId).toBe(QA_APP_ID);
+    expect(result.manifest!.declaredKeys).toEqual({ status: 'valid', declarations: [{ prefix: `apps/${QA_APP_ID}/`, abilities: ['key.create', 'decrypt'] }] });
   });
 });

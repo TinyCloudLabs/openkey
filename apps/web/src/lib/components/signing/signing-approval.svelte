@@ -42,6 +42,7 @@
     CapabilityGrant,
     CapabilityReviewModel,
   } from "@openkey/capability-review";
+  import { formatAccessEnd } from "$lib/access-end";
   import {
     APP_KEY_GROUP_NOTE,
     appKeyAccessStatement,
@@ -227,7 +228,7 @@
   // App keys: the standing-access line follows the decrypt statements, and a
   // `key.delete` action is listed even though it is never selected.
   const appKeyAccessLine = $derived(
-    selectedGrants.some(grantIsAppKeyDecrypt) ? appKeyAccessStatement(model.expiry) : null,
+    selectedGrants.some(grantIsAppKeyDecrypt) ? appKeyAccessStatement(model.expiry, formatAccessEnd) : null,
   );
   const notGrantableStatements = $derived.by(() => {
     const rows = model.permissions.flatMap(appKeyNotGrantableStatements);

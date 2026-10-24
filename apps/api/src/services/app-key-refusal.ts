@@ -6,7 +6,7 @@
 // does not depend on how the wasm parser presents a resource. A message whose
 // ReCap cannot be read exactly is refused.
 
-import { isAppsKeyResource, isKeyDeleteAbility, parseKeyResource } from './key-resource';
+import { isAppsKeyResource, isKeyDeleteAbility, KEY_RESOURCE_PREFIX, parseKeyResource } from './key-resource';
 import { decodeHexUtf8, isSiweShaped } from './siwe-origin';
 
 export type AppKeyRefusalReason =
@@ -182,6 +182,27 @@ function recapResources(siwe: string): Array<[string, string[]]> | null {
 /** The `apps/` resources of a SIWE message with their abilities, as written. `null` when a ReCap cannot be read. */
 export function appKeyResourcesOf(siwe: string): Array<[string, string[]]> | null {
   return recapResources(siwe)?.filter(([resource]) => isAppsKeyResource(resource)) ?? null;
+}
+
+/** `key.block` and `key.unblock` under any namespace, compared like `key.delete`. */
+function isKeyBlockAbility(ability: string): boolean {
+  const name = ability.slice(ability.lastIndexOf('/') + 1).toLowerCase();
+  return name === 'key.block' || name === 'key.unblock';
+}
+
+/**
+ * The encryption resources of a SIWE message outside `apps/` that carry
+ * `key.block` or `key.unblock`: a bare network, a key or a prefix. The node
+ * does not tie these two abilities to the requesting host, so a browser
+ * request may name them only under its own `apps/<app id>/`.
+ */
+export function blockResourcesOutsideApps(siwe: string): Array<[string, string[]]> {
+  return (recapResources(siwe) ?? []).filter(
+    ([resource, abilities]) =>
+      resource.slice(0, KEY_RESOURCE_PREFIX.length).toLowerCase() === KEY_RESOURCE_PREFIX &&
+      !isAppsKeyResource(resource) &&
+      abilities.some(isKeyBlockAbility),
+  );
 }
 
 /**

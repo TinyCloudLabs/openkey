@@ -87,6 +87,7 @@ import {
   appKeyRefusalBody,
   appKeyRefusalCode,
   appKeyRefusalForSiwe,
+  blockResourcesOutsideApps,
   appKeyRefusalMessage,
   appKeyRefusalStatus,
   appKeyResourcesOf,
@@ -2456,6 +2457,16 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     }
     appKeyCandidate = true;
   }
+  // `key.block` and `key.unblock` on a key or prefix outside `apps/` take the
+  // same admission; no manifest lists such a key, so they are refused there.
+  const blockOutsideApps = blockResourcesOutsideApps(body.siwe);
+  if (blockOutsideApps.length > 0) {
+    if (ticket) {
+      const refusal = { reason: 'apps_key' } as const;
+      return c.json(appKeyRefusalBody(refusal, 'non_browser'), appKeyRefusalStatus(refusal));
+    }
+    appKeyCandidate = true;
+  }
   let boundDeclaredAppId: string | undefined;
   let boundDeclaredKeys: ManifestKeys | undefined;
 
@@ -2673,7 +2684,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
   if (appKeyCandidate) {
     const admission = admitAppKeys({
       siwe: body.siwe,
-      resources: appKeyResourcesOf(body.siwe) ?? [],
+      resources: [...(appKeyResourcesOf(body.siwe) ?? []), ...blockOutsideApps],
       requestOrigin: body.requestOrigin,
       reportedOrigin: body.reportedOrigin,
       siweOriginChecked,

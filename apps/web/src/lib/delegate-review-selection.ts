@@ -25,6 +25,37 @@ export function reviewGrantId(serverKey: string): string {
 }
 
 /**
+ * The server's action id for a capability-review action id, and back. The ids
+ * differ only for a raw encryption network, in the same way as the grant ids
+ * (`reviewGrantId`): `service\0<urn>\0\0ability` in the review model,
+ * `service\0encryption\0<urn>\0ability` at `/authorize-sign-preview` and
+ * `/authorize-sign`.
+ */
+export function serverActionId(reviewId: string): string {
+  const [service, space, path, ability] = reviewId.split('\0');
+  return service === RAW_ENCRYPTION_SERVICE && path === '' && space?.startsWith(RAW_ENCRYPTION_PREFIX)
+    ? `${service}\0${RAW_ENCRYPTION_SPACE}\0${space}\0${ability}`
+    : reviewId;
+}
+
+export function reviewActionId(serverId: string): string {
+  const [service, space, path, ability] = serverId.split('\0');
+  return service === RAW_ENCRYPTION_SERVICE && space === RAW_ENCRYPTION_SPACE && path?.startsWith(RAW_ENCRYPTION_PREFIX)
+    ? `${service}\0${path}\0\0${ability}`
+    : serverId;
+}
+
+/** The ids the approval view sends to the server for the selected actions. */
+export function selectedServerActionIds(
+  model: CapabilityReviewModel,
+  selection: ReadonlySet<string>,
+): string[] {
+  return model.permissions.flatMap((grant) =>
+    grant.actions.filter((action) => selection.has(action.id)).map((action) => serverActionId(action.id)),
+  );
+}
+
+/**
  * Translate a capability-review selection (Set of client-side action IDs)
  * into the server's actionKey strings.
  *

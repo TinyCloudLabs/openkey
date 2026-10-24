@@ -9,6 +9,10 @@
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
   import { validatePreviewSelection } from '$lib/preview-review';
   import {
+    reviewActionId,
+    selectedServerActionIds,
+  } from '$lib/delegate-review-selection';
+  import {
     parseCapabilityReview,
     parseSiweChainId,
     defaultSelection,
@@ -545,18 +549,9 @@
     return reviewModel.protocol !== 'malformed-recap';
   }
 
-  // Convert the current review selection to canonical action IDs.
+  // The ids of the current review selection as the server spells them.
   function currentSelectedActionIds(): string[] {
-    if (!reviewModel) return [];
-    const out: string[] = [];
-    for (const grant of reviewModel.permissions) {
-      for (const action of grant.actions) {
-        if (reviewSelection.has(action.id)) {
-          out.push(action.id);
-        }
-      }
-    }
-    return out;
+    return reviewModel ? selectedServerActionIds(reviewModel, reviewSelection) : [];
   }
 
   // Sol CRITICAL-1: preview step. Issues (or re-uses) an authorization
@@ -725,7 +720,9 @@
       if (typeof previewResult.previewApprovalToken !== 'string' || !previewResult.previewApprovalToken) {
         throw new Error('authorize-sign-preview did not return a previewApprovalToken — server is out of date');
       }
-      reviewSelection = validatePreviewSelection(previewResult, requestedActionIds);
+      reviewSelection = new Set(
+        [...validatePreviewSelection(previewResult, requestedActionIds)].map(reviewActionId),
+      );
       previewSignedMessage = previewResult.signedMessage;
       previewApprovalToken = previewResult.previewApprovalToken;
     } catch (e: any) {
