@@ -6,8 +6,10 @@ name: Register OAuth Client
 # client_id together with tinycloud_native_delegation (dry run by default).
 # OpenKey uses pre-registered clients only, and the prod ADMIN_API_KEY lives
 # solely in the Phala CVM env — this workflow provides an auditable
-# registration path using the same DATABASE_URL secret the deploy workflow's
-# schema-sync step already uses. Client ids are public, so log output is safe.
+# registration path. The job runs in the `production` environment (as
+# deploy-api does): a dispatch waits for that environment's required reviewer,
+# and DATABASE_URL is read from the environment's secret of that name.
+# Client ids are public, so log output is safe.
 
 on:
   workflow_dispatch:
@@ -41,7 +43,7 @@ on:
         description: 'Brand accent color as #rrggbb (optional); on update, empty leaves unchanged and none clears'
         required: false
       tinycloud_native_delegation:
-        description: 'Native delegation ceiling JSON (optional). With client_id it is the full replacement ceiling, e.g. {"version":1,"appId":"com.example.app","tinycloudHost":"https://tee.node.tinycloud.xyz","kv":{"paths":["com.example.app/data/"],"actions":["get","put"]},"sql":null}'
+        description: 'Native delegation ceiling JSON (optional). With client_id it replaces the stored ceiling; appId and siweDomain are kept from the stored ceiling and must be left out, e.g. {"version":1,"tinycloudHost":"https://tee.node.tinycloud.xyz","kv":{"paths":["com.example.app/data/"],"actions":["get","put"]},"sql":null}'
         required: false
       dry_run:
         description: 'Ceiling update only: the ceiling is written only when this is false; otherwise BEFORE, AFTER and the diff are printed and nothing is written (default true)'
@@ -49,7 +51,7 @@ on:
         type: boolean
         default: true
       allow_narrow:
-        description: 'Ceiling update only: permit a ceiling that removes or reduces existing entries (default false)'
+        description: 'Ceiling update only: permit a ceiling that removes existing kv paths, sql databases or actions, or reduces a limit (default false)'
         required: false
         type: boolean
         default: false
@@ -57,6 +59,7 @@ on:
 jobs:
   register:
     runs-on: ubuntu-latest
+    environment: production
     steps:
       - name: Checkout
         uses: actions/checkout@v4

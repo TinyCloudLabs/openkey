@@ -29,17 +29,21 @@
  *
  * Ceiling update (CLIENT_ID + CLIENT_TINYCLOUD_NATIVE_DELEGATION):
  *   The value is validated by the same validator the admin API PATCH uses and
- *   replaces the whole stored ceiling. The BEFORE and AFTER ceilings and the
- *   entry-level diff are printed (ceiling config only). Adding entries is
- *   allowed. A value that removes an entry, or reduces a limit, is refused
- *   unless --allow-narrow is passed. It cannot be combined with branding,
+ *   replaces the stored tinycloudNativeDelegation; no other column changes. For
+ *   a client that already has a ceiling, appId and siweDomain are kept from the
+ *   stored value and must not be in the supplied one, and tinycloudHost must
+ *   equal the stored host. The BEFORE and AFTER ceilings, the kept values and
+ *   the entry-level diff are printed (ceiling config only). Adding entries is
+ *   allowed. A value that removes a kv path, sql database or action, or reduces
+ *   a limit, is refused unless --allow-narrow is passed; no flag allows a change
+ *   of appId, siweDomain or tinycloudHost. It cannot be combined with branding,
  *   redirect URI, type or website values.
  *   A ceiling update is a dry run unless --apply is passed: without it the
  *   BEFORE, AFTER and diff are printed and nothing is written.
  *   --apply               Write the ceiling.
  *   --dry-run             Same as passing neither flag (accepted for clarity);
  *                         cannot be combined with --apply.
- *   --allow-narrow        Permit a ceiling that removes or reduces entries.
+ *   --allow-narrow        Permit a ceiling that removes entries or reduces limits.
  *
  * Idempotent: if an active client with the same name already exists, it is
  * printed and no new client is created.

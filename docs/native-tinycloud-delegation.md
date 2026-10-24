@@ -271,17 +271,26 @@ client's name and branding; redirect URIs, scopes, type, and delegation ceiling
 stay untouched. Icons must use HTTPS.
 
 Set `client_id` together with `tinycloud_native_delegation` to replace that
-native client's ceiling with the full value supplied (the same validation and
-whole-value replacement as the admin PATCH). The run prints the BEFORE and AFTER
-ceiling and the entry-level diff. Added entries are applied. A value that
-removes an existing kv path, sql database or action, or reduces a limit or
-changes `appId`, `tinycloudHost` or `siweDomain`, is refused with the entries
-listed unless `allow_narrow` is set (`--allow-narrow` on the command line).
+native client's ceiling with the value supplied (the same validation and
+whole-value replacement as the admin PATCH). A ceiling update changes only
+`tinycloudNativeDelegation`. For a client that already has a ceiling, `appId`
+and `siweDomain` are kept from the stored value: leave both out of the value
+supplied (a value that carries either one is refused, even when it matches the
+stored one), and `tinycloudHost` must equal the stored host. A client that has
+no ceiling yet takes its `appId` from the value. The run prints the BEFORE and
+AFTER ceiling, the kept `appId` and `siweDomain`, and the entry-level diff.
+Added entries are applied. A value that removes an existing kv path, sql
+database or action, or reduces a limit, is refused with the entries listed
+unless `allow_narrow` is set (`--allow-narrow` on the command line); no flag
+allows a change of `appId`, `siweDomain` or `tinycloudHost`.
 A ceiling update is a dry run unless it is applied explicitly: the script
 writes only with `--apply`, and the workflow passes `--apply` only when
 `dry_run` is exactly `false` (default `true`; an empty or any other value is a
 dry run). A dry run prints the same output and writes nothing. Branding,
 redirect URI, type and website values cannot be combined with a ceiling update.
+The workflow job runs in the `production` environment, like the API deploy: a
+dispatch waits until that environment's required reviewer approves it, and
+`DATABASE_URL` is read from the environment's secret of that name.
 For example, a dry run, then the write, from the command line:
 `gh workflow run register-oauth-client.yml --repo TinyCloudLabs/openkey -f client_id=<id> -f tinycloud_native_delegation="$(cat ceiling.json)"`
 and the same with `-f dry_run=false` added. Set only `client_id`,

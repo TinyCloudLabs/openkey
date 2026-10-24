@@ -69,6 +69,16 @@ const EXO_CEILING = {
   sql: { ...DOC_CEILING.sql, databases: [...DOC_CEILING.sql.databases, ...EXO_SQL] },
 };
 
+/**
+ * The supplied form of a ceiling for an existing client: appId and siweDomain
+ * are kept from the stored ceiling, so they are not part of the supplied value.
+ */
+function suppliedCeiling(ceiling: unknown): unknown {
+  if (!ceiling || typeof ceiling !== 'object' || Array.isArray(ceiling)) return ceiling;
+  const { appId: _appId, siweDomain: _siweDomain, ...rest } = ceiling as Record<string, unknown>;
+  return rest;
+}
+
 // Records the client id of every UPDATE the database sees on oauth_client.
 const UPDATE_AUDIT_SQL = `
   CREATE TABLE tc1990_update_audit (client_id text NOT NULL);
@@ -134,11 +144,13 @@ describe('native ceiling update (PGlite, tracked migrations)', () => {
     return client;
   }
 
-  async function run(clientId: string, ceiling: unknown, options: { dryRun?: boolean; allowNarrow?: boolean } = {}) {
+  /** Runs the update; appId and siweDomain are left out of the supplied value unless `identity` is set. */
+  async function run(clientId: string, ceiling: unknown, options: { dryRun?: boolean; allowNarrow?: boolean; identity?: boolean } = {}) {
     const lines: string[] = [];
+    const supplied = options.identity ? ceiling : suppliedCeiling(ceiling);
     const result = await updateNativeCeiling(prisma, {
       clientId,
-      rawCeiling: typeof ceiling === 'string' ? ceiling : JSON.stringify(ceiling),
+      rawCeiling: typeof supplied === 'string' ? supplied : JSON.stringify(supplied),
       dryRun: options.dryRun ?? false,
       allowNarrow: options.allowNarrow ?? false,
       log: (line) => lines.push(line),
@@ -192,13 +204,13 @@ describe('native ceiling update (PGlite, tracked migrations)', () => {
       const client = await seed();
       const { result } = await run(client.clientId, { ...DOC_CEILING, maxDelegationTtlSeconds: 7200 });
       expect(result.outcome).toBe('written');
-      expect(result.diff).toEqual({ added: [], removed: [], changed: ['maxDelegationTtlSeconds: 3600 -> 7200'] });
+      expect(result.diff).toEqual({ added: [], removed: [], changed: ['maxDelegationTtlSeconds: 3600 -> 7200'], fixed: [] });
     });
 
     test('a client without a ceiling receives one and the delegation scope', async () => {
       const client = await seed({ ceiling: null });
       expect(client.scopes).not.toContain(DELEGATION_SCOPE);
-      const { result, output } = await run(client.clientId, EXO_CEILING);
+      const { result, output } = await run(client.clientId, EXO_CEILING, { identity: true });
       expect(result.outcome).toBe('written');
       expect(output).toContain('BEFORE: none');
       expect((await row(client.clientId)).scopes).toContain(DELEGATION_SCOPE);
@@ -218,7 +230,7 @@ describe('native ceiling update (PGlite, tracked migrations)', () => {
 
     test('a stored value that fails validation is replaced, and its raw content is not printed', async () => {
       const client = await seed({ ceiling: { version: 9, marker: 'tc1990-raw-marker' } });
-      const { result, output } = await run(client.clientId, EXO_CEILING);
+      const { result, output } = await run(client.clientId, EXO_CEILING, { identity: true });
       expect(result.outcome).toBe('written');
       expect(output).toContain('BEFORE: not valid under the current policy');
       expect(output).not.toContain('tc1990-raw-marker');
@@ -226,7 +238,6 @@ describe('native ceiling update (PGlite, tracked migrations)', () => {
   });
 
   describe('narrowing', () => {
-    const rebased = (path: string) => path.replace(APP, 'xyz.tinycloud.other');
     const cases: Array<[string, unknown, string[]]> = [
       ['a kv path', { ...DOC_CEILING, kv: { ...DOC_CEILING.kv, paths: [`${APP}/threads/`] } }, [`kv.paths: ${APP}/connectors/`]],
       ['a kv action', { ...DOC_CEILING, kv: { ...DOC_CEILING.kv, actions: ['get', 'put', 'list', 'del'] } }, ['kv.actions: metadata']],
@@ -238,14 +249,6 @@ describe('native ceiling update (PGlite, tracked migrations)', () => {
       ]],
       ['maxDelegationTtlSeconds', { ...DOC_CEILING, maxDelegationTtlSeconds: 1800 }, ['maxDelegationTtlSeconds: 3600 -> 1800']],
       ['grantLifetimeSeconds', { ...DOC_CEILING, grantLifetimeSeconds: 86400 }, ['grantLifetimeSeconds: 2592000 -> 86400']],
-      ['the siweDomain', { ...DOC_CEILING, siweDomain: 'example.test' }, ['siweDomain: openkey.so -> example.test']],
-      ['the tinycloudHost', { ...DOC_CEILING, tinycloudHost: 'https://node.tinycloud.xyz' }, [`tinycloudHost: ${HOST} -> https://node.tinycloud.xyz`]],
-      ['the appId', {
-        ...DOC_CEILING,
-        appId: 'xyz.tinycloud.other',
-        kv: { ...DOC_CEILING.kv, paths: DOC_CEILING.kv.paths.map(rebased) },
-        sql: { ...DOC_CEILING.sql, databases: DOC_CEILING.sql.databases.map(rebased) },
-      }, [`appId: ${APP} -> xyz.tinycloud.other`, `kv.paths: ${APP}/threads/`, `sql.databases: ${APP}/canvas`]],
     ];
 
     test.each(cases)('removing %s is refused with the removed entries named, and nothing is written', async (_label, ceiling, removed) => {
@@ -279,7 +282,6 @@ describe('native ceiling update (PGlite, tracked migrations)', () => {
 
   describe('malformed values', () => {
     const { version: _version, ...withoutVersion } = DOC_CEILING;
-    const { appId: _appId, ...withoutAppId } = DOC_CEILING;
     const { tinycloudHost: _host, ...withoutHost } = DOC_CEILING;
     const { kv: _kv, ...withoutKv } = DOC_CEILING;
     const malformed: Array<[string, unknown]> = [
@@ -289,7 +291,6 @@ describe('native ceiling update (PGlite, tracked migrations)', () => {
       ['a string', 'text'],
       ['version 2', { ...DOC_CEILING, version: 2 }],
       ['no version', withoutVersion],
-      ['no appId', withoutAppId],
       ['no tinycloudHost', withoutHost],
       ['no kv', withoutKv],
       ['only the new entries', { kv: { paths: EXO_KV, actions: ['get'] } }],
@@ -309,6 +310,77 @@ describe('native ceiling update (PGlite, tracked migrations)', () => {
     });
   });
 
+  describe('a ceiling update changes the ceiling only', () => {
+    test('a successful update leaves appId, siweDomain and every other column untouched', async () => {
+      const client = await seed();
+      await run(client.clientId, EXO_CEILING);
+      const stored = await row(client.clientId);
+      const config = validateNativeDelegationConfig(stored.tinycloudNativeDelegation, stored);
+      expect(config.appId).toBe(APP);
+      expect(config.siweDomain).toBe('openkey.so');
+      const { tinycloudNativeDelegation: _storedCeiling, updatedAt: _storedAt, ...storedColumns } = stored;
+      const { tinycloudNativeDelegation: _seededCeiling, updatedAt: _seededAt, ...seededColumns } = client;
+      expect(storedColumns).toEqual(seededColumns);
+    });
+
+    test('a stored ceiling without a siweDomain stays without one', async () => {
+      const { siweDomain: _siweDomain, ...bare } = DOC_CEILING;
+      const client = await seed({ ceiling: bare });
+      const { result, output } = await run(client.clientId, EXO_CEILING);
+      expect(result.outcome).toBe('written');
+      expect(output).toContain('siweDomain = openkey.so (default)');
+      const stored = await row(client.clientId);
+      expect(Object.hasOwn(validateNativeDelegationConfig(stored.tinycloudNativeDelegation, stored), 'siweDomain')).toBe(false);
+    });
+
+    const passed: Array<[string, Record<string, string>]> = [
+      ['the same appId', { appId: APP }],
+      ['another appId', { appId: 'xyz.tinycloud.other' }],
+      ['the same siweDomain', { siweDomain: 'openkey.so' }],
+      ['another siweDomain', { siweDomain: 'example.test' }],
+      ['both', { appId: 'xyz.tinycloud.other', siweDomain: 'example.test' }],
+    ];
+
+    test.each(passed)('passing %s is refused, with or without allowNarrow, and nothing is written', async (_label, fields) => {
+      const client = await seed();
+      const snapshot = await row(client.clientId);
+      for (const allowNarrow of [false, true]) {
+        const failure = await run(client.clientId, { ...suppliedCeiling(EXO_CEILING) as object, ...fields }, { allowNarrow, identity: true })
+          .catch((error: unknown) => error);
+        expect(failure).toBeInstanceOf(NativeCeilingRefusedError);
+        expect((failure as Error).message).toContain('cannot be passed or changed');
+      }
+      await expectUntouched(client.clientId, snapshot);
+    });
+
+    test('a different tinycloudHost is refused even with allowNarrow', async () => {
+      const client = await seed();
+      const snapshot = await row(client.clientId);
+      const moved = { ...DOC_CEILING, tinycloudHost: 'https://node.tinycloud.xyz' };
+      for (const allowNarrow of [false, true]) {
+        const failure = await run(client.clientId, moved, { allowNarrow }).catch((error: unknown) => error);
+        expect(failure).toBeInstanceOf(NativeCeilingRefusedError);
+        expect((failure as Error).message).toContain(`  ! tinycloudHost: ${HOST} -> https://node.tinycloud.xyz`);
+      }
+      await expectUntouched(client.clientId, snapshot);
+    });
+
+    test('a stored value that fails validation still keeps its appId', async () => {
+      const client = await seed({ ceiling: { version: 9, appId: APP } });
+      await expect(run(client.clientId, EXO_CEILING, { identity: true })).rejects.toBeInstanceOf(NativeCeilingRefusedError);
+      const { result } = await run(client.clientId, EXO_CEILING);
+      expect(result.outcome).toBe('written');
+      expect(result.after.appId).toBe(APP);
+    });
+
+    test('a client without a ceiling has to supply its appId', async () => {
+      const client = await seed({ ceiling: null });
+      const snapshot = await row(client.clientId);
+      await expect(run(client.clientId, EXO_CEILING)).rejects.toThrow('appId is invalid');
+      await expectUntouched(client.clientId, snapshot);
+    });
+  });
+
   describe('dry run', () => {
     test('prints BEFORE, AFTER and the diff, and issues no UPDATE', async () => {
       const client = await seed();
@@ -317,6 +389,7 @@ describe('native ceiling update (PGlite, tracked migrations)', () => {
       expect(result.outcome).toBe('dry-run');
       expect(output).toContain(`BEFORE: ${sortedJson(DOC_CEILING)}`);
       expect(output).toContain(`AFTER: ${sortedJson(EXO_CEILING)}`);
+      expect(output).toContain(`KEPT (not changed by this run): appId = ${APP}; siweDomain = openkey.so`);
       for (const path of EXO_KV) expect(output).toContain(`  + kv.paths: ${path}`);
       for (const name of EXO_SQL) expect(output).toContain(`  + sql.databases: ${name}`);
       expect(output).toContain('DRY RUN: nothing written');
@@ -396,7 +469,7 @@ describe('native ceiling update (PGlite, tracked migrations)', () => {
     test('treats an absent siweDomain as the default domain', () => {
       const withDefault = validateNativeDelegationConfig(DOC_CEILING, client);
       const { siweDomain: _siwe, ...bare } = DOC_CEILING;
-      expect(diffNativeCeilings(withDefault, validateNativeDelegationConfig(bare, client))).toEqual({ added: [], removed: [], changed: [] });
+      expect(diffNativeCeilings(withDefault, validateNativeDelegationConfig(bare, client))).toEqual({ added: [], removed: [], changed: [], fixed: [] });
     });
   });
 });
@@ -465,7 +538,7 @@ describe('ci-register-oauth-client.ts', () => {
 
   const ceilingEnv = (clientId: string, ceiling: unknown) => ({
     CLIENT_ID: clientId,
-    CLIENT_TINYCLOUD_NATIVE_DELEGATION: JSON.stringify(ceiling),
+    CLIENT_TINYCLOUD_NATIVE_DELEGATION: JSON.stringify(suppliedCeiling(ceiling)),
   });
 
   /** How many UPDATE statements the database has seen for this client. */
@@ -535,6 +608,27 @@ describe('ci-register-oauth-client.ts', () => {
     const stored = await storedOf(client.clientId);
     expect(validateNativeDelegationConfig(stored.tinycloudNativeDelegation, stored).sql).toBeNull();
     expect(await updatesOf(client.clientId)).toBe(1);
+  }, 240_000);
+
+  test('appId and siweDomain cannot be passed for an existing client, and an update keeps them', async () => {
+    const client = await withDatabase((prisma) => seedClient(prisma));
+    for (const extra of [{ appId: APP }, { appId: 'xyz.tinycloud.other' }, { siweDomain: 'example.test' }]) {
+      const refused = await script(['--apply', '--allow-narrow'], {
+        CLIENT_ID: client.clientId,
+        CLIENT_TINYCLOUD_NATIVE_DELEGATION: JSON.stringify({ ...suppliedCeiling(EXO_CEILING) as object, ...extra }),
+      });
+      expect(refused.exitCode).toBe(1);
+      expect(refused.stderr).toContain('cannot be passed or changed');
+    }
+    expect(await storedOf(client.clientId)).toEqual(client);
+    expect(await updatesOf(client.clientId)).toBe(0);
+
+    const applied = await script(['--apply'], ceilingEnv(client.clientId, EXO_CEILING));
+    expect(applied.exitCode, applied.stderr).toBe(0);
+    expect(applied.stdout).toContain(`KEPT (not changed by this run): appId = ${APP}; siweDomain = openkey.so`);
+    const stored = await storedOf(client.clientId);
+    const config = validateNativeDelegationConfig(stored.tinycloudNativeDelegation, stored);
+    expect([config.appId, config.siweDomain]).toEqual([APP, 'openkey.so']);
   }, 240_000);
 
   test('a ceiling cannot be combined with branding fields, and the flags need a ceiling', async () => {
