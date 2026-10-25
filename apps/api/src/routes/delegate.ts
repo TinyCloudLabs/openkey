@@ -307,7 +307,13 @@ delegateRouter.use('*', async (c, next) => {
   // Hono answers a handler that returns nothing with an empty 200.
   const bearerError = bearerFromOpenKeyOriginError(c.req.header('authorization'), c.req.header('origin'));
   if (bearerError) return c.json({ error: bearerError }, 403);
-  return (requireSession as any)(c, next);
+  // session.ts answers `{ error: 'Unauthorized' }` to every route that uses it;
+  // the delegate routes add a stable code the widget can match on.
+  const refusal = await (requireSession as any)(c, next);
+  if (refusal instanceof Response && refusal.status === 401) {
+    return c.json({ error: 'Unauthorized', code: 'session_required' }, 401);
+  }
+  return refusal;
 });
 
 // Route-layer alias for the CLI permission entry shape. Keeps existing route
