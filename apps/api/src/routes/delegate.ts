@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { createTeeClient } from '@openkey/tee';
-import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
+import { bearerFromOpenKeyOriginError } from '../middleware/bearer-origin';
 import { requireSession } from '../middleware/session';
 import {
   createDelegateSignerAuth,
@@ -303,7 +303,11 @@ delegateRouter.use('*', async (c, next) => {
   if (c.req.path.endsWith('/sign')) {
     return activeDelegateSignerAuth(c, next);
   }
-  return (requireOpenKeyOriginForBearer as any)(c, () => (requireSession as any)(c, next));
+  // The refusals are returned, not awaited: this router has its own onError, so
+  // Hono answers a handler that returns nothing with an empty 200.
+  const bearerError = bearerFromOpenKeyOriginError(c.req.header('authorization'), c.req.header('origin'));
+  if (bearerError) return c.json({ error: bearerError }, 403);
+  return (requireSession as any)(c, next);
 });
 
 // Route-layer alias for the CLI permission entry shape. Keeps existing route
