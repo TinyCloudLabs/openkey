@@ -80,12 +80,20 @@ import {
 import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
 import { checkSiweOrigin } from '../services/siwe-origin';
 import {
+  APP_KEY_GROUP_PARTIAL_CODE,
+  APP_KEY_GROUP_PARTIAL_MESSAGE,
+  admittedAppKeyActionIds,
+  appKeyGroupPartial,
   appKeyRefusalBody,
   appKeyRefusalCode,
   appKeyRefusalForSiwe,
+  blockResourcesOutsideApps,
   appKeyRefusalMessage,
   appKeyRefusalStatus,
+  appKeyResourcesOf,
+  type AdmittedAppKey,
 } from '../services/app-key-refusal';
+import { admitAppKeys, appKeyAdmissionRefusal, type ManifestKeys } from '../services/app-key-gate';
 import { fetchAndBindWellKnownManifest } from '../services/manifest-origin-fetch';
 import { signManagedKey, unsealManagedKey } from '../services/managed-key-signing';
 import {
@@ -929,13 +937,10 @@ delegateRouter.post('/sign', async (c) => {
       },
     });
     if (!policy.allowed) return auditDenial(policy.code, policy.evidence);
-    const coordinationosAppKeyRefusal = typeof candidate.message === 'string' ? appKeyRefusalForSiwe(candidate.message) : null;
-    if (coordinationosAppKeyRefusal) {
-      return c.json({
-        approved: false,
-        code: appKeyRefusalCode(coordinationosAppKeyRefusal),
-        reason: appKeyRefusalMessage(coordinationosAppKeyRefusal, 'non_browser'),
-      }, appKeyRefusalStatus(coordinationosAppKeyRefusal));
+    // A message that names an app key or key.delete is outside the approved
+    // storage records: it is denied and recorded like every other denial.
+    if (typeof candidate.message === 'string' && appKeyRefusalForSiwe(candidate.message)) {
+      return auditDenial('wrong_capability', policy.evidence);
     }
     if (!key || !key.sealedBlob || !policy.evidence.nonceDigest) {
       return auditDenial('key_unavailable', policy.evidence);
@@ -2352,11 +2357,13 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
   // requester, or that arrives unattributed. Prepared-handoff tickets are
   // exempt: their request was bound at claim time and the requester is a
   // local CLI, not a browser origin.
+  let siweOriginChecked = false;
   if (!ticket && typeof body.siwe === 'string') {
     const siweCheck = checkSiweOrigin(body.siwe, body.requestOrigin);
     if (siweCheck.siwe && !siweCheck.ok) {
       return c.json({ error: siweCheck.message, code: 'siwe_origin_refused', reason: siweCheck.code }, 403);
     }
+    siweOriginChecked = siweCheck.siwe && siweCheck.ok;
   }
   const handoffTicketHash = ticket
     ? await activePreparedHandoffService.assertRequest(ticket, user.id, {
@@ -2409,10 +2416,30 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       400,
     );
   }
+  // Messages that name key.delete, an unreadable recap or an unparsable
+  // `apps/` key are refused here. A well-formed `apps/` grant from a browser
+  // request is admitted or refused after the manifest bind below; a ticket
+  // request carries no origin and is always refused.
   const prepareSignAppKeyRefusal = appKeyRefusalForSiwe(body.siwe, originalEntries);
+  let appKeyCandidate = false;
   if (prepareSignAppKeyRefusal) {
-    return c.json(appKeyRefusalBody(prepareSignAppKeyRefusal, ticket ? 'non_browser' : 'browser'), appKeyRefusalStatus(prepareSignAppKeyRefusal));
+    if (prepareSignAppKeyRefusal.reason !== 'apps_key' || ticket) {
+      return c.json(appKeyRefusalBody(prepareSignAppKeyRefusal, ticket ? 'non_browser' : 'browser'), appKeyRefusalStatus(prepareSignAppKeyRefusal));
+    }
+    appKeyCandidate = true;
   }
+  // `key.block` and `key.unblock` on a key or prefix outside `apps/` take the
+  // same admission; no manifest lists such a key, so they are refused there.
+  const blockOutsideApps = blockResourcesOutsideApps(body.siwe);
+  if (blockOutsideApps.length > 0) {
+    if (ticket) {
+      const refusal = { reason: 'apps_key' } as const;
+      return c.json(appKeyRefusalBody(refusal, 'non_browser'), appKeyRefusalStatus(refusal));
+    }
+    appKeyCandidate = true;
+  }
+  let boundDeclaredAppId: string | undefined;
+  let boundDeclaredKeys: ManifestKeys | undefined;
 
   const keyAddress = ensureEip55(key.address);
   // Sol MAJOR-2: parse chainId from the SIWE rather than hard-coding it.
@@ -2597,6 +2624,8 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
                 reportedOrigin,
                 declaredAppScope,
               };
+              boundDeclaredAppId = bindResult.manifest?.declaredAppId;
+              boundDeclaredKeys = bindResult.manifest?.declaredKeys;
             } else {
               metadataTrust = {
                 status: 'unsigned',
@@ -2617,6 +2646,38 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
         }
       }
     }
+  }
+
+  // `apps/` encryption key grants are admitted only here, where the manifest
+  // that was fetched from the requesting origin is at hand. Every failure is a
+  // refusal: unlike the manifest label above, nothing falls back to `unsigned`.
+  let admittedAppKeys: AdmittedAppKey[] | undefined;
+  if (appKeyCandidate) {
+    const admission = admitAppKeys({
+      siwe: body.siwe,
+      resources: [...(appKeyResourcesOf(body.siwe) ?? []), ...blockOutsideApps],
+      requestOrigin: body.requestOrigin,
+      reportedOrigin: body.reportedOrigin,
+      siweOriginChecked,
+      ticket: Boolean(ticket),
+      manifestBound: metadataTrust.status === 'origin-bound',
+      declaredAppId: boundDeclaredAppId,
+      declaredKeys: boundDeclaredKeys,
+      ownerDid: `did:pkh:eip155:${chainId}:${keyAddress}`,
+      expirationTime: immutable.expirationTime,
+    });
+    if (!admission.ok) {
+      const refusal = appKeyAdmissionRefusal(admission.reason);
+      return c.json(
+        appKeyRefusalBody(refusal, admission.reason === 'non_browser' ? 'non_browser' : 'browser'),
+        appKeyRefusalStatus(refusal),
+      );
+    }
+    // Every `apps/` resource of the message, as the parser and the text scan
+    // both see it, must be one of the admitted resources.
+    const notAdmitted = appKeyRefusalForSiwe(body.siwe, originalEntries, admission.admitted);
+    if (notAdmitted) return c.json(appKeyRefusalBody(notAdmitted, 'browser'), appKeyRefusalStatus(notAdmitted));
+    admittedAppKeys = admission.admitted;
   }
 
   let issued: AuthorizationContextToken;
@@ -2640,6 +2701,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       // The widget-reported sender origin of the requesting app. Used only for
       // the per-sign-in count record; never for trust or authority.
       appOrigin: normalizeAppOrigin(body.reportedOrigin) ?? undefined,
+      admittedAppKeys,
     });
   } catch (issueErr) {
     logError('warn', 'delegate_authorization_context_issue_failed', issueErr);
@@ -2870,6 +2932,13 @@ delegateRouter.post('/authorize-sign', async (c) => {
     chainId,
     spaceId: bound.spaceId,
   });
+  if (appKeyGroupPartial(
+    admittedAppKeyActionIds(originalEntries, bound.admittedAppKeys, computeActionKey),
+    allowedActionIdSet(originalEntries),
+    selectedActionIds,
+  )) {
+    return c.json({ error: APP_KEY_GROUP_PARTIAL_MESSAGE, code: APP_KEY_GROUP_PARTIAL_CODE }, 400);
+  }
 
   // Sol MAJOR-4: attenuation-subset check against the caveat-inclusive
   // baseline. We build the candidate attenuation from the SELECTED
@@ -3092,7 +3161,7 @@ delegateRouter.post('/authorize-sign', async (c) => {
   const effectiveSelectedActionKeys = effectiveEntries.flatMap((entry) =>
     entry.actions.map((action) => computeActionKey(entry, action)),
   );
-  const signedAppKeyRefusal = appKeyRefusalForSiwe(signedMessage, effectiveEntries);
+  const signedAppKeyRefusal = appKeyRefusalForSiwe(signedMessage, effectiveEntries, bound.admittedAppKeys);
   if (signedAppKeyRefusal) {
     return c.json(appKeyRefusalBody(signedAppKeyRefusal, ticket ? 'non_browser' : 'browser'), appKeyRefusalStatus(signedAppKeyRefusal));
   }
@@ -3218,6 +3287,13 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     chainId,
     spaceId: bound.spaceId,
   });
+  if (appKeyGroupPartial(
+    admittedAppKeyActionIds(originalEntries, bound.admittedAppKeys, computeActionKey),
+    allowedActionIdSet(originalEntries),
+    selectedActionIds,
+  )) {
+    return c.json({ error: APP_KEY_GROUP_PARTIAL_MESSAGE, code: APP_KEY_GROUP_PARTIAL_CODE }, 400);
+  }
   // Every requested selected action MUST be in the bound allowed set.
   const allowedSet = new Set(bound.allowedActionIds);
   for (const id of selectedActionIds) {
@@ -3320,7 +3396,7 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
   // rationale — the widget's `validatePreviewSelection` requires the
   // per-permission projection to equal the returned selected keys).
   const previewEntries = parsePreparedRecap(preparedSignedMessage);
-  const previewAppKeyRefusal = appKeyRefusalForSiwe(preparedSignedMessage, previewEntries);
+  const previewAppKeyRefusal = appKeyRefusalForSiwe(preparedSignedMessage, previewEntries, bound.admittedAppKeys);
   if (previewAppKeyRefusal) {
     return c.json(appKeyRefusalBody(previewAppKeyRefusal, ticket ? 'non_browser' : 'browser'), appKeyRefusalStatus(previewAppKeyRefusal));
   }

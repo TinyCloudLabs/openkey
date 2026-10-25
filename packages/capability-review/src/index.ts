@@ -15,6 +15,7 @@ export * from "./subset.js";
 export * from "./restrict.js";
 export * from "./metadata.js";
 export * from "./copy.js";
+export * from "./app-identity.js";
 export * from "./statements.js";
 export * from "./app-scope.js";
 export * from "./siwe-origin.js";

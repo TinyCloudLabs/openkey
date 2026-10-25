@@ -42,14 +42,24 @@
     CapabilityGrant,
     CapabilityReviewModel,
   } from "@openkey/capability-review";
+  import { formatAccessEnd } from "$lib/access-end";
   import {
+    APP_KEY_GROUP_NOTE,
+    appDisplayName,
+    appKeyAccessStatement,
+    appKeyIdentity,
+    appRequestingLine,
+    FAMILY_LABEL,
+    appKeyNotGrantableStatements,
     buildRenderPlan,
     buildStatements,
+    grantIsAppKeyDecrypt,
     grantReachesSecretDataOrDecryption,
     grantHeading,
     PROTOCOL_HEADLINE,
     PROTOCOL_HINT,
     sensitiveCallout,
+    splitStatementCode,
   } from "@openkey/capability-review";
 
   interface Props {
@@ -186,22 +196,25 @@
         primaryText: string;
         severity: CapabilityGrant["severity"];
         unmapped: boolean;
+        codeSpans: boolean;
       }
     >();
 
     for (const grant of selectedGrants) {
       for (const statement of buildStatements(grant)) {
         const existing = grouped.get(statement.primaryText);
+        const rowSeverity = statement.severity ?? grant.severity;
         if (existing) {
-          if (severityRank[grant.severity] > severityRank[existing.severity]) {
-            existing.severity = grant.severity;
+          if (severityRank[rowSeverity] > severityRank[existing.severity]) {
+            existing.severity = rowSeverity;
           }
         } else {
           grouped.set(statement.primaryText, {
             key: statement.primaryText,
             primaryText: statement.primaryText,
-            severity: grant.severity,
+            severity: rowSeverity,
             unmapped: isUnmappedStatement(statement.primaryText),
+            codeSpans: statement.codeSpans === true,
           });
         }
       }
@@ -216,12 +229,78 @@
     selectedGrants.filter(grantReachesSecretDataOrDecryption).length,
   );
 
+  // App keys: the standing-access line follows the decrypt statements, and a
+  // `key.delete` action is listed even though it is never selected.
+  const identity = $derived(appKeyIdentity(model));
+  const originHost = $derived.by(() => {
+    const origin = model.requester.verifiedOrigin;
+    if (!origin) return null;
+    try {
+      return new URL(origin).host;
+    } catch {
+      return origin;
+    }
+  });
+  // Names that come from a manifest are app-supplied text: they are shown only
+  // after the display rules (`appDisplayName`), everywhere on this view.
+  const requesterName = $derived(appDisplayName(model.requester.displayName) ?? originHost ?? "");
+  const manifestNameShown = $derived(appDisplayName(model.requester.manifestName));
+  const requestedBy = $derived(originHost ?? requesterName);
+  const appKeyAccessLine = $derived(
+    selectedGrants.some(grantIsAppKeyDecrypt) ? appKeyAccessStatement(model.expiry, formatAccessEnd) : null,
+  );
+  const notGrantableStatements = $derived.by(() => {
+    const rows = model.permissions.flatMap(appKeyNotGrantableStatements);
+    return rows.filter((row, index) => rows.findIndex((other) => other.primaryText === row.primaryText) === index);
+  });
+
   function isSelected(action: CapabilityAction): boolean {
     return selection.has(action.id);
   }
 
+  // The app keys of a request are approved with the rest of it or removed as
+  // a unit: the server refuses a selection that keeps an app-key action and
+  // drops any other action, so no control changes one without the other.
+  const appKeyGrants = $derived(model.permissions.filter((grant) => grant.family === "app-keys"));
+  const appKeyActionIds = $derived(
+    new Set(appKeyGrants.flatMap((grant) => grant.actions.filter((action) => action.editable).map((action) => action.id))),
+  );
+  const firstAppKeyGrantId = $derived(appKeyGrants[0]?.id ?? null);
+
+  const appKeysSelected = $derived([...appKeyActionIds].some((id) => selection.has(id)));
+
+  function isLockedByAppKeys(action: CapabilityAction): boolean {
+    return appKeysSelected && !appKeyActionIds.has(action.id);
+  }
+
+  function toggleAppKeys() {
+    const next = new Set(selection);
+    if (appKeysSelected) {
+      for (const id of appKeyActionIds) next.delete(id);
+    } else {
+      for (const grant of model.permissions) {
+        for (const action of grant.actions) {
+          if (action.editable) next.add(action.id);
+        }
+      }
+    }
+    onSelectionChange(next);
+  }
+
+  function handleAppKeysKeydown(event: KeyboardEvent) {
+    if (event.key === " " || event.key === "Enter") {
+      event.preventDefault();
+      toggleAppKeys();
+    }
+  }
+
   function toggle(action: CapabilityAction) {
     if (!action.editable) return;
+    if (appKeyActionIds.has(action.id)) {
+      toggleAppKeys();
+      return;
+    }
+    if (isLockedByAppKeys(action)) return;
     const next = new Set(selection);
     if (next.has(action.id)) next.delete(action.id);
     else next.add(action.id);
@@ -400,10 +479,23 @@
   tabindex="-1"
 >
   <header class="header">
-    <h2 id="signing-approval-headline" class="headline">{headline}</h2>
-    <p class="requester-line">
-      Requested by <span class="requester-name">{model.requester.displayName}</span>
-    </p>
+    {#if identity}
+      <!-- The app's name, then its id; the name never appears without the id. -->
+      {#if identity.name}
+        <h2 id="signing-approval-headline" class="headline app-name">{identity.name}</h2>
+        <p class="app-id mono">{identity.appId}</p>
+      {:else}
+        <h2 id="signing-approval-headline" class="headline app-id-headline mono">{identity.appId}</h2>
+      {/if}
+      <p class="requester-line">
+        Requested by <span class="requester-name">{requestedBy}</span>
+      </p>
+    {:else}
+      <h2 id="signing-approval-headline" class="headline">{headline}</h2>
+      <p class="requester-line">
+        Requested by <span class="requester-name">{requesterName}</span>
+      </p>
+    {/if}
     <p id="signing-approval-hint" class="hint">{hint}</p>
   </header>
 
@@ -414,7 +506,7 @@
   <!-- Reason only when a reason actually exists. -->
   {#if model.reason.source !== "none" && model.reason.text}
     <section class="reason" aria-label="Reason for request">
-      <div class="reason-label">Reason provided by {model.reason.source === "caller" ? "the requester" : model.requester.displayName}</div>
+      <div class="reason-label">Reason provided by {model.reason.source === "caller" ? "the requester" : requesterName}</div>
       <p class="reason-body">{model.reason.text}</p>
       {#if model.reason.source === "caller"}
         <p class="reason-untrusted">
@@ -442,6 +534,14 @@
     </p>
   {/if}
 
+  {#snippet statementText(text: string, codeSpans: boolean)}
+    {#if codeSpans}
+      {#each splitStatementCode(text) as part}{#if part.code}<code class="mono">{part.text}</code>{:else}{part.text}{/if}{/each}
+    {:else}
+      {text}
+    {/if}
+  {/snippet}
+
   <!--
     Default summary: short list of deterministic statements.
     Never invents friendly semantics for unknown shapes (see statements.ts).
@@ -449,6 +549,9 @@
     in Advanced details so the first viewport is useful to ordinary users.
   -->
   <section class="summary" aria-label="Requested access">
+    {#if identity && summaryStatements.length > 0}
+      <p class="summary-lead">{appRequestingLine(identity.name)}</p>
+    {/if}
     {#if summaryStatements.length > 0}
       <ul class="summary-statements">
         {#each summaryStatements as statement (statement.key)}
@@ -457,7 +560,7 @@
             data-severity={statement.severity}
           >
             <span class="statement-line">
-              <span class="statement-primary">{statement.primaryText}</span>
+              <span class="statement-primary">{@render statementText(statement.primaryText, statement.codeSpans)}</span>
               {#if statement.severity === "sensitive"}
                 <span class="summary-sensitive-pill">Sensitive</span>
               {/if}
@@ -471,6 +574,20 @@
           ? "No optional access selected."
           : "No capability payload — exact-byte signature only."}
       </p>
+    {/if}
+    {#if appKeyAccessLine}
+      <p class="summary-note">{appKeyAccessLine}</p>
+    {/if}
+    {#if notGrantableStatements.length > 0}
+      <ul class="summary-statements summary-not-granted">
+        {#each notGrantableStatements as statement (statement.primaryText)}
+          <li class="summary-statement" data-severity="sensitive">
+            <span class="statement-line">
+              <span class="statement-primary">{@render statementText(statement.primaryText, statement.codeSpans === true)}</span>
+            </span>
+          </li>
+        {/each}
+      </ul>
     {/if}
   </section>
 
@@ -489,7 +606,7 @@
       <section class="identity" aria-label="Requester identity">
       <div class="row">
         <span class="label">Requester</span>
-        <span class="value">{model.requester.displayName}</span>
+        <span class="value">{requesterName}</span>
       </div>
 
       {#if model.requester.verifiedOrigin}
@@ -528,10 +645,10 @@
         a trusted label. Server code never marks a caller-echoed name as
         origin-bound — see the popup/embed prepare handlers.
       -->
-      {#if model.requester.manifestName}
+      {#if manifestNameShown}
         <div class="row">
           <span class="label">Manifest name</span>
-          <span class="value">{model.requester.manifestName}</span>
+          <span class="value">{manifestNameShown}</span>
           <span
             class="provenance-tag"
             data-provenance={model.requester.manifestNameProvenance}
@@ -642,6 +759,9 @@
           {/if}
         </div>
 
+        {#if editing && appKeyGrants.length > 0}
+          <p class="app-key-note">{APP_KEY_GROUP_NOTE}</p>
+        {/if}
         {#each permissionSections as bucket (bucket.key)}
           <details
             class="severity-bucket"
@@ -687,17 +807,29 @@
                         This data belongs to another user.
                       </p>
                     {/if}
+                    {#if editing && grant.id === firstAppKeyGrantId}
+                      <label class="action-toggle app-key-group">
+                        <input
+                          type="checkbox"
+                          checked={appKeysSelected}
+                          onchange={toggleAppKeys}
+                          onkeydown={handleAppKeysKeydown}
+                          disabled={approveDisabled}
+                        />
+                        <span class="verb">{FAMILY_LABEL["app-keys"]}</span>
+                      </label>
+                    {/if}
                     <ul class="action-list">
                       {#each editing ? grant.actions : grant.actions.filter(isSelected) as action}
                         <li class="action">
-                          {#if editing && action.editable}
+                          {#if editing && action.editable && !appKeyActionIds.has(action.id)}
                             <label class="action-toggle">
                               <input
                                 type="checkbox"
                                 checked={isSelected(action)}
                                 onchange={() => toggle(action)}
                                 onkeydown={(e) => handleKeydown(e, action)}
-                                disabled={approveDisabled}
+                                disabled={approveDisabled || isLockedByAppKeys(action)}
                               />
                               <span class="verb">{action.verb}</span>
                             </label>
@@ -822,6 +954,28 @@
     color: #475569;
     margin: 0;
   }
+  .app-name,
+  .app-id-headline {
+    unicode-bidi: isolate;
+    overflow-wrap: anywhere;
+  }
+  .app-id {
+    font-size: 13px;
+    line-height: 1.3;
+    color: #475569;
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+  .app-id-headline {
+    font-size: 17px;
+  }
+  .summary-lead {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 0 0 6px;
+    unicode-bidi: isolate;
+    overflow-wrap: anywhere;
+  }
   .requester-line {
     font-size: 13px;
     line-height: 1.45;
@@ -934,6 +1088,18 @@
     line-height: 1.3;
   }
   .summary-empty {
+    color: #475569;
+    font-size: 13px;
+    line-height: 1.45;
+    margin: 0;
+  }
+  .app-key-note {
+    margin: 0 0 8px;
+    color: #475569;
+    font-size: 13px;
+    line-height: 1.45;
+  }
+  .summary-note {
     color: #475569;
     font-size: 13px;
     line-height: 1.45;

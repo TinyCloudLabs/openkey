@@ -119,6 +119,14 @@ describe('POST /api/keys/:keyId/sign', () => {
     expect(calls).toEqual([]);
   });
 
+  test('answers an app key with the sign-in wording', async () => {
+    const response = await sign({ message: siweWith(APPS_KEY) });
+    await expect(response.json()).resolves.toEqual({
+      error: "App keys can only be requested through a website's sign-in, not from the command line or a device sign-in, so OpenKey didn't approve this request.",
+      code: 'app_key_grant_refused',
+    });
+  });
+
   test.each(['raw', 'personal_sign'])('refuses an app key written as hex with format %s', async (format) => {
     const response = await sign({ message: hex(siweWith(APPS_KEY)), format });
     expect(response.status).toBe(403);
@@ -177,7 +185,7 @@ describe('prepared CLI handoff claim', () => {
   });
 
   test.each([
-    ['an app key', APPS_KEY, 'app_key_grant_refused', 'App keys can only be requested from a website, not from the command line or a device sign-in.'],
+    ['an app key', APPS_KEY, 'app_key_grant_refused', "App keys can only be requested through a website's sign-in, not from the command line or a device sign-in, so OpenKey didn't approve this request."],
     ['key.delete', KEY_DELETE, 'key_delete_not_grantable', "Apps can't be given permission to delete keys, so OpenKey didn't approve this request."],
   ])('refuses %s', async (_name, raw, code, message) => {
     await expect(claim(raw)).rejects.toMatchObject({ code, status: 403, message });
@@ -192,7 +200,7 @@ describe('device sign-in request', () => {
     actions: ['tinycloud.encryption/decrypt'],
     ...over,
   });
-  const NON_BROWSER = 'App keys can only be requested from a website, not from the command line or a device sign-in.';
+  const NON_BROWSER = "App keys can only be requested through a website's sign-in, not from the command line or a device sign-in, so OpenKey didn't approve this request.";
 
   test('accepts the default-key decrypt request', () => {
     expect(deviceRequestPermissions([entry({})])).toHaveLength(1);

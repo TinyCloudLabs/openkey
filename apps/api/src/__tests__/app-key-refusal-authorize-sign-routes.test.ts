@@ -325,7 +325,7 @@ describe('POST /sign (session principal)', () => {
   test('refuses an app key', async () => {
     const res = await sign(siweWith(APPS_KEY));
     expect(res.status).toBe(403);
-    await expect(res.json()).resolves.toEqual({ approved: false, code: 'app_key_grant_refused', reason: 'App keys can only be requested from a website, not from the command line or a device sign-in.' });
+    await expect(res.json()).resolves.toEqual({ approved: false, code: 'app_key_grant_refused', reason: "App keys can only be requested through a website's sign-in, not from the command line or a device sign-in, so OpenKey didn't approve this request." });
     expect(signed).toEqual([]);
   });
 

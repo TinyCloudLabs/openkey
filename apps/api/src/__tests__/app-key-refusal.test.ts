@@ -275,7 +275,7 @@ describe('refusal text', () => {
       "This website doesn't list the key this app asked for, so OpenKey didn't approve it.",
     );
     expect(appKeyRefusalMessage(appKey, 'non_browser')).toBe(
-      'App keys can only be requested from a website, not from the command line or a device sign-in.',
+      "App keys can only be requested through a website's sign-in, not from the command line or a device sign-in, so OpenKey didn't approve this request.",
     );
     expect(appKeyRefusalMessage({ reason: 'key_delete' }, 'browser')).toBe(
       "Apps can't be given permission to delete keys, so OpenKey didn't approve this request.",
