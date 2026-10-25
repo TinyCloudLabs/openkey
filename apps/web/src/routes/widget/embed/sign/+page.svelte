@@ -20,6 +20,8 @@
     checkSiweOrigin,
   } from '@openkey/capability-review';
   import SiweOriginRefusal from '$lib/components/signing/siwe-origin-refusal.svelte';
+  import ServerReplyRefusal from '$lib/components/signing/server-reply-refusal.svelte';
+  import { hasText, readReply, ServerReplyError, SERVER_REPLY_ERROR } from '$lib/server-reply';
   import {
     createIframeLayoutGate,
     type IframeLayoutGate,
@@ -43,6 +45,8 @@
   let loading = $state(true);
   let signing = $state(false);
   let error = $state('');
+  // The HTTP status of a reply that could not be read; shown in Advanced details only.
+  let replyFailureStatus = $state<number | null>(null);
   let sessionChecked = $state(false);
   let initialized = $state(false);
   let keyFetched = $state(false);
@@ -667,11 +671,11 @@
             }),
           },
         );
-        if (!prepareRes.ok) {
-          const errBody = await prepareRes.json().catch(() => ({ error: 'authorize-sign-prepare failed' }));
-          throw new Error(errBody.error || `HTTP ${prepareRes.status}`);
-        }
-        const prepareResult = await prepareRes.json();
+        const prepareResult = await readReply(
+          prepareRes,
+          (body) => hasText(body, 'authorizationContextToken'),
+          'authorize-sign-prepare failed',
+        );
         token = typeof prepareResult.authorizationContextToken === 'string'
           ? prepareResult.authorizationContextToken
           : null;
@@ -770,11 +774,11 @@
           }),
         },
       );
-      if (!previewRes.ok) {
-        const errBody = await previewRes.json().catch(() => ({ error: 'authorize-sign-preview failed' }));
-        throw new Error(errBody.error || `HTTP ${previewRes.status}`);
-      }
-      const previewResult = await previewRes.json();
+      const previewResult = await readReply(
+        previewRes,
+        (body) => hasText(body, 'signedMessage', 'previewApprovalToken'),
+        'authorize-sign-preview failed',
+      );
       if (typeof previewResult.signedMessage !== 'string' || !previewResult.signedMessage) {
         throw new Error('authorize-sign-preview did not return signedMessage');
       }
@@ -788,7 +792,8 @@
       previewSignedMessage = previewResult.signedMessage;
       previewApprovalToken = previewResult.previewApprovalToken;
     } catch (e: any) {
-      error = e.message || 'Preview failed';
+      if (e instanceof ServerReplyError) unreadableReply(e.status);
+      else error = e.message || 'Preview failed';
       previewToken = null;
       previewSignedMessage = null;
       previewApprovalToken = null;
@@ -854,11 +859,11 @@
             }),
           },
         );
-        if (!authorizeRes.ok) {
-          const errBody = await authorizeRes.json().catch(() => ({ error: 'authorize-sign failed' }));
-          throw new Error(errBody.error || `HTTP ${authorizeRes.status}`);
-        }
-        const authorizeResult = await authorizeRes.json();
+        const authorizeResult = await readReply(
+          authorizeRes,
+          (body) => hasText(body, 'signature', 'address', 'signedMessage'),
+          'authorize-sign failed',
+        );
         if (authorizeResult.signedMessage !== previewSignedMessage) {
           throw new Error('Server signed bytes differ from the previewed bytes — refusing to accept');
         }
@@ -899,7 +904,8 @@
       });
       sendClose();
     } catch (e: any) {
-      error = e.message || 'Signing failed';
+      if (e instanceof ServerReplyError) unreadableReply(e.status);
+      else error = e.message || 'Signing failed';
     } finally {
       signing = false;
     }
@@ -928,6 +934,15 @@
       error: { code: 'UNKNOWN', message: `SIWE_ORIGIN_REFUSED: ${siweRefusal.code}` },
     });
   });
+
+  // A reply that cannot be read leaves nothing approved: show the refusal and
+  // tell the host once, without any reply content.
+  function unreadableReply(status: number) {
+    replyFailureStatus = status;
+    error = '';
+    console.error(`OpenKey: unreadable server reply (HTTP ${status})`);
+    sendResponse({ type: 'openkey:sign:response', success: false, error: SERVER_REPLY_ERROR });
+  }
 
   function closeRefused() {
     sendClose();
@@ -1018,6 +1033,8 @@
   <div class="bg-white border border-surface-200 rounded-2xl shadow-sm p-5">
     {#if siweRefusal}
       <SiweOriginRefusal reason={siweRefusal.message} code={siweRefusal.code} onclose={closeRefused} />
+    {:else if replyFailureStatus !== null}
+      <ServerReplyRefusal status={replyFailureStatus} onclose={closeRefused} />
     {:else if !isAuthenticated}
       <EmbeddedSignIn
         prompt="Sign in to review and sign this message"
