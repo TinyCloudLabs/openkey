@@ -92,7 +92,8 @@ const baseStubs = (pageUrl: string): Record<string, string> => ({
   '$lib/auth-client': `export const authErrorMessage = (e, fallback) => fallback;
     export const authClient = { useSession: () => ({ subscribe(run) { run({ data: { user: { id: 'user_1' } }, isPending: false }); return () => {}; } }) };`,
   '$lib/api': `export const api = { getKey: async () => ({ key: ${JSON.stringify(KEY)} }), listKeys: async () => ({ keys: [${JSON.stringify(KEY)}] }) };`,
-  '$lib/embed-passkey': `export const isEmbedContext = () => true; export const getSessionToken = () => 'session-token';`,
+  '$lib/embed-passkey': `export const isEmbedContext = () => true; export const getSessionToken = () => 'session-token';
+    export const withSessionCredential = (init) => init;`,
   '$lib/widget-transport': `export const createWidgetTransport = (options) => {
       globalThis.__pages.options = options;
       return { emitReady() {}, emitResize() {}, emitLayoutSignal() {}, destroy() {}, respond(message) { globalThis.__pages.sent.push(message); } };
