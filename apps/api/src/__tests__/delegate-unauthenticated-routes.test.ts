@@ -1,5 +1,5 @@
 // Unauthenticated requests to the delegate routes are refused with a JSON 401.
-// The router has its own onError, so a refusal that is dropped instead of
+// The router has its own onError, so a refusal that is dropped and not
 // returned becomes an empty 200 (Content-Length 0, no Content-Type).
 
 import './tc1777-test-env';
