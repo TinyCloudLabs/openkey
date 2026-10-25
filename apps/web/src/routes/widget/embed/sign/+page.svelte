@@ -3,7 +3,7 @@
   import { tick } from 'svelte';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
-  import { getSessionToken, isEmbedContext } from '$lib/embed-passkey';
+  import { getSessionToken, isEmbedContext, withSessionCredential } from '$lib/embed-passkey';
   import EmbeddedSignIn from '$lib/components/auth/embedded-sign-in.svelte';
   import { passkeysSupportedFromParams } from '$lib/passkey-support';
   import Button from '$lib/components/ui/button.svelte';
@@ -652,9 +652,8 @@
           origin && origin !== '*' && origin.startsWith('https://') ? origin : undefined;
         const prepareRes = await fetch(
           `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign-prepare`,
-          {
+          withSessionCredential({
             method: 'POST',
-            credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               keyId: key.id,
@@ -665,7 +664,7 @@
               reportedOrigin: reportedOriginForPrepare,
               requestOrigin: origin === '*' ? undefined : origin,
             }),
-          },
+          }),
         );
         if (!prepareRes.ok) {
           const errBody = await prepareRes.json().catch(() => ({ error: 'authorize-sign-prepare failed' }));
@@ -760,15 +759,14 @@
       const selectedIds = currentSelectedActionIds();
       const previewRes = await fetch(
         `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign-preview`,
-        {
+        withSessionCredential({
           method: 'POST',
-          credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             authorizationContextToken: token,
             selectedActionIds: selectedIds,
           }),
-        },
+        }),
       );
       if (!previewRes.ok) {
         const errBody = await previewRes.json().catch(() => ({ error: 'authorize-sign-preview failed' }));
@@ -839,9 +837,8 @@
         }
         const authorizeRes = await fetch(
           `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign`,
-          {
+          withSessionCredential({
             method: 'POST',
-            credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               authorizationContextToken: previewToken,
@@ -852,7 +849,7 @@
               selectedActionIds,
               protocolVersion: 1,
             }),
-          },
+          }),
         );
         if (!authorizeRes.ok) {
           const errBody = await authorizeRes.json().catch(() => ({ error: 'authorize-sign failed' }));
