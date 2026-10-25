@@ -1,6 +1,6 @@
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { describe, expect, test } from 'bun:test';
-import { hasText, readReply, ServerReplyError, SERVER_REPLY_BODY, SERVER_REPLY_TITLE } from './server-reply';
+import { hasSignResult, hasText, readReply, ServerReplyError, SERVER_REPLY_BODY, SERVER_REPLY_TITLE } from './server-reply';
 
 const reply = (body: string, init: ResponseInit = { status: 200 }) => new Response(body, init);
 const needsToken = (body: Record<string, unknown>) => hasText(body, 'token');
@@ -58,5 +58,29 @@ describe('readReply', () => {
   test('a refusal without JSON uses the fallback, and one without text the status', async () => {
     expect(await failure(readReply(reply('', { status: 502 }), needsToken, 'prepare failed'))).toMatchObject({ message: 'prepare failed' });
     expect(await failure(readReply(reply('{}', { status: 500 }), needsToken, 'x'))).toMatchObject({ message: 'HTTP 500' });
+  });
+});
+
+describe('hasSignResult', () => {
+  const grant = { service: 'tinycloud.kv', space: 'space', path: 'notes/', actions: ['tinycloud.kv/get'] };
+  const signed = { signature: '0xsig', address: '0xaddr', signedMessage: 'bytes', selectedActionKeys: ['key'], permissions: [grant] };
+
+  test('a signature with its address, bytes, selected keys and grants is readable, including empty lists', () => {
+    expect(hasSignResult(signed)).toBe(true);
+    expect(hasSignResult({ ...signed, selectedActionKeys: [], permissions: [] })).toBe(true);
+  });
+
+  test.each([
+    ['no selectedActionKeys', { ...signed, selectedActionKeys: undefined }],
+    ['no permissions', { ...signed, permissions: undefined }],
+    ['selectedActionKeys of the wrong type', { ...signed, selectedActionKeys: 'key' }],
+    ['a selected key that is not text', { ...signed, selectedActionKeys: [1] }],
+    ['permissions of the wrong type', { ...signed, permissions: grant }],
+    ['a permission that is not an object', { ...signed, permissions: [null] }],
+    ['a permission without a path', { ...signed, permissions: [{ ...grant, path: undefined }] }],
+    ['a permission whose actions are not text', { ...signed, permissions: [{ ...grant, actions: [1] }] }],
+    ['no signature', { ...signed, signature: '' }],
+  ] as Array<[string, Record<string, unknown>]>)('%s is not readable', (_label: string, body: Record<string, unknown>) => {
+    expect(hasSignResult(body)).toBe(false);
   });
 });

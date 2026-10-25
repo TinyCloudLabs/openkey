@@ -28,6 +28,23 @@ export type ReplyBody = Record<string, any>;
 export const hasText = (body: ReplyBody, ...fields: string[]): boolean =>
   fields.every((field) => typeof body[field] === 'string' && body[field] !== '');
 
+const isTextList = (value: unknown): boolean => Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+
+const isGrant = (value: unknown): boolean =>
+  value !== null && typeof value === 'object' && !Array.isArray(value) &&
+  ['service', 'space', 'path'].every((field) => typeof (value as ReplyBody)[field] === 'string') &&
+  isTextList((value as ReplyBody).actions);
+
+/**
+ * A signed answer from authorize-sign: the signature, the address and the signed
+ * bytes as text, the selected action keys as a list of text, and the permissions
+ * as a list of `{ service, space, path, actions }`. The SDK needs every one.
+ */
+export const hasSignResult = (body: ReplyBody): boolean =>
+  hasText(body, 'signature', 'address', 'signedMessage') &&
+  isTextList(body.selectedActionKeys) &&
+  Array.isArray(body.permissions) && body.permissions.every(isGrant);
+
 /**
  * Read one reply. A non-2xx answer keeps the server's own error text, or
  * `<fallback>` when it has none. A 2xx answer must be a JSON object that

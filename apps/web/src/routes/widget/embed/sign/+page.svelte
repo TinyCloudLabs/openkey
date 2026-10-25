@@ -21,7 +21,7 @@
   } from '@openkey/capability-review';
   import SiweOriginRefusal from '$lib/components/signing/siwe-origin-refusal.svelte';
   import ServerReplyRefusal from '$lib/components/signing/server-reply-refusal.svelte';
-  import { hasText, readReply, ServerReplyError, SERVER_REPLY_ERROR } from '$lib/server-reply';
+  import { hasSignResult, hasText, readReply, ServerReplyError, SERVER_REPLY_ERROR } from '$lib/server-reply';
   import {
     createIframeLayoutGate,
     type IframeLayoutGate,
@@ -861,7 +861,7 @@
         );
         const authorizeResult = await readReply(
           authorizeRes,
-          (body) => hasText(body, 'signature', 'address', 'signedMessage'),
+          hasSignResult,
           'authorize-sign failed',
         );
         if (authorizeResult.signedMessage !== previewSignedMessage) {

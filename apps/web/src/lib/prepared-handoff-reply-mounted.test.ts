@@ -286,6 +286,23 @@ describe('the prepared CLI handoff page when a reply cannot be read', () => {
     expect(result.advanced).toContain('HTTP 200');
   });
 
+  const SIGNED = { protocolVersion: 1, signature: `0x${'11'.repeat(65)}`, address: ADDR, signedMessage: 'signed', deliveryState: 'state', selectedKeyId: KEY.id, selectedActionKeys: ['key-1'], permissions: [] };
+  const withoutField = (field: string) => { const { [field]: _removed, ...rest } = SIGNED as Record<string, unknown>; return rest; };
+  const incomplete: Array<[string, unknown]> = [
+    ['no selectedActionKeys', withoutField('selectedActionKeys')],
+    ['no permissions', withoutField('permissions')],
+    ['selectedActionKeys that is not a list', { ...SIGNED, selectedActionKeys: 'key-1' }],
+    ['a permission that is not a grant', { ...SIGNED, permissions: [1] }],
+  ];
+  for (const [label, body] of incomplete) {
+    test(`sign answers 200 with ${label}: string 20, nothing delivered`, async () => {
+      const result = await run({ sign: { status: 200, text: JSON.stringify(body) } });
+      expect(result.shown).toBe(true);
+      expect(result.visibleOutsideAdvanced).toBe(`${TITLE} ${BODY}`);
+      expect(result.alert).toBeNull();
+    });
+  }
+
   test('the status and the words of the refusal never meet in the visible text', async () => {
     const result = await run({ prepare: { status: 200, text: '{}' } });
     expect(result.visibleOutsideAdvanced).not.toMatch(/HTTP|<status>|\b200\b/);

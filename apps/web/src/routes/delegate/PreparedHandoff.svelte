@@ -8,7 +8,7 @@
   import { validatePreviewSelection } from '$lib/preview-review';
   import { requestedActionIds } from '$lib/widget-selection';
   import { timeUntilExpiry } from '$lib/siwe-parser';
-  import { SERVER_REPLY_BODY, SERVER_REPLY_TITLE, ServerReplyError, hasText } from '$lib/server-reply';
+  import { SERVER_REPLY_BODY, SERVER_REPLY_TITLE, ServerReplyError, hasSignResult, hasText } from '$lib/server-reply';
   import { fitsPreparedLinkBudget } from '$lib/prepared-link';
 
   let { encoded, onClear }: { encoded: string; onClear: () => void } = $props();
@@ -135,7 +135,7 @@
   // `needs` names the fields a successful answer must carry as text. With it, a
   // 2xx answer that is empty, not JSON, or without those fields is an unreadable
   // reply and nothing is approved.
-  async function post(path: string, body: unknown, needs?: string[]): Promise<Record<string, unknown>> {
+  async function post(path: string, body: unknown, needs?: string[], valid?: (reply: Record<string, unknown>) => boolean): Promise<Record<string, unknown>> {
     const response = await fetch(`${apiUrl}/api/delegate/${path}`, {
       method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     });
@@ -144,7 +144,7 @@
       try { parsed = await response.json(); } catch { throw new ServerReplyError(response.status); }
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new ServerReplyError(response.status);
       const reply = parsed as Record<string, unknown>;
-      if (!hasText(reply, ...needs)) throw new ServerReplyError(response.status);
+      if (!hasText(reply, ...needs) || (valid && !valid(reply))) throw new ServerReplyError(response.status);
       return reply;
     }
     const data: unknown = await response.json().catch(() => ({}));
@@ -310,7 +310,7 @@
         body.externalSignature = signature;
       }
       submitted = true;
-      const signed = await post('authorize-sign', body, ['signature', 'address', 'signedMessage', 'deliveryState']);
+      const signed = await post('authorize-sign', body, ['signature', 'address', 'signedMessage', 'deliveryState'], hasSignResult);
       if (signed.protocolVersion !== 1 || typeof signed.signature !== 'string' || typeof signed.address !== 'string' ||
           !Array.isArray(signed.selectedActionKeys) || !signed.selectedActionKeys.every(value => typeof value === 'string') ||
           !Array.isArray(signed.permissions) ||
