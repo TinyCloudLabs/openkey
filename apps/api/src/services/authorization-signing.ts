@@ -28,6 +28,7 @@
 // with a new ticket when routed to a different worker or after a restart.
 
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import type { AdmittedAppKey } from "./app-key-refusal";
 
 const CONTEXT_TTL_MS = 5 * 60 * 1000;
 
@@ -99,6 +100,11 @@ export interface AuthorizationContextIssueInput {
   verifiedManifest?: VerifiedManifestFields;
   /** Normalised requesting-app origin, for the per-sign-in count record only. */
   appOrigin?: string;
+  /**
+   * `apps/` encryption key grants admitted for the original SIWE at prepare
+   * time: the resources as written and the abilities admitted on each.
+   */
+  admittedAppKeys?: AdmittedAppKey[];
 }
 
 interface StoredContext {
@@ -125,6 +131,7 @@ interface StoredContext {
   };
   verifiedManifest?: VerifiedManifestFields;
   appOrigin?: string;
+  admittedAppKeys?: AdmittedAppKey[];
 }
 
 const store = new Map<string, StoredContext>();
@@ -334,6 +341,7 @@ export function issueAuthorizationContext(
     metadataTrust,
     verifiedManifest: input.verifiedManifest,
     appOrigin: input.appOrigin,
+    admittedAppKeys: input.admittedAppKeys,
   };
   store.set(token, stored);
 
@@ -786,6 +794,7 @@ export interface PeekSuccess {
     allowedActionIds: string[];
     initialSelectionActionIds: string[];
     appOrigin?: string;
+    admittedAppKeys?: AdmittedAppKey[];
   };
 }
 
@@ -832,6 +841,7 @@ export function peekAuthorizationContext(token: string): PeekSuccess | PeekFailu
       allowedActionIds: [...stored.allowedActionIds],
       initialSelectionActionIds: [...stored.initialSelectionActionIds],
       appOrigin: stored.appOrigin,
+      admittedAppKeys: stored.admittedAppKeys,
     },
   };
 }

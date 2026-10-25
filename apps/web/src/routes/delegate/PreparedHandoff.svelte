@@ -6,6 +6,7 @@
   import { copyText } from '$lib/clipboard';
   import { parseCapabilityReview, defaultSelection, type CapabilityReviewModel } from '@openkey/capability-review';
   import { validatePreviewSelection } from '$lib/preview-review';
+  import { requestedActionIds } from '$lib/widget-selection';
   import { timeUntilExpiry } from '$lib/siwe-parser';
   import { fitsPreparedLinkBudget } from '$lib/prepared-link';
 
@@ -143,7 +144,7 @@
   }
 
   function selectedIds(): string[] {
-    return model?.permissions.flatMap(grant => grant.actions.filter(action => selected.has(action.id)).map(action => action.id)) ?? [];
+    return requestedActionIds(model, selected);
   }
   function chooseKey(choice: KeyChoice) {
     if (contextToken) return;
