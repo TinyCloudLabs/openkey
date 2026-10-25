@@ -19,4 +19,5 @@ export * from "./app-identity.js";
 export * from "./statements.js";
 export * from "./app-scope.js";
 export * from "./siwe-origin.js";
+export * from "./host-siwe.js";
 export * from "./key-resource.js";
