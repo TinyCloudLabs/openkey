@@ -2083,10 +2083,12 @@ export class OpenKey {
 
     let popup: Window | null;
     if (reserved && !reserved.window.closed) {
-      // The window opened in the caller's gesture: send it to the widget.
-      reserved.used = true;
+      // The window opened in the caller's gesture: send it to the widget. It
+      // counts as taken over once that navigation has succeeded; a failure
+      // leaves it to the caller, which closes it.
       try {
         reserved.window.location.href = url;
+        reserved.used = true;
         popup = reserved.window;
       } catch {
         popup = null;

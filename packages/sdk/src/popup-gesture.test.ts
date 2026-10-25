@@ -138,6 +138,27 @@ describe('authorizeTinyCloud in popup mode', () => {
     }
   });
 
+  test('closes the blank popup when sending it to the widget fails, and the call rejects', async () => {
+    const { openkey, opened, restore } = setup('popup');
+    try {
+      (openkey as any).fetchKnownKeysIfNeeded = () => Promise.resolve([{ id: 'key-other', keyType: 'MANAGED' }]);
+      const originalOpen = (globalThis as any).window.open;
+      (globalThis as any).window.open = (url: string) => {
+        const popup = originalOpen(url) as PopupWindow;
+        // The blank window refuses to be navigated.
+        Object.defineProperty(popup, 'location', {
+          get: () => ({ set href(_value: string) { throw new Error('navigation refused'); } }),
+        });
+        return popup;
+      };
+      await expect(openkey.authorizeTinyCloud(REQUEST, { mode: 'popup' })).rejects.toMatchObject({ code: 'POPUP_BLOCKED' });
+      expect(opened).toHaveLength(1);
+      expect(opened[0]!.popup!.closed).toBe(true);
+    } finally {
+      restore();
+    }
+  });
+
   test('closes the blank popup when the key is an external wallet, which opens its own flow', async () => {
     const { openkey, opened, restore } = setup('popup');
     try {
