@@ -1,10 +1,9 @@
-// Mounted tests for the host approval rows (space, node ID and the node marker)
-// and for the framed Approve gate in the shared approval view. The real
-// `signing-approval.svelte` is compiled and mounted in happy-dom, the same way
-// `signing-approval-parity-mounted.test.ts` mounts the adapters.
+// Mounted tests for the host approval rows (space, node ID and node marker)
+// in the shared approval view. The real `signing-approval.svelte` is compiled
+// and mounted in happy-dom, as in `signing-approval-parity-mounted.test.ts`.
 
 // @ts-expect-error bun:test is a runtime-only module; tsc doesn't ship types
-import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
@@ -280,91 +279,24 @@ describe('host approval rows', () => {
   });
 });
 
-interface ObserverState {
-  isIntersecting: boolean;
-  intersectionRatio: number;
-  isVisible: boolean;
-  intersectionRect: { width: number; height: number };
-  boundingClientRect: { width: number; height: number };
-}
-
-class FakeObserver {
-  static latest: FakeObserver | null = null;
-  trackVisibility = true;
-  observed: Element[] = [];
-  pending: IntersectionObserverEntry[] = [];
-  constructor(public callback: (entries: IntersectionObserverEntry[]) => void) {
-    FakeObserver.latest = this;
-  }
-  observe(element: Element) {
-    this.observed.push(element);
-  }
-  disconnect() {}
-  takeRecords() {
-    const taken = this.pending;
-    this.pending = [];
-    return taken;
-  }
-  report(state: ObserverState) {
-    this.callback(this.observed.map((target) => ({ target, ...state }) as unknown as IntersectionObserverEntry));
-  }
-  entriesFor(state: ObserverState) {
-    return this.observed.map((target) => ({ target, ...state }) as unknown as IntersectionObserverEntry);
-  }
-}
-// The whole view inside the frame, as the browser reports it.
-const frameSize = { width: win.innerWidth, height: win.innerHeight };
-const FULL = { isIntersecting: true, intersectionRatio: 1, isVisible: true, intersectionRect: frameSize, boundingClientRect: frameSize };
-const COVERED = { ...FULL, isVisible: false };
-const WAIT = 'Approve becomes available once this window is fully visible.';
-
 describe('framed Approve', () => {
   let mounted: Mounted | null = null;
   const realTop = Object.getOwnPropertyDescriptor(win, 'top');
 
   beforeEach(() => {
-    vi.useFakeTimers();
-    FakeObserver.latest = null;
-    browserGlobals.IntersectionObserver = FakeObserver;
     Object.defineProperty(win, 'top', { value: {}, configurable: true });
   });
   afterEach(() => {
     mounted?.destroy();
     mounted = null;
-    vi.useRealTimers();
-    delete browserGlobals.IntersectionObserver;
     if (realTop) Object.defineProperty(win, 'top', realTop);
     else Reflect.deleteProperty(win, 'top');
   });
 
-  const tick = (ms: number) => {
-    vi.advanceTimersByTime(ms);
-    flushSync();
-  };
-
-  test('starts disabled with the status line, then opens after the delay once visible', () => {
+  test('framed Approve is enabled without a visibility report once the node check finishes', () => {
     mounted = render(hostModel(), { peerRecognition: { state: 'other' } });
-    const observer = FakeObserver.latest!;
-    expect(observer.observed).toHaveLength(2);
-    expect(mounted.approve.disabled).toBe(true);
-    expect(mounted.target.querySelector('.frame-wait')?.getAttribute('data-waiting')).toBe('true');
-    observer.report(FULL);
-    flushSync();
-    tick(599);
-    expect(mounted.approve.disabled).toBe(true);
-    tick(1);
     expect(mounted.approve.disabled).toBe(false);
-    // The line stays in the layout, empty, so the height does not change when Approve opens.
-    expect(mounted.target.querySelector('.frame-wait')?.getAttribute('data-waiting')).toBe('false');
-    expect(text(mounted.target.querySelector('.frame-wait'))).toBe(WAIT);
-  });
-
-  test('a covered view (still intersecting) never opens', () => {
-    mounted = render(hostModel(), { peerRecognition: { state: 'other' } });
-    FakeObserver.latest!.report(COVERED);
-    tick(10_000);
-    expect(mounted.approve.disabled).toBe(true);
-    expect(mounted.target.querySelector('.frame-wait')?.getAttribute('data-waiting')).toBe('true');
+    expect(mounted.target.querySelector('.approve-blocked')).toBeNull();
   });
 
   test('Cancel is never gated', () => {
@@ -378,9 +310,6 @@ describe('framed Approve', () => {
 
   test('a click that is not from the browser is ignored, a trusted one goes through', () => {
     mounted = render(hostModel(), { peerRecognition: { state: 'other' } });
-    FakeObserver.latest!.report(FULL);
-    flushSync();
-    tick(600);
     expect(mounted.approve.disabled).toBe(false);
     mounted.approve.click();
     expect(mounted.approveCalls()).toBe(0);
@@ -388,55 +317,9 @@ describe('framed Approve', () => {
     expect(mounted.approveCalls()).toBe(1);
   });
 
-  test('a cover reported just before the click refuses the tap', () => {
-    mounted = render(hostModel(), { peerRecognition: { state: 'other' } });
-    const observer = FakeObserver.latest!;
-    observer.report(FULL);
-    flushSync();
-    tick(600);
-    observer.pending = observer.entriesFor(COVERED);
-    trustedClick(mounted.approve);
-    expect(mounted.approveCalls()).toBe(0);
-    expect(mounted.approve.disabled).toBe(true);
-  });
-
-  test('window blur closes Approve and the delay starts over', () => {
-    mounted = render(hostModel(), { peerRecognition: { state: 'other' } });
-    FakeObserver.latest!.report(FULL);
-    flushSync();
-    tick(600);
-    expect(mounted.approve.disabled).toBe(false);
-    win.dispatchEvent(new win.Event('blur'));
-    flushSync();
-    expect(mounted.approve.disabled).toBe(true);
-    tick(599);
-    expect(mounted.approve.disabled).toBe(true);
-    tick(1);
-    expect(mounted.approve.disabled).toBe(false);
-  });
-
-  test('a node check in progress keeps Approve disabled even when visible', () => {
+  test('a node check in progress keeps Approve disabled while framed', () => {
     mounted = render(hostModel(), { peerRecognition: { state: 'checking' } });
-    FakeObserver.latest!.report(FULL);
-    flushSync();
-    tick(5_000);
     expect(mounted.approve.disabled).toBe(true);
-  });
-});
-
-describe('not framed', () => {
-  test('Approve is enabled at once and no observer is created', () => {
-    FakeObserver.latest = null;
-    browserGlobals.IntersectionObserver = FakeObserver;
-    const mounted = render(hostModel(), { peerRecognition: { state: 'other' } });
-    try {
-      expect(FakeObserver.latest).toBeNull();
-      expect(mounted.approve.disabled).toBe(false);
-      expect(mounted.target.querySelector('.approve-blocked')).toBeNull();
-    } finally {
-      mounted.destroy();
-      delete browserGlobals.IntersectionObserver;
-    }
   });
 });
 
