@@ -65,11 +65,6 @@
     splitStatementCode,
   } from "@openkey/capability-review";
   import type { PeerRecognitionState } from "$lib/host-peer-recognition";
-  import {
-    isFramed,
-    watchFrameVisibility,
-    type FrameVisibilityBinding,
-  } from "$lib/frame-visibility-guard";
 
   interface Props {
     model: CapabilityReviewModel;
@@ -484,7 +479,6 @@
   const NODE_CHECKING = "Checking the node…";
   const NODE_NOT_CONFIRMED = "Not confirmed as a known TinyCloud node";
   const NODE_NOT_CONFIRMED_NOTE = "Approving lets this node store and serve your new space.";
-  const WAIT_FOR_VISIBLE = "Approve becomes available once this window is fully visible.";
 
   const hostFacts = $derived(readSpaceHostFacts(model, selection));
   let copiedValue = $state<string | null>(null);
@@ -497,41 +491,19 @@
     }, 2000);
   }
 
-  // Framed approval: Approve opens only while the view and its action row are
-  // fully visible and uncovered (see frame-visibility-guard.ts). Cancel is
-  // never gated. A page that is not framed is not gated.
-  const framed = typeof window !== "undefined" && isFramed();
-  let viewElement = $state<HTMLElement | null>(null);
-  let actionsElement = $state<HTMLElement | null>(null);
-  let frameAllowed = $state(!framed);
-  let frameGuard: FrameVisibilityBinding | null = null;
-
-  $effect(() => {
-    if (!framed || !viewElement || !actionsElement) return;
-    const binding = watchFrameVisibility(
-      { view: viewElement, actions: actionsElement },
-      (allowed) => {
-        frameAllowed = allowed;
-      },
-    );
-    frameGuard = binding;
-    return () => {
-      binding.stop();
-      frameGuard = null;
-      frameAllowed = false;
-    };
-  });
-
   function handleApproveClick(event: MouseEvent) {
-    if (framed && (!event.isTrusted || !frameGuard?.confirmNow())) return;
+    try {
+      if (window.self !== window.top && !event.isTrusted) return;
+    } catch {
+      if (!event.isTrusted) return;
+    }
     onApprove();
   }
 
   const nodeChecking = $derived(peerRecognition?.state === "checking");
-  const frameBlocked = $derived(framed && !frameAllowed);
   const approveDisabled = $derived(approving || isMalformedRecap);
   const approveButtonDisabled = $derived(
-    layoutBlocked || approveDisabled || Boolean(approveBlockedReason) || nodeChecking || frameBlocked,
+    layoutBlocked || approveDisabled || Boolean(approveBlockedReason) || nodeChecking,
   );
   const approveLabel = $derived(
     isMalformedRecap
@@ -546,7 +518,6 @@
 
 <div
   class="signing-approval"
-  bind:this={viewElement}
   class:sticky-actions={stickyActions}
   role="dialog"
   aria-modal="true"
@@ -1028,16 +999,9 @@
   {/if}
   {#if approveBlockedReason}
     <p class="approve-blocked" role="status" aria-live="polite">{approveBlockedReason}</p>
-  {:else if framed}
-    <!--
-      Always present while framed and changed only through an attribute, so the
-      embedding page sees no content change and no new height when Approve
-      opens.
-    -->
-    <p class="approve-blocked frame-wait" id="frame-wait-status" data-waiting={frameBlocked}>{WAIT_FOR_VISIBLE}</p>
   {/if}
 
-  <footer class="actions" bind:this={actionsElement}>
+  <footer class="actions">
     <button
       type="button"
       class="cancel"
@@ -1052,7 +1016,7 @@
       onclick={handleApproveClick}
       disabled={approveButtonDisabled}
       aria-disabled={approveButtonDisabled}
-      aria-describedby={nodeChecking ? "host-node-status" : frameBlocked ? "frame-wait-status" : undefined}
+      aria-describedby={nodeChecking ? "host-node-status" : undefined}
     >
       {approveLabel}
     </button>
@@ -1723,9 +1687,6 @@
     line-height: 1.45;
     margin: 0;
     border: 1px solid #f2c0c0;
-  }
-  .frame-wait[data-waiting="false"] {
-    visibility: hidden;
   }
   .approve-blocked {
     color: #7c4a03;
