@@ -17,6 +17,6 @@ The session cookie cache must stay off unless the cap is applied there too. The 
 
 ## Connected MCP apps
 
-While a connected MCP app keeps refreshing, the OpenKey sign-in that approved it stays valid for up to 30 days from when you signed in, even if you don't use OpenKey on the web. To end both, sign out on the device you connected from, or Disconnect the app in settings.
+While a connected MCP app keeps refreshing, the OpenKey sign-in that approved it stays valid for up to 30 days from when you signed in, even if you don't use OpenKey on the web. To end both, sign out on the device you connected from, or Disconnect the app in settings. The app usually stops within a minute, and always within 5 minutes.
 
 How it works: a successful refresh of an MCP connection's refresh token extends the session that authorized it to 6 days from now (`session.expiresIn` minus `session.updateAge`, so a web use still renews it and re-sends the cookie), never past `WEB_SESSION_ABSOLUTE_CAP_SECONDS` after sign-in and never earlier than the current expiry. It is one guarded `UPDATE` in `apps/api/src/services/mcp-refresh-session.ts`, run before the provider rotates the token, and it does not go through Better Auth's session update, so the hook above is not involved. A session that is gone, expired or 30 days old is not extended and the refresh is answered `invalid_grant`. Web sign-in renewal is unchanged.
