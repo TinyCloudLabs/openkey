@@ -25,7 +25,7 @@
 import type { CapabilityFamily, PermissionSeverity } from "./model.js";
 import { isSecretsSpace } from "./app-scope.js";
 import { isMetadataOnlyAccess } from "./action-semantics.js";
-import { FAMILY_LABEL } from "./copy.js";
+import { DELEGATION_LIST_LABEL, FAMILY_LABEL } from "./copy.js";
 import { APPS_SEGMENT, parseKeyResource } from "./key-resource.js";
 import {
   SPACE_SERVICES,
@@ -235,6 +235,12 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     spaceOwner !== null &&
     signerAddress !== null &&
     spaceOwner !== signerAddress;
+  // The space belongs to the signer, proven by both addresses. An unknown
+  // owner or signer is not proof, so it never counts as the signer's own.
+  const isOwnSpace =
+    spaceOwner !== null &&
+    signerAddress !== null &&
+    spaceOwner === signerAddress;
 
   // KV and SQL authority inside a TinyCloud secrets space reaches secret
   // data regardless of requester ownership. Classify it as a secret family
@@ -460,6 +466,15 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
       return unknownActionLabel(service);
     }
     if (spaceName !== "account") {
+      // Reading which apps and links can reach the signer's own data: only
+      // `list` and `status` get here, and only on the signer's own
+      // `applications` space. Every other space stays unrecognized.
+      if (spaceName === "applications" && isOwnSpace) {
+        return {
+          family: "bootstrap-delegation",
+          displayLabel: DELEGATION_LIST_LABEL,
+        };
+      }
       return {
         family: "unknown",
         displayLabel: "Unrecognized delegation target",
@@ -473,7 +488,7 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     }
     return {
       family: "bootstrap-delegation",
-      displayLabel: "Connected access and sharing",
+      displayLabel: DELEGATION_LIST_LABEL,
     };
   }
   if (SECRETS_SERVICES.has(service)) {
