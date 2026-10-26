@@ -22,7 +22,7 @@ A hosted resource, such as the TinyCloud MCP server, can ask OpenKey whether an 
 
 All responses are `Cache-Control: no-store`. A caller may cache `active: true` for a short fixed time, which bounds how long a withdrawn token stays usable.
 
-A token is active only while the OpenKey sign-in that authorized it is active.
+A token is active only while the OpenKey sign-in that authorized it is active; a successful refresh extends that sign-in up to 30 days after it began.
 
 A token is not active if it is older than the user's current consent. Disconnecting deletes the consent and connecting again creates a new one, so a token issued before the new consent stays inactive after the user reconnects: it is `active: false` when the token's `iat` is earlier than the consent's creation time. Both are compared in whole seconds (consent times have second precision), so a token issued in the same second as the consent is active, which is the token of the sign-in that created it. A consent time OpenKey cannot read ends the token.
 

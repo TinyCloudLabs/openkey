@@ -43,6 +43,7 @@ import { providerTokenOptions } from './services/native-delegation/provider-toke
 import { emailSignupConfirmation } from './services/email-signup-confirmation';
 import { betterAuthLog, log, logError } from './log';
 import { capSessionRefresh } from './services/session-cap';
+import { SESSION_EXPIRES_IN_SECONDS, SESSION_UPDATE_AGE_SECONDS } from './services/session-lifetime';
 
 export const prisma: PrismaClient = createPrismaClient();
 const tee = createTeeClient();
@@ -207,8 +208,8 @@ export const auth = betterAuth({
 
   // Session configuration
   session: {
-    expiresIn: 60 * 60 * 24 * 7, // 7 days
-    updateAge: 60 * 60 * 24, // Update session every 24 hours
+    expiresIn: SESSION_EXPIRES_IN_SECONDS, // 7 days
+    updateAge: SESSION_UPDATE_AGE_SECONDS, // Update session every 24 hours
     storeSessionInDatabase: true, // Required for OAuth provider
   },
 
