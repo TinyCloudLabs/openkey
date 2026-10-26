@@ -266,10 +266,13 @@ accountRouter.delete('/tinycloud-apps/:clientId', async (c) => {
   return c.json({ clientId, disconnected: true });
 });
 
-// Disconnect an MCP app. This is the same withdrawal as the delete above: the
-// consent row is removed and the database trigger bumps the consent generation
-// and revokes the grants and tokens tied to it. The consent is addressed by id,
-// must belong to the signed-in user, and must carry the MCP scope.
+// Disconnect an MCP app. The consent row is withdrawn exactly as in the delete
+// above (the database trigger bumps the consent generation and revokes native
+// grants and their tokens). The provider's refresh grant never re-checks
+// consent, so this branch also deletes the user's access and refresh token rows
+// for the client in the same transaction; the consent is unique per user and
+// client. The consent is addressed by id, must belong to the signed-in user, and
+// must carry the MCP scope.
 accountRouter.delete('/tinycloud-apps/mcp/:consentId', async (c) => {
   const rejected = rejectNonBrowserControlRequest(c);
   if (rejected) return rejected;
@@ -277,10 +280,18 @@ accountRouter.delete('/tinycloud-apps/mcp/:consentId', async (c) => {
   if (body?.confirmation !== 'DISCONNECT') return c.json({ error: 'Type DISCONNECT to confirm' }, 400);
   const userId = c.get('user').id;
   const consentId = c.req.param('consentId');
-  const removed = await prisma.oauthConsent.deleteMany({ where: {
-    id: consentId, userId, scopes: { has: TINYCLOUD_MCP_SCOPE },
-  } });
-  if (removed.count === 0) return c.json({ error: 'Connected MCP app not found' }, 404);
+  const mine = { id: consentId, userId, scopes: { has: TINYCLOUD_MCP_SCOPE } };
+  const disconnected = await prisma.$transaction(async (tx) => {
+    const consent = await tx.oauthConsent.findFirst({ where: mine, select: { clientId: true } });
+    if (!consent) return false;
+    // Consent first, matching the trigger's lock order (consent, then tokens).
+    const removed = await tx.oauthConsent.deleteMany({ where: mine });
+    if (removed.count !== 1) return false;
+    await tx.oauthAccessToken.deleteMany({ where: { userId, clientId: consent.clientId } });
+    await tx.oauthRefreshToken.deleteMany({ where: { userId, clientId: consent.clientId } });
+    return true;
+  });
+  if (!disconnected) return c.json({ error: 'Connected MCP app not found' }, 404);
   return c.json({ consentId, disconnected: true });
 });
 

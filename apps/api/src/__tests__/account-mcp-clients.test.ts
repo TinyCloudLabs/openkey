@@ -22,7 +22,14 @@ replaceModules({
   }),
 });
 await mockModules({
-  '@openkey/db': () => ({ createPrismaClient: () => new Proxy({}, { get: (_target, name) => Reflect.get(prisma, name) }) }),
+  '@openkey/db': () => ({
+    createPrismaClient: () => new Proxy({}, {
+      get: (_target, name) => {
+        const value = Reflect.get(prisma, name);
+        return typeof value === 'function' ? value.bind(prisma) : value;
+      },
+    }),
+  }),
 });
 
 beforeAll(async () => {
@@ -91,6 +98,17 @@ async function nativeSession(userId: string, clientId: string, n: string, consen
   await prisma.oauthRefreshToken.create({ data: { id: `rt-${n}`, token: `refresh-${n}`, clientId, userId, scopes: [], expiresAt: new Date(Date.now() + 3_600_000) } });
   await prisma.oauthAccessToken.create({ data: { id: `at-${n}`, token: `access-${n}`, clientId, userId, refreshId: `rt-${n}`, scopes: [], expiresAt: new Date(Date.now() + 3_600_000) } });
 }
+/** A refresh token and an access token with no native grant, as the provider stores them for an MCP app. */
+async function plainTokens(userId: string, clientId: string, n: string) {
+  await prisma.oauthRefreshToken.create({ data: { id: `rt-${n}`, token: `refresh-${n}`, clientId, userId, scopes: [], expiresAt: new Date(Date.now() + 3_600_000) } });
+  await prisma.oauthAccessToken.create({ data: { id: `at-${n}`, token: `access-${n}`, clientId, userId, refreshId: `rt-${n}`, scopes: [], expiresAt: new Date(Date.now() + 3_600_000) } });
+}
+async function tokenRows(userId: string, clientId: string) {
+  return {
+    refresh: await prisma.oauthRefreshToken.count({ where: { userId, clientId } }),
+    access: await prisma.oauthAccessToken.count({ where: { userId, clientId } }),
+  };
+}
 async function sessionState(clientId: string, n: string, userId = 'user-a') {
   const grant = await prisma.tinyCloudNativeGrant.findUnique({ where: { id: `grant-${n}` }, select: { status: true, revokedReason: true } });
   const generation = await prisma.tinyCloudNativeConsentGeneration.findUnique({ where: { userId_clientId: { userId, clientId } } });
@@ -144,7 +162,37 @@ describe('account connected MCP apps', () => {
     expect((await disconnectMcp('c-a1', { confirmation: 'yes' })).status).toBe(400);
     expect((await call('DELETE', '/tinycloud-apps/mcp/c-a1', { confirmation: 'DISCONNECT' }, {})).status).toBe(403);
     expect((await call('DELETE', '/tinycloud-apps/mcp/c-a1', { confirmation: 'DISCONNECT' }, { origin: 'https://openkey.test', authorization: 'Bearer token' })).status).toBe(403);
+    expect((await call('DELETE', '/tinycloud-apps/mcp/c-a1', { confirmation: 'DISCONNECT' }, { origin: 'https://evil.example' })).status).toBe(403);
     expect(await prisma.oauthConsent.count({ where: { id: 'c-a1' } })).toBe(1);
+  });
+
+  test('an MCP-only consent with plain provider tokens ends with no token rows; other clients and users keep theirs', async () => {
+    // No native grant: these are the rows the provider writes for an MCP app.
+    await consent('c-mcp', 'user-a', 'client-mcp', [MCP]);
+    await consent('c-b-mcp', 'user-b', 'client-mcp', [MCP]);
+    await consent('c-plain', 'user-a', 'client-plain', ['openid']);
+    await plainTokens('user-a', 'client-mcp', 'a-mcp');
+    await plainTokens('user-b', 'client-mcp', 'b-mcp');
+    await plainTokens('user-a', 'client-plain', 'a-plain');
+
+    expect((await disconnectMcp('c-mcp')).status).toBe(200);
+
+    expect(await tokenRows('user-a', 'client-mcp')).toEqual({ refresh: 0, access: 0 });
+    expect(await tokenRows('user-b', 'client-mcp')).toEqual({ refresh: 1, access: 1 });
+    expect(await tokenRows('user-a', 'client-plain')).toEqual({ refresh: 1, access: 1 });
+    expect(await prisma.oauthConsent.count({ where: { id: { in: ['c-b-mcp', 'c-plain'] } } })).toBe(2);
+  });
+
+  test('a refused disconnect leaves the tokens of a consent it does not own or that has no MCP scope', async () => {
+    await consent('c-b-mcp', 'user-b', 'client-mcp', [MCP]);
+    await plainTokens('user-b', 'client-mcp', 'b-mcp');
+    await consent('c-plain', 'user-a', 'client-plain', ['openid']);
+    await plainTokens('user-a', 'client-plain', 'a-plain');
+
+    expect((await disconnectMcp('c-b-mcp')).status).toBe(404);
+    expect((await disconnectMcp('c-plain')).status).toBe(404);
+    expect(await tokenRows('user-b', 'client-mcp')).toEqual({ refresh: 1, access: 1 });
+    expect(await tokenRows('user-a', 'client-plain')).toEqual({ refresh: 1, access: 1 });
   });
 
   test('disconnect removes the consent and has the same grant and token effect as the existing delete', async () => {

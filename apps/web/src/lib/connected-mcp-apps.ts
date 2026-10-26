@@ -8,7 +8,7 @@ export const mcpAppCopy = {
   confirmAction: 'Disconnect app',
   confirmTitle: (name: string) => `Disconnect ${name}?`,
   confirmBody: 'The app will lose the access you gave it, including any other access this connection allowed. It can ask you to connect again later.',
-  disconnected: 'Disconnected. The app will soon no longer be able to use your TinyCloud through MCP.',
+  disconnected: 'Disconnected. The app will no longer be able to use your TinyCloud through MCP within 5 minutes.',
   failed: 'Could not disconnect the app. Try again.',
 } as const;
 
@@ -20,6 +20,12 @@ const SCOPE_WORDS: Record<string, string> = {
   keys: 'Lets this app see your account keys.',
   offline_access: 'Lets this app stay connected until you disconnect it.',
 };
+
+/** Only https icons are rendered; anything else (data:, javascript:, http:) is dropped. */
+export function safeMcpIcon(icon: string | null): string | null {
+  if (!icon) return null;
+  try { return new URL(icon).protocol === 'https:' ? icon : null; } catch { return null; }
+}
 
 /** Plain-words lines for a consent's scopes; the MCP scope is always first. */
 export function describeMcpScopes(scopes: readonly string[]): string[] {

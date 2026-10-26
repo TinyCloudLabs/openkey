@@ -1,7 +1,7 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import { api, type ConnectedMcpApp } from '$lib/api';
-  import { describeMcpScopes, mcpAppCopy as text } from '$lib/connected-mcp-apps';
+  import { describeMcpScopes, mcpAppCopy as text, safeMcpIcon } from '$lib/connected-mcp-apps';
 
   let { apps, onchanged }: { apps: ConnectedMcpApp[]; onchanged: () => void | Promise<void> } = $props();
   let confirming = $state<ConnectedMcpApp | null>(null);
@@ -62,7 +62,7 @@
         <li class="flex flex-col gap-3 rounded-xl border border-surface-200 bg-surface-50 p-4 sm:flex-row sm:items-center sm:justify-between">
           <div class="min-w-0">
             <div class="flex items-center gap-2">
-              {#if app.icon}<img src={app.icon} alt="" class="h-6 w-6 rounded" />{/if}
+              {#if safeMcpIcon(app.icon)}<img src={safeMcpIcon(app.icon)} alt="" referrerpolicy="no-referrer" class="h-6 w-6 rounded" />{/if}
               <span class="truncate font-semibold text-surface-900">{app.name}</span>
               {#if app.host}<span class="truncate text-sm text-surface-500">{app.host}</span>{/if}
             </div>

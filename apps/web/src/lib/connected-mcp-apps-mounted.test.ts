@@ -100,6 +100,17 @@ test('shows an empty state when no MCP app is connected', () => {
   } finally { done(); }
 });
 
+test('renders an https icon without a referrer and drops every other icon scheme', () => {
+  const icons = ['https://cdn.example.test/icon.png', 'http://cdn.example.test/icon.png', 'data:image/svg+xml,<svg/>', 'javascript:alert(1)', 'not a url'];
+  const { target, done } = render({ apps: icons.map((icon, index) => ({ ...apps[0], consentId: `icon-${index}`, icon })) });
+  try {
+    flushSync();
+    const images = [...target.querySelectorAll('img')];
+    expect(images.map((image) => image.getAttribute('src'))).toEqual(['https://cdn.example.test/icon.png']);
+    expect(images[0]!.getAttribute('referrerpolicy')).toBe('no-referrer');
+  } finally { done(); }
+});
+
 test('Disconnect asks first, cancel changes nothing, confirm deletes that consent and reports it', async () => {
   const calls: string[] = [];
   hooks.__disconnectMcpApp = async (id) => { calls.push(id); };
@@ -123,7 +134,7 @@ test('Disconnect asks first, cancel changes nothing, confirm deletes that consen
     await until(() => !!target.querySelector('[role="status"]'), 'disconnected notice');
     expect(calls).toEqual(['consent-2']);
     expect(changed).toBe(1);
-    expect(target.querySelector('[role="status"]')!.textContent).toBe('Disconnected. The app will soon no longer be able to use your TinyCloud through MCP.');
+    expect(target.querySelector('[role="status"]')!.textContent).toBe('Disconnected. The app will no longer be able to use your TinyCloud through MCP within 5 minutes.');
   } finally { done(); }
 });
 
