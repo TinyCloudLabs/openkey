@@ -48,9 +48,16 @@ export const FAMILY_LABEL: Record<CapabilityFamily, string> = {
 
 /**
  * Title of a read-only `tinycloud.delegation` grant (`list`, `status`) on the
- * signer's own `applications` space.
+ * signer's own `account` or `applications` space. The node answers with every
+ * delegation of the account: who holds it, the names of what it reaches, the
+ * actions and the expiry.
  */
-export const DELEGATION_LIST_LABEL = "See which apps and links can reach your data";
+export const DELEGATION_LIST_LABEL =
+  "See which apps and links can reach your data, and the names of what each can reach";
+
+/** The consent sentence for the same grant. */
+export const DELEGATION_LIST_STATEMENT =
+  "See who has access to your data, what it reaches (by name) and when it ends. Keys and contents aren't shown.";
 
 /**
  * Consent copy for a raw `tinycloud.encryption/decrypt` on the account's

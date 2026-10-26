@@ -488,7 +488,7 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     }
     return {
       family: "bootstrap-delegation",
-      displayLabel: "Connected access and sharing",
+      displayLabel: DELEGATION_LIST_LABEL,
     };
   }
   if (SECRETS_SERVICES.has(service)) {

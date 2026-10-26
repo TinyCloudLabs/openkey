@@ -1,6 +1,7 @@
 // Reading which apps and links can reach the signer's own data: `tinycloud.delegation` with
 // `list` (and `status`) on the signer's own `applications` space is a plain read-only grant.
-// Every other space and verb combination keeps the classification it had.
+// The `account` space has the same label. Every other space and verb combination keeps the
+// classification it had.
 
 import { describe, expect, it } from "bun:test";
 
@@ -13,7 +14,7 @@ const SIGNER = "0x1111111111111111111111111111111111111111";
 const OTHER = "0x2222222222222222222222222222222222222222";
 const space = (name: string, owner = SIGNER) => `tinycloud:pkh:eip155:1:${owner}:${name}`;
 
-const LABEL = "See which apps and links can reach your data";
+const LABEL = "See which apps and links can reach your data, and the names of what each can reach";
 
 function classify(options: {
   space: string;
@@ -106,11 +107,11 @@ describe("delegation reads elsewhere keep their classification", () => {
     expect(classify({ space: "tinycloud:pkh:eip155:1:not-an-address:applications", actions })).toEqual(unrecognized);
   });
 
-  it("the account space is unchanged: connected access and sharing, or another user's connected access", () => {
+  it("the account space has the same label, and another user's account space keeps its own", () => {
     for (const actions of [["tinycloud.delegation/list"], ["tinycloud.delegation/list", "tinycloud.delegation/status"]]) {
       expect(classify({ space: space("account"), actions })).toEqual({
         family: "bootstrap-delegation",
-        displayLabel: "Connected access and sharing",
+        displayLabel: LABEL,
       });
       expect(classify({ space: space("account", OTHER), actions })).toEqual({
         family: "cross-app-data",
