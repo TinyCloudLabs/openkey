@@ -2,7 +2,7 @@
 # the SvelteKit dev server that tests/browser/playwright.config.ts starts (TC-2120). No secrets,
 # database or network services: every API call in the specs is routed in the browser.
 #
-# NOT a required check. Until the known reds below are fixed it is informative only.
+# NOT a required check yet: make it required once a few main runs are clean (a flake is retried).
 #
 # No `paths:` filter on the triggers: the workflow always runs and reports. The "Decide whether the
 # change touches the web app" step decides whether the real steps execute, and it fails OPEN: only a
@@ -12,10 +12,9 @@
 # code: it fails only on a failure that is NOT in .github/web-browser-known-reds.json. A test that
 # failed and passed on its retry is reported as a flake and does not fail the job.
 #
-# KNOWN REDS (delete this block, the list file and the argument below when they are fixed):
-#   delegate-prepared-siwe.spec.ts :73 and :370 fail on main: the page now shows the original SIWE
-#   and the exact candidate collapsed and escaped, and the spec expects the raw text. The list file
-#   holds the diagnosis; the job prints "known red now passes: delete it from the list" once fixed.
+# KNOWN REDS: none today (the list in .github/web-browser-known-reds.json is empty). A spec that is
+#   red on main can be listed there, with its diagnosis, until it is fixed; the job then prints it as
+#   a known red, and says "known red now passes: delete it from the list" once it passes.
 name: Web browser tests
 
 on:
