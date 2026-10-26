@@ -100,7 +100,7 @@ test('shows an empty state when no MCP app is connected', () => {
   } finally { done(); }
 });
 
-test('renders an https icon without a referrer and drops every other icon scheme', () => {
+test('renders an https icon without a referrer and leaves out every other icon scheme', () => {
   const icons = ['https://cdn.example.test/icon.png', 'http://cdn.example.test/icon.png', 'data:image/svg+xml,<svg/>', 'javascript:alert(1)', 'not a url'];
   const { target, done } = render({ apps: icons.map((icon, index) => ({ ...apps[0], consentId: `icon-${index}`, icon })) });
   try {

@@ -21,7 +21,7 @@ const SCOPE_WORDS: Record<string, string> = {
   offline_access: 'Lets this app stay connected until you disconnect it.',
 };
 
-/** Only https icons are rendered; anything else (data:, javascript:, http:) is dropped. */
+/** Only https icons are rendered; anything else (data:, javascript:, http:) is skipped. */
 export function safeMcpIcon(icon: string | null): string | null {
   if (!icon) return null;
   try { return new URL(icon).protocol === 'https:' ? icon : null; } catch { return null; }
