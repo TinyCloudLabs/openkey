@@ -7,6 +7,8 @@ import { beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { exportJWK, generateKeyPair, SignJWT, type JSONWebKeySet, type JWK } from 'jose';
 import { createResourceIntrospectRouter } from '../routes/oauth-resource-introspect';
 import { hashClientSecret, resourceServerMetadata } from '../services/resource-server';
+import { accessTokenKey } from '../services/revoked-access-token';
+import { lastCharVariants, otherFormEs256 } from './token-variants';
 
 const ISSUER = 'https://api.openkey.test/api/auth';
 const RESOURCE = 'https://mcp.tinycloud.xyz/mcp';
@@ -38,6 +40,9 @@ let consents: Map<string, { scopes: string[]; createdAt: Date }>;
 const CONSENT_AT = new Date(NOW_MS - 3_600_000);
 let sessions: Map<string, { id: string; userId: string; expiresAt: Date }>;
 let failDatabase: boolean;
+/** The keys of revoked tokens (see accessTokenKey), and a failure of that lookup alone. */
+let revoked: Set<string>;
+let failRevokedLookup: boolean;
 let jwksCalls: number;
 let jwksKeys: JWK[];
 let failJwks: boolean;
@@ -69,6 +74,13 @@ const prisma = {
         (where.userId === undefined || candidate.userId === where.userId) &&
         candidate.expiresAt > where.expiresAt.gt);
       return session ? { id: session.id } : null;
+    },
+  },
+  revokedAccessToken: {
+    findUnique: async ({ where }: { where: { tokenHash: string | undefined } }) => {
+      if (failDatabase || failRevokedLookup) throw new Error('database down');
+      if (where.tokenHash === undefined) throw new Error('Argument `tokenHash` is missing');
+      return revoked.has(where.tokenHash) ? { tokenHash: where.tokenHash } : null;
     },
   },
 };
@@ -106,6 +118,8 @@ beforeEach(() => {
   ]);
   consents = new Map([['user_1:app_1', { scopes: ['tinycloud:mcp'], createdAt: CONSENT_AT }]]);
   sessions = new Map([['sess_1', { id: 'sess_1', userId: 'user_1', expiresAt: new Date(NOW_MS + 3_600_000) }]]);
+  revoked = new Set();
+  failRevokedLookup = false;
   router = makeRouter();
 });
 
@@ -503,5 +517,64 @@ describe('rate limits', () => {
     for (let i = 0; i < 21; i++) failures.push((await call(token, { auth: basic('rs_2', 'wrong'), headers: { 'x-forwarded-for': '198.51.100.9, 10.0.0.1' } })).status);
     expect(failures.slice(0, 20).every((status) => status === 401)).toBe(true);
     expect(failures[20]).toBe(429);
+  });
+});
+
+describe('a token revoked at /oauth2/revoke', () => {
+  const active = async (token: string) => (await json(await call(token))).active;
+
+  test('is inactive, and another token of the same user and client stays active', async () => {
+    const revokedToken = await mint();
+    const other = await mint({}, { issuedAt: NOW_S - 20 });
+    expect(await active(revokedToken)).toBe(true);
+    revoked.add(accessTokenKey(revokedToken)!);
+    expect(await json(await call(revokedToken))).toEqual(INACTIVE);
+    expect(await active(other)).toBe(true);
+  });
+
+  test('a changed last signature character does not bring it back: every variant that verifies is inactive', async () => {
+    const token = await mint();
+    const verifying: string[] = [];
+    for (const variant of lastCharVariants(token)) if (await active(variant)) verifying.push(variant);
+    // The character has spare bits, so some variants verify before the revoke.
+    expect(verifying.length).toBeGreaterThan(0);
+
+    revoked.add(accessTokenKey(token)!);
+    expect(await json(await call(token))).toEqual(INACTIVE);
+    for (const variant of [token, ...lastCharVariants(token)]) expect(await active(variant), variant.slice(-6)).toBe(false);
+  });
+
+  test('the other valid form of an ES256 signature (s replaced by n - s) is inactive too', async () => {
+    const pair = await generateKeyPair('ES256', { extractable: true });
+    jwksKeys = [{ ...(await exportJWK(pair.publicKey)), kid: 'key-es', alg: 'ES256', use: 'sig' }];
+    const token = await new SignJWT({ sub: 'user_1', azp: 'app_1', sid: 'sess_1', scope: 'tinycloud:mcp', aud: RESOURCE } as never)
+      .setProtectedHeader({ alg: 'ES256', kid: 'key-es' }).setIssuer(ISSUER).setIssuedAt(NOW_S - 10).setExpirationTime(NOW_S + 300)
+      .sign(pair.privateKey);
+    const otherForm = otherFormEs256(token);
+    expect(otherForm).not.toBe(token);
+    expect(await active(token)).toBe(true);
+    expect(await active(otherForm)).toBe(true);
+
+    revoked.add(accessTokenKey(token)!);
+    expect(await active(token)).toBe(false);
+    expect(await active(otherForm)).toBe(false);
+  });
+
+  test('a lookup that fails is a 503, never active', async () => {
+    const token = await mint();
+    failRevokedLookup = true;
+    const response = await call(token);
+    expect(response.status).toBe(503);
+    expect(await json(response)).toEqual({ error: 'temporarily_unavailable' });
+  });
+
+  test('the key is the signing input: the same for every signature form, different for another payload, none for a non-token', async () => {
+    const token = await mint();
+    const key = accessTokenKey(token)!;
+    expect(key).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    for (const variant of lastCharVariants(token)) expect(accessTokenKey(variant)).toBe(key);
+    expect(accessTokenKey(await mint({}, { issuedAt: NOW_S - 20 }))).not.toBe(key);
+    expect(accessTokenKey('not-a-token')).toBeNull();
+    expect(accessTokenKey(`${'a'.repeat(9 * 1024)}.b.c`)).toBeNull();
   });
 });

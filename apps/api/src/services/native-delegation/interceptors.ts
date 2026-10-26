@@ -53,7 +53,7 @@ const JSON_MEDIA_TYPE = /^application\/([a-z0-9.+-]*\+)?json/i;
 type ParsedBody = { params: URLSearchParams } | { refusal: Refusal } | { passThrough: true };
 
 /** The route better-call dispatches on: everything after the first base path. */
-function providerPath(url: string): string | null {
+export function providerPath(url: string): string | null {
   const pathname = new URL(url).pathname;
   const index = pathname.indexOf(AUTH_BASE_PATH);
   if (index < 0) return null;
@@ -112,7 +112,7 @@ function mentionsAdminManagedScope(scope: unknown): boolean {
  * the exact form type is parsed here. Anything else the provider would accept
  * is refused; anything it rejects (415, missing body) passes through.
  */
-async function parseProviderForm(request: Request): Promise<ParsedBody> {
+export async function parseProviderForm(request: Request): Promise<ParsedBody> {
   if (!request.body) return { passThrough: true };
   const mediaType = (request.headers.get('content-type') ?? '').toLowerCase().split(';')[0]!.trim();
   if (mediaType !== FORM_MEDIA_TYPE) {
@@ -133,7 +133,7 @@ async function parseProviderForm(request: Request): Promise<ParsedBody> {
  * replaces the body credentials. Only canonical base64 is accepted so this
  * decoder and the provider's always agree on the client_id.
  */
-function requestClients(request: Request, params: URLSearchParams): { effective: string | null; candidates: string[] } | Refusal {
+export function requestClients(request: Request, params: URLSearchParams): { effective: string | null; candidates: string[] } | Refusal {
   const authorization = request.headers.get('authorization');
   const bodyClient = params.get('client_id');
   if (!authorization?.startsWith('Basic ')) {

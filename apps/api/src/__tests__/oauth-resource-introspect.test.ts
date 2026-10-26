@@ -8,12 +8,13 @@
 import './tc1777-test-env';
 import { afterAll, beforeAll, describe, expect, setSystemTime, test } from 'bun:test';
 import { PGlite } from '@electric-sql/pglite';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { generateCodeChallenge } from 'better-auth/oauth2';
 import { serializeSignedCookie } from 'better-call';
 import type { PrismaClient } from '@openkey/db';
+import { lastCharVariants } from './token-variants';
 
 const root = resolve(import.meta.dir, '../../../..');
 if (process.env.OPENKEY_RESOURCE_INTROSPECT_TEST_CHILD !== '1') {
@@ -377,6 +378,211 @@ if (process.env.OPENKEY_RESOURCE_INTROSPECT_TEST_CHILD !== '1') {
       expect(own.body.sid).toBe('session-stock-owner');
       // And the new route treats that same token as any other, for a server allowed its audience.
       expect((await check(ownToken)).body.active).toBe(true);
+    });
+  });
+
+  describe('a token revoked at /oauth2/revoke', () => {
+    const FORM = 'application/x-www-form-urlencoded';
+    function revokeCall(form: Record<string, string>, authorization?: string) {
+      return call('/oauth2/revoke', {
+        method: 'POST',
+        headers: { 'content-type': FORM, ...(authorization ? { authorization } : {}) },
+        body: new URLSearchParams(form),
+      });
+    }
+    const answerOf = async (response: Response) => ({ status: response.status, body: await response.text(), type: response.headers.get('content-type') });
+    const rowCount = () => prisma.revokedAccessToken.count();
+    const isActive = async (token: string) => (await check(token)).body.active;
+
+    /** A token issued to a confidential client, which revokes with its secret. */
+    async function confidentialToken(label: string) {
+      const owner = await confidentialClient(`Revoker ${label}`, null);
+      await prisma.oauthClient.update({ where: { clientId: owner.clientId }, data: { scopes: ['openid', 'tinycloud:mcp'] } });
+      const session = await newSession(`session-${label}`);
+      const verifier = `tc2104-${randomUUID()}${randomUUID()}`;
+      const query = new URLSearchParams({
+        client_id: owner.clientId, response_type: 'code', redirect_uri: confidentialCallback, scope: 'tinycloud:mcp', state: 'st',
+        code_challenge: await generateCodeChallenge(verifier), code_challenge_method: 'S256', resource,
+      });
+      let location = new URL((await call(`/oauth2/authorize?${query}`, {}, session.cookie)).headers.get('location')!, issuer);
+      if (location.pathname === '/oauth/consent') {
+        const approve = await call('/oauth2/consent', {
+          method: 'POST', headers: { 'content-type': 'application/json', origin: 'https://openkey.test' },
+          body: JSON.stringify({ accept: true, oauth_query: location.searchParams.toString() }),
+        }, session.cookie);
+        location = new URL(((await approve.json()) as { url: string }).url);
+      }
+      const exchanged = await call('/oauth2/token', {
+        method: 'POST',
+        headers: { 'content-type': FORM, authorization: basic(owner.clientId, owner.secret) },
+        body: new URLSearchParams({ grant_type: 'authorization_code', code: location.searchParams.get('code')!, redirect_uri: confidentialCallback, code_verifier: verifier, resource }),
+      });
+      expect(exchanged.status, await exchanged.clone().text()).toBe(200);
+      return { owner, accessToken: ((await exchanged.json()) as { access_token: string }).access_token };
+    }
+
+    test('the issuing public client revokes it: inactive at the status check, while another token of the same user and client stays active', async () => {
+      const { clientId, session, accessToken } = await mcpToken('revoke-public');
+      setSystemTime(new Date(Date.now() + 2_000));
+      try {
+        // A second token for the same user, client and session, issued a moment later.
+        const second = (await issue(clientId, session)).access_token;
+        expect(second).not.toBe(accessToken);
+        expect(await isActive(accessToken)).toBe(true);
+        expect(await isActive(second)).toBe(true);
+
+        const before = await rowCount();
+        const revoked = await revokeCall({ token: accessToken, client_id: clientId });
+        expect(revoked.status).toBe(200);
+        expect(await rowCount()).toBe(before + 1);
+
+        expect((await check(accessToken)).body).toEqual(INACTIVE);
+        expect(await isActive(second)).toBe(true);
+      } finally {
+        setSystemTime();
+      }
+    });
+
+    test('a confidential client revokes its own token with its secret', async () => {
+      const { owner, accessToken } = await confidentialToken('revoke-confidential');
+      expect(await isActive(accessToken)).toBe(true);
+      const revoked = await revokeCall({ token: accessToken }, basic(owner.clientId, owner.secret));
+      expect(revoked.status).toBe(200);
+      expect((await check(accessToken)).body).toEqual(INACTIVE);
+    });
+
+    test('revoking the same token twice is fine', async () => {
+      const { clientId, accessToken } = await mcpToken('revoke-twice');
+      const before = await rowCount();
+      expect((await revokeCall({ token: accessToken, client_id: clientId })).status).toBe(200);
+      expect((await revokeCall({ token: accessToken, client_id: clientId })).status).toBe(200);
+      expect(await rowCount()).toBe(before + 1);
+      expect((await check(accessToken)).body).toEqual(INACTIVE);
+    });
+
+    test('a changed last signature character does not bring it back', async () => {
+      const { clientId, accessToken } = await mcpToken('revoke-variant');
+      const verifying: string[] = [];
+      for (const variant of lastCharVariants(accessToken)) if (await isActive(variant)) verifying.push(variant);
+      expect(verifying.length).toBeGreaterThan(0);
+
+      expect((await revokeCall({ token: accessToken, client_id: clientId })).status).toBe(200);
+      for (const variant of [accessToken, ...lastCharVariants(accessToken)]) expect(await isActive(variant), variant.slice(-6)).toBe(false);
+    });
+
+    test('the table holds only the key: SHA-256 of the signing input, with the client and the token\'s expiry', async () => {
+      const { clientId, accessToken } = await mcpToken('revoke-hash');
+      await revokeCall({ token: accessToken, client_id: clientId });
+      const [header, payload, signature] = accessToken.split('.') as [string, string, string];
+      const key = createHash('sha256').update(`${header}.${payload}`).digest('base64url');
+      const row = await prisma.revokedAccessToken.findUnique({ where: { tokenHash: key } });
+      expect(row).not.toBeNull();
+      expect(row!.clientId).toBe(clientId);
+      const exp = (JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as { exp: number }).exp;
+      expect(row!.expiresAt.getTime()).toBe(exp * 1000);
+      const stored = JSON.stringify(await prisma.revokedAccessToken.findMany());
+      for (const part of [accessToken, header, payload, signature]) expect(stored).not.toContain(part);
+    });
+
+    test('the revoke answer is the same for a token that is recorded and for one that is not', async () => {
+      const { clientId, accessToken } = await mcpToken('revoke-answer');
+      const recorded = await answerOf(await revokeCall({ token: accessToken, client_id: clientId }));
+      const unknown = await answerOf(await revokeCall({ token: 'garbage', client_id: clientId }));
+      expect(recorded).toEqual(unknown);
+      expect(recorded.status).toBe(200);
+    });
+
+    test('garbage, an unsigned token, an expired token and another client\'s token record nothing, and are answered as the provider answers', async () => {
+      const mine = await mcpToken('revoke-nothing-mine');
+      const theirs = await mcpToken('revoke-nothing-theirs');
+      const [header, payload] = mine.accessToken.split('.') as [string, string];
+      const unsigned = `${Buffer.from('{"alg":"none","typ":"JWT"}').toString('base64url')}.${payload}.`;
+      const before = await rowCount();
+      const baseline = await answerOf(await revokeCall({ token: 'garbage', client_id: mine.clientId }));
+      const answers = [];
+      for (const token of ['garbage', `${header}.${payload}`, unsigned, `${'a'.repeat(9 * 1024)}.b.c`, theirs.accessToken]) {
+        answers.push(await answerOf(await revokeCall({ token, client_id: mine.clientId })));
+      }
+      for (const answer of answers) expect(answer).toEqual(baseline);
+      expect(await rowCount()).toBe(before);
+      // Another client's token is still active: it was not revoked by a client it was not issued to.
+      expect(await isActive(theirs.accessToken)).toBe(true);
+
+      setSystemTime(new Date(Date.now() + 400_000));
+      try {
+        expect(await answerOf(await revokeCall({ token: mine.accessToken, client_id: mine.clientId }))).toEqual(baseline);
+        expect(await rowCount()).toBe(before);
+      } finally {
+        setSystemTime();
+      }
+    });
+
+    test('a wrong secret is the provider\'s refusal, records nothing, and the token stays active', async () => {
+      const { owner, accessToken } = await confidentialToken('revoke-wrong-secret');
+      const before = await rowCount();
+      const refused = await revokeCall({ token: accessToken }, basic(owner.clientId, 'not-the-secret'));
+      expect(refused.status).toBe(401);
+      expect(await rowCount()).toBe(before);
+      expect(await isActive(accessToken)).toBe(true);
+    });
+
+    test('a refusal by the provider interceptors records nothing, and the token stays active', async () => {
+      const { clientId, accessToken } = await mcpToken('revoke-refused');
+      const before = await rowCount();
+      const refused = await revokeCall({ token: `Bearer ${accessToken}`, client_id: clientId });
+      expect(refused.status).toBe(400);
+      expect(await rowCount()).toBe(before);
+      expect(await isActive(accessToken)).toBe(true);
+    });
+
+    test('a client that did not issue the token cannot revoke it, even though its own request is answered 200', async () => {
+      const issued = await mcpToken('revoke-other-owner');
+      const other = await registerPublicClient();
+      const before = await rowCount();
+      expect((await revokeCall({ token: issued.accessToken, client_id: other })).status).toBe(200);
+      expect(await rowCount()).toBe(before);
+      expect(await isActive(issued.accessToken)).toBe(true);
+    });
+
+    test('an insert that fails is a 503, and the token stays active', async () => {
+      const { clientId, accessToken } = await mcpToken('revoke-insert-fails');
+      await prisma.$executeRawUnsafe('ALTER TABLE "revoked_access_token" RENAME TO "revoked_access_token_away"');
+      try {
+        const response = await revokeCall({ token: accessToken, client_id: clientId });
+        expect(response.status).toBe(503);
+        expect(response.headers.get('retry-after')).toBe('5');
+        expect(await response.json()).toEqual({ error: 'temporarily_unavailable', error_description: 'the revocation could not be recorded; try again' });
+      } finally {
+        await prisma.$executeRawUnsafe('ALTER TABLE "revoked_access_token_away" RENAME TO "revoked_access_token"');
+      }
+      expect(await isActive(accessToken)).toBe(true);
+      expect((await revokeCall({ token: accessToken, client_id: clientId })).status).toBe(200);
+      expect(await isActive(accessToken)).toBe(false);
+    });
+
+    test('a lookup that fails at the status check is a 503, not active', async () => {
+      const { accessToken } = await mcpToken('revoke-lookup-fails');
+      await prisma.$executeRawUnsafe('ALTER TABLE "revoked_access_token" RENAME TO "revoked_access_token_away"');
+      try {
+        const result = await check(accessToken);
+        expect(result.status).toBe(503);
+        expect(result.body).toEqual({ error: 'temporarily_unavailable' });
+      } finally {
+        await prisma.$executeRawUnsafe('ALTER TABLE "revoked_access_token_away" RENAME TO "revoked_access_token"');
+      }
+      expect(await isActive(accessToken)).toBe(true);
+    });
+
+    test('rows past the token\'s own expiry are deleted by a later record', async () => {
+      await prisma.revokedAccessToken.create({ data: { tokenHash: 'expired-row', clientId: 'x', expiresAt: new Date(Date.now() - 1000) } });
+      const { clientId, accessToken } = await mcpToken('revoke-sweep');
+      setSystemTime(new Date(Date.now() + 120_000));
+      try {
+        expect((await revokeCall({ token: accessToken, client_id: clientId })).status).toBe(200);
+      } finally {
+        setSystemTime();
+      }
+      expect(await prisma.revokedAccessToken.findUnique({ where: { tokenHash: 'expired-row' } })).toBeNull();
     });
   });
 }
