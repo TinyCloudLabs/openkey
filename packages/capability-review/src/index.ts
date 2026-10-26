@@ -22,3 +22,4 @@ export * from "./siwe-origin.js";
 export * from "./encryption-resource.js";
 export * from "./host-siwe.js";
 export * from "./key-resource.js";
+export * from "./owner-revocation.js";

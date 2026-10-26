@@ -2,6 +2,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { canonicalSiweFields, strictSessionDid } from './device-authorization';
 import { digestJwk } from './authorization-signing';
 import { appKeyRefusalCode, appKeyRefusalForSiwe, appKeyRefusalMessage, appKeyRefusalStatus } from './app-key-refusal';
+import { parseOwnerRevocationRequest, type OwnerRevocationRequest } from '@openkey/capability-review';
 
 export type PreparedHandoffRequest = {
   protocolVersion: 1;
@@ -11,10 +12,10 @@ export type PreparedHandoffRequest = {
   keyId?: string;
   presentation?: Record<string, unknown>;
   sessionDid: string;
-};
+} | OwnerRevocationRequest;
 
 type Delivery = { handoffId: string; callback?: string; state: string; cancelSecret: string };
-const REQUEST_FIELDS: Record<keyof PreparedHandoffRequest, true> = {
+const REQUEST_FIELDS: Record<keyof Exclude<PreparedHandoffRequest, OwnerRevocationRequest>, true> = {
   protocolVersion: true, siwe: true, jwk: true, host: true,
   keyId: true, presentation: true, sessionDid: true,
 };
@@ -55,7 +56,7 @@ function fail(code: string, message: string, status: 400 | 403 | 404 | 409 | 410
   throw new PreparedHandoffError(code, message, status);
 }
 
-function validateRequest(input: unknown): { request: PreparedHandoffRequest; delivery: Delivery; issuedAt?: string; expirationTime: string; nonce: string } {
+function validateRequest(input: unknown, now: Date): { request: PreparedHandoffRequest; delivery: Delivery; issuedAt?: string; expirationTime: string; nonce: string } {
   if (!input || typeof input !== 'object' || Array.isArray(input) ||
     !('transportVersion' in input) || input.transportVersion !== 2 ||
     !('request' in input) || !input.request || typeof input.request !== 'object' || Array.isArray(input.request) ||
@@ -63,15 +64,23 @@ function validateRequest(input: unknown): { request: PreparedHandoffRequest; del
     Buffer.byteLength(JSON.stringify(input), 'utf8') > 6 * 1024) fail('invalid_request', 'Invalid or oversized handoff request', 400);
   const request = input.request;
   const delivery = input.delivery;
-  if (Object.keys(request).some((field) => !Object.hasOwn(REQUEST_FIELDS, field)) ||
+  const ownerRequest = 'kind' in request;
+  let revocation: OwnerRevocationRequest | null = null;
+  if (ownerRequest) {
+    try { revocation = parseOwnerRevocationRequest(request, now); }
+    catch (cause) { fail('invalid_request', cause instanceof Error ? cause.message : 'Invalid owner-revocation request', 400); }
+  }
+  if ((!ownerRequest && Object.keys(request).some((field) => !Object.hasOwn(REQUEST_FIELDS, field))) ||
     Object.keys(delivery).some((field) => !Object.hasOwn(DELIVERY_FIELDS, field)) ||
-    !('protocolVersion' in request) || request.protocolVersion !== 1 ||
-    !('siwe' in request) || typeof request.siwe !== 'string' || !request.siwe ||
-    !('jwk' in request) || !request.jwk || typeof request.jwk !== 'object' || Array.isArray(request.jwk) ||
-    !('host' in request) || typeof request.host !== 'string' ||
-    !('sessionDid' in request) || typeof request.sessionDid !== 'string' || request.sessionDid.length > 512 ||
-    ('keyId' in request && (typeof request.keyId !== 'string' || !request.keyId)) ||
-    ('presentation' in request && (!request.presentation || typeof request.presentation !== 'object' || Array.isArray(request.presentation))) ||
+    (!ownerRequest && (
+      !('protocolVersion' in request) || request.protocolVersion !== 1 ||
+      !('siwe' in request) || typeof request.siwe !== 'string' || !request.siwe ||
+      !('jwk' in request) || !request.jwk || typeof request.jwk !== 'object' || Array.isArray(request.jwk) ||
+      !('host' in request) || typeof request.host !== 'string' ||
+      !('sessionDid' in request) || typeof request.sessionDid !== 'string' || request.sessionDid.length > 512 ||
+      ('keyId' in request && (typeof request.keyId !== 'string' || !request.keyId)) ||
+      ('presentation' in request && (!request.presentation || typeof request.presentation !== 'object' || Array.isArray(request.presentation)))
+    )) ||
     !('handoffId' in delivery) || !opaque(delivery.handoffId) ||
     !('state' in delivery) || !opaque(delivery.state) ||
     !('cancelSecret' in delivery) || !opaque(delivery.cancelSecret) ||
@@ -83,22 +92,6 @@ function validateRequest(input: unknown): { request: PreparedHandoffRequest; del
   if (callback !== undefined && typeof callback !== 'string') {
     fail('invalid_request', 'Invalid callback', 400);
   }
-  const fields = canonicalSiweFields(request.siwe);
-  if (!fields) fail('invalid_request', 'Invalid canonical prepared SIWE', 400);
-  const appKeyRefusal = appKeyRefusalForSiwe(request.siwe);
-  if (appKeyRefusal) {
-    fail(appKeyRefusalCode(appKeyRefusal), appKeyRefusalMessage(appKeyRefusal, 'non_browser'), appKeyRefusalStatus(appKeyRefusal));
-  }
-  try {
-    const did = strictSessionDid(request.jwk);
-    if (fields.uri !== did) fail('invalid_request', 'SIWE URI does not match the public session key', 400);
-    const url = new URL(request.host);
-    if (!['http:', 'https:'].includes(url.protocol) || url.origin !== request.host || url.username || url.password || url.search || url.hash || url.pathname !== '/') {
-      fail('invalid_request', 'host must be an exact origin', 400);
-    }
-  } catch {
-    fail('invalid_request', 'Invalid public JWK, SIWE, or host', 400);
-  }
   const callbackMatch = typeof callback === 'string'
     ? /^http:\/\/(?:127\.0\.0\.1|\[::1\]):([1-9]\d{3,4})\/callback\/([A-Za-z0-9_-]{22})$/.exec(callback)
     : null;
@@ -107,7 +100,27 @@ function validateRequest(input: unknown): { request: PreparedHandoffRequest; del
     Buffer.from(callbackMatch[2]!, 'base64url').toString('base64url') !== callbackMatch[2])) {
     fail('invalid_request', 'callback must be a randomized loopback URL', 400);
   }
-  return { request: request as PreparedHandoffRequest, delivery: {
+  if (revocation) return { request: revocation, delivery: {
+    handoffId: delivery.handoffId, state: delivery.state, cancelSecret: delivery.cancelSecret, ...(callback ? { callback } : {}),
+  }, issuedAt: now.toISOString(), expirationTime: revocation.expiresAt, nonce: revocation.nonce };
+  const legacy = request as Exclude<PreparedHandoffRequest, OwnerRevocationRequest>;
+  const fields = canonicalSiweFields(legacy.siwe);
+  if (!fields) fail('invalid_request', 'Invalid canonical prepared SIWE', 400);
+  const appKeyRefusal = appKeyRefusalForSiwe(legacy.siwe);
+  if (appKeyRefusal) {
+    fail(appKeyRefusalCode(appKeyRefusal), appKeyRefusalMessage(appKeyRefusal, 'non_browser'), appKeyRefusalStatus(appKeyRefusal));
+  }
+  try {
+    const did = strictSessionDid(legacy.jwk);
+    if (fields.uri !== did) fail('invalid_request', 'SIWE URI does not match the public session key', 400);
+    const url = new URL(legacy.host);
+    if (!['http:', 'https:'].includes(url.protocol) || url.origin !== legacy.host || url.username || url.password || url.search || url.hash || url.pathname !== '/') {
+      fail('invalid_request', 'host must be an exact origin', 400);
+    }
+  } catch {
+    fail('invalid_request', 'Invalid public JWK, SIWE, or host', 400);
+  }
+  return { request: legacy, delivery: {
     handoffId: delivery.handoffId, state: delivery.state, cancelSecret: delivery.cancelSecret, ...(callback ? { callback } : {}),
   }, issuedAt: fields.issuedAt, expirationTime: fields.expirationTime, nonce: fields.nonce };
 }
@@ -118,8 +131,8 @@ export class PreparedHandoffService {
 
   async claim(input: unknown, userId: string): Promise<{ transportVersion: 2; ticket: string; expiresAt: string }> {
     if (!userId) fail('handoff_claimed', 'Authenticated user required', 403);
-    const { request, delivery, issuedAt, expirationTime, nonce } = validateRequest(input);
     const now = this.now();
+    const { request, delivery, issuedAt, expirationTime, nonce } = validateRequest(input, now);
     const preparedAt = Date.parse(issuedAt ?? '');
     const grantExpiresAt = Date.parse(expirationTime);
     if (!nonce || !Number.isFinite(preparedAt) || !Number.isFinite(grantExpiresAt) ||
@@ -164,6 +177,23 @@ export class PreparedHandoffService {
     if (record.status === 'CONSUMED') fail('handoff_consumed', 'Handoff already signed', 409);
     return record;
   }
+  async bindOwnerRevocation(ticket: string, userId: string, keyId: string, contextToken: string): Promise<void> {
+    const record = await this.active(ticket);
+    if (record.ownerId !== userId || !('kind' in record.request) || record.request.kind !== 'owner-revocation') {
+      fail('binding_mismatch', 'Owner-revocation handoff does not belong to this account', 403);
+    }
+    if (record.contextTokenHash || !await this.store.bind(record.ticketHash, userId, digest(contextToken), keyId, this.now())) {
+      fail('handoff_context_unavailable', 'Handoff already prepared; cancel and restart', 409);
+    }
+  }
+
+  async ownerRevocation(ticket: string, userId: string): Promise<OwnerRevocationRequest> {
+    const record = await this.active(ticket);
+    if (record.ownerId !== userId || !('kind' in record.request) || record.request.kind !== 'owner-revocation') {
+      fail('binding_mismatch', 'Owner-revocation handoff does not belong to this account', 403);
+    }
+    return parseOwnerRevocationRequest(record.request, this.now());
+  }
 
 
   async assertRequest(ticket: string, userId: string, input: {
@@ -171,6 +201,7 @@ export class PreparedHandoffService {
   }): Promise<string> {
     const record = await this.active(ticket);
     if (record.ownerId !== userId) fail('handoff_claimed', 'Handoff not claimed by this user', 403);
+    if ('kind' in record.request) fail('binding_mismatch', 'Signing request differs from prepared handoff', 403);
     if (record.contextTokenHash) {
       fail('handoff_context_unavailable', 'Context already bound; cancel and restart with a new handoff', 409);
     }
@@ -190,6 +221,7 @@ export class PreparedHandoffService {
   }): Promise<void> {
     const record = await this.active(ticket);
     if (record.ownerId !== userId) fail('handoff_claimed', 'Handoff not claimed by this user', 403);
+    if ('kind' in record.request) fail('binding_mismatch', 'Signing context differs from prepared request', 403);
     if (!binding || typeof binding.authorizationContextToken !== 'string' || !binding.authorizationContextToken ||
       typeof binding.keyId !== 'string' || !binding.keyId ||
       binding.siwe !== record.request.siwe || binding.host !== record.request.host ||
