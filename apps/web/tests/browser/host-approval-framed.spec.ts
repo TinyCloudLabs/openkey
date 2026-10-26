@@ -2,6 +2,7 @@
 // The dev-only `/__parity_harness` route mounts the popup adapter.
 
 import { test, expect, type Page } from '@playwright/test';
+import { ORIGIN } from './e2e-port';
 import { parseCapabilityReview } from '../../../../packages/capability-review/src/index';
 
 
@@ -9,7 +10,7 @@ const OWNER = '0x1111111111111111111111111111111111111111';
 const NODE_PEER = 'did:key:z6Mkj8ZndSavdU1RqiTepC1hj4jcKHC5qELaBUxBKrPteD25';
 const OTHER_PEER = 'did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH';
 const SPACE = `tinycloud:pkh:eip155:1:${OWNER}:default`;
-const HARNESS = 'http://localhost:5779/__parity_harness';
+const HARNESS = `${ORIGIN}/__parity_harness`;
 
 function hostConfig(peer: string) {
   const recap = `urn:recap:${Buffer.from(JSON.stringify({ att: { [`${SPACE}/space`]: { 'tinycloud.space/host': [{}] } }, prf: [] })).toString('base64url')}`;
