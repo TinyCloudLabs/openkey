@@ -11,6 +11,7 @@
   import SiweMessage from '$lib/components/ui/siwe-message.svelte';
   import CliSigningAdapter from '$lib/components/signing/cli-signing-adapter.svelte';
   import PreparedHandoff from './PreparedHandoff.svelte';
+  import OwnerRevocationHandoff from './OwnerRevocationHandoff.svelte';
   import DeviceRequestNotice from '$lib/components/device/device-request-notice.svelte';
   import { approvedDevicePermissions, cleanConsentText, delegationPasteCode, readDelegatePermissionsParam, deviceRequestReason, loadVerifiedDeviceRequest } from '$lib/device-authorization';
   import DelegateLinkNotice from '$lib/components/delegate/delegate-link-notice.svelte';
@@ -151,6 +152,16 @@
   let dispatchReady = $state(false);
   let preparedMode = $state(false);
   let preparedFragment = $state('');
+  let ownerRevocationSelected = $state(false);
+  const ownerRevocationMode = $derived.by(() => {
+    if (!preparedFragment.startsWith('#tv2=') || preparedFragment.length > 8192) return false;
+    try {
+      const value: unknown = JSON.parse(atob(preparedFragment.slice(5).replace(/-/g, '+').replace(/_/g, '/')));
+      return !!value && typeof value === 'object' && 'request' in value &&
+        !!value.request && typeof value.request === 'object' && 'kind' in value.request &&
+        value.request.kind === 'owner-revocation';
+    } catch { return false; }
+  });
   let reloadingFragment = false;
   function captureClientFragment(): boolean {
     if (reloadingFragment) return true;
@@ -1249,7 +1260,11 @@
 {:else if preparedStorageError}
   <div role="alert" class="min-h-screen flex items-center justify-center">Couldn't save this request. Restart the CLI command.</div>
 {:else if preparedMode}
-  <PreparedHandoff encoded={preparedFragment} onClear={() => { preparedFragment = ''; }} />
+  {#if ownerRevocationMode || ownerRevocationSelected}
+    <OwnerRevocationHandoff encoded={preparedFragment} onClear={() => { ownerRevocationSelected = true; preparedFragment = ''; }} />
+  {:else}
+    <PreparedHandoff encoded={preparedFragment} onClear={() => { preparedFragment = ''; }} />
+  {/if}
 {:else if preparedTransport}
   <div role="alert" class="min-h-screen flex items-center justify-center">Unsupported delegate transport version. Restart the CLI command.</div>
 {:else}
