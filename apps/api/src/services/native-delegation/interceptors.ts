@@ -350,14 +350,16 @@ export function createProviderInterceptors({ database, tokens, provider, getSess
    * own after-hooks resume it when a user is updated or created, on whatever session
    * the cookie names), so the code that comes out is checked when it is exchanged. A
    * code for the MCP scope is refused, and spent, when the sign-in it was issued on
-   * was `MCP_AUTHORIZE_MAX_SESSION_AGE_SECONDS` old or older at the moment of issue.
-   * The code carries the sign-in's creation time (`authTime`) and its row carries the
-   * issue time; a code for this client that lacks either is refused, since its age
-   * cannot be known. Another client's code, and a code for other scopes, are the
-   * provider's. A failed lookup answers 503 and never falls through to the provider.
+   * was `MCP_AUTHORIZE_MAX_SESSION_AGE_SECONDS` old or older at the moment of issue,
+   * whoever presents it: the answer does not depend on the client the request names,
+   * so a Basic header the guard cannot read does not skip it. The code carries the
+   * sign-in's creation time (`authTime`) and its row carries the issue time; an MCP
+   * code that lacks either is refused, since its age cannot be known. A code for other
+   * scopes, an unknown code and a fresh code are the provider's. A failed lookup
+   * answers 503 and never falls through to the provider.
    */
-  async function refuseStaleMcpCode(code: string | null, clientId: string | null): Promise<Refusal | null> {
-    if (!code || !clientId) return null;
+  async function refuseStaleMcpCode(code: string | null): Promise<Refusal | null> {
+    if (!code) return null;
     try {
       const identifier = await storedToken(tokens, code, 'authorization_code');
       const verification = await authorizationCodes.find(identifier);
@@ -368,8 +370,8 @@ export function createProviderInterceptors({ database, tokens, provider, getSess
       } catch {
         return null;
       }
-      if (value?.type !== 'authorization_code' || value.query?.client_id !== clientId) return null;
-      if (typeof value.query.scope !== 'string' || !scopeList(value.query.scope).includes(TINYCLOUD_MCP_SCOPE)) return null;
+      if (value?.type !== 'authorization_code') return null;
+      if (typeof value.query?.scope !== 'string' || !scopeList(value.query.scope).includes(TINYCLOUD_MCP_SCOPE)) return null;
       const signedInAt = new Date(typeof value.authTime === 'number' || typeof value.authTime === 'string' ? value.authTime : Number.NaN);
       const issuedAt = new Date(verification.createdAt ?? Number.NaN);
       const unreadable = Number.isNaN(signedInAt.getTime()) || Number.isNaN(issuedAt.getTime());
@@ -388,11 +390,9 @@ export function createProviderInterceptors({ database, tokens, provider, getSess
     const { params } = parsed;
     const grantType = params.get('grant_type');
     if (grantType === 'authorization_code') {
-      const early = requestClients(c.req.raw, params);
-      if (!('status' in early)) {
-        const stale = await refuseStaleMcpCode(params.get('code'), early.effective);
-        if (stale) return stale;
-      }
+      // First, before anything that reads the client: no early return may precede it.
+      const stale = await refuseStaleMcpCode(params.get('code'));
+      if (stale) return stale;
     }
     if (grantType !== 'refresh_token' && !params.has('resource')) return null;
     const clients = requestClients(c.req.raw, params);

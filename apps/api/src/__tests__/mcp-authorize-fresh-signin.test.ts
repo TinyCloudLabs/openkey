@@ -333,6 +333,40 @@ if (process.env.OPENKEY_MCP_OAUTH_TEST_CHILD !== '1') {
         expect(await codes()).toBe(baseline);
       });
 
+      test('a confidential client with a Basic header the guard cannot read, and no resource, gets no token for an old sign-in\'s code, and the code is spent', async () => {
+        const { cookie, userId } = await signedIn(24 * DAY);
+        const registered = await call('/oauth2/register', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            client_name: 'Fresh sign-in confidential', redirect_uris: [callback], token_endpoint_auth_method: 'client_secret_basic',
+            grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], scope: MCP_SCOPES,
+          }),
+        });
+        expect(registered.status, await registered.clone().text()).toBe(200);
+        const { client_id: clientId, client_secret: clientSecret } = await registered.json() as { client_id: string; client_secret: string };
+        await consented(userId, clientId);
+        const baseline = await codes();
+        const login = await authorize(cookie, clientId, MCP_SCOPES);
+        const updated = await json('/update-user', { name: 'Updated', oauth_query: login.searchParams.toString() }, cookie);
+        expect(updated.status, await updated.clone().text()).toBe(200);
+        const code = codeIn(((await updated.json()) as { url?: string }).url ?? '');
+        expect(code, 'the profile update is expected to resume the request; the backstop is what refuses it').toBeTruthy();
+        const before = await issuedTokens();
+        // The canonical Basic value plus trailing `==`: the provider's decoder reads it, the guard's does not. No `resource`.
+        const canonical = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+        const refused = await call('/oauth2/token', {
+          method: 'POST',
+          headers: { 'content-type': 'application/x-www-form-urlencoded', authorization: `Basic ${canonical}==` },
+          body: new URLSearchParams({ grant_type: 'authorization_code', code: code!, redirect_uri: callback, code_verifier: verifier }),
+        });
+        expect(refused.status, await refused.clone().text()).toBe(400);
+        expect(await refused.json()).toMatchObject({ error: 'invalid_grant' });
+        const again = (await exchange(clientId, code!)).status;
+        expect(again >= 400 && again < 500).toBe(true);
+        expect(await issuedTokens()).toBe(before);
+        expect(await codes()).toBe(baseline);
+      });
+
       test('the same profile update on a young sign-in gets a code that works', async () => {
         const { cookie } = await signedIn(2 * DAY);
         const clientId = await register(MCP_SCOPES);

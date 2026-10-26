@@ -176,7 +176,7 @@ describe('the authorization code exchange (the age limit once more, when the cod
   const DAY = 86_400_000;
 
   /** An exchange of the code `abc`, stored with the given sign-in time, issue time, scope and client. */
-  function exchange(stored: { authTime?: number | string; createdAt?: Date | string; scope?: string; clientId?: string; raw?: string } | null, options: { failFind?: boolean } = {}) {
+  function exchange(stored: { authTime?: number | string; createdAt?: Date | string; scope?: string; clientId?: string; raw?: string } | null, options: { failFind?: boolean; authorization?: string; clientId?: string | null } = {}) {
     const deleted: string[] = [];
     const database = {
       oauthClient: { findMany: async () => [], findUnique: async () => null },
@@ -208,8 +208,8 @@ describe('the authorization code exchange (the age limit once more, when the cod
     app.post('/api/auth/oauth2/token', () => new Response('provider', { status: 200 }));
     const response = app.fetch(new Request('https://api.openkey.test/api/auth/oauth2/token', {
       method: 'POST',
-      headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ grant_type: 'authorization_code', code: 'abc', client_id: 'app', redirect_uri: 'https://app.example/cb', code_verifier: 'v' }),
+      headers: { 'content-type': 'application/x-www-form-urlencoded', ...(options.authorization ? { authorization: options.authorization } : {}) },
+      body: new URLSearchParams({ grant_type: 'authorization_code', code: 'abc', ...(options.clientId === null ? {} : { client_id: options.clientId ?? 'app' }), redirect_uri: 'https://app.example/cb', code_verifier: 'v' }),
     }));
     return { response, deleted };
   }
@@ -226,11 +226,11 @@ describe('the authorization code exchange (the age limit once more, when the cod
     expect(justYoung.deleted).toEqual([]);
   });
 
-  test('a code for a young sign-in, or for other scopes, or another client\'s, is the provider\'s and is not spent', async () => {
+  test('a code for a young sign-in, or for other scopes, or a fresh code presented by another client, is the provider\'s and is not spent', async () => {
     for (const stored of [
       { authTime: ISSUED.getTime() - 2 * DAY },
       { authTime: ISSUED.getTime() - 40 * DAY, scope: 'openid email' },
-      { authTime: ISSUED.getTime() - 40 * DAY, clientId: 'other' },
+      { authTime: ISSUED.getTime() - 2 * DAY, clientId: 'other' },
       { authTime: ISSUED.getTime() - 40 * DAY, raw: 'not json' },
     ]) {
       const result = exchange(stored);
@@ -241,7 +241,24 @@ describe('the authorization code exchange (the age limit once more, when the cod
     expect(await (await unknown.response).text()).toBe('provider');
   });
 
-  test('a code of this client that does not say when the sign-in began, or when it was issued, is refused and spent', async () => {
+  test('a stale MCP code is refused and spent whoever presents it, whatever the request says about the client', async () => {
+    const stale = { authTime: ISSUED.getTime() - 30 * DAY };
+    const cases: [string, Parameters<typeof exchange>[1]][] = [
+      ['another client in the body', { clientId: 'other' }],
+      ['no client at all', { clientId: null }],
+      ['a Basic header the guard cannot read', { authorization: `Basic ${Buffer.from('app:secret').toString('base64')}==` }],
+      ['a Basic header that is not base64 at all', { authorization: 'Basic !!!' }],
+    ];
+    for (const [name, options] of cases) {
+      const result = exchange(stale, options);
+      const response = await result.response;
+      expect(response.status, name).toBe(400);
+      expect(await response.json(), name).toMatchObject({ error: 'invalid_grant' });
+      expect(result.deleted, name).toHaveLength(1);
+    }
+  });
+
+  test('an MCP code that does not say when the sign-in began, or when it was issued, is refused and spent', async () => {
     for (const stored of [{ authTime: undefined }, { authTime: 'not a time' }, { authTime: ISSUED.getTime() - DAY, createdAt: 'not a time' }]) {
       const result = exchange(stored);
       const response = await result.response;
