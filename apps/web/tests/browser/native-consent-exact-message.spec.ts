@@ -32,7 +32,7 @@ const json = (route: Route, body: unknown, status = 200) => route.fulfill({ stat
 const branding = { clientId: 'exo-native', name: 'Exo', icon: null, organization: 'TinyCloud Labs', theme: { backgroundColor: '#09090B', accentColor: '#FAFAFA' } };
 const sessionBody = { session: { id: 's', userId: 'u', expiresAt: new Date(Date.now() + 3600000).toISOString() }, user: { id: 'u', email: 'sam@example.test', name: 'Sam' } };
 
-interface Shown { text: string | null; innerText: string; picture: Buffer }
+interface Shown { text: string | null; innerText: string; picture: Buffer; elements: number }
 
 async function exactMessage(page: Page, sessionSiwe: string): Promise<Shown> {
   await page.setViewportSize({ width: 390, height: 844 });
@@ -54,7 +54,7 @@ async function exactMessage(page: Page, sessionSiwe: string): Promise<Shown> {
   const left = await block.screenshot();
   await block.evaluate((element) => { element.scrollLeft = element.scrollWidth; });
   const right = await block.screenshot();
-  return { text: await block.textContent(), innerText: await block.innerText(), picture: Buffer.concat([left, right]) };
+  return { text: await block.textContent(), innerText: await block.innerText(), picture: Buffer.concat([left, right]), elements: await block.locator('*').count() };
 }
 
 const statement = 'Chat with your threads.';
@@ -86,3 +86,12 @@ for (const pair of pairs) {
     expect(Buffer.compare(shown[0]!.picture, shown[1]!.picture)).not.toBe(0);
   });
 }
+
+test('native consent: HTML in the message is shown literally', async ({ page }) => {
+  const html = '<script>alert(1)</script> <b>x</b> &amp; "><img src=x onerror=alert(1)>';
+  const message = siwe(html);
+  const shown = await exactMessage(page, message);
+  expect(shown.text).toBe(message);
+  expect(shown.innerText).toBe(message);
+  expect(shown.elements).toBe(0);
+});

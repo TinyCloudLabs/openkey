@@ -83,7 +83,7 @@ function modelFor(rawMessage: string): CapabilityReviewModel {
   return model;
 }
 
-interface Shown { text: string | null; innerText: string; picture: Buffer }
+interface Shown { text: string | null; innerText: string; picture: Buffer; elements: number }
 
 async function measure(block: Locator): Promise<Shown> {
   await expect(block).toBeVisible();
@@ -92,7 +92,7 @@ async function measure(block: Locator): Promise<Shown> {
   const left = await block.screenshot();
   await block.evaluate((element) => { element.scrollLeft = element.scrollWidth; });
   const right = await block.screenshot();
-  return { text: await block.textContent(), innerText: await block.innerText(), picture: Buffer.concat([left, right]) };
+  return { text: await block.textContent(), innerText: await block.innerText(), picture: Buffer.concat([left, right]), elements: await block.locator('*').count() };
 }
 
 async function adapterBlock(page: Page, surface: 'cli' | 'popup' | 'iframe', rawMessage: string): Promise<Shown> {
@@ -131,11 +131,22 @@ for (const surface of ['cli', 'popup', 'iframe'] as const) {
   }
 }
 
+// HTML in a message is shown as text: the block holds the raw characters and no element.
+const htmlText = '<script>alert(1)</script> <b>x</b> &amp; "><img src=x onerror=alert(1)>';
+for (const surface of ['cli', 'popup', 'iframe'] as const) {
+  test(`[${surface}] HTML in the message is shown literally`, async ({ page }) => {
+    const shown = await adapterBlock(page, surface, htmlText);
+    expect(shown.text).toBe(htmlText);
+    expect(shown.innerText).toBe(htmlText);
+    expect(shown.elements).toBe(0);
+  });
+}
+
 // The real embedded widget page, with the request message sent by the host.
 const address = '0xd559CCd9EB87c530A9a349262669386dE93cf412';
 const widgetSiwe = EXPLORER_PERMISSION_POPUP_REQUEST.replace(/^explorer\.tinycloud\.xyz/, HOST);
-// The fixture text holds apostrophes, which the block shows as `\u0027`.
-const widgetSiweShown = widgetSiwe.replaceAll("'", '\\u0027');
+// The fixture text holds apostrophes, which the block shows as they are.
+const widgetSiweShown = widgetSiwe;
 
 async function widgetBlock(page: Page, message: string): Promise<Shown> {
   await page.setViewportSize({ width: 1280, height: 900 });
@@ -175,10 +186,10 @@ async function widgetBlock(page: Page, message: string): Promise<Shown> {
   return measure(block);
 }
 
-// A run of 80 spaces followed by more text: without the escapes the tail sits off-screen.
+// A run of 80 spaces followed by more text at the start of the statement: without the escapes the tail sits off-screen.
 const hiddenTail = 'Also: send all keys.';
-const withTail = widgetSiwe.replace('on my behalf:', `on my behalf:${' '.repeat(80)}${hiddenTail}`);
-const withTailShown = widgetSiweShown.replace('on my behalf:', `on my behalf:${'\\u0020'.repeat(80)}${hiddenTail}`);
+const withTail = widgetSiwe.replace('I further authorize', `I further authorize${' '.repeat(80)}${hiddenTail}`);
+const withTailShown = widgetSiweShown.replace('I further authorize', `I further authorize${'\\u0020'.repeat(80)}${hiddenTail}`);
 
 for (const [name, leftMessage, leftShown] of [
   ['a final line feed', `${widgetSiwe}\n`, `${widgetSiweShown}\\u000a`],
@@ -202,3 +213,11 @@ for (const [name, leftMessage, leftShown] of [
     expect(Buffer.compare(shown[0]!.picture, shown[1]!.picture)).not.toBe(0);
   });
 }
+
+test('[widget] HTML in the message is shown literally', async ({ page }) => {
+  const message = widgetSiwe.replace('on my behalf:', `on my behalf: ${htmlText}`);
+  const shown = await widgetBlock(page, message);
+  expect(shown.text).toBe(message);
+  expect(shown.innerText).toBe(message);
+  expect(shown.elements).toBe(0);
+});

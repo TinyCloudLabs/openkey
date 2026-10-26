@@ -107,7 +107,7 @@ const request = { kind: 'owner-revocation', ownerDid: `did:pkh:eip155:1:${addres
 const encoded = `#tv2=${Buffer.from(JSON.stringify({ transportVersion: 2, request, delivery })).toString('base64url')}`;
 const ownerSiwe = (statement: string) => `localhost:5173 wants you to sign in with your Ethereum account:\n${address}\n\n${statement}\n\nURI: ucan:${cid}\nVersion: 1\nChain ID: 1\nNonce: ${request.nonce}\nIssued At: 2026-10-16T17:00:00.000Z\nExpiration Time: ${request.expiresAt}`;
 
-async function ownerBlock(message: string): Promise<string> {
+async function ownerBlock(message: string, inspect?: (block: Element) => void): Promise<string> {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const path = String(input);
@@ -121,7 +121,9 @@ async function ownerBlock(message: string): Promise<string> {
   const app = mount(OwnerRevocation, { target, props: { encoded, onClear: () => {} } });
   try {
     await until(() => !!target.querySelector('pre'), 'the exact message');
-    return target.querySelector('pre')!.textContent ?? '';
+    const block = target.querySelector('pre')!;
+    inspect?.(block);
+    return block.textContent ?? '';
   } finally {
     unmount(app);
     target.remove();
@@ -129,7 +131,7 @@ async function ownerBlock(message: string): Promise<string> {
   }
 }
 
-async function siweMessageBlock(message: string, raw: boolean): Promise<string> {
+async function siweMessageBlock(message: string, raw: boolean, inspect?: (block: Element) => void): Promise<string> {
   const target = document.createElement('div');
   document.body.append(target);
   const app = mount(SiweMessage, { target, props: { message, theme: 'light' } });
@@ -139,7 +141,9 @@ async function siweMessageBlock(message: string, raw: boolean): Promise<string> 
       [...target.querySelectorAll('button')].find(button => button.textContent?.includes('raw message'))!.click();
       flushSync();
     }
-    return target.querySelector('pre')!.textContent ?? '';
+    const block = target.querySelector('pre')!;
+    inspect?.(block);
+    return block.textContent ?? '';
   } finally {
     unmount(app);
     target.remove();
@@ -174,10 +178,30 @@ for (const pair of pairs) {
   });
 }
 
-test('owner revocation: a carriage return, tab, bidi control and markup are escaped and a line feed is a line break', async () => {
+test('owner revocation: a carriage return, tab and bidi control are escaped, ASCII quotes and markup read as themselves, and a line feed is a line break', async () => {
   const shown = await ownerBlock(ownerSiwe('Line one\r\nLine\ttwo \u202e<b>&"\''));
-  expect(shown).toBe(ownerSiwe('Line one\\u000d\nLine\\u0009two \\u202e\\u003cb\\u003e\\u0026\\u0022\\u0027'));
+  expect(shown).toBe(ownerSiwe('Line one\\u000d\nLine\\u0009two \\u202e<b>&"\''));
 });
+
+// HTML in a message is shown as text: the block holds the raw characters and no element.
+const htmlText = '<script>alert(1)</script> <b>x</b> &amp; "><img src=x onerror=alert(1)>';
+const noElements = (block: Element) => {
+  expect(block.querySelector('script')).toBeNull();
+  expect(block.querySelector('b')).toBeNull();
+  expect(block.querySelector('img')).toBeNull();
+  expect(block.children.length).toBe(0);
+};
+
+test('owner revocation: HTML in the message is shown literally', async () => {
+  expect(await ownerBlock(ownerSiwe(htmlText), noElements)).toBe(ownerSiwe(htmlText));
+});
+
+for (const [view, raw] of [['raw message view', true], ['plain view', false]] as const) {
+  test(`${view} of SiweMessage: HTML in the message is shown literally`, async () => {
+    const message = raw ? ownerSiwe(htmlText) : htmlText;
+    expect(await siweMessageBlock(message, raw, noElements)).toBe(message);
+  });
+}
 
 test('raw message view of a message that is not a SIWE: escapes and line breaks match', async () => {
   expect(await siweMessageBlock('plain text\r\nsecond  line \n', false)).toBe('plain text\\u000d\nsecond\\u0020\\u0020line\\u0020\\u000a');
