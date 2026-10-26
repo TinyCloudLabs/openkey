@@ -351,3 +351,65 @@ test('a test reported as flaky must show a failed attempt followed by a pass', (
   assert.equal(flaky([{ status: 'timedOut' }, { status: 'failed' }, { status: 'passed' }]).failed, false);
   assert.equal(flaky([{ status: 'timedOut' }, { status: 'passed' }]).flaky.length, 1);
 });
+
+// ---- allowlist entries and the exit status text (confirmation review of #371) ----
+
+const entry = { project: 'chromium', file: 'a.spec.ts', line: 7, title: 'known red', reason: 'stale spec' };
+
+test('a known entry must name its test and carry its diagnosis: empty, blank, missing or mistyped fields fail before the report is classified', () => {
+  assert.equal(policyProblem({ ...policy, knownReds: [entry] }), null);
+  assert.equal(policyProblem({ ...policy, knownReds: [{ ...entry, line: undefined }] }), null, 'line is optional');
+  assert.equal(policyProblem({ ...policy, knownSkipped: [entry] }), null);
+  for (const list of ['knownReds', 'knownSkipped']) {
+    for (const field of ['project', 'file', 'title', 'reason']) {
+      for (const [what, value] of [['empty', ''], ['whitespace only', '  \t '], ['missing', undefined], ['null', null], ['a number', 5], ['an array', ['x']], ['an object', {}]]) {
+        const bad = { ...entry };
+        if (value === undefined) delete bad[field];
+        else bad[field] = value;
+        assert.match(policyProblem({ ...policy, [list]: [entry, bad] }) ?? '', new RegExp(`\\\`${list}\\[1\\]\\\` needs a non-empty \\\`${field}\\\``), `${list}.${field} ${what}`);
+      }
+    }
+    for (const line of [0, -3, 1.5, '7', null]) {
+      assert.match(policyProblem({ ...policy, [list]: [{ ...entry, line }] }) ?? '', /\.line must be a positive integer/, `${list}.line ${String(line)}`);
+    }
+    assert.match(policyProblem({ ...policy, [list]: 'known red' }) ?? '', /must be an array/);
+    assert.match(policyProblem({ ...policy, [list]: [null] }) ?? '', /\[0\]` must be an object/);
+    assert.match(policyProblem({ ...policy, [list]: [[entry]] }) ?? '', /\[0\]` must be an object/);
+  }
+  // Project names are text too.
+  assert.match(policyProblem({ ...policy, projects: ['chromium', ' '] }) ?? '', /non-empty array of project names/);
+  assert.match(policyProblem({ ...policy, projects: ['chromium', 7] }) ?? '', /non-empty array of project names/);
+});
+
+test('the reviewer\'s probe: a failing test excused by an entry without a diagnosis exits 1, and with one exits 0', () => {
+  const many = Array.from({ length: 150 }, (_, i) => ok('a.spec.ts', i + 1, `test ${i}`));
+  const failing = report([...many, spec('a.spec.ts', 200, 'known red', 'unexpected', failedTwice)]);
+  const withoutReason = { minTests: 150, projects: ['chromium'], knownReds: [{ project: 'chromium', file: 'a.spec.ts', title: 'known red' }] };
+  const bad = command(failing, { list: withoutReason, args: ['--exit-code', '1'] });
+  assert.equal(bad.status, 1, bad.stdout);
+  assert.match(bad.stdout, /known-red list is invalid: `knownReds\[0\]` needs a non-empty `reason`/);
+  for (const reason of ['', '   ']) {
+    assert.equal(command(failing, { list: { ...withoutReason, knownReds: [{ ...withoutReason.knownReds[0], reason }] }, args: ['--exit-code', '1'] }).status, 1, JSON.stringify(reason));
+  }
+  const good = command(failing, { list: { ...withoutReason, knownReds: [{ ...withoutReason.knownReds[0], reason: 'stale spec' }] }, args: ['--exit-code', '1'] });
+  assert.equal(good.status, 0, good.stdout);
+});
+
+test('--exit-code is parsed strictly: only plain decimal digits are a status', () => {
+  for (const text of ['1.0', '01', '0x1', ' ', '1 ', ' 1', '+1', '1e0', '-1', '0.0', '００', 'one', '1,0']) {
+    const result = command(report(whole), { args: ['--exit-code', text] });
+    assert.equal(result.status, 1, JSON.stringify(text));
+    assert.match(result.stdout, /--exit-code must be a non-negative integer in plain decimal digits/, JSON.stringify(text));
+  }
+  // Plain digits go on to the status rules: 0 is a pass for a clean report, 1 needs a known red, others fail.
+  assert.equal(command(report(whole), { args: ['--exit-code', '0'] }).status, 0);
+  const oneRed = report([...whole, spec('red.spec.ts', 80, 'a known red', 'unexpected', failedTwice)]);
+  assert.equal(command(oneRed, { list: { ...policy, minTests: 4 }, args: ['--exit-code', '1'] }).status, 0);
+  assert.match(command(report(whole), { args: ['--exit-code', '137'] }).stdout, /exited with status 137, which is not a test-failure status/);
+  // An empty or absent value is an unrecorded status, a problem of the report, not a parse error.
+  for (const args of [['--exit-code', ''], []]) {
+    const result = command(report(whole), { args });
+    assert.equal(result.status, 1);
+    assert.match(result.stdout, /exit status was not recorded/);
+  }
+});

@@ -9,7 +9,7 @@
 //
 // The job FAILS when:
 //   - the list file is missing, unreadable or invalid (`minTests` not a positive integer, `projects`
-//     not a non-empty array of names);
+//     not a non-empty array of names, or a known entry without its project, file, title and reason);
 //   - the report is missing, unreadable, or has run-level errors (a spec file that fails to load is one);
 //   - Playwright's exit status was not recorded, or is anything but 0 or 1 (1 is Playwright's
 //     test-failure status; 2, 130, 137 and the rest are crashes, signals and CLI errors), or is 1 and
@@ -202,16 +202,30 @@ export function render(result) {
 
 const readJson = (path) => JSON.parse(readFileSync(path, 'utf8'));
 
-/** The reason a list file is not usable as policy, or null. */
+const isText = (value) => typeof value === 'string' && value.trim() !== '';
+
+/**
+ * The reason a list file is not usable as policy, or null. An entry in knownReds or knownSkipped
+ * must name its test (project, file, title) and carry its diagnosis (`reason`): an entry without
+ * one would excuse a failing or skipped test with no explanation.
+ */
 export function policyProblem(list) {
   if (list === null || typeof list !== 'object' || Array.isArray(list)) return 'it is not a JSON object';
   if (!Number.isInteger(list.minTests) || list.minTests < 1) return '`minTests` must be a positive integer';
-  if (!Array.isArray(list.projects) || list.projects.length === 0 || list.projects.some((name) => typeof name !== 'string' || name === '')) {
+  if (!Array.isArray(list.projects) || list.projects.length === 0 || !list.projects.every(isText)) {
     return '`projects` must be a non-empty array of project names';
   }
   for (const name of ['knownReds', 'knownSkipped']) {
-    if (list[name] !== undefined && (!Array.isArray(list[name]) || list[name].some((entry) => entry === null || typeof entry !== 'object' || typeof entry.project !== 'string' || typeof entry.file !== 'string' || typeof entry.title !== 'string'))) {
-      return `\`${name}\` must be an array of { project, file, title } entries`;
+    const entries = list[name];
+    if (entries === undefined) continue;
+    if (!Array.isArray(entries)) return `\`${name}\` must be an array`;
+    for (const [index, entry] of entries.entries()) {
+      const at = `\`${name}[${index}]\``;
+      if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return `${at} must be an object`;
+      for (const field of ['project', 'file', 'title', 'reason']) {
+        if (!isText(entry[field])) return `${at} needs a non-empty \`${field}\` (an entry names its test and carries its diagnosis)`;
+      }
+      if (entry.line !== undefined && !(Number.isInteger(entry.line) && entry.line >= 1)) return `${at}.line must be a positive integer when present`;
     }
   }
   return null;
@@ -271,7 +285,14 @@ function main(argv) {
       return fail(`the spec directory cannot be read (${error.code ?? error.name}).`);
     }
   }
-  const exitCode = flags['--exit-code'] === undefined || flags['--exit-code'] === '' ? undefined : Number(flags['--exit-code']);
+  // The status is parsed strictly: canonical non-negative decimal digits only. An empty or absent
+  // value is an unrecorded status (a problem in the report); anything else that is not a status
+  // (`1.0`, `01`, `0x1`, ` `, `+1`, `1e0`, `-1`) is refused here, by name.
+  const rawExit = flags['--exit-code'];
+  if (rawExit !== undefined && rawExit !== '' && !/^(0|[1-9][0-9]*)$/.test(rawExit)) {
+    return fail(`--exit-code must be a non-negative integer in plain decimal digits, got ${JSON.stringify(rawExit)}.`);
+  }
+  const exitCode = rawExit === undefined || rawExit === '' ? undefined : Number(rawExit);
   const result = summarize(report, {
     knownReds: list.knownReds ?? [],
     knownSkipped: list.knownSkipped ?? [],
