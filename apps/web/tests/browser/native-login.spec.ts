@@ -264,7 +264,7 @@ test.describe('native login', () => {
     await expect(input).toHaveValue('');
     await expect(input).toBeFocused();
     await expect(page.getByRole('button', { name: 'Continue', exact: true })).toBeDisabled();
-    expect(await page.evaluate(() => (window as any).__shakes)).toBe(1);
+    await expect.poll(() => page.evaluate(() => (window as any).__shakes)).toBe(1);
 
     await input.pressSequentially('123456');
     await page.waitForURL('https://app.test/done?code=abc');
