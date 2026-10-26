@@ -8,7 +8,7 @@ export const mcpAppCopy = {
   confirmAction: 'Disconnect app',
   confirmTitle: (name: string) => `Disconnect ${name}?`,
   confirmBody: 'The app will lose the access you gave it, including any other access this connection allowed. It can ask you to connect again later.',
-  disconnected: 'Disconnected. The app will no longer be able to use your TinyCloud through MCP within 5 minutes.',
+  disconnected: 'Disconnected. Within 5 minutes the app will stop being able to use your TinyCloud through MCP.',
   failed: 'Could not disconnect the app. Try again.',
 } as const;
 
