@@ -60,17 +60,48 @@ describe("renderSiweLiteral", () => {
       ["\u200d", "\\u200d"],
       ["\ufeff", "\\ufeff"],
       ["\ud83d\ude00", "\\ud83d\\ude00"],
-      ["<", "\\u003c"],
-      [">", "\\u003e"],
-      ["&", "\\u0026"],
-      ['"', "\\u0022"],
-      ["'", "\\u0027"],
+      ["\x1f", "\\u001f"],
+      ["\x80", "\\u0080"],
+      ["\u2019", "\\u2019"],
+      ["\u201c", "\\u201c"],
       ["\\", "\\u005C"],
     ];
     for (const [input, escaped] of cases) {
       expect(renderSiweLiteral(`x${input}y`)).toBe(`x${escaped}y`);
       expect(renderSiweLiteral(`x${input}y`)).toBe(renderLiteral(`x${input}y`));
     }
+  });
+
+  it("shows printable ASCII apostrophes, quotes, angle brackets and ampersands as themselves", () => {
+    const siwe = [
+      "cli.tinycloud.xyz wants you to sign in with your Ethereum account:",
+      "0xd559ccd9eb87c530a9a349262669386de93cf412",
+      "",
+      "I authorize the app's key to read \"notes\" & <drafts> in your account's space.",
+      "",
+      "URI: did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+      "Version: 1",
+      "Chain ID: 1",
+    ].join("\n");
+    expect(renderSiweLiteral(siwe)).toBe(siwe);
+    expect(renderSiweLiteral(`'"<>&`)).toBe(`'"<>&`);
+    expect(renderLiteral(`'"<>&`)).toBe("\\u0027\\u0022\\u003c\\u003e\\u0026");
+  });
+
+  it("keeps look-alikes of ASCII quotes distinct from the ASCII characters", () => {
+    expect(renderSiweLiteral("it's")).toBe("it's");
+    expect(renderSiweLiteral("it\u2019s")).toBe("it\\u2019s");
+    expect(renderSiweLiteral('say "x"')).toBe('say "x"');
+    expect(renderSiweLiteral("say \u201cx\u201d")).toBe("say \\u201cx\\u201d");
+    expect(renderSiweLiteral("it's")).not.toBe(renderSiweLiteral("it\u2019s"));
+    expect(renderSiweLiteral('"')).not.toBe(renderSiweLiteral("\u201c"));
+  });
+
+  it("reads a typed `\\u0027` as `\\u005Cu0027`, distinct from a real apostrophe", () => {
+    expect(renderSiweLiteral("\\u0027")).toBe("\\u005Cu0027");
+    expect(renderSiweLiteral("\\u0027")).not.toBe(renderSiweLiteral("'"));
+    expect(renderSiweLiteral("\\u003c")).toBe("\\u005Cu003c");
+    expect(renderSiweLiteral("\\u003c")).not.toBe(renderSiweLiteral("<"));
   });
 
   it("keeps text that already spells an escape distinguishable from a real line break", () => {
@@ -114,7 +145,7 @@ describe("renderSiweLiteral", () => {
   });
 
   it("shows two different messages differently: brute force over a small alphabet", () => {
-    const alphabet = ["a", " ", "\n", "\r", "\\"];
+    const alphabet = ["a", " ", "\n", "\r", "\\", "'", '"', "<", "&"];
     const seen = new Map<string, string>();
     let strings = [""];
     let expected = 0;
@@ -147,9 +178,9 @@ describe("renderSiweLiteral", () => {
       const rendered = renderSiweLiteral(input);
       const interiorLineFeeds = input.split("\n").length - 1 - (input.endsWith("\n") ? 1 : 0);
       expect(rendered.split("\n").length - 1).toBe(interiorLineFeeds);
-      // Printable ASCII and line breaks only, no markup, no space before a line break or at the end.
+      // Printable ASCII and line breaks only, and every backslash starts a `\uXXXX` escape.
       expect(/^[\x20-\x7e\n]*$/.test(rendered)).toBe(true);
-      expect(/[<>&"']/.test(rendered)).toBe(false);
+      expect(/\\(?!u[0-9a-f]{4})/i.test(rendered)).toBe(false);
       expect(/ (\n|$)/.test(rendered)).toBe(false);
       expect(/  /.test(rendered)).toBe(false);
       // Un-escape each \uXXXX and the line breaks give the input back.

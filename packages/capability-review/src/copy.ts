@@ -137,9 +137,25 @@ export function renderLiteral(text: string, maxChars?: number): string {
 }
 
 /**
+ * One line of an exact-message view: the control characters (C0, DEL, C1), every
+ * non-ASCII character and the backslash read `\uXXXX`; every other printable
+ * ASCII character, including `' " < > &`, reads as itself. A backslash in the
+ * output therefore always starts an escape.
+ */
+function escapeExactLine(line: string): string {
+  let out = "";
+  for (let i = 0; i < line.length; i += 1) {
+    const code = line.charCodeAt(i);
+    out += code === 0x5c ? "\\u005C" : code < 0x20 || code > 0x7e ? `\\u${code.toString(16).padStart(4, "0")}` : line.charAt(i);
+  }
+  return out;
+}
+
+/**
  * The exact-message view of a SIWE message. A line feed (U+000A) between two
- * lines is a real line break; every other character is escaped as in
- * `renderLiteral`. Runs of two or more spaces and spaces at the end of a line
+ * lines is a real line break; control characters, non-ASCII characters and the
+ * backslash are escaped as `\uXXXX`, and printable ASCII reads as itself. Runs
+ * of two or more spaces and spaces at the end of a line
  * read `\u0020` and a final line feed reads `\u000a`, so an empty line, a line
  * of spaces, a long run of spaces, trailing spaces and a trailing line feed
  * each look different from their absence. Each line break
@@ -150,7 +166,7 @@ export function renderSiweLiteral(text: string): string {
   const endsWithLineFeed = text.endsWith("\n");
   const lines = (endsWithLineFeed ? text.slice(0, -1) : text)
     .split("\n")
-    .map((line) => renderLiteral(line).replace(/ {2,}| +$/g, (spaces) => "\\u0020".repeat(spaces.length)));
+    .map((line) => escapeExactLine(line).replace(/ {2,}| +$/g, (spaces) => "\\u0020".repeat(spaces.length)));
   return lines.join("\n") + (endsWithLineFeed ? "\\u000a" : "");
 }
 
