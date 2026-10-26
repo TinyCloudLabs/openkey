@@ -227,6 +227,23 @@ if (process.env.OPENKEY_RESOURCE_INTROSPECT_TEST_CHILD !== '1') {
       expect((await check(accessToken)).body).toEqual(INACTIVE);
     });
 
+    test('consent withdrawn and given again does not bring an earlier token back, and a new token is active', async () => {
+      const { clientId, session, accessToken } = await mcpToken('reconnect');
+      expect((await check(accessToken)).body.active).toBe(true);
+      await prisma.oauthConsent.deleteMany({ where: { clientId } });
+      expect((await check(accessToken)).body).toEqual(INACTIVE);
+      // Consent times and `iat` are whole seconds: give the new consent a later second than the old token.
+      setSystemTime(new Date(Date.now() + 5_000));
+      try {
+        const again = await issue(clientId, session);
+        expect(await prisma.oauthConsent.count({ where: { clientId } })).toBe(1);
+        expect((await check(accessToken)).body).toEqual(INACTIVE);
+        expect((await check(again.access_token)).body.active).toBe(true);
+      } finally {
+        setSystemTime();
+      }
+    });
+
     test('user signs out', async () => {
       const { session, accessToken } = await mcpToken('signout');
       expect((await check(accessToken)).body.active).toBe(true);

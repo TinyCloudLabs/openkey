@@ -13,12 +13,14 @@ A hosted resource, such as the TinyCloud MCP server, can ask OpenKey whether an 
 ## Response
 
 - `200 {"active": true, "scope", "client_id", "sub", "aud", "exp", "iat", "iss", "token_type": "Bearer"}`. Only these fields. `aud` is the intersection of the token's own `aud` with this server's allowed resources, an array if the token's `aud` is an array and a string if it is a string. If the intersection is empty the answer is `active: false`; a non-empty one may be a subset of what the token carries.
-- `200 {"active": false}` for any token that is not active, whatever the reason: not a JWT, bad signature, wrong issuer, expired or not yet valid, an audience this server may not check, the issuing client disabled or deleted, the user's consent for the issuing client withdrawn (or narrower than the token's scope), or the user's session gone. A bad token is never a 400 or 500.
+- `200 {"active": false}` for any token that is not active, whatever the reason: not a JWT, bad signature, wrong issuer, expired or not yet valid, an audience this server may not check, the issuing client disabled or deleted, the user's consent for the issuing client withdrawn (or narrower than the token's scope, or newer than the token, see below), no `iat`, or the user's session gone. A bad token is never a 400 or 500.
 - `401 {"error": "invalid_client", ...}`: missing or wrong credentials, a public client, a disabled client, or a client that is not a registered resource server.
 - `429 {"error": "too_many_requests"}` with `Retry-After`: rate limited. The limit is per authenticated client: 3000 requests per minute unless the client's registration sets another (1 to 100000); about 20 failed authentications per minute per source address.
 - `503 {"error": "temporarily_unavailable"}`: OpenKey could not answer. Treat it, and any other non-`200`, as inactive.
 
 All responses are `Cache-Control: no-store`. A caller may cache `active: true` for a short fixed time, which bounds how long a withdrawn token stays usable.
+
+A token must not be older than the user's current consent. Disconnecting deletes the consent and connecting again creates a new one, so a token issued before the new consent stays inactive after the user reconnects: it is `active: false` when the token's `iat` is earlier than the consent's creation time. Both are compared in whole seconds (consent times have second precision), so a token issued in the same second as the consent is active, which is the token of the sign-in that created it. A consent time OpenKey cannot read ends the token.
 
 ## Registering a resource server
 

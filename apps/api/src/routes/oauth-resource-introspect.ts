@@ -194,13 +194,21 @@ export function createResourceIntrospectRouter(options: ResourceIntrospectOption
 
     const [issuingClient, consent, session] = await Promise.all([
       options.prisma.oauthClient.findUnique({ where: { clientId: azp }, select: { disabled: true } }),
-      options.prisma.oauthConsent.findUnique({ where: { userId_clientId: { userId: sub, clientId: azp } }, select: { scopes: true } }),
+      options.prisma.oauthConsent.findUnique({ where: { userId_clientId: { userId: sub, clientId: azp } }, select: { scopes: true, createdAt: true } }),
       options.prisma.session.findFirst({ where: { id: sid, userId: sub, expiresAt: { gt: new Date(now()) } }, select: { id: true } }),
     ]);
     if (!issuingClient || issuingClient.disabled || !consent || !session) return INACTIVE;
     // The token may not be wider than what the user's consent still holds.
     const consented = new Set(consent.scopes);
     if (!scope.split(' ').filter(Boolean).every((granted) => consented.has(granted))) return INACTIVE;
+    // The consent must not be newer than the token: disconnecting deletes the row and
+    // reconnecting creates a new one, and a token issued before that must not come back.
+    // Consent times are whole seconds, as is `iat`, so compare in whole seconds. A token
+    // issued in the same second the consent row was created stays active (`iat >=` the
+    // consent's second), which is the token of the very sign-in that created it. A
+    // consent time that cannot be read ends the token.
+    const consentSecond = Math.floor(new Date(consent.createdAt).getTime() / 1000);
+    if (!Number.isFinite(consentSecond) || iat < consentSecond) return INACTIVE;
 
     return {
       active: true,

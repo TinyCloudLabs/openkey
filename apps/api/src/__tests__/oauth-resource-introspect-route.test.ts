@@ -33,7 +33,9 @@ beforeAll(async () => {
 interface ClientRow { clientId: string; clientSecret: string | null; disabled: boolean; public: boolean; metadata: unknown }
 const secrets = { rs: 'rs-secret-0123456789abcdefghijklmnopqrstuvwxyz', rs2: 'rs2-secret-0123456789abcdefghijklmnopqrstuvwxyz', both: 'both-secret-0123456789abcdefghijklmnopqrstuvwxy', slow: 'slow-secret-0123456789abcdefghijklmnopqrstuvwxy', conf: 'conf-secret-0123456789abcdefghijklmnopqrstuvwxy' };
 let clients: Map<string, ClientRow>;
-let consents: Map<string, { scopes: string[] }>;
+let consents: Map<string, { scopes: string[]; createdAt: Date }>;
+/** When the consent rows were given: long before the tokens below, which are issued seconds before NOW. */
+const CONSENT_AT = new Date(NOW_MS - 3_600_000);
 let sessions: Map<string, { id: string; userId: string; expiresAt: Date }>;
 let failDatabase: boolean;
 let jwksCalls: number;
@@ -94,14 +96,14 @@ beforeEach(() => {
     ['pub_1', { clientId: 'pub_1', clientSecret: null, disabled: false, public: true, metadata: null }],
     ['app_1', { clientId: 'app_1', clientSecret: null, disabled: false, public: true, metadata: null }],
   ]);
-  consents = new Map([['user_1:app_1', { scopes: ['tinycloud:mcp'] }]]);
+  consents = new Map([['user_1:app_1', { scopes: ['tinycloud:mcp'], createdAt: CONSENT_AT }]]);
   sessions = new Map([['sess_1', { id: 'sess_1', userId: 'user_1', expiresAt: new Date(NOW_MS + 3_600_000) }]]);
   router = makeRouter();
 });
 
 // ---- tokens and requests ---------------------------------------------------------
 type Claims = Record<string, unknown>;
-async function mint(claims: Claims = {}, options: { signer?: Signer; issuer?: string; expiresIn?: number } = {}): Promise<string> {
+async function mint(claims: Claims = {}, options: { signer?: Signer; issuer?: string; expiresIn?: number; issuedAt?: number | null } = {}): Promise<string> {
   const using = options.signer ?? signer;
   const payload: Claims = {
     sub: 'user_1', azp: 'app_1', sid: 'sess_1', scope: 'tinycloud:mcp', aud: RESOURCE,
@@ -111,8 +113,9 @@ async function mint(claims: Claims = {}, options: { signer?: Signer; issuer?: st
   const jwt = new SignJWT(payload as never)
     .setProtectedHeader({ alg: 'EdDSA', kid: using.jwk.kid })
     .setIssuer(options.issuer ?? ISSUER)
-    .setIssuedAt(NOW_S - 10)
     .setExpirationTime(NOW_S + (options.expiresIn ?? 300));
+  // `issuedAt: null` leaves `iat` out.
+  if (options.issuedAt !== null) jwt.setIssuedAt(options.issuedAt ?? NOW_S - 10);
   return jwt.sign(using.privateKey);
 }
 
@@ -203,7 +206,7 @@ describe('a live token', () => {
 describe('a token whose standing has ended is inactive', () => {
   test.each([
     ['consent deleted', () => consents.delete('user_1:app_1')],
-    ['consent no longer holds the token scope', () => consents.set('user_1:app_1', { scopes: ['openid'] })],
+    ['consent no longer holds the token scope', () => consents.set('user_1:app_1', { scopes: ['openid'], createdAt: CONSENT_AT })],
     ['session deleted (sign-out)', () => sessions.delete('sess_1')],
     ['session expired', () => sessions.set('sess_1', { id: 'sess_1', userId: 'user_1', expiresAt: new Date(NOW_MS - 1) })],
     ['session belongs to another user', () => sessions.set('sess_1', { id: 'sess_1', userId: 'user_2', expiresAt: new Date(NOW_MS + 60_000) })],
@@ -222,6 +225,48 @@ describe('a token whose standing has ended is inactive', () => {
     for (const claims of [{ sid: undefined }, { sub: undefined }, { azp: undefined }, { scope: undefined }]) {
       expect(await json(await call(await mint(claims)))).toEqual(INACTIVE);
     }
+  });
+});
+
+describe('a consent that was withdrawn and given again', () => {
+  const at = (secondsFromNow: number, extraMs = 0) => new Date((NOW_S + secondsFromNow) * 1000 + extraMs);
+  /** Disconnect, then reconnect: the old row is deleted and a new one is created at `createdAt`. */
+  const reconnect = (createdAt: Date) => {
+    consents.delete('user_1:app_1');
+    consents.set('user_1:app_1', { scopes: ['tinycloud:mcp'], createdAt });
+  };
+
+  test('a token issued before the new consent is inactive, and one issued after it is active', async () => {
+    const old = await mint({}, { issuedAt: NOW_S - 120 });
+    expect((await json(await call(old))).active).toBe(true);
+    reconnect(at(-60));
+    const response = await call(old);
+    expect(response.status).toBe(200);
+    expect(await json(response)).toEqual(INACTIVE);
+    expect((await json(await call(await mint({}, { issuedAt: NOW_S - 30 })))).active).toBe(true);
+  });
+
+  test('whole seconds are compared: a token from the second the consent was created stays active, one from the second before does not', async () => {
+    reconnect(at(-100, 999));
+    expect((await json(await call(await mint({}, { issuedAt: NOW_S - 100 })))).active).toBe(true);
+    expect(await json(await call(await mint({}, { issuedAt: NOW_S - 101 })))).toEqual(INACTIVE);
+  });
+
+  test('a token issued a moment before a consent created in the next second is inactive', async () => {
+    reconnect(at(-99));
+    expect(await json(await call(await mint({}, { issuedAt: NOW_S - 100 })))).toEqual(INACTIVE);
+  });
+
+  test('a token with no iat is inactive', async () => {
+    expect(await json(await call(await mint({}, { issuedAt: null })))).toEqual(INACTIVE);
+  });
+
+  test('a consent time that cannot be read ends the token', async () => {
+    const token = await mint();
+    consents.set('user_1:app_1', { scopes: ['tinycloud:mcp'], createdAt: new Date(Number.NaN) });
+    expect(await json(await call(token))).toEqual(INACTIVE);
+    consents.set('user_1:app_1', { scopes: ['tinycloud:mcp'], createdAt: 'not a date' as unknown as Date });
+    expect(await json(await call(token))).toEqual(INACTIVE);
   });
 });
 
