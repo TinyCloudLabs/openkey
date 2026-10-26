@@ -8,7 +8,7 @@
   import { ownerRevocationCopy as text } from '$lib/owner-revocation-copy';
   import { deliverOwnerRevocation } from '$lib/owner-revocation-response';
   import { fitsPreparedLinkBudget } from '$lib/prepared-link';
-  import { ownerRevocationAddress, parseOwnerRevocationRequest, type OwnerRevocationRequest } from '@openkey/capability-review';
+  import { ownerRevocationAddress, parseOwnerRevocationRequest, renderSiweLiteral, type OwnerRevocationRequest } from '@openkey/capability-review';
 
   let { encoded, onClear }: { encoded: string; onClear: () => void } = $props();
   const session = authClient.useSession();
@@ -252,7 +252,7 @@
         {/each}
       {:else}
         <h2 class="font-semibold">Exact message to sign</h2>
-        <pre class="whitespace-pre-wrap break-all rounded-lg bg-surface-50 p-3 text-xs">{siwe}</pre>
+        <pre class="whitespace-pre overflow-x-auto max-w-full min-w-0 rounded-lg bg-surface-50 p-3 text-xs">{renderSiweLiteral(siwe)}</pre>
         <button disabled={busy || submitted} onclick={revoke}>{text.revoke}</button>
       {/if}
       <button disabled={busy || submitted} onclick={cancel}>{text.cancel}</button>
