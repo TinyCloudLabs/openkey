@@ -136,6 +136,16 @@ export function renderLiteral(text: string, maxChars?: number): string {
   return out;
 }
 
+/**
+ * The exact-message view of a SIWE message: line feed (U+000A) is a real line
+ * break and every other character is escaped as in `renderLiteral`, so each
+ * line break shown is one LF in the message and a carriage return reads as
+ * `\u000d`. Not truncated.
+ */
+export function renderSiweLiteral(text: string): string {
+  return text.split("\n").map((line) => renderLiteral(line)).join("\n");
+}
+
 /** Output-character cap for raw, unparsed resource text before `…`. */
 export const LITERAL_TRUNCATE_CHARS = 120;
 

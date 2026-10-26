@@ -4,7 +4,7 @@
   import { authClient, authErrorMessage } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
   import { copyText } from '$lib/clipboard';
-  import { buildStatements, parseEncryptionResource, parseCapabilityReview, defaultSelection, renderLiteral, type CapabilityGrant, type CapabilityReviewModel } from '@openkey/capability-review';
+  import { buildStatements, parseEncryptionResource, parseCapabilityReview, defaultSelection, renderLiteral, renderSiweLiteral, type CapabilityGrant, type CapabilityReviewModel } from '@openkey/capability-review';
   import { validatePreviewSelection } from '$lib/preview-review';
   import { displayConsentStatement } from '$lib/consent-statement';
   import { requestedActionIds } from '$lib/widget-selection';
@@ -439,7 +439,7 @@
         </div>
       {/each}
       <details><summary>Original SIWE message</summary>
-        <pre class="whitespace-pre-wrap break-all rounded-lg bg-surface-50 p-3 text-xs">{renderLiteral(handoff.request.siwe)}</pre>
+        <pre class="whitespace-pre-wrap break-all rounded-lg bg-surface-50 p-3 text-xs">{renderSiweLiteral(handoff.request.siwe)}</pre>
       </details>
       <button disabled={busy || submitted} onclick={cancel}>Cancel</button>
     {:else if handoff && model && key}
@@ -467,12 +467,12 @@
         </div>
       {/each}
       <details><summary>Original SIWE message</summary>
-        <pre class="whitespace-pre-wrap break-all rounded-lg bg-surface-50 p-3 text-xs">{renderLiteral(handoff.request.siwe)}</pre>
+        <pre class="whitespace-pre-wrap break-all rounded-lg bg-surface-50 p-3 text-xs">{renderSiweLiteral(handoff.request.siwe)}</pre>
       </details>
       {#if phase === 'preview'}
         <details>
           <summary class="font-semibold">Exact candidate signedMessage</summary>
-          <pre class="whitespace-pre-wrap break-all rounded-lg bg-surface-50 p-3 text-xs">{renderLiteral(previewMessage)}</pre>
+          <pre class="whitespace-pre-wrap break-all rounded-lg bg-surface-50 p-3 text-xs">{renderSiweLiteral(previewMessage)}</pre>
         </details>
         <button onclick={() => { phase = 'review'; previewToken = ''; }}>Change abilities</button>
         <button disabled={busy || submitted} onclick={approve}>Approve</button>
