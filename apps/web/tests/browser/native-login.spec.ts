@@ -3,6 +3,7 @@
 // answered by page.route; no API server runs.
 
 import { test, expect, type Page, type Route } from '@playwright/test';
+import { ORIGIN } from './e2e-port';
 
 const json = (route: Route, body: unknown, status = 200) =>
   route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
@@ -293,8 +294,8 @@ test.describe('native login', () => {
     const request = api.calls.find((call) => call.path === '/api/auth/sign-in/social')!;
     expect(Object.keys(request.body).sort()).toEqual(['callbackURL', 'disableRedirect', 'errorCallbackURL', 'provider']);
     expect(request.body.provider).toBe('google');
-    expect(request.body.callbackURL).toBe(`http://localhost:5779/auth/login?${query}`);
-    expect(request.body.errorCallbackURL).toBe(`http://localhost:5779/auth/login?${query}&native_social_error=1`);
+    expect(request.body.callbackURL).toBe(`${ORIGIN}/auth/login?${query}`);
+    expect(request.body.errorCallbackURL).toBe(`${ORIGIN}/auth/login?${query}&native_social_error=1`);
     expect(request.body.disableRedirect).toBe(true);
     expect(request.raw).not.toContain('oauth_query');
     expect(request.raw).not.toContain('additionalData');

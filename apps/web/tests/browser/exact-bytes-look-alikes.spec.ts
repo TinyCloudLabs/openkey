@@ -7,6 +7,7 @@
 // its exact text (`textContent` and `innerText`) and by a screenshot of the block.
 
 import { test, expect, type Locator, type Page } from '@playwright/test';
+import { HOST } from './e2e-port';
 import { parseCapabilityReview, type CapabilityReviewModel } from '../../../../packages/capability-review/src/index';
 import { EXPLORER_PERMISSION_POPUP_REQUEST } from '../../../../packages/capability-review/test/fixtures/index';
 
@@ -132,7 +133,7 @@ for (const surface of ['cli', 'popup', 'iframe'] as const) {
 
 // The real embedded widget page, with the request message sent by the host.
 const address = '0xd559CCd9EB87c530A9a349262669386dE93cf412';
-const widgetSiwe = EXPLORER_PERMISSION_POPUP_REQUEST.replace(/^explorer\.tinycloud\.xyz/, 'localhost:5779');
+const widgetSiwe = EXPLORER_PERMISSION_POPUP_REQUEST.replace(/^explorer\.tinycloud\.xyz/, HOST);
 // The fixture text holds apostrophes, which the block shows as `\u0027`.
 const widgetSiweShown = widgetSiwe.replaceAll("'", '\\u0027');
 
