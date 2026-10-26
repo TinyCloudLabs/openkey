@@ -182,3 +182,29 @@ test('owner revocation: a carriage return, tab, bidi control and markup are esca
 test('raw message view of a message that is not a SIWE: escapes and line breaks match', async () => {
   expect(await siweMessageBlock('plain text\r\nsecond  line \n', false)).toBe('plain text\\u000d\nsecond\\u0020\\u0020line\\u0020\\u000a');
 });
+
+// No browser route renders the raw or plain view of `SiweMessage` (the legacy page that mounts it needs a
+// message `parseCapabilityReview` cannot read, which it never rejects), and this harness has no CSS engine.
+// So this checks the utility classes that keep the block unwrapped and scrollable.
+for (const [view, raw] of [['raw message view', true], ['plain view', false]] as const) {
+  test(`${view} of SiweMessage: the block is unwrapped and scrolls`, async () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    const app = mount(SiweMessage, { target, props: { message: raw ? ownerSiwe('Revoke this permission.') : 'plain text', theme: 'light' } });
+    try {
+      flushSync();
+      if (raw) {
+        [...target.querySelectorAll('button')].find(button => button.textContent?.includes('raw message'))!.click();
+        flushSync();
+      }
+      const classes = [...target.querySelector('pre')!.classList];
+      expect(classes).toContain('whitespace-pre');
+      expect(classes).toContain('overflow-auto');
+      expect(classes).not.toContain('whitespace-pre-wrap');
+      expect(classes).not.toContain('break-all');
+    } finally {
+      unmount(app);
+      target.remove();
+    }
+  });
+}

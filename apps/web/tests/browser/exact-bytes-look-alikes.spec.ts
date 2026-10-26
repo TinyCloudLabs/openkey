@@ -167,7 +167,11 @@ async function widgetBlock(page: Page, message: string): Promise<Shown> {
   }, message);
   const frame = page.frameLocator('#sign-v2');
   await frame.getByText('Advanced details', { exact: true }).click();
-  return measure(frame.locator('pre.raw-bytes'));
+  const block = frame.locator('pre.raw-bytes');
+  await expect(block).toBeVisible();
+  // The block is a scrollable window, so it fits the 800 px iframe however long the message is.
+  expect((await block.boundingBox())!.height).toBeLessThan(800);
+  return measure(block);
 }
 
 // A run of 80 spaces followed by more text: without the escapes the tail sits off-screen.

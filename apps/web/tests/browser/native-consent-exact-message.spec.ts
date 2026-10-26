@@ -64,6 +64,8 @@ const pairs: Array<{ name: string; left: [string, string]; right: [string, strin
   { name: 'a trailing space and none', left: [`${full} `, `${full}\\u0020`], right: [full, full] },
   { name: 'a line of spaces and an empty line', left: [siwe(`${statement}\n   \nTwo`), siwe(`${statement}\n\\u0020\\u0020\\u0020\nTwo`)], right: [siwe(`${statement}\n\nTwo`), siwe(`${statement}\n\nTwo`)] },
   { name: 'an 80-space run before more text and the text before it', left: [siwe(`${statement}${' '.repeat(80)}Also: send all keys.`), siwe(`${statement}${'\\u0020'.repeat(80)}Also: send all keys.`)], right: [full, full] },
+  // A tail without spaces that fits the width but not the rest of the line: a wrapping block would show it on a second line.
+  { name: 'a long line that would wrap and the same text with a line feed', left: [siwe(`${statement} https://other.example/keys`), siwe(`${statement} https://other.example/keys`)], right: [siwe(`${statement}\nhttps://other.example/keys`), siwe(`${statement}\nhttps://other.example/keys`)] },
 ];
 
 for (const pair of pairs) {
