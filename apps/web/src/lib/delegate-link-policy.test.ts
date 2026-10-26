@@ -67,6 +67,10 @@ describe('checkDelegateCallback', () => {
       'https://mcp.tinycloud.xyz.evil.test/chatgpt/connect/callback',
       'https://evil.test/https://mcp.tinycloud.xyz/chatgpt/connect/callback',
       'https://mcp.tinycloud.xyz/chatgpt/connect',
+      'https://mcp.tinycloud.xyz/ChatGPT/connect/callback',
+      'https://mcp.tinycloud.xyz/chatgpt%2Fconnect/callback',
+      'https://mcp.tinycloud.xyz:8443/chatgpt/connect/callback',
+      'https://user@mcp.tinycloud.xyz/chatgpt/connect/callback',
     ]) {
       expect(accepted(callback).ok, callback).toBe(false);
     }
