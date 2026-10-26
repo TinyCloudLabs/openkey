@@ -29,11 +29,12 @@ describe("renderSiweLiteral", () => {
     expect(renderSiweLiteral("a\n\n")).toBe("a\n\\u000a");
   });
 
-  it("reads spaces at the end of a line as `\\u0020` and keeps other spaces", () => {
+  it("reads runs of two or more spaces and spaces at the end of a line as `\\u0020` and keeps single spaces", () => {
     expect(renderSiweLiteral("a ")).toBe("a\\u0020");
     expect(renderSiweLiteral("a  \nb")).toBe("a\\u0020\\u0020\nb");
     expect(renderSiweLiteral("   \nb")).toBe("\\u0020\\u0020\\u0020\nb");
-    expect(renderSiweLiteral("a b  c")).toBe("a b  c");
+    expect(renderSiweLiteral("a b  c")).toBe("a b\\u0020\\u0020c");
+    expect(renderSiweLiteral("a b c")).toBe("a b c");
     expect(renderSiweLiteral(" a\n b")).toBe(" a\n b");
     expect(renderSiweLiteral("a \r\nb")).toBe("a \\u000d\nb");
     expect(renderSiweLiteral("a\r \nb")).toBe("a\\u000d\\u0020\nb");
@@ -93,19 +94,40 @@ describe("renderSiweLiteral", () => {
     }
   });
 
+  it("shows a long run of spaces as escapes in the first 100 columns, not as a gap", () => {
+    const statement = "Statement: I agree.";
+    const withTail = `${statement}${" ".repeat(80)}Also: send all keys.`;
+    const pairs: Array<[string, string]> = [
+      [withTail, statement],
+      [withTail, `${statement} Also: send all keys.`],
+      ["a  b", "a b"],
+      ["a  b", "ab"],
+      ["a   b", "a  b"],
+    ];
+    const firstColumns = (rendered: string): string => rendered.split("\n")[0]!.slice(0, 100);
+    for (const [left, right] of pairs) {
+      expect(renderSiweLiteral(left)).not.toBe(renderSiweLiteral(right));
+      expect(firstColumns(renderSiweLiteral(left))).not.toBe(firstColumns(renderSiweLiteral(right)));
+      expect(/  /.test(renderSiweLiteral(left))).toBe(false);
+    }
+    expect(firstColumns(renderSiweLiteral(withTail)).startsWith(`${statement}${"\\u0020".repeat(13)}`)).toBe(true);
+  });
+
   it("shows two different messages differently: brute force over a small alphabet", () => {
     const alphabet = ["a", " ", "\n", "\r", "\\"];
     const seen = new Map<string, string>();
     let strings = [""];
-    for (let length = 0; length <= 5; length += 1) {
+    let expected = 0;
+    for (let length = 0; length <= 6; length += 1) {
       for (const input of strings) {
         const rendered = onScreen(renderSiweLiteral(input));
         expect(seen.get(rendered)).toBeUndefined();
         seen.set(rendered, input);
       }
+      expected += alphabet.length ** length;
       strings = strings.flatMap((prefix) => alphabet.map((character) => prefix + character));
     }
-    expect(seen.size).toBe(1 + 5 + 25 + 125 + 625 + 3125);
+    expect(seen.size).toBe(expected);
   });
 
   it("un-escapes back to the input, with one real line break per interior LF", () => {
@@ -129,6 +151,7 @@ describe("renderSiweLiteral", () => {
       expect(/^[\x20-\x7e\n]*$/.test(rendered)).toBe(true);
       expect(/[<>&"']/.test(rendered)).toBe(false);
       expect(/ (\n|$)/.test(rendered)).toBe(false);
+      expect(/  /.test(rendered)).toBe(false);
       // Un-escape each \uXXXX and the line breaks give the input back.
       expect(unescape(rendered)).toBe(input);
     }

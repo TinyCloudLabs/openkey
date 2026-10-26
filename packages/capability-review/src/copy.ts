@@ -139,9 +139,10 @@ export function renderLiteral(text: string, maxChars?: number): string {
 /**
  * The exact-message view of a SIWE message. A line feed (U+000A) between two
  * lines is a real line break; every other character is escaped as in
- * `renderLiteral`. Spaces at the end of a line read `\u0020` and a final line
- * feed reads `\u000a`, so an empty line, a line of spaces, trailing spaces and
- * a trailing line feed each look different from their absence. Each line break
+ * `renderLiteral`. Runs of two or more spaces and spaces at the end of a line
+ * read `\u0020` and a final line feed reads `\u000a`, so an empty line, a line
+ * of spaces, a long run of spaces, trailing spaces and a trailing line feed
+ * each look different from their absence. Each line break
  * shown is one line feed in the message, a carriage return reads `\u000d`, and
  * un-escaping the output gives the input back. Not truncated.
  */
@@ -149,7 +150,7 @@ export function renderSiweLiteral(text: string): string {
   const endsWithLineFeed = text.endsWith("\n");
   const lines = (endsWithLineFeed ? text.slice(0, -1) : text)
     .split("\n")
-    .map((line) => renderLiteral(line).replace(/ +$/, (spaces) => "\\u0020".repeat(spaces.length)));
+    .map((line) => renderLiteral(line).replace(/ {2,}| +$/g, (spaces) => "\\u0020".repeat(spaces.length)));
   return lines.join("\n") + (endsWithLineFeed ? "\\u000a" : "");
 }
 

@@ -202,3 +202,14 @@ test('a final line feed and spaces at the end of a line read as escapes in both 
   expect(candidate.split('\n')).toHaveLength(13);
   expect(candidate).not.toBe(await exactBlocks(base, signed.replace(/\n$/, '')).then((blocks) => blocks.candidate));
 });
+
+test('a run of two or more spaces reads as escapes in both blocks and single spaces stay', async () => {
+  const statement = `Statement: I agree.${' '.repeat(80)}Also: send all keys.`;
+  const siwe = siweWith(statement);
+  const { original, candidate } = await exactBlocks(siwe, siwe);
+  const expected = siwe.replace(statement, `Statement: I agree.${'\\u0020'.repeat(80)}Also: send all keys.`);
+  expect(original).toBe(expected);
+  expect(candidate).toBe(expected);
+  expect(/  /.test(original + candidate)).toBe(false);
+  expect(original.split('\n')).toHaveLength(13);
+});
