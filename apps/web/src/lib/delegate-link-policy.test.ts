@@ -50,13 +50,43 @@ describe('checkDelegateCallback', () => {
     expect(refused.ok === false && refused.reason).toContain('https://evil.example');
   });
 
+  test('accepts the ChatGPT callback exactly, with a state query like the first-party one', () => {
+    for (const callback of [
+      'https://mcp.tinycloud.xyz/chatgpt/connect/callback',
+      'https://mcp.tinycloud.xyz/chatgpt/connect/callback?state=t.n.sig',
+    ]) {
+      expect(accepted(callback)).toEqual({ ok: true, callback: new URL(callback).href });
+    }
+  });
+
+  test('refuses near-misses of the ChatGPT callback', () => {
+    for (const callback of [
+      'https://mcp.tinycloud.xyz/chatgpt/connect/callback/x',
+      'https://mcp.tinycloud.xyz/chatgpt/connect/callback/',
+      'http://mcp.tinycloud.xyz/chatgpt/connect/callback',
+      'https://mcp.tinycloud.xyz.evil.test/chatgpt/connect/callback',
+      'https://evil.test/https://mcp.tinycloud.xyz/chatgpt/connect/callback',
+      'https://mcp.tinycloud.xyz/chatgpt/connect',
+      'https://mcp.tinycloud.xyz/ChatGPT/connect/callback',
+      'https://mcp.tinycloud.xyz/chatgpt%2Fconnect/callback',
+      'https://mcp.tinycloud.xyz:8443/chatgpt/connect/callback',
+      'https://user@mcp.tinycloud.xyz/chatgpt/connect/callback',
+    ]) {
+      expect(accepted(callback).ok, callback).toBe(false);
+    }
+  });
+
   test('a configured registration admits that exact endpoint only', () => {
     const registered = withConfiguredEntries(
       REGISTERED_CALLBACK_ENDPOINTS,
       'https://mcp.staging.example/connect/callback, https://origin-only.example, http://plain.example/cb, https://q.example/cb?x=1,',
       isCanonicalHttpsEndpoint,
     );
-    expect(registered).toEqual(['https://mcp.tinycloud.xyz/connect/callback', 'https://mcp.staging.example/connect/callback']);
+    expect(registered).toEqual([
+      'https://mcp.tinycloud.xyz/connect/callback',
+      'https://mcp.tinycloud.xyz/chatgpt/connect/callback',
+      'https://mcp.staging.example/connect/callback',
+    ]);
     expect(checkDelegateCallback('https://mcp.staging.example/connect/callback?state=s', registered).ok).toBe(true);
     expect(checkDelegateCallback('https://mcp.staging.example/other', registered).ok).toBe(false);
   });
