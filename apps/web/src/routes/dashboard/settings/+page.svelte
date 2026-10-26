@@ -2,8 +2,9 @@
   import { goto } from '$app/navigation';
   import { tick } from 'svelte';
   import { authClient, authErrorMessage } from '$lib/auth-client';
-  import { api, type EthereumKey, type TinyCloudManageKeyActivity, type TinyCloudManageKeyApp, type TinyCloudManageKeyPreference } from '$lib/api';
+  import { api, type ConnectedMcpApp, type EthereumKey, type TinyCloudManageKeyActivity, type TinyCloudManageKeyApp, type TinyCloudManageKeyPreference } from '$lib/api';
   import Button from '$lib/components/ui/button.svelte';
+  import ConnectedMcpApps from './ConnectedMcpApps.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
 
@@ -34,6 +35,9 @@
   let savingTinyCloudManageKey = $state(false);
   let tinyCloudManageKeyError = $state('');
   let tinyCloudApps = $state<TinyCloudManageKeyApp[]>([]);
+  let mcpApps = $state<ConnectedMcpApp[]>([]);
+  // Set once the first list arrives; later reloads keep the section mounted so its notice stays.
+  let mcpAppsLoaded = $state(false);
   let tinyCloudActivity = $state<TinyCloudManageKeyActivity[]>([]);
   let loadingTinyCloudApps = $state(true);
   let savingTinyCloudAppId = $state<string | null>(null);
@@ -238,6 +242,8 @@
     try {
       const result = await api.listTinyCloudManageKeyApps();
       tinyCloudApps = result.apps;
+      mcpApps = result.mcpApps ?? [];
+      mcpAppsLoaded = true;
       tinyCloudActivity = result.activity;
       tinyCloudManageKeyMode = result.mode;
       tinyCloudManageKeyPolicyEpoch = result.policyEpoch;
@@ -639,6 +645,12 @@
       </div>
     {/if}
   </Card>
+
+  {#if mcpAppsLoaded}
+    <Card id="connected-mcp-apps" class="mt-6">
+      <ConnectedMcpApps apps={mcpApps} onchanged={loadTinyCloudManageKeyApps} />
+    </Card>
+  {/if}
 
   <Card class="mt-6">
     <div class="mb-4">
