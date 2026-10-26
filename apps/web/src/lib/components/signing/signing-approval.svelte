@@ -12,7 +12,9 @@
   //      requester, verified browser origin, manifest name/appId/digest with
   //      HONEST trust/provenance label, reason (only when present), signing
   //      identity, categorized exact-grant list, Edit/Reset controls, the
-  //      full raw message as `<pre>` (`user-select: text`) plus a
+  //      full raw message as `<pre>` (`user-select: text`; line feeds are line
+  //      breaks, other control and invisible characters and runs of spaces are
+  //      escaped by `renderSiweLiteral`) plus a
   //      `Copy text` button that copies `model.rawMessage` UNMODIFIED.
   //   3. `originWarning` and `domainWarning` render distinctly — a concrete
   //      but mismatched origin MUST NOT hide the SIWE-domain mismatch.
@@ -62,6 +64,7 @@
     abbreviateDid,
     abbreviateSpaceId,
     readSpaceHostFacts,
+    renderSiweLiteral,
     splitStatementCode,
   } from "@openkey/capability-review";
   import type { PeerRecognitionState } from "$lib/host-peer-recognition";
@@ -990,7 +993,7 @@
               : "Copy text"}
         </button>
       </div>
-      <pre class="raw-bytes" aria-live="polite">{model.rawMessage}</pre>
+      <pre class="raw-bytes" aria-live="polite">{renderSiweLiteral(model.rawMessage)}</pre>
     </section>
   </details>
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { renderSiweLiteral } from '@openkey/capability-review';
   import { copyText } from '$lib/clipboard';
   import { parseSIWE, groupCapabilities, timeUntilExpiry, type ParsedSIWE, type GroupedCapability } from '$lib/siwe-parser';
 
@@ -103,7 +104,7 @@
 
       {#if showRaw}
         <div class="mt-2 relative">
-          <pre class="p-3 {rawBg} border {border} rounded-xl text-xs font-mono {textSecondary} whitespace-pre-wrap break-all max-h-[200px] overflow-y-auto m-0">{message}</pre>
+          <pre class="p-3 {rawBg} border {border} rounded-xl text-xs font-mono {textSecondary} whitespace-pre max-h-[200px] overflow-auto m-0">{renderSiweLiteral(message)}</pre>
           <button
             class="absolute top-2 right-2 p-1.5 {bg} border {border} rounded-lg cursor-pointer hover:opacity-80 transition-opacity"
             onclick={copyMessage}
@@ -126,7 +127,7 @@
 {:else}
   <!-- Not a SIWE message - show as plain text with copy -->
   <div class="relative">
-    <pre class="p-3 {bg} border {border} rounded-xl text-sm font-mono {textSecondary} whitespace-pre-wrap break-all max-h-[200px] overflow-y-auto m-0">{message}</pre>
+    <pre class="p-3 {bg} border {border} rounded-xl text-sm font-mono {textSecondary} whitespace-pre max-h-[200px] overflow-auto m-0">{renderSiweLiteral(message)}</pre>
     <button
       class="absolute top-2 right-2 p-1.5 {rawBg} border {border} rounded-lg cursor-pointer hover:opacity-80 transition-opacity"
       onclick={copyMessage}
