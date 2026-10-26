@@ -130,3 +130,35 @@ test('the command exits 1 on a new failure, 0 with only known reds and flakes, a
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('a known flaky test that fails on every attempt is a flake, not a failure; one that passes prints nothing', () => {
+  const flaky = [{ project: 'chromium', file: 'login.spec.ts', line: 241, title: 'a flaky one', reason: 'timing race' }];
+  const failing = summarize(report([spec('login.spec.ts', 241, 'a flaky one', 'unexpected', failedTwice)]), [], flaky);
+  assert.equal(failing.failed, false);
+  assert.equal(failing.newFailures.length, 0);
+  assert.equal(failing.flaky.length, 1);
+  assert.equal(failing.flaky[0].persistent, true);
+  assert.deepEqual(failing.perProject.chromium, { passed: 0, failed: 0, flaky: 1, skipped: 0 });
+  assert.match(render(failing), /failed on every attempt; known flaky\).*Known flaky: timing race/);
+  const passing = summarize(report([spec('login.spec.ts', 241, 'a flaky one', 'expected', passed)]), [], flaky);
+  assert.equal(passing.failed, false);
+  assert.equal(passing.flaky.length, 0);
+  assert.equal(passing.knownNowPasses.length, 0);
+  // A different test with the same file is still a new failure.
+  assert.equal(summarize(report([spec('login.spec.ts', 9, 'another one', 'unexpected', failedTwice)]), [], flaky).failed, true);
+});
+
+test('the command reads knownFlaky from the list file', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'web-browser-summary-'));
+  try {
+    const knownPath = join(dir, 'known.json');
+    writeFileSync(knownPath, JSON.stringify({ knownReds: [], knownFlaky: [{ project: 'chromium', file: 'login.spec.ts', line: 241, title: 'a flaky one', reason: 'timing race' }] }));
+    const reportPath = join(dir, 'report.json');
+    writeFileSync(reportPath, JSON.stringify(report([spec('login.spec.ts', 241, 'a flaky one', 'unexpected', failedTwice)])));
+    const result = spawnSync(process.execPath, [script, reportPath, knownPath], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stdout);
+    assert.match(result.stdout, /\*\*PASS\*\*/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

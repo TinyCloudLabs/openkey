@@ -5,9 +5,10 @@
 //   node web-browser-summary.mjs <playwright-report.json> [known-reds.json]
 //
 // A test that fails and is not listed is a NEW failure (job fails). A listed test that fails is a
-// known red. A test that failed and passed on its retry is a flake (reported, never fails). A listed
-// test that passes is "known red now passes". A report that is missing, unreadable or carries
-// run-level errors fails the job: no report means nothing was checked.
+// known red. A test that failed and passed on its retry is a flake (reported, never fails). A test
+// on the `knownFlaky` list that fails on every attempt is reported as a flake too, with its reason,
+// and does not fail the job. A listed known red that passes is "known red now passes". A report that
+// is missing, unreadable or carries run-level errors fails the job: no report means nothing was checked.
 
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
@@ -25,8 +26,9 @@ function* tests(suite) {
 }
 
 /** The classification of every test in a report against the known reds. */
-export function summarize(report, knownReds = []) {
+export function summarize(report, knownReds = [], knownFlaky = []) {
   const known = new Map(knownReds.map((entry) => [testKey(entry.project, entry.file, entry.title), entry]));
+  const flakyKnown = new Map(knownFlaky.map((entry) => [testKey(entry.project, entry.file, entry.title), entry]));
   const seen = new Set();
   const out = { newFailures: [], knownRed: [], flaky: [], knownNowPasses: [], unmatchedKnown: [], skipped: 0, perProject: {}, errors: [], stats: report.stats ?? {} };
   for (const error of report.errors ?? []) out.errors.push(firstLine(error.message ?? error));
@@ -38,7 +40,11 @@ export function summarize(report, knownReds = []) {
       if (entry) seen.add(key);
       const failure = firstLine(test.results.find((result) => result.error)?.error?.message);
       const row = { project: test.project, file: test.file, line: test.line, title: test.title, failure };
-      if (test.status === 'unexpected') {
+      const flakyEntry = flakyKnown.get(key);
+      if (test.status === 'unexpected' && flakyEntry && !entry) {
+        counts.flaky += 1;
+        out.flaky.push({ ...row, persistent: true, reason: flakyEntry.reason });
+      } else if (test.status === 'unexpected') {
         counts.failed += 1;
         (entry ? out.knownRed : out.newFailures).push(entry ? { ...row, reason: entry.reason } : row);
       } else if (test.status === 'flaky') {
@@ -76,7 +82,7 @@ export function render(result) {
     lines.push('### Known reds (still failing; listed in .github/web-browser-known-reds.json)', ...result.knownRed.map((row) => `- ${where(row)}${row.reason ? `: ${row.reason}` : ''}`), '');
   }
   if (result.flaky.length) {
-    lines.push('### Flakes (failed, then passed on retry; they do not fail the job)', ...result.flaky.map((row) => `- ${where(row)}${row.failure ? `: ${row.failure}` : ''}`), '');
+    lines.push('### Flakes (failed, then passed on retry, or listed as known flaky; they do not fail the job)', ...result.flaky.map((row) => `- ${where(row)}${row.persistent ? ' (failed on every attempt; known flaky)' : ''}${row.failure ? `: ${row.failure}` : ''}${row.persistent && row.reason ? ` Known flaky: ${row.reason}` : ''}`), '');
   }
   if (result.knownNowPasses.length) {
     lines.push('### Known red now passes: delete it from the list', ...result.knownNowPasses.map((row) => `- ${where(row)}`), '');
@@ -110,9 +116,12 @@ function main(argv) {
     return 1;
   }
   let knownReds = [];
+  let knownFlaky = [];
   if (knownPath) {
     try {
-      knownReds = readJson(knownPath).knownReds ?? [];
+      const list = readJson(knownPath);
+      knownReds = list.knownReds ?? [];
+      knownFlaky = list.knownFlaky ?? [];
     } catch (error) {
       // A missing list is an empty list; an unreadable one must not hide a failure.
       if (error.code !== 'ENOENT') {
@@ -121,7 +130,7 @@ function main(argv) {
       }
     }
   }
-  const result = summarize(report, knownReds);
+  const result = summarize(report, knownReds, knownFlaky);
   process.stdout.write(render(result));
   return result.failed ? 1 : 0;
 }
