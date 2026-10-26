@@ -122,7 +122,7 @@ async function until(condition: () => boolean, what: string): Promise<void> {
 }
 
 /** Claim the request, press Preview, open both blocks, and return their text. */
-async function exactBlocks(siwe: string, signedMessage: string): Promise<{ original: string; candidate: string }> {
+async function exactBlocks(siwe: string, signedMessage: string, inspect?: (block: Element) => void): Promise<{ original: string; candidate: string }> {
   const claim = {
     transportVersion: 2,
     request: { protocolVersion: 1, siwe, jwk: { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' }, host: 'https://node.tinycloud.xyz', sessionDid: 'did:key:z6Mk' },
@@ -163,6 +163,7 @@ async function exactBlocks(siwe: string, signedMessage: string): Promise<{ origi
       const details = [...target.querySelectorAll('details')].find((d) => d.querySelector('summary')?.textContent === summary);
       const pre = details?.querySelector('pre');
       if (!pre) throw new Error(`no <pre> under '${summary}'`);
+      inspect?.(pre);
       return pre.textContent ?? '';
     };
     return { original: blockAfter('Original SIWE message'), candidate: blockAfter('Exact candidate signedMessage') };
@@ -182,14 +183,27 @@ test('both exact-message blocks show line feeds as real line breaks', async () =
   expect(original).not.toContain('\\u000a');
 });
 
-test('a carriage return, tab, bidi control and markup stay escaped in both blocks', async () => {
+test('a carriage return, tab and bidi control stay escaped and ASCII quotes and markup read as themselves in both blocks', async () => {
   const siwe = siweWith('TinyCloud delegation');
   const signed = siwe.replace('TinyCloud delegation', 'Line one\r\nLine\ttwo \u202e<b>&"\'');
   const { original, candidate } = await exactBlocks(siwe.replace('TinyCloud delegation', 'Line one\r'), signed);
   expect(original).toBe(siwe.replace('TinyCloud delegation', 'Line one\\u000d'));
   expect(candidate).toBe(renderSiweLiteral(signed));
-  expect(candidate).toContain('Line one\\u000d\nLine\\u0009two \\u202e\\u003cb\\u003e\\u0026\\u0022\\u0027\n');
+  expect(candidate).toContain('Line one\\u000d\nLine\\u0009two \\u202e<b>&"\'\n');
   expect(candidate.split('\n')).toHaveLength(14);
+});
+
+test('HTML in the message is shown literally in both blocks', async () => {
+  const html = '<script>alert(1)</script> <b>x</b> &amp; "><img src=x onerror=alert(1)>';
+  const siwe = siweWith(html);
+  const { original, candidate } = await exactBlocks(siwe, siwe, (block) => {
+    expect(block.querySelector('script')).toBeNull();
+    expect(block.querySelector('b')).toBeNull();
+    expect(block.querySelector('img')).toBeNull();
+    expect(block.children.length).toBe(0);
+  });
+  expect(original).toBe(siwe);
+  expect(candidate).toBe(siwe);
 });
 
 test('a final line feed and spaces at the end of a line read as escapes in both blocks', async () => {
