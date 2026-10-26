@@ -85,3 +85,37 @@ describe('extending the session on an MCP refresh', () => {
     expect(updates).toHaveLength(0);
   });
 });
+
+describe('a refresh that matched nothing although the checks held a moment ago', () => {
+  // The token is unrevoked when the guard reads it; by the time the update runs it may not be.
+  function raced(afterwards: { revoked: Date | null } | null): McpRefreshDatabase {
+    const row = {
+      clientId: 'app', userId: 'u', sessionId: 's', scopes: ['openid', 'tinycloud:mcp'],
+      revoked: null, expiresAt: new Date(NOW.getTime() + 86_400_000), createdAt: new Date(NOW.getTime() - 3_600_000),
+    };
+    let reads = 0;
+    return {
+      oauthRefreshToken: { findUnique: async () => (++reads === 1 ? row : afterwards) },
+      oauthClient: { findUnique: async (query: { select: Record<string, boolean> }) => (query.select.disabled ? { disabled: false } : publicClient) },
+      oauthConsent: { findUnique: async () => ({ scopes: ['openid', 'tinycloud:mcp'], createdAt: new Date(NOW.getTime() - 7_200_000) }) },
+      session: { findFirst: async () => ({ id: 's' }) },
+      $queryRaw: async () => [],
+    } as unknown as McpRefreshDatabase;
+  }
+
+  test('a token rotated in the meantime says so, still as invalid_grant', async () => {
+    expect(await run(raced({ revoked: new Date() }), null)).toEqual({
+      status: 400, error: 'invalid_grant', description: 'this refresh token was already used',
+    });
+  });
+
+  test('a token that is still unrevoked, or gone, means the connection or the session ended', async () => {
+    for (const afterwards of [{ revoked: null }, null]) {
+      // Plain reads: a matcher object inside toMatchObject would be written into the shared refusal constant.
+      const refusal = await run(raced(afterwards), null);
+      expect(refusal?.status).toBe(400);
+      expect(refusal?.error).toBe('invalid_grant');
+      expect(refusal?.description).toContain('has ended');
+    }
+  });
+});

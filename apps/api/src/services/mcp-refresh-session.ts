@@ -39,6 +39,12 @@ const CONNECTION_ENDED: McpRefreshRefusal = {
   description: 'the connection that authorized this token has ended; connect again',
 };
 
+const ALREADY_USED: McpRefreshRefusal = {
+  status: 400,
+  error: 'invalid_grant',
+  description: 'this refresh token was already used',
+};
+
 const UNAVAILABLE: McpRefreshRefusal = {
   status: 503,
   error: 'temporarily_unavailable',
@@ -72,7 +78,7 @@ function clientAuthenticates(client: { public: boolean | null; clientSecret: str
  * `timestamp(3)` without a time zone, so the database session's own time zone and
  * clock play no part.
  */
-async function extendSession(
+export async function extendSession(
   database: McpRefreshDatabase,
   row: { userId: string; clientId: string; sessionId: string },
   stored: string,
@@ -158,7 +164,12 @@ export async function mcpRefreshRefusal(
     });
     if (!client || !clientAuthenticates(client, extension.presentedSecret)) return null;
     const extended = await extendSession(database, { userId: row.userId, clientId: row.clientId, sessionId: row.sessionId }, stored, now);
-    return extended ? null : CONNECTION_ENDED;
+    if (extended) return null;
+    // Nothing matched although the checks above held a moment ago. If the token has
+    // been rotated since (a parallel refresh of the same token got there first), say
+    // so; otherwise the connection or the session ended, or the session reached its cap.
+    const current = await database.oauthRefreshToken.findUnique({ where: { token: stored }, select: { revoked: true } });
+    return current?.revoked ? ALREADY_USED : CONNECTION_ENDED;
   } catch {
     return UNAVAILABLE;
   }

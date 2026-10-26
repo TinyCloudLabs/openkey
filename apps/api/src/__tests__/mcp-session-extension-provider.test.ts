@@ -325,6 +325,23 @@ if (process.env.OPENKEY_MCP_OAUTH_TEST_CHILD !== '1') {
       expect(after.expiresAt.getTime()).toBe(after.createdAt.getTime() + 30 * DAY);
     });
 
+    test('parallel refreshes of one token: one succeeds, extends the session once, and the others are invalid_grant without claiming the connection ended', async () => {
+      for (let round = 0; round < 4; round++) {
+        const { cookie, sessionId } = await signedIn();
+        const { clientId, tokens } = await connectMcp(cookie);
+        await age(sessionId, 6, DAY);
+        const results = await Promise.all([1, 2, 3].map(() => refresh(clientId, tokens.refresh_token)));
+        const bodies = await Promise.all(results.map(async (response) => ({ status: response.status, body: await response.json() as { error?: string; error_description?: string } })));
+        expect(bodies.filter((entry) => entry.status === 200), `round ${round}`).toHaveLength(1);
+        for (const loser of bodies.filter((entry) => entry.status !== 200)) {
+          expect(loser.status).toBe(400);
+          expect(loser.body.error).toBe('invalid_grant');
+          expect(loser.body.error_description).not.toContain('connection that authorized');
+        }
+        expect(near((await session(sessionId)).expiresAt, Date.now() + 6 * DAY), `round ${round}`).toBe(true);
+      }
+    });
+
     test('a sign-out that races a refresh wins: the session ends and stays gone', async () => {
       for (let round = 0; round < 4; round++) {
         const { cookie, sessionId } = await signedIn();
