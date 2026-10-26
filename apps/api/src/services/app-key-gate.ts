@@ -189,6 +189,8 @@ export interface AppKeyAdmissionInput {
   manifestBound: boolean;
   /** The manifest's own `app_id` field, unmodified. */
   declaredAppId: string | undefined;
+  /** Optional key namespace declared by the bound manifest. */
+  declaredKeysAppId?: string;
   declaredKeys: ManifestKeys | undefined;
   /** OpenKey's DID for the signing key: `did:pkh:eip155:<chain>:<address>`. */
   ownerDid: string;
@@ -221,7 +223,7 @@ export function admitAppKeys(input: AppKeyAdmissionInput): AppKeyAdmission {
   if (!input.siweOriginChecked) return fail('origin');
   const origin = appKeyOrigin(input.requestOrigin, input.reportedOrigin);
   if (origin === null || !siweSchemeOk(input.siwe)) return fail('origin');
-  const appId = input.declaredAppId;
+  const appId = input.declaredKeysAppId ?? input.declaredAppId;
   if (!input.manifestBound) return fail('manifest_unverified');
   if (appId === undefined || !appIdValid(appId)) return fail('not_declared');
   if (!hostBinding(origin, appId)) return fail('app_id');

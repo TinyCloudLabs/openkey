@@ -29,6 +29,7 @@ import { promises as dns } from "node:dns";
 import net from "node:net";
 import { Agent, buildConnector, fetch as undiciFetch } from "undici";
 import { parseManifestKeys, type ManifestKeys } from "./app-key-gate";
+import { appIdValid } from "./key-resource";
 
 const MANIFEST_PATH = "/.well-known/openkey-manifest.json";
 const REQUEST_TIMEOUT_MS = 5_000;
@@ -101,6 +102,8 @@ export interface OriginBindResult {
     declaredPermissions?: DeclaredPermission[];
     /** The manifest's own `app_id` field when it is a string, unmodified. */
     declaredAppId?: string;
+    /** The optional key namespace, separate from the manifest's data app id. */
+    declaredKeysAppId?: string;
     /** The manifest's `keys` block, read by the app key rules. Absent when the manifest has none. */
     declaredKeys?: ManifestKeys;
   };
@@ -416,7 +419,13 @@ export function bindWellKnownManifestBytes(
     declaredSecrets: extractDeclaredSecrets(parsed.secrets),
     declaredPermissions: extractDeclaredPermissions(parsed.permissions),
     declaredAppId: typeof parsed.app_id === "string" ? parsed.app_id : undefined,
-    declaredKeys: parsed.keys === undefined ? undefined : parseManifestKeys(parsed.app_id, parsed.keys),
+    declaredKeysAppId: typeof parsed.keys_app_id === "string" ? parsed.keys_app_id : undefined,
+    declaredKeys: Object.hasOwn(parsed, "keys_app_id") &&
+      (typeof parsed.keys_app_id !== "string" || !appIdValid(parsed.keys_app_id))
+      ? { status: "invalid" }
+      : parsed.keys === undefined
+        ? undefined
+        : parseManifestKeys(parsed.keys_app_id ?? parsed.app_id, parsed.keys),
   };
 
   return { ok: true, manifest, fetchedDigest };

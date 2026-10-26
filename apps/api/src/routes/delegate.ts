@@ -2449,6 +2449,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     appKeyCandidate = true;
   }
   let boundDeclaredAppId: string | undefined;
+  let boundDeclaredKeysAppId: string | undefined;
   let boundDeclaredKeys: ManifestKeys | undefined;
 
   const keyAddress = ensureEip55(key.address);
@@ -2635,6 +2636,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
                 declaredAppScope,
               };
               boundDeclaredAppId = bindResult.manifest?.declaredAppId;
+              boundDeclaredKeysAppId = bindResult.manifest?.declaredKeysAppId;
               boundDeclaredKeys = bindResult.manifest?.declaredKeys;
             } else {
               metadataTrust = {
@@ -2672,6 +2674,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       ticket: Boolean(ticket),
       manifestBound: metadataTrust.status === 'origin-bound',
       declaredAppId: boundDeclaredAppId,
+      declaredKeysAppId: boundDeclaredKeysAppId,
       declaredKeys: boundDeclaredKeys,
       ownerDid: `did:pkh:eip155:${chainId}:${keyAddress}`,
       expirationTime: immutable.expirationTime,
