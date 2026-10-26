@@ -47,6 +47,12 @@ export const FAMILY_LABEL: Record<CapabilityFamily, string> = {
 };
 
 /**
+ * Title of a read-only `tinycloud.delegation` grant (`list`, `status`) on the
+ * signer's own `applications` space.
+ */
+export const DELEGATION_LIST_LABEL = "See which apps and links can reach your data";
+
+/**
  * Consent copy for a raw `tinycloud.encryption/decrypt` on the account's
  * `:default` network. Single source of truth: statements.ts imports this
  * constant and tests compare against it.
