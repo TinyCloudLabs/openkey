@@ -10,13 +10,15 @@
 // still stand. Anything else is `{ "active": false }`, never an error.
 
 import { Hono } from 'hono';
-import { createLocalJWKSet, errors as joseErrors, jwtVerify, type JSONWebKeySet, type JWTPayload } from 'jose';
+import type { JSONWebKeySet } from 'jose';
 import type { PrismaClient } from '@openkey/db';
 import { logError, logMetric } from '../log';
 import { DEFAULT_RESOURCE_RATE_LIMIT_PER_MINUTE, clientSecretMatches, readResourceServerPolicy } from '../services/resource-server';
 import { mcpTokenStatus } from '../services/mcp-token-status';
+import { JWT_SHAPE, MAX_TOKEN_LENGTH, createAccessTokenVerifier } from '../services/access-token-verifier';
+import { isAccessTokenRevoked } from '../services/revoked-access-token';
 
-export type ResourceIntrospectDatabase = Pick<PrismaClient, 'oauthClient' | 'oauthConsent' | 'session'>;
+export type ResourceIntrospectDatabase = Pick<PrismaClient, 'oauthClient' | 'oauthConsent' | 'session' | 'revokedAccessToken'>;
 
 export interface ResourceIntrospectLimits {
   /** Requests per window for an authenticated resource server whose registration sets no limit of its own. */
@@ -45,13 +47,7 @@ export interface ResourceIntrospectOptions {
   now?: () => number;
 }
 
-/** A token is a JWT of three base64url segments; anything longer than this is not one of ours. */
-export const MAX_TOKEN_LENGTH = 8 * 1024;
 const MAX_BODY_BYTES = 16 * 1024;
-const JWKS_TTL_MS = 60_000;
-const JWKS_MIN_REFETCH_MS = 10_000;
-const SIGNING_ALGORITHMS = ['EdDSA', 'ES256', 'RS256'];
-const JWT_SHAPE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 
 const NO_STORE = { 'Cache-Control': 'no-store', Pragma: 'no-cache' } as const;
 const INACTIVE = { active: false } as const;
@@ -163,31 +159,7 @@ export function createResourceIntrospectRouter(options: ResourceIntrospectOption
   const failedAuth = new FixedWindowCounter(limits.windowMs);
   const validAudiences = new Set(options.validAudiences);
 
-  type SigningKeys = { resolver: ReturnType<typeof createLocalJWKSet>; fetchedAt: number };
-  let cachedKeys: SigningKeys | null = null;
-  async function signingKeys(refresh = false): Promise<SigningKeys> {
-    const at = now();
-    if (cachedKeys && (!refresh ? at - cachedKeys.fetchedAt < JWKS_TTL_MS : at - cachedKeys.fetchedAt < JWKS_MIN_REFETCH_MS)) return cachedKeys;
-    cachedKeys = { resolver: createLocalJWKSet(await options.getJwks()), fetchedAt: at };
-    return cachedKeys;
-  }
-
-  async function verify(token: string, audience: string[]): Promise<JWTPayload | null> {
-    const attempt = async (keys: SigningKeys) =>
-      (await jwtVerify(token, keys.resolver, {
-        issuer: options.issuer, audience, algorithms: SIGNING_ALGORITHMS, currentDate: new Date(now()),
-      })).payload;
-    const first = await signingKeys();
-    try {
-      return await attempt(first);
-    } catch (error) {
-      // A key the cache has not seen yet: look once more, at most every few seconds.
-      if (!(error instanceof joseErrors.JWKSNoMatchingKey)) return null;
-    }
-    const fresh = await signingKeys(true);
-    if (fresh === first) return null;
-    try { return await attempt(fresh); } catch { return null; }
-  }
+  const verify = createAccessTokenVerifier({ issuer: options.issuer, getJwks: options.getJwks, now: options.now });
 
   async function status(allowedResources: string[], token: unknown) {
     if (typeof token !== 'string' || token.length === 0 || token.length > MAX_TOKEN_LENGTH || !JWT_SHAPE.test(token)) return INACTIVE;
@@ -201,13 +173,18 @@ export function createResourceIntrospectRouter(options: ResourceIntrospectOption
     const audiences = (Array.isArray(aud) ? aud : [aud]).filter((value): value is string => typeof value === 'string' && audience.includes(value));
     if (audiences.length === 0) return INACTIVE;
 
-    // The connection must still stand: client, consent, scopes, consent age and session.
-    const state = await mcpTokenStatus(
-      options.prisma,
-      { userId: sub, clientId: azp, sessionId: sid, scopes: scope.split(' ').filter(Boolean), issuedAtSeconds: iat },
-      new Date(now()),
-    );
-    if (!state.active) return INACTIVE;
+    // The connection must still stand (client, consent, scopes, consent age, session), and the token
+    // must not have been revoked at /oauth2/revoke. The reads run together; a read that fails is
+    // thrown to the route's 503: never `active: true` on an error.
+    const [revoked, state] = await Promise.all([
+      isAccessTokenRevoked(options.prisma, token),
+      mcpTokenStatus(
+        options.prisma,
+        { userId: sub, clientId: azp, sessionId: sid, scopes: scope.split(' ').filter(Boolean), issuedAtSeconds: iat },
+        new Date(now()),
+      ),
+    ]);
+    if (revoked || !state.active) return INACTIVE;
 
     return {
       active: true,
