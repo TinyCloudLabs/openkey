@@ -34,6 +34,8 @@ import { API_EXPOSED_HEADERS, corsOriginPolicy } from './origin-policy';
 import { readBuildInfo } from './build-info';
 import { readinessHandler } from './readiness';
 import { createProviderInterceptors } from './services/native-delegation/interceptors';
+import { createRevokeDenylist } from './services/revoked-access-token';
+import { createAccessTokenVerifier } from './services/access-token-verifier';
 import { providerTokenOptions } from './services/native-delegation/provider-tokens';
 import { handlePar } from './services/native-delegation/par';
 import { createNativeDelegationConsentRouter } from './routes/native-delegation-consent';
@@ -172,18 +174,28 @@ app.post('/api/auth/oauth2/par', (c) => handlePar(c.req.raw, authPrisma));
 app.post('/api/auth/oauth2/tinycloud/renew', (c) => handleNativeRenewOrRevoke(c.req.raw, authPrisma, oauthIssuer, 'renew'));
 app.post('/api/auth/oauth2/tinycloud/revoke', (c) => handleNativeRenewOrRevoke(c.req.raw, authPrisma, oauthIssuer, 'revoke'));
 
+// The key set /api/auth/jwks serves, read through the auth handler.
+const readSigningKeys = async () => {
+  const response = await auth.handler(new Request(`${oauthIssuer}/jwks`));
+  if (!response.ok) throw new Error('signing keys unavailable');
+  return (await response.json()) as { keys: import('jose').JWK[] };
+};
+const tokenAudiences = oauthValidAudiences(process.env.BETTER_AUTH_URL!);
+
 // Token status check for registered resource servers (the hosted MCP server).
 // The provider's own /oauth2/introspect, further down, is untouched.
 app.route('/api/oauth/resource/introspect', createResourceIntrospectRouter({
   prisma: authPrisma,
   issuer: oauthIssuer,
-  validAudiences: oauthValidAudiences(process.env.BETTER_AUTH_URL!),
-  // The key set /api/auth/jwks serves, read through the auth handler.
-  getJwks: async () => {
-    const response = await auth.handler(new Request(`${oauthIssuer}/jwks`));
-    if (!response.ok) throw new Error('signing keys unavailable');
-    return (await response.json()) as { keys: import('jose').JWK[] };
-  },
+  validAudiences: tokenAudiences,
+  getJwks: readSigningKeys,
+}));
+// A JWT access token revoked at the provider's /oauth2/revoke is recorded, so the status check
+// above answers inactive for it. Outside the interceptors: it acts on the final answer.
+app.use('/api/auth/*', createRevokeDenylist({
+  database: authPrisma,
+  verify: createAccessTokenVerifier({ issuer: oauthIssuer, getJwks: readSigningKeys }),
+  validAudiences: tokenAudiences,
 }));
 app.use('/api/auth/*', createProviderInterceptors({
   database: authPrisma,

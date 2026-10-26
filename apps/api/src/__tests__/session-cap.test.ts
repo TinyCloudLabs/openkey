@@ -46,9 +46,9 @@ describe('the absolute cap on web sessions', () => {
   });
 
   /** The result must set the expiry to the moment of the call: the session ends, the update is not refused. */
-  async function endsNow(refresh: ReturnType<typeof capSessionRefresh>) {
+  async function endsNow(refresh: () => ReturnType<typeof capSessionRefresh>) {
     const before = Date.now();
-    const result = await refresh;
+    const result = await refresh();
     const after = Date.now();
     expect(result).toBeDefined();
     const endedAt = result!.data.expiresAt.getTime();
@@ -65,12 +65,12 @@ describe('the absolute cap on web sessions', () => {
     ['an unreadable createdAt', { context: { session: { session: { createdAt: 'not a date' } } } }],
     ['a boolean createdAt', { context: { session: { session: { createdAt: true } } } }],
   ] as Array<[string, never]>)('when the creation time is unknown (%s) the session is ended, not extended and not refused', async (_name, context) => {
-    await endsNow(capSessionRefresh(refreshTo(7), context));
+    await endsNow(() => capSessionRefresh(refreshTo(7), context));
   });
 
   test('an unreadable new expiry ends the session', async () => {
-    await endsNow(capSessionRefresh({ expiresAt: 'soon' }, during(2)));
-    await endsNow(capSessionRefresh({ expiresAt: null }, during(2)));
-    await endsNow(capSessionRefresh({ expiresAt: new Date(Number.NaN) }, during(2)));
+    await endsNow(() => capSessionRefresh({ expiresAt: 'soon' }, during(2)));
+    await endsNow(() => capSessionRefresh({ expiresAt: null }, during(2)));
+    await endsNow(() => capSessionRefresh({ expiresAt: new Date(Number.NaN) }, during(2)));
   });
 });
