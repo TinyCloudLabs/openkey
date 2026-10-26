@@ -43,24 +43,32 @@ let jwksKeys: JWK[];
 let failJwks: boolean;
 let clock: number;
 
+// The queries follow Prisma: a unique lookup with a missing argument throws, and an `undefined`
+// field in a `findFirst` filter is ignored, so it matches any row the other fields match.
 const prisma = {
   oauthClient: {
-    findUnique: async ({ where }: { where: { clientId: string } }) => {
+    findUnique: async ({ where }: { where: { clientId: string | undefined } }) => {
       if (failDatabase) throw new Error('database down');
+      if (where.clientId === undefined) throw new Error('Argument `clientId` is missing');
       return clients.get(where.clientId) ?? null;
     },
   },
   oauthConsent: {
-    findUnique: async ({ where }: { where: { userId_clientId: { userId: string; clientId: string } } }) => {
+    findUnique: async ({ where }: { where: { userId_clientId: { userId: string | undefined; clientId: string | undefined } } }) => {
       if (failDatabase) throw new Error('database down');
-      return consents.get(`${where.userId_clientId.userId}:${where.userId_clientId.clientId}`) ?? null;
+      const { userId, clientId } = where.userId_clientId;
+      if (userId === undefined || clientId === undefined) throw new Error('Argument `userId_clientId` is missing a field');
+      return consents.get(`${userId}:${clientId}`) ?? null;
     },
   },
   session: {
-    findFirst: async ({ where }: { where: { id: string; userId: string; expiresAt: { gt: Date } } }) => {
+    findFirst: async ({ where }: { where: { id: string | undefined; userId: string | undefined; expiresAt: { gt: Date } } }) => {
       if (failDatabase) throw new Error('database down');
-      const session = sessions.get(where.id);
-      return session && session.userId === where.userId && session.expiresAt > where.expiresAt.gt ? { id: session.id } : null;
+      const session = [...sessions.values()].find((candidate) =>
+        (where.id === undefined || candidate.id === where.id) &&
+        (where.userId === undefined || candidate.userId === where.userId) &&
+        candidate.expiresAt > where.expiresAt.gt);
+      return session ? { id: session.id } : null;
     },
   },
 };
@@ -206,7 +214,7 @@ describe('a live token', () => {
 describe('a token whose standing has ended is inactive', () => {
   test.each([
     ['consent deleted', () => consents.delete('user_1:app_1')],
-    ['consent no longer holds the token scope', () => consents.set('user_1:app_1', { scopes: ['openid'], createdAt: CONSENT_AT })],
+    ['consent does not hold the token scope', () => consents.set('user_1:app_1', { scopes: ['openid'], createdAt: CONSENT_AT })],
     ['session deleted (sign-out)', () => sessions.delete('sess_1')],
     ['session expired', () => sessions.set('sess_1', { id: 'sess_1', userId: 'user_1', expiresAt: new Date(NOW_MS - 1) })],
     ['session belongs to another user', () => sessions.set('sess_1', { id: 'sess_1', userId: 'user_2', expiresAt: new Date(NOW_MS + 60_000) })],
@@ -378,7 +386,7 @@ describe('client authentication', () => {
   });
 });
 
-describe('failures on our side are 503, so the caller fails closed', () => {
+describe('failures on our side are 503, which the caller can tell from an inactive token', () => {
   test('a database error', async () => {
     const token = await mint();
     failDatabase = true;

@@ -88,6 +88,14 @@ class FixedWindowCounter {
   }
 }
 
+/**
+ * The key for the failed-authentication limit. The API's only other per-address limit (device
+ * authorization) reads the same two headers inline; there is no shared helper. They are the
+ * caller's own address only if the API is reachable solely through Cloudflare, which sets
+ * `cf-connecting-ip`. With neither header the key is the shared string `unknown`: that bucket
+ * counts failed authentications only, so it can answer failing requests with 429 but never
+ * blocks a client that presents valid credentials.
+ */
 function sourceAddress(headers: Headers): string {
   return headers.get('cf-connecting-ip') ?? headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown';
 }
@@ -198,7 +206,7 @@ export function createResourceIntrospectRouter(options: ResourceIntrospectOption
       options.prisma.session.findFirst({ where: { id: sid, userId: sub, expiresAt: { gt: new Date(now()) } }, select: { id: true } }),
     ]);
     if (!issuingClient || issuingClient.disabled || !consent || !session) return INACTIVE;
-    // The token may not be wider than what the user's consent still holds.
+    // Every scope of the token must still be in the user's consent.
     const consented = new Set(consent.scopes);
     if (!scope.split(' ').filter(Boolean).every((granted) => consented.has(granted))) return INACTIVE;
     // The consent must not be newer than the token: disconnecting deletes the row and
