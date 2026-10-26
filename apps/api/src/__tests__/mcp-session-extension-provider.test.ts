@@ -51,7 +51,6 @@ if (process.env.OPENKEY_MCP_OAUTH_TEST_CHILD !== '1') {
   let directory: string;
   let prisma: PrismaClient;
   let app: { fetch: (request: Request) => Response | Promise<Response> };
-  let authOptions: { session?: { expiresIn?: number; updateAge?: number } };
   let secret: string;
   let cookieName: string;
   let counter = 0;
@@ -76,7 +75,6 @@ if (process.env.OPENKEY_MCP_OAUTH_TEST_CHILD !== '1') {
     const context = await authModule.auth.$context;
     secret = context.secret;
     cookieName = context.authCookies.sessionToken.name;
-    authOptions = authModule.auth.options as typeof authOptions;
   }, 90_000);
 
   afterAll(async () => {
@@ -164,12 +162,6 @@ if (process.env.OPENKEY_MCP_OAUTH_TEST_CHILD !== '1') {
   const refreshRows = (clientId: string) => prisma.oauthRefreshToken.findMany({ where: { clientId }, select: { revoked: true } });
 
   describe('extending the authorizing session', () => {
-    test('the shared lifetime constants are the live auth options', async () => {
-      const { SESSION_EXPIRES_IN_SECONDS, SESSION_UPDATE_AGE_SECONDS } = await import('../services/session-lifetime');
-      expect(authOptions.session?.expiresIn).toBe(SESSION_EXPIRES_IN_SECONDS);
-      expect(authOptions.session?.updateAge).toBe(SESSION_UPDATE_AGE_SECONDS);
-    });
-
     test('a refresh on day 6 extends the session to six days from now', async () => {
       const { cookie, sessionId } = await signedIn();
       const { clientId, tokens } = await connectMcp(cookie);

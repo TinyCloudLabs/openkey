@@ -3,7 +3,8 @@ import { TINYCLOUD_MCP_SCOPE } from '../oauth-config';
 import { mcpTokenStatus, type McpTokenStatusDatabase } from './mcp-token-status';
 import { storedRefreshToken, type ProviderTokenOptions } from './native-delegation/provider-tokens';
 import { clientSecretMatches } from './resource-server';
-import { SESSION_EXPIRES_IN_SECONDS, SESSION_UPDATE_AGE_SECONDS, WEB_SESSION_ABSOLUTE_CAP_SECONDS } from './session-lifetime';
+import { WEB_SESSION_ABSOLUTE_CAP_SECONDS } from './session-cap';
+import { SESSION_EXPIRES_IN_SECONDS, SESSION_UPDATE_AGE_SECONDS } from './session-lifetime';
 
 /**
  * An MCP access token is active only while the connection it belongs to stands
