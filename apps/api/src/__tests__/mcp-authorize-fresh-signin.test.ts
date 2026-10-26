@@ -251,17 +251,111 @@ if (process.env.OPENKEY_MCP_OAUTH_TEST_CHILD !== '1') {
         expect(target.href).toBe(nobody.href);
       });
 
-      test('create and select_account are left alone: an old sign-in is answered as a young one is', async () => {
+      test('select_account is left alone: an old sign-in is answered as a young one is', async () => {
         const old = await signedIn(24 * DAY);
         const young = await signedIn(2 * DAY);
         const clientId = await register(MCP_SCOPES);
-        for (const prompt of ['create', 'select_account']) {
-          const stale = await authorize(old.cookie, clientId, MCP_SCOPES, { prompt });
-          const fresh = await authorize(young.cookie, clientId, MCP_SCOPES, { prompt });
-          expect(stale.origin + stale.pathname, prompt).toBe(fresh.origin + fresh.pathname);
-          expect(stale.searchParams.get('prompt'), prompt).toBe(fresh.searchParams.get('prompt'));
-          expect(stale.searchParams.get('error'), prompt).toBe(fresh.searchParams.get('error'));
-        }
+        const stale = await authorize(old.cookie, clientId, MCP_SCOPES, { prompt: 'select_account' });
+        const fresh = await authorize(young.cookie, clientId, MCP_SCOPES, { prompt: 'select_account' });
+        expect(stale.origin + stale.pathname).toBe(fresh.origin + fresh.pathname);
+        expect(stale.searchParams.get('prompt')).toBe(fresh.searchParams.get('prompt'));
+        expect(stale.searchParams.get('error')).toBe(fresh.searchParams.get('error'));
+      });
+    });
+
+    describe('the other ways a request is resumed on the sign-in the browser holds', () => {
+      const exchange = (clientId: string, code: string) => form('/oauth2/token', {
+        client_id: clientId, grant_type: 'authorization_code', code, redirect_uri: callback, code_verifier: verifier, resource,
+      });
+      const codeIn = (url: string) => new URL(url, issuer).searchParams.get('code');
+      const issuedTokens = async () => (await prisma.oauthAccessToken.count()) + (await prisma.oauthRefreshToken.count());
+      /** The user approved this client earlier, so a resumed request goes straight to a code. */
+      const consented = (userId: string, clientId: string) => prisma.oauthConsent.create({ data: { id: `consent-${userId}-${clientId}`, userId, clientId, scopes: MCP_SCOPES.split(' ') } });
+
+      test('prompt=create on an old sign-in goes to the login page as login, and no code is issued', async () => {
+        const { cookie } = await signedIn(24 * DAY);
+        const clientId = await register(MCP_SCOPES);
+        const before = await codes();
+        const target = await authorize(cookie, clientId, MCP_SCOPES, { prompt: 'create' });
+        expect(isLoginPage(target)).toBe(true);
+        expect(target.searchParams.get('prompt')).toBe('login');
+        expect(await codes()).toBe(before);
+      });
+
+      test('prompt=create on a young sign-in is unchanged', async () => {
+        const { cookie } = await signedIn(2 * DAY);
+        const clientId = await register(MCP_SCOPES);
+        const target = await authorize(cookie, clientId, MCP_SCOPES, { prompt: 'create' });
+        expect(isLoginPage(target)).toBe(true);
+        expect(target.searchParams.get('prompt')).toBe('create');
+      });
+
+      test('a create-step request resumed with an old sign-in\'s cookie gets a code that the token request refuses and spends', async () => {
+        const young = await signedIn(2 * DAY);
+        const old = await signedIn(24 * DAY);
+        const clientId = await register(MCP_SCOPES);
+        await consented(old.userId, clientId);
+        const baseline = await codes();
+        // A signed create request (made on a young sign-in), resumed by the browser that holds the old one.
+        const created = await authorize(young.cookie, clientId, MCP_SCOPES, { prompt: 'create' });
+        const resumed = await json('/oauth2/continue', { created: true, oauth_query: created.searchParams.toString() }, old.cookie);
+        const code = codeIn(((await resumed.json()) as { url?: string }).url ?? '');
+        expect(code, 'the resumed request is expected to reach the code step; the backstop is what refuses it').toBeTruthy();
+        const before = await issuedTokens();
+        const refused = await exchange(clientId, code!);
+        expect(refused.status).toBe(400);
+        expect(await refused.json()).toMatchObject({ error: 'invalid_grant' });
+        // The code is spent: a second exchange fails as well, and nothing was issued.
+        const again = (await exchange(clientId, code!)).status;
+        expect(again >= 400 && again < 500).toBe(true);
+        expect(await issuedTokens()).toBe(before);
+        expect(await codes()).toBe(baseline);
+      });
+
+      test('a profile update that carries the signed request on an old sign-in gets a code that the token request refuses and spends', async () => {
+        const { cookie, userId } = await signedIn(24 * DAY);
+        const clientId = await register(MCP_SCOPES);
+        await consented(userId, clientId);
+        const baseline = await codes();
+        const login = await authorize(cookie, clientId, MCP_SCOPES);
+        expect(isLoginPage(login)).toBe(true);
+        const updated = await json('/update-user', { name: 'Updated', oauth_query: login.searchParams.toString() }, cookie);
+        expect(updated.status, await updated.clone().text()).toBe(200);
+        const code = codeIn(((await updated.json()) as { url?: string }).url ?? '');
+        expect(code, 'the profile update is expected to resume the request; the backstop is what refuses it').toBeTruthy();
+        const before = await issuedTokens();
+        const refused = await exchange(clientId, code!);
+        expect(refused.status, await refused.clone().text()).toBe(400);
+        expect(await refused.json()).toMatchObject({ error: 'invalid_grant' });
+        const again = (await exchange(clientId, code!)).status;
+        expect(again >= 400 && again < 500).toBe(true);
+        expect(await issuedTokens()).toBe(before);
+        expect(await codes()).toBe(baseline);
+      });
+
+      test('the same profile update on a young sign-in gets a code that works', async () => {
+        const { cookie } = await signedIn(2 * DAY);
+        const clientId = await register(MCP_SCOPES);
+        // A consent is needed first: a young sign-in without one is sent to the consent page, which carries the signed request.
+        const consent = await authorize(cookie, clientId, MCP_SCOPES);
+        expect(isConsentPage(consent)).toBe(true);
+        const approved = await json('/oauth2/consent', { accept: true, oauth_query: consent.searchParams.toString() }, cookie);
+        const code = codeIn(((await approved.json()) as { url?: string }).url ?? '');
+        expect(code).toBeTruthy();
+        const exchanged = await exchange(clientId, code!);
+        expect(exchanged.status, await exchanged.clone().text()).toBe(200);
+      });
+
+      test('an old sign-in\'s code for a client without the MCP scope is not refused', async () => {
+        const { cookie } = await signedIn(24 * DAY);
+        const clientId = await register('openid email');
+        const consent = await authorize(cookie, clientId, 'openid email');
+        expect(isConsentPage(consent)).toBe(true);
+        const approved = await json('/oauth2/consent', { accept: true, oauth_query: consent.searchParams.toString() }, cookie);
+        const code = codeIn(((await approved.json()) as { url?: string }).url ?? '');
+        expect(code).toBeTruthy();
+        const exchanged = await exchange(clientId, code!);
+        expect(exchanged.status, await exchanged.clone().text()).toBe(200);
       });
     });
 

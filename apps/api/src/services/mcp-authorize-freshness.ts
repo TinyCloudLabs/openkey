@@ -19,9 +19,12 @@ export function mcpAuthorizeNeedsFreshSignIn(sessionCreatedAt: Date, now: Date):
  * added. The provider validates `prompt` against a fixed list and only combines
  * `login` with `consent` (as `login consent`), so a request that names no prompt
  * gets `login`, `consent` becomes `login consent`, and one that already asks for
- * `login` is unchanged. Any other value is not rewritten here: `create` already
- * sends the user to the login page, `select_account` is the provider's to refuse,
- * and `none` is answered with `login_required` by the interceptor.
+ * `login` is unchanged. `create` becomes `login`: it sends the user to the login
+ * page too, but the provider resumes a `create` request when the user is
+ * "created" (`/oauth2/continue`) on whatever session the cookie names, so it would
+ * resume on the old sign-in. Any other value is not rewritten here:
+ * `select_account` is the provider's to refuse, and `none` is answered with
+ * `login_required` by the interceptor.
  *
  * With `login` the provider redirects to the login page with a signed copy of the
  * request and, once the user has signed in, resumes it with `login` removed, on the
@@ -29,7 +32,7 @@ export function mcpAuthorizeNeedsFreshSignIn(sessionCreatedAt: Date, now: Date):
  */
 export function withLoginPrompt(prompt: string | null): string | null {
   const value = (prompt ?? '').split(' ').filter(Boolean).join(' ');
-  if (value === '') return 'login';
+  if (value === '' || value === 'create') return 'login';
   if (value === 'consent') return 'login consent';
   if (value === 'login' || value === 'login consent') return value;
   return null;

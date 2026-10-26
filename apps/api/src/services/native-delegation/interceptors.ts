@@ -180,7 +180,7 @@ export interface ProviderInterceptorOptions {
    * `deleteVerificationByIdentifier`, called with the stored code value.
    */
   authorizationCodes: {
-    find: (identifier: string) => Promise<{ value: string } | null>;
+    find: (identifier: string) => Promise<{ value: string; createdAt?: Date | string } | null>;
     delete: (identifier: string) => Promise<void>;
   };
 }
@@ -344,12 +344,56 @@ export function createProviderInterceptors({ database, tokens, provider, getSess
     return { replacement: new Request(url, c.req.raw) };
   }
 
+  /**
+   * The backstop for the sign-in age rule. An authorize request can still be resumed
+   * on the sign-in the browser holds without passing the guard above (the provider's
+   * own after-hooks resume it when a user is updated or created, on whatever session
+   * the cookie names), so the code that comes out is checked when it is exchanged. A
+   * code for the MCP scope is refused, and spent, when the sign-in it was issued on
+   * was `MCP_AUTHORIZE_MAX_SESSION_AGE_SECONDS` old or older at the moment of issue.
+   * The code carries the sign-in's creation time (`authTime`) and its row carries the
+   * issue time; a code for this client that lacks either is refused, since its age
+   * cannot be known. Another client's code, and a code for other scopes, are the
+   * provider's. A failed lookup answers 503 and never falls through to the provider.
+   */
+  async function refuseStaleMcpCode(code: string | null, clientId: string | null): Promise<Refusal | null> {
+    if (!code || !clientId) return null;
+    try {
+      const identifier = await storedToken(tokens, code, 'authorization_code');
+      const verification = await authorizationCodes.find(identifier);
+      if (!verification) return null;
+      let value: { type?: unknown; authTime?: unknown; query?: { client_id?: unknown; scope?: unknown } } | null;
+      try {
+        value = JSON.parse(verification.value) as typeof value;
+      } catch {
+        return null;
+      }
+      if (value?.type !== 'authorization_code' || value.query?.client_id !== clientId) return null;
+      if (typeof value.query.scope !== 'string' || !scopeList(value.query.scope).includes(TINYCLOUD_MCP_SCOPE)) return null;
+      const signedInAt = new Date(typeof value.authTime === 'number' || typeof value.authTime === 'string' ? value.authTime : Number.NaN);
+      const issuedAt = new Date(verification.createdAt ?? Number.NaN);
+      const unreadable = Number.isNaN(signedInAt.getTime()) || Number.isNaN(issuedAt.getTime());
+      if (!unreadable && !mcpAuthorizeNeedsFreshSignIn(signedInAt, issuedAt)) return null;
+      await authorizationCodes.delete(identifier);
+      return { status: 400, error: 'invalid_grant', description: 'the sign-in that approved this connection was too old; connect again' };
+    } catch {
+      return { status: 503, error: 'temporarily_unavailable', description: 'the authorization code could not be checked; try again', retryAfter: 5 };
+    }
+  }
+
   async function guardToken(c: Context): Promise<Refusal | null> {
     const parsed = await parseProviderForm(c.req.raw);
     if ('passThrough' in parsed) return null;
     if ('refusal' in parsed) return parsed.refusal;
     const { params } = parsed;
     const grantType = params.get('grant_type');
+    if (grantType === 'authorization_code') {
+      const early = requestClients(c.req.raw, params);
+      if (!('status' in early)) {
+        const stale = await refuseStaleMcpCode(params.get('code'), early.effective);
+        if (stale) return stale;
+      }
+    }
     if (grantType !== 'refresh_token' && !params.has('resource')) return null;
     const clients = requestClients(c.req.raw, params);
     if ('status' in clients) return clients;
