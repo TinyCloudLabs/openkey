@@ -21,6 +21,7 @@ import {
   APP_KEY_ABILITIES,
   DECRYPT_DEFAULT_KEY_STATEMENT,
   DELETE_REFUSED_TEMPLATE,
+  DELEGATION_LIST_STATEMENT,
   LITERAL_TRUNCATE_CHARS,
   NAMED_KEY_STATEMENTS,
   OWN_KEY_PREFIX_STATEMENTS,
@@ -1328,9 +1329,7 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
   // are derived from the signed resource structure, not caller-supplied copy.
   if (
     spaceName === "account" &&
-    (grant.family === "bootstrap-kv" ||
-      grant.family === "bootstrap-sql" ||
-      grant.family === "bootstrap-delegation")
+    (grant.family === "bootstrap-kv" || grant.family === "bootstrap-sql")
   ) {
     return {
       primaryText: "Manage your TinyCloud account",
@@ -1519,10 +1518,7 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
       );
     if (!allActionsRecognized) return fallbackStatement(grant);
     return {
-      primaryText:
-        spaceName === "account"
-          ? "Manage your TinyCloud account"
-          : "View connected access and sharing",
+      primaryText: DELEGATION_LIST_STATEMENT,
       service,
       resource,
     };
