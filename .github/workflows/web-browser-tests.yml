@@ -88,12 +88,21 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('bun.lock') }}
 
+      # `--with-deps` runs apt. A runner's Azure Ubuntu mirror sometimes stalls, and apt then waits for
+      # many minutes, so apt gets short timeouts and retries, and the install itself is bounded and
+      # retried.
       - name: Install Playwright browsers
         id: playwright-install
         if: steps.relevance.outputs.relevant == 'true'
         timeout-minutes: 12
         working-directory: apps/web
-        run: bunx playwright install --with-deps chromium webkit
+        run: |
+          printf 'Acquire::Retries "3";\nAcquire::http::Timeout "20";\nAcquire::https::Timeout "20";\n' | sudo tee /etc/apt/apt.conf.d/99-ci-timeouts > /dev/null
+          for attempt in 1 2 3; do
+            timeout 240 bunx playwright install --with-deps chromium webkit && exit 0
+            echo "Playwright install attempt $attempt failed or timed out" >&2
+          done
+          exit 1
 
       - name: Save Playwright browsers
         if: steps.playwright-install.conclusion == 'success' && steps.playwright-cache.outputs.cache-hit != 'true'
