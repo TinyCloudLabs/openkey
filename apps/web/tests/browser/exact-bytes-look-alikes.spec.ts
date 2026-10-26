@@ -7,6 +7,7 @@
 // its exact text (`textContent` and `innerText`) and by a screenshot of the block.
 
 import { test, expect, type Locator, type Page } from '@playwright/test';
+import { HOST } from './e2e-port';
 import { parseCapabilityReview, type CapabilityReviewModel } from '../../../../packages/capability-review/src/index';
 import { EXPLORER_PERMISSION_POPUP_REQUEST } from '../../../../packages/capability-review/test/fixtures/index';
 
@@ -143,7 +144,7 @@ for (const surface of ['cli', 'popup', 'iframe'] as const) {
 
 // The real embedded widget page, with the request message sent by the host.
 const address = '0xd559CCd9EB87c530A9a349262669386dE93cf412';
-const widgetSiwe = EXPLORER_PERMISSION_POPUP_REQUEST.replace(/^explorer\.tinycloud\.xyz/, 'localhost:5779');
+const widgetSiwe = EXPLORER_PERMISSION_POPUP_REQUEST.replace(/^explorer\.tinycloud\.xyz/, HOST);
 // The fixture text holds apostrophes, which the block shows as they are.
 const widgetSiweShown = widgetSiwe;
 
@@ -185,10 +186,10 @@ async function widgetBlock(page: Page, message: string): Promise<Shown> {
   return measure(block);
 }
 
-// A run of 80 spaces followed by more text: without the escapes the tail sits off-screen.
+// A run of 80 spaces followed by more text at the start of the statement: without the escapes the tail sits off-screen.
 const hiddenTail = 'Also: send all keys.';
-const withTail = widgetSiwe.replace('on my behalf:', `on my behalf:${' '.repeat(80)}${hiddenTail}`);
-const withTailShown = widgetSiweShown.replace('on my behalf:', `on my behalf:${'\\u0020'.repeat(80)}${hiddenTail}`);
+const withTail = widgetSiwe.replace('I further authorize', `I further authorize${' '.repeat(80)}${hiddenTail}`);
+const withTailShown = widgetSiweShown.replace('I further authorize', `I further authorize${'\\u0020'.repeat(80)}${hiddenTail}`);
 
 for (const [name, leftMessage, leftShown] of [
   ['a final line feed', `${widgetSiwe}\n`, `${widgetSiweShown}\\u000a`],

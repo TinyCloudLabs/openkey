@@ -54,7 +54,7 @@ async function exactMessage(page: Page, sessionSiwe: string): Promise<Shown> {
   const left = await block.screenshot();
   await block.evaluate((element) => { element.scrollLeft = element.scrollWidth; });
   const right = await block.screenshot();
-  return { text: await block.textContent(), innerText: await block.innerText(), picture: Buffer.concat([left, right]), elements: await block.locator('script, b, img, *').count() };
+  return { text: await block.textContent(), innerText: await block.innerText(), picture: Buffer.concat([left, right]), elements: await block.locator('*').count() };
 }
 
 const statement = 'Chat with your threads.';
