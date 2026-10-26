@@ -12,6 +12,8 @@ import { keysRouter } from './routes/keys';
 import { nostrKeysRouter } from './routes/nostr-keys';
 import { accountRouter } from './routes/account';
 import { oauthAdminRouter } from './routes/oauth-admin';
+import { createResourceIntrospectRouter } from './routes/oauth-resource-introspect';
+import { oauthValidAudiences } from './oauth-config';
 import { createOauthBrandingRouter } from './routes/oauth-branding';
 import { passkeyProxyRouter } from './routes/passkey-proxy';
 import { secretsRouter } from './routes/secrets';
@@ -169,6 +171,20 @@ app.get('/api/auth/providers', (c) =>
 app.post('/api/auth/oauth2/par', (c) => handlePar(c.req.raw, authPrisma));
 app.post('/api/auth/oauth2/tinycloud/renew', (c) => handleNativeRenewOrRevoke(c.req.raw, authPrisma, oauthIssuer, 'renew'));
 app.post('/api/auth/oauth2/tinycloud/revoke', (c) => handleNativeRenewOrRevoke(c.req.raw, authPrisma, oauthIssuer, 'revoke'));
+
+// Token status check for registered resource servers (the hosted MCP server).
+// The provider's own /oauth2/introspect, further down, is untouched.
+app.route('/api/oauth/resource/introspect', createResourceIntrospectRouter({
+  prisma: authPrisma,
+  issuer: oauthIssuer,
+  validAudiences: oauthValidAudiences(process.env.BETTER_AUTH_URL!),
+  // The key set /api/auth/jwks serves, read through the auth handler.
+  getJwks: async () => {
+    const response = await auth.handler(new Request(`${oauthIssuer}/jwks`));
+    if (!response.ok) throw new Error('signing keys unavailable');
+    return (await response.json()) as { keys: import('jose').JWK[] };
+  },
+}));
 app.use('/api/auth/*', createProviderInterceptors({
   database: authPrisma,
   tokens: providerTokenOptions(auth),
