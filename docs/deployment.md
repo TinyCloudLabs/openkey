@@ -226,6 +226,8 @@ and web changes into separate merges.
    docker build -t skgbafa/openkey-api:v1.0.x .
    docker push skgbafa/openkey-api:v1.0.x
    ```
+   The API image includes the built `@openkey/capability-review` workspace
+   package in its runtime stage. Details: TC-2005
 
 2. Deploy and verify pending migrations from a trusted operator machine:
    ```bash
