@@ -16,6 +16,7 @@ describe('hosted MCP OAuth configuration', () => {
     expect(oauthValidAudiences('https://api.openkey.test', 'https://mcp.customer.test/mcp')).toEqual([
       'https://api.openkey.test',
       DEFAULT_TINYCLOUD_MCP_AUDIENCE,
+      'https://mcp.tinycloud.xyz/chatgpt/mcp',
       'https://mcp.customer.test/mcp',
     ]);
   });
