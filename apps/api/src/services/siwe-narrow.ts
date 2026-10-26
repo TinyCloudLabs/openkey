@@ -38,7 +38,7 @@
 // block, ReCap resources appearing under Resources:) is rejected.
 
 import { prepareSession, parseRecapFromSiwe } from '@tinycloud/node-sdk-wasm';
-import { RAW_ENCRYPTION_SPACE, type RecapEntry } from '../routes/delegate-session';
+import { isRawRecapEntry, type RecapEntry } from '../routes/delegate-session';
 
 export interface NarrowResult {
   siwe: string;
@@ -186,7 +186,7 @@ export function narrowSiwePreservingImmutable(input: NarrowInput): NarrowOutcome
   const spaceAbilities: Record<string, Record<string, Record<string, string[]>>> = Object.create(null);
   const rawAbilities: Record<string, string[]> = Object.create(null);
   for (const entry of input.narrowedEntries) {
-    if (entry.space === RAW_ENCRYPTION_SPACE && entry.path.startsWith('urn:tinycloud:encryption:')) {
+    if (isRawRecapEntry(entry)) {
       rawAbilities[entry.path] = [...entry.actions];
       continue;
     }

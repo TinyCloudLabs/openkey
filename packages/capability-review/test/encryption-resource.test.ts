@@ -106,9 +106,9 @@ describe("parseEncryptionResource: accepts", () => {
     expect(parseEncryptionResource(urn("apps/x/"))?.kind).toBe("prefix");
   });
 
-  // Vector 23: owner is not canonical (lowercase) in a key URN -> REJECT.
-  // Enforced at API prepare, not by this shape-only parser.
-  it.skip("23: lowercase owner in a key URN is rejected (canonical EIP-55 owner enforced at API prepare, not in the consent parser)", () => {
+  // Vector 23 specifies a canonical EIP-55 owner; this shape-only parser keeps
+  // the spelling as written. API prepare does not enforce canonical spelling.
+  it.skip("23: lowercase owner in a key URN is rejected by a canonical-owner check (not implemented at API prepare)", () => {
     const lowerOwner =
       "did:pkh:eip155:1:0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed";
     expect(
@@ -118,9 +118,9 @@ describe("parseEncryptionResource: accepts", () => {
     ).toBeNull();
   });
 
-  // Vector 24: bare network with lowercase owner -> normalised to canonical O.
-  // Enforced at API prepare, not by this shape-only parser.
-  it.skip("24: bare network with lowercase owner normalises to canonical owner (canonical EIP-55 owner enforced at API prepare, not in the consent parser)", () => {
+  // Vector 24 specifies canonical owner output; this shape-only parser keeps
+  // the spelling as written. API prepare does not normalise the owner.
+  it.skip("24: bare network with lowercase owner normalises to canonical owner (not implemented at API prepare)", () => {
     const lowerOwner =
       "did:pkh:eip155:1:0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed";
     expect(

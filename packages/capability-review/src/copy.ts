@@ -96,7 +96,7 @@ export const NAMED_KEY_STATEMENTS: Record<
 
 export const OWN_KEY_PREFIX_STATEMENTS = {
   create: "Create encryption keys of your own in the folder `{path}`",
-  decrypt: "Decrypt data locked with your own keys in the folder `{path}`",
+  decrypt: "Decrypt data locked with your own keys in the folder `{path}`, including keys created later",
 } as const;
 
 /**
