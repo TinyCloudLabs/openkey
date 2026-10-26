@@ -32,19 +32,21 @@ function timeMs(value: unknown): number {
  * - Not an expiry change: left alone.
  * - Expiry later than `createdAt + cap`: set to `createdAt + cap`. For a session already older
  *   than the cap that is a time in the past, so the session ends now and is not extended.
- * - `createdAt` unknown or the new expiry unreadable: the update is refused (the cap cannot be
- *   applied, so nothing is extended) and a warning is logged.
+ * - `createdAt` unknown or the new expiry unreadable: the cap cannot be applied, so the session
+ *   is ended (its expiry is set to now) and a warning is logged. The update is not refused:
+ *   a refused update makes `/get-session` answer 401 and `requireSession` routes answer 500
+ *   while the row stays, and an ended session is the same result for every caller.
  */
 export async function capSessionRefresh(
   data: { expiresAt?: unknown },
   context: SessionRefreshContext | null,
-): Promise<{ data: { expiresAt: Date } } | false | undefined> {
+): Promise<{ data: { expiresAt: Date } } | undefined> {
   if (data.expiresAt === undefined) return undefined;
   const requested = timeMs(data.expiresAt);
   const createdAt = timeMs(context?.context?.session?.session?.createdAt);
   if (!Number.isFinite(requested) || !Number.isFinite(createdAt)) {
     log('warn', 'session_cap_unapplied');
-    return false;
+    return { data: { expiresAt: new Date() } };
   }
   const latest = createdAt + CAP_MS;
   return requested > latest ? { data: { expiresAt: new Date(latest) } } : undefined;

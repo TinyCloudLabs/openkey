@@ -45,6 +45,17 @@ describe('the absolute cap on web sessions', () => {
     expect(await capSessionRefresh({ expiresAt: NOW + 7 * DAY }, { context: { session: { session: { createdAt: NOW - 29 * DAY } } } })).toEqual({ data: { expiresAt: new Date(NOW + 1 * DAY) } });
   });
 
+  /** The result must set the expiry to the moment of the call: the session ends, the update is not refused. */
+  async function endsNow(refresh: ReturnType<typeof capSessionRefresh>) {
+    const before = Date.now();
+    const result = await refresh;
+    const after = Date.now();
+    expect(result).toBeDefined();
+    const endedAt = result!.data.expiresAt.getTime();
+    expect(endedAt).toBeGreaterThanOrEqual(before);
+    expect(endedAt).toBeLessThanOrEqual(after);
+  }
+
   test.each([
     ['no context', null],
     ['no session in the context', { context: {} }],
@@ -53,13 +64,13 @@ describe('the absolute cap on web sessions', () => {
     ['a null createdAt', { context: { session: { session: { createdAt: null } } } }],
     ['an unreadable createdAt', { context: { session: { session: { createdAt: 'not a date' } } } }],
     ['a boolean createdAt', { context: { session: { session: { createdAt: true } } } }],
-  ] as Array<[string, never]>)('when the creation time is unknown (%s) the refresh is refused, not applied', async (_name, context) => {
-    expect(await capSessionRefresh(refreshTo(7), context)).toBe(false);
+  ] as Array<[string, never]>)('when the creation time is unknown (%s) the session is ended, not extended and not refused', async (_name, context) => {
+    await endsNow(capSessionRefresh(refreshTo(7), context));
   });
 
-  test('an unreadable new expiry is refused', async () => {
-    expect(await capSessionRefresh({ expiresAt: 'soon' }, during(2))).toBe(false);
-    expect(await capSessionRefresh({ expiresAt: null }, during(2))).toBe(false);
-    expect(await capSessionRefresh({ expiresAt: new Date(Number.NaN) }, during(2))).toBe(false);
+  test('an unreadable new expiry ends the session', async () => {
+    await endsNow(capSessionRefresh({ expiresAt: 'soon' }, during(2)));
+    await endsNow(capSessionRefresh({ expiresAt: null }, during(2)));
+    await endsNow(capSessionRefresh({ expiresAt: new Date(Number.NaN) }, during(2)));
   });
 });

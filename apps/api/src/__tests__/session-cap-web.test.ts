@@ -171,6 +171,50 @@ if (process.env.OPENKEY_SESSION_CAP_TEST_CHILD !== '1') {
     }, 60_000);
   });
 
+  describe('a route that requires a session', () => {
+    test('a 29-day-old session used on GET /api/account is extended only to 30 days after it was created', async () => {
+      const { id, cookie, createdAt } = await session('route-29', 29, 3);
+      setSystemTime(NOW);
+      const response = await app.fetch(new Request('https://api.openkey.test/api/account', { headers: { cookie } }));
+      expect(response.status).toBe(200);
+      expect(response.headers.get('set-cookie')).toBeNull();
+      expect(await expiry(id)).toBe(createdAt.getTime() + 30 * DAY);
+      expect(await expiry(id)).toBe(NOW.getTime() + 1 * DAY);
+    });
+
+    test('a young session used there renews for 7 days', async () => {
+      const { id, cookie } = await session('route-young', 2, 4);
+      setSystemTime(NOW);
+      const response = await app.fetch(new Request('https://api.openkey.test/api/account', { headers: { cookie } }));
+      expect(response.status).toBe(200);
+      expect(await expiry(id)).toBe(NOW.getTime() + 7 * DAY);
+    });
+  });
+
+  describe('when the cap cannot be applied', () => {
+    test('the session is ended and nothing fails: an update outside a request has no session to read the creation time from', async () => {
+      const { id, cookie } = await session('unapplied', 2, 4);
+      setSystemTime(NOW);
+      const context = await authModule.auth.$context;
+      const token = (await prisma.session.findUnique({ where: { id } }))!.token;
+      const updated = await context.internalAdapter.updateSession(token, { expiresAt: new Date(NOW.getTime() + 7 * DAY), updatedAt: NOW });
+      expect(updated).not.toBeNull();
+      expect(await expiry(id)).toBe(NOW.getTime());
+      // The next use finds the session expired: a plain "not signed in", not an error.
+      setSystemTime(new Date(NOW.getTime() + 1000));
+      const result = await use(cookie);
+      expect(result.status).toBe(200);
+      expect(result.body).toBeNull();
+      const route = await app.fetch(new Request('https://api.openkey.test/api/account', { headers: { cookie } }));
+      expect(route.status).toBe(401);
+    });
+  });
+
+  test('the session cookie cache stays off, because the cap is applied on the database refresh only', () => {
+    const session = authModule.auth.options.session as { cookieCache?: { enabled?: boolean } } | undefined;
+    expect(session?.cookieCache?.enabled).not.toBe(true);
+  });
+
   describe('signing in again', () => {
     test('creates a session with a new creation time, 7 days long, and its own 30 days', async () => {
       const context = await authModule.auth.$context;
