@@ -13,7 +13,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
 import { compile } from 'svelte/compiler';
-import { defaultSelection, parseCapabilityReview } from '../../../../packages/capability-review/src/index';
+import { actionId, defaultSelection, parseCapabilityReview } from '../../../../packages/capability-review/src/index';
+import { prepareSession, parseRecapFromSiwe } from '@tinycloud/node-sdk-wasm';
 
 const win = new Window({ url: 'http://openkey.test/' });
 Object.assign(globalThis, {
@@ -167,7 +168,7 @@ function selectedActionIdsOf(body: string): string[] {
 }
 
 /** Open the handoff page for a request, claim it, and press Preview; returns what the page sent. */
-async function previewRequest(siwe: string): Promise<{ previewIds: string[]; status: string }> {
+async function previewRequest(siwe: string, successful = false): Promise<{ previewIds: string[]; status: string; approveVisible: boolean; summary: string; fullGrantCollapsed: boolean }> {
   const claim = {
     transportVersion: 2,
     request: { protocolVersion: 1, siwe, jwk: { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' }, host: 'https://node.tinycloud.xyz', sessionDid: 'did:key:z6Mk' },
@@ -186,7 +187,16 @@ async function previewRequest(siwe: string): Promise<{ previewIds: string[]; sta
     if (url.endsWith('/authorize-sign-preview')) {
       previewIds = selectedActionIdsOf(String(init?.body));
       status = 'previewed';
-      return json({ error: 'stop here' }, 400);
+      if (!successful) return json({ error: 'stop here' }, 400);
+      const entries = parseRecapFromSiwe(siwe) as Array<{ service: string; space: string; path: string; actions: string[] }>;
+      const permissions = entries.map((entry) => {
+        const service = entry.service.startsWith('tinycloud.') ? entry.service : `tinycloud.${entry.service}`;
+        return {
+          service, space: entry.space, path: entry.path,
+          actions: entry.actions.filter((ability) => previewIds.includes(actionId(service, entry.space, entry.path, ability))),
+        };
+      }).filter((entry) => entry.actions.length > 0);
+      return json({ signedMessage: siwe, previewApprovalToken: 'preview-token', selectedActionKeys: previewIds, permissions });
     }
     return json({ error: `unexpected ${url}` }, 500);
   }) as unknown as typeof fetch;
@@ -197,13 +207,22 @@ async function previewRequest(siwe: string): Promise<{ previewIds: string[]; sta
     const button = () => [...target.querySelectorAll('button')].find((b) => b.textContent?.includes('Preview signing message')) as HTMLButtonElement | undefined;
     await until(() => button() !== undefined && !button()!.disabled, 'the Preview button');
     button()!.click();
-    await until(() => status === 'previewed', 'the preview request');
+    await until(() => {
+      if (successful && target.querySelector('[role="alert"]')) throw new Error(`preview rejected: ${target.querySelector('[role="alert"]')?.textContent}`);
+      return status === 'previewed' && (!successful || [...target.querySelectorAll('button')].some((b) => b.textContent === 'Approve'));
+    }, 'the preview response');
+    return {
+      previewIds,
+      status,
+      approveVisible: [...target.querySelectorAll('button')].some((b) => b.textContent === 'Approve' && !b.disabled),
+      summary: target.textContent ?? '',
+      fullGrantCollapsed: [...target.querySelectorAll('details')].filter((details) => details.querySelector('summary')?.textContent === 'Full grant').every((details) => !details.open),
+    };
   } finally {
     unmount(app);
     target.remove();
     globalThis.fetch = realFetch;
   }
-  return { previewIds, status };
 }
 
 const SERVER_DECRYPT = `tinycloud.encryption\0encryption\0${NETWORK}\0tinycloud.encryption/decrypt`;
@@ -228,4 +247,27 @@ describe('the prepared CLI handoff page sends the ids the server holds', () => {
     const { previewIds } = await previewRequest(siwe);
     expect([...previewIds].sort()).toEqual([...review].sort());
   });
+});
+
+test('CLI --keys qa consent names the folder and unlocks Approve after a valid preview', async () => {
+  const folder = `${NETWORK}/qa/`;
+  const now = new Date();
+  const siwe = prepareSession({
+    address: ADDR, chainId: 1, domain: 'cli.tinycloud.xyz', spaceId: SPACE,
+    jwk: { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' },
+    issuedAt: now.toISOString(), expirationTime: new Date(now.getTime() + 3_600_000).toISOString(),
+    abilities: { kv: { '': ['tinycloud.kv/get'] }, capabilities: { '': ['tinycloud.capabilities/read'] } },
+    rawAbilities: {
+      [NETWORK]: ['tinycloud.encryption/decrypt', 'tinycloud.encryption/network.create'],
+      [folder]: ['tinycloud.encryption/key.create', 'tinycloud.encryption/decrypt'],
+    },
+  }).siwe;
+  const rendered = await previewRequest(siwe, true);
+  expect(rendered.previewIds).toContain(`tinycloud.encryption\0encryption\0${folder}\0tinycloud.encryption/key.create`);
+  expect(rendered.previewIds).toContain(`tinycloud.encryption\0encryption\0${folder}\0tinycloud.encryption/decrypt`);
+  expect(rendered.approveVisible).toBe(true);
+  expect(rendered.summary).toContain('Your own encryption keys in qa/');
+  expect(rendered.summary).toContain('Create encryption keys of your own in the folder `qa/`');
+  expect(rendered.summary).toContain('Decrypt data locked with your own keys in the folder `qa/`');
+  expect(rendered.fullGrantCollapsed).toBe(true);
 });

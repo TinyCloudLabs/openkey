@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from "bun:test";
 
-import { DECRYPT_DEFAULT_KEY_STATEMENT } from "../src/copy.js";
+import { DECRYPT_DEFAULT_KEY_STATEMENT, renderLiteral } from "../src/copy.js";
 import {
   buildStatement,
   buildStatements,
@@ -13,8 +13,8 @@ import {
 
 const OWNER = "did:pkh:eip155:1:0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed";
 const NETWORK = `urn:tinycloud:encryption:${OWNER}:default`;
-const KEY = `${NETWORK}/apps/tinychat/x`;
-const PREFIX = `${NETWORK}/apps/tinychat/`;
+const KEY = `${NETWORK}/qa/x`;
+const PREFIX = `${NETWORK}/qa/`;
 
 const ABILITY = {
   create: "tinycloud.encryption/key.create",
@@ -50,28 +50,28 @@ function namedGrant(space: string, abilities: string[]): CapabilityGrant {
 }
 
 const KEY_SENTENCE = {
-  create: "Create the encryption key apps/tinychat/x in your account's default network.",
+  create: "Create the encryption key qa/x in your account's default network.",
   block:
-    "Block the key apps/tinychat/x in your account's default network, so nobody, you included, can decrypt with it until it is unblocked. You can unblock it later.",
+    "Block the key qa/x in your account's default network, so nobody, you included, can decrypt with it until it is unblocked. You can unblock it later.",
   unblock:
-    "Unblock the key apps/tinychat/x in your account's default network, so it can decrypt again, even if you blocked it yourself.",
+    "Unblock the key qa/x in your account's default network, so it can decrypt again, even if you blocked it yourself.",
   decrypt:
-    "Decrypt anything encrypted with your key apps/tinychat/x in your account's default network, whenever this app gets hold of the encrypted copy, until this access expires.",
+    "Decrypt anything encrypted with your key qa/x in your account's default network, whenever this app gets hold of the encrypted copy, until this access expires.",
   delete:
-    "Delete the key apps/tinychat/x: only you can do this, with your wallet, as a separate step. This request is refused.",
+    "Delete the key qa/x: only you can do this, with your wallet, as a separate step. This request is refused.",
 } as const;
 
 const PREFIX_SENTENCE = {
   create:
-    "Create encryption keys under apps/tinychat/ in your account's default network.",
+    "Create encryption keys of your own in the folder `qa/`",
   block:
-    "Block every key under apps/tinychat/ in your account's default network, so nobody, you included, can decrypt with any of them until they are unblocked. You can unblock them later.",
+    "Block every key under qa/ in your account's default network, so nobody, you included, can decrypt with any of them until they are unblocked. You can unblock them later.",
   unblock:
-    "Unblock every key under apps/tinychat/ in your account's default network, so they can decrypt again, even if you blocked them yourself.",
+    "Unblock every key under qa/ in your account's default network, so they can decrypt again, even if you blocked them yourself.",
   decrypt:
-    "Decrypt anything encrypted with any of your keys under apps/tinychat/ in your account's default network, including keys created later, whenever this app gets hold of the encrypted copy, until this access expires.",
+    "Decrypt data locked with your own keys in the folder `qa/`",
   delete:
-    "Delete the key apps/tinychat/: only you can do this, with your wallet, as a separate step. This request is refused.",
+    "Delete the key qa/: only you can do this, with your wallet, as a separate step. This request is refused.",
 } as const;
 
 describe("named-key exact resources: one sentence per verb", () => {
@@ -128,8 +128,8 @@ describe("named-key mixed verbs split into one row per action", () => {
   });
 
   it("keeps a prefix distinct from the same name as an exact key", () => {
-    const exact = namedGrant(`${NETWORK}/apps/tinychat`, [ABILITY.decrypt]);
-    const prefix = namedGrant(`${NETWORK}/apps/tinychat/`, [ABILITY.decrypt]);
+    const exact = namedGrant(`${NETWORK}/qa`, [ABILITY.decrypt]);
+    const prefix = namedGrant(`${NETWORK}/qa/`, [ABILITY.decrypt]);
     expect(buildStatement(exact).primaryText).not.toBe(
       buildStatement(prefix).primaryText,
     );
@@ -298,6 +298,16 @@ describe("literal resource text in refusals is escaped and capped", () => {
     expect(row.primaryText).toContain("apps/\\u005Cu202ex//");
     expect(row.primaryText).not.toContain("\\u202e");
   });
+});
+
+it("escapes markup and controls while capping raw consent text", () => {
+  const text = `<script>${"\u202e"}\n${"x".repeat(300)}`;
+  const abbreviated = renderLiteral(text, 120);
+  expect(abbreviated).toStartWith("\\u003cscript\\u003e\\u202e\\u000a");
+  expect(abbreviated.length).toBe(121);
+  expect(abbreviated.endsWith("…")).toBe(true);
+  expect(abbreviated).not.toContain("<script>");
+  expect(renderLiteral(text)).toContain(`${"x".repeat(300)}`);
 });
 
 describe("failing encryption URNs: every displayed string is printable ASCII", () => {

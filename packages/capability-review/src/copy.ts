@@ -72,13 +72,11 @@ export const NAMED_KEY_STATEMENTS: Record<
 > = {
   create: {
     key: "Create the encryption key {path} in your account's {network} network.",
-    prefix:
-      "Create encryption keys under {path} in your account's {network} network.",
+    prefix: "Create encryption keys under {path} in your account's {network} network.",
   },
   decrypt: {
     key: "Decrypt anything encrypted with your key {path} in your account's {network} network, whenever this app gets hold of the encrypted copy, until this access expires.",
-    prefix:
-      "Decrypt anything encrypted with any of your keys under {path} in your account's {network} network, including keys created later, whenever this app gets hold of the encrypted copy, until this access expires.",
+    prefix: "Decrypt anything encrypted with any of your keys under {path} in your account's {network} network, including keys created later, whenever this app gets hold of the encrypted copy, until this access expires.",
   },
   block: {
     key: "Block the key {path} in your account's {network} network, so nobody, you included, can decrypt with it until it is unblocked. You can unblock it later.",
@@ -96,13 +94,15 @@ export const NAMED_KEY_STATEMENTS: Record<
   },
 };
 
+export const OWN_KEY_PREFIX_STATEMENTS = {
+  create: "Create encryption keys of your own in the folder `{path}`",
+  decrypt: "Decrypt data locked with your own keys in the folder `{path}`",
+} as const;
+
 /**
- * Escape every UTF-16 code unit outside printable ASCII (0x20-0x7E) and every
- * backslash as `\uXXXX`, so escape-looking text in a resource stays visible.
- * Cap the output at `maxChars` characters, ending with `…`.
- * Literal text from a resource is untrusted: control, bidi-override,
- * zero-width, newline and non-ASCII characters render visibly instead of
- * altering the sentence. Grammar-valid text is ASCII and is unchanged.
+ * Escape controls, markup and non-ASCII characters as `\uXXXX`, so
+ * resource text cannot alter the displayed consent sentence. Cap raw text
+ * at `maxChars` output characters, ending with `…`.
  */
 export function renderLiteral(text: string, maxChars?: number): string {
   let out = "";
@@ -111,9 +111,10 @@ export function renderLiteral(text: string, maxChars?: number): string {
     const piece =
       code === 0x5c
         ? "\\u005C"
-        : code >= 0x20 && code <= 0x7e
-          ? text.charAt(i)
-          : `\\u${code.toString(16).padStart(4, "0")}`;
+        : code === 0x3c || code === 0x3e || code === 0x26 ||
+          code === 0x22 || code === 0x27 || code < 0x20 || code > 0x7e
+          ? `\\u${code.toString(16).padStart(4, "0")}`
+          : text.charAt(i);
     if (maxChars !== undefined && out.length + piece.length > maxChars) {
       return `${out}…`;
     }
@@ -145,6 +146,8 @@ export function renderNamedKeySentence(
     /\{(path|network)\}/g,
     (_match, name: string) => (name === "path" ? values.path : values.network),
   );
+}
+
 /** The abilities an app key grant can name, in the order their rows are shown. */
 export const APP_KEY_ABILITIES = [
   "key.create",

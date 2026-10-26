@@ -1066,6 +1066,78 @@ describe('prepared handoff signing over HTTP', () => {
   });
 });
 
+test('CLI --keys qa claims, prepares and previews a narrowed ReCap with both raw encryption rows', async () => {
+  const service = new PreparedHandoffService(new MemoryPreparedHandoffStore());
+  setHandoffService(service);
+  const { createPreparedHandoffRouter } = await import('../routes/prepared-handoffs?authorize-sign-routes-isolated' as string);
+  const handoffs = createPreparedHandoffRouter(service);
+  const space = `tinycloud:pkh:eip155:1:${address}:default`;
+  const secrets = `tinycloud:pkh:eip155:1:${address}:secrets`;
+  const bare = `urn:tinycloud:encryption:did:pkh:eip155:1:${address}:default`;
+  const folder = `${bare}/qa/`;
+  const now = new Date();
+  const primary = {
+    kv: { '': ['tinycloud.kv/put', 'tinycloud.kv/get', 'tinycloud.kv/del', 'tinycloud.kv/list', 'tinycloud.kv/metadata'] },
+    sql: { '': ['tinycloud.sql/read', 'tinycloud.sql/write', 'tinycloud.sql/schema', 'tinycloud.sql/admin', 'tinycloud.sql/export'] },
+    duckdb: { '': ['tinycloud.duckdb/read', 'tinycloud.duckdb/write', 'tinycloud.duckdb/admin', 'tinycloud.duckdb/describe', 'tinycloud.duckdb/export', 'tinycloud.duckdb/import', 'tinycloud.duckdb/execute'] },
+    capabilities: { '': ['tinycloud.capabilities/read'] },
+    hooks: { '': ['tinycloud.hooks/subscribe', 'tinycloud.hooks/register', 'tinycloud.hooks/list', 'tinycloud.hooks/unregister'] },
+  };
+  const siwe = prepareSession({
+    address, chainId: 1, domain: 'cli.tinycloud.xyz', spaceId: space, jwk,
+    issuedAt: now.toISOString(), expirationTime: new Date(now.getTime() + 3_600_000).toISOString(),
+    abilities: primary,
+    spaceAbilities: { [space]: primary, [secrets]: { kv: { 'vault/secrets/': ['tinycloud.kv/get', 'tinycloud.kv/put', 'tinycloud.kv/del', 'tinycloud.kv/list', 'tinycloud.kv/metadata'] } } },
+    rawAbilities: { [bare]: ['tinycloud.encryption/decrypt', 'tinycloud.encryption/network.create'], [folder]: ['tinycloud.encryption/key.create', 'tinycloud.encryption/decrypt'] },
+  }).siwe;
+  const ticket = Buffer.alloc(32, 10).toString('base64url');
+  const claim = await handoffs.request('/claim', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      transportVersion: 2,
+      request: { protocolVersion: 1, siwe, jwk, host: 'https://node.tinycloud.xyz', keyId: keyRecord.id, sessionDid: 'did:key:cli-session' },
+      delivery: { handoffId: ticket, state: Buffer.alloc(32, 11).toString('base64url'), cancelSecret: Buffer.alloc(32, 12).toString('base64url') },
+    }),
+  });
+  expect(claim.status, await claim.clone().text()).toBe(201);
+  const prepare = await router.request('/authorize-sign-prepare', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ticket, keyId: keyRecord.id, siwe, jwk, host: 'https://node.tinycloud.xyz' }),
+  });
+  expect(prepare.status, await prepare.clone().text()).toBe(200);
+  const body = await prepare.json() as { authorizationContextToken: string; allowedActionIds: string[] };
+  const selectedActionIds = body.allowedActionIds.filter((id) => !id.includes('sql/') && !id.includes('duckdb/') && !id.includes('hooks/'));
+  expect(selectedActionIds.length).toBeLessThan(body.allowedActionIds.length);
+  const preview = await router.request('/authorize-sign-preview', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ticket, authorizationContextToken: body.authorizationContextToken, selectedActionIds }),
+  });
+  expect(preview.status, await preview.clone().text()).toBe(200);
+  const signed = await preview.json() as { signedMessage: string; previewApprovalToken: string };
+  expect(signed.signedMessage).toContain('urn:recap:');
+  expect(signed.previewApprovalToken).toBeTruthy();
+  const entries = (await import('@tinycloud/node-sdk-wasm')).parseRecapFromSiwe(signed.signedMessage) as Array<{ path: string; actions: string[] }>;
+  expect(entries.find((entry) => entry.path === bare)?.actions).toEqual(['tinycloud.encryption/decrypt', 'tinycloud.encryption/network.create']);
+  expect(entries.find((entry) => entry.path === folder)?.actions).toEqual(['tinycloud.encryption/decrypt', 'tinycloud.encryption/key.create']);
+});
+
+test('authorize-sign-prepare refuses key.delete on a named CLI resource', async () => {
+  const space = `tinycloud:pkh:eip155:1:${address}:default`;
+  const now = new Date();
+  const siwe = prepareSession({
+    address, chainId: 1, domain: 'openkey.so', spaceId: space, jwk,
+    issuedAt: now.toISOString(), expirationTime: new Date(now.getTime() + 3_600_000).toISOString(),
+    abilities: { kv: { '': ['tinycloud.kv/get'] } },
+    rawAbilities: { [`urn:tinycloud:encryption:did:pkh:eip155:1:${address}:default/qa/`]: ['tinycloud.encryption/key.delete'] },
+  }).siwe;
+  const response = await router.request('/authorize-sign-prepare', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ keyId: keyRecord.id, siwe, jwk, host: 'https://node.tinycloud.xyz', requestOrigin: 'https://openkey.so' }),
+  });
+  expect(response.status).toBe(403);
+  expect((await response.json() as { code: string }).code).toBe('key_delete_not_grantable');
+});
+
 describe('POST /authorize-sign-prepare SIWE origin guard (TC-1486)', () => {
   async function prepare(siwe: string, requestOrigin?: string) {
     const res = await router.request('/authorize-sign-prepare', {

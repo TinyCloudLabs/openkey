@@ -23,6 +23,7 @@ import {
   DELETE_REFUSED_TEMPLATE,
   LITERAL_TRUNCATE_CHARS,
   NAMED_KEY_STATEMENTS,
+  OWN_KEY_PREFIX_STATEMENTS,
   appKeyStatementText,
   renderLiteral,
   renderNamedKeySentence,
@@ -64,7 +65,6 @@ export interface StatementEntry {
    * space) shown alongside the service. Rendered as-is.
    */
   resource: string;
-  /**
   /** Set only on key.delete rows; the review does not offer these to approve. */
   neverApprovable?: boolean;
   /** True when text between backticks in `primaryText` is shown in monospace. */
@@ -612,7 +612,10 @@ function buildNamedKeyStatement(
   if (parsed.kind === "network" || verb === undefined) {
     return fallbackStatement(grant);
   }
-  const template = NAMED_KEY_STATEMENTS[verb][parsed.kind];
+  const template = parsed.kind === "prefix" && parsed.network === "default" && grant.ownedBySelf &&
+    (verb === "create" || verb === "decrypt")
+    ? OWN_KEY_PREFIX_STATEMENTS[verb]
+    : NAMED_KEY_STATEMENTS[verb][parsed.kind];
   if (template === null) return fallbackStatement(grant);
   return {
     primaryText: renderNamedKeySentence(
@@ -762,7 +765,15 @@ function appKeyStatements(grant: CapabilityGrant): StatementEntry[] | null {
   const resource = resourceOf(grant);
   if (!isAppsKeyResource(resource)) return null;
   const parsed = parseKeyResource(resource);
-  if (!parsed) return [fallbackStatement(grant)];
+  if (!parsed) {
+    const view = canonicalEncryptionUrn(grant);
+    return grant.actions.map((action) => {
+      const single = { ...grant, actions: [action] };
+      return isKeyDeleteAction(action)
+        ? buildKeyDeleteStatement(single, view)
+        : fallbackStatement(single);
+    });
+  }
   const target = {
     path: parsed.isPrefix ? `${parsed.keyPath}/` : parsed.keyPath,
     isPrefix: parsed.isPrefix,
@@ -780,6 +791,7 @@ function appKeyStatements(grant: CapabilityGrant): StatementEntry[] | null {
       service: grant.service,
       resource,
       codeSpans: true,
+      neverApprovable: name === "key.delete",
       severity: name === "decrypt" ? "sensitive" : "attention",
     }),
   );
