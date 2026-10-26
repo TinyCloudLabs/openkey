@@ -4,7 +4,7 @@ name: Backfill Session Expiry
 # `apply` backs up and caps the expiry of sessions that are more than 30 days past
 # their creation; `rollback` puts the backed-up expiry back. Both run in one
 # transaction and print counts only (no session ids, tokens or connection strings).
-# The backup table is left in place by both; remove it by hand when it is not needed.
+# The backup table (ops_backup.session_expires_20261026) is left in place by both; remove it by hand when it is not needed.
 
 on:
   workflow_dispatch:

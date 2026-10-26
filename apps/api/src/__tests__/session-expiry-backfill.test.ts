@@ -22,11 +22,13 @@ interface SqlClient {
 interface BackfillModule {
   BACKUP_TABLE: string;
   BackfillRefused: new (message: string) => Error;
-  SQL: { backupExists: string; cap: string };
+  BackfillMismatch: new (capped: number, backedUp: number) => Error;
+  SQL: { backupExists: string; createBackup: string; cap: string };
   parseMode(value: string | undefined): 'apply' | 'rollback';
+  describeFailure(error: unknown): { exitCode: number; line: string };
   runBackfill(client: SqlClient, mode: 'apply' | 'rollback', log: (line: string) => void): Promise<Record<string, unknown>>;
 }
-const { BACKUP_TABLE, BackfillRefused, SQL, parseMode, runBackfill } = (await import(pathToFileURL(script).href)) as BackfillModule;
+const { BACKUP_TABLE, BackfillRefused, BackfillMismatch, SQL, parseMode, describeFailure, runBackfill } = (await import(pathToFileURL(script).href)) as BackfillModule;
 
 const migrationSql = (async () => {
   const names = (await readdir(join(root, 'packages/db/prisma/migrations'), { withFileTypes: true }))
@@ -82,6 +84,13 @@ async function backupTable(db: PGlite): Promise<Snapshot | null> {
   if (!present.rows[0]!.present) return null;
   const { rows } = await db.query<{ id: string; expiresAt: string }>(`SELECT id, "expiresAt"::text AS "expiresAt" FROM ${BACKUP_TABLE} ORDER BY id`);
   return Object.fromEntries(rows.map((row) => [row.id, row.expiresAt]));
+}
+
+/** Whether the schema that holds the backup exists, and how many backup-like tables the application schema has. */
+async function schemaState(db: PGlite): Promise<{ backupSchema: boolean; applicationTables: number }> {
+  const schema = await db.query<{ n: number }>(`SELECT count(*)::int AS n FROM information_schema.schemata WHERE schema_name = 'ops_backup'`);
+  const tables = await db.query<{ n: number }>(`SELECT count(*)::int AS n FROM information_schema.tables WHERE table_schema = 'public' AND table_name LIKE 'session_expires%'`);
+  return { backupSchema: schema.rows[0]!.n === 1, applicationTables: tables.rows[0]!.n };
 }
 
 /** A SQL client over PGlite; `wrap` can alter what a transaction returns, to inject a fault. */
@@ -159,7 +168,7 @@ describe('apply', () => {
       execute: async (sql) => (await transaction.execute(sql)) + (sql === SQL.cap ? 1 : 0),
     }));
 
-    await expect(runBackfill(faulty, 'apply', () => {})).rejects.toThrow(/rolled back/);
+    await expect(runBackfill(faulty, 'apply', () => {})).rejects.toBeInstanceOf(BackfillMismatch);
     expect(await backupTable(db)).toBeNull();
     expect(await snapshot(db)).toEqual(before);
   }, 60_000);
@@ -173,6 +182,63 @@ describe('apply', () => {
     await expect(runBackfill(faulty, 'apply', () => {})).rejects.toThrow();
     expect(await runBackfill(clientFor(db), 'apply', () => {})).toEqual({ mode: 'apply', backedUp: 3, capped: 3 });
   }, 60_000);
+
+  test('the backup is in its own schema: the application schema gets no table, and a rolled-back run leaves no schema', async () => {
+    const db = await freshDatabase();
+    expect(await schemaState(db)).toEqual({ backupSchema: false, applicationTables: 0 });
+    await runBackfill(clientFor(db), 'apply', () => {});
+    expect(await schemaState(db)).toEqual({ backupSchema: true, applicationTables: 0 });
+
+    const other = await freshDatabase();
+    const faulty = clientFor(other, (transaction) => ({
+      rows: transaction.rows,
+      execute: async (sql) => (await transaction.execute(sql)) + (sql === SQL.cap ? 1 : 0),
+    }));
+    await expect(runBackfill(faulty, 'apply', () => {})).rejects.toBeInstanceOf(BackfillMismatch);
+    expect(await schemaState(other)).toEqual({ backupSchema: false, applicationTables: 0 });
+  }, 60_000);
+
+  test('a session pushed over the cap after the backup was taken is not in it, and is not capped', async () => {
+    const db = await freshDatabase();
+    const pushed = clientFor(db, (transaction) => ({
+      rows: transaction.rows,
+      execute: async (sql) => {
+        const changed = await transaction.execute(sql);
+        if (sql === SQL.createBackup) {
+          await transaction.execute(`UPDATE "session" SET "expiresAt" = "createdAt" + interval '40 days' WHERE id = 'young-10d'`);
+        }
+        return changed;
+      },
+    }));
+    const before = await snapshot(db);
+
+    expect(await runBackfill(pushed, 'apply', () => {})).toEqual({ mode: 'apply', backedUp: 3, capped: 3 });
+    expect(Object.keys((await backupTable(db))!)).toEqual(OVER_CAP);
+    const after = await snapshot(db);
+    // Only the backed-up sessions were capped: the pushed one keeps the expiry it was given.
+    expect(ms(after['young-10d']!)).toBe(ms(timestamp(10, 40)));
+    expect(ms(before['young-10d']!)).not.toBe(ms(after['young-10d']!));
+  }, 60_000);
+
+  test('a backed-up session that changed before the update makes the counts differ, and the run is rolled back', async () => {
+    const db = await freshDatabase();
+    const before = await snapshot(db);
+    const changed = clientFor(db, (transaction) => ({
+      rows: transaction.rows,
+      execute: async (sql) => {
+        const count = await transaction.execute(sql);
+        if (sql === SQL.createBackup) {
+          await transaction.execute(`UPDATE "session" SET "expiresAt" = "createdAt" + interval '5 days' WHERE id = 'old-35d-over'`);
+        }
+        return count;
+      },
+    }));
+
+    await expect(runBackfill(changed, 'apply', () => {})).rejects.toBeInstanceOf(BackfillMismatch);
+    expect(await backupTable(db)).toBeNull();
+    expect(await schemaState(db)).toEqual({ backupSchema: false, applicationTables: 0 });
+    expect(await snapshot(db)).toEqual(before);
+  }, 60_000);
 });
 
 describe('rollback', () => {
@@ -184,8 +250,8 @@ describe('rollback', () => {
     const backup = await backupTable(db);
 
     const { printed, log } = lines();
-    expect(await runBackfill(clientFor(db), 'rollback', log)).toEqual({ mode: 'rollback', restored: 3 });
-    expect(printed).toEqual(['restored: 3']);
+    expect(await runBackfill(clientFor(db), 'rollback', log)).toEqual({ mode: 'rollback', restored: 3, leftAlone: 0 });
+    expect(printed).toEqual(['restored: 3', 'left alone: 0']);
     expect(await snapshot(db)).toEqual(original);
     expect(await backupTable(db)).toEqual(backup);
   }, 60_000);
@@ -204,8 +270,26 @@ describe('rollback', () => {
     const db = await freshDatabase();
     await runBackfill(clientFor(db), 'apply', () => {});
     await db.exec(`DELETE FROM "session" WHERE id = 'old-35d-over'`);
-    expect(await runBackfill(clientFor(db), 'rollback', () => {})).toEqual({ mode: 'rollback', restored: 2 });
+    expect(await runBackfill(clientFor(db), 'rollback', () => {})).toEqual({ mode: 'rollback', restored: 2, leftAlone: 1 });
     expect((await snapshot(db))['old-35d-over']).toBeUndefined();
+  }, 60_000);
+
+  test('a session whose expiry changed after apply is left alone: not lengthened and not revived', async () => {
+    const db = await freshDatabase();
+    await runBackfill(clientFor(db), 'apply', () => {});
+    // One ended (its expiry is now earlier than the cap), one given another expiry (later than the cap).
+    await db.exec(`UPDATE "session" SET "expiresAt" = '2026-10-26 00:00:00' WHERE id = 'old-35d-over'`);
+    await db.exec(`UPDATE "session" SET "expiresAt" = "createdAt" + interval '33 days' WHERE id = 'old-40d-over'`);
+    const before = await snapshot(db);
+
+    const { printed, log } = lines();
+    expect(await runBackfill(clientFor(db), 'rollback', log)).toEqual({ mode: 'rollback', restored: 1, leftAlone: 2 });
+    expect(printed).toEqual(['restored: 1', 'left alone: 2']);
+    const after = await snapshot(db);
+    expect(after['old-35d-over']).toBe(before['old-35d-over']!);
+    expect(after['old-40d-over']).toBe(before['old-40d-over']!);
+    // The session that still held the capped value is the one that got its old expiry back.
+    expect(ms(after['old-29d-over']!)).toBe(ms(timestamp(29, 36)));
   }, 60_000);
 });
 
@@ -215,14 +299,38 @@ describe('what is printed', () => {
     const { printed, log } = lines();
     await runBackfill(clientFor(db), 'apply', log);
     await runBackfill(clientFor(db), 'rollback', log);
-    expect(printed.length).toBe(3);
-    for (const line of printed) expect(line).toMatch(/^(backed up|capped|restored): \d+$/);
+    expect(printed.length).toBe(4);
+    for (const line of printed) expect(line).toMatch(/^(backed up|capped|restored|left alone): \d+$/);
   }, 60_000);
 
   test('the mode must be apply or rollback', () => {
     expect(parseMode('apply')).toBe('apply');
     expect(parseMode('rollback')).toBe('rollback');
     for (const value of [undefined, '', 'Apply', 'both', 'restore']) expect(() => parseMode(value)).toThrow(BackfillRefused);
+  });
+});
+
+describe('a failure that is not one of ours', () => {
+  test('a driver error that carries a host name prints only the fixed line', () => {
+    const driver = new Error('connect ECONNREFUSED db.example.neon.tech:5432');
+    expect(describeFailure(driver)).toEqual({ exitCode: 1, line: 'Error: the backfill failed and was rolled back' });
+  });
+
+  test('nor does a driver error whose text says "rolled back" print its text', () => {
+    const driver = new Error('transaction rolled back: could not reach postgres://user:secret@db.example.neon.tech:5432/app');
+    const { line } = describeFailure(driver);
+    expect(line).toBe('Error: the backfill failed and was rolled back');
+    expect(line).not.toContain('neon');
+    expect(line).not.toContain('secret');
+  });
+
+  test('only our own errors print their message', () => {
+    expect(describeFailure(new BackfillRefused('the backup table already exists'))).toEqual({ exitCode: 2, line: 'Refused: the backup table already exists' });
+    expect(describeFailure(new BackfillMismatch(2, 3))).toEqual({
+      exitCode: 1,
+      line: 'Error: the capped count (2) differs from the backed-up count (3); rolled back',
+    });
+    expect(describeFailure('not even an error')).toEqual({ exitCode: 1, line: 'Error: the backfill failed and was rolled back' });
   });
 });
 
@@ -281,7 +389,7 @@ describe('the script, through Prisma', () => {
 
     const rolled = await run(['--mode', 'rollback'], { BACKFILL_CONFIRM: 'rollback' });
     expect(rolled.exitCode, rolled.stderr).toBe(0);
-    expect(rolled.stdout.trim().split('\n')).toEqual(['restored: 3', 'rollback done']);
+    expect(rolled.stdout.trim().split('\n')).toEqual(['restored: 3', 'left alone: 0', 'rollback done']);
     const afterRollback = await stored();
     expect(afterRollback.sessions).toEqual(original);
     expect(afterRollback.backup).toEqual(afterApply.backup);
@@ -312,5 +420,12 @@ describe('the script, through Prisma', () => {
     const result = await run(['--mode', 'rollback'], { BACKFILL_CONFIRM: 'rollback' });
     expect(result.exitCode).toBe(2);
     expect(result.stderr).toContain(`Refused: ${BACKUP_TABLE} does not exist`);
+  }, 90_000);
+
+  test('a database that cannot be reached prints only the fixed line, never the address or the credentials', async () => {
+    const result = await run(['--mode', 'apply'], { BACKFILL_CONFIRM: 'apply', DATABASE_URL: 'postgresql://backfill-user:backfill-secret@127.0.0.1:1/openkey' });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toBe('Error: the backfill failed and was rolled back\n');
+    expect(result.stdout).toBe('');
   }, 90_000);
 });
