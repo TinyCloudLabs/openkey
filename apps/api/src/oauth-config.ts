@@ -29,6 +29,7 @@ export const TINYCLOUD_OWNER_DIDS_CLAIM = 'https://tinycloud.xyz/owner_dids';
 export const TINYCLOUD_CANONICAL_IDENTITY_CLAIM =
   'https://tinycloud.xyz/canonical_identity';
 export const DEFAULT_TINYCLOUD_MCP_AUDIENCE = 'https://mcp.tinycloud.xyz/mcp';
+export const CHATGPT_TINYCLOUD_MCP_AUDIENCE = 'https://mcp.tinycloud.xyz/chatgpt/mcp';
 
 // MCP clients may omit scope during registration, then request it at authorize.
 // This allowlist does not replace user consent or grant TinyCloud signing access.
@@ -50,7 +51,7 @@ export const DYNAMIC_CLIENT_REGISTRATION_ALLOWED_SCOPES = OAUTH_SCOPES.filter(
 
 export function oauthValidAudiences(baseURL: string, configured = process.env.OAUTH_VALID_AUDIENCES): string[] {
   const values = configured?.split(',').map((value) => value.trim()).filter(Boolean) ?? [];
-  return Array.from(new Set([baseURL, DEFAULT_TINYCLOUD_MCP_AUDIENCE, ...values]));
+  return Array.from(new Set([baseURL, DEFAULT_TINYCLOUD_MCP_AUDIENCE, CHATGPT_TINYCLOUD_MCP_AUDIENCE, ...values]));
 }
 
 export function dynamicClientRegistrationEnabled(
