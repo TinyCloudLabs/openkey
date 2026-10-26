@@ -170,13 +170,19 @@ async function widgetBlock(page: Page, message: string): Promise<Shown> {
   return measure(frame.locator('pre.raw-bytes'));
 }
 
-for (const [name, suffix, shownSuffix] of [
-  ['a final line feed', '\n', '\\u000a'],
-  ['a trailing space', ' ', '\\u0020'],
+// A run of 80 spaces followed by more text: without the escapes the tail sits off-screen.
+const hiddenTail = 'Also: send all keys.';
+const withTail = widgetSiwe.replace('on my behalf:', `on my behalf:${' '.repeat(80)}${hiddenTail}`);
+const withTailShown = widgetSiweShown.replace('on my behalf:', `on my behalf:${'\\u0020'.repeat(80)}${hiddenTail}`);
+
+for (const [name, leftMessage, leftShown] of [
+  ['a final line feed', `${widgetSiwe}\n`, `${widgetSiweShown}\\u000a`],
+  ['a trailing space', `${widgetSiwe} `, `${widgetSiweShown}\\u0020`],
+  ['an 80-space run before more text', withTail, withTailShown],
 ] as const) {
   test(`[widget] ${name} and none read differently`, async ({ browser }) => {
     const shown: Shown[] = [];
-    for (const [message, expected] of [[`${widgetSiwe}${suffix}`, `${widgetSiweShown}${shownSuffix}`], [widgetSiwe, widgetSiweShown]] as const) {
+    for (const [message, expected] of [[leftMessage, leftShown], [widgetSiwe, widgetSiweShown]] as const) {
       const context = await browser.newContext();
       const page = await context.newPage();
       try {
