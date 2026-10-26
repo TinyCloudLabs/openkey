@@ -413,6 +413,24 @@ test('the exact SIWE blocks show one line per line feed and scroll sideways at 3
   await expectUnwrappedBlock(page, 'Exact candidate signedMessage', siwe.split('\n').length);
 });
 
+// The same check at a phone and a desktop width. It reads computed styles, so it also holds against a production build.
+for (const width of [375, 1280]) {
+  test(`all three exact SIWE blocks stay unwrapped and scroll sideways at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const second = { ...key, id: 'key-two', keyIndex: 1, label: 'Backup owner key', isPrimary: false };
+    await setup(page, { keys: [key, second] });
+    await expect(page.getByText('Choose an OpenKey signing key')).toBeVisible();
+    await page.getByText('Original SIWE message', { exact: true }).click();
+    await expectUnwrappedBlock(page, 'Original SIWE message', siwe.split('\n').length);
+    await page.getByRole('button', { name: /Backup owner key/ }).click();
+    await page.getByRole('button', { name: 'Preview signing message' }).click();
+    await page.getByText('Exact candidate signedMessage', { exact: true }).click();
+    await page.getByText('Original SIWE message', { exact: true }).click();
+    await expectUnwrappedBlock(page, 'Original SIWE message', siwe.split('\n').length);
+    await expectUnwrappedBlock(page, 'Exact candidate signedMessage', siwe.split('\n').length);
+  });
+}
+
 test('v2 narrowing previews the exact candidate and never signs a second time', async ({ page }) => {
   const calls = await setup(page, { narrowed: true });
   await page.getByRole('checkbox', { name: 'tinycloud.kv/sync' }).uncheck();
