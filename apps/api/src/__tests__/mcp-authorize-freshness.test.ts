@@ -87,7 +87,8 @@ describe('the authorize request through the interceptor', () => {
     ['no sign-in', { query: `scope=${encodeURIComponent(MCP)}`, createdAt: null }],
     ['a request without the MCP scope', { query: 'scope=openid+email' }],
     ['a pushed request', { query: `request_uri=urn%3Aexample&scope=${encodeURIComponent(MCP)}` }],
-    ['a prompt the provider cannot combine with login', { query: `scope=${encodeURIComponent(MCP)}&prompt=none` }],
+    ['prompt=create', { query: `scope=${encodeURIComponent(MCP)}&prompt=create` }],
+    ['prompt=select_account', { query: `scope=${encodeURIComponent(MCP)}&prompt=select_account` }],
     ['no session reader configured', { query: `scope=${encodeURIComponent(MCP)}`, withReader: false }],
   ] as [string, Parameters<typeof run>[0]][])('%s goes to the handler untouched', async (_name, options) => {
     const result = run(options);
@@ -102,5 +103,60 @@ describe('the authorize request through the interceptor', () => {
     const login = run({ query: `scope=${encodeURIComponent(MCP)}&prompt=login` });
     await login.response;
     expect(login.reached).toEqual(['handler']);
+  });
+
+  describe('prompt=none', () => {
+    /** What the provider is handed: the prompt, and whether the request still carries the sign-in's credentials. */
+    function runNone(options: { query: string; createdAt?: Date | null; clientScopes?: string[] | null }) {
+      const handed: { prompt: string | null; credentials: boolean }[] = [];
+      const database = {
+        oauthClient: { findMany: async () => [], findUnique: async () => (options.clientScopes === null ? null : { scopes: options.clientScopes ?? ['openid', MCP] }) },
+        oauthRefreshToken: { findUnique: async () => null },
+        tinyCloudNativeGrant: { findFirst: async () => null },
+      } as unknown as ProviderInterceptorDatabase;
+      const app = new Hono();
+      app.use('/api/auth/*', createProviderInterceptors({
+        database,
+        tokens: {},
+        authorizationCodes: { find: async () => null, delete: async () => {} },
+        provider: async (request) => {
+          handed.push({ prompt: new URL(request.url).searchParams.get('prompt'), credentials: request.headers.has('cookie') || request.headers.has('authorization') });
+          return new Response(null, { status: 302 });
+        },
+        getSessionUserId: async () => null,
+        getSessionCreatedAt: async () => (options.createdAt === undefined ? new Date(Date.now() - 24 * DAY_MS) : options.createdAt),
+      }));
+      app.get('/api/auth/oauth2/authorize', (c) => {
+        handed.push({ prompt: new URL(c.req.url).searchParams.get('prompt'), credentials: c.req.raw.headers.has('cookie') });
+        return new Response(null, { status: 302 });
+      });
+      const response = app.fetch(new Request(`https://api.openkey.test/api/auth/oauth2/authorize?client_id=app&response_type=code&prompt=none&${options.query}`, {
+        headers: { cookie: 'session=old', authorization: 'Bearer old-session-token' },
+      }));
+      return { handed, response };
+    }
+
+    test('an old sign-in with the MCP scope reaches the provider as a request from nobody signed in, still prompt=none', async () => {
+      const result = runNone({ query: `scope=${encodeURIComponent(MCP)}` });
+      await result.response;
+      expect(result.handed).toEqual([{ prompt: 'none', credentials: false }]);
+    });
+
+    test('so does a request that names no scope on an MCP client', async () => {
+      const result = runNone({ query: '' });
+      await result.response;
+      expect(result.handed).toEqual([{ prompt: 'none', credentials: false }]);
+    });
+
+    test.each([
+      ['a young sign-in', { query: `scope=${encodeURIComponent(MCP)}`, createdAt: new Date(Date.now() - 22 * DAY_MS) }],
+      ['no sign-in', { query: `scope=${encodeURIComponent(MCP)}`, createdAt: null }],
+      ['a request without the MCP scope', { query: 'scope=openid+email' }],
+      ['a pushed request', { query: `request_uri=urn%3Aexample&scope=${encodeURIComponent(MCP)}` }],
+    ] as [string, Parameters<typeof runNone>[0]][])('%s keeps its credentials and goes to the handler as it is', async (_name, options) => {
+      const result = runNone(options);
+      await result.response;
+      expect(result.handed).toEqual([{ prompt: 'none', credentials: true }]);
+    });
   });
 });

@@ -19,9 +19,9 @@ export function mcpAuthorizeNeedsFreshSignIn(sessionCreatedAt: Date, now: Date):
  * added. The provider validates `prompt` against a fixed list and only combines
  * `login` with `consent` (as `login consent`), so a request that names no prompt
  * gets `login`, `consent` becomes `login consent`, and one that already asks for
- * `login` is unchanged. Any other value (`none`, `create`, `select_account`) is not
- * rewritten: `none` cannot be combined with `login`, and `create` already sends the
- * user to the login page.
+ * `login` is unchanged. Any other value is not rewritten here: `create` already
+ * sends the user to the login page, `select_account` is the provider's to refuse,
+ * and `none` is answered with `login_required` by the interceptor.
  *
  * With `login` the provider redirects to the login page with a signed copy of the
  * request and, once the user has signed in, resumes it with `login` removed, on the

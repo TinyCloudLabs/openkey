@@ -122,7 +122,7 @@ if (process.env.OPENKEY_MCP_OAUTH_TEST_CHILD !== '1') {
   }
 
   /** An authorize request; `scope: null` sends none, so the provider uses the client's own. */
-  async function authorize(cookie: string, clientId: string, scope: string | null, extra: Record<string, string> = {}) {
+  async function authorize(cookie: string | undefined, clientId: string, scope: string | null, extra: Record<string, string> = {}) {
     const query = new URLSearchParams({
       client_id: clientId, response_type: 'code', redirect_uri: callback, ...(scope === null ? {} : { scope }), resource,
       state: 'state', code_challenge: await generateCodeChallenge(verifier), code_challenge_method: 'S256', ...extra,
@@ -188,6 +188,81 @@ if (process.env.OPENKEY_MCP_OAUTH_TEST_CHILD !== '1') {
       const login = await authorize(cookie, clientId, MCP_SCOPES, { prompt: 'login' });
       expect(isLoginPage(login)).toBe(true);
       expect(login.searchParams.get('prompt')).toBe('login');
+    });
+
+    describe('prompt=none', () => {
+      const none = { prompt: 'none' };
+      const issued = async () => ({
+        codes: await codes(),
+        access: await prisma.oauthAccessToken.count(),
+        refresh: await prisma.oauthRefreshToken.count(),
+        consents: await prisma.oauthConsent.count(),
+      });
+
+      test('on an old sign-in with the MCP scope the client gets the provider\'s own login_required redirect, and nothing is issued', async () => {
+        const { cookie } = await signedIn(24 * DAY);
+        const clientId = await register(MCP_SCOPES);
+        // What the provider answers when nobody is signed in: the format to match, state and iss included.
+        const nobody = await authorize(undefined, clientId, MCP_SCOPES, none);
+        expect(nobody.searchParams.get('error')).toBe('login_required');
+        const before = await issued();
+        const target = await authorize(cookie, clientId, MCP_SCOPES, none);
+        expect(target.href).toBe(nobody.href);
+        expect(target.origin + target.pathname).toBe(callback);
+        expect(target.searchParams.get('error')).toBe('login_required');
+        expect(target.searchParams.get('state')).toBe('state');
+        expect(target.searchParams.get('iss')).toBe(nobody.searchParams.get('iss'));
+        expect(target.searchParams.has('code')).toBe(false);
+        expect(await issued()).toEqual(before);
+      });
+
+      test('a request without a scope on an MCP client is held the same way', async () => {
+        const { cookie } = await signedIn(24 * DAY);
+        const clientId = await register(MCP_SCOPES);
+        const target = await authorize(cookie, clientId, null, none);
+        expect(target.searchParams.get('error')).toBe('login_required');
+      });
+
+      test('a sign-in 22 days old behaves as before: the provider asks for consent, it does not say login is required', async () => {
+        const { cookie } = await signedIn(22 * DAY);
+        const clientId = await register(MCP_SCOPES);
+        const target = await authorize(cookie, clientId, MCP_SCOPES, none);
+        expect(target.origin + target.pathname).toBe(callback);
+        expect(target.searchParams.get('error')).toBe('consent_required');
+      });
+
+      test('an old sign-in without the MCP scope behaves as before', async () => {
+        const { cookie } = await signedIn(24 * DAY);
+        const clientId = await register('openid email');
+        const target = await authorize(cookie, clientId, 'openid email', none);
+        expect(target.searchParams.get('error')).toBe('consent_required');
+      });
+
+      test('a redirect_uri the client has not registered gets the provider\'s own error, never a redirect to that URI', async () => {
+        const { cookie } = await signedIn(24 * DAY);
+        const clientId = await register(MCP_SCOPES);
+        const unregistered = 'https://unregistered.example/callback';
+        const nobody = await authorize(undefined, clientId, MCP_SCOPES, { ...none, redirect_uri: unregistered });
+        const target = await authorize(cookie, clientId, MCP_SCOPES, { ...none, redirect_uri: unregistered });
+        expect(target.origin).not.toBe('https://unregistered.example');
+        expect(target.href.startsWith(unregistered)).toBe(false);
+        expect(target.href.includes('unregistered.example/callback?')).toBe(false);
+        expect(target.searchParams.get('error')).toBe('invalid_redirect');
+        expect(target.href).toBe(nobody.href);
+      });
+
+      test('create and select_account are left alone: an old sign-in is answered as a young one is', async () => {
+        const old = await signedIn(24 * DAY);
+        const young = await signedIn(2 * DAY);
+        const clientId = await register(MCP_SCOPES);
+        for (const prompt of ['create', 'select_account']) {
+          const stale = await authorize(old.cookie, clientId, MCP_SCOPES, { prompt });
+          const fresh = await authorize(young.cookie, clientId, MCP_SCOPES, { prompt });
+          expect(stale.origin + stale.pathname, prompt).toBe(fresh.origin + fresh.pathname);
+          expect(stale.searchParams.get('prompt'), prompt).toBe(fresh.searchParams.get('prompt'));
+          expect(stale.searchParams.get('error'), prompt).toBe(fresh.searchParams.get('error'));
+        }
+      });
     });
 
     test('after a fresh sign-in the flow completes on the new session; nothing is issued on the old sign-in', async () => {

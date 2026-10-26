@@ -308,10 +308,11 @@ export function createProviderInterceptors({ database, tokens, provider, getSess
    * connection is sent through the provider's own login prompt: the same request
    * with `login` added to `prompt`. The provider then redirects to the login page
    * with a signed copy of it, and resumes it with `login` removed once the user has
-   * signed in, on the new session. The scope is the request's, or the client's
-   * own when the request names none (the provider's default). Pushed requests
-   * (`request_uri`) carry native scopes and are left alone. The sign-in's age is read
-   * without renewing it.
+   * signed in, on the new session. With `prompt=none` the client is told
+   * `login_required` instead, by the provider (see below). The scope is the
+   * request's, or the client's own when the request names none (the provider's
+   * default). Pushed requests (`request_uri`) carry native scopes and are left alone.
+   * The sign-in's age is read without renewing it.
    */
   async function requireFreshSignInForMcp(c: Context, params: URLSearchParams, clientId: string | null): Promise<Decision> {
     if (!getSessionCreatedAt || params.has('request_uri') || !clientId) return null;
@@ -322,6 +323,18 @@ export function createProviderInterceptors({ database, tokens, provider, getSess
     if (!scopes?.includes(TINYCLOUD_MCP_SCOPE)) return null;
     const createdAt = await getSessionCreatedAt(c.req.raw.headers);
     if (!createdAt || !mcpAuthorizeNeedsFreshSignIn(createdAt, new Date())) return null;
+    if (params.get('prompt') === 'none') {
+      // The provider cannot combine `none` with `login`. The same request without the sign-in's
+      // credentials is what it gets when nobody is signed in, and the provider answers that itself:
+      // after checking the client and the registered redirect URI it redirects to the request's
+      // `redirect_uri` with `error=login_required` (and `state`, `iss`) in its own format, or
+      // answers its own error page when the URI is not registered. No code or consent is created.
+      const headers = new Headers(c.req.raw.headers);
+      headers.delete('cookie');
+      headers.delete('authorization');
+      // Built from the URL: a Request made from another Request can keep its credentials.
+      return { replacement: new Request(c.req.raw.url, { method: c.req.raw.method, headers }) };
+    }
     const prompt = withLoginPrompt(params.get('prompt'));
     // Null: the provider cannot combine this prompt with login (see `withLoginPrompt`).
     // Unchanged: the request already asks for login, which the provider honors.
