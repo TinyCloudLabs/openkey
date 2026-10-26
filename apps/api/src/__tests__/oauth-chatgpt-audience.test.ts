@@ -44,6 +44,10 @@ if (process.env.OPENKEY_CHATGPT_AUDIENCE_TEST_CHILD !== '1') {
         'https://mcp.tinycloud.xyz/chatgpt/mcp/',
         'http://mcp.tinycloud.xyz/chatgpt/mcp',
         'https://MCP.tinycloud.xyz.evil.test/chatgpt/mcp',
+        'https://MCP.tinycloud.xyz/chatgpt/mcp',
+        'https://mcp.tinycloud.xyz/ChatGPT/mcp',
+        'https://mcp.tinycloud.xyz/chatgpt%2Fmcp',
+        'https://mcp.tinycloud.xyz/chatgpt/mcp?x=1',
       ]) {
         expect(audiences).not.toContain(near);
       }
@@ -208,6 +212,10 @@ if (process.env.OPENKEY_CHATGPT_AUDIENCE_TEST_CHILD !== '1') {
       'https://mcp.tinycloud.xyz/chatgpt/mcp/',
       'http://mcp.tinycloud.xyz/chatgpt/mcp',
       'https://MCP.tinycloud.xyz.evil.test/chatgpt/mcp',
+      'https://MCP.tinycloud.xyz/chatgpt/mcp',
+      'https://mcp.tinycloud.xyz/ChatGPT/mcp',
+      'https://mcp.tinycloud.xyz/chatgpt%2Fmcp',
+      'https://mcp.tinycloud.xyz/chatgpt/mcp?x=1',
     ]) {
       test(`${near} is refused and no token is issued`, async () => {
         const outcome = await issue(near);

@@ -160,7 +160,7 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `BETTER_AUTH_SECRET` | 32+ character random secret for session encryption |
 | `BETTER_AUTH_URL` | `https://api.openkey.so` |
 | `OAUTH_DYNAMIC_CLIENT_REGISTRATION` | Keep `true` for MCP clients that register automatically; set `false` only as an emergency disable |
-| `OAUTH_VALID_AUDIENCES` | Comma-separated additional OAuth resource URLs; production includes `https://mcp.tinycloud.xyz/mcp` |
+| `OAUTH_VALID_AUDIENCES` | Comma-separated additional OAuth resource URLs. Always accepted without configuration: `BETTER_AUTH_URL`, `https://mcp.tinycloud.xyz/mcp` and `https://mcp.tinycloud.xyz/chatgpt/mcp` (matched exactly) |
 | `WEBAUTHN_RP_ID` | `openkey.so` |
 | `WEBAUTHN_ORIGIN` | `https://openkey.so` |
 | `CONSOLE_ORIGIN` | `https://console.openkey.so` |
