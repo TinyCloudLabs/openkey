@@ -30,7 +30,8 @@ export function createOwnerRevocationRouter(service: PreparedHandoffService, dep
       return c.json({ error: 'ticket and keyId are required' }, 400);
     }
     const origin = c.req.header('origin');
-    if (!origin || !resolveOriginPolicy('http://localhost:5173').includes(origin)) return c.json({ error: 'OpenKey page origin required' }, 403);
+    if (!origin || origin !== (process.env.WEBAUTHN_ORIGIN || resolveOriginPolicy('http://localhost:5173')[0]) ||
+      !resolveOriginPolicy('http://localhost:5173').includes(origin)) return c.json({ error: 'OpenKey web signing origin required' }, 403);
     const request = await service.ownerRevocation(body.ticket, c.get('user').id);
     const key = await dependencies.findKey(body.keyId, c.get('user').id);
     if (!key || key.address.toLowerCase() !== ownerRevocationAddress(request).toLowerCase()) {
@@ -54,7 +55,7 @@ export function createOwnerRevocationRouter(service: PreparedHandoffService, dep
       return c.json({ error: 'Invalid owner-revocation signing request' }, 400);
     }
     const request = await service.ownerRevocation(body.ticket, c.get('user').id);
-    const record = await service.assertContext(body.ticket, c.get('user').id, body.authorizationContextToken);
+    const record = await service.assertContext(body.ticket, c.get('user').id, body.authorizationContextToken, 'owner-revocation');
     if (record.selectedKeyId !== body.keyId) return c.json({ error: 'Owner signing key differs from the reviewed key' }, 403);
     const key = await dependencies.findKey(body.keyId, c.get('user').id);
     if (!key || key.address.toLowerCase() !== ownerRevocationAddress(request).toLowerCase()) {
@@ -65,6 +66,7 @@ export function createOwnerRevocationRouter(service: PreparedHandoffService, dep
     const origin = c.req.header('origin');
     if (extra || !time || !random || !/^[A-Za-z0-9_-]{43}$/.test(random) || !origin ||
       Buffer.from(encodedOrigin ?? '', 'base64url').toString() !== origin ||
+      origin !== (process.env.WEBAUTHN_ORIGIN || resolveOriginPolicy('http://localhost:5173')[0]) ||
       !resolveOriginPolicy('http://localhost:5173').includes(origin) ||
       !Number.isFinite(issuedAt.getTime()) || issuedAt.getTime() > Date.now() ||
       issuedAt.getTime() + 300_000 < Date.now() || issuedAt.getTime() >= Date.parse(request.expiresAt)) {
@@ -78,7 +80,7 @@ export function createOwnerRevocationRouter(service: PreparedHandoffService, dep
     } else {
       if ('externalSignature' in body || !key.sealedBlob) return c.json({ error: 'Managed owner key required' }, 400);
       // The ticket is reserved before the managed key can sign again.
-      await service.reserveSigning(body.ticket, c.get('user').id, body.authorizationContextToken, key.id);
+      await service.reserveSigning(body.ticket, c.get('user').id, body.authorizationContextToken, key.id, 'owner-revocation');
       signature = await dependencies.signManaged(key, key.sealedBlob, siwe);
     }
     try {
@@ -86,7 +88,7 @@ export function createOwnerRevocationRouter(service: PreparedHandoffService, dep
     } catch {
       return c.json({ error: 'Owner signature does not match the reviewed account' }, 403);
     }
-    if (key.keyType === 'EXTERNAL') await service.reserveSigning(body.ticket, c.get('user').id, body.authorizationContextToken, key.id);
+    if (key.keyType === 'EXTERNAL') await service.reserveSigning(body.ticket, c.get('user').id, body.authorizationContextToken, key.id, 'owner-revocation');
     const delivery = await service.completeSigning(body.ticket, c.get('user').id, body.authorizationContextToken, key.id);
     c.header('Cache-Control', 'no-store');
     return c.json({ ...ownerRevocationResult(siwe, signature), ...delivery });

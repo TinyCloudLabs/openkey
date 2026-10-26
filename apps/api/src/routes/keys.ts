@@ -100,6 +100,9 @@ keysRouter.post('/link', async (c) => {
     challengeStore.delete(nonce);
     return c.json({ error: 'Challenge expired' }, 400);
   }
+  if (body.message !== challenge.message) {
+    return c.json({ error: 'Wallet verification message differs from challenge' }, 400);
+  }
 
   // Delete the nonce after use (one-time use)
   challengeStore.delete(nonce);
