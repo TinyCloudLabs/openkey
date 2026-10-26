@@ -69,6 +69,8 @@ export interface StatementEntry {
   neverApprovable?: boolean;
   /** True when text between backticks in `primaryText` is shown in monospace. */
   codeSpans?: true;
+  /** Raw fallback text already escaped and capped by the statement builder. */
+  literalEscaped?: true;
 }
 
 /** Family/action-aware structural verb classification. */
@@ -278,6 +280,7 @@ function fallbackStatement(grant: CapabilityGrant): StatementEntry {
         : `Access ${service}`,
     service,
     resource,
+    ...(failing ? { literalEscaped: true as const } : {}),
   };
 }
 
@@ -612,7 +615,8 @@ function buildNamedKeyStatement(
   if (parsed.kind === "network" || verb === undefined) {
     return fallbackStatement(grant);
   }
-  const template = parsed.kind === "prefix" && parsed.network === "default" && grant.ownedBySelf &&
+  if (grant.ownedBySelf !== true) return fallbackStatement(grant);
+  const template = parsed.kind === "prefix" && parsed.network === "default" &&
     (verb === "create" || verb === "decrypt")
     ? OWN_KEY_PREFIX_STATEMENTS[verb]
     : NAMED_KEY_STATEMENTS[verb][parsed.kind];

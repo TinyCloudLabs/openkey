@@ -6,6 +6,7 @@
   import { copyText } from '$lib/clipboard';
   import { buildStatements, parseEncryptionResource, parseCapabilityReview, defaultSelection, renderLiteral, type CapabilityGrant, type CapabilityReviewModel } from '@openkey/capability-review';
   import { validatePreviewSelection } from '$lib/preview-review';
+  import { displayConsentStatement } from '$lib/consent-statement';
   import { requestedActionIds } from '$lib/widget-selection';
   import { timeUntilExpiry } from '$lib/siwe-parser';
   import { SERVER_REPLY_BODY, SERVER_REPLY_TITLE, ServerReplyError, hasSignResult, hasText } from '$lib/server-reply';
@@ -28,11 +29,6 @@
     return parsed?.kind === 'prefix' && parsed.network === 'default' && grant.ownedBySelf
       ? parsed.keyPath
       : null;
-  }
-  function consentStatement(text: string): string {
-    return text.startsWith('Perform ') || text.startsWith('Access ')
-      ? renderLiteral(text, 280)
-      : text;
   }
   function isClaim(value: unknown): value is Claim {
     if (!isRecord(value) || !isRecord(value.request) || !isRecord(value.delivery)) return false;
@@ -438,7 +434,7 @@
       {#each keyChoices[0].review.permissions as grant}
         <div class="rounded-lg border p-3 text-sm">
           {#if ownKeyFolder(grant)}<p class="font-semibold">Your own encryption keys in <code>{ownKeyFolder(grant)}</code></p>{/if}
-          {#each buildStatements(grant) as statement}<p>{consentStatement(statement.primaryText)}</p>{/each}
+          {#each buildStatements(grant) as statement}<p>{displayConsentStatement(statement)}</p>{/each}
           <details><summary>Full grant</summary><pre class="whitespace-pre-wrap break-all">{renderLiteral(`${grant.service} · ${grant.space} · ${grant.path}: ${grant.actions.map(action => action.ability).join(', ')}`)}</pre></details>
         </div>
       {/each}
@@ -463,7 +459,7 @@
       {#each model.permissions as grant}
         <div class="rounded-lg border p-3 text-sm">
           {#if ownKeyFolder(grant)}<p class="font-semibold">Your own encryption keys in <code>{ownKeyFolder(grant)}</code></p>{/if}
-          {#each buildStatements(grant) as statement}<p>{consentStatement(statement.primaryText)}</p>{/each}
+          {#each buildStatements(grant) as statement}<p>{displayConsentStatement(statement)}</p>{/each}
           {#each grant.actions as action}
             <label class="flex gap-2 py-1"><input type="checkbox" checked={selected.has(action.id)} disabled={phase !== 'review' || !action.editable} onchange={() => toggle(action.id)} /><span class="break-all">{renderLiteral(action.ability, 120)}</span></label>
           {/each}
@@ -474,8 +470,10 @@
         <pre class="whitespace-pre-wrap break-all rounded-lg bg-surface-50 p-3 text-xs">{renderLiteral(handoff.request.siwe)}</pre>
       </details>
       {#if phase === 'preview'}
-        <h2 class="font-semibold">Exact candidate signedMessage</h2>
-        <pre class="whitespace-pre-wrap break-all rounded-lg bg-surface-50 p-3 text-xs">{previewMessage}</pre>
+        <details>
+          <summary class="font-semibold">Exact candidate signedMessage</summary>
+          <pre class="whitespace-pre-wrap break-all rounded-lg bg-surface-50 p-3 text-xs">{renderLiteral(previewMessage)}</pre>
+        </details>
         <button onclick={() => { phase = 'review'; previewToken = ''; }}>Change abilities</button>
         <button disabled={busy || submitted} onclick={approve}>Approve</button>
       {:else}
