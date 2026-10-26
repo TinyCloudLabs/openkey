@@ -202,6 +202,8 @@ app.use('/api/auth/*', createProviderInterceptors({
   tokens: providerTokenOptions(auth),
   provider: (request) => auth.handler(request),
   getSessionUserId: async (headers) => (await auth.api.getSession({ headers }))?.user.id ?? null,
+  // `disableRefresh`: reading the age must not renew the session.
+  getSessionCreatedAt: async (headers) => (await auth.api.getSession({ headers, query: { disableRefresh: true } }))?.session.createdAt ?? null,
   authorizationCodes: {
     find: async (identifier) => (await auth.$context).internalAdapter.findVerificationValue(identifier),
     delete: async (identifier) => (await auth.$context).internalAdapter.deleteVerificationByIdentifier(identifier),
