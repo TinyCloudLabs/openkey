@@ -6,6 +6,7 @@
 // splits them (`space: "encryption"`, `path: <urn>`), so the CLI refused a `--keys` sign-in. Only
 // that reporting changed; the signed bytes did not. The fixture file holds what the base code signed
 // and answered for the same request, so these tests compare against it instead of against themselves.
+import './tc1777-test-env';
 import { afterEach, beforeAll, beforeEach, describe, expect, mock, setSystemTime, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
@@ -131,6 +132,8 @@ import { hashMessage } from 'viem';
 import { parseRecapFromSiwe } from '@tinycloud/node-sdk-wasm';
 import { cliConsumerCheck, extractRecapAttenuations } from './cli-consumer-check';
 import { FIXTURE } from './authorize-sign-urn-form.fixture';
+import { parseManifestKeys } from '../services/app-key-gate';
+import { reportedEntry } from '../routes/delegate-session';
 
 // The request is the CLI's default prepared sign-in (capabilities/read, duckdb, hooks, kv data and
 // secrets, sql, the default network's decrypt + network.create) plus the `default/qa/` key row, as a
@@ -163,10 +166,15 @@ function reviewModel(siwe: string) {
 type Grant = { service: string; space: string; path: string; actions: readonly string[] };
 type Wire = { signedMessage: string; signature: string; selectedActionKeys: string[]; permissions: Grant[] };
 
-/** prepare → preview → authorize-sign, with the ids the signing window sends for every row ticked. */
-async function run(siwe: string) {
+/**
+ * prepare → preview → authorize-sign, with the ids the signing window sends: every row ticked, minus the
+ * actions `untick` names (it sees each action of the review model, as the window's own selection does).
+ */
+async function run(siwe: string, untick: (action: { id: string; ability: string }) => boolean = () => false) {
   const model = reviewModel(siwe);
-  const requested = requestedActionIds(model, defaultSelection(model));
+  const selection = new Set(defaultSelection(model));
+  for (const grant of model.permissions) for (const action of grant.actions) if (untick(action)) selection.delete(action.id);
+  const requested = requestedActionIds(model, selection);
   const prepared = await post('/authorize-sign-prepare', {
     keyId: keyRecord.id, siwe, jwk, host: 'https://node.tinycloud.xyz', requestOrigin: ORIGIN, reportedOrigin: ORIGIN,
     presentation: { manifestDigest: 'a'.repeat(64), displayName: 'Listen' },
@@ -288,5 +296,119 @@ describe('/authorize-sign reports raw encryption resources in the consumer encod
     for (const [resource, ability] of ABILITIES_OF_RAW) {
       expect(requested).toContain([ENCRYPTION, 'encryption', resource, ability].join(SEP));
     }
+  });
+});
+
+// ---- follow-ups (TC-1783): a narrowed selection, an `apps/<keys_app_id>/` key row, and the reshaping rule ----
+
+const isUnticked = ([, , path, ability]: string[]) =>
+  (path === RAW_QA && ability === `${ENCRYPTION}/key.create`) ||
+  (path === RAW_NETWORK && ability === `${ENCRYPTION}/network.create`) ||
+  (path === 'secrets/' && ability === 'tinycloud.kv/del');
+
+describe('/authorize-sign with a narrowed selection (TC-1783)', () => {
+  test('reports only the ticked abilities, and raw encryption resources still in the consumer encoding', async () => {
+    // The user unticks key.create in the qa/ row, network.create in the default network row, and kv/del on secrets/.
+    const { body } = await run(FIXTURE.preparedSiwe, ({ id, ability }) => {
+      const parts = id.split(SEP);
+      return (parts.includes(RAW_QA) && ability === `${ENCRYPTION}/key.create`) ||
+        (parts.includes(RAW_NETWORK) && ability === `${ENCRYPTION}/network.create`) ||
+        (parts.includes('secrets/') && ability === 'tinycloud.kv/del');
+    });
+
+    const oldKeys: readonly string[] = FIXTURE.oldResponse.selectedActionKeys;
+    const kept = oldKeys.filter((key) => !isUnticked(key.split(SEP)));
+    expect(oldKeys.length - kept.length).toBe(3);
+    expect(body.selectedActionKeys).toEqual(kept.map((key) => CHANGED_KEYS.get(key) ?? key));
+
+    const raw = body.permissions.filter((grant) => isRaw(grant.space));
+    expect(raw).toEqual([
+      { service: ENCRYPTION, space: RAW_NETWORK, path: '', actions: [`${ENCRYPTION}/decrypt`] },
+      { service: ENCRYPTION, space: RAW_QA, path: '', actions: [`${ENCRYPTION}/decrypt`] },
+    ]);
+    expect(body.permissions.some((grant) => isRaw(grant.path))).toBe(false);
+    const secrets = body.permissions.find((grant) => grant.service === 'tinycloud.kv' && grant.path === 'secrets/');
+    expect(secrets?.actions).toEqual(['tinycloud.kv/get', 'tinycloud.kv/list', 'tinycloud.kv/metadata', 'tinycloud.kv/put']);
+    expect(body.permissions.filter((grant) => !isRaw(grant.space) && !(grant.service === 'tinycloud.kv' && grant.path === 'secrets/')))
+      .toEqual((FIXTURE.oldResponse.permissions as readonly Grant[]).filter((grant) => !isRaw(grant.path) && !(grant.service === 'tinycloud.kv' && grant.path === 'secrets/')));
+
+    // What was signed is the narrowed ReCap, and the consumer accepts it against the request it prepared.
+    expect(signed).toEqual([body.signedMessage]);
+    expect(body.signedMessage === FIXTURE.preparedSiwe).toBe(false);
+    const caps = extractRecapAttenuations(body.signedMessage);
+    expect(Object.keys(caps[RAW_QA]!)).toEqual([`${ENCRYPTION}/decrypt`]);
+    expect(Object.keys(caps[RAW_NETWORK]!)).toEqual([`${ENCRYPTION}/decrypt`]);
+    expect(() => cliConsumerCheck(FIXTURE.preparedSiwe, body)).not.toThrow();
+  });
+});
+
+describe('/authorize-sign for an apps/<keys_app_id>/ key row (TC-1783)', () => {
+  const DATA_ID = 'dev.pages.okqa-dev';
+  const KEYS_ID = APP_ID; // the key namespace is host-bound to listen.tinycloud.xyz; the data app id is another
+  const APPS_PREFIX = urn(`/apps/${KEYS_ID}/`);
+  const KV = ['tinycloud.kv/get', 'tinycloud.kv/put'];
+
+  test('is reported as the urn with no path, and the signed message is byte-identical to the prepared one', async () => {
+    manifestBindResult = {
+      ok: true,
+      fetchedDigest: 'a'.repeat(64),
+      manifest: {
+        ...declaredManifest(),
+        appId: DATA_ID,
+        declaredAppId: DATA_ID,
+        declaredKeysAppId: KEYS_ID,
+        declaredKeys: parseManifestKeys(KEYS_ID, [{ prefix: `apps/${KEYS_ID}/`, abilities: ['key.create', 'decrypt'] }]),
+      },
+    };
+    const now = new Date();
+    const siwe = prepareSession({
+      address, chainId: 1, domain: 'listen.tinycloud.xyz', issuedAt: now.toISOString(),
+      expirationTime: new Date(now.getTime() + 3_600_000).toISOString(), spaceId: SPACE, jwk,
+      abilities: { kv: { '': KV } } as never,
+      rawAbilities: { [APPS_PREFIX]: [`${ENCRYPTION}/key.create`, `${ENCRYPTION}/decrypt`] },
+    }).siwe;
+
+    const { body } = await run(siwe);
+
+    // Byte-identical: the wallet signed the prepared message, and the response echoes it.
+    expect(signed.length).toBe(1);
+    expect(signed[0] === siwe).toBe(true);
+    expect(body.signedMessage === siwe).toBe(true);
+    expect(hashMessage(signed[0]!)).toBe(hashMessage(siwe));
+    expect(Object.keys(extractRecapAttenuations(body.signedMessage)).sort()).toEqual([APPS_PREFIX, `${SPACE}/kv`].sort());
+
+    expect(body.selectedActionKeys.filter((key) => isRaw(key)).sort()).toEqual(
+      [`${ENCRYPTION}/decrypt`, `${ENCRYPTION}/key.create`].map((ability) => [ENCRYPTION, APPS_PREFIX, '', ability].join(SEP)).sort(),
+    );
+    expect(body.selectedActionKeys.some((key) => key.includes(`${SEP}encryption${SEP}`))).toBe(false);
+    const raw = body.permissions.filter((grant) => isRaw(grant.space));
+    expect(raw.map((grant) => ({ ...grant, actions: [...grant.actions].sort() }))).toEqual([
+      { service: ENCRYPTION, space: APPS_PREFIX, path: '', actions: [`${ENCRYPTION}/decrypt`, `${ENCRYPTION}/key.create`] },
+    ]);
+    expect(body.permissions.some((grant) => isRaw(grant.path))).toBe(false);
+    // The kv entry beside it is as the parser reports it.
+    expect(body.permissions.filter((grant) => !isRaw(grant.space)).map((grant) => grant.service)).toEqual(['tinycloud.kv']);
+    expect(() => cliConsumerCheck(siwe, body)).not.toThrow();
+  });
+});
+
+describe('which entries are reshaped for the consumer', () => {
+  test('a raw encryption entry as the ReCap parser splits it is, and nothing else changes in it', () => {
+    const entry = { service: 'encryption', space: 'encryption', path: RAW_QA, actions: [`${ENCRYPTION}/decrypt`] };
+    expect(reportedEntry(entry)).toEqual({ service: 'encryption', space: RAW_QA, path: '', actions: [`${ENCRYPTION}/decrypt`] });
+  });
+
+  test('an entry whose path merely starts with the same text is not reshaped unless its space is encryption', () => {
+    const lookalikes = [
+      { service: 'kv', space: SPACE, path: RAW_NETWORK, actions: ['tinycloud.kv/get'] },
+      { service: 'kv', space: 'other', path: RAW_NETWORK, actions: ['tinycloud.kv/get'] },
+      { service: 'encryption', space: '', path: RAW_NETWORK, actions: [`${ENCRYPTION}/decrypt`] },
+    ];
+    for (const entry of lookalikes) expect(reportedEntry(entry)).toBe(entry);
+  });
+
+  test('an encryption entry whose path is not a raw encryption urn is not reshaped', () => {
+    const entry = { service: 'encryption', space: 'encryption', path: 'secrets/k', actions: [`${ENCRYPTION}/decrypt`] };
+    expect(reportedEntry(entry)).toBe(entry);
   });
 });

@@ -146,7 +146,7 @@ const RAW_ENCRYPTION_RESOURCE_PREFIX = 'urn:tinycloud:encryption:';
  * this: the preview and the action ids the window sends keep the parser's form.
  */
 export function reportedEntry(entry: RecapEntry): RecapEntry {
-  if (entry.space.startsWith('tinycloud:') || !entry.path.startsWith(RAW_ENCRYPTION_RESOURCE_PREFIX)) return entry;
+  if (entry.space !== 'encryption' || !entry.path.startsWith(RAW_ENCRYPTION_RESOURCE_PREFIX)) return entry;
   return { ...entry, space: entry.path, path: '' };
 }
 
