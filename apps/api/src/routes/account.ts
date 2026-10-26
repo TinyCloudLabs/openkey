@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { requireSession, type SessionContext } from '../middleware/session';
 import { parseAutoSignPreferencePatch } from './account-preferences';
-import { TINYCLOUD_DELEGATION_SCOPE, TINYCLOUD_MANAGE_KEY_SCOPE } from '../oauth-config';
+import { TINYCLOUD_DELEGATION_SCOPE, TINYCLOUD_MANAGE_KEY_SCOPE, TINYCLOUD_MCP_SCOPE } from '../oauth-config';
 import {
   changeTinyCloudManageKeyGrant,
   changeTinyCloudManageKeyMode,
@@ -136,7 +136,7 @@ accountRouter.patch('/auto-sign', async (c) => {
 // preference or decision; callers cannot create preferences without consent.
 accountRouter.get('/tinycloud-apps', async (c) => {
   const user = c.get('user');
-  const [consents, preferences, decisions, userPreference, nativeGrants] = await Promise.all([
+  const [consents, preferences, decisions, userPreference, nativeGrants, mcpConsents] = await Promise.all([
     prisma.oauthConsent.findMany({
       where: { userId: user.id, OR: [{ scopes: { has: TINYCLOUD_MANAGE_KEY_SCOPE } }, { scopes: { has: TINYCLOUD_DELEGATION_SCOPE } }] },
       select: { clientId: true, scopes: true },
@@ -153,6 +153,12 @@ accountRouter.get('/tinycloud-apps', async (c) => {
       where: { id: user.id }, select: { tinyCloudManageKeyMode: true, tinyCloudManageKeyPolicyEpoch: true },
     }),
     prisma.tinyCloudNativeGrant.groupBy({ by: ['clientId'], where: { userId: user.id, status: 'ACTIVE' }, _count: { id: true } }),
+    // MCP consents are listed separately; they never add entries to `apps`.
+    prisma.oauthConsent.findMany({
+      where: { userId: user.id, scopes: { has: TINYCLOUD_MCP_SCOPE } },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, clientId: true, scopes: true, createdAt: true },
+    }),
   ]);
   const clientIds = [...new Set([
     ...consents.map((consent) => consent.clientId),
@@ -160,8 +166,9 @@ accountRouter.get('/tinycloud-apps', async (c) => {
     ...decisions.map((decision) => decision.clientId),
     ...nativeGrants.map((grant) => grant.clientId),
   ])];
-  const clients = clientIds.length === 0 ? [] : await prisma.oauthClient.findMany({
-    where: { clientId: { in: clientIds } },
+  const clientLookupIds = [...new Set([...clientIds, ...mcpConsents.map((consent) => consent.clientId)])];
+  const clients = clientLookupIds.length === 0 ? [] : await prisma.oauthClient.findMany({
+    where: { clientId: { in: clientLookupIds } },
     select: { clientId: true, name: true, uri: true, icon: true, disabled: true },
   });
   const clientById = new Map(clients.map((client) => [client.clientId, client]));
@@ -173,6 +180,7 @@ accountRouter.get('/tinycloud-apps', async (c) => {
       const nativeDelegation = consents.some((consent) => consent.clientId === clientId && consent.scopes.includes(TINYCLOUD_DELEGATION_SCOPE));
       const blocked = preference?.enabled === false || preference?.status === 'DISABLED';
       return {
+        kind: 'tinycloud' as const,
         clientId,
         name: client?.name || preference?.clientNameSnapshot || clientId,
         uri: client?.uri || preference?.clientUriSnapshot || null,
@@ -186,6 +194,20 @@ accountRouter.get('/tinycloud-apps', async (c) => {
           ? consentIds.has(clientId) && !(preference?.enabled === false || preference?.status === 'DISABLED')
           : preference?.enabled === true && preference.status === 'ENABLED' && consentIds.has(clientId),
         status: consentIds.has(clientId) ? (preference?.status ?? (nativeDelegation ? 'ENABLED' : 'PENDING_USER_APPROVAL')) : 'CONSENT_WITHDRAWN',
+      };
+    }),
+    mcpApps: mcpConsents.map((consent) => {
+      const client = clientById.get(consent.clientId);
+      return {
+        kind: 'mcp' as const,
+        consentId: consent.id,
+        clientId: consent.clientId,
+        name: client?.name || consent.clientId,
+        uri: client?.uri || null,
+        host: hostnameOf(client?.uri),
+        icon: client?.icon || null,
+        connectedAt: consent.createdAt.toISOString(),
+        scopes: consent.scopes,
       };
     }),
     activity: decisions.map((decision) => {
@@ -243,6 +265,29 @@ accountRouter.delete('/tinycloud-apps/:clientId', async (c) => {
   if (removed.count === 0) return c.json({ error: 'TinyCloud app consent not found' }, 404);
   return c.json({ clientId, disconnected: true });
 });
+
+// Disconnect an MCP app. This is the same withdrawal as the delete above: the
+// consent row is removed and the database trigger bumps the consent generation
+// and revokes the grants and tokens tied to it. The consent is addressed by id,
+// must belong to the signed-in user, and must carry the MCP scope.
+accountRouter.delete('/tinycloud-apps/mcp/:consentId', async (c) => {
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
+  const body = await c.req.json().catch(() => null) as { confirmation?: unknown } | null;
+  if (body?.confirmation !== 'DISCONNECT') return c.json({ error: 'Type DISCONNECT to confirm' }, 400);
+  const userId = c.get('user').id;
+  const consentId = c.req.param('consentId');
+  const removed = await prisma.oauthConsent.deleteMany({ where: {
+    id: consentId, userId, scopes: { has: TINYCLOUD_MCP_SCOPE },
+  } });
+  if (removed.count === 0) return c.json({ error: 'Connected MCP app not found' }, 404);
+  return c.json({ consentId, disconnected: true });
+});
+
+function hostnameOf(uri: string | null | undefined): string | null {
+  if (!uri) return null;
+  try { return new URL(uri).hostname || null; } catch { return null; }
+}
 
 // Delete account permanently
 // Requires: cookie session from an OpenKey origin, a passkey verification on
