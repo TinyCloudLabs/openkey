@@ -16,9 +16,9 @@ describe('prepared owner revocation', () => {
     const service = new PreparedHandoffService(new MemoryPreparedHandoffStore(), { now: () => now });
     expect((await service.claim(claim, 'owner')).ticket).toBe(claim.delivery.handoffId);
     await service.bindOwnerRevocation(claim.delivery.handoffId, 'owner', 'key-owner', '2026-10-26T12:00:00.000Z.secret');
-    await service.reserveSigning(claim.delivery.handoffId, 'owner', '2026-10-26T12:00:00.000Z.secret', 'key-owner');
+    await service.reserveSigning(claim.delivery.handoffId, 'owner', '2026-10-26T12:00:00.000Z.secret', 'key-owner', 'owner-revocation');
     expect(await service.completeSigning(claim.delivery.handoffId, 'owner', '2026-10-26T12:00:00.000Z.secret', 'key-owner')).toEqual({ deliveryState: claim.delivery.state, selectedKeyId: 'key-owner' });
-    await expect(service.reserveSigning(claim.delivery.handoffId, 'owner', '2026-10-26T12:00:00.000Z.secret', 'key-owner')).rejects.toThrow('already signed');
+    await expect(service.reserveSigning(claim.delivery.handoffId, 'owner', '2026-10-26T12:00:00.000Z.secret', 'key-owner', 'owner-revocation')).rejects.toThrow('already signed');
   });
   test.each([
     [{ ...claim.request, kind: 'unknown' }, 'kind'],
@@ -28,9 +28,8 @@ describe('prepared owner revocation', () => {
     const service = new PreparedHandoffService(new MemoryPreparedHandoffStore(), { now: () => now });
     await expect(service.claim({ ...claim, request }, 'owner')).rejects.toThrow(reason);
   });
-  test('caps a later request expiry before storing the signed request', async () => {
+  test('refuses a later request expiry beyond the server clock allowance', async () => {
     const service = new PreparedHandoffService(new MemoryPreparedHandoffStore(), { now: () => now });
-    await service.claim({ ...claim, request: { ...claim.request, expiresAt: '2026-10-26T13:00:00.000Z' } }, 'owner');
-    expect((await service.ownerRevocation(claim.delivery.handoffId, 'owner')).expiresAt).toBe('2026-10-26T12:10:00.000Z');
+    await expect(service.claim({ ...claim, request: { ...claim.request, expiresAt: '2026-10-26T13:00:00.000Z' } }, 'owner')).rejects.toThrow('expiry');
   });
 });

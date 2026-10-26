@@ -241,6 +241,7 @@
       <p class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-amber-900">{text.warning}</p>
       <dl class="space-y-2 text-sm break-all">
         <div><dt class="font-semibold">{text.permission}</dt><dd><code>{request.cid.slice(0, 10)}…{request.cid.slice(-6)}</code></dd></div>
+        <div><dt class="font-semibold">{text.fullCid}</dt><dd><input aria-label={text.fullCid} readonly value={request.cid} class="w-full rounded-lg border border-surface-200 bg-surface-50 p-2 font-mono text-xs" /><p class="mt-1">{text.matchCid}</p></dd></div>
         <div><dt class="font-semibold">{text.owner}</dt><dd><code>{ownerRevocationAddress(request)}</code></dd></div>
         {#if siwe}<div><dt class="font-semibold">{text.expires}</dt><dd>{siwe.match(/^Expiration Time: (.+)$/m)?.[1]}</dd></div>{/if}
       </dl>
