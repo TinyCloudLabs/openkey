@@ -93,11 +93,16 @@ jobs:
 
       # CI=true makes the config retry a failed test once. The step always ends green: the summary
       # step below reads the JSON report and decides the result.
+      #
+      # The dev server listens on `localhost`, which a runner resolves to ::1 first, while the SDK
+      # handshake spec loads the widget from http://127.0.0.1:5779. IPv4 first makes `localhost`
+      # mean 127.0.0.1 (as on a developer machine), so both addresses reach the server.
       - name: Run the browser specs
         id: suite
         if: steps.relevance.outputs.relevant == 'true'
         working-directory: apps/web
         env:
+          NODE_OPTIONS: --dns-result-order=ipv4first
           PLAYWRIGHT_JSON_OUTPUT_NAME: ${{ runner.temp }}/playwright-report.json
         run: |
           bunx playwright test --config tests/browser/playwright.config.ts --reporter=list,json \
