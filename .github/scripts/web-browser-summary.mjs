@@ -1,20 +1,32 @@
 #!/usr/bin/env node
-// Reads a Playwright JSON report and the known-red list, prints a markdown summary and exits 1
-// only when a failure is NOT on the known-red list (TC-2120).
+// Reads a Playwright JSON report, Playwright's exit status and the known-red list, prints a markdown
+// summary, and exits 1 unless the report is complete and every failure is a known red (TC-2120).
 //
-//   node web-browser-summary.mjs <playwright-report.json> [known-reds.json]
+//   node web-browser-summary.mjs <playwright-report.json> [known-reds.json] [--exit-code N] [--specs-dir DIR]
 //
-// A test that fails and is not listed is a NEW failure (job fails). A listed test that fails is a
-// known red. A test that failed and passed on its retry is a flake (reported, never fails). A test
-// on the `knownFlaky` list that fails on every attempt is reported as a flake too, with its reason,
-// and does not fail the job. A listed known red that passes is "known red now passes". A report that
-// is missing, unreadable or carries run-level errors fails the job: no report means nothing was checked.
+// The job FAILS when:
+//   - the report is missing, unreadable, or has run-level errors (a spec file that fails to load is one);
+//   - Playwright's exit status was not recorded, or it is nonzero and the report does not fully
+//     explain it (every failing test must be a listed known red, and at least one must fail);
+//   - the report has no tests, fewer than `minTests`, a configured project with no tests, or a spec
+//     file in --specs-dir with no tests in it;
+//   - the counts in `stats` disagree with the tests in the report (a partial report);
+//   - a test has a status or result status this script does not know, was interrupted, or is an
+//     expected failure;
+//   - a test is skipped and not on the `knownSkipped` list;
+//   - a test fails and is not a listed known red.
+// A test that failed and then passed on its retry is a flake: reported, never a failure.
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
+import { basename } from 'node:path';
 import { pathToFileURL } from 'node:url';
+
+const TEST_STATUSES = new Set(['expected', 'unexpected', 'flaky', 'skipped']);
+const RESULT_STATUSES = new Set(['passed', 'failed', 'timedOut', 'skipped', 'interrupted']);
 
 const firstLine = (text) => String(text ?? '').replace(/\x1b\[[0-9;]*m/g, '').split('\n').find((line) => line.trim()) ?? '';
 const testKey = (project, file, title) => `${project}\u0000${file}\u0000${title}`;
+const keyed = (entries) => new Map(entries.map((entry) => [testKey(entry.project, entry.file, entry.title), entry]));
 
 function* tests(suite) {
   for (const child of suite.suites ?? []) yield* tests(child);
@@ -25,26 +37,48 @@ function* tests(suite) {
   }
 }
 
-/** The classification of every test in a report against the known reds. */
-export function summarize(report, knownReds = [], knownFlaky = []) {
-  const known = new Map(knownReds.map((entry) => [testKey(entry.project, entry.file, entry.title), entry]));
-  const flakyKnown = new Map(knownFlaky.map((entry) => [testKey(entry.project, entry.file, entry.title), entry]));
+/**
+ * The classification of every test in a report.
+ * options: knownReds, knownSkipped (entries { project, file, title, reason }), minTests, projects
+ * (names that must each have a test), specFiles (file names that must each have a test), exitCode.
+ */
+export function summarize(report, options = {}) {
+  const { knownReds = [], knownSkipped = [], minTests = 1, projects = [], specFiles = [], exitCode } = options;
+  const known = keyed(knownReds);
+  const skippable = keyed(knownSkipped);
   const seen = new Set();
-  const out = { newFailures: [], knownRed: [], flaky: [], knownNowPasses: [], unmatchedKnown: [], skipped: 0, perProject: {}, errors: [], stats: report.stats ?? {} };
+  const out = {
+    newFailures: [], knownRed: [], flaky: [], knownNowPasses: [], unmatchedKnown: [], knownSkipped: [],
+    problems: [], errors: [], skipped: 0, total: 0, perProject: {}, stats: report.stats ?? {},
+  };
   for (const error of report.errors ?? []) out.errors.push(firstLine(error.message ?? error));
+
+  const walked = { expected: 0, unexpected: 0, flaky: 0, skipped: 0 };
+  const files = new Set();
+  const seenProjects = new Set();
   for (const suite of report.suites ?? []) {
     for (const test of tests(suite)) {
+      out.total += 1;
+      files.add(basename(String(test.file)));
+      seenProjects.add(test.project);
       const key = testKey(test.project, test.file, test.title);
       const counts = (out.perProject[test.project] ??= { passed: 0, failed: 0, flaky: 0, skipped: 0 });
       const entry = known.get(key);
       if (entry) seen.add(key);
       const failure = firstLine(test.results.find((result) => result.error)?.error?.message);
       const row = { project: test.project, file: test.file, line: test.line, title: test.title, failure };
-      const flakyEntry = flakyKnown.get(key);
-      if (test.status === 'unexpected' && flakyEntry && !entry) {
-        counts.flaky += 1;
-        out.flaky.push({ ...row, persistent: true, reason: flakyEntry.reason });
-      } else if (test.status === 'unexpected') {
+      const label = `\`[${test.project}] ${test.file}:${test.line}\` ${test.title}`;
+
+      for (const result of test.results) {
+        if (!RESULT_STATUSES.has(result.status)) out.problems.push(`${label}: unknown result status "${result.status}"`);
+        else if (result.status === 'interrupted') out.problems.push(`${label}: the run was interrupted`);
+      }
+      if (!TEST_STATUSES.has(test.status)) {
+        out.problems.push(`${label}: unknown test status "${test.status}"`);
+        continue;
+      }
+      walked[test.status] += 1;
+      if (test.status === 'unexpected') {
         counts.failed += 1;
         (entry ? out.knownRed : out.newFailures).push(entry ? { ...row, reason: entry.reason } : row);
       } else if (test.status === 'flaky') {
@@ -53,14 +87,54 @@ export function summarize(report, knownReds = [], knownFlaky = []) {
       } else if (test.status === 'skipped') {
         counts.skipped += 1;
         out.skipped += 1;
+        const allowed = skippable.get(key);
+        if (allowed) out.knownSkipped.push({ ...row, reason: allowed.reason });
+        else out.problems.push(`${label}: skipped, and not on the knownSkipped list`);
       } else {
-        counts.passed += 1;
-        if (entry) out.knownNowPasses.push(row);
+        const last = test.results[test.results.length - 1];
+        if (last?.status !== 'passed') {
+          out.problems.push(`${label}: counted as expected but its last result is "${last?.status ?? 'missing'}" (an expected failure is not a pass)`);
+        } else {
+          counts.passed += 1;
+          if (entry) out.knownNowPasses.push(row);
+        }
       }
     }
   }
   for (const [key, entry] of known) if (!seen.has(key)) out.unmatchedKnown.push(entry);
-  out.failed = out.newFailures.length > 0 || out.errors.length > 0;
+
+  // The report must be whole: tests present, as many as expected, and as many as its own stats say.
+  if (out.total === 0) out.problems.push('the report has no tests');
+  else if (out.total < minTests) out.problems.push(`the report has ${out.total} tests, fewer than the minimum of ${minTests} (a spec file may not have loaded)`);
+  const stats = report.stats;
+  if (!stats || ['expected', 'unexpected', 'flaky', 'skipped'].some((name) => !Number.isInteger(stats[name]))) {
+    out.problems.push('the report has no usable stats to check its tests against');
+  } else {
+    const mismatched = Object.keys(walked).filter((name) => walked[name] !== stats[name]);
+    if (mismatched.length > 0) {
+      out.problems.push(`the report's stats disagree with its tests (a partial report?): ${mismatched.map((name) => `${name} ${stats[name]} in stats, ${walked[name]} in tests`).join('; ')}`);
+    }
+  }
+  for (const project of projects) {
+    if (!seenProjects.has(project)) out.problems.push(`project "${project}" has no tests in the report`);
+  }
+  for (const file of specFiles) {
+    if (!files.has(file)) out.problems.push(`spec file ${file} has no tests in the report (did it fail to load?)`);
+  }
+
+  // Playwright's exit status must be recorded, and a nonzero one must be fully explained by known reds.
+  if (!Number.isInteger(exitCode)) {
+    out.problems.push("Playwright's exit status was not recorded");
+  } else if (exitCode !== 0) {
+    const failing = out.newFailures.length + out.knownRed.length;
+    if (failing === 0 || out.newFailures.length > 0 || out.errors.length > 0) {
+      out.problems.push(`Playwright exited with status ${exitCode}, and the report does not explain it by known reds alone`);
+    }
+  } else if (out.newFailures.length + out.knownRed.length > 0) {
+    out.problems.push('Playwright exited with status 0, but the report has failing tests');
+  }
+
+  out.failed = out.problems.length > 0 || out.newFailures.length > 0 || out.errors.length > 0;
   return out;
 }
 
@@ -68,10 +142,16 @@ const where = (row) => `\`[${row.project}] ${row.file}:${row.line}\` ${row.title
 
 export function render(result) {
   const lines = [];
-  const headline = result.failed
-    ? `**FAIL**: ${result.newFailures.length} new failure(s)${result.errors.length ? `, ${result.errors.length} run-level error(s)` : ''}`
-    : `**PASS**: no failure outside the known-red list (${result.knownRed.length} known red, ${result.flaky.length} flaky)`;
-  lines.push('## Web browser specs', '', headline, '');
+  const reasons = [];
+  if (result.problems.length) reasons.push(`${result.problems.length} problem(s) with the report`);
+  if (result.errors.length) reasons.push(`${result.errors.length} run-level error(s)`);
+  if (result.newFailures.length) reasons.push(`${result.newFailures.length} new failure(s)`);
+  lines.push('## Web browser specs', '', result.failed
+    ? `**FAIL**: ${reasons.join(', ')}`
+    : `**PASS**: ${result.total} tests, no failure outside the known-red list (${result.knownRed.length} known red, ${result.flaky.length} flaky)`, '');
+  if (result.problems.length) {
+    lines.push('### Problems with the report (the run cannot be trusted)', ...result.problems.map((problem) => `- ${problem}`), '');
+  }
   if (result.errors.length) {
     lines.push('### Run-level errors (nothing may have run)', ...result.errors.map((error) => `- ${error}`), '');
   }
@@ -82,7 +162,10 @@ export function render(result) {
     lines.push('### Known reds (still failing; listed in .github/web-browser-known-reds.json)', ...result.knownRed.map((row) => `- ${where(row)}${row.reason ? `: ${row.reason}` : ''}`), '');
   }
   if (result.flaky.length) {
-    lines.push('### Flakes (failed, then passed on retry, or listed as known flaky; they do not fail the job)', ...result.flaky.map((row) => `- ${where(row)}${row.persistent ? ' (failed on every attempt; known flaky)' : ''}${row.failure ? `: ${row.failure}` : ''}${row.persistent && row.reason ? ` Known flaky: ${row.reason}` : ''}`), '');
+    lines.push('### Flakes (failed, then passed on retry; they do not fail the job)', ...result.flaky.map((row) => `- ${where(row)}${row.failure ? `: ${row.failure}` : ''}`), '');
+  }
+  if (result.knownSkipped.length) {
+    lines.push('### Skipped (listed in knownSkipped)', ...result.knownSkipped.map((row) => `- ${where(row)}${row.reason ? `: ${row.reason}` : ''}`), '');
   }
   if (result.knownNowPasses.length) {
     lines.push('### Known red now passes: delete it from the list', ...result.knownNowPasses.map((row) => `- ${where(row)}`), '');
@@ -94,18 +177,26 @@ export function render(result) {
   for (const [project, counts] of Object.entries(result.perProject)) {
     lines.push(`| ${project} | ${counts.passed} | ${counts.failed} | ${counts.flaky} | ${counts.skipped} |`);
   }
-  if (typeof result.stats.duration === 'number') lines.push('', `Run time ${(result.stats.duration / 1000).toFixed(0)} s.`);
+  if (typeof result.stats?.duration === 'number') lines.push('', `Run time ${(result.stats.duration / 1000).toFixed(0)} s.`);
   return `${lines.join('\n')}\n`;
 }
 
-function readJson(path) {
-  return JSON.parse(readFileSync(path, 'utf8'));
+const readJson = (path) => JSON.parse(readFileSync(path, 'utf8'));
+
+function parseArgs(argv) {
+  const positional = [];
+  const flags = {};
+  for (let i = 0; i < argv.length; i += 1) {
+    if (argv[i] === '--exit-code' || argv[i] === '--specs-dir') flags[argv[i]] = argv[++i];
+    else positional.push(argv[i]);
+  }
+  return { positional, flags };
 }
 
 function main(argv) {
-  const [reportPath, knownPath] = argv;
+  const { positional: [reportPath, listPath], flags } = parseArgs(argv);
   if (!reportPath) {
-    console.error('usage: web-browser-summary.mjs <playwright-report.json> [known-reds.json]');
+    console.error('usage: web-browser-summary.mjs <playwright-report.json> [known-reds.json] [--exit-code N] [--specs-dir DIR]');
     return 2;
   }
   let report;
@@ -115,13 +206,10 @@ function main(argv) {
     process.stdout.write(`## Web browser specs\n\n**FAIL**: no readable Playwright report (${error.code ?? error.name}), so nothing was checked.\n`);
     return 1;
   }
-  let knownReds = [];
-  let knownFlaky = [];
-  if (knownPath) {
+  let list = {};
+  if (listPath) {
     try {
-      const list = readJson(knownPath);
-      knownReds = list.knownReds ?? [];
-      knownFlaky = list.knownFlaky ?? [];
+      list = readJson(listPath);
     } catch (error) {
       // A missing list is an empty list; an unreadable one must not hide a failure.
       if (error.code !== 'ENOENT') {
@@ -130,7 +218,24 @@ function main(argv) {
       }
     }
   }
-  const result = summarize(report, knownReds, knownFlaky);
+  let specFiles = [];
+  if (flags['--specs-dir']) {
+    try {
+      specFiles = readdirSync(flags['--specs-dir']).filter((name) => name.endsWith('.spec.ts'));
+    } catch (error) {
+      process.stdout.write(`## Web browser specs\n\n**FAIL**: the spec directory cannot be read (${error.code ?? error.name}).\n`);
+      return 1;
+    }
+  }
+  const exitCode = flags['--exit-code'] === undefined || flags['--exit-code'] === '' ? undefined : Number(flags['--exit-code']);
+  const result = summarize(report, {
+    knownReds: list.knownReds ?? [],
+    knownSkipped: list.knownSkipped ?? [],
+    minTests: list.minTests,
+    projects: list.projects ?? [],
+    specFiles,
+    exitCode,
+  });
   process.stdout.write(render(result));
   return result.failed ? 1 : 0;
 }

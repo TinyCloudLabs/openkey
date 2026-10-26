@@ -1,13 +1,7 @@
 {
-  "_comment": "KNOWN RED and KNOWN FLAKY browser specs (TC-2120). The Web browser tests job fails only on a failure that is NOT listed here. knownReds: a listed test that fails is printed as a known red; when it passes the job prints 'known red now passes: delete it from the list'. knownFlaky: a listed test that fails on every attempt is reported as a flake and does not fail the job; nothing is printed when it passes. Entry format: { project, file, title (as in the report), line (informational), reason }. Add an entry only with a diagnosis, not as a skip, and delete it when the spec is fixed.",
+  "_comment": "Settings and known lists for the Web browser tests job (TC-2120). The job fails on any failure that is NOT a listed known red, on a skipped test that is not in knownSkipped, and on an incomplete report: no tests, fewer than minTests, a project in `projects` with none, a spec file with none, stats that disagree with the tests, or a nonzero Playwright exit status that known reds do not fully explain. minTests: raise it when specs are added (it is a floor that catches a spec file that stops loading; the suite had 164 tests when it was set). knownReds: a listed test that fails is printed as a known red; when it passes the job prints 'known red now passes: delete it from the list'. Entry format: { project, file, title (as in the report), line (informational), reason }. Add an entry only with a diagnosis, not as a skip, and delete it when the spec is fixed. A test that failed and passed on its retry is a flake: Playwright reports it and the job passes, so there is no list for it.",
+  "minTests": 150,
+  "projects": ["chromium", "webkit-sign-handshake"],
   "knownReds": [],
-  "knownFlaky": [
-    {
-      "project": "chromium",
-      "file": "native-login.spec.ts",
-      "line": 241,
-      "title": "a wrong code shows one plain line with a single shake, clears the boxes and lets you try again",
-      "reason": "Timing race in the spec: line 267 reads window.__shakes once, right after the error line is visible, and the animationstart event can fire a frame later (expect(...).toBe(1) is not polled). It failed the first attempt in 1 of 3 local runs and in most GitHub runs, and every attempt in one. A spec fix (expect.poll) needs a test-ruling; not applied."
-    }
-  ]
+  "knownSkipped": []
 }

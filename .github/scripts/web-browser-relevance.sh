@@ -7,41 +7,43 @@
 #
 # It fails OPEN: only a clean `git diff` that lists files, none of them on a relevant path, skips
 # the specs. A non-pull-request event, a git failure and an empty file list all run them.
+# File names are read NUL-delimited (`git diff -z`), so a name with a newline or a quote, which
+# plain `git diff --name-only` C-quotes, is matched as it is.
 #
 # Environment: EVENT (github.event_name), BASE (base commit of the pull request), HEAD (merge commit).
-# `--stdin` reads the changed file names from stdin, not from git; the tests use it.
+# `--stdin` reads NUL-delimited changed file names from stdin, not from git; the tests use it.
 
 set -u
 
 # Paths whose change can move a browser spec: the web app, what it builds from, the SDK the
-# handshake spec loads from its dist/, the lockfile and manifests, and this workflow's own files.
+# handshake spec loads from its dist/, the root configuration those packages build with (they extend
+# the root tsconfig.json), the lockfile and manifests, and this workflow's own files.
 is_relevant_path() {
   case "$1" in
     apps/web/*|packages/capability-review/*|packages/sdk/*|packages/core/*|packages/types/*) return 0 ;;
-    bun.lock|package.json|turbo.json) return 0 ;;
+    bun.lock|bunfig.toml|package.json|tsconfig.json|turbo.json) return 0 ;;
     .github/workflows/web-browser-tests.yml|.github/web-browser-known-reds.json) return 0 ;;
     .github/scripts/web-browser-*) return 0 ;;
   esac
   return 1
 }
 
+# Reads NUL-delimited names from stdin and prints the decision.
 decide() {
-  local files="$1" file first=""
-  if [[ -z "$files" ]]; then
+  local file first="" count=0
+  while IFS= read -r -d '' file; do
+    [[ -z "$file" ]] && continue
+    count=$((count + 1))
+    if [[ -z "$first" ]] && is_relevant_path "$file"; then
+      first="$file"
+    fi
+  done
+  if (( count == 0 )); then
     echo "relevant=true"
     echo "reason=the list of changed files is empty, so the specs run"
-    return
-  fi
-  while IFS= read -r file; do
-    [[ -z "$file" ]] && continue
-    if is_relevant_path "$file"; then
-      first="$file"
-      break
-    fi
-  done <<< "$files"
-  if [[ -n "$first" ]]; then
+  elif [[ -n "$first" ]]; then
     echo "relevant=true"
-    echo "reason=a relevant path changed: $first"
+    echo "reason=a relevant path changed: ${first//$'\n'/ }"
   else
     echo "relevant=false"
     echo "reason=no web app, capability review, SDK or workflow path changed in this pull request"
@@ -49,7 +51,7 @@ decide() {
 }
 
 if [[ "${1:-}" == "--stdin" ]]; then
-  decide "$(cat)"
+  decide
   exit 0
 fi
 
@@ -59,9 +61,11 @@ if [[ "${EVENT:-}" != "pull_request" ]]; then
   exit 0
 fi
 
-if ! files="$(git diff --no-renames --name-only "${BASE:-}" "${HEAD:-}" 2>/dev/null)"; then
+names="$(mktemp 2>/dev/null)" || { echo "relevant=true"; echo "reason=no temporary file, so the specs run"; exit 0; }
+trap 'rm -f "$names"' EXIT
+if ! git diff --no-renames --name-only -z "${BASE:-}" "${HEAD:-}" > "$names" 2>/dev/null; then
   echo "relevant=true"
   echo "reason=git diff failed, so the specs run"
   exit 0
 fi
-decide "$files"
+decide < "$names"
