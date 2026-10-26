@@ -266,8 +266,43 @@ colors with `themeBackgroundColor` and `themeAccentColor` on client create or
 PATCH; each accepts `#rrggbb` or `null` to clear it. The
 `register-oauth-client.yml` workflow accepts `icon`,
 `theme_background_color`, and `theme_accent_color` when creating a client. Set
-`client_id` to update only that enabled client's name and branding; redirect
-URIs, scopes, type, and delegation ceiling stay untouched. Icons must use HTTPS.
+`client_id` without `tinycloud_native_delegation` to update only that enabled
+client's name and branding; redirect URIs, scopes, type, and delegation ceiling
+stay untouched. Icons must use HTTPS.
+
+Set `client_id` together with `tinycloud_native_delegation` to replace that
+native client's ceiling with the value supplied (the same validation and
+whole-value replacement as the admin PATCH). A ceiling update changes only
+`tinycloudNativeDelegation`. For a client that already has a ceiling, `appId`
+and `siweDomain` are kept from the stored value: a value supplied for either
+must equal the stored one (accepted as a no-op), so a ceiling copied from the
+stored value works as it is, and a different value is refused. An absent stored
+`siweDomain` counts as `openkey.so`: supplying `openkey.so` is accepted and the
+written value stays without a `siweDomain`; any other value is refused.
+`tinycloudHost` must equal the stored host. A client that has no ceiling yet
+takes its `appId`
+from the value. The run prints the BEFORE and AFTER ceiling, the kept `appId`
+and `siweDomain` (with a note when a supplied value equalled them), and the
+entry-level diff. Added entries are applied. A value that removes an existing
+kv path, sql database or action, or reduces a limit, is refused with the
+entries listed unless `allow_narrow` is set (`--allow-narrow` on the command
+line); no flag allows a change of `appId`, `siweDomain` or `tinycloudHost`.
+A ceiling update is a dry run unless it is applied explicitly: the script
+writes only with `--apply`, and the workflow passes `--apply` only when
+`dry_run` is exactly `false` (default `true`; an empty or any other value is a
+dry run). A dry run prints the same output and writes nothing. Branding,
+redirect URI, type and website values cannot be combined with a ceiling update.
+The workflow job runs in the `production` environment, like the API deploy: a
+dispatch waits until that environment's required reviewer approves it, and
+`DATABASE_URL` is read from the environment's secret of that name.
+For example, a dry run, then the write, from the command line:
+`gh workflow run register-oauth-client.yml --repo TinyCloudLabs/openkey -f client_id=<id> -f tinycloud_native_delegation="$(cat ceiling.json)"`
+and the same with `-f dry_run=false` added. Set only `client_id`,
+`tinycloud_native_delegation` and optionally `dry_run` (and `allow_narrow`); do
+not set `type` or `name`, because the web form preselects `native` and the
+script refuses a ceiling update that carries `type` or `name`. Running the
+script directly: `CLIENT_ID=<id> CLIENT_TINYCLOUD_NATIVE_DELEGATION="$(cat ceiling.json)" bun scripts/ci-register-oauth-client.ts`
+(add `--apply` to write).
 
 On success OpenKey stores a `PENDING` request holding the public JWK, its
 thumbprint `sessionJkt` ([Session key thumbprint](#session-key-thumbprint)),
