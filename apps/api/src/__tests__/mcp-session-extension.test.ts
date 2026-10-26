@@ -103,10 +103,8 @@ describe('a refresh that matched nothing although the checks held a moment ago',
     } as unknown as McpRefreshDatabase;
   }
 
-  test('a token rotated in the meantime says so, still as invalid_grant', async () => {
-    expect(await run(raced({ revoked: new Date() }), null)).toEqual({
-      status: 400, error: 'invalid_grant', description: 'this refresh token was already used',
-    });
+  test('a token rotated in the meantime goes on to the provider, whose reuse detection decides', async () => {
+    expect(await run(raced({ revoked: new Date() }), null)).toBeNull();
   });
 
   test('a token that is still unrevoked, or gone, means the connection or the session ended', async () => {

@@ -106,12 +106,12 @@ describe('a change that lands between the checks and the write', () => {
   const refresh = (db: McpRefreshDatabase) =>
     mcpRefreshRefusal(db, {}, 'refresh-token', 'app', null, now, { presentedSecret: null });
 
-  test('the token was rotated meanwhile: invalid_grant that says it was already used, and the session is untouched', async () => {
+  test('the token was rotated meanwhile: the request goes on to the provider, and the session is untouched', async () => {
     const stored = await storedRefreshToken({}, 'refresh-token');
     await prisma.oauthRefreshToken.update({ where: { id: 'r' }, data: { token: stored! } });
     const before = await expiry();
     const refusal = await refresh(racing(() => prisma.oauthRefreshToken.update({ where: { id: 'r' }, data: { revoked: new Date(now.getTime() - 1000) } })));
-    expect(refusal).toEqual({ status: 400, error: 'invalid_grant', description: 'this refresh token was already used' });
+    expect(refusal).toBeNull();
     expect(await expiry()).toBe(before);
   });
 
@@ -124,7 +124,7 @@ describe('a change that lands between the checks and the write', () => {
     expect(await prisma.session.count({ where: { id: 's' } })).toBe(0);
   });
 
-  test('the session reached 30 days meanwhile: invalid_grant for an ended connection, not "already used"', async () => {
+  test('the session reached 30 days meanwhile: invalid_grant for an ended connection, and the request does not go on to the provider', async () => {
     const stored = await storedRefreshToken({}, 'refresh-token');
     await prisma.oauthRefreshToken.update({ where: { id: 'r' }, data: { token: stored! } });
     const refusal = await refresh(racing(() => prisma.session.update({ where: { id: 's' }, data: { createdAt: new Date(now.getTime() - 31 * DAY) } })));

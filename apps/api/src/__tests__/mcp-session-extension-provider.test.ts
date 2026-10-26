@@ -325,7 +325,7 @@ if (process.env.OPENKEY_MCP_OAUTH_TEST_CHILD !== '1') {
       expect(after.expiresAt.getTime()).toBe(after.createdAt.getTime() + 30 * DAY);
     });
 
-    test('parallel refreshes of one token: one succeeds, extends the session once, and the others are invalid_grant without claiming the connection ended', async () => {
+    test('parallel refreshes of one token: one succeeds and extends the session once; the others get the provider\'s invalid_grant and its reuse detection removes the spent token', async () => {
       for (let round = 0; round < 4; round++) {
         const { cookie, sessionId } = await signedIn();
         const { clientId, tokens } = await connectMcp(cookie);
@@ -339,7 +339,29 @@ if (process.env.OPENKEY_MCP_OAUTH_TEST_CHILD !== '1') {
           expect(loser.body.error_description).not.toContain('connection that authorized');
         }
         expect(near((await session(sessionId)).expiresAt, Date.now() + 6 * DAY), `round ${round}`).toBe(true);
+        // Reuse detection ran: the spent token's row is gone. (The winner's new row may be written just after it.)
+        expect((await refreshRows(clientId)).filter((row) => row.revoked !== null), `round ${round}`).toHaveLength(0);
       }
+    });
+
+    test('a replay of a rotated token (as when the token was taken and the taker refreshed first) is the provider\'s: invalid_grant and the whole family is deleted', async () => {
+      const { cookie, sessionId } = await signedIn();
+      const { clientId, tokens } = await connectMcp(cookie);
+      await age(sessionId, 6, DAY);
+      const first = await refresh(clientId, tokens.refresh_token);
+      expect(first.status).toBe(200);
+      expect(await refreshRows(clientId)).toHaveLength(2);
+      const extended = (await session(sessionId)).expiresAt.getTime();
+
+      const replay = await refresh(clientId, tokens.refresh_token);
+      expect(replay.status).toBe(400);
+      expect(await replay.json()).toMatchObject({ error: 'invalid_grant', error_description: 'invalid refresh token' });
+      expect(await refreshRows(clientId)).toHaveLength(0);
+      expect((await session(sessionId)).expiresAt.getTime()).toBe(extended);
+
+      // The newer token died with the family: its holder reconnects.
+      const newer = (await first.json() as { refresh_token: string }).refresh_token;
+      expect((await refresh(clientId, newer)).status).toBe(400);
     });
 
     test('a sign-out that races a refresh wins: the session ends and stays gone', async () => {

@@ -39,12 +39,6 @@ const CONNECTION_ENDED: McpRefreshRefusal = {
   description: 'the connection that authorized this token has ended; connect again',
 };
 
-const ALREADY_USED: McpRefreshRefusal = {
-  status: 400,
-  error: 'invalid_grant',
-  description: 'this refresh token was already used',
-};
-
 const UNAVAILABLE: McpRefreshRefusal = {
   status: 503,
   error: 'temporarily_unavailable',
@@ -166,10 +160,13 @@ export async function mcpRefreshRefusal(
     const extended = await extendSession(database, { userId: row.userId, clientId: row.clientId, sessionId: row.sessionId }, stored, now);
     if (extended) return null;
     // Nothing matched although the checks above held a moment ago. If the token has
-    // been rotated since (a parallel refresh of the same token got there first), say
-    // so; otherwise the connection or the session ended, or the session reached its cap.
+    // been rotated since (a parallel refresh of the same token got there first), the
+    // provider decides: its reuse detection removes the whole token family, so a
+    // replay of a token that was taken ends the chain of whoever holds the newer
+    // token. Otherwise the connection or the session ended, or the session reached
+    // its cap.
     const current = await database.oauthRefreshToken.findUnique({ where: { token: stored }, select: { revoked: true } });
-    return current?.revoked ? ALREADY_USED : CONNECTION_ENDED;
+    return current?.revoked ? null : CONNECTION_ENDED;
   } catch {
     return UNAVAILABLE;
   }
