@@ -31,6 +31,7 @@ export function parseOwnerRevocationRequest(value: unknown, now = new Date()): O
   }
   const expiry = Date.parse(input.expiresAt);
   if (expiry <= now.getTime()) throw new Error('Owner-revocation request expired');
+  // The handoff caps the requested expiry at claim time plus ten minutes; the review shows this actual cap.
   return { ...input, expiresAt: new Date(Math.min(expiry, now.getTime() + 600_000)).toISOString() } as OwnerRevocationRequest;
 }
 
@@ -48,6 +49,7 @@ export function buildOwnerRevocationSiwe(request: OwnerRevocationRequest, domain
     `Chain ID: ${match[1]}`,
     `Nonce: ${request.nonce}`,
     `Issued At: ${issuedAt.toISOString()}`,
+    // Message construction can happen later than the claim, so never extend its ten-minute lifetime.
     `Expiration Time: ${new Date(Math.min(Date.parse(request.expiresAt), issuedAt.getTime() + 600_000)).toISOString()}`,
   ].join('\n');
 }

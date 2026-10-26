@@ -125,3 +125,28 @@ test('owner review shows exact target and refuses an external wallet on another 
     globalThis.fetch = originalFetch;
   }
 });
+
+test('owner review exposes the entire copyable permission ID for CLI comparison', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const path = String(input);
+    if (path.endsWith('/available')) return Response.json({ transportVersion: 2 });
+    if (path.endsWith('/claim')) return Response.json({ ticket: delivery.handoffId, expiresAt: new Date(Date.now() + 300_000).toISOString() });
+    if (path.endsWith('/prepare')) return Response.json({ authorizationContextToken: 'token', siwe: `localhost:5173 wants you to sign in with your Ethereum account:\n${address}\n\n\nURI: ucan:${cid}\nVersion: 1\nChain ID: 1\nNonce: ${request.nonce}\nIssued At: ${new Date().toISOString()}\nExpiration Time: ${request.expiresAt}` });
+    throw new Error(`Unexpected request ${path}`);
+  }) as typeof fetch;
+  const target = document.createElement('div');
+  document.body.append(target);
+  const app = mount(Subject, { target, props: { encoded, onClear: () => {} } });
+  try {
+    await until(() => target.querySelector<HTMLInputElement>('input[aria-label="Full permission ID"]')?.value === cid, 'full permission ID');
+    const fullCid = target.querySelector<HTMLInputElement>('input[aria-label="Full permission ID"]');
+    expect(fullCid?.readOnly).toBe(true);
+    expect(fullCid?.value).toBe(cid);
+    expect(target.textContent).toContain('Match the full permission ID with the one shown by your CLI.');
+  } finally {
+    unmount(app);
+    target.remove();
+    globalThis.fetch = originalFetch;
+  }
+});

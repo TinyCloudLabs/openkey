@@ -66,6 +66,11 @@ function validateRequest(input: unknown, now: Date): { request: PreparedHandoffR
   const delivery = input.delivery;
   const ownerRequest = 'kind' in request;
   let revocation: OwnerRevocationRequest | null = null;
+  const requestedExpiry = 'expiresAt' in request ? request.expiresAt : undefined;
+  if (ownerRequest && typeof requestedExpiry === 'string' && Date.parse(requestedExpiry) > now.getTime() + 660_000) {
+    // Allow one minute of CLI/server clock skew, then cap the signed expiry to ten minutes.
+    fail('invalid_request', 'Owner-revocation expiry exceeds the server clock allowance', 400);
+  }
   if (ownerRequest) {
     try { revocation = parseOwnerRevocationRequest(request, now); }
     catch (cause) { fail('invalid_request', cause instanceof Error ? cause.message : 'Invalid owner-revocation request', 400); }
@@ -236,15 +241,18 @@ export class PreparedHandoffService {
     }
   }
 
-  async assertContext(ticket: string, userId: string, contextToken: string): Promise<PreparedHandoffRecord> {
+  async assertContext(ticket: string, userId: string, contextToken: string, expectedKind: 'authorization' | 'owner-revocation' = 'authorization'): Promise<PreparedHandoffRecord> {
     const record = await this.active(ticket);
     if (record.ownerId !== userId) fail('handoff_claimed', 'Handoff not claimed by this user', 403);
+    if (('kind' in record.request ? record.request.kind : 'authorization') !== expectedKind) {
+      fail('binding_mismatch', 'Signing context differs from handoff kind', 403);
+    }
     if (!contextToken || record.contextTokenHash !== digest(contextToken)) fail('binding_mismatch', 'Signing context differs from handoff', 403);
     return record;
   }
 
-  async reserveSigning(ticket: string, userId: string, contextToken: string, keyId: string): Promise<void> {
-    const record = await this.assertContext(ticket, userId, contextToken);
+  async reserveSigning(ticket: string, userId: string, contextToken: string, keyId: string, expectedKind: 'authorization' | 'owner-revocation' = 'authorization'): Promise<void> {
+    const record = await this.assertContext(ticket, userId, contextToken, expectedKind);
     if (record.selectedKeyId !== keyId) fail('binding_mismatch', 'Signer key differs from handoff', 403);
     if (!await this.store.reserve(record.ticketHash, userId, digest(contextToken), keyId, this.now())) {
       await this.active(ticket);
