@@ -1673,8 +1673,8 @@
     max-height: 180px;
     font-size: 12px;
     line-height: 1.5;
-    white-space: pre-wrap;
-    word-break: break-word;
+    white-space: pre;
+    word-break: normal;
     user-select: text;
     -webkit-user-select: text;
   }
