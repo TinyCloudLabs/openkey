@@ -134,7 +134,7 @@ test('Disconnect asks first, cancel changes nothing, confirm deletes that consen
     await until(() => !!target.querySelector('[role="status"]'), 'disconnected notice');
     expect(calls).toEqual(['consent-2']);
     expect(changed).toBe(1);
-    expect(target.querySelector('[role="status"]')!.textContent).toBe('Disconnected. Within 5 minutes the app will stop being able to use your TinyCloud through MCP.');
+    expect(target.querySelector('[role="status"]')!.textContent).toBe('Disconnected. The app will stop being able to use your TinyCloud through MCP, usually within a minute and always within 5 minutes.');
   } finally { done(); }
 });
 
