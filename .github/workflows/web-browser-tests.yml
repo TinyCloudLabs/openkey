@@ -35,7 +35,7 @@ jobs:
   web-browser-tests:
     name: Web browser specs
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       # Full history: the relevance step diffs the pull request's base against the merge commit.
       - uses: actions/checkout@v4
@@ -79,17 +79,29 @@ jobs:
         if: steps.relevance.outputs.relevant == 'true'
         run: bun run build --filter @openkey/capability-review --filter @openkey/sdk
 
-      - name: Cache Playwright browsers
+      # Restored and saved separately: a job that fails (a red spec) skips a plain cache step's
+      # save, and the browser download is the slow, variable part of this job.
+      - name: Restore Playwright browsers
+        id: playwright-cache
         if: steps.relevance.outputs.relevant == 'true'
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('bun.lock') }}
 
       - name: Install Playwright browsers
+        id: playwright-install
         if: steps.relevance.outputs.relevant == 'true'
+        timeout-minutes: 12
         working-directory: apps/web
         run: bunx playwright install --with-deps chromium webkit
+
+      - name: Save Playwright browsers
+        if: steps.playwright-install.conclusion == 'success' && steps.playwright-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('bun.lock') }}
 
       # CI=true makes the config retry a failed test once. The step always ends green: the summary
       # step below reads the JSON report and decides the result.
