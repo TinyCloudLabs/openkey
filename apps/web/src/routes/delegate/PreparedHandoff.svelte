@@ -439,7 +439,7 @@
         </div>
       {/each}
       <details><summary>Original SIWE message</summary>
-        <pre class="whitespace-pre-wrap break-all rounded-lg bg-surface-50 p-3 text-xs">{renderSiweLiteral(handoff.request.siwe)}</pre>
+        <pre class="whitespace-pre overflow-x-auto max-w-full min-w-0 rounded-lg bg-surface-50 p-3 text-xs">{renderSiweLiteral(handoff.request.siwe)}</pre>
       </details>
       <button disabled={busy || submitted} onclick={cancel}>Cancel</button>
     {:else if handoff && model && key}
@@ -467,12 +467,12 @@
         </div>
       {/each}
       <details><summary>Original SIWE message</summary>
-        <pre class="whitespace-pre-wrap break-all rounded-lg bg-surface-50 p-3 text-xs">{renderSiweLiteral(handoff.request.siwe)}</pre>
+        <pre class="whitespace-pre overflow-x-auto max-w-full min-w-0 rounded-lg bg-surface-50 p-3 text-xs">{renderSiweLiteral(handoff.request.siwe)}</pre>
       </details>
       {#if phase === 'preview'}
         <details>
           <summary class="font-semibold">Exact candidate signedMessage</summary>
-          <pre class="whitespace-pre-wrap break-all rounded-lg bg-surface-50 p-3 text-xs">{renderSiweLiteral(previewMessage)}</pre>
+          <pre class="whitespace-pre overflow-x-auto max-w-full min-w-0 rounded-lg bg-surface-50 p-3 text-xs">{renderSiweLiteral(previewMessage)}</pre>
         </details>
         <button onclick={() => { phase = 'review'; previewToken = ''; }}>Change abilities</button>
         <button disabled={busy || submitted} onclick={approve}>Approve</button>

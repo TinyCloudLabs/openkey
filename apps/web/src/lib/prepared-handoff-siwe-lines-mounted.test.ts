@@ -191,3 +191,14 @@ test('a carriage return, tab, bidi control and markup stay escaped in both block
   expect(candidate).toContain('Line one\\u000d\nLine\\u0009two \\u202e\\u003cb\\u003e\\u0026\\u0022\\u0027\n');
   expect(candidate.split('\n')).toHaveLength(14);
 });
+
+test('a final line feed and spaces at the end of a line read as escapes in both blocks', async () => {
+  const base = siweWith('TinyCloud delegation');
+  const signed = `${siweWith('TinyCloud delegation  ')}\n`;
+  const { original, candidate } = await exactBlocks(base, signed);
+  expect(original).toBe(base);
+  expect(candidate).toBe(signed.replace('delegation  \n', 'delegation\\u0020\\u0020\n').replace(/\n$/, '\\u000a'));
+  expect(candidate.endsWith(`${recap}\\u000a`)).toBe(true);
+  expect(candidate.split('\n')).toHaveLength(13);
+  expect(candidate).not.toBe(await exactBlocks(base, signed.replace(/\n$/, '')).then((blocks) => blocks.candidate));
+});

@@ -369,6 +369,8 @@ test('v2 permits choosing an account-matching key when no keyId was requested', 
   const second = { ...key, id: 'key-two', keyIndex: 1, label: 'Backup owner key', isPrimary: false };
   const calls = await setup(page, { keys: [key, second] });
   await expect(page.getByText('Choose an OpenKey signing key')).toBeVisible();
+  await page.getByText('Original SIWE message', { exact: true }).click();
+  await expectExactBlock(page, 'Original SIWE message', siwe);
   await page.getByRole('button', { name: /Backup owner key/ }).click();
   await page.getByRole('button', { name: 'Preview signing message' }).click();
   await page.getByRole('button', { name: 'Approve', exact: true }).click();
@@ -376,6 +378,39 @@ test('v2 permits choosing an account-matching key when no keyId was requested', 
   const envelope = JSON.parse(Buffer.from(await page.locator('textarea').inputValue(), 'base64url').toString('utf8'));
   expect(envelope.selectedKeyId).toBe(second.id);
   expect(envelope.result).toEqual(rawResult);
+});
+
+// Only a line feed may start a new line in the exact blocks: a long line scrolls sideways and never wraps.
+async function expectUnwrappedBlock(page: Page, summary: string, lineCount: number) {
+  const block = page.locator('details', { has: page.locator('summary', { hasText: summary }) }).locator('pre');
+  await expect(block).toBeVisible();
+  const shape = await block.evaluate((element) => {
+    const style = getComputedStyle(element);
+    const padding = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+    return {
+      whiteSpace: style.whiteSpace,
+      overflowX: style.overflowX,
+      lines: (element.clientHeight - padding) / parseFloat(style.lineHeight),
+      scrolls: element.scrollWidth > element.clientWidth,
+      pageOverflow: document.documentElement.scrollWidth > window.innerWidth,
+    };
+  });
+  expect(shape).toEqual({ whiteSpace: 'pre', overflowX: 'auto', lines: lineCount, scrolls: true, pageOverflow: false });
+}
+
+test('the exact SIWE blocks show one line per line feed and scroll sideways at 375px', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 800 });
+  const second = { ...key, id: 'key-two', keyIndex: 1, label: 'Backup owner key', isPrimary: false };
+  await setup(page, { keys: [key, second] });
+  await expect(page.getByText('Choose an OpenKey signing key')).toBeVisible();
+  await page.getByText('Original SIWE message', { exact: true }).click();
+  await expectUnwrappedBlock(page, 'Original SIWE message', siwe.split('\n').length);
+  await page.getByRole('button', { name: /Backup owner key/ }).click();
+  await page.getByRole('button', { name: 'Preview signing message' }).click();
+  await page.getByText('Exact candidate signedMessage', { exact: true }).click();
+  await page.getByText('Original SIWE message', { exact: true }).click();
+  await expectUnwrappedBlock(page, 'Original SIWE message', siwe.split('\n').length);
+  await expectUnwrappedBlock(page, 'Exact candidate signedMessage', siwe.split('\n').length);
 });
 
 test('v2 narrowing previews the exact candidate and never signs a second time', async ({ page }) => {
