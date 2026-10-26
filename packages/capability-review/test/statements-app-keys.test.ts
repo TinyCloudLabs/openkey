@@ -156,17 +156,17 @@ describe("resources under apps/ that are not valid keys keep the literal fallbac
   });
 });
 
-describe("resources that are not under apps/ are unchanged", () => {
-  it("decrypt on another key keeps the neutral sentence", () => {
-    expect(rows(urn("/shares/abc"), [`${E}decrypt`])).toEqual(["Decrypt protected data"]);
+describe("resources outside apps/ use named-key copy", () => {
+  it("decrypt on another key names the key", () => {
+    expect(rows(urn("/shares/abc"), [`${E}decrypt`])).toEqual(["Decrypt anything encrypted with your key shares/abc in your account's default network, whenever this app gets hold of the encrypted copy, until this access expires."]);
   });
 
-  it("key.create on another key keeps the literal fallback", () => {
-    expect(rows(urn("/secrets/x"), [`${E}key.create`])[0]).toStartWith("Perform ");
+  it("key.create on another key names the key", () => {
+    expect(rows(urn("/secrets/x"), [`${E}key.create`])).toEqual(["Create the encryption key secrets/x in your account's default network."]);
   });
 
   it.each(["/appsx/y/z", "/apps.x/y/z"])("%s is an ordinary key", (rest) => {
-    expect(rows(urn(rest), [`${E}decrypt`])).toEqual(["Decrypt protected data"]);
+    expect(rows(urn(rest), [`${E}decrypt`])).toEqual([`Decrypt anything encrypted with your key ${rest.slice(1)} in your account's default network, whenever this app gets hold of the encrypted copy, until this access expires.`]);
   });
 
   it("the default network decrypt keeps the default-key statement", () => {
