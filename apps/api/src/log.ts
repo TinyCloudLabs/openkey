@@ -57,6 +57,7 @@ const EVENTS = {
   native_consent_activation_did_not_host_space: true, native_consent_host_activation_failed: true,
   oauth_client_create_failed: true, oauth_client_delete_failed: true, oauth_client_update_failed: true,
   session_cap_unapplied: true,
+  resource_introspect_failed: true, resource_introspect_rate_limited: true,
   tinycloud_bootstrap_background_failed: true, tinycloud_bootstrap_background_completed: true,
   tinycloud_bootstrap_sweep_tick: true, tinycloud_bootstrap_sweep_healed: true,
   tinycloud_bootstrap_sweep_still_failed: true, tinycloud_bootstrap_sweep_exhausted: true,
