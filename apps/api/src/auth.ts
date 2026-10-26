@@ -42,6 +42,7 @@ import { exchangeNativeCode, generateNativeRefreshToken, withNativeTokenGuardErr
 import { providerTokenOptions } from './services/native-delegation/provider-tokens';
 import { emailSignupConfirmation } from './services/email-signup-confirmation';
 import { betterAuthLog, log, logError } from './log';
+import { capSessionRefresh } from './services/session-cap';
 
 export const prisma: PrismaClient = createPrismaClient();
 const tee = createTeeClient();
@@ -409,6 +410,12 @@ export const auth = betterAuth({
   // User.autoSignEnabled is @default(true) in Prisma, so every new account
   // starts with bootstrap Auto-Sign enabled before this provisioning hook runs.
   databaseHooks: {
+    // Web sessions end at most WEB_SESSION_ABSOLUTE_CAP_SECONDS after sign-in (services/session-cap.ts).
+    session: {
+      update: {
+        before: capSessionRefresh,
+      },
+    },
     user: {
       create: {
         after: async (user) => {
