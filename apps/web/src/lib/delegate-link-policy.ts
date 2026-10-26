@@ -13,8 +13,12 @@
  * app by adding its endpoint here, or, for another deployment, to
  * `VITE_DELEGATE_CALLBACK_URLS`.
  *  - Hosted TinyCloud MCP.
+ *  - Hosted TinyCloud MCP for ChatGPT.
  */
-export const REGISTERED_CALLBACK_ENDPOINTS: readonly string[] = ['https://mcp.tinycloud.xyz/connect/callback'];
+export const REGISTERED_CALLBACK_ENDPOINTS: readonly string[] = [
+  'https://mcp.tinycloud.xyz/connect/callback',
+  'https://mcp.tinycloud.xyz/chatgpt/connect/callback',
+];
 
 /**
  * TinyCloud nodes shown without a warning: the nodes OpenKey already trusts
