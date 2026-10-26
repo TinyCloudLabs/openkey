@@ -3,7 +3,7 @@ import type { PrismaClient } from '@openkey/db';
 import { ADMIN_MANAGED_SCOPES, TINYCLOUD_DELEGATION_SCOPE } from '../../oauth-config';
 import { isNativeDelegationClient } from './policy';
 import { NATIVE_DELEGATION_ENDPOINT_PATHS } from './public-protocol';
-import { mcpRefreshSessionRefusal } from '../mcp-refresh-session';
+import { mcpRefreshRefusal } from '../mcp-refresh-session';
 import { storedOpaqueAccessToken, storedRefreshToken, storedToken, type ProviderTokenOptions } from './provider-tokens';
 import { authoritativeQuery, matchesAuthoritativeQuery } from './par';
 import { nativeUserRetryAfter } from './user-rate-limit';
@@ -40,7 +40,7 @@ const AUTH_BASE_PATH = '/api/auth';
 const FORM_MEDIA_TYPE = 'application/x-www-form-urlencoded';
 const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
-export type ProviderInterceptorDatabase = Pick<PrismaClient, 'oauthClient' | 'oauthRefreshToken' | 'oauthAccessToken' | 'tinyCloudNativeGrant' | 'tinyCloudNativeRequest' | 'session'>;
+export type ProviderInterceptorDatabase = Pick<PrismaClient, 'oauthClient' | 'oauthRefreshToken' | 'oauthAccessToken' | 'oauthConsent' | 'tinyCloudNativeGrant' | 'tinyCloudNativeRequest' | 'session'>;
 
 type Refusal = { status: 400 | 401 | 429 | 503; error: string; description: string; retryAfter?: number };
 /**
@@ -323,9 +323,10 @@ export function createProviderInterceptors({ database, tokens, provider, getSess
         description: 'use the renew endpoint',
       };
     }
-    // An MCP refresh token whose authorizing session has ended is refused here,
-    // before the provider rotates it.
-    return token ? await mcpRefreshSessionRefusal(database, tokens, token, clients.effective) : null;
+    // An MCP refresh whose connection has ended is refused here, before the
+    // provider rotates the token. Unknown, revoked and expired tokens go on to the
+    // provider so its reuse detection still runs.
+    return token ? await mcpRefreshRefusal(database, tokens, token, clients.effective, params.get('scope')) : null;
   }
 
   /** Spec "Provider refresh and revoke interception", revoke table; first match applies. */

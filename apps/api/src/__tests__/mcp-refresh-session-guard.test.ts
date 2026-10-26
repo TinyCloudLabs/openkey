@@ -215,6 +215,82 @@ if (process.env.OPENKEY_MCP_OAUTH_TEST_CHILD !== '1') {
       expect(await response.json()).toMatchObject({ error: 'invalid_client' });
     });
 
+    test('a session that belongs to another user does not count', async () => {
+      const mine = await signedIn();
+      const { clientId, tokens } = await connectMcp(mine.cookie);
+      const other = await signedIn();
+      await prisma.oauthRefreshToken.updateMany({ where: { clientId }, data: { sessionId: other.sessionId } });
+      await expectRefused(clientId, tokens.refresh_token);
+      expect(await refreshRows(clientId)).toEqual([{ revoked: null }]);
+    });
+
+    test('a consent narrowed below the token\'s scopes, a withdrawn consent and a disabled client are invalid_grant; the token is unrotated', async () => {
+      const { cookie, userId } = await signedIn();
+      const { clientId, tokens } = await connectMcp(cookie);
+      const consent = await prisma.oauthConsent.findFirstOrThrow({ where: { userId, clientId } });
+
+      await prisma.oauthConsent.update({ where: { id: consent.id }, data: { scopes: ['openid', 'email', 'offline_access'] } });
+      await expectRefused(clientId, tokens.refresh_token);
+      await prisma.oauthConsent.update({ where: { id: consent.id }, data: { scopes: consent.scopes } });
+
+      await prisma.oauthClient.update({ where: { clientId }, data: { disabled: true } });
+      await expectRefused(clientId, tokens.refresh_token);
+      await prisma.oauthClient.update({ where: { clientId }, data: { disabled: false } });
+
+      await prisma.oauthConsent.delete({ where: { id: consent.id } });
+      await expectRefused(clientId, tokens.refresh_token);
+      expect(await refreshRows(clientId)).toEqual([{ revoked: null }]);
+    });
+
+    test('a refresh that asks for a scope outside the consent is invalid_grant', async () => {
+      const { cookie } = await signedIn();
+      const { clientId, tokens } = await connectMcp(cookie);
+      await expectRefused(clientId, tokens.refresh_token, { resource, scope: 'tinycloud:mcp tinycloud:manage-key' });
+      expect((await refresh(clientId, tokens.refresh_token, { resource, scope: 'tinycloud:mcp' })).status).toBe(200);
+    });
+
+    test('a token issued before the consent was re-created is invalid_grant', async () => {
+      const { cookie, userId } = await signedIn();
+      const { clientId, tokens } = await connectMcp(cookie);
+      await prisma.oauthConsent.updateMany({ where: { userId, clientId }, data: { createdAt: new Date(Date.now() + 60_000) } });
+      await expectRefused(clientId, tokens.refresh_token);
+      expect(await refreshRows(clientId)).toEqual([{ revoked: null }]);
+    });
+
+    test('a revoked token goes to the provider even with the session gone, and its reuse detection deletes the family', async () => {
+      const { cookie, sessionId } = await signedIn();
+      const { clientId, tokens } = await connectMcp(cookie);
+      expect((await refresh(clientId, tokens.refresh_token)).status).toBe(200);
+      expect(await refreshRows(clientId)).toHaveLength(2);
+      await prisma.session.delete({ where: { id: sessionId } });
+      const reused = await refresh(clientId, tokens.refresh_token);
+      expect(reused.status).toBe(400);
+      expect(await reused.json()).toMatchObject({ error: 'invalid_grant', error_description: 'invalid refresh token' });
+      expect(await refreshRows(clientId)).toHaveLength(0);
+    });
+
+    test('the Basic header, not the body client_id, names the client the guard acts for', async () => {
+      const mine = await signedIn();
+      const { clientId: appA, tokens } = await connectMcp(mine.cookie);
+      const other = await signedIn();
+      const { clientId: appB } = await connectMcp(other.cookie);
+      await prisma.session.delete({ where: { id: mine.sessionId } });
+      const basic = (client: string) => `Basic ${Buffer.from(`${client}:unused`).toString('base64')}`;
+      const request = (header: string, bodyClient: string) => call('/oauth2/token', {
+        method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', authorization: header },
+        body: new URLSearchParams({ client_id: bodyClient, grant_type: 'refresh_token', refresh_token: tokens.refresh_token, resource }),
+      });
+      // Basic names the token's own client: the guard judges it, whatever the body says.
+      const asOwner = await request(basic(appA), appB);
+      expect(asOwner.status).toBe(400);
+      expect(await asOwner.json()).toMatchObject({ error: 'invalid_grant', error_description: expect.stringContaining('connection') });
+      // Basic names another client: the guard stays out and the provider answers for the mismatch.
+      const asOther = await request(basic(appB), appA);
+      expect(asOther.status).toBe(400);
+      expect(await asOther.json()).toMatchObject({ error: 'invalid_client' });
+      expect(await refreshRows(appA)).toEqual([{ revoked: null }]);
+    });
+
     test('malformed or unknown refresh tokens get the provider\'s 400, never a server error', async () => {
       const { cookie } = await signedIn();
       const { clientId } = await connectMcp(cookie);

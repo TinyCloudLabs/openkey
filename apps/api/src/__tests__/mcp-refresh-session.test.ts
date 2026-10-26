@@ -1,79 +1,153 @@
 import { describe, expect, test } from 'bun:test';
 import { Hono } from 'hono';
 import { createProviderInterceptors, type ProviderInterceptorDatabase } from '../services/native-delegation/interceptors';
-import { mcpRefreshSessionRefusal, type McpRefreshDatabase } from '../services/mcp-refresh-session';
-import { storedRefreshToken } from '../services/native-delegation/provider-tokens';
+import { mcpRefreshRefusal, type McpRefreshDatabase } from '../services/mcp-refresh-session';
+import { mcpTokenStatus, type McpTokenStatusDatabase } from '../services/mcp-token-status';
 
-type Row = { clientId: string; userId: string; sessionId: string | null; scopes: string[] };
-const mcpRow: Row = { clientId: 'app', userId: 'u', sessionId: 's', scopes: ['openid', 'tinycloud:mcp'] };
+// The interceptor reads the clock itself, so fixtures are relative to the real time.
+const NOW = new Date();
+const SECOND = 1000;
 
-function database(options: { row?: Row | null; session?: { id: string } | null; failRow?: boolean; failSession?: boolean }) {
-  const sessionQueries: unknown[] = [];
+type Row = {
+  clientId: string; userId: string; sessionId: string | null; scopes: string[];
+  revoked: Date | null; expiresAt: Date; createdAt: Date;
+};
+const mcpRow: Row = {
+  clientId: 'app', userId: 'u', sessionId: 's', scopes: ['openid', 'tinycloud:mcp'],
+  revoked: null, expiresAt: new Date(NOW.getTime() + 86_400_000), createdAt: new Date(NOW.getTime() - 3_600_000),
+};
+type World = {
+  row?: Row | null;
+  client?: { disabled: boolean } | null;
+  consent?: { scopes: string[]; createdAt: Date } | null;
+  session?: { id: string } | null;
+  fail?: 'row' | 'client' | 'consent' | 'session';
+};
+const live: World = {
+  row: mcpRow,
+  client: { disabled: false },
+  consent: { scopes: ['openid', 'email', 'tinycloud:mcp'], createdAt: new Date(NOW.getTime() - 7_200_000) },
+  session: { id: 's' },
+};
+
+function world(w: World) {
+  const queries: { session: unknown[]; others: string[] } = { session: [], others: [] };
+  const maybeFail = (what: NonNullable<World['fail']>) => { queries.others.push(what); if (w.fail === what) throw new Error('db down'); };
   const db = {
-    oauthRefreshToken: { findUnique: async () => { if (options.failRow) throw new Error('db down'); return options.row ?? null; } },
-    session: { findFirst: async (query: unknown) => { sessionQueries.push(query); if (options.failSession) throw new Error('db down'); return options.session ?? null; } },
+    oauthRefreshToken: { findUnique: async () => { maybeFail('row'); return w.row ?? null; } },
+    oauthClient: { findUnique: async () => { maybeFail('client'); return w.client ?? null; } },
+    oauthConsent: { findUnique: async () => { maybeFail('consent'); return w.consent ?? null; } },
+    session: { findFirst: async (query: unknown) => { queries.session.push(query); if (w.fail === 'session') throw new Error('db down'); return w.session ?? null; } },
   } as unknown as McpRefreshDatabase;
-  return { db, sessionQueries };
+  return { db, queries };
 }
-const check = (db: McpRefreshDatabase, client: string | null = 'app', now = new Date('2026-10-27T12:00:00.000Z')) =>
-  mcpRefreshSessionRefusal(db, {}, 'refresh-token', client, now);
+const guard = (w: World, client: string | null = 'app', scope: string | null = null) =>
+  mcpRefreshRefusal(world({ ...live, ...w }).db, {}, 'refresh-token', client, scope, NOW);
+const ended = { status: 400, error: 'invalid_grant' };
 
-describe('mcpRefreshSessionRefusal', () => {
-  test('a live session lets the provider rotate; the lookup is bound to the row\'s own user and the clock', async () => {
-    const { db, sessionQueries } = database({ row: mcpRow, session: { id: 's' } });
-    expect(await check(db)).toBeNull();
-    expect(sessionQueries).toEqual([{ where: { id: 's', userId: 'u', expiresAt: { gt: new Date('2026-10-27T12:00:00.000Z') } }, select: { id: true } }]);
+describe('mcpRefreshRefusal: a found, unrevoked, unexpired MCP row of the requesting client', () => {
+  test('a standing connection goes on to the provider; the session lookup is bound to the row\'s user and the clock', async () => {
+    const { db, queries } = world(live);
+    expect(await mcpRefreshRefusal(db, {}, 'refresh-token', 'app', null, NOW)).toBeNull();
+    expect(queries.session).toEqual([{ where: { id: 's', userId: 'u', expiresAt: { gt: NOW } }, select: { id: true } }]);
   });
 
-  test('a missing or expired session and a row with no session are invalid_grant', async () => {
-    expect(await check(database({ row: mcpRow, session: null }).db)).toMatchObject({ status: 400, error: 'invalid_grant' });
-    expect(await check(database({ row: { ...mcpRow, sessionId: null } }).db)).toMatchObject({ status: 400, error: 'invalid_grant' });
+  test.each([
+    ['a missing or expired session', { session: null }],
+    ['no session id on the row', { row: { ...mcpRow, sessionId: null } }],
+    ['a missing client', { client: null }],
+    ['a disabled client', { client: { disabled: true } }],
+    ['a missing consent', { consent: null }],
+    ['a consent narrowed below the token\'s scopes', { consent: { scopes: ['openid'], createdAt: new Date(NOW.getTime() - 7_200_000) } }],
+    ['a consent created after the token, in a later second', { consent: { scopes: live.consent!.scopes, createdAt: new Date(mcpRow.createdAt.getTime() + 2 * SECOND) } }],
+  ] as [string, World][])('%s is invalid_grant', async (_name, change) => {
+    expect(await guard(change)).toMatchObject(ended);
   });
 
-  test('tokens without the MCP scope, unknown tokens and another client\'s token are left to the provider without a session lookup', async () => {
-    for (const options of [{ row: { ...mcpRow, scopes: ['openid', 'offline_access'] } }, { row: null }]) {
-      const { db, sessionQueries } = database(options);
-      expect(await check(db)).toBeNull();
-      expect(sessionQueries).toEqual([]);
-    }
-    const mismatch = database({ row: mcpRow });
-    expect(await check(mismatch.db, 'other-app')).toBeNull();
-    expect(await check(mismatch.db, null)).toBeNull();
-    expect(mismatch.sessionQueries).toEqual([]);
+  test('a consent created in the same second as the token still stands', async () => {
+    const created = new Date(Math.floor(mcpRow.createdAt.getTime() / 1000) * 1000 + 400);
+    expect(await guard({ row: { ...mcpRow, createdAt: new Date(created.getTime() - 400) }, consent: { scopes: live.consent!.scopes, createdAt: created } })).toBeNull();
   });
 
-  test('a token the provider cannot normalize is left to the provider', async () => {
-    const { db } = database({ row: mcpRow });
-    expect(await mcpRefreshSessionRefusal(db, { prefix: { refreshToken: 'rt_' } }, 'no-prefix', 'app')).toBeNull();
+  test('the requested scope, not the row\'s, is checked against the consent when the request names one', async () => {
+    expect(await guard({}, 'app', 'tinycloud:mcp')).toBeNull();
+    expect(await guard({}, 'app', 'tinycloud:mcp tinycloud:manage-key')).toMatchObject(ended);
+    expect(await guard({ consent: { scopes: ['openid'], createdAt: live.consent!.createdAt } }, 'app', 'openid')).toBeNull();
+  });
+});
+
+describe('mcpRefreshRefusal: everything else is the provider\'s call, with no connection lookup', () => {
+  test.each([
+    ['an unknown token', { row: null }],
+    ['a revoked token (reuse detection must still run)', { row: { ...mcpRow, revoked: new Date(NOW.getTime() - 1000) } }],
+    ['an expired token', { row: { ...mcpRow, expiresAt: new Date(NOW.getTime() - 1000) } }],
+    ['a token without the MCP scope', { row: { ...mcpRow, scopes: ['openid', 'offline_access'] } }],
+  ] as [string, World][])('%s', async (_name, change) => {
+    const w = { ...live, ...change, session: null, consent: null, client: null };
+    const { db, queries } = world(w);
+    expect(await mcpRefreshRefusal(db, {}, 'refresh-token', 'app', null, NOW)).toBeNull();
+    expect(queries.session).toEqual([]);
+    expect(queries.others).toEqual(['row']);
   });
 
-  test('a failed lookup is temporarily_unavailable (503), never invalid_grant', async () => {
-    expect(await check(database({ failRow: true }).db)).toMatchObject({ status: 503, error: 'temporarily_unavailable' });
-    expect(await check(database({ row: mcpRow, failSession: true }).db)).toMatchObject({ status: 503, error: 'temporarily_unavailable' });
+  test('another client\'s token, whether the request names none or a different one', async () => {
+    const { db, queries } = world({ ...live, session: null });
+    expect(await mcpRefreshRefusal(db, {}, 'refresh-token', 'other-app', null, NOW)).toBeNull();
+    expect(await mcpRefreshRefusal(db, {}, 'refresh-token', null, null, NOW)).toBeNull();
+    expect(queries.session).toEqual([]);
+  });
+
+  test('a token the provider would reject before any lookup (prefix mismatch)', async () => {
+    const { db } = world({ ...live, session: null });
+    expect(await mcpRefreshRefusal(db, { prefix: { refreshToken: 'rt_' } }, 'no-prefix', 'app', null, NOW)).toBeNull();
+  });
+});
+
+describe('mcpRefreshRefusal: an error', () => {
+  test.each(['row', 'client', 'consent', 'session'] as const)('a failed %s lookup is 503 temporarily_unavailable with a retry hint, never invalid_grant', async (fail) => {
+    expect(await guard({ fail })).toEqual({
+      status: 503, error: 'temporarily_unavailable', description: expect.any(String), retryAfter: 5,
+    });
+  });
+});
+
+describe('mcpTokenStatus, shared with the token status check', () => {
+  const status = (w: World, scopes: string[] = ['tinycloud:mcp'], issuedAtSeconds = Math.floor(mcpRow.createdAt.getTime() / 1000)) =>
+    mcpTokenStatus(world({ ...live, ...w }).db as McpTokenStatusDatabase, { userId: 'u', clientId: 'app', sessionId: 's', scopes, issuedAtSeconds }, NOW);
+
+  test('gives the reason a connection ended', async () => {
+    expect(await status({})).toEqual({ active: true });
+    expect(await status({ client: { disabled: true } })).toEqual({ active: false, reason: 'client' });
+    expect(await status({ consent: null })).toEqual({ active: false, reason: 'consent' });
+    expect(await status({ session: null })).toEqual({ active: false, reason: 'session' });
+    expect(await status({}, ['tinycloud:manage-key'])).toEqual({ active: false, reason: 'scope' });
+    expect(await status({}, ['tinycloud:mcp'], 1)).toEqual({ active: false, reason: 'older_than_consent' });
+    expect(await mcpTokenStatus(world(live).db as McpTokenStatusDatabase, { userId: 'u', clientId: 'app', sessionId: null, scopes: [], issuedAtSeconds: 0 }, NOW))
+      .toEqual({ active: false, reason: 'session' });
   });
 });
 
 describe('token endpoint interception', () => {
-  const stored = storedRefreshToken({}, 'refresh-token');
-  function tokenRequest(db: McpRefreshDatabase, provider: () => Response) {
-    const seen: string[] = [];
+  function tokenRequest(w: World, provider: () => Response) {
+    const { db } = world({ ...live, ...w });
     const full = {
-      oauthClient: { findMany: async () => [], findUnique: async () => null },
       oauthAccessToken: { findUnique: async () => null },
       tinyCloudNativeGrant: { findFirst: async () => null },
       ...db,
+      oauthClient: { findMany: async () => [], findUnique: async () => (w.client === undefined ? live.client : w.client) },
     } as unknown as ProviderInterceptorDatabase;
+    const reached: string[] = [];
     const app = new Hono();
     app.use('/api/auth/*', createProviderInterceptors({
       database: full,
       tokens: {},
       authorizationCodes: { find: async () => null, delete: async () => {} },
-      provider: async (request) => { seen.push(await request.text()); return provider(); },
+      provider: async (request) => { reached.push(await request.text()); return provider(); },
       getSessionUserId: async () => null,
     }));
-    app.post('/api/auth/*', () => Response.json({ access_token: 'issued' }));
+    app.post('/api/auth/*', () => { reached.push('handler'); return Response.json({ access_token: 'issued' }); });
     return {
-      seen,
+      reached,
       response: app.fetch(new Request('https://api.openkey.test/api/auth/oauth2/token', {
         method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: 'grant_type=refresh_token&client_id=app&refresh_token=refresh-token',
@@ -81,21 +155,25 @@ describe('token endpoint interception', () => {
     };
   }
 
-  test('an ended session answers 400 invalid_grant before the provider runs; a live one reaches the handler', async () => {
-    await stored;
-    const ended = tokenRequest(database({ row: mcpRow, session: null }).db, () => Response.json({}));
-    const refused = await ended.response;
-    expect(refused.status).toBe(400);
-    expect(await refused.json()).toMatchObject({ error: 'invalid_grant' });
-    expect(refused.headers.get('cache-control')).toBe('no-store');
+  test('an ended connection is answered before the provider runs; a standing one reaches it', async () => {
+    const refused = tokenRequest({ session: null }, () => Response.json({}));
+    const response = await refused.response;
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: 'invalid_grant' });
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(refused.reached).toEqual([]);
 
-    const live = await tokenRequest(database({ row: mcpRow, session: { id: 's' } }).db, () => Response.json({})).response;
-    expect(await live.json()).toEqual({ access_token: 'issued' });
+    const ok = tokenRequest({}, () => Response.json({}));
+    expect(await (await ok.response).json()).toEqual({ access_token: 'issued' });
+    expect(ok.reached).toEqual(['handler']);
   });
 
-  test('a database failure is a 503 from the guard, not a 500', async () => {
-    const failed = await tokenRequest(database({ row: mcpRow, failSession: true }).db, () => Response.json({})).response;
-    expect(failed.status).toBe(503);
-    expect(await failed.json()).toMatchObject({ error: 'temporarily_unavailable' });
+  test('a guard error is a 503 with Retry-After and never reaches the provider', async () => {
+    const failed = tokenRequest({ fail: 'session' }, () => Response.json({}));
+    const response = await failed.response;
+    expect(response.status).toBe(503);
+    expect(response.headers.get('retry-after')).toBe('5');
+    expect(await response.json()).toMatchObject({ error: 'temporarily_unavailable' });
+    expect(failed.reached).toEqual([]);
   });
 });
