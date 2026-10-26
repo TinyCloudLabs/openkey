@@ -13,6 +13,7 @@
 
 import { actionId, permissionId } from "./ids.js";
 import { classifyRecapEntry, classifySeverityFromActions } from "./classify.js";
+import { isKeyDeleteAbility } from "./key-resource.js";
 import type {
   CapabilityAction,
   CapabilityGrant,
@@ -690,13 +691,16 @@ function buildActions(
           typeof c === "object" &&
           Object.keys(c as Record<string, unknown>).length > 0,
       );
+    // `key.delete` can never be granted to an app: it is listed, never
+    // selected and never toggled.
+    const isKeyDelete = isKeyDeleteAbility(ability);
     return {
       id,
       ability,
       verb,
       required: isRequired,
-      selected: isSelected,
-      editable: ctx.editable && !isRequired && !hasMeaningfulCaveats,
+      selected: isSelected && !isKeyDelete,
+      editable: ctx.editable && !isRequired && !hasMeaningfulCaveats && !isKeyDelete,
       caveats,
     };
   });

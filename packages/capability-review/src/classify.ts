@@ -25,6 +25,8 @@
 import type { CapabilityFamily, PermissionSeverity } from "./model.js";
 import { isSecretsSpace } from "./app-scope.js";
 import { isMetadataOnlyAccess } from "./action-semantics.js";
+import { FAMILY_LABEL } from "./copy.js";
+import { APPS_SEGMENT, parseKeyResource } from "./key-resource.js";
 import {
   SPACE_SERVICES,
   SQL_ADMIN_OPERATIONS,
@@ -106,6 +108,9 @@ const SQL_NAMED_DATABASE_VERBS = new Set([
 const DELEGATION_VERBS = new Set(["list", "status"]);
 const ENCRYPTION_NETWORK_VERBS = new Set(["network.create", "network.revoke"]);
 const ENCRYPTION_KEY_VERBS = new Set(["key.create", "key.block", "key.unblock", "key.delete"]);
+// Creating, blocking and unblocking app keys reads nothing; every other
+// ability on an app key (decrypt, delete, unknown) is sensitive.
+const APP_KEY_MANAGEMENT_VERBS = new Set(["key.create", "key.block", "key.unblock"]);
 const ENCRYPTION_VERBS = new Set([
   ...ENCRYPTION_NETWORK_VERBS,
   ...DECRYPT_VERBS,
@@ -508,6 +513,12 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     if (entry.serviceMismatch === true) {
       return unknownActionLabel(service);
     }
+    // A key or prefix under `apps/` is its own family. Other key resources
+    // keep the encryption classification below.
+    const keyResource = parseKeyResource(path === "" ? space : `${space}/${path}`);
+    if (keyResource && keyResource.keyPath.split("/")[0] === APPS_SEGMENT) {
+      return { family: "app-keys", displayLabel: FAMILY_LABEL["app-keys"] };
+    }
     if (!allVerbsIn(entry.actions, ENCRYPTION_VERBS)) {
       return {
         family: "encryption-key",
@@ -651,6 +662,8 @@ export function classifySeverityFromActions(
         : "sensitive";
     case "encryption-decrypt":
       return hasDecrypt ? "sensitive" : "attention";
+    case "app-keys":
+      return allVerbsIn(actions, APP_KEY_MANAGEMENT_VERBS) ? "attention" : "sensitive";
     case "space-create":
     case "database-admin":
       return "sensitive";

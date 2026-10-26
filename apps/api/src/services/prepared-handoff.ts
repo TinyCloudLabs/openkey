@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { canonicalSiweFields, strictSessionDid } from './device-authorization';
 import { digestJwk } from './authorization-signing';
+import { appKeyRefusalCode, appKeyRefusalForSiwe, appKeyRefusalMessage, appKeyRefusalStatus } from './app-key-refusal';
 
 export type PreparedHandoffRequest = {
   protocolVersion: 1;
@@ -84,6 +85,10 @@ function validateRequest(input: unknown): { request: PreparedHandoffRequest; del
   }
   const fields = canonicalSiweFields(request.siwe);
   if (!fields) fail('invalid_request', 'Invalid canonical prepared SIWE', 400);
+  const appKeyRefusal = appKeyRefusalForSiwe(request.siwe);
+  if (appKeyRefusal) {
+    fail(appKeyRefusalCode(appKeyRefusal), appKeyRefusalMessage(appKeyRefusal, 'non_browser'), appKeyRefusalStatus(appKeyRefusal));
+  }
   try {
     const did = strictSessionDid(request.jwk);
     if (fields.uri !== did) fail('invalid_request', 'SIWE URI does not match the public session key', 400);

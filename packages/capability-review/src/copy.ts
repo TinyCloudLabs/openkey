@@ -36,6 +36,7 @@ export const FAMILY_LABEL: Record<CapabilityFamily, string> = {
   "secret-mutation": "Named secret (mutate)",
   "encryption-key": "Encryption key material",
   "encryption-decrypt": "Decrypt encrypted content",
+  "app-keys": "App keys",
   "space-create": "Create a space",
   "space-read": "Space details",
   hooks: "Change notifications",
@@ -144,6 +145,74 @@ export function renderNamedKeySentence(
     /\{(path|network)\}/g,
     (_match, name: string) => (name === "path" ? values.path : values.network),
   );
+/** The abilities an app key grant can name, in the order their rows are shown. */
+export const APP_KEY_ABILITIES = [
+  "key.create",
+  "decrypt",
+  "key.block",
+  "key.unblock",
+  "key.delete",
+] as const;
+
+export type AppKeyAbility = (typeof APP_KEY_ABILITIES)[number];
+
+/**
+ * Consent copy for one ability on an app key (an exact key) or an app key
+ * prefix. The rows say "this app", never the app's name, and never show the
+ * path: `path` is the key path, or the prefix with its trailing `/`, and an
+ * exact key is named by its last segment. The text between backticks is shown
+ * in monospace.
+ */
+export function appKeyStatementText(
+  ability: AppKeyAbility,
+  target: { path: string; isPrefix: boolean },
+): string {
+  const keyName = `\`${target.path.slice(target.path.lastIndexOf("/") + 1)}\``;
+  switch (ability) {
+    case "key.create":
+      return target.isPrefix
+        ? "Create new encryption keys tied to this app"
+        : `Create the encryption key ${keyName} for this app`;
+    case "decrypt":
+      return target.isPrefix
+        ? "Decrypt data locked with this app's keys"
+        : `Decrypt data locked with this app's key ${keyName}`;
+    case "key.block":
+      return target.isPrefix
+        ? "Block this app's encryption keys so they can't be used to decrypt"
+        : `Block this app's key ${keyName} so it can't be used to decrypt`;
+    case "key.unblock":
+      return target.isPrefix
+        ? "Unblock this app's encryption keys so they can be used again"
+        : `Unblock this app's key ${keyName} so it can be used again`;
+    case "key.delete":
+      return target.isPrefix
+        ? "Delete this app's encryption keys. Apps can't be given this permission."
+        : `Delete this app's key ${keyName}. Apps can't be given this permission.`;
+  }
+}
+
+/** Shown while a request with app keys is being edited: the app keys are one unit. */
+export const APP_KEY_GROUP_NOTE = "App keys can only be approved together. Untick all of them, or keep them all.";
+
+/** The line above the rows of a request with app keys. */
+export function appRequestingLine(name: string | null): string {
+  return `${name ?? "This app"} is requesting:`;
+}
+
+export const APP_KEY_ACCESS_WITHOUT_EXPIRY = "This access lasts until it expires.";
+
+/**
+ * Standing-access line for app-key decrypt. `expiry` is the signed SIWE
+ * `Expiration Time`. `formatExpiry` turns it into the text shown; without one
+ * the signed value is shown as written.
+ */
+export function appKeyAccessStatement(
+  expiry: string | null,
+  formatExpiry: (expiry: string) => string = (value) => value,
+): string {
+  if (expiry === null || Number.isNaN(Date.parse(expiry))) return APP_KEY_ACCESS_WITHOUT_EXPIRY;
+  return `This access lasts until ${formatExpiry(expiry)}.`;
 }
 
 export const PROTOCOL_HEADLINE: Record<RequestProtocol, string> = {

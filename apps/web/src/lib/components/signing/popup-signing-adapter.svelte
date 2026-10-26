@@ -18,7 +18,9 @@
   // A wiring bug (e.g. dropping `invalidatePreview` from the selection
   // handler) surfaces there as a missing spy call.
 
-  import type { CapabilityReviewModel } from "@openkey/capability-review";
+  import { untrack } from "svelte";
+  import { readSpaceHostFacts, type CapabilityReviewModel } from "@openkey/capability-review";
+  import { watchHostPeer, type PeerRecognitionState } from "$lib/host-peer-recognition";
   import SigningApproval from "$lib/components/signing/signing-approval.svelte";
   import type { WidgetSigningTransport } from "./signing-adapter-types";
 
@@ -58,6 +60,20 @@
     transport.invalidatePreview();
   }
 
+  // Node key on a host approval: look it up on the known nodes. The state is
+  // shown in the approval view; it never enables or disables anything else.
+  const hostFacts = $derived(readSpaceHostFacts(model, selection));
+  const hostFactsKey = $derived(
+    hostFacts ? JSON.stringify([hostFacts.spaces.map((space) => space.spaceId), hostFacts.peerDid]) : "",
+  );
+  let peerRecognition = $state<PeerRecognitionState | null>(null);
+  $effect(() => {
+    void hostFactsKey;
+    return watchHostPeer(untrack(() => hostFacts), import.meta.env.VITE_DELEGATE_NODE_ORIGINS, (next) => {
+      peerRecognition = next;
+    });
+  });
+
   function onEditingChange(next: boolean) {
     editing = next;
   }
@@ -85,6 +101,7 @@
   approving={transport.approving}
   error={transport.error}
   finalPreview={transport.previewReady}
+  {peerRecognition}
   {onApprove}
   {onCancel}
   {onSelectionChange}

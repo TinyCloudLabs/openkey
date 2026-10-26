@@ -15,18 +15,23 @@
 // contract; UI callers MUST route through it rather than composing the
 // sentence themselves.
 
-import type { CapabilityGrant } from "./model.js";
+import type { CapabilityAction, CapabilityGrant, CapabilityReviewModel, PermissionSeverity } from "./model.js";
+import { appDisplayName } from "./app-identity.js";
 import {
+  APP_KEY_ABILITIES,
   DECRYPT_DEFAULT_KEY_STATEMENT,
   DELETE_REFUSED_TEMPLATE,
   LITERAL_TRUNCATE_CHARS,
   NAMED_KEY_STATEMENTS,
+  appKeyStatementText,
   renderLiteral,
   renderNamedKeySentence,
+  type AppKeyAbility,
+  type NamedKeyVerb,
 } from "./copy.js";
-import type { NamedKeyVerb } from "./copy.js";
 import type { EncryptionResource } from "./encryption-resource.js";
 import { ENCRYPTION_URN_PREFIX, parseEncryptionResource } from "./encryption-resource.js";
+import { isAppsKeyResource, parseKeyResource } from "./key-resource.js";
 import { isMetadataOnlyAccess } from "./action-semantics.js";
 import {
   CANONICAL_APP_SCOPE_SECRET_ABILITIES,
@@ -42,6 +47,8 @@ import {
 } from "./core-operations.js";
 
 export interface StatementEntry {
+  /** The severity of this row when it differs from the grant's: each app key ability is its own row. */
+  severity?: PermissionSeverity;
   /**
    * Primary sentence shown as the deterministic statement in the default
    * (summary) review view. Never contains a caller-supplied app name.
@@ -58,10 +65,10 @@ export interface StatementEntry {
    */
   resource: string;
   /**
-   * Set only on key.delete rows: marks a row this review does not offer to
-   * approve. Absent on every other row.
-   */
+  /** Set only on key.delete rows; the review does not offer these to approve. */
   neverApprovable?: boolean;
+  /** True when text between backticks in `primaryText` is shown in monospace. */
+  codeSpans?: true;
 }
 
 /** Family/action-aware structural verb classification. */
@@ -736,6 +743,114 @@ function splitsDefaultKeyDecrypt(grant: CapabilityGrant): boolean {
   );
 }
 
+/** The app key ability a wire ability names, byte-exact in either namespace. */
+function appKeyAbilityOf(ability: string): AppKeyAbility | null {
+  for (const name of APP_KEY_ABILITIES) {
+    if (ability === `tinycloud.encryption/${name}` || ability === `encryption/${name}`) return name;
+  }
+  return null;
+}
+
+/**
+ * Rows for an encryption grant on a key or prefix under `apps/`, one row per
+ * ability in a fixed order, each on its own. An ability that is not one of the
+ * five, and a resource under `apps/` that does not parse, keep the literal
+ * fallback. `null` for every other grant.
+ */
+function appKeyStatements(grant: CapabilityGrant): StatementEntry[] | null {
+  if (!ENCRYPTION_SERVICES.has(grant.service) || grant.serviceMismatch === true) return null;
+  const resource = resourceOf(grant);
+  if (!isAppsKeyResource(resource)) return null;
+  const parsed = parseKeyResource(resource);
+  if (!parsed) return [fallbackStatement(grant)];
+  const target = {
+    path: parsed.isPrefix ? `${parsed.keyPath}/` : parsed.keyPath,
+    isPrefix: parsed.isPrefix,
+  };
+  const present = new Set<AppKeyAbility>();
+  const unrecognised: CapabilityAction[] = [];
+  for (const action of grant.actions) {
+    const name = appKeyAbilityOf(action.ability);
+    if (name) present.add(name);
+    else unrecognised.push(action);
+  }
+  const rows: StatementEntry[] = APP_KEY_ABILITIES.filter((name) => present.has(name)).map(
+    (name) => ({
+      primaryText: appKeyStatementText(name, target),
+      service: grant.service,
+      resource,
+      codeSpans: true,
+      severity: name === "decrypt" ? "sensitive" : "attention",
+    }),
+  );
+  if (rows.length === 0 || unrecognised.length > 0) {
+    rows.push(fallbackStatement({ ...grant, actions: unrecognised.length > 0 ? unrecognised : grant.actions }));
+  }
+  return rows;
+}
+
+/**
+ * The `key.delete` rows of an app key grant, whether or not the action is
+ * selected. The action is shown and cannot be approved.
+ */
+export function appKeyNotGrantableStatements(grant: CapabilityGrant): StatementEntry[] {
+  const actions = grant.actions.filter((action) => appKeyAbilityOf(action.ability) === "key.delete");
+  return actions.length === 0 ? [] : (appKeyStatements({ ...grant, actions }) ?? []);
+}
+
+/** Does this grant let an app decrypt with keys under `apps/`? */
+export function grantIsAppKeyDecrypt(grant: CapabilityGrant): boolean {
+  return grant.family === "app-keys" && grant.actions.some((action) => appKeyAbilityOf(action.ability) === "decrypt");
+}
+
+/** The app a request with app keys comes from; see `app-identity.ts`. */
+export interface AppKeyIdentity {
+  /** The verified manifest's name after `appDisplayName`, or `null`. */
+  name: string | null;
+  appId: string;
+  /** The verified origin, when there is one. */
+  origin: string | null;
+}
+
+/**
+ * The identity shown at the top of a request with app keys, `null` for any
+ * other request. The name needs a manifest that is verified or origin-bound;
+ * the id is the verified `app_id`, or the id the key resources name until the
+ * manifest is verified. Where the two disagree the name is left out and the id
+ * of the resources is shown.
+ */
+export function appKeyIdentity(model: CapabilityReviewModel): AppKeyIdentity | null {
+  const grants = model.permissions.filter((grant) => grant.family === "app-keys");
+  if (grants.length === 0) return null;
+  const named = new Set<string>();
+  for (const grant of grants) {
+    const parsed = parseKeyResource(resourceOf(grant));
+    const segments = parsed?.keyPath.split("/");
+    if (segments && segments[0] === "apps" && segments[1]) named.add(segments[1]);
+  }
+  const requester = model.requester;
+  const verifiedId = requester.appId;
+  const resourceId = named.size === 1 ? [...named][0]! : null;
+  const appId = verifiedId ?? resourceId;
+  if (!appId) return null;
+  const trusted =
+    requester.manifestNameProvenance === "verified" || requester.manifestNameProvenance === "origin-bound";
+  const consistent = resourceId === null || resourceId === appId;
+  return {
+    name: trusted && verifiedId !== null && consistent ? appDisplayName(requester.manifestName) : null,
+    appId: consistent ? appId : resourceId!,
+    origin: requester.verifiedOrigin,
+  };
+}
+
+/** A statement split at its backticks; the odd parts are the monospace text. */
+export function splitStatementCode(text: string): Array<{ text: string; code: boolean }> {
+  return text
+    .split("`")
+    .map((part, index) => ({ text: part, code: index % 2 === 1 }))
+    .filter((part) => part.text !== "");
+}
+
 /**
  * Statement rows for a grant. A KV/SQL grant that mixes `schema` with other
  * recognized abilities yields two rows: the read/update row for the other
@@ -744,8 +859,9 @@ function splitsDefaultKeyDecrypt(grant: CapabilityGrant): boolean {
  * renders only the non-schema part of a mixed grant.
  */
 export function buildStatements(input: CapabilityGrant): StatementEntry[] {
-  // key.delete fails closed: each delete ability is its own never-approvable
-  // row, and any other abilities on the grant are rendered separately.
+  const appKeyRows = appKeyStatements(input);
+  if (appKeyRows) return appKeyRows;
+  // key.delete is its own never-approvable row beside any other abilities.
   const deletes = input.actions.filter(isKeyDeleteAction);
   if (deletes.length > 0) {
     const others = input.actions.filter((a) => !isKeyDeleteAction(a));
@@ -757,15 +873,8 @@ export function buildStatements(input: CapabilityGrant): StatementEntry[] {
   const view = canonicalEncryptionUrn(input);
   if (view.kind === "invalid") return [buildStatement(input)];
   const grant = view.kind === "urn" ? view.grant : input;
-  // Each named-key ability gets its own row, so no sentence covers two.
-  if (
-    view.kind === "urn" &&
-    view.parsed.kind !== "network" &&
-    grant.actions.length > 1
-  ) {
-    return grant.actions.map((action) =>
-      buildStatement({ ...grant, actions: [action] }),
-    );
+  if (view.kind === "urn" && view.parsed.kind !== "network" && grant.actions.length > 1) {
+    return grant.actions.map((action) => buildStatement({ ...grant, actions: [action] }));
   }
   if (splitsDefaultKeyDecrypt(grant)) {
     return [
@@ -815,6 +924,8 @@ export function buildStatements(input: CapabilityGrant): StatementEntry[] {
  *   4. Anything else → literal fallback
  */
 export function buildStatement(input: CapabilityGrant): StatementEntry {
+  const appKeyRows = appKeyStatements(input);
+  if (appKeyRows) return appKeyRows[0]!;
   // key.delete fails closed: every delete row is never approvable and renders
   // the refusal line, whatever its resource parses to.
   const view = canonicalEncryptionUrn(input);

@@ -42,15 +42,29 @@
     CapabilityGrant,
     CapabilityReviewModel,
   } from "@openkey/capability-review";
+  import { formatAccessEnd } from "$lib/access-end";
   import {
+    APP_KEY_GROUP_NOTE,
+    appDisplayName,
+    appKeyAccessStatement,
+    appKeyIdentity,
+    appRequestingLine,
+    FAMILY_LABEL,
+    appKeyNotGrantableStatements,
     buildRenderPlan,
     buildStatements,
+    grantIsAppKeyDecrypt,
     grantReachesSecretDataOrDecryption,
     grantHeading,
     PROTOCOL_HEADLINE,
     PROTOCOL_HINT,
     sensitiveCallout,
+    abbreviateDid,
+    abbreviateSpaceId,
+    readSpaceHostFacts,
+    splitStatementCode,
   } from "@openkey/capability-review";
+  import type { PeerRecognitionState } from "$lib/host-peer-recognition";
 
   interface Props {
     model: CapabilityReviewModel;
@@ -74,6 +88,12 @@
     context?: Snippet;
     /** Show which key signs; for users who chose one of several keys. */
     showSigner?: boolean;
+    /**
+     * Lookup state for the node key on a host approval. Leave unset where the
+     * key on the request is not a node (the `/delegate` session grant): the
+     * view then shows the space only.
+     */
+    peerRecognition?: PeerRecognitionState | null;
     onApprove: () => void;
     onCancel: () => void;
     onSelectionChange: (next: Set<string>) => void;
@@ -94,6 +114,7 @@
     cancelText = "Cancel",
     context,
     showSigner = false,
+    peerRecognition = null,
     onApprove,
     onCancel,
     onSelectionChange,
@@ -186,22 +207,25 @@
         primaryText: string;
         severity: CapabilityGrant["severity"];
         unmapped: boolean;
+        codeSpans: boolean;
       }
     >();
 
     for (const grant of selectedGrants) {
       for (const statement of buildStatements(grant)) {
         const existing = grouped.get(statement.primaryText);
+        const rowSeverity = statement.severity ?? grant.severity;
         if (existing) {
-          if (severityRank[grant.severity] > severityRank[existing.severity]) {
-            existing.severity = grant.severity;
+          if (severityRank[rowSeverity] > severityRank[existing.severity]) {
+            existing.severity = rowSeverity;
           }
         } else {
           grouped.set(statement.primaryText, {
             key: statement.primaryText,
             primaryText: statement.primaryText,
-            severity: grant.severity,
+            severity: rowSeverity,
             unmapped: isUnmappedStatement(statement.primaryText),
+            codeSpans: statement.codeSpans === true,
           });
         }
       }
@@ -216,12 +240,78 @@
     selectedGrants.filter(grantReachesSecretDataOrDecryption).length,
   );
 
+  // App keys: the standing-access line follows the decrypt statements, and a
+  // `key.delete` action is listed even though it is never selected.
+  const identity = $derived(appKeyIdentity(model));
+  const originHost = $derived.by(() => {
+    const origin = model.requester.verifiedOrigin;
+    if (!origin) return null;
+    try {
+      return new URL(origin).host;
+    } catch {
+      return origin;
+    }
+  });
+  // Names that come from a manifest are app-supplied text: they are shown only
+  // after the display rules (`appDisplayName`), everywhere on this view.
+  const requesterName = $derived(appDisplayName(model.requester.displayName) ?? originHost ?? "");
+  const manifestNameShown = $derived(appDisplayName(model.requester.manifestName));
+  const requestedBy = $derived(originHost ?? requesterName);
+  const appKeyAccessLine = $derived(
+    selectedGrants.some(grantIsAppKeyDecrypt) ? appKeyAccessStatement(model.expiry, formatAccessEnd) : null,
+  );
+  const notGrantableStatements = $derived.by(() => {
+    const rows = model.permissions.flatMap(appKeyNotGrantableStatements);
+    return rows.filter((row, index) => rows.findIndex((other) => other.primaryText === row.primaryText) === index);
+  });
+
   function isSelected(action: CapabilityAction): boolean {
     return selection.has(action.id);
   }
 
+  // The app keys of a request are approved with the rest of it or removed as
+  // a unit: the server refuses a selection that keeps an app-key action and
+  // drops any other action, so no control changes one without the other.
+  const appKeyGrants = $derived(model.permissions.filter((grant) => grant.family === "app-keys"));
+  const appKeyActionIds = $derived(
+    new Set(appKeyGrants.flatMap((grant) => grant.actions.filter((action) => action.editable).map((action) => action.id))),
+  );
+  const firstAppKeyGrantId = $derived(appKeyGrants[0]?.id ?? null);
+
+  const appKeysSelected = $derived([...appKeyActionIds].some((id) => selection.has(id)));
+
+  function isLockedByAppKeys(action: CapabilityAction): boolean {
+    return appKeysSelected && !appKeyActionIds.has(action.id);
+  }
+
+  function toggleAppKeys() {
+    const next = new Set(selection);
+    if (appKeysSelected) {
+      for (const id of appKeyActionIds) next.delete(id);
+    } else {
+      for (const grant of model.permissions) {
+        for (const action of grant.actions) {
+          if (action.editable) next.add(action.id);
+        }
+      }
+    }
+    onSelectionChange(next);
+  }
+
+  function handleAppKeysKeydown(event: KeyboardEvent) {
+    if (event.key === " " || event.key === "Enter") {
+      event.preventDefault();
+      toggleAppKeys();
+    }
+  }
+
   function toggle(action: CapabilityAction) {
     if (!action.editable) return;
+    if (appKeyActionIds.has(action.id)) {
+      toggleAppKeys();
+      return;
+    }
+    if (isLockedByAppKeys(action)) return;
     const next = new Set(selection);
     if (next.has(action.id)) next.delete(action.id);
     else next.add(action.id);
@@ -348,8 +438,7 @@
     return copied;
   }
 
-  async function copyRawMessage() {
-    const text = model.rawMessage;
+  async function writeClipboard(text: string): Promise<boolean> {
     let copied = false;
     if (
       typeof navigator !== "undefined" &&
@@ -371,14 +460,51 @@
         copied = false;
       }
     }
+    return copied;
+  }
+
+  async function copyRawMessage() {
+    const copied = await writeClipboard(model.rawMessage);
     copyState = copied ? "copied" : "failed";
     setTimeout(() => {
       copyState = "idle";
     }, 2000);
   }
 
+  // Space and node rows on a host approval. Derived from the bytes that are
+  // signed (`model.rawMessage`), for the grants currently selected.
+  const COPY_SPACE_ID = "Copy space ID";
+  const COPY_NODE_ID = "Copy node ID";
+  const COPIED = "Copied";
+  const NODE_CHECKING = "Checking the node…";
+  const NODE_NOT_CONFIRMED = "Not confirmed as a known TinyCloud node";
+  const NODE_NOT_CONFIRMED_NOTE = "Approving lets this node store and serve your new space.";
+
+  const hostFacts = $derived(readSpaceHostFacts(model, selection));
+  let copiedValue = $state<string | null>(null);
+
+  async function copyValue(value: string) {
+    if (!(await writeClipboard(value))) return;
+    copiedValue = value;
+    setTimeout(() => {
+      if (copiedValue === value) copiedValue = null;
+    }, 2000);
+  }
+
+  function handleApproveClick(event: MouseEvent) {
+    try {
+      if (window.self !== window.top && !event.isTrusted) return;
+    } catch {
+      if (!event.isTrusted) return;
+    }
+    onApprove();
+  }
+
+  const nodeChecking = $derived(peerRecognition?.state === "checking");
   const approveDisabled = $derived(approving || isMalformedRecap);
-  const approveButtonDisabled = $derived(layoutBlocked || approveDisabled || Boolean(approveBlockedReason));
+  const approveButtonDisabled = $derived(
+    layoutBlocked || approveDisabled || Boolean(approveBlockedReason) || nodeChecking,
+  );
   const approveLabel = $derived(
     isMalformedRecap
       ? "Cannot approve"
@@ -400,10 +526,23 @@
   tabindex="-1"
 >
   <header class="header">
-    <h2 id="signing-approval-headline" class="headline">{headline}</h2>
-    <p class="requester-line">
-      Requested by <span class="requester-name">{model.requester.displayName}</span>
-    </p>
+    {#if identity}
+      <!-- The app's name, then its id; the name never appears without the id. -->
+      {#if identity.name}
+        <h2 id="signing-approval-headline" class="headline app-name">{identity.name}</h2>
+        <p class="app-id mono">{identity.appId}</p>
+      {:else}
+        <h2 id="signing-approval-headline" class="headline app-id-headline mono">{identity.appId}</h2>
+      {/if}
+      <p class="requester-line">
+        Requested by <span class="requester-name">{requestedBy}</span>
+      </p>
+    {:else}
+      <h2 id="signing-approval-headline" class="headline">{headline}</h2>
+      <p class="requester-line">
+        Requested by <span class="requester-name">{requesterName}</span>
+      </p>
+    {/if}
     <p id="signing-approval-hint" class="hint">{hint}</p>
   </header>
 
@@ -414,7 +553,7 @@
   <!-- Reason only when a reason actually exists. -->
   {#if model.reason.source !== "none" && model.reason.text}
     <section class="reason" aria-label="Reason for request">
-      <div class="reason-label">Reason provided by {model.reason.source === "caller" ? "the requester" : model.requester.displayName}</div>
+      <div class="reason-label">Reason provided by {model.reason.source === "caller" ? "the requester" : requesterName}</div>
       <p class="reason-body">{model.reason.text}</p>
       {#if model.reason.source === "caller"}
         <p class="reason-untrusted">
@@ -442,6 +581,14 @@
     </p>
   {/if}
 
+  {#snippet statementText(text: string, codeSpans: boolean)}
+    {#if codeSpans}
+      {#each splitStatementCode(text) as part}{#if part.code}<code class="mono">{part.text}</code>{:else}{part.text}{/if}{/each}
+    {:else}
+      {text}
+    {/if}
+  {/snippet}
+
   <!--
     Default summary: short list of deterministic statements.
     Never invents friendly semantics for unknown shapes (see statements.ts).
@@ -449,6 +596,9 @@
     in Advanced details so the first viewport is useful to ordinary users.
   -->
   <section class="summary" aria-label="Requested access">
+    {#if identity && summaryStatements.length > 0}
+      <p class="summary-lead">{appRequestingLine(identity.name)}</p>
+    {/if}
     {#if summaryStatements.length > 0}
       <ul class="summary-statements">
         {#each summaryStatements as statement (statement.key)}
@@ -457,7 +607,7 @@
             data-severity={statement.severity}
           >
             <span class="statement-line">
-              <span class="statement-primary">{statement.primaryText}</span>
+              <span class="statement-primary">{@render statementText(statement.primaryText, statement.codeSpans)}</span>
               {#if statement.severity === "sensitive"}
                 <span class="summary-sensitive-pill">Sensitive</span>
               {/if}
@@ -471,6 +621,74 @@
           ? "No optional access selected."
           : "No capability payload — exact-byte signature only."}
       </p>
+    {/if}
+    {#if appKeyAccessLine}
+      <p class="summary-note">{appKeyAccessLine}</p>
+    {/if}
+    {#if notGrantableStatements.length > 0}
+      <ul class="summary-statements summary-not-granted">
+        {#each notGrantableStatements as statement (statement.primaryText)}
+          <li class="summary-statement" data-severity="sensitive">
+            <span class="statement-line">
+              <span class="statement-primary">{@render statementText(statement.primaryText, statement.codeSpans === true)}</span>
+            </span>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+
+    {#if hostFacts}
+      <dl class="host-facts">
+        {#each hostFacts.spaces as space (space.spaceId)}
+          <div class="host-fact">
+            <dt class="host-fact-label">Space</dt>
+            <dd class="host-fact-value">
+              {#if space.spaceName}
+                <span class="host-fact-name">{space.spaceName}</span>
+              {/if}
+              <code class="mono" title={space.spaceId}>{space.spaceName ? abbreviateSpaceId(space.spaceId) : space.spaceId}</code>
+              <button
+                type="button"
+                class="copy-btn"
+                aria-label={copiedValue === space.spaceId ? COPIED : COPY_SPACE_ID}
+                title={copiedValue === space.spaceId ? COPIED : COPY_SPACE_ID}
+                onclick={() => copyValue(space.spaceId)}
+              >
+                {copiedValue === space.spaceId ? COPIED : COPY_SPACE_ID}
+              </button>
+            </dd>
+          </div>
+        {/each}
+        {#if hostFacts.peerDid && peerRecognition}
+          <div class="host-fact">
+            <dt class="host-fact-label">Node ID</dt>
+            <dd class="host-fact-value">
+              <code class="mono" title={hostFacts.peerDid}>{abbreviateDid(hostFacts.peerDid)}</code>
+              <button
+                type="button"
+                class="copy-btn"
+                aria-label={copiedValue === hostFacts.peerDid ? COPIED : COPY_NODE_ID}
+                title={copiedValue === hostFacts.peerDid ? COPIED : COPY_NODE_ID}
+                onclick={() => copyValue(hostFacts.peerDid ?? "")}
+              >
+                {copiedValue === hostFacts.peerDid ? COPIED : COPY_NODE_ID}
+              </button>
+            </dd>
+          </div>
+        {/if}
+      </dl>
+      {#if hostFacts.peerDid && peerRecognition}
+        <div class="host-node-status" id="host-node-status" role="status" aria-live="polite" data-node-state={peerRecognition.state}>
+          {#if peerRecognition.state === "checking"}
+            <p class="host-marker">{NODE_CHECKING}</p>
+          {:else if peerRecognition.state === "known"}
+            <p class="host-marker">Known TinyCloud node at <span class="mono">{peerRecognition.origin}</span></p>
+          {:else}
+            <p class="host-marker">{NODE_NOT_CONFIRMED}</p>
+            <p class="host-marker-note">{NODE_NOT_CONFIRMED_NOTE}</p>
+          {/if}
+        </div>
+      {/if}
     {/if}
   </section>
 
@@ -489,7 +707,7 @@
       <section class="identity" aria-label="Requester identity">
       <div class="row">
         <span class="label">Requester</span>
-        <span class="value">{model.requester.displayName}</span>
+        <span class="value">{requesterName}</span>
       </div>
 
       {#if model.requester.verifiedOrigin}
@@ -528,10 +746,10 @@
         a trusted label. Server code never marks a caller-echoed name as
         origin-bound — see the popup/embed prepare handlers.
       -->
-      {#if model.requester.manifestName}
+      {#if manifestNameShown}
         <div class="row">
           <span class="label">Manifest name</span>
-          <span class="value">{model.requester.manifestName}</span>
+          <span class="value">{manifestNameShown}</span>
           <span
             class="provenance-tag"
             data-provenance={model.requester.manifestNameProvenance}
@@ -642,6 +860,9 @@
           {/if}
         </div>
 
+        {#if editing && appKeyGrants.length > 0}
+          <p class="app-key-note">{APP_KEY_GROUP_NOTE}</p>
+        {/if}
         {#each permissionSections as bucket (bucket.key)}
           <details
             class="severity-bucket"
@@ -687,17 +908,29 @@
                         This data belongs to another user.
                       </p>
                     {/if}
+                    {#if editing && grant.id === firstAppKeyGrantId}
+                      <label class="action-toggle app-key-group">
+                        <input
+                          type="checkbox"
+                          checked={appKeysSelected}
+                          onchange={toggleAppKeys}
+                          onkeydown={handleAppKeysKeydown}
+                          disabled={approveDisabled}
+                        />
+                        <span class="verb">{FAMILY_LABEL["app-keys"]}</span>
+                      </label>
+                    {/if}
                     <ul class="action-list">
                       {#each editing ? grant.actions : grant.actions.filter(isSelected) as action}
                         <li class="action">
-                          {#if editing && action.editable}
+                          {#if editing && action.editable && !appKeyActionIds.has(action.id)}
                             <label class="action-toggle">
                               <input
                                 type="checkbox"
                                 checked={isSelected(action)}
                                 onchange={() => toggle(action)}
                                 onkeydown={(e) => handleKeydown(e, action)}
-                                disabled={approveDisabled}
+                                disabled={approveDisabled || isLockedByAppKeys(action)}
                               />
                               <span class="verb">{action.verb}</span>
                             </label>
@@ -780,9 +1013,10 @@
     <button
       type="button"
       class="approve"
-      onclick={onApprove}
+      onclick={handleApproveClick}
       disabled={approveButtonDisabled}
       aria-disabled={approveButtonDisabled}
+      aria-describedby={nodeChecking ? "host-node-status" : undefined}
     >
       {approveLabel}
     </button>
@@ -821,6 +1055,28 @@
     line-height: 1.5;
     color: #475569;
     margin: 0;
+  }
+  .app-name,
+  .app-id-headline {
+    unicode-bidi: isolate;
+    overflow-wrap: anywhere;
+  }
+  .app-id {
+    font-size: 13px;
+    line-height: 1.3;
+    color: #475569;
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+  .app-id-headline {
+    font-size: 17px;
+  }
+  .summary-lead {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 0 0 6px;
+    unicode-bidi: isolate;
+    overflow-wrap: anywhere;
   }
   .requester-line {
     font-size: 13px;
@@ -934,6 +1190,82 @@
     line-height: 1.3;
   }
   .summary-empty {
+    color: #475569;
+    font-size: 13px;
+    line-height: 1.45;
+    margin: 0;
+  }
+  .host-facts {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 0;
+    padding-top: 8px;
+    border-top: 1px solid #e2e8f0;
+  }
+  .host-fact {
+    display: grid;
+    grid-template-columns: 72px minmax(0, 1fr);
+    gap: 4px 10px;
+    align-items: start;
+  }
+  .host-fact-label {
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.6;
+    color: #475569;
+  }
+  .host-fact-value {
+    margin: 0;
+    min-width: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 8px;
+    overflow-wrap: anywhere;
+  }
+  .host-fact-name {
+    font-size: 13px;
+    font-weight: 700;
+    color: #0f172a;
+  }
+  .host-node-status {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 10px;
+    border: 1px solid #cbd5e1;
+    border-radius: 10px;
+    background: #fff;
+    font-size: 13px;
+    line-height: 1.45;
+    color: #0f172a;
+  }
+  .host-node-status[data-node-state="known"] {
+    border-color: #a7d7b8;
+    background: #f3fbf6;
+  }
+  .host-node-status[data-node-state="other"] {
+    border-color: #f1d28a;
+    background: #fffaf0;
+  }
+  .host-marker {
+    margin: 0;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+  }
+  .host-marker-note {
+    margin: 0;
+    font-size: 12px;
+    color: #475569;
+  }
+  .app-key-note {
+    margin: 0 0 8px;
+    color: #475569;
+    font-size: 13px;
+    line-height: 1.45;
+  }
+  .summary-note {
     color: #475569;
     font-size: 13px;
     line-height: 1.45;

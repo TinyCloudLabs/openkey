@@ -137,6 +137,7 @@ test('legacy host Sign stays actionable without a v2 layout exchange', async ({ 
     );
   }, message);
   const approve = page.frameLocator('#legacy-sign').getByRole('button', { name: 'Approve', exact: true });
+  await approve.scrollIntoViewIfNeeded();
   await expect(approve).toBeEnabled();
   await approve.click();
   await expect.poll(() => signCalls).toBe(1);
