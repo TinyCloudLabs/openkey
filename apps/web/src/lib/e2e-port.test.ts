@@ -2,11 +2,14 @@
 // the default is 5779 (what CI uses), OPENKEY_E2E_PORT changes it, and no other file under the
 // web app's tests or sources spells the port out.
 
+// @ts-expect-error bun:test is supplied by the web test runner
 import { describe, expect, test } from 'bun:test';
+import { spawnSync } from 'node:child_process';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const webRoot = resolve(import.meta.dir, '../..');
+const webRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const portFile = join(webRoot, 'tests/browser/e2e-port.ts');
 const configFile = join(webRoot, 'tests/browser/playwright.config.ts');
 
@@ -23,8 +26,8 @@ function inFreshProcess(module: string, expression: string, port: string | undef
   const env: Record<string, string> = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
   delete env.OPENKEY_E2E_PORT;
   if (port !== undefined) env.OPENKEY_E2E_PORT = port;
-  const result = Bun.spawnSync([process.execPath, '-e', `const m = await import(${JSON.stringify(module)}); console.log(JSON.stringify(${expression}));`], { env, stdout: 'pipe', stderr: 'pipe' });
-  return { status: result.exitCode, stdout: result.stdout.toString().trim(), stderr: result.stderr.toString() };
+  const result = spawnSync(process.execPath, ['-e', `const m = await import(${JSON.stringify(module)}); console.log(JSON.stringify(${expression}));`], { env, encoding: 'utf8' });
+  return { status: result.status, stdout: result.stdout.trim(), stderr: result.stderr };
 }
 
 describe('the browser specs\' dev-server port', () => {
@@ -55,7 +58,7 @@ describe('the browser specs\' dev-server port', () => {
     expect(JSON.parse(inFreshProcess(portFile, 'm.E2E_PORT', '').stdout)).toBe(5779);
   });
 
-  test.each(['abc', '80', '70000', '5791.5', '-1'])('a value that is not a port from 1024 to 65535 (%s) is refused', (value) => {
+  test.each(['abc', '80', '70000', '5791.5', '-1'])('a value that is not a port from 1024 to 65535 (%s) is refused', (value: string) => {
     const result = inFreshProcess(portFile, 'm.E2E_PORT', value);
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain('OPENKEY_E2E_PORT must be an integer from 1024 to 65535');
