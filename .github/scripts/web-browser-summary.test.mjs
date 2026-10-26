@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { render, summarize } from './web-browser-summary.mjs';
+import { policyProblem, render, specFilesUnder, summarize } from './web-browser-summary.mjs';
 
 const script = fileURLToPath(new URL('./web-browser-summary.mjs', import.meta.url));
 
@@ -223,4 +223,131 @@ test('the command: exit codes for a green run, a known red, a new failure, a bro
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ---- the policy file, exit statuses, nested spec files and flake results (review of #371) ----
+
+const policy = { minTests: 3, projects: ['chromium', 'webkit'], knownReds: known, knownSkipped: [] };
+
+/** Runs the command on a report and a list file written into a fresh directory. */
+function command(reportObject, { list = policy, rawList, args = ['--exit-code', '0'], layout = () => {} } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'web-browser-summary-'));
+  try {
+    const reportPath = join(dir, 'report.json');
+    writeFileSync(reportPath, JSON.stringify(reportObject));
+    const listPath = join(dir, 'list.json');
+    if (rawList !== null) writeFileSync(listPath, rawList ?? JSON.stringify(list));
+    layout(dir);
+    const resolved = args.map((arg) => (arg === '@specs' ? join(dir, 'specs') : arg));
+    return spawnSync(process.execPath, [script, reportPath, listPath, ...resolved], { encoding: 'utf8' });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('the same CLI call that fails against the real policy cannot pass against a missing one', () => {
+  const thin = report([ok('a.spec.ts', 1, 'one')]);
+  const real = command(thin, { list: { ...policy, minTests: 150 } });
+  assert.equal(real.status, 1);
+  assert.match(real.stdout, /fewer than the minimum of 150/);
+  const missing = command(thin, { rawList: null });
+  assert.equal(missing.status, 1, missing.stdout);
+  assert.match(missing.stdout, /known-red list cannot be read \(ENOENT\)/);
+  // A complete report passes with the policy and fails without it, so deleting the file never helps.
+  assert.equal(command(report(whole)).status, 0);
+  assert.equal(command(report(whole), { rawList: null }).status, 1);
+});
+
+test('an unparseable list, or one without a usable minTests or projects, fails before the report is classified', () => {
+  const unparseable = command(report(whole), { rawList: '{ not json' });
+  assert.equal(unparseable.status, 1);
+  assert.match(unparseable.stdout, /known-red list cannot be read/);
+  for (const [name, list] of [
+    ['minTests absent', { projects: policy.projects }],
+    ['minTests 0', { ...policy, minTests: 0 }],
+    ['minTests negative', { ...policy, minTests: -5 }],
+    ['minTests not an integer', { ...policy, minTests: 1.5 }],
+    ['minTests a string', { ...policy, minTests: '150' }],
+    ['projects absent', { minTests: 3 }],
+    ['projects empty', { ...policy, projects: [] }],
+    ['projects with an empty name', { ...policy, projects: [''] }],
+    ['knownReds not an array', { ...policy, knownReds: {} }],
+    ['a known red without a title', { ...policy, knownReds: [{ project: 'chromium', file: 'a.spec.ts' }] }],
+    ['the list is an array', []],
+  ]) {
+    const result = command(report(whole), { list });
+    assert.equal(result.status, 1, `${name}: ${result.stdout}`);
+    assert.match(result.stdout, /known-red list is invalid/, name);
+  }
+  assert.equal(policyProblem(policy), null);
+});
+
+test('the CLI needs the list path', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'web-browser-summary-'));
+  try {
+    writeFileSync(join(dir, 'report.json'), JSON.stringify(report(whole)));
+    assert.equal(spawnSync(process.execPath, [script, join(dir, 'report.json'), '--exit-code', '0'], { encoding: 'utf8' }).status, 2);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('only Playwright\'s test-failure status (1) can be explained by known reds: 2, 130, 137 and the rest fail', () => {
+  const oneRed = report([...whole, spec('red.spec.ts', 80, 'a known red', 'unexpected', failedTwice)]);
+  assert.equal(summarize(oneRed, options({ exitCode: 1, minTests: 4, knownReds: known })).failed, false);
+  for (const exitCode of [2, 3, 130, 137, 255, -1]) {
+    const result = summarize(oneRed, options({ exitCode, minTests: 4, knownReds: known }));
+    assert.equal(result.failed, true, `exit ${exitCode}`);
+    assert.match(result.problems.join('\n'), new RegExp(`exited with status ${exitCode}, which is not a test-failure status`));
+  }
+  // Through the command too, with the same complete one-red report.
+  assert.equal(command(oneRed, { list: { ...policy, minTests: 4 }, args: ['--exit-code', '1'] }).status, 0);
+  for (const code of ['2', '130', '137']) assert.equal(command(oneRed, { list: { ...policy, minTests: 4 }, args: ['--exit-code', code] }).status, 1, code);
+  // A clean report with 2 or 137 fails as well.
+  assert.equal(command(report(whole), { args: ['--exit-code', '137'] }).status, 1);
+});
+
+test('spec files are enumerated recursively and compared by relative path', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'web-browser-summary-'));
+  try {
+    mkdirSync(join(dir, 'nested/deeper'), { recursive: true });
+    mkdirSync(join(dir, 'node_modules/x'), { recursive: true });
+    for (const name of ['a.spec.ts', 'helper.ts', 'nested/b.spec.ts', 'nested/deeper/c.spec.ts', 'node_modules/x/d.spec.ts']) writeFileSync(join(dir, name), '');
+    assert.deepEqual(specFilesUnder(dir), ['a.spec.ts', 'nested/b.spec.ts', 'nested/deeper/c.spec.ts']);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  // Same base name in two directories: each path needs its own tests.
+  const result = summarize(report([ok('a.spec.ts', 1, 'one'), ok('nested/a.spec.ts', 2, 'two'), ok('c.spec.ts', 3, 'three', 'webkit')]), options({ specFiles: ['a.spec.ts', 'other/a.spec.ts'] }));
+  assert.equal(result.failed, true);
+  assert.match(result.problems.join('\n'), /spec file other\/a\.spec\.ts has no tests/);
+  assert.equal(summarize(report([ok('a.spec.ts', 1, 'one'), ok('nested/a.spec.ts', 2, 'two'), ok('c.spec.ts', 3, 'three', 'webkit')]), options({ specFiles: ['a.spec.ts', 'nested/a.spec.ts'] })).failed, false);
+});
+
+test('a nested spec file with no tests in the report fails the command', () => {
+  const layout = (dir) => {
+    mkdirSync(join(dir, 'specs/nested'), { recursive: true });
+    for (const name of ['a.spec.ts', 'b.spec.ts', 'nested/lost.spec.ts']) writeFileSync(join(dir, 'specs', name), '');
+  };
+  const reportObject = report([ok('a.spec.ts', 1, 'one'), ok('b.spec.ts', 2, 'two'), ok('c.spec.ts', 3, 'three', 'webkit')]);
+  const lost = command(reportObject, { args: ['--exit-code', '0', '--specs-dir', '@specs'], layout });
+  assert.equal(lost.status, 1, lost.stdout);
+  assert.match(lost.stdout, /spec file nested\/lost\.spec\.ts has no tests/);
+  const found = command(report([...whole, ok('nested/lost.spec.ts', 9, 'nested one')]), {
+    list: { ...policy, minTests: 4 }, args: ['--exit-code', '0', '--specs-dir', '@specs'],
+    layout: (dir) => { layout(dir); writeFileSync(join(dir, 'specs/c.spec.ts'), ''); },
+  });
+  assert.equal(found.status, 0, found.stdout);
+});
+
+test('a test reported as flaky must show a failed attempt followed by a pass', () => {
+  const flaky = (results) => summarize(report([...whole, spec('login.spec.ts', 241, 'a flaky one', 'flaky', results)]), options({ minTests: 4 }));
+  for (const [name, results] of [['[failed, failed]', failedTwice], ['[]', []], ['[passed]', passed], ['[passed, passed]', [{ status: 'passed' }, { status: 'passed' }]], ['[failed]', [{ status: 'failed' }]], ['[failed, skipped]', [{ status: 'failed' }, { status: 'skipped' }]]]) {
+    const result = flaky(results);
+    assert.equal(result.failed, true, name);
+    assert.match(result.problems.join('\n'), /reported as flaky, but its attempts are/, name);
+  }
+  assert.equal(flaky(failedThenPassed).failed, false);
+  assert.equal(flaky([{ status: 'timedOut' }, { status: 'failed' }, { status: 'passed' }]).failed, false);
+  assert.equal(flaky([{ status: 'timedOut' }, { status: 'passed' }]).flaky.length, 1);
 });

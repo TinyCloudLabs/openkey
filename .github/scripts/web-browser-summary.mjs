@@ -2,23 +2,31 @@
 // Reads a Playwright JSON report, Playwright's exit status and the known-red list, prints a markdown
 // summary, and exits 1 unless the report is complete and every failure is a known red (TC-2120).
 //
-//   node web-browser-summary.mjs <playwright-report.json> [known-reds.json] [--exit-code N] [--specs-dir DIR]
+//   node web-browser-summary.mjs <playwright-report.json> <known-reds.json> [--exit-code N] [--specs-dir DIR]
+//
+// The list file is REQUIRED: it carries the completeness floor (`minTests`, `projects`) as well as
+// the known reds, so a missing, unreadable or invalid list fails the job, never loosens the checks.
 //
 // The job FAILS when:
+//   - the list file is missing, unreadable or invalid (`minTests` not a positive integer, `projects`
+//     not a non-empty array of names);
 //   - the report is missing, unreadable, or has run-level errors (a spec file that fails to load is one);
-//   - Playwright's exit status was not recorded, or it is nonzero and the report does not fully
-//     explain it (every failing test must be a listed known red, and at least one must fail);
+//   - Playwright's exit status was not recorded, or is anything but 0 or 1 (1 is Playwright's
+//     test-failure status; 2, 130, 137 and the rest are crashes, signals and CLI errors), or is 1 and
+//     the report does not fully explain it (every failing test must be a listed known red, and at
+//     least one must fail);
 //   - the report has no tests, fewer than `minTests`, a configured project with no tests, or a spec
-//     file in --specs-dir with no tests in it;
+//     file anywhere under --specs-dir (nested ones included, compared by relative path) with no tests;
 //   - the counts in `stats` disagree with the tests in the report (a partial report);
 //   - a test has a status or result status this script does not know, was interrupted, or is an
 //     expected failure;
 //   - a test is skipped and not on the `knownSkipped` list;
 //   - a test fails and is not a listed known red.
-// A test that failed and then passed on its retry is a flake: reported, never a failure.
+// A test that failed and then passed on its retry is a flake: reported, never a failure. Its results
+// must show it (an earlier failed or timed-out attempt, and a final passed one), or the report fails.
 
-import { readFileSync, readdirSync } from 'node:fs';
-import { basename } from 'node:path';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const TEST_STATUSES = new Set(['expected', 'unexpected', 'flaky', 'skipped']);
@@ -26,6 +34,7 @@ const RESULT_STATUSES = new Set(['passed', 'failed', 'timedOut', 'skipped', 'int
 
 const firstLine = (text) => String(text ?? '').replace(/\x1b\[[0-9;]*m/g, '').split('\n').find((line) => line.trim()) ?? '';
 const testKey = (project, file, title) => `${project}\u0000${file}\u0000${title}`;
+const normalizePath = (path) => String(path).replace(/\\/g, '/').replace(/^\.\//, '');
 const keyed = (entries) => new Map(entries.map((entry) => [testKey(entry.project, entry.file, entry.title), entry]));
 
 function* tests(suite) {
@@ -59,7 +68,7 @@ export function summarize(report, options = {}) {
   for (const suite of report.suites ?? []) {
     for (const test of tests(suite)) {
       out.total += 1;
-      files.add(basename(String(test.file)));
+      files.add(normalizePath(test.file));
       seenProjects.add(test.project);
       const key = testKey(test.project, test.file, test.title);
       const counts = (out.perProject[test.project] ??= { passed: 0, failed: 0, flaky: 0, skipped: 0 });
@@ -82,8 +91,15 @@ export function summarize(report, options = {}) {
         counts.failed += 1;
         (entry ? out.knownRed : out.newFailures).push(entry ? { ...row, reason: entry.reason } : row);
       } else if (test.status === 'flaky') {
-        counts.flaky += 1;
-        out.flaky.push(row);
+        const attempts = test.results.map((result) => result.status);
+        const eventualPass = attempts.length >= 2 && attempts[attempts.length - 1] === 'passed'
+          && attempts.slice(0, -1).some((status) => status === 'failed' || status === 'timedOut');
+        if (!eventualPass) {
+          out.problems.push(`${label}: reported as flaky, but its attempts are [${attempts.join(', ')}], not a failure followed by a pass`);
+        } else {
+          counts.flaky += 1;
+          out.flaky.push(row);
+        }
       } else if (test.status === 'skipped') {
         counts.skipped += 1;
         out.skipped += 1;
@@ -118,17 +134,20 @@ export function summarize(report, options = {}) {
   for (const project of projects) {
     if (!seenProjects.has(project)) out.problems.push(`project "${project}" has no tests in the report`);
   }
-  for (const file of specFiles) {
+  for (const file of specFiles.map(normalizePath)) {
     if (!files.has(file)) out.problems.push(`spec file ${file} has no tests in the report (did it fail to load?)`);
   }
 
-  // Playwright's exit status must be recorded, and a nonzero one must be fully explained by known reds.
+  // Playwright's exit status must be recorded. 0 is a pass and 1 is its documented test-failure
+  // status; anything else (2, 130, 137, ...) is a crash, a signal or a CLI error that no test explains.
   if (!Number.isInteger(exitCode)) {
     out.problems.push("Playwright's exit status was not recorded");
-  } else if (exitCode !== 0) {
+  } else if (exitCode !== 0 && exitCode !== 1) {
+    out.problems.push(`Playwright exited with status ${exitCode}, which is not a test-failure status (0 or 1)`);
+  } else if (exitCode === 1) {
     const failing = out.newFailures.length + out.knownRed.length;
     if (failing === 0 || out.newFailures.length > 0 || out.errors.length > 0) {
-      out.problems.push(`Playwright exited with status ${exitCode}, and the report does not explain it by known reds alone`);
+      out.problems.push(`Playwright exited with status 1, and the report does not explain it by known reds alone`);
     }
   } else if (out.newFailures.length + out.knownRed.length > 0) {
     out.problems.push('Playwright exited with status 0, but the report has failing tests');
@@ -183,6 +202,30 @@ export function render(result) {
 
 const readJson = (path) => JSON.parse(readFileSync(path, 'utf8'));
 
+/** The reason a list file is not usable as policy, or null. */
+export function policyProblem(list) {
+  if (list === null || typeof list !== 'object' || Array.isArray(list)) return 'it is not a JSON object';
+  if (!Number.isInteger(list.minTests) || list.minTests < 1) return '`minTests` must be a positive integer';
+  if (!Array.isArray(list.projects) || list.projects.length === 0 || list.projects.some((name) => typeof name !== 'string' || name === '')) {
+    return '`projects` must be a non-empty array of project names';
+  }
+  for (const name of ['knownReds', 'knownSkipped']) {
+    if (list[name] !== undefined && (!Array.isArray(list[name]) || list[name].some((entry) => entry === null || typeof entry !== 'object' || typeof entry.project !== 'string' || typeof entry.file !== 'string' || typeof entry.title !== 'string'))) {
+      return `\`${name}\` must be an array of { project, file, title } entries`;
+    }
+  }
+  return null;
+}
+
+/** Every *.spec.ts under a directory, as paths relative to it with forward slashes. */
+export function specFilesUnder(directory, prefix = '') {
+  return readdirSync(join(directory, prefix)).sort().flatMap((name) => {
+    if (name === 'node_modules' || name === 'test-results') return [];
+    const relative = prefix ? `${prefix}/${name}` : name;
+    return statSync(join(directory, relative)).isDirectory() ? specFilesUnder(directory, relative) : name.endsWith('.spec.ts') ? [relative] : [];
+  });
+}
+
 function parseArgs(argv) {
   const positional = [];
   const flags = {};
@@ -193,38 +236,39 @@ function parseArgs(argv) {
   return { positional, flags };
 }
 
+const fail = (message) => {
+  process.stdout.write(`## Web browser specs\n\n**FAIL**: ${message}\n`);
+  return 1;
+};
+
 function main(argv) {
   const { positional: [reportPath, listPath], flags } = parseArgs(argv);
-  if (!reportPath) {
-    console.error('usage: web-browser-summary.mjs <playwright-report.json> [known-reds.json] [--exit-code N] [--specs-dir DIR]');
+  if (!reportPath || !listPath) {
+    console.error('usage: web-browser-summary.mjs <playwright-report.json> <known-reds.json> [--exit-code N] [--specs-dir DIR]');
     return 2;
   }
+  // The list carries the completeness floor, so any problem with it, a missing file included, fails.
+  let list;
+  try {
+    list = readJson(listPath);
+  } catch (error) {
+    return fail(`the known-red list cannot be read (${error.code ?? error.name}), so the completeness checks cannot run.`);
+  }
+  const problem = policyProblem(list);
+  if (problem) return fail(`the known-red list is invalid: ${problem}.`);
+
   let report;
   try {
     report = readJson(reportPath);
   } catch (error) {
-    process.stdout.write(`## Web browser specs\n\n**FAIL**: no readable Playwright report (${error.code ?? error.name}), so nothing was checked.\n`);
-    return 1;
-  }
-  let list = {};
-  if (listPath) {
-    try {
-      list = readJson(listPath);
-    } catch (error) {
-      // A missing list is an empty list; an unreadable one must not hide a failure.
-      if (error.code !== 'ENOENT') {
-        process.stdout.write(`## Web browser specs\n\n**FAIL**: the known-red list cannot be read (${error.name}).\n`);
-        return 1;
-      }
-    }
+    return fail(`no readable Playwright report (${error.code ?? error.name}), so nothing was checked.`);
   }
   let specFiles = [];
   if (flags['--specs-dir']) {
     try {
-      specFiles = readdirSync(flags['--specs-dir']).filter((name) => name.endsWith('.spec.ts'));
+      specFiles = specFilesUnder(flags['--specs-dir']);
     } catch (error) {
-      process.stdout.write(`## Web browser specs\n\n**FAIL**: the spec directory cannot be read (${error.code ?? error.name}).\n`);
-      return 1;
+      return fail(`the spec directory cannot be read (${error.code ?? error.name}).`);
     }
   }
   const exitCode = flags['--exit-code'] === undefined || flags['--exit-code'] === '' ? undefined : Number(flags['--exit-code']);
@@ -232,7 +276,7 @@ function main(argv) {
     knownReds: list.knownReds ?? [],
     knownSkipped: list.knownSkipped ?? [],
     minTests: list.minTests,
-    projects: list.projects ?? [],
+    projects: list.projects,
     specFiles,
     exitCode,
   });
