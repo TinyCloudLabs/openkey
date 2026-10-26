@@ -69,7 +69,7 @@ const PREFIX_SENTENCE = {
   unblock:
     "Unblock every key under qa/ in your account's default network, so they can decrypt again, even if you blocked them yourself.",
   decrypt:
-    "Decrypt data locked with your own keys in the folder `qa/`",
+    "Decrypt data locked with your own keys in the folder `qa/`, including keys created later",
   delete:
     "Delete the key qa/: only you can do this, with your wallet, as a separate step. This request is refused.",
 } as const;
