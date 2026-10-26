@@ -40,7 +40,7 @@ const AUTH_BASE_PATH = '/api/auth';
 const FORM_MEDIA_TYPE = 'application/x-www-form-urlencoded';
 const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
-export type ProviderInterceptorDatabase = Pick<PrismaClient, 'oauthClient' | 'oauthRefreshToken' | 'oauthAccessToken' | 'oauthConsent' | 'tinyCloudNativeGrant' | 'tinyCloudNativeRequest' | 'session'>;
+export type ProviderInterceptorDatabase = Pick<PrismaClient, 'oauthClient' | 'oauthRefreshToken' | 'oauthAccessToken' | 'oauthConsent' | 'tinyCloudNativeGrant' | 'tinyCloudNativeRequest' | 'session' | '$queryRaw'>;
 
 type Refusal = { status: 400 | 401 | 429 | 503; error: string; description: string; retryAfter?: number };
 /**
@@ -147,6 +147,18 @@ function requestClients(request: Request, params: URLSearchParams): { effective:
   if (separator <= 0 || separator === decoded.length - 1) return invalid;
   const basicClient = decoded.slice(0, separator);
   return { effective: basicClient, candidates: [...new Set([basicClient, ...(bodyClient ? [bodyClient] : [])])] };
+}
+
+/**
+ * The client secret as the provider reads it: a Basic header's secret (the text
+ * between the first and second colon, as the provider splits it) replaces the
+ * body's `client_secret`. Only call this after `requestClients` accepted the header.
+ */
+function requestSecret(request: Request, params: URLSearchParams): string | null {
+  const authorization = request.headers.get('authorization');
+  if (!authorization?.startsWith('Basic ')) return params.get('client_secret');
+  const decoded = Buffer.from(authorization.slice('Basic '.length), 'base64').toString('utf8');
+  return decoded.split(':', 2)[1] ?? null;
 }
 
 export interface ProviderInterceptorOptions {
@@ -326,7 +338,11 @@ export function createProviderInterceptors({ database, tokens, provider, getSess
     // An MCP refresh whose connection has ended is refused here, before the
     // provider rotates the token. Unknown, revoked and expired tokens go on to the
     // provider so its reuse detection still runs.
-    return token ? await mcpRefreshRefusal(database, tokens, token, clients.effective, params.get('scope')) : null;
+    return token
+      ? await mcpRefreshRefusal(database, tokens, token, clients.effective, params.get('scope'), new Date(), {
+        presentedSecret: requestSecret(c.req.raw, params),
+      })
+      : null;
   }
 
   /** Spec "Provider refresh and revoke interception", revoke table; first match applies. */
