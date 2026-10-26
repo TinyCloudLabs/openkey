@@ -42,6 +42,7 @@ import {
   isRequiredAction,
   normalizeStringArray,
   parsePreparedRecap,
+  reportedEntry,
   prepareDelegationSession,
   type DelegationJwk,
   type DelegationPermissionEntry,
@@ -3165,13 +3166,16 @@ delegateRouter.post('/authorize-sign', async (c) => {
   // would throw "permissions disagree with selectedActionKeys" before
   // ever displaying anything to the user.
   const effectiveEntries = parsePreparedRecap(signedMessage);
-  const effectiveGrants = effectiveEntries.map((entry) => ({
+  // The response is reported in the consumer's encoding (`reportedEntry`); the
+  // signed bytes and the ids the window sent are unaffected.
+  const reportedEntries = effectiveEntries.map(reportedEntry);
+  const effectiveGrants = reportedEntries.map((entry) => ({
     service: canonicalizeServiceName(entry.service),
     space: entry.space,
     path: entry.path,
     actions: [...entry.actions],
   }));
-  const effectiveSelectedActionKeys = effectiveEntries.flatMap((entry) =>
+  const effectiveSelectedActionKeys = reportedEntries.flatMap((entry) =>
     entry.actions.map((action) => computeActionKey(entry, action)),
   );
   const signedAppKeyRefusal = appKeyRefusalForSiwe(signedMessage, effectiveEntries, bound.admittedAppKeys);

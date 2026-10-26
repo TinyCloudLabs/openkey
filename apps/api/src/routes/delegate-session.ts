@@ -133,6 +133,23 @@ export function actionKey(entry: RecapEntry, action: string): string {
   return `${permissionKey(entry)}\0${action}`;
 }
 
+const RAW_ENCRYPTION_RESOURCE_PREFIX = 'urn:tinycloud:encryption:';
+
+/**
+ * How a signing response reports a ReCap entry to the consumer of the signed
+ * session. The WASM ReCap parser splits a raw encryption resource
+ * (`urn:tinycloud:encryption:…`) into `space: "encryption"`, `path: <urn>`.
+ * The consumer (sdk-core `parseCanonicalRecapResource`) reads a resource that
+ * does not start with `tinycloud:` as the `space` itself with no `path`, and
+ * checks both `selectedActionKeys` and `permissions` in that form. Every other
+ * entry is returned unchanged. Only the final /authorize-sign response uses
+ * this: the preview and the action ids the window sends keep the parser's form.
+ */
+export function reportedEntry(entry: RecapEntry): RecapEntry {
+  if (entry.space.startsWith('tinycloud:') || !entry.path.startsWith(RAW_ENCRYPTION_RESOURCE_PREFIX)) return entry;
+  return { ...entry, space: entry.path, path: '' };
+}
+
 export function isRequiredAction(entry: RecapEntry, action: string): boolean {
   return entry.service === 'capabilities' && action === CAPABILITIES.READ;
 }
