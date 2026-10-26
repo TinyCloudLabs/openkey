@@ -19,12 +19,18 @@
  *   DATABASE_URL                              Postgres connection string (required)
  *   RESOURCE_SERVER_NAME                      Display name (required)
  *   RESOURCE_SERVER_ALLOWED_RESOURCES         Comma-separated canonical resource URLs, each one an
- *                                             audience this server issues tokens for (required)
+ *                                             audience this server issues tokens for
+ *   RESOURCE_SERVER_RATE_LIMIT_PER_MINUTE     Requests per minute this server may make, 1 to 100000
+ *                                             (optional; the default is 3000)
  *   RESOURCE_SERVER_SECRET_RECIPIENT_PUBLIC_KEY
  *                                             RSA public key (>= 2048 bits), PEM or base64 of the
  *                                             PEM (workflow inputs are single-line) (required)
  *   BETTER_AUTH_URL                           The API's base URL (default https://api.openkey.so)
  *   OAUTH_VALID_AUDIENCES                     The API's extra audiences, if it sets any (optional)
+ *
+ * Flags (merged with the env above; at least one resource is required in total):
+ *   --allowed-resource <url>                  A resource URL; repeat it for each one
+ *   --rate-limit-per-minute <n>               Same as RESOURCE_SERVER_RATE_LIMIT_PER_MINUTE
  *
  * Idempotent: an active resource server with the same name is reported and not
  * touched; its secret cannot be shown again. To rotate, disable it and register again.
@@ -32,9 +38,12 @@
 
 import { createPrismaClient, type Prisma } from '../packages/db/src/index';
 import { createPublicKey, constants, publicEncrypt, randomBytes, type KeyObject } from 'node:crypto';
+import { parseArgs } from 'node:util';
 import { oauthValidAudiences } from '../apps/api/src/oauth-config';
 import {
+  MAX_RESOURCE_RATE_LIMIT_PER_MINUTE,
   hashClientSecret,
+  isValidRateLimit,
   readResourceServerPolicy,
   resourceServerMetadata,
   validateAllowedResources,
@@ -68,12 +77,24 @@ function recipientPublicKey(raw: string): KeyObject {
 
 async function main() {
   required('DATABASE_URL');
+  const { values } = parseArgs({
+    args: process.argv.slice(2),
+    options: { 'allowed-resource': { type: 'string', multiple: true }, 'rate-limit-per-minute': { type: 'string' } },
+    strict: true,
+  });
   const name = required('RESOURCE_SERVER_NAME');
-  const allowedResources = [...new Set(required('RESOURCE_SERVER_ALLOWED_RESOURCES')
-    .split(',').map((resource) => resource.trim()).filter(Boolean))];
+  const allowedResources = [...new Set([
+    ...(process.env.RESOURCE_SERVER_ALLOWED_RESOURCES ?? '').split(','),
+    ...(values['allowed-resource'] ?? []),
+  ].map((resource) => resource.trim()).filter(Boolean))];
   const baseURL = process.env.BETTER_AUTH_URL?.trim() || 'https://api.openkey.so';
   const problems = validateAllowedResources(allowedResources, oauthValidAudiences(baseURL, process.env.OAUTH_VALID_AUDIENCES));
-  if (problems.length > 0) throw new Error(`RESOURCE_SERVER_ALLOWED_RESOURCES: ${problems.join('; ')}`);
+  if (problems.length > 0) throw new Error(`Allowed resources: ${problems.join('; ')}`);
+  const rateLimitText = (values['rate-limit-per-minute'] ?? process.env.RESOURCE_SERVER_RATE_LIMIT_PER_MINUTE ?? '').trim();
+  const rateLimitPerMinute = rateLimitText === '' ? undefined : Number(rateLimitText);
+  if (rateLimitPerMinute !== undefined && !isValidRateLimit(rateLimitPerMinute)) {
+    throw new Error(`The rate limit must be an integer from 1 to ${MAX_RESOURCE_RATE_LIMIT_PER_MINUTE}`);
+  }
   const recipient = recipientPublicKey(required('RESOURCE_SERVER_SECRET_RECIPIENT_PUBLIC_KEY'));
 
   const prisma = createPrismaClient();
@@ -112,13 +133,14 @@ async function main() {
         type: 'web',
         public: false,
         contacts: [],
-        metadata: resourceServerMetadata(allowedResources) as unknown as Prisma.InputJsonObject,
+        metadata: resourceServerMetadata(allowedResources, { rateLimitPerMinute }) as unknown as Prisma.InputJsonObject,
       },
     });
 
     console.log(`Resource server registered: ${name}`);
     console.log(`CLIENT_ID=${clientId}`);
     console.log(`ALLOWED_RESOURCES=${allowedResources.join(',')}`);
+    console.log(`RATE_LIMIT_PER_MINUTE=${rateLimitPerMinute ?? 'default'}`);
     console.log(`SECRET_CIPHERTEXT_RSA_OAEP_SHA256_B64=${ciphertext}`);
   } finally {
     await prisma.$disconnect();

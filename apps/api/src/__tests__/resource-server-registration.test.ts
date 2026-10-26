@@ -12,6 +12,7 @@ import { hashClientSecret } from '../services/resource-server';
 const root = resolve(import.meta.dir, '../../../..');
 const script = join(root, 'scripts/ci-register-resource-server.ts');
 const MCP = 'https://mcp.tinycloud.xyz/mcp';
+const CHATGPT_MCP = 'https://mcp.tinycloud.xyz/chatgpt/mcp';
 
 let directory: string;
 const keys = generateKeyPairSync('rsa', { modulusLength: 2048, publicKeyEncoding: { type: 'spki', format: 'pem' }, privateKeyEncoding: { type: 'pkcs8', format: 'pem' } });
@@ -35,7 +36,7 @@ beforeAll(freshDatabase, 60_000);
 beforeEach(freshDatabase, 60_000);
 afterAll(async () => { if (directory) await rm(directory, { recursive: true, force: true }); });
 
-async function register(overrides: Record<string, string | undefined> = {}) {
+async function register(overrides: Record<string, string | undefined> = {}, args: string[] = []) {
   const env: Record<string, string | undefined> = {
     ...process.env,
     DATABASE_URL: `pglite:${directory}`,
@@ -47,7 +48,7 @@ async function register(overrides: Record<string, string | undefined> = {}) {
     OAUTH_VALID_AUDIENCES: undefined,
     ...overrides,
   };
-  const child = Bun.spawn([process.execPath, script], { cwd: root, env: env as Record<string, string>, stdout: 'pipe', stderr: 'pipe' });
+  const child = Bun.spawn([process.execPath, script, ...args], { cwd: root, env: env as Record<string, string>, stdout: 'pipe', stderr: 'pipe' });
   const [stdout, stderr, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   return { stdout, stderr, exitCode };
 }
@@ -135,4 +136,55 @@ describe('registering a resource server', () => {
     const result = await register({ RESOURCE_SERVER_ALLOWED_RESOURCES: 'https://other.example/mcp', OAUTH_VALID_AUDIENCES: 'https://other.example/mcp' });
     expect(result.exitCode, result.stderr).toBe(0);
   }, 90_000);
+
+  describe('for both the broad and the chatgpt MCP resource', () => {
+    // Until the API lists the chatgpt resource itself, its OAUTH_VALID_AUDIENCES must.
+    const withAudience = { OAUTH_VALID_AUDIENCES: CHATGPT_MCP };
+
+    test('repeated --allowed-resource flags register both', async () => {
+      const result = await register({ ...withAudience, RESOURCE_SERVER_ALLOWED_RESOURCES: undefined }, ['--allowed-resource', MCP, '--allowed-resource', CHATGPT_MCP]);
+      expect(result.exitCode, result.stderr).toBe(0);
+      expect(printed(result.stdout, 'ALLOWED_RESOURCES')).toBe(`${MCP},${CHATGPT_MCP}`);
+      expect((await rows())[0]!.metadata).toEqual({ tinycloudResourceServer: { allowedResources: [MCP, CHATGPT_MCP] } });
+    }, 90_000);
+
+    test('a comma-separated env value registers both, and flags add to it without duplicates', async () => {
+      const result = await register({ ...withAudience, RESOURCE_SERVER_ALLOWED_RESOURCES: `${MCP},${CHATGPT_MCP}` }, ['--allowed-resource', CHATGPT_MCP]);
+      expect(result.exitCode, result.stderr).toBe(0);
+      expect((await rows())[0]!.metadata).toEqual({ tinycloudResourceServer: { allowedResources: [MCP, CHATGPT_MCP] } });
+    }, 90_000);
+
+    test('the chatgpt resource is refused, by name, while the API does not list it as an audience', async () => {
+      const result = await register({ RESOURCE_SERVER_ALLOWED_RESOURCES: `${MCP},${CHATGPT_MCP}` });
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain(`${CHATGPT_MCP} is not an audience this server issues tokens for`);
+      expect(result.stderr).toContain('OAUTH_VALID_AUDIENCES');
+      expect(result.stderr).not.toContain(`${MCP} is not`);
+      expect(await rows()).toHaveLength(0);
+    }, 90_000);
+  });
+
+  describe('the rate limit', () => {
+    test('is stored when given by flag or env, and absent otherwise', async () => {
+      const byFlag = await register({}, ['--rate-limit-per-minute', '6000']);
+      expect(byFlag.exitCode, byFlag.stderr).toBe(0);
+      expect(printed(byFlag.stdout, 'RATE_LIMIT_PER_MINUTE')).toBe('6000');
+      expect((await rows())[0]!.metadata).toEqual({ tinycloudResourceServer: { allowedResources: [MCP], rateLimitPerMinute: 6000 } });
+      await freshDatabase();
+      const byEnv = await register({ RESOURCE_SERVER_RATE_LIMIT_PER_MINUTE: '1500' });
+      expect(byEnv.exitCode, byEnv.stderr).toBe(0);
+      expect((await rows())[0]!.metadata).toEqual({ tinycloudResourceServer: { allowedResources: [MCP], rateLimitPerMinute: 1500 } });
+      await freshDatabase();
+      const none = await register();
+      expect(printed(none.stdout, 'RATE_LIMIT_PER_MINUTE')).toBe('default');
+      expect((await rows())[0]!.metadata).toEqual({ tinycloudResourceServer: { allowedResources: [MCP] } });
+    }, 150_000);
+
+    test.each(['0', '-1', '1.5', 'many', '100001'])('%s is refused and writes nothing', async (value) => {
+      const result = await register({}, [`--rate-limit-per-minute=${value}`]);
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toMatch(/rate limit must be an integer from 1 to 100000/);
+      expect(await rows()).toHaveLength(0);
+    }, 90_000);
+  });
 });

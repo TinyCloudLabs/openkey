@@ -13,11 +13,17 @@ on:
         description: 'Display name of the resource server'
         required: true
       allowed_resources:
-        description: 'Comma-separated canonical resource URLs (token audiences) it may check tokens for'
+        description: 'Comma-separated canonical resource URLs (token audiences) it may check tokens for, e.g. https://mcp.tinycloud.xyz/mcp,https://mcp.tinycloud.xyz/chatgpt/mcp'
         required: true
       secret_recipient_public_key:
         description: 'RSA public key (2048+ bits) of the secret holder: PEM, or base64 of the PEM (base64 -w0)'
         required: true
+      rate_limit_per_minute:
+        description: 'Requests per minute this server may make, 1 to 100000 (optional; the default is 3000)'
+        required: false
+      valid_audiences:
+        description: 'Extra audiences the API accepts, comma-separated, if a resource is not built in yet (optional; adds to the OAUTH_VALID_AUDIENCES variable)'
+        required: false
 
 permissions:
   contents: read
@@ -48,8 +54,9 @@ jobs:
           RESOURCE_SERVER_NAME: ${{ inputs.name }}
           RESOURCE_SERVER_ALLOWED_RESOURCES: ${{ inputs.allowed_resources }}
           RESOURCE_SERVER_SECRET_RECIPIENT_PUBLIC_KEY: ${{ inputs.secret_recipient_public_key }}
+          RESOURCE_SERVER_RATE_LIMIT_PER_MINUTE: ${{ inputs.rate_limit_per_minute }}
           BETTER_AUTH_URL: https://api.openkey.so
-          OAUTH_VALID_AUDIENCES: ${{ vars.OAUTH_VALID_AUDIENCES }}
+          OAUTH_VALID_AUDIENCES: ${{ vars.OAUTH_VALID_AUDIENCES }},${{ inputs.valid_audiences }}
         run: |
           if [ -z "$DATABASE_URL" ]; then
             echo "DATABASE_URL secret not set" >&2

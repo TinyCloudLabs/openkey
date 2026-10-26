@@ -10,6 +10,7 @@ import { hashClientSecret, resourceServerMetadata } from '../services/resource-s
 
 const ISSUER = 'https://api.openkey.test/api/auth';
 const RESOURCE = 'https://mcp.tinycloud.xyz/mcp';
+const CHATGPT_RESOURCE = 'https://mcp.tinycloud.xyz/chatgpt/mcp';
 const OTHER_RESOURCE = 'https://other.example/mcp';
 const USERINFO = `${ISSUER}/oauth2/userinfo`;
 const NOW_MS = Date.UTC(2026, 9, 26, 12, 0, 0);
@@ -30,7 +31,7 @@ beforeAll(async () => {
 
 // ---- the database ----------------------------------------------------------------
 interface ClientRow { clientId: string; clientSecret: string | null; disabled: boolean; public: boolean; metadata: unknown }
-const secrets = { rs: 'rs-secret-0123456789abcdefghijklmnopqrstuvwxyz', rs2: 'rs2-secret-0123456789abcdefghijklmnopqrstuvwxyz', conf: 'conf-secret-0123456789abcdefghijklmnopqrstuvwxy' };
+const secrets = { rs: 'rs-secret-0123456789abcdefghijklmnopqrstuvwxyz', rs2: 'rs2-secret-0123456789abcdefghijklmnopqrstuvwxyz', both: 'both-secret-0123456789abcdefghijklmnopqrstuvwxy', slow: 'slow-secret-0123456789abcdefghijklmnopqrstuvwxy', conf: 'conf-secret-0123456789abcdefghijklmnopqrstuvwxy' };
 let clients: Map<string, ClientRow>;
 let consents: Map<string, { scopes: string[] }>;
 let sessions: Map<string, { id: string; userId: string; expiresAt: Date }>;
@@ -66,7 +67,7 @@ function makeRouter(limits?: { authenticatedPerWindow?: number; failedAuthPerWin
   return createResourceIntrospectRouter({
     prisma: prisma as never,
     issuer: ISSUER,
-    validAudiences: [RESOURCE, OTHER_RESOURCE, USERINFO],
+    validAudiences: [RESOURCE, CHATGPT_RESOURCE, OTHER_RESOURCE, USERINFO],
     getJwks: async (): Promise<JSONWebKeySet> => {
       jwksCalls += 1;
       if (failJwks) throw new Error('keys unavailable');
@@ -87,6 +88,8 @@ beforeEach(() => {
   clients = new Map([
     ['rs_1', { clientId: 'rs_1', clientSecret: hashClientSecret(secrets.rs), disabled: false, public: false, metadata: resourceServerMetadata([RESOURCE]) }],
     ['rs_2', { clientId: 'rs_2', clientSecret: hashClientSecret(secrets.rs2), disabled: false, public: false, metadata: resourceServerMetadata([RESOURCE]) }],
+    ['rs_both', { clientId: 'rs_both', clientSecret: hashClientSecret(secrets.both), disabled: false, public: false, metadata: resourceServerMetadata([RESOURCE, CHATGPT_RESOURCE]) }],
+    ['rs_slow', { clientId: 'rs_slow', clientSecret: hashClientSecret(secrets.slow), disabled: false, public: false, metadata: resourceServerMetadata([RESOURCE], { rateLimitPerMinute: 2 }) }],
     ['conf_1', { clientId: 'conf_1', clientSecret: hashClientSecret(secrets.conf), disabled: false, public: false, metadata: null }],
     ['pub_1', { clientId: 'pub_1', clientSecret: null, disabled: false, public: true, metadata: null }],
     ['app_1', { clientId: 'app_1', clientSecret: null, disabled: false, public: true, metadata: null }],
@@ -162,9 +165,38 @@ describe('a live token', () => {
     expect((await json(await call(await mint(), { auth: basic('rs_2', secrets.rs2) }))).active).toBe(true);
   });
 
-  test('only the audiences the server is allowed are reported', async () => {
-    const body = await json(await call(await mint({ aud: [RESOURCE, USERINFO] })));
-    expect(body.aud).toBe(RESOURCE);
+  test('only the audiences the server is allowed are reported, as an array when the token has an array', async () => {
+    expect((await json(await call(await mint({ aud: [RESOURCE, USERINFO] })))).aud).toEqual([RESOURCE]);
+    expect((await json(await call(await mint({ aud: [RESOURCE] })))).aud).toEqual([RESOURCE]);
+    expect((await json(await call(await mint({ aud: [RESOURCE, OTHER_RESOURCE, USERINFO] })))).aud).toEqual([RESOURCE]);
+  });
+
+  test('a string audience is reported as a string', async () => {
+    expect((await json(await call(await mint({ aud: RESOURCE })))).aud).toBe(RESOURCE);
+  });
+
+  test('a token whose audiences the server may not check at all is inactive, however many it carries', async () => {
+    expect(await json(await call(await mint({ aud: [OTHER_RESOURCE, USERINFO] })))).toEqual(INACTIVE);
+    expect(await json(await call(await mint({ aud: [CHATGPT_RESOURCE, USERINFO] })))).toEqual(INACTIVE);
+  });
+
+  describe('a server registered for both the broad and the chatgpt MCP resource', () => {
+    const both = { auth: basic('rs_both', secrets.both) };
+
+    test.each([RESOURCE, CHATGPT_RESOURCE])('is told a token for %s is active', async (resource) => {
+      const body = await json(await call(await mint({ aud: resource }), both));
+      expect(body.active).toBe(true);
+      expect(body.aud).toBe(resource);
+    });
+
+    test('gets the intersection of a token\'s audiences with its two resources', async () => {
+      expect((await json(await call(await mint({ aud: [RESOURCE, CHATGPT_RESOURCE, USERINFO, OTHER_RESOURCE] }), both))).aud).toEqual([RESOURCE, CHATGPT_RESOURCE]);
+      expect((await json(await call(await mint({ aud: [CHATGPT_RESOURCE, USERINFO] }), both))).aud).toEqual([CHATGPT_RESOURCE]);
+    });
+
+    test('a server registered for only the broad resource is not told about a chatgpt token', async () => {
+      expect(await json(await call(await mint({ aud: CHATGPT_RESOURCE })))).toEqual(INACTIVE);
+    });
   });
 });
 
@@ -384,11 +416,36 @@ describe('rate limits', () => {
     expect((await bad('203.0.113.7')).status).toBe(401);
   });
 
-  test('the default limits are 600 per client and 20 failures per address in a minute', async () => {
+  test('a registration can set its own limit, which replaces the default for that client only', async () => {
+    router = makeRouter({ authenticatedPerWindow: 5 });
+    const token = await mint();
+    const slow = { auth: basic('rs_slow', secrets.slow) };
+    expect((await call(token, slow)).status).toBe(200);
+    expect((await call(token, slow)).status).toBe(200);
+    const limited = await call(token, slow);
+    expect(limited.status).toBe(429);
+    expect(await json(limited)).toEqual({ error: 'too_many_requests' });
+    // A client without a setting of its own gets the router's default (5 here), more than the 2 above.
+    for (let i = 0; i < 5; i++) expect((await call(token)).status).toBe(200);
+    expect((await call(token)).status).toBe(429);
+    clock += 61_000;
+    expect((await call(token, slow)).status).toBe(200);
+  });
+
+  test('a registration may raise its limit above the default', async () => {
+    router = makeRouter({ authenticatedPerWindow: 2 });
+    clients.set('rs_fast', { clientId: 'rs_fast', clientSecret: hashClientSecret(secrets.rs), disabled: false, public: false, metadata: resourceServerMetadata([RESOURCE], { rateLimitPerMinute: 4 }) });
+    const token = await mint();
+    for (let i = 0; i < 4; i++) expect((await call(token, { auth: basic('rs_fast', secrets.rs) })).status).toBe(200);
+    expect((await call(token, { auth: basic('rs_fast', secrets.rs) })).status).toBe(429);
+  });
+
+  test('the default is 3000 requests per client and 20 failures per address in a minute', async () => {
     router = makeRouter();
     const token = await mint();
-    for (let i = 0; i < 600; i++) expect((await call(token)).status).toBe(200);
+    for (let i = 0; i < 3000; i++) expect((await call(token)).status).toBe(200);
     expect((await call(token)).status).toBe(429);
+    expect((await call(token, { auth: basic('rs_2', secrets.rs2) })).status).toBe(200);
     const failures: number[] = [];
     for (let i = 0; i < 21; i++) failures.push((await call(token, { auth: basic('rs_2', 'wrong'), headers: { 'x-forwarded-for': '198.51.100.9, 10.0.0.1' } })).status);
     expect(failures.slice(0, 20).every((status) => status === 401)).toBe(true);

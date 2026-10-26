@@ -13,12 +13,12 @@ import { Hono } from 'hono';
 import { createLocalJWKSet, errors as joseErrors, jwtVerify, type JSONWebKeySet, type JWTPayload } from 'jose';
 import type { PrismaClient } from '@openkey/db';
 import { logError, logMetric } from '../log';
-import { clientSecretMatches, readResourceServerPolicy } from '../services/resource-server';
+import { DEFAULT_RESOURCE_RATE_LIMIT_PER_MINUTE, clientSecretMatches, readResourceServerPolicy } from '../services/resource-server';
 
 export type ResourceIntrospectDatabase = Pick<PrismaClient, 'oauthClient' | 'oauthConsent' | 'session'>;
 
 export interface ResourceIntrospectLimits {
-  /** Requests per window for one authenticated resource server. */
+  /** Requests per window for an authenticated resource server whose registration sets no limit of its own. */
   authenticatedPerWindow: number;
   /** Failed client authentications per window for one source address. */
   failedAuthPerWindow: number;
@@ -26,7 +26,7 @@ export interface ResourceIntrospectLimits {
 }
 
 export const DEFAULT_RESOURCE_INTROSPECT_LIMITS: ResourceIntrospectLimits = {
-  authenticatedPerWindow: 600,
+  authenticatedPerWindow: DEFAULT_RESOURCE_RATE_LIMIT_PER_MINUTE,
   failedAuthPerWindow: 20,
   windowMs: 60_000,
 };
@@ -58,7 +58,7 @@ const INACTIVE = { active: false } as const;
 /** Fixed-window counters keyed by string; bounded so a flood of keys cannot grow it without limit. */
 class FixedWindowCounter {
   private readonly windows = new Map<string, { start: number; count: number }>();
-  constructor(private readonly max: number, private readonly windowMs: number, private readonly maxKeys = 10_000) {}
+  constructor(private readonly windowMs: number, private readonly maxKeys = 10_000) {}
 
   private current(key: string, now: number): { start: number; count: number } | undefined {
     const entry = this.windows.get(key);
@@ -67,19 +67,19 @@ class FixedWindowCounter {
     return undefined;
   }
 
-  /** Counts one event; false once the window's budget is spent. */
-  hit(key: string, now: number): boolean {
+  /** Counts one event; false once the window's budget (`max`) is spent. */
+  hit(key: string, now: number, max: number): boolean {
     const entry = this.current(key, now);
     if (entry) {
       entry.count += 1;
-      return entry.count <= this.max;
+      return entry.count <= max;
     }
     if (this.windows.size >= this.maxKeys) {
       for (const [other, value] of this.windows) if (now - value.start >= this.windowMs) this.windows.delete(other);
       if (this.windows.size >= this.maxKeys) this.windows.delete(this.windows.keys().next().value as string);
     }
     this.windows.set(key, { start: now, count: 1 });
-    return 1 <= this.max;
+    return 1 <= max;
   }
 
   retryAfterSeconds(key: string, now: number): number {
@@ -150,8 +150,8 @@ function requestCredentials(request: Request, form: URLSearchParams | null): Cli
 export function createResourceIntrospectRouter(options: ResourceIntrospectOptions): Hono {
   const limits = { ...DEFAULT_RESOURCE_INTROSPECT_LIMITS, ...options.limits };
   const now = () => options.now?.() ?? Date.now();
-  const authenticated = new FixedWindowCounter(limits.authenticatedPerWindow, limits.windowMs);
-  const failedAuth = new FixedWindowCounter(limits.failedAuthPerWindow, limits.windowMs);
+  const authenticated = new FixedWindowCounter(limits.windowMs);
+  const failedAuth = new FixedWindowCounter(limits.windowMs);
   const validAudiences = new Set(options.validAudiences);
 
   type SigningKeys = { resolver: ReturnType<typeof createLocalJWKSet>; fetchedAt: number };
@@ -207,7 +207,8 @@ export function createResourceIntrospectRouter(options: ResourceIntrospectOption
       scope,
       client_id: azp,
       sub,
-      aud: audiences.length === 1 ? audiences[0]! : audiences,
+      // The token's audiences this server may check, as an array or a string like the token's own `aud`.
+      aud: Array.isArray(aud) ? audiences : audiences[0]!,
       exp,
       iat,
       iss: options.issuer,
@@ -238,7 +239,7 @@ export function createResourceIntrospectRouter(options: ResourceIntrospectOption
       const secretOk = clientSecretMatches(credentials?.secret ?? '', client?.clientSecret);
       const policy = client ? readResourceServerPolicy(client.metadata) : null;
       if (!credentials || !client || !secretOk || client.disabled || client.public || !policy) {
-        if (!failedAuth.hit(source, at)) {
+        if (!failedAuth.hit(source, at, limits.failedAuthPerWindow)) {
           logMetric('warn', 'resource_introspect_rate_limited', { status: 429 });
           return c.json({ error: 'too_many_requests' }, 429, { ...NO_STORE, 'Retry-After': String(failedAuth.retryAfterSeconds(source, at)) });
         }
@@ -249,7 +250,7 @@ export function createResourceIntrospectRouter(options: ResourceIntrospectOption
         );
       }
 
-      if (!authenticated.hit(client.clientId, at)) {
+      if (!authenticated.hit(client.clientId, at, policy.rateLimitPerMinute ?? limits.authenticatedPerWindow)) {
         logMetric('warn', 'resource_introspect_rate_limited', { status: 429 });
         return c.json({ error: 'too_many_requests' }, 429, { ...NO_STORE, 'Retry-After': String(authenticated.retryAfterSeconds(client.clientId, at)) });
       }

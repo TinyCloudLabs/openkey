@@ -1,6 +1,8 @@
 import './tc1777-test-env';
 import { describe, expect, test } from 'bun:test';
 import {
+  DEFAULT_RESOURCE_RATE_LIMIT_PER_MINUTE,
+  MAX_RESOURCE_RATE_LIMIT_PER_MINUTE,
   clientSecretMatches,
   hashClientSecret,
   isCanonicalResourceUrl,
@@ -10,6 +12,7 @@ import {
 } from '../services/resource-server';
 
 const MCP = 'https://mcp.tinycloud.xyz/mcp';
+const CHATGPT_MCP = 'https://mcp.tinycloud.xyz/chatgpt/mcp';
 
 describe('resource server registration in client metadata', () => {
   test('what is written is read back', () => {
@@ -66,6 +69,38 @@ describe('resource URLs', () => {
     expect(validateAllowedResources([], valid)).toHaveLength(1);
     expect(validateAllowedResources(['https://other.example/mcp'], valid)).toHaveLength(1);
     expect(validateAllowedResources(['http://mcp.tinycloud.xyz/mcp', MCP], valid)).toHaveLength(1);
+  });
+});
+
+describe('a registration for both MCP resources', () => {
+  test('holds both, and reads back both', () => {
+    expect(readResourceServerPolicy(resourceServerMetadata([MCP, CHATGPT_MCP]))).toEqual({ allowedResources: [MCP, CHATGPT_MCP] });
+  });
+
+  test('the chatgpt resource is refused, naming it, until the API lists it as an audience', () => {
+    const problems = validateAllowedResources([MCP, CHATGPT_MCP], ['https://api.openkey.so', MCP]);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain(CHATGPT_MCP);
+    expect(problems[0]).toContain('OAUTH_VALID_AUDIENCES');
+    expect(validateAllowedResources([MCP, CHATGPT_MCP], ['https://api.openkey.so', MCP, CHATGPT_MCP])).toEqual([]);
+  });
+});
+
+describe('the rate limit of a registration', () => {
+  test('the default is 3000 a minute and the most a registration may ask for is 100000', () => {
+    expect(DEFAULT_RESOURCE_RATE_LIMIT_PER_MINUTE).toBe(3000);
+    expect(MAX_RESOURCE_RATE_LIMIT_PER_MINUTE).toBe(100_000);
+  });
+
+  test('is optional, and written and read back when set', () => {
+    expect(readResourceServerPolicy(resourceServerMetadata([MCP]))).toEqual({ allowedResources: [MCP] });
+    expect(readResourceServerPolicy(resourceServerMetadata([MCP], { rateLimitPerMinute: 6000 }))).toEqual({ allowedResources: [MCP], rateLimitPerMinute: 6000 });
+    expect(readResourceServerPolicy(resourceServerMetadata([MCP], { rateLimitPerMinute: 1 }))?.rateLimitPerMinute).toBe(1);
+    expect(readResourceServerPolicy(resourceServerMetadata([MCP], { rateLimitPerMinute: 100_000 }))?.rateLimitPerMinute).toBe(100_000);
+  });
+
+  test.each([0, -5, 1.5, 100_001, '3000', null, Number.NaN, Number.POSITIVE_INFINITY])('%p makes the client not a resource server', (value) => {
+    expect(readResourceServerPolicy({ tinycloudResourceServer: { allowedResources: [MCP], rateLimitPerMinute: value } })).toBeNull();
   });
 });
 

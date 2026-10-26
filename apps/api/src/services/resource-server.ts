@@ -7,14 +7,33 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 
 export const RESOURCE_SERVER_METADATA_KEY = 'tinycloudResourceServer';
 
+/** Requests per minute a resource server may make unless its registration says otherwise. */
+export const DEFAULT_RESOURCE_RATE_LIMIT_PER_MINUTE = 3000;
+/** The most a registration may ask for. */
+export const MAX_RESOURCE_RATE_LIMIT_PER_MINUTE = 100_000;
+
 export interface ResourceServerPolicy {
   /** Canonical resource URLs (token `aud` values) this server may check tokens for. */
   allowedResources: string[];
+  /** Requests per minute for this server; the default applies when absent. */
+  rateLimitPerMinute?: number;
+}
+
+export function isValidRateLimit(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= MAX_RESOURCE_RATE_LIMIT_PER_MINUTE;
 }
 
 /** The client row fields that make a client a resource server. */
-export function resourceServerMetadata(allowedResources: readonly string[]): { [RESOURCE_SERVER_METADATA_KEY]: ResourceServerPolicy } {
-  return { [RESOURCE_SERVER_METADATA_KEY]: { allowedResources: [...allowedResources] } };
+export function resourceServerMetadata(
+  allowedResources: readonly string[],
+  options: { rateLimitPerMinute?: number } = {},
+): { [RESOURCE_SERVER_METADATA_KEY]: ResourceServerPolicy } {
+  return {
+    [RESOURCE_SERVER_METADATA_KEY]: {
+      allowedResources: [...allowedResources],
+      ...(options.rateLimitPerMinute === undefined ? {} : { rateLimitPerMinute: options.rateLimitPerMinute }),
+    },
+  };
 }
 
 /** The policy stored in a client's metadata, or null when the client is not a resource server. */
@@ -26,10 +45,15 @@ export function readResourceServerPolicy(metadata: unknown): ResourceServerPolic
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
   const entry = (value as Record<string, unknown>)[RESOURCE_SERVER_METADATA_KEY];
   if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return null;
-  const allowed = (entry as Record<string, unknown>).allowedResources;
+  const record = entry as Record<string, unknown>;
+  const allowed = record.allowedResources;
   if (!Array.isArray(allowed) || allowed.length === 0) return null;
   if (!allowed.every((resource) => typeof resource === 'string' && resource.length > 0)) return null;
-  return { allowedResources: [...new Set(allowed as string[])] };
+  if (record.rateLimitPerMinute !== undefined && !isValidRateLimit(record.rateLimitPerMinute)) return null;
+  return {
+    allowedResources: [...new Set(allowed as string[])],
+    ...(record.rateLimitPerMinute === undefined ? {} : { rateLimitPerMinute: record.rateLimitPerMinute as number }),
+  };
 }
 
 /**
@@ -50,7 +74,9 @@ export function validateAllowedResources(resources: readonly string[], validAudi
   if (resources.length === 0) problems.push('at least one allowed resource is required');
   for (const resource of resources) {
     if (!isCanonicalResourceUrl(resource)) problems.push(`${resource} is not a canonical https resource URL`);
-    else if (!validAudiences.includes(resource)) problems.push(`${resource} is not an audience this server issues tokens for`);
+    else if (!validAudiences.includes(resource)) {
+      problems.push(`${resource} is not an audience this server issues tokens for; add it to OAUTH_VALID_AUDIENCES (the API's setting, and the workflow's valid_audiences input) or register it once the API lists it`);
+    }
   }
   return problems;
 }

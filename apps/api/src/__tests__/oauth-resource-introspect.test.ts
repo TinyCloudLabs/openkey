@@ -31,7 +31,7 @@ if (process.env.OPENKEY_RESOURCE_INTROSPECT_TEST_CHILD !== '1') {
         WEBAUTHN_ORIGIN: 'https://openkey.test',
         CORS_ORIGIN: 'https://openkey.test',
         OAUTH_DYNAMIC_CLIENT_REGISTRATION: 'true',
-        OAUTH_VALID_AUDIENCES: 'https://other.example/mcp',
+        OAUTH_VALID_AUDIENCES: 'https://other.example/mcp,https://mcp.tinycloud.xyz/chatgpt/mcp',
         RESEND_API_KEY: '',
         GOOGLE_CLIENT_ID: '',
         GOOGLE_CLIENT_SECRET: '',
@@ -52,6 +52,7 @@ if (process.env.OPENKEY_RESOURCE_INTROSPECT_TEST_CHILD !== '1') {
   const route = 'https://api.openkey.test/api/oauth/resource/introspect';
   const resource = 'https://mcp.tinycloud.xyz/mcp';
   const otherResource = 'https://other.example/mcp';
+  const chatgptResource = 'https://mcp.tinycloud.xyz/chatgpt/mcp';
   const publicCallback = 'https://chatgpt.com/connector_platform_oauth_redirect';
   const confidentialCallback = 'https://rs.example/cb';
   const ownerAddress = '0x31d40B62C395B9418C4198363619B11c65cD406F';
@@ -83,7 +84,7 @@ if (process.env.OPENKEY_RESOURCE_INTROSPECT_TEST_CHILD !== '1') {
     app = (await import('../index')).default;
     await prisma.user.create({ data: { id: 'u1', email: 'u1@example.test', name: 'U One', emailVerified: true } });
     await prisma.ethereumKey.create({ data: { id: 'k1', userId: 'u1', address: ownerAddress, publicKey: '0x1', keyType: 'EXTERNAL' } });
-    resourceServer = await confidentialClient('MCP resource server', resourceServerMetadata([resource]));
+    resourceServer = await confidentialClient('MCP resource server', resourceServerMetadata([resource, chatgptResource]));
     plainConfidential = await confidentialClient('Plain confidential client', null);
   }, 90_000);
 
@@ -129,13 +130,14 @@ if (process.env.OPENKEY_RESOURCE_INTROSPECT_TEST_CHILD !== '1') {
   }
 
   /** Authorize with PKCE, consent, and exchange the code, for the given client and audience. */
-  async function issue(clientId: string, session: { cookie: string }, audience: string | null = resource, scope = 'tinycloud:mcp') {
+  async function issue(clientId: string, session: { cookie: string }, audience: string | string[] | null = resource, scope = 'tinycloud:mcp') {
     const verifier = `tc1627-${randomUUID()}${randomUUID()}`;
+    const audiences = audience === null ? [] : Array.isArray(audience) ? audience : [audience];
     const query = new URLSearchParams({
       client_id: clientId, response_type: 'code', redirect_uri: publicCallback, scope, state: 'st',
       code_challenge: await generateCodeChallenge(verifier), code_challenge_method: 'S256',
-      ...(audience ? { resource: audience } : {}),
     });
+    for (const value of audiences) query.append('resource', value);
     const authorize = await call(`/oauth2/authorize?${query}`, {}, session.cookie);
     let location = new URL(authorize.headers.get('location')!, issuer);
     if (location.pathname === '/oauth/consent') {
@@ -150,20 +152,23 @@ if (process.env.OPENKEY_RESOURCE_INTROSPECT_TEST_CHILD !== '1') {
     expect(code, location.toString()).toBeTruthy();
     const exchanged = await call('/oauth2/token', {
       method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        client_id: clientId, grant_type: 'authorization_code', code: code!, redirect_uri: publicCallback,
-        code_verifier: verifier, ...(audience ? { resource: audience } : {}),
-      }),
+      body: (() => {
+        const form = new URLSearchParams({
+          client_id: clientId, grant_type: 'authorization_code', code: code!, redirect_uri: publicCallback, code_verifier: verifier,
+        });
+        for (const value of audiences) form.append('resource', value);
+        return form;
+      })(),
     });
     expect(exchanged.status, await exchanged.clone().text()).toBe(200);
     return (await exchanged.json()) as { access_token: string; refresh_token?: string; scope: string; expires_in: number };
   }
 
   /** A fresh public client, session and MCP-shaped token. */
-  async function mcpToken(label: string, audience: string | null = resource) {
+  async function mcpToken(label: string, audience: string | string[] | null = resource, scope = 'tinycloud:mcp') {
     const clientId = await registerPublicClient();
     const session = await newSession(`session-${label}`);
-    const tokens = await issue(clientId, session, audience);
+    const tokens = await issue(clientId, session, audience, scope);
     return { clientId, session, accessToken: tokens.access_token, tokens };
   }
 
@@ -197,6 +202,20 @@ if (process.env.OPENKEY_RESOURCE_INTROSPECT_TEST_CHILD !== '1') {
     test('the form-field client authentication works too', async () => {
       const { accessToken } = await mcpToken('form');
       expect((await check(accessToken, resourceServer, 'form')).body.active).toBe(true);
+    });
+
+    test('a token for the chatgpt resource is active for a server registered for both resources', async () => {
+      const { accessToken } = await mcpToken('chatgpt', chatgptResource);
+      const result = await check(accessToken);
+      expect(result.body).toMatchObject({ active: true, aud: chatgptResource });
+    });
+
+    test('a token whose audience is an array (an openid scope adds the userinfo audience) reports only the allowed resource, as an array', async () => {
+      const { accessToken } = await mcpToken('array-audience', resource, 'openid tinycloud:mcp');
+      const [, payload] = accessToken.split('.') as [string, string];
+      expect(JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')).aud).toEqual([resource, `${issuer}/oauth2/userinfo`]);
+      const result = await check(accessToken);
+      expect(result.body).toMatchObject({ active: true, aud: [resource], scope: 'openid tinycloud:mcp' });
     });
   });
 
