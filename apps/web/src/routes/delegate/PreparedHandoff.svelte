@@ -4,7 +4,7 @@
   import { authClient, authErrorMessage } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
   import { copyText } from '$lib/clipboard';
-  import { parseCapabilityReview, defaultSelection, type CapabilityReviewModel } from '@openkey/capability-review';
+  import { buildStatements, parseEncryptionResource, parseCapabilityReview, defaultSelection, renderLiteral, type CapabilityGrant, type CapabilityReviewModel } from '@openkey/capability-review';
   import { validatePreviewSelection } from '$lib/preview-review';
   import { requestedActionIds } from '$lib/widget-selection';
   import { timeUntilExpiry } from '$lib/siwe-parser';
@@ -22,6 +22,17 @@
   const pendingKey = 'openkey.delegate.tv2.pending';
   function isRecord(value: unknown): value is Record<string, unknown> {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
+  }
+  function ownKeyFolder(grant: CapabilityGrant): string | null {
+    const parsed = parseEncryptionResource(grant.space);
+    return parsed?.kind === 'prefix' && parsed.network === 'default' && grant.ownedBySelf
+      ? parsed.keyPath
+      : null;
+  }
+  function consentStatement(text: string): string {
+    return text.startsWith('Perform ') || text.startsWith('Access ')
+      ? renderLiteral(text, 280)
+      : text;
   }
   function isClaim(value: unknown): value is Claim {
     if (!isRecord(value) || !isRecord(value.request) || !isRecord(value.delivery)) return false;
@@ -425,10 +436,15 @@
       {/each}
       <h2 class="font-semibold">Requested abilities and spaces</h2>
       {#each keyChoices[0].review.permissions as grant}
-        <p class="break-all text-sm">{grant.service} · {grant.space} · {grant.path}: {grant.actions.map(action => action.ability).join(', ')}</p>
+        <div class="rounded-lg border p-3 text-sm">
+          {#if ownKeyFolder(grant)}<p class="font-semibold">Your own encryption keys in <code>{ownKeyFolder(grant)}</code></p>{/if}
+          {#each buildStatements(grant) as statement}<p>{consentStatement(statement.primaryText)}</p>{/each}
+          <details><summary>Full grant</summary><pre class="whitespace-pre-wrap break-all">{renderLiteral(`${grant.service} · ${grant.space} · ${grant.path}: ${grant.actions.map(action => action.ability).join(', ')}`)}</pre></details>
+        </div>
       {/each}
-      <h2 class="font-semibold">Original SIWE message</h2>
-      <pre class="whitespace-pre-wrap break-all rounded-lg bg-surface-50 p-3 text-xs">{handoff.request.siwe}</pre>
+      <details><summary>Original SIWE message</summary>
+        <pre class="whitespace-pre-wrap break-all rounded-lg bg-surface-50 p-3 text-xs">{renderLiteral(handoff.request.siwe)}</pre>
+      </details>
       <button disabled={busy || submitted} onclick={cancel}>Cancel</button>
     {:else if handoff && model && key}
       <p class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-amber-900">Only approve if you started this sign-in yourself on your own computer.</p>
@@ -446,14 +462,17 @@
       <h2 class="font-semibold">Requested abilities and spaces</h2>
       {#each model.permissions as grant}
         <div class="rounded-lg border p-3 text-sm">
-          <p class="font-semibold break-all">{grant.service} · {grant.space} · {grant.path}</p>
+          {#if ownKeyFolder(grant)}<p class="font-semibold">Your own encryption keys in <code>{ownKeyFolder(grant)}</code></p>{/if}
+          {#each buildStatements(grant) as statement}<p>{consentStatement(statement.primaryText)}</p>{/each}
           {#each grant.actions as action}
-            <label class="flex gap-2 py-1"><input type="checkbox" checked={selected.has(action.id)} disabled={phase !== 'review' || !action.editable} onchange={() => toggle(action.id)} /><span class="break-all">{action.ability}</span></label>
+            <label class="flex gap-2 py-1"><input type="checkbox" checked={selected.has(action.id)} disabled={phase !== 'review' || !action.editable} onchange={() => toggle(action.id)} /><span class="break-all">{renderLiteral(action.ability, 120)}</span></label>
           {/each}
+          <details><summary>Full grant</summary><pre class="whitespace-pre-wrap break-all">{renderLiteral(`${grant.service} · ${grant.space} · ${grant.path}: ${grant.actions.map(action => action.ability).join(', ')}`)}</pre></details>
         </div>
       {/each}
-      <h2 class="font-semibold">Original SIWE message</h2>
-      <pre class="whitespace-pre-wrap break-all rounded-lg bg-surface-50 p-3 text-xs">{handoff.request.siwe}</pre>
+      <details><summary>Original SIWE message</summary>
+        <pre class="whitespace-pre-wrap break-all rounded-lg bg-surface-50 p-3 text-xs">{renderLiteral(handoff.request.siwe)}</pre>
+      </details>
       {#if phase === 'preview'}
         <h2 class="font-semibold">Exact candidate signedMessage</h2>
         <pre class="whitespace-pre-wrap break-all rounded-lg bg-surface-50 p-3 text-xs">{previewMessage}</pre>

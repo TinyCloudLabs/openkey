@@ -14,6 +14,7 @@
 import { actionId, permissionId } from "./ids.js";
 import { classifyRecapEntry, classifySeverityFromActions } from "./classify.js";
 import { isKeyDeleteAbility } from "./key-resource.js";
+import { parseEncryptionResource } from "./encryption-resource.js";
 import type {
   CapabilityAction,
   CapabilityGrant,
@@ -738,13 +739,13 @@ function buildGrants(
     });
     const actions = buildActions(entry, ctx);
     const ownership = ownerFromSpace(entry.space);
-    // `ownedBySelf` answers the user-facing ownership question: does this
-    // TinyCloud space belong to the account that is signing? It does not
-    // identify which application requested the authority.
-    const ownedBySelf =
-      ownership.owner === null
-        ? null
-        : ownership.owner === signerAddress;
+    const encryption = parseEncryptionResource(entry.space);
+    // Top-level encryption resources use an owner DID rather than a
+    // tinycloud: space. Check the chain as well as the address before saying
+    // the named keys belong to the signer.
+    const ownedBySelf = encryption
+      ? encryption.ownerDid.toLowerCase() === `did:pkh:eip155:${signer.chainId}:${signer.address}`.toLowerCase()
+      : ownership.owner === null ? null : ownership.owner === signerAddress;
     // Blocker 4 follow-up (Defect 2): grant ID service segment is the
     // resource-derived service (canonicalized to `tinycloud.<short>`)
     // when the wire carried one; falls back to the ability-derived

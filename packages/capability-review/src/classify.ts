@@ -107,12 +107,14 @@ const SQL_NAMED_DATABASE_VERBS = new Set([
 ]);
 const DELEGATION_VERBS = new Set(["list", "status"]);
 const ENCRYPTION_NETWORK_VERBS = new Set(["network.create", "network.revoke"]);
+const ENCRYPTION_KEY_VERBS = new Set(["key.create", "key.block", "key.unblock", "key.delete"]);
 // Creating, blocking and unblocking app keys reads nothing; every other
 // ability on an app key (decrypt, delete, unknown) is sensitive.
 const APP_KEY_MANAGEMENT_VERBS = new Set(["key.create", "key.block", "key.unblock"]);
 const ENCRYPTION_VERBS = new Set([
   ...ENCRYPTION_NETWORK_VERBS,
   ...DECRYPT_VERBS,
+  ...ENCRYPTION_KEY_VERBS,
 ]);
 
 // The verbs the secrets service is expected to carry. Any grant on
