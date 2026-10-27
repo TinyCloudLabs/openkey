@@ -47,6 +47,7 @@
     CapabilityReviewModel,
   } from "@openkey/capability-review";
   import { formatAccessEnd } from "$lib/access-end";
+  import { routineSignInIdentity } from "$lib/routine-sign-in";
   import {
     APP_KEY_GROUP_NOTE,
     appDisplayName,
@@ -179,34 +180,13 @@
   // manifest verification and a successful byte preview. Other approval
   // surfaces retain their complete technical review.
   const routineSignIn = $derived.by(() => {
-    const app = appKeyIdentity(model);
-    if (
-      !routineSignInVerified ||
-      !routineSignInCandidate ||
-      model.protocol !== "tinycloud-siwe-recap" ||
-      model.parseWarnings.length > 0 ||
-      model.requester.domainWarning ||
-      model.requester.originWarning ||
-      !app?.name ||
-      model.permissions.length === 0 ||
-      !model.permissions.every(
-        (grant) =>
-          grant.family === "app-keys" &&
-          !grant.resourceService &&
-          grant.path === "" &&
-          grant.space.endsWith(`/apps/${app.appId}/`) &&
-          appKeyNotGrantableStatements(grant).length === 0,
-      )
-    ) {
+    const app = routineSignInIdentity(model);
+    if (!routineSignInVerified || !routineSignInCandidate || !app?.name) {
       return null;
     }
 
     const origin = model.requester.verifiedOrigin;
-    if (
-      !origin ||
-      app.origin !== origin ||
-      model.requester.appId !== app.appId
-    ) {
+    if (!origin || app.origin !== origin || model.requester.appId !== app.appId) {
       return null;
     }
     try {

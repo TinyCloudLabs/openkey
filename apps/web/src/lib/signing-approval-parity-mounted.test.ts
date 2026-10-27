@@ -73,6 +73,7 @@ import {
   makeRecapResource,
   siweWithResources,
 } from '../../../../packages/capability-review/test/fixtures/index';
+import { routineSignInIdentity } from './routine-sign-in';
 // Install happy-dom BEFORE importing the Svelte client runtime (which
 // touches document/HTMLElement at import time).
 import { Window } from 'happy-dom';
@@ -1181,6 +1182,27 @@ describe('signing-approval mounted parity across production surface adapters (So
     expect(renamedHandle.container.querySelector('.raw-bytes')?.textContent).toBe(model.rawMessage);
     renamedHandle.unmount();
   });
+  test('routine sign-in excludes key-management actions', () => {
+    const routine = routineAppKeyModel();
+    expect(routineSignInIdentity(routine)?.appId).toBe('chat.tinycloud.tinychat');
+
+    for (const ability of [
+      'tinycloud.encryption/key.block',
+      'tinycloud.encryption/key.unblock',
+      'tinycloud.encryption/key.delete',
+    ]) {
+      const model = routineAppKeyModel();
+      const grant = model.permissions[0]!;
+      const action = grant.actions[0]!;
+      grant.actions.push({
+        ...action,
+        ability,
+        id: `extra-${ability}`,
+      });
+      expect(routineSignInIdentity(model)).toBeNull();
+    }
+  });
+
 
   test('CLI delegation keeps its technical exact-message view for app-key grants', async () => {
     const model = routineAppKeyModel();

@@ -7,6 +7,7 @@
   import { passkeysSupportedFromParams, withPasskeysFlag } from '$lib/passkey-support';
   import PopupSigningAdapter from '$lib/components/signing/popup-signing-adapter.svelte';
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
+  import { routineSignInIdentity } from '$lib/routine-sign-in';
   import { requestedActionIds, selectionFromPreview } from '$lib/widget-selection';
   import {
     parseCapabilityReview,
@@ -14,7 +15,6 @@
     defaultSelection,
     annotateAppScopedGrants,
     appKeyIdentity,
-    appKeyNotGrantableStatements,
     type CapabilityReviewModel,
     type DeclaredAppScope,
     checkSiweOrigin,
@@ -555,32 +555,13 @@
     if (!reviewModel) return true; // legacy plain-message flow
     return reviewModel.protocol !== 'malformed-recap';
   }
-  function isRoutineAppKeyRequest(model: CapabilityReviewModel): boolean {
-    if (
-      model.protocol !== 'tinycloud-siwe-recap' ||
-      model.parseWarnings.length > 0 ||
-      model.requester.domainWarning ||
-      model.requester.originWarning ||
-      model.permissions.length === 0
-    ) {
-      return false;
-    }
-    const identity = appKeyIdentity(model);
-    return Boolean(
-      identity &&
-      model.permissions.every(
-        (grant) =>
-          grant.family === 'app-keys' &&
-          !grant.resourceService &&
-          grant.path === '' &&
-          grant.space.endsWith(`/apps/${identity.appId}/`) &&
-          appKeyNotGrantableStatements(grant).length === 0,
-      ),
-    );
-  }
 
   const routineSignInCandidate = $derived.by(() =>
-    Boolean(reviewModel && canUseAuthorizeSignFn() && isRoutineAppKeyRequest(reviewModel)),
+    Boolean(
+      reviewModel &&
+      canUseAuthorizeSignFn() &&
+      routineSignInIdentity(reviewModel),
+    ),
   );
 
   const previewReady = $derived(
