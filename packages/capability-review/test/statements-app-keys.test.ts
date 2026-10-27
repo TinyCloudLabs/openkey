@@ -169,8 +169,8 @@ describe("resources outside apps/ use named-key copy", () => {
     expect(rows(urn(rest), [`${E}decrypt`])).toEqual([`Decrypt anything encrypted with your key ${rest.slice(1)} in your account's default network, whenever this app gets hold of the encrypted copy, until this access expires.`]);
   });
 
-  it("the default network decrypt keeps the default-key statement", () => {
-    expect(rows(urn(""), [`${E}decrypt`])[0]).toStartWith("Decrypt anything encrypted with your account's default key");
+  it("the default network decrypt keeps the plain decrypt copy", () => {
+    expect(rows(urn(""), [`${E}decrypt`])).toEqual(["Decrypt protected data"]);
   });
 });
 
