@@ -1,5 +1,6 @@
 import './log'; // Keep first: patches dependency console output before any dependency module runs.
 import './install-process-handlers'; // Install fatal handlers before dependency startup.
+import { verifyMessage } from 'ethers';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { apiErrorHandler, log, logConfigInvalid, logError, requestLogger, type ApiEnv } from './log';
@@ -251,6 +252,29 @@ app.route('/api/device-authorizations', deviceAuthorizationRouter);
 app.route('/api/delegation-codes', createDelegationCodeRouter({
   store: createPrismaDelegationCodeStore(),
   sessionMiddleware: requireSession,
+  refreshGrantSecret: process.env.BETTER_AUTH_SECRET ?? '',
+  isDelegationOwnedByUser: async (userId, delegation) => {
+    if (
+      typeof delegation.address !== 'string' ||
+      typeof delegation.signature !== 'string' ||
+      typeof delegation.signedMessage !== 'string'
+    ) return false;
+    try {
+      const recoveredAddress = verifyMessage(delegation.signedMessage, delegation.signature);
+      if (recoveredAddress.toLowerCase() !== delegation.address.toLowerCase()) return false;
+      const key = await authPrisma.ethereumKey.findFirst({
+        where: {
+          userId,
+          archivedAt: null,
+          address: { equals: recoveredAddress, mode: 'insensitive' },
+        },
+        select: { id: true },
+      });
+      return key !== null;
+    } catch {
+      return false;
+    }
+  },
 }));
 
 // Developer Organizations own OAuth application configuration and membership only.

@@ -63,6 +63,8 @@ describe('Prisma delegation code store (PGlite)', () => {
     const app = new Hono().route('/api/delegation-codes', createDelegationCodeRouter({
       store,
       sessionMiddleware: async (_c, next) => next(),
+      refreshGrantSecret: 'test-refresh-grant-secret',
+      isDelegationOwnedByUser: async () => true,
     }));
     await store.create('gggg-hhhh', delegation, new Date('2099-01-01T00:00:00.000Z'));
     const first = await app.request('/api/delegation-codes/gggg-hhhh');
