@@ -311,6 +311,7 @@ model TinyCloudBootstrapState {
   completedAt      DateTime?
   failureCode      String?
   failureReason    String?
+  sweepAttempts    Int       @default(0)
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
@@ -813,4 +814,17 @@ model AppSignInDay {
   @@id([userId, origin, day])
   @@index([day])
   @@map("app_sign_in_day")
+}
+
+// A JWT access token revoked at /oauth2/revoke, kept until the token's own
+// expiry. The key is the SHA-256 of the token's signed part (header.payload),
+// base64url; the token itself is never stored.
+model RevokedAccessToken {
+  tokenHash String   @id @map("token_hash")
+  clientId  String   @map("client_id")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([expiresAt])
+  @@map("revoked_access_token")
 }

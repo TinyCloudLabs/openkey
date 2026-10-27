@@ -10,7 +10,9 @@
   // render byte-identical DOM and invoke the same transport calls in
   // response to the same real DOM keyboard/click events.
 
-  import type { CapabilityReviewModel } from "@openkey/capability-review";
+  import { untrack } from "svelte";
+  import { readSpaceHostFacts, type CapabilityReviewModel } from "@openkey/capability-review";
+  import { watchHostPeer, type PeerRecognitionState } from "$lib/host-peer-recognition";
   import SigningApproval from "$lib/components/signing/signing-approval.svelte";
   import type { WidgetSigningTransport } from "./signing-adapter-types";
 
@@ -44,6 +46,20 @@
     transport.invalidatePreview();
   }
 
+  // Node key on a host approval: look it up on the known nodes. The state is
+  // shown in the approval view; it never enables or disables anything else.
+  const hostFacts = $derived(readSpaceHostFacts(model, selection));
+  const hostFactsKey = $derived(
+    hostFacts ? JSON.stringify([hostFacts.spaces.map((space) => space.spaceId), hostFacts.peerDid]) : "",
+  );
+  let peerRecognition = $state<PeerRecognitionState | null>(null);
+  $effect(() => {
+    void hostFactsKey;
+    return watchHostPeer(untrack(() => hostFacts), import.meta.env.VITE_DELEGATE_NODE_ORIGINS, (next) => {
+      peerRecognition = next;
+    });
+  });
+
   function onEditingChange(next: boolean) {
     editing = next;
   }
@@ -70,6 +86,7 @@
   {layoutBlocked}
   stickyActions
   finalPreview={transport.previewReady}
+  {peerRecognition}
   {onApprove}
   {onCancel}
   {onSelectionChange}

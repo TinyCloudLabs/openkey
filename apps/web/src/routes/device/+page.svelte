@@ -4,6 +4,7 @@
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import {
+    decryptDefaultEntryLabel,
     deviceLifetimeOptions,
     deviceRequestReason,
     deviceRequestTtlSeconds,
@@ -103,15 +104,20 @@
           <h2 class="text-sm text-surface-500">Requested capabilities ({request.permissions.length})</h2>
           <ul class="mt-2 divide-y divide-surface-200 rounded-lg border border-surface-200">
             {#each request.permissions as permission (`${permission.service}\0${permission.path}`)}
+                {@const decrypt = decryptDefaultEntryLabel(permission, deviceRequestTtlSeconds(request))}
               <li class="px-3 py-2 text-sm">
                 <div class="flex flex-wrap items-baseline justify-between gap-2">
                   <span class="font-medium text-surface-900">
+                    {#if decrypt}
+                      {decrypt.statement}
+                    {:else}
                     {Object.hasOwn(SERVICE_LABELS, permission.service) ? SERVICE_LABELS[permission.service] : permission.service}
                     {#if permission.service === 'tinycloud.capabilities'}
                       <span class="ml-1 rounded bg-surface-100 px-1.5 py-0.5 text-xs font-medium text-surface-600">required</span>
                     {/if}
+                    {/if}
                   </span>
-                  <span class="break-all font-mono text-xs text-surface-700">{permission.path || 'entire space'}</span>
+                  <span class="break-all font-mono text-xs text-surface-700">{decrypt ? decrypt.lifetime : permission.path || 'entire space'}</span>
                 </div>
                 <p class="mt-0.5 text-xs text-surface-500">
                   {permission.actions.map((action) => action.slice(action.indexOf('/') + 1)).join(', ')}

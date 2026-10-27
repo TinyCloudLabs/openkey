@@ -25,6 +25,8 @@
 import type { CapabilityFamily, PermissionSeverity } from "./model.js";
 import { isSecretsSpace } from "./app-scope.js";
 import { isMetadataOnlyAccess } from "./action-semantics.js";
+import { DELEGATION_LIST_LABEL, FAMILY_LABEL } from "./copy.js";
+import { APPS_SEGMENT, parseKeyResource } from "./key-resource.js";
 import {
   SPACE_SERVICES,
   SQL_ADMIN_OPERATIONS,
@@ -105,9 +107,14 @@ const SQL_NAMED_DATABASE_VERBS = new Set([
 ]);
 const DELEGATION_VERBS = new Set(["list", "status"]);
 const ENCRYPTION_NETWORK_VERBS = new Set(["network.create", "network.revoke"]);
+const ENCRYPTION_KEY_VERBS = new Set(["key.create", "key.block", "key.unblock", "key.delete"]);
+// Creating, blocking and unblocking app keys reads nothing; every other
+// ability on an app key (decrypt, delete, unknown) is sensitive.
+const APP_KEY_MANAGEMENT_VERBS = new Set(["key.create", "key.block", "key.unblock"]);
 const ENCRYPTION_VERBS = new Set([
   ...ENCRYPTION_NETWORK_VERBS,
   ...DECRYPT_VERBS,
+  ...ENCRYPTION_KEY_VERBS,
 ]);
 
 // The verbs the secrets service is expected to carry. Any grant on
@@ -228,6 +235,12 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     spaceOwner !== null &&
     signerAddress !== null &&
     spaceOwner !== signerAddress;
+  // The space belongs to the signer, proven by both addresses. An unknown
+  // owner or signer is not proof, so it never counts as the signer's own.
+  const isOwnSpace =
+    spaceOwner !== null &&
+    signerAddress !== null &&
+    spaceOwner === signerAddress;
 
   // KV and SQL authority inside a TinyCloud secrets space reaches secret
   // data regardless of requester ownership. Classify it as a secret family
@@ -453,6 +466,15 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
       return unknownActionLabel(service);
     }
     if (spaceName !== "account") {
+      // Reading which apps and links can reach the signer's own data: only
+      // `list` and `status` get here, and only on the signer's own
+      // `applications` space. Every other space stays unrecognized.
+      if (spaceName === "applications" && isOwnSpace) {
+        return {
+          family: "bootstrap-delegation",
+          displayLabel: DELEGATION_LIST_LABEL,
+        };
+      }
       return {
         family: "unknown",
         displayLabel: "Unrecognized delegation target",
@@ -466,7 +488,7 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     }
     return {
       family: "bootstrap-delegation",
-      displayLabel: "Connected access and sharing",
+      displayLabel: DELEGATION_LIST_LABEL,
     };
   }
   if (SECRETS_SERVICES.has(service)) {
@@ -505,6 +527,12 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
   if (ENCRYPTION_SERVICES.has(service)) {
     if (entry.serviceMismatch === true) {
       return unknownActionLabel(service);
+    }
+    // A key or prefix under `apps/` is its own family. Other key resources
+    // keep the encryption classification below.
+    const keyResource = parseKeyResource(path === "" ? space : `${space}/${path}`);
+    if (keyResource && keyResource.keyPath.split("/")[0] === APPS_SEGMENT) {
+      return { family: "app-keys", displayLabel: FAMILY_LABEL["app-keys"] };
     }
     if (!allVerbsIn(entry.actions, ENCRYPTION_VERBS)) {
       return {
@@ -649,6 +677,8 @@ export function classifySeverityFromActions(
         : "sensitive";
     case "encryption-decrypt":
       return hasDecrypt ? "sensitive" : "attention";
+    case "app-keys":
+      return allVerbsIn(actions, APP_KEY_MANAGEMENT_VERBS) ? "attention" : "sensitive";
     case "space-create":
     case "database-admin":
       return "sensitive";

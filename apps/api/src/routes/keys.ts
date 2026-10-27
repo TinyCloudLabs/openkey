@@ -14,6 +14,7 @@ import { createSealingContext, deriveKeyForRecord } from '../services/key-sealin
 import { deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, PrimaryKeyConflictError, setPrimaryKey } from '../services/primary-key';
 import { checkSignableMessage } from '../services/siwe-origin';
+import { appKeyRefusalBody, appKeyRefusalForMessage, appKeyRefusalStatus, blocksOutsideApps } from '../services/app-key-refusal';
 import { rejectNonBrowserControlRequest } from '../middleware/browser-control';
 
 import { log, logError } from '../log';
@@ -98,6 +99,9 @@ keysRouter.post('/link', async (c) => {
   if (challenge.expiresAt <= Date.now()) {
     challengeStore.delete(nonce);
     return c.json({ error: 'Challenge expired' }, 400);
+  }
+  if (body.message !== challenge.message) {
+    return c.json({ error: 'Wallet verification message differs from challenge' }, 400);
   }
 
   // Delete the nonce after use (one-time use)
@@ -298,6 +302,11 @@ keysRouter.post('/:keyId/sign', async (c) => {
   const siweCheck = checkSignableMessage(body.message, body.requestOrigin);
   if (siweCheck.siwe && !siweCheck.ok) {
     return c.json({ error: siweCheck.message, code: 'siwe_origin_refused', reason: siweCheck.code }, 403);
+  }
+  const appKeyRefusal = appKeyRefusalForMessage(body.message)
+    ?? (blocksOutsideApps(body.message) ? ({ reason: 'apps_key' } as const) : null);
+  if (appKeyRefusal) {
+    return c.json(appKeyRefusalBody(appKeyRefusal, 'non_browser'), appKeyRefusalStatus(appKeyRefusal));
   }
 
   const key = await prisma.ethereumKey.findFirst({

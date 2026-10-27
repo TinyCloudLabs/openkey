@@ -1,4 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
+import { E2E_PORT, ORIGIN } from './e2e-port';
 
 /**
  * OpenKey signing-approval browser parity tests.
@@ -27,7 +28,7 @@ export default defineConfig({
   reporter: 'list',
 
   use: {
-    baseURL: 'http://localhost:5779',
+    baseURL: ORIGIN,
     trace: 'off',
     screenshot: 'off',
     actionTimeout: 15000,
@@ -52,8 +53,8 @@ export default defineConfig({
     // a developer's own dev instance. Vite's rolldown-driven dependency
     // optimization takes a while on cold start; 3 minutes accommodates
     // that plus SvelteKit sync.
-    command: 'vite dev --port 5779 --strictPort',
-    url: 'http://localhost:5779/__parity_harness',
+    command: `vite dev --port ${E2E_PORT} --strictPort`,
+    url: `${ORIGIN}/__parity_harness`,
     cwd: '../..',
     reuseExistingServer: !process.env.CI,
     timeout: 180000,

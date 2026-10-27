@@ -38,7 +38,7 @@
 // block, ReCap resources appearing under Resources:) is rejected.
 
 import { prepareSession, parseRecapFromSiwe } from '@tinycloud/node-sdk-wasm';
-import type { RecapEntry } from '../routes/delegate-session';
+import { isRawRecapEntry, type RecapEntry } from '../routes/delegate-session';
 
 export interface NarrowResult {
   siwe: string;
@@ -179,12 +179,20 @@ export function narrowSiwePreservingImmutable(input: NarrowInput): NarrowOutcome
       message: 'Original SIWE does not conform to the expected grammar (header/address/URI).',
     };
   }
-  // Convert the narrowed entries to the abilities map WASM expects. Keys are
-  // request-supplied services and paths, so the maps have no prototype.
-  const narrowedAbilities: Record<string, Record<string, string[]>> = Object.create(null);
+  // ReCap entries retain their originating space. A raw encryption network is
+  // a top-level resource, not an ability beneath the session's primary space.
+  // Recreate both maps separately so a partial selection does not change the
+  // resource being signed (including the CLI's bare and named-key rows).
+  const spaceAbilities: Record<string, Record<string, Record<string, string[]>>> = Object.create(null);
+  const rawAbilities: Record<string, string[]> = Object.create(null);
   for (const entry of input.narrowedEntries) {
-    if (!Object.hasOwn(narrowedAbilities, entry.service)) narrowedAbilities[entry.service] = Object.create(null);
-    narrowedAbilities[entry.service]![entry.path] = [...entry.actions];
+    if (isRawRecapEntry(entry)) {
+      rawAbilities[entry.path] = [...entry.actions];
+      continue;
+    }
+    const abilities = spaceAbilities[entry.space] ?? (spaceAbilities[entry.space] = Object.create(null));
+    const paths = abilities[entry.service] ?? (abilities[entry.service] = Object.create(null));
+    paths[entry.path] = [...entry.actions];
   }
 
   let narrowedPrepared: { siwe: string } & Record<string, unknown>;
@@ -197,7 +205,9 @@ export function narrowSiwePreservingImmutable(input: NarrowInput): NarrowOutcome
       expirationTime: input.expirationTime,
       spaceId: input.spaceId,
       jwk: input.jwk,
-      abilities: narrowedAbilities,
+      abilities: spaceAbilities[input.spaceId] ?? {},
+      spaceAbilities,
+      rawAbilities,
       ...(input.notBefore ? { notBefore: input.notBefore } : {}),
     }) as { siwe: string } & Record<string, unknown>;
   } catch (e) {

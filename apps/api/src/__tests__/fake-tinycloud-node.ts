@@ -42,7 +42,7 @@ interface Recap {
   att?: Record<string, Record<string, unknown>>;
 }
 
-function recapOf(authorization: string): Record<string, Record<string, unknown>> {
+export function recapOf(authorization: string): Record<string, Record<string, unknown>> {
   // The authorization is CBOR around the SIWE; the recap is a base64url run inside it, followed
   // by the next CBOR field. Trim until what remains decodes to the recap JSON.
   const decoded = Buffer.from(authorization, 'base64').toString('latin1');
