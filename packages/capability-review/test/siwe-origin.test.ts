@@ -221,3 +221,26 @@ describe("checkSignableMessage: hex-encoded text", () => {
     expect(checkSignableMessage("hello", "*")).toEqual({ siwe: false });
   });
 });
+
+describe("checkSiweOrigin: Exo's macOS app origin", () => {
+  const SESSION = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+
+  test("signs a localhost sign-in with a session-key URI from tauri://localhost", () => {
+    expect(checkSiweOrigin(siwe({ domain: "localhost", uri: SESSION }), "tauri://localhost")).toEqual({ siwe: true, ok: true });
+    expect(checkSignableMessage(`0x${Buffer.from(siwe({ domain: "localhost", uri: SESSION })).toString("hex")}`, "tauri://localhost"))
+      .toEqual({ siwe: true, ok: true });
+  });
+
+  test("still refuses tauri://localhost for any other domain or a web URI", () => {
+    refusedWith(siwe({ domain: "internal.tinycloud.xyz", uri: SESSION }), "tauri://localhost", "domain-mismatch");
+    refusedWith(siwe({ domain: "localhost:5186", uri: SESSION }), "tauri://localhost", "domain-mismatch");
+    refusedWith(siwe({ domain: "localhost", uri: "https://localhost" }), "tauri://localhost", "uri-mismatch");
+    refusedWith(siwe({ domain: "localhost", uri: "tauri://localhost" }), "tauri://localhost", "uri-mismatch");
+  });
+
+  test("other custom-scheme origins and look-alikes stay refused", () => {
+    for (const origin of ["tauri://evil", "TAURI://localhost", "tauri://localhost/", "capacitor://localhost", "constructor", "__proto__"]) {
+      refusedWith(siwe({ domain: "localhost", uri: SESSION }), origin, "invalid-origin");
+    }
+  });
+});
