@@ -13,13 +13,15 @@
     parseSiweChainId,
     defaultSelection,
     annotateAppScopedGrants,
+    appKeyIdentity,
+    appKeyNotGrantableStatements,
     type CapabilityReviewModel,
     type DeclaredAppScope,
     checkSiweOrigin,
   } from '@openkey/capability-review';
   import SiweOriginRefusal from '$lib/components/signing/siwe-origin-refusal.svelte';
   import ServerReplyRefusal from '$lib/components/signing/server-reply-refusal.svelte';
-  import { hasSignResult, hasText, readReply, ServerReplyError, SERVER_REPLY_ERROR } from '$lib/server-reply';
+  import { hasSignResult, hasText, readReply, ServerReplyError, SERVER_REPLY_BODY, SERVER_REPLY_ERROR } from '$lib/server-reply';
   import {
     createWidgetTransport,
     type WidgetRequest,
@@ -72,6 +74,8 @@
   let previewApprovalToken = $state<string | null>(null);
   let previewing = $state(false);
   let previewApproved = $state(false);
+  let previewAbortController: AbortController | null = null;
+  let initialRoutinePreviewStarted = $state(false);
   // Sol MAJOR-3 (continuation): when the SDK passes `externalSign: true`
   // on the sign request, the widget MUST NOT call /authorize-sign at
   // approval time. Instead it emits an `openkey:externalSign:approve`
@@ -176,6 +180,8 @@
   // Cleanup transport when the component unmounts.
   $effect(() => {
     return () => {
+      previewAbortController?.abort();
+      previewAbortController = null;
       transport?.destroy();
       transport = null;
     };
@@ -244,6 +250,7 @@
     previewToken = null;
     previewApprovalToken = null;
     previewApproved = false;
+    initialRoutinePreviewStarted = false;
     requestSealed = true;
   }
 
@@ -548,6 +555,64 @@
     if (!reviewModel) return true; // legacy plain-message flow
     return reviewModel.protocol !== 'malformed-recap';
   }
+  function isRoutineAppKeyRequest(model: CapabilityReviewModel): boolean {
+    if (
+      model.protocol !== 'tinycloud-siwe-recap' ||
+      model.parseWarnings.length > 0 ||
+      model.requester.domainWarning ||
+      model.requester.originWarning ||
+      model.permissions.length === 0
+    ) {
+      return false;
+    }
+    const identity = appKeyIdentity(model);
+    return Boolean(
+      identity &&
+      model.permissions.every(
+        (grant) =>
+          grant.family === 'app-keys' &&
+          !grant.resourceService &&
+          grant.path === '' &&
+          grant.space.endsWith(`/apps/${identity.appId}/`) &&
+          appKeyNotGrantableStatements(grant).length === 0,
+      ),
+    );
+  }
+
+  const routineSignInCandidate = $derived.by(() =>
+    Boolean(reviewModel && canUseAuthorizeSignFn() && isRoutineAppKeyRequest(reviewModel)),
+  );
+
+  const previewReady = $derived(
+    Boolean(previewToken && previewSignedMessage && previewApprovalToken),
+  );
+
+  const routineSignInVerified = $derived.by(() => {
+    const model = reviewModel;
+    const manifest = serverVerifiedManifest;
+    if (
+      !model ||
+      !routineSignInCandidate ||
+      !previewReady ||
+      !previewSignedMessage ||
+      model.rawMessage !== previewSignedMessage ||
+      !manifest?.name ||
+      !manifest.appId ||
+      manifest.reportedOrigin !== origin ||
+      (serverMetadataTrust?.status !== 'verified' &&
+        serverMetadataTrust?.status !== 'origin-bound')
+    ) {
+      return false;
+    }
+    const identity = appKeyIdentity(model);
+    return Boolean(
+      identity?.name &&
+      identity.appId === manifest.appId &&
+      identity.origin === origin &&
+      model.requester.appId === manifest.appId &&
+      model.requester.verifiedOrigin === origin,
+    );
+  });
 
   // Convert the current review selection to canonical action IDs.
   function currentSelectedActionIds(): string[] {
@@ -560,9 +625,11 @@
   // sign for the current selection. The user must approve the preview
   // before /authorize-sign consumes the token.
   async function requestPreview(): Promise<void> {
-    if (!key || !message) return;
-    if (siweRefusal) return;
-    if (!canUseAuthorizeSignFn()) return;
+    if (!key || !message || siweRefusal || !canUseAuthorizeSignFn()) return;
+    if (previewAbortController || previewing) return;
+    if (routineSignInCandidate) initialRoutinePreviewStarted = true;
+    const controller = new AbortController();
+    previewAbortController = controller;
     previewing = true;
     error = '';
     previewApproved = false;
@@ -585,6 +652,7 @@
           {
             method: 'POST',
             credentials: 'include',
+            signal: controller.signal,
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               keyId: key.id,
@@ -602,6 +670,7 @@
           (body) => hasText(body, 'authorizationContextToken'),
           'authorize-sign-prepare failed',
         );
+        if (controller.signal.aborted) return;
         token = typeof prepareResult.authorizationContextToken === 'string'
           ? prepareResult.authorizationContextToken
           : null;
@@ -701,6 +770,7 @@
           method: 'POST',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
           body: JSON.stringify({
             authorizationContextToken: token,
             selectedActionIds: selectedIds,
@@ -712,6 +782,7 @@
         (body) => hasText(body, 'signedMessage', 'previewApprovalToken'),
         'authorize-sign-preview failed',
       );
+      if (controller.signal.aborted) return;
       if (typeof previewResult.signedMessage !== 'string' || !previewResult.signedMessage) {
         throw new Error('authorize-sign-preview did not return signedMessage');
       }
@@ -723,9 +794,10 @@
       reviewSelection = selectionFromPreview(previewResult, selectedIds);
       previewSignedMessage = previewResult.signedMessage;
       previewApprovalToken = previewResult.previewApprovalToken;
-    } catch (e: any) {
-      if (e instanceof ServerReplyError) unreadableReply(e.status);
-      else error = e.message || 'Preview failed';
+    } catch (e: unknown) {
+      if (controller.signal.aborted) return;
+      if (e instanceof ServerReplyError) error = SERVER_REPLY_BODY;
+      else error = e instanceof Error ? e.message : 'Preview failed';
       // On failure, invalidate any stored token so the next attempt gets
       // a fresh one — the server may have expired the token or rejected
       // the immutable-fields digest.
@@ -733,9 +805,24 @@
       previewSignedMessage = null;
       previewApprovalToken = null;
     } finally {
-      previewing = false;
+      if (previewAbortController === controller) {
+        previewAbortController = null;
+        previewing = false;
+      }
     }
   }
+  $effect(() => {
+    if (
+      !routineSignInCandidate ||
+      initialRoutinePreviewStarted ||
+      previewReady ||
+      previewing
+    ) {
+      return;
+    }
+    initialRoutinePreviewStarted = true;
+    void requestPreview();
+  });
 
   // Sol CRITICAL-1: distinct final approval. The preview bytes are what
   // gets signed; the token binding + preview digest are the sole
@@ -855,6 +942,9 @@
   // Called by SigningApproval when the selection changes. Clears any
   // approved preview so the user must review + approve the new bytes.
   function invalidatePreviewForSelectionEdit() {
+    previewAbortController?.abort();
+    previewAbortController = null;
+    previewing = false;
     previewSignedMessage = null;
     // Also invalidate the preview-approval token: it was bound to the
     // old (selection, bytes) pair. A new preview call must issue a
@@ -900,6 +990,9 @@
   }
 
   function cancel() {
+    previewAbortController?.abort();
+    previewAbortController = null;
+    previewing = false;
     sendResponse({
       type: 'openkey:sign:response',
       success: false,
@@ -1038,9 +1131,12 @@
       initialSelection={reviewSelection}
       transport={{
         approving: signing || previewing,
+        cancelDisabled: signing,
         error,
         canUseAuthorizeSign: canUseAuthorizeSignFn(),
-        previewReady: Boolean(previewToken && previewSignedMessage && previewApprovalToken),
+        previewReady,
+        routineSignInCandidate,
+        routineSignInVerified,
         requestPreview,
         approveAndSign,
         cancel,
