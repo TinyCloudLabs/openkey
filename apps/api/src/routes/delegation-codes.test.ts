@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import { Hono } from 'hono';
+import { createMiddleware } from 'hono/factory';
 import { createDelegationCodeRouter, type DelegationCodeStore } from './delegation-codes';
+import type { SessionContext } from '../middleware/session';
 
 const delegation = {
   delegationHeader: { Authorization: 'Bearer signed-delegation' },
@@ -32,7 +34,13 @@ function fixture() {
   const app = new Hono().route('/api/delegation-codes', createDelegationCodeRouter({
     store,
     now: () => new Date(now),
-    sessionMiddleware: async (_c, next) => next(),
+    sessionMiddleware: createMiddleware<SessionContext>(async (context, next) => {
+      context.set('user', { id: 'test-user', email: 'test@example.test' });
+      context.set('session', { id: 'test-session', userId: 'test-user', expiresAt: new Date(Date.UTC(2099, 0, 1)) });
+      await next();
+    }),
+    refreshGrantSecret: 'test-refresh-grant-secret',
+    isDelegationOwnedByUser: async () => true,
   }));
   return { app, records, lookups, now: () => now, advance: (ms: number) => { now += ms; } };
 }
