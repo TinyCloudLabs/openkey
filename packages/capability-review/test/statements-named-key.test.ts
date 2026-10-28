@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from "bun:test";
 
-import { DECRYPT_DEFAULT_KEY_STATEMENT, renderLiteral } from "../src/copy.js";
+import { renderLiteral } from "../src/copy.js";
 import {
   buildStatement,
   buildStatements,
@@ -186,10 +186,10 @@ describe("named-key routing: shape A and shape B resolve identically", () => {
       expect(row.resource).toBe(PREFIX);
     });
 
-    it(`shape ${shape} bare network keeps the default-key decrypt copy`, () => {
+    it(`shape ${shape} bare network keeps the plain decrypt copy`, () => {
       expect(
         buildStatement(shapeGrant(shape, NETWORK, [ABILITY.decrypt])).primaryText,
-      ).toBe(DECRYPT_DEFAULT_KEY_STATEMENT);
+      ).toBe("Decrypt protected data");
     });
 
     it(`shape ${shape} malformed URN renders the literal fallback, not friendly copy`, () => {
