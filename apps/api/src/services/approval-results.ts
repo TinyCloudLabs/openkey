@@ -98,7 +98,16 @@ export class ApprovalResultService {
     const now = this.options.now?.() ?? new Date();
     const delegationExpiresAt = new Date(siwe.expirationTime!);
     const resultExpiresAt = new Date(Math.min(delegationExpiresAt.getTime(), now.getTime() + this.options.retentionSeconds * 1000));
-    const payload = { requestId: record.id, bodyCid: record.bodyCid, requesterDid: record.issuer, ownerDid, targetDid: record.request.targetDid, expiresAt: delegationExpiresAt.toISOString(), delegation };
+    const payload = {
+      resultVersion: 1,
+      requestId: record.id,
+      requestDigest: record.bodyCid,
+      requesterDid: record.issuer,
+      ownerDid,
+      targetDid: record.request.targetDid,
+      delegationExpiresAt: delegationExpiresAt.toISOString(),
+      delegation,
+    };
     const recipient = await crypto.subtle.importKey('jwk', record.request.resultEncryptionPublicJwk, { name: 'ECDH', namedCurve: 'P-256' }, false, []);
     const ephemeral = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
     const shared = await crypto.subtle.deriveBits({ name: 'ECDH', public: recipient }, ephemeral.privateKey, 256);

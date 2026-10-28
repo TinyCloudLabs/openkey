@@ -7,6 +7,7 @@ import { serializeSignedCookie } from 'better-call';
 import { signerFromJwk, prepareLinkRecord, openLinkRecord, parseApprovalRequest } from '@tinycloud/share-envelope/links';
 import { z } from 'zod';
 import { Wallet } from 'ethers';
+import { SiweMessage } from 'siwe';
 
 // A fresh process avoids Bun's process-wide route/auth mocks in the unit lane.
 if (!process.env.TC2212_APPROVAL_API_CHILD) {
@@ -107,7 +108,7 @@ if (!process.env.TC2212_APPROVAL_API_CHILD) {
     await prisma.approvalRequest.update({ where: { id }, data: { expiresAt: new Date(opened.header.expiresAt) } });
     const approvedResponse = await post('/api/delegate', approval, { cookie });
     expect(approvedResponse.status, await approvedResponse.clone().text()).toBe(200);
-    const delegation = z.object({ ownerDid: z.string() }).passthrough().parse(await approvedResponse.json());
+    const delegation = z.object({ ownerDid: z.string(), siwe: z.string() }).passthrough().parse(await approvedResponse.json());
     const saved = await prisma.approvalRequest.findUniqueOrThrow({ where: { id } });
     expect(saved.approvedByUserId).toBe(userId);
     expect(saved.ownerDid).toBe(delegation.ownerDid);
@@ -145,7 +146,7 @@ if (!process.env.TC2212_APPROVAL_API_CHILD) {
     const aes = await crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt: context, info: new TextEncoder().encode('openkey-device-relay-v1') }, material, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
     const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: Buffer.from(result.relay.nonce, 'base64url'), additionalData: context }, aes, Buffer.from(result.relay.ciphertext, 'base64url'));
     const wrapped = JSON.parse(new TextDecoder().decode(plaintext));
-    expect(wrapped).toMatchObject({ requestId: id, bodyCid: saved.bodyCid, requesterDid: signer.did, targetDid: signer.did, ownerDid: delegation.ownerDid, delegation });
+    expect(wrapped).toEqual({ resultVersion: 1, requestId: id, requestDigest: saved.bodyCid, requesterDid: signer.did, targetDid: signer.did, ownerDid: delegation.ownerDid, delegationExpiresAt: new SiweMessage(delegation.siwe).expirationTime, delegation });
     // CLI verification/profile durability is exercised by the separate CLI
     // vertical smoke. This API proof deliberately makes no commitLogin claim.
     const ackPath = `/api/approval-results/${resultRef}/ack`;
