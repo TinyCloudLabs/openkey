@@ -70,11 +70,23 @@ if (!process.env.TC2212_APPROVAL_API_CHILD) {
     const sealed = await prepareLinkRecord({ type: 'openkey-approval-request', issuerKey: signer, apiOrigin: 'https://api.tinycloud.xyz', expiresAt: new Date(Date.now() + 3600_000), plaintext: new TextEncoder().encode(JSON.stringify(request)) });
     const opened = await openLinkRecord(sealed.record, sealed.key);
     const id = 'abcdefghijklmnopqrstuvwxyz';
-    await createPrismaApprovalRequestStore(prisma).register({ id, bodyCid: opened.header.bodyCid, issuer: opened.header.issuer, request: parseApprovalRequest(opened.value, { issuer: opened.header.issuer }), expiresAt: new Date(opened.header.expiresAt), createdAt: new Date(), resultRef: null, encryptedResult: null, resultExpiresAt: null });
     const apiOrigin = process.env.BETTER_AUTH_URL!;
+    const jkt = createHash('sha256').update(JSON.stringify({ crv: 'Ed25519', kty: 'OKP', x: jwk.x })).digest('base64url');
     async function post(path: string, body: unknown, headers: Record<string, string> = {}) {
       return app.fetch(new Request(apiOrigin + path, { method: 'POST', headers: { 'content-type': 'application/json', origin: process.env.WEBAUTHN_ORIGIN!, ...headers }, body: JSON.stringify(body) }));
     }
+    const initialResultPath = `/api/approval-requests/${id}/result`;
+    const signedReference = { bodyCid: opened.header.bodyCid, header: opened.header, signature: opened.signature };
+    const pending = await post(initialResultPath, signedReference, { 'OpenKey-Session-Proof': proof('discover', initialResultPath) });
+    expect(pending.status).toBe(202);
+    expect(await pending.json()).toEqual({ status: 'pending' });
+    expect((await post(initialResultPath, signedReference, { 'OpenKey-Session-Proof': proof('discover', initialResultPath) })).status).toBe(202);
+    expect((await post(initialResultPath, signedReference, { 'OpenKey-Session-Proof': proof('discover', initialResultPath, '', '', generateKeyPairSync('ed25519').privateKey) })).status).toBe(401);
+    expect((await post(initialResultPath, signedReference, { 'OpenKey-Session-Proof': proof('fetch', initialResultPath) })).status).toBe(401);
+    expect((await post(initialResultPath, { ...signedReference, bodyCid: 'wrong-sealed-cid' }, { 'OpenKey-Session-Proof': proof('discover', initialResultPath) })).status).toBe(400);
+    expect((await post(initialResultPath, { ...signedReference, signature: { algorithm: 'Ed25519', value: Buffer.alloc(64).toString('base64url') } }, { 'OpenKey-Session-Proof': proof('discover', initialResultPath) })).status).toBe(400);
+    expect(await prisma.approvalRequest.findUnique({ where: { id } })).toBeNull();
+    await createPrismaApprovalRequestStore(prisma).register({ id, bodyCid: opened.header.bodyCid, issuer: opened.header.issuer, request: parseApprovalRequest(opened.value, { issuer: opened.header.issuer }), expiresAt: new Date(opened.header.expiresAt), createdAt: new Date(), resultRef: null, encryptedResult: null, resultExpiresAt: null });
     const body = { keyId: ownerKey.id, jwk: targetJwk, host: request.nodeOrigin, permissions, expiry: '3600s', approvalRequestId: id };
     expect((await post('/api/delegate/prepare', body)).status).toBe(401);
     const otherUserId = randomUUID();
@@ -114,10 +126,9 @@ if (!process.env.TC2212_APPROVAL_API_CHILD) {
     expect(saved.ownerDid).toBe(delegation.ownerDid);
     // Approved, unacknowledged results outlive the original request deadline.
     await prisma.approvalRequest.update({ where: { id }, data: { expiresAt: new Date(0) } });
-    const jkt = createHash('sha256').update(JSON.stringify({ crv: 'Ed25519', kty: 'OKP', x: jwk.x })).digest('base64url');
     function proof(action: 'discover' | 'fetch' | 'ack', path: string, ref = '', ackId = '', signingKey = pair.privateKey) {
       const head = Buffer.from(JSON.stringify({ alg: 'EdDSA', kid: jkt, typ: 'openkey-session-proof+jwt' })).toString('base64url');
-      const payload = Buffer.from(JSON.stringify({ client_id: 'openkey-approval-result-v1', cred_hash: createHash('sha256').update(JSON.stringify([action, id, saved.bodyCid, ref, ackId])).digest('base64url'), htm: 'POST', htu: apiOrigin + path, iat: Math.floor(Date.now() / 1000), jti: randomBytes(24).toString('base64url') })).toString('base64url');
+      const payload = Buffer.from(JSON.stringify({ client_id: 'openkey-approval-result-v1', cred_hash: createHash('sha256').update(JSON.stringify([action, id, opened.header.bodyCid, ref, ackId])).digest('base64url'), htm: 'POST', htu: apiOrigin + path, iat: Math.floor(Date.now() / 1000), jti: randomBytes(24).toString('base64url') })).toString('base64url');
       return `${head}.${payload}.${sign(null, Buffer.from(`${head}.${payload}`), signingKey).toString('base64url')}`;
     }
     const resultPath = `/api/approval-requests/${id}/result`;
