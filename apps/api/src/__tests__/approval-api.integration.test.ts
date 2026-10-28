@@ -6,6 +6,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { serializeSignedCookie } from 'better-call';
 import { signerFromJwk, prepareLinkRecord, openLinkRecord, parseApprovalRequest } from '@tinycloud/share-envelope/links';
 import { z } from 'zod';
+import { Wallet } from 'ethers';
 
 // A fresh process avoids Bun's process-wide route/auth mocks in the unit lane.
 if (!process.env.TC2212_APPROVAL_API_CHILD) {
@@ -75,10 +76,19 @@ if (!process.env.TC2212_APPROVAL_API_CHILD) {
     }
     const body = { keyId: ownerKey.id, jwk: targetJwk, host: request.nodeOrigin, permissions, expiry: '3600s', approvalRequestId: id };
     expect((await post('/api/delegate/prepare', body)).status).toBe(401);
+    const otherUserId = randomUUID();
+    const otherToken = randomBytes(32).toString('base64url');
+    await prisma.user.create({ data: { id: otherUserId, email: `${otherUserId}@example.test`, emailVerified: true } });
+    await prisma.session.create({ data: { id: randomUUID(), userId: otherUserId, token: otherToken, expiresAt: new Date(Date.now() + 3600_000) } });
+    const otherCookie = (await serializeSignedCookie(authContext.authCookies.sessionToken.name, otherToken, authContext.secret)).split(';')[0]!;
+    expect((await post('/api/delegate/prepare', body, { cookie: otherCookie })).status).toBe(404);
+    const otherJwk = generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' });
+    expect((await post('/api/delegate/prepare', { ...body, jwk: { kty: 'OKP', crv: 'Ed25519', x: otherJwk.x } }, { cookie })).status).toBe(400);
+    expect((await post('/api/delegate/prepare', { ...body, permissions: [{ ...permissions[0], actions: ['tinycloud.kv/get'] }, permissions[1]] }, { cookie })).status).toBe(400);
     const preparedResponse = await post('/api/delegate/prepare', body, { cookie });
     expect(preparedResponse.status, await preparedResponse.clone().text()).toBe(200);
     const prepared = z.object({
-      prepared: z.record(z.unknown()),
+      prepared: z.object({ siwe: z.string() }).passthrough(),
       authorizationContext: z.object({ token: z.string() }),
       selectedActionKeys: z.array(z.string()),
     }).parse(await preparedResponse.json());
@@ -86,24 +96,38 @@ if (!process.env.TC2212_APPROVAL_API_CHILD) {
     const refused = await post('/api/delegate', { ...approval, approvalRequestId: 'zyxwvutsrqponmlkjihgfedcba2' }, { cookie });
     expect(refused.status).toBe(400);
     expect((await prisma.approvalRequest.findUniqueOrThrow({ where: { id } })).resultRef).toBeNull();
+    expect((await post('/api/delegate', approval, { cookie: otherCookie })).status).toBe(404);
+    const wrongSignature = await Wallet.createRandom().signMessage(prepared.prepared.siwe);
+    expect((await post('/api/delegate/complete', { ...approval, signature: wrongSignature }, { cookie })).status).toBe(400);
+    // A preview loaded before the deadline cannot be approved after expiry.
+    // Rejection must not consume the consent context.
+    await prisma.approvalRequest.update({ where: { id }, data: { expiresAt: new Date(0) } });
+    expect((await post('/api/delegate', approval, { cookie })).status).toBe(410);
+    expect((await prisma.approvalRequest.findUniqueOrThrow({ where: { id } })).resultRef).toBeNull();
+    await prisma.approvalRequest.update({ where: { id }, data: { expiresAt: new Date(opened.header.expiresAt) } });
     const approvedResponse = await post('/api/delegate', approval, { cookie });
     expect(approvedResponse.status, await approvedResponse.clone().text()).toBe(200);
     const delegation = z.object({ ownerDid: z.string() }).passthrough().parse(await approvedResponse.json());
     const saved = await prisma.approvalRequest.findUniqueOrThrow({ where: { id } });
     expect(saved.approvedByUserId).toBe(userId);
     expect(saved.ownerDid).toBe(delegation.ownerDid);
+    // Approved, unacknowledged results outlive the original request deadline.
+    await prisma.approvalRequest.update({ where: { id }, data: { expiresAt: new Date(0) } });
     const jkt = createHash('sha256').update(JSON.stringify({ crv: 'Ed25519', kty: 'OKP', x: jwk.x })).digest('base64url');
-    function proof(action: 'discover' | 'fetch' | 'ack', path: string, ref = '', ackId = '') {
+    function proof(action: 'discover' | 'fetch' | 'ack', path: string, ref = '', ackId = '', signingKey = pair.privateKey) {
       const head = Buffer.from(JSON.stringify({ alg: 'EdDSA', kid: jkt, typ: 'openkey-session-proof+jwt' })).toString('base64url');
       const payload = Buffer.from(JSON.stringify({ client_id: 'openkey-approval-result-v1', cred_hash: createHash('sha256').update(JSON.stringify([action, id, saved.bodyCid, ref, ackId])).digest('base64url'), htm: 'POST', htu: apiOrigin + path, iat: Math.floor(Date.now() / 1000), jti: randomBytes(24).toString('base64url') })).toString('base64url');
-      return `${head}.${payload}.${sign(null, Buffer.from(`${head}.${payload}`), pair.privateKey).toString('base64url')}`;
+      return `${head}.${payload}.${sign(null, Buffer.from(`${head}.${payload}`), signingKey).toString('base64url')}`;
     }
     const resultPath = `/api/approval-requests/${id}/result`;
     const discovered = await post(resultPath, { bodyCid: saved.bodyCid }, { 'OpenKey-Session-Proof': proof('discover', resultPath) });
     expect(discovered.status).toBe(200);
-    const { resultRef } = await discovered.json() as { resultRef: string };
+    const { resultRef } = z.object({ resultRef: z.string() }).parse(await discovered.json());
     const fetchPath = `/api/approval-results/${resultRef}/fetch`;
     const binding = { requestId: id, bodyCid: saved.bodyCid };
+    expect((await post(fetchPath, binding)).status).toBe(401);
+    expect((await post(fetchPath, binding, { 'OpenKey-Session-Proof': proof('fetch', fetchPath, resultRef, '', generateKeyPairSync('ed25519').privateKey) })).status).toBe(401);
+    expect((await post(fetchPath, { ...binding, bodyCid: 'wrong-sealed-cid' }, { 'OpenKey-Session-Proof': proof('fetch', fetchPath, resultRef) })).status).toBe(400);
     const fetched = await post(fetchPath, binding, { 'OpenKey-Session-Proof': proof('fetch', fetchPath, resultRef) });
     expect(fetched.status).toBe(200);
     const result = z.object({

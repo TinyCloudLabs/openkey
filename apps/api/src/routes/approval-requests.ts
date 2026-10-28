@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
-import { buildShortLink, resolveLink, parseApprovalRequest, validateLinkHeader, verifyHeader, linkIssuerPublicKey } from '@tinycloud/share-envelope/links';
+import { parseLink, resolveLink, parseApprovalRequest, validateLinkHeader, verifyHeader, linkIssuerPublicKey } from '@tinycloud/share-envelope/links';
 import { ApprovalResultError, ApprovalResultService } from '../services/approval-results';
 import { createPrismaApprovalRequestStore } from '../services/approval-request-store';
 import { verifySessionProofClaims } from '../services/native-delegation/session-proof';
@@ -52,10 +52,12 @@ approvalRequestRouter.post('/approval-requests/:id/load', async (c) => {
   approvalResultService();
   const id = c.req.param('id');
   const body = await c.req.json();
-  if (!/^[a-z2-7]{26}$/.test(id) || typeof body.key !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(body.key) || typeof body.bodyCid !== 'string') {
-    throw new ApprovalResultError('invalid_request', 'Approval request reference is invalid', 400);
+  if (typeof body.reference !== 'string') throw new ApprovalResultError('invalid_request', 'Approval request reference is required', 400);
+  const link = viewerOrigin + body.reference;
+  const parsed = parseLink(link, { trustedOrigins: [viewerOrigin] });
+  if (parsed.form !== 'short' || parsed.pathType !== 'openkey-approval-request' || parsed.id !== id) {
+    throw new ApprovalResultError('invalid_request', 'Approval request reference does not match this request', 400);
   }
-  const link = buildShortLink({ origin: viewerOrigin, type: 'openkey-approval-request', id, key: Buffer.from(body.key, 'base64url'), bodyCid: body.bodyCid });
   const opened = await resolveLink(link, { trustedOrigins: [viewerOrigin], apiOrigin: linksOrigin, fetch: Object.assign(fetchLink, { preconnect: fetch.preconnect }) });
   if (opened.type !== 'openkey-approval-request') throw new ApprovalResultError('invalid_request', 'Not an approval request', 400);
   const request = parseApprovalRequest(opened.value, { issuer: opened.header.issuer });

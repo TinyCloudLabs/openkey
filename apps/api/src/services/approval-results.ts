@@ -51,8 +51,8 @@ export class ApprovalResultService {
     retentionSeconds: number;
     now?: () => Date;
   }) {
-    if (!Number.isSafeInteger(options.retentionSeconds) || options.retentionSeconds < 60 || options.retentionSeconds > 86400) {
-      throw new Error('Approval result retention must be explicitly bounded to 60..86400 seconds');
+    if (!Number.isSafeInteger(options.retentionSeconds) || options.retentionSeconds <= 0) {
+      throw new Error('Approval result retention must be an explicit positive number of seconds');
     }
     if (new URL(options.apiOrigin).origin !== options.apiOrigin) throw new Error('Approval API origin must be canonical');
   }

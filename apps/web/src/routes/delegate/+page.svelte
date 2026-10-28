@@ -135,7 +135,9 @@
   let baselineSiweForReview = $state<string | null>(null);
   let reviewSelection = $state(new Set<string>());
   let reviewEditing = $state(false);
-  const delegateReturnTo = $derived($page.url.pathname + $page.url.search + $page.url.hash);
+  const approvalRequestMode = $page.route.id === '/a/[id]';
+  const approvalRequestId = approvalRequestMode ? $page.params.id || '' : '';
+  const delegateReturnTo = $derived(approvalRequestMode ? $page.url.pathname : $page.url.pathname + $page.url.search + $page.url.hash);
   const registerHref = $derived(`/auth/register?returnTo=${encodeURIComponent(delegateReturnTo)}`);
   const emailSignInHref = $derived(`/auth/login?redirect=${encodeURIComponent(delegateReturnTo)}`);
   let actionRow: HTMLDivElement | null = $state(null);
@@ -147,8 +149,6 @@
   let linking = $state(false);
 
   // Parse query params
-  const approvalRequestMode = $page.route.id === '/a/[id]';
-  const approvalRequestId = approvalRequestMode ? $page.params.id || '' : '';
   let approvalRequestLoading = $state(approvalRequestMode);
   let approvalRequestLoaded = $state(false);
   const preparedTransport = !approvalRequestMode && $page.url.searchParams.has('transportVersion');
@@ -365,7 +365,7 @@
   const linkPolicyError = $derived(callbackCheck?.ok === false
     ? callbackCheck.reason
     : hostCheck?.ok === false ? hostCheck.reason : '');
-  if (linkPolicyError) error = linkPolicyError;
+  $effect(() => { if (linkPolicyError) error = linkPolicyError; });
   const approvedCallback = $derived(callbackCheck?.ok ? callbackCheck.callback : null);
   const showLoopbackHint = $derived(
     shouldShowLoopbackHint({ delegating, approvedCallback, deviceTransactionId, callbackInFlight, pasteCode }),
@@ -378,18 +378,20 @@
   // carries must come from (or equal) the server's pending request. Key
   // selection waits for this check.
   if (deviceTransactionId) requestReason = '';
-  const deviceRequestVerified = !approvalRequestMode && deviceTransactionId
-    ? loadVerifiedDeviceRequest(import.meta.env.VITE_API_URL || '', deviceUserCode, {
-        transactionId: deviceTransactionId,
-        sessionDid: did,
-        publicJwk: jwk,
-        relayPublicJwk,
-        nodeOrigin: host,
-        shareOrigin: deviceShareOrigin,
-        permissions: requestedPermissions,
-        expiry: expiryParam,
-      }).then((record) => { requestReason = normalizeReason(deviceRequestReason(record)); })
-    : Promise.resolve();
+  const deviceRequestVerified = (async () => {
+    if (approvalRequestMode || !deviceTransactionId) return;
+    const record = await loadVerifiedDeviceRequest(import.meta.env.VITE_API_URL || '', deviceUserCode, {
+      transactionId: deviceTransactionId,
+      sessionDid: did,
+      publicJwk: jwk,
+      relayPublicJwk,
+      nodeOrigin: host,
+      shareOrigin: deviceShareOrigin,
+      permissions: requestedPermissions,
+      expiry: expiryParam,
+    });
+    requestReason = normalizeReason(deviceRequestReason(record));
+  })();
   deviceRequestVerified.catch((cause: Error) => { error = cause.message; });
 
   // The wallet the CLI requested: the one owner (chain and address) every
@@ -401,7 +403,7 @@
   const requestOwnerError = $derived(requestSigner.kind === 'conflict'
     ? `This request names more than one account (${requestSigner.owners.join(', ')}). Restart the CLI command to get a new link.`
     : '');
-  if (requestOwnerError && !linkPolicyError) error = requestOwnerError;
+  $effect(() => { if (requestOwnerError && !linkPolicyError) error = requestOwnerError; });
   const expectedAddressShort = $derived(
     expectedAddress
       ? `${expectedAddress.slice(0, 6)}...${expectedAddress.slice(-4)}`
@@ -428,18 +430,18 @@
 
   async function loadApprovalRequest() {
     try {
-      if (!/^[a-z2-7]{26}$/.test(approvalRequestId)) throw new Error('Invalid approval request reference.');
+      if (location.search) throw new Error('Approval request URLs cannot contain query parameters.');
       const storageKey = `openkey.approval.${approvalRequestId}`;
       const fragment = location.hash || sessionStorage.getItem(storageKey) || '';
-      if (!/^#v=4&k=[A-Za-z0-9_-]{43}&c=[A-Za-z0-9]+$/.test(fragment)) throw new Error('The approval request key or sealed-body CID is missing.');
+      if (!fragment) throw new Error('The approval request key or sealed-body CID is missing.');
       // Keep the key in this tab, never in an auth return query or server log.
       sessionStorage.setItem(storageKey, fragment);
-      history.replaceState(history.state, '', location.pathname + location.search);
-      const values = new URLSearchParams(fragment.slice(1));
+      history.replaceState(history.state, '', location.pathname);
+      const reference = location.pathname + fragment;
       const response = await fetch(`${import.meta.env.VITE_API_URL || ''}/api/approval-requests/${approvalRequestId}/load`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key: values.get('k'), bodyCid: values.get('c') }),
+        body: JSON.stringify({ reference }),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Could not verify the immutable approval request.');
@@ -1575,7 +1577,7 @@
         {#if deviceTransactionId}
           <DeviceRequestNotice nodeOrigin={host} shareOrigin={deviceShareOrigin} expiry={expiryParam} bind:acknowledged={deviceAcknowledged} />
         {:else}
-          <DelegateLinkNotice {host} hostRecognized={!hostNeedsAcknowledgment} callback={approvedCallback} expiresAt={delegationExpiresAt} bind:acknowledged={hostAcknowledged} />
+          <DelegateLinkNotice {host} hostRecognized={!hostNeedsAcknowledgment} callback={approvedCallback} requesterRelay={approvalRequestMode} expiresAt={delegationExpiresAt} bind:acknowledged={hostAcknowledged} />
         {/if}
 
         {#if selectedKey.keyType === 'EXTERNAL'}

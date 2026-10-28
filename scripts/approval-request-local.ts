@@ -30,6 +30,8 @@ process.env.GOOGLE_CLIENT_ID = '';
 process.env.GOOGLE_CLIENT_SECRET = '';
 process.env.TINYCLOUD_BOOTSTRAP_ON_SIGN = 'off';
 
+// These modules capture auth/database/TEE environment at import time. Import
+// only after the private-runtime checks and synthetic environment are installed.
 const { createPrismaClient } = await import('@openkey/db');
 const { createTeeClient, generatePrivateKey, getAddressFromPrivateKey, seal } = await import('@openkey/tee');
 const prisma = createPrismaClient();
@@ -38,8 +40,6 @@ await prisma.user.create({ data: { id: userId, email: `${userId}@example.test`, 
 const privateKey = generatePrivateKey();
 const address = getAddressFromPrivateKey(privateKey);
 const sealingContext = randomBytes(32).toString('base64url');
-// These modules capture auth/database/TEE environment at import time. Import
-// only after the private-runtime checks and synthetic environment are installed.
 const sealingKey = await createTeeClient().deriveKey(`openkey/key/${sealingContext}`);
 const key = await prisma.ethereumKey.create({ data: { userId, address, publicKey: '0x1', sealedBlob: await seal(privateKey, sealingKey), sealingContext, keyType: 'MANAGED', isCanonicalTinyCloud: true } });
 const sessionToken = randomBytes(32).toString('base64url');
