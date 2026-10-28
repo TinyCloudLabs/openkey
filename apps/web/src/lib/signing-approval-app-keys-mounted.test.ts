@@ -179,6 +179,13 @@ describe('approval view for app keys', () => {
     cleanup();
   });
 
+  test('keeps unsigned app labels explicitly unsigned', () => {
+    const model = appKeyModel({ [urn('/apps/xyz.tinycloud.listen/')]: [`${E}key.create`] });
+    const { target, cleanup } = render(model);
+    expect(target.querySelector('[data-trust="unsigned"]')?.textContent).toContain('No signed manifest');
+    cleanup();
+  });
+
   test('names an exact key by its last segment in monospace', () => {
     const model = appKeyModel({ [urn('/apps/xyz.tinycloud.listen/api-token')]: [`${E}key.create`, `${E}decrypt`] });
     const { target, cleanup } = render(model);

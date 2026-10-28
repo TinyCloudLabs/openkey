@@ -160,7 +160,6 @@ function prepareBody(siwe: unknown) {
 const NOT_DECLARED = "This website doesn't list the key this app asked for, so OpenKey didn't approve it.";
 const ORIGIN_REFUSED = "App keys can only be requested by the app's own website, so OpenKey didn't approve this request.";
 const APP_ID_REFUSED = "This app doesn't belong to this website, so OpenKey didn't approve its keys.";
-const MANIFEST_REFUSED = "OpenKey couldn't check this website's app details, so it didn't approve this request.";
 const KEYS_REFUSED = "This website's list of app keys can't be read, so OpenKey didn't approve this request.";
 const ACCOUNT_REFUSED = "This request doesn't match your account, so OpenKey didn't approve it.";
 const PARTIAL_REFUSED = "App keys can only be approved together, so OpenKey didn't approve this request.";
@@ -278,8 +277,14 @@ describe('admission refusals at /authorize-sign-prepare', () => {
     await refused(siweWith(PREFIX), { requestOrigin: 'https://LISTEN.tinycloud.xyz', reportedOrigin: 'https://LISTEN.tinycloud.xyz' }, ORIGIN_REFUSED);
   });
 
-  test('no reported origin: the manifest cannot be bound (string 12)', async () => {
-    await refused(siweWith(PREFIX), { reportedOrigin: undefined }, ORIGIN_REFUSED);
+  test('the plain browser flow does not require a reported-origin manifest-fetch hint', async () => {
+    const { res, body } = await prepare(siweWith(PREFIX), {
+      reportedOrigin: undefined,
+      presentation: { displayName: 'Listen' },
+    });
+    expect(res.status).toBe(200);
+    expect(body.metadataTrust?.status).toBe('unsigned');
+    expect(body.allowedActionIds).toHaveLength(4);
   });
 
   test.each([
@@ -297,13 +302,20 @@ describe('admission refusals at /authorize-sign-prepare', () => {
     await refused(siweWith(raw), {}, ACCOUNT_REFUSED);
   });
 
-  test('the manifest is not origin-bound: the app details cannot be checked (W3a)', async () => {
+  test('an unfetchable manifest leaves app-key grants available with unsigned metadata', async () => {
     manifestBindResult = { ok: false, reason: 'digest mismatch' };
-    await refused(siweWith(PREFIX), {}, MANIFEST_REFUSED);
+    const { res, body } = await prepare(siweWith(PREFIX));
+    expect(res.status).toBe(200);
+    expect(body.metadataTrust?.status).toBe('unsigned');
+    expect(body.allowedActionIds).toHaveLength(4);
   });
 
-  test('no digest in the presentation: the app details cannot be checked (W3a)', async () => {
-    await refused(siweWith(PREFIX), { presentation: { displayName: 'Listen' } }, MANIFEST_REFUSED);
+  test('no manifest digest: app-key grants are admitted without fetching a manifest', async () => {
+    const { res, body } = await prepare(siweWith(PREFIX), { presentation: { displayName: 'Listen' } });
+    expect(res.status).toBe(200);
+    expect(body.metadataTrust?.status).toBe('unsigned');
+    expect(fetchAndBindWellKnownManifest).not.toHaveBeenCalled();
+    expect(body.allowedActionIds).toHaveLength(4);
   });
 
   test.each([
