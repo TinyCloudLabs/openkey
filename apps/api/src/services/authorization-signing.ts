@@ -78,6 +78,8 @@ export interface AuthorizationContextIssueInput {
   originalSiwe?: string;
   /** Only prepared-handoff contexts carry this DB ticket digest. */
   handoffTicketHash?: string;
+  /** Immutable approval request selected by the consent preview. */
+  approvalRequestId?: string;
   /**
    * Server-decided trust for the presentation envelope. Bound at prepare
    * time so the widget cannot upgrade it in a later step. Display-only:
@@ -125,6 +127,7 @@ interface StoredContext {
   expirationTime: string;
   originalSiwe: string;
   handoffTicketHash?: string;
+  approvalRequestId?: string;
   metadataTrust: {
     status: "verified" | "origin-bound" | "unsigned";
     reason: string;
@@ -338,6 +341,7 @@ export function issueAuthorizationContext(
     expirationTime: input.expirationTime,
     originalSiwe: input.originalSiwe ?? "",
     handoffTicketHash: input.handoffTicketHash,
+    approvalRequestId: input.approvalRequestId,
     metadataTrust,
     verifiedManifest: input.verifiedManifest,
     appOrigin: input.appOrigin,
@@ -789,6 +793,7 @@ export interface PeekSuccess {
     spaceId: string;
     originalSiwe: string;
     handoffTicketHash?: string;
+    approvalRequestId?: string;
     jwk: unknown;
     expirationTime: string;
     allowedActionIds: string[];
@@ -836,6 +841,7 @@ export function peekAuthorizationContext(token: string): PeekSuccess | PeekFailu
       spaceId: stored.spaceId,
       originalSiwe: stored.originalSiwe,
       handoffTicketHash: stored.handoffTicketHash,
+      approvalRequestId: stored.approvalRequestId,
       jwk: stored.jwk,
       expirationTime: stored.expirationTime,
       allowedActionIds: [...stored.allowedActionIds],
