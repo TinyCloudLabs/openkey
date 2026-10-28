@@ -318,6 +318,35 @@ describe('admission refusals at /authorize-sign-prepare', () => {
     expect(body.allowedActionIds).toHaveLength(4);
   });
 
+  test('unsigned app-key admission completes prepare, preview, and explicit sign', async () => {
+    const siwe = siweWith(PREFIX);
+    const { res, body } = await prepare(siwe, {
+      presentation: { displayName: 'Listen' },
+      reportedOrigin: undefined,
+    });
+    expect(res.status).toBe(200);
+    expect(body.metadataTrust?.status).toBe('unsigned');
+    expect(fetchAndBindWellKnownManifest).not.toHaveBeenCalled();
+
+    const preview = await post('/authorize-sign-preview', {
+      authorizationContextToken: body.authorizationContextToken,
+      selectedActionIds: body.allowedActionIds,
+    });
+    expect(preview.status).toBe(200);
+    const previewBody = await preview.json() as { signedMessage: string; previewApprovalToken: string };
+    expect(previewBody.signedMessage).toBe(siwe);
+
+    const sign = await post('/authorize-sign', {
+      authorizationContextToken: body.authorizationContextToken,
+      previewApprovalToken: previewBody.previewApprovalToken,
+      selectedActionIds: body.allowedActionIds,
+      protocolVersion: 1,
+    });
+    expect(sign.status).toBe(200);
+    expect(await sign.json()).toMatchObject({ signedMessage: siwe });
+    expect(signed).toEqual([siwe]);
+  });
+
   test.each([
     ['no keys block', undefined],
     ['an empty keys block', []],
