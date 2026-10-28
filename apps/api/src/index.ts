@@ -45,6 +45,8 @@ import {
   protocolAwareCors,
   withNativeDelegationMetadata,
 } from './services/native-delegation/public-protocol';
+import { turnstileConfigProblem } from './services/turnstile';
+import { loadTestAccountRegistry, qaRegistrationSecretTooShort } from './services/qa-registration';
 import { startTinyCloudBootstrapSweep } from './services/tinycloud-bootstrap-sweep';
 
 
@@ -56,6 +58,17 @@ try {
   logConfigInvalid('BETTER_AUTH_URL');
   throw new Error('Invalid API configuration');
 }
+// TC-1632: log a Turnstile setup that would pause new-account sign-ups at runtime.
+const turnstileProblem = turnstileConfigProblem();
+if (turnstileProblem === 'missing_secret' || turnstileProblem === 'test_secret') logConfigInvalid('TURNSTILE_SECRET_KEY');
+if (turnstileProblem === 'missing_hostname') logConfigInvalid('TURNSTILE_EXPECTED_HOSTNAME');
+// TC-1632: a registry that cannot be loaded (bad JSON or shape, a QA-eligible pattern that is not
+// anchored with ^...$, or one that matches a public mail domain) means no QA exemptions and no
+// scoreboard exclusions.
+const registryLoad = loadTestAccountRegistry();
+if (registryLoad.problem) logConfigInvalid('TEST_ACCOUNT_REGISTRY_JSON', registryLoad.refusal);
+// A QA secret shorter than the minimum is ignored, so the exemption is off; this logs it.
+if (qaRegistrationSecretTooShort()) logConfigInvalid('OPENKEY_QA_REGISTRATION_SECRET');
 
 // Create Hono app
 const app = new Hono<ApiEnv>();

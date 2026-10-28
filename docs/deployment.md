@@ -178,6 +178,10 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `ADMIN_API_KEY` | Bearer token for organization plan fixtures and app registration |
 | `INTERNAL_METRICS_TOKEN` | Bearer token for internal metrics |
 | `OPENKEY_METRICS_READ_TOKEN` | Separate bearer for `/api/internal/scoreboard/*`. Grants **aggregate counts only** (`GET /protocol-users` -> `{count}`, `GET /app-users` -> `{total, active7d}`); neither endpoint takes input, so the token cannot be used to look up addresses or accounts. `/protocol-users` is capped at 30 calls/min per process (429) and audit-logged (status and count only). Unset = 503 |
+| `TURNSTILE_SECRET_KEY` | Cloudflare Turnstile secret for new-account sign-up by email one-time code. The API checks each token with siteverify before the sign-up is completed. Unset = new sign-ups return 503 "Try again shortly" (fail closed); sign-in is unaffected. Cloudflare's published test secrets are refused in production (503). The site key is `VITE_TURNSTILE_SITE_KEY` at web build time. Alert on the rate of `auth_email_signup_turnstile_unavailable` |
+| `TURNSTILE_EXPECTED_HOSTNAME` | Public hostname the Turnstile widget runs on. Required in production (`openkey.so`): missing = new sign-ups return 503 (fail closed). Outside production, when set, a token whose siteverify hostname differs is rejected; unset = not checked |
+| `OPENKEY_QA_REGISTRATION_SECRET` / `OPENKEY_QA_REGISTRATION_SECRET_PREVIOUS` | QA exemption from the Turnstile step on new-account sign-up, used by the production QA account flow. At least 43 characters (32 random bytes, base64url); shorter values are ignored. The exemption applies only to an email matching a QA-eligible pattern in `TEST_ACCOUNT_REGISTRY_JSON`; a matching secret alone is not enough. The OTP and the single-use proof still apply. Compared in constant time; the current and previous values are both accepted during rotation. Unset = disabled. Revocation: unsetting the variable stops new exemptions at once; a proof already issued stays valid up to 5 minutes (`SIGNUP_TOKEN_TTL_MS`). Rotation: set the new value as `OPENKEY_QA_REGISTRATION_SECRET` and the old value as `_PREVIOUS`; unset `_PREVIOUS` to retire the old value. Each account created through the exemption logs `auth_email_signup_qa_account_created` with its `user_id` (never the email), so counts can exclude test accounts, and `auth_email_signup_qa_daily_count` with `day` (UTC) and `count` (this process's running tally for that day; a restart starts it again from zero). Alert on a daily count above the number of QA accounts expected. Rotation owner: Amos. Never expose to the browser |
+| `TEST_ACCOUNT_REGISTRY_JSON` | Runtime registry of QA and team accounts, as JSON: `userIds` and `clientIds` (added to scoreboard exclusions), `emailDomains` (domains searched for QA accounts), and `patterns` (email regexes; `qaEligible: true` allows the QA exemption). A QA-eligible pattern must be anchored with `^...$` (no top-level `\|`; wrap alternatives in a group) and must end in `@` followed by a literal domain and `$`: two or more lowercase `a-z0-9-` labels joined by `\.` (for example `^qa-[0-9]+@qa\.example\.com$`), with no wildcard, class, group or quantifier in the domain part. The exempt domain must be one that TinyCloud or the operator controls: it must not be gmail.com, googlemail.com, outlook.com, hotmail.com, yahoo.com, icloud.com, proton.me, protonmail.com, aol.com, gmx.com, gmx.de, gmx.net, mail.com, yandex.com, yandex.ru, zoho.com, fastmail.com or fastmail.fm, or a subdomain of one (`PUBLIC_MAIL_DOMAINS` in `apps/api/src/services/qa-registration.ts`). The pattern's domain is not required to appear in `emailDomains`; the scoreboard only counts QA accounts at the domains listed there. Read at boot and validated. Unset = empty registry. Bad JSON, a bad shape, or a refused pattern = no QA exemptions and no scoreboard exclusions from the registry, logged once as `config_invalid` (`error_code` = `TEST_ACCOUNT_REGISTRY_JSON`, plus `reason` = `unanchored_pattern`, `unqualified_domain_pattern` or `public_mail_domain_pattern` for a refused pattern); the API keeps running. Schema: `apps/api/config/test-accounts.json`. Values are deployment data and are never committed |
 | `NODE_STATS_URL` / `NODE_STATS_READ_TOKEN` | Full URL of the node's read-only `GET /admin/stats` (TC-1482) and its read-only bearer. OpenKey fetches the owner addresses from it for `/protocol-users` (owners with data beyond the automatic `account` space; account-only owners are excluded). The URL must be `https:`; the response is capped at 16 MiB and concurrent calls share one node request; unset or failing node = 503, never a partial count. Expected response: `200 {"owners": ["0x<40 hex>", ...]}` |
 | `SCOREBOARD_EXCLUDE_USER_IDS` / `SCOREBOARD_EXCLUDE_CLIENT_IDS` | Comma-separated team/QA/agent user ids and internal OAuth client ids excluded from scoreboard counts |
 | `TINYCLOUD_BOOTSTRAP_HOST` | Trusted TinyCloud node used for canonical user-key bootstrap |
@@ -270,13 +274,18 @@ The SvelteKit frontend deploys to Cloudflare Pages using the `@sveltejs/adapter-
 1. Connect your repository to Cloudflare Pages
 
 2. Configure build settings:
-   - Build command: `bun run build --filter @openkey/web`
+   - Build command: `bun install && bun run build --filter @openkey/web`
    - Build output: `apps/web/.svelte-kit/cloudflare`
    - Root directory: `/`
 
 3. Set environment variables:
    - `VITE_API_URL`: URL of your deployed API (e.g., `https://api.openkey.so`)
    - `VITE_CONSOLE_ORIGIN=https://console.openkey.so`
+   - `VITE_TURNSTILE_SITE_KEY`: public Turnstile site key for the new-account
+     check (TC-1632). Not a secret. It is set in the Cloudflare Pages build
+     environment, not in the repo. Set it and redeploy the web build before
+     setting the API's `TURNSTILE_SECRET_KEY`; otherwise the widget shows
+     "Verification is unavailable right now" and new sign-ups cannot finish.
    - Optional, for deployments outside production (staging MCP, extra
      TinyCloud nodes): `VITE_DELEGATE_CALLBACK_URLS` (comma-separated app
      callback endpoints such as `https://mcp.staging.example/connect/callback`)
@@ -290,6 +299,8 @@ The SvelteKit frontend deploys to Cloudflare Pages using the `@sveltejs/adapter-
 Attach both `openkey.so` and `console.openkey.so` custom domains to this Pages
 deployment. The console hostname only serves the `/console` route tree, while
 account-host console URLs redirect permanently to the console hostname.
+
+Content Security Policy: neither this repo nor the live sites set a CSP header today. If one is added to the web or embed pages, it must allow `https://challenges.cloudflare.com` in `script-src` and `frame-src`, or the new-account Turnstile widget cannot load.
 
 ## DNS Configuration
 

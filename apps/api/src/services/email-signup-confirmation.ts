@@ -7,21 +7,34 @@
 // user then confirms with `/sign-up/email-otp`, which consumes the token and
 // creates the account exactly as the OTP path did. Nothing about the account
 // is revealed before the code is verified, so the send step is unchanged.
+//
+// TC-1632: confirmation also requires a Cloudflare Turnstile token, verified
+// with siteverify before the token is consumed. A QA registration secret,
+// checked on the OTP step, marks the token so the Turnstile step is skipped.
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { BetterAuthPlugin } from 'better-auth';
 import { APIError, createAuthEndpoint } from 'better-auth/api';
 import { setSessionCookie } from 'better-auth/cookies';
 import { parseUserOutput } from 'better-auth/db';
+import { getCurrentAuthContext } from '@better-auth/core/context';
 import type { PrismaClient } from '@openkey/db';
-import { log } from '../log';
+import { log, logQaAccountCreated } from '../log';
+import { QA_REGISTRATION_HEADER, qaEligibleEmail, qaRegistrationAuthorized } from './qa-registration';
+import { verifyTurnstileToken } from './turnstile';
 
 export const NEW_ACCOUNT_CONFIRMATION_REQUIRED = 'NEW_ACCOUNT_CONFIRMATION_REQUIRED';
 export const INVALID_SIGNUP_TOKEN = 'INVALID_SIGNUP_TOKEN';
 export const ACCOUNT_ALREADY_EXISTS = 'ACCOUNT_ALREADY_EXISTS';
+export const TURNSTILE_REQUIRED = 'TURNSTILE_REQUIRED';
+export const TURNSTILE_FAILED = 'TURNSTILE_FAILED';
+export const REGISTRATION_PAUSED = 'REGISTRATION_PAUSED';
 
 // Matches the OTP lifetime: the confirmation belongs to the same sitting.
 export const SIGNUP_TOKEN_TTL_MS = 5 * 60 * 1000;
 const IDENTIFIER_PREFIX = 'openkey-email-signup:';
+// Stored in `verification.value`. A token carrying this value skips siteverify.
+const VALUE_CHALLENGED = 'email-signup';
+const VALUE_QA_EXEMPT = 'email-signup-qa';
 
 /**
  * Only a hash is stored, and it covers the email: a token presented with any
@@ -38,6 +51,53 @@ function refused(): APIError {
   });
 }
 
+// Read from the request on the OTP step only. A missing request context means
+// no QA header, so the normal Turnstile path applies.
+async function presentedQaSecret(): Promise<string | null> {
+  try {
+    const ctx = await getCurrentAuthContext();
+    return ctx.request?.headers.get(QA_REGISTRATION_HEADER) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// Cloudflare uses the visitor address as a signal. Only cf-connecting-ip is trusted:
+// Cloudflare sets it at the edge, while x-forwarded-for is client-controlled.
+function clientIp(request: Request | undefined): string | undefined {
+  return request?.headers.get('cf-connecting-ip') || undefined;
+}
+
+// Verifies the widget token. Only a definite success passes. A refused token
+// leaves the sign-up token unspent so the visitor can complete the check again.
+async function requireTurnstile(token: unknown, remoteIp?: string): Promise<void> {
+  if (typeof token !== 'string' || !token) {
+    log('warn', 'auth_email_signup_turnstile_refused', 'turnstile_required');
+    throw new APIError('BAD_REQUEST', {
+      code: TURNSTILE_REQUIRED,
+      message: 'Complete the verification check to create your account.',
+    });
+  }
+  const outcome = await verifyTurnstileToken(token, process.env, remoteIp);
+  if (outcome === 'success') {
+    log('info', 'auth_email_signup_turnstile_verified');
+    return;
+  }
+  if (outcome === 'rejected') {
+    log('warn', 'auth_email_signup_turnstile_refused', 'turnstile_failed');
+    throw new APIError('BAD_REQUEST', {
+      code: TURNSTILE_FAILED,
+      message: 'Verification failed. Complete the check again.',
+    });
+  }
+  // Fail closed: the check could not run, so no account is created.
+  log('error', 'auth_email_signup_turnstile_unavailable', 'turnstile_unavailable');
+  throw new APIError('SERVICE_UNAVAILABLE', {
+    code: REGISTRATION_PAUSED,
+    message: 'Sign-ups are paused for a moment. Try again shortly.',
+  });
+}
+
 export function emailSignupConfirmation(database: PrismaClient) {
   return {
     id: 'openkey-email-signup-confirmation',
@@ -48,6 +108,7 @@ export function emailSignupConfirmation(database: PrismaClient) {
             create: {
               before: async (user: { email: string }, context: { path?: string } | null) => {
                 if (context?.path !== '/sign-in/email-otp') return;
+                const qaExempt = qaRegistrationAuthorized(await presentedQaSecret()) && qaEligibleEmail(user.email);
                 const now = new Date();
                 const signupToken = randomBytes(32).toString('base64url');
                 await database.verification.deleteMany({
@@ -57,15 +118,16 @@ export function emailSignupConfirmation(database: PrismaClient) {
                   data: {
                     id: randomUUID(),
                     identifier: signupIdentifier(signupToken, user.email),
-                    value: 'email-signup',
+                    value: qaExempt ? VALUE_QA_EXEMPT : VALUE_CHALLENGED,
                     expiresAt: new Date(now.getTime() + SIGNUP_TOKEN_TTL_MS),
                   },
                 });
-                log('info', 'auth_email_signup_confirmation_required');
+                log('info', qaExempt ? 'auth_email_signup_qa_exempt' : 'auth_email_signup_confirmation_required');
                 throw new APIError('FORBIDDEN', {
                   code: NEW_ACCOUNT_CONFIRMATION_REQUIRED,
                   message: 'No OpenKey account exists for this email.',
                   signupToken,
+                  turnstileRequired: !qaExempt,
                 });
               },
             },
@@ -75,17 +137,27 @@ export function emailSignupConfirmation(database: PrismaClient) {
     }),
     endpoints: {
       signUpEmailOtp: createAuthEndpoint('/sign-up/email-otp', { method: 'POST' }, async (ctx) => {
-        const body = (ctx.body ?? {}) as { email?: unknown; signupToken?: unknown };
+        const body = (ctx.body ?? {}) as { email?: unknown; signupToken?: unknown; turnstileToken?: unknown };
         if (typeof body.email !== 'string' || typeof body.signupToken !== 'string' || !body.signupToken) {
           log('warn', 'auth_email_signup_refused', 'signup_token_invalid');
           throw refused();
         }
         const email = body.email.toLowerCase();
-        // One DELETE is the single-use gate: concurrent confirmations race on
-        // the same row and only one sees it.
-        const consumed = await database.verification.deleteMany({
-          where: { identifier: signupIdentifier(body.signupToken, email), expiresAt: { gt: new Date() } },
+        const identifier = signupIdentifier(body.signupToken, email);
+        // Read without spending: a failed Turnstile check must leave the token usable.
+        const pending = await database.verification.findFirst({
+          where: { identifier, expiresAt: { gt: new Date() } },
+          select: { id: true, value: true },
         });
+        if (!pending) {
+          log('warn', 'auth_email_signup_refused', 'signup_token_invalid');
+          throw refused();
+        }
+        if (pending.value !== VALUE_QA_EXEMPT) await requireTurnstile(body.turnstileToken, clientIp(ctx.request));
+        // One DELETE is the single-use gate: concurrent confirmations race on
+        // the same row and only one sees it. The expiry predicate applies here
+        // too, so a token that lapses during the Turnstile check creates nothing.
+        const consumed = await database.verification.deleteMany({ where: { id: pending.id, expiresAt: { gt: new Date() } } });
         if (consumed.count !== 1) {
           log('warn', 'auth_email_signup_refused', 'signup_token_invalid');
           throw refused();
@@ -107,6 +179,7 @@ export function emailSignupConfirmation(database: PrismaClient) {
           if (await ctx.context.internalAdapter.findUserByEmail(email)) throw accountExists();
           throw error;
         }
+        if (pending.value === VALUE_QA_EXEMPT) logQaAccountCreated(user.id);
         const session = await ctx.context.internalAdapter.createSession(user.id);
         await setSessionCookie(ctx, { session, user });
         log('info', 'auth_email_signup_confirmed');

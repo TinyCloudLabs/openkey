@@ -34,6 +34,16 @@ services:
       - NODE_STATS_READ_TOKEN=${NODE_STATS_READ_TOKEN:-}
       - SCOREBOARD_EXCLUDE_USER_IDS=${SCOREBOARD_EXCLUDE_USER_IDS:-}
       - SCOREBOARD_EXCLUDE_CLIENT_IDS=${SCOREBOARD_EXCLUDE_CLIENT_IDS:-}
+      # Cloudflare Turnstile server-side verification for new-account sign-up.
+      # Unset = new sign-ups pause (fail closed); sign-in is unaffected.
+      - TURNSTILE_SECRET_KEY=${TURNSTILE_SECRET_KEY:-}
+      # Public hostname the Turnstile widget runs on. Required in production (unset = new sign-ups pause); outside production, unset = hostname not checked.
+      - TURNSTILE_EXPECTED_HOSTNAME=${TURNSTILE_EXPECTED_HOSTNAME:-}
+      # QA registration exemption (server-checked, rotatable). Unset = disabled.
+      - OPENKEY_QA_REGISTRATION_SECRET=${OPENKEY_QA_REGISTRATION_SECRET:-}
+      - OPENKEY_QA_REGISTRATION_SECRET_PREVIOUS=${OPENKEY_QA_REGISTRATION_SECRET_PREVIOUS:-}
+      # Runtime QA account registry (JSON, deploy-time secret). Unset = no exemptions.
+      - TEST_ACCOUNT_REGISTRY_JSON=${TEST_ACCOUNT_REGISTRY_JSON:-}
     restart: unless-stopped
     healthcheck:
       # Keep this aligned with the API's configurable listener. `$$` defers

@@ -46,6 +46,8 @@ globalThis.fetch = Object.assign(function fetchWithRequestId(input: Parameters<t
 const EVENTS = {
   better_auth: true, otp_delivery_unconfigured: true, auth_key_generated: true, auth_key_generation_failed: true,
   auth_email_signup_confirmation_required: true, auth_email_signup_confirmed: true, auth_email_signup_refused: true,
+  auth_email_signup_qa_exempt: true, auth_email_signup_turnstile_verified: true, auth_email_signup_turnstile_refused: true,
+  auth_email_signup_turnstile_unavailable: true, auth_email_signup_qa_account_created: true, auth_email_signup_qa_daily_count: true,
   analytics_token_exchange_failed: true, analytics_unique_user_failed: true, analytics_token_tracking_failed: true,
   analytics_authorization_failed: true, analytics_authorization_tracking_failed: true, oauth_client_scopes_updated: true,
   oauth_client_scopes_update_failed: true, api_starting: true, request: true, api_error: true,
@@ -70,13 +72,15 @@ const EVENTS = {
   unlisted_event: true,
 } as const satisfies Record<string, true>;
 type EventName = keyof typeof EVENTS;
-const CONFIG_KEYS: Record<string, true> = { BETTER_AUTH_URL: true };
+const CONFIG_KEYS: Record<string, true> = { BETTER_AUTH_URL: true, TURNSTILE_SECRET_KEY: true, TURNSTILE_EXPECTED_HOSTNAME: true, TEST_ACCOUNT_REGISTRY_JSON: true, OPENKEY_QA_REGISTRATION_SECRET: true };
+const CONFIG_REASONS: Record<string, true> = { unanchored_pattern: true, unqualified_domain_pattern: true, public_mail_domain_pattern: true };
 const ERROR_CODES: Record<string, true> = {
   P2002: true, P2025: true, P2010: true, P2034: true, tinycloud_bootstrap_failed: true,
   tinycloud_bootstrap_crashed: true, tinycloud_bootstrap_in_progress: true,
   tinycloud_bootstrap_node_timeout: true, tinycloud_bootstrap_space_not_hosted: true,
   tinycloud_bootstrap_expired_request: true, BETTER_AUTH_URL: true, signup_token_invalid: true,
   signup_account_exists: true, quote_report_data_mismatch: true, quote_key_custody_mismatch: true,
+  turnstile_required: true, turnstile_failed: true, turnstile_unavailable: true,
   quote_format_invalid: true,
 };
 const LEVELS: Record<string, true> = { debug: true, info: true, warn: true, error: true };
@@ -130,6 +134,25 @@ export function logMetric(
   fields: { status?: number; count?: number },
 ): void {
   emit(level, event, { status: fields.status, count: fields.count });
+}
+
+let qaSignUpDay = '';
+let qaSignUpCount = 0;
+
+/**
+ * QA-exempt account creation only: logs the account id (never the email) so counts can exclude
+ * test accounts, then the number of QA-exempt accounts created so far on the current UTC day
+ * (`day`, `count`). The tally lives in this process and starts again from zero after a restart.
+ */
+export function logQaAccountCreated(userId: string, now: Date = new Date()): void {
+  emit('info', 'auth_email_signup_qa_account_created', { user_id: userId });
+  const day = now.toISOString().slice(0, 10);
+  if (day !== qaSignUpDay) {
+    qaSignUpDay = day;
+    qaSignUpCount = 0;
+  }
+  qaSignUpCount += 1;
+  emit('info', 'auth_email_signup_qa_daily_count', { day, count: qaSignUpCount });
 }
 
 const PERMISSION_FIELD_NAME = /^[A-Za-z0-9_.-]{1,64}$/;
@@ -254,9 +277,11 @@ for (const method of consoleMethods) {
   (console as unknown as Record<string, (...args: unknown[]) => void>)[method] = (...args) => thirdPartyConsole(level, args);
 }
 
-export function logConfigInvalid(configKey: string): void {
+/** `reason` is a closed set naming why a configured value was refused; never the value itself. */
+export function logConfigInvalid(configKey: string, reason?: string): void {
   if (!Object.hasOwn(CONFIG_KEYS, configKey)) return;
-  emit('error', 'config_invalid', { error_code: configKey });
+  const safeReason = typeof reason === 'string' && Object.hasOwn(CONFIG_REASONS, reason) ? reason : undefined;
+  emit('error', 'config_invalid', { error_code: configKey, reason: safeReason });
 }
 
 function handleUncaughtException(error: Error): void {

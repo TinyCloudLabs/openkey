@@ -29,6 +29,10 @@ COPY packages/capability-review ./packages/capability-review
 # container is reachable from the *browser*, not the Docker network.
 ARG VITE_API_URL
 ENV VITE_API_URL=${VITE_API_URL}
+# Public Turnstile site key (not a secret). Empty means the widget shows its
+# "unavailable" state and new sign-ups stay paused. See TC-1632.
+ARG VITE_TURNSTILE_SITE_KEY
+ENV VITE_TURNSTILE_SITE_KEY=${VITE_TURNSTILE_SITE_KEY}
 RUN cd apps/web && bun run build
 
 FROM base AS runner

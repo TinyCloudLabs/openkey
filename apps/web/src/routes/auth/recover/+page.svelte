@@ -7,7 +7,7 @@
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
   import { setSessionToken } from '$lib/embed-passkey';
-  import { newAccountSignupToken } from '$lib/email-signup';
+  import { keepsSignupToken, newAccountNeedsChallenge, newAccountSignupToken } from '$lib/email-signup';
   import NewAccountConfirmation from '$lib/components/auth/new-account-confirmation.svelte';
 
   let { data } = $props();
@@ -17,6 +17,7 @@
   // 'newAccount' follows a verified code for an email with no account (TC-1114).
   let step = $state<'email' | 'otp' | 'newAccount' | 'passkey'>('email');
   let signupToken = $state<string | null>(null);
+  let signupChallenge = $state(true);
   let loading = $state(false);
   let error = $state('');
 
@@ -54,6 +55,7 @@
       const token = newAccountSignupToken(result.error);
       if (token) {
         signupToken = token;
+        signupChallenge = newAccountNeedsChallenge(result.error);
         otp = '';
         step = 'newAccount';
       } else if (result.error) {
@@ -68,12 +70,20 @@
     }
   }
 
-  async function createAccount() {
+  async function createAccount(turnstileToken: string | null) {
     if (!signupToken) return;
     loading = true;
     error = '';
     try {
-      const result = await confirmEmailSignUp({ email, signupToken, oauth_query: oauthQuery }, keepOAuthRedirect);
+      const result = await confirmEmailSignUp(
+        { email, signupToken, turnstileToken: turnstileToken ?? undefined, oauth_query: oauthQuery },
+        keepOAuthRedirect,
+      );
+      if (result.error && keepsSignupToken(result.error)) {
+        // The token is still unspent: complete the check and confirm again.
+        error = authErrorMessage(result.error, 'Could not create your account');
+        return;
+      }
       signupToken = null;
       if (result.error) {
         // Expired or already used: the user starts again with a new code.
@@ -254,6 +264,7 @@
           {email}
           busy={loading}
           creating={loading}
+          challenge={signupChallenge}
           oncreate={createAccount}
           ondifferentemail={() => { step = 'email'; signupToken = null; error = ''; }}
         />

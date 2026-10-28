@@ -57,8 +57,20 @@ describe('embedded email OTP', () => {
 
     const result = await embedVerifyEmailOtp('new@example.test', '123456', fetchImpl, (value) => { persisted = value; });
 
-    expect(result).toEqual({ signupToken: 'signup-1' });
+    expect(result.signupToken).toBe('signup-1');
+    expect(result.turnstileRequired).toBe(true);
     expect(persisted).toBe('');
+  });
+
+  test('the Turnstile token is forwarded with the sign-up token', async () => {
+    let body: unknown;
+    const created = (async (_url: string | URL | Request, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ token: 'raw' }), { status: 200, headers: { 'set-auth-token': 'session-token-3' } });
+    }) as typeof fetch;
+
+    await embedCreateAccount('new@example.test', 'signup-1', 'cf-token', created, () => {});
+    expect(body).toEqual({ email: 'new@example.test', signupToken: 'signup-1', turnstileToken: 'cf-token' });
   });
 
   test('creating the confirmed account persists its session; a refusal persists nothing', async () => {
@@ -69,7 +81,7 @@ describe('embedded email OTP', () => {
       return new Response(JSON.stringify({ token: 'raw' }), { status: 200, headers: { 'set-auth-token': 'session-token-2' } });
     }) as typeof fetch;
 
-    expect(await embedCreateAccount('new@example.test', 'signup-1', created, (value) => { persisted = value; })).toBe('session-token-2');
+    expect(await embedCreateAccount('new@example.test', 'signup-1', null, created, (value) => { persisted = value; })).toBe('session-token-2');
     expect(persisted).toBe('session-token-2');
     expect(request?.url).toEndWith('/api/auth/sign-up/email-otp');
     expect(JSON.parse(String(request?.init?.body))).toEqual({ email: 'new@example.test', signupToken: 'signup-1' });
@@ -79,7 +91,7 @@ describe('embedded email OTP', () => {
       JSON.stringify({ code: 'INVALID_SIGNUP_TOKEN', message: 'This confirmation has expired. Request a new code to create your account.' }),
       { status: 400 },
     )) as typeof fetch;
-    await expect(embedCreateAccount('new@example.test', 'signup-1', refused, (value) => { persisted = value; }))
+    await expect(embedCreateAccount('new@example.test', 'signup-1', null, refused, (value) => { persisted = value; }))
       .rejects.toThrow('This confirmation has expired');
     expect(persisted).toBe('');
   });
