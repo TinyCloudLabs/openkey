@@ -243,10 +243,11 @@ describe('TC-943 prod host pair (pre-merge)', () => {
 
   function expectNoOnboarding(result: Awaited<ReturnType<typeof post>>) {
     expect(result.status).toBe(200);
-    expect(result.body.hostActivated).toBe(true);
+    expect(result.body.hostActivated).toBe(false);
     expect(result.body.spaceReady).toBe(false);
     expect(result.body.spaceError).toBeUndefined();
     expect(ensureTinyCloudBootstrap).not.toHaveBeenCalled();
+    expect(activateSessionWithHost).not.toHaveBeenCalled();
     expect(unseal).toHaveBeenCalledTimes(1);
   }
 
@@ -955,8 +956,9 @@ describe('TC-945 bootstrap budget', () => {
     }) as any);
     const result = await managedApproval(host);
     expect(result.status).toBe(200);
-    expect(result.body).toMatchObject({ hostActivated: true, spaceReady: null, spacePending: true });
-    expect(result.body).not.toHaveProperty('spaceError');
+    expect(result.body).toMatchObject({
+      hostActivated: true, spaceReady: null, spacePending: true, spaceError: 'tinycloud_bootstrap_in_progress',
+    });
   });
   test('other bootstrap failures keep the error contract without a pending marker', async () => {
     ensureTinyCloudBootstrap.mockImplementationOnce(async () => ({

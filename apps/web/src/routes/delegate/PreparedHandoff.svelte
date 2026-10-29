@@ -4,9 +4,12 @@
   import { authClient, authErrorMessage } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
   import { copyText } from '$lib/clipboard';
-  import { parseCapabilityReview, defaultSelection, type CapabilityReviewModel } from '@openkey/capability-review';
+  import { buildStatements, parseEncryptionResource, parseCapabilityReview, defaultSelection, renderLiteral, renderSiweLiteral, type CapabilityGrant, type CapabilityReviewModel } from '@openkey/capability-review';
   import { validatePreviewSelection } from '$lib/preview-review';
+  import { displayConsentStatement } from '$lib/consent-statement';
+  import { requestedActionIds } from '$lib/widget-selection';
   import { timeUntilExpiry } from '$lib/siwe-parser';
+  import { SERVER_REPLY_BODY, SERVER_REPLY_TITLE, ServerReplyError, hasSignResult, hasText } from '$lib/server-reply';
   import { fitsPreparedLinkBudget } from '$lib/prepared-link';
 
   let { encoded, onClear }: { encoded: string; onClear: () => void } = $props();
@@ -20,6 +23,12 @@
   const pendingKey = 'openkey.delegate.tv2.pending';
   function isRecord(value: unknown): value is Record<string, unknown> {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
+  }
+  function ownKeyFolder(grant: CapabilityGrant): string | null {
+    const parsed = parseEncryptionResource(grant.space);
+    return parsed?.kind === 'prefix' && parsed.network === 'default' && grant.ownedBySelf
+      ? parsed.keyPath
+      : null;
   }
   function isClaim(value: unknown): value is Claim {
     if (!isRecord(value) || !isRecord(value.request) || !isRecord(value.delivery)) return false;
@@ -67,6 +76,8 @@
   let callbackFailed = $state(false);
   let delivered = $state(false);
   let error = $state('');
+  // The HTTP status of a reply that could not be read; shown in Advanced details only.
+  let replyFailureStatus = $state<number | null>(null);
   let busy = $state(false);
   let loginRequired = $state(false);
   let loaded = $state(false);
@@ -128,10 +139,21 @@
     error = 'Approval cancelled. Restart the CLI command for a new sign-in.';
   }
 
-  async function post(path: string, body: unknown): Promise<Record<string, unknown>> {
+  // `needs` names the fields a successful answer must carry as text. With it, a
+  // 2xx answer that is empty, not JSON, or without those fields is an unreadable
+  // reply and nothing is approved.
+  async function post(path: string, body: unknown, needs?: string[], valid?: (reply: Record<string, unknown>) => boolean): Promise<Record<string, unknown>> {
     const response = await fetch(`${apiUrl}/api/delegate/${path}`, {
       method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     });
+    if (needs !== undefined && response.ok) {
+      let parsed: unknown;
+      try { parsed = await response.json(); } catch { throw new ServerReplyError(response.status); }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new ServerReplyError(response.status);
+      const reply = parsed as Record<string, unknown>;
+      if (!hasText(reply, ...needs) || (valid && !valid(reply))) throw new ServerReplyError(response.status);
+      return reply;
+    }
     const data: unknown = await response.json().catch(() => ({}));
     if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error(`Invalid response from ${path}.`);
     const record = data as Record<string, unknown>;
@@ -142,8 +164,16 @@
     return record;
   }
 
+  // A reply that cannot be read leaves nothing approved; the status is shown in
+  // Advanced details and written to the console, never the reply.
+  function unreadableReply(status: number) {
+    replyFailureStatus = status;
+    error = '';
+    console.error(`OpenKey: unreadable server reply (HTTP ${status})`);
+  }
+
   function selectedIds(): string[] {
-    return model?.permissions.flatMap(grant => grant.actions.filter(action => selected.has(action.id)).map(action => action.id)) ?? [];
+    return requestedActionIds(model, selected);
   }
   function chooseKey(choice: KeyChoice) {
     if (contextToken) return;
@@ -169,7 +199,7 @@
         throw new Error('Could not verify prepared CLI sign-in availability. Restart the CLI command.');
       }
       if (pending !== input) throw new Error('Prepared sign-in request expired. Restart the CLI command.');
-      const claimed = await post('handoffs/claim', input);
+      const claimed = await post('handoffs/claim', input, ['ticket', 'expiresAt']);
       if (pending !== input) throw new Error('Prepared sign-in request expired. Restart the CLI command.');
       if (claimed.transportVersion !== 2 || claimed.ticket !== input.delivery.handoffId ||
         typeof claimed.expiresAt !== 'string' || !Number.isFinite(Date.parse(claimed.expiresAt))) {
@@ -208,7 +238,8 @@
     } catch (cause) {
       pending = null;
       clearPending();
-      error = cause instanceof Error ? cause.message : 'Could not claim prepared sign-in.';
+      if (cause instanceof ServerReplyError) unreadableReply(cause.status);
+      else error = cause instanceof Error ? cause.message : 'Could not claim prepared sign-in.';
     } finally { busy = false; }
   }
 
@@ -241,20 +272,23 @@
         const prepared = await post('authorize-sign-prepare', {
           ticket, keyId: key.id, siwe: request.siwe, jwk: request.jwk, host: request.host,
           ...(request.presentation ? { presentation: request.presentation } : {}),
-        });
+        }, ['authorizationContextToken']);
         if (typeof prepared.authorizationContextToken !== 'string') throw new Error('Missing bound authorization context.');
         contextToken = prepared.authorizationContextToken;
       }
       const actions = selectedIds();
       if (!actions.length) throw new Error('Select at least one ability.');
-      const candidate = await post('authorize-sign-preview', { ticket, authorizationContextToken: contextToken, selectedActionIds: actions });
+      const candidate = await post('authorize-sign-preview', { ticket, authorizationContextToken: contextToken, selectedActionIds: actions }, ['signedMessage', 'previewApprovalToken']);
       if (typeof candidate.previewApprovalToken !== 'string' || typeof candidate.signedMessage !== 'string') throw new Error('Missing sealed signing preview.');
       validatePreviewSelection(candidate, actions);
       previewToken = candidate.previewApprovalToken;
       previewMessage = candidate.signedMessage;
       previewActions = actions;
       phase = 'preview';
-    } catch (cause) { error = cause instanceof Error ? cause.message : 'Could not preview sign-in.'; }
+    } catch (cause) {
+      if (cause instanceof ServerReplyError) unreadableReply(cause.status);
+      else error = cause instanceof Error ? cause.message : 'Could not preview sign-in.';
+    }
     finally { busy = false; }
   }
 
@@ -283,7 +317,7 @@
         body.externalSignature = signature;
       }
       submitted = true;
-      const signed = await post('authorize-sign', body);
+      const signed = await post('authorize-sign', body, ['signature', 'address', 'signedMessage', 'deliveryState'], hasSignResult);
       if (signed.protocolVersion !== 1 || typeof signed.signature !== 'string' || typeof signed.address !== 'string' ||
           !Array.isArray(signed.selectedActionKeys) || !signed.selectedActionKeys.every(value => typeof value === 'string') ||
           !Array.isArray(signed.permissions) ||
@@ -308,7 +342,8 @@
         } catch { callbackFailed = true; }
       }
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Signing failed. Restart the CLI command.';
+      if (cause instanceof ServerReplyError) unreadableReply(cause.status);
+      else error = cause instanceof Error ? cause.message : 'Signing failed. Restart the CLI command.';
     } finally { busy = false; }
   }
 
@@ -345,6 +380,16 @@
   <main class="w-full max-w-xl rounded-xl border border-surface-200 bg-white p-6 shadow-sm space-y-5">
     <header><h1 class="text-xl font-semibold text-surface-900">Prepared CLI sign-in</h1></header>
     {#if error}<p role="alert" class="rounded-lg bg-red-50 p-3 text-red-800">{error}</p>{/if}
+    {#if replyFailureStatus !== null}
+      <div role="alert" class="rounded-lg bg-red-50 p-3 text-red-800 space-y-2" data-testid="server-reply-refusal">
+        <p class="font-semibold">{SERVER_REPLY_TITLE}</p>
+        <p>{SERVER_REPLY_BODY}</p>
+        <details>
+          <summary>Advanced details</summary>
+          <p>Server reply: <code class="mono">HTTP {replyFailureStatus}</code></p>
+        </details>
+      </div>
+    {/if}
     {#if !initialized}
       <p>Loading prepared sign-in…</p>
     {:else if error && !handoff && !pending}
@@ -387,10 +432,15 @@
       {/each}
       <h2 class="font-semibold">Requested abilities and spaces</h2>
       {#each keyChoices[0].review.permissions as grant}
-        <p class="break-all text-sm">{grant.service} · {grant.space} · {grant.path}: {grant.actions.map(action => action.ability).join(', ')}</p>
+        <div class="rounded-lg border p-3 text-sm">
+          {#if ownKeyFolder(grant)}<p class="font-semibold">Your own encryption keys in <code>{ownKeyFolder(grant)}</code></p>{/if}
+          {#each buildStatements(grant) as statement}<p>{displayConsentStatement(statement)}</p>{/each}
+          <details><summary>Full grant</summary><pre class="whitespace-pre-wrap break-all">{renderLiteral(`${grant.service} · ${grant.space} · ${grant.path}: ${grant.actions.map(action => action.ability).join(', ')}`)}</pre></details>
+        </div>
       {/each}
-      <h2 class="font-semibold">Original SIWE message</h2>
-      <pre class="whitespace-pre-wrap break-all rounded-lg bg-surface-50 p-3 text-xs">{handoff.request.siwe}</pre>
+      <details><summary>Original SIWE message</summary>
+        <pre class="whitespace-pre overflow-x-auto max-w-full min-w-0 rounded-lg bg-surface-50 p-3 text-xs">{renderSiweLiteral(handoff.request.siwe)}</pre>
+      </details>
       <button disabled={busy || submitted} onclick={cancel}>Cancel</button>
     {:else if handoff && model && key}
       <p class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-amber-900">Only approve if you started this sign-in yourself on your own computer.</p>
@@ -408,17 +458,22 @@
       <h2 class="font-semibold">Requested abilities and spaces</h2>
       {#each model.permissions as grant}
         <div class="rounded-lg border p-3 text-sm">
-          <p class="font-semibold break-all">{grant.service} · {grant.space} · {grant.path}</p>
+          {#if ownKeyFolder(grant)}<p class="font-semibold">Your own encryption keys in <code>{ownKeyFolder(grant)}</code></p>{/if}
+          {#each buildStatements(grant) as statement}<p>{displayConsentStatement(statement)}</p>{/each}
           {#each grant.actions as action}
-            <label class="flex gap-2 py-1"><input type="checkbox" checked={selected.has(action.id)} disabled={phase !== 'review' || !action.editable} onchange={() => toggle(action.id)} /><span class="break-all">{action.ability}</span></label>
+            <label class="flex gap-2 py-1"><input type="checkbox" checked={selected.has(action.id)} disabled={phase !== 'review' || !action.editable} onchange={() => toggle(action.id)} /><span class="break-all">{renderLiteral(action.ability, 120)}</span></label>
           {/each}
+          <details><summary>Full grant</summary><pre class="whitespace-pre-wrap break-all">{renderLiteral(`${grant.service} · ${grant.space} · ${grant.path}: ${grant.actions.map(action => action.ability).join(', ')}`)}</pre></details>
         </div>
       {/each}
-      <h2 class="font-semibold">Original SIWE message</h2>
-      <pre class="whitespace-pre-wrap break-all rounded-lg bg-surface-50 p-3 text-xs">{handoff.request.siwe}</pre>
+      <details><summary>Original SIWE message</summary>
+        <pre class="whitespace-pre overflow-x-auto max-w-full min-w-0 rounded-lg bg-surface-50 p-3 text-xs">{renderSiweLiteral(handoff.request.siwe)}</pre>
+      </details>
       {#if phase === 'preview'}
-        <h2 class="font-semibold">Exact candidate signedMessage</h2>
-        <pre class="whitespace-pre-wrap break-all rounded-lg bg-surface-50 p-3 text-xs">{previewMessage}</pre>
+        <details>
+          <summary class="font-semibold">Exact candidate signedMessage</summary>
+          <pre class="whitespace-pre overflow-x-auto max-w-full min-w-0 rounded-lg bg-surface-50 p-3 text-xs">{renderSiweLiteral(previewMessage)}</pre>
+        </details>
         <button onclick={() => { phase = 'review'; previewToken = ''; }}>Change abilities</button>
         <button disabled={busy || submitted} onclick={approve}>Approve</button>
       {:else}

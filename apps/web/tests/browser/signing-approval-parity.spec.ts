@@ -126,6 +126,7 @@ function encryptionFixtureModel() {
       service: 'tinycloud.encryption',
       space,
       path: '',
+      resourceService: null,
       owner: null,
       ownedBySelf: null,
       displayLabel: null,
@@ -144,6 +145,46 @@ function encryptionFixtureModel() {
           id: `tinycloud.encryption\x00${space}\x00\x00tinycloud.encryption/decrypt`,
           ability: 'tinycloud.encryption/decrypt',
           verb: 'decrypt',
+          required: false,
+          selected: true,
+          editable: true,
+          caveats: [{}],
+        },
+      ],
+    },
+  ];
+  return model;
+}
+
+function sqlSchemaFixtureModel() {
+  const model = benignFixtureModel();
+  const space = 'tinycloud:pkh:eip155:1:0x1111111111111111111111111111111111111111:applications';
+  model.permissions = [
+    {
+      id: `tinycloud.sql\x00${space}\x00`,
+      family: 'own-app-data',
+      severity: 'standard',
+      service: 'tinycloud.sql',
+      space,
+      path: '',
+      owner: '0x1111111111111111111111111111111111111111',
+      ownedBySelf: true,
+      displayLabel: null,
+      metadataLabel: null,
+      actions: [
+        {
+          id: `tinycloud.sql\x00${space}\x00\x00tinycloud.sql/read`,
+          ability: 'tinycloud.sql/read',
+          verb: 'read',
+          required: false,
+          selected: true,
+          editable: true,
+          caveats: [{}],
+        },
+        {
+          id: `tinycloud.sql\x00${space}\x00\x00tinycloud.sql/schema`,
+          ability: 'tinycloud.sql/schema',
+          verb: 'schema',
           required: false,
           selected: true,
           editable: true,
@@ -250,6 +291,22 @@ test.describe('signing-approval browser parity — production adapters', () => {
       await expect(dialog).toHaveAttribute('aria-modal', 'true');
     });
 
+    test(`[${surface}] mixed SQL read+schema grant renders schema in its own row`, async ({ page }) => {
+      const model = sqlSchemaFixtureModel();
+      await loadHarness(page, {
+        surface,
+        model,
+        initialSelection: fixtureInitialSelection(model),
+        canUseAuthorizeSign: surface === 'cli' ? undefined : true,
+      });
+      const dialog = page.locator('[data-parity-harness] [role="dialog"]');
+      await expect(dialog).toBeVisible();
+      const summary = page.locator('[data-parity-harness] .summary');
+      await expect(summary.locator('.summary-statement')).toHaveCount(2);
+      await expect(summary).toContainText("Create, change and delete this app's tables");
+      await expect(summary).not.toContainText('Perform ');
+    });
+
     test(`[${surface}] exact ReCap fixture stays readable in a narrow popup viewport`, async ({ page }) => {
       await page.setViewportSize({ width: 400, height: 600 });
       const model = exactRecapFixtureModel();
@@ -267,7 +324,12 @@ test.describe('signing-approval browser parity — production adapters', () => {
       await expect(dialog).toContainText('Read and update application data');
       await expect(dialog).toContainText('Check your TinyCloud permissions');
       const summary = page.locator('[data-parity-harness] .summary');
-      await expect(summary.locator('.summary-statement')).toHaveCount(7);
+      await expect(summary.locator('.summary-statement')).toHaveCount(11);
+      await expect(summary).toContainText(
+        "See who has access to your data, what it reaches (by name) and when it ends. Keys and contents aren't shown.",
+      );
+      await expect(summary).toContainText("Create, change and delete tables in your TinyCloud account");
+      await expect(summary).toContainText("Create, change and delete this app's tables");
       await expect(summary).toContainText('View your secret names and details');
       await expect(summary).toContainText('Read secret values');
       await expect(summary.locator('.summary-sensitive-pill')).toHaveText([

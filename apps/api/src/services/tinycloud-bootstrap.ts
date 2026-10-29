@@ -31,6 +31,7 @@ import type { PrismaClient } from '@openkey/db';
 import { DEFAULT_TINYCLOUD_BOOTSTRAP_HOST, TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS } from './tinycloud-hosts';
 import { tinyCloudBootstrapNodeCallTimeoutMs, tinyCloudBootstrapNodeInvokeTimeoutMs } from './tinycloud-node-timeouts';
 import { kvSpaceRegistryStore, registerMissingBootstrapSpaces } from './tinycloud-space-registry';
+import { SWEEP_RETRYABLE_CODES } from './tinycloud-bootstrap-budget';
 
 import { log } from '../log';
 export const TINYCLOUD_BOOTSTRAP_VERSION = `@tinycloud/bootstrap:${canonicalHashHex({
@@ -74,10 +75,24 @@ export interface EnsureTinyCloudBootstrapInputCore {
   prisma: PrismaLike;
   userId: string;
   key: TinyCloudBootstrapKey;
-  privateKey: string;
+  /** Resolved inside the lock, so a sweep claim that loses never unseals the key. */
+  privateKey: string | (() => Promise<string>);
   host?: string;
   /** The space this run is for: hosted first, inside the lock, and reported as soon as the node confirms it. */
   requestedSpace?: TinyCloudBootstrapRequestedSpace;
+  /** Set by the background sweep: the lock is taken only if the row still matches what it observed. */
+  sweepClaim?: TinyCloudBootstrapSweepClaim;
+}
+
+/** A sweep's claim on one row: the state it observed, and a hook fired only once the lock is won. */
+export interface TinyCloudBootstrapSweepClaim {
+  observed: {
+    status: 'failed' | 'in_progress';
+    sweepAttempts: number;
+    checkedAt: Date;
+    attemptId: string | null;
+  };
+  onClaimed: () => void;
 }
 
 export class TinyCloudBootstrapError extends Error {
@@ -397,9 +412,18 @@ export async function ensureTinyCloudBootstrap(
     address: ensureEip55(input.key.address),
     chainId,
     tinycloudHost,
+    sweep: input.sweepClaim?.observed,
   });
 
   if (!locked) {
+    if (input.sweepClaim) {
+      // A sweep that loses the claim is not a failed run and does not wait: the holder owns the row.
+      return {
+        status: 'failed',
+        errorCode: 'tinycloud_bootstrap_in_progress',
+        errorMessage: 'TinyCloud account bootstrap is already in progress for this key.',
+      };
+    }
     await wait(BOOTSTRAP_WAIT_MS);
     const refreshed = await input.prisma.tinyCloudBootstrapState.findUnique({
       where: { keyId_chainId_tinycloudHost_bootstrapVersion: cacheKey },
@@ -413,13 +437,15 @@ export async function ensureTinyCloudBootstrap(
       errorMessage: 'TinyCloud account bootstrap is already in progress for this key.',
     };
   }
+  input.sweepClaim?.onClaimed();
 
   try {
     await withBootstrapLockHeartbeat(input.prisma, cacheKey, attemptId, async () => {
+      const privateKey = await resolvePrivateKey(input.privateKey);
       const runInput: TinyCloudBootstrapRunInput = {
         address: ensureEip55(input.key.address),
         chainId,
-        privateKey: input.privateKey,
+        privateKey,
         tinycloudHost,
       };
       const requested = input.requestedSpace;
@@ -481,6 +507,7 @@ async function acquireBootstrapLock(
     address: string;
     chainId: number;
     tinycloudHost: string;
+    sweep?: TinyCloudBootstrapSweepClaim['observed'];
   },
 ): Promise<boolean> {
   const now = new Date();
@@ -491,6 +518,31 @@ async function acquireBootstrapLock(
     tinycloudHost: input.tinycloudHost,
     bootstrapVersion: TINYCLOUD_BOOTSTRAP_VERSION,
   };
+  if (input.sweep) {
+    // The claim matches only the state the sweep observed: a row changed by an approval or another tick matches nothing.
+    const observed = input.sweep;
+    const claimed = await prisma.tinyCloudBootstrapState.updateMany({
+      where: {
+        ...key,
+        status: observed.status,
+        sweepAttempts: observed.sweepAttempts,
+        checkedAt: observed.checkedAt,
+        attemptId: observed.attemptId,
+        failureCode: { in: [...SWEEP_RETRYABLE_CODES] },
+        ...(observed.status === 'in_progress' ? { lockExpiresAt: { lt: now } } : {}),
+        user: { is: { autoSignEnabled: true } },
+        key: { is: { keyType: 'MANAGED', archivedAt: null } },
+      },
+      data: {
+        status: 'in_progress',
+        attemptId: input.attemptId,
+        lockExpiresAt,
+        checkedAt: now,
+        sweepAttempts: { increment: 1 },
+      },
+    });
+    return claimed.count === 1;
+  }
 
   if (!input.state) {
     try {
@@ -535,10 +587,30 @@ async function acquireBootstrapLock(
       attemptId: input.attemptId,
       lockExpiresAt,
       checkedAt: now,
+      // Approval claims start a fresh sweep budget.
+      sweepAttempts: 0,
     },
   });
 
   return result.count === 1;
+}
+
+const PRIVATE_KEY_RESOLVE_TIMEOUT_MS = 5_000;
+
+/** Resolves a lazily unsealed key with a bound, so a stuck unseal fails the run instead of holding the lock. */
+async function resolvePrivateKey(privateKey: string | (() => Promise<string>)): Promise<string> {
+  if (typeof privateKey === 'string') return privateKey;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      privateKey(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('TinyCloud bootstrap key unseal timed out')), PRIVATE_KEY_RESOLVE_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 async function withBootstrapLockHeartbeat<T>(

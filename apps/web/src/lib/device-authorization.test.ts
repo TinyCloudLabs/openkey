@@ -5,6 +5,7 @@ import {
   cleanConsentText,
   decodeBase64UrlJson,
   decodeDelegatePermissionsParam,
+  decryptDefaultEntryLabel,
   readDelegatePermissionsParam,
   delegationPasteCode,
   deviceLifetimeOptions,
@@ -18,6 +19,7 @@ import {
 } from './device-authorization';
 
 const space = 'tinycloud:pkh:eip155:1:0x0000000000000000000000000000000000000001:default';
+const signer = { address: '0x0000000000000000000000000000000000000001', chainId: 1 };
 // The CLI's built-in publishing manifest (TC-539 acceptance scope).
 const requested: DevicePermission[] = [
   { service: 'tinycloud.kv', space: 'default', path: 'xyz.tinycloud.share/shares/', actions: ['tinycloud.kv/put', 'tinycloud.kv/get'] },
@@ -34,7 +36,7 @@ describe('approvedDevicePermissions', () => {
       { service: 'kv', space, path: 'shares/', actions: ['tinycloud.kv/get', 'tinycloud.kv/list', 'tinycloud.kv/put'] },
       { service: 'kv', space, path: 'xyz.tinycloud.share/shares/', actions: ['tinycloud.kv/get', 'tinycloud.kv/put'] },
     ];
-    expect(approvedDevicePermissions(requested, granted)).toEqual([
+    expect(approvedDevicePermissions(requested, granted, signer)).toEqual([
       requested[0],
       { ...requested[1], actions: ['tinycloud.kv/put', 'tinycloud.kv/get', 'tinycloud.kv/list'] },
       requested[2],
@@ -44,12 +46,12 @@ describe('approvedDevicePermissions', () => {
   test('omits unchecked capabilities and keeps the legacy Share binding unchanged', () => {
     expect(approvedDevicePermissions(requested, [
       { service: 'capabilities', space, path: '', actions: ['tinycloud.capabilities/read'] },
-    ])).toEqual([requested[2]]);
+    ], signer)).toEqual([requested[2]]);
 
     const share = [{ service: 'tinycloud.capabilities', space: 'applications', path: '', actions: ['tinycloud.capabilities/read'] }];
     expect(approvedDevicePermissions(share, [
       { service: 'capabilities', space: 'tinycloud:pkh:eip155:1:0x0000000000000000000000000000000000000001:applications', path: '', actions: ['tinycloud.capabilities/read'] },
-    ])).toEqual(share);
+    ], signer)).toEqual(share);
   });
 
   test('refuses a delegation broader than the request or granting nothing', () => {
@@ -61,7 +63,7 @@ describe('approvedDevicePermissions', () => {
       [],
       undefined,
     ];
-    for (const granted of cases) expect(() => approvedDevicePermissions(requested, granted)).toThrow();
+    for (const granted of cases) expect(() => approvedDevicePermissions(requested, granted, signer)).toThrow();
   });
 
   test('maps paths named like Object.prototype members', () => {
@@ -69,7 +71,54 @@ describe('approvedDevicePermissions', () => {
       service: 'tinycloud.kv', space: 'default', path, actions: ['tinycloud.kv/get'],
     }));
     const granted = own.map((permission) => ({ service: 'kv', space, path: permission.path, actions: ['tinycloud.kv/get'] }));
-    expect(approvedDevicePermissions(own, granted)).toEqual(own);
+    expect(approvedDevicePermissions(own, granted, signer)).toEqual(own);
+  });
+});
+
+describe('device encryption entry', () => {
+  const alice = { address: '0x00000000000000000000000000000000000000Aa', chainId: 1 };
+  const bob = { address: '0x00000000000000000000000000000000000000bB', chainId: 1 };
+  const device: DevicePermission[] = [{ service: 'tinycloud.encryption', space: 'default', path: '', actions: ['tinycloud.encryption/decrypt'] }];
+  // A relayed raw network grant: short service name, space `encryption`, the signer's own default network.
+  const networkGrant = (address: string, overrides: Record<string, unknown> = {}) => ({
+    service: 'encryption',
+    space: 'encryption',
+    path: `urn:tinycloud:encryption:did:pkh:eip155:1:${address}:default`,
+    actions: ['tinycloud.encryption/decrypt'],
+    ...overrides,
+  });
+
+  test('approves the signer own default network grant in the request form', () => {
+    expect(approvedDevicePermissions(device, [networkGrant(alice.address)], alice)).toEqual(device);
+  });
+
+  test('compares the account address case-insensitively', () => {
+    expect(approvedDevicePermissions(device, [networkGrant(alice.address.toLowerCase())], alice)).toEqual(device);
+  });
+
+  test('two accounts: each approves only its own network', () => {
+    expect(approvedDevicePermissions(device, [networkGrant(bob.address)], bob)).toEqual(device);
+    expect(() => approvedDevicePermissions(device, [networkGrant(bob.address)], alice)).toThrow('The approved delegation exceeds the device request.');
+    expect(() => approvedDevicePermissions(device, [networkGrant(alice.address)], bob)).toThrow('The approved delegation exceeds the device request.');
+  });
+
+  test('refuses the same account on another chain', () => {
+    const otherChain = networkGrant(alice.address, { path: `urn:tinycloud:encryption:did:pkh:eip155:10:${alice.address}:default` });
+    expect(() => approvedDevicePermissions(device, [otherChain], alice)).toThrow('The approved delegation exceeds the device request.');
+  });
+
+  test('refuses another network name', () => {
+    const secrets = networkGrant(alice.address, { path: `urn:tinycloud:encryption:did:pkh:eip155:1:${alice.address}:secrets` });
+    expect(() => approvedDevicePermissions(device, [secrets], alice)).toThrow('The approved delegation exceeds the device request.');
+  });
+
+  test('refuses an extra ability on the network', () => {
+    const extra = networkGrant(alice.address, { actions: ['tinycloud.encryption/decrypt', 'tinycloud.encryption/encrypt'] });
+    expect(() => approvedDevicePermissions(device, [extra], alice)).toThrow('The approved delegation exceeds the device request.');
+  });
+
+  test('refuses a network grant the request did not ask for', () => {
+    expect(() => approvedDevicePermissions(requested, [networkGrant(alice.address)], alice)).toThrow('The approved delegation exceeds the device request.');
   });
 });
 
@@ -79,13 +128,13 @@ describe('owner space URIs', () => {
   const request: DevicePermission[] = [{ service: 'tinycloud.kv', space: lower, path: 'shares/', actions: ['tinycloud.kv/get'] }];
 
   test('match the signed EIP-55 address and keep the request spelling', () => {
-    expect(approvedDevicePermissions(request, [{ service: 'kv', space: signed, path: 'shares/', actions: ['tinycloud.kv/get'] }]))
+    expect(approvedDevicePermissions(request, [{ service: 'kv', space: signed, path: 'shares/', actions: ['tinycloud.kv/get'] }], signer))
       .toEqual(request);
   });
 
   test('still compare chain, address, and space name', () => {
     for (const space of [signed.replace(':1:', ':10:'), signed.replace('aB:', 'aC:'), signed.replace(':default', ':Default')]) {
-      expect(() => approvedDevicePermissions(request, [{ service: 'kv', space, path: 'shares/', actions: ['tinycloud.kv/get'] }])).toThrow();
+      expect(() => approvedDevicePermissions(request, [{ service: 'kv', space, path: 'shares/', actions: ['tinycloud.kv/get'] }], signer)).toThrow();
     }
   });
 });
@@ -231,5 +280,40 @@ describe('loadVerifiedDeviceRequest', () => {
     }
     await expect(withLookup(null, () => loadVerifiedDeviceRequest('', 'ABCD-EFGH', link))).rejects.toThrow('invalid or expired');
     await expect(withLookup(server, () => loadVerifiedDeviceRequest('', '', link))).rejects.toThrow('invalid or expired');
+  });
+});
+
+describe('decryptDefaultEntryLabel', () => {
+  test('gives the exact default-network decrypt entry the consent sentence and its lifetime', () => {
+    const entry: DevicePermission = {
+      service: 'tinycloud.encryption',
+      space: 'default',
+      path: '',
+      actions: ['tinycloud.encryption/decrypt'],
+    };
+    expect(decryptDefaultEntryLabel(entry, 3600)).toEqual({
+      statement: 'Decrypt protected data',
+      lifetime: '1 hour',
+    });
+  });
+
+  test('leaves a kv entry without a label override', () => {
+    const entry: DevicePermission = {
+      service: 'tinycloud.kv',
+      space,
+      path: 'notes',
+      actions: ['tinycloud.kv/get'],
+    };
+    expect(decryptDefaultEntryLabel(entry, 3600)).toBeNull();
+  });
+
+  test('leaves an encryption entry on another space without a label override', () => {
+    const entry: DevicePermission = {
+      service: 'tinycloud.encryption',
+      space: 'encryption',
+      path: '',
+      actions: ['tinycloud.encryption/decrypt'],
+    };
+    expect(decryptDefaultEntryLabel(entry, 3600)).toBeNull();
   });
 });

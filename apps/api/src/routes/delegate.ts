@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { createTeeClient } from '@openkey/tee';
-import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
+import { bearerFromOpenKeyOriginError } from '../middleware/bearer-origin';
 import { requireSession } from '../middleware/session';
 import {
   createDelegateSignerAuth,
@@ -35,13 +35,14 @@ import {
   DEFAULT_SESSION_ABILITIES,
   SIWE_DOMAIN,
   sessionAbilitiesFromPermissions,
-  isRawEncryptionPermission,
+  validatePermissions,
   actionKey as computeActionKey,
   assertBaselineSubset,
   assertRequiredActions,
   isRequiredAction,
   normalizeStringArray,
   parsePreparedRecap,
+  reportedEntry,
   prepareDelegationSession,
   type DelegationJwk,
   type DelegationPermissionEntry,
@@ -79,6 +80,21 @@ import {
 } from '../services/authorization-signing';
 import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
 import { checkSiweOrigin } from '../services/siwe-origin';
+import {
+  APP_KEY_GROUP_PARTIAL_CODE,
+  APP_KEY_GROUP_PARTIAL_MESSAGE,
+  admittedAppKeyActionIds,
+  appKeyGroupPartial,
+  appKeyRefusalBody,
+  appKeyRefusalCode,
+  appKeyRefusalForSiwe,
+  blockResourcesOutsideApps,
+  appKeyRefusalMessage,
+  appKeyRefusalStatus,
+  appKeyResourcesOf,
+  type AdmittedAppKey,
+} from '../services/app-key-refusal';
+import { admitAppKeys, appKeyAdmissionRefusal, type ManifestKeys } from '../services/app-key-gate';
 import { fetchAndBindWellKnownManifest } from '../services/manifest-origin-fetch';
 import { signManagedKey, unsealManagedKey } from '../services/managed-key-signing';
 import {
@@ -208,9 +224,9 @@ async function finishManagedSpaceOnboarding(input: {
       case 'hosted':
       case 'complete':
         return { spaceReady: true };
-      // Still running here or under another approval's lock: the lock/cache finishes it once.
+      // Another run holds the lock (an approval's or the sweep's) and will host the space: keep waiting.
       case 'pending':
-        return { spaceReady: null, spacePending: true };
+        return { spaceReady: null, spacePending: true, spaceError: result.errorCode };
       case 'timeout':
         return { spaceReady: null, spacePending: true, spaceError: REQUESTED_SPACE_TIMEOUT_ERROR };
       case 'skipped':
@@ -288,7 +304,17 @@ delegateRouter.use('*', async (c, next) => {
   if (c.req.path.endsWith('/sign')) {
     return activeDelegateSignerAuth(c, next);
   }
-  return (requireOpenKeyOriginForBearer as any)(c, () => (requireSession as any)(c, next));
+  // The refusals are returned, not awaited: this router has its own onError, so
+  // Hono answers a handler that returns nothing with an empty 200.
+  const bearerError = bearerFromOpenKeyOriginError(c.req.header('authorization'), c.req.header('origin'));
+  if (bearerError) return c.json({ error: bearerError }, 403);
+  // session.ts answers `{ error: 'Unauthorized' }` to every route that uses it;
+  // the delegate routes add a stable code the widget can match on.
+  const refusal = await (requireSession as any)(c, next);
+  if (refusal instanceof Response && refusal.status === 401) {
+    return c.json({ error: 'Unauthorized', code: 'session_required' }, 401);
+  }
+  return refusal;
 });
 
 // Route-layer alias for the CLI permission entry shape. Keeps existing route
@@ -374,40 +400,6 @@ function resolveDelegationExpiryMs(input: unknown): number {
     throw new Error(`expiry must be a positive number, got ${input}`);
   }
   return Math.min(MAX_DELEGATION_EXPIRY_MS, Math.max(MIN_DELEGATION_EXPIRY_MS, raw));
-}
-
-function validatePermissions(permissions: unknown): PermissionEntry[] {
-  if (!Array.isArray(permissions) || permissions.length === 0) {
-    throw new Error('permissions must be a non-empty array');
-  }
-  return permissions.map((entry, index) => {
-    if (!entry || typeof entry !== 'object') {
-      throw new Error(`permissions[${index}] is not an object`);
-    }
-    const e = entry as Record<string, unknown>;
-    if (typeof e.service !== 'string' || !e.service) {
-      throw new Error(`permissions[${index}].service is required`);
-    }
-    const isRawEncryption = isRawEncryptionPermission(e);
-    if (!isRawEncryption && (typeof e.space !== 'string' || !e.space)) {
-      throw new Error(`permissions[${index}].space is required`);
-    }
-    if (e.space !== undefined && typeof e.space !== 'string') {
-      throw new Error(`permissions[${index}].space must be a string`);
-    }
-    if (typeof e.path !== 'string') {
-      throw new Error(`permissions[${index}].path must be a string`);
-    }
-    if (!Array.isArray(e.actions) || e.actions.some((a) => typeof a !== 'string')) {
-      throw new Error(`permissions[${index}].actions must be a string[]`);
-    }
-    return {
-      service: e.service,
-      ...(typeof e.space === 'string' ? { space: e.space } : {}),
-      path: e.path,
-      actions: e.actions as string[],
-    };
-  });
 }
 
 /**
@@ -860,6 +852,8 @@ delegateRouter.post('/sign', async (c) => {
         };
         const policy = validateTinyCloudManageKeyRequest({ type: candidate.type, chainId: candidate.chainId, message: candidate.message, identity });
         if (!policy.allowed) throw new Error(`message_rejected:${policy.reason}`);
+        const appKeyRefusal = appKeyRefusalForSiwe(candidate.message as string);
+        if (appKeyRefusal) throw new Error(`message_rejected:${appKeyRefusalMessage(appKeyRefusal, 'non_browser')}`);
         const signature = await signManagedKey(key, key.sealedBlob, candidate.message as string);
         return { signature, identity };
       });
@@ -954,6 +948,11 @@ delegateRouter.post('/sign', async (c) => {
       },
     });
     if (!policy.allowed) return auditDenial(policy.code, policy.evidence);
+    // A message that names an app key or key.delete is outside the approved
+    // storage records: it is denied and recorded like every other denial.
+    if (typeof candidate.message === 'string' && appKeyRefusalForSiwe(candidate.message)) {
+      return auditDenial('wrong_capability', policy.evidence);
+    }
     if (!key || !key.sealedBlob || !policy.evidence.nonceDigest) {
       return auditDenial('key_unavailable', policy.evidence);
     }
@@ -1049,6 +1048,15 @@ delegateRouter.post('/sign', async (c) => {
       approved: false,
       reason: 'address, chainId, message, and type are required',
     }, 400);
+  }
+
+  const signAppKeyRefusal = appKeyRefusalForSiwe(body.message);
+  if (signAppKeyRefusal) {
+    return c.json({
+      approved: false,
+      code: appKeyRefusalCode(signAppKeyRefusal),
+      reason: appKeyRefusalMessage(signAppKeyRefusal, 'non_browser'),
+    }, appKeyRefusalStatus(signAppKeyRefusal));
   }
 
   let address: string;
@@ -1230,6 +1238,7 @@ delegateRouter.post('/', async (c) => {
     actionKeys?: unknown;
     permissionKeys?: unknown;
     permissions?: unknown;
+    deviceTransactionId?: unknown;
     expiry?: unknown;
     reason?: unknown;
     /**
@@ -1403,7 +1412,7 @@ delegateRouter.post('/', async (c) => {
     let baseline: SessionAbilities;
     try {
       baseline = permissions
-        ? sessionAbilitiesFromPermissions(permissions, { address, chainId })
+        ? sessionAbilitiesFromPermissions(permissions, { address, chainId }, { deviceTransaction: body.deviceTransactionId !== undefined })
         : DEFAULT_SESSION_ABILITIES;
       assertBaselineSubset(preparedEntries, baseline);
       assertRequiredActions(preparedEntries, baseline);
@@ -1505,6 +1514,8 @@ delegateRouter.post('/', async (c) => {
     }
     const deviceWindow = await deviceDelegationWindowError(body, { host, signedSiwe: bound.originalSiwe });
     if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
+    const tokenAppKeyRefusal = appKeyRefusalForSiwe(bound.originalSiwe, preparedEntries);
+    if (tokenAppKeyRefusal) return c.json(appKeyRefusalBody(tokenAppKeyRefusal, 'non_browser'), appKeyRefusalStatus(tokenAppKeyRefusal));
 
     // About to sign: consume the context atomically, only if it is still
     // the exact one checked above, so a concurrent approval or a replay
@@ -1550,6 +1561,7 @@ delegateRouter.post('/', async (c) => {
       }
       if (!hostActivated) {
         log('warn', 'delegate_session_activation_warning');
+        if (activationResult.hostNotKnown) spaceReadiness = { spaceReady: false };
       }
     } catch (e) {
       logError('warn', 'delegate_session_activation_failed', e);
@@ -1608,6 +1620,7 @@ delegateRouter.post('/', async (c) => {
       actionKeys: normalizeStringArray(body.actionKeys, 'actionKeys'),
       permissionKeys: normalizeStringArray(body.permissionKeys, 'permissionKeys'),
       permissions,
+      deviceTransaction: body.deviceTransactionId !== undefined,
       expiryMs,
     });
   } catch (e) {
@@ -1620,6 +1633,9 @@ delegateRouter.post('/', async (c) => {
   }
   const deviceWindow = await deviceDelegationWindowError(body, { host, signedSiwe: preparedResult.prepared.siwe });
   if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
+
+  const legacyAppKeyRefusal = appKeyRefusalForSiwe(preparedResult.prepared.siwe);
+  if (legacyAppKeyRefusal) return c.json(appKeyRefusalBody(legacyAppKeyRefusal, 'non_browser'), appKeyRefusalStatus(legacyAppKeyRefusal));
 
   const signature = await signManagedKey(key, key.sealedBlob, preparedResult.prepared.siwe);
 
@@ -1646,6 +1662,7 @@ delegateRouter.post('/', async (c) => {
     }
     if (!hostActivated) {
       log('warn', 'delegate_session_activation_warning');
+      if (activationResult.hostNotKnown) spaceReadiness = { spaceReady: false };
     }
   } catch (e) {
     logError('warn', 'delegate_session_activation_failed', e);
@@ -1718,6 +1735,7 @@ delegateRouter.post('/prepare', async (c) => {
     permissions?: unknown;
     expiry?: unknown;
     reason?: unknown;
+    deviceTransactionId?: unknown;
   }>();
 
   if (!body.keyId || !body.jwk || !body.host) {
@@ -1766,6 +1784,7 @@ delegateRouter.post('/prepare', async (c) => {
       actionKeys: normalizeStringArray(body.actionKeys, 'actionKeys'),
       permissionKeys: normalizeStringArray(body.permissionKeys, 'permissionKeys'),
       permissions,
+      deviceTransaction: body.deviceTransactionId !== undefined,
       expiryMs,
     });
   } catch (e) {
@@ -1781,6 +1800,9 @@ delegateRouter.post('/prepare', async (c) => {
     ...preparedResult.prepared,
     jwk: body.jwk,
   };
+
+  const prepareAppKeyRefusal = appKeyRefusalForSiwe(preparedResult.prepared.siwe);
+  if (prepareAppKeyRefusal) return c.json(appKeyRefusalBody(prepareAppKeyRefusal, 'non_browser'), appKeyRefusalStatus(prepareAppKeyRefusal));
 
   // Issue an opaque single-use authorization context so /complete cannot
   // be replayed with a broader SIWE, a different key, or a different host.
@@ -1892,6 +1914,7 @@ delegateRouter.post('/complete', async (c) => {
     jwk: DelegationJwk;
     edited?: boolean;
     reason?: unknown;
+    deviceTransactionId?: unknown;
     /**
      * The CLI-supplied permissions that were the baseline for /prepare.
      * When present, this is used instead of DEFAULT_ABILITIES for the
@@ -1975,6 +1998,9 @@ delegateRouter.post('/complete', async (c) => {
     spaceId: preparedSpaceId,
   });
 
+  const completeAppKeyRefusal = appKeyRefusalForSiwe(body.prepared.siwe);
+  if (completeAppKeyRefusal) return c.json(appKeyRefusalBody(completeAppKeyRefusal, 'non_browser'), appKeyRefusalStatus(completeAppKeyRefusal));
+
   // Authority-side validation always runs; the `edited` request field is
   // never trusted as an authority gate. Older callers omit both the
   // context token and the selectedActionIds field; those paths still get
@@ -1986,7 +2012,7 @@ delegateRouter.post('/complete', async (c) => {
       ? sessionAbilitiesFromPermissions(baselinePermissions, {
           address: signedFields.address,
           chainId: signedFields.chainId,
-        })
+        }, { deviceTransaction: body.deviceTransactionId !== undefined })
       : DEFAULT_SESSION_ABILITIES;
     assertBaselineSubset(entries, baseline);
     assertRequiredActions(entries, baseline);
@@ -2188,6 +2214,7 @@ delegateRouter.post('/complete', async (c) => {
     if (hostActivated) spaceReady = !activationResult.skipped?.includes(spaceId);
     if (!hostActivated) {
       log('warn', 'delegate_session_activation_warning');
+      if (activationResult.hostNotKnown) spaceReady = false;
     }
   } catch (e) {
     logError('warn', 'delegate_session_activation_failed', e);
@@ -2333,16 +2360,21 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       400,
     );
   }
+  if (typeof body.siwe !== 'string') {
+    return c.json({ error: 'siwe must be a string', code: 'invalid_siwe' }, 400);
+  }
   const ticket = handoffTicket(body);
   // TC-1486: refuse a SIWE that names a different site than the verified
   // requester, or that arrives unattributed. Prepared-handoff tickets are
   // exempt: their request was bound at claim time and the requester is a
   // local CLI, not a browser origin.
+  let siweOriginChecked = false;
   if (!ticket && typeof body.siwe === 'string') {
     const siweCheck = checkSiweOrigin(body.siwe, body.requestOrigin);
     if (siweCheck.siwe && !siweCheck.ok) {
       return c.json({ error: siweCheck.message, code: 'siwe_origin_refused', reason: siweCheck.code }, 403);
     }
+    siweOriginChecked = siweCheck.siwe && siweCheck.ok;
   }
   const handoffTicketHash = ticket
     ? await activePreparedHandoffService.assertRequest(ticket, user.id, {
@@ -2395,6 +2427,31 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       400,
     );
   }
+  // Messages that name key.delete, an unreadable recap or an unparsable
+  // `apps/` key are refused here. A well-formed `apps/` grant from a browser
+  // request is admitted or refused after the manifest bind below; a ticket
+  // request carries no origin and is always refused.
+  const prepareSignAppKeyRefusal = appKeyRefusalForSiwe(body.siwe, originalEntries);
+  let appKeyCandidate = false;
+  if (prepareSignAppKeyRefusal) {
+    if (prepareSignAppKeyRefusal.reason !== 'apps_key' || ticket) {
+      return c.json(appKeyRefusalBody(prepareSignAppKeyRefusal, ticket ? 'non_browser' : 'browser'), appKeyRefusalStatus(prepareSignAppKeyRefusal));
+    }
+    appKeyCandidate = true;
+  }
+  // `key.block` and `key.unblock` on a key or prefix outside `apps/` take the
+  // same admission; no manifest lists such a key, so they are refused there.
+  const blockOutsideApps = blockResourcesOutsideApps(body.siwe);
+  if (blockOutsideApps.length > 0) {
+    if (ticket) {
+      const refusal = { reason: 'apps_key' } as const;
+      return c.json(appKeyRefusalBody(refusal, 'non_browser'), appKeyRefusalStatus(refusal));
+    }
+    appKeyCandidate = true;
+  }
+  let boundDeclaredAppId: string | undefined;
+  let boundDeclaredKeysAppId: string | undefined;
+  let boundDeclaredKeys: ManifestKeys | undefined;
 
   const keyAddress = ensureEip55(key.address);
   // Sol MAJOR-2: parse chainId from the SIWE rather than hard-coding it.
@@ -2579,6 +2636,9 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
                 reportedOrigin,
                 declaredAppScope,
               };
+              boundDeclaredAppId = bindResult.manifest?.declaredAppId;
+              boundDeclaredKeysAppId = bindResult.manifest?.declaredKeysAppId;
+              boundDeclaredKeys = bindResult.manifest?.declaredKeys;
             } else {
               metadataTrust = {
                 status: 'unsigned',
@@ -2599,6 +2659,39 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
         }
       }
     }
+  }
+
+  // `apps/` encryption key grants are admitted only here, where the manifest
+  // that was fetched from the requesting origin is at hand. Every failure is a
+  // refusal: unlike the manifest label above, nothing falls back to `unsigned`.
+  let admittedAppKeys: AdmittedAppKey[] | undefined;
+  if (appKeyCandidate) {
+    const admission = admitAppKeys({
+      siwe: body.siwe,
+      resources: [...(appKeyResourcesOf(body.siwe) ?? []), ...blockOutsideApps],
+      requestOrigin: body.requestOrigin,
+      reportedOrigin: body.reportedOrigin,
+      siweOriginChecked,
+      ticket: Boolean(ticket),
+      manifestBound: metadataTrust.status === 'origin-bound',
+      declaredAppId: boundDeclaredAppId,
+      declaredKeysAppId: boundDeclaredKeysAppId,
+      declaredKeys: boundDeclaredKeys,
+      ownerDid: `did:pkh:eip155:${chainId}:${keyAddress}`,
+      expirationTime: immutable.expirationTime,
+    });
+    if (!admission.ok) {
+      const refusal = appKeyAdmissionRefusal(admission.reason);
+      return c.json(
+        appKeyRefusalBody(refusal, admission.reason === 'non_browser' ? 'non_browser' : 'browser'),
+        appKeyRefusalStatus(refusal),
+      );
+    }
+    // Every `apps/` resource of the message, as the parser and the text scan
+    // both see it, must be one of the admitted resources.
+    const notAdmitted = appKeyRefusalForSiwe(body.siwe, originalEntries, admission.admitted);
+    if (notAdmitted) return c.json(appKeyRefusalBody(notAdmitted, 'browser'), appKeyRefusalStatus(notAdmitted));
+    admittedAppKeys = admission.admitted;
   }
 
   let issued: AuthorizationContextToken;
@@ -2622,6 +2715,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       // The widget-reported sender origin of the requesting app. Used only for
       // the per-sign-in count record; never for trust or authority.
       appOrigin: normalizeAppOrigin(body.reportedOrigin) ?? undefined,
+      admittedAppKeys,
     });
   } catch (issueErr) {
     logError('warn', 'delegate_authorization_context_issue_failed', issueErr);
@@ -2852,6 +2946,13 @@ delegateRouter.post('/authorize-sign', async (c) => {
     chainId,
     spaceId: bound.spaceId,
   });
+  if (appKeyGroupPartial(
+    admittedAppKeyActionIds(originalEntries, bound.admittedAppKeys, computeActionKey),
+    allowedActionIdSet(originalEntries),
+    selectedActionIds,
+  )) {
+    return c.json({ error: APP_KEY_GROUP_PARTIAL_MESSAGE, code: APP_KEY_GROUP_PARTIAL_CODE }, 400);
+  }
 
   // Sol MAJOR-4: attenuation-subset check against the caveat-inclusive
   // baseline. We build the candidate attenuation from the SELECTED
@@ -3065,15 +3166,22 @@ delegateRouter.post('/authorize-sign', async (c) => {
   // would throw "permissions disagree with selectedActionKeys" before
   // ever displaying anything to the user.
   const effectiveEntries = parsePreparedRecap(signedMessage);
-  const effectiveGrants = effectiveEntries.map((entry) => ({
+  // The response is reported in the consumer's encoding (`reportedEntry`); the
+  // signed bytes and the ids the window sent are unaffected.
+  const reportedEntries = effectiveEntries.map(reportedEntry);
+  const effectiveGrants = reportedEntries.map((entry) => ({
     service: canonicalizeServiceName(entry.service),
     space: entry.space,
     path: entry.path,
     actions: [...entry.actions],
   }));
-  const effectiveSelectedActionKeys = effectiveEntries.flatMap((entry) =>
+  const effectiveSelectedActionKeys = reportedEntries.flatMap((entry) =>
     entry.actions.map((action) => computeActionKey(entry, action)),
   );
+  const signedAppKeyRefusal = appKeyRefusalForSiwe(signedMessage, effectiveEntries, bound.admittedAppKeys);
+  if (signedAppKeyRefusal) {
+    return c.json(appKeyRefusalBody(signedAppKeyRefusal, ticket ? 'non_browser' : 'browser'), appKeyRefusalStatus(signedAppKeyRefusal));
+  }
   // Both checked claims still have to reference the stored records. This
   // synchronous call compares both, checks both expiries, then deletes both
   // without an await between either comparison and either deletion. Only
@@ -3196,6 +3304,13 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     chainId,
     spaceId: bound.spaceId,
   });
+  if (appKeyGroupPartial(
+    admittedAppKeyActionIds(originalEntries, bound.admittedAppKeys, computeActionKey),
+    allowedActionIdSet(originalEntries),
+    selectedActionIds,
+  )) {
+    return c.json({ error: APP_KEY_GROUP_PARTIAL_MESSAGE, code: APP_KEY_GROUP_PARTIAL_CODE }, 400);
+  }
   // Every requested selected action MUST be in the bound allowed set.
   const allowedSet = new Set(bound.allowedActionIds);
   for (const id of selectedActionIds) {
@@ -3298,6 +3413,10 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
   // rationale — the widget's `validatePreviewSelection` requires the
   // per-permission projection to equal the returned selected keys).
   const previewEntries = parsePreparedRecap(preparedSignedMessage);
+  const previewAppKeyRefusal = appKeyRefusalForSiwe(preparedSignedMessage, previewEntries, bound.admittedAppKeys);
+  if (previewAppKeyRefusal) {
+    return c.json(appKeyRefusalBody(previewAppKeyRefusal, ticket ? 'non_browser' : 'browser'), appKeyRefusalStatus(previewAppKeyRefusal));
+  }
   const previewGrants = previewEntries.map((entry) => ({
     service: canonicalizeServiceName(entry.service),
     space: entry.space,

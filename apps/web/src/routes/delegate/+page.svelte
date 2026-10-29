@@ -11,6 +11,7 @@
   import SiweMessage from '$lib/components/ui/siwe-message.svelte';
   import CliSigningAdapter from '$lib/components/signing/cli-signing-adapter.svelte';
   import PreparedHandoff from './PreparedHandoff.svelte';
+  import OwnerRevocationHandoff from './OwnerRevocationHandoff.svelte';
   import DeviceRequestNotice from '$lib/components/device/device-request-notice.svelte';
   import { approvedDevicePermissions, cleanConsentText, delegationPasteCode, readDelegatePermissionsParam, deviceRequestReason, loadVerifiedDeviceRequest } from '$lib/device-authorization';
   import DelegateLinkNotice from '$lib/components/delegate/delegate-link-notice.svelte';
@@ -26,6 +27,10 @@
   import { preparedMatchesSelection, reviewSelectionToActionKeys } from '$lib/delegate-review-selection';
   import { expectedSigner } from '$lib/delegate-expected-signer';
   import { autoSelectKey } from '$lib/delegate-key-selection';
+  import DelegateSigningHint from '$lib/components/signing/delegate-signing-hint.svelte';
+  import { shouldShowLoopbackHint } from '$lib/delegate-signing-hint';
+  import { startCodeCountdown, remainingFromServerClock, type CodeCountdownSnapshot } from '$lib/delegate-code-countdown';
+  import { closeThisTab, browserCloseEnvironment } from '$lib/delegate-close-tab';
   import {
     parseSpaceSetup,
     spaceReadinessResult,
@@ -80,6 +85,7 @@
   let spaceSetup = $state<SpaceSetupNotice | null>(null);
   let spaceReadiness = $state<ReturnType<typeof spaceReadinessResult>>(null);
   let callbackFailed = $state(false);
+  let callbackInFlight = $state(false);
   let copied = $state(false);
   let step = $state<'select-key' | 'link-wallet' | 'consent' | 'choose-wallet' | 'done'>('select-key');
   let preparedData = $state<any>(null);
@@ -88,6 +94,35 @@
   let permissionOptions = $state<DelegatePermission[]>([]);
   let selectedActionKeys = $state<string[]>([]);
   let editingPermissions = $state(false);
+  let codeDeadline = $state<number | null>(null);
+  let codeCountdown = $state<CodeCountdownSnapshot | null>(null);
+  let codeAnnouncement = $state('');
+  let closeStuck = $state(false);
+  let cancelCloseAttempt: (() => void) | null = null;
+
+  // Countdown for the short code. Stopped when the deadline changes or the page is destroyed.
+  $effect(() => {
+    const deadline = codeDeadline;
+    if (deadline === null) return;
+    codeAnnouncement = '';
+    return startCodeCountdown({
+      deadline,
+      onUpdate: (snapshot) => {
+        codeCountdown = snapshot;
+        if (snapshot.announcement) codeAnnouncement = snapshot.announcement;
+      },
+    });
+  });
+
+  // Cancels a pending Close check when the page is destroyed.
+  $effect(() => () => cancelCloseAttempt?.());
+
+  function requestClose() {
+    cancelCloseAttempt?.();
+    cancelCloseAttempt = closeThisTab(browserCloseEnvironment(), () => {
+      closeStuck = true;
+    });
+  }
   let updatingPermissions = $state(false);
   let permissionsEdited = $state(false);
   let authorizationContextToken = $state<string | null>(null);
@@ -117,6 +152,16 @@
   let dispatchReady = $state(false);
   let preparedMode = $state(false);
   let preparedFragment = $state('');
+  let ownerRevocationSelected = $state(false);
+  const ownerRevocationMode = $derived.by(() => {
+    if (!preparedFragment.startsWith('#tv2=') || preparedFragment.length > 8192) return false;
+    try {
+      const value: unknown = JSON.parse(atob(preparedFragment.slice(5).replace(/-/g, '+').replace(/_/g, '/')));
+      return !!value && typeof value === 'object' && 'request' in value &&
+        !!value.request && typeof value.request === 'object' && 'kind' in value.request &&
+        value.request.kind === 'owner-revocation';
+    } catch { return false; }
+  });
   let reloadingFragment = false;
   function captureClientFragment(): boolean {
     if (reloadingFragment) return true;
@@ -312,6 +357,9 @@
     : hostCheck?.ok === false ? hostCheck.reason : '';
   if (linkPolicyError) error = linkPolicyError;
   const approvedCallback = callbackCheck?.ok ? callbackCheck.callback : null;
+  const showLoopbackHint = $derived(
+    shouldShowLoopbackHint({ delegating, approvedCallback, deviceTransactionId, callbackInFlight, pasteCode }),
+  );
   const hostNeedsAcknowledgment = hostCheck?.ok === true && !hostCheck.recognized;
   let hostAcknowledged = $state(false);
   const delegationExpiresAt = $derived(/^Expiration Time:\s*(.+)$/m.exec(siweMessage)?.[1]?.trim() ?? '');
@@ -1076,7 +1124,10 @@
       if (typeof delegationExpiresAt !== 'string') throw new Error('The approved delegation has no expiry binding.');
       // The owner may have unchecked capabilities: bind and relay exactly
       // what the signed delegation grants, in the request's manifest form.
-      const approvedPermissions = approvedDevicePermissions(requestedPermissions, payload.permissions);
+      const approvedPermissions = approvedDevicePermissions(requestedPermissions, payload.permissions, {
+        address: payload.address,
+        chainId: payload.chainId,
+      });
       const relay = await encryptDeviceRelay({ ...payload, permissions: approvedPermissions });
       const response = await fetch(`${API_URL}/api/device-authorizations/${encodeURIComponent(deviceTransactionId)}/approve`, {
         method: 'POST',
@@ -1104,6 +1155,7 @@
     }
 
     if (approvedCallback) {
+      callbackInFlight = true;
       try {
         const cbRes = await fetch(approvedCallback, {
           method: 'POST',
@@ -1122,6 +1174,8 @@
         return;
       } catch {
         callbackFailed = true;
+      } finally {
+        callbackInFlight = false;
       }
     }
 
@@ -1136,7 +1190,14 @@
       });
       if (response.ok) {
         const result = await response.json();
-        if (/^[a-z2-7]{4}-[a-z2-7]{4}$/i.test(result.code)) shortCode = result.code.toUpperCase();
+        const remainingMs = typeof result.expiresAt === 'string'
+          ? remainingFromServerClock(result.expiresAt, response.headers.get('date'))
+          : null;
+        if (/^[a-z2-7]{4}-[a-z2-7]{4}$/i.test(result.code)) {
+          shortCode = result.code.toUpperCase();
+          // Read at receipt: the countdown runs on the monotonic clock from here.
+          if (remainingMs !== null) codeDeadline = performance.now() + remainingMs;
+        }
       }
     } catch {
       // The full delegation remains available when the broker is unreachable.
@@ -1199,7 +1260,11 @@
 {:else if preparedStorageError}
   <div role="alert" class="min-h-screen flex items-center justify-center">Couldn't save this request. Restart the CLI command.</div>
 {:else if preparedMode}
-  <PreparedHandoff encoded={preparedFragment} onClear={() => { preparedFragment = ''; }} />
+  {#if ownerRevocationMode || ownerRevocationSelected}
+    <OwnerRevocationHandoff encoded={preparedFragment} onClear={() => { ownerRevocationSelected = true; preparedFragment = ''; }} />
+  {:else}
+    <PreparedHandoff encoded={preparedFragment} onClear={() => { preparedFragment = ''; }} />
+  {/if}
 {:else if preparedTransport}
   <div role="alert" class="min-h-screen flex items-center justify-center">Unsupported delegate transport version. Restart the CLI command.</div>
 {:else}
@@ -1241,11 +1306,17 @@
             {/if}
             {#if shortCode}
               <div class="w-full rounded-xl bg-surface-50 border border-surface-200 px-3 py-4">
-                <div class="font-mono text-2xl font-semibold tracking-widest text-surface-900 select-all">{shortCode}</div>
-                <p class="text-surface-500 text-xs mt-2">Valid for 10 minutes</p>
+                <div class="font-mono text-2xl font-semibold tracking-widest select-all {codeCountdown?.expired ? 'text-surface-400 line-through' : 'text-surface-900'}">{shortCode}</div>
+                {#if codeCountdown}
+                  <p role="timer" aria-live="off" class="text-sm mt-2 {codeCountdown.expired ? 'font-medium text-amber-900' : 'text-surface-600'}">{codeCountdown.text}</p>
+                  <p class="text-surface-500 text-xs mt-1">Works once.</p>
+                {:else}
+                  <p class="text-surface-600 text-sm mt-2">Use within 5 minutes. Works once.</p>
+                {/if}
               </div>
+              <p class="sr-only" role="status" aria-live="polite">{codeAnnouncement}</p>
               <button
-                class="mt-3 rounded-lg border border-surface-200 bg-surface-50 px-4 py-2 text-sm font-medium text-surface-900 hover:bg-surface-100"
+                class="mt-3 rounded-lg border border-surface-200 bg-surface-50 px-4 py-2 text-sm font-medium text-surface-900 hover:bg-surface-100 disabled:cursor-not-allowed disabled:opacity-50"
                 onclick={() => copyCode(shortCode)}
                 aria-label="Copy short code"
               >{copied ? 'Copied' : 'Copy code'}</button>
@@ -1270,6 +1341,14 @@
                 aria-label="Copy full delegation code"
               >{copied ? 'Copied' : 'Copy full code'}</button>
             </details>
+            {#if closeStuck}
+              <p class="text-surface-600 text-sm mt-4">You can close this tab.</p>
+            {:else}
+              <button
+                class="mt-4 rounded-lg border border-surface-200 bg-surface-50 px-4 py-2 text-sm font-medium text-surface-900 hover:bg-surface-100"
+                onclick={requestClose}
+              >Close</button>
+            {/if}
           {:else}
             <h2 class="text-lg font-semibold text-surface-900 mb-2">Authenticated</h2>
             <p class="text-surface-500 text-sm">You can close this window and return to the CLI.</p>
@@ -1450,6 +1529,7 @@
             {spaceSetupNoticeText(spaceSetup)}
           </div>
         {/if}
+        <DelegateSigningHint show={showLoopbackHint} />
         {/if}
         {/snippet}
 

@@ -1,0 +1,158 @@
+# Runs the apps/web Playwright browser specs (chromium, and webkit for the SDK handshake) against
+# the SvelteKit dev server that tests/browser/playwright.config.ts starts (TC-2120). No secrets,
+# database or network services: every API call in the specs is routed in the browser.
+#
+# NOT a required check yet: make it required once a few main runs are clean (a flake is retried).
+#
+# No `paths:` filter on the triggers: the workflow always runs and reports. The "Decide whether the
+# change touches the web app" step decides whether the real steps execute, and it fails OPEN: only a
+# clean `git diff` with no relevant path skips them (.github/scripts/web-browser-relevance.sh).
+#
+# The job result is decided by .github/scripts/web-browser-summary.mjs from Playwright's JSON report
+# AND its exit status: it fails on a failure that is NOT a known red (.github/web-browser-known-reds.json),
+# on a nonzero exit status the report does not fully explain, and on an incomplete report (no tests,
+# fewer than minTests, a project or spec file with no tests, stats that disagree with the tests, a
+# skipped test that is not listed). A test that failed and passed on its retry is a flake: reported,
+# not a failure.
+#
+# KNOWN REDS: none today (the list in .github/web-browser-known-reds.json is empty). A spec that is
+#   red on main can be listed there, with its diagnosis, until it is fixed; the job then prints it as
+#   a known red, and says "known red now passes: delete it from the list" once it passes.
+name: Web browser tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: web-browser-tests-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  web-browser-tests:
+    name: Web browser specs
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # Full history: the relevance step diffs the pull request's base against the merge commit.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Test the workflow's own scripts
+        run: node --test .github/scripts/web-browser-relevance.test.mjs .github/scripts/web-browser-summary.test.mjs
+
+      - name: Decide whether the change touches the web app
+        id: relevance
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.sha }}
+        run: |
+          out="$(bash .github/scripts/web-browser-relevance.sh)" || out=$'relevant=true\nreason=the relevance script failed, so the specs run'
+          echo "$out" >> "$GITHUB_OUTPUT"
+          echo "Web browser specs: $(sed -n 's/^reason=//p' <<< "$out")" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Setup Bun
+        if: steps.relevance.outputs.relevant == 'true'
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2 (the commit tc-492-production-cutover.yml pins)
+        with:
+          bun-version: 1.3.14
+
+      - name: Cache Bun dependencies
+        if: steps.relevance.outputs.relevant == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+
+      - name: Install dependencies
+        if: steps.relevance.outputs.relevant == 'true'
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      # The signing pages load @openkey/capability-review from its dist/, and the SDK handshake spec
+      # serves packages/sdk/dist/index.mjs (built with its @openkey/core and @openkey/types).
+      - name: Build packages
+        if: steps.relevance.outputs.relevant == 'true'
+        run: bun run build --filter @openkey/capability-review --filter @openkey/sdk
+
+      # Restored and saved separately: a job that fails (a red spec) skips a plain cache step's
+      # save, and the browser download is the slow, variable part of this job.
+      - name: Restore Playwright browsers
+        id: playwright-cache
+        if: steps.relevance.outputs.relevant == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+
+      # `--with-deps` runs apt, and a runner's Azure Ubuntu mirror is sometimes slow or stalls. apt gets
+      # short connection timeouts, retries and a wait for the dpkg lock; a failed install is retried
+      # (never killed halfway: a killed apt keeps the lock); the step has its own time limit.
+      - name: Install Playwright browsers
+        id: playwright-install
+        if: steps.relevance.outputs.relevant == 'true'
+        timeout-minutes: 15
+        working-directory: apps/web
+        run: |
+          printf 'Acquire::Retries "3";\nAcquire::http::Timeout "20";\nAcquire::https::Timeout "20";\nDPkg::Lock::Timeout "180";\n' | sudo tee /etc/apt/apt.conf.d/99-ci-timeouts > /dev/null
+          for attempt in 1 2 3; do
+            bunx playwright install --with-deps chromium webkit && exit 0
+            echo "Playwright install attempt $attempt failed" >&2
+            sleep 15
+          done
+          exit 1
+
+      - name: Save Playwright browsers
+        if: steps.playwright-install.conclusion == 'success' && steps.playwright-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+
+      # CI=true makes the config retry a failed test once. The step ends green but KEEPS Playwright's
+      # exit status in `exit_code`: the summary step below reads it with the JSON report and decides the
+      # result (a nonzero status that the report does not fully explain fails the job).
+      #
+      # The dev server listens on `localhost`, which a runner resolves to ::1 first, while the SDK
+      # handshake spec loads the widget from http://127.0.0.1:5779. IPv4 first makes `localhost`
+      # mean 127.0.0.1 (as on a developer machine), so both addresses reach the server.
+      - name: Run the browser specs
+        id: suite
+        if: steps.relevance.outputs.relevant == 'true'
+        working-directory: apps/web
+        env:
+          NODE_OPTIONS: --dns-result-order=ipv4first
+          PLAYWRIGHT_JSON_OUTPUT_NAME: ${{ runner.temp }}/playwright-report.json
+        run: |
+          set +e
+          bunx playwright test --config tests/browser/playwright.config.ts --reporter=list,json
+          status=$?
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          echo "Playwright exited with status $status; the summary step decides the result."
+          exit 0
+
+      - name: Summarize, and fail unless the report is complete and every failure is a known red
+        if: always() && steps.suite.conclusion != 'skipped'
+        env:
+          PLAYWRIGHT_EXIT_CODE: ${{ steps.suite.outputs.exit_code }}
+        run: |
+          set -o pipefail
+          node .github/scripts/web-browser-summary.mjs "$RUNNER_TEMP/playwright-report.json" .github/web-browser-known-reds.json \
+            --exit-code "$PLAYWRIGHT_EXIT_CODE" --specs-dir apps/web/tests/browser | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the report and the failure context
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: web-browser-tests-report
+          path: |
+            ${{ runner.temp }}/playwright-report.json
+            apps/web/test-results
+          if-no-files-found: ignore
+          retention-days: 7

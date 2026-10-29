@@ -12,12 +12,15 @@ import { keysRouter } from './routes/keys';
 import { nostrKeysRouter } from './routes/nostr-keys';
 import { accountRouter } from './routes/account';
 import { oauthAdminRouter } from './routes/oauth-admin';
+import { createResourceIntrospectRouter } from './routes/oauth-resource-introspect';
+import { oauthValidAudiences } from './oauth-config';
 import { createOauthBrandingRouter } from './routes/oauth-branding';
 import { passkeyProxyRouter } from './routes/passkey-proxy';
 import { secretsRouter } from './routes/secrets';
 import { variablesRouter } from './routes/variables';
 import { delegateRouter } from './routes/delegate';
 import { preparedHandoffRouter } from './routes/prepared-handoffs';
+import { ownerRevocationRouter } from './routes/owner-revocation-runtime';
 import { internalMetricsRouter } from './routes/internal-metrics';
 import { scoreboardMetricsRouter } from './routes/scoreboard-metrics';
 import { organizationsRouter } from './routes/organizations';
@@ -28,9 +31,12 @@ import { createDelegationCodeRouter, createPrismaDelegationCodeStore } from './r
 import { requireSession } from './middleware/session';
 import { trackAuthorization, trackTokenExchange, trackUniqueUser } from './analytics';
 import { configuredSocialProviderIds } from './social-providers';
-import { corsOriginPolicy } from './origin-policy';
+import { API_EXPOSED_HEADERS, corsOriginPolicy } from './origin-policy';
+import { readBuildInfo } from './build-info';
 import { readinessHandler } from './readiness';
 import { createProviderInterceptors } from './services/native-delegation/interceptors';
+import { createRevokeDenylist } from './services/revoked-access-token';
+import { createAccessTokenVerifier } from './services/access-token-verifier';
 import { providerTokenOptions } from './services/native-delegation/provider-tokens';
 import { handlePar } from './services/native-delegation/par';
 import { createNativeDelegationConsentRouter } from './routes/native-delegation-consent';
@@ -40,6 +46,7 @@ import {
   protocolAwareCors,
   withNativeDelegationMetadata,
 } from './services/native-delegation/public-protocol';
+import { startTinyCloudBootstrapSweep } from './services/tinycloud-bootstrap-sweep';
 
 
 const betterAuthUrl = process.env.BETTER_AUTH_URL;
@@ -75,12 +82,12 @@ app.use('/api/delegate/sign', cors({
 app.use('*', protocolAwareCors(cors({
   origin: corsOriginPolicy('http://localhost:5173'),
   credentials: true,
-  exposeHeaders: ['set-auth-token'],
+  exposeHeaders: API_EXPOSED_HEADERS,
 })));
 
 // Health check: traffic is accepted only when the database migration contract
 // required by this Prisma client is present and checksum-verified.
-app.get('/health', readinessHandler());
+app.get('/health', readinessHandler(undefined, readBuildInfo));
 
 // Analytics middleware - runs BEFORE auth handler, uses next() to capture response
 // POST /api/auth/oauth2/token → track token exchange + unique user
@@ -167,11 +174,37 @@ app.get('/api/auth/providers', (c) =>
 app.post('/api/auth/oauth2/par', (c) => handlePar(c.req.raw, authPrisma));
 app.post('/api/auth/oauth2/tinycloud/renew', (c) => handleNativeRenewOrRevoke(c.req.raw, authPrisma, oauthIssuer, 'renew'));
 app.post('/api/auth/oauth2/tinycloud/revoke', (c) => handleNativeRenewOrRevoke(c.req.raw, authPrisma, oauthIssuer, 'revoke'));
+
+// The key set /api/auth/jwks serves, read through the auth handler.
+const readSigningKeys = async () => {
+  const response = await auth.handler(new Request(`${oauthIssuer}/jwks`));
+  if (!response.ok) throw new Error('signing keys unavailable');
+  return (await response.json()) as { keys: import('jose').JWK[] };
+};
+const tokenAudiences = oauthValidAudiences(process.env.BETTER_AUTH_URL!);
+
+// Token status check for registered resource servers (the hosted MCP server).
+// The provider's own /oauth2/introspect, further down, is untouched.
+app.route('/api/oauth/resource/introspect', createResourceIntrospectRouter({
+  prisma: authPrisma,
+  issuer: oauthIssuer,
+  validAudiences: tokenAudiences,
+  getJwks: readSigningKeys,
+}));
+// A JWT access token revoked at the provider's /oauth2/revoke is recorded, so the status check
+// above answers inactive for it. Outside the interceptors: it acts on the final answer.
+app.use('/api/auth/*', createRevokeDenylist({
+  database: authPrisma,
+  verify: createAccessTokenVerifier({ issuer: oauthIssuer, getJwks: readSigningKeys }),
+  validAudiences: tokenAudiences,
+}));
 app.use('/api/auth/*', createProviderInterceptors({
   database: authPrisma,
   tokens: providerTokenOptions(auth),
   provider: (request) => auth.handler(request),
   getSessionUserId: async (headers) => (await auth.api.getSession({ headers }))?.user.id ?? null,
+  // `disableRefresh`: reading the age must not renew the session.
+  getSessionCreatedAt: async (headers) => (await auth.api.getSession({ headers, query: { disableRefresh: true } }))?.session.createdAt ?? null,
   authorizationCodes: {
     find: async (identifier) => (await auth.$context).internalAdapter.findVerificationValue(identifier),
     delete: async (identifier) => (await auth.$context).internalAdapter.deleteVerificationByIdentifier(identifier),
@@ -211,6 +244,7 @@ app.route('/api/variables', variablesRouter);
 
 // Delegate route (CLI auth flow)
 app.route('/api/delegate/handoffs', preparedHandoffRouter);
+app.route('/api/delegate/owner-revocation', ownerRevocationRouter);
 app.route('/api/delegate', delegateRouter);
 app.route('/api/oauth/tinycloud/requests', createNativeDelegationConsentRouter(authPrisma));
 app.route('/api/oauth/tinycloud', createOauthBrandingRouter(authPrisma));
@@ -261,6 +295,8 @@ const ALL_SCOPES = ['openid', 'email', 'keys', 'offline_access'];
 const port = parseInt(process.env.API_PORT || '3001');
 
 log('info', 'api_starting');
+// Retries failed TinyCloud account setup in the background. Off under tests; kill switch is read per tick.
+if (process.env.NODE_ENV !== 'test') startTinyCloudBootstrapSweep();
 
 export default {
   port,

@@ -73,11 +73,11 @@ jobs:
         run: bun install --frozen-lockfile --ignore-scripts
 
       # The startup test runs the real API entry point, which loads the built
-      # @openkey/db and @openkey/tee packages.
+      # @openkey/db, @openkey/tee, and @openkey/capability-review packages. Details: TC-2005
       - name: Build packages
         run: |
           bun run db:generate
-          bun run build --filter @openkey/db --filter @openkey/tee
+          bun run build --filter @openkey/db --filter @openkey/tee --filter @openkey/capability-review
 
       - name: TEE mode tests
         run: bun test packages/tee/tests/tee-mode.test.ts apps/api/src/__tests__/tee-mode-startup.test.ts

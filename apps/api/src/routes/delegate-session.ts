@@ -13,10 +13,12 @@ import {
   parseRecapFromSiwe,
 } from '@tinycloud/node-sdk-wasm';
 import { CAPABILITIES, ENCRYPTION, KV, SQL } from '@tinycloud/bootstrap';
+import { getAddress } from 'viem';
 import {
   DelegateRequestError,
   shortServiceName,
 } from './delegate-validation';
+import { logPermissionEntryUnknownFields } from '../log';
 
 export type DelegationJwk = { kty: string; crv: string; x: string };
 export type AbilitiesMap = Record<string, Record<string, string[]>>;
@@ -129,6 +131,23 @@ export function permissionKey(entry: RecapEntry): string {
 
 export function actionKey(entry: RecapEntry, action: string): string {
   return `${permissionKey(entry)}\0${action}`;
+}
+
+const RAW_ENCRYPTION_RESOURCE_PREFIX = 'urn:tinycloud:encryption:';
+
+/**
+ * How a signing response reports a ReCap entry to the consumer of the signed
+ * session. The WASM ReCap parser splits a raw encryption resource
+ * (`urn:tinycloud:encryption:…`) into `space: "encryption"`, `path: <urn>`.
+ * The consumer (sdk-core `parseCanonicalRecapResource`) reads a resource that
+ * does not start with `tinycloud:` as the `space` itself with no `path`, and
+ * checks both `selectedActionKeys` and `permissions` in that form. Every other
+ * entry is returned unchanged. Only the final /authorize-sign response uses
+ * this: the preview and the action ids the window sends keep the parser's form.
+ */
+export function reportedEntry(entry: RecapEntry): RecapEntry {
+  if (entry.space !== 'encryption' || !entry.path.startsWith(RAW_ENCRYPTION_RESOURCE_PREFIX)) return entry;
+  return { ...entry, space: entry.path, path: '' };
 }
 
 export function isRequiredAction(entry: RecapEntry, action: string): boolean {
@@ -307,6 +326,85 @@ export function isRawEncryptionPermission(
   );
 }
 
+/** Entry fields this validator reads. Any other defined field is dropped and reported by name. */
+const PERMISSION_ENTRY_FIELDS: Record<string, true> = {
+  service: true, space: true, path: true, actions: true, caveats: true, expiry: true, expiryMs: true,
+};
+
+/**
+ * Refusal messages for narrowing fields this approval cannot carry. Each names the field and the
+ * entry index only, never a value.
+ */
+const PERMISSION_ENTRY_REFUSAL = {
+  caveats: (index: number) =>
+    `permissions[${index}] includes a limit (caveats) that this approval can't carry, so a request that needs the limit can't be made this way. Nothing was approved.`,
+  expiry: (index: number) =>
+    `permissions[${index}] sets its own expiry (expiry). Set one expiry for the whole request instead. Nothing was approved.`,
+  expiryMs: (index: number) =>
+    `permissions[${index}] sets its own expiry (expiryMs). Set one expiry for the whole request instead. Nothing was approved.`,
+};
+
+/**
+ * Validates the CLI `permissions[]` array. Narrowing fields this approval cannot carry (`caveats`
+ * with restrictions, per-entry `expiry` / `expiryMs`) are refused with an error. Other unknown
+ * entry fields are dropped; their names are logged, capped per request (see
+ * `logPermissionEntryUnknownFields`). Nothing is logged for a refused request.
+ */
+export function validatePermissions(permissions: unknown): DelegationPermissionEntry[] {
+  if (!Array.isArray(permissions) || permissions.length === 0) {
+    throw new Error('permissions must be a non-empty array');
+  }
+  const unknownFields = new Map<string, number>();
+  const entries = permissions.map((entry, index) => {
+    if (!entry || typeof entry !== 'object') {
+      throw new Error(`permissions[${index}] is not an object`);
+    }
+    const e = entry as Record<string, unknown>;
+    if (typeof e.service !== 'string' || !e.service) {
+      throw new Error(`permissions[${index}].service is required`);
+    }
+    const isRawEncryption = isRawEncryptionPermission(e);
+    if (!isRawEncryption && (typeof e.space !== 'string' || !e.space)) {
+      throw new Error(`permissions[${index}].space is required`);
+    }
+    if (e.space !== undefined && typeof e.space !== 'string') {
+      throw new Error(`permissions[${index}].space must be a string`);
+    }
+    if (typeof e.path !== 'string') {
+      throw new Error(`permissions[${index}].path must be a string`);
+    }
+    if (!Array.isArray(e.actions) || e.actions.some((a) => typeof a !== 'string')) {
+      throw new Error(`permissions[${index}].actions must be a string[]`);
+    }
+    const caveatsRestrictNothing =
+      e.caveats === undefined ||
+      (Array.isArray(e.caveats) &&
+        e.caveats.every((c) => c !== null && typeof c === 'object' && !Array.isArray(c) && Object.keys(c).length === 0));
+    if (!caveatsRestrictNothing) {
+      throw new Error(PERMISSION_ENTRY_REFUSAL.caveats(index));
+    }
+    if (e.expiry !== undefined) {
+      throw new Error(PERMISSION_ENTRY_REFUSAL.expiry(index));
+    }
+    if (e.expiryMs !== undefined) {
+      throw new Error(PERMISSION_ENTRY_REFUSAL.expiryMs(index));
+    }
+    for (const key of Object.keys(e)) {
+      if (e[key] !== undefined && !Object.hasOwn(PERMISSION_ENTRY_FIELDS, key)) {
+        unknownFields.set(key, (unknownFields.get(key) ?? 0) + 1);
+      }
+    }
+    return {
+      service: e.service,
+      ...(typeof e.space === 'string' ? { space: e.space } : {}),
+      path: e.path,
+      actions: e.actions as string[],
+    };
+  });
+  logPermissionEntryUnknownFields(unknownFields);
+  return entries;
+}
+
 const RAW_ENCRYPTION_NETWORK = /^urn:tinycloud:encryption:did:pkh:eip155:(\d+):(0x[0-9a-fA-F]{40}):([^:]*)$/;
 // The network-name rule of the TinyCloud SDK (`sdk-services` NETWORK_NAME_RE).
 const ENCRYPTION_NETWORK_NAME = /^[a-z0-9][a-z0-9-]*$/;
@@ -387,6 +485,34 @@ function assertRawEncryptionPermission(
   }
 }
 
+/** Service name of the device authorization encryption entry, exact on the wire. */
+const DEVICE_ENCRYPTION_SERVICE = 'tinycloud.encryption';
+/** Space name of the approving account's own default encryption network. */
+const DEVICE_ENCRYPTION_SPACE = 'default';
+
+/**
+ * URN of the signer's own `default` encryption network. Single producer for the
+ * device entry; owner DID uses the signer's chain and EIP-55 address.
+ */
+export function defaultEncryptionNetworkUrn(signer: { address: string; chainId: number }): string {
+  return `${RAW_ENCRYPTION_PREFIX}did:pkh:eip155:${signer.chainId}:${getAddress(signer.address)}:default`;
+}
+
+/**
+ * The exact device authorization encryption entry: service `tinycloud.encryption`,
+ * space `default`, path `""`, and only the decrypt action. Any other entry keeps
+ * its existing handling.
+ */
+export function isDeviceDefaultEncryptionEntry(entry: DelegationPermissionEntry): boolean {
+  return (
+    entry.service === DEVICE_ENCRYPTION_SERVICE &&
+    entry.space === DEVICE_ENCRYPTION_SPACE &&
+    entry.path === '' &&
+    entry.actions.length === 1 &&
+    entry.actions[0] === ENCRYPTION.DECRYPT
+  );
+}
+
 /**
  * Translate CLI permission entries into the ability maps `prepareSession()`
  * signs. Space abilities are keyed by short service name (`kv`, `sql`, …),
@@ -394,14 +520,32 @@ function assertRawEncryptionPermission(
  * `rawAbilities` keyed by network URN, after checking the signer owns the
  * network. Actions stay fully-qualified (`tinycloud.sql/read`) because the
  * SIWE recap stores them that way.
+ *
+ * With `deviceTransaction`, the exact default encryption entry (see
+ * `isDeviceDefaultEncryptionEntry`) resolves to the signer's own default
+ * network. Every other entry is handled as before.
  */
 export function sessionAbilitiesFromPermissions(
   permissions: DelegationPermissionEntry[],
   signer: { address: string; chainId: number },
+  options: { deviceTransaction?: boolean } = {},
 ): SessionAbilities {
   const abilities: AbilitiesMap = Object.create(null);
   const rawAbilities: RawAbilitiesMap = Object.create(null);
+  let deviceDefaultSeen = false;
   permissions.forEach((entry, index) => {
+    if (options.deviceTransaction && isDeviceDefaultEncryptionEntry(entry)) {
+      if (deviceDefaultSeen) {
+        throw new DelegateRequestError(
+          'invalid_permissions',
+          `permissions[${index}] repeats the default encryption entry; a device request carries one`,
+          [{ path: `permissions[${index}]`, message: 'Only one default encryption entry is allowed' }],
+        );
+      }
+      deviceDefaultSeen = true;
+      addActions(rawAbilities, defaultEncryptionNetworkUrn(signer), [ENCRYPTION.DECRYPT]);
+      return;
+    }
     if (isRawEncryptionPermission(entry)) {
       assertRawEncryptionPermission(entry, index, signer);
       addActions(rawAbilities, entry.path, entry.actions);
@@ -467,6 +611,11 @@ export interface PrepareDelegationSessionInput {
    * request before signing.
    */
   permissions?: DelegationPermissionEntry[];
+  /**
+   * Device authorization context. Only then does the exact default encryption
+   * entry resolve to the signer's own network.
+   */
+  deviceTransaction?: boolean;
   /** Pre-validated, clamped delegation lifetime in milliseconds. */
   expiryMs: number;
   domain?: string;
@@ -492,6 +641,7 @@ export function prepareDelegationSession({
   actionKeys,
   permissionKeys,
   permissions,
+  deviceTransaction,
   expiryMs,
   domain,
   nonce,
@@ -517,7 +667,7 @@ export function prepareDelegationSession({
   };
 
   const baselineAbilities = isCliBaseline
-    ? sessionAbilitiesFromPermissions(permissions!, { address, chainId })
+    ? sessionAbilitiesFromPermissions(permissions!, { address, chainId }, { deviceTransaction })
     : DEFAULT_SESSION_ABILITIES;
 
   const baselinePrepared = prepareSession({

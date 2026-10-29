@@ -424,8 +424,9 @@ describe('TC-1608 the sync path and the background never submit a conflicting ho
 
     const second = await approveDefault();
 
-    expect(second.body).toMatchObject({ hostActivated: true, spaceReady: null, spacePending: true });
-    expect(second.body).not.toHaveProperty('spaceError');
+    expect(second.body).toMatchObject({
+      hostActivated: true, spaceReady: null, spacePending: true, spaceError: 'tinycloud_bootstrap_in_progress',
+    });
     expect(hostPostsFor('default')).toHaveLength(1);
 
     hold.release();

@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { HOST, ORIGIN } from './e2e-port';
 
 const address = '0x1111111111111111111111111111111111111111';
 
@@ -22,12 +23,12 @@ test('failed selected-key read shows a stable cancellable error in the v2 iframe
   await expect.poll(() => page.evaluate(() => (window as unknown as Window & { received: Array<{ type: string; requestId?: string }> }).received.some(m => m.type === 'openkey:ready' && m.requestId === 'phase-1'))).toBe(true);
   const frame = page.frameLocator('#sign-v2');
   await expect(frame.getByText('Selected key could not be loaded.')).toBeVisible();
-  await page.evaluate((address) => {
+  await page.evaluate(([address, host, origin]) => {
     document.querySelector<HTMLIFrameElement>('#sign-v2')?.contentWindow?.postMessage({
       type: 'openkey:sign:request', requestId: 'phase-1', protocolVersion: 2, keyId: 'selected-key',
-      message: `localhost:5779 wants you to sign in with your Ethereum account:\n${address}\n\nSign in\n\nURI: http://localhost:5779\nVersion: 1\nChain ID: 1\nNonce: 12345678\nIssued At: 2026-10-15T00:00:00.000Z`,
+      message: `${host} wants you to sign in with your Ethereum account:\n${address}\n\nSign in\n\nURI: ${origin}\nVersion: 1\nChain ID: 1\nNonce: 12345678\nIssued At: 2026-10-15T00:00:00.000Z`,
     }, location.origin);
-  }, address);
+  }, [address, HOST, ORIGIN]);
   await expect(frame.getByRole('button', { name: 'Cancel' })).toBeVisible();
   await expect.poll(() => page.evaluate(() => (window as unknown as Window & { received: Array<{ type: string }> }).received.some(m => m.type === 'openkey:resize'))).toBe(true);
   await frame.getByRole('button', { name: 'Cancel' }).click();
@@ -52,12 +53,12 @@ test('v2 sign-in form can be measured and revealed when the embedded session is 
     document.body.append(iframe);
   });
   await expect.poll(() => page.evaluate(() => (window as unknown as Window & { received: Array<{ type: string }> }).received.some(m => m.type === 'openkey:ready'))).toBe(true);
-  await page.evaluate((address) => {
+  await page.evaluate(([address, host, origin]) => {
     document.querySelector<HTMLIFrameElement>('#sign-v2')?.contentWindow?.postMessage({
       type: 'openkey:sign:request', requestId: 'phase-auth', protocolVersion: 2, keyId: 'selected-key',
-      message: `localhost:5779 wants you to sign in with your Ethereum account:\n${address}\n\nSign in\n\nURI: http://localhost:5779\nVersion: 1\nChain ID: 1\nNonce: 12345678\nIssued At: 2026-10-15T00:00:00.000Z`,
+      message: `${host} wants you to sign in with your Ethereum account:\n${address}\n\nSign in\n\nURI: ${origin}\nVersion: 1\nChain ID: 1\nNonce: 12345678\nIssued At: 2026-10-15T00:00:00.000Z`,
     }, location.origin);
-  }, address);
+  }, [address, HOST, ORIGIN]);
   await expect.poll(() => page.evaluate(() => (window as unknown as Window & { received: Array<{ type: string }> }).received.some(m => m.type === 'openkey:resize'))).toBe(true);
   const resize = await page.evaluate(() => (window as unknown as Window & { received: Array<{ type: string; height: number; layoutId: number }> }).received.find(m => m.type === 'openkey:resize')!);
   await page.evaluate(({ height, layoutId }) => {

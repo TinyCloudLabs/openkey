@@ -39,6 +39,7 @@ export type CapabilityFamily =
   | "secret-mutation"
   | "encryption-key"
   | "encryption-decrypt"
+  | "app-keys"
   | "space-create"
   | "space-read"
   | "hooks"
