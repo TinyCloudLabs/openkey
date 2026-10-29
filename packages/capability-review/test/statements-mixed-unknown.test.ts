@@ -478,6 +478,7 @@ describe("unknown cross-user schema grants stay literal", () => {
       ownedBySelf: false,
     });
     expect(buildStatement(grant).literalEscaped).toBe(true);
+    expect(buildStatement(grant).primaryText).toBe("Edit and delete tables in another user's data");
     expect(buildStatements(grant).map((s) => s.primaryText)).toEqual([
       buildStatement(grant).primaryText,
     ]);
@@ -493,6 +494,7 @@ describe("unknown cross-user schema grants stay literal", () => {
       ownedBySelf: false,
     });
     expect(buildStatement(grant).literalEscaped).toBe(true);
+    expect(buildStatement(grant).primaryText).toBe("Edit and delete tables in another user's data");
   });
 });
 

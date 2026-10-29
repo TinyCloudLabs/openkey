@@ -579,3 +579,44 @@ describe("fallback rows escape raw text once", () => {
     expect(statement.primaryText).toBe("Read another user's data; unknown action: tinycloud.kv/archive");
   });
 });
+
+// Review of TC-2216: a raw row must show every raw action, however many.
+describe("raw fallback rows show every action", () => {
+  const ENCRYPTION = [
+    "tinycloud.encryption/decrypt",
+    "tinycloud.encryption/key.block",
+    "tinycloud.encryption/key.create",
+    "tinycloud.encryption/key.unblock",
+    "tinycloud.encryption/network.create",
+    "tinycloud.encryption/network.revoke",
+  ];
+
+  it("a service-mismatched request lists all six encryption actions", () => {
+    const statement = buildStatement({
+      ...makeGrant({
+        service: "tinycloud.encryption",
+        path: "notes",
+        abilities: ENCRYPTION,
+        family: "unknown",
+        severity: "attention",
+      }),
+      resourceService: "sql",
+      serviceMismatch: true,
+    });
+    expect(statement.showsRawText).toBe(true);
+    expect(statement.primaryText).toBe(`Unknown actions: ${ENCRYPTION.join(", ")}`);
+  });
+
+  it("a long unknown action does not hide the actions after it", () => {
+    const long = `tinycloud.kv/${"x".repeat(200)}`;
+    const statement = buildStatement(
+      makeGrant({
+        service: "tinycloud.kv",
+        abilities: [long, "tinycloud.kv/archive", "tinycloud.kv/rotate"],
+        family: "unknown",
+        severity: "attention",
+      }),
+    );
+    expect(statement.primaryText).toContain(`${long.slice(0, 120)}…, tinycloud.kv/archive, tinycloud.kv/rotate`);
+  });
+});

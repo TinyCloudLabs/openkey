@@ -81,6 +81,9 @@ describe("the sentence for listing the account's delegations", () => {
       const primaryText = buildStatement(grantFor(space(spaceName), abilities)).primaryText;
       expect(primaryText).not.toBe(SENTENCE);
       expect(buildStatement(grantFor(space(spaceName), abilities)).literalEscaped).toBe(true);
+      for (const ability of abilities.filter((a) => a !== "tinycloud.delegation/list")) {
+        expect(primaryText.toLowerCase()).toContain(`unknown action: ${ability}`);
+      }
     }
   });
 

@@ -133,6 +133,7 @@ describe("several abilities on one resource", () => {
   it("only exact ability names get a sentence", () => {
     const [row] = buildStatements(grantFor(urn(KEY), [`${E}KEY.CREATE`]));
     expect(row!.literalEscaped).toBe(true);
+    expect(row!.primaryText).toBe("Unknown action: tinycloud.encryption/KEY.CREATE");
   });
 
   it("every row carries codeSpans", () => {
@@ -142,18 +143,20 @@ describe("several abilities on one resource", () => {
 });
 
 describe("resources under apps/ that are not valid keys keep the literal fallback", () => {
+  const RAW = "Unknown action: tinycloud.encryption/decrypt";
   it.each([
-    ["a capital in the first segment", urn("/Apps/x/y")],
-    ["an empty segment", urn("/apps//y")],
-    ["two segments", urn("/apps/x")],
-    ["apps/ alone", urn("/apps/")],
-    ["an upper-case path", urn("/apps/X/y")],
-    ["an upper-case URN scheme", `URN:TINYCLOUD:ENCRYPTION:${OWNER}:default/apps/x/y`],
-    ["a path of nine segments", urn("/apps/a/b/c/d/e/f/g/h")],
-  ])("%s", (_name, resource) => {
+    ["a capital in the first segment", urn("/Apps/x/y"), RAW],
+    ["an empty segment", urn("/apps//y"), RAW],
+    ["two segments", urn("/apps/x"), "Decrypt your data"],
+    ["apps/ alone", urn("/apps/"), "Decrypt your data"],
+    ["an upper-case path", urn("/apps/X/y"), RAW],
+    ["an upper-case URN scheme", `URN:TINYCLOUD:ENCRYPTION:${OWNER}:default/apps/x/y`, "Decrypt data"],
+    ["a path of nine segments", urn("/apps/a/b/c/d/e/f/g/h"), RAW],
+  ])("%s", (_name, resource, text) => {
     const result = buildStatements(grantFor(resource, [`${E}decrypt`]));
     expect(result).toHaveLength(1);
     expect(result[0]!.literalEscaped).toBe(true);
+    expect(result[0]!.primaryText).toBe(text);
   });
 });
 

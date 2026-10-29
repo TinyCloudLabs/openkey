@@ -32,7 +32,6 @@ import {
   SQL_ADMIN_OPERATIONS,
   coreOperations,
   isCoreOperationService,
-  joinDistinct,
   type CoreOperation,
 } from "./core-operations.js";
 
@@ -399,12 +398,15 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
         if (!allVerbsIn(entry.actions, SQL_NAMED_DATABASE_VERBS)) {
           return unknownActionLabel(service);
         }
-        const label = joinDistinct(
-          entry.actions
-            .map((action) => SQL_ADMIN_OPERATIONS[verbOf(action)]?.label)
-            .filter((value): value is string => value !== undefined),
-          ", ",
-        );
+        const labels = [
+          ...new Set(
+            entry.actions
+              .map((action) => SQL_ADMIN_OPERATIONS[verbOf(action)]?.label)
+              .filter((value): value is string => value !== undefined),
+          ),
+        ];
+        // Several operations take the family's title, so the title stays one line.
+        const label = labels.length === 1 ? labels[0]! : FAMILY_LABEL["database-admin"];
         return {
           family: "database-admin",
           displayLabel: isOtherUser ? `${label} — another user` : label,
@@ -595,10 +597,9 @@ function classifyCoreOperation(
     return unknownActionLabel(service);
   }
   const family = dominantCoreFamily(operations);
-  const label = joinDistinct(
-    operations.map((operation) => operation.label),
-    ", ",
-  );
+  const labels = [...new Set(operations.map((operation) => operation.label))];
+  // Several operations take the family's title, so the title stays one line.
+  const label = labels.length === 1 ? labels[0]! : FAMILY_LABEL[family];
 
   // Space operations address the space itself, not data inside it, so they
   // apply to any space name.

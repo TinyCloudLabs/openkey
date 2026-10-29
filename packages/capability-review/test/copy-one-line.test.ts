@@ -8,13 +8,20 @@
 // wider glyphs. Two lines is 100. A row with the "Sensitive" pill has about
 // 40 characters before it wraps.
 //
-// Two checks:
+// Checks:
 // - every prose string literal in the copy sources (it starts with a capital
-//   letter and has a space); a `{path}`, `{network}` or `${...}` placeholder
-//   counts as PLACEHOLDER_CHARS, the length of a short name such as `notes/k1`;
-// - every row and label the review renders for each TinyCloud registry
-//   ability, on the signer's own space and on another user's, which covers
-//   copy built from parts (the fallback row).
+//   letter and has a space); a `{path}`, `{network}`, `{owner}`, `{data}` or
+//   `${...}` placeholder counts as PLACEHOLDER_CHARS, the length of a short
+//   name such as `notes/k1`;
+// - every row and label the review renders for every combination of a
+//   service's registry abilities in one request (each alone, each pair, up to
+//   all of them), on the signer's own space and on another user's. This
+//   covers rows composed from several actions (the fallback row).
+//
+// The one exemption: a row marked `showsRawText` lists unknown or
+// mismatched actions raw. It is a safety display, not a descriptor: it must
+// show every raw action, and may wrap. No registered-only request may
+// produce one.
 
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -45,6 +52,8 @@ interface Descriptor {
   where: string;
   text: string;
   length: number;
+  /** The row's `showsRawText` flag; such rows are exempt from the limit. */
+  raw?: true;
 }
 
 function sourceDescriptors(): Descriptor[] {
@@ -63,8 +72,8 @@ function sourceDescriptors(): Descriptor[] {
         for (const span of node.templateSpans) visit(span.expression);
       }
       if (text !== null && /^[A-Z]/.test(text) && text.includes(" ")) {
-        const named = text.match(/\{(path|network)\}/g)?.length ?? 0;
-        const fixed = text.replace(/\$\{\}|\{(path|network)\}/g, "").length;
+        const named = text.match(/\{(path|network|owner|data)\}/g)?.length ?? 0;
+        const fixed = text.replace(/\$\{\}|\{(path|network|owner|data)\}/g, "").length;
         const line = source.getLineAndCharacterOfPosition(node.getStart()).line + 1;
         found.push({
           where: `src/${file}:${line}`,
@@ -97,36 +106,56 @@ const RESOURCE: Record<string, (owner: string) => string> = {
   "tinycloud.space": (owner) => `${space("courier", owner)}/space`,
 };
 
-function renderedDescriptors(): Descriptor[] {
+/** Every non-empty subset of `items`, in a stable order. */
+function subsets<T>(items: readonly T[]): T[][] {
+  return items.reduce<T[][]>((all, item) => [...all, ...all.map((set) => [...set, item])], [[]]).slice(1);
+}
+
+function review(resource: string, abilities: readonly string[]) {
+  return parseCapabilityReview({
+    message: siweWithResources([
+      makeRecapResource({ [resource]: Object.fromEntries(abilities.map((ability) => [ability, [{}]])) }),
+    ]),
+    signer: { label: "Signer", address: ACCOUNT, chainId: FIXTURE_META.chainId, provenance: "managed" },
+    editable: true,
+    metadataTrust: { status: "unsigned", reason: "no manifest" },
+    reason: { text: "", source: "none" },
+    requester: {
+      displayName: "cli.tinycloud.xyz",
+      verifiedOrigin: "https://cli.tinycloud.xyz",
+      appId: null,
+      manifestName: null,
+      manifestNameProvenance: "none",
+      manifestId: null,
+      manifestIdProvenance: "none",
+      manifestDigest: null,
+      domainWarning: false,
+      originWarning: false,
+    },
+  });
+}
+
+function renderedDescriptors(extraAbility?: (service: string) => string): Descriptor[] {
   const found: Descriptor[] = [];
-  for (const entry of CAPABILITY_REGISTRY) {
-    const resource = RESOURCE[entry.service];
-    if (!resource) throw new Error(`No resource for registry service ${entry.service}; add it to RESOURCE`);
-    for (const owner of [ACCOUNT, OTHER]) {
-      const model = parseCapabilityReview({
-        message: siweWithResources([makeRecapResource({ [resource(owner)]: { [entry.urn]: [{}] } })]),
-        signer: { label: "Signer", address: ACCOUNT, chainId: FIXTURE_META.chainId, provenance: "managed" },
-        editable: true,
-        metadataTrust: { status: "unsigned", reason: "no manifest" },
-        reason: { text: "", source: "none" },
-        requester: {
-          displayName: "cli.tinycloud.xyz",
-          verifiedOrigin: "https://cli.tinycloud.xyz",
-          appId: null,
-          manifestName: null,
-          manifestNameProvenance: "none",
-          manifestId: null,
-          manifestIdProvenance: "none",
-          manifestDigest: null,
-          domainWarning: false,
-          originWarning: false,
-        },
-      });
-      const who = owner === ACCOUNT ? "own" : "other";
-      for (const grant of model.permissions) {
-        found.push({ where: `${entry.urn} (${who}) label`, text: grant.displayLabel, length: grant.displayLabel.length });
-        for (const row of buildStatements(grant)) {
-          found.push({ where: `${entry.urn} (${who})`, text: row.primaryText, length: row.primaryText.length });
+  const services = [...new Set(CAPABILITY_REGISTRY.map((entry) => entry.service))];
+  for (const service of services) {
+    const resource = RESOURCE[service];
+    if (!resource) throw new Error(`No resource for registry service ${service}; add it to RESOURCE`);
+    const abilities = CAPABILITY_REGISTRY.filter((entry) => entry.service === service).map((entry) => entry.urn);
+    for (const set of subsets(abilities)) {
+      const requested = extraAbility ? [...set, extraAbility(service)] : set;
+      for (const owner of [ACCOUNT, OTHER]) {
+        const where = `[${requested.join(", ")}] (${owner === ACCOUNT ? "own" : "other"})`;
+        for (const grant of review(resource(owner), requested).permissions) {
+          found.push({ where: `${where} label`, text: grant.displayLabel, length: grant.displayLabel.length });
+          for (const row of buildStatements(grant)) {
+            found.push({
+              where,
+              text: row.primaryText,
+              length: row.primaryText.length,
+              ...(row.showsRawText ? { raw: true as const } : {}),
+            });
+          }
         }
       }
     }
@@ -137,6 +166,7 @@ function renderedDescriptors(): Descriptor[] {
 function overLimit(descriptors: Descriptor[]): string[] {
   return descriptors
     .filter((d) => {
+      if (d.raw) return false;
       const limit = Object.hasOwn(TWO_LINE_EXCEPTIONS, d.text) ? TWO_LINE_LIMIT : LINE_LIMIT;
       return d.length > limit;
     })
@@ -155,8 +185,21 @@ describe("permission copy is one line", () => {
     expect(overLimit(source)).toEqual([]);
   });
 
-  it(`every row and label rendered for a registry ability fits ${LINE_LIMIT} characters`, () => {
-    expect(overLimit(renderedDescriptors())).toEqual([]);
+  it(`every row and label rendered for any mix of registry abilities fits ${LINE_LIMIT} characters`, () => {
+    const rendered = renderedDescriptors();
+    expect(rendered.filter((d) => d.raw).map((d) => `${d.where}: ${d.text}`)).toEqual([]);
+    expect(overLimit(rendered)).toEqual([]);
+  });
+
+  it("a row with an unknown action is marked raw and shows that action", () => {
+    // The registered-only test above proves no other row is marked raw.
+    const unknown = (service: string) => `${service}/tc2216-unknown`;
+    const rows = renderedDescriptors(unknown).filter((d) => !d.where.endsWith("label"));
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(row.raw, row.where).toBe(true);
+      expect(row.text, row.where).toContain(unknown(row.where.slice(1, row.where.indexOf("/"))));
+    }
   });
 
   it("every two-line exception is still in the source, needs the second line, and has a reason", () => {

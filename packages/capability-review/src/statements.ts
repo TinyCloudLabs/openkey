@@ -45,7 +45,6 @@ import {
   SQL_ADMIN_OPERATIONS,
   coreOperations,
   isCoreOperationService,
-  joinDistinct,
 } from "./core-operations.js";
 
 export interface StatementEntry {
@@ -72,6 +71,12 @@ export interface StatementEntry {
   codeSpans?: true;
   /** Set on every fallback row (a shape the catalog does not recognize); its raw parts are already escaped and capped. */
   literalEscaped?: true;
+  /**
+   * Set on a fallback row that shows an action or service raw (unknown,
+   * service-mismatched or failing). A safety display: it lists every raw
+   * action, so it is exempt from the one-line rule and may wrap.
+   */
+  showsRawText?: true;
 }
 
 /** Family/action-aware structural verb classification. */
@@ -247,87 +252,133 @@ function hasFailingEncryptionUrn(grant: CapabilityGrant): boolean {
 }
 
 /**
- * Plain words for the fallback row: each known action of a TinyCloud service,
- * by short service name, as a verb and the thing it acts on, in reading
- * order. The legacy named-secrets service and `key.delete` (always refused)
- * are absent on purpose; actions outside this table show their raw ability.
+ * Plain words for the fallback row, by short service name and verb: the
+ * sentence for that one action (`{owner}` is "your ", "another user's " or
+ * nothing, `{data}` is "secrets" in a secrets space, else "data"), and the
+ * coarse kinds it counts as when a row names several actions. The legacy
+ * named-secrets service and `key.delete` (always refused) are absent on
+ * purpose; actions outside this table show their raw ability.
  */
-const PLAIN_ACTIONS: Record<string, Record<string, readonly [verb: string, noun: string]>> = {
+const PLAIN_ACTIONS: Record<string, Record<string, readonly [text: string, kinds: readonly string[]]>> = {
   kv: {
-    get: ["read", "data"],
-    list: ["list", "data"],
-    metadata: ["see details of", "data"],
-    put: ["change", "data"],
-    del: ["delete", "data"],
-    delete: ["delete", "data"],
-    sync: ["follow changes to", "data"],
-    retain: ["keep offline copies of", "data"],
+    get: ["Read {owner}{data}", ["read"]],
+    list: ["List {owner}{data}", ["read"]],
+    metadata: ["See details of {owner}{data}", ["read"]],
+    put: ["Change {owner}{data}", ["change"]],
+    del: ["Delete {owner}{data}", ["delete"]],
+    delete: ["Delete {owner}{data}", ["delete"]],
+    sync: ["Follow changes to {owner}{data}", ["read"]],
+    retain: ["Keep offline copies of {owner}{data}", ["read"]],
   },
   sql: {
-    read: ["read", "data"],
-    select: ["read", "data"],
-    write: ["change", "data"],
-    schema: ["edit tables in", "data"],
-    admin: ["manage", "data"],
-    "*": ["do anything with", "data"],
+    read: ["Read {owner}{data}", ["read"]],
+    select: ["Read {owner}{data}", ["read"]],
+    write: ["Change {owner}{data}", ["change"]],
+    schema: ["Edit and delete tables in {owner}{data}", ["change", "delete"]],
+    admin: ["Manage {owner}{data}", ["manage"]],
+    "*": ["Do anything with {owner}{data}", ["all"]],
   },
   duckdb: {
-    read: ["read", "data"],
-    select: ["read", "data"],
-    export: ["download", "data"],
-    write: ["change", "data"],
-    import: ["replace", "data"],
-    admin: ["manage", "data"],
-    "*": ["do anything with", "data"],
+    read: ["Read {owner}{data}", ["read"]],
+    select: ["Read {owner}{data}", ["read"]],
+    export: ["Download {owner}{data}", ["read"]],
+    write: ["Change {owner}{data}", ["change"]],
+    import: ["Replace {owner}{data}", ["change", "delete"]],
+    admin: ["Manage {owner}{data}", ["manage"]],
+    "*": ["Do anything with {owner}{data}", ["all"]],
   },
   vfs: {
-    get: ["read", "files"],
-    list: ["list", "files"],
-    metadata: ["see details of", "files"],
-    put: ["change", "files"],
-    delete: ["delete", "files"],
+    get: ["Read {owner}files", ["read"]],
+    list: ["List {owner}files", ["read"]],
+    metadata: ["See details of {owner}files", ["read"]],
+    put: ["Change {owner}files", ["change"]],
+    delete: ["Delete {owner}files", ["delete"]],
   },
   hooks: {
-    subscribe: ["watch changes to", "data"],
-    list: ["see webhooks on", "data"],
-    register: ["add webhooks to", "data"],
-    unregister: ["remove webhooks from", "data"],
+    subscribe: ["Watch changes to {owner}{data}", ["read"]],
+    list: ["See webhooks on {owner}{data}", ["read"]],
+    register: ["Send {owner}change alerts to a webhook", ["share"]],
+    unregister: ["Remove webhooks from {owner}{data}", ["change"]],
   },
   space: {
-    list: ["list", "spaces"],
-    info: ["see usage of", "spaces"],
-    host: ["create", "spaces"],
-    create: ["create", "spaces"],
+    list: ["List {owner}spaces", ["read"]],
+    info: ["See usage of {owner}spaces", ["read"]],
+    host: ["Create {owner}spaces", ["create"]],
+    create: ["Create {owner}spaces", ["create"]],
   },
-  capabilities: { read: ["check permissions on", "data"] },
+  capabilities: { read: ["Check permissions on {owner}{data}", ["read"]] },
   delegation: {
-    list: ["see who can access", "data"],
-    status: ["see who can access", "data"],
+    list: ["See who can access {owner}{data}", ["read"]],
+    status: ["See who can access {owner}{data}", ["read"]],
   },
   encryption: {
-    decrypt: ["decrypt", "data"],
-    "network.create": ["set up", "decryption network"],
-    "network.revoke": ["turn off", "decryption network"],
-    "key.create": ["create", "keys"],
-    "key.block": ["block", "keys"],
-    "key.unblock": ["unblock", "keys"],
+    decrypt: ["Decrypt {owner}data", ["decrypt"]],
+    "network.create": ["Set up {owner}decryption network", ["set up"]],
+    "network.revoke": ["Turn off {owner}decryption network", ["turn off"]],
+    "key.create": ["Create {owner}keys", ["set up"]],
+    "key.block": ["Block {owner}keys", ["change"]],
+    "key.unblock": ["Unblock {owner}keys", ["change"]],
   },
 };
 
-/** `read`, `read and list`, `read, list and delete`. */
-function joinAnd(words: readonly string[]): string {
-  return words.length <= 1
-    ? words.join("")
-    : `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}`;
+/** What a row naming several actions of a service acts on; encryption names no owner. */
+const COMPOSED_NOUN: Record<string, string> = {
+  vfs: "files",
+  space: "spaces",
+  encryption: "decryption",
+};
+
+/** Reading order of the coarse kinds. "manage" covers "change"; "all" covers every kind. */
+const KIND_ORDER = ["decrypt", "read", "set up", "create", "change", "manage", "turn off", "delete", "share"];
+
+/**
+ * The known actions of a grant in plain words: one action in its own words
+ * ("See details of your data"), several as coarse kinds ("Read and delete
+ * your data"). `raw` holds every other action, each escaped and capped on
+ * its own; with `rawOnly` every action is raw.
+ */
+function plainWords(
+  grant: CapabilityGrant,
+  owner: string,
+  rawOnly: boolean,
+): { parts: string[]; raw: string[] } {
+  const data = isSecretsSpace(grant.space) ? "secrets" : "data";
+  const sentences = new Set<string>();
+  const kindsByService = new Map<string, Set<string>>();
+  const raw: string[] = [];
+  for (const { ability } of grant.actions) {
+    const head = ability.includes("/") ? ability.slice(0, ability.indexOf("/")).replace(/^tinycloud\./, "") : "";
+    const table = !rawOnly && Object.hasOwn(PLAIN_ACTIONS, head) ? PLAIN_ACTIONS[head] : undefined;
+    const verb = verbOf(ability);
+    const entry = table !== undefined && Object.hasOwn(table, verb) ? table[verb]! : undefined;
+    if (entry === undefined) {
+      raw.push(renderLiteral(ability, LITERAL_TRUNCATE_CHARS));
+      continue;
+    }
+    sentences.add(entry[0].replace("{owner}", owner).replace("{data}", data));
+    const kinds = kindsByService.get(head) ?? new Set<string>();
+    for (const kind of entry[1]) kinds.add(kind);
+    kindsByService.set(head, kinds);
+  }
+  if (sentences.size <= 1) return { parts: [...sentences], raw };
+  const parts = [...kindsByService].map(([head, kinds]) => {
+    const noun = Object.hasOwn(COMPOSED_NOUN, head) ? COMPOSED_NOUN[head]! : data;
+    const whose = head === "encryption" ? "" : owner;
+    const words = kinds.has("all")
+      ? ["do anything with"]
+      : KIND_ORDER.filter((kind) => kinds.has(kind) && !(kind === "change" && kinds.has("manage")));
+    return `${joinAnd(words)} ${whose}${noun}`;
+  });
+  return { parts, raw };
 }
 
 /**
  * Fallback row for anything the catalog does not recognize: the known
- * actions in plain words ("Read and delete your data"), then any other
- * action by its raw ability ("unknown action: tinycloud.kv/archive"). A
- * service-mismatched wire tuple or a failing encryption URN shows every
- * action raw. Raw text is escaped and capped, so the row is marked
- * `literalEscaped`.
+ * actions in plain words (see plainWords), then every other action by its
+ * raw ability ("unknown action: tinycloud.kv/archive"). A service-mismatched
+ * wire tuple or a failing encryption URN shows every action raw. Every raw
+ * action stays visible. The row is marked `literalEscaped`, and
+ * `showsRawText` when any part is raw.
  */
 function fallbackStatement(grant: CapabilityGrant): StatementEntry {
   const failing = hasFailingEncryptionUrn(grant);
@@ -344,34 +395,9 @@ function fallbackStatement(grant: CapabilityGrant): StatementEntry {
       : grant.ownedBySelf === true && grant.appScopeNearMiss !== true
         ? "your "
         : "";
-  const rawOnly = failing || grant.serviceMismatch === true;
-  const groups = new Map<string, Array<{ verb: string; order: number }>>();
-  const raw: string[] = [];
-  for (const { ability } of grant.actions) {
-    const head = ability.includes("/") ? ability.slice(0, ability.indexOf("/")).replace(/^tinycloud\./, "") : "";
-    const table = !rawOnly && Object.hasOwn(PLAIN_ACTIONS, head) ? PLAIN_ACTIONS[head] : undefined;
-    const verb = verbOf(ability);
-    const entry = table !== undefined && Object.hasOwn(table, verb) ? table[verb]! : undefined;
-    if (entry === undefined) {
-      raw.push(ability);
-      continue;
-    }
-    const noun = entry[1] === "data" && isSecretsSpace(grant.space) ? "secrets" : entry[1];
-    const verbs = groups.get(noun) ?? [];
-    if (!verbs.some((known) => known.verb === entry[0])) {
-      verbs.push({ verb: entry[0], order: Object.keys(table!).indexOf(verb) });
-    }
-    groups.set(noun, verbs);
-  }
-  const parts = [...groups].map(
-    ([noun, verbs]) =>
-      `${joinAnd(verbs.sort((a, b) => a.order - b.order).map((v) => v.verb))} ${owner}${noun}`,
-  );
-  // Join raw ability strings first, so the list is escaped and capped once,
-  // with at most one `…`.
+  const { parts, raw } = plainWords(grant, owner, failing || grant.serviceMismatch === true);
   if (raw.length > 0) {
-    const list = renderLiteral(raw.join(", "), LITERAL_TRUNCATE_CHARS);
-    parts.push(`unknown action${raw.length > 1 ? "s" : ""}: ${list}`);
+    parts.push(`unknown action${raw.length > 1 ? "s" : ""}: ${raw.join(", ")}`);
   }
   const text =
     parts.length > 0
@@ -382,7 +408,15 @@ function fallbackStatement(grant: CapabilityGrant): StatementEntry {
     service,
     resource,
     literalEscaped: true,
+    ...(raw.length > 0 || parts.length === 0 ? { showsRawText: true as const } : {}),
   };
+}
+
+/** `read`, `read and list`, `read, list and delete`. */
+function joinAnd(words: readonly string[]): string {
+  return words.length <= 1
+    ? words.join("")
+    : `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}`;
 }
 
 /**
@@ -1653,6 +1687,13 @@ function coreOperationStatement(grant: CapabilityGrant): StatementEntry | null {
   const abilities = grant.actions.map((action) => action.ability);
   const resource = resourceOf(grant);
   const literal = () => fallbackStatement(grant);
+  // One operation keeps its own sentence; several read as coarse kinds, on one line.
+  const oneLine = (descriptions: string[]): string => {
+    const distinct = [...new Set(descriptions)];
+    if (distinct.length === 1) return distinct[0]!;
+    const text = plainWords(grant, grant.ownedBySelf === true ? "your " : "", false).parts.join("; ");
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  };
 
   if (isCoreOperationService(service)) {
     const operations = coreOperations(service, abilities);
@@ -1664,10 +1705,7 @@ function coreOperationStatement(grant: CapabilityGrant): StatementEntry | null {
       return literal();
     }
     return {
-      primaryText: joinDistinct(
-        operations.map((operation) => operation.description),
-        "; ",
-      ),
+      primaryText: oneLine(operations.map((operation) => operation.description)),
       service,
       resource,
     };
@@ -1693,10 +1731,7 @@ function coreOperationStatement(grant: CapabilityGrant): StatementEntry | null {
     const verbs = exactVerbs(SQL_SERVICES, SQL_ADMIN_OPERATIONS);
     if (!verbs || grant.ownedBySelf === false) return literal();
     return {
-      primaryText: joinDistinct(
-        verbs.map((verb) => SQL_ADMIN_OPERATIONS[verb]!.description),
-        "; ",
-      ),
+      primaryText: oneLine(verbs.map((verb) => SQL_ADMIN_OPERATIONS[verb]!.description)),
       service,
       resource,
     };
@@ -1711,10 +1746,7 @@ function coreOperationStatement(grant: CapabilityGrant): StatementEntry | null {
     const verbs = exactVerbs(KV_SERVICES, KV_FEED_DESCRIPTIONS);
     if (!verbs) return null;
     return {
-      primaryText: joinDistinct(
-        verbs.map((verb) => KV_FEED_DESCRIPTIONS[verb]!),
-        "; ",
-      ),
+      primaryText: oneLine(verbs.map((verb) => KV_FEED_DESCRIPTIONS[verb]!)),
       service,
       resource,
     };

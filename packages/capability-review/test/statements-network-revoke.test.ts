@@ -103,15 +103,15 @@ describe("buildStatement — encryption network.revoke", () => {
     });
     const stmt = buildStatement(grant);
     expect(stmt.primaryText).toBe(
-      "Decrypt your data; turn off your decryption network",
+      "Decrypt and turn off decryption",
     );
     expect(stmt.primaryText).not.toBe("Decrypt protected data");
     expect(stmt.primaryText).not.toBe(
       "Create a decryption network and decrypt protected data",
     );
     // Every ability must appear, in plain words.
-    expect(stmt.primaryText).toContain("Decrypt your data");
-    expect(stmt.primaryText).toContain("turn off your decryption network");
+    expect(stmt.primaryText).toContain("Decrypt");
+    expect(stmt.primaryText).toContain("turn off decryption");
   });
 
   it("[network.create, network.revoke] renders the literal fallback (revoke not swallowed)", () => {
@@ -129,14 +129,14 @@ describe("buildStatement — encryption network.revoke", () => {
     });
     const stmt = buildStatement(grant);
     expect(stmt.primaryText).toBe(
-      "Set up and turn off your decryption network",
+      "Set up and turn off decryption",
     );
     expect(stmt.primaryText).not.toBe("Create a decryption network");
     expect(stmt.primaryText).not.toBe(
       "Create a decryption network and decrypt protected data",
     );
     expect(stmt.primaryText).toContain("Set up");
-    expect(stmt.primaryText).toContain("turn off your decryption network");
+    expect(stmt.primaryText).toContain("turn off decryption");
   });
 
   it("[decrypt, network.create, network.revoke] renders the literal fallback", () => {
@@ -156,7 +156,7 @@ describe("buildStatement — encryption network.revoke", () => {
     });
     const stmt = buildStatement(grant);
     expect(stmt.primaryText).toBe(
-      "Decrypt your data; set up and turn off your decryption network",
+      "Decrypt, set up and turn off decryption",
     );
     expect(stmt.primaryText).not.toBe(
       "Create a decryption network and decrypt protected data",
@@ -164,9 +164,9 @@ describe("buildStatement — encryption network.revoke", () => {
     expect(stmt.primaryText).not.toBe("Decrypt protected data");
     expect(stmt.primaryText).not.toBe("Create a decryption network");
     // Every ability must appear, in plain words.
-    expect(stmt.primaryText).toContain("Decrypt your data");
+    expect(stmt.primaryText).toContain("Decrypt");
     expect(stmt.primaryText).toContain("set up");
-    expect(stmt.primaryText).toContain("turn off your decryption network");
+    expect(stmt.primaryText).toContain("turn off decryption");
   });
 
   it("also explains the short-form `encryption/network.revoke` alias", () => {

@@ -221,8 +221,3 @@ export function coreOperations(
   }
   return operations;
 }
-
-/** Join distinct strings in first-seen order. */
-export function joinDistinct(values: readonly string[], separator: string): string {
-  return [...new Set(values)].join(separator);
-}

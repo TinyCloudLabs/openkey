@@ -108,6 +108,9 @@ describe("buildStatements — schema gets its own row", () => {
     );
     expect(rows).toHaveLength(1);
     expect(rows[0]!.literalEscaped).toBe(true);
+    expect(rows[0]!.primaryText).toBe(
+      "Read, change and delete your data; unknown action: tinycloud.sql/exfiltrate",
+    );
   });
 
   it("buildStatement fails closed on a mixed schema grant instead of dropping schema", () => {
@@ -115,7 +118,7 @@ describe("buildStatements — schema gets its own row", () => {
       sqlGrant(["tinycloud.sql/read", "tinycloud.sql/schema"]),
     );
     expect(stmt.primaryText).toBe(
-      "Read and edit tables in your data",
+      "Read, change and delete your data",
     );
   });
 });
