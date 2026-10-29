@@ -83,13 +83,13 @@ jobs:
       BETTER_AUTH_URL: https://api.openkey.test
       BETTER_AUTH_SECRET: org-registration-postgres-fixture-secret
       CORS_ORIGIN: https://openkey.so
-      HOME: ${{ runner.temp }}/org-registration/home
-      TC_HOME: ${{ runner.temp }}/org-registration/tc
-      COURIER_HOME: ${{ runner.temp }}/org-registration/courier
-      TMPDIR: ${{ runner.temp }}/org-registration/tmp
-      XDG_CACHE_HOME: ${{ runner.temp }}/org-registration/cache
-      BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/org-registration/bun-cache
-      npm_config_cache: ${{ runner.temp }}/org-registration/npm-cache
+      HOME: ${{ github.workspace }}/.ci/org-registration/home
+      TC_HOME: ${{ github.workspace }}/.ci/org-registration/tc
+      COURIER_HOME: ${{ github.workspace }}/.ci/org-registration/courier
+      TMPDIR: ${{ github.workspace }}/.ci/org-registration/tmp
+      XDG_CACHE_HOME: ${{ github.workspace }}/.ci/org-registration/cache
+      BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.ci/org-registration/bun-cache
+      npm_config_cache: ${{ github.workspace }}/.ci/org-registration/npm-cache
     steps:
       - uses: actions/checkout@v4
       - name: Prepare private fixture roots
