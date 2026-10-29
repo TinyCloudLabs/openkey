@@ -430,10 +430,10 @@
 
   async function loadApprovalRequest() {
     try {
-      if (location.search) throw new Error('Approval request URLs cannot contain query parameters.');
+      if (location.search) throw new Error('Open the original approval link.');
       const storageKey = `openkey.approval.${approvalRequestId}`;
       const fragment = location.hash || sessionStorage.getItem(storageKey) || '';
-      if (!fragment) throw new Error('The approval request key or sealed-body CID is missing.');
+      if (!fragment) throw new Error('Open the complete approval link.');
       // Keep the key in this tab, never in an auth return query or server log.
       sessionStorage.setItem(storageKey, fragment);
       history.replaceState(history.state, '', location.pathname);
@@ -444,7 +444,7 @@
         body: JSON.stringify({ reference }),
       });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error || 'Could not verify the immutable approval request.');
+      if (!response.ok) throw new Error(result.error || 'This approval link is invalid.');
       if (result.approved) {
         done = true;
         step = 'done';
@@ -458,7 +458,7 @@
       expiryParam = `${request.grantLifetimeSeconds}s`;
       approvalRequestLoaded = true;
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Could not load the approval request.';
+      error = cause instanceof Error ? cause.message : 'Could not open this approval link.';
     } finally {
       approvalRequestLoading = false;
     }
@@ -601,7 +601,7 @@
     // Every signing path starts here: never prepare the default abilities
     // for a request whose permissions could not be read.
     if (permissionsParamError) throw new Error(permissionsParamError);
-    if (approvalRequestMode && !approvalRequestLoaded) throw new Error('The immutable approval request has not been verified.');
+    if (approvalRequestMode && !approvalRequestLoaded) throw new Error('Open the approval link again.');
     if (linkPolicyError) throw new Error(linkPolicyError);
     if (requestOwnerError) throw new Error(requestOwnerError);
     const API_URL = import.meta.env.VITE_API_URL || '';
@@ -1317,7 +1317,7 @@
 
 {#if approvalRequestMode && !approvalRequestLoaded}
   <div role={error ? 'alert' : 'status'} class="min-h-screen flex items-center justify-center px-4 text-center">
-    {error || (approvalRequestLoading ? 'Verifying approval request…' : 'Approval request is unavailable.')}
+    {error || (approvalRequestLoading ? 'Checking request…' : 'This approval link is unavailable.')}
   </div>
 {:else if !dispatchReady && !preparedTransport}
   <div role="status" class="min-h-screen flex items-center justify-center">Loading delegation request…</div>

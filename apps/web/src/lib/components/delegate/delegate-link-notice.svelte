@@ -17,7 +17,7 @@
   let { host, hostRecognized, callback, requesterRelay = false, expiresAt, acknowledged = $bindable(false) }: Props = $props();
 
   const returnsTo = $derived.by(() => {
-    if (requesterRelay) return 'Requesting CLI, encrypted';
+    if (requesterRelay) return 'Requesting CLI';
     if (!callback) return 'This page, as a code to paste';
     const url = new URL(callback);
     return `${url.origin}${url.pathname}`;
