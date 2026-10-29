@@ -30,6 +30,8 @@ A token is not active if it is older than the user's current consent. Disconnect
 
 A resource server is a confidential client (`public: false`, `type: web`, `client_secret_basic`) whose `metadata` holds `tinycloudResourceServer.allowedResources`, the canonical resource URLs (token audiences) it may check, and optionally `rateLimitPerMinute`. It may hold several resources, for example `https://mcp.tinycloud.xyz/mcp` and `https://mcp.tinycloud.xyz/chatgpt/mcp`. Each must be an audience OpenKey issues tokens for (`OAUTH_VALID_AUDIENCES`, plus the built-in ones); registration names any that is not.
 
+Both first-party MCP resources are built-in audiences. Registering them does not require an `OAUTH_VALID_AUDIENCES` override; that setting is for additional resources the deployed API is configured to issue tokens for.
+
 Run the "Register Resource Server" workflow (`scripts/ci-register-resource-server.ts`) with the name, the allowed resources (comma-separated; locally, repeat `--allowed-resource <url>`), optionally `rate_limit_per_minute`, and the RSA public key (2048 bits or more) of whoever will hold the secret. The client secret is generated in the job and never printed; only its RSA-OAEP (SHA-256) ciphertext is, and the key holder decrypts it:
 
 ```sh
