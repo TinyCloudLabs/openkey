@@ -318,7 +318,34 @@ describe('exact share decrypt: create, prepare and signing (TC-1424)', () => {
     await assertSigned(signed.body);
   });
 
-  test('recipient delegation covers exactly its share and never the folder or another share (node v1.25.12)', async () => {
+  test('owner prefix approval signs exactly share/ decrypt with existing sign-time gates', async () => {
+    const prefix = `${network}/share/`;
+    const permissions = [sharePermissions[0]!, { ...sharePermissions[1]!, path: prefix }];
+    for (const key of [externalKey, managedKey]) {
+      const prepared = await post('/prepare', { keyId: key.id, jwk, host, permissions });
+      expect(prepared.status).toBe(200);
+      const signed = key.keyType === 'EXTERNAL'
+        ? await walletComplete(prepared.body, permissions)
+        : await post('/', {
+          keyId: key.id, jwk, host, permissions, protocolVersion: 1,
+          prepared: prepared.body.prepared,
+          authorizationContextToken: prepared.body.authorizationContext.token,
+          selectedActionIds: prepared.body.selectedActionKeys,
+        });
+      expect(signed.status).toBe(200);
+      expect(await verifyMessage({
+        address: wallet.address, message: signed.body.signedMessage, signature: signed.body.signature,
+      })).toBe(true);
+      expect(recapAtt(signed.body.signedMessage)).toEqual({
+        [`${shareSpace}/capabilities`]: { 'tinycloud.capabilities/read': [{}] },
+        [prefix]: { [DECRYPT]: [{}] },
+      });
+    }
+  });
+
+  test('exact-leaf owner session covers only its requested share (node v1.25.12 vectors)', async () => {
+    // This is a wallet-signed owner session to a fresh session key, not the
+    // node-minted Policy/v3 recipient token or its depth-0 contract.
     const recipient = new TCWSessionManager();
     recipient.createSessionKey('recipient');
     const { kty, crv, x } = JSON.parse(recipient.jwk('recipient')!);
@@ -370,15 +397,15 @@ describe('exact share decrypt: create, prepare and signing (TC-1424)', () => {
         });
         const isThisShare = target.requested === shareResource &&
           target.bodyKeyPath === 'share/abc123' && target.factsKeyPath === 'share/abc123';
-        expect(covered, `Recipient reach: ${target.requested}`).toBe(isThisShare);
+        expect(covered, `Signed scope reach: ${target.requested}`).toBe(isThisShare);
       }
     } finally {
       recipient.free();
     }
   });
 
-  test('neither create nor prepare accepts a prefix or an adjacent scope', async () => {
-    for (const path of [`${network}/share/`, `${shareResource}/`, `${shareResource}/child`, `${shareResource}%2Fchild`, `${network}/apps/demo/key`]) {
+  test('neither create nor prepare accepts noncanonical prefixes or adjacent scopes', async () => {
+    for (const path of [`${network}/sharex/`, `${shareResource}/`, `${shareResource}/child`, `${shareResource}%2Fchild`, `${network}/apps/demo/key`]) {
       for (const route of ['/', '/prepare']) {
         const result = await post(route, {
           keyId: managedKey.id, jwk, host,

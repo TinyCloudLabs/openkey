@@ -413,9 +413,9 @@ const ENCRYPTION_NETWORK_NAME = /^[a-z0-9][a-z0-9-]*$/;
 /**
  * A raw encryption entry carries no space (`space` absent or `encryption`),
  * grants only `tinycloud.encryption/decrypt`, and names a network the signer
- * owns or one exact `default/share/<shareId>` key. Whole networks keep their
- * case-insensitive owner check; named keys require the canonical owner DID,
- * matching the node's named-key parser.
+ * owns, the `default/share/` prefix, or one exact key below it. Whole networks
+ * keep their case-insensitive owner check; named resources require the
+ * canonical owner DID and path bytes, matching the node's named-key parser.
  */
 function assertRawEncryptionPermission(
   entry: DelegationPermissionEntry,
@@ -474,8 +474,10 @@ function assertRawEncryptionPermission(
     );
   }
   const key = network[3]!.includes('/') ? parseEncryptionResource(entry.path) : null;
-  const isShareKey = key?.kind === 'key' && key.network === 'default' &&
-    /^share\/[^/]+$/.test(key.keyPath);
+  const isShareKey = key !== null && key.network === 'default' &&
+    ((key.kind === 'prefix' && key.keyPath === 'share/') ||
+      (key.kind === 'key' && /^share\/[^/]+$/.test(key.keyPath))) &&
+    entry.path === `${RAW_ENCRYPTION_PREFIX}${key.ownerDid}:default/${key.keyPath}`;
   if (isShareKey && key.ownerDid !== `did:pkh:eip155:${signer.chainId}:${getAddress(signer.address)}`) {
     throw new DelegateRequestError(
       'invalid_permissions',
@@ -486,10 +488,10 @@ function assertRawEncryptionPermission(
   if (!ENCRYPTION_NETWORK_NAME.test(network[3]!) && !isShareKey) {
     throw new DelegateRequestError(
       'invalid_permissions',
-      `permissions[${index}].path must name an encryption network or an exact default/share/<shareId> key`,
+      `permissions[${index}].path must name an encryption network, default/share/, or an exact share key`,
       [{
         path: `permissions[${index}].path`,
-        message: 'Expected a valid network name or an exact default/share/<shareId> key',
+        message: 'Expected a valid network name, default/share/, or an exact default/share/<shareId> key',
         value: entry.path,
       }],
     );
