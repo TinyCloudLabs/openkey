@@ -50,6 +50,8 @@ const tinycloudBootstrapSweepMigration = '20261021_0001_tinycloud_bootstrap_swee
 const tinycloudBootstrapSweepChecksum = '905d0105d5b97e75d8855f30cd7e35e80d8034e7ee3051402f81d1efc1bf5edd';
 const revokedAccessTokenMigration = '20261026_0001_revoked_access_token';
 const revokedAccessTokenChecksum = 'a57958f43b7d1c28c25b38ef358a5392e4b7f9ecf78a979b2c86c8027bd53a30';
+const orgRegistrationMigration = '20261029_0001_org_registration_proofs';
+const orgRegistrationChecksum = '2aba2adcbca2a1554b480ee832873d846ed57161f95668ff4b4ce6659f465569';
 // Reviewed expand-only migrations that may run while TC-488 stays parked.
 const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
   [deviceMigration, deviceChecksum],
@@ -65,6 +67,7 @@ const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
   [orgKeyCustodyMigration, orgKeyCustodyChecksum],
   [tinycloudBootstrapSweepMigration, tinycloudBootstrapSweepChecksum],
   [revokedAccessTokenMigration, revokedAccessTokenChecksum],
+  [orgRegistrationMigration, orgRegistrationChecksum],
 ]);
 
 export type MigrationRow = {

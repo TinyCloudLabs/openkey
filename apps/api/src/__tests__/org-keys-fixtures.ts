@@ -1,8 +1,9 @@
 import { createHash, generateKeyPairSync, randomBytes, sign, type KeyObject } from 'node:crypto';
 import type { AuthenticationResponseJSON } from '@simplewebauthn/server';
 import type { PrismaClient } from '@openkey/db';
-import type { TeeClient } from '@openkey/tee';
-import { createOrgKey, ORG_KEY_ORIGIN } from '../services/org-keys';
+import { generatePrivateKey, getAddressFromPrivateKey, seal, type TeeClient } from '@openkey/tee';
+import { controllerDidForAddress, ORG_KEY_ORIGIN } from '../services/org-keys';
+import { createSealingContext, deriveKeyForRecord } from '../services/key-sealing';
 
 // Shared fixtures for the org-key service and route tests. Not a test file.
 // The fake Prisma client models only the operators org-keys.ts uses, and its
@@ -228,11 +229,22 @@ export function assertionFor(
 export async function setupOrgKey(options: { counter?: number } = {}) {
   const { db, state, fail } = fakeDb();
   const tee = fakeTee();
-  const key = await createOrgKey(asPrisma(db), tee, {
-    userId: 'user_1',
-    orgId: 'org_1',
-    orgName: 'Acme',
-    label: null,
+  const client = asPrisma(db);
+  const privateKey = generatePrivateKey();
+  const address = getAddressFromPrivateKey(privateKey);
+  const controllerDid = controllerDidForAddress(address);
+  const sealingContext = createSealingContext();
+  const sealedBlob = await seal(privateKey, await deriveKeyForRecord(tee, { userId: null, sealingContext }));
+  const key = await client.$transaction(async (tx) => {
+    const record = await tx.ethereumKey.create({ data: {
+      userId: null, custody: 'ORG', keyType: 'MANAGED', address, publicKey: address,
+      sealedBlob, sealingContext, isCanonicalTinyCloud: false, label: null,
+    } });
+    await tx.orgKey.create({ data: { keyId: record.id, orgId: 'org_1', orgName: 'Acme', controllerDid } });
+    const grant = await tx.keyGrant.create({ data: {
+      keyId: record.id, role: 'OWNER', granteeUserId: 'user_1', invitedByUserId: 'user_1', acceptedAt: new Date(),
+    } });
+    return { keyId: record.id, grantId: grant.id, address: record.address, label: record.label, controllerDid };
   });
   const passkey = addPasskey(state, 'user_1', options.counter ?? 0);
   addSession(state, 'user_1');

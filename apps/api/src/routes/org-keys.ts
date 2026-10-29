@@ -4,10 +4,10 @@ import { createPrismaClient, type PrismaClient } from '@openkey/db';
 import { createTeeClient, type TeeClient } from '@openkey/tee';
 import { requireSession, type SessionContext } from '../middleware/session';
 import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
-import { requireFreshPasskey } from '../services/passkey-freshness';
+import { auth } from '../auth';
+import { completeOrgRegistration, createOrgRegistrationHandler, type OrgRegistrationDependencies, type OrgRegistrationProof } from '../services/org-registration';
 import {
   classifyOrgKeyMessage,
-  createOrgKey,
   findActiveOrgGrant,
   findOrgKeyForUser,
   isOrgKeyCustodyEnabled,
@@ -18,14 +18,16 @@ import {
   signOrgKeyMessage,
 } from '../services/org-keys';
 
+// auth.ts widens plugin inference; this is the existing Better Auth server-only JWT endpoint, not a signer.
+interface ExistingJwtApi {
+  signJWT(input: { body: { payload: OrgRegistrationProof } }): Promise<{ token: string }>;
+}
+const jwtApi = auth.api as typeof auth.api & ExistingJwtApi;
+
 const requireOrgKeyCustodyEnabled: MiddlewareHandler = async (c, next) => {
   if (!isOrgKeyCustodyEnabled()) return c.json({ error: 'Not found' }, 404);
   await next();
 };
-
-// Creating an org key establishes custody, so it requires a passkey verified
-// within this window (K1 F7). Same bound as account deletion (TC-689).
-const ORG_KEY_CREATE_PASSKEY_MAX_AGE_MS = 5 * 60 * 1000;
 
 export type OrgKeysRouterDeps = {
   prisma: PrismaClient;
@@ -33,6 +35,7 @@ export type OrgKeysRouterDeps = {
   sessionMiddleware?: MiddlewareHandler<SessionContext>;
   // Read per request so the relying-party settings track the environment.
   webauthn?: () => { rpID: string; origin: string };
+  registration?: Partial<OrgRegistrationDependencies>;
 };
 
 const defaultWebauthn = () => ({
@@ -63,6 +66,10 @@ export function createOrgKeysRouter(deps: OrgKeysRouterDeps) {
   const { prisma, tee } = deps;
   const webauthn = deps.webauthn ?? defaultWebauthn;
   const sessionMiddleware = deps.sessionMiddleware ?? requireSession;
+  const registerOrg = createOrgRegistrationHandler(prisma, tee, {
+    fetch: deps.registration?.fetch,
+    signProof: deps.registration?.signProof ?? (async (payload) => (await jwtApi.signJWT({ body: { payload } })).token),
+  });
   const orgKeysRouter = new Hono<SessionContext>();
   orgKeysRouter.use('*', requireOrgKeyCustodyEnabled);
   // A bearer session token is accepted only from an OpenKey web origin (TC-688).
@@ -81,24 +88,18 @@ export function createOrgKeysRouter(deps: OrgKeysRouterDeps) {
   });
 
   orgKeysRouter.post('/', async (c) => {
-    const stale = await requireFreshPasskey(c, ORG_KEY_CREATE_PASSKEY_MAX_AGE_MS, prisma);
-    if (stale) return stale;
-    const body = await readJson<{ orgId?: unknown; orgName?: unknown; controllerDid?: unknown; label?: unknown }>(c);
-    if (!body || !isNonEmptyString(body.orgId) || !isNonEmptyString(body.orgName)) {
-      return c.json({ error: 'orgId and orgName are required' }, 400);
-    }
-    if (body.controllerDid !== undefined) {
-      return c.json({ error: 'controllerDid is derived from the key address and cannot be supplied', code: 'controller_did_not_accepted' }, 400);
-    }
-    const label = isNonEmptyString(body.label) ? body.label : null;
     try {
-      const created = await createOrgKey(prisma, tee, {
+      const relyingParty = deps.webauthn?.() ?? { rpID: 'openkey.so', origin: 'https://openkey.so' };
+      const result = await registerOrg(await c.req.text(), {
         userId: c.get('user').id,
-        orgId: body.orgId,
-        orgName: body.orgName,
-        label,
+        sessionId: c.get('session').id,
+        origin: c.req.header('origin'),
+        rpID: relyingParty.rpID,
+        expectedOrigin: relyingParty.origin,
       });
-      return c.json({ key: created }, 201);
+      if ('registrationChallenge' in result.body) return c.json(result.body, 200);
+      const registration = await completeOrgRegistration(prisma, result.body.key.keyId, deps.registration?.fetch);
+      return c.json({ key: result.body.key, registration }, result.status);
     } catch (error) {
       if (error instanceof OrgKeyRefusal) return c.json({ error: error.message, code: error.code }, error.status);
       throw error;

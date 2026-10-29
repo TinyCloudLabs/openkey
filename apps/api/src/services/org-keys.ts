@@ -4,13 +4,10 @@ import { verifyAuthenticationResponse, type AuthenticationResponseJSON } from '@
 import type { PrismaClient } from '@openkey/db';
 import {
   createWalletFromPrivateKey,
-  generatePrivateKey,
-  getAddressFromPrivateKey,
-  seal,
   unseal,
   type TeeClient,
 } from '@openkey/tee';
-import { createSealingContext, deriveKeyForRecord } from './key-sealing';
+import { deriveKeyForRecord } from './key-sealing';
 
 // Capability flag for organization key custody (TC-1518). Default off: the
 // org-key routes answer 404 until the flag is set to "true".
@@ -113,7 +110,7 @@ export async function findActiveOrgGrant(
 
 export class OrgKeyRefusal extends Error {
   constructor(
-    readonly status: 400 | 403 | 404,
+    readonly status: 400 | 403 | 404 | 409 | 410 | 503,
     readonly code: string,
     message: string,
   ) {
@@ -121,59 +118,10 @@ export class OrgKeyRefusal extends Error {
   }
 }
 
-export type CreateOrgKeyInput = {
-  userId: string;
-  orgId: string;
-  orgName: string;
-  label?: string | null;
-};
-
 // The controller of an org key is the did:pkh of the key's own address on chain 1,
 // the same form managed keys use in routes/delegate.ts. Clients never choose it.
 export function controllerDidForAddress(address: string): string {
   return `did:pkh:eip155:1:${getAddress(address)}`;
-}
-
-// Creates an ORG-custodied key with the caller as its OWNER (K1 D2). The key has
-// no personal owner (userId NULL), a per-key sealing context, and is never the
-// canonical TinyCloud key.
-export async function createOrgKey(prisma: PrismaClient, tee: TeeClient, input: CreateOrgKeyInput) {
-  const privateKey = generatePrivateKey();
-  const address = getAddressFromPrivateKey(privateKey);
-  const controllerDid = controllerDidForAddress(address);
-  const sealingContext = createSealingContext();
-  const sealedBlob = await seal(privateKey, await deriveKeyForRecord(tee, { userId: null, sealingContext }));
-
-  return prisma.$transaction(async (tx) => {
-    const key = await tx.ethereumKey.create({
-      data: {
-        userId: null,
-        custody: 'ORG',
-        keyType: 'MANAGED',
-        address,
-        publicKey: address,
-        sealedBlob,
-        sealingContext,
-        isCanonicalTinyCloud: false,
-        label: input.label ?? input.orgName,
-      },
-      select: { id: true, address: true, label: true },
-    });
-    await tx.orgKey.create({
-      data: { keyId: key.id, orgId: input.orgId, orgName: input.orgName, controllerDid },
-    });
-    const grant = await tx.keyGrant.create({
-      data: {
-        keyId: key.id,
-        role: 'OWNER',
-        granteeUserId: input.userId,
-        invitedByUserId: input.userId,
-        acceptedAt: new Date(),
-      },
-      select: { id: true },
-    });
-    return { keyId: key.id, grantId: grant.id, address: key.address, label: key.label, controllerDid };
-  });
 }
 
 export type OrgKeyMessageClassification = { ok: true; kind: string } | { ok: false; refusal: string };

@@ -131,6 +131,7 @@ model Session {
   lastPasskeyAt DateTime?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orgRegistrationChallenges OrgKeyRegistrationChallenge[]
 
   @@map("session")
 }
@@ -246,6 +247,7 @@ model EthereumKey {
   keyGrants               KeyGrant[]
   orgKeySignatureAudits   OrgKeySignatureAudit[]
   orgKeySignChallenges    OrgKeySignChallenge[]
+  orgRegistration        OrgKeyRegistration?
 
   @@unique([id, userId], map: "ethereum_keys_id_userId_key")
   @@map("ethereum_keys")
@@ -285,6 +287,7 @@ model KeyGrant {
   signatureAudits OrgKeySignatureAudit[]
   signChallenges OrgKeySignChallenge[]
   grantee User?       @relation(fields: [granteeUserId], references: [id], onDelete: Restrict)
+  orgRegistration OrgKeyRegistration?
 
   @@index([keyId])
   @@index([granteeUserId])
@@ -930,4 +933,49 @@ model RevokedAccessToken {
 
   @@index([expiresAt])
   @@map("revoked_access_token")
+}
+
+// Registration consent is bound to the verified account, exact session and immutable OC intent.
+model OrgKeyRegistrationChallenge {
+  challengeNonce String @id
+  registrationId String
+  ownerSubject String
+  sessionId String
+  intentDigest String
+  orgId String
+  nonce String
+  handle String
+  displayName String
+  expiresAt DateTime
+  consumedAt DateTime?
+  assertionHash String? @unique(map: "org_key_registration_challenges_assertionHash_key")
+  createdAt DateTime @default(now())
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([registrationId])
+  @@index([expiresAt])
+  @@map("org_key_registration_challenges")
+}
+
+// Account subject is retained without a user FK, like signature audits, so historical receipts survive account deletion.
+model OrgKeyRegistration {
+  registrationId String @id
+  ownerSubject String
+  intentDigest String
+  orgId String
+  nonce String
+  handle String
+  displayName String
+  keyId String @unique(map: "org_key_registrations_keyId_key")
+  grantId String @unique(map: "org_key_registrations_grantId_key")
+  controllerDid String
+  jti String @unique(map: "org_key_registrations_jti_key")
+  proof String
+  createdAt DateTime @default(now())
+
+  key EthereumKey @relation(fields: [keyId], references: [id], onDelete: Restrict)
+  grant KeyGrant @relation(fields: [grantId], references: [id], onDelete: Restrict)
+
+  @@map("org_key_registrations")
 }

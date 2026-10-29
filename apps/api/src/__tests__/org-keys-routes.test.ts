@@ -3,7 +3,7 @@ import { createMiddleware } from 'hono/factory';
 import { Hono } from 'hono';
 import { mockModules, replaceModules } from './mock-module';
 import type * as OrgKeysRoutes from '../routes/org-keys';
-import { addSession, asPrisma, fakeTee, ORIGIN, RP_ID, setupOrgKey } from './org-keys-fixtures';
+import { asPrisma, fakeTee, ORIGIN, RP_ID, setupOrgKey } from './org-keys-fixtures';
 
 const user = { id: 'user_1', email: 'test@example.com' };
 const MESSAGE = 'Sign in to the org console, nonce 42';
@@ -19,7 +19,7 @@ replaceModules({
   }),
 });
 await mockModules({
-  '@openkey/db': () => ({ createPrismaClient: () => ({}) }),
+  '@openkey/db': () => ({ createPrismaClient: () => ({ $extends() { return this; } }) }),
   '@openkey/tee': () => ({ createTeeClient: () => fakeTee() }),
 });
 
@@ -158,45 +158,6 @@ describe('org key routes', () => {
     expect(ctx.state.keys).toHaveLength(1);
   });
 
-  test('POST creates an ORG key and an OWNER grant for the caller after a fresh passkey', async () => {
-    const ctx = await setupOrgKey();
-    const app = await appFor(ctx);
-
-    const response = await app.request('/api/org-keys', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ orgId: 'org_2', orgName: 'Beta' }),
-    });
-    expect(response.status).toBe(201);
-    const body = (await response.json()) as { key: { keyId: string; address: string; controllerDid: string } };
-    const created = ctx.state.keys.find((key) => key.id === body.key.keyId);
-    expect(created).toMatchObject({ custody: 'ORG' });
-    expect(
-      ctx.state.grants.some(
-        (grant) => grant.keyId === body.key.keyId && grant.role === 'OWNER' && grant.granteeUserId === 'user_1',
-      ),
-    ).toBe(true);
-    expect(body.key.controllerDid).toBe(`did:pkh:eip155:1:${body.key.address}`);
-  });
-
-  test('POST refuses a supplied controllerDid and creates no key', async () => {
-    const ctx = await setupOrgKey();
-    const app = await appFor(ctx);
-
-    const response = await app.request('/api/org-keys', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        orgId: 'org_2',
-        orgName: 'Beta',
-        controllerDid: 'did:pkh:eip155:1:0x0000000000000000000000000000000000000001',
-      }),
-    });
-    expect(response.status).toBe(400);
-    expect(await response.json()).toMatchObject({ code: 'controller_did_not_accepted' });
-    expect(ctx.state.keys).toHaveLength(1);
-  });
-
   test('POST rejects a body missing required fields', async () => {
     const ctx = await setupOrgKey();
     const app = await appFor(ctx);
@@ -207,37 +168,6 @@ describe('org key routes', () => {
       body: JSON.stringify({ orgId: 'org_2' }),
     });
     expect(response.status).toBe(400);
-    expect(ctx.state.keys).toHaveLength(1);
-  });
-
-  test('F7: POST without a passkey verified in the last 5 minutes is refused and creates no key', async () => {
-    const ctx = await setupOrgKey();
-    const app = await appFor(ctx);
-    ctx.state.sessions[0] = { ...ctx.state.sessions[0], lastPasskeyAt: new Date(Date.now() - 10 * 60 * 1000) };
-
-    const response = await app.request('/api/org-keys', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ orgId: 'org_2', orgName: 'Beta' }),
-    });
-    expect(response.status).toBe(403);
-    expect(await response.json()).toMatchObject({ code: 'passkey_step_up_required' });
-    expect(ctx.state.keys).toHaveLength(1);
-  });
-
-  test('F7: POST is refused when the session has never recorded a passkey verification', async () => {
-    const ctx = await setupOrgKey();
-    const app = await appFor(ctx);
-    ctx.state.sessions.length = 0;
-    addSession(ctx.state, 'user_1', null);
-
-    const response = await app.request('/api/org-keys', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ orgId: 'org_2', orgName: 'Beta' }),
-    });
-    expect(response.status).toBe(403);
-    expect(await response.json()).toMatchObject({ code: 'passkey_step_up_required' });
     expect(ctx.state.keys).toHaveLength(1);
   });
 

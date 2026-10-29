@@ -79,11 +79,21 @@ app.use('/api/delegate/sign', cors({
 // and PKCE plus session proofs, not cookies, authenticate them. Every other
 // route, including the cookie-authenticated consent routes, keeps the
 // restricted credentialed policy.
-app.use('*', protocolAwareCors(cors({
+const credentialedCors = protocolAwareCors(cors({
   origin: corsOriginPolicy('http://localhost:5173'),
   credentials: true,
   exposeHeaders: API_EXPOSED_HEADERS,
-})));
+}));
+const registrationCors = cors({
+  origin: (origin) => origin === 'https://openkey.so' ? origin : undefined,
+  credentials: true,
+  exposeHeaders: API_EXPOSED_HEADERS,
+});
+app.use('*', (c, next) => {
+  const registration = (c.req.path === '/api/org-keys' || c.req.path === '/api/org-keys/')
+    && (c.req.method === 'POST' || (c.req.method === 'OPTIONS' && c.req.header('access-control-request-method')?.toUpperCase() === 'POST'));
+  return registration ? registrationCors(c, next) : credentialedCors(c, next);
+});
 
 // Health check: traffic is accepted only when the database migration contract
 // required by this Prisma client is present and checksum-verified.
