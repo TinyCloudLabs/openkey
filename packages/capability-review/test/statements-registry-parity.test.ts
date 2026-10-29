@@ -264,8 +264,9 @@ describe("buildStatement — KV catalog: registered abilities preserved", () => 
       abilities: ["tinycloud.kv/get", "tinycloud.kv/put", "tinycloud.kv/del"],
     });
     expect(buildStatement(grant).primaryText).toBe(
-      "Read and update application data",
+      "Read, change and delete your data",
     );
+    expect(buildStatement(grant).literalEscaped).toBeUndefined();
   });
 
   it("KV [delete] (deprecated alias) stays literal", () => {

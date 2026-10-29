@@ -620,3 +620,33 @@ describe("raw fallback rows show every action", () => {
     expect(statement.primaryText).toContain(`${long.slice(0, 120)}…, tinycloud.kv/archive, tinycloud.kv/rotate`);
   });
 });
+
+// Re-review of TC-2216: composed encryption rows keep key actions and the owner.
+describe("composed encryption rows", () => {
+  it("block and unblock on one resource name both", () => {
+    const statement = buildStatement(
+      makeGrant({
+        service: "tinycloud.encryption",
+        path: "",
+        abilities: ["tinycloud.encryption/key.block", "tinycloud.encryption/key.unblock"],
+        family: "encryption-key",
+        severity: "attention",
+      }),
+    );
+    expect(statement.primaryText).toBe("Block and unblock your keys");
+  });
+
+  it("another user's decrypt and revoke keep another user's", () => {
+    const statement = buildStatement(
+      makeGrant({
+        service: "tinycloud.encryption",
+        path: "",
+        abilities: ["tinycloud.encryption/decrypt", "tinycloud.encryption/network.revoke"],
+        family: "encryption-decrypt",
+        severity: "sensitive",
+        ownedBySelf: false,
+      }),
+    );
+    expect(statement.primaryText).toBe("Decrypt and stop another user's decryption");
+  });
+});

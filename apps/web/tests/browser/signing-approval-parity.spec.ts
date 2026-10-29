@@ -328,7 +328,7 @@ test.describe('signing-approval browser parity — production adapters', () => {
       await expect(dialog).toContainText('Read and update application data');
       await expect(dialog).toContainText('Check your TinyCloud permissions');
       const summary = page.locator('[data-parity-harness] .summary');
-      await expect(summary.locator('.summary-statement')).toHaveCount(11);
+      await expect(summary.locator('.summary-statement')).toHaveCount(12);
       await expect(summary).toContainText('See who has access to your data');
       await expect(summary).toContainText("Edit and delete tables in your TinyCloud account");
       await expect(summary).toContainText("Edit and delete this app's tables");
@@ -350,11 +350,12 @@ test.describe('signing-approval browser parity — production adapters', () => {
         'Check your TinyCloud permissions',
         'See who has access to your data',
         'Manage your TinyCloud account',
-        'Read and update application data',
+        'Read, change and delete your data',
         'Read your public data',
         'View your secret names and details',
         'Read secret values',
         'Edit and delete tables in your TinyCloud account',
+        'Read and update application data',
         'Read application data',
         "Edit and delete this app's tables",
         'View your secret catalog',

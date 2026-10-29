@@ -29,7 +29,7 @@ import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { CAPABILITY_REGISTRY } from "@tinycloud/bootstrap";
 
-import { buildStatements, parseCapabilityReview } from "../src/index.js";
+import { buildStatements, parseCapabilityReview, type StatementEntry } from "../src/index.js";
 import {
   FIXTURE_META,
   makeRecapResource,
@@ -93,18 +93,29 @@ const OTHER = "0x2222222222222222222222222222222222222222";
 const space = (name: string, owner: string) =>
   `tinycloud:pkh:eip155:${FIXTURE_META.chainId}:${owner}:${name}`;
 
-// The resource each registry service is normally requested on.
-const RESOURCE: Record<string, (owner: string) => string> = {
-  "tinycloud.kv": (owner) => `${space("default", owner)}/kv/notes/`,
-  "tinycloud.sql": (owner) => `${space("default", owner)}/sql/notes`,
-  "tinycloud.duckdb": (owner) => `${space("default", owner)}/duckdb/analytics`,
-  "tinycloud.vfs": (owner) => `${space("default", owner)}/vfs/photos`,
-  "tinycloud.hooks": (owner) => `${space("default", owner)}/hooks/notes/`,
-  "tinycloud.capabilities": (owner) => `${space("default", owner)}/capabilities`,
-  "tinycloud.delegation": (owner) => `${space("account", owner)}/delegation`,
-  "tinycloud.encryption": (owner) => `${space("default", owner)}/encryption`,
-  "tinycloud.space": (owner) => `${space("courier", owner)}/space`,
+// The resources each service is normally requested on. Encryption is also
+// requested on its network URN.
+const RESOURCES: Record<string, Array<(owner: string) => string>> = {
+  "tinycloud.kv": [(owner) => `${space("default", owner)}/kv/notes/`],
+  "tinycloud.sql": [(owner) => `${space("default", owner)}/sql/notes`],
+  "tinycloud.duckdb": [(owner) => `${space("default", owner)}/duckdb/analytics`],
+  "tinycloud.vfs": [(owner) => `${space("default", owner)}/vfs/photos`],
+  "tinycloud.hooks": [(owner) => `${space("default", owner)}/hooks/notes/`],
+  "tinycloud.capabilities": [(owner) => `${space("default", owner)}/capabilities`],
+  "tinycloud.delegation": [(owner) => `${space("account", owner)}/delegation`],
+  "tinycloud.encryption": [
+    (owner) => `${space("default", owner)}/encryption`,
+    (owner) => `urn:tinycloud:encryption:did:pkh:eip155:${FIXTURE_META.chainId}:${owner}:default`,
+  ],
+  "tinycloud.space": [(owner) => `${space("courier", owner)}/space`],
 };
+
+// Registered encryption key abilities the node registry does not list.
+const KEY_ABILITIES = [
+  "tinycloud.encryption/key.create",
+  "tinycloud.encryption/key.block",
+  "tinycloud.encryption/key.unblock",
+];
 
 /** Every non-empty subset of `items`, in a stable order. */
 function subsets<T>(items: readonly T[]): T[][] {
@@ -135,32 +146,123 @@ function review(resource: string, abilities: readonly string[]) {
   });
 }
 
-function renderedDescriptors(extraAbility?: (service: string) => string): Descriptor[] {
-  const found: Descriptor[] = [];
+interface Combination {
+  where: string;
+  requested: string[];
+  other: boolean;
+  grants: Array<{ label: string; composedLabel: boolean; rows: StatementEntry[] }>;
+}
+
+/**
+ * Every non-empty combination of a service's abilities in one request, on
+ * each of its resources, on the signer's own space and on another user's.
+ * `extraAbility` adds one more ability to every request.
+ */
+function combinations(extraAbility?: (service: string) => string): Combination[] {
+  const found: Combination[] = [];
   const services = [...new Set(CAPABILITY_REGISTRY.map((entry) => entry.service))];
   for (const service of services) {
-    const resource = RESOURCE[service];
-    if (!resource) throw new Error(`No resource for registry service ${service}; add it to RESOURCE`);
-    const abilities = CAPABILITY_REGISTRY.filter((entry) => entry.service === service).map((entry) => entry.urn);
-    for (const set of subsets(abilities)) {
-      const requested = extraAbility ? [...set, extraAbility(service)] : set;
+    const resources = RESOURCES[service];
+    if (!resources) throw new Error(`No resource for registry service ${service}; add it to RESOURCES`);
+    const abilities = [
+      ...CAPABILITY_REGISTRY.filter((entry) => entry.service === service).map((entry) => entry.urn),
+      ...(service === "tinycloud.encryption" ? KEY_ABILITIES : []),
+    ];
+    for (const resource of resources) {
       for (const owner of [ACCOUNT, OTHER]) {
-        const where = `[${requested.join(", ")}] (${owner === ACCOUNT ? "own" : "other"})`;
-        for (const grant of review(resource(owner), requested).permissions) {
-          found.push({ where: `${where} label`, text: grant.displayLabel, length: grant.displayLabel.length });
-          for (const row of buildStatements(grant)) {
-            found.push({
-              where,
-              text: row.primaryText,
-              length: row.primaryText.length,
-              ...(row.showsRawText ? { raw: true as const } : {}),
-            });
-          }
+        const singleLabels = new Set(
+          abilities.flatMap((ability) => review(resource(owner), [ability]).permissions.map((g) => g.displayLabel)),
+        );
+        for (const set of subsets(abilities)) {
+          const requested = extraAbility ? [...set, extraAbility(service)] : set;
+          found.push({
+            where: `${resource(owner)} [${requested.join(", ")}]`,
+            requested,
+            other: owner === OTHER,
+            grants: review(resource(owner), requested).permissions.map((grant) => ({
+              label: grant.displayLabel,
+              // A title no single ability of the request has was composed from several.
+              composedLabel: requested.length > 1 && !singleLabels.has(grant.displayLabel),
+              rows: buildStatements(grant),
+            })),
+          });
         }
       }
     }
   }
   return found;
+}
+
+function renderedDescriptors(extraAbility?: (service: string) => string): Descriptor[] {
+  return combinations(extraAbility).flatMap((c) =>
+    c.grants.flatMap((grant) => [
+      { where: `${c.where} label`, text: grant.label, length: grant.label.length },
+      ...grant.rows.map((row) => ({
+        where: c.where,
+        text: row.primaryText,
+        length: row.primaryText.length,
+        ...(row.showsRawText ? { raw: true as const } : {}),
+      })),
+    ]),
+  );
+}
+
+/**
+ * Consequences a row must never lose when it names several actions: each is
+ * carried by these abilities, and named by a word matching `keyword`.
+ */
+const CONSEQUENCES: Array<{ name: string; abilities: string[]; keyword: RegExp }> = [
+  {
+    name: "delete",
+    abilities: [
+      "tinycloud.kv/del",
+      "tinycloud.kv/delete",
+      "tinycloud.sql/schema",
+      "tinycloud.sql/*",
+      "tinycloud.vfs/delete",
+      "tinycloud.duckdb/import",
+      "tinycloud.duckdb/*",
+    ],
+    keyword: /\b(delete|replace|anything)\b/i,
+  },
+  { name: "decrypt", abilities: ["tinycloud.encryption/decrypt"], keyword: /\bdecrypt\b/i },
+  {
+    name: "block or unblock keys",
+    abilities: ["tinycloud.encryption/key.block", "tinycloud.encryption/key.unblock"],
+    keyword: /\b(un)?block\b/i,
+  },
+  { name: "create keys", abilities: ["tinycloud.encryption/key.create"], keyword: /\bcreate\b/i },
+  { name: "send outward (webhook)", abilities: ["tinycloud.hooks/register"], keyword: /\b(share|send)\b/i },
+  {
+    name: "decryption network",
+    abilities: ["tinycloud.encryption/network.create", "tinycloud.encryption/network.revoke"],
+    keyword: /\b(decryption|encryption)\b/i,
+  },
+];
+const ANOTHER_USER = /\banother user's\b/i;
+
+/** Every consequence a combination's rows (together) or composed title fail to name. */
+function lostConsequences(c: Combination): string[] {
+  const lost: string[] = [];
+  for (const grant of c.grants) {
+    const summary = grant.rows.map((row) => row.primaryText).join(" | ");
+    const texts = [["rows", summary], ...(grant.composedLabel ? [["title", grant.label]] : [])];
+    for (const consequence of CONSEQUENCES) {
+      if (!c.requested.some((ability) => consequence.abilities.includes(ability))) continue;
+      for (const [what, text] of texts) {
+        if (!consequence.keyword.test(text!)) lost.push(`${c.where} ${what} drop ${consequence.name}: ${text}`);
+      }
+    }
+    if (c.other) {
+      for (const row of grant.rows) {
+        if (!ANOTHER_USER.test(row.primaryText)) lost.push(`${c.where} row drops another user's: ${row.primaryText}`);
+      }
+      if (grant.composedLabel && !ANOTHER_USER.test(grant.label)) {
+        lost.push(`${c.where} title drops another user's: ${grant.label}`);
+      }
+    }
+  }
+  return lost;
 }
 
 function overLimit(descriptors: Descriptor[]): string[] {
@@ -191,14 +293,19 @@ describe("permission copy is one line", () => {
     expect(overLimit(rendered)).toEqual([]);
   });
 
+  it("a row or composed title never loses deletion, decryption, key, sharing or another user's data", () => {
+    expect(combinations().flatMap(lostConsequences)).toEqual([]);
+  });
+
   it("a row with an unknown action is marked raw and shows that action", () => {
     // The registered-only test above proves no other row is marked raw.
-    const unknown = (service: string) => `${service}/tc2216-unknown`;
-    const rows = renderedDescriptors(unknown).filter((d) => !d.where.endsWith("label"));
-    expect(rows.length).toBeGreaterThan(0);
-    for (const row of rows) {
-      expect(row.raw, row.where).toBe(true);
-      expect(row.text, row.where).toContain(unknown(row.where.slice(1, row.where.indexOf("/"))));
+    const cases = combinations((service) => `${service}/tc2216-unknown`);
+    expect(cases.length).toBeGreaterThan(0);
+    for (const c of cases) {
+      for (const row of c.grants.flatMap((grant) => grant.rows)) {
+        expect(row.showsRawText, c.where).toBe(true);
+        expect(row.primaryText, c.where).toContain(c.requested.at(-1)!);
+      }
     }
   });
 

@@ -167,7 +167,7 @@ export const SQL_ADMIN_OPERATIONS: Readonly<Record<string, CoreOperation>> = {
   "*": {
     family: "database-admin",
     label: "SQL database (full access)",
-    description: "Read, update and manage an application database",
+    description: "Read, change, delete and manage an app database",
   },
 };
 
