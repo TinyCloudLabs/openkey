@@ -8,15 +8,12 @@
 
   const storageKey = 'openkey.org-registration.intent.v1';
   const path = '/org-registration/consent';
-  const session = authClient.useSession();
   interface IntentFields { intentJws: string; registrationId: string; orgId: string; nonce: string; handle: string; orgName: string }
   interface Challenge { challengeNonce: string; challenge: string; expiresAt: string; allowCredentials: PublicKeyCredentialRequestOptionsJSON['allowCredentials'] }
   interface Registration { registrationId: string; orgId: string; handle: string; displayName: string; controllerDid: string; issuerDid: string; tier: string }
   let fields = $state<IntentFields | null>(null);
   let pending = $state<{ fields: IntentFields; challenge: Challenge } | null>(null);
   let registration = $state<Registration | null>(null);
-  let loaded = $state(false);
-  let started = $state(false);
   let busy = $state(false);
   let retryable = $state(false);
   let error = $state('');
@@ -30,10 +27,16 @@
   }
 
   onMount(() => {
+    if (location.origin !== 'https://openkey.so') {
+      clearIntent();
+      error = 'Organization registration is available only at https://openkey.so.';
+      return;
+    }
     // An SPA return from login must acquire this document's response headers too.
     const navigation = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
     if (navigation && new URL(navigation.name).pathname !== path) { location.replace(path); return; }
     let timer: number | undefined;
+    let unsubscribe: (() => void) | undefined;
     try {
       if (window.top !== window.self) throw new Error('Open this registration in its own browser tab.');
       const stored = sessionStorage.getItem(storageKey);
@@ -50,11 +53,18 @@
         clearIntent();
         if (!registration && !busy) error = 'Registration expired. Start again at credentials.org.';
       }, expiresAt - Date.now());
+      let started = false;
+      unsubscribe = authClient.useSession().subscribe(session => {
+        if (session.isPending || started) return;
+        started = true;
+        if (!session.data) { location.replace('/auth/login?redirect=%2Forg-registration%2Fconsent'); return; }
+        void verify();
+      });
     } catch (cause) {
       clearIntent();
       error = cause instanceof Error ? cause.message : 'Registration cannot be recovered in this tab. Start again at credentials.org.';
-    } finally { loaded = true; }
-    return () => { if (timer !== undefined) window.clearTimeout(timer); };
+    }
+    return () => { if (timer !== undefined) window.clearTimeout(timer); unsubscribe?.(); };
   });
 
   async function submit(input: IntentFields, consent?: { challengeNonce: string; assertion: AuthenticationResponseJSON }) {
@@ -92,12 +102,6 @@
     } finally { busy = false; }
   }
 
-  $effect(() => {
-    if (!loaded || started || !fields || $session.isPending) return;
-    started = true;
-    if (!$session.data) { location.replace('/auth/login?redirect=%2Forg-registration%2Fconsent'); return; }
-    void verify();
-  });
 
   async function approve() {
     const bound = pending;
