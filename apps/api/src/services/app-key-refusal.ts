@@ -205,6 +205,28 @@ export function blockResourcesOutsideApps(siwe: string): Array<[string, string[]
   );
 }
 
+/** `decrypt` and `key.create` under any namespace, compared like `key.block`. */
+function isEncryptionGrantAbility(ability: string): boolean {
+  const name = ability.slice(ability.lastIndexOf('/') + 1).toLowerCase();
+  return name === 'decrypt' || name === 'key.create';
+}
+
+/**
+ * The encryption resources of a SIWE message outside `apps/` that carry
+ * `decrypt` or `key.create`: a bare network (no path), a prefix or a key. A
+ * website's own sign-in may name these two only under `apps/<app id>/`, which
+ * `isAppsKeyResource` does not see for a bare network. The prepared-handoff
+ * (command line) routes do not call this.
+ */
+export function encryptionGrantsOutsideApps(siwe: string): Array<[string, string[]]> {
+  return (recapResources(siwe) ?? []).filter(
+    ([resource, abilities]) =>
+      resource.slice(0, KEY_RESOURCE_PREFIX.length).toLowerCase() === KEY_RESOURCE_PREFIX &&
+      !isAppsKeyResource(resource) &&
+      abilities.some(isEncryptionGrantAbility),
+  );
+}
+
 /**
  * Look for `apps/` key resources and `key.delete` abilities in every
  * `urn:recap:` resource of one SIWE message, and for a ReCap that cannot be
