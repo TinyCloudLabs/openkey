@@ -159,7 +159,7 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `DATABASE_URL` | PostgreSQL connection string |
 | `BETTER_AUTH_SECRET` | 32+ character random secret for session encryption |
 | `BETTER_AUTH_URL` | `https://api.openkey.so` |
-| `APPROVAL_RESULT_RETENTION_SECONDS` | Required positive integer seconds for collecting approved CLI results. No default; choose the value in the approved deploy plan. The result deadline is capped by the signed grant expiry. |
+| `APPROVAL_RESULT_RETENTION_SECONDS` | `600` (10 min, Sam 2026-10-29), fixed in production compose for collecting approved CLI results. The result deadline is capped by the signed grant expiry. |
 | `OAUTH_DYNAMIC_CLIENT_REGISTRATION` | Keep `true` for MCP clients that register automatically; set `false` only as an emergency disable |
 | `OAUTH_VALID_AUDIENCES` | Comma-separated additional OAuth resource URLs; code includes the exact broad `https://mcp.tinycloud.xyz/mcp` and public `https://mcp.tinycloud.xyz/chatgpt/mcp` audiences. Preserve any additional configured resources. |
 | `WEBAUTHN_RP_ID` | `openkey.so` |
