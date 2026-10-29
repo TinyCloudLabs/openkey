@@ -5,12 +5,15 @@
 import { beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
 import type { keysRouter } from '../routes/keys';
+import type { ownerRevocationRouter } from '../routes/owner-revocation-runtime';
+import { MemoryPreparedHandoffStore, PreparedHandoffService } from '../services/prepared-handoff';
 import { mockModules, replaceModules } from './mock-module';
 
 type Row = Record<string, unknown>;
 
 const user = { id: 'user_1', email: 'alice@example.test', emailVerified: true };
 const createdAt = new Date('2026-01-01T00:00:00.000Z');
+const ownerRevocationHandoffs = new PreparedHandoffService(new MemoryPreparedHandoffStore());
 
 const personalKey: Row = {
   id: 'key_personal', userId: user.id, custody: 'PERSONAL', address: `0x${'1'.repeat(40)}`,
@@ -68,6 +71,9 @@ replaceModules({
       await next();
     }),
   }),
+  '../routes/prepared-handoffs': () => ({
+    preparedHandoffService: ownerRevocationHandoffs,
+  }),
 });
 await mockModules({
   '@openkey/db': () => ({ createPrismaClient: () => fakeClient }),
@@ -84,6 +90,7 @@ await mockModules({
 });
 
 let router: typeof keysRouter;
+let revocationRouter: typeof ownerRevocationRouter;
 let buildKeyClaims: typeof import('../auth').buildKeyClaims;
 
 beforeAll(async () => {
@@ -92,6 +99,8 @@ beforeAll(async () => {
   process.env.BETTER_AUTH_SECRET ??= 'org-key-t1-test-secret-000000000000';
   ({ keysRouter: router } = await import('../routes/keys?org-key-t1-keys' as string));
   ({ buildKeyClaims } = (await import('../auth?org-key-t1-auth' as string)) as typeof import('../auth'));
+  // Load the runtime after its scoped DB, session, and handoff fixtures are registered.
+  ({ ownerRevocationRouter: revocationRouter } = await import('../routes/owner-revocation-runtime?org-key-t1-owner-revocation' as string));
 });
 
 // The OAuth keys claim reads only through the injected DB, so the fake store drives it.
@@ -178,4 +187,56 @@ describe('K1 T1: a user with one personal key and one org key', () => {
     const claims = (await claimsFor()) as Array<{ keyId: string }>;
     expect(claims.map((claim) => claim.keyId)).toEqual(['key_personal']);
   });
+});
+
+test('owner revocation accepts a non-primary personal key and refuses other key bindings', async () => {
+  const origin = 'https://openkey.test';
+  const previousCorsOrigin = process.env.CORS_ORIGIN;
+  const previousWebauthnOrigin = process.env.WEBAUTHN_ORIGIN;
+  process.env.CORS_ORIGIN = origin;
+  process.env.WEBAUTHN_ORIGIN = origin;
+  const activePersonal = { ...personalKey, isCanonicalTinyCloud: false, sealingContext: 'A'.repeat(43) };
+  const cases: Array<{ row: Row; status: number }> = [
+    { row: activePersonal, status: 200 },
+    // The stateful fixture can represent inconsistent rows, independently checking the custody predicate.
+    { row: { ...activePersonal, custody: 'ORG' }, status: 403 },
+    { row: { ...activePersonal, userId: 'another_user' }, status: 403 },
+    { row: { ...activePersonal, archivedAt: createdAt }, status: 403 },
+    { row: { ...activePersonal, id: 'another_key' }, status: 403 },
+  ];
+  try {
+    for (const [index, { row, status }] of cases.entries()) {
+      rows = [row];
+      const ticket = Buffer.alloc(32, index + 10).toString('base64url');
+      await ownerRevocationHandoffs.claim({
+        transportVersion: 2,
+        request: {
+          kind: 'owner-revocation',
+          ownerDid: `did:pkh:eip155:1:${String(personalKey.address)}`,
+          cid: 'bafyreib2rxk3rybk3aobmv5cjuql3bm2twh4jo5uxgf5kpqcsgzz7nazxe',
+          nonce: Buffer.alloc(16, index + 1).toString('hex'),
+          expiresAt: new Date(Date.now() + 590_000).toISOString(),
+        },
+        delivery: {
+          handoffId: ticket,
+          state: Buffer.alloc(32, 30).toString('base64url'),
+          cancelSecret: Buffer.alloc(32, 31).toString('base64url'),
+        },
+      }, user.id);
+      const response = await revocationRouter.request('/prepare', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin },
+        body: JSON.stringify({ keyId: personalKey.id, ticket }),
+      });
+      expect(response.status).toBe(status);
+      if (status !== 200) {
+        expect('authorizationContextToken' in await response.json()).toBe(false);
+      }
+    }
+  } finally {
+    if (previousCorsOrigin === undefined) delete process.env.CORS_ORIGIN;
+    else process.env.CORS_ORIGIN = previousCorsOrigin;
+    if (previousWebauthnOrigin === undefined) delete process.env.WEBAUTHN_ORIGIN;
+    else process.env.WEBAUTHN_ORIGIN = previousWebauthnOrigin;
+  }
 });
