@@ -189,7 +189,7 @@ describe('a first-party origin', () => {
   test('the list is the one briefed: six production origins and our own Pages projects', () => {
     expect([...FIRST_PARTY_ENCRYPTION_ORIGINS].sort()).toEqual([
       'http://tauri.localhost',
-      'https://lightning-node-1.gecko-snares.ts.net',
+      'https://lightning-node-1.gecko-snares.ts.net:8451',
       'https://secrets.tinycloud.xyz',
       'https://share.tinycloud.xyz',
       'https://tinycloud.chat',
@@ -219,7 +219,8 @@ describe('a first-party origin', () => {
 // `network.create` on the owner's `inbox` encryption network. The rows are those of the renewal
 // fixture in the Inbox repository (tests/fixtures/signin-renewal.json).
 describe('the Inbox sign-in', () => {
-  const INBOX_ORIGIN = 'https://lightning-node-1.gecko-snares.ts.net';
+  const INBOX_HOST = 'lightning-node-1.gecko-snares.ts.net:8451';
+  const INBOX_ORIGIN = `https://${INBOX_HOST}`;
   const MESSAGES = `tinycloud:pkh:eip155:1:${address}:messages`;
   const PUBLIC = `tinycloud:pkh:eip155:1:${address}:public`;
   const KV = ['tinycloud.kv/del', 'tinycloud.kv/get', 'tinycloud.kv/list', 'tinycloud.kv/metadata', 'tinycloud.kv/put'];
@@ -250,7 +251,7 @@ describe('the Inbox sign-in', () => {
   }
 
   test('the request built here has the eight rows of the Inbox fixture', () => {
-    const rows = extractRecapAttenuations(inboxSiwe('lightning-node-1.gecko-snares.ts.net'));
+    const rows = extractRecapAttenuations(inboxSiwe(INBOX_HOST));
     expect(Object.keys(rows).sort()).toEqual([
       `${MESSAGES}/capabilities`,
       `${MESSAGES}/kv/xyz.tinycloud.inbox/media/`,
@@ -265,7 +266,7 @@ describe('the Inbox sign-in', () => {
   });
 
   test('signs from the Inbox origin, as text and as 0x hex', async () => {
-    const siwe = inboxSiwe('lightning-node-1.gecko-snares.ts.net');
+    const siwe = inboxSiwe(INBOX_HOST);
     for (const body of [{ message: siwe }, { message: hex(siwe), format: 'raw' }]) {
       unseal.mockClear();
       const res = await sign({ ...body, requestOrigin: INBOX_ORIGIN });
@@ -275,14 +276,16 @@ describe('the Inbox sign-in', () => {
   });
 
   test.each([
-    ['the retired port', 'https://lightning-node-1.gecko-snares.ts.net:8451'],
-    ['plain http', 'http://lightning-node-1.gecko-snares.ts.net'],
-    ['a longer host', 'https://lightning-node-1.gecko-snares.ts.net.evil.example'],
-    ['a prefixed host', 'https://evil-lightning-node-1.gecko-snares.ts.net'],
-    ['another node on the tailnet', 'https://lightning-node-2.gecko-snares.ts.net'],
-    ['the tailnet name alone', 'https://gecko-snares.ts.net'],
+    ['the same host on the shared port 443 (no port)', 'https://lightning-node-1.gecko-snares.ts.net'],
+    ['another port on the same host', 'https://lightning-node-1.gecko-snares.ts.net:8452'],
+    ['plain http on its port', 'http://lightning-node-1.gecko-snares.ts.net:8451'],
+    ['a longer host', 'https://lightning-node-1.gecko-snares.ts.net.evil.example:8451'],
+    ['a prefixed host', 'https://evil-lightning-node-1.gecko-snares.ts.net:8451'],
+    ['another node on the tailnet', 'https://lightning-node-2.gecko-snares.ts.net:8451'],
+    ['the tailnet name alone', 'https://gecko-snares.ts.net:8451'],
   ])('is refused from %s', async (_name, origin) => {
     expect(isFirstPartyEncryptionOrigin(origin)).toBe(false);
+    // The page at that origin signs a request that names its own host, so only the new gate can refuse it.
     const res = await sign({ message: inboxSiwe(new URL(origin).host), requestOrigin: origin });
     expect(res.status).toBe(403);
     await expect(res.json()).resolves.toEqual(REFUSED);

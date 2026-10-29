@@ -25,14 +25,14 @@ export const FIRST_PARTY_ENCRYPTION_ORIGINS: ReadonlySet<string> = new Set([
   // Secret Manager. secret-manager: src/lib/tinycloud-manifest.ts:36-41 (decrypt on the default
   // network), src/lib/vault-client.ts:64 and :76 (sign-in), :103-107 (network.create).
   'https://secrets.tinycloud.xyz',
-  // Inbox (TC-2230 slice 3, inbox #32). The tailnet-only host that serves the Inbox page under
-  // /inbox-pair/; the origin has no path and no port, and it is also the SIWE domain. The one
-  // sign-in asks for `decrypt` (inbox: src/authority.ts:37) and `network.create` (src/consent.ts:20)
-  // on the owner's `inbox` encryption network (src/authority.ts:29), through
-  // OpenKey.signMessage (src/browser.ts:15 mode 'iframe', :105). The same host also serves other
-  // internal static pages; this entry trusts that origin only. The retired `:8451` origin is
-  // deliberately not listed.
-  'https://lightning-node-1.gecko-snares.ts.net',
+  // Inbox (TC-2230 slice 3, inbox #32), on its own port. The page is served at /inbox-pair/ on this
+  // tailnet-only origin, and the origin, port included, is also the SIWE domain (inbox:
+  // src/config.ts:46-50). The one sign-in asks for `decrypt` (inbox: src/authority.ts:37) and
+  // `network.create` (src/consent.ts:20) on the owner's `inbox` encryption network
+  // (src/authority.ts:29), through OpenKey.signMessage (src/browser.ts:15 mode 'iframe', :105).
+  // The same machine also serves about eighty other pages and proxies on port 443 (other
+  // origins), so the port-less origin is deliberately not listed: this entry trusts :8451 only.
+  'https://lightning-node-1.gecko-snares.ts.net:8451',
 ]);
 
 /**
