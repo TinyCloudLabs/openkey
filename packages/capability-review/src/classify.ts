@@ -433,10 +433,13 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
         family: "unknown",
         displayLabel: "Unrecognized public data permission",
       };
-    } else if (isOwnSpace && namedSpaceName(space) !== null) {
-      if (!allVerbsIn(entry.actions, isScopedDataPath(path) ? SQL_DATABASE_VERBS : SQL_DATA_VERBS)) {
-        return unknownActionLabel(service);
-      }
+    } else if (
+      isOwnSpace &&
+      namedSpaceName(space) !== null &&
+      allVerbsIn(entry.actions, isScopedDataPath(path) ? SQL_DATABASE_VERBS : SQL_DATA_VERBS)
+    ) {
+      // Only data and table verbs earn the space's name; any other SQL verb
+      // (admin, `*`, export, …) stays unrecognized, as on main.
       knownTarget = { family: "own-app-data", displayLabel: `Data in your ${namedSpaceName(space)} space` };
     } else {
       return { family: "unknown", displayLabel: "Unrecognized SQL data" };

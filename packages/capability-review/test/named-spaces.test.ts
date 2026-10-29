@@ -8,6 +8,12 @@ import { describe, expect, it } from "bun:test";
 
 import { buildStatements, parseCapabilityReview, type CapabilityReviewModel } from "../src/index.js";
 import { INBOX_OWNER, M, inboxAtt, inboxRecipients, inboxSignIn, recipientsResource } from "./fixtures/inbox.js";
+import { makeRecapResource, siweWithResources } from "./fixtures/index.js";
+
+/** One ReCap grant on the signer's account. */
+function grantOn(resource: string, abilities: readonly string[]): string {
+  return siweWithResources([makeRecapResource({ [resource]: Object.fromEntries(abilities.map((ability) => [ability, [{}]])) })]);
+}
 
 function review(message: string, signer: string = INBOX_OWNER): CapabilityReviewModel {
   return parseCapabilityReview({
@@ -59,6 +65,36 @@ describe("the Inbox sign-in rows", () => {
     expect(messages.every(({ grant }) => grant.family === "unknown" && grant.ownedBySelf === false)).toBe(true);
     expect([...new Set(messages.map(({ statement }) => statement.primaryText))]).toEqual(["Read, change and delete another user's data"]);
   });
+});
+
+describe("what stays as on main", () => {
+  const OWNER_SPACE = `tinycloud:pkh:eip155:1:${INBOX_OWNER}`;
+
+  // A space id with a further `:` segment is not a canonical space id: it is never named.
+  for (const reserved of ["agents", "account", "public", "default", "applications"]) {
+    it(`a ${reserved}:foo space id stays unrecognized and sensitive`, () => {
+      const model = review(grantOn(`${OWNER_SPACE}:${reserved}:foo/kv/xyz.tinycloud.inbox/media/`, ["tinycloud.kv/get", "tinycloud.kv/put"]));
+      expect(model.permissions.map((grant) => [grant.family, grant.severity, grant.displayLabel])).toEqual([
+        ["unknown", "sensitive", "Unrecognized key-value data"],
+      ]);
+      expect(rows(model).map(({ statement }) => statement.primaryText).join(" ")).not.toContain("foo");
+    });
+  }
+
+  // Only data and table verbs earn the space's name. Severities are main's.
+  for (const [ability, severity] of [
+    ["tinycloud.sql/admin", "sensitive"],
+    ["tinycloud.sql/*", "attention"],
+    ["tinycloud.sql/export", "attention"],
+  ] as const) {
+    it(`${ability} on the owner's messages space stays unrecognized`, () => {
+      const model = review(grantOn(`${M}/sql/xyz.tinycloud.inbox/data`, [ability]));
+      expect(model.permissions.map((grant) => [grant.family, grant.severity, grant.displayLabel])).toEqual([
+        ["unknown", severity, "Unrecognized SQL data"],
+      ]);
+      expect(rows(model).map(({ statement }) => statement.primaryText).join(" ")).not.toContain("messages");
+    });
+  }
 });
 
 describe("a urn:tinycloud:recipients: line", () => {

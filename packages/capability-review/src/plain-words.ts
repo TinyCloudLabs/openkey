@@ -119,15 +119,18 @@ const RESERVED_SPACE_NAMES: ReadonlySet<string> = new Set<string>([
   ...BOOTSTRAP_SPACE_NAMES,
 ]);
 
+/** A canonical TinyCloud space id with a plain name: `tinycloud:pkh:eip155:<chain>:<address>:<name>`. */
+const NAMEABLE_SPACE = /^tinycloud:pkh:eip155:\d+:0x[a-fA-F0-9]{40}:([a-z][a-z0-9-]{0,11})$/;
+
 /**
  * The name of a space that may be named in copy ("your messages data"): a
- * short plain name that is not one of TinyCloud's own spaces. Null for
- * anything else, which keeps its generic words.
+ * canonical space id whose name is short and plain and not one of
+ * TinyCloud's own spaces. Null for anything else (another shape, such as
+ * `…:agents:foo`, included), which keeps its generic words.
  */
 export function namedSpaceName(space: string): string | null {
-  const name = space.slice(space.lastIndexOf(":") + 1);
-  if (!space.startsWith("tinycloud:pkh:") || !/^[a-z][a-z0-9-]{0,11}$/.test(name)) return null;
-  if (RESERVED_SPACE_NAMES.has(name) || isSecretsSpace(space)) return null;
+  const name = NAMEABLE_SPACE.exec(space)?.[1];
+  if (name === undefined || RESERVED_SPACE_NAMES.has(name) || isSecretsSpace(space)) return null;
   return name;
 }
 
