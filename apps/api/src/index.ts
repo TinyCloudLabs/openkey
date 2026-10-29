@@ -27,6 +27,7 @@ import { organizationsRouter } from './routes/organizations';
 import { orgKeysRouter } from './routes/org-keys';
 import { tenantConsoleRouter } from './routes/tenant-console';
 import { deviceAuthorizationRouter } from './routes/device-authorization';
+import { approvalRequestRouter } from './routes/approval-requests';
 import { createDelegationCodeRouter, createPrismaDelegationCodeStore } from './routes/delegation-codes';
 import { requireSession } from './middleware/session';
 import { trackAuthorization, trackTokenExchange, trackUniqueUser } from './analytics';
@@ -259,6 +260,7 @@ app.route('/api/delegate', delegateRouter);
 app.route('/api/oauth/tinycloud/requests', createNativeDelegationConsentRouter(authPrisma));
 app.route('/api/oauth/tinycloud', createOauthBrandingRouter(authPrisma));
 app.route('/api/device-authorizations', deviceAuthorizationRouter);
+app.route('/api', approvalRequestRouter);
 app.route('/api/delegation-codes', createDelegationCodeRouter({
   store: createPrismaDelegationCodeStore(),
   sessionMiddleware: requireSession,

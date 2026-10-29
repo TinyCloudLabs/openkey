@@ -267,7 +267,7 @@ test('CLI --keys qa consent names the folder and unlocks Approve after a valid p
   expect(rendered.previewIds).toContain(`tinycloud.encryption\0encryption\0${folder}\0tinycloud.encryption/decrypt`);
   expect(rendered.approveVisible).toBe(true);
   expect(rendered.summary).toContain('Your own encryption keys in qa/');
-  expect(rendered.summary).toContain('Create encryption keys of your own in the folder `qa/`');
-  expect(rendered.summary).toContain('Decrypt data locked with your own keys in the folder `qa/`');
+  expect(rendered.summary).toContain('Create your own encryption keys in `qa/`');
+  expect(rendered.summary).toContain('Decrypt data locked with your keys in `qa/`');
   expect(rendered.fullGrantCollapsed).toBe(true);
 });

@@ -63,10 +63,11 @@ const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
   [signinPolishMigration, signinPolishChecksum],
   [preparedHandoffMigration, preparedHandoffChecksum],
   [appSignInDayMigration, appSignInDayChecksum],
-  [orgKeySignChallengesMigration, orgKeySignChallengesChecksum],
   [orgKeyCustodyMigration, orgKeyCustodyChecksum],
   [tinycloudBootstrapSweepMigration, tinycloudBootstrapSweepChecksum],
+  [orgKeySignChallengesMigration, orgKeySignChallengesChecksum],
   [revokedAccessTokenMigration, revokedAccessTokenChecksum],
+  ['20261028_0001_approval_request_results', 'c1d45c495e46e7eaf8a3bb92c06802437c34ca2f63c47d63e2550190b1d8ed8f'],
   [orgRegistrationMigration, orgRegistrationChecksum],
 ]);
 
