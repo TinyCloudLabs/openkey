@@ -76,7 +76,7 @@ describe("buildStatement — generic app data", () => {
     expect(
       buildStatement(grant("own-app-data", ["tinycloud.kv/archive"]))
         .primaryText,
-    ).toBe("Perform tinycloud.kv/archive on tinycloud.kv");
+    ).toBe("Unknown action: tinycloud.kv/archive");
   });
 });
 
@@ -91,14 +91,14 @@ describe("buildStatements — schema gets its own row", () => {
     );
     expect(rows.map((row) => row.primaryText)).toEqual([
       "Read and update application data",
-      "Create, change and delete this app's tables",
+      "Edit and delete this app's tables",
     ]);
   });
 
   it("schema-only renders the schema row, not the update copy", () => {
     const rows = buildStatements(sqlGrant(["tinycloud.sql/schema"]));
     expect(rows.map((row) => row.primaryText)).toEqual([
-      "Create, change and delete this app's tables",
+      "Edit and delete this app's tables",
     ]);
   });
 
@@ -107,7 +107,10 @@ describe("buildStatements — schema gets its own row", () => {
       sqlGrant(["tinycloud.sql/read", "tinycloud.sql/exfiltrate", "tinycloud.sql/schema"]),
     );
     expect(rows).toHaveLength(1);
-    expect(rows[0]!.primaryText.startsWith("Perform ")).toBe(true);
+    expect(rows[0]!.literalEscaped).toBe(true);
+    expect(rows[0]!.primaryText).toBe(
+      "Read, change and delete your data; unknown action: tinycloud.sql/exfiltrate",
+    );
   });
 
   it("buildStatement fails closed on a mixed schema grant instead of dropping schema", () => {
@@ -115,7 +118,7 @@ describe("buildStatements — schema gets its own row", () => {
       sqlGrant(["tinycloud.sql/read", "tinycloud.sql/schema"]),
     );
     expect(stmt.primaryText).toBe(
-      "Perform tinycloud.sql/read, tinycloud.sql/schema on tinycloud.sql",
+      "Read, change and delete your data",
     );
   });
 });

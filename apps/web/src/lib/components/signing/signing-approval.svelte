@@ -164,16 +164,10 @@
     model.permissions.some((grant) => grant.actions.some((action) => action.editable)),
   );
   const isMalformedRecap = $derived(model.protocol === "malformed-recap");
-  const headline = $derived(
-    isMalformedRecap
-      ? "Refusing to sign: malformed capability payload"
-      : PROTOCOL_HEADLINE[model.protocol],
-  );
+  const headline = $derived(PROTOCOL_HEADLINE[model.protocol]);
   const hint = $derived(
-    isMalformedRecap
-      ? "This message carries a capability payload we could not decode. Refusing to approve so the request cannot be silently degraded to an exact-byte SIWE signature."
-      : finalPreview && model.protocol === "tinycloud-siwe-recap"
-        ? "Review the server-prepared request. Approving signs the exact bytes shown in Advanced details."
+    finalPreview && model.protocol === "tinycloud-siwe-recap"
+      ? "Review the server-prepared request. Approving signs the exact bytes shown in Advanced details."
       : PROTOCOL_HINT[model.protocol],
   );
 
@@ -187,10 +181,6 @@
       return actions.length > 0 ? [{ ...grant, actions }] : [];
     }),
   );
-
-  function isUnmappedStatement(primaryText: string): boolean {
-    return primaryText.startsWith("Perform ") || primaryText.startsWith("Access ");
-  }
 
   // Statements for the summary view. Group by primary text so repeated
   // statements collapse into one visible row while preserving the strongest
@@ -227,7 +217,7 @@
             key: statement.primaryText,
             primaryText: statement.primaryText,
             severity: rowSeverity,
-            unmapped: isUnmappedStatement(statement.primaryText),
+            unmapped: statement.literalEscaped === true,
             codeSpans: statement.codeSpans === true,
           });
         }

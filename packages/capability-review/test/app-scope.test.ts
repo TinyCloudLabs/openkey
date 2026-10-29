@@ -479,9 +479,9 @@ describe("buildStatement — appScopedSecret branch verb gate (defense-in-depth)
     const statement = buildStatement(stamped);
     expect(statement.primaryText).not.toBe("Read the app secret API_KEY");
     expect(statement.primaryText).not.toContain("app secret");
-    // Falls through to the literal fallback: "Perform <ability> on <service>".
+    // Falls through to the literal fallback: "Unknown action: <ability>".
     expect(statement.primaryText).toBe(
-      "Perform tinycloud.secrets/peek on tinycloud.secrets",
+      "Unknown action: tinycloud.secrets/peek",
     );
   });
 
@@ -814,7 +814,7 @@ describe("annotateAppScopedGrants — Defect 1: cross-signer space attack", () =
     expect(stmt.primaryText).not.toContain("app secret");
     expect(stmt.primaryText).not.toContain("vault");
     expect(stmt.primaryText).toBe(
-      `Perform tinycloud.kv/get on tinycloud.kv`,
+      "Read secrets",
     );
   });
 
@@ -868,7 +868,7 @@ describe("annotateAppScopedGrants — Defect 2: near-miss literal fallback", () 
     expect(stmt.primaryText).not.toContain("View secrets stored in your vault");
     expect(stmt.primaryText).not.toContain("Manage secrets stored in your vault");
     expect(stmt.primaryText).toBe(
-      "Perform tinycloud.kv/get on tinycloud.kv",
+      "Read secrets",
     );
   });
 
@@ -942,7 +942,7 @@ describe("annotateAppScopedGrants — Defect 2: near-miss literal fallback", () 
     // The literal fallback must name the raw ability.
     const stmt = buildStatement(g);
     expect(stmt.primaryText).toBe(
-      "Perform tinycloud.kv/peek on tinycloud.kv",
+      "Unknown action: tinycloud.kv/peek",
     );
   });
 
@@ -978,7 +978,7 @@ describe("buildStatement — appScopeNearMiss short-circuit", () => {
     };
     const stmt = buildStatement(grant);
     expect(stmt.primaryText).toBe(
-      "Perform tinycloud.kv/get on tinycloud.kv",
+      "Read secrets",
     );
   });
 
@@ -995,7 +995,7 @@ describe("buildStatement — appScopeNearMiss short-circuit", () => {
     const stmt = buildStatement(grant);
     expect(stmt.primaryText).not.toContain("app secret");
     expect(stmt.primaryText).toBe(
-      "Perform tinycloud.kv/get on tinycloud.kv",
+      "Read secrets",
     );
   });
 });
@@ -1043,7 +1043,7 @@ describe("annotateAppScopedGrants — Sol follow-up probes (wrong-service / wron
     expect(stmt.primaryText).not.toContain("app secret");
     expect(stmt.primaryText).not.toContain("permissions for your secrets");
     expect(stmt.primaryText).toBe(
-      "Perform tinycloud.secrets/get on tinycloud.secrets",
+      "Unknown action: tinycloud.secrets/get",
     );
   });
 
@@ -1105,7 +1105,7 @@ describe("annotateAppScopedGrants — Sol follow-up probes (wrong-service / wron
     expect(stmt.primaryText).not.toContain("Read data outside this app");
     expect(stmt.primaryText).not.toContain("app secret");
     expect(stmt.primaryText).toBe(
-      "Perform tinycloud.kv/get on tinycloud.kv",
+      "Read another user's secrets",
     );
   });
 

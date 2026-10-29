@@ -14,7 +14,7 @@ const SIGNER = "0x1111111111111111111111111111111111111111";
 const OTHER = "0x2222222222222222222222222222222222222222";
 const space = (name: string, owner = SIGNER) => `tinycloud:pkh:eip155:1:${owner}:${name}`;
 
-const LABEL = "See which apps and links can reach your data, and the names of what each can reach";
+const LABEL = "Who can access your data";
 
 function classify(options: {
   space: string;
