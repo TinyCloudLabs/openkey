@@ -16,6 +16,7 @@ import {
   isFirstPartyEncryptionOrigin,
 } from '../services/first-party-origins';
 import { encryptionOutsideAppsRefusal, encryptionOutsideAppsRefusalForMessage } from '../services/app-key-refusal';
+import { extractRecapAttenuations } from './cli-consumer-check';
 
 const privateKey = '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 const address = privateKeyToAccount(privateKey).address;
@@ -185,11 +186,10 @@ describe('a first-party origin', () => {
   const previews = FIRST_PARTY_PAGES_SUBDOMAINS.flatMap((name) => [`https://${name}.pages.dev`, `https://a1b2c3d4.${name}.pages.dev`, `https://feat-x.${name}.pages.dev`]);
   const origins = [...FIRST_PARTY_ENCRYPTION_ORIGINS, ...previews];
 
-  test('the list is the one briefed: seven production origins and our own Pages projects', () => {
+  test('the list is the one briefed: six production origins and our own Pages projects', () => {
     expect([...FIRST_PARTY_ENCRYPTION_ORIGINS].sort()).toEqual([
       'http://tauri.localhost',
-      'https://demo.tinycloud.xyz',
-      'https://listen.tinycloud.xyz',
+      'https://lightning-node-1.gecko-snares.ts.net',
       'https://secrets.tinycloud.xyz',
       'https://share.tinycloud.xyz',
       'https://tinycloud.chat',
@@ -215,6 +215,88 @@ describe('a first-party origin', () => {
   });
 });
 
+// Inbox (TC-2230, inbox #32): one sign-in with eight ReCap rows, the last of them `decrypt` and
+// `network.create` on the owner's `inbox` encryption network. The rows are those of the renewal
+// fixture in the Inbox repository (tests/fixtures/signin-renewal.json).
+describe('the Inbox sign-in', () => {
+  const INBOX_ORIGIN = 'https://lightning-node-1.gecko-snares.ts.net';
+  const MESSAGES = `tinycloud:pkh:eip155:1:${address}:messages`;
+  const PUBLIC = `tinycloud:pkh:eip155:1:${address}:public`;
+  const KV = ['tinycloud.kv/del', 'tinycloud.kv/get', 'tinycloud.kv/list', 'tinycloud.kv/metadata', 'tinycloud.kv/put'];
+  const SQL = ['tinycloud.sql/read', 'tinycloud.sql/schema', 'tinycloud.sql/write'];
+  const CAPS = ['tinycloud.capabilities/read'];
+  const INBOX_NETWORK = urn('').replace(':default', ':inbox');
+  const messagesRows = {
+    capabilities: { '': CAPS },
+    kv: { 'xyz.tinycloud.inbox/media/': KV, 'xyz.tinycloud.inbox/sessions/': KV },
+    sql: { 'xyz.tinycloud.inbox/data': SQL, 'xyz.tinycloud.inbox/triage': SQL },
+  };
+  const publicRows = { capabilities: { '': CAPS }, kv: { 'xyz.tinycloud.inbox/grants/': ['tinycloud.kv/put'] } };
+
+  function inboxSiwe(domain: string): string {
+    const now = new Date();
+    return prepareSession({
+      address,
+      chainId: 1,
+      domain,
+      issuedAt: now.toISOString(),
+      expirationTime: new Date(now.getTime() + 7 * 86_400_000).toISOString(),
+      spaceId: MESSAGES,
+      jwk: { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' },
+      abilities: messagesRows as never,
+      spaceAbilities: { [MESSAGES]: messagesRows, [PUBLIC]: publicRows } as never,
+      rawAbilities: { [INBOX_NETWORK]: ['tinycloud.encryption/decrypt', 'tinycloud.encryption/network.create'] },
+    }).siwe;
+  }
+
+  test('the request built here has the eight rows of the Inbox fixture', () => {
+    const rows = extractRecapAttenuations(inboxSiwe('lightning-node-1.gecko-snares.ts.net'));
+    expect(Object.keys(rows).sort()).toEqual([
+      `${MESSAGES}/capabilities`,
+      `${MESSAGES}/kv/xyz.tinycloud.inbox/media/`,
+      `${MESSAGES}/kv/xyz.tinycloud.inbox/sessions/`,
+      `${MESSAGES}/sql/xyz.tinycloud.inbox/data`,
+      `${MESSAGES}/sql/xyz.tinycloud.inbox/triage`,
+      `${PUBLIC}/capabilities`,
+      `${PUBLIC}/kv/xyz.tinycloud.inbox/grants/`,
+      INBOX_NETWORK,
+    ].sort());
+    expect(Object.keys(rows[INBOX_NETWORK]!).sort()).toEqual(['tinycloud.encryption/decrypt', 'tinycloud.encryption/network.create']);
+  });
+
+  test('signs from the Inbox origin, as text and as 0x hex', async () => {
+    const siwe = inboxSiwe('lightning-node-1.gecko-snares.ts.net');
+    for (const body of [{ message: siwe }, { message: hex(siwe), format: 'raw' }]) {
+      unseal.mockClear();
+      const res = await sign({ ...body, requestOrigin: INBOX_ORIGIN });
+      expect(res.status, await res.clone().text()).toBe(200);
+      expect(unseal).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  test.each([
+    ['the retired port', 'https://lightning-node-1.gecko-snares.ts.net:8451'],
+    ['plain http', 'http://lightning-node-1.gecko-snares.ts.net'],
+    ['a longer host', 'https://lightning-node-1.gecko-snares.ts.net.evil.example'],
+    ['a prefixed host', 'https://evil-lightning-node-1.gecko-snares.ts.net'],
+    ['another node on the tailnet', 'https://lightning-node-2.gecko-snares.ts.net'],
+    ['the tailnet name alone', 'https://gecko-snares.ts.net'],
+  ])('is refused from %s', async (_name, origin) => {
+    expect(isFirstPartyEncryptionOrigin(origin)).toBe(false);
+    const res = await sign({ message: inboxSiwe(new URL(origin).host), requestOrigin: origin });
+    expect(res.status).toBe(403);
+    await expect(res.json()).resolves.toEqual(REFUSED);
+    expect(unseal).not.toHaveBeenCalled();
+  });
+
+  test('is refused from an unrelated site', async () => {
+    const res = await sign({ message: inboxSiwe('thirdparty.example'), requestOrigin: THIRD_PARTY });
+    expect(res.status).toBe(403);
+    await expect(res.json()).resolves.toEqual(REFUSED);
+    expect(unseal).not.toHaveBeenCalled();
+  });
+});
+
 describe('look-alikes of a first-party origin are not first-party', () => {
   const lookAlikes = [
     'https://tinycloud.chat.evil.example',
@@ -222,8 +304,8 @@ describe('look-alikes of a first-party origin are not first-party', () => {
     'https://tinycloud.chat:8443',
     'http://tinycloud.chat',
     'https://TINYCLOUD.CHAT',
-    'https://listen.tinycloud.xyz.evil.example',
-    'https://sub.listen.tinycloud.xyz',
+    'https://listen.tinycloud.xyz',
+    'https://demo.tinycloud.xyz',
     'https://tinychat-4jq.pages.dev.evil.example',
     'https://a.b.tinychat-4jq.pages.dev',
     'https://evil.pages.dev',

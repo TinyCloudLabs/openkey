@@ -22,37 +22,38 @@ export const FIRST_PARTY_ENCRYPTION_ORIGINS: ReadonlySet<string> = new Set([
   // Share. share: src/share/openkey-session.ts:194 (decrypt and network.create on the owner's
   // network), :73-77 (explicitOpenKeyApproval -> openkey.signMessage).
   'https://share.tinycloud.xyz',
-  // Listen. listen: packages/client/src/manifest.ts:53-59 (decrypt on the default network),
-  // frontend/src/App.tsx:977-981 and :2001 (the grant in the sign-in request),
-  // packages/client/src/openkey.ts:55-61 (personal_sign -> openkey.signMessage).
-  'https://listen.tinycloud.xyz',
-  // Secret Manager. secret-manager: src/lib/tinycloud-manifest.ts:38-42 (decrypt on the default
+  // Secret Manager. secret-manager: src/lib/tinycloud-manifest.ts:36-41 (decrypt on the default
   // network), src/lib/vault-client.ts:64 and :76 (sign-in), :103-107 (network.create).
   'https://secrets.tinycloud.xyz',
-  // TinyCloud OpenKey example app. js-sdk: apps/openkey-example/src/pages/Home.tsx:114-126
-  // (sign-in with no manifest, so the SDK asks for decrypt on the default network). The mapping
-  // of this host to that app is not confirmed in either repository.
-  'https://demo.tinycloud.xyz',
+  // Inbox (TC-2230 slice 3, inbox #32). The tailnet-only host that serves the Inbox page under
+  // /inbox-pair/; the origin has no path and no port, and it is also the SIWE domain. The one
+  // sign-in asks for `decrypt` (inbox: src/authority.ts:37) and `network.create` (src/consent.ts:20)
+  // on the owner's `inbox` encryption network (src/authority.ts:29), through
+  // OpenKey.signMessage (src/browser.ts:15 mode 'iframe', :105). The same host also serves other
+  // internal static pages; this entry trusts that origin only. The retired `:8451` origin is
+  // deliberately not listed.
+  'https://lightning-node-1.gecko-snares.ts.net',
 ]);
 
 /**
  * `<name>.pages.dev` subdomains of our own Cloudflare Pages projects. A preview deployment is
  * served at `<deployment or branch label>.<name>.pages.dev`, so for each name the bare host
- * and exactly one extra DNS label are first-party. No other `*.pages.dev` host is.
+ * and exactly one extra DNS label are first-party. No other `*.pages.dev` host is. Anyone who
+ * can push a branch to one of these projects' repositories can publish on such a host.
  */
 export const FIRST_PARTY_PAGES_SUBDOMAINS: readonly string[] = [
   // Pages project `tinychat`. tinychat: backend/src/cors-origins.ts:14.
   'tinychat-4jq',
   // Pages project `share`. share: README.md:45 (`--project-name share`). Previews cannot finish a
-  // sign-in today (src/host/share-adapter.ts:823-826 and :1199-1201 answer 403 off the share origin).
+  // sign-in today (src/host/share-adapter.ts:823-825 is the origin predicate, :1201 the 403).
   'share-2fz',
   // Pages project `tinycloud-secrets`. secret-manager: .github/workflows/deploy.yml:31, wrangler.toml:1.
   'tinycloud-secrets',
-  // Pages project `openkey-tinycloud-demo`, served at demo.tinycloud.xyz (see the entry above).
+  // Pages project `openkey-tinycloud-demo`: the OpenKey example app (js-sdk apps/openkey-example,
+  // src/pages/Home.tsx:114-126, sign-in with no manifest) is served at its pages.dev host.
   'openkey-tinycloud-demo',
-  // Listen's Pages project is not in the Cloudflare account these subdomains were read from, so its
-  // subdomain is unconfirmed (listen: wrangler.toml:1, .github/workflows/preview-phala-cloudflare.yml:45).
-  // Add it here when it is known; until then Listen previews are not first-party.
+  // Not listed: Listen is retired (its host redirects to tinychat and no Pages project exists),
+  // and `demo.tinycloud.xyz` only redirects.
 ];
 
 const PAGES_LABEL = '[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?';
