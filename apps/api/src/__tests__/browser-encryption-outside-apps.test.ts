@@ -102,8 +102,8 @@ await mockModules({
   // preview and sign tests. Before the check exists this export is missing and
   // those tests fail on the route's answer, not on this wrapper.
   '../services/app-key-refusal': (actual) => ({
-    encryptionGrantsOutsideApps: (...args: unknown[]) =>
-      allowEncryption ? [] : (actual.encryptionGrantsOutsideApps as (...a: unknown[]) => unknown)(...args),
+    encryptionOutsideAppsRefusal: (...args: unknown[]) =>
+      allowEncryption ? null : (actual.encryptionOutsideAppsRefusal as (...a: unknown[]) => unknown)(...args),
   }),
 });
 

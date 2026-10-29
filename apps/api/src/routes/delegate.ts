@@ -89,7 +89,7 @@ import {
   appKeyRefusalCode,
   appKeyRefusalForSiwe,
   blockResourcesOutsideApps,
-  encryptionGrantsOutsideApps,
+  encryptionOutsideAppsRefusal,
   appKeyRefusalMessage,
   appKeyRefusalStatus,
   appKeyResourcesOf,
@@ -2466,9 +2466,9 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
   // `key.create` only under its own `apps/` prefix. Anything else, a bare
   // network included, is refused before a context is issued. A ticket request
   // (the command line's `--keys <folder>`) is not checked here.
-  if (!ticket && encryptionGrantsOutsideApps(body.siwe).length > 0) {
-    const refusal = { reason: 'apps_key' } as const;
-    return c.json(appKeyRefusalBody(refusal, 'browser'), appKeyRefusalStatus(refusal));
+  const prepareEncryptionRefusal = ticket ? null : encryptionOutsideAppsRefusal(body.siwe);
+  if (prepareEncryptionRefusal) {
+    return c.json(appKeyRefusalBody(prepareEncryptionRefusal, 'browser'), appKeyRefusalStatus(prepareEncryptionRefusal));
   }
   // `key.block` and `key.unblock` on a key or prefix outside `apps/` take the
   // same admission; no manifest lists such a key, so they are refused there.
@@ -3213,9 +3213,9 @@ delegateRouter.post('/authorize-sign', async (c) => {
   if (signedAppKeyRefusal) {
     return c.json(appKeyRefusalBody(signedAppKeyRefusal, ticket ? 'non_browser' : 'browser'), appKeyRefusalStatus(signedAppKeyRefusal));
   }
-  if (!ticket && encryptionGrantsOutsideApps(signedMessage).length > 0) {
-    const refusal = { reason: 'apps_key' } as const;
-    return c.json(appKeyRefusalBody(refusal, 'browser'), appKeyRefusalStatus(refusal));
+  const signEncryptionRefusal = ticket ? null : encryptionOutsideAppsRefusal(signedMessage);
+  if (signEncryptionRefusal) {
+    return c.json(appKeyRefusalBody(signEncryptionRefusal, 'browser'), appKeyRefusalStatus(signEncryptionRefusal));
   }
   // Both checked claims still have to reference the stored records. This
   // synchronous call compares both, checks both expiries, then deletes both
@@ -3452,9 +3452,9 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
   if (previewAppKeyRefusal) {
     return c.json(appKeyRefusalBody(previewAppKeyRefusal, ticket ? 'non_browser' : 'browser'), appKeyRefusalStatus(previewAppKeyRefusal));
   }
-  if (!ticket && encryptionGrantsOutsideApps(preparedSignedMessage).length > 0) {
-    const refusal = { reason: 'apps_key' } as const;
-    return c.json(appKeyRefusalBody(refusal, 'browser'), appKeyRefusalStatus(refusal));
+  const previewEncryptionRefusal = ticket ? null : encryptionOutsideAppsRefusal(preparedSignedMessage);
+  if (previewEncryptionRefusal) {
+    return c.json(appKeyRefusalBody(previewEncryptionRefusal, 'browser'), appKeyRefusalStatus(previewEncryptionRefusal));
   }
   const previewGrants = previewEntries.map((entry) => ({
     service: canonicalizeServiceName(entry.service),
