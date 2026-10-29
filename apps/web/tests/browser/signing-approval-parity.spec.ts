@@ -304,7 +304,11 @@ test.describe('signing-approval browser parity — production adapters', () => {
       const summary = page.locator('[data-parity-harness] .summary');
       await expect(summary.locator('.summary-statement')).toHaveCount(2);
       await expect(summary).toContainText("Edit and delete this app's tables");
-      await expect(summary).not.toContainText('Unknown action');
+      // Exact rows: a known action that fell through to the generic fallback would change one.
+      await expect(summary.locator('.summary-statement .statement-primary')).toHaveText([
+        'Read application data',
+        "Edit and delete this app's tables",
+      ]);
     });
 
     test(`[${surface}] exact ReCap fixture stays readable in a narrow popup viewport`, async ({ page }) => {
@@ -341,7 +345,20 @@ test.describe('signing-approval browser parity — production adapters', () => {
       await expect(summary).not.toContainText('tinycloud:pkh:');
       await expect(dialog).not.toContainText(`owner ${model.signer.address.toLowerCase()}`);
       await expect(dialog).not.toContainText('path=spaces/');
-      await expect(summary).not.toContainText('Unknown action');
+      // Exact rows: a known action that fell through to the generic fallback would change one.
+      await expect(summary.locator('.summary-statement .statement-primary')).toHaveText([
+        'Check your TinyCloud permissions',
+        'See who has access to your data',
+        'Manage your TinyCloud account',
+        'Read and update application data',
+        'Read your public data',
+        'View your secret names and details',
+        'Read secret values',
+        'Edit and delete tables in your TinyCloud account',
+        'Read application data',
+        "Edit and delete this app's tables",
+        'View your secret catalog',
+      ]);
       const details = page.locator('details.advanced-details').first();
       await details.locator(':scope > summary').click();
       await expect(details.locator(':scope > summary')).toHaveText('Advanced details');
