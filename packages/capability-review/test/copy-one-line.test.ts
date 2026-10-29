@@ -46,7 +46,7 @@ const PLACEHOLDER_CHARS = 8;
  */
 const TWO_LINE_EXCEPTIONS: Record<string, string> = {};
 
-const COPY_SOURCES = ["copy.ts", "statements.ts", "core-operations.ts", "classify.ts"];
+const COPY_SOURCES = ["copy.ts", "statements.ts", "core-operations.ts", "classify.ts", "plain-words.ts"];
 
 interface Descriptor {
   where: string;
