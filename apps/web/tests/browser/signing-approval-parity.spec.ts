@@ -602,11 +602,10 @@ test.describe('signing-approval browser parity — production adapters', () => {
     });
 
     const summary = page.locator('[data-parity-harness] .summary');
-    await expect(summary).toContainText('Set up encrypted data access');
     await expect(summary).toContainText(
-      "Decrypt anything encrypted with your account's default key — including your Secrets and every private share — whenever this app gets hold of the encrypted copy, until this access expires.",
+      'Set up encrypted data access and decrypt protected data',
     );
-    await expect(summary.locator('.summary-sensitive-pill')).toHaveText(['Sensitive', 'Sensitive']);
+    await expect(summary.locator('.summary-sensitive-pill')).toHaveText('Sensitive');
     const details = page.locator('details.advanced-details');
     await details.locator(':scope > summary').click();
     await expect(details.locator('.grant-severity[data-severity="sensitive"]')).toHaveText(

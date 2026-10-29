@@ -59,14 +59,6 @@ export const DELEGATION_LIST_LABEL =
 export const DELEGATION_LIST_STATEMENT =
   "See who has access to your data, what it reaches (by name) and when it ends. Keys and contents aren't shown.";
 
-/**
- * Consent copy for a raw `tinycloud.encryption/decrypt` on the account's
- * `:default` network. Single source of truth: statements.ts imports this
- * constant and tests compare against it.
- */
-export const DECRYPT_DEFAULT_KEY_STATEMENT =
-  "Decrypt anything encrypted with your account's default key — including your Secrets and every private share — whenever this app gets hold of the encrypted copy, until this access expires.";
-
 /** Named-key verbs that carry consent copy. */
 export type NamedKeyVerb = "create" | "decrypt" | "block" | "unblock" | "delete";
 

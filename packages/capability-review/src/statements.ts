@@ -19,7 +19,6 @@ import type { CapabilityAction, CapabilityGrant, CapabilityReviewModel, Permissi
 import { appDisplayName } from "./app-identity.js";
 import {
   APP_KEY_ABILITIES,
-  DECRYPT_DEFAULT_KEY_STATEMENT,
   DELETE_REFUSED_TEMPLATE,
   DELEGATION_LIST_STATEMENT,
   LITERAL_TRUNCATE_CHARS,
@@ -232,14 +231,6 @@ function resourceOf(grant: CapabilityGrant): string {
   if (grant.path) return `${grant.space}/${grant.path}`;
   return grant.space;
 }
-
-/**
- * Raw encryption network URI for the account's `default` key, e.g.
- * `urn:tinycloud:encryption:did:pkh:eip155:1:0x<40 hex>:default`. Only a
- * raw URN with no sub-path matches; per-share or other named networks do not.
- */
-const DEFAULT_KEY_NETWORK_URN =
-  /^urn:tinycloud:encryption:did:pkh:eip155:\d+:0x[0-9a-fA-F]{40}:default$/;
 
 /**
  * True when `space`, `path` or `resourceService` carries an encryption URN
@@ -728,29 +719,6 @@ function schemaOnlyStatementText(
   return null;
 }
 
-/**
- * A default-network grant that carries encryption setup and decrypt together.
- * The combined phrase would present the default-key decrypt as setup-only, so
- * `buildStatements` renders the setup verbs and the decrypt verbs as two rows.
- */
-function splitsDefaultKeyDecrypt(grant: CapabilityGrant): boolean {
-  if (!ENCRYPTION_SERVICES.has(grant.service)) return false;
-  if (
-    grant.serviceMismatch === true ||
-    grant.appScopeNearMiss === true ||
-    grant.appScopedSecret
-  ) {
-    return false;
-  }
-  const verbs = classifyVerbs(grant.actions.map((a) => a.ability));
-  return (
-    verbs.hasCreate &&
-    verbs.hasDecrypt &&
-    !verbs.hasRevoke &&
-    DEFAULT_KEY_NETWORK_URN.test(resourceOf(grant))
-  );
-}
-
 /** The app key ability a wire ability names, byte-exact in either namespace. */
 function appKeyAbilityOf(ability: string): AppKeyAbility | null {
   for (const name of APP_KEY_ABILITIES) {
@@ -892,18 +860,6 @@ export function buildStatements(input: CapabilityGrant): StatementEntry[] {
   const grant = view.kind === "urn" ? view.grant : input;
   if (view.kind === "urn" && view.parsed.kind !== "network" && grant.actions.length > 1) {
     return grant.actions.map((action) => buildStatement({ ...grant, actions: [action] }));
-  }
-  if (splitsDefaultKeyDecrypt(grant)) {
-    return [
-      buildStatement({
-        ...grant,
-        actions: grant.actions.filter((a) => !classifyVerbs([a.ability]).hasDecrypt),
-      }),
-      buildStatement({
-        ...grant,
-        actions: grant.actions.filter((a) => classifyVerbs([a.ability]).hasDecrypt),
-      }),
-    ];
   }
   const schemaActions = grant.actions.filter(
     (a) => verbOf(a.ability) === "schema",
@@ -1450,9 +1406,6 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
       return fallbackStatement(grant);
     }
     if (verbs.hasCreate && verbs.hasDecrypt) {
-      // A default-network combination is split by buildStatements; a single
-      // row must not present the default-key decrypt as setup-only.
-      if (DEFAULT_KEY_NETWORK_URN.test(resource)) return fallbackStatement(grant);
       return {
         primaryText: "Set up encrypted data access and decrypt protected data",
         service,
@@ -1461,9 +1414,7 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
     }
     if (verbs.onlyDecrypt || (verbs.hasDecrypt && !verbs.hasCreate)) {
       return {
-        primaryText: DEFAULT_KEY_NETWORK_URN.test(resource)
-          ? DECRYPT_DEFAULT_KEY_STATEMENT
-          : "Decrypt protected data",
+        primaryText: "Decrypt protected data",
         service,
         resource,
       };

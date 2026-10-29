@@ -3,8 +3,6 @@
 // binding and the relayed delegation must both state exactly the approved
 // subset, in the request's own manifest form, so the CLI can compare them.
 
-import { DECRYPT_DEFAULT_KEY_STATEMENT } from '@openkey/capability-review';
-
 export interface DevicePermission {
   service: string;
   space: string;
@@ -309,7 +307,7 @@ export function formatDeviceLifetime(seconds: number): string {
 
 /**
  * The approver's own `default` network decrypt entry, the one encryption grant
- * a device request may carry, is labelled with the consent sentence and its
+ * a device request may carry, is labelled "Decrypt protected data" with its
  * lifetime. Every other entry returns null and keeps its existing label.
  */
 export function decryptDefaultEntryLabel(
@@ -323,5 +321,5 @@ export function decryptDefaultEntryLabel(
     permission.actions.length === 1 &&
     permission.actions[0] === 'tinycloud.encryption/decrypt';
   if (!exact) return null;
-  return { statement: DECRYPT_DEFAULT_KEY_STATEMENT, lifetime: formatDeviceLifetime(lifetimeSeconds) };
+  return { statement: 'Decrypt protected data', lifetime: formatDeviceLifetime(lifetimeSeconds) };
 }
