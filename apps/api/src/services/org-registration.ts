@@ -206,7 +206,7 @@ export function createOrgRegistrationIntentVerifier(fetcher: OrgRegistrationFetc
     if (forced) lastForcedRefresh = now;
     inFlight = (async () => {
       try {
-        const response = await fetcher(INTENT_DID_URL, { redirect: 'error', cache: forced ? 'no-store' : 'default' });
+        const response = await fetcher(INTENT_DID_URL, { redirect: 'error', cache: forced ? 'no-store' : 'default', signal: AbortSignal.timeout(10_000) });
         if (!response.ok || response.status >= 300) throw new Error('Issuer DID unavailable');
         const text = await response.text();
         const parsed = strictJson(text);
@@ -317,6 +317,7 @@ export function createOrgRegistrationHandler(prisma: PrismaClient, tee: TeeClien
     if (!request.challengeNonce || !request.assertion) {
       const passkeys = await prisma.passkey.findMany({ where: { userId: actor.userId }, select: { credentialID: true } });
       if (!passkeys.length) return refuse(403, 'registration_passkey_required', 'A registered passkey is required for org registration');
+      await prisma.orgKeyRegistrationChallenge.deleteMany({ where: { expiresAt: { lte: new Date() } } });
       const challengeNonce = randomBytes(32).toString('base64url');
       const expiresAt = new Date(Math.min(Date.now() + WINDOW_MS, intent.exp * 1000));
       await prisma.orgKeyRegistrationChallenge.create({ data: {

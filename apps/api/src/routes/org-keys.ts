@@ -1,10 +1,9 @@
 import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import type { AuthenticationResponseJSON } from '@simplewebauthn/server';
-import { createPrismaClient, type PrismaClient } from '@openkey/db';
-import { createTeeClient, type TeeClient } from '@openkey/tee';
-import { requireSession, type SessionContext } from '../middleware/session';
+import type { PrismaClient } from '@openkey/db';
+import type { TeeClient } from '@openkey/tee';
+import type { SessionContext } from '../middleware/session';
 import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
-import { auth } from '../auth';
 import { completeOrgRegistration, createOrgRegistrationHandler, type OrgRegistrationDependencies, type OrgRegistrationProof } from '../services/org-registration';
 import {
   classifyOrgKeyMessage,
@@ -22,7 +21,6 @@ import {
 interface ExistingJwtApi {
   signJWT(input: { body: { payload: OrgRegistrationProof } }): Promise<{ token: string }>;
 }
-const jwtApi = auth.api as typeof auth.api & ExistingJwtApi;
 
 const requireOrgKeyCustodyEnabled: MiddlewareHandler = async (c, next) => {
   if (!isOrgKeyCustodyEnabled()) return c.json({ error: 'Not found' }, 404);
@@ -32,7 +30,7 @@ const requireOrgKeyCustodyEnabled: MiddlewareHandler = async (c, next) => {
 export type OrgKeysRouterDeps = {
   prisma: PrismaClient;
   tee: TeeClient;
-  sessionMiddleware?: MiddlewareHandler<SessionContext>;
+  sessionMiddleware: MiddlewareHandler<SessionContext>;
   // Read per request so the relying-party settings track the environment.
   webauthn?: () => { rpID: string; origin: string };
   registration?: Partial<OrgRegistrationDependencies>;
@@ -63,12 +61,14 @@ function allowedOrigin(c: Context): string | null {
 }
 
 export function createOrgKeysRouter(deps: OrgKeysRouterDeps) {
-  const { prisma, tee } = deps;
+  const { prisma, tee, sessionMiddleware } = deps;
   const webauthn = deps.webauthn ?? defaultWebauthn;
-  const sessionMiddleware = deps.sessionMiddleware ?? requireSession;
   const registerOrg = createOrgRegistrationHandler(prisma, tee, {
     fetch: deps.registration?.fetch,
-    signProof: deps.registration?.signProof ?? (async (payload) => (await jwtApi.signJWT({ body: { payload } })).token),
+    signProof: deps.registration?.signProof ?? (async (payload) => {
+      const { auth } = await import('../auth');
+      return (await (auth.api as typeof auth.api & ExistingJwtApi).signJWT({ body: { payload } })).token;
+    }),
   });
   const orgKeysRouter = new Hono<SessionContext>();
   orgKeysRouter.use('*', requireOrgKeyCustodyEnabled);
@@ -189,6 +189,3 @@ export function createOrgKeysRouter(deps: OrgKeysRouterDeps) {
   return orgKeysRouter;
 }
 
-const prisma = createPrismaClient();
-const tee = createTeeClient();
-export const orgKeysRouter = createOrgKeysRouter({ prisma, tee });

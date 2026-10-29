@@ -24,7 +24,7 @@ import { ownerRevocationRouter } from './routes/owner-revocation-runtime';
 import { internalMetricsRouter } from './routes/internal-metrics';
 import { scoreboardMetricsRouter } from './routes/scoreboard-metrics';
 import { organizationsRouter } from './routes/organizations';
-import { orgKeysRouter } from './routes/org-keys';
+import { createOrgKeysRouter } from './routes/org-keys';
 import { tenantConsoleRouter } from './routes/tenant-console';
 import { deviceAuthorizationRouter } from './routes/device-authorization';
 import { approvalRequestRouter } from './routes/approval-requests';
@@ -42,7 +42,7 @@ import { providerTokenOptions } from './services/native-delegation/provider-toke
 import { handlePar } from './services/native-delegation/par';
 import { createNativeDelegationConsentRouter } from './routes/native-delegation-consent';
 import { handleNativeRenewOrRevoke } from './services/native-delegation/renew-revoke';
-import { resolveTeeMode } from '@openkey/tee';
+import { createTeeClient, resolveTeeMode } from '@openkey/tee';
 import {
   protocolAwareCors,
   withNativeDelegationMetadata,
@@ -271,7 +271,11 @@ app.route('/api/organizations', organizationsRouter);
 app.route('/api/console/organizations', tenantConsoleRouter);
 
 // Organization keys are separate from personal keys under /api/keys (TC-1518).
-app.route('/api/org-keys', orgKeysRouter);
+app.route('/api/org-keys', createOrgKeysRouter({
+  prisma: authPrisma,
+  tee: createTeeClient(),
+  sessionMiddleware: requireSession,
+}));
 
 // 404 handler
 app.notFound((c) => c.json({ error: 'Not found' }, 404));

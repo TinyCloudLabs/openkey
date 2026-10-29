@@ -178,6 +178,31 @@ describe('org registration authenticated intent contract', () => {
     expect(await db.ethereumKey.count()).toBe(0);
   });
 
+  test('new consent sweeps expired challenges but preserves live consent and immutable receipts', async () => {
+    const router = app();
+    const bound = await intent();
+    const approval = await complete(router, bound);
+    expect(approval.status).toBe(201);
+    const approved = await approval.json();
+    const firstProof = deliveredProofs[0];
+    const unused = await intent();
+    expect((await post(router, unused.body)).status).toBe(200);
+    const live = await intent();
+    const liveResponse = await post(router, live.body);
+    const liveNonce = (await liveResponse.json()).registrationChallenge.challengeNonce;
+    await db.orgKeyRegistrationChallenge.updateMany({
+      where: { registrationId: { in: [bound.body.registrationId, unused.body.registrationId] } },
+      data: { expiresAt: new Date(Date.now() - 1) },
+    });
+    expect((await post(router, (await intent()).body)).status).toBe(200);
+    expect(await db.orgKeyRegistrationChallenge.count({ where: { registrationId: { in: [bound.body.registrationId, unused.body.registrationId] } } })).toBe(0);
+    expect((await db.orgKeyRegistrationChallenge.findUniqueOrThrow({ where: { challengeNonce: liveNonce } })).consumedAt).toBeNull();
+    const retry = await post(router, bound.body);
+    expect(retry.status).toBe(200);
+    expect((await retry.json()).key).toEqual(approved.key);
+    expect(deliveredProofs[1]).toBe(firstProof);
+  });
+
   test('verified consent creates one OWNER binding and an OC-verifiable exact proof', async () => {
     const issued = await intent();
     const response = await complete(app(), issued);

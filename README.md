@@ -188,7 +188,7 @@ The first request returns `200 {registrationChallenge}` without a key; approval 
 After completion, the response is `{key, registration}` (`201` new, `200` retry), never the owner-proof JWT.
 OpenKey sends that proof server-side to the fixed OpenCredentials completion endpoint and shows only its confirmed registration result.
 Identical owner/tuple retries reuse the key and immutable proof; OC returns its stored result after completion.
-Temporary completion failures can be retried in OpenKey. A `409` or `410` requires a new intent from Credentials.
+Temporary completion failures and future-dated intents can be retried in OpenKey. A `409` or `410` requires a new intent from Credentials.
 An already-created OpenKey key is retained if OC completion fails; the two systems do not perform distributed rollback.
 
 ## Environment Variables

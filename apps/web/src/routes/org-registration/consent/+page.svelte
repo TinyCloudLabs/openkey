@@ -78,7 +78,8 @@
       return;
     }
     if (!response.ok) {
-      if ([400, 403, 404, 409, 410].includes(response.status)) clearIntent();
+      if ([400, 403, 404, 409, 410].includes(response.status)
+        && !(response.status === 400 && result.code === 'registration_intent_future')) clearIntent();
       throw new Error(typeof result.error === 'string' ? result.error : 'Registration could not complete. Retry in OpenKey.');
     }
     if (result.registration) {

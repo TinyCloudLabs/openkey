@@ -1,26 +1,18 @@
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
 import { Hono } from 'hono';
-import { mockModules, replaceModules } from './mock-module';
 import type * as OrgKeysRoutes from '../routes/org-keys';
-import { asPrisma, fakeTee, ORIGIN, RP_ID, setupOrgKey } from './org-keys-fixtures';
+import type { SessionContext } from '../middleware/session';
+import { asPrisma, ORIGIN, RP_ID, setupOrgKey } from './org-keys-fixtures';
 
 const user = { id: 'user_1', email: 'test@example.com' };
 const MESSAGE = 'Sign in to the org console, nonce 42';
 const otherOrigin = 'https://evil.example';
 
-replaceModules({
-  '../middleware/session': () => ({
-    requireSession: createMiddleware(async (c, next) => {
-      c.set('user', user);
-      c.set('session', { id: 'session_1', userId: user.id, expiresAt: new Date(Date.now() + 60_000) });
-      await next();
-    }),
-  }),
-});
-await mockModules({
-  '@openkey/db': () => ({ createPrismaClient: () => ({ $extends() { return this; } }) }),
-  '@openkey/tee': () => ({ createTeeClient: () => fakeTee() }),
+const sessionMiddleware = createMiddleware<SessionContext>(async (c, next) => {
+  c.set('user', user);
+  c.set('session', { id: 'session_1', userId: user.id, expiresAt: new Date(Date.now() + 60_000) });
+  await next();
 });
 
 const originalFlag = process.env.ORG_KEY_CUSTODY_ENABLED;
@@ -29,8 +21,7 @@ afterAll(() => {
   else process.env.ORG_KEY_CUSTODY_ENABLED = originalFlag;
 });
 
-// Loaded after mockModules so the route captures the mocked db and tee. A file-specific
-// query string gives this file its own module instance (see mock-module.ts).
+// A file-specific query string isolates this route instance from other tests.
 const { createOrgKeysRouter } = (await import('../routes/org-keys?org-keys-route-test' as string)) as typeof OrgKeysRoutes;
 
 type Ctx = Awaited<ReturnType<typeof setupOrgKey>>;
@@ -39,6 +30,7 @@ async function appFor(ctx: Ctx) {
   const router = createOrgKeysRouter({
     prisma: asPrisma(ctx.db),
     tee: ctx.tee,
+    sessionMiddleware,
     webauthn: () => ({ rpID: RP_ID, origin: ORIGIN }),
   });
   return new Hono().route('/api/org-keys', router);

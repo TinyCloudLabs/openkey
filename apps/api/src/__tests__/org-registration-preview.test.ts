@@ -46,20 +46,21 @@ if (process.env.OPENKEY_REGISTRATION_PREVIEW_CHILD !== '1') {
     win.document.documentElement.dataset.orgRegistration = 'ready';
     const require = createRequire(import.meta.url);
     const svelteClient = join(dirname(require.resolve('svelte/package.json')), 'src/index-client.js');
-    const { mount, unmount, flushSync } = await import(pathToFileURL(svelteClient).href) as {
-      mount(subject: unknown, options: { target: HTMLElement }): unknown;
-      unmount(subject: unknown): Promise<void>;
-      flushSync(): void;
-    };
     let mounted: unknown;
+    let unmount: ((subject: unknown) => Promise<void>) | undefined;
     try {
       const web = join(root, 'apps/web');
+      const entry = join(directory, 'entry.ts');
+      // Bundle the component and its own client runtime together. Browser-only Svelte
+      // exports must resolve under Bun.build's browser conditions, not Node require.
+      await Bun.write(entry, `import Subject from ${JSON.stringify(join(web, 'src/routes/org-registration/consent/+page.svelte'))};\nexport { mount, unmount, flushSync } from ${JSON.stringify(svelteClient)};\nexport default Subject;\n`);
       const build = await Bun.build({
-        entrypoints: [join(web, 'src/routes/org-registration/consent/+page.svelte')], outdir: directory,
+        // Do not let the runtime resolve generated entry.js back to its sibling entry.ts.
+        entrypoints: [entry], outdir: join(directory, 'compiled'),
         target: 'browser', format: 'esm', conditions: ['browser'],
+        loader: { '.svelte': 'js' },
         define: { 'import.meta.env.VITE_API_URL': '"https://api.openkey.so"' },
         plugins: [{ name: 'actual-svelte-consent', setup(builder) {
-          builder.onResolve({ filter: /^svelte(?:\/|$)/ }, args => ({ path: args.path === 'svelte' ? svelteClient : require.resolve(args.path), external: true }));
           builder.onResolve({ filter: /^\$lib\// }, args => {
             const base = join(web, 'src/lib', args.path.slice(5));
             const path = [base, `${base}.ts`, `${base}.js`].find(value => existsSync(value));
@@ -70,16 +71,22 @@ if (process.env.OPENKEY_REGISTRATION_PREVIEW_CHILD !== '1') {
         } }],
       });
       if (!build.success) throw new Error(build.logs.map(log => log.message).join('\n'));
-      const Subject = (await import(pathToFileURL(build.outputs[0]!.path).href)).default;
+      const runtime = await import(pathToFileURL(build.outputs[0]!.path).href) as {
+        default: unknown;
+        mount(subject: unknown, options: { target: HTMLElement }): unknown;
+        unmount(subject: unknown): Promise<void>;
+        flushSync(): void;
+      };
+      unmount = runtime.unmount;
       const target = document.createElement('div'); document.body.append(target);
-      mounted = mount(Subject, { target });
-      flushSync();
-      for (let turn = 0; turn < 8; turn += 1) { await new Promise<void>(resolve => setImmediate(resolve)); flushSync(); }
+      mounted = runtime.mount(runtime.default, { target });
+      runtime.flushSync();
+      for (let turn = 0; turn < 8; turn += 1) { await new Promise<void>(resolve => setImmediate(resolve)); runtime.flushSync(); }
       expect(win.sessionStorage.getItem(storageKey)).toBeNull();
       expect(calls).toEqual([]);
       expect(navigations).toEqual([]);
     } finally {
-      if (mounted) await unmount(mounted);
+      if (mounted) await unmount?.(mounted);
       await win.happyDOM.abort();
       await rm(directory, { recursive: true, force: true });
     }
