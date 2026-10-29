@@ -581,4 +581,28 @@ describe('org registration authenticated intent contract', () => {
     expect((await post(router, issued.body)).status).toBe(200);
     expect(await db.ethereumKey.count()).toBe(0);
   });
+
+  test('signed display names with separators or invisible formatting cannot start owner consent', async () => {
+    const router = app();
+    for (const character of ['\u2028', '\u2029', '\u200e', '\u200f', '\u061c', '\u202e', '\u2066', '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff', '\u00ad', '\u034f', '\u3164', '\ufe0f']) {
+      const issued = await intent({ displayName: `Visible${character}(@another-handle)` });
+      const response = await post(router, issued.body);
+      expect(response.status, JSON.stringify(character)).toBe(400);
+      expect((await response.json()).code).toBe('registration_intent_invalid');
+    }
+    expect(await db.ethereumKey.count()).toBe(0);
+    expect(await db.orgKeyRegistrationChallenge.count()).toBe(0);
+    expect(await db.orgKeyRegistration.count()).toBe(0);
+  });
+
+  test('visible Unicode names remain exact in the approved binding and signed proof', async () => {
+    const issued = await intent({ displayName: 'Café 東京 🐙' });
+    const response = await complete(app(), issued);
+    expect(response.status).toBe(201);
+    const binding = await db.orgKeyRegistration.findUniqueOrThrow({ where: { registrationId: issued.claims.registrationId } });
+    const verified = await jwtVerify(binding.proof, createLocalJWKSet(await proofAuth.api.getJwks()), { issuer: 'https://api.openkey.so/api/auth', audience: 'https://witness.credentials.org' });
+    expect(binding.displayName).toBe(issued.claims.displayName);
+    expect(verified.payload.displayName).toBe(issued.claims.displayName);
+    expect(await db.keyGrant.findUniqueOrThrow({ where: { id: binding.grantId } })).toMatchObject({ role: 'OWNER', granteeUserId: actor.userId });
+  });
 });

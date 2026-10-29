@@ -4,7 +4,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { Hono } from 'hono';
 import { serializeSignedCookie } from 'better-call';
-import { createLocalJWKSet, exportJWK, generateKeyPair, jwtVerify, SignJWT, type JWK } from 'jose';
+import { createLocalJWKSet, exportJWK, generateKeyPair, jwtVerify, SignJWT, type JWK, type GenerateKeyPairResult } from 'jose';
 import { createPrismaClient, type PrismaClient } from '@openkey/db';
 import { createTeeClient } from '@openkey/tee';
 import type { SessionContext } from '../src/middleware/session';
@@ -34,6 +34,7 @@ let cookie: string;
 let body: { intentJws: string; registrationId: string; orgId: string; nonce: string; handle: string; orgName: string };
 let credential: PasskeyFixture;
 let jwks: { keys: JWK[] };
+let oc: GenerateKeyPairResult;
 let blockedGraphObserved = false;
 interface HttpOutcome { status: number; body: OrgRegistrationResponse['body'] | { code: string } }
 
@@ -62,7 +63,7 @@ beforeAll(async () => {
   const context = await auth.$context;
   cookie = (await serializeSignedCookie(context.authCookies.sessionToken.name, token, context.secret)).split(';')[0]!;
   jwks = await auth.api.getJwks();
-  const oc = await generateKeyPair('EdDSA', { extractable: true });
+  oc = await generateKeyPair('EdDSA', { extractable: true });
   const issuer = 'did:web:issuer.credentials.org';
   const kid = `${issuer}#controller`;
   const document = { id: issuer, assertionMethod: [kid], verificationMethod: [{ id: kid, controller: issuer, publicKeyJwk: await exportJWK(oc.publicKey) }] };
@@ -149,3 +150,80 @@ test('a committed concurrent registration wins after counter rollback without a 
   expect(await database.orgKeyRegistration.count()).toBe(1);
   console.log('Observed both PostgreSQL lock waiters; exactly one committed registration and immutable winner proof.');
 }, 15_000);
+
+test('one owner can approve beyond pool capacity without stalling unrelated same-pool work', async () => {
+  const state = { passkeys: [] as Record<string, unknown>[] };
+  const burstCredential = addPasskey(state, owner);
+  await database.passkey.create({ data: {
+    id: `${owner}-burst-passkey`, userId: owner, credentialID: burstCredential.credentialID,
+    publicKey: state.passkeys[0]!.publicKey as string, counter: 0, deviceType: 'singleDevice', backedUp: false,
+  } });
+  const approvalsCount = 12; // More than the real auth PrismaPg pool's ten connections.
+  const requests: unknown[] = [];
+  const registrationIds: string[] = [];
+  for (let index = 0; index < approvalsCount; index++) {
+    const now = Math.floor(Date.now() / 1000);
+    const claims = {
+      iss: 'did:web:issuer.credentials.org', aud: 'https://api.openkey.so', registrationId: randomUUID(),
+      orgId: `o${'d'.repeat(25)}${'abcdefghijkl'[index]}`, nonce: randomBytes(32).toString('base64url'),
+      handle: `pg-burst-${index}`, displayName: `PostgreSQL burst ${index}`, purpose: 'org-registration/v1', iat: now, exp: now + 600,
+    };
+    const intentJws = await new SignJWT(claims).setProtectedHeader({ alg: 'EdDSA', kid: 'did:web:issuer.credentials.org#controller', typ: 'org-registration-intent+jwt' }).sign(oc.privateKey);
+    const input = { intentJws, registrationId: claims.registrationId, orgId: claims.orgId, nonce: claims.nonce, handle: claims.handle, orgName: claims.displayName };
+    const response = await post(input);
+    expect(response.status).toBe(200);
+    if (!('registrationChallenge' in response.body)) throw new Error('Producer did not issue burst consent');
+    registrationIds.push(claims.registrationId);
+    requests.push({ ...input, challengeNonce: response.body.registrationChallenge.challengeNonce,
+      assertion: assertionFor(burstCredential, response.body.registrationChallenge.challenge, { origin, rpID, counter: 0 }) });
+  }
+  const burstLockId = lockId + 1;
+  await control.$executeRawUnsafe(`CREATE FUNCTION s1b_key_insert_barrier() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock_shared(${burstLockId}); RETURN NEW; END $$`);
+  await control.$executeRawUnsafe('CREATE TRIGGER s1b_key_insert_barrier BEFORE INSERT ON ethereum_keys FOR EACH ROW EXECUTE FUNCTION s1b_key_insert_barrier()');
+  let responses: Promise<Array<{ status: number; text: string }>> = Promise.resolve([]);
+  let unrelated: Promise<{ value: number; elapsedMs: number }> = Promise.resolve({ value: 0, elapsedMs: Infinity });
+  let saturatedGraphObserved = false;
+  let blockedTransactions = 0;
+  try {
+    await control.$transaction(async tx => {
+      await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(${burstLockId})`);
+      const [{ pid }] = await tx.$queryRawUnsafe<Array<{ pid: number }>>('SELECT pg_backend_pid() AS pid');
+      responses = Promise.all(requests.map(async input => {
+        const response = await fetch(`http://127.0.0.1:${server.port}/`, { method: 'POST', headers: { cookie, origin, 'content-type': 'application/json' }, body: JSON.stringify(input) });
+        return { status: response.status, text: await response.text() };
+      }));
+      const deadline = Date.now() + 3_000;
+      while (Date.now() < deadline) {
+        const waiters = await tx.$queryRawUnsafe<Array<{ count: bigint }>>('SELECT count(DISTINCT pid) AS count FROM pg_locks WHERE pid IS NOT NULL AND $1::int = ANY(pg_blocking_pids(pid))', pid!);
+        blockedTransactions = Math.max(blockedTransactions, Number(waiters[0]!.count));
+        if (blockedTransactions === 10) { saturatedGraphObserved = true; break; }
+        await new Promise<void>(resolve => setImmediate(resolve));
+      }
+      const started = performance.now();
+      unrelated = database.$queryRawUnsafe<Array<{ value: number }>>('SELECT 42::int AS value')
+        .then(rows => ({ value: rows[0]!.value, elapsedMs: performance.now() - started }));
+    }); // Release only after the ten real transaction connections are observed waiting.
+    const [outcomes, query] = await Promise.all([responses, unrelated]);
+    process.stdout.write(JSON.stringify({ synthetic: true, saturatedGraphObserved, blockedTransactions, statuses: outcomes.map(response => response.status), unrelatedQueryMs: query.elapsedMs }) + '\n');
+    expect(outcomes.map(response => response.status)).toEqual(Array(approvalsCount).fill(201));
+    expect(saturatedGraphObserved).toBe(true);
+    expect(query.value).toBe(42);
+    expect(query.elapsedMs).toBeLessThan(1_000);
+    const bindings = await database.orgKeyRegistration.findMany({ where: { registrationId: { in: registrationIds } } });
+    expect(bindings.map(binding => binding.registrationId).sort()).toEqual([...registrationIds].sort());
+    expect(new Set(bindings.map(binding => binding.controllerDid)).size).toBe(approvalsCount);
+    for (const outcome of outcomes) {
+      const result = JSON.parse(outcome.text) as Extract<OrgRegistrationResponse['body'], { key: unknown }>;
+      const binding = bindings.find(binding => binding.keyId === result.key.keyId);
+      expect(binding?.proof === result.registrationProof).toBe(true);
+      const verified = await jwtVerify(result.registrationProof, createLocalJWKSet(jwks), { issuer: 'https://api.openkey.so/api/auth', audience: 'https://witness.credentials.org' });
+      expect(verified.payload).toMatchObject({ sub: owner, registrationId: binding!.registrationId, keyId: binding!.keyId, controllerDid: binding!.controllerDid });
+    }
+    expect(await database.ethereumKey.count({ where: { id: { in: bindings.map(binding => binding.keyId) }, custody: 'ORG' } })).toBe(approvalsCount);
+    expect(await database.keyGrant.count({ where: { id: { in: bindings.map(binding => binding.grantId) }, role: 'OWNER', granteeUserId: owner } })).toBe(approvalsCount);
+  } finally {
+    await Promise.allSettled([responses, unrelated]);
+    await control.$executeRawUnsafe('DROP TRIGGER s1b_key_insert_barrier ON ethereum_keys');
+    await control.$executeRawUnsafe('DROP FUNCTION s1b_key_insert_barrier()');
+  }
+}, 20_000);

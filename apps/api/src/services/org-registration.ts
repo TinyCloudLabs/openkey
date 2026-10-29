@@ -163,7 +163,7 @@ function validHandle(value: unknown): value is string {
 }
 function validDisplayName(value: unknown): value is string {
   return typeof value === 'string' && Buffer.byteLength(value, 'utf8') >= 1 && Buffer.byteLength(value, 'utf8') <= 256
-    && !/[\p{Cc}\p{Cs}\u202a-\u202e\u2066-\u2069]/u.test(value);
+    && !/[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/u.test(value);
 }
 function readRequest(raw: string): RegistrationRequest {
   try {
@@ -366,6 +366,26 @@ export function createOrgRegistrationHandler(prisma: PrismaClient, tee: TeeClien
     let sealedBlob: string;
     try { sealedBlob = await seal(privateKey, sealingKey); } finally { sealingKey.fill(0); }
     const jti = randomUUID();
+    const keyId = randomUUID();
+    const iat = Math.floor(Date.now() / 1000);
+    const exp = Math.min(intent.exp, iat + WINDOW_MS / 1000);
+    if (exp <= iat) return refuse(410, 'registration_intent_expired', 'Registration intent has expired');
+    const claims: OrgRegistrationProof = {
+      iss: PROOF_ISSUER, aud: PROOF_AUDIENCE, sub: actor.userId, registrationId: intent.registrationId,
+      orgId: intent.orgId, nonce: intent.nonce, handle: intent.handle, displayName: intent.displayName,
+      keyId, controllerDid, purpose: PURPOSE, jti, iat, exp,
+    };
+    // The candidate proof remains private unless this request's transaction commits.
+    let proof: string;
+    try {
+      proof = await dependencies.signProof(claims);
+      const header = decodeObject(proof.split('.')[0] ?? '');
+      if (!exactFields(header, ['alg', 'kid']) || header.alg !== 'EdDSA' || typeof header.kid !== 'string' || !header.kid) {
+        throw new Error('Unsupported issuer signing key');
+      }
+    } catch {
+      return refuse(503, 'registration_signer_unavailable', 'Registration proof signing is unavailable');
+    }
     try {
       return await prisma.$transaction(async (tx): Promise<OrgRegistrationResponse> => {
         const winner = await storedResponse(tx, intent, intentDigest, actor.userId);
@@ -382,7 +402,7 @@ export function createOrgRegistrationHandler(prisma: PrismaClient, tee: TeeClien
           return refuse(403, 'registration_challenge_used', 'Registration challenge is expired or already used');
         }
         const key = await tx.ethereumKey.create({ data: {
-          custody: 'ORG', userId: null, keyType: 'MANAGED', address, publicKey: address, sealedBlob, sealingContext,
+          id: keyId, custody: 'ORG', userId: null, keyType: 'MANAGED', address, publicKey: address, sealedBlob, sealingContext,
           isCanonicalTinyCloud: false, label: intent.displayName,
         }, select: { id: true, address: true, label: true } });
         await tx.orgKey.create({ data: { keyId: key.id, orgId: intent.orgId, orgName: intent.displayName, controllerDid } });
@@ -393,24 +413,6 @@ export function createOrgRegistrationHandler(prisma: PrismaClient, tee: TeeClien
         if (!owner) return refuse(403, 'registration_owner_required', 'An active OWNER grant is required for registration');
         const counter = await tx.passkey.updateMany({ where: { id: passkey.id, userId: actor.userId, counter: passkey.counter }, data: { counter: newCounter } });
         if (counter.count !== 1) return refuse(403, 'registration_passkey_changed', 'Registration passkey state changed');
-        const iat = Math.floor(Date.now() / 1000);
-        const exp = Math.min(intent.exp, iat + WINDOW_MS / 1000);
-        if (exp <= iat) return refuse(410, 'registration_intent_expired', 'Registration intent has expired');
-        const claims: OrgRegistrationProof = {
-          iss: PROOF_ISSUER, aud: PROOF_AUDIENCE, sub: actor.userId, registrationId: intent.registrationId,
-          orgId: intent.orgId, nonce: intent.nonce, handle: intent.handle, displayName: intent.displayName,
-          keyId: key.id, controllerDid, purpose: PURPOSE, jti, iat, exp,
-        };
-        let proof: string;
-        try {
-          proof = await dependencies.signProof(claims);
-          const header = decodeObject(proof.split('.')[0] ?? '');
-          if (!exactFields(header, ['alg', 'kid']) || header.alg !== 'EdDSA' || typeof header.kid !== 'string' || !header.kid) {
-            throw new Error('Unsupported issuer signing key');
-          }
-        } catch {
-          return refuse(503, 'registration_signer_unavailable', 'Registration proof signing is unavailable');
-        }
         await tx.orgKeyRegistration.create({ data: {
           registrationId: intent.registrationId, ownerSubject: actor.userId, intentDigest,
           orgId: intent.orgId, nonce: intent.nonce, handle: intent.handle, displayName: intent.displayName,
