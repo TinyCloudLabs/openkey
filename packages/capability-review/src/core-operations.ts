@@ -64,12 +64,12 @@ const CATALOG: ReadonlyArray<{
       subscribe: {
         family: "hooks",
         label: "Change notifications (subscribe)",
-        description: "Receive notifications when data in this space changes",
+        description: "Get notified when data in this space changes",
       },
       register: {
         family: "hooks",
         label: "Webhooks (register)",
-        description: "Send change notifications for this space to a webhook",
+        description: "Send this space's change alerts to a webhook",
       },
       list: {
         family: "hooks",
@@ -110,7 +110,7 @@ const CATALOG: ReadonlyArray<{
       admin: {
         family: "database-admin",
         label: "DuckDB database (manage)",
-        description: "Change the structure and settings of a DuckDB database",
+        description: "Change a DuckDB database's structure and settings",
       },
       import: {
         family: "database-admin",
@@ -162,7 +162,7 @@ export const SQL_ADMIN_OPERATIONS: Readonly<Record<string, CoreOperation>> = {
   admin: {
     family: "database-admin",
     label: "SQL database (manage)",
-    description: "Change the structure and settings of an application database",
+    description: "Change an app database's structure and settings",
   },
   "*": {
     family: "database-admin",
@@ -176,7 +176,7 @@ export const SQL_ADMIN_OPERATIONS: Readonly<Record<string, CoreOperation>> = {
  * come from the KV target rules in classify.ts.
  */
 export const KV_FEED_DESCRIPTIONS: Readonly<Record<string, string>> = {
-  sync: "Follow changes to data (names and details, not values)",
+  sync: "See which data changes, but not the values",
   retain: "Keep synced data available offline",
 };
 

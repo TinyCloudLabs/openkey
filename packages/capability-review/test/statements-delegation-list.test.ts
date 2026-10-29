@@ -15,7 +15,7 @@ const OTHER = "0x2222222222222222222222222222222222222222";
 const space = (name: string, owner = SIGNER) => `tinycloud:pkh:eip155:1:${owner}:${name}`;
 
 const SENTENCE =
-  "See who has access to your data, what it reaches (by name) and when it ends. Keys and contents aren't shown.";
+  "See who has access to your data";
 
 /** A grant as the review model builds it: classified from its own entry, owned by the signer unless said otherwise. */
 function grantFor(spaceUri: string, abilities: string[], options: { owner?: string } = {}): CapabilityGrant {
@@ -80,14 +80,14 @@ describe("the sentence for listing the account's delegations", () => {
     for (const spaceName of ["account", "applications"]) {
       const primaryText = buildStatement(grantFor(space(spaceName), abilities)).primaryText;
       expect(primaryText).not.toBe(SENTENCE);
-      expect(primaryText).toStartWith("Perform ");
+      expect(buildStatement(grantFor(space(spaceName), abilities)).literalEscaped).toBe(true);
     }
   });
 
   it("a grant that is classed as a delegation read but carries another verb still gets the literal wording", () => {
     for (const spaceName of ["account", "applications"]) {
       const grant = { ...grantFor(space(spaceName), ["tinycloud.delegation/revoke"]), family: "bootstrap-delegation" as const, severity: "standard" as const };
-      expect(buildStatement(grant).primaryText).toBe("Perform tinycloud.delegation/revoke on tinycloud.delegation");
+      expect(buildStatement(grant).primaryText).toBe("Unknown action: tinycloud.delegation/revoke");
     }
   });
 
@@ -98,6 +98,6 @@ describe("the sentence for listing the account's delegations", () => {
 
   it("another space keeps the literal wording", () => {
     expect(buildStatement(grantFor(space("default"), ["tinycloud.delegation/list"])).primaryText)
-      .toBe("Perform tinycloud.delegation/list on tinycloud.delegation");
+      .toBe("See who can access your data");
   });
 });

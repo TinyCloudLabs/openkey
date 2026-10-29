@@ -280,7 +280,7 @@ describe('selection controls for a request with app keys', () => {
   test('the edit view says the app keys are one unit, and labels their checkbox "App keys"', () => {
     const { target, boxes, cleanup } = mountEditing(model, new Set(everyId));
     expect(target.querySelector('.app-key-note')?.textContent).toBe(
-      'App keys can only be approved together. Untick all of them, or keep them all.',
+      'App keys are approved together: keep all or none.',
     );
     const groupBox = boxes.find((box) => !box.disabled)!;
     expect(groupBox.closest('label')?.textContent?.trim()).toBe('App keys');

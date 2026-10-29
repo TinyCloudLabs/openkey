@@ -7,9 +7,10 @@
 // display strings, but the primary statement is always derived from the
 // verified structure of the request.
 //
-// Falls back to the literal service/resource/actions for any shape it does
-// not recognize — invented friendly semantics on unknown shapes would be a
-// spec violation (see the merge-readiness contract).
+// Falls back to plain words for the known actions, and the raw ability for
+// any other, on any shape it does not recognize — invented friendly semantics
+// on unknown shapes would be a spec violation (see the merge-readiness
+// contract).
 //
 // The `sensitiveCallout(n)` string is the exact copy required by the
 // contract; UI callers MUST route through it rather than composing the
@@ -69,7 +70,7 @@ export interface StatementEntry {
   neverApprovable?: boolean;
   /** True when text between backticks in `primaryText` is shown in monospace. */
   codeSpans?: true;
-  /** Raw fallback text already escaped and capped by the statement builder. */
+  /** Set on every fallback row (a shape the catalog does not recognize); its raw parts are already escaped and capped. */
   literalEscaped?: true;
 }
 
@@ -245,34 +246,142 @@ function hasFailingEncryptionUrn(grant: CapabilityGrant): boolean {
   );
 }
 
-/** Fallback statement for anything the catalog does not recognize. */
+/**
+ * Plain words for the fallback row: each known action of a TinyCloud service,
+ * by short service name, as a verb and the thing it acts on, in reading
+ * order. The legacy named-secrets service and `key.delete` (always refused)
+ * are absent on purpose; actions outside this table show their raw ability.
+ */
+const PLAIN_ACTIONS: Record<string, Record<string, readonly [verb: string, noun: string]>> = {
+  kv: {
+    get: ["read", "data"],
+    list: ["list", "data"],
+    metadata: ["see details of", "data"],
+    put: ["change", "data"],
+    del: ["delete", "data"],
+    delete: ["delete", "data"],
+    sync: ["follow changes to", "data"],
+    retain: ["keep offline copies of", "data"],
+  },
+  sql: {
+    read: ["read", "data"],
+    select: ["read", "data"],
+    write: ["change", "data"],
+    schema: ["edit tables in", "data"],
+    admin: ["manage", "data"],
+    "*": ["do anything with", "data"],
+  },
+  duckdb: {
+    read: ["read", "data"],
+    select: ["read", "data"],
+    export: ["download", "data"],
+    write: ["change", "data"],
+    import: ["replace", "data"],
+    admin: ["manage", "data"],
+    "*": ["do anything with", "data"],
+  },
+  vfs: {
+    get: ["read", "files"],
+    list: ["list", "files"],
+    metadata: ["see details of", "files"],
+    put: ["change", "files"],
+    delete: ["delete", "files"],
+  },
+  hooks: {
+    subscribe: ["watch changes to", "data"],
+    list: ["see webhooks on", "data"],
+    register: ["add webhooks to", "data"],
+    unregister: ["remove webhooks from", "data"],
+  },
+  space: {
+    list: ["list", "spaces"],
+    info: ["see usage of", "spaces"],
+    host: ["create", "spaces"],
+    create: ["create", "spaces"],
+  },
+  capabilities: { read: ["check permissions on", "data"] },
+  delegation: {
+    list: ["see who can access", "data"],
+    status: ["see who can access", "data"],
+  },
+  encryption: {
+    decrypt: ["decrypt", "data"],
+    "network.create": ["set up", "decryption network"],
+    "network.revoke": ["turn off", "decryption network"],
+    "key.create": ["create", "keys"],
+    "key.block": ["block", "keys"],
+    "key.unblock": ["unblock", "keys"],
+  },
+};
+
+/** `read`, `read and list`, `read, list and delete`. */
+function joinAnd(words: readonly string[]): string {
+  return words.length <= 1
+    ? words.join("")
+    : `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}`;
+}
+
+/**
+ * Fallback row for anything the catalog does not recognize: the known
+ * actions in plain words ("Read and delete your data"), then any other
+ * action by its raw ability ("unknown action: tinycloud.kv/archive"). A
+ * service-mismatched wire tuple or a failing encryption URN shows every
+ * action raw. Raw text is escaped and capped, so the row is marked
+ * `literalEscaped`.
+ */
 function fallbackStatement(grant: CapabilityGrant): StatementEntry {
-  // Grant actions are CapabilityAction objects; join their ability
-  // strings for the literal fallback text. Never invent friendly
-  // semantics from a shape we don't recognize.
   const failing = hasFailingEncryptionUrn(grant);
-  // A failing encryption URN is untrusted literal text: escape every displayed
-  // value, and cap the ability list, service and resource.
-  // Join raw ability strings first, so a failing grant's ability list is
-  // escaped and capped once, with at most one `…`.
-  const abilityText = grant.actions.map((a) => a.ability).join(", ");
-  const actionList = failing
-    ? renderLiteral(abilityText, LITERAL_TRUNCATE_CHARS)
-    : abilityText;
   const service = failing
     ? renderLiteral(grant.service, LITERAL_TRUNCATE_CHARS)
     : grant.service;
   const resource = failing
     ? renderLiteral(resourceOf(grant), LITERAL_TRUNCATE_CHARS)
     : resourceOf(grant);
+  // A near-miss failed the app-scope proof, so it never claims "your".
+  const owner =
+    grant.ownedBySelf === false
+      ? "another user's "
+      : grant.ownedBySelf === true && grant.appScopeNearMiss !== true
+        ? "your "
+        : "";
+  const rawOnly = failing || grant.serviceMismatch === true;
+  const groups = new Map<string, Array<{ verb: string; order: number }>>();
+  const raw: string[] = [];
+  for (const { ability } of grant.actions) {
+    const head = ability.includes("/") ? ability.slice(0, ability.indexOf("/")).replace(/^tinycloud\./, "") : "";
+    const table = !rawOnly && Object.hasOwn(PLAIN_ACTIONS, head) ? PLAIN_ACTIONS[head] : undefined;
+    const verb = verbOf(ability);
+    const entry = table !== undefined && Object.hasOwn(table, verb) ? table[verb]! : undefined;
+    if (entry === undefined) {
+      raw.push(ability);
+      continue;
+    }
+    const noun = entry[1] === "data" && isSecretsSpace(grant.space) ? "secrets" : entry[1];
+    const verbs = groups.get(noun) ?? [];
+    if (!verbs.some((known) => known.verb === entry[0])) {
+      verbs.push({ verb: entry[0], order: Object.keys(table!).indexOf(verb) });
+    }
+    groups.set(noun, verbs);
+  }
+  const parts = [...groups].map(
+    ([noun, verbs]) =>
+      `${joinAnd(verbs.sort((a, b) => a.order - b.order).map((v) => v.verb))} ${owner}${noun}`,
+  );
+  // Join raw ability strings first, so the list is escaped and capped once,
+  // with at most one `…`.
+  if (raw.length > 0) {
+    const list = renderLiteral(raw.join(", "), LITERAL_TRUNCATE_CHARS);
+    parts.push(`unknown action${raw.length > 1 ? "s" : ""}: ${list}`);
+  }
+  const text =
+    parts.length > 0
+      ? parts.join("; ")
+      : `unknown access: ${renderLiteral(grant.service, LITERAL_TRUNCATE_CHARS)}`;
   return {
-    primaryText:
-      actionList.length > 0
-        ? `Perform ${actionList} on ${service}`
-        : `Access ${service}`,
+    primaryText: text.charAt(0).toUpperCase() + text.slice(1),
     service,
     resource,
-    ...(failing ? { literalEscaped: true as const } : {}),
+    literalEscaped: true,
   };
 }
 
@@ -636,10 +745,9 @@ function buildNamedKeyStatement(
  *
  * Unknown services (anything not in KV / SQL / encryption / capabilities
  * / secrets) return `true` so `buildStatement` reaches its unknown-service
- * fallback branch untouched. The fallback at the end of `buildStatement`
- * still emits the literal `Perform <actions> on <service>` copy, so
- * returning `true` here does NOT admit friendly copy for an unknown
- * service — it just avoids double-handling.
+ * fallback branch untouched. The fallback names only the actions it knows
+ * and shows any other one raw, so returning `true` here does NOT admit
+ * friendly copy for an unknown service — it just avoids double-handling.
  *
  * Empty action lists ALWAYS return `false` regardless of service. A
  * friendly sentence would still speak about "read" or "update" authority
@@ -701,20 +809,21 @@ function schemaOnlyStatementText(
     // copy does not name tables, so create/change/delete is stated here.
     if (grant.ownedBySelf !== true && grant.ownedBySelf !== false) return null;
     const owner = grant.ownedBySelf === false ? "another user's" : "your";
-    const scope = grant.path === "" ? "entire " : "";
-    return `Create, change and delete tables in ${owner} ${scope}secret catalog`;
+    const scope = grant.path === "" ? (grant.ownedBySelf === false ? "all of " : "all ") : "";
+    return `Edit and delete ${scope}${owner} secret tables`;
   }
   if (grant.ownedBySelf === false && !isSecretsSpace(grant.space)) {
-    return `Create, change and delete tables in ${otherUserSubject(spaceName)}`;
+    // "another user's application data" → "another user's application tables".
+    return `Edit and delete ${otherUserSubject(spaceName).replace(/ data$/, " tables")}`;
   }
   if (spaceName === "applications" && grant.family === "own-app-data") {
-    return "Create, change and delete this app's tables";
+    return "Edit and delete this app's tables";
   }
   if (spaceName === "account" && grant.family === "bootstrap-sql") {
-    return "Create, change and delete tables in your TinyCloud account";
+    return "Edit and delete tables in your TinyCloud account";
   }
   if (grant.family === "own-app-data" || grant.family === "cross-app-data") {
-    return "Create, change and delete tables in application data";
+    return "Edit and delete tables in application data";
   }
   return null;
 }
@@ -1407,7 +1516,7 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
     }
     if (verbs.hasCreate && verbs.hasDecrypt) {
       return {
-        primaryText: "Set up encrypted data access and decrypt protected data",
+        primaryText: "Set up encryption and decrypt protected data",
         service,
         resource,
       };
@@ -1421,7 +1530,7 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
     }
     if (verbs.onlyCreate) {
       return {
-        primaryText: "Set up encrypted data access",
+        primaryText: "Set up encryption",
         service,
         resource,
       };
@@ -1620,5 +1729,7 @@ function coreOperationStatement(grant: CapabilityGrant): StatementEntry | null {
  * `grantReachesSecretDataOrDecryption`.
  */
 export function sensitiveCallout(count: number): string {
-  return `${count} exact grants reach secret data or decryption. You can review them below.`;
+  return count === 1
+    ? "1 permission reaches secrets or decryption"
+    : `${count} permissions reach secrets or decryption`;
 }

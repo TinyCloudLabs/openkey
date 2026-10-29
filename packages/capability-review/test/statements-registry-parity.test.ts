@@ -95,7 +95,7 @@ describe("buildStatement — KV catalog is registry-scoped", () => {
       abilities: ["tinycloud.kv/peek"],
     });
     const stmt = buildStatement(grant);
-    expect(stmt.primaryText).toBe("Perform tinycloud.kv/peek on tinycloud.kv");
+    expect(stmt.primaryText).toBe("Unknown action: tinycloud.kv/peek");
     expect(stmt.primaryText).not.toBe("Read this app's data");
   });
 
@@ -108,7 +108,7 @@ describe("buildStatement — KV catalog is registry-scoped", () => {
       abilities: ["tinycloud.kv/read"],
     });
     const stmt = buildStatement(grant);
-    expect(stmt.primaryText).toBe("Perform tinycloud.kv/read on tinycloud.kv");
+    expect(stmt.primaryText).toBe("Unknown action: tinycloud.kv/read");
     expect(stmt.primaryText).not.toBe("Read this app's data");
   });
 
@@ -121,7 +121,7 @@ describe("buildStatement — KV catalog is registry-scoped", () => {
     });
     const stmt = buildStatement(grant);
     expect(stmt.primaryText).toBe(
-      "Perform tinycloud.kv/update on tinycloud.kv",
+      "Unknown action: tinycloud.kv/update",
     );
     expect(stmt.primaryText).not.toBe("Update this app's data");
     expect(stmt.primaryText).not.toBe("Read and update this app's data");
@@ -135,7 +135,7 @@ describe("buildStatement — KV catalog is registry-scoped", () => {
       abilities: ["tinycloud.kv/write"],
     });
     const stmt = buildStatement(grant);
-    expect(stmt.primaryText).toBe("Perform tinycloud.kv/write on tinycloud.kv");
+    expect(stmt.primaryText).toBe("Unknown action: tinycloud.kv/write");
     expect(stmt.primaryText).not.toBe("Update this app's data");
   });
 
@@ -147,7 +147,7 @@ describe("buildStatement — KV catalog is registry-scoped", () => {
       abilities: ["tinycloud.kv/admin"],
     });
     const stmt = buildStatement(grant);
-    expect(stmt.primaryText).toBe("Perform tinycloud.kv/admin on tinycloud.kv");
+    expect(stmt.primaryText).toBe("Unknown action: tinycloud.kv/admin");
   });
 
   it("KV [tinycloud.kv/grant, tinycloud.kv/revoke] → literal fallback", () => {
@@ -159,7 +159,7 @@ describe("buildStatement — KV catalog is registry-scoped", () => {
     });
     const stmt = buildStatement(grant);
     expect(stmt.primaryText).toBe(
-      "Perform tinycloud.kv/grant, tinycloud.kv/revoke on tinycloud.kv",
+      "Unknown actions: tinycloud.kv/grant, tinycloud.kv/revoke",
     );
   });
 
@@ -174,7 +174,7 @@ describe("buildStatement — KV catalog is registry-scoped", () => {
     });
     const stmt = buildStatement(grant);
     expect(stmt.primaryText).toBe(
-      "Perform tinycloud.kv/get, tinycloud.kv/peek on tinycloud.kv",
+      "Read your data; unknown action: tinycloud.kv/peek",
     );
     expect(stmt.primaryText).not.toBe("Read this app's data");
   });
@@ -189,7 +189,7 @@ describe("buildStatement — KV catalog is registry-scoped", () => {
       severity: "standard",
     });
     const stmt = buildStatement(grant);
-    expect(stmt.primaryText).toBe("Perform tinycloud.kv/peek on tinycloud.kv");
+    expect(stmt.primaryText).toBe("Unknown action: tinycloud.kv/peek");
     expect(stmt.primaryText).not.toBe("View your connected apps");
   });
 });
@@ -276,7 +276,7 @@ describe("buildStatement — KV catalog: registered abilities preserved", () => 
       abilities: ["tinycloud.kv/delete"],
     });
     expect(buildStatement(grant).primaryText).toBe(
-      "Perform tinycloud.kv/delete on tinycloud.kv",
+      "Delete your data",
     );
   });
 
@@ -307,7 +307,7 @@ describe("buildStatement — SQL catalog is registry-scoped", () => {
       severity: "standard",
     });
     const stmt = buildStatement(grant);
-    expect(stmt.primaryText).toBe("Perform tinycloud.sql/get on tinycloud.sql");
+    expect(stmt.primaryText).toBe("Unknown action: tinycloud.sql/get");
     expect(stmt.primaryText).not.toBe("Read your TinyCloud account");
   });
 
@@ -319,7 +319,7 @@ describe("buildStatement — SQL catalog is registry-scoped", () => {
       severity: "attention",
     });
     const stmt = buildStatement(grant);
-    expect(stmt.primaryText).toBe("Perform tinycloud.sql/put on tinycloud.sql");
+    expect(stmt.primaryText).toBe("Unknown action: tinycloud.sql/put");
     expect(stmt.primaryText).not.toBe("Update your TinyCloud account");
   });
 
@@ -332,7 +332,7 @@ describe("buildStatement — SQL catalog is registry-scoped", () => {
     });
     const stmt = buildStatement(grant);
     expect(stmt.primaryText).toBe(
-      "Perform tinycloud.sql/delete on tinycloud.sql",
+      "Unknown action: tinycloud.sql/delete",
     );
   });
 
@@ -345,7 +345,7 @@ describe("buildStatement — SQL catalog is registry-scoped", () => {
     });
     const stmt = buildStatement(grant);
     expect(stmt.primaryText).toBe(
-      "Perform tinycloud.sql/schema.apply on tinycloud.sql",
+      "Unknown action: tinycloud.sql/schema.apply",
     );
     expect(stmt.primaryText).not.toBe("Update your TinyCloud account");
   });
@@ -359,7 +359,7 @@ describe("buildStatement — SQL catalog is registry-scoped", () => {
     });
     const stmt = buildStatement(grant);
     expect(stmt.primaryText).toBe(
-      "Perform tinycloud.sql/update on tinycloud.sql",
+      "Unknown action: tinycloud.sql/update",
     );
   });
 });
@@ -376,7 +376,7 @@ describe("buildStatement — SQL catalog: manifest abilities only", () => {
       severity: "attention",
     });
     expect(buildStatement(grant).primaryText).toBe(
-      "Perform tinycloud.sql/admin on tinycloud.sql",
+      "Manage your data",
     );
   });
 
@@ -390,7 +390,7 @@ describe("buildStatement — SQL catalog: manifest abilities only", () => {
       severity: "attention",
     });
     expect(buildStatement(grant).primaryText).toBe(
-      "Perform tinycloud.sql/read, tinycloud.sql/admin on tinycloud.sql",
+      "Read and manage your data",
     );
   });
 
@@ -403,7 +403,7 @@ describe("buildStatement — SQL catalog: manifest abilities only", () => {
     });
     const stmt = buildStatement(grant);
     expect(stmt.primaryText).toBe(
-      "Perform tinycloud.sql/select on tinycloud.sql",
+      "Read your data",
     );
   });
 });
@@ -422,7 +422,7 @@ describe("buildStatement — encryption catalog is registry-scoped", () => {
     });
     const stmt = buildStatement(grant);
     expect(stmt.primaryText).toBe(
-      "Perform tinycloud.encryption/unwrap on tinycloud.encryption",
+      "Unknown action: tinycloud.encryption/unwrap",
     );
     expect(stmt.primaryText).not.toBe("Decrypt protected data");
   });
@@ -440,7 +440,7 @@ describe("buildStatement — encryption catalog is registry-scoped", () => {
     });
     const stmt = buildStatement(grant);
     expect(stmt.primaryText).toBe(
-      "Perform tinycloud.encryption/decrypt, tinycloud.encryption/unwrap on tinycloud.encryption",
+      "Decrypt your data; unknown action: tinycloud.encryption/unwrap",
     );
     expect(stmt.primaryText).not.toBe("Decrypt protected data");
   });
@@ -459,7 +459,7 @@ describe("buildStatement — empty action lists fall back", () => {
       severity: "standard",
     });
     const stmt = buildStatement(grant);
-    expect(stmt.primaryText).toBe("Access tinycloud.capabilities");
+    expect(stmt.primaryText).toBe("Unknown access: tinycloud.capabilities");
     expect(stmt.primaryText).not.toContain("permissions");
   });
 
@@ -471,7 +471,7 @@ describe("buildStatement — empty action lists fall back", () => {
       severity: "attention",
     });
     const stmt = buildStatement(grant);
-    expect(stmt.primaryText).toBe("Access tinycloud.secrets");
+    expect(stmt.primaryText).toBe("Unknown access: tinycloud.secrets");
   });
 
   it("appScopedSecret grant with EMPTY actions → literal fallback", () => {
@@ -491,7 +491,7 @@ describe("buildStatement — empty action lists fall back", () => {
     };
     const stmt = buildStatement(grant);
     expect(stmt.primaryText).not.toContain("app secret");
-    expect(stmt.primaryText).toBe("Access tinycloud.kv");
+    expect(stmt.primaryText).toBe("Unknown access: tinycloud.kv");
   });
 });
 
@@ -521,7 +521,7 @@ describe("buildStatement — appScopedSecret uses byte-exact ability check", () 
     };
     const stmt = buildStatement(grant);
     expect(stmt.primaryText).not.toContain("app secret");
-    expect(stmt.primaryText).toBe("Perform tinycloud.kv/read on tinycloud.kv");
+    expect(stmt.primaryText).toBe("Unknown action: tinycloud.kv/read");
   });
 
   it("stamped appScopedSecret with kv/get short-form → literal fallback", () => {
@@ -621,7 +621,7 @@ describe("buildStatement — encryption catalog: registered abilities preserved"
       severity: "sensitive",
     });
     expect(buildStatement(grant).primaryText).toBe(
-      "Set up encrypted data access and decrypt protected data",
+      "Set up encryption and decrypt protected data",
     );
   });
 

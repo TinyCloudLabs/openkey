@@ -28,16 +28,16 @@ const decrypt = 'tinycloud.encryption/decrypt';
 test('self-owned exact keys retain the account wording', () => {
   const rows = buildStatements(grant(`${base}/qa/x`, [create, decrypt], true));
   expect(rows.map((row) => row.primaryText)).toEqual([
-    "Create the encryption key qa/x in your account's default network.",
-    "Decrypt anything encrypted with your key qa/x in your account's default network, whenever this app gets hold of the encrypted copy, until this access expires.",
+    'Create your encryption key default/qa/x',
+    'Decrypt data with your key default/qa/x',
   ]);
 });
 
 test('a foreign exact key uses literal abilities rather than signer ownership wording', () => {
   const rows = buildStatements(grant(`${base}/qa/x`, [create, decrypt], false));
   expect(rows.map((row) => row.primaryText)).toEqual([
-    'Perform tinycloud.encryption/key.create on tinycloud.encryption',
-    'Perform tinycloud.encryption/decrypt on tinycloud.encryption',
+    "Create another user's keys",
+    "Decrypt another user's data",
   ]);
 });
 
@@ -46,8 +46,8 @@ test('a foreign or unidentified prefix does not claim that its keys belong to th
     for (const network of ['default', 'vault']) {
       const resource = `urn:tinycloud:encryption:${owner}:${network}/qa/`;
       expect(buildStatements(grant(resource, [create, decrypt], ownedBySelf)).map((row) => row.primaryText)).toEqual([
-        'Perform tinycloud.encryption/key.create on tinycloud.encryption',
-        'Perform tinycloud.encryption/decrypt on tinycloud.encryption',
+        ownedBySelf === false ? "Create another user's keys" : 'Create keys',
+        ownedBySelf === false ? "Decrypt another user's data" : 'Decrypt data',
       ]);
     }
   }
@@ -55,12 +55,12 @@ test('a foreign or unidentified prefix does not claim that its keys belong to th
 
 test('self-owned folder decrypt states that keys created later are included', () => {
   expect(buildStatement(grant(`${base}/qa/`, [decrypt], true)).primaryText).toBe(
-    'Decrypt data locked with your own keys in the folder `qa/`, including keys created later',
+    'Decrypt data locked with your keys in `qa/`',
   );
 });
 
 test('failing encryption URN fallback is marked as already escaped', () => {
   const row = buildStatement(grant(`${base}/qa/\u202ex`, [decrypt], true));
-  expect(row.primaryText).toBe('Perform tinycloud.encryption/decrypt on tinycloud.encryption');
+  expect(row.primaryText).toBe('Unknown action: tinycloud.encryption/decrypt');
   expect(row.literalEscaped).toBe(true);
 });

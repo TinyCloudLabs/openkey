@@ -303,8 +303,8 @@ test.describe('signing-approval browser parity — production adapters', () => {
       await expect(dialog).toBeVisible();
       const summary = page.locator('[data-parity-harness] .summary');
       await expect(summary.locator('.summary-statement')).toHaveCount(2);
-      await expect(summary).toContainText("Create, change and delete this app's tables");
-      await expect(summary).not.toContainText('Perform ');
+      await expect(summary).toContainText("Edit and delete this app's tables");
+      await expect(summary).not.toContainText('Unknown action');
     });
 
     test(`[${surface}] exact ReCap fixture stays readable in a narrow popup viewport`, async ({ page }) => {
@@ -325,11 +325,9 @@ test.describe('signing-approval browser parity — production adapters', () => {
       await expect(dialog).toContainText('Check your TinyCloud permissions');
       const summary = page.locator('[data-parity-harness] .summary');
       await expect(summary.locator('.summary-statement')).toHaveCount(11);
-      await expect(summary).toContainText(
-        "See who has access to your data, what it reaches (by name) and when it ends. Keys and contents aren't shown.",
-      );
-      await expect(summary).toContainText("Create, change and delete tables in your TinyCloud account");
-      await expect(summary).toContainText("Create, change and delete this app's tables");
+      await expect(summary).toContainText('See who has access to your data');
+      await expect(summary).toContainText("Edit and delete tables in your TinyCloud account");
+      await expect(summary).toContainText("Edit and delete this app's tables");
       await expect(summary).toContainText('View your secret names and details');
       await expect(summary).toContainText('Read secret values');
       await expect(summary.locator('.summary-sensitive-pill')).toHaveText([
@@ -343,7 +341,7 @@ test.describe('signing-approval browser parity — production adapters', () => {
       await expect(summary).not.toContainText('tinycloud:pkh:');
       await expect(dialog).not.toContainText(`owner ${model.signer.address.toLowerCase()}`);
       await expect(dialog).not.toContainText('path=spaces/');
-      await expect(summary).not.toContainText('Perform ');
+      await expect(summary).not.toContainText('Unknown action');
       const details = page.locator('details.advanced-details').first();
       await details.locator(':scope > summary').click();
       await expect(details.locator(':scope > summary')).toHaveText('Advanced details');
@@ -603,7 +601,7 @@ test.describe('signing-approval browser parity — production adapters', () => {
 
     const summary = page.locator('[data-parity-harness] .summary');
     await expect(summary).toContainText(
-      'Set up encrypted data access and decrypt protected data',
+      'Set up encryption and decrypt protected data',
     );
     await expect(summary.locator('.summary-sensitive-pill')).toHaveText('Sensitive');
     const details = page.locator('details.advanced-details');
@@ -712,7 +710,7 @@ test.describe('signing-approval browser parity — production adapters', () => {
       });
 
       const summary = page.locator('.summary');
-      await expect(summary).toContainText('Set up encrypted data access');
+      await expect(summary).toContainText('Set up encryption');
       await expect(summary).not.toContainText('decrypt protected data');
       await expect(page.locator('.sensitive-callout')).toHaveCount(0);
       await expect(page.getByRole('button', { name: 'Approve exact bytes' })).toBeVisible();

@@ -283,7 +283,7 @@ describe("parseCapabilityReview", () => {
     expect(namespaceGrant).toBeDefined();
     expect(namespaceGrant?.severity).toBe("sensitive");
     expect(namespaceGrant?.displayLabel).toBe(
-      "Secret names and metadata — (entire secrets namespace)",
+      "Secret names and metadata — (all secrets)",
     );
     expect(buildStatement(namespaceGrant!).primaryText).toBe(
       "View your secret names and details",
@@ -337,7 +337,7 @@ describe("parseCapabilityReview", () => {
     expect(read.permissions[0]?.family).toBe("secret-namespace-list");
     expect(read.permissions[0]?.severity).toBe("sensitive");
     expect(read.permissions[0]?.displayLabel).toBe(
-      "Secret data — (entire secrets namespace)",
+      "Secret data — (all secrets)",
     );
     expect(buildStatement(read.permissions[0]!).primaryText).toBe(
       "View your entire secret catalog",
@@ -373,7 +373,7 @@ describe("parseCapabilityReview", () => {
     expect(crossOwner.permissions[0]?.severity).toBe("sensitive");
     expect(crossOwner.permissions[0]?.ownedBySelf).toBe(false);
     expect(crossOwner.permissions[0]?.displayLabel).toBe(
-      "Secret data — (entire secrets namespace)",
+      "Secret data — (all secrets)",
     );
     expect(buildStatement(crossOwner.permissions[0]!).primaryText).toBe(
       "View another user's entire secret catalog",
@@ -394,7 +394,7 @@ describe("parseCapabilityReview", () => {
     // is absent.
     expect(unverified.permissions[0]?.ownedBySelf).toBe(true);
     expect(unverified.permissions[0]?.displayLabel).toBe(
-      "Secret data — (entire secrets namespace)",
+      "Secret data — (all secrets)",
     );
   });
 

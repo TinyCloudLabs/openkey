@@ -81,9 +81,9 @@ describe("one row per ability, exact key", () => {
   it.each([
     ["key.create", "Create the encryption key `k` for this app"],
     ["decrypt", "Decrypt data locked with this app's key `k`"],
-    ["key.block", "Block this app's key `k` so it can't be used to decrypt"],
-    ["key.unblock", "Unblock this app's key `k` so it can be used again"],
-    ["key.delete", "Delete this app's key `k`. Apps can't be given this permission."],
+    ["key.block", "Block this app's key `k` so it can't decrypt"],
+    ["key.unblock", "Unblock this app's key `k` so it can decrypt"],
+    ["key.delete", "Delete this app's key `k`: apps can't do this"],
   ])("%s", (ability, text) => {
     expect(rows(urn(KEY), [`${E}${ability}`])).toEqual([text]);
   });
@@ -93,8 +93,8 @@ describe("one row per ability, prefix", () => {
   it.each([
     ["key.create", "Create new encryption keys tied to this app"],
     ["decrypt", "Decrypt data locked with this app's keys"],
-    ["key.block", "Block this app's encryption keys so they can't be used to decrypt"],
-    ["key.unblock", "Unblock this app's encryption keys so they can be used again"],
+    ["key.block", "Block this app's keys so they can't decrypt"],
+    ["key.unblock", "Unblock this app's keys so they can decrypt"],
   ])("%s", (ability, text) => {
     expect(rows(urn(PREFIX), [`${E}${ability}`])).toEqual([text]);
   });
@@ -109,8 +109,8 @@ describe("several abilities on one resource", () => {
     expect(rows(urn(KEY), [`${E}key.unblock`, `${E}decrypt`, `${E}key.create`, `${E}key.block`])).toEqual([
       "Create the encryption key `k` for this app",
       "Decrypt data locked with this app's key `k`",
-      "Block this app's key `k` so it can't be used to decrypt",
-      "Unblock this app's key `k` so it can be used again",
+      "Block this app's key `k` so it can't decrypt",
+      "Unblock this app's key `k` so it can decrypt",
     ]);
   });
 
@@ -122,16 +122,17 @@ describe("several abilities on one resource", () => {
   });
 
   it("an ability that is not one of the five keeps the literal fallback beside the others", () => {
-    const result = rows(urn(KEY), [`${E}decrypt`, `${E}key.rotate`]);
+    const entries = buildStatements(grantFor(urn(KEY), [`${E}decrypt`, `${E}key.rotate`]));
+    const result = entries.map((row) => row.primaryText);
     expect(result).toHaveLength(2);
     expect(result[0]).toBe("Decrypt data locked with this app's key `k`");
-    expect(result[1]).toStartWith("Perform ");
+    expect(entries[1]!.literalEscaped).toBe(true);
     expect(result[1]).toContain("key.rotate");
   });
 
   it("only exact ability names get a sentence", () => {
-    const [row] = rows(urn(KEY), [`${E}KEY.CREATE`]);
-    expect(row).toStartWith("Perform ");
+    const [row] = buildStatements(grantFor(urn(KEY), [`${E}KEY.CREATE`]));
+    expect(row!.literalEscaped).toBe(true);
   });
 
   it("every row carries codeSpans", () => {
@@ -150,23 +151,23 @@ describe("resources under apps/ that are not valid keys keep the literal fallbac
     ["an upper-case URN scheme", `URN:TINYCLOUD:ENCRYPTION:${OWNER}:default/apps/x/y`],
     ["a path of nine segments", urn("/apps/a/b/c/d/e/f/g/h")],
   ])("%s", (_name, resource) => {
-    const result = rows(resource, [`${E}decrypt`]);
+    const result = buildStatements(grantFor(resource, [`${E}decrypt`]));
     expect(result).toHaveLength(1);
-    expect(result[0]).toStartWith("Perform ");
+    expect(result[0]!.literalEscaped).toBe(true);
   });
 });
 
 describe("resources outside apps/ use named-key copy", () => {
   it("decrypt on another key names the key", () => {
-    expect(rows(urn("/shares/abc"), [`${E}decrypt`])).toEqual(["Decrypt anything encrypted with your key shares/abc in your account's default network, whenever this app gets hold of the encrypted copy, until this access expires."]);
+    expect(rows(urn("/shares/abc"), [`${E}decrypt`])).toEqual(["Decrypt data with your key default/shares/abc"]);
   });
 
   it("key.create on another key names the key", () => {
-    expect(rows(urn("/secrets/x"), [`${E}key.create`])).toEqual(["Create the encryption key secrets/x in your account's default network."]);
+    expect(rows(urn("/secrets/x"), [`${E}key.create`])).toEqual(["Create your encryption key default/secrets/x"]);
   });
 
   it.each(["/appsx/y/z", "/apps.x/y/z"])("%s is an ordinary key", (rest) => {
-    expect(rows(urn(rest), [`${E}decrypt`])).toEqual([`Decrypt anything encrypted with your key ${rest.slice(1)} in your account's default network, whenever this app gets hold of the encrypted copy, until this access expires.`]);
+    expect(rows(urn(rest), [`${E}decrypt`])).toEqual([`Decrypt data with your key default/${rest.slice(1)}`]);
   });
 
   it("the default network decrypt keeps the plain decrypt copy", () => {
@@ -241,7 +242,7 @@ describe("key.delete is listed and cannot be selected", () => {
   it("the not-grantable rows come from the unselected action", () => {
     const [grant] = model(urn(KEY), abilities).permissions;
     expect(appKeyNotGrantableStatements(grant!).map((row) => row.primaryText)).toEqual([
-      "Delete this app's key `k`. Apps can't be given this permission.",
+      "Delete this app's key `k`: apps can't do this",
     ]);
     expect(appKeyNotGrantableStatements(grantFor(urn(KEY), [`${E}decrypt`]))).toEqual([]);
   });

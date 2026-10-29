@@ -265,8 +265,8 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
       return {
         family: "secret-namespace-list",
         displayLabel: isSecretValueRead(entry.actions)
-          ? "Secret data — (entire secrets namespace)"
-          : "Secret names and metadata — (entire secrets namespace)",
+          ? "Secret data — (all secrets)"
+          : "Secret names and metadata — (all secrets)",
       };
     }
     if (BOOTSTRAP_SQL_SERVICES.has(service)) {
@@ -306,7 +306,7 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
       );
       const secretName =
         path.replace(/^vault\/secrets\/?/, "").replace(/^secrets\/?/, "") ||
-        "(entire secrets namespace)";
+        "(all secrets)";
       const isWholeNamespace =
         path === "vault/secrets" || path === "secrets";
       return {
@@ -319,8 +319,8 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
           ? `Named secret (mutate) — ${secretName}`
           : isWholeNamespace
             ? isSecretValueRead(entry.actions)
-              ? "Secret data — (entire secrets namespace)"
-              : "Secret names and metadata — (entire secrets namespace)"
+              ? "Secret data — (all secrets)"
+              : "Secret names and metadata — (all secrets)"
             : `Named secret (read) — ${secretName}`,
       };
     }
@@ -407,7 +407,7 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
         );
         return {
           family: "database-admin",
-          displayLabel: isOtherUser ? `${label} — another user's space` : label,
+          displayLabel: isOtherUser ? `${label} — another user` : label,
         };
       }
       const allowed = scoped ? SQL_DATABASE_VERBS : SQL_DATA_VERBS;
@@ -513,8 +513,8 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
       return {
         family: "secret-namespace-list",
         displayLabel: isSecretValueRead(entry.actions)
-          ? "Secret data — (entire secrets namespace)"
-          : "Secret names and metadata — (entire secrets namespace)",
+          ? "Secret data — (all secrets)"
+          : "Secret names and metadata — (all secrets)",
       };
     }
     return {
@@ -629,14 +629,14 @@ function classifyCoreOperation(
     // Never lower an administrative grant to the attention-level
     // cross-user family.
     return family === "database-admin"
-      ? { family, displayLabel: `${label} — another user's space` }
+      ? { family, displayLabel: `${label} — another user` }
       : { family: "cross-app-data", displayLabel: "Another user's data" };
   }
   return { family, displayLabel: label };
 }
 
 function describeName(path: string): string {
-  if (!path) return "(entire secrets namespace)";
+  if (!path) return "(all secrets)";
   return path;
 }
 

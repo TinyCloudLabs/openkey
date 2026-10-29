@@ -88,7 +88,7 @@ describe("buildStatement — fail-closed on mixed known+unknown actions", () => 
     });
     const stmt = buildStatement(grant);
     expect(stmt.primaryText).toBe(
-      "Perform tinycloud.kv/get, tinycloud.kv/exfiltrate on tinycloud.kv",
+      "Read your data; unknown action: tinycloud.kv/exfiltrate",
     );
     // Must NOT inherit the friendly own-app-data copy.
     expect(stmt.primaryText).not.toBe("Read this app's data");
@@ -109,7 +109,7 @@ describe("buildStatement — fail-closed on mixed known+unknown actions", () => 
     });
     const stmt = buildStatement(grant);
     expect(stmt.primaryText).toBe(
-      "Perform tinycloud.kv/get, tinycloud.kv/put, tinycloud.kv/archive on tinycloud.kv",
+      "Read and change another user's data; unknown action: tinycloud.kv/archive",
     );
     expect(stmt.primaryText).not.toBe("Read and update data outside this app");
     expect(stmt.primaryText).not.toBe("Update data outside this app");
@@ -128,7 +128,7 @@ describe("buildStatement — fail-closed on mixed known+unknown actions", () => 
     });
     const stmt = buildStatement(grant);
     expect(stmt.primaryText).toBe(
-      "Perform tinycloud.encryption/decrypt, tinycloud.encryption/export-key on tinycloud.encryption",
+      "Decrypt your data; unknown action: tinycloud.encryption/export-key",
     );
     // Must NOT inherit the friendly "Decrypt protected data" copy just
     // because `decrypt` is a known verb.
@@ -148,7 +148,7 @@ describe("buildStatement — fail-closed on mixed known+unknown actions", () => 
     });
     const stmt = buildStatement(grant);
     expect(stmt.primaryText).toBe(
-      "Perform tinycloud.encryption/export-key on tinycloud.encryption",
+      "Unknown action: tinycloud.encryption/export-key",
     );
     expect(stmt.primaryText).not.toBe("Decrypt protected data");
   });
@@ -164,7 +164,7 @@ describe("buildStatement — fail-closed on mixed known+unknown actions", () => 
     });
     const stmt = buildStatement(grant);
     expect(stmt.primaryText).toBe(
-      "Perform tinycloud.kv/rotate on tinycloud.kv",
+      "Unknown action: tinycloud.kv/rotate",
     );
     // Must NOT get the friendly "Manage secret variables" copy just
     // because the path shape is secrets-variables — the ability is
@@ -183,7 +183,7 @@ describe("buildStatement — fail-closed on mixed known+unknown actions", () => 
     });
     const stmt = buildStatement(grant);
     expect(stmt.primaryText).toBe(
-      "Perform tinycloud.kv/get, tinycloud.kv/archive on tinycloud.kv",
+      "Read your data; unknown action: tinycloud.kv/archive",
     );
     expect(stmt.primaryText).not.toBe("View your connected apps");
     expect(stmt.primaryText).not.toBe("View and update your connected apps");
@@ -199,7 +199,7 @@ describe("buildStatement — fail-closed on mixed known+unknown actions", () => 
     });
     const stmt = buildStatement(grant);
     expect(stmt.primaryText).toBe(
-      "Perform tinycloud.sql/read, tinycloud.sql/vacuum on tinycloud.sql",
+      "Read your data; unknown action: tinycloud.sql/vacuum",
     );
     // Must NOT get the friendly "Read your TinyCloud account" copy just
     // because `read` is a known verb.
@@ -218,7 +218,7 @@ describe("buildStatement — fail-closed on mixed known+unknown actions", () => 
     });
     const stmt = buildStatement(grant);
     expect(stmt.primaryText).toBe(
-      "Perform tinycloud.sql/read, tinycloud.sql/dump on tinycloud.sql",
+      "Read your secrets; unknown action: tinycloud.sql/dump",
     );
     expect(stmt.primaryText).not.toBe("Read TinyCloud Secrets data");
     expect(stmt.primaryText).not.toBe("Read and update TinyCloud Secrets data");
@@ -284,7 +284,7 @@ describe("buildStatement — happy-path friendly copy preserved", () => {
       severity: "sensitive",
     });
     expect(buildStatement(grant).primaryText).toBe(
-      "Set up encrypted data access and decrypt protected data",
+      "Set up encryption and decrypt protected data",
     );
   });
 
@@ -310,7 +310,7 @@ describe("buildStatement — happy-path friendly copy preserved", () => {
     });
     const stmt = buildStatement(grant);
     expect(stmt.primaryText).toBe(
-      "Perform tinycloud.encryption/create, tinycloud.encryption/decrypt on tinycloud.encryption",
+      "Decrypt your data; unknown action: tinycloud.encryption/create",
     );
     expect(stmt.primaryText).not.toBe(
       "Create a decryption network and decrypt protected data",
@@ -333,7 +333,7 @@ describe("buildStatement — happy-path friendly copy preserved", () => {
     });
     const stmt = buildStatement(grant);
     expect(stmt.primaryText).toBe(
-      "Perform tinycloud.encryption/create on tinycloud.encryption",
+      "Unknown action: tinycloud.encryption/create",
     );
     expect(stmt.primaryText).not.toBe("Create a decryption network");
   });
@@ -391,7 +391,7 @@ describe("buildStatement — happy-path friendly copy preserved", () => {
     });
     expect(buildStatements(grant).map((s) => s.primaryText)).toEqual([
       "Manage your TinyCloud account",
-      "Create, change and delete tables in your TinyCloud account",
+      "Edit and delete tables in your TinyCloud account",
     ]);
   });
 });
@@ -414,7 +414,7 @@ describe("secret catalog SQL schema gets its own row", () => {
     });
     expect(buildStatements(grant).map((s) => s.primaryText)).toEqual([
       "View and manage your secret catalog",
-      "Create, change and delete tables in your secret catalog",
+      "Edit and delete your secret tables",
     ]);
   });
 
@@ -433,7 +433,7 @@ describe("secret catalog SQL schema gets its own row", () => {
     });
     expect(buildStatements(grant).map((s) => s.primaryText)).toEqual([
       "View and manage another user's secret catalog",
-      "Create, change and delete tables in another user's secret catalog",
+      "Edit and delete another user's secret tables",
     ]);
   });
 
@@ -446,7 +446,7 @@ describe("secret catalog SQL schema gets its own row", () => {
       abilities: ["tinycloud.sql/schema"],
     });
     expect(buildStatements(grant).map((s) => s.primaryText)).toEqual([
-      "Create, change and delete tables in your secret catalog",
+      "Edit and delete your secret tables",
     ]);
   });
 
@@ -460,7 +460,7 @@ describe("secret catalog SQL schema gets its own row", () => {
     });
     expect(buildStatements(grant).map((s) => s.primaryText)).toEqual([
       "Manage your entire secret catalog",
-      "Create, change and delete tables in your entire secret catalog",
+      "Edit and delete all your secret tables",
     ]);
   });
 });
@@ -477,7 +477,7 @@ describe("unknown cross-user schema grants stay literal", () => {
       abilities: ["tinycloud.sql/schema"],
       ownedBySelf: false,
     });
-    expect(buildStatement(grant).primaryText).toMatch(/^Perform /);
+    expect(buildStatement(grant).literalEscaped).toBe(true);
     expect(buildStatements(grant).map((s) => s.primaryText)).toEqual([
       buildStatement(grant).primaryText,
     ]);
@@ -492,7 +492,7 @@ describe("unknown cross-user schema grants stay literal", () => {
       abilities: ["tinycloud.sql/schema"],
       ownedBySelf: false,
     });
-    expect(buildStatement(grant).primaryText).toMatch(/^Perform /);
+    expect(buildStatement(grant).literalEscaped).toBe(true);
   });
 });
 
@@ -507,7 +507,7 @@ describe("schema-only copy pins the owner and the space", () => {
       abilities: ["tinycloud.sql/schema"],
     });
     expect(buildStatement(grant).primaryText).toBe(
-      "Create, change and delete tables in your TinyCloud account",
+      "Edit and delete tables in your TinyCloud account",
     );
   });
 
@@ -521,7 +521,7 @@ describe("schema-only copy pins the owner and the space", () => {
       ownedBySelf: false,
     });
     expect(buildStatement(grant).primaryText).toBe(
-      "Create, change and delete tables in another user's TinyCloud data",
+      "Edit and delete another user's TinyCloud tables",
     );
   });
 
@@ -535,7 +535,7 @@ describe("schema-only copy pins the owner and the space", () => {
       ownedBySelf: false,
     });
     expect(buildStatement(grant).primaryText).toBe(
-      "Create, change and delete tables in another user's application data",
+      "Edit and delete another user's application tables",
     );
   });
 });
@@ -553,7 +553,7 @@ describe("unrecognized schema spellings stay literal", () => {
       ownedBySelf: false,
     });
     expect(buildStatement(grant).primaryText).toBe(
-      "Perform tinycloud.kv/schema on tinycloud.sql",
+      "Unknown action: tinycloud.kv/schema",
     );
   });
 });
