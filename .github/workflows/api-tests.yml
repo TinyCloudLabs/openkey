@@ -35,38 +35,6 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile --ignore-scripts
 
-      # TC-2212 proves the exact lockstep source combination without publishing
-      # an unreleased codec or putting a development path in production manifests.
-      - name: Checkout immutable approval codec source
-        uses: actions/checkout@v4
-        with:
-          repository: TinyCloudLabs/js-sdk
-          ref: 63fd3a7de34d3b6f364430eb8a82caa803c7f659
-          path: .tc2212-sdk
-          persist-credentials: false
-
-      - name: Prepare private approval codec runtime
-        run: |
-          codec_root=$(mktemp -d -p /var/tmp TC2212-codec-XXXXXX)
-          echo "TC-2212 private codec root: $codec_root"
-          echo "TC2212_CODEC_ROOT=$codec_root" >> "$GITHUB_ENV"
-          echo "TC2212_CODEC_DIR=$codec_root/artifacts" >> "$GITHUB_ENV"
-          echo "BUN_INSTALL_CACHE_DIR=$codec_root/bun-cache" >> "$GITHUB_ENV"
-          echo "npm_config_cache=$codec_root/npm-cache" >> "$GITHUB_ENV"
-          mkdir "$codec_root/artifacts"
-
-      - name: Build and pack approval codec
-        working-directory: .tc2212-sdk
-        run: |
-          bun install --frozen-lockfile --ignore-scripts
-          bun run --cwd packages/share-envelope build
-          # The candidate's unchanged package version must never enter the saved
-          # normal dependency cache. This job's private root is removed below.
-          npm pack --ignore-scripts --workspace packages/share-envelope --pack-destination "$TC2212_CODEC_DIR"
-
-      - name: Install ephemeral approval codec
-        run: bun add --no-save --ignore-scripts "$TC2212_CODEC_DIR/tinycloud-share-envelope-1.3.1-beta.1.tgz"
-
       # The API imports @openkey/db and @openkey/tee from their built dist/,
       # and @openkey/db needs the generated Prisma client. The tests that drive
       # the signing pages' own code load @openkey/capability-review from its dist/.
@@ -82,12 +50,3 @@ jobs:
       - name: Capability review and web lib tests
         run: bun test packages/capability-review/test apps/web/src/lib
 
-      - name: Clean private approval codec runtime
-        if: always()
-        run: |
-          if [ -n "${TC2212_CODEC_ROOT:-}" ]; then
-            case "$TC2212_CODEC_ROOT" in
-              /var/tmp/TC2212-codec-*) rm -rf -- "$TC2212_CODEC_ROOT" ;;
-              *) echo "Refusing to remove an unrecorded codec root" >&2; exit 1 ;;
-            esac
-          fi
