@@ -101,6 +101,9 @@
   approving={transport.approving}
   error={transport.error}
   finalPreview={transport.previewReady}
+  routineSignInCandidate={transport.routineSignInCandidate ?? false}
+  routineSignInVerified={transport.routineSignInVerified ?? false}
+  cancelDisabled={transport.cancelDisabled ?? transport.approving}
   {peerRecognition}
   {onApprove}
   {onCancel}

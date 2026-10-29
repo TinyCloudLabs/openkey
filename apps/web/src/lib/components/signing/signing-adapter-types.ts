@@ -110,6 +110,12 @@ export interface WidgetSigningTransport {
 
   /** True while the widget is previewing or signing. */
   approving: boolean;
+  /** Routine app-key candidate uses a stable sign-in label during prepare. */
+  routineSignInCandidate?: boolean;
+  /** True only after origin-bound manifest and signed-byte preview verification. */
+  routineSignInVerified?: boolean;
+  /** Preview may be canceled; final signing remains non-cancelable while in flight. */
+  cancelDisabled?: boolean;
 
   /** Latest error string, or null. */
   error: string | null;

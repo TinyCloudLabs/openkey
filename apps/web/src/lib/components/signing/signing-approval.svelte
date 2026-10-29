@@ -31,12 +31,14 @@
   //   - size itself for a specific transport
   //   - branch on "CLI" / "popup" / "iframe" — those are container-only
   //
-  // Surface context (TC-659): every surface gets the same header, reason,
-  // summary, Advanced details, error line and buttons. A surface passes
-  // only its own facts through `context` (the CLI's node, return target and
-  // acknowledgements), rendered in one fixed slot under the header, and
-  // `showSigner` when the user picked one of several keys. Surfaces must not
-  // render their own copy of `error`: it is shown once, above the buttons.
+  // Surface context (TC-659): approval surfaces share the technical review
+  // by default. The widget may use a plain headline only for a verified
+  // routine sign-in; authority-grant surfaces retain their technical view.
+  // Surface-specific facts go through `context` (the CLI's node, return
+  // target and acknowledgements), rendered in one fixed slot under the
+  // header, and `showSigner` when the user picked one of several keys.
+  // Surfaces must not render their own copy of `error`: it is shown once,
+  // above the buttons.
 
   import type { Snippet } from "svelte";
   import type {
@@ -45,6 +47,7 @@
     CapabilityReviewModel,
   } from "@openkey/capability-review";
   import { formatAccessEnd } from "$lib/access-end";
+  import { routineSignInIdentity } from "$lib/routine-sign-in";
   import {
     APP_KEY_GROUP_NOTE,
     appDisplayName,
@@ -85,6 +88,12 @@
     layoutBlocked?: boolean;
     stickyActions?: boolean;
     finalPreview?: boolean;
+    /** Keep the widget sign-in button label stable during preview preparation. */
+    routineSignInCandidate?: boolean;
+    /** Set only by the widget route after the server verifies the manifest and preview. */
+    routineSignInVerified?: boolean;
+    /** Allow cancel during non-signing preview preparation. */
+    cancelDisabled?: boolean;
     approveText?: string;
     cancelText?: string;
     /** Surface-specific context rendered in a fixed slot under the header. */
@@ -113,6 +122,9 @@
     layoutBlocked = false,
     stickyActions = false,
     finalPreview = false,
+    routineSignInCandidate = false,
+    routineSignInVerified = false,
+    cancelDisabled = approving,
     approveText = "Approve",
     cancelText = "Cancel",
     context,
@@ -164,17 +176,44 @@
     model.permissions.some((grant) => grant.actions.some((action) => action.editable)),
   );
   const isMalformedRecap = $derived(model.protocol === "malformed-recap");
+  // The simplified header is opt-in from the widget route after server
+  // manifest verification and a successful byte preview. Other approval
+  // surfaces retain their complete technical review.
+  const routineSignIn = $derived.by(() => {
+    const app = routineSignInIdentity(model);
+    if (!routineSignInVerified || !routineSignInCandidate || !app?.name) {
+      return null;
+    }
+
+    const origin = model.requester.verifiedOrigin;
+    if (!origin || app.origin !== origin || model.requester.appId !== app.appId) {
+      return null;
+    }
+    try {
+      const parsedOrigin = new URL(origin);
+      if (parsedOrigin.protocol !== "https:") return null;
+      return { appName: app.name, originHost: parsedOrigin.host };
+    } catch {
+      return null;
+    }
+  });
   const headline = $derived(
-    isMalformedRecap
-      ? "Refusing to sign: malformed capability payload"
-      : PROTOCOL_HEADLINE[model.protocol],
+    routineSignIn
+      ? routineSignIn.appName
+        ? `Sign in to ${routineSignIn.appName}`
+        : "Sign in"
+      : isMalformedRecap
+        ? "Refusing to sign: malformed capability payload"
+        : PROTOCOL_HEADLINE[model.protocol],
   );
   const hint = $derived(
-    isMalformedRecap
-      ? "This message carries a capability payload we could not decode. Refusing to approve so the request cannot be silently degraded to an exact-byte SIWE signature."
-      : finalPreview && model.protocol === "tinycloud-siwe-recap"
-        ? "Review the server-prepared request. Approving signs the exact bytes shown in Advanced details."
-      : PROTOCOL_HINT[model.protocol],
+    routineSignIn
+      ? `${routineSignIn.originHost} is asking you to sign in.`
+      : isMalformedRecap
+        ? "This message carries a capability payload we could not decode. Refusing to approve so the request cannot be silently degraded to an exact-byte SIWE signature."
+        : finalPreview && model.protocol === "tinycloud-siwe-recap"
+          ? "Review the server-prepared request. Approving signs the exact bytes shown in Advanced details."
+          : PROTOCOL_HINT[model.protocol],
   );
 
   // Summary copy and the sensitive count describe only actions the user is
@@ -511,11 +550,13 @@
   const approveLabel = $derived(
     isMalformedRecap
       ? "Cannot approve"
-      : approving
-        ? "Signing…"
-        : finalPreview
-          ? "Approve exact bytes"
-          : approveText,
+      : routineSignInCandidate
+        ? "Sign in"
+        : approving
+          ? "Signing…"
+          : finalPreview
+            ? "Approve exact bytes"
+            : approveText,
   );
 </script>
 
@@ -529,24 +570,32 @@
   tabindex="-1"
 >
   <header class="header">
-    {#if identity}
-      <!-- The app's name, then its id; the name never appears without the id. -->
-      {#if identity.name}
-        <h2 id="signing-approval-headline" class="headline app-name">{identity.name}</h2>
-        <p class="app-id mono">{identity.appId}</p>
-      {:else}
-        <h2 id="signing-approval-headline" class="headline app-id-headline mono">{identity.appId}</h2>
-      {/if}
-      <p class="requester-line">
-        Requested by <span class="requester-name">{requestedBy}</span>
-      </p>
-    {:else}
+    {#if routineSignIn}
       <h2 id="signing-approval-headline" class="headline">{headline}</h2>
-      <p class="requester-line">
-        Requested by <span class="requester-name">{requesterName}</span>
-      </p>
+      <p id="signing-approval-hint" class="hint">{hint}</p>
+    {:else}
+      {#if identity}
+        <!-- The app's name, then its id; the name never appears without the id. -->
+        {#if identity.name}
+          <h2 id="signing-approval-headline" class="headline app-name">{identity.name}</h2>
+          <p class="app-id mono">{identity.appId}</p>
+        {:else}
+          <h2 id="signing-approval-headline" class="headline app-id-headline mono">{identity.appId}</h2>
+        {/if}
+        <p class="requester-line">
+          Requested by <span class="requester-name">{requestedBy}</span>
+        </p>
+      {:else}
+        <h2 id="signing-approval-headline" class="headline">{headline}</h2>
+        <p class="requester-line">
+          Requested by <span class="requester-name">{requesterName}</span>
+        </p>
+      {/if}
+      <p id="signing-approval-hint" class="hint">{hint}</p>
     {/if}
-    <p id="signing-approval-hint" class="hint">{hint}</p>
+    {#if routineSignInCandidate && approving && !finalPreview}
+      <p class="preview-status" role="status" aria-live="polite">Getting ready…</p>
+    {/if}
   </header>
 
   {#if context}
@@ -1009,7 +1058,7 @@
       type="button"
       class="cancel"
       onclick={onCancel}
-      disabled={approving}
+      disabled={cancelDisabled}
     >
       {cancelText}
     </button>
@@ -1058,6 +1107,12 @@
     line-height: 1.5;
     color: #475569;
     margin: 0;
+  }
+  .preview-status {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.4;
+    color: #475569;
   }
   .app-name,
   .app-id-headline {

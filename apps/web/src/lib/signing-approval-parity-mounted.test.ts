@@ -66,12 +66,14 @@
 import { afterAll, describe, expect, test } from 'bun:test';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseCapabilityReview } from '../../../../packages/capability-review/src/index';
+import { parseCapabilityReview, type CapabilityReviewModel } from '../../../../packages/capability-review/src/index';
 import {
   FIXTURE_META,
   REAL_RECAP_WITH_PATH,
+  makeRecapResource,
+  siweWithResources,
 } from '../../../../packages/capability-review/test/fixtures/index';
-
+import { routineSignInIdentity } from './routine-sign-in';
 // Install happy-dom BEFORE importing the Svelte client runtime (which
 // touches document/HTMLElement at import time).
 import { Window } from 'happy-dom';
@@ -447,6 +449,44 @@ function realRecapFixtureModel(): any {
   }) as any;
 }
 
+function routineAppKeyModel(): CapabilityReviewModel {
+  const appId = 'chat.tinycloud.tinychat';
+  const owner = `did:pkh:eip155:${FIXTURE_META.chainId}:${FIXTURE_META.address}`;
+  const resource = `urn:tinycloud:encryption:${owner}:default/apps/${appId}/`;
+  const att = {
+    [resource]: {
+      'tinycloud.encryption/key.create': [{}],
+      'tinycloud.encryption/decrypt': [{}],
+    },
+  };
+  return parseCapabilityReview({
+    message: siweWithResources([makeRecapResource(att)]),
+    signer: {
+      label: 'Managed key',
+      address: FIXTURE_META.address,
+      chainId: FIXTURE_META.chainId,
+      provenance: 'managed',
+    },
+    editable: true,
+    metadataTrust: { status: 'origin-bound', reason: 'manifest fetched from verified origin' },
+    reason: { text: '', source: 'none' },
+    requester: {
+      displayName: 'tinycloud.chat',
+      verifiedOrigin: 'https://tinycloud.chat',
+      appId,
+      manifestName: 'TinyChat',
+      manifestNameProvenance: 'origin-bound',
+      manifestId: appId,
+      manifestIdProvenance: 'origin-bound',
+      manifestDigest: 'a'.repeat(64),
+      domainWarning: false,
+      originWarning: false,
+    },
+    requesterAddress: null,
+    requesterVerified: false,
+  });
+}
+
 function fixtureSelection(model: any): Set<string> {
   const s = new Set<string>();
   for (const perm of model.permissions) {
@@ -523,6 +563,9 @@ interface WidgetTransport {
   invalidatePreview: () => void;
   onSelectionEdited: (next: Set<string>) => void;
   approving: boolean;
+  cancelDisabled: boolean;
+  routineSignInCandidate: boolean;
+  routineSignInVerified: boolean;
   error: string | null;
   _spies: WidgetSpies;
 }
@@ -530,6 +573,13 @@ interface WidgetTransport {
 function makeWidgetTransport(
   canUseAuthorizeSign: boolean,
   previewReady = false,
+  approving = false,
+  opts: {
+    cancelDisabled?: boolean;
+    routineSignInCandidate?: boolean;
+    routineSignInVerified?: boolean;
+    error?: string | null;
+  } = {},
 ): WidgetTransport {
   const spies: WidgetSpies = {
     requestPreview: [],
@@ -541,8 +591,11 @@ function makeWidgetTransport(
   return {
     canUseAuthorizeSign,
     previewReady,
-    approving: false,
-    error: null,
+    approving,
+    cancelDisabled: opts.cancelDisabled ?? approving,
+    routineSignInCandidate: opts.routineSignInCandidate ?? false,
+    routineSignInVerified: opts.routineSignInVerified ?? false,
+    error: opts.error ?? null,
     requestPreview: () => {
       spies.requestPreview.push([]);
     },
@@ -571,7 +624,15 @@ function propsForSurface(
   binding: SurfaceBinding,
   model: any,
   initialSelection: Set<string>,
-  opts: { canUseAuthorizeSign?: boolean; previewReady?: boolean } = {},
+  opts: {
+    canUseAuthorizeSign?: boolean;
+    previewReady?: boolean;
+    approving?: boolean;
+    cancelDisabled?: boolean;
+    routineSignInCandidate?: boolean;
+    routineSignInVerified?: boolean;
+    error?: string | null;
+  } = {},
 ): { props: any; cliTransport?: CliTransport; widgetTransport?: WidgetTransport } {
   if (binding.kind === 'cli') {
     const transport = makeCliTransport();
@@ -583,12 +644,15 @@ function propsForSurface(
   const transport = makeWidgetTransport(
     opts.canUseAuthorizeSign ?? true,
     opts.previewReady ?? false,
+    opts.approving ?? false,
+    opts,
   );
   return {
     props: { model, initialSelection, transport },
     widgetTransport: transport,
   };
 }
+
 
 // -----------------------------------------------------------------------------
 // DOM helpers.
@@ -1024,6 +1088,159 @@ describe('signing-approval mounted parity across production surface adapters (So
       expect(t._spies.requestPreview.length).toBe(0);
       handle.unmount();
     }
+  });
+  test('routine sign-in only simplifies after the verified preview is ready', async () => {
+    const model = routineAppKeyModel();
+    model.metadataTrust = { status: 'unsigned', reason: 'awaiting server verification' };
+    model.requester.appId = null;
+    model.requester.manifestNameProvenance = 'caller';
+    model.requester.manifestIdProvenance = 'caller';
+    model.rawMessage = 'the exact message signed by TinyChat';
+    const selection = fixtureSelection(model);
+    const popup = surfaceBindings.find((binding) => binding.name === 'PopupWidgetSign')!;
+
+    const before = propsForSurface(popup, model, selection, {
+      canUseAuthorizeSign: true,
+      routineSignInCandidate: true,
+    });
+    const beforeHandle = await mountSurface(popup, before.props);
+    const beforeHeader = beforeHandle.container.querySelector('.header')!;
+    expect(beforeHeader.textContent).not.toContain('Sign in to TinyChat');
+    expect(beforeHeader.textContent).toContain('chat.tinycloud.tinychat');
+    expect(beforeHeader.textContent).toContain('Requested by');
+    expect(beforeHandle.container.querySelector('button.approve')?.textContent?.trim()).toBe('Sign in');
+    expect(beforeHandle.container.querySelector('.raw-bytes')?.textContent).toBe(model.rawMessage);
+    beforeHandle.unmount();
+
+    const preparing = propsForSurface(popup, model, selection, {
+      canUseAuthorizeSign: true,
+      approving: true,
+      cancelDisabled: false,
+      routineSignInCandidate: true,
+    });
+    const preparingHandle = await mountSurface(popup, preparing.props);
+    const preparingButton = preparingHandle.container.querySelector('button.approve') as HTMLButtonElement;
+    expect(preparingHandle.container.querySelector('.header')?.textContent).toContain('Requested by');
+    expect(preparingButton.textContent.trim()).toBe('Sign in');
+    expect(preparingButton.disabled).toBe(true);
+    expect(preparingHandle.container.querySelector('.preview-status')?.textContent?.trim()).toBe('Getting ready…');
+    const cancelButton = [...preparingHandle.container.querySelectorAll('button')].find(
+      (button) => button.textContent?.trim() === 'Cancel',
+    ) as HTMLButtonElement;
+    expect(cancelButton.disabled).toBe(false);
+    cancelButton.click();
+    expect(preparing.widgetTransport!._spies.cancel).toHaveLength(1);
+    preparingHandle.unmount();
+
+    const failed = propsForSurface(popup, model, selection, {
+      canUseAuthorizeSign: true,
+      routineSignInCandidate: true,
+      error: 'OpenKey could not verify the requesting site.',
+    });
+    const failedHandle = await mountSurface(popup, failed.props);
+    expect(failedHandle.container.querySelector('.header')?.textContent).toContain('chat.tinycloud.tinychat');
+    expect(failedHandle.container.querySelector('.header')?.textContent).toContain('Requested by');
+    expect(failedHandle.container.querySelector('[role="alert"]')?.textContent).toContain(
+      'OpenKey could not verify the requesting site.',
+    );
+    expect(failedHandle.container.querySelector('.raw-bytes')?.textContent).toBe(model.rawMessage);
+    failedHandle.unmount();
+
+    model.metadataTrust = { status: 'origin-bound', reason: 'manifest fetched from verified origin' };
+    model.requester.appId = 'chat.tinycloud.tinychat';
+    model.requester.manifestNameProvenance = 'origin-bound';
+    model.requester.manifestIdProvenance = 'origin-bound';
+    model.rawMessage = 'the exact server-prepared message';
+    const after = propsForSurface(popup, model, selection, {
+      canUseAuthorizeSign: true,
+      previewReady: true,
+      routineSignInCandidate: true,
+      routineSignInVerified: true,
+    });
+    const afterHandle = await mountSurface(popup, after.props);
+    const afterHeader = afterHandle.container.querySelector('.header')!;
+    expect(afterHeader.textContent).toContain('Sign in to TinyChat');
+    expect(afterHeader.textContent).toContain('tinycloud.chat is asking you to sign in.');
+    expect(afterHeader.textContent).not.toContain('chat.tinycloud.tinychat');
+    expect(afterHeader.textContent).not.toContain('Requested by');
+    const afterButton = afterHandle.container.querySelector('button.approve') as HTMLButtonElement;
+    expect(afterButton.textContent.trim()).toBe('Sign in');
+    expect(afterHandle.container.querySelector('.preview-status')).toBeNull();
+    expect(afterHandle.container.querySelector('.raw-bytes')?.textContent).toBe(model.rawMessage);
+    afterHandle.unmount();
+    model.requester.manifestName = 'TinyCloud Home';
+    const renamed = propsForSurface(popup, model, selection, {
+      canUseAuthorizeSign: true,
+      previewReady: true,
+      routineSignInCandidate: true,
+      routineSignInVerified: true,
+    });
+    const renamedHandle = await mountSurface(popup, renamed.props);
+    expect(renamedHandle.container.querySelector('.header')?.textContent).toContain(
+      'Sign in to TinyCloud Home',
+    );
+    expect(renamedHandle.container.querySelector('.raw-bytes')?.textContent).toBe(model.rawMessage);
+    renamedHandle.unmount();
+  });
+  test('routine sign-in excludes key-management actions', () => {
+    const routine = routineAppKeyModel();
+    expect(routineSignInIdentity(routine)?.appId).toBe('chat.tinycloud.tinychat');
+
+    for (const ability of [
+      'tinycloud.encryption/key.block',
+      'tinycloud.encryption/key.unblock',
+      'tinycloud.encryption/key.delete',
+    ]) {
+      const model = routineAppKeyModel();
+      const grant = model.permissions[0]!;
+      const action = grant.actions[0]!;
+      grant.actions.push({
+        ...action,
+        ability,
+        id: `extra-${ability}`,
+      });
+      expect(routineSignInIdentity(model)).toBeNull();
+    }
+  });
+
+
+  test('CLI delegation keeps its technical exact-message view for app-key grants', async () => {
+    const model = routineAppKeyModel();
+    model.rawMessage = 'the exact authority message for the CLI';
+    const cli = surfaceBindings.find((binding) => binding.name === 'CliDelegate')!;
+    const built = propsForSurface(cli, model, fixtureSelection(model));
+    const handle = await mountSurface(cli, built.props);
+    const header = handle.container.querySelector('.header')!;
+
+    expect(header.textContent).toContain('TinyChat');
+    expect(header.textContent).toContain('chat.tinycloud.tinychat');
+    expect(header.textContent).toContain('Requested by');
+    expect(handle.container.querySelector('.sensitive-callout')).toBeTruthy();
+    expect(handle.container.querySelector('.raw-bytes')?.textContent).toBe(model.rawMessage);
+    expect(handle.container.querySelector('button.approve')?.textContent?.trim()).toBe('Approve');
+    handle.unmount();
+  });
+
+  test('routine sign-in copy is not used when the request includes extra capabilities', async () => {
+    const model = routineAppKeyModel();
+    model.permissions.push(...benignFixtureModel().permissions);
+    const selection = fixtureSelection(model);
+    const popup = surfaceBindings.find((binding) => binding.name === 'PopupWidgetSign')!;
+    const built = propsForSurface(popup, model, selection, {
+      canUseAuthorizeSign: true,
+      previewReady: true,
+    });
+    const handle = await mountSurface(popup, built.props);
+
+    const header = handle.container.querySelector('.header')!;
+    expect(header.textContent).not.toContain('Sign in to TinyChat');
+    expect(header.textContent).toContain('chat.tinycloud.tinychat');
+    expect(header.textContent).toContain('Requested by');
+    expect(handle.container.querySelector('button.approve')?.textContent?.trim()).toBe('Approve exact bytes');
+    expect(handle.container.querySelector('.summary')?.textContent).toContain("Decrypt data locked with this app's keys");
+    expect(handle.container.querySelector('.sensitive-callout')).toBeTruthy();
+    expect(handle.container.querySelector('section[aria-label="Exact grants"]')).toBeTruthy();
+    handle.unmount();
   });
 
   test('final summary and sensitive warning describe only selected actions', async () => {
