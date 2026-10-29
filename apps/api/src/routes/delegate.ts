@@ -121,6 +121,8 @@ import { PreparedHandoffError } from '../services/prepared-handoff';
 import { preparedHandoffService } from './prepared-handoffs';
 import { normalizeAppOrigin, recordAppSignIn } from '../services/app-sign-in';
 import type { PreparedHandoffService } from '../services/prepared-handoff';
+import { checkApprovalDelegation, saveApprovalDelegation } from './approval-requests';
+import { ApprovalResultError } from '../services/approval-results';
 let activePreparedHandoffService: PreparedHandoffService = preparedHandoffService;
 export function setPreparedHandoffServiceForTests(service: PreparedHandoffService): void {
   activePreparedHandoffService = service;
@@ -268,6 +270,7 @@ export function setDelegateSignerAuthMiddlewareForTests(
 export const delegateRouter = new Hono<DelegateSignerContext>();
 delegateRouter.onError((error, c) => {
   if (error instanceof PreparedHandoffError) return c.json({ code: error.code, error: error.message }, error.status);
+  if (error instanceof ApprovalResultError) return c.json({ code: error.code, error: error.message }, error.status);
   throw error;
 });
 
@@ -1239,6 +1242,7 @@ delegateRouter.post('/', async (c) => {
     permissionKeys?: unknown;
     permissions?: unknown;
     deviceTransactionId?: unknown;
+    approvalRequestId?: string;
     expiry?: unknown;
     reason?: unknown;
     /**
@@ -1261,6 +1265,9 @@ delegateRouter.post('/', async (c) => {
 
   if (!body.keyId || !body.jwk || !body.host) {
     return c.json({ error: 'keyId, jwk, and host are required' }, 400);
+  }
+  if (body.approvalRequestId && (body.protocolVersion !== 1 || !body.authorizationContextToken)) {
+    return c.json({ error: 'Approval requests require the consent preview context' }, 400);
   }
 
   const key = await prisma.ethereumKey.findFirst({
@@ -1346,6 +1353,9 @@ delegateRouter.post('/', async (c) => {
       return c.json({ error: preview.message, code: preview.error }, 400);
     }
     const bound = preview.value;
+    if (bound.approvalRequestId !== body.approvalRequestId) {
+      return c.json({ error: 'Approval request does not match the consent preview' }, 400);
+    }
 
     // The stored context MUST have bound originalSiwe. Older /prepare
     // invocations that predate Blocker 1 did not set this field — those
@@ -1514,6 +1524,7 @@ delegateRouter.post('/', async (c) => {
     }
     const deviceWindow = await deviceDelegationWindowError(body, { host, signedSiwe: bound.originalSiwe });
     if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
+    await checkApprovalDelegation(body, { signedSiwe: bound.originalSiwe });
     const tokenAppKeyRefusal = appKeyRefusalForSiwe(bound.originalSiwe, preparedEntries);
     if (tokenAppKeyRefusal) return c.json(appKeyRefusalBody(tokenAppKeyRefusal, 'non_browser'), appKeyRefusalStatus(tokenAppKeyRefusal));
 
@@ -1576,7 +1587,7 @@ delegateRouter.post('/', async (c) => {
     }));
 
     recordAppSignIn(prisma, user.id, bound.appOrigin);
-    return c.json({
+    return c.json(await saveApprovalDelegation(body, user.id, {
       delegationHeader: session.delegationHeader,
       delegationCid: session.delegationCid,
       spaceId: bound.spaceId,
@@ -1604,7 +1615,7 @@ delegateRouter.post('/', async (c) => {
       signature,
       signedMessage: bound.originalSiwe,
       permissions: effectiveGrants,
-    });
+    }));
   }
 
   // Legacy token-less path — unchanged behavior. The CLI and any older
@@ -1736,6 +1747,7 @@ delegateRouter.post('/prepare', async (c) => {
     expiry?: unknown;
     reason?: unknown;
     deviceTransactionId?: unknown;
+    approvalRequestId?: string;
   }>();
 
   if (!body.keyId || !body.jwk || !body.host) {
@@ -1774,6 +1786,7 @@ delegateRouter.post('/prepare', async (c) => {
     host,
   });
   if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
+  await checkApprovalDelegation(body, { expiryMs });
   let preparedResult: ReturnType<typeof prepareDelegationSession>;
   try {
     preparedResult = prepareDelegationSession({
@@ -1838,6 +1851,7 @@ delegateRouter.post('/prepare', async (c) => {
       // instead of regenerating the message (which would produce fresh
       // issuedAt/expirationTime bytes on every attempt).
       originalSiwe: preparedResult.prepared.siwe,
+      approvalRequestId: body.approvalRequestId,
     });
   } catch (issueErr) {
     logError('warn', 'delegate_authorization_context_issue_failed', issueErr);
@@ -1915,6 +1929,7 @@ delegateRouter.post('/complete', async (c) => {
     edited?: boolean;
     reason?: unknown;
     deviceTransactionId?: unknown;
+    approvalRequestId?: string;
     /**
      * The CLI-supplied permissions that were the baseline for /prepare.
      * When present, this is used instead of DEFAULT_ABILITIES for the
@@ -2075,6 +2090,9 @@ delegateRouter.post('/complete', async (c) => {
     }
     const peekedContext = peekAuthorizationContext(body.authorizationContextToken);
     if (peekedContext.ok) signInAppOrigin = peekedContext.value.appOrigin;
+    if (peekedContext.ok && peekedContext.value.approvalRequestId !== body.approvalRequestId) {
+      return c.json({ error: 'Approval request does not match the consent preview' }, 400);
+    }
     if (!Array.isArray(body.selectedActionIds) || body.selectedActionIds.some((id) => typeof id !== 'string')) {
       return c.json({ error: 'selectedActionIds must be a string[] when authorizationContextToken is provided' }, 400);
     }
@@ -2182,6 +2200,10 @@ delegateRouter.post('/complete', async (c) => {
     signedSiwe: String(body.prepared?.siwe ?? ''),
   });
   if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
+  if (body.approvalRequestId && !body.authorizationContextToken) {
+    return c.json({ error: 'Approval requests require the consent preview context' }, 400);
+  }
+  await checkApprovalDelegation(body, { signedSiwe: body.prepared.siwe });
 
   // Token-less legacy callers still pass the echoed prepared block (with
   // the caller's JWK, a proper object with kty for WASM deserialization).
@@ -2240,7 +2262,7 @@ delegateRouter.post('/complete', async (c) => {
   }));
 
   recordAppSignIn(prisma, user.id, signInAppOrigin);
-  return c.json({
+  return c.json(await saveApprovalDelegation(body, user.id, {
     delegationHeader: session.delegationHeader,
     delegationCid: session.delegationCid,
     spaceId,
@@ -2270,7 +2292,7 @@ delegateRouter.post('/complete', async (c) => {
     //   `permissions` is the effective grant set after any narrowing.
     signedMessage: body.prepared.siwe,
     permissions: effectiveGrants,
-  });
+  }));
 });
 
 /**
