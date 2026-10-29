@@ -3,6 +3,14 @@
 Track changes to agent-facing development guidance for OpenKey. Add a concise entry when
 `agent.dev.md` or related agent workflow expectations change.
 
+## 2026-10-21
+
+- Added the public personal-record MCP audience and exact delegation callback
+  alongside the existing broad service. Release requires the OpenKey API and
+  web changes, plus the SDK candidate; reviewer login and actual ChatGPT
+  acceptance remain separate gates. No default-branch integration or deployment
+  without explicit owner approval.
+
 ## 2026-10-15
 
 - MCP scope registration defaults now match discovery. Omitted-scope clients can request

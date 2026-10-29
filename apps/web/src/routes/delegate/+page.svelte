@@ -575,7 +575,7 @@
 
   async function onKeySelect(key: EthereumKey) {
     if (!jwk) {
-      error = 'Missing JWK parameter. Please restart the CLI auth flow.';
+      error = 'Missing delegation key. Return to the app or command that requested access and start again.';
       return;
     }
 
@@ -1421,12 +1421,11 @@
 
       {:else if !$session.data}
         <header class="mb-5">
-          <h1 class="text-lg font-semibold text-surface-900">TinyCloud CLI Login</h1>
-          <p class="text-surface-500 text-sm mt-1">Sign in to authorize the CLI</p>
+          <h1 class="text-lg font-semibold text-surface-900">TinyCloud access request</h1>
+          <p class="text-surface-500 text-sm mt-1">Sign in to review the requested access</p>
         </header>
 
         <div class="flex flex-col items-center justify-center text-center py-4">
-          <p class="text-surface-500 text-sm mb-5">Sign in to authorize the CLI</p>
 
           {#if error}
             <div class="w-full bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl mb-4 text-sm" role="alert">
@@ -1711,8 +1710,8 @@
       {:else}
         <!-- Key selection -->
         <header class="mb-5">
-          <h1 class="text-lg font-semibold text-surface-900">TinyCloud CLI Login</h1>
-          <p class="text-surface-500 text-sm mt-1">Select a key to authorize the CLI</p>
+          <h1 class="text-lg font-semibold text-surface-900">TinyCloud access request</h1>
+          <p class="text-surface-500 text-sm mt-1">Select a key to review the requested access</p>
         </header>
 
         {#if error}

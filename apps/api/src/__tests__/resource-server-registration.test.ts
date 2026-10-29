@@ -138,29 +138,17 @@ describe('registering a resource server', () => {
   }, 90_000);
 
   describe('for both the broad and the chatgpt MCP resource', () => {
-    // Until the API lists the chatgpt resource itself, its OAUTH_VALID_AUDIENCES must.
-    const withAudience = { OAUTH_VALID_AUDIENCES: CHATGPT_MCP };
-
     test('repeated --allowed-resource flags register both', async () => {
-      const result = await register({ ...withAudience, RESOURCE_SERVER_ALLOWED_RESOURCES: undefined }, ['--allowed-resource', MCP, '--allowed-resource', CHATGPT_MCP]);
+      const result = await register({ RESOURCE_SERVER_ALLOWED_RESOURCES: undefined }, ['--allowed-resource', MCP, '--allowed-resource', CHATGPT_MCP]);
       expect(result.exitCode, result.stderr).toBe(0);
       expect(printed(result.stdout, 'ALLOWED_RESOURCES')).toBe(`${MCP},${CHATGPT_MCP}`);
       expect((await rows())[0]!.metadata).toEqual({ tinycloudResourceServer: { allowedResources: [MCP, CHATGPT_MCP] } });
     }, 90_000);
 
     test('a comma-separated env value registers both, and flags add to it without duplicates', async () => {
-      const result = await register({ ...withAudience, RESOURCE_SERVER_ALLOWED_RESOURCES: `${MCP},${CHATGPT_MCP}` }, ['--allowed-resource', CHATGPT_MCP]);
+      const result = await register({ RESOURCE_SERVER_ALLOWED_RESOURCES: `${MCP},${CHATGPT_MCP}` }, ['--allowed-resource', CHATGPT_MCP]);
       expect(result.exitCode, result.stderr).toBe(0);
       expect((await rows())[0]!.metadata).toEqual({ tinycloudResourceServer: { allowedResources: [MCP, CHATGPT_MCP] } });
-    }, 90_000);
-
-    test('the chatgpt resource is refused, by name, while the API does not list it as an audience', async () => {
-      const result = await register({ RESOURCE_SERVER_ALLOWED_RESOURCES: `${MCP},${CHATGPT_MCP}` });
-      expect(result.exitCode).toBe(1);
-      expect(result.stderr).toContain(`${CHATGPT_MCP} is not an audience this server issues tokens for`);
-      expect(result.stderr).toContain('OAUTH_VALID_AUDIENCES');
-      expect(result.stderr).not.toContain(`${MCP} is not`);
-      expect(await rows()).toHaveLength(0);
     }, 90_000);
   });
 
