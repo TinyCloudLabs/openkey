@@ -192,6 +192,30 @@ describe("named-key routing: shape A and shape B resolve identically", () => {
   }
 });
 
+describe("exact share decrypt copy", () => {
+  for (const shape of ["A", "B"] as const) {
+    it(`shape ${shape} renders one plain line for an owned exact share`, () => {
+      const row = buildStatement(shapeGrant(shape, `${NETWORK}/share/abc123`, [ABILITY.decrypt]));
+      expect(row.primaryText).toBe("Open this shared file");
+      expect(row.resource).toBe(`${NETWORK}/share/abc123`);
+    });
+  }
+
+  it("does not label other shapes or actions as one shared file", () => {
+    const cases = [
+      shapeGrant("A", `${NETWORK}/share/`, [ABILITY.decrypt]),
+      shapeGrant("A", `${NETWORK}/share/abc123/child`, [ABILITY.decrypt]),
+      shapeGrant("A", `${NETWORK}/share/abc123`, [ABILITY.create]),
+      shapeGrant("A", `${NETWORK}/share/abc123`, ["tinycloud.encryption/encrypt"]),
+      shapeGrant("A", `${NETWORK}/share/abc123`, [ABILITY.decrypt]),
+    ];
+    cases[4]!.ownedBySelf = false;
+    for (const grant of cases) {
+      expect(buildStatement(grant).primaryText).not.toBe("Open this shared file");
+    }
+  });
+});
+
 describe("key.delete fails closed on every encryption resource shape", () => {
   const cases = [
     ["exact key", KEY],

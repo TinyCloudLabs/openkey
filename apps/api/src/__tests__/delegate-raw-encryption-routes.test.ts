@@ -6,6 +6,9 @@
 import { beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
+import { verifyMessage } from 'viem';
+import { completeSessionSetup, TCWSessionManager } from '@tinycloud/node-sdk-wasm';
+import nodeScopeVectors from './fixtures/share-decrypt-node-vectors.json';
 import type { delegateRouter, setDelegateSignerAuthMiddlewareForTests } from '../routes/delegate';
 import type { _resetAuthorizationContextStoreForTests } from '../services/authorization-signing';
 import { mockModules, replaceModules } from './mock-module';
@@ -258,6 +261,143 @@ describe('managed keys: POST /', () => {
     const res = await post('/', { keyId: managedKey.id, jwk, host, permissions: [kvGet, foreign, capabilitiesRead] });
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('invalid_permissions');
+    expect(activateSessionWithHost).not.toHaveBeenCalled();
+  });
+});
+
+describe('exact share decrypt: create, prepare and signing (TC-1424)', () => {
+  const shareSpace = `tinycloud:pkh:eip155:1:${wallet.address}:default`;
+  const shareResource = `${network}/share/abc123`;
+  const sharePermissions = [
+    { ...capabilitiesRead, space: shareSpace },
+    { ...decrypt, path: shareResource },
+  ];
+
+  function recapAtt(siwe: string) {
+    const encoded = /^- urn:recap:(.+)$/m.exec(siwe)![1]!;
+    return JSON.parse(Buffer.from(encoded, 'base64url').toString()).att;
+  }
+
+  async function assertSigned(body: Record<string, any>) {
+    expect(await verifyMessage({
+      address: wallet.address, message: body.signedMessage, signature: body.signature,
+    })).toBe(true);
+    expect(recapAtt(body.signedMessage)).toEqual({
+      [`${shareSpace}/capabilities`]: { 'tinycloud.capabilities/read': [{}] },
+      [shareResource]: { [DECRYPT]: [{}] },
+    });
+    expect(body.permissions).toContainEqual({
+      service: 'encryption', space: 'encryption', path: shareResource, actions: [DECRYPT],
+    });
+  }
+
+  test('external-wallet prepare and complete sign only the exact leaf', async () => {
+    const prepared = await post('/prepare', { keyId: externalKey.id, jwk, host, permissions: sharePermissions });
+    expect(prepared.status).toBe(200);
+    const signed = await walletComplete(prepared.body, sharePermissions);
+    expect(signed.status).toBe(200);
+    await assertSigned(signed.body);
+  });
+
+  test('managed-key versioned approval signs only the exact leaf', async () => {
+    const prepared = await post('/prepare', { keyId: managedKey.id, jwk, host, permissions: sharePermissions });
+    expect(prepared.status).toBe(200);
+    const signed = await post('/', {
+      keyId: managedKey.id, jwk, host, permissions: sharePermissions,
+      prepared: prepared.body.prepared, protocolVersion: 1,
+      authorizationContextToken: prepared.body.authorizationContext.token,
+      selectedActionIds: prepared.body.selectedActionKeys,
+    });
+    expect(signed.status).toBe(200);
+    await assertSigned(signed.body);
+  });
+
+  test('managed-key create signs the same exact leaf without a prepare round trip', async () => {
+    const signed = await post('/', { keyId: managedKey.id, jwk, host, permissions: sharePermissions });
+    expect(signed.status).toBe(200);
+    await assertSigned(signed.body);
+  });
+
+  test('recipient delegation covers exactly its share and never the folder or another share (node v1.25.12)', async () => {
+    const recipient = new TCWSessionManager();
+    recipient.createSessionKey('recipient');
+    const { kty, crv, x } = JSON.parse(recipient.jwk('recipient')!);
+    const recipientJwk = { kty, crv, x };
+    const recipientDid = recipient.getDID('recipient');
+    const recipientPermissions = [
+      { service: 'tinycloud.kv', space: shareSpace, path: 'shares/abc123/file.txt', actions: ['tinycloud.kv/get', 'tinycloud.kv/metadata'] },
+      sharePermissions[1]!,
+    ];
+    try {
+      const prepared = await post('/prepare', {
+        keyId: externalKey.id, jwk: recipientJwk, host, permissions: recipientPermissions,
+      });
+      expect(prepared.status).toBe(200);
+      const signed = await post('/complete', {
+        prepared: prepared.body.prepared, host, jwk: recipientJwk, permissions: recipientPermissions,
+        signature: await wallet.signMessage({ message: prepared.body.prepared.siwe }),
+        authorizationContextToken: prepared.body.authorizationContext.token,
+        selectedActionIds: prepared.body.selectedActionKeys,
+      });
+      expect(signed.status).toBe(200);
+      expect(await verifyMessage({
+        address: wallet.address, message: signed.body.signedMessage, signature: signed.body.signature,
+      })).toBe(true);
+      expect(/^URI: (.+)$/m.exec(signed.body.signedMessage)?.[1]).toBe(recipientDid);
+      // Rebuild the actual signed delegation, not the relayed permission metadata.
+      const delegation = completeSessionSetup({
+        ...prepared.body.prepared, signature: signed.body.signature,
+      });
+      expect(signed.body.delegationHeader).toEqual(delegation.delegationHeader);
+      const signedGrants = Object.entries(recapAtt(signed.body.signedMessage));
+      expect(signedGrants.filter(([resource]) => !resource.startsWith('urn:tinycloud:encryption:'))).toEqual([
+        [`${shareSpace}/kv/shares/abc123/file.txt`, { 'tinycloud.kv/get': [{}], 'tinycloud.kv/metadata': [{}] }],
+      ]);
+      const encryption = signedGrants
+        .filter(([resource]) => resource.startsWith('urn:tinycloud:encryption:'));
+      expect(encryption).toHaveLength(1);
+      for (const [, actions] of encryption) expect(actions).toEqual({ [DECRYPT]: [{}] });
+      // These vectors were executed against the unmodified v1.25.12 Rust
+      // EncryptionResource::extends and check_decrypt_scope, not OpenKey's parser.
+      // A signed share/ prefix covers share/other and fails this same assertion.
+      for (const target of nodeScopeVectors.vectors.filter((row) => row.granted === shareResource)) {
+        const covered = encryption.some(([granted]) => {
+          const vector = nodeScopeVectors.vectors.find((row) =>
+            row.granted === granted && row.requested === target.requested &&
+            row.bodyKeyPath === target.bodyKeyPath && row.factsKeyPath === target.factsKeyPath);
+          expect(vector, `Missing node vector for signed resource ${granted}`).toBeDefined();
+          return vector!.covers && vector!.decryptScope;
+        });
+        const isThisShare = target.requested === shareResource &&
+          target.bodyKeyPath === 'share/abc123' && target.factsKeyPath === 'share/abc123';
+        expect(covered, `Recipient reach: ${target.requested}`).toBe(isThisShare);
+      }
+    } finally {
+      recipient.free();
+    }
+  });
+
+  test('neither create nor prepare accepts a prefix or an adjacent scope', async () => {
+    for (const path of [`${network}/share/`, `${shareResource}/`, `${shareResource}/child`, `${shareResource}%2Fchild`, `${network}/apps/demo/key`]) {
+      for (const route of ['/', '/prepare']) {
+        const result = await post(route, {
+          keyId: managedKey.id, jwk, host,
+          permissions: [sharePermissions[0], { ...sharePermissions[1], path }],
+        });
+        expect(result.status).toBe(400);
+        expect(result.body.code).toBe('invalid_permissions');
+      }
+    }
+    expect(activateSessionWithHost).not.toHaveBeenCalled();
+  });
+
+  test('a signed leaf cannot complete under another forwarded leaf', async () => {
+    const prepared = await post('/prepare', { keyId: externalKey.id, jwk, host, permissions: sharePermissions });
+    expect(prepared.status).toBe(200);
+    const result = await walletComplete(prepared.body, [
+      sharePermissions[0]!, { ...sharePermissions[1]!, path: `${network}/share/other` },
+    ]);
+    expect(result.status).toBe(400);
     expect(activateSessionWithHost).not.toHaveBeenCalled();
   });
 });
