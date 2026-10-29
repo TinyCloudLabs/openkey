@@ -127,14 +127,15 @@ describe("parseCapabilityReview", () => {
     expect(chat?.displayLabel).toBe("Application data");
   });
 
-  it("keeps an unrecognized custom app space literal without manifest proof", () => {
+  // test-ruling: TC-2232 — the signer's own plainly named space is its own data.
+  it("names the signer's own custom space without manifest proof", () => {
     const model = parseCapabilityReview(ctx({ message: FEED_APP_REQUEST }));
     const feed = model.permissions.find((p) => p.service === "tinycloud.kv");
     expect(feed).toBeDefined();
     expect(feed?.ownedBySelf).toBe(true);
-    expect(feed?.family).toBe("unknown");
-    expect(feed?.severity).toBe("sensitive");
-    expect(feed?.displayLabel).toBe("Unrecognized key-value data");
+    expect(feed?.family).toBe("own-app-data");
+    expect(feed?.severity).toBe("standard");
+    expect(feed?.displayLabel).toBe("Data in your feed space");
   });
 
   it("keeps an unrecognized cross-user KV target literal and elevated", () => {
@@ -187,6 +188,7 @@ describe("parseCapabilityReview", () => {
     }
   });
 
+  // test-ruling: TC-2232 — ownership is the resource fact, not app identity.
   it("does not invent app semantics from missing requester metadata", () => {
     const model = parseCapabilityReview(
       ctx({
@@ -207,12 +209,12 @@ describe("parseCapabilityReview", () => {
         requesterVerified: false,
       }),
     );
-    const unknownData = model.permissions.find(
-      (p) => p.family === "unknown" && p.service === "tinycloud.kv",
+    const ownData = model.permissions.find(
+      (p) => p.family === "own-app-data" && p.service === "tinycloud.kv",
     );
-    expect(unknownData).toBeDefined();
-    expect(unknownData?.ownedBySelf).toBe(true);
-    expect(unknownData?.severity).toBe("sensitive");
+    expect(ownData).toBeDefined();
+    expect(ownData?.ownedBySelf).toBe(true);
+    expect(ownData?.severity).toBe("standard");
     const crossAppData = model.permissions.find(
       (p) => p.family === "cross-app-data",
     );

@@ -29,3 +29,13 @@ popup, iframe): it parses SIWE/ReCap requests into a presentation-safe model,
 validates edits as a subset of the request, classifies severity, and renders
 the consent copy (`src/copy.ts`, `src/statements.ts`). How each TinyCloud
 registry ability is shown is in `registry-inventory.md`.
+
+## Spaces with a name of their own
+
+KV and SQL grants on a space the signer owns, whose name is short and plain
+(`^[a-z][a-z0-9-]{0,11}$`) and is none of TinyCloud's own spaces
+(`account`, `applications`, `public`, `default`, and every name in
+`BOOTSTRAP_SPACE_NAMES` from `@tinycloud/bootstrap`, such as `secrets` and
+`agents`), are the signer's own data and name the space: "Read and change
+your messages data". TinyCloud's own spaces, another user's space, and a
+space whose owner is not proven stay as they were.

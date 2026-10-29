@@ -46,7 +46,7 @@ import {
   coreOperations,
   isCoreOperationService,
 } from "./core-operations.js";
-import { plainSentence, plainWords } from "./plain-words.js";
+import { namedSpaceName, plainSentence, plainWords } from "./plain-words.js";
 
 export interface StatementEntry {
   /** The severity of this row when it differs from the grant's: each app key ability is its own row. */
@@ -683,6 +683,13 @@ function allActionsRecognizedForService(grant: CapabilityGrant): boolean {
   return true;
 }
 
+/** "messages data" for own data in the signer's own named space (classify.ts); undefined otherwise. */
+function ownNamedSpaceNoun(grant: CapabilityGrant): string | undefined {
+  if (grant.family !== "own-app-data" || grant.ownedBySelf !== true) return undefined;
+  const name = namedSpaceName(grant.space);
+  return name === null ? undefined : `${name} data`;
+}
+
 // Subject phrase for another user's data in `spaceName`.
 function otherUserSubject(spaceName: string | null): string {
   const knownSubject: Record<string, string> = {
@@ -727,6 +734,10 @@ function schemaOnlyStatementText(
   if (grant.ownedBySelf === false && !isSecretsSpace(grant.space)) {
     // "another user's application data" → "another user's application tables".
     return `Edit and delete ${otherUserSubject(spaceName).replace(/ data$/, " tables")}`;
+  }
+  const namedNoun = ownNamedSpaceNoun(grant);
+  if (namedNoun !== undefined) {
+    return `Edit and delete your ${namedNoun.replace(/ data$/, " tables")}`;
   }
   if (spaceName === "applications" && grant.family === "own-app-data") {
     return "Edit and delete this app's tables";
@@ -1225,7 +1236,7 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
     grant.actions.some((a) => verbOf(a.ability) === "del" || verbOf(a.ability) === "delete")
   ) {
     const owner = grant.ownedBySelf === true ? "your " : grant.ownedBySelf === false ? "another user's " : "";
-    return { primaryText: plainSentence(abilityStrings, space, owner), service, resource };
+    return { primaryText: plainSentence(abilityStrings, space, owner, ownNamedSpaceNoun(grant)), service, resource };
   }
   if (
     grant.ownedBySelf === false &&
@@ -1398,6 +1409,13 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
       return { primaryText: "Read your TinyCloud data", service, resource };
     }
     return fallbackStatement(grant);
+  }
+
+  // The signer's own space with a plain name (Inbox's `messages`) reads in
+  // plain words that name it: "Read and change your messages data".
+  const namedNoun = ownNamedSpaceNoun(grant);
+  if (namedNoun !== undefined && (KV_SERVICES.has(service) || SQL_SERVICES.has(service))) {
+    return { primaryText: plainSentence(abilityStrings, space, "your ", namedNoun), service, resource };
   }
 
   // App-data ownership is already a structural classification. Keep the

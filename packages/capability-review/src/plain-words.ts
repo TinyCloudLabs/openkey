@@ -6,6 +6,7 @@
 // titles composed from several operations (classify.ts), so a row and its
 // title name the same consequences.
 
+import { BOOTSTRAP_SPACE_NAMES } from "@tinycloud/bootstrap";
 import { isSecretsSpace } from "./app-scope.js";
 import { LITERAL_TRUNCATE_CHARS, renderLiteral } from "./copy.js";
 
@@ -105,18 +106,46 @@ function joinAnd(words: readonly string[]): string {
 }
 
 /**
+ * Space names OpenKey never names in copy: the ones it has words of its own
+ * for, and every one of TinyCloud's own spaces (`BOOTSTRAP_SPACE_NAMES`,
+ * which includes `secrets` and `agents`, where Courier keeps approvals and
+ * peer delegations).
+ */
+const RESERVED_SPACE_NAMES: ReadonlySet<string> = new Set<string>([
+  "account",
+  "applications",
+  "public",
+  "default",
+  ...BOOTSTRAP_SPACE_NAMES,
+]);
+
+/**
+ * The name of a space that may be named in copy ("your messages data"): a
+ * short plain name that is not one of TinyCloud's own spaces. Null for
+ * anything else, which keeps its generic words.
+ */
+export function namedSpaceName(space: string): string | null {
+  const name = space.slice(space.lastIndexOf(":") + 1);
+  if (!space.startsWith("tinycloud:pkh:") || !/^[a-z][a-z0-9-]{0,11}$/.test(name)) return null;
+  if (RESERVED_SPACE_NAMES.has(name) || isSecretsSpace(space)) return null;
+  return name;
+}
+
+/**
  * The known actions in plain words: one sentence for one known action, else
  * one part per thing acted on ("read and delete your data"). Every part
  * keeps `owner`. `raw` holds every other action, each escaped and capped on
- * its own; with `rawOnly` every action is raw.
+ * its own; with `rawOnly` every action is raw. `dataNoun` replaces "data"
+ * for a space the caller has recognized by name ("messages data").
  */
 export function plainWords(
   abilities: readonly string[],
   space: string,
   owner: string,
   rawOnly: boolean,
+  dataNoun?: string,
 ): { parts: string[]; raw: string[] } {
-  const data = isSecretsSpace(space) ? "secrets" : "data";
+  const data = isSecretsSpace(space) ? "secrets" : dataNoun ?? "data";
   const sentences = new Set<string>();
   const kindsByNoun = new Map<string, Set<string>>();
   const raw: string[] = [];
@@ -147,7 +176,7 @@ export function plainWords(
 }
 
 /** Plain words for several known actions as one capitalized line ("Read and delete your data"). */
-export function plainSentence(abilities: readonly string[], space: string, owner: string): string {
-  const text = plainWords(abilities, space, owner, false).parts.join("; ");
+export function plainSentence(abilities: readonly string[], space: string, owner: string, dataNoun?: string): string {
+  const text = plainWords(abilities, space, owner, false, dataNoun).parts.join("; ");
   return text.charAt(0).toUpperCase() + text.slice(1);
 }

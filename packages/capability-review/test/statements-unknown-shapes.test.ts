@@ -14,6 +14,8 @@
 
 import { describe, expect, it } from "bun:test";
 
+import { BOOTSTRAP_SPACE_NAMES } from "@tinycloud/bootstrap";
+
 import {
   buildStatement,
   classifyRecapEntry,
@@ -21,6 +23,7 @@ import {
   type CapabilityAction,
   type CapabilityGrant,
 } from "../src/index.js";
+import { namedSpaceName } from "../src/plain-words.js";
 
 const ACCOUNT = "0x1111111111111111111111111111111111111111";
 const SPACE = `tinycloud:pkh:eip155:1:${ACCOUNT}:default`;
@@ -317,7 +320,8 @@ describe("classifyRecapEntry — unknown data targets", () => {
     ["tinycloud.kv", "tinycloud.kv/get"],
     ["tinycloud.sql", "tinycloud.sql/read"],
   ] as const) {
-    it(`fails closed for ${service} on an unrecognized space`, () => {
+    // test-ruling: TC-2232 — the signer's own plainly named space is its own data.
+    it(`names the signer's own ${service} space it has no other words for`, () => {
       const result = classifyRecapEntry({
         service,
         space: `tinycloud:pkh:eip155:1:${ACCOUNT}:custom`,
@@ -325,12 +329,78 @@ describe("classifyRecapEntry — unknown data targets", () => {
         actions: [action],
         signerAddress: ACCOUNT,
       });
+      expect(result.family).toBe("own-app-data");
+      expect(result.displayLabel).toBe("Data in your custom space");
+      expect(classifySeverityFromActions(result.family, [action])).toBe("standard");
+    });
+
+    it(`fails closed for ${service} on a named space whose owner is not proven`, () => {
+      const result = classifyRecapEntry({
+        service,
+        space: `tinycloud:pkh:eip155:1:${ACCOUNT}:custom`,
+        path: "",
+        actions: [action],
+        signerAddress: null,
+      });
       expect(result.family).toBe("unknown");
-      expect(classifySeverityFromActions(result.family, [action])).toBe(
-        "attention",
-      );
+      expect(classifySeverityFromActions(result.family, [action])).toBe("attention");
+    });
+
+    it(`keeps the signer's own secrets space out of own data for ${service}`, () => {
+      const result = classifyRecapEntry({
+        service,
+        space: `tinycloud:pkh:eip155:1:${ACCOUNT}:secrets`,
+        path: "",
+        actions: [action],
+        signerAddress: ACCOUNT,
+      });
+      expect(result.family).not.toBe("own-app-data");
+      expect(classifySeverityFromActions(result.family, [action])).not.toBe("standard");
+    });
+
+    it(`fails closed for ${service} on the signer's space with a 13-character name`, () => {
+      const result = classifyRecapEntry({
+        service,
+        space: `tinycloud:pkh:eip155:1:${ACCOUNT}:abcdefghijklm`,
+        path: "",
+        actions: [action],
+        signerAddress: ACCOUNT,
+      });
+      expect(result.family).toBe("unknown");
     });
   }
+
+  // Courier keeps approvals and peer delegations in the owner's `agents` space.
+  it("keeps the signer's own agents space unrecognized and sensitive, unnamed", () => {
+    const actions = ["tinycloud.kv/get", "tinycloud.kv/put", "tinycloud.kv/del"];
+    const result = classifyRecapEntry({
+      service: "tinycloud.kv",
+      space: `tinycloud:pkh:eip155:1:${ACCOUNT}:agents`,
+      path: "xyz.tinycloud.courier/me/approvals/",
+      actions,
+      signerAddress: ACCOUNT,
+    });
+    expect(result.family).toBe("unknown");
+    expect(classifySeverityFromActions(result.family, actions)).toBe("sensitive");
+    const statement = buildStatement(
+      makeGrant({
+        service: "tinycloud.kv",
+        space: `tinycloud:pkh:eip155:1:${ACCOUNT}:agents`,
+        path: "xyz.tinycloud.courier/me/approvals/",
+        abilities: actions,
+        family: result.family,
+        severity: "sensitive",
+      }),
+    );
+    expect(statement.primaryText).not.toContain("agents");
+  });
+
+  it("never names one of TinyCloud's own spaces", () => {
+    for (const name of BOOTSTRAP_SPACE_NAMES) {
+      expect(namedSpaceName(`tinycloud:pkh:eip155:1:${ACCOUNT}:${name}`), name).toBeNull();
+    }
+    expect(namedSpaceName(`tinycloud:pkh:eip155:1:${ACCOUNT}:messages`)).toBe("messages");
+  });
 
   it("fails closed for a scoped path in an unrecognized custom space", () => {
     const result = classifyRecapEntry({

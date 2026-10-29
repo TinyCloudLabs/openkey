@@ -27,7 +27,7 @@ import { isSecretsSpace } from "./app-scope.js";
 import { isMetadataOnlyAccess } from "./action-semantics.js";
 import { DELEGATION_LIST_LABEL, FAMILY_LABEL } from "./copy.js";
 import { APPS_SEGMENT, parseKeyResource } from "./key-resource.js";
-import { plainSentence } from "./plain-words.js";
+import { namedSpaceName, plainSentence } from "./plain-words.js";
 import {
   SPACE_SERVICES,
   SQL_ADMIN_OPERATIONS,
@@ -367,6 +367,10 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
       knownTarget = isScopedDataPath(path)
         ? { family: "own-app-data", displayLabel: "Application data" }
         : { family: "bootstrap-kv", displayLabel: "TinyCloud data" };
+    } else if (isOwnSpace && namedSpaceName(space) !== null) {
+      // A space with a plain name the signer owns (Inbox's `messages`): its own data, named.
+      // Another user's such space stays unrecognized, as before.
+      knownTarget = { family: "own-app-data", displayLabel: `Data in your ${namedSpaceName(space)} space` };
     } else {
       return {
         family: "unknown",
@@ -429,6 +433,11 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
         family: "unknown",
         displayLabel: "Unrecognized public data permission",
       };
+    } else if (isOwnSpace && namedSpaceName(space) !== null) {
+      if (!allVerbsIn(entry.actions, isScopedDataPath(path) ? SQL_DATABASE_VERBS : SQL_DATA_VERBS)) {
+        return unknownActionLabel(service);
+      }
+      knownTarget = { family: "own-app-data", displayLabel: `Data in your ${namedSpaceName(space)} space` };
     } else {
       return { family: "unknown", displayLabel: "Unrecognized SQL data" };
     }

@@ -96,8 +96,9 @@ const space = (name: string, owner: string) =>
 // The resources each service is normally requested on. Encryption is also
 // requested on its network URN.
 const RESOURCES: Record<string, Array<(owner: string) => string>> = {
-  "tinycloud.kv": [(owner) => `${space("default", owner)}/kv/notes/`],
-  "tinycloud.sql": [(owner) => `${space("default", owner)}/sql/notes`],
+  // `mailarchives`: the longest space name OpenKey names in copy (12 characters, plain-words.ts).
+  "tinycloud.kv": [(owner) => `${space("default", owner)}/kv/notes/`, (owner) => `${space("mailarchives", owner)}/kv/notes/`],
+  "tinycloud.sql": [(owner) => `${space("default", owner)}/sql/notes`, (owner) => `${space("mailarchives", owner)}/sql/notes`],
   "tinycloud.duckdb": [(owner) => `${space("default", owner)}/duckdb/analytics`],
   "tinycloud.vfs": [(owner) => `${space("default", owner)}/vfs/photos`],
   "tinycloud.hooks": [(owner) => `${space("default", owner)}/hooks/notes/`],
