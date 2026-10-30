@@ -22,6 +22,7 @@ import {
   APP_KEY_ABILITIES,
   DELETE_REFUSED_TEMPLATE,
   DELEGATION_LIST_STATEMENT,
+  HELD_CREDENTIALS_STATEMENT,
   LITERAL_TRUNCATE_CHARS,
   NAMED_KEY_STATEMENTS,
   OWN_KEY_PREFIX_STATEMENTS,
@@ -35,6 +36,7 @@ import type { EncryptionResource } from "./encryption-resource.js";
 import { ENCRYPTION_URN_PREFIX, parseEncryptionResource } from "./encryption-resource.js";
 import { isAppsKeyResource, parseKeyResource } from "./key-resource.js";
 import { isMetadataOnlyAccess } from "./action-semantics.js";
+import { isHeldCredentialsGrant } from "./held-credentials.js";
 import {
   CANONICAL_APP_SCOPE_SECRET_ABILITIES,
   KV_SECRET_SERVICES_PROOF,
@@ -1157,6 +1159,21 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
 
   if (!allActionsRecognizedForService(grant)) {
     return fallbackStatement(grant);
+  }
+
+  // The one held-credentials request has its own sentence. It stays family
+  // `unknown` (severity unchanged); the exact shape is held-credentials.ts.
+  if (
+    isHeldCredentialsGrant({
+      service,
+      space,
+      path,
+      abilities: abilityStrings,
+      serviceMismatch: grant.serviceMismatch,
+      ownedBySigner: grant.ownedBySelf === true,
+    })
+  ) {
+    return { primaryText: HELD_CREDENTIALS_STATEMENT, service, resource };
   }
 
   // Classification is the authority for whether a structural shape is

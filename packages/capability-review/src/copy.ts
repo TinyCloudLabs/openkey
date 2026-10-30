@@ -57,6 +57,19 @@ export const DELEGATION_LIST_LABEL = "Who can access your data";
 /** The consent sentence for the same grant. */
 export const DELEGATION_LIST_STATEMENT = "See who has access to your data";
 
+/**
+ * Advanced-details title of the one held-credentials request (see
+ * held-credentials.ts). The grant stays family `unknown`, so its severity is
+ * unchanged.
+ */
+export const HELD_CREDENTIALS_LABEL = "Verified email credentials";
+
+/** The consent sentence for the same request. */
+export const HELD_CREDENTIALS_STATEMENT = "Manage your verified email credentials";
+
+/** Alternative wording, not wired: statements.ts imports HELD_CREDENTIALS_STATEMENT, so switching is one line there. */
+export const HELD_CREDENTIALS_STATEMENT_ALT = "Save, read and delete your verified emails";
+
 /** Named-key verbs that carry consent copy. */
 export type NamedKeyVerb = "create" | "decrypt" | "block" | "unblock" | "delete";
 
