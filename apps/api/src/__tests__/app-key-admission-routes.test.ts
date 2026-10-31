@@ -424,6 +424,7 @@ describe('plain app-key grants (no digest-matched manifest)', () => {
     expect(res.status).toBe(403);
     expect(body.code).toBe('app_key_grant_refused');
     expect(body.authorizationContextToken).toBeUndefined();
+    expect(signed).toEqual([]);
   });
 
   test.each([

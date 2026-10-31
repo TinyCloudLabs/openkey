@@ -9,7 +9,7 @@ There are two ways to ask. Both end on the same OpenKey approval screen. The dif
 - Your page runs on an `https://` origin with no port and no path. The host must be a real name with at least two labels (`app.example.com`). IP addresses and `localhost` hosts cannot name an app.
 - The key owner is the signing user's own account on the `default` network.
 - The signed message has an `Expiration Time`.
-- Your app id is your host with its labels reversed: `app.example.com` becomes `com.example.app`. The id can be at most 64 characters.
+- Your app id is your host with its labels reversed: `app.example.com` becomes `com.example.app`. The id can be at most 64 characters; a longer host is refused (without a manifest, with the generic "doesn't list the key" message).
 - `key.delete` is never granted to apps.
 
 OpenKey takes your origin from the browser, not from anything you send. If you also send `reportedOrigin`, it must be byte-for-byte the same origin; anything else is refused. The SIWE domain (no port) and URI must name that same origin. Host labels must be lowercase letters, digits and hyphens, at most 63 characters, with no leading or trailing hyphen.
@@ -49,7 +49,7 @@ await openkey.authorizeTinyCloud({
 
 **What it unlocks.** The name and details from your manifest appear in the review, and you can limit your request to specific key paths or abilities. Nothing is signed: the label means your own origin served the file that matches the digest you sent. The manifest is a declaration, not a barrier: code running on your own origin can still send a request without the digest, and a fetch that fails falls back to section B.
 
-A parent domain's manifest may use an `app_id` that equals a child host's reversed host (`tinycloud.xyz` declaring `xyz.tinycloud.listen`). That is the same namespace `listen.tinycloud.xyz` gets without a manifest, so treat those namespaces as shared between a domain and its subdomains.
+A parent domain's manifest may use any `app_id` under its own reversed host (`tinycloud.xyz` declaring `xyz.tinycloud.listen`). That is the same namespace `listen.tinycloud.xyz` gets without a manifest, so treat those namespaces as shared between a domain and its subdomains.
 
 If the fetch or the digest match fails, the request is treated as a request without a manifest (section B), not as an error. If the digest matches, the manifest decides: when it has no `keys` block, an empty one, an unreadable one, or an `app_id` that does not belong to your host, the app-key request is refused. It is not widened to the section B scope. Publishing a manifest for other purposes (secrets, permissions) and sending its digest therefore means you must declare your app keys in it too.
 
