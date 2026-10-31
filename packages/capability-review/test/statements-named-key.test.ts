@@ -237,6 +237,27 @@ describe("owner share-prefix decrypt explanation", () => {
     expect(buildStatement(namedGrant(`${NETWORK}/share/abc123`, [ABILITY.decrypt])).primaryText)
       .toBe("Open this shared file");
   });
+
+  // The shared-files line is for the owner's decrypt on exactly `default/share/`. Each neighbour below keeps the
+  // sentence it had before that line existed.
+  const SHARED_FILES_LINE = "Open all your shared files, including ones you share later.";
+  const neighbours = [
+    ["a different network (other/share/)", `urn:tinycloud:encryption:${OWNER}:other/share/`, "Decrypt with any of your keys in other/share/"],
+    ["a sibling prefix (share-x/)", `${NETWORK}/share-x/`, "Decrypt data locked with your keys in `share-x/`"],
+    ["a nested prefix (share/sub/)", `${NETWORK}/share/sub/`, "Decrypt data locked with your keys in `share/sub/`"],
+    ["an unrelated prefix (notes/)", `${NETWORK}/notes/`, "Decrypt data locked with your keys in `notes/`"],
+    ["a nested exact key (share/a/b)", `${NETWORK}/share/a/b`, "Decrypt data with your key default/share/a/b"],
+  ] as const;
+  for (const shape of ["A", "B"] as const) {
+    for (const [label, resource, sentence] of neighbours) {
+      it(`shape ${shape}: an owner decrypt on ${label} does not get the shared-files line`, () => {
+        const row = buildStatement(shapeGrant(shape, resource, [ABILITY.decrypt]));
+        expect(row.primaryText).not.toBe(SHARED_FILES_LINE);
+        expect(row.primaryText).toBe(sentence);
+        expect(row.resource).toBe(resource);
+      });
+    }
+  }
 });
 
 describe("key.delete fails closed on every encryption resource shape", () => {
