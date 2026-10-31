@@ -124,8 +124,8 @@ describe('a link-supplied expiry is clamped, a user-picked one is not', () => {
     expect(lifetime(prepared)).toBeGreaterThan(30 * day - 60_000);
   });
 
-  test('a user pick of a year signs a year, and the grant reports the signed time', async () => {
-    const prepared = await prepareWith({ expiry: '31536000s', expiryChosen: true });
+  test('on a link that opts in (expiryChangeable), a user pick of a year signs a year, and the grant reports the signed time', async () => {
+    const prepared = await prepareWith({ expiry: '31536000s', expiryChosen: true, expiryChangeable: true });
     expect(prepared.status).toBe(200);
     expect(lifetime(prepared)).toBeGreaterThan(365 * day - 60_000);
     expect(lifetime(prepared)).toBeLessThanOrEqual(365 * day);

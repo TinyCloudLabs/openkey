@@ -27,6 +27,7 @@ import {
 import { activateSessionWithinTimeout } from '../services/tinycloud-node-timeouts';
 import { BOOTSTRAP_SPACE_NAMES, CAPABILITIES } from '@tinycloud/bootstrap';
 import {
+  DelegateRequestError,
   delegateErrorResponse,
   normalizeDelegateReason,
   signedSiweExpirationTime,
@@ -417,6 +418,40 @@ function resolveDelegationExpiryMs(input: unknown, userChosen = false): number {
     return Math.max(MIN_DELEGATION_EXPIRY_MS, raw);
   }
   return Math.min(MAX_DELEGATION_EXPIRY_MS, Math.max(MIN_DELEGATION_EXPIRY_MS, raw));
+}
+
+/**
+ * The lifetime a /prepare or /api/delegate body asks for. A link's own `expiry` is clamped to 30 days
+ * (TC-547). A time the user picked on the screen (`expiryChosen`) skips that clamp, but on a plain link
+ * it may not be longer than the link's own expiry (`linkExpiry`, after the clamp) unless the link opted
+ * in with `expiryChangeable: true`: a CLI that built the link refuses a delegation longer than it asked
+ * for (OPENKEY_EXPIRY_EXCEEDED) and saves nothing. Signed approval requests and device transactions are
+ * held to what the requester signed by their own window checks.
+ */
+function resolveRequestExpiryMs(body: {
+  expiry?: unknown;
+  expiryChosen?: unknown;
+  linkExpiry?: unknown;
+  expiryChangeable?: unknown;
+  approvalRequestId?: unknown;
+  deviceTransactionId?: unknown;
+}): number {
+  const picked = body.expiryChosen === true;
+  const expiryMs = resolveDelegationExpiryMs(body.expiry, picked);
+  // `null` and '' are not a signed request: only a real id puts the request under its own window check.
+  const plainLink = !body.approvalRequestId && !body.deviceTransactionId;
+  if (picked && plainLink && body.expiryChangeable !== true) {
+    const linkMs = resolveDelegationExpiryMs(body.linkExpiry);
+    if (expiryMs > linkMs) {
+      const days = linkMs / 86_400_000;
+      const allowed = Number.isInteger(days) ? `${days}d` : `${Math.round(linkMs / 60_000)}m`;
+      throw new DelegateRequestError(
+        'expiry_exceeds_link',
+        `This link allows an approval of up to ${allowed}. To allow longer, start again with a longer expiry.`,
+      );
+    }
+  }
+  return expiryMs;
 }
 
 /**
@@ -1259,6 +1294,8 @@ delegateRouter.post('/', async (c) => {
     approvalRequestId?: string;
     expiry?: unknown;
     expiryChosen?: unknown;
+    linkExpiry?: unknown;
+    expiryChangeable?: unknown;
     reason?: unknown;
     /**
      * Blocker 1: versioned managed-approval path. When supplied together
@@ -1316,7 +1353,7 @@ delegateRouter.post('/', async (c) => {
   }
   let expiryMs: number;
   try {
-    expiryMs = resolveDelegationExpiryMs(body.expiry, body.expiryChosen === true);
+    expiryMs = resolveRequestExpiryMs(body);
   } catch (err) {
     return c.json(delegateErrorResponse(err, 'Invalid expiry', 'invalid_expiry'), 400);
   }
@@ -1762,6 +1799,9 @@ delegateRouter.post('/prepare', async (c) => {
     expiry?: unknown;
     /** TC-2272: true when `expiry` is the time the user picked on the approval screen, not a link parameter. */
     expiryChosen?: unknown;
+    /** The link's own `expiry` (before any pick) and its `expiryChangeable=true` opt-in. */
+    linkExpiry?: unknown;
+    expiryChangeable?: unknown;
     reason?: unknown;
     deviceTransactionId?: unknown;
     approvalRequestId?: string;
@@ -1794,7 +1834,7 @@ delegateRouter.post('/prepare', async (c) => {
   }
   let expiryMs: number;
   try {
-    expiryMs = resolveDelegationExpiryMs(body.expiry, body.expiryChosen === true);
+    expiryMs = resolveRequestExpiryMs(body);
   } catch (err) {
     return c.json(delegateErrorResponse(err, 'Invalid expiry', 'invalid_expiry'), 400);
   }
