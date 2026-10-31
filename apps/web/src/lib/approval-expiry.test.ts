@@ -118,7 +118,7 @@ describe('presets, warning and expiry time', () => {
 
   test('the warning threshold is more than one year', () => {
     expect(LONG_EXPIRY_MS).toBe(365 * D);
-    expect(LONG_EXPIRY_WARNING).toBe("That's a long time. You can revoke it any time.");
+    expect(LONG_EXPIRY_WARNING).toBe("That's a long time. OpenKey can't cancel it early once you approve.");
   });
 
   test('expiryAt adds the duration to now, as an ISO string', () => {

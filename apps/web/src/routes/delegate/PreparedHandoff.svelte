@@ -10,7 +10,7 @@
   import { timeUntilExpiry } from '$lib/siwe-parser';
   import { SERVER_REPLY_BODY, SERVER_REPLY_TITLE, ServerReplyError, hasSignResult, hasText } from '$lib/server-reply';
   import { fitsPreparedLinkBudget } from '$lib/prepared-link';
-  import { EXPIRY_PRESETS, LONG_EXPIRY_MS, LONG_EXPIRY_WARNING, expiryAt, formatExpiry, parseExpiry, requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
+  import { EXPIRY_PRESETS, LONG_EXPIRY_MS, LONG_EXPIRY_WARNING, expiryAt, expiryLimitNote, formatExpiry, parseExpiry, requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
 
   let { encoded, onClear }: { encoded: string; onClear: () => void } = $props();
   const session = authClient.useSession();
@@ -88,7 +88,9 @@
   function applyExpiryText() {
     if (!expiryEditable) return;
     const parsed = parseExpiry(expiryText);
-    if (parsed.ok) chooseExpiry(parsed.ms); else expiryError = parsed.message;
+    if (!parsed.ok) expiryError = parsed.message;
+    else if (expiryRequestedMs !== null && parsed.ms > expiryRequestedMs) expiryError = expiryLimitNote(expiryRequestedMs);
+    else chooseExpiry(parsed.ms);
   }
   let selected = $state(new Set<string>());
   let contextToken = $state('');
@@ -485,7 +487,7 @@
           {#if expiryOpen && expiryEditable}
             <div class="rounded-lg border p-3 space-y-2">
               <div class="flex flex-wrap gap-2">
-                {#each EXPIRY_PRESETS as preset (preset.label)}
+                {#each EXPIRY_PRESETS.filter((preset) => expiryRequestedMs === null || preset.ms <= expiryRequestedMs) as preset (preset.label)}
                   <button type="button" class="rounded-lg border px-3 py-2" aria-pressed={expiryShownMs === preset.ms} onclick={() => chooseExpiry(preset.ms)}>{preset.label}</button>
                 {/each}
               </div>
@@ -497,6 +499,7 @@
                 </div>
                 {#if expiryError}<p role="alert" class="text-red-700">{expiryError}</p>{/if}
               </form>
+              {#if expiryRequestedMs !== null}<p class="text-xs text-surface-600">{expiryLimitNote(expiryRequestedMs)}</p>{/if}
             </div>
           {/if}
           {#if expiryWarn !== null && expiryWarn > LONG_EXPIRY_MS}

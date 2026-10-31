@@ -182,6 +182,13 @@ export interface TinyCloudAuthorizationRequestV1 {
   host?: string;
   /** Optional presentation envelope (name, reason, manifest). */
   presentation?: CapabilityPresentationEnvelopeV1;
+  /**
+   * Set only when the caller accepts a signed message whose `Expiration Time`
+   * differs from `siwe` (shorter or longer): OpenKey then shows "Approval
+   * expires … (Change)" and signs the time the user picks. Read the signed
+   * expiry from the returned `signedMessage`. Forwarded only when literally `true`.
+   */
+  expiryChangeable?: boolean;
 }
 
 export interface TinyCloudAuthorizationResultV1 {
@@ -239,7 +246,7 @@ type MessageType =
   | { type: 'openkey:auth:request'; appName: string; requestId?: string; protocolVersion?: number }
   | { type: 'openkey:auth:response'; success: true; address: string; keyId: string; keyType?: 'MANAGED' | 'EXTERNAL'; requestId?: string; protocolVersion?: number }
   | { type: 'openkey:auth:response'; success: false; error: OpenKeyError; requestId?: string; protocolVersion?: number }
-  | { type: 'openkey:sign:request'; message: string; keyId?: string; requestId?: string; protocolVersion?: number; authorizationProtocolVersion?: 1 }
+  | { type: 'openkey:sign:request'; message: string; keyId?: string; requestId?: string; protocolVersion?: number; authorizationProtocolVersion?: 1; expiryChangeable?: true }
   | { type: 'openkey:sign:response'; success: true; signature: string; address: string; requestId?: string; protocolVersion?: number }
   | {
       type: 'openkey:sign:response';
@@ -1210,6 +1217,8 @@ export class OpenKey {
         // validates and size-bounds it before use and NEVER treats it as
         // verified unless the server actually origin-binds a manifest.
         presentation: request.presentation,
+        // TC-2272: only an SDK that accepts a different signed expiry opts in; OpenKey then lets the user change it.
+        ...(request.expiryChangeable === true ? { expiryChangeable: true as const } : {}),
       },
       opts?.mode,
       reserved,
@@ -1304,6 +1313,7 @@ export class OpenKey {
         // bounded at the transport, never treated as verified without
         // server-side origin-binding.
         presentation: request.presentation,
+        ...(request.expiryChangeable === true ? { expiryChangeable: true as const } : {}),
         // Sol MAJOR-3 (continuation): tell the widget to hand us back
         // the previewApproval instead of asking OpenKey to sign
         // server-side with a managed key. The widget will still render

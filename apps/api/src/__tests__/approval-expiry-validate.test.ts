@@ -21,7 +21,7 @@ describe('validateExpirationOverride', () => {
     expect(validateExpirationOverride(iso(5_000), { issuedAt: iso(-1000), notBefore: iso(5_000) }, 0, now).ok).toBe(false);
     expect(validateExpirationOverride(iso(5_001), { issuedAt: iso(-1000), notBefore: iso(5_000) }, 0, now).ok).toBe(true);
   });
-  test.each([null, 5, {}, 'soon', '2030-01-01', '2030-01-01T00:00:00Z', '10000-01-01T00:00:00.000Z'])('refuses %p', (value) => {
+  test.each([null, 5, {}, 'soon', '2030-01-01', '2030-01-01T00:00:00Z', '10000-01-01T00:00:00.000Z', '+010000-01-01T00:00:00.000Z'])('refuses %p', (value) => {
     expect(validateExpirationOverride(value, siwe, 0, now).ok).toBe(false);
   });
 });

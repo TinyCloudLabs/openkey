@@ -24,7 +24,7 @@ export const EXPIRY_PRESETS: ReadonlyArray<{ label: string; ms: number }> = [
 
 /** Longer than this shows the warning. There is no upper limit. */
 export const LONG_EXPIRY_MS = 365 * D;
-export const LONG_EXPIRY_WARNING = "That's a long time. You can revoke it any time.";
+export const LONG_EXPIRY_WARNING = "That's a long time. OpenKey can't cancel it early once you approve.";
 
 export type ParsedExpiry = { ok: true; ms: number } | { ok: false; message: string };
 

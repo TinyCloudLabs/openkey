@@ -7,6 +7,9 @@ export type ExpirationOverride = { ok: true; value: string } | { ok: false };
 /** The shortest approval the server previews: the same one-minute floor the delegation expiry has. */
 export const MIN_EXPIRATION_LEAD_MS = 60_000;
 
+/** The last second a SIWE timestamp (four-digit year) can name. */
+const LATEST_SIWE_TIME_MS = Date.UTC(9999, 11, 31, 23, 59, 59);
+
 /**
  * A chosen expiry must be an exact ISO-8601 UTC time (what `toISOString()`
  * writes), at least `minLeadMs` after now, after the message's Issued At and
@@ -23,7 +26,7 @@ export function validateExpirationOverride(
   if (typeof value !== 'string') return { ok: false };
   const time = Date.parse(value);
   if (!Number.isFinite(time) || new Date(time).toISOString() !== value) return { ok: false };
-  if (time <= now + minLeadMs) return { ok: false };
+  if (time > LATEST_SIWE_TIME_MS || time <= now + minLeadMs) return { ok: false };
   for (const bound of [siwe.issuedAt, siwe.notBefore]) {
     const boundTime = bound ? Date.parse(bound) : Number.NaN;
     if (Number.isFinite(boundTime) && time <= boundTime) return { ok: false };

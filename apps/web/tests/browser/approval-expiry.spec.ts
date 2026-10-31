@@ -92,12 +92,12 @@ for (const viewport of [{ name: '390', width: 390, height: 844 }, { name: 'deskt
       await load(page);
       await page.getByRole('button', { name: '(Change)' }).click();
       await page.getByLabel('Or type a time').fill('5y');
-      await expect(page.getByText("That's a long time. You can revoke it any time.")).toBeVisible();
+      await expect(page.getByText("That's a long time. OpenKey can't cancel it early once you approve.")).toBeVisible();
       expect(await noSidewaysScroll(page)).toBe(true);
       await shot(page, `${viewport.name}-warning`);
       await page.keyboard.press('Enter');
       await expect(line(page)).toHaveText(/Approval expires:\s*5y/);
-      await expect(page.getByText("That's a long time. You can revoke it any time.")).toBeVisible();
+      await expect(page.getByText("That's a long time. OpenKey can't cancel it early once you approve.")).toBeVisible();
       expect((await calls(page)).at(-1)).toEqual({ name: 'expiryChange', args: 5 * 365 * 86_400_000 });
     });
 

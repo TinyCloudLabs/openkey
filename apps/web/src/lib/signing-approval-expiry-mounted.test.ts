@@ -243,7 +243,7 @@ describe('the "Approval expires" line', () => {
   test('a long time shows the warning, a year or less does not', () => {
     const warning = (t: HTMLElement) => t.querySelector('.expiry-warning')?.textContent ?? null;
     const long = render({ onExpiryChange() {}, expiryMs: 366 * D });
-    expect(warning(long.target)).toBe("That's a long time. You can revoke it any time.");
+    expect(warning(long.target)).toBe("That's a long time. OpenKey can't cancel it early once you approve.");
     long.cleanup();
     const edge = render({ onExpiryChange() {}, expiryMs: 365 * D });
     expect(warning(edge.target)).toBeNull();
