@@ -231,7 +231,7 @@ describe('approval view for app keys', () => {
     const { target, cleanup } = render(model, true);
     expect(statementTexts(target)).toEqual([
       'Create the encryption key k for this app',
-      "Delete this app's key k. Apps can't be given this permission.",
+      "Delete this app's key k: apps can't do this",
     ]);
     const boxes = [...target.querySelectorAll('input[type="checkbox"]')];
     expect(boxes).toHaveLength(1);

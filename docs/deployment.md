@@ -159,8 +159,9 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `DATABASE_URL` | PostgreSQL connection string |
 | `BETTER_AUTH_SECRET` | 32+ character random secret for session encryption |
 | `BETTER_AUTH_URL` | `https://api.openkey.so` |
+| `APPROVAL_RESULT_RETENTION_SECONDS` | `600` (10 min, Sam 2026-10-29), fixed in production compose for collecting approved CLI results. The result deadline is capped by the signed grant expiry. |
 | `OAUTH_DYNAMIC_CLIENT_REGISTRATION` | Keep `true` for MCP clients that register automatically; set `false` only as an emergency disable |
-| `OAUTH_VALID_AUDIENCES` | Comma-separated additional OAuth resource URLs; production includes `https://mcp.tinycloud.xyz/mcp` |
+| `OAUTH_VALID_AUDIENCES` | Comma-separated additional OAuth resource URLs; code includes the exact broad `https://mcp.tinycloud.xyz/mcp` and public `https://mcp.tinycloud.xyz/chatgpt/mcp` audiences. Preserve any additional configured resources. |
 | `WEBAUTHN_RP_ID` | `openkey.so` |
 | `WEBAUTHN_ORIGIN` | `https://openkey.so` |
 | `CONSOLE_ORIGIN` | `https://console.openkey.so` |
@@ -184,6 +185,12 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `CLOUDFLARE_API_TOKEN` | For SSL certificate management |
 | `DSTACK_GATEWAY_DOMAIN` | Phala gateway base domain (e.g. `dstack-pha-prod5.phala.network`); the ingress CNAMEs `api.openkey.so` to `gateway.<base>` (never `_.<base>`, which Android cannot resolve) |
 | `CERTBOT_EMAIL` | Email for Let's Encrypt |
+
+TC-2212 request IDs, sealed-body digests and request deadlines are bound by
+OpenKey's server-side consent context. The owner's signature covers the canonical
+delegation's target, permissions and grant expiry, not the server-authored result
+wrapper. The approval-request content key goes to OpenKey's own API to verify the
+sealed request; it is not forwarded to the links store.
 
 Google and Apple must be configured with these exact production return URLs:
 
@@ -281,8 +288,11 @@ The SvelteKit frontend deploys to Cloudflare Pages using the `@sveltejs/adapter-
      TinyCloud nodes): `VITE_DELEGATE_CALLBACK_URLS` (comma-separated app
      callback endpoints such as `https://mcp.staging.example/connect/callback`)
      and `VITE_DELEGATE_NODE_ORIGINS` (comma-separated HTTPS node origins).
-     Production needs neither: the hosted MCP endpoint and the
-     `node`/`tee.node.tinycloud.xyz` nodes are built in. See
+     Production needs neither for the first-party MCP services: the exact
+     `/connect/callback` and `/chatgpt/connect/callback` endpoints on
+     `https://mcp.tinycloud.xyz` and the `node`/`tee.node.tinycloud.xyz` nodes
+     are built in. The public ChatGPT candidate needs both this web registration
+     and the API audience update deployed; neither establishes ChatGPT acceptance. See
      `docs/share-device-authorization.md` ("Ordinary `/delegate` links").
 
 4. Deploy

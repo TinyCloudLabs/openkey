@@ -93,6 +93,29 @@ model DeviceAuthorization {
   @@map("device_authorization")
 }
 
+// Immutable signed CLI request and encrypted result. Fetch never consumes it;
+// only the requester's durable ACK intent clears ciphertext.
+model ApprovalRequest {
+  id                    String    @id
+  bodyCid               String
+  issuer                String
+  request               Json
+  expiresAt             DateTime
+  createdAt             DateTime  @default(now())
+  resultRef             String?   @unique
+  approvedByUserId      String?
+  ownerDid              String?
+  encryptedResult       String?
+  delegationExpiresAt   DateTime?
+  resultExpiresAt       DateTime?
+  ackId                 String?
+  acknowledgedAt        DateTime?
+
+  @@index([expiresAt])
+  @@index([resultExpiresAt])
+  @@map("approval_request")
+}
+
 // Short-lived, ticket-only prepared SIWE handoff. No signed result is persisted.
 model PreparedHandoff {
   ticketHash       String   @id

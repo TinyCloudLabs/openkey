@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from "bun:test";
 
-import { DECRYPT_DEFAULT_KEY_STATEMENT, renderLiteral } from "../src/copy.js";
+import { renderLiteral } from "../src/copy.js";
 import {
   buildStatement,
   buildStatements,
@@ -50,28 +50,19 @@ function namedGrant(space: string, abilities: string[]): CapabilityGrant {
 }
 
 const KEY_SENTENCE = {
-  create: "Create the encryption key qa/x in your account's default network.",
-  block:
-    "Block the key qa/x in your account's default network, so nobody, you included, can decrypt with it until it is unblocked. You can unblock it later.",
-  unblock:
-    "Unblock the key qa/x in your account's default network, so it can decrypt again, even if you blocked it yourself.",
-  decrypt:
-    "Decrypt anything encrypted with your key qa/x in your account's default network, whenever this app gets hold of the encrypted copy, until this access expires.",
-  delete:
-    "Delete the key qa/x: only you can do this, with your wallet, as a separate step. This request is refused.",
+  create: "Create your encryption key default/qa/x",
+  block: "Block your key default/qa/x from decrypting",
+  unblock: "Let your key default/qa/x decrypt again",
+  decrypt: "Decrypt data with your key default/qa/x",
+  delete: "Refused: only you can delete the key qa/x",
 } as const;
 
 const PREFIX_SENTENCE = {
-  create:
-    "Create encryption keys of your own in the folder `qa/`",
-  block:
-    "Block every key under qa/ in your account's default network, so nobody, you included, can decrypt with any of them until they are unblocked. You can unblock them later.",
-  unblock:
-    "Unblock every key under qa/ in your account's default network, so they can decrypt again, even if you blocked them yourself.",
-  decrypt:
-    "Decrypt data locked with your own keys in the folder `qa/`, including keys created later",
-  delete:
-    "Delete the key qa/: only you can do this, with your wallet, as a separate step. This request is refused.",
+  create: "Create your own encryption keys in `qa/`",
+  block: "Block keys in default/qa/ from decrypting",
+  unblock: "Let all keys in default/qa/ decrypt again",
+  decrypt: "Decrypt data locked with your keys in `qa/`",
+  delete: "Refused: only you can delete the key qa/",
 } as const;
 
 describe("named-key exact resources: one sentence per verb", () => {
@@ -151,8 +142,8 @@ describe("malformed named-key resources fall back to generic rows", () => {
       const grant = namedGrant(space, [ABILITY.decrypt, ABILITY.delete]);
       const rows = buildStatements(grant);
       expect(rows.map((row) => row.primaryText)).toEqual([
-        "Perform tinycloud.encryption/decrypt on tinycloud.encryption",
-        `Delete the key ${space}: only you can do this, with your wallet, as a separate step. This request is refused.`,
+        "Unknown action: tinycloud.encryption/decrypt",
+        `Refused: only you can delete the key ${space}`,
       ]);
       expect(rows[0]?.neverApprovable).not.toBe(true);
       expect(rows[1]?.neverApprovable).toBe(true);
@@ -186,17 +177,17 @@ describe("named-key routing: shape A and shape B resolve identically", () => {
       expect(row.resource).toBe(PREFIX);
     });
 
-    it(`shape ${shape} bare network keeps the default-key decrypt copy`, () => {
+    it(`shape ${shape} bare network keeps the plain decrypt copy`, () => {
       expect(
         buildStatement(shapeGrant(shape, NETWORK, [ABILITY.decrypt])).primaryText,
-      ).toBe(DECRYPT_DEFAULT_KEY_STATEMENT);
+      ).toBe("Decrypt protected data");
     });
 
     it(`shape ${shape} malformed URN renders the literal fallback, not friendly copy`, () => {
       expect(
         buildStatement(shapeGrant(shape, `${NETWORK}/apps//x`, [ABILITY.decrypt]))
           .primaryText,
-      ).toBe("Perform tinycloud.encryption/decrypt on tinycloud.encryption");
+      ).toBe("Unknown action: tinycloud.encryption/decrypt");
     });
   }
 });
@@ -212,7 +203,7 @@ describe("key.delete fails closed on every encryption resource shape", () => {
       it(`shape ${shape} ${label} delete is never approvable and refused`, () => {
         const row = buildStatement(shapeGrant(shape, resource, [ABILITY.delete]));
         expect(row.neverApprovable).toBe(true);
-        expect(row.primaryText).toContain("This request is refused.");
+        expect(row.primaryText).toContain("Refused: ");
       });
     }
   }
@@ -220,7 +211,7 @@ describe("key.delete fails closed on every encryption resource shape", () => {
   it("a delete on a non-URN resource is still never approvable and refused", () => {
     const row = buildStatement(namedGrant("default", [ABILITY.delete]));
     expect(row.neverApprovable).toBe(true);
-    expect(row.primaryText).toContain("This request is refused.");
+    expect(row.primaryText).toContain("Refused: ");
   });
 
   for (const shape of ["A", "B"] as const) {
@@ -243,7 +234,7 @@ describe("literal resource text in refusals is escaped and capped", () => {
     const resource = `${NETWORK}/apps/\u202ex`;
     const row = buildStatement(namedGrant(resource, [ABILITY.delete]));
     expect(row.primaryText).toBe(
-      `Delete the key ${NETWORK}/apps/\\u202ex: only you can do this, with your wallet, as a separate step. This request is refused.`,
+      `Refused: only you can delete the key ${NETWORK}/apps/\\u202ex`,
     );
     expect(row.primaryText).not.toContain("\u202e");
     expect(row.resource).toBe(`${NETWORK}/apps/\\u202ex`);
@@ -280,7 +271,7 @@ describe("literal resource text in refusals is escaped and capped", () => {
     const resource = `${NETWORK}/${"x".repeat(300)}//`;
     const row = buildStatement(namedGrant(resource, [ABILITY.delete]));
     expect(row.primaryText).toBe(
-      `Delete the key ${resource.slice(0, 120)}…: only you can do this, with your wallet, as a separate step. This request is refused.`,
+      `Refused: only you can delete the key ${resource.slice(0, 120)}…`,
     );
     expect(row.resource).toBe(`${resource.slice(0, 120)}…`);
   });
@@ -372,7 +363,7 @@ describe("failing encryption URNs: every displayed string is printable ASCII", (
     for (const row of rows) {
       expectDisplayable(row.primaryText, 1);
     }
-    expect(rows[0].primaryText.startsWith(`Perform ${ability.slice(0, 120)}…`)).toBe(
+    expect(rows[0].primaryText.startsWith(`Unknown action: ${ability.slice(0, 120)}…`)).toBe(
       true,
     );
     expect(rows[0].primaryText).not.toContain("u".repeat(121));

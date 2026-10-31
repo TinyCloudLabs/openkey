@@ -273,6 +273,27 @@ describe('production migration deployment mode', () => {
     });
   });
 
+  test('allows approval result expansion beside parked TC-488 but rejects a changed checksum', () => {
+    const name = '20261028_0001_approval_request_results';
+    const input = {
+      migrations: [baseline],
+      migrationDirectories: [baseline.migration_name, ...tc492, device, name],
+      managedAccountTableExists: true,
+    };
+    expect(selectProductionMigrationMode(input)).toBe('pre-tc488-additive');
+    const applied = {
+      migration_name: name,
+      checksum: 'c1d45c495e46e7eaf8a3bb92c06802437c34ca2f63c47d63e2550190b1d8ed8f',
+      finished_at: new Date('2026-10-28T00:00:00Z'),
+      rolled_back_at: null,
+    };
+    expect(selectProductionMigrationMode({ ...input, migrations: [baseline, applied] })).toBe('pre-tc488-additive');
+    expect(() => selectProductionMigrationMode({
+      ...input,
+      migrations: [baseline, { ...applied, checksum: 'changed' }],
+    })).toThrow();
+  });
+
   test('fails closed on inconsistent physical cutover state', () => {
     expect(() => selectProductionMigrationMode({
       migrations: [baseline],

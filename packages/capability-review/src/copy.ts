@@ -52,54 +52,42 @@ export const FAMILY_LABEL: Record<CapabilityFamily, string> = {
  * delegation of the account: who holds it, the names of what it reaches, the
  * actions and the expiry.
  */
-export const DELEGATION_LIST_LABEL =
-  "See which apps and links can reach your data, and the names of what each can reach";
+export const DELEGATION_LIST_LABEL = "Who can access your data";
 
 /** The consent sentence for the same grant. */
-export const DELEGATION_LIST_STATEMENT =
-  "See who has access to your data, what it reaches (by name) and when it ends. Keys and contents aren't shown.";
-
-/**
- * Consent copy for a raw `tinycloud.encryption/decrypt` on the account's
- * `:default` network. Single source of truth: statements.ts imports this
- * constant and tests compare against it.
- */
-export const DECRYPT_DEFAULT_KEY_STATEMENT =
-  "Decrypt anything encrypted with your account's default key — including your Secrets and every private share — whenever this app gets hold of the encrypted copy, until this access expires.";
+export const DELEGATION_LIST_STATEMENT = "See who has access to your data";
 
 /** Named-key verbs that carry consent copy. */
 export type NamedKeyVerb = "create" | "decrypt" | "block" | "unblock" | "delete";
 
-export const DELETE_REFUSED_TEMPLATE =
-  "Delete the key {path}: only you can do this, with your wallet, as a separate step. This request is refused.";
+export const DELETE_REFUSED_TEMPLATE = "Refused: only you can delete the key {path}";
 
 /**
- * Named-key consent sentences, one per verb and resource shape. `{path}` is
- * the key path (a prefix keeps its trailing `/`) and `{network}` the network
- * name, both filled verbatim by renderNamedKeySentence. `null` means no
- * approved wording: the row renders the literal fallback instead.
+ * Named-key consent sentences, one per verb and resource shape. `{network}`
+ * is the network name and `{path}` the key path (a prefix keeps its trailing
+ * `/`), both filled verbatim by renderNamedKeySentence, so `{network}/{path}`
+ * reads as the key's full name. `null` means no approved wording: the row
+ * renders the literal fallback instead.
  */
 export const NAMED_KEY_STATEMENTS: Record<
   NamedKeyVerb,
   { key: string | null; prefix: string | null }
 > = {
   create: {
-    key: "Create the encryption key {path} in your account's {network} network.",
-    prefix: "Create encryption keys under {path} in your account's {network} network.",
+    key: "Create your encryption key {network}/{path}",
+    prefix: "Create your encryption keys in {network}/{path}",
   },
   decrypt: {
-    key: "Decrypt anything encrypted with your key {path} in your account's {network} network, whenever this app gets hold of the encrypted copy, until this access expires.",
-    prefix: "Decrypt anything encrypted with any of your keys under {path} in your account's {network} network, including keys created later, whenever this app gets hold of the encrypted copy, until this access expires.",
+    key: "Decrypt data with your key {network}/{path}",
+    prefix: "Decrypt with any of your keys in {network}/{path}",
   },
   block: {
-    key: "Block the key {path} in your account's {network} network, so nobody, you included, can decrypt with it until it is unblocked. You can unblock it later.",
-    prefix:
-      "Block every key under {path} in your account's {network} network, so nobody, you included, can decrypt with any of them until they are unblocked. You can unblock them later.",
+    key: "Block your key {network}/{path} from decrypting",
+    prefix: "Block keys in {network}/{path} from decrypting",
   },
   unblock: {
-    key: "Unblock the key {path} in your account's {network} network, so it can decrypt again, even if you blocked it yourself.",
-    prefix:
-      "Unblock every key under {path} in your account's {network} network, so they can decrypt again, even if you blocked them yourself.",
+    key: "Let your key {network}/{path} decrypt again",
+    prefix: "Let all keys in {network}/{path} decrypt again",
   },
   delete: {
     key: DELETE_REFUSED_TEMPLATE,
@@ -108,8 +96,8 @@ export const NAMED_KEY_STATEMENTS: Record<
 };
 
 export const OWN_KEY_PREFIX_STATEMENTS = {
-  create: "Create encryption keys of your own in the folder `{path}`",
-  decrypt: "Decrypt data locked with your own keys in the folder `{path}`, including keys created later",
+  create: "Create your own encryption keys in `{path}`",
+  decrypt: "Decrypt data locked with your keys in `{path}`",
 } as const;
 
 /**
@@ -229,21 +217,21 @@ export function appKeyStatementText(
         : `Decrypt data locked with this app's key ${keyName}`;
     case "key.block":
       return target.isPrefix
-        ? "Block this app's encryption keys so they can't be used to decrypt"
-        : `Block this app's key ${keyName} so it can't be used to decrypt`;
+        ? "Block this app's keys so they can't decrypt"
+        : `Block this app's key ${keyName} so it can't decrypt`;
     case "key.unblock":
       return target.isPrefix
-        ? "Unblock this app's encryption keys so they can be used again"
-        : `Unblock this app's key ${keyName} so it can be used again`;
+        ? "Unblock this app's keys so they can decrypt"
+        : `Unblock this app's key ${keyName} so it can decrypt`;
     case "key.delete":
       return target.isPrefix
-        ? "Delete this app's encryption keys. Apps can't be given this permission."
-        : `Delete this app's key ${keyName}. Apps can't be given this permission.`;
+        ? "Delete this app's keys: apps can't do this"
+        : `Delete this app's key ${keyName}: apps can't do this`;
   }
 }
 
 /** Shown while a request with app keys is being edited: the app keys are one unit. */
-export const APP_KEY_GROUP_NOTE = "App keys can only be approved together. Untick all of them, or keep them all.";
+export const APP_KEY_GROUP_NOTE = "App keys are approved together: keep all or none.";
 
 /** The line above the rows of a request with app keys. */
 export function appRequestingLine(name: string | null): string {
@@ -273,14 +261,10 @@ export const PROTOCOL_HEADLINE: Record<RequestProtocol, string> = {
 };
 
 export const PROTOCOL_HINT: Record<RequestProtocol, string> = {
-  "legacy-message":
-    "You will sign these bytes exactly. Editing is not available.",
-  "siwe-plain":
-    "You will sign this SIWE message exactly. Editing is not available.",
-  "tinycloud-siwe-recap":
-    "Review the requested capabilities. Uncheck anything you do not want to grant.",
-  "malformed-recap":
-    "This message carries a capability payload we could not decode. Approving is disabled so a broken ReCap cannot be silently signed as an exact-byte SIWE.",
+  "legacy-message": "You will sign these exact bytes.",
+  "siwe-plain": "You will sign this exact sign-in message.",
+  "tinycloud-siwe-recap": "Review the access this app is asking for.",
+  "malformed-recap": "This request can't be read, so it won't be signed.",
 };
 
 /**

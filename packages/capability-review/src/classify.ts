@@ -27,12 +27,12 @@ import { isSecretsSpace } from "./app-scope.js";
 import { isMetadataOnlyAccess } from "./action-semantics.js";
 import { DELEGATION_LIST_LABEL, FAMILY_LABEL } from "./copy.js";
 import { APPS_SEGMENT, parseKeyResource } from "./key-resource.js";
+import { plainSentence } from "./plain-words.js";
 import {
   SPACE_SERVICES,
   SQL_ADMIN_OPERATIONS,
   coreOperations,
   isCoreOperationService,
-  joinDistinct,
   type CoreOperation,
 } from "./core-operations.js";
 
@@ -265,8 +265,8 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
       return {
         family: "secret-namespace-list",
         displayLabel: isSecretValueRead(entry.actions)
-          ? "Secret data — (entire secrets namespace)"
-          : "Secret names and metadata — (entire secrets namespace)",
+          ? "Secret data — (all secrets)"
+          : "Secret names and metadata — (all secrets)",
       };
     }
     if (BOOTSTRAP_SQL_SERVICES.has(service)) {
@@ -306,7 +306,7 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
       );
       const secretName =
         path.replace(/^vault\/secrets\/?/, "").replace(/^secrets\/?/, "") ||
-        "(entire secrets namespace)";
+        "(all secrets)";
       const isWholeNamespace =
         path === "vault/secrets" || path === "secrets";
       return {
@@ -319,8 +319,8 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
           ? `Named secret (mutate) — ${secretName}`
           : isWholeNamespace
             ? isSecretValueRead(entry.actions)
-              ? "Secret data — (entire secrets namespace)"
-              : "Secret names and metadata — (entire secrets namespace)"
+              ? "Secret data — (all secrets)"
+              : "Secret names and metadata — (all secrets)"
             : `Named secret (read) — ${secretName}`,
       };
     }
@@ -399,15 +399,22 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
         if (!allVerbsIn(entry.actions, SQL_NAMED_DATABASE_VERBS)) {
           return unknownActionLabel(service);
         }
-        const label = joinDistinct(
-          entry.actions
-            .map((action) => SQL_ADMIN_OPERATIONS[verbOf(action)]?.label)
-            .filter((value): value is string => value !== undefined),
-          ", ",
-        );
+        const labels = [
+          ...new Set(
+            entry.actions
+              .map((action) => SQL_ADMIN_OPERATIONS[verbOf(action)]?.label)
+              .filter((value): value is string => value !== undefined),
+          ),
+        ];
+        // Several operations read as one plain line that keeps every consequence and the owner.
         return {
           family: "database-admin",
-          displayLabel: isOtherUser ? `${label} — another user's space` : label,
+          displayLabel:
+            labels.length > 1
+              ? plainSentence(entry.actions, entry.space, isOtherUser ? "another user's " : "your ")
+              : isOtherUser
+                ? `${labels[0]} — another user`
+                : labels[0]!,
         };
       }
       const allowed = scoped ? SQL_DATABASE_VERBS : SQL_DATA_VERBS;
@@ -513,8 +520,8 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
       return {
         family: "secret-namespace-list",
         displayLabel: isSecretValueRead(entry.actions)
-          ? "Secret data — (entire secrets namespace)"
-          : "Secret names and metadata — (entire secrets namespace)",
+          ? "Secret data — (all secrets)"
+          : "Secret names and metadata — (all secrets)",
       };
     }
     return {
@@ -595,10 +602,13 @@ function classifyCoreOperation(
     return unknownActionLabel(service);
   }
   const family = dominantCoreFamily(operations);
-  const label = joinDistinct(
-    operations.map((operation) => operation.label),
-    ", ",
-  );
+  const labels = [...new Set(operations.map((operation) => operation.label))];
+  // Several operations read as one plain line that keeps every consequence and the owner.
+  const composed =
+    labels.length > 1
+      ? plainSentence(entry.actions, space, context.isOtherUser ? "another user's " : "your ")
+      : null;
+  const label = composed ?? labels[0]!;
 
   // Space operations address the space itself, not data inside it, so they
   // apply to any space name.
@@ -606,7 +616,7 @@ function classifyCoreOperation(
     if (family === "space-create") {
       return {
         family,
-        displayLabel: context.isOtherUser ? `${label} for another user` : label,
+        displayLabel: context.isOtherUser && composed === null ? `${label} for another user` : label,
       };
     }
     return context.isOtherUser
@@ -629,14 +639,14 @@ function classifyCoreOperation(
     // Never lower an administrative grant to the attention-level
     // cross-user family.
     return family === "database-admin"
-      ? { family, displayLabel: `${label} — another user's space` }
+      ? { family, displayLabel: composed ?? `${label} — another user` }
       : { family: "cross-app-data", displayLabel: "Another user's data" };
   }
   return { family, displayLabel: label };
 }
 
 function describeName(path: string): string {
-  if (!path) return "(entire secrets namespace)";
+  if (!path) return "(all secrets)";
   return path;
 }
 
