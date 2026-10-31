@@ -91,6 +91,7 @@ import {
   appKeyRefusalCode,
   appKeyRefusalForSiwe,
   blockResourcesOutsideApps,
+  encryptionOutsideAppsRefusal,
   appKeyRefusalMessage,
   appKeyRefusalStatus,
   appKeyResourcesOf,
@@ -2478,6 +2479,14 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     }
     appKeyCandidate = true;
   }
+  // A website's own sign-in (no ticket) may name encryption `decrypt` or
+  // `key.create` only under its own `apps/` prefix. Anything else, a bare
+  // network included, is refused before a context is issued. A ticket request
+  // (the command line's `--keys <folder>`) is not checked here.
+  const prepareEncryptionRefusal = ticket ? null : encryptionOutsideAppsRefusal(body.siwe);
+  if (prepareEncryptionRefusal) {
+    return c.json(appKeyRefusalBody(prepareEncryptionRefusal, 'browser'), appKeyRefusalStatus(prepareEncryptionRefusal));
+  }
   // `key.block` and `key.unblock` on a key or prefix outside `apps/` take the
   // same admission; no manifest lists such a key, so they are refused there.
   const blockOutsideApps = blockResourcesOutsideApps(body.siwe);
@@ -3245,6 +3254,10 @@ delegateRouter.post('/authorize-sign', async (c) => {
   if (signedAppKeyRefusal) {
     return c.json(appKeyRefusalBody(signedAppKeyRefusal, ticket ? 'non_browser' : 'browser'), appKeyRefusalStatus(signedAppKeyRefusal));
   }
+  const signEncryptionRefusal = ticket ? null : encryptionOutsideAppsRefusal(signedMessage);
+  if (signEncryptionRefusal) {
+    return c.json(appKeyRefusalBody(signEncryptionRefusal, 'browser'), appKeyRefusalStatus(signEncryptionRefusal));
+  }
   // Both checked claims still have to reference the stored records. This
   // synchronous call compares both, checks both expiries, then deletes both
   // without an await between either comparison and either deletion. Only
@@ -3502,6 +3515,10 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
   const previewAppKeyRefusal = appKeyRefusalForSiwe(preparedSignedMessage, previewEntries, bound.admittedAppKeys);
   if (previewAppKeyRefusal) {
     return c.json(appKeyRefusalBody(previewAppKeyRefusal, ticket ? 'non_browser' : 'browser'), appKeyRefusalStatus(previewAppKeyRefusal));
+  }
+  const previewEncryptionRefusal = ticket ? null : encryptionOutsideAppsRefusal(preparedSignedMessage);
+  if (previewEncryptionRefusal) {
+    return c.json(appKeyRefusalBody(previewEncryptionRefusal, 'browser'), appKeyRefusalStatus(previewEncryptionRefusal));
   }
   const previewGrants = previewEntries.map((entry) => ({
     service: canonicalizeServiceName(entry.service),
