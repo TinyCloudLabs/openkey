@@ -42,10 +42,16 @@ const preparedHandoffMigration = '20261016_0001_prepared_siwe_handoff';
 const preparedHandoffChecksum = '645d931e10dbd068da7f7243dcbe995f1af6f0e339b98d082264c8153bfec9ec';
 const appSignInDayMigration = '20261019_0001_app_sign_in_day';
 const appSignInDayChecksum = 'a2f56caea9cd46aebccfb4d369e0223cf8338d07ac685a0dce145b4c3c90bb29';
+const orgKeyCustodyMigration = '20261021_0001_org_key_custody';
+const orgKeyCustodyChecksum = '2c9f0a53affc841a7f0a7d1b6f8b865f4c4ef0277e0e140e1f81cd76f1d97f23';
+const orgKeySignChallengesMigration = '20261021_0002_org_key_sign_challenges';
+const orgKeySignChallengesChecksum = '045b0c9c8dc4d00d50d227eb1faa731118122696ff989031c1b9eff18cc075c1';
 const tinycloudBootstrapSweepMigration = '20261021_0001_tinycloud_bootstrap_sweep_attempts';
 const tinycloudBootstrapSweepChecksum = '905d0105d5b97e75d8855f30cd7e35e80d8034e7ee3051402f81d1efc1bf5edd';
 const revokedAccessTokenMigration = '20261026_0001_revoked_access_token';
 const revokedAccessTokenChecksum = 'a57958f43b7d1c28c25b38ef358a5392e4b7f9ecf78a979b2c86c8027bd53a30';
+const orgRegistrationMigration = '20261029_0001_org_registration_proofs';
+const orgRegistrationChecksum = '2aba2adcbca2a1554b480ee832873d846ed57161f95668ff4b4ce6659f465569';
 // Reviewed expand-only migrations that may run while TC-488 stays parked.
 const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
   [deviceMigration, deviceChecksum],
@@ -57,9 +63,12 @@ const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
   [signinPolishMigration, signinPolishChecksum],
   [preparedHandoffMigration, preparedHandoffChecksum],
   [appSignInDayMigration, appSignInDayChecksum],
+  [orgKeyCustodyMigration, orgKeyCustodyChecksum],
   [tinycloudBootstrapSweepMigration, tinycloudBootstrapSweepChecksum],
+  [orgKeySignChallengesMigration, orgKeySignChallengesChecksum],
   [revokedAccessTokenMigration, revokedAccessTokenChecksum],
   ['20261028_0001_approval_request_results', 'c1d45c495e46e7eaf8a3bb92c06802437c34ca2f63c47d63e2550190b1d8ed8f'],
+  [orgRegistrationMigration, orgRegistrationChecksum],
 ]);
 
 export type MigrationRow = {
@@ -333,6 +342,38 @@ async function deployAdditiveMigrationsBeforeTc488(
     !verified.request_login_method_column
   ) {
     throw new Error('Pre-TC-488 additive physical schema verification failed');
+  }
+  const orgCustody = await database.$queryRawUnsafe<Array<{
+    custody_column: boolean;
+    custody_check: boolean;
+    org_keys_table: boolean;
+    key_grants_table: boolean;
+    one_active_owner_index: boolean;
+    signature_audit_table: boolean;
+    signature_audit_hash_index: boolean;
+  }>>(`
+    SELECT
+      EXISTS (SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'ethereum_keys' AND column_name = 'custody') AS custody_column,
+      EXISTS (SELECT 1 FROM pg_constraint
+        WHERE conname = 'ethereum_keys_custody_org_shape_check' AND contype = 'c') AS custody_check,
+      to_regclass('public."org_keys"') IS NOT NULL AS org_keys_table,
+      to_regclass('public."key_grants"') IS NOT NULL AS key_grants_table,
+      to_regclass('public."key_grants_one_active_owner_per_key"') IS NOT NULL AS one_active_owner_index,
+      to_regclass('public."org_key_signature_audits"') IS NOT NULL AS signature_audit_table,
+      to_regclass('public."org_key_signature_audits_passkeyAssertionHash_key"') IS NOT NULL AS signature_audit_hash_index
+  `);
+  const org = orgCustody[0];
+  if (
+    !org?.custody_column ||
+    !org.custody_check ||
+    !org.org_keys_table ||
+    !org.key_grants_table ||
+    !org.one_active_owner_index ||
+    !org.signature_audit_table ||
+    !org.signature_audit_hash_index
+  ) {
+    throw new Error('Pre-TC-488 org custody physical schema verification failed');
   }
   await assertNativeDelegationSchema(database);
 

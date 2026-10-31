@@ -13,6 +13,7 @@ import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
 import { requireFreshPasskey } from '../services/passkey-freshness';
 import { rejectNonBrowserControlRequest } from '../middleware/browser-control';
 import { nativeDelegationLockResponse } from '../services/native-delegation/errors';
+import { personalKeyWhere } from '../services/primary-key';
 
 const prisma = createPrismaClient();
 
@@ -322,16 +323,33 @@ accountRouter.post('/delete', async (c) => {
   }
 
 
-  // Count and delete every user key. TC-488 removed tenant-managed keys.
-  const keyCount = await prisma.ethereumKey.count({
-    where: { userId: user.id },
-  });
-
-  // Delete all user data in transaction
-  try { await prisma.$transaction(async (tx) => {
+  // Delete all user data in transaction. The OWNER check runs under the user
+  // row lock. Only personal keys are deleted; ORG-custodied keys have no userId
+  // and are not touched (TC-1518 D1).
+  let result: { kind: 'deleted'; keysDeleted: number } | { kind: 'owner_grant' };
+  try { result = await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "user" WHERE id = ${user.id} FOR UPDATE`;
+    const activeOwnerGrants = await tx.keyGrant.count({
+      where: { granteeUserId: user.id, role: 'OWNER', revokedAt: null },
+    });
+    if (activeOwnerGrants > 0) return { kind: 'owner_grant' as const };
+
+    // Active ADMIN grants do not block deletion: revoke them and detach the grantee.
+    // key_grants.granteeUserId is ON DELETE RESTRICT, so the user row cannot be
+    // deleted while any grant still points at it.
+    await tx.keyGrant.updateMany({
+      where: { granteeUserId: user.id, role: 'ADMIN', revokedAt: null },
+      data: { revokedAt: new Date(), revokedByUserId: user.id, granteeUserId: null },
+    });
+    // Grants revoked earlier still point at the user. Detach them too; revokedAt and
+    // revokedByUserId stay, so the revocation record is kept without the grantee link.
+    await tx.keyGrant.updateMany({
+      where: { granteeUserId: user.id, revokedAt: { not: null } },
+      data: { granteeUserId: null },
+    });
+
     // Delete all ethereum keys (sealed blobs will be unrecoverable)
-    await tx.ethereumKey.deleteMany({ where: { userId: user.id } });
+    const { count: keysDeleted } = await tx.ethereumKey.deleteMany({ where: personalKeyWhere(user.id) });
 
     // Delete all passkeys
     await tx.passkey.deleteMany({ where: { userId: user.id } });
@@ -347,16 +365,23 @@ accountRouter.post('/delete', async (c) => {
 
     // Finally delete the user
     await tx.user.delete({ where: { id: user.id } });
+    return { kind: 'deleted' as const, keysDeleted };
   }); } catch (error) {
     const unavailable = nativeDelegationLockResponse(error);
     if (unavailable) return unavailable;
     throw error;
   }
+  if (result.kind === 'owner_grant') {
+    return c.json({
+      error: 'Account owns an organization key',
+      message: 'Accounts holding an active organization key grant cannot be deleted',
+    }, 409);
+  }
 
   return c.json({
     success: true,
     message: 'Account permanently deleted',
-    keysDeleted: keyCount,
+    keysDeleted: result.keysDeleted,
   });
 });
 

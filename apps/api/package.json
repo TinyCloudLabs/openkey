@@ -15,6 +15,7 @@
     "@openkey/db": "workspace:*",
     "@openkey/capability-review": "workspace:*",
     "@openkey/tee": "workspace:*",
+    "@simplewebauthn/server": "^13.3.0",
     "@tinycloud/bootstrap": "2.8.0-beta.1",
     "@tinycloud/node-sdk": "2.11.0",
     "@tinycloud/node-sdk-wasm": "1.7.6",

@@ -45,6 +45,7 @@ export function normalizeAuthReturnTo(
   options: AuthReturnToOptions = {},
 ): string | null {
   if (!value) return null;
+  if (value === '/org-registration/consent') return value;
 
   try {
     const url = new URL(value, origin);
