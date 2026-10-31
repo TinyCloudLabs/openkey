@@ -1212,7 +1212,7 @@ describe('prepared handoff expiry ceiling (TC-2274)', () => {
     };
     const later = await preview(asked + 1);
     expect(later.status).toBe(400);
-    expect(later.body.code).toBe('invalid_expiration_time');
+    expect(later.body.code).toBe('expiry_exceeds_handoff');
     const shorter = await preview(asked - 10 * 60_000);
     expect(shorter.status).toBe(200);
     expect(/^Expiration Time: (.+)$/m.exec(shorter.body.signedMessage as string)?.[1]).toBe(new Date(asked - 10 * 60_000).toISOString());

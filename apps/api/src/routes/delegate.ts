@@ -345,12 +345,12 @@ interface OpenKeySigningRequestBody {
  */
 const DEFAULT_DELEGATION_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
 /**
- * Upper bound on caller-supplied expiry for `/api/delegate` and
+ * Upper bound on a link-supplied expiry for `/api/delegate` and
  * `/api/delegate/prepare` (TC-547). These routes back the `/delegate` page,
  * whose link parameters (including `expiry`) come from whoever made the link,
- * so a longer request is clamped to this ceiling. It matches the device-flow
- * ceiling (`DEVICE_AUTH_MAX_DELEGATION_TTL_MS`); longer-lived access is
- * renewed by approving a new link.
+ * so a longer request is clamped to this ceiling; longer-lived access is
+ * renewed by approving a new link. A signed approval request or device request
+ * states its own maximum and is held to it by its window check instead (TC-2274).
  */
 const MAX_DELEGATION_EXPIRY_MS = 30 * 24 * 60 * 60 * 1000;
 const MIN_DELEGATION_EXPIRY_MS = 60 * 1000; // 1 minute
@@ -3428,9 +3428,16 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
       );
     }
     const checked = validateExpirationOverride(body.expirationTime, immutable, MIN_EXPIRATION_LEAD_MS);
-    if (!checked.ok || (ticket && Date.parse(checked.value) > Date.parse(immutable.expirationTime))) {
+    if (!checked.ok) {
       return c.json(
         { error: 'expirationTime must be a future ISO-8601 UTC time after the request was issued', code: 'invalid_expiration_time' },
+        400,
+      );
+    }
+    // A prepared handoff's CLI refuses a grant longer than it asked for: that time is the ceiling.
+    if (ticket && Date.parse(checked.value) > Date.parse(immutable.expirationTime)) {
+      return c.json(
+        { error: 'expirationTime is later than the time the CLI asked for', code: 'expiry_exceeds_handoff' },
         400,
       );
     }

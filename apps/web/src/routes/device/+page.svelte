@@ -5,6 +5,7 @@
   import Card from '$lib/components/ui/card.svelte';
   import {
     decryptDefaultEntryLabel,
+    deviceLifetimeNotice,
     deviceLifetimeOptions,
     deviceRequestReason,
     deviceRequestSuggestedSeconds,
@@ -14,6 +15,7 @@
     lookupDeviceRequest,
     type DeviceRequestRecord,
   } from '$lib/device-authorization';
+  import { LONG_EXPIRY_WARNING } from '$lib/approval-expiry';
 
   let userCode = $state($page.url.searchParams.get('user_code') ?? '');
   // TC-660: a complete code from the link is shown read-only, leaving sign-in
@@ -29,6 +31,7 @@
   /** The lifetime the CLI suggests as the default (the maximum when it does not). */
   let suggestedLifetimeSeconds = $state(0);
   const lifetimeOptions = $derived(deviceLifetimeOptions(maxLifetimeSeconds, suggestedLifetimeSeconds));
+  const lifetimeNotice = $derived(deviceLifetimeNotice(Math.min(lifetimeSeconds, maxLifetimeSeconds)));
   const requestReason = $derived(request ? deviceRequestReason(request) : '');
   const SERVICE_LABELS: Record<string, string> = {
     'tinycloud.kv': 'Key-value storage',
@@ -141,6 +144,10 @@
                   <option value={option.seconds}>{option.label}</option>
                 {/each}
               </select>
+              <p class="mt-1 text-xs text-surface-500" data-testid="device-lifetime-end">Ends {lifetimeNotice.ends}.</p>
+              {#if lifetimeNotice.long}
+                <p class="mt-1 rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-900" role="status">{LONG_EXPIRY_WARNING}</p>
+              {/if}
             </dd>
           </div>
           <div><dt class="text-surface-500">Share origin</dt><dd class="break-all font-mono text-xs text-surface-900">{request.shareOrigin}</dd></div>

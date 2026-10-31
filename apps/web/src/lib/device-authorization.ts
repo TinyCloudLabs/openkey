@@ -3,6 +3,8 @@
 // binding and the relayed delegation must both state exactly the approved
 // subset, in the request's own manifest form, so the CLI can compare them.
 
+import { formatAccessEnd } from './access-end';
+
 export interface DevicePermission {
   service: string;
   space: string;
@@ -312,11 +314,21 @@ export function approvedDevicePermissions(
 /** Human lifetime for a delegation that lasts `seconds`, rounded down. */
 export function formatDeviceLifetime(seconds: number): string {
   const days = Math.floor(seconds / 86_400);
+  // Two years or more read as years: a signed maximum can be far longer than 30 days.
+  if (days >= 730) return `${Math.floor(days / 365)} years`;
   if (days >= 1) return days === 1 ? '1 day' : `${days} days`;
   const hours = Math.floor(seconds / 3_600);
   if (hours >= 1) return hours === 1 ? '1 hour' : `${hours} hours`;
   const minutes = Math.max(1, Math.floor(seconds / 60));
   return minutes === 1 ? '1 minute' : `${minutes} minutes`;
+}
+
+/**
+ * The end date of a lifetime chosen now, and whether it is longer than a year (the screen then adds the
+ * long-value warning). A requester can sign a maximum of years, so the owner sees when access stops.
+ */
+export function deviceLifetimeNotice(seconds: number, now: number = Date.now()): { ends: string; long: boolean } {
+  return { ends: formatAccessEnd(new Date(now + seconds * 1000).toISOString()), long: seconds > 365 * 86_400 };
 }
 
 /**

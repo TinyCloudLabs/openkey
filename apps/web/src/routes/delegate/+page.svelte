@@ -1631,7 +1631,7 @@
         {#if deviceTransactionId}
           <DeviceRequestNotice nodeOrigin={host} shareOrigin={deviceShareOrigin} expiry={expiryParam} bind:acknowledged={deviceAcknowledged} />
         {:else}
-          <DelegateLinkNotice {host} hostRecognized={!hostNeedsAcknowledgment} callback={approvedCallback} requesterRelay={approvalRequestMode} expiresAt={delegationExpiresAt} showExpires={!reviewModel?.immutable} bind:acknowledged={hostAcknowledged} />
+          <DelegateLinkNotice {host} hostRecognized={!hostNeedsAcknowledgment} callback={approvedCallback} requesterRelay={approvalRequestMode} expiresAt={delegationExpiresAt} showExpires={!(reviewModel?.immutable && reviewModel.protocol === 'tinycloud-siwe-recap')} bind:acknowledged={hostAcknowledged} />
         {/if}
 
         {#if selectedKey.keyType === 'EXTERNAL'}

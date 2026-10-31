@@ -38,3 +38,22 @@ describe('deviceLifetimeOptions with a suggestion', () => {
     expect(deviceLifetimeOptions(30 * day).map((option) => option.seconds)).toEqual([day, 7 * day, 30 * day]);
   });
 });
+
+describe('long lifetimes read plainly (TC-2274)', () => {
+  test('two years or more read as years; a year or less stays in days', async () => {
+    const { formatDeviceLifetime } = await import('./device-authorization');
+    expect(formatDeviceLifetime(365 * day)).toBe('365 days');
+    expect(formatDeviceLifetime(729 * day)).toBe('729 days');
+    expect(formatDeviceLifetime(730 * day)).toBe('2 years');
+    expect(formatDeviceLifetime(2_920_812 * day)).toBe('8002 years');
+    expect(deviceLifetimeOptions(5 * 365 * day).at(-1)?.label).toBe('5 years (requested maximum)');
+  });
+
+  test('the notice gives the end date and flags more than a year', async () => {
+    const { deviceLifetimeNotice } = await import('./device-authorization');
+    const now = Date.UTC(2026, 9, 31, 12);
+    expect(deviceLifetimeNotice(7 * day, now)).toEqual({ ends: 'Nov 7, 2026, 12:00 PM UTC', long: false });
+    expect(deviceLifetimeNotice(365 * day, now).long).toBe(false);
+    expect(deviceLifetimeNotice(365 * day + 1, now).long).toBe(true);
+  });
+});
