@@ -10,6 +10,9 @@ import {
   buildStatements,
   type CapabilityGrant,
 } from "../src/index.js";
+import { parseCapabilityReview, type SignerInfo } from "../src/index.js";
+import type { ParseContext } from "../src/parse.js";
+import { FIXTURE_META, makeRecapResource, siweWithResources } from "./fixtures/index.js";
 
 const OWNER = "did:pkh:eip155:1:0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed";
 const NETWORK = `urn:tinycloud:encryption:${OWNER}:default`;
@@ -247,6 +250,10 @@ describe("owner share-prefix decrypt explanation", () => {
     ["a nested prefix (share/sub/)", `${NETWORK}/share/sub/`, "Decrypt data locked with your keys in `share/sub/`"],
     ["an unrelated prefix (notes/)", `${NETWORK}/notes/`, "Decrypt data locked with your keys in `notes/`"],
     ["a nested exact key (share/a/b)", `${NETWORK}/share/a/b`, "Decrypt data with your key default/share/a/b"],
+    ["a network look-alike (default-x/share/)", `urn:tinycloud:encryption:${OWNER}:default-x/share/`, "Decrypt with any of your keys in default-x/share/"],
+    ["a share-like prefix (sharex/)", `${NETWORK}/sharex/`, "Decrypt data locked with your keys in `sharex/`"],
+    ["a share-like prefix (shared/)", `${NETWORK}/shared/`, "Decrypt data locked with your keys in `shared/`"],
+    ["a key named exactly share (no slash)", `${NETWORK}/share`, "Decrypt data with your key default/share"],
   ] as const;
   for (const shape of ["A", "B"] as const) {
     for (const [label, resource, sentence] of neighbours) {
@@ -258,6 +265,92 @@ describe("owner share-prefix decrypt explanation", () => {
       });
     }
   }
+
+  // Other verbs on `default/share/` keep their own sentences, and key actions are never worded as "open shared files".
+  for (const shape of ["A", "B"] as const) {
+    for (const [verb, sentence] of [
+      ["block", "Block keys in default/share/ from decrypting"],
+      ["unblock", "Let all keys in default/share/ decrypt again"],
+      ["create", "Create your own encryption keys in `share/`"],
+    ] as const) {
+      it(`shape ${shape}: an owner key.${verb} on default/share/ keeps its own sentence`, () => {
+        const row = buildStatement(shapeGrant(shape, `${NETWORK}/share/`, [ABILITY[verb]]));
+        expect(row.primaryText).not.toBe(SHARED_FILES_LINE);
+        expect(row.primaryText).toBe(sentence);
+      });
+    }
+  }
+
+  // A grant with several actions is split into one row per action, in grant order: create is never hidden
+  // behind the decrypt sentence, and the decrypt sentence is never repeated for a key action.
+  const CREATE_SHARE = "Create your own encryption keys in `share/`";
+  for (const shape of ["A", "B"] as const) {
+    for (const [label, abilities, rows] of [
+      ["decrypt, create", [ABILITY.decrypt, ABILITY.create], [SHARED_FILES_LINE, CREATE_SHARE]],
+      ["create, decrypt", [ABILITY.create, ABILITY.decrypt], [CREATE_SHARE, SHARED_FILES_LINE]],
+      ["decrypt, block, create", [ABILITY.decrypt, ABILITY.block, ABILITY.create], [SHARED_FILES_LINE, "Block keys in default/share/ from decrypting", CREATE_SHARE]],
+    ] as const) {
+      it(`shape ${shape}: ${label} on default/share/ lists one row per action`, () => {
+        const built = buildStatements(shapeGrant(shape, `${NETWORK}/share/`, [...abilities]));
+        expect(built.map((row) => row.primaryText)).toEqual([...rows]);
+        expect(built.every((row) => row.neverApprovable !== true)).toBe(true);
+      });
+    }
+  }
+
+  // Severity comes from the review model, not from the statement helpers (which take it as an input), so read it
+  // from `parseCapabilityReview` like statements-app-keys.test.ts does.
+  const signer: SignerInfo = {
+    label: "Test signer",
+    address: FIXTURE_META.address,
+    chainId: FIXTURE_META.chainId,
+    provenance: "managed",
+  };
+  const ownerShare = `urn:tinycloud:encryption:did:pkh:eip155:${FIXTURE_META.chainId}:${FIXTURE_META.address}:default/share/`;
+  function reviewOf(resource: string, abilities: string[]) {
+    const context: ParseContext = {
+      message: siweWithResources([makeRecapResource({ [resource]: Object.fromEntries(abilities.map((ability) => [ability, [{}]])) })]),
+      signer,
+      editable: true,
+      metadataTrust: { status: "unsigned", reason: "no manifest" },
+      reason: { text: "", source: "none" },
+      requester: {
+        displayName: "listen.tinycloud.xyz",
+        verifiedOrigin: "https://listen.tinycloud.xyz",
+        appId: null,
+        manifestName: null,
+        manifestNameProvenance: "none",
+        manifestId: null,
+        manifestIdProvenance: "none",
+        manifestDigest: null,
+        domainWarning: false,
+        originWarning: false,
+      },
+      requesterAddress: null,
+      requesterVerified: false,
+    };
+    return parseCapabilityReview(context).permissions;
+  }
+
+  it("the owner's decrypt on default/share/ stays a sensitive, approvable row with the shared-files line", () => {
+    const grants = reviewOf(ownerShare, [ABILITY.decrypt]);
+    expect(grants).toHaveLength(1);
+    expect(grants[0]!.family).toBe("encryption-decrypt");
+    expect(grants[0]!.severity).toBe("sensitive");
+    expect(grants[0]!.ownedBySelf).toBe(true);
+    const rows = buildStatements(grants[0]!);
+    expect(rows.map((row) => row.primaryText)).toEqual([SHARED_FILES_LINE]);
+    expect(rows[0]!.neverApprovable).not.toBe(true);
+  });
+
+  it("decrypt with create on default/share/ stays one sensitive grant with an approvable row for each action", () => {
+    const grants = reviewOf(ownerShare, [ABILITY.decrypt, ABILITY.create]);
+    expect(grants).toHaveLength(1);
+    expect(grants[0]!.severity).toBe("sensitive");
+    const rows = buildStatements(grants[0]!);
+    expect(rows.map((row) => row.primaryText)).toEqual([SHARED_FILES_LINE, CREATE_SHARE]);
+    expect(rows.every((row) => row.neverApprovable !== true)).toBe(true);
+  });
 });
 
 describe("key.delete fails closed on every encryption resource shape", () => {
