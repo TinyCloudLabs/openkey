@@ -400,6 +400,67 @@ describe('admission refusals at /authorize-sign-prepare', () => {
   });
 });
 
+describe('plain app-key grants (no digest-matched manifest)', () => {
+  const plain = { presentation: { displayName: 'Listen' }, reportedOrigin: undefined };
+  const ALL_FOUR = ['key.create', 'decrypt', 'key.block', 'key.unblock'].map((a) => `tinycloud.encryption/${a}`);
+
+  test('the origin prefix is admitted with all four abilities and never fetches a manifest', async () => {
+    const { res, body } = await prepare(siweWith({ [PREFIX_URN]: ALL_FOUR }), plain);
+    expect(res.status).toBe(200);
+    expect(body.metadataTrust?.status).toBe('unsigned');
+    expect(fetchAndBindWellKnownManifest).not.toHaveBeenCalled();
+    expect(body.allowedActionIds).toHaveLength(6);
+  });
+
+  test('an exact key under the origin prefix is admitted', async () => {
+    const { res } = await prepare(siweWith(APPS_KEY), plain);
+    expect(res.status).toBe(200);
+  });
+
+  test.each([
+    ['a sibling host\'s app prefix', { [urn('/apps/xyz.tinycloud.notes/')]: ['tinycloud.encryption/decrypt'] }],
+    ['the shorter parent prefix', { [urn('/apps/xyz.tinycloud/')]: ['tinycloud.encryption/decrypt'] }],
+  ])('%s is refused', async (_name, raw) => {
+    const { res, body } = await prepare(siweWith(raw), plain);
+    expect(res.status).toBe(403);
+    expect(body.code).toBe('app_key_grant_refused');
+    expect(signed).toEqual([]);
+  });
+
+  test('key.delete is refused', async () => {
+    const { res, body } = await prepare(siweWith({ [PREFIX_URN]: ['tinycloud.encryption/key.delete'] }), plain);
+    expect(res.status).toBe(403);
+    expect(body.code).toBe('key_delete_not_grantable');
+  });
+
+  test('another owner is refused', async () => {
+    const other = { [urn(`/apps/${APP_ID}/`).replace(address, '0x0000000000000000000000000000000000000001')]: ['tinycloud.encryption/decrypt'] };
+    const { res, body } = await prepare(siweWith(other), plain);
+    expect(res.status).toBe(403);
+    expect(body.code).toBe('app_key_grant_refused');
+  });
+
+  test('an origin that cannot name an app is refused', async () => {
+    const origin = 'https://listen.tinycloud.xyz:8443';
+    const { res } = await prepare(siweWith(PREFIX), { ...plain, requestOrigin: origin });
+    expect(res.status).toBe(403);
+    expect(signed).toEqual([]);
+  });
+
+  test('a reported origin that differs from the browser origin is refused', async () => {
+    const { res, body } = await prepare(siweWith(PREFIX), { presentation: { displayName: 'Listen' }, reportedOrigin: 'https://notes.tinycloud.xyz' });
+    expect(res.status).toBe(403);
+    expect(body.code).toBe('app_key_grant_refused');
+  });
+
+  test('a manifest that binds still narrows the request', async () => {
+    manifestBindResult = { ok: true, fetchedDigest: 'a'.repeat(64), manifest: declaredManifest([{ prefix: `apps/${APP_ID}/`, abilities: ['decrypt'] }]) };
+    const { res, body } = await prepare(siweWith({ [PREFIX_URN]: ['tinycloud.encryption/key.block'] }));
+    expect(res.status).toBe(403);
+    expect(body.code).toBe('app_key_grant_refused');
+  });
+});
+
 describe('a context that was not admitted for app keys', () => {
   test('a context issued for a request with no app keys cannot carry one at preview', async () => {
     const { body } = await prepare(siweWith());
