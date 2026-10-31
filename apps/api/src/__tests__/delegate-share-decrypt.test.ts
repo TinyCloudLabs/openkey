@@ -136,10 +136,6 @@ describe('owner share-prefix decrypt permission', () => {
     expect(parsePreparedRecap(result.prepared.siwe)).toContainEqual({
       service: 'encryption', space: 'encryption', path: prefix, actions: [DECRYPT],
     });
-    const grant = review(result.prepared.siwe).permissions.find((entry) => entry.service === 'tinycloud.encryption')!;
-    expect(buildStatements(grant).map((row) => row.primaryText)).toEqual([
-      'Decrypt data locked with your keys in `share/`',
-    ]);
   });
 
   test('owner can remove the prefix decrypt action before signing', () => {

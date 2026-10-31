@@ -216,6 +216,29 @@ describe("exact share decrypt copy", () => {
   });
 });
 
+describe("owner share-prefix decrypt explanation", () => {
+  for (const shape of ["A", "B"] as const) {
+    it(`shape ${shape} explains that the owner's grant includes future shares`, () => {
+      const resource = `${NETWORK}/share/`;
+      const row = buildStatement(shapeGrant(shape, resource, [ABILITY.decrypt]));
+      expect(row.primaryText).toBe("Open all your shared files, including ones you share later.");
+      expect(row.resource).toBe(resource);
+    });
+  }
+
+  it("keeps other prefix, action and ownership explanations unchanged", () => {
+    expect(buildStatement(namedGrant(PREFIX, [ABILITY.decrypt])).primaryText).toBe(PREFIX_SENTENCE.decrypt);
+    expect(buildStatement(namedGrant(`${NETWORK}/share/`, [ABILITY.create])).primaryText)
+      .toBe("Create your own encryption keys in `share/`");
+    const otherOwner = namedGrant(`${NETWORK}/share/`, [ABILITY.decrypt]);
+    otherOwner.ownedBySelf = false;
+    expect(buildStatement(otherOwner).primaryText)
+      .not.toBe("Open all your shared files, including ones you share later.");
+    expect(buildStatement(namedGrant(`${NETWORK}/share/abc123`, [ABILITY.decrypt])).primaryText)
+      .toBe("Open this shared file");
+  });
+});
+
 describe("key.delete fails closed on every encryption resource shape", () => {
   const cases = [
     ["exact key", KEY],
