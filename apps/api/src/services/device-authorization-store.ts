@@ -17,21 +17,23 @@ type StoredDeviceScope = {
   approved?: DevicePermission[];
   reason?: string;
   ttlSeconds?: number;
+  suggestedTtlSeconds?: number;
 };
 
-type DeviceScope = Pick<DeviceAuthorizationRecord, 'permissions' | 'approvedPermissions' | 'reason' | 'delegationTtlSeconds'>;
+type DeviceScope = Pick<DeviceAuthorizationRecord, 'permissions' | 'approvedPermissions' | 'reason' | 'delegationTtlSeconds' | 'suggestedTtlSeconds'>;
 
-function encodeScope(scope: DeviceScope): StoredDeviceScope {
+export function encodeScope(scope: DeviceScope): StoredDeviceScope {
   return {
     version: 2,
     requested: scope.permissions,
     ...(scope.approvedPermissions ? { approved: scope.approvedPermissions } : {}),
     ...(scope.reason ? { reason: scope.reason } : {}),
     ttlSeconds: scope.delegationTtlSeconds,
+    ...(scope.suggestedTtlSeconds !== undefined ? { suggestedTtlSeconds: scope.suggestedTtlSeconds } : {}),
   };
 }
 
-function decodeScope(value: { permissions: unknown; delegationExpiresAt: Date; transactionExpiresAt: Date }): DeviceScope {
+export function decodeScope(value: { permissions: unknown; delegationExpiresAt: Date; transactionExpiresAt: Date }): DeviceScope {
   // Older rows did not store the TTL; they were created with
   // delegationExpiresAt = transactionExpiresAt + TTL and allowed up to 90
   // days, so clamp to today's 30-day maximum.
@@ -48,6 +50,7 @@ function decodeScope(value: { permissions: unknown; delegationExpiresAt: Date; t
     ...(scope.approved ? { approvedPermissions: scope.approved } : {}),
     ...(scope.reason ? { reason: scope.reason } : {}),
     delegationTtlSeconds: scope.ttlSeconds ?? derivedTtlSeconds,
+    ...(scope.suggestedTtlSeconds !== undefined ? { suggestedTtlSeconds: scope.suggestedTtlSeconds } : {}),
   };
 }
 
@@ -79,12 +82,12 @@ function fromDatabase(value: any): DeviceAuthorizationRecord {
 export function createPrismaDeviceAuthorizationStore(database: any): DeviceAuthorizationStore {
   return {
     async create(record) {
-      const { permissions, approvedPermissions, reason, delegationTtlSeconds, ...columns } = record;
+      const { permissions, approvedPermissions, reason, delegationTtlSeconds, suggestedTtlSeconds, ...columns } = record;
       await database.deviceAuthorization.create({
         data: {
           ...columns,
           status: record.status.toUpperCase(),
-          permissions: encodeScope({ permissions, approvedPermissions, reason, delegationTtlSeconds }),
+          permissions: encodeScope({ permissions, approvedPermissions, reason, delegationTtlSeconds, suggestedTtlSeconds }),
         },
       });
     },

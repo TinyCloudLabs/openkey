@@ -146,9 +146,9 @@ const expiryLine = (siwe: string) => siwe.match(/^Expiration Time: (.+)$/m)?.[1]
 const withoutExpiry = (siwe: string) => siwe.replace(/^Expiration Time: .+$/m, '');
 const inDays = (days: number) => new Date(Date.now() + days * 86_400_000).toISOString();
 
-async function prepare() {
+async function prepare(extra: Record<string, unknown> = { expiryChangeable: true }) {
   const siwe = originalSiwe();
-  const prepared = await post('/authorize-sign-prepare', { keyId: currentKey.id, siwe, jwk, host, requestOrigin: 'https://openkey.so' });
+  const prepared = await post('/authorize-sign-prepare', { keyId: currentKey.id, siwe, jwk, host, requestOrigin: 'https://openkey.so', ...extra });
   expect(prepared.status).toBe(200);
   const allowed = stringArray(prepared.body.allowedActionIds);
   return { siwe, allowed, contextToken: stringField(prepared.body.authorizationContextToken) };
@@ -270,5 +270,40 @@ describe('the one-minute floor', () => {
     expect(refused.body.code).toBe('invalid_expiration_time');
     const ok = await preview(p, p.allowed, new Date(Date.now() + 90_000).toISOString());
     expect(ok.status).toBe(200);
+  });
+});
+
+describe('the app opt-in is enforced by the server (TC-2274)', () => {
+  test('without expiryChangeable at prepare, a chosen expiry is refused and the original bytes still sign', async () => {
+    const p = await prepare({});
+    const refused = await preview(p, p.allowed, inDays(3));
+    expect(refused.status).toBe(400);
+    expect(refused.body.code).toBe('expiry_not_changeable');
+    const plain = await preview(p, p.allowed);
+    expect(plain.status).toBe(200);
+    expect(plain.body.signedMessage).toBe(p.siwe);
+    const signed = await post('/authorize-sign', signBody(p, p.allowed, stringField(plain.body.previewApprovalToken)));
+    expect(signed.status).toBe(200);
+    expect(signed.body.signedMessage).toBe(p.siwe);
+  });
+
+  test('only a literal true opts in', async () => {
+    for (const expiryChangeable of ['true', 1, 'yes', null]) {
+      const p = await prepare({ expiryChangeable });
+      expect((await preview(p, p.allowed, inDays(3))).body.code).toBe('expiry_not_changeable');
+    }
+  });
+});
+
+describe('the sealed expiry is read only by the preview\'s own user and context (TC-2274)', () => {
+  test('a foreign user or context gets nothing', () => {
+    const message = 'x\nExpiration Time: 2030-01-01T00:00:00.000Z\ny';
+    const issued = signing.issuePreviewApproval({
+      authorizationContextToken: 'ctx-a', userId: 'user-a', keyAddress: account.address, selectedActionIds: new Set(['a']), signedMessage: message,
+    });
+    expect(signing.peekPreviewApprovalExpiry(issued.token, { userId: 'user-a', authorizationContextToken: 'ctx-a' })).toBe('2030-01-01T00:00:00.000Z');
+    expect(signing.peekPreviewApprovalExpiry(issued.token, { userId: 'user-b', authorizationContextToken: 'ctx-a' })).toBeUndefined();
+    expect(signing.peekPreviewApprovalExpiry(issued.token, { userId: 'user-a', authorizationContextToken: 'ctx-b' })).toBeUndefined();
+    expect(signing.peekPreviewApprovalExpiry('unknown', { userId: 'user-a', authorizationContextToken: 'ctx-a' })).toBeUndefined();
   });
 });

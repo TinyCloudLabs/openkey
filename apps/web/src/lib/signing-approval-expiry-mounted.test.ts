@@ -329,3 +329,66 @@ describe('where the requester signed the longest time it accepts', () => {
     cleanup();
   });
 });
+
+describe('where the requester signed a maximum above its suggested default (TC-2274)', () => {
+  test('the default is the suggestion, the picker offers up to the signed maximum, and the note names it', () => {
+    const { target, cleanup } = render({ onExpiryChange() {}, expiryBounded: true, expiryMaxMs: 365 * D });
+    expect(line(target)).toBe('Approval expires: 7d (Change)');
+    open(target);
+    expect([...target.querySelectorAll('.expiry-preset')].map((b) => b.textContent?.trim())).toEqual(['1 hr', '24 hr', '7d', '30d']);
+    expect(target.querySelector('.expiry-note')?.textContent).toBe(
+      'This app asked for up to 1y. To allow longer, start the request again with a longer expiry.',
+    );
+    cleanup();
+  });
+
+  test('a time up to the maximum is reported; one past it is refused', () => {
+    const chosen: Array<number | null> = [];
+    const { target, cleanup } = render({ onExpiryChange: (ms: number | null) => chosen.push(ms), expiryBounded: true, expiryMaxMs: 365 * D });
+    open(target);
+    type(target, '1y');
+    submit(target);
+    expect(chosen).toEqual([365 * D]);
+    open(target);
+    type(target, '366d');
+    submit(target);
+    expect(target.querySelector('.expiry-error')?.textContent).toContain('up to 1y');
+    expect(chosen).toEqual([365 * D]);
+    cleanup();
+  });
+});
+
+describe('QA nits (TC-2274)', () => {
+  test('after a refused typed value the limit note is shown once, as the error', () => {
+    const { target, cleanup } = render({ onExpiryChange() {}, expiryBounded: true });
+    open(target);
+    expect(target.querySelectorAll('.expiry-note').length).toBe(1);
+    type(target, '8d');
+    submit(target);
+    const text = target.textContent ?? '';
+    expect(text.split('To allow longer, start the request again with a longer expiry.').length - 1).toBe(1);
+    expect(target.querySelector('.expiry-error')).not.toBeNull();
+    expect(target.querySelector('.expiry-note')).toBeNull();
+    type(target, '1d');
+    expect(target.querySelectorAll('.expiry-note').length).toBe(1);
+    cleanup();
+  });
+
+  test('the link notice shows its own Expires row only where nothing else shows the expiry', async () => {
+    const Notice = (await import(await compileSvelte('components/delegate/delegate-link-notice.svelte'))).default;
+    const rows = (props: Record<string, unknown>) => {
+      const host = document.createElement('div');
+      document.body.appendChild(host);
+      const app = mount(Notice, { target: host, props: { host: 'https://node.tinycloud.xyz', hostRecognized: true, callback: null, expiresAt: '2030-01-01T00:00:00.000Z', ...props } });
+      flushSync();
+      const labels = [...host.querySelectorAll('dt')].map((dt) => dt.textContent?.trim());
+      unmount(app);
+      host.remove();
+      return labels;
+    };
+    expect(rows({})).toContain('Expires');
+    expect(rows({ showExpires: true })).toContain('Expires');
+    expect(rows({ showExpires: false })).not.toContain('Expires');
+    expect(rows({ showExpires: false })).toContain('Node');
+  });
+});

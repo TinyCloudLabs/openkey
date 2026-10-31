@@ -3,6 +3,8 @@
 // binding and the relayed delegation must both state exactly the approved
 // subset, in the request's own manifest form, so the CLI can compare them.
 
+import { formatAccessEnd } from './access-end';
+
 export interface DevicePermission {
   service: string;
   space: string;
@@ -30,6 +32,8 @@ export interface DeviceRequestRecord {
   reason?: string;
   shareOnly?: boolean;
   delegationTtlSeconds?: number;
+  /** The lifetime the requester suggests as the default; absent means `delegationTtlSeconds`. */
+  suggestedTtlSeconds?: number;
 }
 
 /** Values a `/delegate` device link carries that must equal the server's request. */
@@ -123,12 +127,24 @@ export function deviceRequestTtlSeconds(record: DeviceRequestRecord): number {
   return Math.min(2_592_000, Math.max(60, Number.isFinite(derived) ? derived : 60));
 }
 
-/** Lifetime choices up to (and ending with) the requested maximum. */
-export function deviceLifetimeOptions(maxSeconds: number): Array<{ seconds: number; label: string }> {
+/**
+ * The lifetime to select first: the requester's suggestion, never above its maximum
+ * (a missing, zero or too-large suggestion means the maximum).
+ */
+export function deviceRequestSuggestedSeconds(record: DeviceRequestRecord): number {
+  const max = deviceRequestTtlSeconds(record);
+  const suggested = record.suggestedTtlSeconds;
+  return typeof suggested === 'number' && Number.isFinite(suggested) && suggested >= 1 && suggested <= max ? suggested : max;
+}
+
+/** Lifetime choices up to (and ending with) the requested maximum, with the suggestion marked. */
+export function deviceLifetimeOptions(maxSeconds: number, suggestedSeconds?: number): Array<{ seconds: number; label: string }> {
+  const suggested = suggestedSeconds !== undefined && suggestedSeconds < maxSeconds ? suggestedSeconds : null;
+  const steps = [...new Set([86_400, 604_800, 2_592_000, ...(suggested === null ? [] : [suggested])])]
+    .filter((seconds) => seconds < maxSeconds)
+    .sort((a, b) => a - b);
   return [
-    ...[86_400, 604_800, 2_592_000]
-      .filter((seconds) => seconds < maxSeconds)
-      .map((seconds) => ({ seconds, label: formatDeviceLifetime(seconds) })),
+    ...steps.map((seconds) => ({ seconds, label: `${formatDeviceLifetime(seconds)}${seconds === suggested ? ' (suggested)' : ''}` })),
     { seconds: maxSeconds, label: `${formatDeviceLifetime(maxSeconds)} (requested maximum)` },
   ];
 }
@@ -298,11 +314,21 @@ export function approvedDevicePermissions(
 /** Human lifetime for a delegation that lasts `seconds`, rounded down. */
 export function formatDeviceLifetime(seconds: number): string {
   const days = Math.floor(seconds / 86_400);
+  // Two years or more read as years: a signed maximum can be far longer than 30 days.
+  if (days >= 730) return `${Math.floor(days / 365)} years`;
   if (days >= 1) return days === 1 ? '1 day' : `${days} days`;
   const hours = Math.floor(seconds / 3_600);
   if (hours >= 1) return hours === 1 ? '1 hour' : `${hours} hours`;
   const minutes = Math.max(1, Math.floor(seconds / 60));
   return minutes === 1 ? '1 minute' : `${minutes} minutes`;
+}
+
+/**
+ * The end date of a lifetime chosen now, and whether it is longer than a year (the screen then adds the
+ * long-value warning). A requester can sign a maximum of years, so the owner sees when access stops.
+ */
+export function deviceLifetimeNotice(seconds: number, now: number = Date.now()): { ends: string; long: boolean } {
+  return { ends: formatAccessEnd(new Date(now + seconds * 1000).toISOString()), long: seconds > 365 * 86_400 };
 }
 
 /**

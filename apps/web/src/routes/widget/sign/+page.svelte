@@ -521,9 +521,12 @@
       // Keep the final decision in this same shared model. Only the raw
       // bytes change after preview; categorized grants and edit/reset stay
       // visible through the approval that actually signs them.
+      // Before the preview the access lines show the chosen time (from now); after it, the sealed bytes' own.
       reviewModel = previewSignedMessage
         ? { ...nextReviewModel, rawMessage: previewSignedMessage, expiry: siweExpiration(previewSignedMessage) ?? nextReviewModel.expiry }
-        : nextReviewModel;
+        : expiryChoiceMs !== null
+          ? { ...nextReviewModel, expiry: expiryAt(expiryChoiceMs) }
+          : nextReviewModel;
       if (reviewSourceMessage !== message) {
         reviewSelection = defaultSelection(reviewModel);
         reviewSourceMessage = message;
@@ -601,6 +604,8 @@
               presentation: requestPresentation ?? undefined,
               reportedOrigin: reportedOriginForPrepare,
               requestOrigin: origin === '*' ? undefined : origin,
+              // Bound into the authorization context: the server refuses a changed expiry unless the app opted in.
+              ...(expiryChangeable ? { expiryChangeable: true } : {}),
             }),
           },
         );

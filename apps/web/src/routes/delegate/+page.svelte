@@ -13,7 +13,7 @@
   import PreparedHandoff from './PreparedHandoff.svelte';
   import OwnerRevocationHandoff from './OwnerRevocationHandoff.svelte';
   import DeviceRequestNotice from '$lib/components/device/device-request-notice.svelte';
-  import { approvedDevicePermissions, cleanConsentText, delegationPasteCode, readDelegatePermissionsParam, deviceRequestReason, loadVerifiedDeviceRequest } from '$lib/device-authorization';
+  import { approvedDevicePermissions, cleanConsentText, delegationPasteCode, readDelegatePermissionsParam, deviceRequestReason, deviceRequestTtlSeconds, loadVerifiedDeviceRequest } from '$lib/device-authorization';
   import DelegateLinkNotice from '$lib/components/delegate/delegate-link-notice.svelte';
   import {
     KNOWN_NODE_ORIGINS,
@@ -252,6 +252,8 @@
   let expiryChoiceMs = $state<number | null>(null);
   let expiryChosen = $state(false);
   let requestedExpiryParam: string | null = null;
+  // The longest the requester signed (a signed approval request or a device request); null on a plain link.
+  let expiryMaxMs = $state<number | null>(null);
   async function changeApprovalExpiry(ms: number | null) {
     if (!selectedKey || !jwk) {
       error = 'Missing key or JWK parameter.';
@@ -425,6 +427,7 @@
       expiry: expiryParam,
     });
     requestReason = normalizeReason(deviceRequestReason(record));
+    expiryMaxMs = deviceRequestTtlSeconds(record) * 1000;
   })();
   deviceRequestVerified.catch((cause: Error) => { error = cause.message; });
 
@@ -489,7 +492,9 @@
       host = request.nodeOrigin;
       requestedPermissions = request.permissions;
       requestReason = normalizeReason(request.reason);
-      expiryParam = `${request.grantLifetimeSeconds}s`;
+      // The requester signs its longest lifetime; the owner starts from its suggestion (the maximum when it gives none).
+      expiryMaxMs = request.grantLifetimeSeconds * 1000;
+      expiryParam = `${request.suggestedLifetimeSeconds ?? request.grantLifetimeSeconds}s`;
       approvalRequestLoaded = true;
     } catch (cause) {
       error = cause instanceof Error ? cause.message : 'Could not open this approval link.';
@@ -1626,7 +1631,7 @@
         {#if deviceTransactionId}
           <DeviceRequestNotice nodeOrigin={host} shareOrigin={deviceShareOrigin} expiry={expiryParam} bind:acknowledged={deviceAcknowledged} />
         {:else}
-          <DelegateLinkNotice {host} hostRecognized={!hostNeedsAcknowledgment} callback={approvedCallback} requesterRelay={approvalRequestMode} expiresAt={delegationExpiresAt} bind:acknowledged={hostAcknowledged} />
+          <DelegateLinkNotice {host} hostRecognized={!hostNeedsAcknowledgment} callback={approvedCallback} requesterRelay={approvalRequestMode} expiresAt={delegationExpiresAt} showExpires={!(reviewModel?.immutable && reviewModel.protocol === 'tinycloud-siwe-recap')} bind:acknowledged={hostAcknowledged} />
         {/if}
 
         {#if selectedKey.keyType === 'EXTERNAL'}
@@ -1681,6 +1686,8 @@
                   // The requester signed its longest time (signed request, device), or the link asked for exactly
                   // this much: a link without `expiryChangeable=true` is shorter-only.
                   bounded: approvalRequestMode || Boolean(deviceTransactionId) || !linkExpiryChangeable,
+                  // The most the requester signed; the default shown can be shorter (its suggestion).
+                  maxMs: expiryMaxMs,
                   onChange: changeApprovalExpiry,
                 },
               }}
