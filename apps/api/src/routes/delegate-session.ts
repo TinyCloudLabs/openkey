@@ -14,6 +14,7 @@ import {
 } from '@tinycloud/node-sdk-wasm';
 import { CAPABILITIES, ENCRYPTION, KV, SQL } from '@tinycloud/bootstrap';
 import { getAddress } from 'viem';
+import { parseEncryptionResource } from '@openkey/capability-review';
 import {
   DelegateRequestError,
   shortServiceName,
@@ -412,9 +413,9 @@ const ENCRYPTION_NETWORK_NAME = /^[a-z0-9][a-z0-9-]*$/;
 /**
  * A raw encryption entry carries no space (`space` absent or `encryption`),
  * grants only `tinycloud.encryption/decrypt`, and names a network the signer
- * owns: the URN's owner DID must be the signer's
- * `did:pkh:eip155:<chainId>:<address>` (address case-insensitive) and the
- * network name must follow the SDK's naming rule.
+ * owns, the `default/share/` prefix, or one exact key below it. Whole networks
+ * keep their case-insensitive owner check; named resources require the
+ * canonical owner DID and path bytes, matching the node's named-key parser.
  */
 function assertRawEncryptionPermission(
   entry: DelegationPermissionEntry,
@@ -472,13 +473,25 @@ function assertRawEncryptionPermission(
       }],
     );
   }
-  if (!ENCRYPTION_NETWORK_NAME.test(network[3]!)) {
+  const key = network[3]!.includes('/') ? parseEncryptionResource(entry.path) : null;
+  const isShareKey = key !== null && key.network === 'default' &&
+    ((key.kind === 'prefix' && key.keyPath === 'share/') ||
+      (key.kind === 'key' && /^share\/[^/]+$/.test(key.keyPath))) &&
+    entry.path === `${RAW_ENCRYPTION_PREFIX}${key.ownerDid}:default/${key.keyPath}`;
+  if (isShareKey && key.ownerDid !== `did:pkh:eip155:${signer.chainId}:${getAddress(signer.address)}`) {
     throw new DelegateRequestError(
       'invalid_permissions',
-      `permissions[${index}].path names an invalid encryption network; the name must match ${ENCRYPTION_NETWORK_NAME.source}`,
+      `permissions[${index}].path must use the canonical owner DID for a share key`,
+      [{ path: `permissions[${index}].path`, message: 'Expected the canonical signing account DID', value: entry.path }],
+    );
+  }
+  if (!ENCRYPTION_NETWORK_NAME.test(network[3]!) && !isShareKey) {
+    throw new DelegateRequestError(
+      'invalid_permissions',
+      `permissions[${index}].path must name an encryption network, default/share/, or an exact share key`,
       [{
         path: `permissions[${index}].path`,
-        message: `The network name must match ${ENCRYPTION_NETWORK_NAME.source}`,
+        message: 'Expected a valid network name, default/share/, or an exact default/share/<shareId> key',
         value: entry.path,
       }],
     );

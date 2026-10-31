@@ -629,6 +629,14 @@ function buildNamedKeyStatement(
     return fallbackStatement(grant);
   }
   if (grant.ownedBySelf !== true) return fallbackStatement(grant);
+  if (parsed.kind === "key" && parsed.network === "default" &&
+    /^share\/[^/]+$/.test(parsed.keyPath) && verb === "decrypt") {
+    return { primaryText: "Open this shared file", service: grant.service, resource };
+  }
+  if (parsed.kind === "prefix" && parsed.network === "default" &&
+    parsed.keyPath === "share/" && verb === "decrypt") {
+    return { primaryText: OWN_KEY_PREFIX_STATEMENTS.shareDecrypt, service: grant.service, resource };
+  }
   const template = parsed.kind === "prefix" && parsed.network === "default" &&
     (verb === "create" || verb === "decrypt")
     ? OWN_KEY_PREFIX_STATEMENTS[verb]

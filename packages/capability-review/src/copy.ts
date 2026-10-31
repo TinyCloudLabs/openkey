@@ -98,6 +98,7 @@ export const NAMED_KEY_STATEMENTS: Record<
 export const OWN_KEY_PREFIX_STATEMENTS = {
   create: "Create your own encryption keys in `{path}`",
   decrypt: "Decrypt data locked with your keys in `{path}`",
+  shareDecrypt: "Open all your shared files, including ones you share later.",
 } as const;
 
 /**
