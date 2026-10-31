@@ -10,7 +10,7 @@
   import { timeUntilExpiry } from '$lib/siwe-parser';
   import { SERVER_REPLY_BODY, SERVER_REPLY_TITLE, ServerReplyError, hasSignResult, hasText } from '$lib/server-reply';
   import { fitsPreparedLinkBudget } from '$lib/prepared-link';
-  import { EXPIRY_PRESETS, LONG_EXPIRY_MS, LONG_EXPIRY_WARNING, expiryAt, expiryLimitNote, formatExpiry, parseExpiry, requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
+  import { EXPIRY_PRESETS, LONG_EXPIRY_MS, LONG_EXPIRY_WARNING, expiryAtCapped, expiryLimitNote, formatExpiry, parseExpiry, requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
 
   let { encoded, onClear }: { encoded: string; onClear: () => void } = $props();
   const session = authClient.useSession();
@@ -303,7 +303,7 @@
       }
       const actions = selectedIds();
       if (!actions.length) throw new Error('Select at least one ability.');
-      const candidate = await post('authorize-sign-preview', { ticket, authorizationContextToken: contextToken, selectedActionIds: actions, ...(expiryChoiceMs === null ? {} : { expirationTime: expiryAt(expiryChoiceMs) }) }, ['signedMessage', 'previewApprovalToken']);
+      const candidate = await post('authorize-sign-preview', { ticket, authorizationContextToken: contextToken, selectedActionIds: actions, ...(expiryChoiceMs === null ? {} : { expirationTime: expiryAtCapped(expiryChoiceMs, siweExpiration(handoff.request.siwe)) }) }, ['signedMessage', 'previewApprovalToken']);
       if (typeof candidate.previewApprovalToken !== 'string' || typeof candidate.signedMessage !== 'string') throw new Error('Missing sealed signing preview.');
       validatePreviewSelection(candidate, actions);
       previewToken = candidate.previewApprovalToken;

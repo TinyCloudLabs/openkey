@@ -146,3 +146,14 @@ describe('the one-minute floor', () => {
     expect(parseExpiry('1m')).toEqual({ ok: true, ms: 60 * S });
   });
 });
+
+describe('expiryAtCapped', () => {
+  const now = Date.UTC(2026, 9, 31);
+  test('is now plus the duration, but never past the time the requester asked for', async () => {
+    const { expiryAtCapped } = await import('./approval-expiry');
+    expect(expiryAtCapped(H, '2026-11-07T00:00:00.000Z', now)).toBe('2026-10-31T01:00:00.000Z');
+    expect(expiryAtCapped(7 * D, '2026-11-05T00:00:00.000Z', now)).toBe('2026-11-05T00:00:00.000Z');
+    expect(expiryAtCapped(H, null, now)).toBe('2026-10-31T01:00:00.000Z');
+    expect(expiryAtCapped(H, 'not a time', now)).toBe('2026-10-31T01:00:00.000Z');
+  });
+});
