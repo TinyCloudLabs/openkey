@@ -51,16 +51,20 @@ async function open(page: Page, request: Record<string, unknown>) {
 }
 
 async function approveOnce(page: Page, frame: ReturnType<Page['frameLocator']>) {
-  await expect.poll(() => page.evaluate(() => (window as unknown as { received: Array<{ type: string }> }).received.some((m) => m.type === 'openkey:resize'))).toBe(true);
-  const resize = await page.evaluate(() => (window as unknown as { received: Array<{ type: string; height: number; layoutId: number }> }).received.filter((m) => m.type === 'openkey:resize').at(-1)!);
-  await page.evaluate(({ height, layoutId }) => {
-    const iframe = document.querySelector<HTMLIFrameElement>('#sign');
-    const h = Math.min(height, Math.floor(window.innerHeight * 0.85));
-    if (iframe) iframe.style.height = `${h}px`;
-    iframe?.contentWindow?.postMessage({ type: 'openkey:layout-applied', requestId: 'optin', protocolVersion: 2, height: h, layoutId }, location.origin);
-  }, resize);
   const approve = frame.getByRole('button', { name: 'Approve', exact: true });
-  await expect(approve).toBeEnabled();
+  // The frame asks the host to apply its height after every layout change (opening the picker is one);
+  // acknowledge the latest request until Approve is enabled.
+  await expect(async () => {
+    const resize = await page.evaluate(() => (window as unknown as { received: Array<{ type: string; height: number; layoutId: number }> }).received.filter((m) => m.type === 'openkey:resize').at(-1));
+    expect(resize).toBeTruthy();
+    await page.evaluate(({ height, layoutId }) => {
+      const iframe = document.querySelector<HTMLIFrameElement>('#sign');
+      const h = Math.min(height, Math.floor(window.innerHeight * 0.85));
+      if (iframe) iframe.style.height = `${h}px`;
+      iframe?.contentWindow?.postMessage({ type: 'openkey:layout-applied', requestId: 'optin', protocolVersion: 2, height: h, layoutId }, location.origin);
+    }, resize!);
+    await expect(approve).toBeEnabled({ timeout: 1500 });
+  }).toPass({ timeout: 20000 });
   await approve.click();
 }
 
