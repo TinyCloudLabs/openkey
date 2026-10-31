@@ -3,13 +3,18 @@
 // and the preview request carries no expiry, so the app's own expiry is signed.
 
 import { test, expect, type Page } from '@playwright/test';
-import { HOST } from './e2e-port';
-import { EXPLORER_PERMISSION_POPUP_REQUEST } from '../../../../packages/capability-review/test/fixtures/index';
+import { HOST, ORIGIN } from './e2e-port';
+import {
+  EXPLORER_PERMISSION_POPUP_REQUEST,
+  FIXTURE_META,
+  makeRecapResource,
+  siweWithResources,
+} from '../../../../packages/capability-review/test/fixtures/index';
 
 const address = '0xd559CCd9EB87c530A9a349262669386dE93cf412';
 const siwe = EXPLORER_PERMISSION_POPUP_REQUEST.replace(/^explorer\.tinycloud\.xyz/, HOST);
 
-async function open(page: Page, request: Record<string, unknown>) {
+async function open(page: Page, request: Record<string, unknown>, message: string = siwe) {
   const previews: Array<Record<string, unknown>> = [];
   await page.addInitScript(() => sessionStorage.setItem('openkey_session_token', 'test-session'));
   await page.route('**/api/keys/**', (route) => route.fulfill({ json: { key: {
@@ -44,7 +49,7 @@ async function open(page: Page, request: Record<string, unknown>) {
       { type: 'openkey:sign:request', requestId: 'optin', protocolVersion: 2, authorizationProtocolVersion: 1, keyId: 'selected-key', jwk: { kty: 'EC' }, message, ...request },
       location.origin,
     );
-  }, { message: siwe, request });
+  }, { message, request });
   const frame = page.frameLocator('#sign');
   await expect(frame.getByRole('dialog')).toContainText('Requested by');
   return { frame, previews };
@@ -95,4 +100,22 @@ test('with the opt-in the control shows, and a changed expiry is what the previe
   expect(asked).toBeGreaterThanOrEqual(before + 90 * 60_000 - 1000);
   expect(asked).toBeLessThanOrEqual(Date.now() + 90 * 60_000 + 1000);
   expect(String(previews[0]!.expirationTime)).toBe(new Date(asked).toISOString());
+});
+
+test('the "This access lasts until" line follows the pick before anything is approved', async ({ page }) => {
+  const owner = `did:pkh:eip155:${FIXTURE_META.chainId}:${FIXTURE_META.address}`;
+  const folder = `urn:tinycloud:encryption:${owner}:default/apps/xyz.tinycloud.listen/`;
+  const att = { [folder]: { 'tinycloud.encryption/key.create': [{}], 'tinycloud.encryption/decrypt': [{}] } };
+  const appKeys = siweWithResources([makeRecapResource(att)], { domain: HOST, uri: ORIGIN });
+  const { frame } = await open(page, { expiryChangeable: true }, appKeys);
+  const access = frame.locator('.summary-note');
+  await expect(access).toContainText('This access lasts until');
+  const before = (await access.innerText()).trim();
+  await frame.getByRole('button', { name: '(Change)' }).click();
+  await frame.getByLabel('Or type a time').fill('30d');
+  await page.keyboard.press('Enter');
+  await expect(frame.locator('.expiry-line')).toHaveText(/30d/);
+  await expect(access).not.toHaveText(before);
+  const date = new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeZone: 'UTC' }).format(new Date(Date.now() + 30 * 86_400_000));
+  await expect(access).toContainText(date);
 });

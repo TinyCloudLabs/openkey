@@ -10,11 +10,13 @@
     requesterRelay?: boolean;
     /** SIWE Expiration Time of the delegation being reviewed. */
     expiresAt: string;
+    /** False where the approval screen's own "Approval expires" line already shows it. */
+    showExpires?: boolean;
     /** The owner confirmed they trust an unrecognized node; required to approve. */
     acknowledged?: boolean;
   }
 
-  let { host, hostRecognized, callback, requesterRelay = false, expiresAt, acknowledged = $bindable(false) }: Props = $props();
+  let { host, hostRecognized, callback, requesterRelay = false, expiresAt, showExpires = true, acknowledged = $bindable(false) }: Props = $props();
 
   const returnsTo = $derived.by(() => {
     if (requesterRelay) return 'Requesting CLI';
@@ -54,10 +56,12 @@
       <dt class="shrink-0 text-surface-400">Returned to</dt>
       <dd class="break-all text-right font-mono text-surface-900">{returnsTo}</dd>
     </div>
-    <div class="flex justify-between gap-3">
-      <dt class="shrink-0 text-surface-400">Expires</dt>
-      <dd class="text-right font-medium text-surface-900">{expires}</dd>
-    </div>
+    {#if showExpires}
+      <div class="flex justify-between gap-3">
+        <dt class="shrink-0 text-surface-400">Expires</dt>
+        <dd class="text-right font-medium text-surface-900">{expires}</dd>
+      </div>
+    {/if}
   </dl>
   {#if !callback && !requesterRelay}
     <p class="text-xs font-medium leading-relaxed text-amber-900">

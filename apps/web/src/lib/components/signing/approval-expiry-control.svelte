@@ -145,7 +145,7 @@
             <p class="expiry-error" id="approval-expiry-error" role="alert">{error}</p>
           {/if}
         </form>
-        {#if maxMs != null}
+        {#if maxMs != null && !error}
           <p class="expiry-note" id="approval-expiry-note">{expiryLimitNote(maxMs)}</p>
         {/if}
       </div>

@@ -606,9 +606,12 @@
         model,
         serverVerifiedManifest?.declaredAppScope,
       );
+      // Before the preview the access lines show the chosen time (from now); after it, the sealed bytes' own.
       reviewModel = previewSignedMessage
         ? { ...nextReviewModel, rawMessage: previewSignedMessage, expiry: siweExpiration(previewSignedMessage) ?? nextReviewModel.expiry }
-        : nextReviewModel;
+        : expiryChoiceMs !== null
+          ? { ...nextReviewModel, expiry: expiryAt(expiryChoiceMs) }
+          : nextReviewModel;
       if (reviewSourceMessage !== message) {
         reviewSelection = defaultSelection(reviewModel);
         reviewSourceMessage = message;

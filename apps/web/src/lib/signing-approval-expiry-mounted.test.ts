@@ -357,3 +357,38 @@ describe('where the requester signed a maximum above its suggested default (TC-2
     cleanup();
   });
 });
+
+describe('QA nits (TC-2274)', () => {
+  test('after a refused typed value the limit note is shown once, as the error', () => {
+    const { target, cleanup } = render({ onExpiryChange() {}, expiryBounded: true });
+    open(target);
+    expect(target.querySelectorAll('.expiry-note').length).toBe(1);
+    type(target, '8d');
+    submit(target);
+    const text = target.textContent ?? '';
+    expect(text.split('To allow longer, start the request again with a longer expiry.').length - 1).toBe(1);
+    expect(target.querySelector('.expiry-error')).not.toBeNull();
+    expect(target.querySelector('.expiry-note')).toBeNull();
+    type(target, '1d');
+    expect(target.querySelectorAll('.expiry-note').length).toBe(1);
+    cleanup();
+  });
+
+  test('the link notice shows its own Expires row only where nothing else shows the expiry', async () => {
+    const Notice = (await import(await compileSvelte('components/delegate/delegate-link-notice.svelte'))).default;
+    const rows = (props: Record<string, unknown>) => {
+      const host = document.createElement('div');
+      document.body.appendChild(host);
+      const app = mount(Notice, { target: host, props: { host: 'https://node.tinycloud.xyz', hostRecognized: true, callback: null, expiresAt: '2030-01-01T00:00:00.000Z', ...props } });
+      flushSync();
+      const labels = [...host.querySelectorAll('dt')].map((dt) => dt.textContent?.trim());
+      unmount(app);
+      host.remove();
+      return labels;
+    };
+    expect(rows({})).toContain('Expires');
+    expect(rows({ showExpires: true })).toContain('Expires');
+    expect(rows({ showExpires: false })).not.toContain('Expires');
+    expect(rows({ showExpires: false })).toContain('Node');
+  });
+});
