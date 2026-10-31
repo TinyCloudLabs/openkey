@@ -423,7 +423,7 @@ describe('OpenKey device authorization service', () => {
   test('caps the reason at 200 characters and the lifetime at the requested TTL from approval', async () => {
     const input = fixture();
     const thirtyDays = 30 * 24 * 60 * 60;
-    await expect(input.service.start({ ...input.request, delegationTtlSeconds: thirtyDays + 1 }, '203.0.113.30'))
+    await expect(input.service.start({ ...input.request, delegationTtlSeconds: 59 }, '203.0.113.30'))
       .rejects.toMatchObject({ code: 'invalid_request', status: 400 });
     await expect(input.service.start({ ...input.request, permissions: publishingPermissions(), reason: 'x'.repeat(201) }, '203.0.113.31'))
       .rejects.toMatchObject({ code: 'invalid_request', status: 400 });

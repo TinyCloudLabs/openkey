@@ -601,6 +601,8 @@
               presentation: requestPresentation ?? undefined,
               reportedOrigin: reportedOriginForPrepare,
               requestOrigin: origin === '*' ? undefined : origin,
+              // Bound into the authorization context: the server refuses a changed expiry unless the app opted in.
+              ...(expiryChangeable ? { expiryChangeable: true } : {}),
             }),
           },
         );

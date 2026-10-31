@@ -56,6 +56,8 @@ export interface CliSigningTransport {
   expiry?: {
     chosenMs: number | null;
     bounded: boolean;
+    /** The most the requester signed; the shown default can be shorter. Null: the default is the most. */
+    maxMs?: number | null;
     onChange: (ms: number | null) => void;
   };
   /**

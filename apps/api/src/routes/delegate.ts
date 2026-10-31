@@ -437,9 +437,11 @@ function resolveRequestExpiryMs(body: {
   deviceTransactionId?: unknown;
 }): number {
   const picked = body.expiryChosen === true;
-  const expiryMs = resolveDelegationExpiryMs(body.expiry, picked);
   // `null` and '' are not a signed request: only a real id puts the request under its own window check.
   const plainLink = !body.approvalRequestId && !body.deviceTransactionId;
+  // A signed approval request or device transaction states its own longest lifetime and is held to it by
+  // its window check; only a bare link's `expiry` gets the 30-day link clamp (TC-547).
+  const expiryMs = resolveDelegationExpiryMs(body.expiry, picked || !plainLink);
   if (picked && plainLink && body.expiryChangeable !== true) {
     const linkMs = resolveDelegationExpiryMs(body.linkExpiry);
     if (expiryMs > linkMs) {
@@ -2425,6 +2427,8 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
      * which only drives the optional manifest origin-bind.
      */
     requestOrigin?: string;
+    /** TC-2272: the app sends `expiryChangeable: true` when it accepts a different signed expiry. */
+    expiryChangeable?: unknown;
     ticket?: string;
     transportVersion?: number;
     callback?: unknown;
@@ -2803,6 +2807,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       // the per-sign-in count record; never for trust or authority.
       appOrigin: normalizeAppOrigin(body.reportedOrigin) ?? undefined,
       admittedAppKeys,
+      expiryChangeable: body.expiryChangeable === true,
     });
   } catch (issueErr) {
     logError('warn', 'delegate_authorization_context_issue_failed', issueErr);
@@ -3202,7 +3207,10 @@ delegateRouter.post('/authorize-sign', async (c) => {
   // TC-2272: the expiry the user chose at preview is sealed in the preview
   // approval's bytes. Re-apply it here; checkPreviewApproval then holds the
   // signed bytes to exactly those bytes.
-  const sealedExpiry = peekPreviewApprovalExpiry(body.previewApprovalToken!);
+  const sealedExpiry = peekPreviewApprovalExpiry(body.previewApprovalToken!, {
+    userId: user.id,
+    authorizationContextToken: body.authorizationContextToken,
+  });
   if (sealedExpiry !== undefined && sealedExpiry !== immutable.expirationTime) {
     const checked = validateExpirationOverride(sealedExpiry, immutable, 0);
     const withExpiry = checked.ok ? withExpirationTime(signedMessage, checked.value) : null;
@@ -3411,8 +3419,16 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
   });
   let expirationOverride: string | undefined;
   if (body.expirationTime !== undefined) {
+    // An app that did not opt in (`expiryChangeable: true` at prepare) gets the expiry it asked for. A
+    // prepared handoff has no app opt-in: its ceiling is the time the CLI asked for.
+    if (!ticket && !bound.expiryChangeable) {
+      return c.json(
+        { error: 'The requesting app did not opt in to a changed expiry', code: 'expiry_not_changeable' },
+        400,
+      );
+    }
     const checked = validateExpirationOverride(body.expirationTime, immutable, MIN_EXPIRATION_LEAD_MS);
-    if (!checked.ok) {
+    if (!checked.ok || (ticket && Date.parse(checked.value) > Date.parse(immutable.expirationTime))) {
       return c.json(
         { error: 'expirationTime must be a future ISO-8601 UTC time after the request was issued', code: 'invalid_expiration_time' },
         400,

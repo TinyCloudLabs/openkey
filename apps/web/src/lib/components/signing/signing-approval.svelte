@@ -112,6 +112,8 @@
      * and device requests): the picker then offers nothing longer than asked.
      */
     expiryBounded?: boolean;
+    /** With `expiryBounded`: the most the requester signed, when that is more than the default it asked for. */
+    expiryMaxMs?: number | null;
     onApprove: () => void;
     onCancel: () => void;
     onSelectionChange: (next: Set<string>) => void;
@@ -136,6 +138,7 @@
     expiryMs = null,
     onExpiryChange,
     expiryBounded = false,
+    expiryMaxMs = null,
     onApprove,
     onCancel,
     onSelectionChange,
@@ -655,7 +658,7 @@
       <ApprovalExpiryControl
         requestedMs={requestedExpiry}
         chosenMs={expiryMs}
-        maxMs={expiryBounded ? requestedExpiry : null}
+        maxMs={expiryBounded ? (expiryMaxMs ?? requestedExpiry) : null}
         disabled={approving}
         onChange={onExpiryChange}
       />

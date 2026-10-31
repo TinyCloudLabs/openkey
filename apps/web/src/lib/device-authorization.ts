@@ -30,6 +30,8 @@ export interface DeviceRequestRecord {
   reason?: string;
   shareOnly?: boolean;
   delegationTtlSeconds?: number;
+  /** The lifetime the requester suggests as the default; absent means `delegationTtlSeconds`. */
+  suggestedTtlSeconds?: number;
 }
 
 /** Values a `/delegate` device link carries that must equal the server's request. */
@@ -123,12 +125,24 @@ export function deviceRequestTtlSeconds(record: DeviceRequestRecord): number {
   return Math.min(2_592_000, Math.max(60, Number.isFinite(derived) ? derived : 60));
 }
 
-/** Lifetime choices up to (and ending with) the requested maximum. */
-export function deviceLifetimeOptions(maxSeconds: number): Array<{ seconds: number; label: string }> {
+/**
+ * The lifetime to select first: the requester's suggestion, never above its maximum
+ * (a missing, zero or too-large suggestion means the maximum).
+ */
+export function deviceRequestSuggestedSeconds(record: DeviceRequestRecord): number {
+  const max = deviceRequestTtlSeconds(record);
+  const suggested = record.suggestedTtlSeconds;
+  return typeof suggested === 'number' && Number.isFinite(suggested) && suggested >= 1 && suggested <= max ? suggested : max;
+}
+
+/** Lifetime choices up to (and ending with) the requested maximum, with the suggestion marked. */
+export function deviceLifetimeOptions(maxSeconds: number, suggestedSeconds?: number): Array<{ seconds: number; label: string }> {
+  const suggested = suggestedSeconds !== undefined && suggestedSeconds < maxSeconds ? suggestedSeconds : null;
+  const steps = [...new Set([86_400, 604_800, 2_592_000, ...(suggested === null ? [] : [suggested])])]
+    .filter((seconds) => seconds < maxSeconds)
+    .sort((a, b) => a - b);
   return [
-    ...[86_400, 604_800, 2_592_000]
-      .filter((seconds) => seconds < maxSeconds)
-      .map((seconds) => ({ seconds, label: formatDeviceLifetime(seconds) })),
+    ...steps.map((seconds) => ({ seconds, label: `${formatDeviceLifetime(seconds)}${seconds === suggested ? ' (suggested)' : ''}` })),
     { seconds: maxSeconds, label: `${formatDeviceLifetime(maxSeconds)} (requested maximum)` },
   ];
 }

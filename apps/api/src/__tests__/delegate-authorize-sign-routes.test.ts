@@ -1175,3 +1175,47 @@ describe('POST /authorize-sign-prepare SIWE origin guard (TC-1486)', () => {
     expect(body).toMatchObject({ reason: 'uri-mismatch' });
   });
 });
+
+describe('prepared handoff expiry ceiling (TC-2274)', () => {
+  test('with a ticket, a chosen expiry later than the CLI asked for is refused; up to it is previewed', async () => {
+    const service = new PreparedHandoffService(new MemoryPreparedHandoffStore());
+    setHandoffService(service);
+    const siwe = makePreparedSiwe();
+    const asked = Date.parse(/^Expiration Time: (.+)$/m.exec(siwe)![1]!);
+    const { createPreparedHandoffRouter } = await import('../routes/prepared-handoffs?authorize-sign-routes-isolated' as string);
+    const handoffs = createPreparedHandoffRouter(service);
+    const ticket = Buffer.alloc(32, 21).toString('base64url');
+    const claim = await handoffs.request('/claim', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        transportVersion: 2,
+        request: { protocolVersion: 1, siwe, jwk, host: 'https://node.tinycloud.xyz', keyId: keyRecord.id, sessionDid: 'display-only' },
+        delivery: { handoffId: ticket, callback: 'http://127.0.0.1:42317/callback/AAAAAAAAAAAAAAAAAAAAAA', state: Buffer.alloc(32, 22).toString('base64url'), cancelSecret: Buffer.alloc(32, 23).toString('base64url') },
+      }),
+    });
+    expect(claim.status).toBe(201);
+    const prepareRes = await router.request('/authorize-sign-prepare', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ticket, keyId: keyRecord.id, siwe, jwk, host: 'https://node.tinycloud.xyz', requestOrigin: 'https://openkey.so' }),
+    });
+    expect(prepareRes.status).toBe(200);
+    const prepared = await prepareRes.json() as { authorizationContextToken: string; allowedActionIds: string[] };
+    const preview = async (expirationTime: number) => {
+      const res = await router.request('/authorize-sign-preview', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          ticket, authorizationContextToken: prepared.authorizationContextToken, selectedActionIds: prepared.allowedActionIds,
+          expirationTime: new Date(expirationTime).toISOString(),
+        }),
+      });
+      return { status: res.status, body: await res.json() as Record<string, unknown> };
+    };
+    const later = await preview(asked + 1);
+    expect(later.status).toBe(400);
+    expect(later.body.code).toBe('invalid_expiration_time');
+    const shorter = await preview(asked - 10 * 60_000);
+    expect(shorter.status).toBe(200);
+    expect(/^Expiration Time: (.+)$/m.exec(shorter.body.signedMessage as string)?.[1]).toBe(new Date(asked - 10 * 60_000).toISOString());
+    expect((await preview(asked)).status).toBe(200);
+  });
+});

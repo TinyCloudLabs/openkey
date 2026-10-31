@@ -96,6 +96,8 @@ export interface DeviceAuthorizationRecord {
   delegationExpiresAt: Date;
   /** Requested lifetime; an approval may grant at most approval time + this. */
   delegationTtlSeconds: number;
+  /** Lifetime the requester suggests as the default; absent means `delegationTtlSeconds`. */
+  suggestedTtlSeconds?: number;
   transactionExpiresAt: Date;
   requestedAt: Date;
   requestIpHash: string;
@@ -187,6 +189,8 @@ export type DeviceAuthorizationStart = {
   nodeOrigin: string;
   shareOrigin: string;
   delegationTtlSeconds?: number;
+  /** Optional default lifetime to show: 60 seconds up to `delegationTtlSeconds`; absent means the maximum. */
+  suggestedTtlSeconds?: number;
   reason?: string;
 };
 
@@ -558,12 +562,29 @@ function randomUserCode(): string {
   return [...bytes].map((value) => alphabet[value % alphabet.length]).join('');
 }
 
-function requestedTtlSeconds(input: unknown): number {
-  const seconds = input === undefined ? DEVICE_AUTH_DEFAULT_DELEGATION_TTL_MS / 1000 : Number(input);
-  if (!Number.isSafeInteger(seconds) || seconds < 60 || seconds > DEVICE_AUTH_MAX_DELEGATION_TTL_MS / 1000) {
-    throw new DeviceAuthorizationError('invalid_request', 'delegationTtlSeconds must be between 60 seconds and 30 days', 400);
+/** The last second a SIWE timestamp (four-digit year) can name. */
+const LATEST_SIWE_TIME_MS = Date.UTC(9999, 11, 31, 23, 59, 59);
+
+/**
+ * The longest lifetime the requester will accept (TC-2274: the requester signs it,
+ * so there is no server cap; only a minute minimum and what a date can hold).
+ */
+function requestedTtlSeconds(input: unknown, now: Date): number {
+  const seconds = input === undefined ? DEVICE_AUTH_DEFAULT_DELEGATION_TTL_MS / 1000 : typeof input === 'number' ? input : Number.NaN;
+  const latest = (LATEST_SIWE_TIME_MS - now.getTime() - DEVICE_AUTH_TRANSACTION_TTL_MS) / 1000;
+  if (!Number.isSafeInteger(seconds) || seconds < 60 || seconds > latest) {
+    throw new DeviceAuthorizationError('invalid_request', 'delegationTtlSeconds must be a whole number of at least 60 seconds', 400);
   }
   return seconds;
+}
+
+/** The default lifetime the requester suggests: absent means the maximum; never below a minute or above the maximum. */
+function requestedSuggestedTtlSeconds(input: unknown, maxSeconds: number): number | undefined {
+  if (input === undefined) return undefined;
+  if (typeof input !== 'number' || !Number.isSafeInteger(input) || input < 60 || input > maxSeconds) {
+    throw new DeviceAuthorizationError('invalid_request', 'suggestedTtlSeconds must be a whole number from 60 seconds up to delegationTtlSeconds', 400);
+  }
+  return input;
 }
 
 function jsonEqual(left: unknown, right: unknown): boolean {
@@ -682,7 +703,8 @@ export class DeviceAuthorizationService {
     }
     const permissions = deviceRequestPermissions(input.permissions);
     const reason = requestReason(input.reason);
-    const delegationTtlSeconds = requestedTtlSeconds(input.delegationTtlSeconds);
+    const delegationTtlSeconds = requestedTtlSeconds(input.delegationTtlSeconds, now);
+    const suggestedTtlSeconds = requestedSuggestedTtlSeconds(input.suggestedTtlSeconds, delegationTtlSeconds);
     const nodeOrigin = canonicalOrigin(input.nodeOrigin, 'nodeOrigin');
     const shareOrigin = canonicalOrigin(input.shareOrigin, 'shareOrigin');
     const requestIpHash = sha256(`device-auth-ip\0${this.options.encryptionSecret}\0${requestIp}`);
@@ -713,6 +735,7 @@ export class DeviceAuthorizationService {
       // the TTL.
       delegationExpiresAt: new Date(transactionExpiresAt.getTime() + delegationTtlSeconds * 1000),
       delegationTtlSeconds,
+      ...(suggestedTtlSeconds !== undefined ? { suggestedTtlSeconds } : {}),
       transactionExpiresAt,
       requestedAt: now,
       requestIpHash,

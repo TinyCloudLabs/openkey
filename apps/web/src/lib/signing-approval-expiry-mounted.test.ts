@@ -329,3 +329,31 @@ describe('where the requester signed the longest time it accepts', () => {
     cleanup();
   });
 });
+
+describe('where the requester signed a maximum above its suggested default (TC-2274)', () => {
+  test('the default is the suggestion, the picker offers up to the signed maximum, and the note names it', () => {
+    const { target, cleanup } = render({ onExpiryChange() {}, expiryBounded: true, expiryMaxMs: 365 * D });
+    expect(line(target)).toBe('Approval expires: 7d (Change)');
+    open(target);
+    expect([...target.querySelectorAll('.expiry-preset')].map((b) => b.textContent?.trim())).toEqual(['1 hr', '24 hr', '7d', '30d']);
+    expect(target.querySelector('.expiry-note')?.textContent).toBe(
+      'This app asked for up to 1y. To allow longer, start the request again with a longer expiry.',
+    );
+    cleanup();
+  });
+
+  test('a time up to the maximum is reported; one past it is refused', () => {
+    const chosen: Array<number | null> = [];
+    const { target, cleanup } = render({ onExpiryChange: (ms: number | null) => chosen.push(ms), expiryBounded: true, expiryMaxMs: 365 * D });
+    open(target);
+    type(target, '1y');
+    submit(target);
+    expect(chosen).toEqual([365 * D]);
+    open(target);
+    type(target, '366d');
+    submit(target);
+    expect(target.querySelector('.expiry-error')?.textContent).toContain('up to 1y');
+    expect(chosen).toEqual([365 * D]);
+    cleanup();
+  });
+});
