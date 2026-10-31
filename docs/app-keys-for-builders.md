@@ -12,7 +12,7 @@ There are two ways to ask. Both end on the same OpenKey approval screen. The dif
 - Your app id is your host with its labels reversed: `app.example.com` becomes `com.example.app`.
 - `key.delete` is never granted to apps.
 
-OpenKey takes your origin from the browser, not from anything you send. A request that names a different origin than the one the browser reports is refused.
+OpenKey takes your origin from the browser, not from anything you send. If you also send `reportedOrigin`, it must be byte-for-byte the same origin; anything else is refused. The SIWE domain (no port) and URI must name that same origin. Host labels must be lowercase letters, digits and hyphens, at most 63 characters, with no leading or trailing hyphen.
 
 ## A. With a published manifest
 
@@ -29,12 +29,12 @@ Publish a JSON file at `https://<your origin>/.well-known/openkey-manifest.json`
 }
 ```
 
-- `app_id` must be your reversed host, or your reversed host followed by `.` and more labels (`xyz.tinycloud.listen.beta`).
+- `app_id` must be your reversed host, or your reversed host followed by `.` and more labels (`xyz.tinycloud.listen.beta`). The example above only works from `https://listen.tinycloud.xyz`.
 - `keys_app_id` is optional. When present it picks the key namespace instead of `app_id`, and it must also belong to your origin.
-- `keys` lists what you may ask for. Each entry is either a `path` (one key) or a `prefix` (`apps/<id>/`, everything under it), plus `abilities` from `key.create`, `decrypt`, `key.block`, `key.unblock`. At most 32 entries. One `prefix` entry at most.
-- `name` is shown in the review as the name from your manifest.
+- `keys` lists what you may ask for. Each entry is either a `path` (one key) or a `prefix` (`apps/<id>/`, everything under it, where `<id>` is `keys_app_id` if present, else `app_id`), plus a non-empty list of `abilities` from `key.create`, `decrypt`, `key.block`, `key.unblock` with no repeats. Unknown fields make the whole `keys` block unreadable. At most 32 entries, one `prefix` entry at most, no duplicate `path`.
+- `name` is a display name for your app.
 
-**Digest.** Compute the SHA-256 of the manifest as canonical JSON and send it as `presentation.manifestDigest` (lowercase hex) in your `authorizeTinyCloud` request. Canonical JSON is the manifest parsed, then written back with object keys sorted at every level and no whitespace; array order stays. The helper is `canonicalManifestSha256Hex` in `apps/api/src/services/manifest-origin-fetch.ts`. The SDK does not compute the digest for you today.
+**Digest.** Compute the SHA-256 of the manifest as canonical JSON and send it as `presentation.manifestDigest` (lowercase hex) in your `authorizeTinyCloud` request. Canonical JSON is the manifest parsed, then written back with object keys sorted at every level and no whitespace; array order stays. The helper is `canonicalManifestSha256Hex` in `apps/api/src/services/manifest-origin-fetch.ts`. `@openkey/sdk` does not compute the digest for you.
 
 ```ts
 const digest = sha256Hex(canonicalJson(manifest)); // keys sorted, no spaces
@@ -45,11 +45,11 @@ await openkey.authorizeTinyCloud({
 });
 ```
 
-**What OpenKey does.** When the request carries a digest and your origin is https, OpenKey fetches the file (https only, no redirects, 5 second timeout, 64 KiB maximum), canonicalizes it and compares digests. A match shows your app as `Manifest served by verified https origin`, and your `keys` block limits the request: anything you ask for that is not declared is refused.
+**What OpenKey does.** When the request carries a digest and your origin is https, OpenKey fetches the file (https only, a public address, no redirects, 5 second timeout, 64 KiB maximum), canonicalizes it and compares digests. A match shows your app as `Manifest served by verified https origin`, and the manifest then governs app keys: anything you ask for that is not declared in `keys` is refused.
 
 **What it unlocks.** The name and details from your manifest appear in the review, and you can limit your request to specific key paths or abilities. Nothing is signed: the label means your own origin served the file that matches the digest you sent.
 
-If the fetch or the match fails, the request is treated as a request without a manifest (section B), not as an error.
+If the fetch or the digest match fails, the request is treated as a request without a manifest (section B), not as an error. If the digest matches, the manifest decides: when it has no `keys` block, an empty one, an unreadable one, or an `app_id` that does not belong to your host, the app-key request is refused. It is not widened to the section B scope. Publishing a manifest for other purposes (secrets, permissions) and sending its digest therefore means you must declare your app keys in it too.
 
 ## B. Without a manifest
 
@@ -57,7 +57,7 @@ Skip the file and the digest. Send the same `authorizeTinyCloud` request from yo
 
 **What your app gets.** OpenKey derives your app id from the browser origin and allows requests inside `apps/<reversed host>/` only. For `https://app.example.com` that is `apps/com.example.app/`. Allowed actions in that prefix: create keys, decrypt, block keys and unblock keys (`key.create`, `decrypt`, `key.block`, `key.unblock`).
 
-**What the user sees.** The same approval screen, with the label `No signed manifest`. The app keys are listed as one group, "This app is requesting:", with lines such as "Create new encryption keys tied to this app" and "Decrypt data locked with this app's keys", and an access line saying when the access ends. The user keeps all of the app keys or none of them. Without a manifest there is no verified app name beyond what you send as `presentation.displayName`, which is shown as supplied by the app.
+**What the user sees.** The same approval screen, with the label `No signed manifest`. The headline is your app id in monospace (`com.example.app`) with "Requested by app.example.com". The app keys are listed as one group, "This app is requesting:", with lines such as "Create new encryption keys tied to this app" and "Decrypt data locked with this app's keys", and an access line saying when the access ends. The user keeps all of the app keys or none of them. There is no verified app name: a `presentation.displayName` you send appears only in the details section, marked as supplied by the caller and unverified.
 
 **Limits.**
 - Only `apps/<your reversed host>/`. Other paths, other apps' prefixes and anything outside `apps/` are refused.
@@ -71,11 +71,11 @@ Skip the file and the digest. Send the same `authorizeTinyCloud` request from yo
 | --- | --- | --- |
 | Setup | Publish file, send digest | None |
 | Label shown | Manifest served by verified https origin | No signed manifest |
-| Name shown | From your manifest | Only what you send, as app-supplied |
+| Name shown | From your manifest | Only in details, marked unverified |
 | Request scope | Only what `keys` declares | Whole `apps/<reversed host>/` prefix, four abilities |
-| If it fails | Treated as no manifest | Not applicable |
+| If it fails | Fetch or digest mismatch: treated as no manifest. Digest matches but `keys` is missing or unusable: refused | Not applicable |
 
-A request with a published manifest that fails to fetch gets the broad no-manifest scope, not an error. If you publish a manifest, check that it serves.
+A request whose manifest fails to fetch or match gets the broad no-manifest scope, not an error. A request whose manifest matches but declares no usable `keys` is refused. If you publish a manifest, check that it serves and that it declares your keys.
 
 ## Not the same thing as the SDK `manifest` option
 

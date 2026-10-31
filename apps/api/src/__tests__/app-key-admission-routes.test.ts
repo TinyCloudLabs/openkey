@@ -409,12 +409,21 @@ describe('plain app-key grants (no digest-matched manifest)', () => {
     expect(res.status).toBe(200);
     expect(body.metadataTrust?.status).toBe('unsigned');
     expect(fetchAndBindWellKnownManifest).not.toHaveBeenCalled();
-    expect(body.allowedActionIds).toHaveLength(6);
+    for (const ability of ALL_FOUR) expect(body.allowedActionIds!.some((id) => id.endsWith(ability))).toBe(true);
   });
 
   test('an exact key under the origin prefix is admitted', async () => {
-    const { res } = await prepare(siweWith(APPS_KEY), plain);
+    const { res, body } = await prepare(siweWith(APPS_KEY), plain);
     expect(res.status).toBe(200);
+    expect(body.allowedActionIds!.some((id) => id.includes('/apps/xyz.tinycloud.listen/k') && id.endsWith('decrypt'))).toBe(true);
+  });
+
+  test('one resource outside the origin prefix refuses the whole request', async () => {
+    const mixed = { ...PREFIX, [urn('/apps/xyz.tinycloud.notes/')]: ['tinycloud.encryption/decrypt'] };
+    const { res, body } = await prepare(siweWith(mixed), plain);
+    expect(res.status).toBe(403);
+    expect(body.code).toBe('app_key_grant_refused');
+    expect(body.authorizationContextToken).toBeUndefined();
   });
 
   test.each([
