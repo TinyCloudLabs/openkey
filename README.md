@@ -53,6 +53,8 @@ const { signature } = await openkey.signMessage({
 
 Register your app at [openkey.so/admin](https://openkey.so/admin) to get a client ID.
 
+Apps that need their own encryption keys (`apps/<app id>/...`) use `authorizeTinyCloud`, with or without a published `/.well-known/openkey-manifest.json`. See [App keys for builders](docs/app-keys-for-builders.md).
+
 ### For Contributors
 
 Prerequisites:
