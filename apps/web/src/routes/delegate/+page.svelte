@@ -243,6 +243,9 @@
   // and clamping (30 days at most) are owned by the API to keep the source
   // of truth in one place; we just forward it.
   let expiryParam = $state($page.url.searchParams.get('expiry') || '');
+  // `expiryChangeable=true` on a /delegate link: the CLI that built it accepts a delegation longer than the
+  // link's `expiry`. Without it a pick can only be shorter (a CLI refuses a longer one and saves nothing).
+  const linkExpiryChangeable = $page.url.searchParams.get('expiryChangeable') === 'true';
   // TC-2272: the time the user picked on the approval screen (ms from approval), or null for the
   // requested one. A pick is sent as `expiry` with `expiryChosen`, which skips the 30-day clamp meant
   // for link parameters; a signed request or device approval still bounds it to what was signed.
@@ -657,7 +660,11 @@
     }
     if (expiryParam) {
       body.expiry = expiryParam;
-      if (expiryChosen) body.expiryChosen = true;
+      if (expiryChosen) {
+        body.expiryChosen = true;
+        body.linkExpiry = requestedExpiryParam ?? '';
+        if (linkExpiryChangeable) body.expiryChangeable = true;
+      }
     }
     // The API refuses a device delegation outside the transaction's lifetime.
     if (deviceTransactionId) body.deviceTransactionId = deviceTransactionId;
@@ -1041,7 +1048,11 @@
       }
       if (expiryParam) {
         body.expiry = expiryParam;
-        if (expiryChosen) body.expiryChosen = true;
+        if (expiryChosen) {
+          body.expiryChosen = true;
+          body.linkExpiry = requestedExpiryParam ?? '';
+          if (linkExpiryChangeable) body.expiryChangeable = true;
+        }
       }
       if (deviceTransactionId) body.deviceTransactionId = deviceTransactionId;
 
@@ -1667,8 +1678,9 @@
                 },
                 expiry: {
                   chosenMs: expiryChoiceMs,
-                  // A signed CLI request or a device approval: the requester signed the longest time it accepts.
-                  bounded: approvalRequestMode || Boolean(deviceTransactionId),
+                  // The requester signed its longest time (signed request, device), or the link asked for exactly
+                  // this much: a link without `expiryChangeable=true` is shorter-only.
+                  bounded: approvalRequestMode || Boolean(deviceTransactionId) || !linkExpiryChangeable,
                   onChange: changeApprovalExpiry,
                 },
               }}
