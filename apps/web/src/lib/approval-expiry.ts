@@ -80,3 +80,8 @@ export function expiryAt(ms: number, now: number = Date.now()): string {
 export function siweExpiration(message: string): string | null {
   return /^Expiration Time: (.+)$/m.exec(message)?.[1]?.trim() ?? null;
 }
+
+/** Shown where the requester signed the longest time it accepts (signed CLI and device requests). */
+export function expiryLimitNote(maxMs: number): string {
+  return `This app asked for up to ${formatExpiry(maxMs)}. To allow longer, start the request again with a longer expiry.`;
+}

@@ -82,6 +82,7 @@
   // wallet on the previewed bytes and complete /authorize-sign with an
   // externalSignature.
   let externalSignMode = $state(false);
+  let expiryChangeable = $state(false);
 
   // Shared capability-review state — the SigningApproval component uses this
   // when the request looks like a TinyCloud SIWE-ReCap. Legacy plain
@@ -223,6 +224,9 @@
     // sign request. The widget renders the SAME SigningApproval UI in
     // both modes; only the "approve" behaviour differs.
     externalSignMode = data.externalSign === true;
+    // TC-2272: only an SDK that accepts a different signed expiry sends this; without it the
+    // approval shows no expiry control and the app's own expiry is signed.
+    expiryChangeable = data.expiryChangeable === true;
     // Capture the caller-supplied presentation envelope. It has already
     // been validated + size-bounded by the widget transport; here we only
     // stash the resulting object so the review model can render it. Trust
@@ -1054,7 +1058,7 @@
           // (e.g. sendResponse) still see the up-to-date selection.
           reviewSelection = next;
         },
-        expiry: canUseAuthorizeSignFn()
+        expiry: canUseAuthorizeSignFn() && expiryChangeable
           ? {
               chosenMs: expiryChoiceMs,
               onChange: (ms) => {

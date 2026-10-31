@@ -9,6 +9,7 @@
     LONG_EXPIRY_WARNING,
     formatExpiry,
     parseExpiry,
+    expiryLimitNote,
   } from "$lib/approval-expiry";
 
   interface Props {
@@ -16,11 +17,16 @@
     requestedMs: number | null;
     /** The user's choice; null keeps what the app asked for. */
     chosenMs: number | null;
+    /**
+     * The longest the requester allows (it signed this into its request); null
+     * when the user may pick any time. Longer times are refused with a note.
+     */
+    maxMs?: number | null;
     disabled?: boolean;
     onChange: (ms: number | null) => void;
   }
 
-  let { requestedMs, chosenMs, disabled = false, onChange }: Props = $props();
+  let { requestedMs, chosenMs, maxMs = null, disabled = false, onChange }: Props = $props();
 
   let open = $state(false);
   let text = $state("");
@@ -29,6 +35,7 @@
   let customInput = $state<HTMLInputElement | null>(null);
 
   const shownMs = $derived(chosenMs ?? requestedMs);
+  const presets = $derived(EXPIRY_PRESETS.filter((preset) => maxMs == null || preset.ms <= maxMs));
   const typed = $derived(text.trim() === "" ? null : parseExpiry(text));
   const warnMs = $derived(typed?.ok ? typed.ms : shownMs);
   const showWarning = $derived(warnMs !== null && warnMs > LONG_EXPIRY_MS);
@@ -43,6 +50,11 @@
 
   function applyTyped() {
     const result = parseExpiry(text);
+    if (result.ok && maxMs != null && result.ms > maxMs) {
+      error = expiryLimitNote(maxMs);
+      customInput?.focus();
+      return;
+    }
     if (!result.ok) {
       error = result.message;
       customInput?.focus();
@@ -85,7 +97,7 @@
     {#if open}
       <div class="expiry-panel" id="approval-expiry-panel">
         <div class="expiry-presets" role="group" aria-label="Preset times">
-          {#each EXPIRY_PRESETS as preset (preset.label)}
+          {#each presets as preset (preset.label)}
             <button
               type="button"
               class="expiry-preset"
@@ -126,6 +138,9 @@
             <p class="expiry-error" id="approval-expiry-error" role="alert">{error}</p>
           {/if}
         </form>
+        {#if maxMs != null}
+          <p class="expiry-note" id="approval-expiry-note">{expiryLimitNote(maxMs)}</p>
+        {/if}
       </div>
     {/if}
     {#if showWarning}
@@ -228,6 +243,11 @@
   .expiry-error {
     margin: 0;
     color: #b91c1c;
+  }
+  .expiry-note {
+    margin: 0;
+    font-size: 12px;
+    color: #475569;
   }
   .expiry-warning {
     margin: 0;

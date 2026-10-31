@@ -125,3 +125,12 @@ describe('presets, warning and expiry time', () => {
     expect(expiryAt(7 * D, Date.UTC(2026, 9, 31))).toBe('2026-11-07T00:00:00.000Z');
   });
 });
+
+describe('expiryLimitNote', () => {
+  test('names the longest time the request allows and how to get longer', async () => {
+    const { expiryLimitNote } = await import('./approval-expiry');
+    expect(expiryLimitNote(7 * D)).toBe(
+      'This app asked for up to 7d. To allow longer, start the request again with a longer expiry.',
+    );
+  });
+});

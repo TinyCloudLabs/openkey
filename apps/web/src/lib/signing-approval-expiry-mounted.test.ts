@@ -285,3 +285,47 @@ describe('the "Approval expires" line', () => {
     cleanup();
   });
 });
+
+describe('where the requester signed the longest time it accepts', () => {
+  const NOTE = 'This app asked for up to 7d. To allow longer, start the request again with a longer expiry.';
+
+  test('the picker offers nothing longer than asked, with the plain note', () => {
+    const { target, cleanup } = render({ onExpiryChange() {}, expiryBounded: true });
+    open(target);
+    expect([...target.querySelectorAll('.expiry-preset')].map((b) => b.textContent?.trim())).toEqual(['1 hr', '24 hr', '7d']);
+    expect(target.querySelector('.expiry-note')?.textContent).toBe(NOTE);
+    cleanup();
+  });
+
+  test('a typed time past the signed maximum is refused with that note; the maximum itself is allowed', () => {
+    const chosen: Array<number | null> = [];
+    const { target, cleanup } = render({ onExpiryChange: (ms: number | null) => chosen.push(ms), expiryBounded: true });
+    open(target);
+    type(target, '8d');
+    submit(target);
+    expect(target.querySelector('.expiry-error')?.textContent).toBe(NOTE);
+    expect(chosen).toEqual([]);
+    type(target, '7d');
+    submit(target);
+    expect(chosen).toEqual([null]);
+    cleanup();
+  });
+
+  test('a shorter typed time is reported', () => {
+    const chosen: Array<number | null> = [];
+    const { target, cleanup } = render({ onExpiryChange: (ms: number | null) => chosen.push(ms), expiryBounded: true });
+    open(target);
+    type(target, '5600s');
+    submit(target);
+    expect(chosen).toEqual([5600 * S]);
+    cleanup();
+  });
+
+  test('where the user may pick anything there is no note and 30d is offered', () => {
+    const { target, cleanup } = render({ onExpiryChange() {} });
+    open(target);
+    expect(target.querySelector('.expiry-note')).toBeNull();
+    expect(target.querySelectorAll('.expiry-preset').length).toBe(4);
+    cleanup();
+  });
+});

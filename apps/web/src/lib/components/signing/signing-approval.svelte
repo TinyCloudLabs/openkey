@@ -107,6 +107,11 @@
      */
     expiryMs?: number | null;
     onExpiryChange?: (ms: number | null) => void;
+    /**
+     * True where the requester signed the longest time it accepts (signed CLI
+     * and device requests): the picker then offers nothing longer than asked.
+     */
+    expiryBounded?: boolean;
     onApprove: () => void;
     onCancel: () => void;
     onSelectionChange: (next: Set<string>) => void;
@@ -130,6 +135,7 @@
     peerRecognition = null,
     expiryMs = null,
     onExpiryChange,
+    expiryBounded = false,
     onApprove,
     onCancel,
     onSelectionChange,
@@ -649,6 +655,7 @@
       <ApprovalExpiryControl
         requestedMs={requestedExpiry}
         chosenMs={expiryMs}
+        maxMs={expiryBounded ? requestedExpiry : null}
         disabled={approving}
         onChange={onExpiryChange}
       />

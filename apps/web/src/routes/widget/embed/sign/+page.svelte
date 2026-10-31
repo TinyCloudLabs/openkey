@@ -107,6 +107,7 @@
   let previewApproved = $state(false);
   // Sol MAJOR-3 (continuation): external-key review mode. See widget/sign.
   let externalSignMode = $state(false);
+  let expiryChangeable = $state(false);
 
   const isAuthenticated = $derived(inIframe ? embedAuthenticated : !!$session.data);
 
@@ -258,6 +259,9 @@
     keyId = typeof data.keyId === 'string' ? data.keyId : null;
     // Sol MAJOR-3 (continuation): capture the externalSign flag.
     externalSignMode = data.externalSign === true;
+    // TC-2272: only an SDK that accepts a different signed expiry sends this; without it the
+    // approval shows no expiry control and the app's own expiry is signed.
+    expiryChangeable = data.expiryChangeable === true;
     // Envelope (display-only). Widget transport already validated + size-
     // bounded the object. Trust decision is deferred to /authorize-sign-
     // prepare and populated into serverMetadataTrust below.
@@ -1081,7 +1085,7 @@
           onSelectionEdited: (next) => {
             reviewSelection = next;
           },
-          expiry: canUseAuthorizeSignFn()
+          expiry: canUseAuthorizeSignFn() && expiryChangeable
             ? {
                 chosenMs: expiryChoiceMs,
                 onChange: (ms) => {
