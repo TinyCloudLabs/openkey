@@ -76,13 +76,17 @@
   let expiryError = $state('');
   const expiryTyped = $derived(expiryText.trim() === '' ? null : parseExpiry(expiryText));
   const expiryWarn = $derived(expiryTyped?.ok ? expiryTyped.ms : expiryShownMs);
+  // A choice after the preview is sealed would not be in what gets signed.
+  const expiryEditable = $derived.by(() => phase === 'review' && !busy && !submitted);
   function chooseExpiry(ms: number) {
+    if (!expiryEditable) return;
     expiryChoiceMs = ms === expiryRequestedMs ? null : ms;
     expiryText = '';
     expiryError = '';
     expiryOpen = false;
   }
   function applyExpiryText() {
+    if (!expiryEditable) return;
     const parsed = parseExpiry(expiryText);
     if (parsed.ok) chooseExpiry(parsed.ms); else expiryError = parsed.message;
   }
@@ -477,8 +481,8 @@
       {#if expiryShownMs !== null}
         <div class="space-y-2 text-sm" role="group" aria-label="Approval expiry">
           <p>Approval expires: <strong>{formatExpiry(expiryShownMs)}</strong>
-            <button type="button" class="underline" aria-expanded={expiryOpen} disabled={busy || submitted || phase !== 'review'} onclick={() => { expiryOpen = !expiryOpen; }}>(Change)</button></p>
-          {#if expiryOpen}
+            <button type="button" class="underline min-h-10" aria-expanded={expiryOpen && expiryEditable} disabled={!expiryEditable} onclick={() => { expiryOpen = !expiryOpen; }}>(Change)</button></p>
+          {#if expiryOpen && expiryEditable}
             <div class="rounded-lg border p-3 space-y-2">
               <div class="flex flex-wrap gap-2">
                 {#each EXPIRY_PRESETS as preset (preset.label)}

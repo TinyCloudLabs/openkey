@@ -134,3 +134,15 @@ describe('expiryLimitNote', () => {
     );
   });
 });
+
+describe('the one-minute floor', () => {
+  test.each(['1s', '30s', '59s'])('%s is refused', (text: string) => {
+    const result = parseExpiry(text);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toBe('Use at least 1m.');
+  });
+  test('60s and 1m are accepted', () => {
+    expect(parseExpiry('60s')).toEqual({ ok: true, ms: 60 * S });
+    expect(parseExpiry('1m')).toEqual({ ok: true, ms: 60 * S });
+  });
+});

@@ -766,6 +766,12 @@
     baselineSiweForReview = null;
     reviewModel = null;
     reviewSelection = new Set<string>();
+    // TC-2272: the next prepare starts again from what the request asked for, so the picker's
+    // requested window (and the signed-request maximum) is not the previous pick.
+    expiryChoiceMs = null;
+    expiryChosen = false;
+    if (requestedExpiryParam !== null) expiryParam = requestedExpiryParam;
+    requestedExpiryParam = null;
   }
 
   function showLinkWallet() {

@@ -4,17 +4,30 @@
 
 export type ExpirationOverride = { ok: true; value: string } | { ok: false };
 
+/** The shortest approval the server previews: the same one-minute floor the delegation expiry has. */
+export const MIN_EXPIRATION_LEAD_MS = 60_000;
+
 /**
  * A chosen expiry must be an exact ISO-8601 UTC time (what `toISOString()`
- * writes), after both now and the message's Issued At. There is no upper limit
- * beyond what a four-digit year can hold.
+ * writes), at least `minLeadMs` after now, after the message's Issued At and
+ * after its Not Before when it has one. There is no upper limit beyond what a
+ * four-digit year can hold. At sign time `minLeadMs` is 0: the preview already
+ * met the floor, and the time must only still be in the future.
  */
-export function validateExpirationOverride(value: unknown, issuedAt: string, now: number = Date.now()): ExpirationOverride {
+export function validateExpirationOverride(
+  value: unknown,
+  siwe: { issuedAt: string; notBefore?: string },
+  minLeadMs: number,
+  now: number = Date.now(),
+): ExpirationOverride {
   if (typeof value !== 'string') return { ok: false };
   const time = Date.parse(value);
   if (!Number.isFinite(time) || new Date(time).toISOString() !== value) return { ok: false };
-  const issued = Date.parse(issuedAt);
-  if (time <= now || (Number.isFinite(issued) && time <= issued)) return { ok: false };
+  if (time <= now + minLeadMs) return { ok: false };
+  for (const bound of [siwe.issuedAt, siwe.notBefore]) {
+    const boundTime = bound ? Date.parse(bound) : Number.NaN;
+    if (Number.isFinite(boundTime) && time <= boundTime) return { ok: false };
+  }
   return { ok: true, value };
 }
 

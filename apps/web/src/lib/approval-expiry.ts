@@ -9,6 +9,9 @@ const D = 24 * H;
 
 const UNIT_MS: Record<string, number> = { s: S, m: M, h: H, d: D, w: 7 * D, y: 365 * D };
 
+/** The shortest approval the server will sign (matches the server's one-minute floor). */
+export const MIN_EXPIRY_MS = M;
+
 /** The last second a SIWE timestamp (four-digit year) can name. */
 const LATEST_EXPIRY_MS = Date.UTC(9999, 11, 31, 23, 59, 59);
 
@@ -41,6 +44,7 @@ export function parseExpiry(text: string, now: number = Date.now()): ParsedExpir
   if (!Number.isFinite(ms) || now + ms > LATEST_EXPIRY_MS) {
     return { ok: false, message: 'That is too far in the future.' };
   }
+  if (ms < MIN_EXPIRY_MS) return { ok: false, message: 'Use at least 1m.' };
   return { ok: true, ms };
 }
 

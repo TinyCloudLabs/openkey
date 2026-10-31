@@ -79,7 +79,7 @@ import {
   type AuthorizationContextToken,
   type AuthorizationContextClaim,
 } from '../services/authorization-signing';
-import { validateExpirationOverride, withExpirationTime } from '../services/approval-expiry';
+import { MIN_EXPIRATION_LEAD_MS, validateExpirationOverride, withExpirationTime } from '../services/approval-expiry';
 import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
 import { checkSiweOrigin } from '../services/siwe-origin';
 import {
@@ -3156,7 +3156,7 @@ delegateRouter.post('/authorize-sign', async (c) => {
   // signed bytes to exactly those bytes.
   const sealedExpiry = peekPreviewApprovalExpiry(body.previewApprovalToken!);
   if (sealedExpiry !== undefined && sealedExpiry !== immutable.expirationTime) {
-    const checked = validateExpirationOverride(sealedExpiry, immutable.issuedAt);
+    const checked = validateExpirationOverride(sealedExpiry, immutable, 0);
     const withExpiry = checked.ok ? withExpirationTime(signedMessage, checked.value) : null;
     if (!withExpiry) {
       return c.json(
@@ -3363,7 +3363,7 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
   });
   let expirationOverride: string | undefined;
   if (body.expirationTime !== undefined) {
-    const checked = validateExpirationOverride(body.expirationTime, immutable.issuedAt);
+    const checked = validateExpirationOverride(body.expirationTime, immutable, MIN_EXPIRATION_LEAD_MS);
     if (!checked.ok) {
       return c.json(
         { error: 'expirationTime must be a future ISO-8601 UTC time after the request was issued', code: 'invalid_expiration_time' },
@@ -3480,7 +3480,7 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
   if (expirationOverride !== undefined) {
     const withExpiry = withExpirationTime(preparedSignedMessage, expirationOverride);
     if (!withExpiry) {
-      return c.json({ error: 'Bound SIWE has no single Expiration Time line', code: 'bound_siwe_parse_failed' }, 500);
+      return c.json({ error: 'Bound SIWE has no single Expiration Time line', code: 'bound_siwe_parse_failed' }, 400);
     }
     preparedSignedMessage = withExpiry;
   }

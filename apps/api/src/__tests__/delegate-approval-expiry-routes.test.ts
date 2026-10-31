@@ -261,3 +261,14 @@ describe('an expiry the server will not sign', () => {
     });
   }
 });
+
+describe('the one-minute floor', () => {
+  test('a preview under a minute is refused, a minute and a bit is previewed', async () => {
+    const p = await prepare();
+    const refused = await preview(p, p.allowed, new Date(Date.now() + 30_000).toISOString());
+    expect(refused.status).toBe(400);
+    expect(refused.body.code).toBe('invalid_expiration_time');
+    const ok = await preview(p, p.allowed, new Date(Date.now() + 90_000).toISOString());
+    expect(ok.status).toBe(200);
+  });
+});

@@ -69,6 +69,11 @@
     changeButton?.focus();
   }
 
+  // A choice made while the approval is being previewed or signed would not be in what gets signed.
+  $effect(() => {
+    if (disabled) open = false;
+  });
+
   function onKeydown(event: KeyboardEvent) {
     if (event.key === "Escape" && open) {
       event.stopPropagation();
@@ -101,6 +106,7 @@
             <button
               type="button"
               class="expiry-preset"
+              {disabled}
               aria-pressed={shownMs === preset.ms}
               onclick={() => choose(preset.ms)}
             >
@@ -120,6 +126,7 @@
             <input
               id="approval-expiry-custom"
               class="expiry-input"
+              {disabled}
               type="text"
               inputmode="text"
               autocomplete="off"
@@ -132,7 +139,7 @@
               aria-invalid={error ? "true" : undefined}
               aria-describedby={error ? "approval-expiry-error" : undefined}
             />
-            <button type="submit" class="expiry-set">Set</button>
+            <button type="submit" class="expiry-set" {disabled}>Set</button>
           </div>
           {#if error}
             <p class="expiry-error" id="approval-expiry-error" role="alert">{error}</p>
@@ -176,7 +183,7 @@
     color: #1d4ed8;
     cursor: pointer;
     text-decoration: underline;
-    min-height: 32px;
+    min-height: 40px;
   }
   .expiry-change:disabled {
     color: #94a3b8;
