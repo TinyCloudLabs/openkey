@@ -25,7 +25,8 @@
 import type { CapabilityFamily, PermissionSeverity } from "./model.js";
 import { isSecretsSpace } from "./app-scope.js";
 import { isMetadataOnlyAccess } from "./action-semantics.js";
-import { DELEGATION_LIST_LABEL, FAMILY_LABEL } from "./copy.js";
+import { DELEGATION_LIST_LABEL, FAMILY_LABEL, HELD_CREDENTIALS_LABEL } from "./copy.js";
+import { isHeldCredentialsGrant } from "./held-credentials.js";
 import { APPS_SEGMENT, parseKeyResource } from "./key-resource.js";
 import { plainSentence } from "./plain-words.js";
 import {
@@ -329,6 +330,18 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     // routine severity is safe for a malformed wire tuple.
     if (entry.serviceMismatch === true) {
       return unknownActionLabel(service);
+    }
+    if (
+      isHeldCredentialsGrant({
+        service,
+        space,
+        path,
+        abilities: entry.actions,
+        serviceMismatch: entry.serviceMismatch,
+        ownedBySigner: isOwnSpace,
+      })
+    ) {
+      return { family: "unknown", displayLabel: HELD_CREDENTIALS_LABEL };
     }
     let knownTarget: { family: CapabilityFamily; displayLabel: string };
     if (spaceName === "account") {
