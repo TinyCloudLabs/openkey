@@ -68,6 +68,8 @@
     splitStatementCode,
   } from "@openkey/capability-review";
   import type { PeerRecognitionState } from "$lib/host-peer-recognition";
+  import ApprovalExpiryControl from "$lib/components/signing/approval-expiry-control.svelte";
+  import { requestedExpiryMs } from "$lib/approval-expiry";
 
   interface Props {
     model: CapabilityReviewModel;
@@ -97,6 +99,14 @@
      * view then shows the space only.
      */
     peerRecognition?: PeerRecognitionState | null;
+    /**
+     * The approval expiry the user chose, in ms from approval; null keeps what
+     * the app asked for. The line shows only on surfaces that pass
+     * `onExpiryChange`, i.e. those whose signing path writes the choice into
+     * the signed message.
+     */
+    expiryMs?: number | null;
+    onExpiryChange?: (ms: number | null) => void;
     onApprove: () => void;
     onCancel: () => void;
     onSelectionChange: (next: Set<string>) => void;
@@ -118,6 +128,8 @@
     context,
     showSigner = false,
     peerRecognition = null,
+    expiryMs = null,
+    onExpiryChange,
     onApprove,
     onCancel,
     onSelectionChange,
@@ -128,6 +140,9 @@
     `${model.signer.address.slice(0, 6)}...${model.signer.address.slice(-4)}`,
   );
   const renderPlan = $derived(buildRenderPlan(model.permissions));
+  const requestedExpiry = $derived(
+    requestedExpiryMs(model.immutable?.issuedAt, model.immutable?.expirationTime),
+  );
   const permissionSections = $derived.by(() => {
     const reviewGrants = renderPlan
       .filter((bucket) => bucket.severity !== "standard")
@@ -628,6 +643,15 @@
           </li>
         {/each}
       </ul>
+    {/if}
+
+    {#if onExpiryChange && model.protocol === "tinycloud-siwe-recap"}
+      <ApprovalExpiryControl
+        requestedMs={requestedExpiry}
+        chosenMs={expiryMs}
+        disabled={approving}
+        onChange={onExpiryChange}
+      />
     {/if}
 
     {#if hostFacts}

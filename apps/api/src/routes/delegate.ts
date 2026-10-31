@@ -75,9 +75,11 @@ import {
   issueAuthorizationContext,
   issuePreviewApproval,
   peekAuthorizationContext,
+  peekPreviewApprovalExpiry,
   type AuthorizationContextToken,
   type AuthorizationContextClaim,
 } from '../services/authorization-signing';
+import { validateExpirationOverride, withExpirationTime } from '../services/approval-expiry';
 import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
 import { checkSiweOrigin } from '../services/siwe-origin';
 import {
@@ -3134,6 +3136,22 @@ delegateRouter.post('/authorize-sign', async (c) => {
     signedMessage = narrowed.siwe;
   }
 
+  // TC-2272: the expiry the user chose at preview is sealed in the preview
+  // approval's bytes. Re-apply it here; checkPreviewApproval then holds the
+  // signed bytes to exactly those bytes.
+  const sealedExpiry = peekPreviewApprovalExpiry(body.previewApprovalToken!);
+  if (sealedExpiry !== undefined && sealedExpiry !== immutable.expirationTime) {
+    const checked = validateExpirationOverride(sealedExpiry, immutable.issuedAt);
+    const withExpiry = checked.ok ? withExpirationTime(signedMessage, checked.value) : null;
+    if (!withExpiry) {
+      return c.json(
+        { error: 'The chosen approval expiry is no longer in the future — preview again', code: 'invalid_expiration_time' },
+        400,
+      );
+    }
+    signedMessage = withExpiry;
+  }
+
   // Validate the single-use preview approval without consuming it. The
   // final selection and bytes must match exactly what the user previewed.
   const previewCheck = checkPreviewApproval({
@@ -3270,6 +3288,8 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
   const body = await c.req.json<{
     authorizationContextToken?: string;
     selectedActionIds?: unknown;
+    /** TC-2272: the approval expiry the user chose (ISO-8601 UTC); the app's own is the default. */
+    expirationTime?: unknown;
     ticket?: string;
     transportVersion?: number;
     callback?: unknown;
@@ -3326,6 +3346,17 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     chainId,
     spaceId: bound.spaceId,
   });
+  let expirationOverride: string | undefined;
+  if (body.expirationTime !== undefined) {
+    const checked = validateExpirationOverride(body.expirationTime, immutable.issuedAt);
+    if (!checked.ok) {
+      return c.json(
+        { error: 'expirationTime must be a future ISO-8601 UTC time after the request was issued', code: 'invalid_expiration_time' },
+        400,
+      );
+    }
+    expirationOverride = checked.value;
+  }
   if (appKeyGroupPartial(
     admittedAppKeyActionIds(originalEntries, bound.admittedAppKeys, computeActionKey),
     allowedActionIdSet(originalEntries),
@@ -3427,6 +3458,16 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
       );
     }
     preparedSignedMessage = previewNarrowed.siwe;
+  }
+
+  // TC-2272: the user's chosen approval expiry replaces the Expiration Time
+  // line of the bytes to sign; the preview approval seals the result.
+  if (expirationOverride !== undefined) {
+    const withExpiry = withExpirationTime(preparedSignedMessage, expirationOverride);
+    if (!withExpiry) {
+      return c.json({ error: 'Bound SIWE has no single Expiration Time line', code: 'bound_siwe_parse_failed' }, 500);
+    }
+    preparedSignedMessage = withExpiry;
   }
 
   // Preview grants + selection. `service` is canonicalized to the

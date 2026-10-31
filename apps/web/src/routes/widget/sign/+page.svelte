@@ -8,6 +8,7 @@
   import PopupSigningAdapter from '$lib/components/signing/popup-signing-adapter.svelte';
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
   import { requestedActionIds, selectionFromPreview } from '$lib/widget-selection';
+  import { expiryAt, siweExpiration } from '$lib/approval-expiry';
   import {
     parseCapabilityReview,
     parseSiweChainId,
@@ -71,6 +72,8 @@
   // (selection, signedMessage) pair. /authorize-sign requires this token.
   let previewApprovalToken = $state<string | null>(null);
   let previewing = $state(false);
+  // TC-2272: how long from approval the user chose; null keeps the app's own expiry.
+  let expiryChoiceMs = $state<number | null>(null);
   let previewApproved = $state(false);
   // Sol MAJOR-3 (continuation): when the SDK passes `externalSign: true`
   // on the sign request, the widget MUST NOT call /authorize-sign at
@@ -515,7 +518,7 @@
       // bytes change after preview; categorized grants and edit/reset stay
       // visible through the approval that actually signs them.
       reviewModel = previewSignedMessage
-        ? { ...nextReviewModel, rawMessage: previewSignedMessage }
+        ? { ...nextReviewModel, rawMessage: previewSignedMessage, expiry: siweExpiration(previewSignedMessage) ?? nextReviewModel.expiry }
         : nextReviewModel;
       if (reviewSourceMessage !== message) {
         reviewSelection = defaultSelection(reviewModel);
@@ -704,6 +707,8 @@
           body: JSON.stringify({
             authorizationContextToken: token,
             selectedActionIds: selectedIds,
+            // TC-2272: only when the user changed it; the app's own expiry stays the default.
+            ...(expiryChoiceMs === null ? {} : { expirationTime: expiryAt(expiryChoiceMs) }),
           }),
         },
       );
@@ -1049,6 +1054,15 @@
           // (e.g. sendResponse) still see the up-to-date selection.
           reviewSelection = next;
         },
+        expiry: canUseAuthorizeSignFn()
+          ? {
+              chosenMs: expiryChoiceMs,
+              onChange: (ms) => {
+                expiryChoiceMs = ms;
+                invalidatePreviewForSelectionEdit();
+              },
+            }
+          : undefined,
         invalidatePreview: invalidatePreviewForSelectionEdit,
       }}
     />

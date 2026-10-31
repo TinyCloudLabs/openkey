@@ -113,4 +113,15 @@ export interface WidgetSigningTransport {
 
   /** Latest error string, or null. */
   error: string | null;
+
+  /**
+   * The "Approval expires" choice (TC-2272). Set only when the signing path
+   * is the server-authoritative one, which writes the choice into the signed
+   * message; unset on the exact-byte path, where the line is not shown.
+   * `onChange` must invalidate any approved preview.
+   */
+  expiry?: {
+    chosenMs: number | null;
+    onChange: (ms: number | null) => void;
+  };
 }
