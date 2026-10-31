@@ -438,7 +438,8 @@ function resolveRequestExpiryMs(body: {
 }): number {
   const picked = body.expiryChosen === true;
   const expiryMs = resolveDelegationExpiryMs(body.expiry, picked);
-  const plainLink = body.approvalRequestId === undefined && body.deviceTransactionId === undefined;
+  // `null` and '' are not a signed request: only a real id puts the request under its own window check.
+  const plainLink = !body.approvalRequestId && !body.deviceTransactionId;
   if (picked && plainLink && body.expiryChangeable !== true) {
     const linkMs = resolveDelegationExpiryMs(body.linkExpiry);
     if (expiryMs > linkMs) {

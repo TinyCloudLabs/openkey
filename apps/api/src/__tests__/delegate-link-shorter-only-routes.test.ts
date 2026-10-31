@@ -169,3 +169,12 @@ describe('a /delegate link is shorter-only', () => {
     expect(lifetime(plain)).toBeLessThanOrEqual(30 * day);
   });
 });
+
+describe('an empty request id is not a signed request', () => {
+  test('null and empty approvalRequestId / deviceTransactionId do not skip the shorter-only check', async () => {
+    for (const extra of [{ approvalRequestId: null }, { approvalRequestId: '' }, { deviceTransactionId: null }, { deviceTransactionId: '' }]) {
+      const refused = await pick('30d', '7d', extra);
+      expect(refused.body.code, JSON.stringify(extra)).toBe('expiry_exceeds_link');
+    }
+  });
+});
