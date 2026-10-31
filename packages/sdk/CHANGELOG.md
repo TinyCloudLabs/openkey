@@ -1,5 +1,15 @@
 # @openkey/sdk
 
+## 0.13.0-beta.0
+
+### Minor Changes
+
+- e7f2d42: `authorizeTinyCloud` takes an optional `expiryChangeable: true` and forwards it to the sign widget (managed and external keys), only when it is literally `true`. Set it only when your app accepts a signed message whose `Expiration Time` differs from the SIWE you sent (shorter or longer) and reads the expiry from the returned `signedMessage`: OpenKey then shows "Approval expires … (Change)" and signs the time the user picks. Without it the widget shows no expiry control and your expiry is signed. Details: TC-2272
+
+### Patch Changes
+
+- 1f9316e: Correct the `manifestDigest` type comment: the app-key manifest at `/.well-known/openkey-manifest.json` is fetched from the app's origin and digest-checked, not signed, and it is optional for app keys. See docs/app-keys-for-builders.md.
+
 ## 0.12.2
 
 ### Patch Changes
