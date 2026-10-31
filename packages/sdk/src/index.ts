@@ -220,7 +220,11 @@ export interface CapabilityPresentationEnvelopeV1 {
    * the same reason string.
    */
   reason?: string;
-  /** Manifest ID + digest, when the app publishes a signed manifest. */
+  /**
+   * Manifest ID + digest, when the app publishes /.well-known/openkey-manifest.json.
+   * The manifest is not signed: OpenKey fetches it from the app's origin and
+   * compares its digest. Optional for app keys; see docs/app-keys-for-builders.md.
+   */
   manifestId?: string;
   manifestDigest?: string;
   /**

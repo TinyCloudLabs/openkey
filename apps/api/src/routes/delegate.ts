@@ -96,7 +96,7 @@ import {
   appKeyResourcesOf,
   type AdmittedAppKey,
 } from '../services/app-key-refusal';
-import { admitAppKeys, appKeyAdmissionRefusal, type ManifestKeys } from '../services/app-key-gate';
+import { admitAppKeys, appIdForOrigin, appKeyAdmissionRefusal, type ManifestKeys } from '../services/app-key-gate';
 import { fetchAndBindWellKnownManifest } from '../services/manifest-origin-fetch';
 import { signManagedKey, unsealManagedKey } from '../services/managed-key-signing';
 import {
@@ -2700,22 +2700,30 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     }
   }
 
-  // `apps/` encryption key grants are admitted only here, where the manifest
-  // that was fetched from the requesting origin is at hand. Every failure is a
-  // refusal: unlike the manifest label above, nothing falls back to `unsigned`.
+  // `apps/` encryption key grants are admitted here. A successfully bound
+  // manifest may narrow the app's keys; otherwise the browser origin supplies
+  // the app namespace and the user's approval remains the authority boundary.
   let admittedAppKeys: AdmittedAppKey[] | undefined;
   if (appKeyCandidate) {
+    const originAppId = appIdForOrigin(typeof body.requestOrigin === 'string' ? body.requestOrigin : '');
+    const manifestBound = metadataTrust.status === 'origin-bound';
     const admission = admitAppKeys({
       siwe: body.siwe,
       resources: [...(appKeyResourcesOf(body.siwe) ?? []), ...blockOutsideApps],
       requestOrigin: body.requestOrigin,
-      reportedOrigin: body.reportedOrigin,
+      // A browser channel origin is sufficient when no signed manifest was
+      // verified. `reportedOrigin` remains the origin-bind input when a
+      // manifest was verified and an optional consistency check otherwise.
+      reportedOrigin: body.reportedOrigin ?? (manifestBound ? undefined : body.requestOrigin),
       siweOriginChecked,
       ticket: Boolean(ticket),
-      manifestBound: metadataTrust.status === 'origin-bound',
-      declaredAppId: boundDeclaredAppId,
-      declaredKeysAppId: boundDeclaredKeysAppId,
-      declaredKeys: boundDeclaredKeys,
+      manifestBound: manifestBound || originAppId !== null,
+      declaredAppId: manifestBound ? boundDeclaredAppId : originAppId ?? undefined,
+      declaredKeysAppId: manifestBound ? boundDeclaredKeysAppId : originAppId ?? undefined,
+      declaredKeys: manifestBound ? boundDeclaredKeys : originAppId ? {
+        status: 'valid',
+        declarations: [{ prefix: `apps/${originAppId}/`, abilities: ['key.create', 'decrypt', 'key.block', 'key.unblock'] }],
+      } : undefined,
       ownerDid: `did:pkh:eip155:${chainId}:${keyAddress}`,
       expirationTime: immutable.expirationTime,
     });
