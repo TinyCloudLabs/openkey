@@ -31,6 +31,7 @@
   import { shouldShowLoopbackHint } from '$lib/delegate-signing-hint';
   import { startCodeCountdown, remainingFromServerClock, type CodeCountdownSnapshot } from '$lib/delegate-code-countdown';
   import { closeThisTab, browserCloseEnvironment } from '$lib/delegate-close-tab';
+  import { siweExpiration } from '$lib/approval-expiry';
   import {
     parseSpaceSetup,
     spaceReadinessResult,
@@ -242,6 +243,36 @@
   // and clamping (30 days at most) are owned by the API to keep the source
   // of truth in one place; we just forward it.
   let expiryParam = $state($page.url.searchParams.get('expiry') || '');
+  // TC-2272: the time the user picked on the approval screen (ms from approval), or null for the
+  // requested one. A pick is sent as `expiry` with `expiryChosen`, which skips the 30-day clamp meant
+  // for link parameters; a signed request or device approval still bounds it to what was signed.
+  let expiryChoiceMs = $state<number | null>(null);
+  let expiryChosen = $state(false);
+  let requestedExpiryParam: string | null = null;
+  async function changeApprovalExpiry(ms: number | null) {
+    if (!selectedKey || !jwk) {
+      error = 'Missing key or JWK parameter.';
+      return;
+    }
+    requestedExpiryParam ??= expiryParam;
+    const previous = { choice: expiryChoiceMs, chosen: expiryChosen, param: expiryParam };
+    expiryChoiceMs = ms;
+    expiryChosen = ms !== null;
+    expiryParam = ms === null ? requestedExpiryParam : `${Math.round(ms / 1000)}s`;
+    updatingPermissions = true;
+    error = '';
+    try {
+      const data = await prepareDelegation(selectedKey, permissionsEdited ? selectedActionKeys : undefined);
+      applyPreparedDelegation(data);
+    } catch (e: any) {
+      expiryChoiceMs = previous.choice;
+      expiryChosen = previous.chosen;
+      expiryParam = previous.param;
+      error = e.message || 'Failed to change the expiry';
+    } finally {
+      updatingPermissions = false;
+    }
+  }
   const deviceTransactionId = approvalRequestMode ? '' : $page.url.searchParams.get('deviceTransactionId') || '';
   const deviceShareOrigin = $page.url.searchParams.get('deviceShareOrigin') || '';
   const deviceUserCode = $page.url.searchParams.get('deviceUserCode') || '';
@@ -626,6 +657,7 @@
     }
     if (expiryParam) {
       body.expiry = expiryParam;
+      if (expiryChosen) body.expiryChosen = true;
     }
     // The API refuses a device delegation outside the transaction's lifetime.
     if (deviceTransactionId) body.deviceTransactionId = deviceTransactionId;
@@ -715,7 +747,7 @@
       // bytes here means the user reviews text that no longer matches
       // what will be signed. Assign a fresh model object so Svelte
       // reactivity picks up the change.
-      reviewModel = { ...reviewModel, rawMessage: siweMessage };
+      reviewModel = { ...reviewModel, rawMessage: siweMessage, expiry: siweExpiration(siweMessage) ?? reviewModel.expiry };
     }
   }
 
@@ -734,6 +766,12 @@
     baselineSiweForReview = null;
     reviewModel = null;
     reviewSelection = new Set<string>();
+    // TC-2272: the next prepare starts again from what the request asked for, so the picker's
+    // requested window (and the signed-request maximum) is not the previous pick.
+    expiryChoiceMs = null;
+    expiryChosen = false;
+    if (requestedExpiryParam !== null) expiryParam = requestedExpiryParam;
+    requestedExpiryParam = null;
   }
 
   function showLinkWallet() {
@@ -1003,6 +1041,7 @@
       }
       if (expiryParam) {
         body.expiry = expiryParam;
+        if (expiryChosen) body.expiryChosen = true;
       }
       if (deviceTransactionId) body.deviceTransactionId = deviceTransactionId;
 
@@ -1625,6 +1664,12 @@
                     return;
                   }
                   return updatePermissions(nextServerKeys);
+                },
+                expiry: {
+                  chosenMs: expiryChoiceMs,
+                  // A signed CLI request or a device approval: the requester signed the longest time it accepts.
+                  bounded: approvalRequestMode || Boolean(deviceTransactionId),
+                  onChange: changeApprovalExpiry,
                 },
               }}
             />

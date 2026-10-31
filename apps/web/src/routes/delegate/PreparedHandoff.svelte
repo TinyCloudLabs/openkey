@@ -10,6 +10,7 @@
   import { timeUntilExpiry } from '$lib/siwe-parser';
   import { SERVER_REPLY_BODY, SERVER_REPLY_TITLE, ServerReplyError, hasSignResult, hasText } from '$lib/server-reply';
   import { fitsPreparedLinkBudget } from '$lib/prepared-link';
+  import { EXPIRY_PRESETS, LONG_EXPIRY_MS, LONG_EXPIRY_WARNING, expiryAtCapped, expiryLimitNote, formatExpiry, parseExpiry, requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
 
   let { encoded, onClear }: { encoded: string; onClear: () => void } = $props();
   const session = authClient.useSession();
@@ -57,7 +58,7 @@
     }
   });
   const signedExpiry = $derived.by(() => {
-    const value = handoff?.request.siwe.match(/^Expiration Time:[ \t]*(.+)$/m)?.[1]?.trim();
+    const value = (phase === 'preview' ? siweExpiration(previewMessage) : null) ?? siweExpiration(handoff?.request.siwe ?? '');
     if (!value) return null;
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? null : { local: date.toLocaleString(), relative: timeUntilExpiry(value).text };
@@ -66,6 +67,31 @@
   let keyChoices = $state<KeyChoice[]>([]);
   let signingChain = $state('');
   let model = $state<CapabilityReviewModel | null>(null);
+  // TC-2272: how long from approval the user chose; null keeps the app's own expiry.
+  let expiryChoiceMs = $state<number | null>(null);
+  const expiryRequestedMs = $derived(requestedExpiryMs(model?.immutable?.issuedAt, model?.immutable?.expirationTime));
+  const expiryShownMs = $derived(expiryChoiceMs ?? expiryRequestedMs);
+  let expiryOpen = $state(false);
+  let expiryText = $state('');
+  let expiryError = $state('');
+  const expiryTyped = $derived(expiryText.trim() === '' ? null : parseExpiry(expiryText));
+  const expiryWarn = $derived(expiryTyped?.ok ? expiryTyped.ms : expiryShownMs);
+  // A choice after the preview is sealed would not be in what gets signed.
+  const expiryEditable = $derived.by(() => phase === 'review' && !busy && !submitted);
+  function chooseExpiry(ms: number) {
+    if (!expiryEditable) return;
+    expiryChoiceMs = ms === expiryRequestedMs ? null : ms;
+    expiryText = '';
+    expiryError = '';
+    expiryOpen = false;
+  }
+  function applyExpiryText() {
+    if (!expiryEditable) return;
+    const parsed = parseExpiry(expiryText);
+    if (!parsed.ok) expiryError = parsed.message;
+    else if (expiryRequestedMs !== null && parsed.ms > expiryRequestedMs) expiryError = expiryLimitNote(expiryRequestedMs);
+    else chooseExpiry(parsed.ms);
+  }
   let selected = $state(new Set<string>());
   let contextToken = $state('');
   let previewToken = $state('');
@@ -277,7 +303,7 @@
       }
       const actions = selectedIds();
       if (!actions.length) throw new Error('Select at least one ability.');
-      const candidate = await post('authorize-sign-preview', { ticket, authorizationContextToken: contextToken, selectedActionIds: actions }, ['signedMessage', 'previewApprovalToken']);
+      const candidate = await post('authorize-sign-preview', { ticket, authorizationContextToken: contextToken, selectedActionIds: actions, ...(expiryChoiceMs === null ? {} : { expirationTime: expiryAtCapped(expiryChoiceMs, siweExpiration(handoff.request.siwe)) }) }, ['signedMessage', 'previewApprovalToken']);
       if (typeof candidate.previewApprovalToken !== 'string' || typeof candidate.signedMessage !== 'string') throw new Error('Missing sealed signing preview.');
       validatePreviewSelection(candidate, actions);
       previewToken = candidate.previewApprovalToken;
@@ -453,6 +479,33 @@
         <div class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm"><dt class="font-semibold">Access granted until</dt><dd>{signedExpiry.local} ({signedExpiry.relative})</dd></div>
       {:else}
         <p role="alert" class="rounded-lg border border-red-300 bg-red-50 p-3 text-sm">No expiry set</p>
+      {/if}
+      {#if expiryShownMs !== null}
+        <div class="space-y-2 text-sm" role="group" aria-label="Approval expiry">
+          <p>Approval expires: <strong>{formatExpiry(expiryShownMs)}</strong>
+            <button type="button" class="underline min-h-10" aria-expanded={expiryOpen && expiryEditable} disabled={!expiryEditable} onclick={() => { expiryOpen = !expiryOpen; }}>(Change)</button></p>
+          {#if expiryOpen && expiryEditable}
+            <div class="rounded-lg border p-3 space-y-2">
+              <div class="flex flex-wrap gap-2">
+                {#each EXPIRY_PRESETS.filter((preset) => expiryRequestedMs === null || preset.ms <= expiryRequestedMs) as preset (preset.label)}
+                  <button type="button" class="rounded-lg border px-3 py-2" aria-pressed={expiryShownMs === preset.ms} onclick={() => chooseExpiry(preset.ms)}>{preset.label}</button>
+                {/each}
+              </div>
+              <form class="space-y-1" onsubmit={(event) => { event.preventDefault(); applyExpiryText(); }}>
+                <label for="approval-expiry-custom" class="block text-xs font-semibold">Or type a time</label>
+                <div class="flex gap-2">
+                  <input id="approval-expiry-custom" class="min-w-0 flex-1 rounded-lg border px-2 py-2 text-base" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="5600s, 90m, 40d, 1y" value={expiryText} oninput={(event) => { expiryText = event.currentTarget.value; expiryError = ''; }} aria-invalid={expiryError ? 'true' : undefined} />
+                  <button type="submit" class="rounded-lg border px-3 py-2">Set</button>
+                </div>
+                {#if expiryError}<p role="alert" class="text-red-700">{expiryError}</p>{/if}
+              </form>
+              {#if expiryRequestedMs !== null}<p class="text-xs text-surface-600">{expiryLimitNote(expiryRequestedMs)}</p>{/if}
+            </div>
+          {/if}
+          {#if expiryWarn !== null && expiryWarn > LONG_EXPIRY_MS}
+            <p role="status" class="rounded-lg border border-amber-300 bg-amber-50 p-2 text-amber-900">{LONG_EXPIRY_WARNING}</p>
+          {/if}
+        </div>
       {/if}
       <h2 class="font-semibold">Requested abilities and spaces</h2>
       {#each model.permissions as grant}

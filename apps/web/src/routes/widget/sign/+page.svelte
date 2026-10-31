@@ -8,6 +8,7 @@
   import PopupSigningAdapter from '$lib/components/signing/popup-signing-adapter.svelte';
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
   import { requestedActionIds, selectionFromPreview } from '$lib/widget-selection';
+  import { expiryAt, siweExpiration } from '$lib/approval-expiry';
   import {
     parseCapabilityReview,
     parseSiweChainId,
@@ -71,6 +72,8 @@
   // (selection, signedMessage) pair. /authorize-sign requires this token.
   let previewApprovalToken = $state<string | null>(null);
   let previewing = $state(false);
+  // TC-2272: how long from approval the user chose; null keeps the app's own expiry.
+  let expiryChoiceMs = $state<number | null>(null);
   let previewApproved = $state(false);
   // Sol MAJOR-3 (continuation): when the SDK passes `externalSign: true`
   // on the sign request, the widget MUST NOT call /authorize-sign at
@@ -79,6 +82,7 @@
   // wallet on the previewed bytes and complete /authorize-sign with an
   // externalSignature.
   let externalSignMode = $state(false);
+  let expiryChangeable = $state(false);
 
   // Shared capability-review state — the SigningApproval component uses this
   // when the request looks like a TinyCloud SIWE-ReCap. Legacy plain
@@ -220,6 +224,9 @@
     // sign request. The widget renders the SAME SigningApproval UI in
     // both modes; only the "approve" behaviour differs.
     externalSignMode = data.externalSign === true;
+    // TC-2272: only an SDK that accepts a different signed expiry sends this; without it the
+    // approval shows no expiry control and the app's own expiry is signed.
+    expiryChangeable = data.expiryChangeable === true;
     // Capture the caller-supplied presentation envelope. It has already
     // been validated + size-bounded by the widget transport; here we only
     // stash the resulting object so the review model can render it. Trust
@@ -515,7 +522,7 @@
       // bytes change after preview; categorized grants and edit/reset stay
       // visible through the approval that actually signs them.
       reviewModel = previewSignedMessage
-        ? { ...nextReviewModel, rawMessage: previewSignedMessage }
+        ? { ...nextReviewModel, rawMessage: previewSignedMessage, expiry: siweExpiration(previewSignedMessage) ?? nextReviewModel.expiry }
         : nextReviewModel;
       if (reviewSourceMessage !== message) {
         reviewSelection = defaultSelection(reviewModel);
@@ -704,6 +711,8 @@
           body: JSON.stringify({
             authorizationContextToken: token,
             selectedActionIds: selectedIds,
+            // TC-2272: only when the user changed it; the app's own expiry stays the default.
+            ...(expiryChoiceMs === null ? {} : { expirationTime: expiryAt(expiryChoiceMs) }),
           }),
         },
       );
@@ -1049,6 +1058,15 @@
           // (e.g. sendResponse) still see the up-to-date selection.
           reviewSelection = next;
         },
+        expiry: canUseAuthorizeSignFn() && expiryChangeable
+          ? {
+              chosenMs: expiryChoiceMs,
+              onChange: (ms) => {
+                expiryChoiceMs = ms;
+                invalidatePreviewForSelectionEdit();
+              },
+            }
+          : undefined,
         invalidatePreview: invalidatePreviewForSelectionEdit,
       }}
     />

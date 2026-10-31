@@ -67,8 +67,9 @@ export class ApprovalResultService {
       input.host !== request.nodeOrigin || !sameJson(input.permissions, request.permissions)) {
       throw new ApprovalResultError('request_binding', 'Delegation binding does not match the immutable approval request', 400);
     }
-    if (input.expiryMs !== undefined && input.expiryMs !== request.grantLifetimeSeconds * 1000) {
-      throw new ApprovalResultError('request_binding', 'Grant lifetime does not match the immutable approval request', 400);
+    // The requester signed the longest lifetime it will accept; the owner may pick a shorter one.
+    if (input.expiryMs !== undefined && input.expiryMs > request.grantLifetimeSeconds * 1000) {
+      throw new ApprovalResultError('request_binding', 'Grant lifetime exceeds the immutable approval request', 400);
     }
     if (input.signedSiwe !== undefined) {
       let siwe: SiweMessage;

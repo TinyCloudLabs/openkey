@@ -75,9 +75,11 @@ import {
   issueAuthorizationContext,
   issuePreviewApproval,
   peekAuthorizationContext,
+  peekPreviewApprovalExpiry,
   type AuthorizationContextToken,
   type AuthorizationContextClaim,
 } from '../services/authorization-signing';
+import { MIN_EXPIRATION_LEAD_MS, validateExpirationOverride, withExpirationTime } from '../services/approval-expiry';
 import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
 import { checkSiweOrigin } from '../services/siwe-origin';
 import {
@@ -360,6 +362,8 @@ const MS_UNIT_FACTORS: Record<string, number> = {
   d: 24 * 60 * 60 * 1000,
   w: 7 * 24 * 60 * 60 * 1000,
 };
+/** The last second a SIWE timestamp (four-digit year) can name. */
+const LATEST_SIWE_TIME_MS = Date.UTC(9999, 11, 31, 23, 59, 59);
 
 /**
  * Parse a caller-provided expiry into a clamped ms count.
@@ -370,8 +374,12 @@ const MS_UNIT_FACTORS: Record<string, number> = {
  *    the popular `ms` package, inlined to avoid a new dep)
  *
  * Result is clamped to [MIN, MAX]. Bad input throws a 400-friendly Error.
+ * A link-supplied value is clamped to [MIN, MAX] (TC-547: link parameters come
+ * from whoever made the link). A value the user picked on the approval screen
+ * (`userChosen`) is not clamped to MAX; the approval-request and device
+ * windows still bound it to what the requester signed.
  */
-function resolveDelegationExpiryMs(input: unknown): number {
+function resolveDelegationExpiryMs(input: unknown, userChosen = false): number {
   if (input === undefined || input === null || input === '') {
     return DEFAULT_DELEGATION_EXPIRY_MS;
   }
@@ -401,6 +409,12 @@ function resolveDelegationExpiryMs(input: unknown): number {
   }
   if (!Number.isFinite(raw) || raw <= 0) {
     throw new Error(`expiry must be a positive number, got ${input}`);
+  }
+  if (userChosen) {
+    // A time the user picked is their own choice: no 30-day link clamp, only
+    // the minimum and the last date a SIWE timestamp can hold.
+    if (Date.now() + raw > LATEST_SIWE_TIME_MS) throw new Error('expiry is too far in the future');
+    return Math.max(MIN_DELEGATION_EXPIRY_MS, raw);
   }
   return Math.min(MAX_DELEGATION_EXPIRY_MS, Math.max(MIN_DELEGATION_EXPIRY_MS, raw));
 }
@@ -1244,6 +1258,7 @@ delegateRouter.post('/', async (c) => {
     deviceTransactionId?: unknown;
     approvalRequestId?: string;
     expiry?: unknown;
+    expiryChosen?: unknown;
     reason?: unknown;
     /**
      * Blocker 1: versioned managed-approval path. When supplied together
@@ -1301,7 +1316,7 @@ delegateRouter.post('/', async (c) => {
   }
   let expiryMs: number;
   try {
-    expiryMs = resolveDelegationExpiryMs(body.expiry);
+    expiryMs = resolveDelegationExpiryMs(body.expiry, body.expiryChosen === true);
   } catch (err) {
     return c.json(delegateErrorResponse(err, 'Invalid expiry', 'invalid_expiry'), 400);
   }
@@ -1745,6 +1760,8 @@ delegateRouter.post('/prepare', async (c) => {
     permissionKeys?: unknown;
     permissions?: unknown;
     expiry?: unknown;
+    /** TC-2272: true when `expiry` is the time the user picked on the approval screen, not a link parameter. */
+    expiryChosen?: unknown;
     reason?: unknown;
     deviceTransactionId?: unknown;
     approvalRequestId?: string;
@@ -1777,7 +1794,7 @@ delegateRouter.post('/prepare', async (c) => {
   }
   let expiryMs: number;
   try {
-    expiryMs = resolveDelegationExpiryMs(body.expiry);
+    expiryMs = resolveDelegationExpiryMs(body.expiry, body.expiryChosen === true);
   } catch (err) {
     return c.json(delegateErrorResponse(err, 'Invalid expiry', 'invalid_expiry'), 400);
   }
@@ -3142,6 +3159,22 @@ delegateRouter.post('/authorize-sign', async (c) => {
     signedMessage = narrowed.siwe;
   }
 
+  // TC-2272: the expiry the user chose at preview is sealed in the preview
+  // approval's bytes. Re-apply it here; checkPreviewApproval then holds the
+  // signed bytes to exactly those bytes.
+  const sealedExpiry = peekPreviewApprovalExpiry(body.previewApprovalToken!);
+  if (sealedExpiry !== undefined && sealedExpiry !== immutable.expirationTime) {
+    const checked = validateExpirationOverride(sealedExpiry, immutable, 0);
+    const withExpiry = checked.ok ? withExpirationTime(signedMessage, checked.value) : null;
+    if (!withExpiry) {
+      return c.json(
+        { error: 'The chosen approval expiry is no longer in the future — preview again', code: 'invalid_expiration_time' },
+        400,
+      );
+    }
+    signedMessage = withExpiry;
+  }
+
   // Validate the single-use preview approval without consuming it. The
   // final selection and bytes must match exactly what the user previewed.
   const previewCheck = checkPreviewApproval({
@@ -3278,6 +3311,8 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
   const body = await c.req.json<{
     authorizationContextToken?: string;
     selectedActionIds?: unknown;
+    /** TC-2272: the approval expiry the user chose (ISO-8601 UTC); the app's own is the default. */
+    expirationTime?: unknown;
     ticket?: string;
     transportVersion?: number;
     callback?: unknown;
@@ -3334,6 +3369,17 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     chainId,
     spaceId: bound.spaceId,
   });
+  let expirationOverride: string | undefined;
+  if (body.expirationTime !== undefined) {
+    const checked = validateExpirationOverride(body.expirationTime, immutable, MIN_EXPIRATION_LEAD_MS);
+    if (!checked.ok) {
+      return c.json(
+        { error: 'expirationTime must be a future ISO-8601 UTC time after the request was issued', code: 'invalid_expiration_time' },
+        400,
+      );
+    }
+    expirationOverride = checked.value;
+  }
   if (appKeyGroupPartial(
     admittedAppKeyActionIds(originalEntries, bound.admittedAppKeys, computeActionKey),
     allowedActionIdSet(originalEntries),
@@ -3435,6 +3481,16 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
       );
     }
     preparedSignedMessage = previewNarrowed.siwe;
+  }
+
+  // TC-2272: the user's chosen approval expiry replaces the Expiration Time
+  // line of the bytes to sign; the preview approval seals the result.
+  if (expirationOverride !== undefined) {
+    const withExpiry = withExpirationTime(preparedSignedMessage, expirationOverride);
+    if (!withExpiry) {
+      return c.json({ error: 'Bound SIWE has no single Expiration Time line', code: 'bound_siwe_parse_failed' }, 400);
+    }
+    preparedSignedMessage = withExpiry;
   }
 
   // Preview grants + selection. `service` is canonicalized to the

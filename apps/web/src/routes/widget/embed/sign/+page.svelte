@@ -10,6 +10,7 @@
   import IframeSigningAdapter from '$lib/components/signing/iframe-signing-adapter.svelte';
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
   import { requestedActionIds, selectionFromPreview } from '$lib/widget-selection';
+  import { expiryAt, siweExpiration } from '$lib/approval-expiry';
   import {
     parseCapabilityReview,
     parseSiweChainId,
@@ -101,9 +102,12 @@
   let previewToken = $state<string | null>(null);
   let previewApprovalToken = $state<string | null>(null);
   let previewing = $state(false);
+  // TC-2272: how long from approval the user chose; null keeps the app's own expiry.
+  let expiryChoiceMs = $state<number | null>(null);
   let previewApproved = $state(false);
   // Sol MAJOR-3 (continuation): external-key review mode. See widget/sign.
   let externalSignMode = $state(false);
+  let expiryChangeable = $state(false);
 
   const isAuthenticated = $derived(inIframe ? embedAuthenticated : !!$session.data);
 
@@ -255,6 +259,9 @@
     keyId = typeof data.keyId === 'string' ? data.keyId : null;
     // Sol MAJOR-3 (continuation): capture the externalSign flag.
     externalSignMode = data.externalSign === true;
+    // TC-2272: only an SDK that accepts a different signed expiry sends this; without it the
+    // approval shows no expiry control and the app's own expiry is signed.
+    expiryChangeable = data.expiryChangeable === true;
     // Envelope (display-only). Widget transport already validated + size-
     // bounded the object. Trust decision is deferred to /authorize-sign-
     // prepare and populated into serverMetadataTrust below.
@@ -600,7 +607,7 @@
         serverVerifiedManifest?.declaredAppScope,
       );
       reviewModel = previewSignedMessage
-        ? { ...nextReviewModel, rawMessage: previewSignedMessage }
+        ? { ...nextReviewModel, rawMessage: previewSignedMessage, expiry: siweExpiration(previewSignedMessage) ?? nextReviewModel.expiry }
         : nextReviewModel;
       if (reviewSourceMessage !== message) {
         reviewSelection = defaultSelection(reviewModel);
@@ -769,6 +776,8 @@
           body: JSON.stringify({
             authorizationContextToken: token,
             selectedActionIds: selectedIds,
+            // TC-2272: only when the user changed it; the app's own expiry stays the default.
+            ...(expiryChoiceMs === null ? {} : { expirationTime: expiryAt(expiryChoiceMs) }),
           }),
         }),
       );
@@ -1076,6 +1085,15 @@
           onSelectionEdited: (next) => {
             reviewSelection = next;
           },
+          expiry: canUseAuthorizeSignFn() && expiryChangeable
+            ? {
+                chosenMs: expiryChoiceMs,
+                onChange: (ms) => {
+                  expiryChoiceMs = ms;
+                  invalidatePreviewForSelectionEdit();
+                },
+              }
+            : undefined,
           invalidatePreview: invalidatePreviewForSelectionEdit,
         }}
       />

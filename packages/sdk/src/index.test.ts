@@ -892,3 +892,40 @@ describe('iframe to popup fallback without popup support', () => {
     });
   });
 });
+
+describe('authorizeTinyCloud expiryChangeable opt-in (TC-2272)', () => {
+  const siwe = 'app wants you to sign in with your Ethereum account:\n0xfirst';
+  async function requestFor(extra: Record<string, unknown>, keyType: 'MANAGED' | 'EXTERNAL' = 'MANAGED') {
+    const openkey = Object.create(OpenKey.prototype) as OpenKey;
+    (openkey as any).activeFlowCancellations = new Set();
+    (openkey as any).lastAuth = { address: '0xfirst', keyId: 'key-first', keyType };
+    (openkey as any).fetchKnownKeysIfNeeded = async () => [];
+    const requests: any[] = [];
+    (openkey as any).openFlow = async (_action: string, request: any) => {
+      requests.push(request);
+      return {
+        signature: '0xsig', address: '0xfirst', signedMessage: siwe, selectedActionKeys: [], permissions: [],
+        authorizationContextToken: 'c', previewApprovalToken: 'p', selectedActionIds: [],
+      };
+    };
+    (openkey as any).finalizeExternalAuthorization = async () => ({});
+    try {
+      await openkey.authorizeTinyCloud({ protocolVersion: 1, siwe, jwk: {}, ...extra } as any);
+    } catch {
+      // The external path needs a wallet after the widget step; only the widget request matters here.
+    }
+    return requests[0];
+  }
+
+  test('reaches the widget request only when the app opts in with literally true', async () => {
+    expect(await requestFor({ expiryChangeable: true })).toMatchObject({ type: 'openkey:sign:request', expiryChangeable: true });
+    for (const value of [undefined, false, 'true', 1, null]) {
+      expect(await requestFor({ expiryChangeable: value })).not.toHaveProperty('expiryChangeable');
+    }
+  });
+
+  test('also reaches the widget on the external-key path', async () => {
+    expect(await requestFor({ expiryChangeable: true }, 'EXTERNAL')).toMatchObject({ externalSign: true, expiryChangeable: true });
+    expect(await requestFor({}, 'EXTERNAL')).not.toHaveProperty('expiryChangeable');
+  });
+});

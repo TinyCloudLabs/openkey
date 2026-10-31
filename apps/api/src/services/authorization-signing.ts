@@ -29,6 +29,7 @@
 
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import type { AdmittedAppKey } from "./app-key-refusal";
+import { expirationTimeOf } from "./approval-expiry";
 
 const CONTEXT_TTL_MS = 5 * 60 * 1000;
 
@@ -938,6 +939,17 @@ export function issuePreviewApproval(
     expiresAt: new Date(stored.expiresAt).toISOString(),
     signedMessageDigest: digest,
   };
+}
+
+/**
+ * The Expiration Time the sealed preview bytes carry. /authorize-sign takes
+ * the user's chosen expiry from here, so an external signer that signed the
+ * previewed bytes needs no extra field. `checkPreviewApproval` still holds the
+ * signed bytes to the sealed digest.
+ */
+export function peekPreviewApprovalExpiry(token: string): string | undefined {
+  const stored = previewApprovals.get(token);
+  return stored ? expirationTimeOf(stored.signedMessage) : undefined;
 }
 
 export type PreviewApprovalCheckError =
