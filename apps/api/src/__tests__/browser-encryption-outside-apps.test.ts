@@ -160,8 +160,8 @@ function prepareBody(siwe: string, origin = ORIGIN) {
   return { keyId: keyRecord.id, siwe, jwk, host: HOST, requestOrigin: origin, reportedOrigin: origin };
 }
 
-const NOT_DECLARED = "This website doesn't list the key this app asked for, so OpenKey didn't approve it.";
-const REFUSED = { error: NOT_DECLARED, code: 'app_key_grant_refused' };
+// TC-2291: the refusal is identified by its code (the owner-visible sentence is copy, not pinned here).
+const REFUSED = { error: expect.any(String), code: 'app_key_grant_refused' };
 
 // Each request is one a third-party site could send with a single consent click.
 const OUTSIDE_APPS: Array<[string, Record<string, string[]>]> = [
