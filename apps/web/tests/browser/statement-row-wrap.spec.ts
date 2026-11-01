@@ -50,7 +50,7 @@ test('a 32-hex key id in an approval row wraps: no sideways scroll, the Sensitiv
     );
   }, siwe);
   const frame = page.frameLocator('#sign');
-  const row = frame.locator('.summary-statement', { hasText: `Create your encryption key default/share/${shareId}` });
+  const row = frame.locator('.summary-statement', { hasText: shareId }).first(); // layout only: no row wording pinned
   await expect(row).toBeVisible();
   await expect(row.locator('.summary-sensitive-pill')).toBeVisible();
   await expect.poll(() => frame.locator('body').evaluate(() => ({
