@@ -58,10 +58,10 @@ const KEY_SENTENCE = {
 } as const;
 
 const PREFIX_SENTENCE = {
-  create: "Create your own encryption keys in `qa/`",
+  create: "Create your own encryption keys in qa/",
   block: "Block keys in default/qa/ from decrypting",
   unblock: "Let all keys in default/qa/ decrypt again",
-  decrypt: "Decrypt data locked with your keys in `qa/`",
+  decrypt: "Decrypt data locked with your keys in qa/",
   delete: "Refused: only you can delete the key qa/",
 } as const;
 
@@ -434,4 +434,46 @@ describe("failing encryption URNs: every displayed string is printable ASCII", (
       });
     });
   }
+});
+
+describe("own key prefix rows carry no backquotes", () => {
+  it.each([
+    ["create", ABILITY.create],
+    ["decrypt", ABILITY.decrypt],
+  ] as const)("a %s row on a prefix shows the path as plain text", (_verb, ability) => {
+    for (const prefix of ["qa/", "docs/q1/", "share/x/"]) {
+      const row = buildStatement(namedGrant(`${NETWORK}/${prefix}`, [ability]));
+      expect(row.primaryText).toContain(` ${prefix}`);
+      expect(row.primaryText).not.toContain("`");
+    }
+  });
+});
+
+describe("the default share/ prefix uses plain words", () => {
+  const SHARE = `${NETWORK}/share/`;
+
+  it("create reads 'Create keys for files you share', with no path", () => {
+    const row = buildStatement(namedGrant(SHARE, [ABILITY.create]));
+    expect(row.primaryText).toBe("Create keys for files you share");
+    expect(row.primaryText).not.toContain("share/");
+  });
+
+  it("only the owner's default share/ prefix gets it", () => {
+    expect(buildStatement(namedGrant(`${NETWORK}/share/x/`, [ABILITY.create])).primaryText)
+      .toBe("Create your own encryption keys in share/x/");
+    expect(buildStatement(namedGrant(`${NETWORK}/share`, [ABILITY.create])).primaryText)
+      .toBe("Create your encryption key default/share");
+    expect(buildStatement(namedGrant(`${NETWORK.replace(/:default$/, ":other")}/share/`, [ABILITY.create])).primaryText)
+      .toBe("Create your encryption keys in other/share/");
+    expect(buildStatement({ ...namedGrant(SHARE, [ABILITY.create]), ownedBySelf: false }).primaryText)
+      .not.toBe("Create keys for files you share");
+  });
+
+  it("a create and a decrypt on share/ are two rows", () => {
+    const rows = buildStatements(namedGrant(SHARE, [ABILITY.create, ABILITY.decrypt]));
+    expect(rows.map((row) => row.primaryText)).toEqual([
+      "Create keys for files you share",
+      "Decrypt data locked with your keys in share/",
+    ]);
+  });
 });

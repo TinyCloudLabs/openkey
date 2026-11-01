@@ -25,6 +25,7 @@ import {
   LITERAL_TRUNCATE_CHARS,
   NAMED_KEY_STATEMENTS,
   OWN_KEY_PREFIX_STATEMENTS,
+  SHARE_KEY_PREFIX_CREATE_STATEMENT,
   appKeyStatementText,
   renderLiteral,
   renderNamedKeySentence,
@@ -629,6 +630,10 @@ function buildNamedKeyStatement(
     return fallbackStatement(grant);
   }
   if (grant.ownedBySelf !== true) return fallbackStatement(grant);
+  if (parsed.kind === "prefix" && parsed.network === "default" &&
+    parsed.keyPath === "share/" && verb === "create") {
+    return { primaryText: SHARE_KEY_PREFIX_CREATE_STATEMENT, service: grant.service, resource };
+  }
   const template = parsed.kind === "prefix" && parsed.network === "default" &&
     (verb === "create" || verb === "decrypt")
     ? OWN_KEY_PREFIX_STATEMENTS[verb]
@@ -1675,4 +1680,24 @@ export function sensitiveCallout(count: number): string {
   return count === 1
     ? "1 permission reaches secrets or decryption"
     : `${count} permissions reach secrets or decryption`;
+}
+
+/**
+ * The number the sensitive-grant callout shows: the rows of the approval list
+ * that are marked Sensitive and belong to a grant that reaches secret data or
+ * decryption (`grantReachesSecretDataOrDecryption`). The list shows one row per
+ * distinct text, and a grant with several actions is several rows, so counting
+ * grants put "2 permissions" above three Sensitive rows. A Sensitive row of a
+ * grant that reaches neither (a new space, say) is not about secrets or
+ * decryption and stays out of the count.
+ */
+export function sensitiveRowCount(grants: readonly CapabilityGrant[]): number {
+  const counted = new Set<string>();
+  for (const grant of grants) {
+    if (!grantReachesSecretDataOrDecryption(grant)) continue;
+    for (const row of buildStatements(grant)) {
+      if ((row.severity ?? grant.severity) === "sensitive") counted.add(row.primaryText);
+    }
+  }
+  return counted.size;
 }

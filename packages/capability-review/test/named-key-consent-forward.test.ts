@@ -55,7 +55,7 @@ test('a foreign or unidentified prefix does not claim that its keys belong to th
 
 test('self-owned folder decrypt states that keys created later are included', () => {
   expect(buildStatement(grant(`${base}/qa/`, [decrypt], true)).primaryText).toBe(
-    'Decrypt data locked with your keys in `qa/`',
+    'Decrypt data locked with your keys in qa/',
   );
 });
 
