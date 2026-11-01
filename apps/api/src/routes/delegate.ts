@@ -27,6 +27,7 @@ import {
 import { activateSessionWithinTimeout } from '../services/tinycloud-node-timeouts';
 import { BOOTSTRAP_SPACE_NAMES, CAPABILITIES } from '@tinycloud/bootstrap';
 import {
+  DelegateRequestError,
   delegateErrorResponse,
   normalizeDelegateReason,
   signedSiweExpirationTime,
@@ -75,9 +76,11 @@ import {
   issueAuthorizationContext,
   issuePreviewApproval,
   peekAuthorizationContext,
+  peekPreviewApprovalExpiry,
   type AuthorizationContextToken,
   type AuthorizationContextClaim,
 } from '../services/authorization-signing';
+import { MIN_EXPIRATION_LEAD_MS, validateExpirationOverride, withExpirationTime } from '../services/approval-expiry';
 import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
 import { checkSiweOrigin } from '../services/siwe-origin';
 import {
@@ -89,12 +92,13 @@ import {
   appKeyRefusalCode,
   appKeyRefusalForSiwe,
   blockResourcesOutsideApps,
+  encryptionOutsideAppsRefusal,
   appKeyRefusalMessage,
   appKeyRefusalStatus,
   appKeyResourcesOf,
   type AdmittedAppKey,
 } from '../services/app-key-refusal';
-import { admitAppKeys, appKeyAdmissionRefusal, type ManifestKeys } from '../services/app-key-gate';
+import { admitAppKeys, appIdForOrigin, appKeyAdmissionRefusal, type ManifestKeys } from '../services/app-key-gate';
 import { fetchAndBindWellKnownManifest } from '../services/manifest-origin-fetch';
 import { signManagedKey, unsealManagedKey } from '../services/managed-key-signing';
 import {
@@ -342,12 +346,12 @@ interface OpenKeySigningRequestBody {
  */
 const DEFAULT_DELEGATION_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
 /**
- * Upper bound on caller-supplied expiry for `/api/delegate` and
+ * Upper bound on a link-supplied expiry for `/api/delegate` and
  * `/api/delegate/prepare` (TC-547). These routes back the `/delegate` page,
  * whose link parameters (including `expiry`) come from whoever made the link,
- * so a longer request is clamped to this ceiling. It matches the device-flow
- * ceiling (`DEVICE_AUTH_MAX_DELEGATION_TTL_MS`); longer-lived access is
- * renewed by approving a new link.
+ * so a longer request is clamped to this ceiling; longer-lived access is
+ * renewed by approving a new link. A signed approval request or device request
+ * states its own maximum and is held to it by its window check instead (TC-2274).
  */
 const MAX_DELEGATION_EXPIRY_MS = 30 * 24 * 60 * 60 * 1000;
 const MIN_DELEGATION_EXPIRY_MS = 60 * 1000; // 1 minute
@@ -360,6 +364,8 @@ const MS_UNIT_FACTORS: Record<string, number> = {
   d: 24 * 60 * 60 * 1000,
   w: 7 * 24 * 60 * 60 * 1000,
 };
+/** The last second a SIWE timestamp (four-digit year) can name. */
+const LATEST_SIWE_TIME_MS = Date.UTC(9999, 11, 31, 23, 59, 59);
 
 /**
  * Parse a caller-provided expiry into a clamped ms count.
@@ -370,8 +376,12 @@ const MS_UNIT_FACTORS: Record<string, number> = {
  *    the popular `ms` package, inlined to avoid a new dep)
  *
  * Result is clamped to [MIN, MAX]. Bad input throws a 400-friendly Error.
+ * A link-supplied value is clamped to [MIN, MAX] (TC-547: link parameters come
+ * from whoever made the link). A value the user picked on the approval screen
+ * (`userChosen`) is not clamped to MAX; the approval-request and device
+ * windows still bound it to what the requester signed.
  */
-function resolveDelegationExpiryMs(input: unknown): number {
+function resolveDelegationExpiryMs(input: unknown, userChosen = false): number {
   if (input === undefined || input === null || input === '') {
     return DEFAULT_DELEGATION_EXPIRY_MS;
   }
@@ -402,7 +412,49 @@ function resolveDelegationExpiryMs(input: unknown): number {
   if (!Number.isFinite(raw) || raw <= 0) {
     throw new Error(`expiry must be a positive number, got ${input}`);
   }
+  if (userChosen) {
+    // A time the user picked is their own choice: no 30-day link clamp, only
+    // the minimum and the last date a SIWE timestamp can hold.
+    if (Date.now() + raw > LATEST_SIWE_TIME_MS) throw new Error('expiry is too far in the future');
+    return Math.max(MIN_DELEGATION_EXPIRY_MS, raw);
+  }
   return Math.min(MAX_DELEGATION_EXPIRY_MS, Math.max(MIN_DELEGATION_EXPIRY_MS, raw));
+}
+
+/**
+ * The lifetime a /prepare or /api/delegate body asks for. A link's own `expiry` is clamped to 30 days
+ * (TC-547). A time the user picked on the screen (`expiryChosen`) skips that clamp, but on a plain link
+ * it may not be longer than the link's own expiry (`linkExpiry`, after the clamp) unless the link opted
+ * in with `expiryChangeable: true`: a CLI that built the link refuses a delegation longer than it asked
+ * for (OPENKEY_EXPIRY_EXCEEDED) and saves nothing. Signed approval requests and device transactions are
+ * held to what the requester signed by their own window checks.
+ */
+function resolveRequestExpiryMs(body: {
+  expiry?: unknown;
+  expiryChosen?: unknown;
+  linkExpiry?: unknown;
+  expiryChangeable?: unknown;
+  approvalRequestId?: unknown;
+  deviceTransactionId?: unknown;
+}): number {
+  const picked = body.expiryChosen === true;
+  // `null` and '' are not a signed request: only a real id puts the request under its own window check.
+  const plainLink = !body.approvalRequestId && !body.deviceTransactionId;
+  // A signed approval request or device transaction states its own longest lifetime and is held to it by
+  // its window check; only a bare link's `expiry` gets the 30-day link clamp (TC-547).
+  const expiryMs = resolveDelegationExpiryMs(body.expiry, picked || !plainLink);
+  if (picked && plainLink && body.expiryChangeable !== true) {
+    const linkMs = resolveDelegationExpiryMs(body.linkExpiry);
+    if (expiryMs > linkMs) {
+      const days = linkMs / 86_400_000;
+      const allowed = Number.isInteger(days) ? `${days}d` : `${Math.round(linkMs / 60_000)}m`;
+      throw new DelegateRequestError(
+        'expiry_exceeds_link',
+        `This link allows an approval of up to ${allowed}. To allow longer, start again with a longer expiry.`,
+      );
+    }
+  }
+  return expiryMs;
 }
 
 /**
@@ -1244,6 +1296,9 @@ delegateRouter.post('/', async (c) => {
     deviceTransactionId?: unknown;
     approvalRequestId?: string;
     expiry?: unknown;
+    expiryChosen?: unknown;
+    linkExpiry?: unknown;
+    expiryChangeable?: unknown;
     reason?: unknown;
     /**
      * Blocker 1: versioned managed-approval path. When supplied together
@@ -1301,7 +1356,7 @@ delegateRouter.post('/', async (c) => {
   }
   let expiryMs: number;
   try {
-    expiryMs = resolveDelegationExpiryMs(body.expiry);
+    expiryMs = resolveRequestExpiryMs(body);
   } catch (err) {
     return c.json(delegateErrorResponse(err, 'Invalid expiry', 'invalid_expiry'), 400);
   }
@@ -1745,6 +1800,11 @@ delegateRouter.post('/prepare', async (c) => {
     permissionKeys?: unknown;
     permissions?: unknown;
     expiry?: unknown;
+    /** TC-2272: true when `expiry` is the time the user picked on the approval screen, not a link parameter. */
+    expiryChosen?: unknown;
+    /** The link's own `expiry` (before any pick) and its `expiryChangeable=true` opt-in. */
+    linkExpiry?: unknown;
+    expiryChangeable?: unknown;
     reason?: unknown;
     deviceTransactionId?: unknown;
     approvalRequestId?: string;
@@ -1777,7 +1837,7 @@ delegateRouter.post('/prepare', async (c) => {
   }
   let expiryMs: number;
   try {
-    expiryMs = resolveDelegationExpiryMs(body.expiry);
+    expiryMs = resolveRequestExpiryMs(body);
   } catch (err) {
     return c.json(delegateErrorResponse(err, 'Invalid expiry', 'invalid_expiry'), 400);
   }
@@ -2368,6 +2428,8 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
      * which only drives the optional manifest origin-bind.
      */
     requestOrigin?: string;
+    /** TC-2272: the app sends `expiryChangeable: true` when it accepts a different signed expiry. */
+    expiryChangeable?: unknown;
     ticket?: string;
     transportVersion?: number;
     callback?: unknown;
@@ -2460,6 +2522,14 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       return c.json(appKeyRefusalBody(prepareSignAppKeyRefusal, ticket ? 'non_browser' : 'browser'), appKeyRefusalStatus(prepareSignAppKeyRefusal));
     }
     appKeyCandidate = true;
+  }
+  // A website's own sign-in (no ticket) may name encryption `decrypt` or
+  // `key.create` only under its own `apps/` prefix. Anything else, a bare
+  // network included, is refused before a context is issued. A ticket request
+  // (the command line's `--keys <folder>`) is not checked here.
+  const prepareEncryptionRefusal = ticket ? null : encryptionOutsideAppsRefusal(body.siwe);
+  if (prepareEncryptionRefusal) {
+    return c.json(appKeyRefusalBody(prepareEncryptionRefusal, 'browser'), appKeyRefusalStatus(prepareEncryptionRefusal));
   }
   // `key.block` and `key.unblock` on a key or prefix outside `apps/` take the
   // same admission; no manifest lists such a key, so they are refused there.
@@ -2683,22 +2753,30 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     }
   }
 
-  // `apps/` encryption key grants are admitted only here, where the manifest
-  // that was fetched from the requesting origin is at hand. Every failure is a
-  // refusal: unlike the manifest label above, nothing falls back to `unsigned`.
+  // `apps/` encryption key grants are admitted here. A successfully bound
+  // manifest may narrow the app's keys; otherwise the browser origin supplies
+  // the app namespace and the user's approval remains the authority boundary.
   let admittedAppKeys: AdmittedAppKey[] | undefined;
   if (appKeyCandidate) {
+    const originAppId = appIdForOrigin(typeof body.requestOrigin === 'string' ? body.requestOrigin : '');
+    const manifestBound = metadataTrust.status === 'origin-bound';
     const admission = admitAppKeys({
       siwe: body.siwe,
       resources: [...(appKeyResourcesOf(body.siwe) ?? []), ...blockOutsideApps],
       requestOrigin: body.requestOrigin,
-      reportedOrigin: body.reportedOrigin,
+      // A browser channel origin is sufficient when no signed manifest was
+      // verified. `reportedOrigin` remains the origin-bind input when a
+      // manifest was verified and an optional consistency check otherwise.
+      reportedOrigin: body.reportedOrigin ?? (manifestBound ? undefined : body.requestOrigin),
       siweOriginChecked,
       ticket: Boolean(ticket),
-      manifestBound: metadataTrust.status === 'origin-bound',
-      declaredAppId: boundDeclaredAppId,
-      declaredKeysAppId: boundDeclaredKeysAppId,
-      declaredKeys: boundDeclaredKeys,
+      manifestBound: manifestBound || originAppId !== null,
+      declaredAppId: manifestBound ? boundDeclaredAppId : originAppId ?? undefined,
+      declaredKeysAppId: manifestBound ? boundDeclaredKeysAppId : originAppId ?? undefined,
+      declaredKeys: manifestBound ? boundDeclaredKeys : originAppId ? {
+        status: 'valid',
+        declarations: [{ prefix: `apps/${originAppId}/`, abilities: ['key.create', 'decrypt', 'key.block', 'key.unblock'] }],
+      } : undefined,
       ownerDid: `did:pkh:eip155:${chainId}:${keyAddress}`,
       expirationTime: immutable.expirationTime,
     });
@@ -2738,6 +2816,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       // the per-sign-in count record; never for trust or authority.
       appOrigin: normalizeAppOrigin(body.reportedOrigin) ?? undefined,
       admittedAppKeys,
+      expiryChangeable: body.expiryChangeable === true,
     });
   } catch (issueErr) {
     logError('warn', 'delegate_authorization_context_issue_failed', issueErr);
@@ -3134,6 +3213,25 @@ delegateRouter.post('/authorize-sign', async (c) => {
     signedMessage = narrowed.siwe;
   }
 
+  // TC-2272: the expiry the user chose at preview is sealed in the preview
+  // approval's bytes. Re-apply it here; checkPreviewApproval then holds the
+  // signed bytes to exactly those bytes.
+  const sealedExpiry = peekPreviewApprovalExpiry(body.previewApprovalToken!, {
+    userId: user.id,
+    authorizationContextToken: body.authorizationContextToken,
+  });
+  if (sealedExpiry !== undefined && sealedExpiry !== immutable.expirationTime) {
+    const checked = validateExpirationOverride(sealedExpiry, immutable, 0);
+    const withExpiry = checked.ok ? withExpirationTime(signedMessage, checked.value) : null;
+    if (!withExpiry) {
+      return c.json(
+        { error: 'The chosen approval expiry is no longer in the future — preview again', code: 'invalid_expiration_time' },
+        400,
+      );
+    }
+    signedMessage = withExpiry;
+  }
+
   // Validate the single-use preview approval without consuming it. The
   // final selection and bytes must match exactly what the user previewed.
   const previewCheck = checkPreviewApproval({
@@ -3204,6 +3302,10 @@ delegateRouter.post('/authorize-sign', async (c) => {
   if (signedAppKeyRefusal) {
     return c.json(appKeyRefusalBody(signedAppKeyRefusal, ticket ? 'non_browser' : 'browser'), appKeyRefusalStatus(signedAppKeyRefusal));
   }
+  const signEncryptionRefusal = ticket ? null : encryptionOutsideAppsRefusal(signedMessage);
+  if (signEncryptionRefusal) {
+    return c.json(appKeyRefusalBody(signEncryptionRefusal, 'browser'), appKeyRefusalStatus(signEncryptionRefusal));
+  }
   // Both checked claims still have to reference the stored records. This
   // synchronous call compares both, checks both expiries, then deletes both
   // without an await between either comparison and either deletion. Only
@@ -3270,6 +3372,8 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
   const body = await c.req.json<{
     authorizationContextToken?: string;
     selectedActionIds?: unknown;
+    /** TC-2272: the approval expiry the user chose (ISO-8601 UTC); the app's own is the default. */
+    expirationTime?: unknown;
     ticket?: string;
     transportVersion?: number;
     callback?: unknown;
@@ -3326,6 +3430,32 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     chainId,
     spaceId: bound.spaceId,
   });
+  let expirationOverride: string | undefined;
+  if (body.expirationTime !== undefined) {
+    // An app that did not opt in (`expiryChangeable: true` at prepare) gets the expiry it asked for. A
+    // prepared handoff has no app opt-in: its ceiling is the time the CLI asked for.
+    if (!ticket && !bound.expiryChangeable) {
+      return c.json(
+        { error: 'The requesting app did not opt in to a changed expiry', code: 'expiry_not_changeable' },
+        400,
+      );
+    }
+    const checked = validateExpirationOverride(body.expirationTime, immutable, MIN_EXPIRATION_LEAD_MS);
+    if (!checked.ok) {
+      return c.json(
+        { error: 'expirationTime must be a future ISO-8601 UTC time after the request was issued', code: 'invalid_expiration_time' },
+        400,
+      );
+    }
+    // A prepared handoff's CLI refuses a grant longer than it asked for: that time is the ceiling.
+    if (ticket && Date.parse(checked.value) > Date.parse(immutable.expirationTime)) {
+      return c.json(
+        { error: 'expirationTime is later than the time the CLI asked for', code: 'expiry_exceeds_handoff' },
+        400,
+      );
+    }
+    expirationOverride = checked.value;
+  }
   if (appKeyGroupPartial(
     admittedAppKeyActionIds(originalEntries, bound.admittedAppKeys, computeActionKey),
     allowedActionIdSet(originalEntries),
@@ -3429,6 +3559,16 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     preparedSignedMessage = previewNarrowed.siwe;
   }
 
+  // TC-2272: the user's chosen approval expiry replaces the Expiration Time
+  // line of the bytes to sign; the preview approval seals the result.
+  if (expirationOverride !== undefined) {
+    const withExpiry = withExpirationTime(preparedSignedMessage, expirationOverride);
+    if (!withExpiry) {
+      return c.json({ error: 'Bound SIWE has no single Expiration Time line', code: 'bound_siwe_parse_failed' }, 400);
+    }
+    preparedSignedMessage = withExpiry;
+  }
+
   // Preview grants + selection. `service` is canonicalized to the
   // `tinycloud.<short>` form so the wire shape agrees with
   // `selectedActionKeys` (see the /authorize-sign response for the full
@@ -3438,6 +3578,10 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
   const previewAppKeyRefusal = appKeyRefusalForSiwe(preparedSignedMessage, previewEntries, bound.admittedAppKeys);
   if (previewAppKeyRefusal) {
     return c.json(appKeyRefusalBody(previewAppKeyRefusal, ticket ? 'non_browser' : 'browser'), appKeyRefusalStatus(previewAppKeyRefusal));
+  }
+  const previewEncryptionRefusal = ticket ? null : encryptionOutsideAppsRefusal(preparedSignedMessage);
+  if (previewEncryptionRefusal) {
+    return c.json(appKeyRefusalBody(previewEncryptionRefusal, 'browser'), appKeyRefusalStatus(previewEncryptionRefusal));
   }
   const previewGrants = previewEntries.map((entry) => ({
     service: canonicalizeServiceName(entry.service),

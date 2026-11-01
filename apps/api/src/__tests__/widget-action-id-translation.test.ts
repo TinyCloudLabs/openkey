@@ -11,6 +11,8 @@ import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
 import { prepareSession } from '@tinycloud/node-sdk-wasm';
 import { mockModules, replaceModules } from './mock-module';
+import { MemoryPreparedHandoffStore, PreparedHandoffService } from '../services/prepared-handoff';
+import type { setPreparedHandoffServiceForTests } from '../routes/delegate';
 // The approval view's own code, loaded by path: it lives in the web app and the
 // capability-review package, outside this project's source root.
 const loadSource = (relative: string) => import(new URL(relative, import.meta.url).href);
@@ -106,10 +108,13 @@ await mockModules({
 });
 
 let router: typeof import('../routes/delegate')['delegateRouter'];
+let setHandoffService: typeof setPreparedHandoffServiceForTests;
+let createHandoffRouter: typeof import('../routes/prepared-handoffs')['createPreparedHandoffRouter'];
 let resetContexts: typeof import('../services/authorization-signing')['_resetAuthorizationContextStoreForTests'];
 
 beforeAll(async () => {
-  ({ delegateRouter: router } = await import('../routes/delegate?app-key-widget-ids' as string));
+  ({ delegateRouter: router, setPreparedHandoffServiceForTests: setHandoffService } = await import('../routes/delegate?app-key-widget-ids' as string));
+  ({ createPreparedHandoffRouter: createHandoffRouter } = await import('../routes/prepared-handoffs?app-key-widget-ids' as string));
   ({ _resetAuthorizationContextStoreForTests: resetContexts } = await import(
     '../services/authorization-signing?app-key-widget-ids' as string
   ));
@@ -213,12 +218,38 @@ function encryptionSiwe(raw: Record<string, string[]>): string {
 
 type Preview = { signedMessage?: string; previewApprovalToken?: string; selectedActionKeys: string[]; code?: string; error?: string };
 
-async function previewWith(siwe: string, ids: string[]) {
-  const prepared = await post('/authorize-sign-prepare', prepareBody(siwe));
+/** The CLI's prepared hand-off for this message: a fresh store per call and the ticket its request claims (TC-2247). */
+async function claimTicket(siwe: string): Promise<string> {
+  const service = new PreparedHandoffService(new MemoryPreparedHandoffStore());
+  setHandoffService(service);
+  const ticket = Buffer.alloc(32, 60).toString('base64url');
+  const claim = await createHandoffRouter(service).request('/claim', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      transportVersion: 2,
+      request: { protocolVersion: 1, siwe, jwk, host: 'https://node.tinycloud.xyz', keyId: keyRecord.id, sessionDid: 'did:key:cli-session' },
+      delivery: {
+        handoffId: ticket,
+        state: Buffer.alloc(32, 61).toString('base64url'),
+        cancelSecret: Buffer.alloc(32, 62).toString('base64url'),
+      },
+    }),
+  });
+  expect(claim.status, await claim.clone().text()).toBe(201);
+  return ticket;
+}
+
+/** Sent the way the CLI's prepared hand-off sends it; `viaTicket: false` sends a website's request. */
+async function previewWith(siwe: string, ids: string[], viaTicket = true) {
+  const handoff = viaTicket ? { ticket: await claimTicket(siwe) } : {};
+  const prepared = await post('/authorize-sign-prepare', viaTicket
+    ? { ...handoff, keyId: keyRecord.id, siwe, jwk, host: 'https://node.tinycloud.xyz' }
+    : prepareBody(siwe));
   expect(prepared.status).toBe(200);
   const { authorizationContextToken } = await prepared.json() as { authorizationContextToken: string };
-  const preview = await post('/authorize-sign-preview', { authorizationContextToken, selectedActionIds: ids });
-  return { authorizationContextToken, preview, previewBody: await preview.json() as Preview };
+  const preview = await post('/authorize-sign-preview', { ...handoff, authorizationContextToken, selectedActionIds: ids });
+  return { authorizationContextToken, preview, previewBody: await preview.json() as Preview, handoff };
 }
 
 const SM_SHAPE = {
@@ -238,7 +269,7 @@ describe('the ids both signing windows send for an encryption grant', () => {
     const requested = windowIds(siwe);
     expect(requested.length).toBe(Object.values(raw).flat().length);
 
-    const { authorizationContextToken, preview, previewBody } = await previewWith(siwe, requested);
+    const { authorizationContextToken, preview, previewBody, handoff } = await previewWith(siwe, requested);
     expect(preview.status).toBe(200);
     expect(previewBody.signedMessage).toBe(siwe);
 
@@ -248,7 +279,7 @@ describe('the ids both signing windows send for an encryption grant', () => {
     const signIds = requestedActionIds(model, reviewSelection);
     expect([...signIds].sort()).toEqual([...requested].sort());
 
-    const sign = await post('/authorize-sign', { authorizationContextToken, previewApprovalToken: previewBody.previewApprovalToken, selectedActionIds: signIds, protocolVersion: 1 });
+    const sign = await post('/authorize-sign', { ...handoff, authorizationContextToken, previewApprovalToken: previewBody.previewApprovalToken, selectedActionIds: signIds, protocolVersion: 1 });
     expect(sign.status).toBe(200);
     expect(signed).toEqual([siwe]);
   });
@@ -279,10 +310,10 @@ describe('the ids both signing windows send for an encryption grant', () => {
     for (const grant of model.permissions) for (const action of grant.actions) if (action.ability.startsWith('tinycloud.encryption/')) selection.delete(action.id);
     const requested = requestedActionIds(model, selection);
     expect(requested.length).toBe(2);
-    const { authorizationContextToken, preview, previewBody } = await previewWith(siwe, requested);
+    const { authorizationContextToken, preview, previewBody, handoff } = await previewWith(siwe, requested);
     expect(preview.status).toBe(200);
     expect(selectionFromPreview(previewBody, requested).size).toBe(2);
-    const sign = await post('/authorize-sign', { authorizationContextToken, previewApprovalToken: previewBody.previewApprovalToken, selectedActionIds: requested, protocolVersion: 1 });
+    const sign = await post('/authorize-sign', { ...handoff, authorizationContextToken, previewApprovalToken: previewBody.previewApprovalToken, selectedActionIds: requested, protocolVersion: 1 });
     expect(sign.status).toBe(200);
   });
 
@@ -290,7 +321,7 @@ describe('the ids both signing windows send for an encryption grant', () => {
     const siwe = siweWith();
     const requested = windowIds(siwe);
     expect(requested.length).toBe(2);
-    const { preview, previewBody } = await previewWith(siwe, requested);
+    const { preview, previewBody } = await previewWith(siwe, requested, false);
     expect(preview.status).toBe(200);
     expect(selectionFromPreview(previewBody, requested).size).toBe(2);
   });

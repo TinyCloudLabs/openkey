@@ -38,6 +38,7 @@
     previewReady?: boolean;
     approving?: boolean;
     error?: string | null;
+    withExpiry?: boolean;
     calls: Array<{ name: string; args?: unknown }>;
   }
 
@@ -45,6 +46,7 @@
   let surface = $state<'cli' | 'popup' | 'iframe' | null>(null);
   let model = $state<CapabilityReviewModel | null>(null);
   let initialSelection = $state<Set<string>>(new Set());
+  let expiryMs = $state<number | null>(null);
 
   // Non-reactive reference to the window-scoped harness object so
   // spy transport calls push into the SAME array Playwright reads.
@@ -98,6 +100,18 @@
     cancel: () => record('cancel'),
     onSelectionEdited: (next) => record('onSelectionEdited', Array.from(next).sort()),
     invalidatePreview: () => record('invalidatePreview'),
+    // TC-2272: the "Approval expires" line, on when the spec sets `withExpiry`.
+    get expiry() {
+      return rawGlobals?.withExpiry
+        ? {
+            chosenMs: expiryMs,
+            onChange: (ms: number | null) => {
+              expiryMs = ms;
+              record('expiryChange', ms);
+            },
+          }
+        : undefined;
+    },
   };
 </script>
 

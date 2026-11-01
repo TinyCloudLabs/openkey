@@ -53,6 +53,12 @@ jobs:
       - name: Capability review and web lib tests
         run: bun test packages/capability-review/test apps/web/src/lib
 
+      # The SDK tests import @openkey/core and @openkey/types from their dist/.
+      - name: SDK tests
+        run: |
+          bun run build --filter @openkey/core --filter @openkey/types
+          bun test packages/sdk
+
       - name: Personal-key custody access checks
         run: |
           bun scripts/lint-ethereum-key-access.ts
