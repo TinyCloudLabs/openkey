@@ -1,6 +1,6 @@
 // API client for key management
-import { getSessionToken } from '$lib/embed-passkey';
-import { isDefiniteRefusal, ServerRefusalError } from '$lib/server-reply';
+import { getSessionToken } from './embed-passkey';
+import { isDefiniteRefusal, ServerRefusalError } from './server-reply';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
