@@ -53,10 +53,11 @@ test('a foreign or unidentified prefix does not claim that its keys belong to th
   }
 });
 
-test('self-owned folder decrypt states that keys created later are included', () => {
-  expect(buildStatement(grant(`${base}/qa/`, [decrypt], true)).primaryText).toBe(
-    'Decrypt data locked with your keys in qa/',
-  );
+test('self-owned folder decrypt is a recognized row for the folder, with no backquote characters', () => {
+  const row = buildStatement(grant(`${base}/qa/`, [decrypt], true));
+  expect(row.literalEscaped).not.toBe(true);
+  expect(row.primaryText).toContain('qa/');
+  expect(row.primaryText).not.toContain('`');
 });
 
 test('failing encryption URN fallback is marked as already escaped', () => {

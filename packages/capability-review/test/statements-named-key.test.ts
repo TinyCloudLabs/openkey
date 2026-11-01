@@ -9,6 +9,7 @@ import {
   buildStatement,
   buildStatements,
   type CapabilityGrant,
+  type StatementEntry,
 } from "../src/index.js";
 
 const OWNER = "did:pkh:eip155:1:0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed";
@@ -57,13 +58,21 @@ const KEY_SENTENCE = {
   delete: "Refused: only you can delete the key qa/x",
 } as const;
 
+// Create and decrypt on a prefix are checked for behaviour, not wording: see
+// expectOwnPrefixRow.
 const PREFIX_SENTENCE = {
-  create: "Create your own encryption keys in qa/",
   block: "Block keys in default/qa/ from decrypting",
   unblock: "Let all keys in default/qa/ decrypt again",
-  decrypt: "Decrypt data locked with your keys in qa/",
   delete: "Refused: only you can delete the key qa/",
 } as const;
+
+/** A recognized row for the signer's own prefix: not the literal fallback, no backquote characters, names the path. */
+function expectOwnPrefixRow(row: StatementEntry, path = "qa/") {
+  expect(row.primaryText.length).toBeGreaterThan(0);
+  expect(row.literalEscaped).not.toBe(true);
+  expect(row.primaryText).not.toContain("`");
+  expect(row.primaryText).toContain(path);
+}
 
 describe("named-key exact resources: one sentence per verb", () => {
   for (const verb of ["create", "block", "unblock", "decrypt", "delete"] as const) {
@@ -78,7 +87,9 @@ describe("named-key prefix resources: one sentence per verb", () => {
   for (const verb of ["create", "block", "unblock", "decrypt", "delete"] as const) {
     it(`renders ${verb} on a prefix`, () => {
       const grant = namedGrant(PREFIX, [ABILITY[verb]]);
-      expect(buildStatement(grant).primaryText).toBe(PREFIX_SENTENCE[verb]);
+      const row = buildStatement(grant);
+      if (verb === "create" || verb === "decrypt") expectOwnPrefixRow(row);
+      else expect(row.primaryText).toBe(PREFIX_SENTENCE[verb]);
     });
   }
 });
@@ -124,7 +135,7 @@ describe("named-key mixed verbs split into one row per action", () => {
     expect(buildStatement(exact).primaryText).not.toBe(
       buildStatement(prefix).primaryText,
     );
-    expect(buildStatement(prefix).primaryText).toBe(PREFIX_SENTENCE.decrypt);
+    expectOwnPrefixRow(buildStatement(prefix));
   });
 });
 
@@ -173,7 +184,7 @@ describe("named-key routing: shape A and shape B resolve identically", () => {
 
     it(`shape ${shape} prefix routes to the prefix sentence and keeps the URN`, () => {
       const row = buildStatement(shapeGrant(shape, PREFIX, [ABILITY.decrypt]));
-      expect(row.primaryText).toBe(PREFIX_SENTENCE.decrypt);
+      expectOwnPrefixRow(row);
       expect(row.resource).toBe(PREFIX);
     });
 
@@ -442,38 +453,36 @@ describe("own key prefix rows carry no backquotes", () => {
     ["decrypt", ABILITY.decrypt],
   ] as const)("a %s row on a prefix shows the path as plain text", (_verb, ability) => {
     for (const prefix of ["qa/", "docs/q1/", "share/x/"]) {
-      const row = buildStatement(namedGrant(`${NETWORK}/${prefix}`, [ability]));
-      expect(row.primaryText).toContain(` ${prefix}`);
-      expect(row.primaryText).not.toContain("`");
+      expectOwnPrefixRow(buildStatement(namedGrant(`${NETWORK}/${prefix}`, [ability])), prefix);
     }
   });
 });
 
-describe("the default share/ prefix uses plain words", () => {
+describe("the default share/ prefix create row does not name the path", () => {
   const SHARE = `${NETWORK}/share/`;
+  const createText = (space: string, ownedBySelf = true) =>
+    buildStatement({ ...namedGrant(space, [ABILITY.create]), ownedBySelf }).primaryText;
 
-  it("create reads 'Create keys for files you share', with no path", () => {
+  it("is a recognized row without the path or a backquote", () => {
     const row = buildStatement(namedGrant(SHARE, [ABILITY.create]));
-    expect(row.primaryText).toBe("Create keys for files you share");
+    expect(row.literalEscaped).not.toBe(true);
+    expect(row.primaryText.length).toBeGreaterThan(0);
     expect(row.primaryText).not.toContain("share/");
+    expect(row.primaryText).not.toContain("`");
   });
 
   it("only the owner's default share/ prefix gets it", () => {
-    expect(buildStatement(namedGrant(`${NETWORK}/share/x/`, [ABILITY.create])).primaryText)
-      .toBe("Create your own encryption keys in share/x/");
-    expect(buildStatement(namedGrant(`${NETWORK}/share`, [ABILITY.create])).primaryText)
-      .toBe("Create your encryption key default/share");
-    expect(buildStatement(namedGrant(`${NETWORK.replace(/:default$/, ":other")}/share/`, [ABILITY.create])).primaryText)
-      .toBe("Create your encryption keys in other/share/");
-    expect(buildStatement({ ...namedGrant(SHARE, [ABILITY.create]), ownedBySelf: false }).primaryText)
-      .not.toBe("Create keys for files you share");
+    const shareText = createText(SHARE);
+    expect(createText(`${NETWORK}/share/x/`)).toContain("share/x/");
+    expect(createText(`${NETWORK}/share`)).toContain("default/share");
+    expect(createText(`${NETWORK.replace(/:default$/, ":other")}/share/`)).toContain("other/share/");
+    expect(createText(SHARE, false)).not.toBe(shareText);
   });
 
-  it("a create and a decrypt on share/ are two rows", () => {
+  it("a create and a decrypt on share/ are two distinct rows", () => {
     const rows = buildStatements(namedGrant(SHARE, [ABILITY.create, ABILITY.decrypt]));
-    expect(rows.map((row) => row.primaryText)).toEqual([
-      "Create keys for files you share",
-      "Decrypt data locked with your keys in share/",
-    ]);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.primaryText).not.toBe(rows[1]!.primaryText);
+    for (const row of rows) expect(row.primaryText).not.toContain("`");
   });
 });

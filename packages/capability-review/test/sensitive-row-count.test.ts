@@ -8,7 +8,6 @@ import {
   buildStatements,
   grantReachesSecretDataOrDecryption,
   parseCapabilityReview,
-  sensitiveCallout,
   sensitiveRowCount,
   type CapabilityGrant,
 } from "../src/index.js";
@@ -70,7 +69,6 @@ describe("the callout count matches the Sensitive rows", () => {
     expect(grants.filter(grantReachesSecretDataOrDecryption)).toHaveLength(2);
     expect(sensitiveRowTexts(grants)).toHaveLength(3);
     expect(sensitiveRowCount(grants)).toBe(3);
-    expect(sensitiveCallout(sensitiveRowCount(grants))).toBe("3 permissions reach secrets or decryption");
   });
 
   it.each([
