@@ -9,6 +9,8 @@ const address = '0xd559CCd9EB87c530A9a349262669386dE93cf412';
 const siwe = EXPLORER_PERMISSION_POPUP_REQUEST.replace(/^explorer\.tinycloud\.xyz/, HOST);
 const WORDS = 'This site is not allowed in this test.';
 
+const responses = (page: import('@playwright/test').Page) => page.evaluate(() => (window as unknown as Window & { received: Array<{ type: string; success?: boolean; error?: { code: string; message: string } }> }).received.filter((m) => m.type === 'openkey:sign:response'));
+
 for (const route of ['/widget/embed/sign', '/widget/sign']) {
   async function open(page: import('@playwright/test').Page, prepareStatus: number, prepareBody: unknown) {
     await page.addInitScript(() => sessionStorage.setItem('openkey_session_token', 'test-session'));
@@ -37,7 +39,6 @@ for (const route of ['/widget/embed/sign', '/widget/sign']) {
     }, siwe);
     return page.frameLocator('#sign');
   }
-  const responses = (page: import('@playwright/test').Page) => page.evaluate(() => (window as unknown as Window & { received: Array<{ type: string; success?: boolean; error?: { code: string; message: string } }> }).received.filter((m) => m.type === 'openkey:sign:response'));
 
   test(`${route}: a 403 refusal rejects the app's request with the server's words and turns Approve off`, async ({ page }) => {
     const frame = await open(page, 403, { error: WORDS, code: 'app_key_grant_refused' });
@@ -55,3 +56,4 @@ for (const route of ['/widget/embed/sign', '/widget/sign']) {
     expect(await responses(page)).toEqual([]);
   });
 }
+
