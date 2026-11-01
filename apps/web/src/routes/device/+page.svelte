@@ -28,9 +28,9 @@
   /** The CLI's requested lifetime, fixed when the request is looked up. */
   let maxLifetimeSeconds = $state(0);
   let lifetimeSeconds = $state(0);
-  /** The lifetime the CLI suggests as the default (the maximum when it does not). */
+  /** The lifetime selected first: the CLI's suggestion, else a week or the maximum if shorter. */
   let suggestedLifetimeSeconds = $state(0);
-  const lifetimeOptions = $derived(deviceLifetimeOptions(maxLifetimeSeconds, suggestedLifetimeSeconds));
+  const lifetimeOptions = $derived(deviceLifetimeOptions(maxLifetimeSeconds, request?.suggestedTtlSeconds === undefined ? undefined : suggestedLifetimeSeconds));
   const lifetimeNotice = $derived(deviceLifetimeNotice(Math.min(lifetimeSeconds, maxLifetimeSeconds)));
   const requestReason = $derived(request ? deviceRequestReason(request) : '');
   const SERVICE_LABELS: Record<string, string> = {
