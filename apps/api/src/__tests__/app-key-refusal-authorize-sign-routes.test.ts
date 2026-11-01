@@ -195,12 +195,21 @@ describe('POST /authorize-sign-prepare', () => {
     await expect(res.json()).resolves.toMatchObject({ code: 'invalid_siwe' });
   });
 
-  test('still issues a context for a message with no app keys, and for default-network decrypt', async () => {
-    for (const raw of [{}, { [urn('')]: ['tinycloud.encryption/decrypt', 'tinycloud.encryption/network.create'] }, { [urn('/appsx/y')]: ['tinycloud.encryption/decrypt'] }]) {
-      const res = await post('/authorize-sign-prepare', { ...prepareBody(siweWith(raw)), requestOrigin: ORIGIN });
-      expect(res.status).toBe(200);
-      await expect(res.json()).resolves.toMatchObject({ authorizationContextToken: expect.stringMatching(/^oks_/) });
-    }
+  test('still issues a context for a message with no app keys', async () => {
+    const res = await post('/authorize-sign-prepare', { ...prepareBody(siweWith({})), requestOrigin: ORIGIN });
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({ authorizationContextToken: expect.stringMatching(/^oks_/) });
+  });
+
+  // TC-2247: a website's sign-in may not name decrypt outside its own apps/ prefix, the bare network included.
+  test.each([
+    ['default-network decrypt', { [urn('')]: ['tinycloud.encryption/decrypt', 'tinycloud.encryption/network.create'] }],
+    ['decrypt on a key outside apps/', { [urn('/appsx/y')]: ['tinycloud.encryption/decrypt'] }],
+  ])('refuses %s and issues nothing', async (_name, raw) => {
+    const res = await post('/authorize-sign-prepare', { ...prepareBody(siweWith(raw)), requestOrigin: ORIGIN });
+    expect(res.status).toBe(403);
+    await expect(res.json()).resolves.toEqual({ error: NOT_DECLARED, code: 'app_key_grant_refused' });
+    expect(signed).toEqual([]);
   });
 });
 
