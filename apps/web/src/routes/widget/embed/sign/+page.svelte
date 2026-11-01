@@ -1081,6 +1081,7 @@
         layoutBlocked={v2 && !layoutReady}
         transport={{
           approving: signing || previewing,
+          host: messageHost,
           error: error || layoutError,
           canUseAuthorizeSign: canUseAuthorizeSignFn(),
           previewReady: Boolean(previewToken && previewSignedMessage && previewApprovalToken),
