@@ -12,6 +12,8 @@ import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
 import { prepareSession } from '@tinycloud/node-sdk-wasm';
 import { mockModules, replaceModules } from './mock-module';
+import { MemoryPreparedHandoffStore, PreparedHandoffService } from '../services/prepared-handoff';
+import type { setPreparedHandoffServiceForTests } from '../routes/delegate';
 // The approval view's own code, loaded by path: it lives in the web app and the
 // capability-review package, outside this project's source root.
 const loadSource = (relative: string) => import(new URL(relative, import.meta.url).href);
@@ -107,10 +109,13 @@ await mockModules({
 });
 
 let router: typeof import('../routes/delegate')['delegateRouter'];
+let setHandoffService: typeof setPreparedHandoffServiceForTests;
+let createHandoffRouter: typeof import('../routes/prepared-handoffs')['createPreparedHandoffRouter'];
 let resetContexts: typeof import('../services/authorization-signing')['_resetAuthorizationContextStoreForTests'];
 
 beforeAll(async () => {
-  ({ delegateRouter: router } = await import('../routes/delegate?authorize-sign-urn-form' as string));
+  ({ delegateRouter: router, setPreparedHandoffServiceForTests: setHandoffService } = await import('../routes/delegate?authorize-sign-urn-form' as string));
+  ({ createPreparedHandoffRouter: createHandoffRouter } = await import('../routes/prepared-handoffs?authorize-sign-urn-form' as string));
   ({ _resetAuthorizationContextStoreForTests: resetContexts } = await import(
     '../services/authorization-signing?authorize-sign-urn-form' as string
   ));
@@ -167,28 +172,60 @@ type Grant = { service: string; space: string; path: string; actions: readonly s
 type Wire = { signedMessage: string; signature: string; selectedActionKeys: string[]; permissions: Grant[] };
 
 /**
+ * The CLI's prepared hand-off: a fresh store and service per call, and the ticket the CLI's request claims.
+ * A request without a ticket is a website's sign-in, which the route treats differently (TC-2247).
+ */
+async function claimTicket(siwe: string): Promise<string> {
+  const service = new PreparedHandoffService(new MemoryPreparedHandoffStore());
+  setHandoffService(service);
+  const ticket = Buffer.alloc(32, 40).toString('base64url');
+  const claim = await createHandoffRouter(service).request('/claim', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      transportVersion: 2,
+      request: { protocolVersion: 1, siwe, jwk, host: 'https://node.tinycloud.xyz', keyId: keyRecord.id, sessionDid: 'did:key:cli-session' },
+      delivery: {
+        handoffId: ticket,
+        state: Buffer.alloc(32, 41).toString('base64url'),
+        cancelSecret: Buffer.alloc(32, 42).toString('base64url'),
+      },
+    }),
+  });
+  expect(claim.status, await claim.clone().text()).toBe(201);
+  return ticket;
+}
+
+/**
  * prepare → preview → authorize-sign, with the ids the signing window sends: every row ticked, minus the
  * actions `untick` names (it sees each action of the review model, as the window's own selection does).
+ * `viaTicket` sends the three calls the way the CLI's prepared hand-off does; otherwise they are a website's.
  */
-async function run(siwe: string, untick: (action: { id: string; ability: string }) => boolean = () => false) {
+async function run(siwe: string, untick: (action: { id: string; ability: string }) => boolean = () => false, viaTicket = false) {
   const model = reviewModel(siwe);
   const selection = new Set(defaultSelection(model));
   for (const grant of model.permissions) for (const action of grant.actions) if (untick(action)) selection.delete(action.id);
   const requested = requestedActionIds(model, selection);
-  const prepared = await post('/authorize-sign-prepare', {
-    keyId: keyRecord.id, siwe, jwk, host: 'https://node.tinycloud.xyz', requestOrigin: ORIGIN, reportedOrigin: ORIGIN,
-    presentation: { manifestDigest: 'a'.repeat(64), displayName: 'Listen' },
-  });
+  const handoff = viaTicket ? { ticket: await claimTicket(siwe) } : {};
+  const prepared = await post('/authorize-sign-prepare', viaTicket
+    ? { ...handoff, keyId: keyRecord.id, siwe, jwk, host: 'https://node.tinycloud.xyz' }
+    : {
+      keyId: keyRecord.id, siwe, jwk, host: 'https://node.tinycloud.xyz', requestOrigin: ORIGIN, reportedOrigin: ORIGIN,
+      presentation: { manifestDigest: 'a'.repeat(64), displayName: 'Listen' },
+    });
   expect(prepared.status).toBe(200);
   const { authorizationContextToken } = (await prepared.json()) as { authorizationContextToken: string };
-  const preview = await post('/authorize-sign-preview', { authorizationContextToken, selectedActionIds: requested });
+  const preview = await post('/authorize-sign-preview', { ...handoff, authorizationContextToken, selectedActionIds: requested });
   expect(preview.status).toBe(200);
   const previewBody = (await preview.json()) as { previewApprovalToken: string; selectedActionKeys: string[]; permissions: Grant[] };
   const signIds = requestedActionIds(model, selectionFromPreview(previewBody, requested));
-  const sign = await post('/authorize-sign', { authorizationContextToken, previewApprovalToken: previewBody.previewApprovalToken, selectedActionIds: signIds, protocolVersion: 1 });
+  const sign = await post('/authorize-sign', { ...handoff, authorizationContextToken, previewApprovalToken: previewBody.previewApprovalToken, selectedActionIds: signIds, protocolVersion: 1 });
   expect(sign.status).toBe(200);
   return { requested, previewBody, body: (await sign.json()) as Wire };
 }
+
+/** The same flow as the CLI's `--keys` sign-in sends it. */
+const runViaCli = (siwe: string, untick?: (action: { id: string; ability: string }) => boolean) => run(siwe, untick, true);
 
 // The fixture's clock: after the request's issuedAt, before its expiry.
 beforeEach(() => setSystemTime(new Date('2026-10-26T12:00:30.000Z')));
@@ -225,7 +262,7 @@ const asResult = (selectedActionKeys: readonly string[], permissions: readonly G
 
 describe('/authorize-sign reports raw encryption resources in the consumer encoding (TC-1783)', () => {
   test('the signed message, its ReCap, the signature and the digest are identical to the base behaviour', async () => {
-    const { body } = await run(FIXTURE.preparedSiwe);
+    const { body } = await runViaCli(FIXTURE.preparedSiwe);
     // The wallet signed exactly one message, the one the base code signed.
     expect(signed.length).toBe(1);
     expect(signed[0] === FIXTURE.signedMessage).toBe(true);
@@ -240,7 +277,7 @@ describe('/authorize-sign reports raw encryption resources in the consumer encod
   });
 
   test('only the reported space and path of the two raw encryption resources differ from the base response', async () => {
-    const { body } = await run(FIXTURE.preparedSiwe);
+    const { body } = await runViaCli(FIXTURE.preparedSiwe);
     const oldKeys: readonly string[] = FIXTURE.oldResponse.selectedActionKeys;
     expect(body.selectedActionKeys.length).toBe(oldKeys.length);
     const changed = oldKeys.filter((key, index) => body.selectedActionKeys[index] !== key);
@@ -257,7 +294,7 @@ describe('/authorize-sign reports raw encryption resources in the consumer encod
   });
 
   test('capabilities, duckdb, hooks, kv and sql entries are deep-equal before and after', async () => {
-    const { body } = await run(FIXTURE.preparedSiwe);
+    const { body } = await runViaCli(FIXTURE.preparedSiwe);
     const keep = (keys: readonly string[]) => keys.filter((key) => !isRaw(key));
     const oldKeys = keep(FIXTURE.oldResponse.selectedActionKeys);
     expect(keep(body.selectedActionKeys)).toEqual(oldKeys);
@@ -271,7 +308,7 @@ describe('/authorize-sign reports raw encryption resources in the consumer encod
   });
 
   test('the CLI consumer check accepts the response for every row', async () => {
-    const { body } = await run(FIXTURE.preparedSiwe);
+    const { body } = await runViaCli(FIXTURE.preparedSiwe);
     expect(body.selectedActionKeys.length).toBe(31);
     expect(() => cliConsumerCheck(FIXTURE.preparedSiwe, body)).not.toThrow();
   });
@@ -290,7 +327,7 @@ describe('/authorize-sign reports raw encryption resources in the consumer encod
   });
 
   test('the preview and the ids the window sends keep the server form', async () => {
-    const { requested, previewBody } = await run(FIXTURE.preparedSiwe);
+    const { requested, previewBody } = await runViaCli(FIXTURE.preparedSiwe);
     expect(previewBody.selectedActionKeys).toEqual([...FIXTURE.previewSelectedActionKeys]);
     expect(previewBody.permissions).toEqual(FIXTURE.previewPermissions as unknown as Grant[]);
     for (const [resource, ability] of ABILITIES_OF_RAW) {
@@ -309,7 +346,7 @@ const isUnticked = ([, , path, ability]: string[]) =>
 describe('/authorize-sign with a narrowed selection (TC-1783)', () => {
   test('reports only the ticked abilities, and raw encryption resources still in the consumer encoding', async () => {
     // The user unticks key.create in the qa/ row, network.create in the default network row, and kv/del on secrets/.
-    const { body } = await run(FIXTURE.preparedSiwe, ({ id, ability }) => {
+    const { body } = await runViaCli(FIXTURE.preparedSiwe, ({ id, ability }) => {
       const parts = id.split(SEP);
       return (parts.includes(RAW_QA) && ability === `${ENCRYPTION}/key.create`) ||
         (parts.includes(RAW_NETWORK) && ability === `${ENCRYPTION}/network.create`) ||
