@@ -37,6 +37,7 @@ interface StateRow {
   lockExpiresAt?: Date | null;
   failureCode?: string | null;
   failureReason?: string | null;
+  checkedAt?: Date;
 }
 let state: StateRow | null = null;
 let autoSignEnabled = true;
@@ -414,4 +415,39 @@ describe('the account-space sign-in is unchanged', () => {
     expect([...node.hosted].sort()).toEqual(SPACES.map((name) => spaceId(name)).sort());
   });
 
+});
+
+describe('an account whose setup keeps failing', () => {
+  const failedAgo = (ms: number): StateRow => ({
+    id: 'state_1', status: 'failed', failureCode: 'tinycloud_bootstrap_host_failed', failureReason: 'node refused', checkedAt: new Date(Date.now() - ms),
+  });
+
+  test('a recent failure: the sign-in does not wait for hosting, and the setup still runs in the background', async () => {
+    state = failedAgo(60_000);
+    process.env.TINYCLOUD_BOOTSTRAP_REQUESTED_SPACE_TIMEOUT_MS = '5000';
+    node.beforeHost = async (id) => { if (id === spaceId('applications')) await Bun.sleep(400); };
+
+    const start = performance.now();
+    const signed = await sign(applicationsOnly());
+
+    expect(performance.now() - start).toBeLessThan(300);
+    expect(signed.status).toBe(200);
+    expect(signed.body.signature).toMatch(/^0x[0-9a-f]+$/i);
+    expect(signed.body.tinycloudBootstrap).toEqual({ status: 'pending' });
+    await until(() => state?.status === 'complete', 'the background setup to complete');
+    expect(node.hosted.has(spaceId('applications'))).toBe(true);
+  });
+
+  test('an old failure is waited for again', async () => {
+    state = failedAgo(10 * 60_000);
+    process.env.TINYCLOUD_BOOTSTRAP_REQUESTED_SPACE_TIMEOUT_MS = '5000';
+    node.beforeHost = async (id) => { if (id === spaceId('applications')) await Bun.sleep(400); };
+
+    const start = performance.now();
+    const signed = await sign(applicationsOnly());
+
+    expect(performance.now() - start).toBeGreaterThanOrEqual(350);
+    expect(signed.body.tinycloudBootstrap).toEqual({ status: 'complete' });
+    expect(node.hosted.has(spaceId('applications'))).toBe(true);
+  });
 });

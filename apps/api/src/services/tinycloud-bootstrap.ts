@@ -46,6 +46,8 @@ const BOOTSTRAP_LOCK_TTL_MS = 2 * 60 * 1000;
 const BOOTSTRAP_LOCK_REFRESH_MS = 30 * 1000;
 const BOOTSTRAP_WAIT_MS = 500;
 const MIN_USEFUL_SIWE_TTL_MS = 5_000;
+/** After a failed run, a sign-in does not wait for hosting again for this long (the run still happens in the background). */
+const FAILED_SETUP_WAIT_BACKOFF_MS = 5 * 60 * 1000;
 const BOOTSTRAP_DOMAIN = 'cli.tinycloud.xyz';
 const NETWORK_CREATE_ACTION = ENCRYPTION.NETWORK_CREATE;
 const NETWORK_ADMIN_TYPE = 'tinycloud.encryption.network-admin/v1';
@@ -267,12 +269,26 @@ export async function ensureTinyCloudBootstrapForApprovedSign(
  * (TC-1608), so the SDK never has to host it itself. The rest of the setup follows in the background under
  * the same lock. `complete` here means the requested space is hosted. The wait is bounded by the requested-
  * space timeout; the caller returns `pending` past it, as before. A run that fails is not retried here (a
- * retry would keep the plaintext key alive): the sweep retries a failed state.
+ * retry would keep the plaintext key alive): the sweep retries a failed state. A state that failed less than
+ * FAILED_SETUP_WAIT_BACKOFF_MS ago is not waited for: a node that hangs would otherwise cost every sign-in the
+ * whole timeout. The run still starts and continues in the background, as before.
  */
 async function hostOwnSpaceBeforeSign(
   input: EnsureTinyCloudBootstrapInput,
   requested: { space: BootstrapSpaceName; host: string; chainId: number },
 ): Promise<TinyCloudBootstrapOutcome | { status: 'pending' }> {
+  const previous = await input.prisma.tinyCloudBootstrapState.findUnique({
+    where: {
+      keyId_chainId_tinycloudHost_bootstrapVersion: {
+        keyId: input.key.id,
+        chainId: requested.chainId,
+        tinycloudHost: requested.host,
+        bootstrapVersion: TINYCLOUD_BOOTSTRAP_VERSION,
+      },
+    },
+  });
+  const failedRecently = previous?.status === 'failed'
+    && Date.now() - previous.checkedAt.getTime() < FAILED_SETUP_WAIT_BACKOFF_MS;
   const result = await hostRequestedSpaceWithinBudget(
     ({ alreadyHosted, report }) => ensureTinyCloudBootstrap({
       ...input,
@@ -280,7 +296,7 @@ async function hostOwnSpaceBeforeSign(
       chainId: requested.chainId,
       requestedSpace: { space: requested.space, alreadyHosted, report },
     }),
-    { retryDelaysMs: [] },
+    { retryDelaysMs: [], ...(failedRecently ? { timeoutMs: 0 } : {}) },
   );
   switch (result.status) {
     case 'hosted':

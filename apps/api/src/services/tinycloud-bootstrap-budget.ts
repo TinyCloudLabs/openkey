@@ -116,7 +116,7 @@ export const OWN_TIMEOUT_BUDGET_MS = MAX_TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS;
  */
 export async function awaitTinyCloudBootstrapWithinBudget(
   bootstrap: Promise<BudgetedTinyCloudBootstrapOutcome>,
-  options: { budgetMs?: number } = {},
+  options: { budgetMs?: number; ownLogsBackground?: boolean } = {},
 ): Promise<BudgetedTinyCloudBootstrapOutcome> {
   const startedAt = performance.now();
   const settled = settleBootstrap(() => bootstrap);
@@ -140,8 +140,8 @@ export async function awaitTinyCloudBootstrapWithinBudget(
     clearTimeout(timer);
   }
 
-  // A caller that sets its own budget bounds and logs its own run (hostRequestedSpaceWithinBudget).
-  if (timedOut && options.budgetMs === undefined) {
+  // A bootstrap that bounds and logs its own background run (hostRequestedSpaceWithinBudget) sets ownLogsBackground.
+  if (timedOut && !options.ownLogsBackground) {
     void settled.then((outcome) => {
       if (outcome.status !== 'pending') recordBackgroundOutcome(outcome, { attempt: 1, startedAt });
     });

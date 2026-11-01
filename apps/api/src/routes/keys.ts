@@ -337,7 +337,7 @@ keysRouter.post('/:keyId/sign', async (c) => {
   const waitsForOwnSpace = siwe !== null && requestedOwnSpaceForSiwe(siwe, key.address) !== null;
   const bootstrap = await awaitTinyCloudBootstrapWithinBudget(
     ensureTinyCloudBootstrapForApprovedSign({ prisma, userId: user.id, key, privateKey, message: body.message, format }),
-    waitsForOwnSpace ? { budgetMs: OWN_TIMEOUT_BUDGET_MS } : {},
+    waitsForOwnSpace ? { budgetMs: OWN_TIMEOUT_BUDGET_MS, ownLogsBackground: true } : {},
   );
   if (bootstrap.status === 'failed') {
     log('error', 'tinycloud_bootstrap_failed', bootstrap.errorCode);
