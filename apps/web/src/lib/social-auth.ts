@@ -105,7 +105,8 @@ export async function signInWithSocialPopup(
       finish(() => {
         popup.close();
         deps.persistToken(event.data!.sessionToken!);
-        deps.refreshSession();
+        // Best effort: the token is saved, and a throwing store subscriber must not leave the sign-in pending.
+        try { deps.refreshSession(); } catch { /* the session re-reads on its own at the next load */ }
         resolve(event.data!.sessionToken!);
       });
     };

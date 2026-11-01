@@ -38,6 +38,15 @@ describe('signInWithSocialPopup', () => {
     expect(h.calls).toEqual(['popup.close', 'persist:tok', 'refresh', 'resolved:tok']);
   });
 
+  test('a session refresh that throws does not leave the sign-in hanging: the token is saved and the promise still resolves', async () => {
+    const h = harness();
+    h.deps.refreshSession = () => { h.calls.push('refresh'); throw new Error('subscriber failed'); };
+    const done = signInWithSocialPopup('google', h.deps);
+    h.send({ type: 'openkey:social:complete', sessionToken: 'tok' });
+    expect(await done).toBe('tok');
+    expect(h.calls).toEqual(['popup.close', 'persist:tok', 'refresh']);
+  });
+
   test.each([
     ['an error from the popup', (h: ReturnType<typeof harness>) => h.send({ type: 'openkey:social:error', message: 'no' })],
     ['the popup window being closed', (h: ReturnType<typeof harness>) => h.closeWindow()],

@@ -1,5 +1,5 @@
-// TC-659 / TC-660: the real /delegate and /device routes with every API
-// call answered by `page.route`; no API server runs.
+// TC-2304: the real /delegate and /auth/register routes with every API call answered by `page.route`; no API
+// server runs. The Google popup is a new page of the browser context, so its route is set on the context.
 
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { encodeBase64UrlJson } from '../../src/lib/device-authorization';
