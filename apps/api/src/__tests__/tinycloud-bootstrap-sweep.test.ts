@@ -651,6 +651,76 @@ describe('TinyCloud bootstrap background sweep', () => {
     }
   });
 
+  // TC-1518: an ORG key never reaches a personal path. A state row can point at one structurally (the foreign
+  // key allows it), so the sweep must filter on custody itself, in both the candidate read and the claim.
+  const ORG_ADDRESS = privateKeyToAccount(`0x${'22'.repeat(32)}`).address;
+  async function seedOrgKeyRow(prisma: PrismaClient, n: number): Promise<void> {
+    await prisma.user.create({ data: { id: `user-${n}`, email: `user-${n}@example.test` } });
+    await prisma.ethereumKey.create({
+      data: { id: `key-${n}`, custody: 'ORG', userId: null, keyType: 'MANAGED', sealingContext: 'o'.repeat(43), isCanonicalTinyCloud: false, address: ORG_ADDRESS, publicKey: '', sealedBlob: 'sealed' },
+    });
+    await prisma.tinyCloudBootstrapState.create({
+      data: {
+        id: `state-${n}`, userId: `user-${n}`, keyId: `key-${n}`, address: ORG_ADDRESS, chainId: 1, tinycloudHost: HOST,
+        bootstrapVersion: TINYCLOUD_BOOTSTRAP_VERSION, status: 'failed', checkedAt: at(-3 * 60 * MIN),
+        failureCode: 'tinycloud_bootstrap_node_timeout', failureReason: 'node timed out', sweepAttempts: 2,
+      },
+    });
+  }
+
+  test('13c. the sweep never selects, unseals or runs for an ORG-custody key (PGlite)', async () => {
+    const pg = await pgliteStore();
+    try {
+      await seedOrgKeyRow(pg.prisma, 95);
+      await seedPgliteRow(pg.prisma, 96);
+      const unsealed: string[] = [];
+      setTinyCloudBootstrapExecutorForTests(async () => { executions += 1; });
+
+      setSystemTime(at(5 * MIN));
+      const summary = await sweepTinyCloudBootstrapOnce({
+        prisma: pg.prisma,
+        resolveKey: async (key) => { unsealed.push(key.id); return PRIVATE_KEY; },
+      });
+
+      expect(unsealed).toEqual(['key-96']);
+      expect(summary.candidates).toBe(1);
+      expect(executions).toBe(1);
+      expect(await pgliteStateOf(pg.prisma, 95)).toMatchObject({ status: 'failed', attemptId: null, sweepAttempts: 2 });
+    } finally {
+      await pg.close();
+    }
+  });
+
+  test('13d. a sweep claim on an ORG-custody key updates nothing (PGlite)', async () => {
+    const pg = await pgliteStore();
+    try {
+      await seedOrgKeyRow(pg.prisma, 97);
+      const before = await pgliteStateOf(pg.prisma, 97);
+      let claimed = false;
+      setTinyCloudBootstrapExecutorForTests(async () => { executions += 1; });
+
+      setSystemTime(at(5 * MIN));
+      await ensureTinyCloudBootstrap({
+        prisma: pg.prisma,
+        userId: 'user-97',
+        key: { id: 'key-97', address: ADDRESS, keyType: 'MANAGED' },
+        privateKey: PRIVATE_KEY,
+        host: HOST,
+        chainId: 1,
+        sweepClaim: {
+          observed: { status: 'failed', sweepAttempts: 2, checkedAt: before!.checkedAt, attemptId: null },
+          onClaimed: () => { claimed = true; },
+        },
+      });
+
+      expect(claimed).toBe(false);
+      expect(executions).toBe(0);
+      expect(await pgliteStateOf(pg.prisma, 97)).toMatchObject({ status: 'failed', attemptId: null, sweepAttempts: 2 });
+    } finally {
+      await pg.close();
+    }
+  });
+
   test('14. a stale in-progress lock with a retryable code is swept; a null code is not', async () => {
     seedRow(100, { status: 'in_progress', lockExpiresAt: at(-MIN), attemptId: 'dead', checkedAt: at(-60 * MIN) });
     seedRow(101, { status: 'in_progress', lockExpiresAt: at(-MIN), attemptId: 'dead', failureCode: null, checkedAt: at(-60 * MIN) });

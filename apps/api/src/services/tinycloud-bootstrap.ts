@@ -531,7 +531,7 @@ async function acquireBootstrapLock(
         failureCode: { in: [...SWEEP_RETRYABLE_CODES] },
         ...(observed.status === 'in_progress' ? { lockExpiresAt: { lt: now } } : {}),
         user: { is: { autoSignEnabled: true } },
-        key: { is: { keyType: 'MANAGED', archivedAt: null } },
+        key: { is: { custody: 'PERSONAL', keyType: 'MANAGED', archivedAt: null } },
       },
       data: {
         status: 'in_progress',

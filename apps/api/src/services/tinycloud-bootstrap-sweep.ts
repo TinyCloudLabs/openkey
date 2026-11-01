@@ -73,7 +73,8 @@ export async function sweepTinyCloudBootstrapOnce(opts: SweepOptions = {}): Prom
         { OR: delays.map((delay, attempt) => ({ sweepAttempts: attempt, checkedAt: { lte: new Date(now.getTime() - delay) } })) },
       ],
       user: { is: { autoSignEnabled: true } },
-      key: { is: { keyType: 'MANAGED', archivedAt: null, sealedBlob: { not: null } } },
+      // Only personal keys: an ORG key is never read or unsealed by the personal bootstrap path (TC-1518).
+      key: { is: { custody: 'PERSONAL', keyType: 'MANAGED', archivedAt: null, sealedBlob: { not: null } } },
     },
     select: {
       id: true,
