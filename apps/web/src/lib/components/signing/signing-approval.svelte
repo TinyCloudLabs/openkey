@@ -1194,6 +1194,9 @@
     color: #7c4a03;
   }
   .statement-primary {
+    /* A long unbroken id (a 32-hex share key) wraps inside the row instead of pushing the Sensitive pill off the card. */
+    min-width: 0;
+    overflow-wrap: anywhere;
     font-size: 13px;
     line-height: 1.45;
     font-weight: 600;
