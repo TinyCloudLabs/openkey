@@ -1052,6 +1052,7 @@
       initialSelection={reviewSelection}
       transport={{
         approving: signing || previewing,
+        host: messageHost,
         error,
         canUseAuthorizeSign: canUseAuthorizeSignFn(),
         previewReady: Boolean(previewToken && previewSignedMessage && previewApprovalToken),

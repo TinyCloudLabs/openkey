@@ -72,6 +72,12 @@ export interface CliSigningTransport {
 /** Transport injected by the widget popup and iframe routes. */
 export interface WidgetSigningTransport {
   /**
+   * The TinyCloud node the request names (the sign request's `host`), or empty when it names none. The host
+   * approval looks the node key up only there, and only if it is a known node (TC-2309).
+   */
+  host?: string;
+
+  /**
    * True iff the request is eligible for the server-authoritative
    * narrowing path (versioned request + strict origin + versioned SIWE).
    * When false the adapter routes approval straight to the exact-byte
