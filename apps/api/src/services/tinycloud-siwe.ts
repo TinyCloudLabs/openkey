@@ -12,7 +12,7 @@ import {
   SQL,
   type BootstrapSpaceName,
 } from '@tinycloud/bootstrap';
-import { ensureEip55, makeSpaceId, parseRecapFromSiwe } from '@tinycloud/node-sdk-wasm';
+import { ensureEip55, parseRecapFromSiwe } from '@tinycloud/node-sdk-wasm';
 
 const NETWORK_CREATE_ACTION = ENCRYPTION.NETWORK_CREATE;
 
@@ -74,7 +74,9 @@ export function parseTinyCloudSiwe(message: string): ParsedTinyCloudSiwe | null 
 export function ownBootstrapSpaceName(spaceId: string, address: string, chainId: number): BootstrapSpaceName | null {
   const name = spaceId.slice(spaceId.lastIndexOf(':') + 1);
   if (!isBootstrapSpaceName(name)) return null;
-  return spaceId === makeSpaceId(address, chainId, name) ? name : null;
+  // Built as text, not through the wasm `makeSpaceId`, which throws on a chain id it rejects (0): a message
+  // like that must not stop the signature, it just names no own space.
+  return spaceId === `tinycloud:pkh:eip155:${chainId}:${ensureEip55(address)}:${name}` ? name : null;
 }
 
 function isBootstrapSpaceName(name: string): name is BootstrapSpaceName {

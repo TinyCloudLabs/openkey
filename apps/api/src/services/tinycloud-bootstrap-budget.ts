@@ -140,7 +140,8 @@ export async function awaitTinyCloudBootstrapWithinBudget(
     clearTimeout(timer);
   }
 
-  if (timedOut) {
+  // A caller that sets its own budget bounds and logs its own run (hostRequestedSpaceWithinBudget).
+  if (timedOut && options.budgetMs === undefined) {
     void settled.then((outcome) => {
       if (outcome.status !== 'pending') recordBackgroundOutcome(outcome, { attempt: 1, startedAt });
     });
@@ -253,7 +254,9 @@ export async function hostRequestedSpaceWithinBudget(
     let outcome = await firstRun;
     let attemptStartedAt = startedAt;
     for (let attempt = 1; ; attempt += 1) {
-      if (!(outcome.status === 'failed' && outcome.errorCode === 'tinycloud_bootstrap_in_progress')) {
+      // `complete` straight from the state row: nothing ran, so there is no background run to log.
+      const ranNothing = attempt === 1 && result.status === 'complete';
+      if (!ranNothing && !(outcome.status === 'failed' && outcome.errorCode === 'tinycloud_bootstrap_in_progress')) {
         recordBackgroundOutcome(outcome, { attempt, startedAt: attemptStartedAt, requestedSpaceHosted });
       }
       const delay = delays[attempt - 1];

@@ -377,6 +377,8 @@ describe('when hosting takes too long or cannot start', () => {
   });
 
   test('a node that refuses the host delegation still signs, reports the failure, and does not retry with the key', async () => {
+    // A 1 ms retry delay: were the approval to keep the key and retry, a second host POST would show at once.
+    process.env.TINYCLOUD_BOOTSTRAP_RETRY_DELAYS_MS = '1';
     node.hostStatus = 503;
 
     const signed = await sign(applicationsOnly());
@@ -386,7 +388,7 @@ describe('when hosting takes too long or cannot start', () => {
     expect(signed.body.tinycloudBootstrap?.status).toBe('failed');
     expect(signed.body.tinycloudBootstrap?.errorCode).toBeString();
     expect(errorLogs().map((line) => line.event)).toContain('tinycloud_bootstrap_failed');
-    await Bun.sleep(100);
+    await Bun.sleep(300);
     expect(hostPostsFor('applications')).toHaveLength(1);
   });
 
@@ -411,4 +413,5 @@ describe('the account-space sign-in is unchanged', () => {
     expect(state?.status).toBe('complete');
     expect([...node.hosted].sort()).toEqual(SPACES.map((name) => spaceId(name)).sort());
   });
+
 });

@@ -56,6 +56,13 @@ describe('ownBootstrapSpaceName', () => {
   });
 });
 
+describe('ownBootstrapSpaceName with a chain id the wasm rejects', () => {
+  test('compares text and never throws, so a message like that cannot stop the signature', () => {
+    expect(() => ownBootstrapSpaceName(spaceOf(signer, 'applications', 0), signer, 0)).not.toThrow();
+    expect(ownBootstrapSpaceName(spaceOf(signer, 'applications', 0), signer, 0)).toBe('applications');
+  });
+});
+
 describe('isTinyCloudSiweForSigner', () => {
   test('an applications-only sign-in by the signer is a trigger (it names no account-space entry)', () => {
     expect(isTinyCloudSiweForSigner(parsed(siwe({ spaceId: spaceOf(signer, 'applications') })), signer)).toBe(true);
@@ -141,4 +148,5 @@ describe('requestedOwnSpaceForSiwe', () => {
   test('is null for a sign-in by another address', () => {
     expect(requestedOwnSpaceForSiwe(parsed(siwe({ address: other, spaceId: spaceOf(signer, 'applications') })), signer)).toBeNull();
   });
+
 });
