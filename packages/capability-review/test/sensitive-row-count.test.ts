@@ -87,9 +87,36 @@ describe("the callout count matches the Sensitive rows", () => {
     expect(sensitiveRowCount([])).toBe(0);
   });
 
-  it("counts a row shown once for two grants once", () => {
-    const grants = grantsFor({ [SHARE]: ["decrypt"] });
-    expect(sensitiveRowCount([...grants, ...grants])).toBe(1);
+  it("never counts a grant that reaches secrets lower than one, even with no Sensitive row", () => {
+    const secrets = `tinycloud:pkh:eip155:${FIXTURE_META.chainId}:${FIXTURE_META.address}:secrets`;
+    const [base] = grantsFor({ [SHARE]: ["decrypt"] });
+    const unrecognized: CapabilityGrant = {
+      ...base!,
+      id: "zzz",
+      family: "unknown",
+      severity: "attention",
+      service: "tinycloud.zzz",
+      space: secrets,
+      path: "k",
+      actions: [{ ...base!.actions[0]!, id: "zzz-read", ability: "tinycloud.zzz/read", verb: "read" }],
+    };
+    expect(grantReachesSecretDataOrDecryption(unrecognized)).toBe(true);
+    expect(sensitiveRowTexts([unrecognized])).toHaveLength(0);
+    expect(sensitiveRowCount([unrecognized])).toBe(1);
+    // It adds one beside a grant that has Sensitive rows.
+    expect(sensitiveRowCount([...grantsFor({ [SHARE]: ["key.create", "decrypt"] }), unrecognized])).toBe(3);
+  });
+
+  it("is never lower than the number of grants that reach secrets or decryption", () => {
+    const sets = [
+      { [SHARE]: ["decrypt"], [APP]: ["decrypt"] },
+      { [SHARE]: ["key.create", "decrypt"], [APP]: ["key.create", "decrypt"] },
+      { [SHARE]: ["decrypt"] },
+    ];
+    for (const resources of sets) {
+      const grants = grantsFor(resources);
+      expect(sensitiveRowCount(grants)).toBeGreaterThanOrEqual(grants.filter(grantReachesSecretDataOrDecryption).length);
+    }
   });
 
   it("does not count a Sensitive row that is not about secrets or decryption", () => {
