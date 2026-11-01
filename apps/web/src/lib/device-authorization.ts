@@ -32,7 +32,7 @@ export interface DeviceRequestRecord {
   reason?: string;
   shareOnly?: boolean;
   delegationTtlSeconds?: number;
-  /** The lifetime the requester suggests as the default; absent means `delegationTtlSeconds`. */
+  /** The lifetime the requester suggests as the default; absent means the page preselects min(`delegationTtlSeconds`, 7 days). */
   suggestedTtlSeconds?: number;
 }
 
