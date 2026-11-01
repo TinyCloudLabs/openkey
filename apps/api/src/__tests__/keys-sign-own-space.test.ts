@@ -174,17 +174,20 @@ function siweFor(options: {
   address?: string;
   abilities?: Record<string, Record<string, string[]>>;
   expiresInMs?: number;
+  domain?: string;
+  rawAbilities?: Record<string, string[]>;
 }) {
   return prepareSession({
     address: options.address ?? account.address,
     chainId: 1,
-    domain: 'app.example.test',
+    domain: options.domain ?? 'app.example.test',
     issuedAt: new Date().toISOString(),
     expirationTime: new Date(Date.now() + (options.expiresInMs ?? 3_600_000)).toISOString(),
     spaceId: options.space,
     jwk,
     abilities: options.abilities ?? { kv: { 'data/': ['tinycloud.kv/get', 'tinycloud.kv/put'] } },
-  }).siwe;
+    ...(options.rawAbilities ? { rawAbilities: options.rawAbilities } : {}),
+  } as never).siwe;
 }
 
 const applicationsOnly = () => siweFor({ space: spaceId('applications') });
@@ -451,5 +454,36 @@ describe('an account whose setup keeps failing', () => {
     expect(performance.now() - start).toBeGreaterThanOrEqual(350);
     expect(signed.body.tinycloudBootstrap).toEqual({ status: 'hosted' });
     expect(node.hosted.has(spaceId('applications'))).toBe(true);
+  });
+});
+
+// TC-2247 x TC-2285: the own-sites gate runs before the bootstrap, so a sign it refuses hosts nothing.
+describe('a sign the own-sites gate refuses', () => {
+  const network = `urn:tinycloud:encryption:did:pkh:eip155:1:${account.address}:default`;
+  const decryptOnNetwork = { [network]: ['tinycloud.encryption/decrypt'] };
+
+  test('from a site that is not first-party: refused 403, nothing hosted, no setup state, nothing signed', async () => {
+    const signed = await sign(siweFor({ space: spaceId('applications'), rawAbilities: decryptOnNetwork }));
+
+    expect(signed.status).toBe(403);
+    expect(signed.body).toMatchObject({ code: 'app_key_grant_refused' });
+    expect(signed.body.signature).toBeUndefined();
+    expect(node.hostPosts).toEqual([]);
+    expect(node.peerGets).toEqual([]);
+    expect(prisma.tinyCloudBootstrapState.create).not.toHaveBeenCalled();
+    expect(unseal).not.toHaveBeenCalled();
+    expect(state).toBeNull();
+  });
+
+  test('the same message from a first-party site passes the gate and then hosts the signer\'s own space', async () => {
+    const signed = await sign(
+      siweFor({ space: spaceId('applications'), rawAbilities: decryptOnNetwork, domain: 'share.tinycloud.xyz' }),
+      { requestOrigin: 'https://share.tinycloud.xyz' },
+    );
+
+    expect(signed.status).toBe(200);
+    expect(signed.body.signature).toMatch(/^0x[0-9a-f]+$/i);
+    expect(signed.body.tinycloudBootstrap).toEqual({ status: 'hosted' });
+    expect(hostPostsFor('applications')).toHaveLength(1);
   });
 });
