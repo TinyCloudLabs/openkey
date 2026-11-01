@@ -25,7 +25,7 @@
 import type { CapabilityFamily, PermissionSeverity } from "./model.js";
 import { isSecretsSpace } from "./app-scope.js";
 import { isMetadataOnlyAccess } from "./action-semantics.js";
-import { DELEGATION_LIST_LABEL, FAMILY_LABEL } from "./copy.js";
+import { DELEGATION_LIST_LABEL, DELEGATION_REVOKE_LABEL, FAMILY_LABEL } from "./copy.js";
 import { APPS_SEGMENT, parseKeyResource } from "./key-resource.js";
 import { plainSentence } from "./plain-words.js";
 import {
@@ -106,6 +106,8 @@ const SQL_NAMED_DATABASE_VERBS = new Set([
   ...SQL_ADMIN_VERBS,
 ]);
 const DELEGATION_VERBS = new Set(["list", "status"]);
+// Ending access the signer gave. Recognized alone, on the signer's own space.
+const DELEGATION_REVOKE_VERBS = new Set(["revoke"]);
 const ENCRYPTION_NETWORK_VERBS = new Set(["network.create", "network.revoke"]);
 const ENCRYPTION_KEY_VERBS = new Set(["key.create", "key.block", "key.unblock", "key.delete"]);
 // Creating, blocking and unblocking app keys reads nothing; every other
@@ -469,6 +471,15 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     if (entry.serviceMismatch === true) {
       return unknownActionLabel(service);
     }
+    // Revoking names the space, not the app or link, so the row is only the
+    // label. It is not a read: it keeps its own verb set and stays sensitive
+    // (see classifySeverityFromActions). Anything else on another user's or
+    // an unproven space, or mixed with another verb, stays unrecognized.
+    if (allVerbsIn(entry.actions, DELEGATION_REVOKE_VERBS)) {
+      return isOwnSpace
+        ? { family: "bootstrap-delegation", displayLabel: DELEGATION_REVOKE_LABEL }
+        : unknownActionLabel(service);
+    }
     if (!allVerbsIn(entry.actions, DELEGATION_VERBS)) {
       return unknownActionLabel(service);
     }
@@ -668,8 +679,11 @@ export function classifySeverityFromActions(
     case "bootstrap-sql":
       return "standard";
     case "bootstrap-capabilities":
-    case "bootstrap-delegation":
       return "standard";
+    case "bootstrap-delegation":
+      // The reads are routine. Revoke cuts off access the signer gave, and
+      // its authority is the whole space, not one named grant.
+      return allVerbsIn(actions, DELEGATION_VERBS) ? "standard" : "sensitive";
     case "own-app-data":
       return "standard";
     case "cross-app-data":

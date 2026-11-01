@@ -23,6 +23,7 @@ import {
   APP_KEY_ABILITIES,
   DELETE_REFUSED_TEMPLATE,
   DELEGATION_LIST_STATEMENT,
+  DELEGATION_REVOKE_LABEL,
   LITERAL_TRUNCATE_CHARS,
   NAMED_KEY_STATEMENTS,
   OWN_KEY_PREFIX_STATEMENTS,
@@ -389,6 +390,10 @@ const RECOGNIZED_DELEGATION_ACTIONS = new Set([
   "delegation/list",
   "tinycloud.delegation/status",
   "delegation/status",
+]);
+const REVOKE_DELEGATION_ACTIONS = new Set([
+  "tinycloud.delegation/revoke",
+  "delegation/revoke",
 ]);
 
 function spaceNameOf(space: string): string | null {
@@ -1240,7 +1245,13 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
       resource,
     };
   }
-  if (grant.ownedBySelf === false && DELEGATION_SERVICES.has(service)) {
+  // The sentence says "View", so it is only for a grant that only reads. A
+  // revoke on another user's space has no sentence and stays literal.
+  if (
+    grant.ownedBySelf === false &&
+    DELEGATION_SERVICES.has(service) &&
+    grant.actions.every((a) => RECOGNIZED_DELEGATION_ACTIONS.has(a.ability))
+  ) {
     return {
       primaryText: "View another user's connected access",
       service,
@@ -1556,6 +1567,16 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
   }
 
   if (DELEGATION_SERVICES.has(service)) {
+    // Ending access the signer gave: only when it is the signer's own space and
+    // nothing else rides along. The title says the same; the resource names a
+    // space, not the app or link, so there is no target to name.
+    if (
+      grant.ownedBySelf === true &&
+      abilityStrings.length > 0 &&
+      abilityStrings.every((ability) => REVOKE_DELEGATION_ACTIONS.has(ability))
+    ) {
+      return { primaryText: DELEGATION_REVOKE_LABEL, service, resource };
+    }
     const allActionsRecognized =
       abilityStrings.length > 0 &&
       abilityStrings.every((ability) =>
