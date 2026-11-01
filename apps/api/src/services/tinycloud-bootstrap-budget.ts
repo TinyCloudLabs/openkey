@@ -66,9 +66,11 @@ export function setTinyCloudBootstrapBackgroundObserverForTests(observer?: Backg
 }
 
 /** Rejections outside the bootstrap lock's try cannot be recorded in the state row: normalize them. */
-function settleBootstrap(bootstrap: () => Promise<TinyCloudBootstrapOutcome>): Promise<TinyCloudBootstrapOutcome> {
+function settleBootstrap<T extends BudgetedTinyCloudBootstrapOutcome>(
+  bootstrap: () => Promise<T>,
+): Promise<T | TinyCloudBootstrapOutcome> {
   return (async () => bootstrap())().then(
-    (outcome) => outcome,
+    (outcome): T | TinyCloudBootstrapOutcome => outcome,
     (error): TinyCloudBootstrapOutcome => ({
       status: 'failed',
       errorCode: 'tinycloud_bootstrap_crashed',
@@ -98,26 +100,38 @@ function recordBackgroundOutcome(
 }
 
 /**
+ * For a caller that bounds its own wait (hostRequestedSpaceWithinBudget, with the requested-space timeout):
+ * pass this as `budgetMs` so the sync budget never fires first and answers `pending` for it.
+ */
+export const OWN_TIMEOUT_BUDGET_MS = MAX_TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS;
+
+/**
  * Wait up to the sync budget, then let bootstrap finish under its existing lock/heartbeat.
  * Executor/probe failures are recorded by ensureTinyCloudBootstrap in its state row.
  * Rejections outside that lock's try cannot be recorded without an attemptId: log them
  * here, and let the two-minute lock TTL free any abandoned in-progress row.
+ * A `pending` the bootstrap itself returns (it bounded its own wait, or another run holds the
+ * lock) passes through: its run is logged by its own owner, not here.
  * Never rejects; the original promise gets a rejection handler before the race starts.
  */
 export async function awaitTinyCloudBootstrapWithinBudget(
-  bootstrap: Promise<TinyCloudBootstrapOutcome>,
+  bootstrap: Promise<BudgetedTinyCloudBootstrapOutcome>,
   options: { budgetMs?: number } = {},
 ): Promise<BudgetedTinyCloudBootstrapOutcome> {
   const startedAt = performance.now();
   const settled = settleBootstrap(() => bootstrap);
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
   let result: BudgetedTinyCloudBootstrapOutcome;
   try {
     result = await Promise.race([
       settled,
       new Promise<{ status: 'pending' }>((resolve) => {
         timer = setTimeout(
-          () => resolve({ status: 'pending' }),
+          () => {
+            timedOut = true;
+            resolve({ status: 'pending' });
+          },
           Math.min(options.budgetMs ?? tinyCloudBootstrapSyncBudgetMs(), MAX_TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS),
         );
       }),
@@ -126,8 +140,10 @@ export async function awaitTinyCloudBootstrapWithinBudget(
     clearTimeout(timer);
   }
 
-  if (result.status === 'pending') {
-    void settled.then((outcome) => recordBackgroundOutcome(outcome, { attempt: 1, startedAt }));
+  if (timedOut) {
+    void settled.then((outcome) => {
+      if (outcome.status !== 'pending') recordBackgroundOutcome(outcome, { attempt: 1, startedAt });
+    });
   }
   return result;
 }

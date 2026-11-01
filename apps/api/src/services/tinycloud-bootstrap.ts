@@ -22,7 +22,6 @@ import {
   generateHostSIWEMessage,
   invoke,
   invokeAny,
-  parseRecapFromSiwe,
   prepareSession,
   siweToDelegationHeaders,
   vault_sha256,
@@ -31,7 +30,11 @@ import type { PrismaClient } from '@openkey/db';
 import { DEFAULT_TINYCLOUD_BOOTSTRAP_HOST, TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS } from './tinycloud-hosts';
 import { tinyCloudBootstrapNodeCallTimeoutMs, tinyCloudBootstrapNodeInvokeTimeoutMs } from './tinycloud-node-timeouts';
 import { kvSpaceRegistryStore, registerMissingBootstrapSpaces } from './tinycloud-space-registry';
-import { SWEEP_RETRYABLE_CODES } from './tinycloud-bootstrap-budget';
+import { hostRequestedSpaceWithinBudget, SWEEP_RETRYABLE_CODES } from './tinycloud-bootstrap-budget';
+import { isTinyCloudSiweForSigner, parseTinyCloudSiwe, requestedOwnSpaceForSiwe } from './tinycloud-siwe';
+
+// The SIWE reading lives in tinycloud-siwe.ts (the signing route reads it without loading this module).
+export { isTinyCloudSiweForSigner, parseTinyCloudSiwe };
 
 import { log } from '../log';
 export const TINYCLOUD_BOOTSTRAP_VERSION = `@tinycloud/bootstrap:${canonicalHashHex({
@@ -109,20 +112,6 @@ export type TinyCloudBootstrapOutcome =
   | { status: 'complete' }
   | { status: 'skipped' }
   | { status: 'failed'; errorCode: string; errorMessage: string };
-
-interface RecapEntry {
-  service: string;
-  space: string;
-  path: string;
-  actions: string[];
-}
-
-interface ParsedTinyCloudSiwe {
-  address: string;
-  chainId: number;
-  expirationTime?: Date;
-  entries: RecapEntry[];
-}
 
 interface BootstrapSession {
   space: BootstrapSpaceName;
@@ -209,95 +198,13 @@ export function trustedTinyCloudBootstrapHost(): string {
   );
 }
 
-export function parseTinyCloudSiwe(message: string): ParsedTinyCloudSiwe | null {
-  const header = message.match(/^.+ wants you to sign in with your Ethereum account:\n(0x[a-fA-F0-9]{40})\n/);
-  if (!header?.[1]) {
-    return null;
-  }
-
-  const chainIdMatch = message.match(/^Chain ID:\s*(\d+)\s*$/m);
-  if (!chainIdMatch?.[1]) {
-    return null;
-  }
-
-  let entries: RecapEntry[];
-  try {
-    entries = parseRecapFromSiwe(message) as RecapEntry[];
-  } catch {
-    return null;
-  }
-
-  if (!Array.isArray(entries) || entries.length === 0) {
-    return null;
-  }
-
-  const expirationMatch = message.match(/^Expiration Time:\s*(.+)\s*$/m);
-  const expirationTime = expirationMatch?.[1] ? new Date(expirationMatch[1]) : undefined;
-
-  return {
-    address: ensureEip55(header[1]),
-    chainId: Number(chainIdMatch[1]),
-    expirationTime: expirationTime && !Number.isNaN(expirationTime.getTime())
-      ? expirationTime
-      : undefined,
-    entries,
-  };
-}
-
-export function isTinyCloudSiweForSigner(
-  parsed: ParsedTinyCloudSiwe,
-  keyAddress: string,
-): boolean {
-  const address = ensureEip55(keyAddress);
-  if (ensureEip55(parsed.address) !== address) {
-    return false;
-  }
-
-  const accountSpace = `tinycloud:pkh:eip155:${parsed.chainId}:${address}:account`;
-  const ownerDid = `did:pkh:eip155:${parsed.chainId}:${address}`;
-  const defaultEncryptionNetwork = `urn:tinycloud:encryption:${ownerDid}:default`;
-
-  return parsed.entries.some((entry) => isAccountBootstrapEntry(entry, accountSpace, defaultEncryptionNetwork));
-}
-
-function isAccountBootstrapEntry(
-  entry: RecapEntry,
-  accountSpace: string,
-  defaultEncryptionNetwork: string,
-): boolean {
-  if (entry.path === defaultEncryptionNetwork) {
-    return entry.actions.includes(NETWORK_CREATE_ACTION);
-  }
-  if (entry.space !== accountSpace) {
-    return false;
-  }
-
-  return (
-    entry.service === 'capabilities' &&
-    (entry.path === '' || entry.path === 'capabilities') &&
-    entry.actions.includes(CAPABILITIES.READ)
-  ) || (
-    entry.service === 'kv' &&
-    (entry.path === 'applications/' || entry.path === 'spaces/') &&
-    hasAnyAction(entry.actions, [KV.GET, KV.LIST, KV.PUT])
-  ) || (
-    entry.service === 'sql' &&
-    entry.path === 'account' &&
-    hasAnyAction(entry.actions, [SQL.READ, SQL.SCHEMA, SQL.WRITE])
-  );
-}
-
-function hasAnyAction(actions: string[], expected: string[]): boolean {
-  return expected.some((action) => actions.includes(action));
-}
-
 function isSupportedTinyCloudChainId(chainId: number): boolean {
   return SUPPORTED_TINYCLOUD_CHAIN_IDS.has(chainId);
 }
 
 export async function ensureTinyCloudBootstrapForApprovedSign(
   input: EnsureTinyCloudBootstrapInput,
-): Promise<TinyCloudBootstrapOutcome> {
+): Promise<TinyCloudBootstrapOutcome | { status: 'pending' }> {
   // Kill-switch: clients on the SDK auto-sign strategy bootstrap through
   // POST /api/delegate/sign instead; this hook only compensates for older
   // clients. Disable once /delegate/sign traffic replaces widget signs.
@@ -347,7 +254,48 @@ export async function ensureTinyCloudBootstrapForApprovedSign(
     };
   }
 
-  return ensureTinyCloudBootstrap({ ...input, host: tinycloudHost, chainId: parsed.chainId });
+  const requestedSpace = requestedOwnSpaceForSiwe(parsed, input.key.address);
+  if (!requestedSpace) {
+    return ensureTinyCloudBootstrap({ ...input, host: tinycloudHost, chainId: parsed.chainId });
+  }
+  return hostOwnSpaceBeforeSign(input, { space: requestedSpace, host: tinycloudHost, chainId: parsed.chainId });
+}
+
+/**
+ * A sign-in that names one of the signer's own spaces and no account-space entry (an app that asks only for
+ * `applications`): host that space and wait for it before the signature is returned, as an approval does
+ * (TC-1608), so the SDK never has to host it itself. The rest of the setup follows in the background under
+ * the same lock. `complete` here means the requested space is hosted. The wait is bounded by the requested-
+ * space timeout; the caller returns `pending` past it, as before. A run that fails is not retried here (a
+ * retry would keep the plaintext key alive): the sweep retries a failed state.
+ */
+async function hostOwnSpaceBeforeSign(
+  input: EnsureTinyCloudBootstrapInput,
+  requested: { space: BootstrapSpaceName; host: string; chainId: number },
+): Promise<TinyCloudBootstrapOutcome | { status: 'pending' }> {
+  const result = await hostRequestedSpaceWithinBudget(
+    ({ alreadyHosted, report }) => ensureTinyCloudBootstrap({
+      ...input,
+      host: requested.host,
+      chainId: requested.chainId,
+      requestedSpace: { space: requested.space, alreadyHosted, report },
+    }),
+    { retryDelaysMs: [] },
+  );
+  switch (result.status) {
+    case 'hosted':
+    case 'complete':
+      return { status: 'complete' };
+    case 'skipped':
+      return { status: 'skipped' };
+    // Another run holds the lock, or hosting did not finish in time: it continues without this request.
+    case 'pending':
+    case 'timeout':
+      return { status: 'pending' };
+    case 'retrying':
+    case 'failed':
+      return { status: 'failed', errorCode: result.errorCode, errorMessage: result.errorMessage };
+  }
 }
 
 export async function isTinyCloudBootstrapComplete(
