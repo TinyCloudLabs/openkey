@@ -237,7 +237,7 @@ describe('a brand-new account signing in for `applications` only', () => {
       expect(signed.status).toBe(200);
       expect(signed.body.signature).toMatch(/^0x[0-9a-f]+$/i);
       expect(signed.body.address).toBe(account.address);
-      expect(signed.body.tinycloudBootstrap).toEqual({ status: 'complete' });
+      expect(signed.body.tinycloudBootstrap).toEqual({ status: 'hosted' });
       expect([...node.hosted]).toEqual([spaceId('applications')]);
       expect(events.indexOf('host:applications')).toBeGreaterThanOrEqual(0);
       expect(events.indexOf('host:applications')).toBeLessThan(events.indexOf('sign'));
@@ -257,7 +257,7 @@ describe('a brand-new account signing in for `applications` only', () => {
     const signed = await sign(siweFor({ space: spaceId('default') }));
 
     expect(signed.status).toBe(200);
-    expect(signed.body.tinycloudBootstrap).toEqual({ status: 'complete' });
+    expect(signed.body.tinycloudBootstrap).toEqual({ status: 'hosted' });
     expect(node.hosted.has(spaceId('default'))).toBe(true);
     expect(events.indexOf('host:default')).toBeLessThan(events.indexOf('sign'));
   });
@@ -422,7 +422,7 @@ describe('an account whose setup keeps failing', () => {
     id: 'state_1', status: 'failed', failureCode: 'tinycloud_bootstrap_host_failed', failureReason: 'node refused', checkedAt: new Date(Date.now() - ms),
   });
 
-  test('a recent failure: the sign-in does not wait for hosting, and the setup still runs in the background', async () => {
+  test('a recent failure: the sign-in neither waits for nor re-claims the setup (the sweep retries it)', async () => {
     state = failedAgo(60_000);
     process.env.TINYCLOUD_BOOTSTRAP_REQUESTED_SPACE_TIMEOUT_MS = '5000';
     node.beforeHost = async (id) => { if (id === spaceId('applications')) await Bun.sleep(400); };
@@ -434,8 +434,10 @@ describe('an account whose setup keeps failing', () => {
     expect(signed.status).toBe(200);
     expect(signed.body.signature).toMatch(/^0x[0-9a-f]+$/i);
     expect(signed.body.tinycloudBootstrap).toEqual({ status: 'pending' });
-    await until(() => state?.status === 'complete', 'the background setup to complete');
-    expect(node.hosted.has(spaceId('applications'))).toBe(true);
+    await Bun.sleep(100);
+    expect(node.hostPosts).toEqual([]);
+    expect(state?.status).toBe('failed');
+    expect(state?.attemptId).toBeUndefined();
   });
 
   test('an old failure is waited for again', async () => {
@@ -447,7 +449,7 @@ describe('an account whose setup keeps failing', () => {
     const signed = await sign(applicationsOnly());
 
     expect(performance.now() - start).toBeGreaterThanOrEqual(350);
-    expect(signed.body.tinycloudBootstrap).toEqual({ status: 'complete' });
+    expect(signed.body.tinycloudBootstrap).toEqual({ status: 'hosted' });
     expect(node.hosted.has(spaceId('applications'))).toBe(true);
   });
 });

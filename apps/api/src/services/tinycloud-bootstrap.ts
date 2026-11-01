@@ -46,7 +46,7 @@ const BOOTSTRAP_LOCK_TTL_MS = 2 * 60 * 1000;
 const BOOTSTRAP_LOCK_REFRESH_MS = 30 * 1000;
 const BOOTSTRAP_WAIT_MS = 500;
 const MIN_USEFUL_SIWE_TTL_MS = 5_000;
-/** After a failed run, a sign-in does not wait for hosting again for this long (the run still happens in the background). */
+/** After a failed run, a sign-in neither claims nor waits for the setup again for this long (the sweep retries). */
 const FAILED_SETUP_WAIT_BACKOFF_MS = 5 * 60 * 1000;
 const BOOTSTRAP_DOMAIN = 'cli.tinycloud.xyz';
 const NETWORK_CREATE_ACTION = ENCRYPTION.NETWORK_CREATE;
@@ -112,6 +112,8 @@ export class TinyCloudBootstrapError extends Error {
 
 export type TinyCloudBootstrapOutcome =
   | { status: 'complete' }
+  /** A sign-in's own space is hosted; the rest of the setup is still running (or may yet fail) in the background. */
+  | { status: 'hosted' }
   | { status: 'skipped' }
   | { status: 'failed'; errorCode: string; errorMessage: string };
 
@@ -267,11 +269,11 @@ export async function ensureTinyCloudBootstrapForApprovedSign(
  * A sign-in that names one of the signer's own spaces and no account-space entry (an app that asks only for
  * `applications`): host that space and wait for it before the signature is returned, as an approval does
  * (TC-1608), so the SDK never has to host it itself. The rest of the setup follows in the background under
- * the same lock. `complete` here means the requested space is hosted. The wait is bounded by the requested-
+ * the same lock. `hosted` means the requested space is hosted and the rest of the setup is still running; `complete` that setup was already complete. The wait is bounded by the requested-
  * space timeout; the caller returns `pending` past it, as before. A run that fails is not retried here (a
  * retry would keep the plaintext key alive): the sweep retries a failed state. A state that failed less than
- * FAILED_SETUP_WAIT_BACKOFF_MS ago is not waited for: a node that hangs would otherwise cost every sign-in the
- * whole timeout. The run still starts and continues in the background, as before.
+ * FAILED_SETUP_WAIT_BACKOFF_MS ago is neither claimed nor waited for: a node that hangs would otherwise cost
+ * every sign-in the whole timeout and a full rerun. The background sweep keeps retrying the failed state.
  */
 async function hostOwnSpaceBeforeSign(
   input: EnsureTinyCloudBootstrapInput,
@@ -289,6 +291,7 @@ async function hostOwnSpaceBeforeSign(
   });
   const failedRecently = previous?.status === 'failed'
     && Date.now() - previous.checkedAt.getTime() < FAILED_SETUP_WAIT_BACKOFF_MS;
+  if (failedRecently) return { status: 'pending' };
   const result = await hostRequestedSpaceWithinBudget(
     ({ alreadyHosted, report }) => ensureTinyCloudBootstrap({
       ...input,
@@ -296,10 +299,11 @@ async function hostOwnSpaceBeforeSign(
       chainId: requested.chainId,
       requestedSpace: { space: requested.space, alreadyHosted, report },
     }),
-    { retryDelaysMs: [], ...(failedRecently ? { timeoutMs: 0 } : {}) },
+    { retryDelaysMs: [] },
   );
   switch (result.status) {
     case 'hosted':
+      return { status: 'hosted' };
     case 'complete':
       return { status: 'complete' };
     case 'skipped':

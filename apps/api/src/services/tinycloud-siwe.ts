@@ -68,8 +68,9 @@ export function parseTinyCloudSiwe(message: string): ParsedTinyCloudSiwe | null 
 /**
  * The canonical bootstrap space name when `spaceId` is exactly one of THIS address's own bootstrap
  * spaces on this chain (`tinycloud:pkh:eip155:<chain>:<EIP-55 address>:<name>`), otherwise null. Another
- * account's space, another chain, a lower-case spelling of the address and a name that is not a bootstrap
- * space all return null.
+ * account's space, another chain, an address that is not spelled EIP-55 and a name that is not a bootstrap space all return
+ * null. (A lower-case address in a real message never gets here as such: the SIWE parser normalises it to
+ * EIP-55 first, and it is still the signer's own space.)
  */
 export function ownBootstrapSpaceName(spaceId: string, address: string, chainId: number): BootstrapSpaceName | null {
   const name = spaceId.slice(spaceId.lastIndexOf(':') + 1);
