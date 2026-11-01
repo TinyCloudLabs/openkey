@@ -29,6 +29,7 @@
 
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import type { AdmittedAppKey } from "./app-key-refusal";
+import { expirationTimeOf } from "./approval-expiry";
 
 const CONTEXT_TTL_MS = 5 * 60 * 1000;
 
@@ -107,6 +108,8 @@ export interface AuthorizationContextIssueInput {
    * time: the resources as written and the abilities admitted on each.
    */
   admittedAppKeys?: AdmittedAppKey[];
+  /** The app's `expiryChangeable: true` opt-in, bound at prepare time (TC-2272). */
+  expiryChangeable?: boolean;
 }
 
 interface StoredContext {
@@ -135,6 +138,7 @@ interface StoredContext {
   verifiedManifest?: VerifiedManifestFields;
   appOrigin?: string;
   admittedAppKeys?: AdmittedAppKey[];
+  expiryChangeable?: boolean;
 }
 
 const store = new Map<string, StoredContext>();
@@ -346,6 +350,7 @@ export function issueAuthorizationContext(
     verifiedManifest: input.verifiedManifest,
     appOrigin: input.appOrigin,
     admittedAppKeys: input.admittedAppKeys,
+    expiryChangeable: input.expiryChangeable,
   };
   store.set(token, stored);
 
@@ -800,6 +805,8 @@ export interface PeekSuccess {
     initialSelectionActionIds: string[];
     appOrigin?: string;
     admittedAppKeys?: AdmittedAppKey[];
+    /** The app opted in (`expiryChangeable: true`) to a signed expiry that differs from the one it sent. */
+    expiryChangeable?: boolean;
   };
 }
 
@@ -848,6 +855,7 @@ export function peekAuthorizationContext(token: string): PeekSuccess | PeekFailu
       initialSelectionActionIds: [...stored.initialSelectionActionIds],
       appOrigin: stored.appOrigin,
       admittedAppKeys: stored.admittedAppKeys,
+      expiryChangeable: stored.expiryChangeable,
     },
   };
 }
@@ -938,6 +946,25 @@ export function issuePreviewApproval(
     expiresAt: new Date(stored.expiresAt).toISOString(),
     signedMessageDigest: digest,
   };
+}
+
+/**
+ * The Expiration Time the sealed preview bytes carry. /authorize-sign takes
+ * the user's chosen expiry from here, so an external signer that signed the
+ * previewed bytes needs no extra field. `checkPreviewApproval` still holds the
+ * signed bytes to the sealed digest.
+ */
+export function peekPreviewApprovalExpiry(
+  token: string,
+  owner: { userId: string; authorizationContextToken: string },
+): string | undefined {
+  const stored = previewApprovals.get(token);
+  // Only the preview's own user and context may read it; anyone else gets nothing and
+  // `checkPreviewApproval` then refuses with its own error.
+  if (!stored || stored.userId !== owner.userId || stored.authorizationContextToken !== owner.authorizationContextToken) {
+    return undefined;
+  }
+  return expirationTimeOf(stored.signedMessage);
 }
 
 export type PreviewApprovalCheckError =

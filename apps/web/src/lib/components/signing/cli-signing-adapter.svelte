@@ -86,6 +86,10 @@
   error={transport.error}
   approveBlockedReason={transport.approveBlockedReason ?? null}
   {context}
+  expiryMs={transport.expiry?.chosenMs ?? null}
+  onExpiryChange={transport.expiry?.onChange}
+  expiryBounded={transport.expiry?.bounded ?? false}
+  expiryMaxMs={transport.expiry?.maxMs ?? null}
   {showSigner}
   {onApprove}
   {onCancel}

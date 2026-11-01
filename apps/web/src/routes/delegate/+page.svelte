@@ -13,7 +13,7 @@
   import PreparedHandoff from './PreparedHandoff.svelte';
   import OwnerRevocationHandoff from './OwnerRevocationHandoff.svelte';
   import DeviceRequestNotice from '$lib/components/device/device-request-notice.svelte';
-  import { approvedDevicePermissions, cleanConsentText, delegationPasteCode, readDelegatePermissionsParam, deviceRequestReason, loadVerifiedDeviceRequest } from '$lib/device-authorization';
+  import { approvedDevicePermissions, cleanConsentText, delegationPasteCode, readDelegatePermissionsParam, deviceRequestReason, deviceRequestTtlSeconds, loadVerifiedDeviceRequest } from '$lib/device-authorization';
   import DelegateLinkNotice from '$lib/components/delegate/delegate-link-notice.svelte';
   import {
     KNOWN_NODE_ORIGINS,
@@ -31,6 +31,7 @@
   import { shouldShowLoopbackHint } from '$lib/delegate-signing-hint';
   import { startCodeCountdown, remainingFromServerClock, type CodeCountdownSnapshot } from '$lib/delegate-code-countdown';
   import { closeThisTab, browserCloseEnvironment } from '$lib/delegate-close-tab';
+  import { siweExpiration } from '$lib/approval-expiry';
   import {
     parseSpaceSetup,
     spaceReadinessResult,
@@ -242,6 +243,41 @@
   // and clamping (30 days at most) are owned by the API to keep the source
   // of truth in one place; we just forward it.
   let expiryParam = $state($page.url.searchParams.get('expiry') || '');
+  // `expiryChangeable=true` on a /delegate link: the CLI that built it accepts a delegation longer than the
+  // link's `expiry`. Without it a pick can only be shorter (a CLI refuses a longer one and saves nothing).
+  const linkExpiryChangeable = $page.url.searchParams.get('expiryChangeable') === 'true';
+  // TC-2272: the time the user picked on the approval screen (ms from approval), or null for the
+  // requested one. A pick is sent as `expiry` with `expiryChosen`, which skips the 30-day clamp meant
+  // for link parameters; a signed request or device approval still bounds it to what was signed.
+  let expiryChoiceMs = $state<number | null>(null);
+  let expiryChosen = $state(false);
+  let requestedExpiryParam: string | null = null;
+  // The longest the requester signed (a signed approval request or a device request); null on a plain link.
+  let expiryMaxMs = $state<number | null>(null);
+  async function changeApprovalExpiry(ms: number | null) {
+    if (!selectedKey || !jwk) {
+      error = 'Missing key or JWK parameter.';
+      return;
+    }
+    requestedExpiryParam ??= expiryParam;
+    const previous = { choice: expiryChoiceMs, chosen: expiryChosen, param: expiryParam };
+    expiryChoiceMs = ms;
+    expiryChosen = ms !== null;
+    expiryParam = ms === null ? requestedExpiryParam : `${Math.round(ms / 1000)}s`;
+    updatingPermissions = true;
+    error = '';
+    try {
+      const data = await prepareDelegation(selectedKey, permissionsEdited ? selectedActionKeys : undefined);
+      applyPreparedDelegation(data);
+    } catch (e: any) {
+      expiryChoiceMs = previous.choice;
+      expiryChosen = previous.chosen;
+      expiryParam = previous.param;
+      error = e.message || 'Failed to change the expiry';
+    } finally {
+      updatingPermissions = false;
+    }
+  }
   const deviceTransactionId = approvalRequestMode ? '' : $page.url.searchParams.get('deviceTransactionId') || '';
   const deviceShareOrigin = $page.url.searchParams.get('deviceShareOrigin') || '';
   const deviceUserCode = $page.url.searchParams.get('deviceUserCode') || '';
@@ -391,6 +427,7 @@
       expiry: expiryParam,
     });
     requestReason = normalizeReason(deviceRequestReason(record));
+    expiryMaxMs = deviceRequestTtlSeconds(record) * 1000;
   })();
   deviceRequestVerified.catch((cause: Error) => { error = cause.message; });
 
@@ -455,7 +492,9 @@
       host = request.nodeOrigin;
       requestedPermissions = request.permissions;
       requestReason = normalizeReason(request.reason);
-      expiryParam = `${request.grantLifetimeSeconds}s`;
+      // The requester signs its longest lifetime; the owner starts from its suggestion (the maximum when it gives none).
+      expiryMaxMs = request.grantLifetimeSeconds * 1000;
+      expiryParam = `${request.suggestedLifetimeSeconds ?? request.grantLifetimeSeconds}s`;
       approvalRequestLoaded = true;
     } catch (cause) {
       error = cause instanceof Error ? cause.message : 'Could not open this approval link.';
@@ -626,6 +665,11 @@
     }
     if (expiryParam) {
       body.expiry = expiryParam;
+      if (expiryChosen) {
+        body.expiryChosen = true;
+        body.linkExpiry = requestedExpiryParam ?? '';
+        if (linkExpiryChangeable) body.expiryChangeable = true;
+      }
     }
     // The API refuses a device delegation outside the transaction's lifetime.
     if (deviceTransactionId) body.deviceTransactionId = deviceTransactionId;
@@ -715,7 +759,7 @@
       // bytes here means the user reviews text that no longer matches
       // what will be signed. Assign a fresh model object so Svelte
       // reactivity picks up the change.
-      reviewModel = { ...reviewModel, rawMessage: siweMessage };
+      reviewModel = { ...reviewModel, rawMessage: siweMessage, expiry: siweExpiration(siweMessage) ?? reviewModel.expiry };
     }
   }
 
@@ -734,6 +778,12 @@
     baselineSiweForReview = null;
     reviewModel = null;
     reviewSelection = new Set<string>();
+    // TC-2272: the next prepare starts again from what the request asked for, so the picker's
+    // requested window (and the signed-request maximum) is not the previous pick.
+    expiryChoiceMs = null;
+    expiryChosen = false;
+    if (requestedExpiryParam !== null) expiryParam = requestedExpiryParam;
+    requestedExpiryParam = null;
   }
 
   function showLinkWallet() {
@@ -1003,6 +1053,11 @@
       }
       if (expiryParam) {
         body.expiry = expiryParam;
+        if (expiryChosen) {
+          body.expiryChosen = true;
+          body.linkExpiry = requestedExpiryParam ?? '';
+          if (linkExpiryChangeable) body.expiryChangeable = true;
+        }
       }
       if (deviceTransactionId) body.deviceTransactionId = deviceTransactionId;
 
@@ -1576,7 +1631,7 @@
         {#if deviceTransactionId}
           <DeviceRequestNotice nodeOrigin={host} shareOrigin={deviceShareOrigin} expiry={expiryParam} bind:acknowledged={deviceAcknowledged} />
         {:else}
-          <DelegateLinkNotice {host} hostRecognized={!hostNeedsAcknowledgment} callback={approvedCallback} requesterRelay={approvalRequestMode} expiresAt={delegationExpiresAt} bind:acknowledged={hostAcknowledged} />
+          <DelegateLinkNotice {host} hostRecognized={!hostNeedsAcknowledgment} callback={approvedCallback} requesterRelay={approvalRequestMode} expiresAt={delegationExpiresAt} showExpires={!(reviewModel?.immutable && reviewModel.protocol === 'tinycloud-siwe-recap')} bind:acknowledged={hostAcknowledged} />
         {/if}
 
         {#if selectedKey.keyType === 'EXTERNAL'}
@@ -1625,6 +1680,15 @@
                     return;
                   }
                   return updatePermissions(nextServerKeys);
+                },
+                expiry: {
+                  chosenMs: expiryChoiceMs,
+                  // The requester signed its longest time (signed request, device), or the link asked for exactly
+                  // this much: a link without `expiryChangeable=true` is shorter-only.
+                  bounded: approvalRequestMode || Boolean(deviceTransactionId) || !linkExpiryChangeable,
+                  // The most the requester signed; the default shown can be shorter (its suggestion).
+                  maxMs: expiryMaxMs,
+                  onChange: changeApprovalExpiry,
                 },
               }}
             />
