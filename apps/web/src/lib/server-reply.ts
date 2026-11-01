@@ -21,6 +21,21 @@ export class ServerReplyError extends Error {
   }
 }
 
+/** The codes of the server's definite refusals of a sign-in (services/app-key-refusal.ts). Retrying the same request cannot succeed. */
+const REFUSAL_CODES: ReadonlySet<string> = new Set(['app_key_grant_refused', 'key_delete_not_grantable', 'invalid_siwe_recap']);
+
+/** A 400 or 403 whose body carries one of the refusal codes. Keeps the server's words, the code and the status. */
+export class ServerRefusalError extends Error {
+  readonly status: number;
+  readonly code: string;
+  constructor(message: string, status: number, code: string) {
+    super(message);
+    this.name = 'ServerRefusalError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
 // The pages read nested fields of a checked reply the way they read any parsed JSON.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type ReplyBody = Record<string, any>;
@@ -61,6 +76,10 @@ export async function readReply(
       failure !== null && typeof failure === 'object' && 'error' in failure && typeof failure.error === 'string' && failure.error
         ? failure.error
         : `HTTP ${response.status}`;
+    const code = failure !== null && typeof failure === 'object' && 'code' in failure && typeof failure.code === 'string' ? failure.code : '';
+    if ((response.status === 400 || response.status === 403) && REFUSAL_CODES.has(code)) {
+      throw new ServerRefusalError(text, response.status, code);
+    }
     throw new Error(text);
   }
   let parsed: unknown;

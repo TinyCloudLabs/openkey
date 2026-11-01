@@ -20,7 +20,7 @@
   } from '@openkey/capability-review';
   import SiweOriginRefusal from '$lib/components/signing/siwe-origin-refusal.svelte';
   import ServerReplyRefusal from '$lib/components/signing/server-reply-refusal.svelte';
-  import { hasSignResult, hasText, readReply, ServerReplyError, SERVER_REPLY_ERROR } from '$lib/server-reply';
+  import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError, SERVER_REPLY_ERROR } from '$lib/server-reply';
   import {
     createWidgetTransport,
     type WidgetRequest,
@@ -738,7 +738,8 @@
       previewSignedMessage = previewResult.signedMessage;
       previewApprovalToken = previewResult.previewApprovalToken;
     } catch (e: any) {
-      if (e instanceof ServerReplyError) unreadableReply(e.status);
+      if (e instanceof ServerRefusalError) refusedByServer(e);
+      else if (e instanceof ServerReplyError) unreadableReply(e.status);
       else error = e.message || 'Preview failed';
       // On failure, invalidate any stored token so the next attempt gets
       // a fresh one — the server may have expired the token or rejected
@@ -859,7 +860,8 @@
       });
       sendClose();
     } catch (e: any) {
-      if (e instanceof ServerReplyError) unreadableReply(e.status);
+      if (e instanceof ServerRefusalError) refusedByServer(e);
+      else if (e instanceof ServerReplyError) unreadableReply(e.status);
       else error = e.message || 'Signing failed';
     } finally {
       signing = false;
@@ -902,6 +904,15 @@
 
   // A reply that cannot be read leaves nothing approved: show the refusal and
   // tell the host once, without any reply content.
+  // A definite refusal from the server (TC-2291): tell the app once, show the server's words in place of Approve.
+  let refusalMessage = $state<string | null>(null);
+  function refusedByServer(refusal: ServerRefusalError) {
+    error = '';
+    if (refusalMessage !== null) return;
+    refusalMessage = refusal.message;
+    sendResponse({ type: 'openkey:sign:response', success: false, error: { code: 'UNKNOWN', message: refusal.message } });
+  }
+
   function unreadableReply(status: number) {
     replyFailureStatus = status;
     error = '';
@@ -1053,6 +1064,7 @@
       transport={{
         approving: signing || previewing,
         error,
+        approveBlockedReason: refusalMessage,
         canUseAuthorizeSign: canUseAuthorizeSignFn(),
         previewReady: Boolean(previewToken && previewSignedMessage && previewApprovalToken),
         requestPreview,

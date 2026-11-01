@@ -71,6 +71,8 @@ export interface CliSigningTransport {
 
 /** Transport injected by the widget popup and iframe routes. */
 export interface WidgetSigningTransport {
+  /** Set once the server has refused this request for good: Approve is off and this is shown in its place. */
+  approveBlockedReason?: string | null;
   /**
    * True iff the request is eligible for the server-authoritative
    * narrowing path (versioned request + strict origin + versioned SIWE).
