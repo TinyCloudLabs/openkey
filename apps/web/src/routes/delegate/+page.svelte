@@ -13,7 +13,7 @@
   import PreparedHandoff from './PreparedHandoff.svelte';
   import OwnerRevocationHandoff from './OwnerRevocationHandoff.svelte';
   import DeviceRequestNotice from '$lib/components/device/device-request-notice.svelte';
-  import { approvedDevicePermissions, cleanConsentText, delegationPasteCode, readDelegatePermissionsParam, deviceRequestReason, deviceRequestTtlSeconds, loadVerifiedDeviceRequest } from '$lib/device-authorization';
+  import { approvedDevicePermissions, cleanConsentText, delegationPasteCode, readDelegatePermissionsParam, deviceRequestReason, deviceRequestTtlSeconds, loadVerifiedDeviceRequest, preselectedLifetimeSeconds } from '$lib/device-authorization';
   import DelegateLinkNotice from '$lib/components/delegate/delegate-link-notice.svelte';
   import {
     KNOWN_NODE_ORIGINS,
@@ -520,9 +520,9 @@
       host = request.nodeOrigin;
       requestedPermissions = request.permissions;
       requestReason = normalizeReason(request.reason);
-      // The requester signs its longest lifetime; the owner starts from its suggestion (the maximum when it gives none).
+      // The requester signs its longest lifetime; the owner starts from its suggestion (a week, or the maximum if shorter, when it gives none).
       expiryMaxMs = request.grantLifetimeSeconds * 1000;
-      expiryParam = `${request.suggestedLifetimeSeconds ?? request.grantLifetimeSeconds}s`;
+      expiryParam = `${preselectedLifetimeSeconds(request.grantLifetimeSeconds, request.suggestedLifetimeSeconds)}s`;
       approvalRequestLoaded = true;
     } catch (cause) {
       error = cause instanceof TypeError

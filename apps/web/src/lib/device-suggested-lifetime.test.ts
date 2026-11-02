@@ -1,7 +1,7 @@
 // TC-2274: a device request may carry a suggested default lifetime below its signed maximum.
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { describe, expect, test } from 'bun:test';
-import { deviceLifetimeOptions, deviceRequestSuggestedSeconds, type DeviceRequestRecord } from './device-authorization';
+import { deviceLifetimeOptions, deviceRequestSuggestedSeconds, preselectedLifetimeSeconds, type DeviceRequestRecord } from './device-authorization';
 
 const day = 86_400;
 const record = (fields: Partial<DeviceRequestRecord>): DeviceRequestRecord => ({
@@ -11,13 +11,23 @@ const record = (fields: Partial<DeviceRequestRecord>): DeviceRequestRecord => ({
 } as DeviceRequestRecord);
 
 describe('deviceRequestSuggestedSeconds', () => {
-  test('is the suggestion when there is one, otherwise the maximum', () => {
+  test('is the suggestion when there is one, otherwise the smaller of the maximum and 7 days', () => {
     expect(deviceRequestSuggestedSeconds(record({ delegationTtlSeconds: 365 * day, suggestedTtlSeconds: 7 * day }))).toBe(7 * day);
-    expect(deviceRequestSuggestedSeconds(record({ delegationTtlSeconds: 365 * day }))).toBe(365 * day);
+    expect(deviceRequestSuggestedSeconds(record({ delegationTtlSeconds: 365 * day, suggestedTtlSeconds: 90 * day }))).toBe(90 * day);
+    expect(deviceRequestSuggestedSeconds(record({ delegationTtlSeconds: 365 * day }))).toBe(7 * day);
+    expect(deviceRequestSuggestedSeconds(record({ delegationTtlSeconds: 8000 * 365 * day }))).toBe(7 * day);
+    expect(deviceRequestSuggestedSeconds(record({ delegationTtlSeconds: 3 * day }))).toBe(3 * day);
+  });
+  test('with no suggestion the maximum is still selectable: only what is preselected changes', () => {
+    const max = 365 * day;
+    const options = deviceLifetimeOptions(max);
+    expect(options.map((option) => option.seconds)).toContain(deviceRequestSuggestedSeconds(record({ delegationTtlSeconds: max })));
+    expect(options.at(-1)?.seconds).toBe(max);
   });
   test('never exceeds the maximum, whatever the server sent', () => {
     expect(deviceRequestSuggestedSeconds(record({ delegationTtlSeconds: 3600, suggestedTtlSeconds: 7 * day }))).toBe(3600);
     expect(deviceRequestSuggestedSeconds(record({ delegationTtlSeconds: 3600, suggestedTtlSeconds: 0 }))).toBe(3600);
+    expect(deviceRequestSuggestedSeconds(record({ delegationTtlSeconds: 30 * day, suggestedTtlSeconds: 0 }))).toBe(7 * day);
   });
 });
 
@@ -55,5 +65,22 @@ describe('long lifetimes read plainly (TC-2274)', () => {
     expect(deviceLifetimeNotice(7 * day, now)).toEqual({ ends: 'Nov 7, 2026, 12:00 PM UTC', long: false });
     expect(deviceLifetimeNotice(365 * day, now).long).toBe(false);
     expect(deviceLifetimeNotice(365 * day + 1, now).long).toBe(true);
+  });
+});
+
+// The signed-approval page (/delegate) uses the same rule with the link's signed maximum.
+describe('preselectedLifetimeSeconds', () => {
+  test('no suggestion: a week, or the maximum when that is shorter; the maximum stays selectable', () => {
+    expect(preselectedLifetimeSeconds(365 * day)).toBe(7 * day);
+    expect(preselectedLifetimeSeconds(8000 * 365 * day)).toBe(7 * day);
+    expect(preselectedLifetimeSeconds(7 * day)).toBe(7 * day);
+    expect(preselectedLifetimeSeconds(3 * day)).toBe(3 * day);
+    expect(deviceLifetimeOptions(365 * day).at(-1)?.seconds).toBe(365 * day);
+  });
+  test('a suggestion up to the maximum is unchanged, even above a week; one above it or unusable falls back', () => {
+    expect(preselectedLifetimeSeconds(365 * day, 90 * day)).toBe(90 * day);
+    expect(preselectedLifetimeSeconds(365 * day, 3600)).toBe(3600);
+    expect(preselectedLifetimeSeconds(3 * day, 30 * day)).toBe(3 * day);
+    expect(preselectedLifetimeSeconds(365 * day, 0)).toBe(7 * day);
   });
 });
