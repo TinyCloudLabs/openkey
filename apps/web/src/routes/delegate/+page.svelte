@@ -1460,7 +1460,7 @@
               >Close</button>
             {/if}
           {:else}
-            <h2 class="text-lg font-semibold text-surface-900 mb-2">Approved. Your session was sent back to the TinyCloud CLI.</h2>
+            <h2 class="text-lg font-semibold text-surface-900 mb-2">Approved. Your session was sent back.</h2>
             <p class="text-surface-500 text-sm">You can close this window and return to the CLI.</p>
           {/if}
         </div>
