@@ -23,6 +23,7 @@
   import SiweOriginRefusal from '$lib/components/signing/siwe-origin-refusal.svelte';
   import ServerReplyRefusal from '$lib/components/signing/server-reply-refusal.svelte';
   import { hasSignResult, hasText, readReply, ServerReplyError, SERVER_REPLY_ERROR } from '$lib/server-reply';
+  import { createFrameSettleGate, type FrameSettleGate } from '$lib/frame-settle-gate';
   import {
     createIframeLayoutGate,
     type IframeLayoutGate,
@@ -63,6 +64,9 @@
   let layoutReady = $state(false);
   let layoutError = $state('');
   let layoutGate: IframeLayoutGate | null = null;
+  // v1 has no layout-ready handshake with the host: Approve waits until this frame's own size has been quiet (TC-2320).
+  let frameSettled = $state(false);
+  let frameSettle: FrameSettleGate | null = null;
   let pendingLayoutAck: { height: number; layoutId: number } | null = null;
   let keyReadGeneration = 0;
   let keyOwnerToken: string | null = null;
@@ -113,6 +117,19 @@
 
   const origin = $page.url.searchParams.get('origin') || '*';
   const v2 = $page.url.searchParams.get('protocolVersion') === '2';
+  if (!v2 && typeof window !== 'undefined') {
+    frameSettle = createFrameSettleGate({
+      schedule: (run, ms) => {
+        const id = setTimeout(run, ms);
+        return () => clearTimeout(id);
+      },
+      onChange: (settled) => { frameSettled = settled; },
+    });
+    // The frame's own size is what the SDK modal animates; each change restarts the quiet period.
+    window.addEventListener('resize', () => frameSettle?.resized());
+  }
+  // Start waiting once the review is on screen (the first call only).
+  $effect(() => { if (!v2 && reviewModel) frameSettle?.show(); });
   const phaseRequestId = v2 ? $page.url.searchParams.get('requestId') : null;
   const phaseKeyId = v2 ? $page.url.searchParams.get('keyId') : null;
   const passkeysSupported = passkeysSupportedFromParams($page.url.searchParams);
@@ -196,6 +213,7 @@
       window.removeEventListener('resize', applyPendingLayout);
       window.visualViewport?.removeEventListener('resize', applyPendingLayout);
       layoutGate?.destroy();
+      frameSettle?.destroy();
       transport = null;
     };
   });
@@ -310,6 +328,8 @@
         );
         return;
       }
+      // The host animates the frame to this height: Approve is blocked again until it is quiet (v1 only).
+      frameSettle?.posted();
       if (currentRequestId && messageProtocolVersion !== null) {
         if (transport) {
           transport.emitResize(height);
@@ -1078,7 +1098,7 @@
       <IframeSigningAdapter
         model={reviewModel}
         initialSelection={reviewSelection}
-        layoutBlocked={v2 && !layoutReady}
+        layoutBlocked={v2 ? !layoutReady : !frameSettled}
         transport={{
           approving: signing || previewing,
           host: messageHost,
