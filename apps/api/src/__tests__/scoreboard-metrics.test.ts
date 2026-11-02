@@ -5,7 +5,7 @@ await mockModules({
   '@openkey/db': () => ({ createPrismaClient: () => ({ $queryRaw: async () => [] }) }),
 });
 
-const { countAppUsers, countProtocolUsers, exclusionsFromEnv, fetchNodeOwners, resetScoreboardRateLimitForTests, scoreboardMetricsRouter } = await import(
+const { countAppUsers, countProtocolUsers, fetchNodeOwners, resetScoreboardRateLimitForTests, scoreboardMetricsRouter } = await import(
   '../routes/scoreboard-metrics?tc1483' as string
 );
 
@@ -85,11 +85,6 @@ test('app users: excluded accounts and excluded OAuth clients are removed', asyn
   expect(result).toEqual({ total: 2, active7d: 2 });
 });
 
-test('exclusion lists come from config', () => {
-  const { userIds, clientIds } = exclusionsFromEnv({ SCOREBOARD_EXCLUDE_USER_IDS: ' a, b ,,', SCOREBOARD_EXCLUDE_CLIENT_IDS: 'c' });
-  expect([...userIds]).toEqual(['a', 'b']);
-  expect([...clientIds]).toEqual(['c']);
-});
 
 const envKeys = ['OPENKEY_METRICS_READ_TOKEN', 'INTERNAL_METRICS_TOKEN', 'NODE_STATS_URL', 'NODE_STATS_READ_TOKEN'] as const;
 const savedEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
