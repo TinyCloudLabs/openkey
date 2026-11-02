@@ -41,6 +41,8 @@ export const requiredRuntimeMigrationChecksums = new Map<string, string>([
   ['20261012_0001_signin_polish_hints_branding', 'd09960dda6ae76472c61629283b4030131d47b5f0f5cd7d79a3d02c0c5bf0e96'],
   ['20261012_0002_native_session_proof_jti', 'e3b40f3045fbc715556496226d8b60b7eca318fe58df4ba45392665bfd88ff6b'],
   ['20261015_0001_google_link_step_up', '4848695c2de0e91f66e9e05e4ffa9537bfb62685cc37a925db121d1e7c3c0c4c'],
+  ['20261015_0002_apple_social_identity', '5d98152596b3d2bc66dedad4128e77100cc056cefb7ca33d466a1f74c7cea8ba'],
+  ['20261015_0003_apple_social_continuation', '52ade4b7b47f44a4ee4638cb33a28fc56a54856801b44b65c4e3dc3eb2beb953'],
   ['20261016_0001_prepared_siwe_handoff', '645d931e10dbd068da7f7243dcbe995f1af6f0e339b98d082264c8153bfec9ec'],
   ['20261019_0001_app_sign_in_day', 'a2f56caea9cd46aebccfb4d369e0223cf8338d07ac685a0dce145b4c3c90bb29'],
   ['20261021_0001_tinycloud_bootstrap_sweep_attempts', '905d0105d5b97e75d8855f30cd7e35e80d8034e7ee3051402f81d1efc1bf5edd'],
