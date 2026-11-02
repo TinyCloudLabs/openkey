@@ -12,12 +12,17 @@ export type PreparedHandoffRequest = {
   keyId?: string;
   presentation?: Record<string, unknown>;
   sessionDid: string;
+  /**
+   * TC-2276: the CLI accepts a delegation that outlives the Expiration Time of the SIWE it prepared, so the owner may
+   * choose a longer time than it asked for. Strictly the boolean true; absent keeps the shorter-only ceiling.
+   */
+  expiryChangeable?: true;
 } | OwnerRevocationRequest;
 
 type Delivery = { handoffId: string; callback?: string; state: string; cancelSecret: string };
 const REQUEST_FIELDS: Record<keyof Exclude<PreparedHandoffRequest, OwnerRevocationRequest>, true> = {
   protocolVersion: true, siwe: true, jwk: true, host: true,
-  keyId: true, presentation: true, sessionDid: true,
+  keyId: true, presentation: true, sessionDid: true, expiryChangeable: true,
 };
 const DELIVERY_FIELDS: Record<keyof Delivery, true> = { handoffId: true, callback: true, state: true, cancelSecret: true };
 
@@ -84,7 +89,8 @@ function validateRequest(input: unknown, now: Date): { request: PreparedHandoffR
       !('host' in request) || typeof request.host !== 'string' ||
       !('sessionDid' in request) || typeof request.sessionDid !== 'string' || request.sessionDid.length > 512 ||
       ('keyId' in request && (typeof request.keyId !== 'string' || !request.keyId)) ||
-      ('presentation' in request && (!request.presentation || typeof request.presentation !== 'object' || Array.isArray(request.presentation)))
+      ('presentation' in request && (!request.presentation || typeof request.presentation !== 'object' || Array.isArray(request.presentation))) ||
+      ('expiryChangeable' in request && request.expiryChangeable !== true)
     )) ||
     !('handoffId' in delivery) || !opaque(delivery.handoffId) ||
     !('state' in delivery) || !opaque(delivery.state) ||
@@ -182,6 +188,13 @@ export class PreparedHandoffService {
     if (record.status === 'CONSUMED') fail('handoff_consumed', 'Handoff already signed', 409);
     return record;
   }
+  /** Whether the CLI that made this handoff opted in to a longer signed expiry. Read from the stored handoff, never from a request body. */
+  async expiryChangeable(ticket: string, userId: string): Promise<boolean> {
+    const record = await this.active(ticket);
+    if (record.ownerId !== userId) fail('handoff_claimed', 'Handoff not claimed by this user', 403);
+    return !('kind' in record.request) && record.request.expiryChangeable === true;
+  }
+
   async bindOwnerRevocation(ticket: string, userId: string, keyId: string, contextToken: string): Promise<void> {
     const record = await this.active(ticket);
     if (record.ownerId !== userId || !('kind' in record.request) || record.request.kind !== 'owner-revocation') {

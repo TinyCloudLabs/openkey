@@ -126,3 +126,16 @@ describe('the one-minute minimum, from both sides', () => {
     await refusal(service.start({ ...request, delegationTtlSeconds: 3600, suggestedTtlSeconds: 59 }, '203.0.113.9'));
   });
 });
+
+// TC-2276 item 12: an older row that stored no TTL derives it from its two deadlines and is used as it is. The old
+// 30-day clamp (DEVICE_AUTH_MAX_DELEGATION_TTL_MS) belonged to a cap that no longer exists.
+describe('the scope of a row that stored no TTL', () => {
+  test('derives the TTL from the two deadlines, without a 30-day ceiling', () => {
+    const permissions = [{ service: 'tinycloud.kv', space: 'default', path: '', actions: ['tinycloud.kv/get'] }];
+    const transactionExpiresAt = new Date('2026-10-02T12:10:00.000Z');
+    for (const days of [7, 30, 90, 365]) {
+      const row = { permissions, delegationExpiresAt: new Date(transactionExpiresAt.getTime() + days * DAY * 1000), transactionExpiresAt };
+      expect(decodeScope(row).delegationTtlSeconds, `${days} d`).toBe(days * DAY);
+    }
+  });
+});

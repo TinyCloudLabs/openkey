@@ -69,7 +69,7 @@ do not support device transactions: any request to them that carries
 `deviceTransactionId` (whatever its value) is refused with 400
 `device_transaction_unsupported`, and requests without it behave as before.
 
-The default and maximum lifetime is 30 days, counted from approval.
+The default lifetime is 30 days, counted from approval. The requested `delegationTtlSeconds` is the maximum; there is no other ceiling than the latest time a signed message can carry (year 9999).
 
 ## Ordinary `/delegate` links
 
@@ -322,7 +322,7 @@ overrides, every format (`\p{Cf}`) and default-ignorable
 U+034F, U+061C, U+115F, U+1160, U+180E, U+3164, U+FFA0 and tag characters
 U+E0000–U+E007F are removed; `/delegate` applies the same cleaning to any
 reason it shows).
-`delegationTtlSeconds` must be between 60 seconds and 30 days. The
+`delegationTtlSeconds` must be at least 60 seconds, and the delegation must end by year 9999. The
 approved delegation may expire at most `delegationTtlSeconds` after approval,
 and approval must happen before the ten-minute transaction deadline.
 
@@ -386,8 +386,7 @@ and the CLI's poll returns it as `binding.permissions`.
 The requested scope, reason, requested lifetime, and approved subset are
 stored together in the existing `permissions` JSON column, so this needs no
 migration. Rows written before TC-539 hold a bare permission array and are
-still read; their lifetime is derived from the stored deadline and capped at
-30 days.
+still read; their lifetime is derived from the stored deadline.
 
 ## Deployment and rollback
 
@@ -400,7 +399,7 @@ protections.
 
 The new web tolerates the old API: when the lookup has no
 `delegationTtlSeconds`, it derives the lifetime from
-`delegationExpiresAt − transactionExpiresAt` (capped at 30 days) instead of
+`delegationExpiresAt − transactionExpiresAt` (at least 60 seconds) instead of
 failing.
 
 Roll the API back whenever the web is rolled back (the old web must not face

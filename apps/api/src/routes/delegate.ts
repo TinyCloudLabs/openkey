@@ -3447,8 +3447,10 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
         400,
       );
     }
-    // A prepared handoff's CLI refuses a grant longer than it asked for: that time is the ceiling.
-    if (ticket && Date.parse(checked.value) > Date.parse(immutable.expirationTime)) {
+    // A prepared handoff's CLI refuses a grant longer than it asked for: that time is the ceiling, unless that CLI
+    // opted in to a longer one when it made the handoff (TC-2276). The opt-in is read from the stored handoff.
+    if (ticket && Date.parse(checked.value) > Date.parse(immutable.expirationTime) &&
+      !await activePreparedHandoffService.expiryChangeable(ticket, user.id)) {
       return c.json(
         { error: 'expirationTime is later than the time the CLI asked for', code: 'expiry_exceeds_handoff' },
         400,
