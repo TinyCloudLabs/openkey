@@ -1041,7 +1041,11 @@ describe('signing-approval mounted parity across production surface adapters (So
       const summary = handle.container.querySelector('.summary');
       expect(summary?.textContent).toContain('Set up encryption');
       expect(summary?.textContent).not.toContain('decrypt protected data');
-      expect(handle.container.querySelector('.sensitive-callout')).toBeNull();
+      // TC-2242 (ruled): the header counts exactly the rows marked Sensitive in this summary (here one).
+      const pills = handle.container.querySelectorAll('.summary-statement .summary-sensitive-pill').length;
+      expect(pills).toBe(1);
+      expect(handle.container.querySelectorAll('.sensitive-callout')).toHaveLength(1);
+      expect(handle.container.querySelector('.sensitive-callout')?.textContent).toContain(String(pills));
 
       // Advanced details retains the removed baseline action so the user can
       // re-add it, but it no longer contaminates the top-level final copy.

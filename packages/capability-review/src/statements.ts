@@ -642,6 +642,10 @@ function buildNamedKeyStatement(
     ),
     service: grant.service,
     resource,
+    // The own-key folder sentences set the path off in backquotes; the display shows them as monospace.
+    ...(template === OWN_KEY_PREFIX_STATEMENTS.create || template === OWN_KEY_PREFIX_STATEMENTS.decrypt
+      ? { codeSpans: true as const }
+      : {}),
   };
 }
 
@@ -1675,4 +1679,56 @@ export function sensitiveCallout(count: number): string {
   return count === 1
     ? "1 permission reaches secrets or decryption"
     : `${count} permissions reach secrets or decryption`;
+}
+
+/** One row of the approval summary: statements grouped by sentence, at the strongest severity of the grants behind them. */
+export interface SummaryStatement {
+  key: string;
+  primaryText: string;
+  severity: PermissionSeverity;
+  /** A literal fallback row (an unmapped shape); listed after the mapped rows. */
+  unmapped: boolean;
+  codeSpans: boolean;
+}
+
+const SUMMARY_SEVERITY_RANK: Record<PermissionSeverity, number> = { standard: 0, attention: 1, sensitive: 2 };
+
+/**
+ * The rows of the approval summary for the grants currently selected. Repeated
+ * sentences collapse into one row at the strongest severity; unmapped rows
+ * come last. The Sensitive header counts these rows (`sensitiveSummaryCount`),
+ * so what the header says always matches the rows marked Sensitive.
+ */
+export function buildSummaryStatements(grants: readonly CapabilityGrant[]): SummaryStatement[] {
+  const grouped = new Map<string, SummaryStatement>();
+  for (const grant of grants) {
+    for (const statement of buildStatements(grant)) {
+      const existing = grouped.get(statement.primaryText);
+      const rowSeverity = statement.severity ?? grant.severity;
+      if (existing) {
+        if (SUMMARY_SEVERITY_RANK[rowSeverity] > SUMMARY_SEVERITY_RANK[existing.severity]) {
+          existing.severity = rowSeverity;
+        }
+      } else {
+        grouped.set(statement.primaryText, {
+          key: statement.primaryText,
+          primaryText: statement.primaryText,
+          severity: rowSeverity,
+          unmapped: statement.literalEscaped === true,
+          codeSpans: statement.codeSpans === true,
+        });
+      }
+    }
+  }
+  return [...grouped.values()].sort((left, right) => Number(left.unmapped) - Number(right.unmapped));
+}
+
+/** How many summary rows carry the Sensitive mark. */
+export function sensitiveSummaryCount(rows: readonly SummaryStatement[]): number {
+  return rows.filter((row) => row.severity === "sensitive").length;
+}
+
+/** The header over the summary, saying exactly what it counts: the rows marked Sensitive. Never shown for 0. */
+export function sensitiveRowsCallout(count: number): string {
+  return count === 1 ? "1 permission is marked Sensitive" : `${count} permissions are marked Sensitive`;
 }

@@ -54,13 +54,13 @@
     FAMILY_LABEL,
     appKeyNotGrantableStatements,
     buildRenderPlan,
-    buildStatements,
+    buildSummaryStatements,
     grantIsAppKeyDecrypt,
-    grantReachesSecretDataOrDecryption,
+    sensitiveSummaryCount,
     grantHeading,
     PROTOCOL_HEADLINE,
     PROTOCOL_HINT,
-    sensitiveCallout,
+    sensitiveRowsCallout,
     abbreviateDid,
     abbreviateSpaceId,
     readSpaceHostFacts,
@@ -206,56 +206,11 @@
     }),
   );
 
-  // Statements for the summary view. Group by primary text so repeated
-  // statements collapse into one visible row while preserving the strongest
-  // severity. Counts, services, resources, and requester provenance belong in
-  // Advanced details; the approval view stays understandable at a glance.
-  const summaryStatements = $derived.by(() => {
-    const severityRank: Record<CapabilityGrant["severity"], number> = {
-      standard: 0,
-      attention: 1,
-      sensitive: 2,
-    };
-
-    const grouped = new Map<
-      string,
-      {
-        key: string;
-        primaryText: string;
-        severity: CapabilityGrant["severity"];
-        unmapped: boolean;
-        codeSpans: boolean;
-      }
-    >();
-
-    for (const grant of selectedGrants) {
-      for (const statement of buildStatements(grant)) {
-        const existing = grouped.get(statement.primaryText);
-        const rowSeverity = statement.severity ?? grant.severity;
-        if (existing) {
-          if (severityRank[rowSeverity] > severityRank[existing.severity]) {
-            existing.severity = rowSeverity;
-          }
-        } else {
-          grouped.set(statement.primaryText, {
-            key: statement.primaryText,
-            primaryText: statement.primaryText,
-            severity: rowSeverity,
-            unmapped: statement.literalEscaped === true,
-            codeSpans: statement.codeSpans === true,
-          });
-        }
-      }
-    }
-
-    return [...grouped.values()].sort(
-      (left, right) => Number(left.unmapped) - Number(right.unmapped),
-    );
-  });
-
-  const sensitiveCount = $derived(
-    selectedGrants.filter(grantReachesSecretDataOrDecryption).length,
-  );
+  // Statements for the summary view. The rows, and the count in the Sensitive
+  // header, come from one function so the header always counts the rows marked
+  // Sensitive below it (capability-review `buildSummaryStatements`).
+  const summaryStatements = $derived(buildSummaryStatements(selectedGrants));
+  const sensitiveCount = $derived(sensitiveSummaryCount(summaryStatements));
 
   // App keys: the standing-access line follows the decrypt statements, and a
   // `key.delete` action is listed even though it is never selected.
@@ -594,7 +549,7 @@
   -->
   {#if sensitiveCount > 0}
     <p class="sensitive-callout" role="status" aria-live="polite">
-      {sensitiveCallout(sensitiveCount)}
+      {sensitiveRowsCallout(sensitiveCount)}
     </p>
   {/if}
 

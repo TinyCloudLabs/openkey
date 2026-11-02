@@ -258,3 +258,35 @@ describe('approval view for app keys', () => {
     cleanup();
   });
 });
+
+// TC-2242: the Share sign-in consent. The header counted grants (2) while four rows carried the Sensitive pill, and
+// the own-key folder rows showed their path between raw backquotes.
+describe('approval view for the Share sign-in', () => {
+  const SHARE_SPACE = `tinycloud:pkh:eip155:${FIXTURE_META.chainId}:${FIXTURE_META.address}:default`;
+  const shareModel = () =>
+    appKeyModel({
+      [urn('')]: [`${E}decrypt`, `${E}network.create`],
+      [urn('/share/')]: [`${E}key.create`, `${E}decrypt`],
+      [`${SHARE_SPACE.replace(/:default$/, ":files")}/kv/files-for-you/v1/`]: ['tinycloud.kv/get', 'tinycloud.kv/list', 'tinycloud.kv/put'],
+      [`${SHARE_SPACE}/capabilities`]: ['tinycloud.capabilities/read'],
+    });
+
+  test('the header counts exactly the rows marked Sensitive', () => {
+    const { target, cleanup } = render(shareModel());
+    const marked = target.querySelectorAll('.summary-statement .summary-sensitive-pill').length;
+    expect(marked).toBeGreaterThanOrEqual(4);
+    expect(target.querySelectorAll('.sensitive-callout')).toHaveLength(1);
+    expect(target.querySelector('.sensitive-callout')!.textContent).toMatch(new RegExp(`^\\s*${marked}\\b`));
+    cleanup();
+  });
+
+  test('shows the folder path in monospace with no raw backquote anywhere in the summary', () => {
+    const { target, cleanup } = render(shareModel());
+    const code = [...target.querySelectorAll('.summary-statement code.mono')].map((node) => node.textContent);
+    expect(code).toEqual(['share/', 'share/']);
+    expect(target.querySelector('.summary')!.textContent).not.toContain('`');
+    expect(statementTexts(target)).toContain('Create your own encryption keys in share/');
+    expect(statementTexts(target)).toContain('Decrypt data locked with your keys in share/');
+    cleanup();
+  });
+});
