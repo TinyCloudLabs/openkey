@@ -13,6 +13,7 @@
   import PreparedHandoff from './PreparedHandoff.svelte';
   import EmbeddedSignIn from '$lib/components/auth/embedded-sign-in.svelte';
   import { isFirstSession } from '$lib/first-session';
+  import { clearSessionToken } from '$lib/embed-passkey';
   import OwnerRevocationHandoff from './OwnerRevocationHandoff.svelte';
   import DeviceRequestNotice from '$lib/components/device/device-request-notice.svelte';
   import { approvedDevicePermissions, cleanConsentText, delegationPasteCode, readDelegatePermissionsParam, deviceRequestReason, deviceRequestTtlSeconds, loadVerifiedDeviceRequest } from '$lib/device-authorization';
@@ -139,7 +140,6 @@
   let reviewEditing = $state(false);
   const approvalRequestMode = $page.route.id === '/a/[id]';
   const approvalRequestId = approvalRequestMode ? $page.params.id || '' : '';
-  const delegateReturnTo = $derived(approvalRequestMode ? $page.url.pathname : $page.url.pathname + $page.url.search + $page.url.hash);
   const firstSession = $derived(isFirstSession($session.data));
   let actionRow: HTMLDivElement | null = $state(null);
   let showScrollToApprove = $state(false);
@@ -1824,7 +1824,7 @@
 
     {#if $session.data && step !== 'done'}
       <button
-        onclick={() => authClient.signOut()}
+        onclick={() => { clearSessionToken(); authClient.signOut(); }}
         class="text-xs text-surface-400 hover:text-surface-600 transition-colors bg-transparent border-none cursor-pointer"
       >
         Sign out

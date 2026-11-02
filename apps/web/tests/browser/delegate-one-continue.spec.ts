@@ -44,12 +44,28 @@ function sessionBody(account: Account) {
 }
 
 async function mockApi(page: Page, account: Account, delegation: Record<string, unknown> = {}) {
-  const state = { signedIn: false };
+  // `confirm`: the email has no account yet (the code is verified, then the user confirms creating one).
+  const state = { signedIn: false, confirm: false, keyAuth: [] as Array<string | undefined> };
+  const signedInAs = (route: Route, token: string) => {
+    state.signedIn = true;
+    return route.fulfill({
+      status: 200, contentType: 'application/json', headers: { 'set-auth-token': token },
+      body: JSON.stringify({ token, ...sessionBody(account) }),
+    });
+  };
   await page.route('**/api/**', (route) => {
     const url = new URL(route.request().url());
+    if (url.pathname === '/api/auth/email-otp/send-verification-otp') return json(route, 200, { success: true });
+    if (url.pathname === '/api/auth/sign-in/email-otp') {
+      return state.confirm
+        ? json(route, 403, { code: 'NEW_ACCOUNT_CONFIRMATION_REQUIRED', message: 'No OpenKey account exists for this email.', signupToken: 'signup-1' })
+        : signedInAs(route, 'tok-A');
+    }
+    if (url.pathname === '/api/auth/sign-up/email-otp') return signedInAs(route, 'tok-A');
+    if (url.pathname === '/api/auth/sign-out') { state.signedIn = false; return json(route, 200, { success: true }); }
     if (url.pathname === '/api/auth/get-session') return json(route, 200, state.signedIn ? sessionBody(account) : null);
     if (url.pathname === '/api/auth/providers') return json(route, 200, { providers: ['google'] });
-    if (url.pathname === '/api/keys') return json(route, 200, { keys: oneKey });
+    if (url.pathname === '/api/keys') { state.keyAuth.push(route.request().headers()['authorization']); return json(route, 200, { keys: oneKey }); }
     if (url.pathname === '/api/delegate/prepare') return json(route, 200, prepared);
     if (url.pathname === '/api/delegate') {
       return json(route, 200, { delegationHeader: { Authorization: 'Bearer x' }, delegationCid: 'bafy', spaceId: space, hostActivated: true, ...delegation });
@@ -162,4 +178,43 @@ test('on /auth/login, while the Google window is open, the other buttons keep th
   await expect(other('Use a passkey instead')).toBeDisabled();
   await expect(page.getByText('Sending code…')).toHaveCount(0);
   await expect(page.getByText('Waiting for passkey…')).toHaveCount(0);
+});
+
+async function signInWithEmailCode(page: Page) {
+  await email(page).click();
+  await page.getByLabel('Email address').fill('qa@example.test');
+  await page.getByRole('button', { name: 'Send code' }).click();
+  await page.getByLabel('Verification code').fill('123456');
+  await page.getByRole('button', { name: 'Verify and continue' }).click();
+}
+
+test('an existing email reaches the approval by code, in place, with no welcome', async ({ page }) => {
+  await mockApi(page, 'returning');
+  await page.goto(link);
+  await signInWithEmailCode(page);
+  await expect(approve(page)).toBeEnabled();
+  await expect(page.getByText('Welcome to OpenKey')).toHaveCount(0);
+});
+
+test('a new email is asked before an account is created, then reaches the approval with the welcome', async ({ page }) => {
+  const state = await mockApi(page, 'new');
+  state.confirm = true;
+  await page.goto(link);
+  await signInWithEmailCode(page);
+  await expect(page.getByText('No OpenKey account for')).toBeVisible();
+  await expect(approve(page)).toHaveCount(0);
+  await page.getByRole('button', { name: 'Create a new account' }).click();
+  await expect(approve(page)).toBeEnabled();
+  await expect(page.getByText('Welcome to OpenKey')).toHaveCount(1);
+});
+
+test('Sign out clears the email session token, so the next account\'s calls carry no stale bearer', async ({ page }) => {
+  const state = await mockApi(page, 'returning');
+  await page.goto(link);
+  await signInWithEmailCode(page);
+  await expect(approve(page)).toBeEnabled();
+  expect(state.keyAuth.at(-1)).toBe('Bearer tok-A');
+  await page.getByRole('button', { name: 'Sign out' }).click();
+  await expect(email(page)).toBeVisible();
+  expect(await page.evaluate(() => sessionStorage.getItem('openkey_session_token'))).toBeNull();
 });

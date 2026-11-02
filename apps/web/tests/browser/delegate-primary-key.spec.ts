@@ -154,7 +154,6 @@ test.describe('TC-703 primary key picker', () => {
     await keyButton(page, /Key 0/).click();
     await approve(page).click();
     await expect.poll(() => delivered).not.toBeNull();
-    expect(delivered).not.toBeNull();
     expect(delivered!.primary).toBe(false);
   });
 });
