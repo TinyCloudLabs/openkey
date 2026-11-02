@@ -15,3 +15,14 @@ Content-key rationale — Sam, 2026-10-29, accepting delivery to OpenKey's own A
 Deployment requires the additive approval-request migration and an explicit positive `APPROVAL_RESULT_RETENTION_SECONDS`. No production default or 24-hour result-retention cap is selected. Every result's deadline is the earlier of that independently configured window and its signed grant expiry. The local synthetic runner uses 600 seconds. `APPROVAL_LINKS_API_ORIGIN` defaults to `https://api.tinycloud.xyz`; `APPROVAL_OPENKEY_ORIGIN` defaults to `https://openkey.so`. The development-only `APPROVAL_LINKS_LOCAL_TRANSPORT` can forward to configured HTTP loopback without changing the signed HTTPS audience.
 
 The API uses published `@tinycloud/share-envelope@1.4.0-beta.2` (registry gitHead `e01f883161e2b82e42d504e1a13c50e457f1cd4d`), with no SDK source bootstrap or development-path dependency. Legacy login, device authorization, manual five-minute codes, Share and Courier are unchanged.
+
+Harden mobile entry: scrub short-link fragments before application scripts run,
+keep auth return URLs fragment-free, and give actionable recovery for missing,
+malformed, expired, unavailable, or storage-blocked links. Incomplete legacy
+links stop before sign-in/key selection. Changing approval IDs remounts the
+request consumer rather than retaining the previous request. Expiry before the
+first browser visit now returns authenticated `expired_request` (410), allowing
+the CLI to clear its expired pending request instead of suggesting an endless
+resume. Link loads remain non-consuming; consent and requester-authenticated
+result acknowledgement are unchanged. Physical WhatsApp iOS/Android first-tap
+behavior still requires device validation.
