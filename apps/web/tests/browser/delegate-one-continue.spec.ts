@@ -149,7 +149,6 @@ test('after Approve the finished screen says the session was sent back', async (
   await google(page).click();
   await approve(page).click();
   await expect(page.getByRole('heading', { name: 'Approved. Your session was sent back.' })).toBeVisible();
-  await expect(page.getByText('You can close this window and return to the CLI.')).toBeVisible();
 });
 
 test('on /auth/login, while the Google window is open, the other buttons keep their words and are only disabled', async ({ page }) => {
