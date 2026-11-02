@@ -180,7 +180,8 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `INTERNAL_METRICS_TOKEN` | Bearer token for internal metrics |
 | `OPENKEY_METRICS_READ_TOKEN` | Separate bearer for `/api/internal/scoreboard/*`. Grants **aggregate counts only** (`GET /protocol-users` -> `{count}`, `GET /app-users` -> `{total, active7d}`); neither endpoint takes input, so the token cannot be used to look up addresses or accounts. `/protocol-users` is capped at 30 calls/min per process (429) and audit-logged (status and count only). Unset = 503 |
 | `NODE_STATS_URL` / `NODE_STATS_READ_TOKEN` | Full URL of the node's read-only `GET /admin/stats` (TC-1482) and its read-only bearer. OpenKey fetches the owner addresses from it for `/protocol-users` (owners with data beyond the automatic `account` space; account-only owners are excluded). The URL must be `https:`; the response is capped at 16 MiB and concurrent calls share one node request; unset or failing node = 503, never a partial count. Expected response: `200 {"owners": ["0x<40 hex>", ...]}` |
-| `SCOREBOARD_EXCLUSIONS` | JSON identity rules derived from the shared CSV by `python3 scripts/scoreboard-exclusions.py /var/tmp/test-identities/list.csv`; replaces `SCOREBOARD_EXCLUDE_USER_IDS`. Capture stdout privately, never in deploy logs. CSV headers: `kind,value,status` (`status` optional); kinds: `user_id`, `email`, `email_domain`, `evm_address`, `did`. Rows marked `unsure` in status/confidence/decision are retained in counts. Details: TC-1480 |
+| `SCOREBOARD_EXCLUSIONS` | JSON identity rules derived from the shared CSV by `python3 scripts/scoreboard-exclusions.py /var/tmp/test-identities/list.csv`. Capture stdout privately, never in deploy logs. CSV headers: `kind,value,status` (`status` optional); kinds: `user_id`, `email`, `email_domain`, `evm_address`, `did`. Rows marked `unsure` in status/confidence/decision are retained in counts. Details: TC-1480 |
+| `SCOREBOARD_EXCLUDE_USER_IDS` | Retain the existing value alongside `SCOREBOARD_EXCLUSIONS` for rollback to an older release. The new resolver does not read it or fall back to it. Both are passed through Compose; rolling back code requires no env change. Details: TC-1480 |
 | `SCOREBOARD_EXCLUDE_CLIENT_IDS` | Comma-separated OAuth client ids omitted from app-user counts. Details: TC-1480 |
 | `TINYCLOUD_BOOTSTRAP_HOST` | Trusted TinyCloud node used for canonical user-key bootstrap |
 | `CLOUDFLARE_API_TOKEN` | For SSL certificate management |
@@ -195,7 +196,7 @@ account mapping do not affect the count. Multiple matches exclude one account on
 list excludes nobody; invalid rules fail the metrics request rather than returning a partial count.
 `/api/internal/metrics` keeps `accounts.total` and adds `accounts.real`, `accounts.excluded`
 and `accounts.exclusionCriteria`. Only aggregates and this criteria text leave OpenKey:
-`v1: listed identities and exact email domains; mapped keys exclude accounts; unmapped keys are not accounts; unsure entries retained`.
+`Excludes team, QA, agent/service and throwaway-mailbox accounts on the shared test-identity list (v1). Entries marked unsure are kept.`
 The CSV is authoritative; do not maintain a separate identity or domain list. Existing account
 joins already omit node identities without OpenKey accounts. No database migration is needed.
 Details: TC-1480

@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { excludedAccountIds, parseExclusions } from '../services/scoreboard-exclusions';
+import { excludedAccountIds, parseExclusions, resolveScoreboardExclusions } from '../services/scoreboard-exclusions';
 
 const address = '0xabcdef0000000000000000000000000000000001';
 const accounts = [
@@ -59,4 +59,17 @@ test('invalid configuration fails without exposing entry values', () => {
   expect(() => parseExclusions('{broken')).toThrow('Invalid scoreboard exclusions');
   expect(() => rules([{ kind: 'unknown', value: 'private-value' }])).toThrow('Invalid scoreboard exclusions');
   expect(() => rules([{ kind: 'evm_address', value: 'bad-address' }])).toThrow('Invalid scoreboard exclusions');
+});
+
+test('the new resolver ignores the rollback env whether the new env is set or unset', async () => {
+  const database = {
+    user: { findMany: async () => accounts },
+    $queryRaw: async <T>() => [] as T,
+  };
+  const env = {
+    SCOREBOARD_EXCLUSIONS: JSON.stringify([{ kind: 'user_id', value: 'listed' }]),
+    SCOREBOARD_EXCLUDE_USER_IDS: 'own',
+  };
+  expect([...(await resolveScoreboardExclusions(database, env)).userIds]).toEqual(['listed']);
+  expect((await resolveScoreboardExclusions(database, { SCOREBOARD_EXCLUDE_USER_IDS: 'own' })).userIds.size).toBe(0);
 });

@@ -1,4 +1,4 @@
-export const SCOREBOARD_EXCLUSION_CRITERIA = 'v1: listed identities and exact email domains; mapped keys exclude accounts; unmapped keys are not accounts; unsure entries retained';
+export const SCOREBOARD_EXCLUSION_CRITERIA = 'Excludes team, QA, agent/service and throwaway-mailbox accounts on the shared test-identity list (v1). Entries marked unsure are kept.';
 
 type Account = { id: string; email: string; ethereumKeys: { address: string }[] };
 type Rules = {
@@ -73,6 +73,7 @@ export async function resolveScoreboardExclusions(
   database: ExclusionDatabase,
   env: Record<string, string | undefined> = process.env,
 ): Promise<{ userIds: ReadonlySet<string>; clientIds: ReadonlySet<string> }> {
+  // The legacy env remains available for old releases; this resolver never falls back to it. Details: TC-1480
   const rules = parseExclusions(env.SCOREBOARD_EXCLUSIONS);
   const clientIds = new Set((env.SCOREBOARD_EXCLUDE_CLIENT_IDS ?? '').split(',').map((value) => value.trim()).filter(Boolean));
   if (![rules.userIds, rules.emails, rules.domains, rules.addresses, rules.keyDids].some((values) => values.size)) {

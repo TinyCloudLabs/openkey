@@ -98,7 +98,8 @@ Optional (features degrade gracefully without these):
 | `INTERNAL_METRICS_TOKEN` | Protect internal metrics endpoints |
 | `OPENKEY_METRICS_READ_TOKEN` | Bearer for `/api/internal/scoreboard/*` (TC-1483); aggregate counts only |
 | `NODE_STATS_URL` / `NODE_STATS_READ_TOKEN` | Node `GET /admin/stats` URL and read-only bearer, used by `/api/internal/scoreboard/protocol-users` (TC-1483). Counts owners with data beyond the automatic `account` space; account-only owners are excluded. Must be `https:`; `http://localhost`/`127.0.0.1` allowed only with `NODE_ENV=development` |
-| `SCOREBOARD_EXCLUSIONS` | JSON rules from `scripts/scoreboard-exclusions.py` applied inside OpenKey to accounts, protocol users and app users. Replaces `SCOREBOARD_EXCLUDE_USER_IDS`; see deployment docs for the CSV schema and key mappings. Empty list excludes nobody. Details: TC-1480 |
+| `SCOREBOARD_EXCLUSIONS` | JSON rules from `scripts/scoreboard-exclusions.py` applied inside OpenKey to accounts, protocol users and app users. See deployment docs for the CSV schema and key mappings. Empty list excludes nobody. Details: TC-1480 |
+| `SCOREBOARD_EXCLUDE_USER_IDS` | Keep alongside the new env for older releases during rollback; ignored by the new resolver, with no fallback. Details: TC-1480 |
 | `SCOREBOARD_EXCLUDE_CLIENT_IDS` | Comma-separated OAuth client ids omitted from app-user counts. Details: TC-1480 |
 | `TINYCLOUD_BOOTSTRAP_HOST` | TinyCloud node used to bootstrap a user's canonical signer space |
 | `VITE_CONSOLE_ORIGIN` | Optional console origin. Leave unset locally to keep the account and console journey on one Vite host; set to `https://console.openkey.so` in production. |

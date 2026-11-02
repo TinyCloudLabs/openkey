@@ -2,4 +2,4 @@
 "@openkey/api": patch
 ---
 
-Add real and excluded account aggregates and apply the same CSV-derived identity rules to scoreboard counts. Replace SCOREBOARD_EXCLUDE_USER_IDS with SCOREBOARD_EXCLUSIONS. Details: TC-1480
+Add real and excluded account aggregates and apply the same CSV-derived identity rules to scoreboard counts. Use SCOREBOARD_EXCLUSIONS for the new resolver; retain SCOREBOARD_EXCLUDE_USER_IDS for older releases during rollback. Details: TC-1480
