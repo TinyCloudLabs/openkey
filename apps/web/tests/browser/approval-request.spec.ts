@@ -92,7 +92,7 @@ test('client navigation to another request never reuses the previous approval', 
   const calls = await serve(page);
   await page.goto(path + fragment);
   await expect(page.getByRole('button', { name: 'Continue with email' })).toBeVisible();
-  const nextPath = '/a/zyxwvutsrqponmlkjihgfedcba2';
+  const nextPath = `/a/${'b'.repeat(26)}`;
   await page.evaluate(target => {
     const link = document.createElement('a');
     link.id = 'next-approval';
