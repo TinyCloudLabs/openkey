@@ -13,7 +13,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { createRequire } from 'node:module';
 import { Window } from 'happy-dom';
 import { compile } from 'svelte/compiler';
-import { parseCapabilityReview } from '../../../../packages/capability-review/src/index';
+import { OWN_KEY_PREFIX_STATEMENTS, parseCapabilityReview } from '../../../../packages/capability-review/src/index';
 import type { CapabilityReviewModel } from '../../../../packages/capability-review/src/index';
 import {
   FIXTURE_META,
@@ -283,10 +283,11 @@ describe('approval view for the Share sign-in', () => {
   test('shows the folder path in monospace with no raw backquote anywhere in the summary', () => {
     const { target, cleanup } = render(shareModel());
     const code = [...target.querySelectorAll('.summary-statement code.mono')].map((node) => node.textContent);
-    expect(code).toEqual(['share/', 'share/']);
+    // Create keeps its folder in monospace; Decrypt on share/ is the approved plain sentence (no path in it).
+    expect(code).toEqual(['share/']);
     expect(target.querySelector('.summary')!.textContent).not.toContain('`');
     expect(statementTexts(target)).toContain('Create your own encryption keys in share/');
-    expect(statementTexts(target)).toContain('Decrypt data locked with your keys in share/');
+    expect(statementTexts(target)).toContain(OWN_KEY_PREFIX_STATEMENTS.shareDecrypt);
     cleanup();
   });
 });

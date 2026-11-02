@@ -5,6 +5,7 @@
 import { describe, expect, it } from "bun:test";
 
 import {
+  OWN_KEY_PREFIX_STATEMENTS,
   buildSummaryStatements,
   defaultSelection,
   parseCapabilityReview,
@@ -69,7 +70,7 @@ describe("the Sensitive header counts the Sensitive rows", () => {
     const rows = rowsOf(modelFor(SHARE_SIGN_IN));
     expect(rows.filter((row) => row.severity === "sensitive").map((row) => row.primaryText)).toEqual([
       "Set up encryption and decrypt protected data",
-      "Decrypt data locked with your keys in `share/`",
+      OWN_KEY_PREFIX_STATEMENTS.shareDecrypt,
       "Create your own encryption keys in `share/`",
       "Read and change your data",
     ]);
@@ -82,15 +83,23 @@ describe("the Sensitive header counts the Sensitive rows", () => {
 });
 
 describe("own-key folder rows show the path in code style, never as raw backquotes", () => {
-  it("marks the Create and Decrypt rows so the display splits the path out of the sentence", () => {
-    const rows = rowsOf(modelFor(SHARE_SIGN_IN));
-    for (const text of ["Create your own encryption keys in `share/`", "Decrypt data locked with your keys in `share/`"]) {
+  it("marks a folder's Create and Decrypt rows so the display splits the path out of the sentence", () => {
+    const rows = rowsOf(modelFor({ [`${NETWORK}/qa/`]: ["tinycloud.encryption/key.create", "tinycloud.encryption/decrypt"] }));
+    for (const text of ["Create your own encryption keys in `qa/`", "Decrypt data locked with your keys in `qa/`"]) {
       const row = rows.find((candidate) => candidate.primaryText === text);
       expect(row?.codeSpans).toBe(true);
       const parts = splitStatementCode(text);
-      expect(parts.some((part) => part.code && part.text === "share/")).toBe(true);
+      expect(parts.some((part) => part.code && part.text === "qa/")).toBe(true);
       expect(parts.filter((part) => !part.code).map((part) => part.text).join("")).not.toContain("`");
     }
+  });
+
+  it("the share/ folder: Create keeps the code-style path; Decrypt is the approved plain sentence, which has no path to style", () => {
+    const rows = rowsOf(modelFor(SHARE_SIGN_IN));
+    expect(rows.find((row) => row.primaryText === "Create your own encryption keys in `share/`")?.codeSpans).toBe(true);
+    const decrypt = rows.find((row) => row.primaryText === OWN_KEY_PREFIX_STATEMENTS.shareDecrypt);
+    expect(decrypt?.codeSpans).toBe(false);
+    expect(decrypt?.primaryText).not.toContain("`");
   });
 });
 
