@@ -67,9 +67,7 @@ async function mockWithPopupSession(page: Page) {
 test('after the Google popup signs a new user in, this tab leaves the signed-out card without a reload', async ({ page }) => {
   await mockWithPopupSession(page);
   await page.goto(`/delegate?did=did:key:z6Mk&jwk=${jwk}`);
-  await expect(page.getByText('Sign in to review the requested access')).toBeVisible();
-  await page.getByRole('link', { name: 'Register', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Continue with Google' })).toBeVisible();
+  await expect(page.getByText('Sign in or create an account to review the requested access')).toBeVisible();
   await page.getByRole('button', { name: 'Continue with Google' }).click();
   // Back on /delegate, signed in: the approval, not the signed-out card.
   await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();

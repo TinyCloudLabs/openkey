@@ -64,6 +64,8 @@
   let resendTimer: ReturnType<typeof setInterval> | undefined;
   let providers = $state<SocialProviderId[]>([]);
   let loadingProvider = $state<SocialProviderId | null>(null);
+  // The passkey prompt is its own busy state: the other buttons are only disabled while it (or Google) is open.
+  let passkeyPending = $state(false);
   // In OAuth flows the API answers sign-in/email-otp with its own redirect
   // URL (the consent page, or the client's redirect_uri when consent can be
   // skipped). The URL is captured during the sign-in response and replayed
@@ -321,6 +323,7 @@
 
   async function signInWithPasskey() {
     loading = true;
+    passkeyPending = true;
     error = '';
     try {
       const result = await authClient.signIn.passkey();
@@ -333,6 +336,7 @@
       error = e.message || 'Passkey sign-in failed';
     } finally {
       loading = false;
+      passkeyPending = false;
     }
   }
 
@@ -532,7 +536,7 @@
           {/each}
           {#if passkeysSupported}
             <button type="button" class="nb-button" onclick={signInWithPasskey} disabled={loading}>
-              {loading && !loadingProvider ? 'Waiting for passkey…' : 'Use a passkey'}
+              {passkeyPending ? 'Waiting for passkey…' : 'Use a passkey'}
             </button>
           {/if}
         </div>
@@ -578,7 +582,7 @@
             />
           </div>
           <Button type="submit" disabled={loading} class="w-full">
-            {loading ? 'Sending code…' : 'Continue with email'}
+            {loading && !loadingProvider && !passkeyPending ? 'Sending code…' : 'Continue with email'}
           </Button>
         </form>
 
@@ -605,7 +609,7 @@
             <path d="M2 18v3c0 .6.4 1 1 1h4v-3h3v-3h2l1.4-1.4a6.5 6.5 0 1 0-4-4Z" />
             <circle cx="16.5" cy="7.5" r=".5" fill="currentColor" />
           </svg>
-          {loading ? 'Waiting for passkey…' : 'Use a passkey instead'}
+          {passkeyPending ? 'Waiting for passkey…' : 'Use a passkey instead'}
         </Button>
         {/if}
       {:else if step === 'otp'}
