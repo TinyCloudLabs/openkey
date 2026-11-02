@@ -68,6 +68,7 @@ describe('dropBackup', () => {
     expect(printed).toEqual([
       'columns: id, expiresAt',
       'rows: 1',
+      `committed: ${BACKUP_TABLE} dropped`,
       `verified: ${BACKUP_TABLE} no longer exists`,
       'schema ops_backup: dropped (it was empty)',
     ]);
@@ -94,6 +95,19 @@ describe('dropBackup', () => {
     expect((await state(db)).schema).toBe(true);
   });
 
+  test.each([
+    ['a collation', `CREATE COLLATION ops_backup.c FROM "C"`],
+    ['a text search configuration', `CREATE TEXT SEARCH CONFIGURATION ops_backup.cfg (COPY = simple)`],
+    ['extended statistics', `CREATE TABLE public.stat_source (a int, b int); CREATE STATISTICS ops_backup.st ON a, b FROM public.stat_source`],
+  ])('%s in the schema keeps the schema and still drops the table, without a failure', async (_name, sql) => {
+    const db = await database(1, [sql]);
+    const result = await dropBackup(clientFor(db), () => {});
+    expect(result.outcome).toBe('dropped');
+    expect(result.schema).toBe('kept');
+    expect((await state(db)).schema).toBe(true);
+    expect((await state(db)).relations).not.toContain('ops_backup.session_expires_20261026');
+  });
+
   test.each([0, 2, 3])('%i rows: refused, nothing changed', async (rows) => {
     const db = await database(rows);
     const { printed, log } = lines();
@@ -103,6 +117,18 @@ describe('dropBackup', () => {
     expect(await state(db)).toEqual({ relations: ['ops_backup.session_expires_20261026'], schema: true });
     expect((await db.query(`SELECT 1 FROM ${BACKUP_TABLE}`)).rows.length).toBe(rows);
     expect(printed).toEqual(['columns: id, expiresAt', `rows: ${rows}`]);
+  });
+
+  test.each([[[]], [[{ n: null }]]])('a count that cannot be read (%j) is refused, nothing changed', async (unreadable) => {
+    const db = await database(1);
+    const unreadableCount: SqlClient = {
+      transaction: (run) => clientFor(db).transaction((transaction) => run({
+        rows: async <T>(sql: string) => (sql === SQL.count ? unreadable : await transaction.rows(sql)) as T[],
+        execute: transaction.execute,
+      })),
+    };
+    await expect(dropBackup(unreadableCount, () => {})).rejects.toBeInstanceOf(DropRefused);
+    expect(await state(db)).toEqual({ relations: ['ops_backup.session_expires_20261026'], schema: true });
   });
 
   test('table missing: "already gone", exits normally, and an existing schema is left alone', async () => {
@@ -121,6 +147,23 @@ describe('dropBackup', () => {
     await db.exec(`CREATE SCHEMA ops_backup; CREATE VIEW ${BACKUP_TABLE} AS SELECT 1 AS id`);
     await expect(dropBackup(clientFor(db), () => {})).rejects.toBeInstanceOf(DropRefused);
     expect((await state(db)).relations).toEqual(['ops_backup.session_expires_20261026']);
+  });
+
+  test('a dependent object elsewhere makes the whole run fail with nothing dropped (no CASCADE), and other tables are untouched', async () => {
+    const db = await database(1, [
+      `CREATE TABLE public.session (id text); INSERT INTO public.session VALUES ('s1')`,
+      `CREATE VIEW public.v AS SELECT * FROM ${BACKUP_TABLE}`,
+    ]);
+    await expect(dropBackup(clientFor(db), () => {})).rejects.toThrow();
+    expect(await state(db)).toEqual({ relations: ['ops_backup.session_expires_20261026'], schema: true });
+    expect((await db.query(`SELECT id FROM public.session`)).rows).toEqual([{ id: 's1' }]);
+    expect((await db.query(`SELECT 1 FROM public.v`)).rows.length).toBe(1);
+  });
+
+  test('tables outside the schema are untouched by a successful run', async () => {
+    const db = await database(1, [`CREATE TABLE public.session (id text); INSERT INTO public.session VALUES ('s1')`]);
+    await dropBackup(clientFor(db), () => {});
+    expect((await db.query(`SELECT id FROM public.session`)).rows).toEqual([{ id: 's1' }]);
   });
 
   test('a failing schema drop rolls the table drop back too', async () => {

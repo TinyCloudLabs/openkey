@@ -33,8 +33,9 @@ export const SQL = {
   relkind: `SELECT c.relkind::text AS kind FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = '${BACKUP_SCHEMA}' AND c.relname = '${BACKUP_NAME}'`,
   columns: `SELECT column_name::text AS name FROM information_schema.columns WHERE table_schema = '${BACKUP_SCHEMA}' AND table_name = '${BACKUP_NAME}' ORDER BY ordinal_position`,
   count: `SELECT count(*)::int AS n FROM ${BACKUP_TABLE}`,
-  // Relations, functions and types: what would keep the schema from being dropped.
-  schemaObjects: `SELECT ((SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = '${BACKUP_SCHEMA}') + (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = '${BACKUP_SCHEMA}') + (SELECT count(*) FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace WHERE n.nspname = '${BACKUP_SCHEMA}'))::int AS n`,
+  // Normal dependencies on the schema: exactly what DROP SCHEMA (RESTRICT) refuses on. Relations, functions, types,
+  // collations, text search objects, extended statistics and so on all have one. Run after the table drop, in its transaction.
+  schemaObjects: `SELECT count(*)::int AS n FROM pg_depend WHERE refclassid = 'pg_namespace'::regclass AND refobjid = (SELECT oid FROM pg_namespace WHERE nspname = '${BACKUP_SCHEMA}') AND deptype = 'n'`,
   schemaExists: `SELECT count(*)::int AS n FROM pg_namespace WHERE nspname = '${BACKUP_SCHEMA}'`,
   // The only statements that change anything. Neither has CASCADE: a dependent object makes them fail.
   dropTable: `DROP TABLE ${BACKUP_TABLE}`,
@@ -91,6 +92,8 @@ export async function dropBackup(client: SqlClient, log: (line: string) => void)
   });
 
   if (result.outcome === 'gone') return result;
+  // Fixed text, so the log shows that the drop committed even if the verification below cannot run.
+  log(`committed: ${BACKUP_TABLE} dropped`);
 
   // Read-only verification, after the commit.
   const verified = await client.transaction(async (transaction) => {
@@ -116,7 +119,7 @@ export async function dropBackup(client: SqlClient, log: (line: string) => void)
  */
 export function describeFailure(error: unknown): { exitCode: number; line: string } {
   if (error instanceof DropRefused) return { exitCode: 2, line: `Refused: ${error.message}` };
-  return { exitCode: 1, line: 'Error: the drop failed; nothing was changed unless the log above says verified' };
+  return { exitCode: 1, line: 'Error: the drop failed; if the log above does not say committed, nothing was changed' };
 }
 
 async function main() {
