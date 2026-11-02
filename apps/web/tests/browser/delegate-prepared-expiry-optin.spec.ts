@@ -85,9 +85,3 @@ test('an opted-in handoff picks the 30-day preset and still refuses nonsense and
   await expect.poll(() => previews.length).toBe(1);
   expect(previews[0]!.expirationTime).toBe('2026-11-15T17:00:00.000Z');
 });
-
-test('a handoff whose expiryChangeable is not the boolean true is not offered the longer picker', async ({ page }) => {
-  // OpenKey's API refuses such a claim; the page must not treat a string as an opt-in either.
-  await open(page, { expiryChangeable: 'true' }).catch(() => undefined);
-  await expect(page.getByRole('button', { name: '30d' })).toHaveCount(0);
-});

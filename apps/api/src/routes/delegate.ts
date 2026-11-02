@@ -3433,7 +3433,7 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
   let expirationOverride: string | undefined;
   if (body.expirationTime !== undefined) {
     // An app that did not opt in (`expiryChangeable: true` at prepare) gets the expiry it asked for. A
-    // prepared handoff has no app opt-in: its ceiling is the time the CLI asked for.
+    // prepared handoff's opt-in lives on the stored handoff (`request.expiryChangeable`) and is checked below.
     if (!ticket && !bound.expiryChangeable) {
       return c.json(
         { error: 'The requesting app did not opt in to a changed expiry', code: 'expiry_not_changeable' },

@@ -128,7 +128,7 @@ describe('the one-minute minimum, from both sides', () => {
 });
 
 // TC-2276 item 12: an older row that stored no TTL derives it from its two deadlines and is used as it is. The old
-// 30-day clamp (DEVICE_AUTH_MAX_DELEGATION_TTL_MS) belonged to a cap that no longer exists.
+// 30-day clamp belonged to a cap that no longer exists.
 describe('the scope of a row that stored no TTL', () => {
   test('derives the TTL from the two deadlines, without a 30-day ceiling', () => {
     const permissions = [{ service: 'tinycloud.kv', space: 'default', path: '', actions: ['tinycloud.kv/get'] }];
