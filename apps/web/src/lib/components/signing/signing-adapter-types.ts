@@ -48,6 +48,19 @@ export interface CliSigningTransport {
   error: string | null;
 
   /**
+   * The "Approval expires" choice (TC-2272). `bounded` is true for a signed
+   * CLI approval request or a device approval, whose requester signed the
+   * longest lifetime it accepts. `onChange` re-issues `/api/delegate/prepare`
+   * so the bytes that get signed carry the choice.
+   */
+  expiry?: {
+    chosenMs: number | null;
+    bounded: boolean;
+    /** The most the requester signed; the shown default can be shorter. Null: the default is the most. */
+    maxMs?: number | null;
+    onChange: (ms: number | null) => void;
+  };
+  /**
    * Set while the prepared authorization does not match the visible
    * selection (a narrowing `/prepare` failed or never ran). Approve stays
    * disabled and shows this reason; the selection stays editable so the
@@ -58,6 +71,12 @@ export interface CliSigningTransport {
 
 /** Transport injected by the widget popup and iframe routes. */
 export interface WidgetSigningTransport {
+  /**
+   * The TinyCloud node the request names (the sign request's `host`), or empty when it names none. The host
+   * approval looks the node key up only there, and only if it is a known node (TC-2309).
+   */
+  host?: string;
+
   /**
    * True iff the request is eligible for the server-authoritative
    * narrowing path (versioned request + strict origin + versioned SIWE).
@@ -113,4 +132,15 @@ export interface WidgetSigningTransport {
 
   /** Latest error string, or null. */
   error: string | null;
+
+  /**
+   * The "Approval expires" choice (TC-2272). Set only when the signing path
+   * is the server-authoritative one, which writes the choice into the signed
+   * message; unset on the exact-byte path, where the line is not shown.
+   * `onChange` must invalidate any approved preview.
+   */
+  expiry?: {
+    chosenMs: number | null;
+    onChange: (ms: number | null) => void;
+  };
 }

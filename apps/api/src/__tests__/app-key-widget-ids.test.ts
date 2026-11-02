@@ -13,6 +13,8 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { prepareSession } from '@tinycloud/node-sdk-wasm';
 import { mockModules, replaceModules } from './mock-module';
 import { parseManifestKeys } from '../services/app-key-gate';
+import { MemoryPreparedHandoffStore, PreparedHandoffService } from '../services/prepared-handoff';
+import type { setPreparedHandoffServiceForTests } from '../routes/delegate';
 // The approval view's own code, loaded by path: it lives in the web app and the
 // capability-review package, outside this project's source root.
 const loadSource = (relative: string) => import(new URL(relative, import.meta.url).href);
@@ -114,10 +116,13 @@ await mockModules({
 });
 
 let router: typeof import('../routes/delegate')['delegateRouter'];
+let setHandoffService: typeof setPreparedHandoffServiceForTests;
+let createHandoffRouter: typeof import('../routes/prepared-handoffs')['createPreparedHandoffRouter'];
 let resetContexts: typeof import('../services/authorization-signing')['_resetAuthorizationContextStoreForTests'];
 
 beforeAll(async () => {
-  ({ delegateRouter: router } = await import('../routes/delegate?app-key-widget-ids' as string));
+  ({ delegateRouter: router, setPreparedHandoffServiceForTests: setHandoffService } = await import('../routes/delegate?app-key-widget-ids' as string));
+  ({ createPreparedHandoffRouter: createHandoffRouter } = await import('../routes/prepared-handoffs?app-key-widget-ids' as string));
   ({ _resetAuthorizationContextStoreForTests: resetContexts } = await import(
     '../services/authorization-signing?app-key-widget-ids' as string
   ));
@@ -262,13 +267,39 @@ function encryptionOnlySiwe(raw: Record<string, string[]>): string {
 
 const NODE_SHAPE = { [PREFIX_URN]: ['tinycloud.encryption/key.create', 'tinycloud.encryption/decrypt'] };
 
-async function throughTheWidget(siwe: string, ids = widgetIds(siwe)) {
-  const prepared = await post('/authorize-sign-prepare', prepareBody(siwe));
+/** The CLI's prepared hand-off for this message: a fresh store per call and the ticket its request claims (TC-2247). */
+async function claimTicket(siwe: string): Promise<string> {
+  const service = new PreparedHandoffService(new MemoryPreparedHandoffStore());
+  setHandoffService(service);
+  const ticket = Buffer.alloc(32, 50).toString('base64url');
+  const claim = await createHandoffRouter(service).request('/claim', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      transportVersion: 2,
+      request: { protocolVersion: 1, siwe, jwk, host: 'https://node.tinycloud.xyz', keyId: keyRecord.id, sessionDid: 'did:key:cli-session' },
+      delivery: {
+        handoffId: ticket,
+        state: Buffer.alloc(32, 51).toString('base64url'),
+        cancelSecret: Buffer.alloc(32, 52).toString('base64url'),
+      },
+    }),
+  });
+  expect(claim.status, await claim.clone().text()).toBe(201);
+  return ticket;
+}
+
+/** `viaTicket` sends the calls the way the CLI's prepared hand-off does; otherwise they are a website's. */
+async function throughTheWidget(siwe: string, ids = widgetIds(siwe), viaTicket = false) {
+  const handoff = viaTicket ? { ticket: await claimTicket(siwe) } : {};
+  const prepared = await post('/authorize-sign-prepare', viaTicket
+    ? { ...handoff, keyId: keyRecord.id, siwe, jwk, host: 'https://node.tinycloud.xyz' }
+    : prepareBody(siwe));
   expect(prepared.status).toBe(200);
   const { authorizationContextToken } = await prepared.json() as { authorizationContextToken: string };
-  const preview = await post('/authorize-sign-preview', { authorizationContextToken, selectedActionIds: ids });
+  const preview = await post('/authorize-sign-preview', { ...handoff, authorizationContextToken, selectedActionIds: ids });
   const previewBody = await preview.json() as { signedMessage?: string; previewApprovalToken?: string; selectedActionKeys: string[]; permissions: Array<{ service: string; space: string; path: string; actions: string[] }>; code?: string; error?: string };
-  return { authorizationContextToken, preview, previewBody, ids };
+  return { authorizationContextToken, preview, previewBody, ids, handoff };
 }
 
 describe('the approval view\'s ids for app keys', () => {
@@ -309,7 +340,7 @@ describe('the approval view\'s ids for app keys', () => {
 
   test('the account\'s default network decrypt goes through the same path', async () => {
     const siwe = encryptionOnlySiwe({ [urn('')]: ['tinycloud.encryption/decrypt'] });
-    const { preview, previewBody, ids } = await throughTheWidget(siwe);
+    const { preview, previewBody, ids } = await throughTheWidget(siwe, undefined, true);
     expect(ids).toHaveLength(1);
     expect(preview.status).toBe(200);
     expect(previewAgrees(previewBody, ids)).toBe(true);
@@ -339,17 +370,18 @@ describe('the approval view\'s ids for app keys', () => {
 describe('the order both signing pages follow', () => {
   test('sign with the ids of the selection the preview returned', async () => {
     for (const raw of [PREFIX, APPS_KEY, { [urn('')]: ['tinycloud.encryption/decrypt'] }]) {
-      const siwe = raw === PREFIX || raw === APPS_KEY ? siweWith(raw) : encryptionOnlySiwe(raw);
+      const viaTicket = raw !== PREFIX && raw !== APPS_KEY;
+      const siwe = viaTicket ? encryptionOnlySiwe(raw) : siweWith(raw);
       const model = reviewModel(siwe);
       const requested = widgetIds(siwe);
-      const { authorizationContextToken, preview, previewBody } = await throughTheWidget(siwe, requested);
+      const { authorizationContextToken, preview, previewBody, handoff } = await throughTheWidget(siwe, requested, viaTicket);
       expect(preview.status).toBe(200);
       // The page stores the selection the preview describes, then builds the sign ids from it.
       const reviewSelection = selectionFromPreview(previewBody, requested);
       expect([...reviewSelection].sort()).toEqual(model.permissions.flatMap((g) => g.actions.map((a) => a.id)).sort());
       const signIds = requestedActionIds(model, reviewSelection);
       expect([...signIds].sort()).toEqual([...requested].sort());
-      const sign = await post('/authorize-sign', { authorizationContextToken, previewApprovalToken: previewBody.previewApprovalToken, selectedActionIds: signIds, protocolVersion: 1 });
+      const sign = await post('/authorize-sign', { ...handoff, authorizationContextToken, previewApprovalToken: previewBody.previewApprovalToken, selectedActionIds: signIds, protocolVersion: 1 });
       expect(sign.status).toBe(200);
     }
   });
@@ -471,8 +503,11 @@ describe('key.block and key.unblock are admitted only on the requesting app\'s o
     expect(signed).toEqual([]);
   });
 
-  test('create and decrypt outside apps/ are not part of this refusal', async () => {
-    const { res } = await fromA({ [urn('/secrets/')]: ['tinycloud.encryption/decrypt'] }, ownBlock);
-    expect(res.status).toBe(200);
+  // TC-2247: a website's sign-in may not name create or decrypt outside its own apps/ prefix, whatever its manifest lists.
+  test('create and decrypt outside apps/ are refused, and nothing is signed', async () => {
+    const { res, body } = await fromA({ [urn('/secrets/')]: ['tinycloud.encryption/decrypt'] }, ownBlock);
+    expect(res.status).toBe(403);
+    expect(body.code).toBe('app_key_grant_refused');
+    expect(signed).toEqual([]);
   });
 });

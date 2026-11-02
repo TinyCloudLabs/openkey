@@ -57,7 +57,7 @@
     void hostFactsKey;
     return watchHostPeer(untrack(() => hostFacts), import.meta.env.VITE_DELEGATE_NODE_ORIGINS, (next) => {
       peerRecognition = next;
-    });
+    }, untrack(() => transport.host));
   });
 
   function onEditingChange(next: boolean) {
@@ -87,6 +87,8 @@
   stickyActions
   finalPreview={transport.previewReady}
   {peerRecognition}
+  expiryMs={transport.expiry?.chosenMs ?? null}
+  onExpiryChange={transport.expiry?.onChange}
   {onApprove}
   {onCancel}
   {onSelectionChange}

@@ -1,0 +1,28 @@
+{
+  "popupDefaultLine": "Approval expires: 1h (Change)",
+  "popupShownExpiry": "2026-10-31T13:42:53.213Z",
+  "popupResponseSuccess": true,
+  "popupSignedExpiry": "2026-10-31T13:42:53.213Z",
+  "popupRequestedExpiry": "2026-10-31T13:12:52.331Z",
+  "popupSignedMinutesFromNow": 90,
+  "popupSignerMatches": true,
+  "popupLinesChanged": [
+    "Expiration Time: 2026-10-31T13:42:53.213Z"
+  ],
+  "popupSessionBuilt": true,
+  "popupSessionSiweExpiry": "2026-10-31T13:42:53.213Z",
+  "delegateUrl": "http://localhost:5792/delegate?jwk=eyJrdHkiOiJPS1AiLCJjcnYiOiJFZDI1NTE5IiwieCI6IkFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUEifQ&host=http%3A%2F%2Flocalhost%3A5794&expiry=7d",
+  "delegateDefaultLine": "Approval expires: 7d (Change)",
+  "delegateEndText": "Delegation Created\n\nEnter this code in the CLI to finish signing in:\n\nAJRE-NPYE\n\nCode valid for 4:59\n\nWorks once.\n\nCopy code\n\nOnly paste this code into a terminal you started yourself.\n\nUse full delegation code instead\nClose\nProtected by TEE hardware security",
+  "delegateKeys": "address,chainId,delegationCid,delegationHeader,edited,expirationTime,expiresAt,expiry,hostActivated,jwk,ownerDid,permissions,primary,signature,signedMessage,siwe,spaceId,spaceReady,verificationMethod",
+  "delegateSignedExpiry": "2027-10-31T12:12:55.097Z",
+  "delegateExpiresAtField": "2027-10-31T12:12:55.097Z",
+  "delegateDaysFromNow": 365,
+  "nodeActivations": [
+    {
+      "method": "POST",
+      "url": "/delegate",
+      "hasAuth": true
+    }
+  ]
+}

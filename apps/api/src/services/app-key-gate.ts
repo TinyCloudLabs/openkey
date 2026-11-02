@@ -108,6 +108,11 @@ function reversedHost(origin: string): string | null {
   return labels.reverse().join('.');
 }
 
+/** App namespace a browser origin may request without a signed manifest. */
+export function appIdForOrigin(origin: string): string | null {
+  return reversedHost(origin);
+}
+
 /**
  * Is `appId` bound to the host of `origin`? True when the id equals the
  * reversed host or starts with it and a `.`. The origin is read through the

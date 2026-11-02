@@ -33,12 +33,12 @@
 {:else}
   <div class="min-h-screen flex flex-col">
     <header class="border-b border-surface-200/80 bg-surface-50/90 backdrop-blur px-5 py-4">
-      <nav class="mx-auto flex max-w-6xl items-center justify-between gap-4">
+      <nav class="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-x-4 gap-y-3">
         <a href="/" class="flex items-center gap-3 text-[15px] font-semibold tracking-[-0.03em] text-surface-900 no-underline">
           <span class="inline-grid h-8 w-8 place-items-center rounded-full bg-primary-600 font-mono text-[12px] text-white">OK</span>
           OpenKey Account
         </a>
-        <div class="flex items-center gap-2 overflow-x-auto">
+        <div class="flex flex-wrap items-center gap-2">
           <a href="/dashboard" class="rounded-full px-3 py-1.5 text-sm text-surface-500 no-underline transition-colors hover:bg-surface-100 hover:text-surface-900">
             Dashboard
           </a>
