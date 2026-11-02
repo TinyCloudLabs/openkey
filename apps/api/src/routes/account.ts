@@ -15,7 +15,6 @@ import { requireFreshPasskey } from '../services/passkey-freshness';
 import { rejectNonBrowserControlRequest } from '../middleware/browser-control';
 import { nativeDelegationLockResponse } from '../services/native-delegation/errors';
 import { sendAccountStepUpCode, verifyAccountStepUpCode } from '../services/email-otp-step-up';
-import { auth } from '../auth';
 import { revokeAppleToken } from '../services/social-confirmation';
 
 const prisma = createPrismaClient();
@@ -93,6 +92,11 @@ accountRouter.post('/social/unlink', async (c) => {
     let refreshToken: string | undefined;
     if (outcome.refreshToken) {
       try {
+        // Not a static import: loading ../auth builds Better Auth over the
+        // module's Prisma client, so importing this router (as the route unit
+        // tests do with a stand-in client) must not load it. In the running API
+        // index.ts has already loaded it; this resolves to the same instance.
+        const { auth } = await import('../auth');
         refreshToken = await symmetricDecrypt({
           key: (await auth.$context).secretConfig, data: outcome.refreshToken,
         });

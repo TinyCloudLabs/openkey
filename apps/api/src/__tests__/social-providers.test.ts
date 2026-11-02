@@ -106,7 +106,7 @@ async function nativeVerifierFixture() {
   const unusedNonces = new Set([`${requestUri}:${nonceHash}`]);
   const options = {
     jwks,
-    audience: 'xyz.tinycloud.exo',
+    audience: 'xyz.tinycloud.home',
     serverNonce,
     requestUri,
     consumeNonce: async (uri: string, hash: string) =>
@@ -133,7 +133,7 @@ async function nativeVerifierFixture() {
     })
       .setProtectedHeader({ alg: 'RS256', kid: override.kid ?? 'apple-test-key' })
       .setIssuer(override.issuer ?? 'https://appleid.apple.com')
-      .setAudience(override.audience ?? 'xyz.tinycloud.exo')
+      .setAudience(override.audience ?? 'xyz.tinycloud.home')
       .setIssuedAt(override.issuedAt ?? now)
       .setExpirationTime(override.expiresAt ?? now + 300)
       .sign(privateKey);
@@ -391,7 +391,7 @@ describe('Apple native token verifier (not a live sign-in endpoint)', () => {
   for (const [claim, override] of [
     ['issuer', { issuer: 'https://attacker.example.test' }],
     ['Services ID audience', { audience: 'services.openkey.test' }],
-    ['production-excluded dev bundle audience', { audience: 'xyz.tinycloud.exo.dev' }],
+    ['production-excluded dev bundle audience', { audience: 'xyz.tinycloud.home.dev' }],
     ['expired token', { expiresAt: Math.floor(Date.now() / 1000) - 1 }],
     ['stale issued-at', { issuedAt: Math.floor(Date.now() / 1000) - 601 }],
     ['unknown signing kid', { kid: 'missing-key' }],
@@ -422,7 +422,7 @@ describe('Apple native token verifier (not a live sign-in endpoint)', () => {
     const token = await new SignJWT({ sub: 'native-apple-user', nonce: nonceHash })
       .setProtectedHeader({ alg: 'HS256', kid: 'apple-test-key' })
       .setIssuer('https://appleid.apple.com')
-      .setAudience('xyz.tinycloud.exo')
+      .setAudience('xyz.tinycloud.home')
       .setIssuedAt(now)
       .setExpirationTime(now + 300)
       .sign(new TextEncoder().encode('test-only-secret-test-only-secret'));
