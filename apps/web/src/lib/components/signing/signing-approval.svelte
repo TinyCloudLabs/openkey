@@ -544,8 +544,8 @@
   {/if}
 
   <!--
-    Sensitive callout pinned at the top. Exact copy from the contract.
-    Rendered only when at least one grant reaches secret data or decryption.
+    Sensitive callout pinned at the top. Its count is the number of summary rows
+    marked Sensitive below it (sensitiveSummaryCount); rendered only when there is at least one.
   -->
   {#if sensitiveCount > 0}
     <p class="sensitive-callout" role="status" aria-live="polite">

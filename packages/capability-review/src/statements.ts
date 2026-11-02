@@ -12,9 +12,10 @@
 // on unknown shapes would be a spec violation (see the merge-readiness
 // contract).
 //
-// The `sensitiveCallout(n)` string is the exact copy required by the
-// contract; UI callers MUST route through it rather than composing the
-// sentence themselves.
+// The approval page's header over the summary comes from `sensitiveRowsCallout(n)` with n =
+// `sensitiveSummaryCount(rows)`; `sensitiveCallout(n)` (grants that reach secrets or
+// decryption) is used by the native access summary. UI callers route through these rather
+// than composing the sentence themselves.
 
 import type { CapabilityAction, CapabilityGrant, CapabilityReviewModel, PermissionSeverity } from "./model.js";
 import { appDisplayName } from "./app-identity.js";
@@ -326,7 +327,7 @@ function grantVerbSet(grant: CapabilityGrant): Set<string> {
  *
  * App-scoped secrets that passed the dedicated origin-bound manifest proof
  * still reach secret data and remain Sensitive; the proof only enriches their
- * label. The count exposed by `sensitiveCallout` describes every exact grant
+ * label. The native access summary's `sensitiveCallout` count describes every exact grant
  * that reaches secret data or decryption. Unknown sensitive mutations and create-only
  * encryption grants do not enter the count: neither fact alone proves
  * access to secret data or decryption.

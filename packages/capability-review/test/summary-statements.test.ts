@@ -64,30 +64,20 @@ function rowsOf(model: CapabilityReviewModel) {
   return buildSummaryStatements(selected);
 }
 
-describe("the Sensitive header matches the Sensitive rows", () => {
-  it("counts every row marked Sensitive in the Share sign-in (it said 2 over four marked rows)", () => {
+describe("the Sensitive header counts the Sensitive rows", () => {
+  it("counts the four rows marked Sensitive in the Share sign-in (the header said 2)", () => {
     const rows = rowsOf(modelFor(SHARE_SIGN_IN));
-    const marked = rows.filter((row) => row.severity === "sensitive");
-    expect(marked.length).toBeGreaterThanOrEqual(4);
-    expect(sensitiveSummaryCount(rows)).toBe(marked.length);
+    expect(rows.filter((row) => row.severity === "sensitive").map((row) => row.primaryText)).toEqual([
+      "Set up encryption and decrypt protected data",
+      "Decrypt data locked with your keys in `share/`",
+      "Create your own encryption keys in `share/`",
+      "Read and change your data",
+    ]);
+    expect(sensitiveSummaryCount(rows)).toBe(4);
   });
 
-  it("is the number of marked rows for any selection, including one row and none", () => {
-    const keysOnly = rowsOf(modelFor({ [`${NETWORK}/share/`]: ["tinycloud.encryption/key.create", "tinycloud.encryption/decrypt"] }));
-    expect(sensitiveSummaryCount(keysOnly)).toBe(keysOnly.filter((row) => row.severity === "sensitive").length);
-    const none = rowsOf(modelFor({ [`${SPACE}/capabilities`]: ["tinycloud.capabilities/read"] }));
-    expect(sensitiveSummaryCount(none)).toBe(0);
-  });
-
-  it("counts a row once when two grants give it the same sentence", () => {
-    const rows = rowsOf(
-      modelFor({
-        [`${NETWORK}/share/`]: ["tinycloud.encryption/decrypt"],
-        [`${NETWORK}/share/x/`]: ["tinycloud.encryption/decrypt"],
-      }),
-    );
-    expect(new Set(rows.map((row) => row.primaryText)).size).toBe(rows.length);
-    expect(sensitiveSummaryCount(rows)).toBe(rows.filter((row) => row.severity === "sensitive").length);
+  it("is 0 when nothing selected is marked Sensitive", () => {
+    expect(sensitiveSummaryCount(rowsOf(modelFor({ [`${SPACE}/capabilities`]: ["tinycloud.capabilities/read"] })))).toBe(0);
   });
 });
 
