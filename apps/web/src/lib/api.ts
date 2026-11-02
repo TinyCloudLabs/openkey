@@ -1,12 +1,15 @@
 // API client for key management
-import { getSessionToken } from './embed-passkey';
+import { getSessionToken, isEmbedContext } from './embed-passkey';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
 /**
- * `cookieOnly`: the request is sent with the cookie session and never with a stored token. The API refuses any
- * request carrying an Authorization header when it changes a TinyCloud signing control (it must stay cookie-session
- * only), and a tab can hold a leftover embedded-widget token that would otherwise be preferred over the cookie.
+ * The stored session token is for an embedded frame, where third-party cookies are blocked. A top-level tab has the
+ * cookie session, and a leftover widget token there can belong to a different account than the cookie: using it
+ * would show one account's data and write to another. So outside an embedded frame every call uses the cookie.
+ *
+ * `cookieOnly`: never send the stored token, even in an embedded frame. The API refuses any request carrying an
+ * Authorization header when it changes a TinyCloud signing control (they are cookie-session only).
  */
 async function fetchAPI<T>(path: string, options: RequestInit = {}, cookieOnly = false): Promise<T> {
   const headers: Record<string, string> = {
@@ -15,7 +18,7 @@ async function fetchAPI<T>(path: string, options: RequestInit = {}, cookieOnly =
   };
 
   // In embed context, use bearer token instead of cookies
-  const sessionToken = cookieOnly ? null : getSessionToken();
+  const sessionToken = cookieOnly || !isEmbedContext() ? null : getSessionToken();
   if (sessionToken) {
     headers['Authorization'] = `Bearer ${sessionToken}`;
   }

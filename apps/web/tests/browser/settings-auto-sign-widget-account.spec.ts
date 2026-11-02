@@ -4,6 +4,7 @@
 // signing control is refused with 403 "Bearer tokens cannot change TinyCloud signing controls".
 
 import { test, expect, type Page, type Route } from '@playwright/test';
+import { ORIGIN } from './e2e-port';
 
 const json = (route: Route, body: unknown, status = 200, headers: Record<string, string> = {}) =>
   route.fulfill({ status, contentType: 'application/json', headers, body: JSON.stringify(body) });
@@ -14,10 +15,13 @@ const session = {
   user: { id: 'u', email: EMAIL, name: '' },
 };
 
-type Patch = { authorization: string | undefined; credentials: boolean };
+type Patch = { authorization: string | undefined; cookie: boolean };
 
 async function mockApi(page: Page) {
-  const state = { signedIn: false, autoSign: true, patches: [] as Patch[], reads: [] as Array<string | undefined> };
+  // The tab's cookie session: the mocked API only sees that a cookie header is sent, not its value.
+  await page.context().addCookies([{ name: 'better-auth.session_token', value: 'cookie-session', url: ORIGIN }]);
+  // `autoSign` is the cookie account's setting; `bearerAutoSign` is what the account behind a stored token would show.
+  const state = { signedIn: false, autoSign: true, bearerAutoSign: false, patches: [] as Patch[], reads: [] as Array<{ authorization: string | undefined; cookie: boolean }> };
   await page.route('**/api/**', (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
@@ -33,11 +37,11 @@ async function mockApi(page: Page) {
       return json(route, { token: 'tok-widget', ...session }, 200, { 'set-auth-token': 'tok-widget' });
     }
     if (path === '/api/account/auto-sign' && request.method() === 'GET') {
-      state.reads.push(authorization);
-      return json(route, { autoSignEnabled: state.autoSign });
+      state.reads.push({ authorization, cookie: !!request.headers()['cookie'] });
+      return json(route, { autoSignEnabled: authorization ? state.bearerAutoSign : state.autoSign });
     }
     if (path === '/api/account/auto-sign' && request.method() === 'PATCH') {
-      state.patches.push({ authorization, credentials: !authorization });
+      state.patches.push({ authorization, cookie: !!request.headers()['cookie'] });
       if (authorization) return json(route, { error: 'Bearer tokens cannot change TinyCloud signing controls' }, 403);
       state.autoSign = (request.postDataJSON() as { autoSignEnabled: boolean }).autoSignEnabled;
       return json(route, { autoSignEnabled: state.autoSign });
@@ -72,6 +76,26 @@ test('a widget-created account turns Auto-Sign off on openkey.so from the same t
   await expect(toggle).toHaveAttribute('aria-checked', 'false');
   await expect(page.getByText('Disabled', { exact: true })).toBeVisible();
   await expect(page.getByText('Bearer tokens cannot change TinyCloud signing controls')).toHaveCount(0);
-  expect(api.patches).toEqual([{ authorization: undefined, credentials: true }]);
+  expect(api.patches).toEqual([{ authorization: undefined, cookie: true }]);
+  expect(api.autoSign).toBe(false);
+  // The page read the setting with the same identity it then wrote with: the cookie.
+  expect(api.reads.every((read) => read.authorization === undefined && read.cookie)).toBe(true);
+});
+
+test('the settings page shows and changes the cookie account even if the tab holds another account\'s token', async ({ page }) => {
+  const api = await mockApi(page);
+  api.signedIn = true;
+  // The widget left account B's token in this tab; the tab's cookie session is account A's.
+  await page.addInitScript(() => sessionStorage.setItem('openkey_session_token', 'token-of-B'));
+
+  await page.goto('/dashboard/settings');
+  const toggle = page.getByRole('switch', { name: 'Toggle Auto-Sign' });
+  // A's setting is on; B's (what a bearer read returns in this mock) is off. The page must show A's.
+  await expect(toggle).toHaveAttribute('aria-checked', 'true');
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-checked', 'false');
+
+  expect(api.reads.every((read) => read.authorization === undefined && read.cookie)).toBe(true);
+  expect(api.patches).toEqual([{ authorization: undefined, cookie: true }]);
   expect(api.autoSign).toBe(false);
 });
