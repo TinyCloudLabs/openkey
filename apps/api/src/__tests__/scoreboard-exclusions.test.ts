@@ -17,18 +17,16 @@ const rules = (entries: unknown[]) => parseExclusions(JSON.stringify(entries));
 test('an explicit user id excludes one account', () => {
   expect([...excludedAccountIds(accounts, rules([{ kind: 'user_id', value: 'listed' }]))]).toEqual(['listed']);
 });
-test('own and throwaway domains match case-insensitively and exactly, not subdomains', () => {
-  expect([...excludedAccountIds(accounts, rules([
-    { kind: 'email_domain', value: 'Team.Example' },
-    { kind: 'email_domain', value: 'DISPOSABLE.EXAMPLE' },
-  ]))]).toEqual(['own', 'mailbox']);
+test('domain rules are not applied', () => {
+  expect(() => rules([{ kind: 'email_domain', value: 'team.example' }])).toThrow('Invalid scoreboard exclusions');
+  expect(excludedAccountIds(accounts, rules([])).size).toBe(0);
 });
 test('exact emails are case-insensitive', () => {
   expect([...excludedAccountIds(accounts, rules([{ kind: 'email', value: 'person@example.org' }]))]).toEqual(['exact']);
 });
 test('overlapping rules exclude an account once', () => {
   expect(excludedAccountIds(accounts, rules([
-    { kind: 'user_id', value: 'own' }, { kind: 'email_domain', value: 'team.example' },
+    { kind: 'user_id', value: 'own' }, { kind: 'email', value: 'qa@team.example' },
   ])).size).toBe(1);
 });
 test('empty configuration excludes nobody', () => {
@@ -47,13 +45,19 @@ test('did:key entries affect only accounts mapped by OpenKey records', () => {
   expect([...excludedAccountIds(accounts, entries, new Set(['agent-owner']))]).toEqual(['agent-owner']);
   expect(excludedAccountIds(accounts, entries).size).toBe(0);
 });
-test('unsure entries never exclude accounts, even when otherwise matching', () => {
+test('explicit unsure decisions never exclude accounts', () => {
   const entries = rules([
     { kind: 'user_id', value: 'unsure', status: 'UNSURE' },
-    { kind: 'email', value: 'unsure@example.net', confidence: 'unsure' },
-    { kind: 'email_domain', value: 'example.net', decision: 'unsure' },
+    { kind: 'email', value: 'unsure@example.net', decision: 'unsure' },
   ]);
   expect(excludedAccountIds(accounts, entries).size).toBe(0);
+});
+test('confidence and purge holds do not change explicit identity exclusions', () => {
+  const entries = rules([
+    { kind: 'email', value: 'person@example.org', confidence: 'medium', purge_hold: true },
+    { kind: 'email', value: 'unsure@example.net', confidence: 'unsure', purge_hold: 'unsure' },
+  ]);
+  expect([...excludedAccountIds(accounts, entries)]).toEqual(['exact', 'unsure']);
 });
 test('invalid configuration fails without exposing entry values', () => {
   expect(() => parseExclusions('{broken')).toThrow('Invalid scoreboard exclusions');

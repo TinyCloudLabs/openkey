@@ -4,7 +4,6 @@ type Account = { id: string; email: string; ethereumKeys: { address: string }[] 
 type Rules = {
   userIds: Set<string>;
   emails: Set<string>;
-  domains: Set<string>;
   addresses: Set<string>;
   keyDids: Set<string>;
 };
@@ -16,13 +15,13 @@ export type ExclusionDatabase = {
 };
 
 export function parseExclusions(raw: string | undefined): Rules {
-  const rules: Rules = { userIds: new Set(), emails: new Set(), domains: new Set(), addresses: new Set(), keyDids: new Set() };
+  const rules: Rules = { userIds: new Set(), emails: new Set(), addresses: new Set(), keyDids: new Set() };
   try {
     const entries: unknown = JSON.parse(raw?.trim() || '[]');
     if (!Array.isArray(entries)) throw new Error();
     for (const entry of entries) {
       if (!entry || typeof entry !== 'object') throw new Error();
-      if (['status', 'confidence', 'decision'].some((column) =>
+      if (['status', 'decision'].some((column) =>
         typeof entry[column] === 'string' && entry[column].trim().toLowerCase() === 'unsure')) continue;
       if (typeof entry.value !== 'string' || !entry.value.trim()) throw new Error();
       const value = entry.value.trim();
@@ -31,10 +30,6 @@ export function parseExclusions(raw: string | undefined): Rules {
         case 'email':
           if (!/^[^@\s]+@[^@\s]+$/.test(value)) throw new Error();
           rules.emails.add(value.toLowerCase());
-          break;
-        case 'email_domain':
-          if (!/^[a-z0-9]+(?:[.-][a-z0-9-]+)*\.[a-z]{2,}$/i.test(value)) throw new Error();
-          rules.domains.add(value.toLowerCase());
           break;
         case 'evm_address':
           if (!/^0x[0-9a-f]{40}$/i.test(value)) throw new Error();
@@ -61,7 +56,7 @@ export function excludedAccountIds(accounts: readonly Account[], rules: Rules, m
   for (const account of accounts) {
     const email = account.email.toLowerCase();
     if (rules.userIds.has(account.id) || mappedKeyUsers?.has(account.id)
-      || rules.emails.has(email) || rules.domains.has(email.slice(email.lastIndexOf('@') + 1))
+      || rules.emails.has(email)
       || account.ethereumKeys.some((key) => rules.addresses.has(key.address.toLowerCase()))) {
       excluded.add(account.id);
     }
@@ -76,7 +71,7 @@ export async function resolveScoreboardExclusions(
   // The legacy env remains available for old releases; this resolver never falls back to it. Details: TC-1480
   const rules = parseExclusions(env.SCOREBOARD_EXCLUSIONS);
   const clientIds = new Set((env.SCOREBOARD_EXCLUDE_CLIENT_IDS ?? '').split(',').map((value) => value.trim()).filter(Boolean));
-  if (![rules.userIds, rules.emails, rules.domains, rules.addresses, rules.keyDids].some((values) => values.size)) {
+  if (![rules.userIds, rules.emails, rules.addresses, rules.keyDids].some((values) => values.size)) {
     return { userIds: new Set(), clientIds };
   }
   // No archivedAt filter: archived account keys still identify their account. Details: TC-1480
