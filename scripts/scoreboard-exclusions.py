@@ -9,38 +9,38 @@ import re
 import sys
 
 
-HEADERS = frozenset(("identifier", "id_type", "kind", "confidence", "purge_hold", "evidence"))
-KINDS = {"eth-address": "evm_address", "email": "email", "did:key": "did"}
+HEADERS = ("kind", "value", "evidence")
+KINDS = {"address": "evm_address", "did_pkh": "did", "email": "email", "did_key": "did", "email_domain": "email_domain"}
 PATTERNS = {
-    "eth-address": re.compile(r"0x[0-9a-fA-F]{40}", re.IGNORECASE),
+    "address": re.compile(r"0x[0-9a-f]{40}", re.IGNORECASE),
+    "did_pkh": re.compile(r"did:pkh:eip155:\d+:0x[0-9a-f]{40}", re.IGNORECASE),
     "email": re.compile(r"[^@\s]+@[^@\s]+"),
-    "did:key": re.compile(r"did:key:z[1-9A-HJ-NP-Za-km-z]+"),
+    "did_key": re.compile(r"did:key:z[1-9A-HJ-NP-Za-km-z]+"),
+    "email_domain": re.compile(r"[a-z0-9]+(?:[.-][a-z0-9-]+)*\.[a-z]{2,}", re.IGNORECASE),
 }
 
 
 def exclusion_from_row(row):
     if None in row or any(value is None for value in row.values()):
         raise ValueError("Invalid CSV row width")
-    id_type = row["id_type"].strip()
-    if id_type not in KINDS:
-        raise ValueError("Unsupported id_type")
-    value = row["identifier"].strip()
-    if not PATTERNS[id_type].fullmatch(value):
+    kind = row["kind"].strip()
+    if kind not in KINDS:
+        raise ValueError("Unsupported kind")
+    value = row["value"].strip()
+    if not PATTERNS[kind].fullmatch(value):
         raise ValueError("Invalid identifier format")
-    if id_type != "did:key":
+    if kind != "did_key":
         value = value.lower()
-    # Every list.csv row applies; confidence, kind and purge_hold are not exclusion gates.
-    return {"kind": KINDS[id_type], "value": value}
+    # Every list.csv row applies; evidence is not an exclusion gate.
+    return {"kind": KINDS[kind], "value": value}
 
 
 def exclusions_from_csv(source):
     reader = csv.DictReader(source, strict=True)
     if reader.fieldnames is None:
         raise ValueError("Invalid CSV header")
-    headers = [header.strip().casefold() for header in reader.fieldnames]
-    if set(headers) != HEADERS or len(headers) != len(HEADERS):
+    if tuple(reader.fieldnames) != HEADERS:
         raise ValueError("Invalid CSV header")
-    reader.fieldnames = headers
     return [exclusion_from_row(row) for row in reader]
 
 

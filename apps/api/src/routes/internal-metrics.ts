@@ -60,6 +60,7 @@ export async function collectInternalMetrics(database: MetricsDatabase, now = ne
       total: totalAccounts, new24h: newAccounts24h,
       real: totalAccounts - exclusions.userIds.size,
       excluded: exclusions.userIds.size,
+      excludedDomainOnly: exclusions.domainOnly,
       exclusionCriteria: SCOREBOARD_EXCLUSION_CRITERIA,
     },
     keys: { total: totalKeys, active: activeKeys, new24h: newKeys24h },

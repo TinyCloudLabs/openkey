@@ -4,6 +4,7 @@ type Account = { id: string; email: string; ethereumKeys: { address: string }[] 
 type Rules = {
   userIds: Set<string>;
   emails: Set<string>;
+  domains: Set<string>;
   addresses: Set<string>;
   keyDids: Set<string>;
 };
@@ -15,7 +16,7 @@ export type ExclusionDatabase = {
 };
 
 export function parseExclusions(raw: string | undefined): Rules {
-  const rules: Rules = { userIds: new Set(), emails: new Set(), addresses: new Set(), keyDids: new Set() };
+  const rules: Rules = { userIds: new Set(), emails: new Set(), domains: new Set(), addresses: new Set(), keyDids: new Set() };
   try {
     const entries: unknown = JSON.parse(raw?.trim() || '[]');
     if (!Array.isArray(entries)) throw new Error();
@@ -30,6 +31,10 @@ export function parseExclusions(raw: string | undefined): Rules {
         case 'email':
           if (!/^[^@\s]+@[^@\s]+$/.test(value)) throw new Error();
           rules.emails.add(value.toLowerCase());
+          break;
+        case 'email_domain':
+          if (!/^[a-z0-9]+(?:[.-][a-z0-9-]+)*\.[a-z]{2,}$/i.test(value)) throw new Error();
+          rules.domains.add(value.toLowerCase());
           break;
         case 'evm_address':
           if (!/^0x[0-9a-f]{40}$/i.test(value)) throw new Error();
@@ -51,28 +56,34 @@ export function parseExclusions(raw: string | undefined): Rules {
   return rules;
 }
 
-export function excludedAccountIds(accounts: readonly Account[], rules: Rules, mappedKeyUsers?: ReadonlySet<string>): Set<string> {
-  const excluded = new Set<string>();
+export function classifyExcludedAccounts(
+  accounts: readonly Account[], rules: Rules, mappedKeyUsers?: ReadonlySet<string>,
+): { userIds: Set<string>; domainOnly: number } {
+  const userIds = new Set<string>();
+  let domainOnly = 0;
   for (const account of accounts) {
     const email = account.email.toLowerCase();
-    if (rules.userIds.has(account.id) || mappedKeyUsers?.has(account.id)
+    const exact = rules.userIds.has(account.id) || mappedKeyUsers?.has(account.id)
       || rules.emails.has(email)
-      || account.ethereumKeys.some((key) => rules.addresses.has(key.address.toLowerCase()))) {
-      excluded.add(account.id);
+      || account.ethereumKeys.some((key) => rules.addresses.has(key.address.toLowerCase()));
+    const domain = rules.domains.has(email.slice(email.lastIndexOf('@') + 1));
+    if (exact || domain) {
+      userIds.add(account.id);
+      if (!exact) domainOnly += 1;
     }
   }
-  return excluded;
+  return { userIds, domainOnly };
 }
 
 export async function resolveScoreboardExclusions(
   database: ExclusionDatabase,
   env: Record<string, string | undefined> = process.env,
-): Promise<{ userIds: ReadonlySet<string>; clientIds: ReadonlySet<string> }> {
+): Promise<{ userIds: ReadonlySet<string>; clientIds: ReadonlySet<string>; domainOnly: number }> {
   // The legacy env remains available for old releases; this resolver never falls back to it. Details: TC-1480
   const rules = parseExclusions(env.SCOREBOARD_EXCLUSIONS);
   const clientIds = new Set((env.SCOREBOARD_EXCLUDE_CLIENT_IDS ?? '').split(',').map((value) => value.trim()).filter(Boolean));
-  if (![rules.userIds, rules.emails, rules.addresses, rules.keyDids].some((values) => values.size)) {
-    return { userIds: new Set(), clientIds };
+  if (![rules.userIds, rules.emails, rules.domains, rules.addresses, rules.keyDids].some((values) => values.size)) {
+    return { userIds: new Set(), clientIds, domainOnly: 0 };
   }
   // No archivedAt filter: archived account keys still identify their account. Details: TC-1480
   const accounts = await database.user.findMany({ select: { id: true, email: true, ethereumKeys: { select: { address: true } } } });
@@ -89,5 +100,5 @@ export async function resolveScoreboardExclusions(
       UNION SELECT "userId" FROM tinycloud_native_grant WHERE "sessionDid" = ANY(${dids})`;
     mappedKeyUsers = new Set(rows.map((row) => row.userId));
   }
-  return { userIds: excludedAccountIds(accounts, rules, mappedKeyUsers), clientIds };
+  return { ...classifyExcludedAccounts(accounts, rules, mappedKeyUsers), clientIds };
 }
