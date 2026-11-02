@@ -12,11 +12,14 @@ services:
       - WEBAUTHN_ORIGIN=${WEBAUTHN_ORIGIN}
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      # Apple stays off until enrollment and a separate production decision.
+      - APPLE_SIGN_IN_ENABLED=false
+      - APPLE_NATIVE_SIGN_IN_ENABLED=false
       - APPLE_CLIENT_ID=${APPLE_CLIENT_ID}
       - APPLE_TEAM_ID=${APPLE_TEAM_ID}
       - APPLE_KEY_ID=${APPLE_KEY_ID}
       - APPLE_PRIVATE_KEY=${APPLE_PRIVATE_KEY}
-      - APPLE_APP_BUNDLE_IDENTIFIER=${APPLE_APP_BUNDLE_IDENTIFIER}
+      - APPLE_APP_BUNDLE_IDENTIFIERS=${APPLE_APP_BUNDLE_IDENTIFIERS}
       # Hardcoded: the encrypted env must not be able to select mock sealing
       # keys (TC-966).
       - TEE_MODE=production
