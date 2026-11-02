@@ -1,5 +1,6 @@
 // API client for key management
-import { getSessionToken } from '$lib/embed-passkey';
+import { getSessionToken } from './embed-passkey';
+import { isDefiniteRefusal, ServerRefusalError } from './server-reply';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -25,6 +26,8 @@ async function fetchAPI<T>(path: string, options: RequestInit = {}): Promise<T> 
     const error = await res.json().catch(() => ({ error: 'Unknown error' }));
     const detail = error?.error;
     const message = typeof detail === 'string' ? detail : detail?.message;
+    // A definite refusal of a sign-in keeps its code so the widget can tell the app (TC-2291).
+    if (isDefiniteRefusal(res.status, error?.code)) throw new ServerRefusalError(message || `HTTP ${res.status}`, res.status, error.code);
     const failure = new Error(message || `HTTP ${res.status}`);
     Object.assign(failure, {
       code: detail?.code,

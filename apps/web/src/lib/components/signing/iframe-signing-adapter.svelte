@@ -83,6 +83,7 @@
   {editing}
   approving={transport.approving}
   error={transport.error}
+  approveBlockedReason={transport.approveBlockedReason ?? null}
   {layoutBlocked}
   stickyActions
   finalPreview={transport.previewReady}

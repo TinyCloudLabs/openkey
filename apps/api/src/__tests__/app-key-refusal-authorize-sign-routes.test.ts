@@ -208,7 +208,8 @@ describe('POST /authorize-sign-prepare', () => {
   ])('refuses %s and issues nothing', async (_name, raw) => {
     const res = await post('/authorize-sign-prepare', { ...prepareBody(siweWith(raw)), requestOrigin: ORIGIN });
     expect(res.status).toBe(403);
-    await expect(res.json()).resolves.toEqual({ error: NOT_DECLARED, code: 'app_key_grant_refused' });
+    // TC-2291: the #389 refusal is identified by its code; its sentence is owner-visible copy, not pinned here.
+    await expect(res.json()).resolves.toEqual({ error: expect.any(String), code: 'app_key_grant_refused' });
     expect(signed).toEqual([]);
   });
 });

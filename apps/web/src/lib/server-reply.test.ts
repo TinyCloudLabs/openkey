@@ -1,6 +1,6 @@
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { describe, expect, test } from 'bun:test';
-import { hasSignResult, hasText, readReply, ServerReplyError, SERVER_REPLY_BODY, SERVER_REPLY_TITLE } from './server-reply';
+import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError, SERVER_REPLY_BODY, SERVER_REPLY_TITLE } from './server-reply';
 
 const reply = (body: string, init: ResponseInit = { status: 200 }) => new Response(body, init);
 const needsToken = (body: Record<string, unknown>) => hasText(body, 'token');
@@ -82,5 +82,27 @@ describe('hasSignResult', () => {
     ['no signature', { ...signed, signature: '' }],
   ] as Array<[string, Record<string, unknown>]>)('%s is not readable', (_label: string, body: Record<string, unknown>) => {
     expect(hasSignResult(body)).toBe(false);
+  });
+});
+
+// TC-2291: a definite refusal keeps its code and status so the widget can tell the app; anything else stays a plain error.
+describe('readReply with a definite refusal', () => {
+  const refusal = (code: string, status = 403) => reply(JSON.stringify({ error: 'server words', code }), { status });
+
+  test.each(['app_key_grant_refused', 'key_delete_not_grantable', 'invalid_siwe_recap'])('%s throws a ServerRefusalError with the status, code and the server\'s words', async (code: string) => {
+    const error = await failure(readReply(refusal(code, code === 'invalid_siwe_recap' ? 400 : 403), needsToken, 'x'));
+    expect(error).toBeInstanceOf(ServerRefusalError);
+    expect(error).toMatchObject({ code, message: 'server words', status: code === 'invalid_siwe_recap' ? 400 : 403 });
+  });
+
+  test.each([
+    ['an unknown code', refusal('something_else')],
+    ['a server error carrying a refusal code', refusal('app_key_grant_refused', 503)],
+    ['no code', reply(JSON.stringify({ error: 'server words' }), { status: 403 })],
+    ['a body that is not JSON', reply('nope', { status: 403 })],
+  ])('%s stays a plain Error', async (_label: string, response: Response) => {
+    const error = await failure(readReply(response, needsToken, 'fallback'));
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(ServerRefusalError);
   });
 });
