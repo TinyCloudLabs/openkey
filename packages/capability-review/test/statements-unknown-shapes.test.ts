@@ -128,7 +128,7 @@ describe("buildStatement — unknown structural shapes", () => {
       }),
     );
     expect(statement.primaryText).toBe(
-      "Perform tinycloud.kv/get on tinycloud.kv",
+      "Read another user's data",
     );
   });
 
@@ -143,7 +143,7 @@ describe("buildStatement — unknown structural shapes", () => {
       }),
     );
     expect(statement.primaryText).toBe(
-      "Perform tinycloud.delegation/list on tinycloud.delegation",
+      "See who can access your data",
     );
   });
 
@@ -159,7 +159,7 @@ describe("buildStatement — unknown structural shapes", () => {
       }),
     );
     expect(statement.primaryText).toBe(
-      "Perform tinycloud.kv/get on tinycloud.kv",
+      "Read your data",
     );
   });
 });
@@ -174,7 +174,7 @@ describe("buildStatement — capabilities service unknown verbs", () => {
     });
     const statement = buildStatement(grant);
     expect(statement.primaryText).toBe(
-      "Perform tinycloud.capabilities/admin on tinycloud.capabilities",
+      "Unknown action: tinycloud.capabilities/admin",
     );
     expect(statement.service).toBe("tinycloud.capabilities");
   });
@@ -190,7 +190,7 @@ describe("buildStatement — capabilities service unknown verbs", () => {
       severity: "standard",
     });
     const statement = buildStatement(grant);
-    expect(statement.primaryText).toContain("Perform");
+    expect(statement.literalEscaped).toBe(true);
     expect(statement.primaryText).toContain("tinycloud.capabilities/mutate");
   });
 
@@ -216,7 +216,7 @@ describe("buildStatement — secrets service unknown verbs", () => {
       severity: "sensitive",
     });
     expect(buildStatement(grant).primaryText).toBe(
-      "Perform tinycloud.secrets/read on tinycloud.secrets",
+      "Unknown action: tinycloud.secrets/read",
     );
   });
 
@@ -229,7 +229,7 @@ describe("buildStatement — secrets service unknown verbs", () => {
     });
     const statement = buildStatement(grant);
     expect(statement.primaryText).toBe(
-      "Perform tinycloud.secrets/rotate on tinycloud.secrets",
+      "Unknown action: tinycloud.secrets/rotate",
     );
   });
 
@@ -244,7 +244,7 @@ describe("buildStatement — secrets service unknown verbs", () => {
     });
     const primary = buildStatement(grant).primaryText;
     expect(primary).toBe(
-      "Perform tinycloud.secrets/peek on tinycloud.secrets",
+      "Unknown action: tinycloud.secrets/peek",
     );
   });
 });
@@ -530,7 +530,123 @@ describe("classifyRecapEntry — unknown secrets verbs", () => {
       }),
     );
     expect(statement.primaryText).toBe(
-      "Perform tinycloud.secrets/list, tinycloud.secrets/metadata on tinycloud.secrets",
+      "Unknown actions: tinycloud.secrets/list, tinycloud.secrets/metadata",
     );
+  });
+});
+
+// Moved from apps/web/src/lib/consent-statement.test.ts (TC-2216): the
+// statement builder now escapes and caps every fallback row itself.
+describe("fallback rows escape raw text once", () => {
+  it("escapes and caps markup in an unknown ability", () => {
+    const statement = buildStatement(
+      makeGrant({
+        service: "tinycloud.kv",
+        abilities: [`tinycloud.kv/${"<script>".repeat(100)}`],
+        family: "unknown",
+        severity: "attention",
+      }),
+    );
+    expect(statement.literalEscaped).toBe(true);
+    expect(statement.primaryText).toContain("\\u003cscript\\u003e");
+    expect(statement.primaryText).not.toContain("<");
+    expect(statement.primaryText.endsWith("…")).toBe(true);
+    expect(statement.primaryText.length).toBeLessThanOrEqual("Unknown action: ".length + 121);
+  });
+
+  it("escapes a bidi override in an unknown service exactly once", () => {
+    const statement = buildStatement(
+      makeGrant({
+        service: "tinycloud.\u202e",
+        abilities: [],
+        family: "unknown",
+        severity: "attention",
+      }),
+    );
+    expect(statement.primaryText).toBe("Unknown access: tinycloud.\\u202e");
+  });
+
+  it("keeps plain words legible", () => {
+    const statement = buildStatement(
+      makeGrant({
+        service: "tinycloud.kv",
+        abilities: ["tinycloud.kv/get", "tinycloud.kv/archive"],
+        family: "unknown",
+        severity: "attention",
+        ownedBySelf: false,
+      }),
+    );
+    expect(statement.primaryText).toBe("Read another user's data; unknown action: tinycloud.kv/archive");
+  });
+});
+
+// Review of TC-2216: a raw row must show every raw action, however many.
+describe("raw fallback rows show every action", () => {
+  const ENCRYPTION = [
+    "tinycloud.encryption/decrypt",
+    "tinycloud.encryption/key.block",
+    "tinycloud.encryption/key.create",
+    "tinycloud.encryption/key.unblock",
+    "tinycloud.encryption/network.create",
+    "tinycloud.encryption/network.revoke",
+  ];
+
+  it("a service-mismatched request lists all six encryption actions", () => {
+    const statement = buildStatement({
+      ...makeGrant({
+        service: "tinycloud.encryption",
+        path: "notes",
+        abilities: ENCRYPTION,
+        family: "unknown",
+        severity: "attention",
+      }),
+      resourceService: "sql",
+      serviceMismatch: true,
+    });
+    expect(statement.showsRawText).toBe(true);
+    expect(statement.primaryText).toBe(`Unknown actions: ${ENCRYPTION.join(", ")}`);
+  });
+
+  it("a long unknown action does not hide the actions after it", () => {
+    const long = `tinycloud.kv/${"x".repeat(200)}`;
+    const statement = buildStatement(
+      makeGrant({
+        service: "tinycloud.kv",
+        abilities: [long, "tinycloud.kv/archive", "tinycloud.kv/rotate"],
+        family: "unknown",
+        severity: "attention",
+      }),
+    );
+    expect(statement.primaryText).toContain(`${long.slice(0, 120)}…, tinycloud.kv/archive, tinycloud.kv/rotate`);
+  });
+});
+
+// Re-review of TC-2216: composed encryption rows keep key actions and the owner.
+describe("composed encryption rows", () => {
+  it("block and unblock on one resource name both", () => {
+    const statement = buildStatement(
+      makeGrant({
+        service: "tinycloud.encryption",
+        path: "",
+        abilities: ["tinycloud.encryption/key.block", "tinycloud.encryption/key.unblock"],
+        family: "encryption-key",
+        severity: "attention",
+      }),
+    );
+    expect(statement.primaryText).toBe("Block and unblock your keys");
+  });
+
+  it("another user's decrypt and revoke keep another user's", () => {
+    const statement = buildStatement(
+      makeGrant({
+        service: "tinycloud.encryption",
+        path: "",
+        abilities: ["tinycloud.encryption/decrypt", "tinycloud.encryption/network.revoke"],
+        family: "encryption-decrypt",
+        severity: "sensitive",
+        ownedBySelf: false,
+      }),
+    );
+    expect(statement.primaryText).toBe("Decrypt and stop another user's decryption");
   });
 });

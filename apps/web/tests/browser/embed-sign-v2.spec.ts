@@ -1,11 +1,12 @@
 import { test, expect } from '@playwright/test';
+import { HOST, ORIGIN } from './e2e-port';
 
 const address = '0x1111111111111111111111111111111111111111';
 const key = {
   id: 'selected-key', address, publicKey: '0x02', keyIndex: 0,
   label: 'Selected', keyType: 'MANAGED', createdAt: '2026-01-01T00:00:00Z',
 };
-const message = `localhost:5779 wants you to sign in with your Ethereum account:\n${address}\n\nSign in\n\nURI: http://localhost:5779\nVersion: 1\nChain ID: 1\nNonce: 12345678\nIssued At: 2026-10-15T00:00:00.000Z`;
+const message = `${HOST} wants you to sign in with your Ethereum account:\n${address}\n\nSign in\n\nURI: ${ORIGIN}\nVersion: 1\nChain ID: 1\nNonce: 12345678\nIssued At: 2026-10-15T00:00:00.000Z`;
 
 // Exercise the real embed route in a frame, not a mocked approval button.
 for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {

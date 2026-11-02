@@ -7,7 +7,8 @@
   import { passkeysSupportedFromParams, withPasskeysFlag } from '$lib/passkey-support';
   import PopupSigningAdapter from '$lib/components/signing/popup-signing-adapter.svelte';
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
-  import { validatePreviewSelection } from '$lib/preview-review';
+  import { requestedActionIds, selectionFromPreview } from '$lib/widget-selection';
+  import { expiryAt, siweExpiration } from '$lib/approval-expiry';
   import {
     parseCapabilityReview,
     parseSiweChainId,
@@ -18,6 +19,8 @@
     checkSiweOrigin,
   } from '@openkey/capability-review';
   import SiweOriginRefusal from '$lib/components/signing/siwe-origin-refusal.svelte';
+  import ServerReplyRefusal from '$lib/components/signing/server-reply-refusal.svelte';
+  import { hasSignResult, hasText, readReply, ServerReplyError, SERVER_REPLY_ERROR } from '$lib/server-reply';
   import {
     createWidgetTransport,
     type WidgetRequest,
@@ -41,6 +44,8 @@
   let loading = $state(true);
   let signing = $state(false);
   let error = $state('');
+  // The HTTP status of a reply that could not be read; shown in Advanced details only.
+  let replyFailureStatus = $state<number | null>(null);
   let sessionChecked = $state(false);
   // When a versioned request comes in through the shared transport, we
   // remember the correlated requestId so the response echoes it. Legacy
@@ -67,6 +72,8 @@
   // (selection, signedMessage) pair. /authorize-sign requires this token.
   let previewApprovalToken = $state<string | null>(null);
   let previewing = $state(false);
+  // TC-2272: how long from approval the user chose; null keeps the app's own expiry.
+  let expiryChoiceMs = $state<number | null>(null);
   let previewApproved = $state(false);
   // Sol MAJOR-3 (continuation): when the SDK passes `externalSign: true`
   // on the sign request, the widget MUST NOT call /authorize-sign at
@@ -75,6 +82,7 @@
   // wallet on the previewed bytes and complete /authorize-sign with an
   // externalSignature.
   let externalSignMode = $state(false);
+  let expiryChangeable = $state(false);
 
   // Shared capability-review state — the SigningApproval component uses this
   // when the request looks like a TinyCloud SIWE-ReCap. Legacy plain
@@ -216,6 +224,9 @@
     // sign request. The widget renders the SAME SigningApproval UI in
     // both modes; only the "approve" behaviour differs.
     externalSignMode = data.externalSign === true;
+    // TC-2272: only an SDK that accepts a different signed expiry sends this; without it the
+    // approval shows no expiry control and the app's own expiry is signed.
+    expiryChangeable = data.expiryChangeable === true;
     // Capture the caller-supplied presentation envelope. It has already
     // been validated + size-bounded by the widget transport; here we only
     // stash the resulting object so the review model can render it. Trust
@@ -510,9 +521,12 @@
       // Keep the final decision in this same shared model. Only the raw
       // bytes change after preview; categorized grants and edit/reset stay
       // visible through the approval that actually signs them.
+      // Before the preview the access lines show the chosen time (from now); after it, the sealed bytes' own.
       reviewModel = previewSignedMessage
-        ? { ...nextReviewModel, rawMessage: previewSignedMessage }
-        : nextReviewModel;
+        ? { ...nextReviewModel, rawMessage: previewSignedMessage, expiry: siweExpiration(previewSignedMessage) ?? nextReviewModel.expiry }
+        : expiryChoiceMs !== null
+          ? { ...nextReviewModel, expiry: expiryAt(expiryChoiceMs) }
+          : nextReviewModel;
       if (reviewSourceMessage !== message) {
         reviewSelection = defaultSelection(reviewModel);
         reviewSourceMessage = message;
@@ -547,16 +561,7 @@
 
   // Convert the current review selection to canonical action IDs.
   function currentSelectedActionIds(): string[] {
-    if (!reviewModel) return [];
-    const out: string[] = [];
-    for (const grant of reviewModel.permissions) {
-      for (const action of grant.actions) {
-        if (reviewSelection.has(action.id)) {
-          out.push(action.id);
-        }
-      }
-    }
-    return out;
+    return requestedActionIds(reviewModel, reviewSelection);
   }
 
   // Sol CRITICAL-1: preview step. Issues (or re-uses) an authorization
@@ -599,14 +604,16 @@
               presentation: requestPresentation ?? undefined,
               reportedOrigin: reportedOriginForPrepare,
               requestOrigin: origin === '*' ? undefined : origin,
+              // Bound into the authorization context: the server refuses a changed expiry unless the app opted in.
+              ...(expiryChangeable ? { expiryChangeable: true } : {}),
             }),
           },
         );
-        if (!prepareRes.ok) {
-          const errBody = await prepareRes.json().catch(() => ({ error: 'authorize-sign-prepare failed' }));
-          throw new Error(errBody.error || `HTTP ${prepareRes.status}`);
-        }
-        const prepareResult = await prepareRes.json();
+        const prepareResult = await readReply(
+          prepareRes,
+          (body) => hasText(body, 'authorizationContextToken'),
+          'authorize-sign-prepare failed',
+        );
         token = typeof prepareResult.authorizationContextToken === 'string'
           ? prepareResult.authorizationContextToken
           : null;
@@ -699,7 +706,7 @@
           };
         }
       }
-      const requestedActionIds = currentSelectedActionIds();
+      const selectedIds = currentSelectedActionIds();
       const previewRes = await fetch(
         `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign-preview`,
         {
@@ -708,15 +715,17 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             authorizationContextToken: token,
-            selectedActionIds: requestedActionIds,
+            selectedActionIds: selectedIds,
+            // TC-2272: only when the user changed it; the app's own expiry stays the default.
+            ...(expiryChoiceMs === null ? {} : { expirationTime: expiryAt(expiryChoiceMs) }),
           }),
         },
       );
-      if (!previewRes.ok) {
-        const errBody = await previewRes.json().catch(() => ({ error: 'authorize-sign-preview failed' }));
-        throw new Error(errBody.error || `HTTP ${previewRes.status}`);
-      }
-      const previewResult = await previewRes.json();
+      const previewResult = await readReply(
+        previewRes,
+        (body) => hasText(body, 'signedMessage', 'previewApprovalToken'),
+        'authorize-sign-preview failed',
+      );
       if (typeof previewResult.signedMessage !== 'string' || !previewResult.signedMessage) {
         throw new Error('authorize-sign-preview did not return signedMessage');
       }
@@ -725,11 +734,12 @@
       if (typeof previewResult.previewApprovalToken !== 'string' || !previewResult.previewApprovalToken) {
         throw new Error('authorize-sign-preview did not return a previewApprovalToken — server is out of date');
       }
-      reviewSelection = validatePreviewSelection(previewResult, requestedActionIds);
+      reviewSelection = selectionFromPreview(previewResult, selectedIds);
       previewSignedMessage = previewResult.signedMessage;
       previewApprovalToken = previewResult.previewApprovalToken;
     } catch (e: any) {
-      error = e.message || 'Preview failed';
+      if (e instanceof ServerReplyError) unreadableReply(e.status);
+      else error = e.message || 'Preview failed';
       // On failure, invalidate any stored token so the next attempt gets
       // a fresh one — the server may have expired the token or rejected
       // the immutable-fields digest.
@@ -798,11 +808,11 @@
             }),
           },
         );
-        if (!authorizeRes.ok) {
-          const errBody = await authorizeRes.json().catch(() => ({ error: 'authorize-sign failed' }));
-          throw new Error(errBody.error || `HTTP ${authorizeRes.status}`);
-        }
-        const authorizeResult = await authorizeRes.json();
+        const authorizeResult = await readReply(
+          authorizeRes,
+          hasSignResult,
+          'authorize-sign failed',
+        );
         // Defence in depth: the server must have signed the exact bytes
         // the user approved. If /authorize-sign returned different bytes
         // than the preview showed, refuse.
@@ -849,7 +859,8 @@
       });
       sendClose();
     } catch (e: any) {
-      error = e.message || 'Signing failed';
+      if (e instanceof ServerReplyError) unreadableReply(e.status);
+      else error = e.message || 'Signing failed';
     } finally {
       signing = false;
     }
@@ -888,6 +899,15 @@
       error: { code: 'UNKNOWN', message: `SIWE_ORIGIN_REFUSED: ${siweRefusal.code}` },
     });
   });
+
+  // A reply that cannot be read leaves nothing approved: show the refusal and
+  // tell the host once, without any reply content.
+  function unreadableReply(status: number) {
+    replyFailureStatus = status;
+    error = '';
+    console.error(`OpenKey: unreadable server reply (HTTP ${status})`);
+    sendResponse({ type: 'openkey:sign:response', success: false, error: SERVER_REPLY_ERROR });
+  }
 
   function closeRefused() {
     sendClose();
@@ -996,6 +1016,8 @@
 
   {#if siweRefusal}
     <SiweOriginRefusal reason={siweRefusal.message} code={siweRefusal.code} onclose={closeRefused} />
+  {:else if replyFailureStatus !== null}
+    <ServerReplyRefusal status={replyFailureStatus} onclose={closeRefused} />
   {:else if !$session.data}
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
       <p class="mb-4">Sign in to sign messages</p>
@@ -1030,6 +1052,7 @@
       initialSelection={reviewSelection}
       transport={{
         approving: signing || previewing,
+        host: messageHost,
         error,
         canUseAuthorizeSign: canUseAuthorizeSignFn(),
         previewReady: Boolean(previewToken && previewSignedMessage && previewApprovalToken),
@@ -1041,6 +1064,15 @@
           // (e.g. sendResponse) still see the up-to-date selection.
           reviewSelection = next;
         },
+        expiry: canUseAuthorizeSignFn() && expiryChangeable
+          ? {
+              chosenMs: expiryChoiceMs,
+              onChange: (ms) => {
+                expiryChoiceMs = ms;
+                invalidatePreviewForSelectionEdit();
+              },
+            }
+          : undefined,
         invalidatePreview: invalidatePreviewForSelectionEdit,
       }}
     />

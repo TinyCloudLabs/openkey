@@ -182,6 +182,13 @@ export interface TinyCloudAuthorizationRequestV1 {
   host?: string;
   /** Optional presentation envelope (name, reason, manifest). */
   presentation?: CapabilityPresentationEnvelopeV1;
+  /**
+   * Set only when the caller accepts a signed message whose `Expiration Time`
+   * differs from `siwe` (shorter or longer): OpenKey then shows "Approval
+   * expires … (Change)" and signs the time the user picks. Read the signed
+   * expiry from the returned `signedMessage`. Forwarded only when literally `true`.
+   */
+  expiryChangeable?: boolean;
 }
 
 export interface TinyCloudAuthorizationResultV1 {
@@ -213,7 +220,11 @@ export interface CapabilityPresentationEnvelopeV1 {
    * the same reason string.
    */
   reason?: string;
-  /** Manifest ID + digest, when the app publishes a signed manifest. */
+  /**
+   * Manifest ID + digest, when the app publishes /.well-known/openkey-manifest.json.
+   * The manifest is not signed: OpenKey fetches it from the app's origin and
+   * compares its digest. Optional for app keys; see docs/app-keys-for-builders.md.
+   */
   manifestId?: string;
   manifestDigest?: string;
   /**
@@ -239,7 +250,7 @@ type MessageType =
   | { type: 'openkey:auth:request'; appName: string; requestId?: string; protocolVersion?: number }
   | { type: 'openkey:auth:response'; success: true; address: string; keyId: string; keyType?: 'MANAGED' | 'EXTERNAL'; requestId?: string; protocolVersion?: number }
   | { type: 'openkey:auth:response'; success: false; error: OpenKeyError; requestId?: string; protocolVersion?: number }
-  | { type: 'openkey:sign:request'; message: string; keyId?: string; requestId?: string; protocolVersion?: number; authorizationProtocolVersion?: 1 }
+  | { type: 'openkey:sign:request'; message: string; keyId?: string; requestId?: string; protocolVersion?: number; authorizationProtocolVersion?: 1; expiryChangeable?: true }
   | { type: 'openkey:sign:response'; success: true; signature: string; address: string; requestId?: string; protocolVersion?: number }
   | {
       type: 'openkey:sign:response';
@@ -308,6 +319,13 @@ type MessageType =
 type WidgetResponseMessage = Extract<MessageType, { success: boolean }>;
 
 const DEFAULT_HOST = 'https://openkey.so';
+/** A popup window opened in the caller's gesture, before the flow knows its URL. */
+interface ReservedPopup {
+  window: Window;
+  /** Set once `openPopup` took the window over. */
+  used: boolean;
+}
+
 const POPUP_WIDTH = 400;
 const POPUP_HEIGHT = 600;
 const DEFAULT_TIMEOUT = 5 * 60 * 1000; // 5 minutes
@@ -1075,6 +1093,30 @@ export class OpenKey {
     request: TinyCloudAuthorizationRequestV1,
     opts?: { mode?: OpenKeyMode },
   ): Promise<TinyCloudAuthorizationResultV1> {
+    // A popup opens only inside the gesture that asked for it, and the awaits
+    // below (the key list, the routing) can outlast it. In popup mode the window
+    // is opened here, in the caller's own tick, and navigated to the widget once
+    // the route is known. A request that fails the checks below opens nothing.
+    const reserved =
+      request?.protocolVersion === 1 && typeof request.siwe === 'string' && request.siwe !== '' &&
+      this.resolveMode(opts?.mode) === 'popup'
+        ? this.reservePopup('sign')
+        : null;
+    try {
+      return await this.authorizeTinyCloudFlow(request, opts, reserved);
+    } finally {
+      // Closed unless the flow took the window over (the widget closes its own).
+      if (reserved && !reserved.used) {
+        try { reserved.window.close(); } catch { /* the window is already gone */ }
+      }
+    }
+  }
+
+  private async authorizeTinyCloudFlow(
+    request: TinyCloudAuthorizationRequestV1,
+    opts: { mode?: OpenKeyMode } | undefined,
+    reserved: ReservedPopup | null,
+  ): Promise<TinyCloudAuthorizationResultV1> {
     if (request.protocolVersion !== 1) {
       throw new Error(
         `authorizeTinyCloud only supports protocolVersion 1; got ${request.protocolVersion}`,
@@ -1179,8 +1221,11 @@ export class OpenKey {
         // validates and size-bounds it before use and NEVER treats it as
         // verified unless the server actually origin-binds a manifest.
         presentation: request.presentation,
+        // TC-2272: only an SDK that accepts a different signed expiry opts in; OpenKey then lets the user change it.
+        ...(request.expiryChangeable === true ? { expiryChangeable: true as const } : {}),
       },
       opts?.mode,
+      reserved,
     );
     // Sol CRITICAL-1: NO silent fallback to `request.siwe`. If the widget
     // returned an authorization response without `signedMessage`, that is
@@ -1272,6 +1317,7 @@ export class OpenKey {
         // bounded at the transport, never treated as verified without
         // server-side origin-binding.
         presentation: request.presentation,
+        ...(request.expiryChangeable === true ? { expiryChangeable: true as const } : {}),
         // Sol MAJOR-3 (continuation): tell the widget to hand us back
         // the previewApproval instead of asking OpenKey to sign
         // server-side with a managed key. The widget will still render
@@ -1724,7 +1770,7 @@ export class OpenKey {
     return false;
   }
 
-  private async openFlow<T>(action: string, message: object, modeOverride?: OpenKeyMode): Promise<T> {
+  private async openFlow<T>(action: string, message: object, modeOverride?: OpenKeyMode, reserved?: ReservedPopup | null): Promise<T> {
     const mode = this.resolveMode(modeOverride);
     const origin = encodeURIComponent(window.location.origin);
     const eoaFlag = action === 'connect' && this.hasDetectedEoa() ? '&hasEoa=true' : '';
@@ -1732,7 +1778,7 @@ export class OpenKey {
 
     if (mode === 'popup') {
       const url = `${this.host}/widget/${action}?origin=${origin}${eoaFlag}${passkeysFlag}`;
-      return new Promise((resolve, reject) => this.openPopup(action, url, message, resolve, reject));
+      return new Promise((resolve, reject) => this.openPopup(action, url, message, resolve, reject, reserved ?? null));
     }
 
     if (mode === 'redirect') {
@@ -2021,22 +2067,53 @@ export class OpenKey {
     });
   }
 
+  /**
+   * Opens the popup window of a flow in the current tick, blank. `openPopup`
+   * navigates it to the widget later. `null` when the browser did not give a
+   * usable window: the flow then opens its own, as it always did.
+   */
+  private reservePopup(action: string): ReservedPopup | null {
+    const left = window.screenX + (window.outerWidth - POPUP_WIDTH) / 2;
+    const top = window.screenY + (window.outerHeight - POPUP_HEIGHT) / 2;
+    const win = window.open(
+      'about:blank',
+      `openkey-${action}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      `width=${POPUP_WIDTH},height=${POPUP_HEIGHT},left=${left},top=${top},popup=true`,
+    );
+    return isUsablePopup(win) ? { window: win, used: false } : null;
+  }
+
   private openPopup<T>(
     action: string,
     url: string,
     message: object,
     resolve: (value: T) => void,
-    reject: (error: OpenKeyError) => void
+    reject: (error: OpenKeyError) => void,
+    reserved: ReservedPopup | null = null,
   ) {
     // Calculate popup position
     const left = window.screenX + (window.outerWidth - POPUP_WIDTH) / 2;
     const top = window.screenY + (window.outerHeight - POPUP_HEIGHT) / 2;
 
-    const popup = window.open(
-      url,
-      `openkey-${action}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-      `width=${POPUP_WIDTH},height=${POPUP_HEIGHT},left=${left},top=${top},popup=true`
-    );
+    let popup: Window | null;
+    if (reserved && !reserved.window.closed) {
+      // The window opened in the caller's gesture: send it to the widget. It
+      // counts as taken over once that navigation has succeeded; a failure
+      // leaves it to the caller, which closes it.
+      try {
+        reserved.window.location.href = url;
+        reserved.used = true;
+        popup = reserved.window;
+      } catch {
+        popup = null;
+      }
+    } else {
+      popup = window.open(
+        url,
+        `openkey-${action}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+        `width=${POPUP_WIDTH},height=${POPUP_HEIGHT},left=${left},top=${top},popup=true`
+      );
+    }
 
     if (!isUsablePopup(popup)) {
       this.popup = null;

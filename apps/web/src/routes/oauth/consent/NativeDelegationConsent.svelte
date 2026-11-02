@@ -4,7 +4,7 @@
   import NativeShell from '$lib/components/auth/native-shell.svelte';
   import { nativeAccessSummary } from '$lib/native-access';
   import {
-    parseCapabilityReview, defaultSelection, buildRenderPlan, grantHeading,
+    parseCapabilityReview, defaultSelection, buildRenderPlan, grantHeading, renderSiweLiteral,
     type CapabilityAction, type CapabilityGrant, type CapabilityReviewModel,
   } from '@openkey/capability-review';
   import { reviewSelectionToActionKeys, preparedMatchesSelection, type ServerPermissionOption } from '$lib/delegate-review-selection';
@@ -225,7 +225,7 @@
 
         <details class="raw">
           <summary>Exact message being signed</summary>
-          <pre>{model.rawMessage}</pre>
+          <pre>{renderSiweLiteral(model.rawMessage)}</pre>
         </details>
       </div>
     </details>
@@ -415,8 +415,7 @@
     padding: 12px;
     max-height: 240px;
     overflow: auto;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
+    white-space: pre;
     border-radius: 12px;
     background: var(--nb-field);
     color: var(--nb-muted);

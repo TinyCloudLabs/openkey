@@ -81,7 +81,8 @@ the page limits what it does with one:
   HTTPS origin plus exact path, with any query
   (`REGISTERED_CALLBACK_ENDPOINTS` in
   `apps/web/src/lib/delegate-link-policy.ts`, currently
-  `https://mcp.tinycloud.xyz/connect/callback`, plus
+  `https://mcp.tinycloud.xyz/connect/callback` and
+  `https://mcp.tinycloud.xyz/chatgpt/connect/callback`, plus
   `VITE_DELEGATE_CALLBACK_URLS` for other deployments). Any other callback
   refuses the request before a key is prepared. The page POSTs with
   `redirect: 'error'`, so a redirect cannot forward the delegation. Without a
@@ -287,6 +288,28 @@ any previous profile key. A later approval of that old fragment has no
 held key and cannot pass the CLI state check. Wallet refusal before a
 finalize request leaves page cancellation available; after finalize
 might have succeeded, the page does not re-sign or retrieve a result.
+
+### Owner revocation handoff
+
+The same `#tv2` delivery envelope accepts an `owner-revocation` request with
+exactly `kind`, `ownerDid`, `cid`, `nonce`, and `expiresAt`. The CLI supplies a
+fresh nonce and an RFC3339 expiry. OpenKey validates the CID, nonce, owner DID,
+and request fields; an expired request is refused. At claim time, the expiry
+is capped at ten minutes. The confirmation screen shows the owner address,
+short CID, effective expiry, and "This cannot be undone."
+
+`POST /api/delegate/owner-revocation/prepare` binds the selected signing key
+to the signed-in owner address and chain. OpenKey constructs the SIWE with
+the page host, `ucan:<cid>` URI, supplied nonce, actual issuance time, and
+the capped expiry. There is no statement, Not Before, or ReCap. The screen
+says "Revoke this permission" and signs those exact bytes with the owner's
+key through `/api/delegate/owner-revocation/sign`.
+
+The callback and paste code carry the same one-use completion envelope:
+`{transportVersion:2,state:<original state>,result:{siwe,signature}}`.
+The `siwe` field is the exact signed text; `signature` is its EIP-191 hex
+signature. The handoff's existing cancellation, timeout, and callback
+acknowledgement rules apply.
 
 ## Request
 

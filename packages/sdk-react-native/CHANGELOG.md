@@ -1,5 +1,11 @@
 # @openkey/sdk-react-native
 
+## 0.12.2
+
+### Patch Changes
+
+- @openkey/core@0.12.2
+
 ## 0.12.1
 
 ### Patch Changes

@@ -93,6 +93,29 @@ model DeviceAuthorization {
   @@map("device_authorization")
 }
 
+// Immutable signed CLI request and encrypted result. Fetch never consumes it;
+// only the requester's durable ACK intent clears ciphertext.
+model ApprovalRequest {
+  id                    String    @id
+  bodyCid               String
+  issuer                String
+  request               Json
+  expiresAt             DateTime
+  createdAt             DateTime  @default(now())
+  resultRef             String?   @unique
+  approvedByUserId      String?
+  ownerDid              String?
+  encryptedResult       String?
+  delegationExpiresAt   DateTime?
+  resultExpiresAt       DateTime?
+  ackId                 String?
+  acknowledgedAt        DateTime?
+
+  @@index([expiresAt])
+  @@index([resultExpiresAt])
+  @@map("approval_request")
+}
+
 // Short-lived, ticket-only prepared SIWE handoff. No signed result is persisted.
 model PreparedHandoff {
   ticketHash       String   @id
@@ -817,4 +840,17 @@ model AppSignInDay {
   @@id([userId, origin, day])
   @@index([day])
   @@map("app_sign_in_day")
+}
+
+// A JWT access token revoked at /oauth2/revoke, kept until the token's own
+// expiry. The key is the SHA-256 of the token's signed part (header.payload),
+// base64url; the token itself is never stored.
+model RevokedAccessToken {
+  tokenHash String   @id @map("token_hash")
+  clientId  String   @map("client_id")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([expiresAt])
+  @@map("revoked_access_token")
 }

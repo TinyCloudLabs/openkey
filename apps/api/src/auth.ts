@@ -45,6 +45,8 @@ import { hasFreshEmailStepUp } from './services/email-otp-step-up';
 import { googleSocialConfirmation } from './services/google-social-confirmation';
 import { assertCurrentGoogleLink, googleLinkStatePlugin } from './services/google-link-state';
 import { betterAuthLog, log, logError } from './log';
+import { capSessionRefresh } from './services/session-cap';
+import { SESSION_EXPIRES_IN_SECONDS, SESSION_UPDATE_AGE_SECONDS } from './services/session-lifetime';
 
 export const prisma: PrismaClient = createPrismaClient();
 const tee = createTeeClient();
@@ -235,8 +237,8 @@ export const auth = betterAuth({
 
   // Session configuration
   session: {
-    expiresIn: 60 * 60 * 24 * 7, // 7 days
-    updateAge: 60 * 60 * 24, // Update session every 24 hours
+    expiresIn: SESSION_EXPIRES_IN_SECONDS, // 7 days
+    updateAge: SESSION_UPDATE_AGE_SECONDS, // Update session every 24 hours
     storeSessionInDatabase: true, // Required for OAuth provider
   },
 
@@ -450,6 +452,12 @@ export const auth = betterAuth({
   // User.autoSignEnabled is @default(true) in Prisma, so every new account
   // starts with bootstrap Auto-Sign enabled before this provisioning hook runs.
   databaseHooks: {
+    // Web sessions end at most WEB_SESSION_ABSOLUTE_CAP_SECONDS after sign-in (services/session-cap.ts).
+    session: {
+      update: {
+        before: capSessionRefresh,
+      },
+    },
     user: {
       create: {
         before: async (user) => {

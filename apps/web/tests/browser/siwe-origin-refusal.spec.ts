@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { HOST, ORIGIN } from './e2e-port';
 
 // TC-1486: the real sign routes, in a frame, must refuse a SIWE that does not
 // name the requesting origin — with no approve control and no /sign call.
@@ -73,7 +74,7 @@ for (const surface of [
     const apiCalls = await openFrame(page, surface.route, surface.query);
     await send(page, {
       type: 'openkey:sign:request', requestId: 'phase-1', protocolVersion: surface.proto, keyId: 'selected-key',
-      message: siwe('localhost:5779', 'https://internal.tinycloud.xyz'),
+      message: siwe(HOST, 'https://internal.tinycloud.xyz'),
     });
     await expect(page.frameLocator('#sign').getByTestId('siwe-origin-refusal')).toHaveAttribute('data-refusal-code', 'uri-mismatch');
     expect(apiCalls.filter((url) => url.endsWith('/sign') || url.includes('authorize-sign'))).toEqual([]);
@@ -105,7 +106,7 @@ test('a SIWE on the unattributed legacy path is refused', async ({ page }) => {
   await expect.poll(() => page.evaluate(() => (window as Window & { ready?: boolean }).ready)).toBe(true);
   await page.evaluate((message) => {
     document.querySelector<HTMLIFrameElement>('#sign')?.contentWindow?.postMessage({ type: 'openkey:sign:request', keyId: 'selected-key', message }, '*');
-  }, siwe('localhost:5779', 'http://localhost:5779'));
+  }, siwe(HOST, ORIGIN));
   await expect(page.frameLocator('#sign').getByTestId('siwe-origin-refusal')).toHaveAttribute('data-refusal-code', 'unattributed-origin');
   expect(apiCalls.filter((url) => url.endsWith('/sign'))).toEqual([]);
 });

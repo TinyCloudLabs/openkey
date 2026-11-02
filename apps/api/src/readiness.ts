@@ -1,6 +1,7 @@
 import type { Context } from 'hono';
 import { checkRuntimeSchemaContract, getPrisma, type SchemaContractDatabase } from '@openkey/db';
 import { resolveTeeMode } from '@openkey/tee';
+import type { BuildInfo } from './build-info';
 
 export type ReadinessCheck = () => Promise<{ ready: boolean }>;
 
@@ -8,7 +9,10 @@ export async function checkApiReadiness(database: SchemaContractDatabase = getPr
   return checkRuntimeSchemaContract(database);
 }
 
-export function readinessHandler(check: ReadinessCheck = checkApiReadiness) {
+export function readinessHandler(
+  check: ReadinessCheck = checkApiReadiness,
+  buildInfo?: () => BuildInfo,
+) {
   return async (c: Context) => {
     const result = await check();
     if (!result.ready) {
@@ -18,6 +22,6 @@ export function readinessHandler(check: ReadinessCheck = checkApiReadiness) {
     }
     // TEE_MODE selects a client, not the guest OS. Image identity and hardening
     // cannot be inferred without independently trusted runtime metadata.
-    return c.json({ status: 'ok', tee_mode: resolveTeeMode(), os_image: 'unknown' });
+    return c.json({ status: 'ok', tee_mode: resolveTeeMode(), os_image: 'unknown', ...buildInfo?.() });
   };
 }

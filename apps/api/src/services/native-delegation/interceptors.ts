@@ -1,8 +1,10 @@
 import type { Context, MiddlewareHandler } from 'hono';
 import type { PrismaClient } from '@openkey/db';
-import { ADMIN_MANAGED_SCOPES, TINYCLOUD_DELEGATION_SCOPE } from '../../oauth-config';
+import { ADMIN_MANAGED_SCOPES, TINYCLOUD_DELEGATION_SCOPE, TINYCLOUD_MCP_SCOPE } from '../../oauth-config';
 import { isNativeDelegationClient } from './policy';
 import { NATIVE_DELEGATION_ENDPOINT_PATHS } from './public-protocol';
+import { mcpRefreshRefusal } from '../mcp-refresh-session';
+import { mcpAuthorizeNeedsFreshSignIn, withLoginPrompt } from '../mcp-authorize-freshness';
 import { storedOpaqueAccessToken, storedRefreshToken, storedToken, type ProviderTokenOptions } from './provider-tokens';
 import { authoritativeQuery, matchesAuthoritativeQuery } from './par';
 import { nativeUserRetryAfter } from './user-rate-limit';
@@ -39,9 +41,9 @@ const AUTH_BASE_PATH = '/api/auth';
 const FORM_MEDIA_TYPE = 'application/x-www-form-urlencoded';
 const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
-export type ProviderInterceptorDatabase = Pick<PrismaClient, 'oauthClient' | 'oauthRefreshToken' | 'oauthAccessToken' | 'tinyCloudNativeGrant' | 'tinyCloudNativeRequest'>;
+export type ProviderInterceptorDatabase = Pick<PrismaClient, 'oauthClient' | 'oauthRefreshToken' | 'oauthAccessToken' | 'oauthConsent' | 'tinyCloudNativeGrant' | 'tinyCloudNativeRequest' | 'session' | '$queryRaw'>;
 
-type Refusal = { status: 400 | 401 | 429; error: string; description: string; retryAfter?: number };
+type Refusal = { status: 400 | 401 | 429 | 503; error: string; description: string; retryAfter?: number };
 /**
  * Send this request to the provider instead, then answer RFC 7009's 200 if
  * it reports the token unknown.
@@ -52,7 +54,7 @@ const JSON_MEDIA_TYPE = /^application\/([a-z0-9.+-]*\+)?json/i;
 type ParsedBody = { params: URLSearchParams } | { refusal: Refusal } | { passThrough: true };
 
 /** The route better-call dispatches on: everything after the first base path. */
-function providerPath(url: string): string | null {
+export function providerPath(url: string): string | null {
   const pathname = new URL(url).pathname;
   const index = pathname.indexOf(AUTH_BASE_PATH);
   if (index < 0) return null;
@@ -111,7 +113,7 @@ function mentionsAdminManagedScope(scope: unknown): boolean {
  * the exact form type is parsed here. Anything else the provider would accept
  * is refused; anything it rejects (415, missing body) passes through.
  */
-async function parseProviderForm(request: Request): Promise<ParsedBody> {
+export async function parseProviderForm(request: Request): Promise<ParsedBody> {
   if (!request.body) return { passThrough: true };
   const mediaType = (request.headers.get('content-type') ?? '').toLowerCase().split(';')[0]!.trim();
   if (mediaType !== FORM_MEDIA_TYPE) {
@@ -132,7 +134,7 @@ async function parseProviderForm(request: Request): Promise<ParsedBody> {
  * replaces the body credentials. Only canonical base64 is accepted so this
  * decoder and the provider's always agree on the client_id.
  */
-function requestClients(request: Request, params: URLSearchParams): { effective: string | null; candidates: string[] } | Refusal {
+export function requestClients(request: Request, params: URLSearchParams): { effective: string | null; candidates: string[] } | Refusal {
   const authorization = request.headers.get('authorization');
   const bodyClient = params.get('client_id');
   if (!authorization?.startsWith('Basic ')) {
@@ -148,6 +150,18 @@ function requestClients(request: Request, params: URLSearchParams): { effective:
   return { effective: basicClient, candidates: [...new Set([basicClient, ...(bodyClient ? [bodyClient] : [])])] };
 }
 
+/**
+ * The client secret as the provider reads it: a Basic header's secret (the text
+ * between the first and second colon, as the provider splits it) replaces the
+ * body's `client_secret`. Only call this after `requestClients` accepted the header.
+ */
+function requestSecret(request: Request, params: URLSearchParams): string | null {
+  const authorization = request.headers.get('authorization');
+  if (!authorization?.startsWith('Basic ')) return params.get('client_secret');
+  const decoded = Buffer.from(authorization.slice('Basic '.length), 'base64').toString('utf8');
+  return decoded.split(':', 2)[1] ?? null;
+}
+
 export interface ProviderInterceptorOptions {
   database: ProviderInterceptorDatabase;
   /** The provider plugin's configured options; see `providerTokenOptions`. */
@@ -156,12 +170,17 @@ export interface ProviderInterceptorOptions {
   provider: (request: Request) => Response | Promise<Response>;
   getSessionUserId: (headers: Headers) => Promise<string | null>;
   /**
+   * When the signed-in session was created, read without renewing it, or null
+   * when there is none. Without it an MCP authorize request is not checked for age.
+   */
+  getSessionCreatedAt?: (headers: Headers) => Promise<Date | null>;
+  /**
    * better-auth's verification storage, where the provider keeps
    * authorization codes: `internalAdapter.findVerificationValue` and
    * `deleteVerificationByIdentifier`, called with the stored code value.
    */
   authorizationCodes: {
-    find: (identifier: string) => Promise<{ value: string } | null>;
+    find: (identifier: string) => Promise<{ value: string; createdAt?: Date | string } | null>;
     delete: (identifier: string) => Promise<void>;
   };
 }
@@ -169,7 +188,7 @@ export interface ProviderInterceptorOptions {
 type RefreshTokenMatch = { clientId: string; native: boolean };
 type AccessTokenMatch = { clientId: string };
 
-export function createProviderInterceptors({ database, tokens, provider, getSessionUserId, authorizationCodes }: ProviderInterceptorOptions): MiddlewareHandler {
+export function createProviderInterceptors({ database, tokens, provider, getSessionUserId, getSessionCreatedAt, authorizationCodes }: ProviderInterceptorOptions): MiddlewareHandler {
   async function anyDelegationClient(clientIds: string[]): Promise<boolean> {
     if (clientIds.length === 0) return false;
     const clients = await database.oauthClient.findMany({
@@ -281,7 +300,87 @@ export function createProviderInterceptors({ database, tokens, provider, getSess
     if (!params.has('scope') && !params.has('request_uri') && clientId && await anyDelegationClient([clientId])) {
       return invalid();
     }
-    return null;
+    return await requireFreshSignInForMcp(c, params, clientId);
+  }
+
+  /**
+   * A request for the MCP scope on a sign-in that is too old to approve a new
+   * connection is sent through the provider's own login prompt: the same request
+   * with `login` added to `prompt`. The provider then redirects to the login page
+   * with a signed copy of it, and resumes it with `login` removed once the user has
+   * signed in, on the new session. With `prompt=none` the client is told
+   * `login_required` instead, by the provider (see below). The scope is the
+   * request's, or the client's own when the request names none (the provider's
+   * default). Pushed requests (`request_uri`) carry native scopes and are left alone.
+   * The sign-in's age is read without renewing it.
+   */
+  async function requireFreshSignInForMcp(c: Context, params: URLSearchParams, clientId: string | null): Promise<Decision> {
+    if (!getSessionCreatedAt || params.has('request_uri') || !clientId) return null;
+    let scopes: string[] | undefined = params.has('scope') ? scopeList(params.get('scope')) : undefined;
+    if (scopes === undefined) {
+      scopes = (await database.oauthClient.findUnique({ where: { clientId }, select: { scopes: true } }))?.scopes;
+    }
+    if (!scopes?.includes(TINYCLOUD_MCP_SCOPE)) return null;
+    const createdAt = await getSessionCreatedAt(c.req.raw.headers);
+    if (!createdAt || !mcpAuthorizeNeedsFreshSignIn(createdAt, new Date())) return null;
+    if (params.get('prompt') === 'none') {
+      // The provider cannot combine `none` with `login`. The same request without the sign-in's
+      // credentials is what it gets when nobody is signed in, and the provider answers that itself:
+      // after checking the client and the registered redirect URI it redirects to the request's
+      // `redirect_uri` with `error=login_required` (and `state`, `iss`) in its own format, or
+      // answers its own error page when the URI is not registered. No code or consent is created.
+      const headers = new Headers(c.req.raw.headers);
+      headers.delete('cookie');
+      headers.delete('authorization');
+      // Built from the URL: a Request made from another Request can keep its credentials.
+      return { replacement: new Request(c.req.raw.url, { method: c.req.raw.method, headers }) };
+    }
+    const prompt = withLoginPrompt(params.get('prompt'));
+    // Null: the provider cannot combine this prompt with login (see `withLoginPrompt`).
+    // Unchanged: the request already asks for login, which the provider honors.
+    if (prompt === null || prompt === params.get('prompt')) return null;
+    const url = new URL(c.req.url);
+    url.searchParams.set('prompt', prompt);
+    return { replacement: new Request(url, c.req.raw) };
+  }
+
+  /**
+   * The backstop for the sign-in age rule. An authorize request can still be resumed
+   * on the sign-in the browser holds without passing the guard above (the provider's
+   * own after-hooks resume it when a user is updated or created, on whatever session
+   * the cookie names), so the code that comes out is checked when it is exchanged. A
+   * code for the MCP scope is refused, and spent, when the sign-in it was issued on
+   * was `MCP_AUTHORIZE_MAX_SESSION_AGE_SECONDS` old or older at the moment of issue,
+   * whoever presents it: the answer does not depend on the client the request names,
+   * so a Basic header the guard cannot read does not skip it. The code carries the
+   * sign-in's creation time (`authTime`) and its row carries the issue time; an MCP
+   * code that lacks either is refused, since its age cannot be known. A code for other
+   * scopes, an unknown code and a fresh code are the provider's. A failed lookup
+   * answers 503 and never falls through to the provider.
+   */
+  async function refuseStaleMcpCode(code: string | null): Promise<Refusal | null> {
+    if (!code) return null;
+    try {
+      const identifier = await storedToken(tokens, code, 'authorization_code');
+      const verification = await authorizationCodes.find(identifier);
+      if (!verification) return null;
+      let value: { type?: unknown; authTime?: unknown; query?: { client_id?: unknown; scope?: unknown } } | null;
+      try {
+        value = JSON.parse(verification.value) as typeof value;
+      } catch {
+        return null;
+      }
+      if (value?.type !== 'authorization_code') return null;
+      if (typeof value.query?.scope !== 'string' || !scopeList(value.query.scope).includes(TINYCLOUD_MCP_SCOPE)) return null;
+      const signedInAt = new Date(typeof value.authTime === 'number' || typeof value.authTime === 'string' ? value.authTime : Number.NaN);
+      const issuedAt = new Date(verification.createdAt ?? Number.NaN);
+      const unreadable = Number.isNaN(signedInAt.getTime()) || Number.isNaN(issuedAt.getTime());
+      if (!unreadable && !mcpAuthorizeNeedsFreshSignIn(signedInAt, issuedAt)) return null;
+      await authorizationCodes.delete(identifier);
+      return { status: 400, error: 'invalid_grant', description: 'the sign-in that approved this connection was too old; connect again' };
+    } catch {
+      return { status: 503, error: 'temporarily_unavailable', description: 'the authorization code could not be checked; try again', retryAfter: 5 };
+    }
   }
 
   async function guardToken(c: Context): Promise<Refusal | null> {
@@ -290,6 +389,11 @@ export function createProviderInterceptors({ database, tokens, provider, getSess
     if ('refusal' in parsed) return parsed.refusal;
     const { params } = parsed;
     const grantType = params.get('grant_type');
+    if (grantType === 'authorization_code') {
+      // First, before anything that reads the client: no early return may precede it.
+      const stale = await refuseStaleMcpCode(params.get('code'));
+      if (stale) return stale;
+    }
     if (grantType !== 'refresh_token' && !params.has('resource')) return null;
     const clients = requestClients(c.req.raw, params);
     if ('status' in clients) return clients;
@@ -322,7 +426,14 @@ export function createProviderInterceptors({ database, tokens, provider, getSess
         description: 'use the renew endpoint',
       };
     }
-    return null;
+    // An MCP refresh whose connection has ended is refused here, before the
+    // provider rotates the token. Unknown, revoked and expired tokens go on to the
+    // provider so its reuse detection still runs.
+    return token
+      ? await mcpRefreshRefusal(database, tokens, token, clients.effective, params.get('scope'), new Date(), {
+        presentedSecret: requestSecret(c.req.raw, params),
+      })
+      : null;
   }
 
   /** Spec "Provider refresh and revoke interception", revoke table; first match applies. */

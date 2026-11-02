@@ -36,6 +36,7 @@ export const FAMILY_LABEL: Record<CapabilityFamily, string> = {
   "secret-mutation": "Named secret (mutate)",
   "encryption-key": "Encryption key material",
   "encryption-decrypt": "Decrypt encrypted content",
+  "app-keys": "App keys",
   "space-create": "Create a space",
   "space-read": "Space details",
   hooks: "Change notifications",
@@ -46,12 +47,211 @@ export const FAMILY_LABEL: Record<CapabilityFamily, string> = {
 };
 
 /**
- * Consent copy for a raw `tinycloud.encryption/decrypt` on the account's
- * `:default` network. Single source of truth: statements.ts imports this
- * constant and tests compare against it.
+ * Title of a read-only `tinycloud.delegation` grant (`list`, `status`) on the
+ * signer's own `account` or `applications` space. The node answers with every
+ * delegation of the account: who holds it, the names of what it reaches, the
+ * actions and the expiry.
  */
-export const DECRYPT_DEFAULT_KEY_STATEMENT =
-  "Decrypt anything encrypted with your account's default key — including your Secrets and every private share — whenever this app gets hold of the encrypted copy, until this access expires.";
+export const DELEGATION_LIST_LABEL = "Who can access your data";
+
+/** The consent sentence for the same grant. */
+export const DELEGATION_LIST_STATEMENT = "See who has access to your data";
+
+/** Named-key verbs that carry consent copy. */
+export type NamedKeyVerb = "create" | "decrypt" | "block" | "unblock" | "delete";
+
+export const DELETE_REFUSED_TEMPLATE = "Refused: only you can delete the key {path}";
+
+/**
+ * Named-key consent sentences, one per verb and resource shape. `{network}`
+ * is the network name and `{path}` the key path (a prefix keeps its trailing
+ * `/`), both filled verbatim by renderNamedKeySentence, so `{network}/{path}`
+ * reads as the key's full name. `null` means no approved wording: the row
+ * renders the literal fallback instead.
+ */
+export const NAMED_KEY_STATEMENTS: Record<
+  NamedKeyVerb,
+  { key: string | null; prefix: string | null }
+> = {
+  create: {
+    key: "Create your encryption key {network}/{path}",
+    prefix: "Create your encryption keys in {network}/{path}",
+  },
+  decrypt: {
+    key: "Decrypt data with your key {network}/{path}",
+    prefix: "Decrypt with any of your keys in {network}/{path}",
+  },
+  block: {
+    key: "Block your key {network}/{path} from decrypting",
+    prefix: "Block keys in {network}/{path} from decrypting",
+  },
+  unblock: {
+    key: "Let your key {network}/{path} decrypt again",
+    prefix: "Let all keys in {network}/{path} decrypt again",
+  },
+  delete: {
+    key: DELETE_REFUSED_TEMPLATE,
+    prefix: DELETE_REFUSED_TEMPLATE,
+  },
+};
+
+export const OWN_KEY_PREFIX_STATEMENTS = {
+  create: "Create your own encryption keys in `{path}`",
+  decrypt: "Decrypt data locked with your keys in `{path}`",
+} as const;
+
+/**
+ * Escape controls, markup and non-ASCII characters as `\uXXXX`, so
+ * resource text cannot alter the displayed consent sentence. Cap raw text
+ * at `maxChars` output characters, ending with `…`.
+ */
+export function renderLiteral(text: string, maxChars?: number): string {
+  let out = "";
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i);
+    const piece =
+      code === 0x5c
+        ? "\\u005C"
+        : code === 0x3c || code === 0x3e || code === 0x26 ||
+          code === 0x22 || code === 0x27 || code < 0x20 || code > 0x7e
+          ? `\\u${code.toString(16).padStart(4, "0")}`
+          : text.charAt(i);
+    if (maxChars !== undefined && out.length + piece.length > maxChars) {
+      return `${out}…`;
+    }
+    out += piece;
+  }
+  return out;
+}
+
+/**
+ * One line of an exact-message view: the control characters (C0, DEL, C1), every
+ * non-ASCII character and the backslash read `\uXXXX`; every other printable
+ * ASCII character, including `' " < > &`, reads as itself. A backslash in the
+ * output therefore always starts an escape.
+ */
+function escapeExactLine(line: string): string {
+  let out = "";
+  for (let i = 0; i < line.length; i += 1) {
+    const code = line.charCodeAt(i);
+    out += code === 0x5c ? "\\u005C" : code < 0x20 || code > 0x7e ? `\\u${code.toString(16).padStart(4, "0")}` : line.charAt(i);
+  }
+  return out;
+}
+
+/**
+ * The exact-message view of a SIWE message. A line feed (U+000A) between two
+ * lines is a real line break; control characters, non-ASCII characters and the
+ * backslash are escaped as `\uXXXX`, and printable ASCII reads as itself. Runs
+ * of two or more spaces and spaces at the end of a line
+ * read `\u0020` and a final line feed reads `\u000a`, so an empty line, a line
+ * of spaces, a long run of spaces, trailing spaces and a trailing line feed
+ * each look different from their absence. Each line break
+ * shown is one line feed in the message, a carriage return reads `\u000d`, and
+ * un-escaping the output gives the input back. Not truncated.
+ */
+export function renderSiweLiteral(text: string): string {
+  const endsWithLineFeed = text.endsWith("\n");
+  const lines = (endsWithLineFeed ? text.slice(0, -1) : text)
+    .split("\n")
+    .map((line) => escapeExactLine(line).replace(/ {2,}| +$/g, (spaces) => "\\u0020".repeat(spaces.length)));
+  return lines.join("\n") + (endsWithLineFeed ? "\\u000a" : "");
+}
+
+/** Output-character cap for raw, unparsed resource text before `…`. */
+export const LITERAL_TRUNCATE_CHARS = 120;
+
+/**
+ * Fill a named-key template in one pass, so a `{network}` inside a path is
+ * never substituted again and `$` is never a replacement pattern. Every value
+ * goes through renderLiteral. `truncateAt` is passed only for raw text that
+ * did not parse; valid keys are never truncated.
+ */
+export function renderNamedKeySentence(
+  template: string,
+  keyPath: string,
+  network: string,
+  truncateAt?: number,
+): string {
+  const values = {
+    path: renderLiteral(keyPath, truncateAt),
+    network: renderLiteral(network),
+  };
+  return template.replace(
+    /\{(path|network)\}/g,
+    (_match, name: string) => (name === "path" ? values.path : values.network),
+  );
+}
+
+/** The abilities an app key grant can name, in the order their rows are shown. */
+export const APP_KEY_ABILITIES = [
+  "key.create",
+  "decrypt",
+  "key.block",
+  "key.unblock",
+  "key.delete",
+] as const;
+
+export type AppKeyAbility = (typeof APP_KEY_ABILITIES)[number];
+
+/**
+ * Consent copy for one ability on an app key (an exact key) or an app key
+ * prefix. The rows say "this app", never the app's name, and never show the
+ * path: `path` is the key path, or the prefix with its trailing `/`, and an
+ * exact key is named by its last segment. The text between backticks is shown
+ * in monospace.
+ */
+export function appKeyStatementText(
+  ability: AppKeyAbility,
+  target: { path: string; isPrefix: boolean },
+): string {
+  const keyName = `\`${target.path.slice(target.path.lastIndexOf("/") + 1)}\``;
+  switch (ability) {
+    case "key.create":
+      return target.isPrefix
+        ? "Create new encryption keys tied to this app"
+        : `Create the encryption key ${keyName} for this app`;
+    case "decrypt":
+      return target.isPrefix
+        ? "Decrypt data locked with this app's keys"
+        : `Decrypt data locked with this app's key ${keyName}`;
+    case "key.block":
+      return target.isPrefix
+        ? "Block this app's keys so they can't decrypt"
+        : `Block this app's key ${keyName} so it can't decrypt`;
+    case "key.unblock":
+      return target.isPrefix
+        ? "Unblock this app's keys so they can decrypt"
+        : `Unblock this app's key ${keyName} so it can decrypt`;
+    case "key.delete":
+      return target.isPrefix
+        ? "Delete this app's keys: apps can't do this"
+        : `Delete this app's key ${keyName}: apps can't do this`;
+  }
+}
+
+/** Shown while a request with app keys is being edited: the app keys are one unit. */
+export const APP_KEY_GROUP_NOTE = "App keys are approved together: keep all or none.";
+
+/** The line above the rows of a request with app keys. */
+export function appRequestingLine(name: string | null): string {
+  return `${name ?? "This app"} is requesting:`;
+}
+
+export const APP_KEY_ACCESS_WITHOUT_EXPIRY = "This access lasts until it expires.";
+
+/**
+ * Standing-access line for app-key decrypt. `expiry` is the signed SIWE
+ * `Expiration Time`. `formatExpiry` turns it into the text shown; without one
+ * the signed value is shown as written.
+ */
+export function appKeyAccessStatement(
+  expiry: string | null,
+  formatExpiry: (expiry: string) => string = (value) => value,
+): string {
+  if (expiry === null || Number.isNaN(Date.parse(expiry))) return APP_KEY_ACCESS_WITHOUT_EXPIRY;
+  return `This access lasts until ${formatExpiry(expiry)}.`;
+}
 
 export const PROTOCOL_HEADLINE: Record<RequestProtocol, string> = {
   "legacy-message": "Sign message",
@@ -61,14 +261,10 @@ export const PROTOCOL_HEADLINE: Record<RequestProtocol, string> = {
 };
 
 export const PROTOCOL_HINT: Record<RequestProtocol, string> = {
-  "legacy-message":
-    "You will sign these bytes exactly. Editing is not available.",
-  "siwe-plain":
-    "You will sign this SIWE message exactly. Editing is not available.",
-  "tinycloud-siwe-recap":
-    "Review the requested capabilities. Uncheck anything you do not want to grant.",
-  "malformed-recap":
-    "This message carries a capability payload we could not decode. Approving is disabled so a broken ReCap cannot be silently signed as an exact-byte SIWE.",
+  "legacy-message": "You will sign these exact bytes.",
+  "siwe-plain": "You will sign this exact sign-in message.",
+  "tinycloud-siwe-recap": "Review the access this app is asking for.",
+  "malformed-recap": "This request can't be read, so it won't be signed.",
 };
 
 /**

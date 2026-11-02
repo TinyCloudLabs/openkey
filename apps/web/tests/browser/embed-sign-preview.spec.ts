@@ -1,8 +1,9 @@
 import { test, expect } from '@playwright/test';
+import { HOST } from './e2e-port';
 import { EXPLORER_PERMISSION_POPUP_REQUEST } from '../../../../packages/capability-review/test/fixtures/index';
 
 const address = '0xd559CCd9EB87c530A9a349262669386dE93cf412';
-const siwe = EXPLORER_PERMISSION_POPUP_REQUEST.replace(/^explorer\.tinycloud\.xyz/, 'localhost:5779');
+const siwe = EXPLORER_PERMISSION_POPUP_REQUEST.replace(/^explorer\.tinycloud\.xyz/, HOST);
 const previewBytes = `${siwe}\nPreview marker: exact server bytes`;
 
 test('v2 final preview bytes are visible before approval and require a new layout ack', async ({ page }) => {

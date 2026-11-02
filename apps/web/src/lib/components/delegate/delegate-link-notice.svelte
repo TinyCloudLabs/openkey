@@ -6,15 +6,20 @@
     hostRecognized: boolean;
     /** Validated callback URL, or null when the page shows a paste code. */
     callback: string | null;
+    /** The API encrypts delivery for the immutable request's CLI key. */
+    requesterRelay?: boolean;
     /** SIWE Expiration Time of the delegation being reviewed. */
     expiresAt: string;
+    /** False where the approval screen's own "Approval expires" line already shows it. */
+    showExpires?: boolean;
     /** The owner confirmed they trust an unrecognized node; required to approve. */
     acknowledged?: boolean;
   }
 
-  let { host, hostRecognized, callback, expiresAt, acknowledged = $bindable(false) }: Props = $props();
+  let { host, hostRecognized, callback, requesterRelay = false, expiresAt, showExpires = true, acknowledged = $bindable(false) }: Props = $props();
 
   const returnsTo = $derived.by(() => {
+    if (requesterRelay) return 'Requesting CLI';
     if (!callback) return 'This page, as a code to paste';
     const url = new URL(callback);
     return `${url.origin}${url.pathname}`;
@@ -51,12 +56,14 @@
       <dt class="shrink-0 text-surface-400">Returned to</dt>
       <dd class="break-all text-right font-mono text-surface-900">{returnsTo}</dd>
     </div>
-    <div class="flex justify-between gap-3">
-      <dt class="shrink-0 text-surface-400">Expires</dt>
-      <dd class="text-right font-medium text-surface-900">{expires}</dd>
-    </div>
+    {#if showExpires}
+      <div class="flex justify-between gap-3">
+        <dt class="shrink-0 text-surface-400">Expires</dt>
+        <dd class="text-right font-medium text-surface-900">{expires}</dd>
+      </div>
+    {/if}
   </dl>
-  {#if !callback}
+  {#if !callback && !requesterRelay}
     <p class="text-xs font-medium leading-relaxed text-amber-900">
       Only paste this code into a terminal you started yourself.
     </p>

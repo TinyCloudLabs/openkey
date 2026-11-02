@@ -10,6 +10,7 @@ COPY package.json bun.lock ./
 COPY apps/api/package.json ./apps/api/
 COPY packages/tee/package.json ./packages/tee/
 COPY packages/db/package.json ./packages/db/
+COPY packages/capability-review/package.json ./packages/capability-review/
 COPY packages/db/prisma ./packages/db/prisma
 COPY scripts/generate-prisma.ts ./scripts/generate-prisma.ts
 COPY packages/types/package.json ./packages/types/
@@ -30,6 +31,7 @@ COPY . .
 RUN bun test packages/db/src/schema-contract.test.ts
 RUN bun run build --filter @openkey/db
 RUN bun run build --filter @openkey/tee
+RUN bun run build --filter @openkey/capability-review
 # The runtime image ships this stage's node_modules and packages/tee/dist.
 # Refuse to build it if sealed-key derivation would change (TC-964).
 RUN OPENKEY_KAT_REQUIRE_DIST=1 bun test packages/tee/tests/dstack-key-derivation.kat.test.ts
@@ -50,7 +52,13 @@ COPY --from=builder /app/packages/db/dist ./packages/db/dist
 COPY --from=builder /app/packages/db/src/generated ./packages/db/src/generated
 COPY --from=builder /app/packages/db/prisma ./packages/db/prisma
 COPY --from=builder /app/packages/db/package.json ./packages/db/
+COPY --from=builder /app/packages/capability-review/dist ./packages/capability-review/dist
+COPY --from=builder /app/packages/capability-review/package.json ./packages/capability-review/
 COPY --from=builder /app/package.json ./
+
+# Commit the image was built from; reported by GET /health as `commit`.
+ARG GIT_SHA=
+ENV GIT_SHA=${GIT_SHA}
 
 EXPOSE 3001
 

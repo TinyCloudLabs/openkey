@@ -3,13 +3,14 @@
   import { tick } from 'svelte';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
-  import { getSessionToken, isEmbedContext } from '$lib/embed-passkey';
+  import { getSessionToken, isEmbedContext, withSessionCredential } from '$lib/embed-passkey';
   import EmbeddedSignIn from '$lib/components/auth/embedded-sign-in.svelte';
   import { passkeysSupportedFromParams } from '$lib/passkey-support';
   import Button from '$lib/components/ui/button.svelte';
   import IframeSigningAdapter from '$lib/components/signing/iframe-signing-adapter.svelte';
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
-  import { validatePreviewSelection } from '$lib/preview-review';
+  import { requestedActionIds, selectionFromPreview } from '$lib/widget-selection';
+  import { expiryAt, siweExpiration } from '$lib/approval-expiry';
   import {
     parseCapabilityReview,
     parseSiweChainId,
@@ -20,6 +21,9 @@
     checkSiweOrigin,
   } from '@openkey/capability-review';
   import SiweOriginRefusal from '$lib/components/signing/siwe-origin-refusal.svelte';
+  import ServerReplyRefusal from '$lib/components/signing/server-reply-refusal.svelte';
+  import { hasSignResult, hasText, readReply, ServerReplyError, SERVER_REPLY_ERROR } from '$lib/server-reply';
+  import { createFrameSettleGate, type FrameSettleGate } from '$lib/frame-settle-gate';
   import {
     createIframeLayoutGate,
     type IframeLayoutGate,
@@ -43,6 +47,8 @@
   let loading = $state(true);
   let signing = $state(false);
   let error = $state('');
+  // The HTTP status of a reply that could not be read; shown in Advanced details only.
+  let replyFailureStatus = $state<number | null>(null);
   let sessionChecked = $state(false);
   let initialized = $state(false);
   let keyFetched = $state(false);
@@ -58,6 +64,11 @@
   let layoutReady = $state(false);
   let layoutError = $state('');
   let layoutGate: IframeLayoutGate | null = null;
+  // v1 has no layout-ready handshake with the host: Approve waits until this frame's own size has been quiet (TC-2320).
+  let frameSettled = $state(false);
+  let frameSettle: FrameSettleGate | null = null;
+  // A content change that does not change the posted height does not move the frame, so it does not re-block Approve.
+  let lastPostedHeight = -1;
   let pendingLayoutAck: { height: number; layoutId: number } | null = null;
   let keyReadGeneration = 0;
   let keyOwnerToken: string | null = null;
@@ -97,14 +108,34 @@
   let previewToken = $state<string | null>(null);
   let previewApprovalToken = $state<string | null>(null);
   let previewing = $state(false);
+  // TC-2272: how long from approval the user chose; null keeps the app's own expiry.
+  let expiryChoiceMs = $state<number | null>(null);
   let previewApproved = $state(false);
   // Sol MAJOR-3 (continuation): external-key review mode. See widget/sign.
   let externalSignMode = $state(false);
+  let expiryChangeable = $state(false);
 
   const isAuthenticated = $derived(inIframe ? embedAuthenticated : !!$session.data);
 
   const origin = $page.url.searchParams.get('origin') || '*';
   const v2 = $page.url.searchParams.get('protocolVersion') === '2';
+  const frameResized = () => frameSettle?.resized();
+  if (!v2 && typeof window !== 'undefined') {
+    frameSettle = createFrameSettleGate({
+      schedule: (run, ms) => {
+        const id = setTimeout(run, ms);
+        return () => clearTimeout(id);
+      },
+      onChange: (settled) => { frameSettled = settled; },
+    });
+    // The frame's own size is what the SDK modal animates; each change restarts the quiet period.
+    window.addEventListener('resize', frameResized);
+  }
+  // Start waiting once the review is actually rendered (the template's own conditions: not while signing in, loading or
+  // reading the key), so the clock cannot run out behind a sign-in screen (the first call only).
+  $effect(() => {
+    if (!v2 && reviewModel && !siweRefusal && replyFailureStatus === null && isAuthenticated && !loading && key) frameSettle?.show();
+  });
   const phaseRequestId = v2 ? $page.url.searchParams.get('requestId') : null;
   const phaseKeyId = v2 ? $page.url.searchParams.get('keyId') : null;
   const passkeysSupported = passkeysSupportedFromParams($page.url.searchParams);
@@ -186,8 +217,10 @@
       transport?.destroy();
       window.removeEventListener('message', handleMessage);
       window.removeEventListener('resize', applyPendingLayout);
+      window.removeEventListener('resize', frameResized);
       window.visualViewport?.removeEventListener('resize', applyPendingLayout);
       layoutGate?.destroy();
+      frameSettle?.destroy();
       transport = null;
     };
   });
@@ -251,6 +284,9 @@
     keyId = typeof data.keyId === 'string' ? data.keyId : null;
     // Sol MAJOR-3 (continuation): capture the externalSign flag.
     externalSignMode = data.externalSign === true;
+    // TC-2272: only an SDK that accepts a different signed expiry sends this; without it the
+    // approval shows no expiry control and the app's own expiry is signed.
+    expiryChangeable = data.expiryChangeable === true;
     // Envelope (display-only). Widget transport already validated + size-
     // bounded the object. Trust decision is deferred to /authorize-sign-
     // prepare and populated into serverMetadataTrust below.
@@ -298,6 +334,11 @@
           ((!isAuthenticated || !!keyError) && content.getClientRects().length > 0),
         );
         return;
+      }
+      // The host animates the frame to this height: Approve is blocked again until it is quiet (v1 only).
+      if (height !== lastPostedHeight) {
+        lastPostedHeight = height;
+        frameSettle?.posted();
       }
       if (currentRequestId && messageProtocolVersion !== null) {
         if (transport) {
@@ -595,9 +636,12 @@
         model,
         serverVerifiedManifest?.declaredAppScope,
       );
+      // Before the preview the access lines show the chosen time (from now); after it, the sealed bytes' own.
       reviewModel = previewSignedMessage
-        ? { ...nextReviewModel, rawMessage: previewSignedMessage }
-        : nextReviewModel;
+        ? { ...nextReviewModel, rawMessage: previewSignedMessage, expiry: siweExpiration(previewSignedMessage) ?? nextReviewModel.expiry }
+        : expiryChoiceMs !== null
+          ? { ...nextReviewModel, expiry: expiryAt(expiryChoiceMs) }
+          : nextReviewModel;
       if (reviewSourceMessage !== message) {
         reviewSelection = defaultSelection(reviewModel);
         reviewSourceMessage = message;
@@ -617,16 +661,7 @@
   }
 
   function currentSelectedActionIds(): string[] {
-    if (!reviewModel) return [];
-    const out: string[] = [];
-    for (const grant of reviewModel.permissions) {
-      for (const action of grant.actions) {
-        if (reviewSelection.has(action.id)) {
-          out.push(action.id);
-        }
-      }
-    }
-    return out;
+    return requestedActionIds(reviewModel, reviewSelection);
   }
 
   function currentKeyBelongsToSession(): boolean {
@@ -661,9 +696,8 @@
           origin && origin !== '*' && origin.startsWith('https://') ? origin : undefined;
         const prepareRes = await fetch(
           `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign-prepare`,
-          {
+          withSessionCredential({
             method: 'POST',
-            credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               keyId: key.id,
@@ -673,14 +707,16 @@
               presentation: requestPresentation ?? undefined,
               reportedOrigin: reportedOriginForPrepare,
               requestOrigin: origin === '*' ? undefined : origin,
+              // Bound into the authorization context: the server refuses a changed expiry unless the app opted in.
+              ...(expiryChangeable ? { expiryChangeable: true } : {}),
             }),
-          },
+          }),
         );
-        if (!prepareRes.ok) {
-          const errBody = await prepareRes.json().catch(() => ({ error: 'authorize-sign-prepare failed' }));
-          throw new Error(errBody.error || `HTTP ${prepareRes.status}`);
-        }
-        const prepareResult = await prepareRes.json();
+        const prepareResult = await readReply(
+          prepareRes,
+          (body) => hasText(body, 'authorizationContextToken'),
+          'authorize-sign-prepare failed',
+        );
         token = typeof prepareResult.authorizationContextToken === 'string'
           ? prepareResult.authorizationContextToken
           : null;
@@ -766,24 +802,25 @@
           };
         }
       }
-      const requestedActionIds = currentSelectedActionIds();
+      const selectedIds = currentSelectedActionIds();
       const previewRes = await fetch(
         `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign-preview`,
-        {
+        withSessionCredential({
           method: 'POST',
-          credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             authorizationContextToken: token,
-            selectedActionIds: requestedActionIds,
+            selectedActionIds: selectedIds,
+            // TC-2272: only when the user changed it; the app's own expiry stays the default.
+            ...(expiryChoiceMs === null ? {} : { expirationTime: expiryAt(expiryChoiceMs) }),
           }),
-        },
+        }),
       );
-      if (!previewRes.ok) {
-        const errBody = await previewRes.json().catch(() => ({ error: 'authorize-sign-preview failed' }));
-        throw new Error(errBody.error || `HTTP ${previewRes.status}`);
-      }
-      const previewResult = await previewRes.json();
+      const previewResult = await readReply(
+        previewRes,
+        (body) => hasText(body, 'signedMessage', 'previewApprovalToken'),
+        'authorize-sign-preview failed',
+      );
       if (typeof previewResult.signedMessage !== 'string' || !previewResult.signedMessage) {
         throw new Error('authorize-sign-preview did not return signedMessage');
       }
@@ -793,11 +830,12 @@
       if (typeof previewResult.previewApprovalToken !== 'string' || !previewResult.previewApprovalToken) {
         throw new Error('authorize-sign-preview did not return a previewApprovalToken — server is out of date');
       }
-      reviewSelection = validatePreviewSelection(previewResult, requestedActionIds);
+      reviewSelection = selectionFromPreview(previewResult, selectedIds);
       previewSignedMessage = previewResult.signedMessage;
       previewApprovalToken = previewResult.previewApprovalToken;
     } catch (e: any) {
-      error = e.message || 'Preview failed';
+      if (e instanceof ServerReplyError) unreadableReply(e.status);
+      else error = e.message || 'Preview failed';
       previewToken = null;
       previewSignedMessage = null;
       previewApprovalToken = null;
@@ -848,9 +886,8 @@
         }
         const authorizeRes = await fetch(
           `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign`,
-          {
+          withSessionCredential({
             method: 'POST',
-            credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               authorizationContextToken: previewToken,
@@ -861,13 +898,13 @@
               selectedActionIds,
               protocolVersion: 1,
             }),
-          },
+          }),
         );
-        if (!authorizeRes.ok) {
-          const errBody = await authorizeRes.json().catch(() => ({ error: 'authorize-sign failed' }));
-          throw new Error(errBody.error || `HTTP ${authorizeRes.status}`);
-        }
-        const authorizeResult = await authorizeRes.json();
+        const authorizeResult = await readReply(
+          authorizeRes,
+          hasSignResult,
+          'authorize-sign failed',
+        );
         if (authorizeResult.signedMessage !== previewSignedMessage) {
           throw new Error('Server signed bytes differ from the previewed bytes — refusing to accept');
         }
@@ -908,7 +945,8 @@
       });
       sendClose();
     } catch (e: any) {
-      error = e.message || 'Signing failed';
+      if (e instanceof ServerReplyError) unreadableReply(e.status);
+      else error = e.message || 'Signing failed';
     } finally {
       signing = false;
     }
@@ -937,6 +975,15 @@
       error: { code: 'UNKNOWN', message: `SIWE_ORIGIN_REFUSED: ${siweRefusal.code}` },
     });
   });
+
+  // A reply that cannot be read leaves nothing approved: show the refusal and
+  // tell the host once, without any reply content.
+  function unreadableReply(status: number) {
+    replyFailureStatus = status;
+    error = '';
+    console.error(`OpenKey: unreadable server reply (HTTP ${status})`);
+    sendResponse({ type: 'openkey:sign:response', success: false, error: SERVER_REPLY_ERROR });
+  }
 
   function closeRefused() {
     sendClose();
@@ -1027,6 +1074,8 @@
   <div class="bg-white border border-surface-200 rounded-2xl shadow-sm p-5">
     {#if siweRefusal}
       <SiweOriginRefusal reason={siweRefusal.message} code={siweRefusal.code} onclose={closeRefused} />
+    {:else if replyFailureStatus !== null}
+      <ServerReplyRefusal status={replyFailureStatus} onclose={closeRefused} />
     {:else if !isAuthenticated}
       <EmbeddedSignIn
         prompt="Sign in to review and sign this message"
@@ -1059,9 +1108,10 @@
       <IframeSigningAdapter
         model={reviewModel}
         initialSelection={reviewSelection}
-        layoutBlocked={v2 && !layoutReady}
+        layoutBlocked={v2 ? !layoutReady : !frameSettled}
         transport={{
           approving: signing || previewing,
+          host: messageHost,
           error: error || layoutError,
           canUseAuthorizeSign: canUseAuthorizeSignFn(),
           previewReady: Boolean(previewToken && previewSignedMessage && previewApprovalToken),
@@ -1071,6 +1121,15 @@
           onSelectionEdited: (next) => {
             reviewSelection = next;
           },
+          expiry: canUseAuthorizeSignFn() && expiryChangeable
+            ? {
+                chosenMs: expiryChoiceMs,
+                onChange: (ms) => {
+                  expiryChoiceMs = ms;
+                  invalidatePreviewForSelectionEdit();
+                },
+              }
+            : undefined,
           invalidatePreview: invalidatePreviewForSelectionEdit,
         }}
       />

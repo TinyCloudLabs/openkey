@@ -6,6 +6,12 @@ export const TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS: ReadonlySet<string> = new Set([
   'https://tee.node.tinycloud.xyz',
 ]);
 
+export const LOCAL_HOSTNAMES: ReadonlySet<string> = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+export function localHostsAllowed(): boolean {
+  return process.env.NODE_ENV !== 'production' && process.env.TEE_MODE !== 'production';
+}
+
 // Printable ASCII, no space. Checked before lowercasing: String#toLowerCase
 // maps some non-ASCII (U+212A KELVIN SIGN -> "k") onto ASCII.
 const PRINTABLE_ASCII = /^[\x21-\x7e]+$/;
@@ -34,4 +40,22 @@ export function canonicalTrustedTinyCloudHost(raw: unknown, configuredHost: stri
   }
   if (url.protocol !== 'https:' || url.origin !== candidate) return null;
   return TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS.has(candidate) ? configuredHost : null;
+}
+
+/**
+ * Whether OpenKey's server may send a session delegation to `raw` (TC-1949): an
+ * allowlisted TinyCloud node, or a loopback origin outside production.
+ */
+export function isKnownTinyCloudActivationHost(raw: unknown): boolean {
+  if (canonicalTrustedTinyCloudHost(raw, DEFAULT_TINYCLOUD_BOOTSTRAP_HOST) !== null) return true;
+  if (typeof raw !== 'string' || !localHostsAllowed()) return false;
+  const origin = raw.endsWith('/') ? raw.slice(0, -1) : raw;
+  try {
+    const url = new URL(origin);
+    return (url.protocol === 'http:' || url.protocol === 'https:') &&
+      LOCAL_HOSTNAMES.has(url.hostname) &&
+      url.origin === origin;
+  } catch {
+    return false;
+  }
 }

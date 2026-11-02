@@ -9,6 +9,7 @@ import {
   selectProductionMigrationMode,
   type MigrationRow,
 } from './deploy-production-migrations';
+import { requiredRuntimeMigrationChecksums } from '../packages/db/src/schema-contract';
 
 const baseline: MigrationRow = {
   migration_name: '20260714_origin_main_schema_catchup',
@@ -281,6 +282,101 @@ describe('production migration deployment mode', () => {
       migrationDirectories: [baseline.migration_name, ...tc492, device, '20260815_unreviewed'],
       managedAccountTableExists: true,
     })).toThrow('unreviewed pending migration set');
+  });
+
+  describe('the revoked access token table (TC-2104)', () => {
+    const name = '20261026_0001_revoked_access_token';
+    const migrationsRoot = join(import.meta.dir, '../packages/db/prisma/migrations');
+    const fileChecksum = async (migration: string) =>
+      createHash('sha256').update(await readFile(join(migrationsRoot, migration, 'migration.sql'))).digest('hex');
+    const applied = (migration_name: string, checksum: string): MigrationRow =>
+      ({ migration_name, checksum, finished_at: new Date(), rolled_back_at: null });
+    const directories = [baseline.migration_name, ...tc492, device, name];
+
+    test('is pending beside the parked TC-488 migration: the additive mode, and only the new one is applied', () => {
+      expect(selectProductionMigrationMode({
+        migrations: [baseline],
+        migrationDirectories: directories,
+        managedAccountTableExists: true,
+      })).toBe('pre-tc488-additive');
+      const { apply, park } = partitionPreTc488Migrations([tc488, name]);
+      expect(apply).toEqual([name]);
+      expect(park).toEqual([tc488]);
+    });
+
+    test('TC-488 is never in the list to apply, whatever else is pending', () => {
+      const { apply, park } = partitionPreTc488Migrations([...tc492, device, name]);
+      expect(apply).not.toContain(tc488);
+      expect(apply).toContain(name);
+      expect(park).toEqual([tc488]);
+    });
+
+    test('another unknown migration pending with it still fails closed', () => {
+      expect(() => selectProductionMigrationMode({
+        migrations: [baseline],
+        migrationDirectories: [...directories, '20261027_0001_not_reviewed'],
+        managedAccountTableExists: true,
+      })).toThrow('unreviewed pending migration set');
+    });
+
+    test('a stored checksum that differs from the reviewed one is refused', () => {
+      expect(() => selectProductionMigrationMode({
+        migrations: [baseline, applied(name, 'unreviewed')],
+        migrationDirectories: directories,
+        managedAccountTableExists: true,
+      })).toThrow(`Stored migration checksum differs from the reviewed ${name}`);
+    });
+
+    test('the reviewed checksum is the one of the migration file, and the runtime schema contract records the same', async () => {
+      const checksum = await fileChecksum(name);
+      expect(checksum).toBe('a57958f43b7d1c28c25b38ef358a5392e4b7f9ecf78a979b2c86c8027bd53a30');
+      expect(requiredRuntimeMigrationChecksums.get(name)).toBe(checksum);
+      // Applied with the file's own checksum, the reviewed list accepts it: an edit of either one fails here.
+      expect(selectProductionMigrationMode({
+        migrations: [baseline, applied(name, checksum)],
+        migrationDirectories: directories,
+        managedAccountTableExists: true,
+      })).toBe('pre-tc488-additive');
+    });
+
+    test('every migration directory newer than the parked TC-488 one is reviewed for the pre-TC-488 deploy', async () => {
+      const all = (await readdir(migrationsRoot, { withFileTypes: true }))
+        .filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
+      const newer = all.filter((migration) => migration > tc488);
+      expect(newer).toContain(name);
+      for (const pendingOne of newer) {
+        const history: MigrationRow[] = [];
+        for (const migration of all.filter((other) => other !== tc488 && other !== pendingOne)) {
+          history.push(applied(migration, await fileChecksum(migration)));
+        }
+        expect(selectProductionMigrationMode({
+          migrations: history,
+          migrationDirectories: all,
+          managedAccountTableExists: true,
+        }), `${pendingOne} is not in the reviewed list of scripts/deploy-production-migrations.ts`).toBe('pre-tc488-additive');
+      }
+    });
+  });
+
+  test('allows approval result expansion beside parked TC-488 but rejects a changed checksum', () => {
+    const name = '20261028_0001_approval_request_results';
+    const input = {
+      migrations: [baseline],
+      migrationDirectories: [baseline.migration_name, ...tc492, device, name],
+      managedAccountTableExists: true,
+    };
+    expect(selectProductionMigrationMode(input)).toBe('pre-tc488-additive');
+    const applied = {
+      migration_name: name,
+      checksum: 'c1d45c495e46e7eaf8a3bb92c06802437c34ca2f63c47d63e2550190b1d8ed8f',
+      finished_at: new Date('2026-10-28T00:00:00Z'),
+      rolled_back_at: null,
+    };
+    expect(selectProductionMigrationMode({ ...input, migrations: [baseline, applied] })).toBe('pre-tc488-additive');
+    expect(() => selectProductionMigrationMode({
+      ...input,
+      migrations: [baseline, { ...applied, checksum: 'changed' }],
+    })).toThrow();
   });
 
   test('fails closed on inconsistent physical cutover state', () => {

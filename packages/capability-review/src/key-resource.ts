@@ -93,3 +93,8 @@ export function isAppsKeyResource(uri: string): boolean {
   const slash = path.indexOf("/");
   return (slash < 0 ? path : path.slice(0, slash)).toLowerCase() === APPS_SEGMENT;
 }
+
+/** `key.delete` under any namespace: the last `/`-separated part of the ability, compared case-insensitively. */
+export function isKeyDeleteAbility(ability: string): boolean {
+  return ability.slice(ability.lastIndexOf("/") + 1).toLowerCase() === "key.delete";
+}

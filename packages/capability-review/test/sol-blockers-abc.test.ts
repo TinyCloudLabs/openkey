@@ -258,7 +258,7 @@ describe("Sol Blocker B: canonical grant-side ability allowlist", () => {
     // non-canonical wire form verbatim.
     const stmt = buildStatement(g);
     expect(stmt.primaryText).toBe(
-      "Perform tinycloud.kv/read on tinycloud.kv",
+      "Unknown action: tinycloud.kv/read",
     );
     expect(stmt.primaryText).not.toContain("app secret");
   });

@@ -835,7 +835,7 @@ describe('delegateRouter Auto-Sign integration', () => {
       body: JSON.stringify({
         keyId: keyRecord.id,
         jwk,
-        host: 'https://node.tinycloud.test',
+        host: 'https://node.tinycloud.xyz',
         prefix: 'openkey',
       }),
     });

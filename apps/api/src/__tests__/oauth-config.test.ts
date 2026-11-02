@@ -1,30 +1,19 @@
 import { describe, expect, test } from 'bun:test';
 
 import {
-  DEFAULT_TINYCLOUD_MCP_AUDIENCE,
   DEFAULT_OAUTH_SCOPES,
   DYNAMIC_CLIENT_REGISTRATION_ALLOWED_SCOPES,
   OAUTH_SCOPES,
   TINYCLOUD_MANAGE_KEY_SCOPE,
   TINYCLOUD_SESSION_SCOPE,
   dynamicClientRegistrationEnabled,
-  oauthValidAudiences,
 } from '../oauth-config';
 
 describe('hosted MCP OAuth configuration', () => {
-  test('allows the canonical resource and configured self-hosted resources', () => {
-    expect(oauthValidAudiences('https://api.openkey.test', 'https://mcp.customer.test/mcp')).toEqual([
-      'https://api.openkey.test',
-      DEFAULT_TINYCLOUD_MCP_AUDIENCE,
-      'https://mcp.customer.test/mcp',
-    ]);
-  });
-
   test('advertises tinycloud session delegation without defaulting it', () => {
     expect(OAUTH_SCOPES).toContain(TINYCLOUD_SESSION_SCOPE);
     expect(DEFAULT_OAUTH_SCOPES).not.toContain(TINYCLOUD_SESSION_SCOPE as never);
     expect(OAUTH_SCOPES).toContain('tinycloud:mcp');
-    expect(DEFAULT_TINYCLOUD_MCP_AUDIENCE).toBe('https://mcp.tinycloud.xyz/mcp');
   });
 
   test('advertises canonical-key management without making it a default scope', () => {

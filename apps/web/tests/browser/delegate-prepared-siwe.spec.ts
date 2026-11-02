@@ -27,6 +27,12 @@ const narrowedSiwe = siwe.replace(
 );
 const narrowedResult = { ...rawResult, signedMessage: narrowedSiwe, selectedActionKeys: [fullKey], permissions: [{ service: 'tinycloud.kv', space, path: 'notes/', actions: ['tinycloud.kv/get'] }] };
 const json = (route: Route, status: number, body: unknown) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+async function expectExactBlock(page: Page, summary: string, expected: string) {
+  const block = page.locator('details', { has: page.locator('summary', { hasText: summary }) }).locator('pre');
+  await expect(block).toBeVisible();
+  expect(await block.textContent()).toBe(expected);
+  expect(await block.innerText()).toBe(expected);
+}
 
 async function setup(page: Page, options: { keyId?: string; callback?: string; narrowed?: boolean; external?: boolean; keys?: KeyFixture[]; siwe?: string; authenticated?: boolean; entry?: 'client' | 'hash' | 'conflict' } = {}) {
   const calls: Array<{ path: string; body: unknown }> = [];
@@ -83,9 +89,14 @@ test('v2 displays original and exact preview, signs the bound context, and paste
   });
   await expect(page.getByText('did:key:cli-session')).toBeVisible();
   await expect(page.getByText(host)).toBeVisible();
-  await expect(page.getByText(siwe, { exact: true })).toBeVisible();
+  // The page shows the SIWE collapsed: a line feed is a real line break and every other control character is escaped.
+  // `getByText` normalises whitespace, so the blocks are compared by their exact text.
+  await page.getByText('Original SIWE message', { exact: true }).click();
+  await expectExactBlock(page, 'Original SIWE message', siwe);
   await page.getByRole('button', { name: 'Preview signing message' }).click();
-  await expect(page.getByText(siwe, { exact: true })).toHaveCount(2);
+  await page.getByText('Exact candidate signedMessage', { exact: true }).click();
+  await expectExactBlock(page, 'Original SIWE message', siwe);
+  await expectExactBlock(page, 'Exact candidate signedMessage', siwe);
   await page.getByRole('button', { name: 'Approve', exact: true }).click();
   const code = await page.locator('textarea').inputValue();
   const envelope = JSON.parse(Buffer.from(code, 'base64url').toString('utf8'));
@@ -358,6 +369,8 @@ test('v2 permits choosing an account-matching key when no keyId was requested', 
   const second = { ...key, id: 'key-two', keyIndex: 1, label: 'Backup owner key', isPrimary: false };
   const calls = await setup(page, { keys: [key, second] });
   await expect(page.getByText('Choose an OpenKey signing key')).toBeVisible();
+  await page.getByText('Original SIWE message', { exact: true }).click();
+  await expectExactBlock(page, 'Original SIWE message', siwe);
   await page.getByRole('button', { name: /Backup owner key/ }).click();
   await page.getByRole('button', { name: 'Preview signing message' }).click();
   await page.getByRole('button', { name: 'Approve', exact: true }).click();
@@ -367,11 +380,63 @@ test('v2 permits choosing an account-matching key when no keyId was requested', 
   expect(envelope.result).toEqual(rawResult);
 });
 
+// Only a line feed may start a new line in the exact blocks: a long line scrolls sideways and never wraps.
+async function expectUnwrappedBlock(page: Page, summary: string, lineCount: number) {
+  const block = page.locator('details', { has: page.locator('summary', { hasText: summary }) }).locator('pre');
+  await expect(block).toBeVisible();
+  const shape = await block.evaluate((element) => {
+    const style = getComputedStyle(element);
+    const padding = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+    return {
+      whiteSpace: style.whiteSpace,
+      overflowX: style.overflowX,
+      lines: (element.clientHeight - padding) / parseFloat(style.lineHeight),
+      scrolls: element.scrollWidth > element.clientWidth,
+      pageOverflow: document.documentElement.scrollWidth > window.innerWidth,
+    };
+  });
+  expect(shape).toEqual({ whiteSpace: 'pre', overflowX: 'auto', lines: lineCount, scrolls: true, pageOverflow: false });
+}
+
+test('the exact SIWE blocks show one line per line feed and scroll sideways at 375px', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 800 });
+  const second = { ...key, id: 'key-two', keyIndex: 1, label: 'Backup owner key', isPrimary: false };
+  await setup(page, { keys: [key, second] });
+  await expect(page.getByText('Choose an OpenKey signing key')).toBeVisible();
+  await page.getByText('Original SIWE message', { exact: true }).click();
+  await expectUnwrappedBlock(page, 'Original SIWE message', siwe.split('\n').length);
+  await page.getByRole('button', { name: /Backup owner key/ }).click();
+  await page.getByRole('button', { name: 'Preview signing message' }).click();
+  await page.getByText('Exact candidate signedMessage', { exact: true }).click();
+  await page.getByText('Original SIWE message', { exact: true }).click();
+  await expectUnwrappedBlock(page, 'Original SIWE message', siwe.split('\n').length);
+  await expectUnwrappedBlock(page, 'Exact candidate signedMessage', siwe.split('\n').length);
+});
+
+// The same check at a phone and a desktop width. It reads computed styles, so it also holds against a production build.
+for (const width of [375, 1280]) {
+  test(`all three exact SIWE blocks stay unwrapped and scroll sideways at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const second = { ...key, id: 'key-two', keyIndex: 1, label: 'Backup owner key', isPrimary: false };
+    await setup(page, { keys: [key, second] });
+    await expect(page.getByText('Choose an OpenKey signing key')).toBeVisible();
+    await page.getByText('Original SIWE message', { exact: true }).click();
+    await expectUnwrappedBlock(page, 'Original SIWE message', siwe.split('\n').length);
+    await page.getByRole('button', { name: /Backup owner key/ }).click();
+    await page.getByRole('button', { name: 'Preview signing message' }).click();
+    await page.getByText('Exact candidate signedMessage', { exact: true }).click();
+    await page.getByText('Original SIWE message', { exact: true }).click();
+    await expectUnwrappedBlock(page, 'Original SIWE message', siwe.split('\n').length);
+    await expectUnwrappedBlock(page, 'Exact candidate signedMessage', siwe.split('\n').length);
+  });
+}
+
 test('v2 narrowing previews the exact candidate and never signs a second time', async ({ page }) => {
   const calls = await setup(page, { narrowed: true });
   await page.getByRole('checkbox', { name: 'tinycloud.kv/sync' }).uncheck();
   await page.getByRole('button', { name: 'Preview signing message' }).click();
-  await expect(page.getByText(narrowedSiwe, { exact: true })).toBeVisible();
+  await page.getByText('Exact candidate signedMessage', { exact: true }).click();
+  await expectExactBlock(page, 'Exact candidate signedMessage', narrowedSiwe);
   await page.getByRole('button', { name: 'Approve', exact: true }).click();
   expect(calls.find(c => c.path === '/api/delegate/authorize-sign-preview')?.body).toMatchObject({ selectedActionIds: [fullKey], ticket: handoffId });
   expect(calls.find(c => c.path === '/api/delegate/authorize-sign')?.body).toMatchObject({ selectedActionIds: [fullKey], ticket: handoffId });

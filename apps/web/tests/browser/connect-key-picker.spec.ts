@@ -4,6 +4,7 @@
 // `page.route`; no API server runs.
 
 import { test, expect, type Page, type FrameLocator, type Locator } from '@playwright/test';
+import { ORIGIN } from './e2e-port';
 
 const key = (id: string, keyIndex: number, address: string, isPrimary: boolean, keyType = 'MANAGED') =>
   ({ id, address, publicKey: '0x', keyIndex, label: null, keyType, isPrimary, createdAt: '2026-01-01T00:00:00Z' });
@@ -12,7 +13,7 @@ const keys = [
   key('key_1', 1, '0x2222222222222222222222222222222222222222', false),
   key('key_2', 2, '0x3333333333333333333333333333333333333333', false, 'EXTERNAL'),
 ];
-const origin = 'http://localhost:5779';
+const origin = ORIGIN;
 
 type Message = { type: string; success?: boolean; keyId?: string; address?: string; keyType?: string };
 

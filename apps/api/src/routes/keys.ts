@@ -14,7 +14,14 @@ import { createSealingContext, deriveKeyForRecord } from '../services/key-sealin
 import { deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, PrimaryKeyConflictError, setPrimaryKey } from '../services/primary-key';
 import { checkSignableMessage } from '../services/siwe-origin';
-import { appKeyRefusalBody, appKeyRefusalForMessage, appKeyRefusalStatus } from '../services/app-key-refusal';
+import {
+  appKeyRefusalBody,
+  appKeyRefusalForMessage,
+  appKeyRefusalStatus,
+  blocksOutsideApps,
+  encryptionOutsideAppsRefusalForMessage,
+} from '../services/app-key-refusal';
+import { isFirstPartyEncryptionOrigin } from '../services/first-party-origins';
 import { rejectNonBrowserControlRequest } from '../middleware/browser-control';
 
 import { log, logError } from '../log';
@@ -99,6 +106,9 @@ keysRouter.post('/link', async (c) => {
   if (challenge.expiresAt <= Date.now()) {
     challengeStore.delete(nonce);
     return c.json({ error: 'Challenge expired' }, 400);
+  }
+  if (body.message !== challenge.message) {
+    return c.json({ error: 'Wallet verification message differs from challenge' }, 400);
   }
 
   // Delete the nonce after use (one-time use)
@@ -300,9 +310,20 @@ keysRouter.post('/:keyId/sign', async (c) => {
   if (siweCheck.siwe && !siweCheck.ok) {
     return c.json({ error: siweCheck.message, code: 'siwe_origin_refused', reason: siweCheck.code }, 403);
   }
-  const appKeyRefusal = appKeyRefusalForMessage(body.message);
+  const appKeyRefusal = appKeyRefusalForMessage(body.message)
+    ?? (blocksOutsideApps(body.message) ? ({ reason: 'apps_key' } as const) : null);
   if (appKeyRefusal) {
-    return c.json(appKeyRefusalBody(appKeyRefusal, 'browser'), appKeyRefusalStatus(appKeyRefusal));
+    return c.json(appKeyRefusalBody(appKeyRefusal, 'non_browser'), appKeyRefusalStatus(appKeyRefusal));
+  }
+  // TC-2247: decrypt or key.create on an encryption resource outside `apps/`, a bare network
+  // included, is signed only for a first-party site (services/first-party-origins.ts). The
+  // origin is the one TC-1486 verified above; an unattributed SIWE never gets this far. Text and
+  // `0x` hex are both read, and a ReCap that cannot be read is refused. Checked before unseal.
+  const encryptionRefusal = isFirstPartyEncryptionOrigin(body.requestOrigin)
+    ? null
+    : encryptionOutsideAppsRefusalForMessage(body.message);
+  if (encryptionRefusal) {
+    return c.json(appKeyRefusalBody(encryptionRefusal, 'browser'), appKeyRefusalStatus(encryptionRefusal));
   }
 
   const key = await prisma.ethereumKey.findFirst({

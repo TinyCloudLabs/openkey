@@ -50,7 +50,12 @@ export const DYNAMIC_CLIENT_REGISTRATION_ALLOWED_SCOPES = OAUTH_SCOPES.filter(
 
 export function oauthValidAudiences(baseURL: string, configured = process.env.OAUTH_VALID_AUDIENCES): string[] {
   const values = configured?.split(',').map((value) => value.trim()).filter(Boolean) ?? [];
-  return Array.from(new Set([baseURL, DEFAULT_TINYCLOUD_MCP_AUDIENCE, ...values]));
+  return Array.from(new Set([
+    baseURL,
+    DEFAULT_TINYCLOUD_MCP_AUDIENCE,
+    'https://mcp.tinycloud.xyz/chatgpt/mcp',
+    ...values,
+  ]));
 }
 
 export function dynamicClientRegistrationEnabled(

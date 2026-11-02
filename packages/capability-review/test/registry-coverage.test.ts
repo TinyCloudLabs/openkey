@@ -178,7 +178,7 @@ describe("core services stay fail-closed off their known shapes", () => {
       expect(grant.family).toBe("unknown");
       expect(grant.severity).not.toBe("standard");
       expect(buildStatement(grant).primaryText).toBe(
-        `Perform ${ability} on ${service}`,
+        `Unknown action: ${ability}`,
       );
     }
   });
@@ -223,7 +223,7 @@ describe("core services stay fail-closed off their known shapes", () => {
     expect(read.family).toBe("cross-app-data");
     expect(read.severity).toBe("attention");
     expect(buildStatement(read).primaryText).toBe(
-      "Perform tinycloud.duckdb/read on tinycloud.duckdb",
+      "Read another user's data",
     );
     const admin = review(`${space("default", OTHER)}/duckdb/analytics`, [
       "tinycloud.duckdb/import",

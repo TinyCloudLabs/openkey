@@ -103,6 +103,13 @@ bun dev:portless
   Existing clients are not broadened automatically; affected connectors must re-register.
   The API suite exercises registration, consent, PKCE exchange and refresh in an isolated
   real-provider subprocess (`oauth-mcp-registration.test.ts`).
+- The public ChatGPT candidate uses the distinct OAuth resource
+  `https://mcp.tinycloud.xyz/chatgpt/mcp` and exact web delegation callback
+  `https://mcp.tinycloud.xyz/chatgpt/connect/callback`. Preserve the broad
+  `/mcp` resource and `/connect/callback`; register no origin-wide wildcard.
+  API and web deployment are both needed. This does not change sign-in methods
+  or remove consent. Default-branch merges and deployment require explicit
+  owner approval; no auto-merge or deployment bypass.
 - Never bump `@phala/dstack-sdk` or change `createProductionClient` in `packages/tee` without
   reading `docs/tee-overview.md` "Frozen key derivation". The SDK is pinned exactly; in SDK 0.6
   `DstackClient` derives different keys, which would make every sealed key unrecoverable. The

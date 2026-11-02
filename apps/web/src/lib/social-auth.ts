@@ -1,4 +1,4 @@
-import { API_BASE, socialRedirectClient } from './auth-client';
+import { API_BASE, authClient, socialRedirectClient } from './auth-client';
 import { setSessionToken } from './embed-passkey';
 
 export type SocialProviderId = 'google' | 'apple';
@@ -26,6 +26,8 @@ export type SocialPopupDependencies = {
   setPoll: (listener: () => void) => number;
   clearPoll: (id: number) => void;
   persistToken: (token: string) => void;
+  /** Tells this tab's session store that a sign-in just happened in another window. */
+  refreshSession: () => void;
 };
 
 function browserPopupDependencies(): SocialPopupDependencies {
@@ -37,6 +39,9 @@ function browserPopupDependencies(): SocialPopupDependencies {
     setPoll: (listener) => window.setInterval(listener, 500),
     clearPoll: (id) => window.clearInterval(id),
     persistToken: setSessionToken,
+    // The popup signs in inside its own window, so this tab's Better Auth session store still holds the
+    // signed-out answer it read before; the email-code path signals it the same way (auth-client.ts).
+    refreshSession: () => authClient.$store.notify('$sessionSignal'),
   };
 }
 
@@ -102,6 +107,8 @@ export async function signInWithSocialPopup(
       finish(() => {
         popup.close();
         deps.persistToken(event.data!.sessionToken!);
+        // Best effort: the token is saved, and a throwing store subscriber must not leave the sign-in pending.
+        try { deps.refreshSession(); } catch { /* the session re-reads on its own at the next load */ }
         resolve(event.data!.sessionToken!);
       });
     };

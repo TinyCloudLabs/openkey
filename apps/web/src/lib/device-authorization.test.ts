@@ -17,7 +17,6 @@ import {
   type DevicePermission,
   type DeviceRequestRecord,
 } from './device-authorization';
-import { DECRYPT_DEFAULT_KEY_STATEMENT } from '@openkey/capability-review';
 
 const space = 'tinycloud:pkh:eip155:1:0x0000000000000000000000000000000000000001:default';
 const signer = { address: '0x0000000000000000000000000000000000000001', chainId: 1 };
@@ -293,7 +292,7 @@ describe('decryptDefaultEntryLabel', () => {
       actions: ['tinycloud.encryption/decrypt'],
     };
     expect(decryptDefaultEntryLabel(entry, 3600)).toEqual({
-      statement: DECRYPT_DEFAULT_KEY_STATEMENT,
+      statement: 'Decrypt protected data',
       lifetime: '1 hour',
     });
   });

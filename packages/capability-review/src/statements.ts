@@ -7,16 +7,33 @@
 // display strings, but the primary statement is always derived from the
 // verified structure of the request.
 //
-// Falls back to the literal service/resource/actions for any shape it does
-// not recognize — invented friendly semantics on unknown shapes would be a
-// spec violation (see the merge-readiness contract).
+// Falls back to plain words for the known actions, and the raw ability for
+// any other, on any shape it does not recognize — invented friendly semantics
+// on unknown shapes would be a spec violation (see the merge-readiness
+// contract).
 //
 // The `sensitiveCallout(n)` string is the exact copy required by the
 // contract; UI callers MUST route through it rather than composing the
 // sentence themselves.
 
-import type { CapabilityGrant } from "./model.js";
-import { DECRYPT_DEFAULT_KEY_STATEMENT } from "./copy.js";
+import type { CapabilityAction, CapabilityGrant, CapabilityReviewModel, PermissionSeverity } from "./model.js";
+import { appDisplayName } from "./app-identity.js";
+import {
+  APP_KEY_ABILITIES,
+  DELETE_REFUSED_TEMPLATE,
+  DELEGATION_LIST_STATEMENT,
+  LITERAL_TRUNCATE_CHARS,
+  NAMED_KEY_STATEMENTS,
+  OWN_KEY_PREFIX_STATEMENTS,
+  appKeyStatementText,
+  renderLiteral,
+  renderNamedKeySentence,
+  type AppKeyAbility,
+  type NamedKeyVerb,
+} from "./copy.js";
+import type { EncryptionResource } from "./encryption-resource.js";
+import { ENCRYPTION_URN_PREFIX, parseEncryptionResource } from "./encryption-resource.js";
+import { isAppsKeyResource, parseKeyResource } from "./key-resource.js";
 import { isMetadataOnlyAccess } from "./action-semantics.js";
 import {
   CANONICAL_APP_SCOPE_SECRET_ABILITIES,
@@ -28,10 +45,12 @@ import {
   SQL_ADMIN_OPERATIONS,
   coreOperations,
   isCoreOperationService,
-  joinDistinct,
 } from "./core-operations.js";
+import { plainSentence, plainWords } from "./plain-words.js";
 
 export interface StatementEntry {
+  /** The severity of this row when it differs from the grant's: each app key ability is its own row. */
+  severity?: PermissionSeverity;
   /**
    * Primary sentence shown as the deterministic statement in the default
    * (summary) review view. Never contains a caller-supplied app name.
@@ -47,6 +66,18 @@ export interface StatementEntry {
    * space) shown alongside the service. Rendered as-is.
    */
   resource: string;
+  /** Set only on key.delete rows; the review does not offer these to approve. */
+  neverApprovable?: boolean;
+  /** True when text between backticks in `primaryText` is shown in monospace. */
+  codeSpans?: true;
+  /** Set on every fallback row (a shape the catalog does not recognize); its raw parts are already escaped and capped. */
+  literalEscaped?: true;
+  /**
+   * Set on a fallback row that shows an action or service raw (unknown,
+   * service-mismatched or failing). A safety display: it lists every raw
+   * action, so it is exempt from the one-line rule and may wrap.
+   */
+  showsRawText?: true;
 }
 
 /** Family/action-aware structural verb classification. */
@@ -209,27 +240,60 @@ function resourceOf(grant: CapabilityGrant): string {
 }
 
 /**
- * Raw encryption network URI for the account's `default` key, e.g.
- * `urn:tinycloud:encryption:did:pkh:eip155:1:0x<40 hex>:default`. Only a
- * raw URN with no sub-path matches; per-share or other named networks do not.
+ * True when `space`, `path` or `resourceService` carries an encryption URN
+ * that fails the strict parse. Such a grant's literal text is untrusted, so
+ * every displayed value is escaped and the resource is capped.
  */
-const DEFAULT_KEY_NETWORK_URN =
-  /^urn:tinycloud:encryption:did:pkh:eip155:\d+:0x[0-9a-fA-F]{40}:default$/;
+function hasFailingEncryptionUrn(grant: CapabilityGrant): boolean {
+  return [grant.space, grant.path, grant.resourceService ?? ""].some(
+    (value) =>
+      value.startsWith(ENCRYPTION_URN_PREFIX) &&
+      parseEncryptionResource(value) === null,
+  );
+}
 
-/** Fallback statement for anything the catalog does not recognize. */
+/**
+ * Fallback row for anything the catalog does not recognize: the known
+ * actions in plain words (see plainWords), then every other action by its
+ * raw ability ("unknown action: tinycloud.kv/archive"). A service-mismatched
+ * wire tuple or a failing encryption URN shows every action raw. Every raw
+ * action stays visible. The row is marked `literalEscaped`, and
+ * `showsRawText` when any part is raw.
+ */
 function fallbackStatement(grant: CapabilityGrant): StatementEntry {
-  // Grant actions are CapabilityAction objects; join their ability
-  // strings for the literal fallback text. Never invent friendly
-  // semantics from a shape we don't recognize.
-  const actionList = grant.actions.map((a) => a.ability).join(", ");
-  const resource = resourceOf(grant);
+  const failing = hasFailingEncryptionUrn(grant);
+  const service = failing
+    ? renderLiteral(grant.service, LITERAL_TRUNCATE_CHARS)
+    : grant.service;
+  const resource = failing
+    ? renderLiteral(resourceOf(grant), LITERAL_TRUNCATE_CHARS)
+    : resourceOf(grant);
+  // A near-miss failed the app-scope proof, so it never claims "your".
+  const owner =
+    grant.ownedBySelf === false
+      ? "another user's "
+      : grant.ownedBySelf === true && grant.appScopeNearMiss !== true
+        ? "your "
+        : "";
+  const { parts, raw } = plainWords(
+    grant.actions.map((action) => action.ability),
+    grant.space,
+    owner,
+    failing || grant.serviceMismatch === true,
+  );
+  if (raw.length > 0) {
+    parts.push(`unknown action${raw.length > 1 ? "s" : ""}: ${raw.join(", ")}`);
+  }
+  const text =
+    parts.length > 0
+      ? parts.join("; ")
+      : `unknown access: ${renderLiteral(grant.service, LITERAL_TRUNCATE_CHARS)}`;
   return {
-    primaryText:
-      actionList.length > 0
-        ? `Perform ${actionList} on ${grant.service}`
-        : `Access ${grant.service}`,
-    service: grant.service,
+    primaryText: text.charAt(0).toUpperCase() + text.slice(1),
+    service,
     resource,
+    literalEscaped: true,
+    ...(raw.length > 0 || parts.length === 0 ? { showsRawText: true as const } : {}),
   };
 }
 
@@ -419,7 +483,167 @@ const ENCRYPTION_RECOGNIZED_ABILITIES = new Set<string>([
   "encryption/network.create",
   "tinycloud.encryption/network.revoke",
   "encryption/network.revoke",
+  "tinycloud.encryption/key.create",
+  "encryption/key.create",
+  "tinycloud.encryption/key.block",
+  "encryption/key.block",
+  "tinycloud.encryption/key.unblock",
+  "encryption/key.unblock",
+  "tinycloud.encryption/key.delete",
+  "encryption/key.delete",
 ]);
+
+/**
+ * Named-key abilities and the consent verb each one renders. `key.delete` is
+ * absent on purpose: it never reaches this table (see buildKeyDeleteStatement).
+ */
+const NAMED_KEY_VERB_BY_ABILITY: Record<string, NamedKeyVerb> = {
+  "tinycloud.encryption/decrypt": "decrypt",
+  "encryption/decrypt": "decrypt",
+  "tinycloud.encryption/key.create": "create",
+  "encryption/key.create": "create",
+  "tinycloud.encryption/key.block": "block",
+  "encryption/key.block": "block",
+  "tinycloud.encryption/key.unblock": "unblock",
+  "encryption/key.unblock": "unblock",
+};
+
+const KEY_DELETE_ABILITIES = new Set<string>([
+  "tinycloud.encryption/key.delete",
+  "encryption/key.delete",
+]);
+
+function isKeyDeleteAction(action: { ability: string }): boolean {
+  return KEY_DELETE_ABILITIES.has(action.ability);
+}
+
+/**
+ * Encryption URN view of a grant. The URN is read from `space` (canonical:
+ * splitResourceUri leaves it whole with `path` "") or from `path` when `space`
+ * is the raw "encryption" service name. Any other placement, or a URN that
+ * fails the strict parse, is `invalid` and renders the literal fallback.
+ * `grant` is the canonical form, with the URN alone in `space`.
+ */
+type EncryptionUrnView =
+  | { kind: "none" }
+  | { kind: "invalid"; resource: string }
+  | {
+      kind: "urn";
+      resource: string;
+      parsed: EncryptionResource;
+      grant: CapabilityGrant;
+    };
+
+function canonicalEncryptionUrn(grant: CapabilityGrant): EncryptionUrnView {
+  if (!ENCRYPTION_SERVICES.has(grant.service)) return { kind: "none" };
+  const resourceService = grant.resourceService ?? "";
+  const inSpace = grant.space.startsWith(ENCRYPTION_URN_PREFIX);
+  const inPath = grant.path.startsWith(ENCRYPTION_URN_PREFIX);
+  const inService = resourceService.startsWith(ENCRYPTION_URN_PREFIX);
+  if (!inSpace && !inPath && !inService) return { kind: "none" };
+  const resource = inSpace
+    ? grant.space
+    : inPath
+      ? grant.path
+      : resourceService;
+  const shapeOk =
+    (inSpace && !inPath && !inService && resourceService === "") ||
+    (inPath &&
+      !inSpace &&
+      !inService &&
+      grant.space === "encryption" &&
+      resourceService === "");
+  const parsed = shapeOk ? parseEncryptionResource(resource) : null;
+  if (parsed === null) return { kind: "invalid", resource };
+  // Key and prefix URNs carry their whole path, so a stray `path` beside one
+  // is an unexpected placement. A network URN keeps `path` for the legacy
+  // network routing.
+  if (inSpace && grant.path !== "" && parsed.kind !== "network") {
+    return { kind: "invalid", resource };
+  }
+  return {
+    kind: "urn",
+    resource,
+    parsed,
+    grant: {
+      ...grant,
+      space: resource,
+      path: inSpace ? grant.path : "",
+      resourceService: null,
+    },
+  };
+}
+
+/**
+ * Fail-closed delete row. Every key.delete renders the refusal line and is
+ * never approvable. A parsed key or prefix names its own path and network;
+ * anything else names the raw resource string.
+ */
+function buildKeyDeleteStatement(
+  grant: CapabilityGrant,
+  view: EncryptionUrnView,
+): StatementEntry {
+  const resource = view.kind === "none" ? resourceOf(grant) : view.resource;
+  const parsed = view.kind === "urn" ? view.parsed : null;
+  const primaryText =
+    parsed !== null && parsed.kind !== "network"
+      ? renderNamedKeySentence(
+          DELETE_REFUSED_TEMPLATE,
+          parsed.keyPath,
+          parsed.network,
+        )
+      : renderNamedKeySentence(
+          DELETE_REFUSED_TEMPLATE,
+          resource,
+          "",
+          LITERAL_TRUNCATE_CHARS,
+        );
+  const failing = hasFailingEncryptionUrn(grant);
+  return {
+    primaryText,
+    service: failing
+      ? renderLiteral(grant.service, LITERAL_TRUNCATE_CHARS)
+      : grant.service,
+    resource: failing ? renderLiteral(resource, LITERAL_TRUNCATE_CHARS) : resource,
+    neverApprovable: true,
+  };
+}
+
+/**
+ * Consent row for one key-shaped encryption grant. Anything the ability table
+ * or the copy table does not cover renders the literal fallback, so no
+ * sentence is shown for an unrecognized shape.
+ */
+function buildNamedKeyStatement(
+  grant: CapabilityGrant,
+  parsed: EncryptionResource,
+  resource: string,
+): StatementEntry {
+  const action = grant.actions.length === 1 ? grant.actions[0] : undefined;
+  const verb =
+    action !== undefined &&
+    Object.hasOwn(NAMED_KEY_VERB_BY_ABILITY, action.ability)
+      ? NAMED_KEY_VERB_BY_ABILITY[action.ability]
+      : undefined;
+  if (parsed.kind === "network" || verb === undefined) {
+    return fallbackStatement(grant);
+  }
+  if (grant.ownedBySelf !== true) return fallbackStatement(grant);
+  const template = parsed.kind === "prefix" && parsed.network === "default" &&
+    (verb === "create" || verb === "decrypt")
+    ? OWN_KEY_PREFIX_STATEMENTS[verb]
+    : NAMED_KEY_STATEMENTS[verb][parsed.kind];
+  if (template === null) return fallbackStatement(grant);
+  return {
+    primaryText: renderNamedKeySentence(
+      template,
+      parsed.keyPath,
+      parsed.network,
+    ),
+    service: grant.service,
+    resource,
+  };
+}
 
 /**
  * Fail-closed gate for the KV / SQL / encryption family/service branches
@@ -433,10 +657,9 @@ const ENCRYPTION_RECOGNIZED_ABILITIES = new Set<string>([
  *
  * Unknown services (anything not in KV / SQL / encryption / capabilities
  * / secrets) return `true` so `buildStatement` reaches its unknown-service
- * fallback branch untouched. The fallback at the end of `buildStatement`
- * still emits the literal `Perform <actions> on <service>` copy, so
- * returning `true` here does NOT admit friendly copy for an unknown
- * service — it just avoids double-handling.
+ * fallback branch untouched. The fallback names only the actions it knows
+ * and shows any other one raw, so returning `true` here does NOT admit
+ * friendly copy for an unknown service — it just avoids double-handling.
  *
  * Empty action lists ALWAYS return `false` regardless of service. A
  * friendly sentence would still speak about "read" or "update" authority
@@ -498,45 +721,140 @@ function schemaOnlyStatementText(
     // copy does not name tables, so create/change/delete is stated here.
     if (grant.ownedBySelf !== true && grant.ownedBySelf !== false) return null;
     const owner = grant.ownedBySelf === false ? "another user's" : "your";
-    const scope = grant.path === "" ? "entire " : "";
-    return `Create, change and delete tables in ${owner} ${scope}secret catalog`;
+    const scope = grant.path === "" ? (grant.ownedBySelf === false ? "all of " : "all ") : "";
+    return `Edit and delete ${scope}${owner} secret tables`;
   }
   if (grant.ownedBySelf === false && !isSecretsSpace(grant.space)) {
-    return `Create, change and delete tables in ${otherUserSubject(spaceName)}`;
+    // "another user's application data" → "another user's application tables".
+    return `Edit and delete ${otherUserSubject(spaceName).replace(/ data$/, " tables")}`;
   }
   if (spaceName === "applications" && grant.family === "own-app-data") {
-    return "Create, change and delete this app's tables";
+    return "Edit and delete this app's tables";
   }
   if (spaceName === "account" && grant.family === "bootstrap-sql") {
-    return "Create, change and delete tables in your TinyCloud account";
+    return "Edit and delete tables in your TinyCloud account";
   }
   if (grant.family === "own-app-data" || grant.family === "cross-app-data") {
-    return "Create, change and delete tables in application data";
+    return "Edit and delete tables in application data";
+  }
+  return null;
+}
+
+/** The app key ability a wire ability names, byte-exact in either namespace. */
+function appKeyAbilityOf(ability: string): AppKeyAbility | null {
+  for (const name of APP_KEY_ABILITIES) {
+    if (ability === `tinycloud.encryption/${name}` || ability === `encryption/${name}`) return name;
   }
   return null;
 }
 
 /**
- * A default-network grant that carries encryption setup and decrypt together.
- * The combined phrase would present the default-key decrypt as setup-only, so
- * `buildStatements` renders the setup verbs and the decrypt verbs as two rows.
+ * Rows for an encryption grant on a key or prefix under `apps/`, one row per
+ * ability in a fixed order, each on its own. An ability that is not one of the
+ * five, and a resource under `apps/` that does not parse, keep the literal
+ * fallback. `null` for every other grant.
  */
-function splitsDefaultKeyDecrypt(grant: CapabilityGrant): boolean {
-  if (!ENCRYPTION_SERVICES.has(grant.service)) return false;
-  if (
-    grant.serviceMismatch === true ||
-    grant.appScopeNearMiss === true ||
-    grant.appScopedSecret
-  ) {
-    return false;
+function appKeyStatements(grant: CapabilityGrant): StatementEntry[] | null {
+  if (!ENCRYPTION_SERVICES.has(grant.service) || grant.serviceMismatch === true) return null;
+  const resource = resourceOf(grant);
+  if (!isAppsKeyResource(resource)) return null;
+  const parsed = parseKeyResource(resource);
+  if (!parsed) {
+    const view = canonicalEncryptionUrn(grant);
+    return grant.actions.map((action) => {
+      const single = { ...grant, actions: [action] };
+      return isKeyDeleteAction(action)
+        ? buildKeyDeleteStatement(single, view)
+        : fallbackStatement(single);
+    });
   }
-  const verbs = classifyVerbs(grant.actions.map((a) => a.ability));
-  return (
-    verbs.hasCreate &&
-    verbs.hasDecrypt &&
-    !verbs.hasRevoke &&
-    DEFAULT_KEY_NETWORK_URN.test(resourceOf(grant))
+  const target = {
+    path: parsed.isPrefix ? `${parsed.keyPath}/` : parsed.keyPath,
+    isPrefix: parsed.isPrefix,
+  };
+  const present = new Set<AppKeyAbility>();
+  const unrecognised: CapabilityAction[] = [];
+  for (const action of grant.actions) {
+    const name = appKeyAbilityOf(action.ability);
+    if (name) present.add(name);
+    else unrecognised.push(action);
+  }
+  const rows: StatementEntry[] = APP_KEY_ABILITIES.filter((name) => present.has(name)).map(
+    (name) => ({
+      primaryText: appKeyStatementText(name, target),
+      service: grant.service,
+      resource,
+      codeSpans: true,
+      neverApprovable: name === "key.delete",
+      severity: name === "decrypt" ? "sensitive" : "attention",
+    }),
   );
+  if (rows.length === 0 || unrecognised.length > 0) {
+    rows.push(fallbackStatement({ ...grant, actions: unrecognised.length > 0 ? unrecognised : grant.actions }));
+  }
+  return rows;
+}
+
+/**
+ * The `key.delete` rows of an app key grant, whether or not the action is
+ * selected. The action is shown and cannot be approved.
+ */
+export function appKeyNotGrantableStatements(grant: CapabilityGrant): StatementEntry[] {
+  const actions = grant.actions.filter((action) => appKeyAbilityOf(action.ability) === "key.delete");
+  return actions.length === 0 ? [] : (appKeyStatements({ ...grant, actions }) ?? []);
+}
+
+/** Does this grant let an app decrypt with keys under `apps/`? */
+export function grantIsAppKeyDecrypt(grant: CapabilityGrant): boolean {
+  return grant.family === "app-keys" && grant.actions.some((action) => appKeyAbilityOf(action.ability) === "decrypt");
+}
+
+/** The app a request with app keys comes from; see `app-identity.ts`. */
+export interface AppKeyIdentity {
+  /** The verified manifest's name after `appDisplayName`, or `null`. */
+  name: string | null;
+  appId: string;
+  /** The verified origin, when there is one. */
+  origin: string | null;
+}
+
+/**
+ * The identity shown at the top of a request with app keys, `null` for any
+ * other request. The name needs a manifest that is verified or origin-bound;
+ * the id is the verified `app_id`, or the id the key resources name until the
+ * manifest is verified. Where the two disagree the name is left out and the id
+ * of the resources is shown.
+ */
+export function appKeyIdentity(model: CapabilityReviewModel): AppKeyIdentity | null {
+  const grants = model.permissions.filter((grant) => grant.family === "app-keys");
+  if (grants.length === 0) return null;
+  const named = new Set<string>();
+  for (const grant of grants) {
+    const parsed = parseKeyResource(resourceOf(grant));
+    const segments = parsed?.keyPath.split("/");
+    if (segments && segments[0] === "apps" && segments[1]) named.add(segments[1]);
+  }
+  const requester = model.requester;
+  const verifiedId = requester.appId;
+  const resourceId = named.size === 1 ? [...named][0]! : null;
+  const appId = verifiedId ?? resourceId;
+  if (!appId) return null;
+  const trusted =
+    requester.manifestNameProvenance === "verified" || requester.manifestNameProvenance === "origin-bound";
+  const consistent = resourceId === null || resourceId === appId;
+  return {
+    name: trusted && verifiedId !== null && consistent ? appDisplayName(requester.manifestName) : null,
+    appId: consistent ? appId : resourceId!,
+    origin: requester.verifiedOrigin,
+  };
+}
+
+/** A statement split at its backticks; the odd parts are the monospace text. */
+export function splitStatementCode(text: string): Array<{ text: string; code: boolean }> {
+  return text
+    .split("`")
+    .map((part, index) => ({ text: part, code: index % 2 === 1 }))
+    .filter((part) => part.text !== "");
 }
 
 /**
@@ -546,17 +864,37 @@ function splitsDefaultKeyDecrypt(grant: CapabilityGrant): boolean {
  * update row. Callers must render every returned row; `buildStatement` alone
  * renders only the non-schema part of a mixed grant.
  */
-export function buildStatements(grant: CapabilityGrant): StatementEntry[] {
-  if (splitsDefaultKeyDecrypt(grant)) {
+export function buildStatements(input: CapabilityGrant): StatementEntry[] {
+  const appKeyRows = appKeyStatements(input);
+  if (appKeyRows) return appKeyRows;
+  // key.delete is its own never-approvable row beside any other abilities.
+  const deletes = input.actions.filter(isKeyDeleteAction);
+  if (deletes.length > 0) {
+    const others = input.actions.filter((a) => !isKeyDeleteAction(a));
     return [
-      buildStatement({
-        ...grant,
-        actions: grant.actions.filter((a) => !classifyVerbs([a.ability]).hasDecrypt),
-      }),
-      buildStatement({
-        ...grant,
-        actions: grant.actions.filter((a) => classifyVerbs([a.ability]).hasDecrypt),
-      }),
+      ...(others.length > 0 ? buildStatements({ ...input, actions: others }) : []),
+      ...deletes.map((action) => buildStatement({ ...input, actions: [action] })),
+    ];
+  }
+  const view = canonicalEncryptionUrn(input);
+  if (view.kind === "invalid") return [buildStatement(input)];
+  const grant = view.kind === "urn" ? view.grant : input;
+  if (view.kind === "urn" && view.parsed.kind !== "network" && grant.actions.length > 1) {
+    return grant.actions.map((action) => buildStatement({ ...grant, actions: [action] }));
+  }
+  // Key actions and decryption actions on one encryption resource get a row
+  // each, so neither is folded into the other's words.
+  const keyActions = grant.actions.filter((a) => /^(tinycloud\.)?encryption\/key\./.test(a.ability));
+  if (
+    ENCRYPTION_SERVICES.has(grant.service) &&
+    grant.serviceMismatch !== true &&
+    keyActions.length > 0 &&
+    keyActions.length < grant.actions.length &&
+    grant.actions.every((a) => ENCRYPTION_RECOGNIZED_ABILITIES.has(a.ability))
+  ) {
+    return [
+      buildStatement({ ...grant, actions: grant.actions.filter((a) => !keyActions.includes(a)) }),
+      buildStatement({ ...grant, actions: keyActions }),
     ];
   }
   const schemaActions = grant.actions.filter(
@@ -594,7 +932,21 @@ export function buildStatements(grant: CapabilityGrant): StatementEntry[] {
  *   3. Secret reads and mutations
  *   4. Anything else → literal fallback
  */
-export function buildStatement(grant: CapabilityGrant): StatementEntry {
+export function buildStatement(input: CapabilityGrant): StatementEntry {
+  const appKeyRows = appKeyStatements(input);
+  if (appKeyRows) return appKeyRows[0]!;
+  // key.delete fails closed: every delete row is never approvable and renders
+  // the refusal line, whatever its resource parses to.
+  const view = canonicalEncryptionUrn(input);
+  if (input.actions.some(isKeyDeleteAction)) {
+    return input.actions.length === 1
+      ? buildKeyDeleteStatement(input, view)
+      : { ...fallbackStatement(input), neverApprovable: true };
+  }
+  // A URN that fails the strict parse, or sits in an unexpected field, renders
+  // the literal fallback.
+  if (view.kind === "invalid") return fallbackStatement(input);
+  const grant = view.kind === "urn" ? view.grant : input;
   const service = grant.service;
   const path = grant.path;
   const space = grant.space;
@@ -618,6 +970,12 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
   if (grant.serviceMismatch === true) {
     return fallbackStatement(grant);
   }
+  // Key-shaped encryption grants render per-verb copy. A network URN falls
+  // through to the network branches below.
+  if (view.kind === "urn" && view.parsed.kind !== "network") {
+    return buildNamedKeyStatement(input, view.parsed, view.resource);
+  }
+
   // Schema is never folded into another row. A mixed schema grant falls back
   // to the literal wire tuple here; buildStatements() renders the split rows.
   if (
@@ -857,6 +1215,18 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
       resource,
     };
   }
+  // The KV data sentences below say "update", which hides a delete. A grant
+  // that can delete reads in plain words that name it ("Read and delete your
+  // data"). Secrets and the account space keep their own sentences.
+  if (
+    KV_SERVICES.has(service) &&
+    !isSecretsSpace(space) &&
+    spaceName !== "account" &&
+    grant.actions.some((a) => verbOf(a.ability) === "del" || verbOf(a.ability) === "delete")
+  ) {
+    const owner = grant.ownedBySelf === true ? "your " : grant.ownedBySelf === false ? "another user's " : "";
+    return { primaryText: plainSentence(abilityStrings, space, owner), service, resource };
+  }
   if (
     grant.ownedBySelf === false &&
     (KV_SERVICES.has(service) || SQL_SERVICES.has(service)) &&
@@ -963,9 +1333,7 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
   // are derived from the signed resource structure, not caller-supplied copy.
   if (
     spaceName === "account" &&
-    (grant.family === "bootstrap-kv" ||
-      grant.family === "bootstrap-sql" ||
-      grant.family === "bootstrap-delegation")
+    (grant.family === "bootstrap-kv" || grant.family === "bootstrap-sql")
   ) {
     return {
       primaryText: "Manage your TinyCloud account",
@@ -1071,6 +1439,14 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
 
   // 1. Encryption: create + decrypt in the same grant.
   if (ENCRYPTION_SERVICES.has(service)) {
+    // The words below name neither another user nor key actions, so those
+    // grants read in plain words instead.
+    if (
+      grant.ownedBySelf === false ||
+      !abilityStrings.every((a) => /^(tinycloud\.)?encryption\/(decrypt|network\.create|network\.revoke)$/.test(a))
+    ) {
+      return fallbackStatement(grant);
+    }
     if (verbs.hasRevoke) {
       if (
         abilityStrings.length === 1 &&
@@ -1086,27 +1462,22 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
       return fallbackStatement(grant);
     }
     if (verbs.hasCreate && verbs.hasDecrypt) {
-      // A default-network combination is split by buildStatements; a single
-      // row must not present the default-key decrypt as setup-only.
-      if (DEFAULT_KEY_NETWORK_URN.test(resource)) return fallbackStatement(grant);
       return {
-        primaryText: "Set up encrypted data access and decrypt protected data",
+        primaryText: "Set up encryption and decrypt protected data",
         service,
         resource,
       };
     }
     if (verbs.onlyDecrypt || (verbs.hasDecrypt && !verbs.hasCreate)) {
       return {
-        primaryText: DEFAULT_KEY_NETWORK_URN.test(resource)
-          ? DECRYPT_DEFAULT_KEY_STATEMENT
-          : "Decrypt protected data",
+        primaryText: "Decrypt protected data",
         service,
         resource,
       };
     }
     if (verbs.onlyCreate) {
       return {
-        primaryText: "Set up encrypted data access",
+        primaryText: "Set up encryption",
         service,
         resource,
       };
@@ -1154,10 +1525,7 @@ export function buildStatement(grant: CapabilityGrant): StatementEntry {
       );
     if (!allActionsRecognized) return fallbackStatement(grant);
     return {
-      primaryText:
-        spaceName === "account"
-          ? "Manage your TinyCloud account"
-          : "View connected access and sharing",
+      primaryText: DELEGATION_LIST_STATEMENT,
       service,
       resource,
     };
@@ -1232,6 +1600,11 @@ function coreOperationStatement(grant: CapabilityGrant): StatementEntry | null {
   const abilities = grant.actions.map((action) => action.ability);
   const resource = resourceOf(grant);
   const literal = () => fallbackStatement(grant);
+  // One operation keeps its own sentence; several read as plain kinds, on one line.
+  const oneLine = (descriptions: string[]): string =>
+    new Set(descriptions).size === 1
+      ? descriptions[0]!
+      : plainSentence(abilities, grant.space, grant.ownedBySelf === true ? "your " : "");
 
   if (isCoreOperationService(service)) {
     const operations = coreOperations(service, abilities);
@@ -1243,10 +1616,7 @@ function coreOperationStatement(grant: CapabilityGrant): StatementEntry | null {
       return literal();
     }
     return {
-      primaryText: joinDistinct(
-        operations.map((operation) => operation.description),
-        "; ",
-      ),
+      primaryText: oneLine(operations.map((operation) => operation.description)),
       service,
       resource,
     };
@@ -1272,10 +1642,7 @@ function coreOperationStatement(grant: CapabilityGrant): StatementEntry | null {
     const verbs = exactVerbs(SQL_SERVICES, SQL_ADMIN_OPERATIONS);
     if (!verbs || grant.ownedBySelf === false) return literal();
     return {
-      primaryText: joinDistinct(
-        verbs.map((verb) => SQL_ADMIN_OPERATIONS[verb]!.description),
-        "; ",
-      ),
+      primaryText: oneLine(verbs.map((verb) => SQL_ADMIN_OPERATIONS[verb]!.description)),
       service,
       resource,
     };
@@ -1290,10 +1657,7 @@ function coreOperationStatement(grant: CapabilityGrant): StatementEntry | null {
     const verbs = exactVerbs(KV_SERVICES, KV_FEED_DESCRIPTIONS);
     if (!verbs) return null;
     return {
-      primaryText: joinDistinct(
-        verbs.map((verb) => KV_FEED_DESCRIPTIONS[verb]!),
-        "; ",
-      ),
+      primaryText: oneLine(verbs.map((verb) => KV_FEED_DESCRIPTIONS[verb]!)),
       service,
       resource,
     };
@@ -1308,5 +1672,7 @@ function coreOperationStatement(grant: CapabilityGrant): StatementEntry | null {
  * `grantReachesSecretDataOrDecryption`.
  */
 export function sensitiveCallout(count: number): string {
-  return `${count} exact grants reach secret data or decryption. You can review them below.`;
+  return count === 1
+    ? "1 permission reaches secrets or decryption"
+    : `${count} permissions reach secrets or decryption`;
 }

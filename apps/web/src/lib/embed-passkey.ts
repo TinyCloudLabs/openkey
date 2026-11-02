@@ -21,6 +21,23 @@ export function getSessionToken(): string | null {
   return sessionStorage.getItem(SESSION_TOKEN_KEY);
 }
 
+/**
+ * Request options with the credential the embedded widget holds. An iframe on
+ * another site does not send OpenKey's session cookie, so `lib/api.ts` sends the
+ * session token as a bearer credential. This does the same for the widget's own
+ * calls: with a token, `Authorization: Bearer <token>` and no cookies; without
+ * one, cookies as before.
+ */
+export function withSessionCredential(init: RequestInit): RequestInit {
+  const token = getSessionToken();
+  if (!token) return { ...init, credentials: 'include' };
+  return {
+    ...init,
+    credentials: 'omit',
+    headers: { ...(init.headers as Record<string, string> | undefined), Authorization: `Bearer ${token}` },
+  };
+}
+
 export function setSessionToken(token: string): void {
   sessionStorage.setItem(SESSION_TOKEN_KEY, token);
 }
