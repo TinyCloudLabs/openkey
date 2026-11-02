@@ -40,6 +40,10 @@ const signinPolishMigration = '20261012_0001_signin_polish_hints_branding';
 const signinPolishChecksum = 'd09960dda6ae76472c61629283b4030131d47b5f0f5cd7d79a3d02c0c5bf0e96';
 const googleLinkStepUpMigration = '20261015_0001_google_link_step_up';
 const googleLinkStepUpChecksum = '4848695c2de0e91f66e9e05e4ffa9537bfb62685cc37a925db121d1e7c3c0c4c';
+const appleSocialIdentityMigration = '20261015_0002_apple_social_identity';
+const appleSocialIdentityChecksum = '5d98152596b3d2bc66dedad4128e77100cc056cefb7ca33d466a1f74c7cea8ba';
+const appleSocialContinuationMigration = '20261015_0003_apple_social_continuation';
+const appleSocialContinuationChecksum = '52ade4b7b47f44a4ee4638cb33a28fc56a54856801b44b65c4e3dc3eb2beb953';
 const preparedHandoffMigration = '20261016_0001_prepared_siwe_handoff';
 const preparedHandoffChecksum = '645d931e10dbd068da7f7243dcbe995f1af6f0e339b98d082264c8153bfec9ec';
 const appSignInDayMigration = '20261019_0001_app_sign_in_day';
@@ -58,6 +62,8 @@ const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
   [nativeSessionProofJtiMigration, nativeSessionProofJtiChecksum],
   [signinPolishMigration, signinPolishChecksum],
   [googleLinkStepUpMigration, googleLinkStepUpChecksum],
+  [appleSocialIdentityMigration, appleSocialIdentityChecksum],
+  [appleSocialContinuationMigration, appleSocialContinuationChecksum],
   [preparedHandoffMigration, preparedHandoffChecksum],
   [appSignInDayMigration, appSignInDayChecksum],
   [tinycloudBootstrapSweepMigration, tinycloudBootstrapSweepChecksum],
