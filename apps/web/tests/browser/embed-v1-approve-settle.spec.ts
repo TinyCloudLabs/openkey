@@ -12,9 +12,12 @@ const siwe = EXPLORER_PERMISSION_POPUP_REQUEST.replace(/^explorer\.tinycloud\.xy
 
 type Parent = 'sdk-modal' | 'never-resizes' | 'resizes-forever';
 
-async function openEmbed(page: Page, parent: Parent, version: 1 | 2 = 1) {
+async function openEmbed(page: Page, parent: Parent, version: 1 | 2 = 1, keyDelayMs = 0) {
   await page.addInitScript(() => sessionStorage.setItem('openkey_session_token', 'test-session'));
-  await page.route('**/api/keys/**', (route) => route.fulfill({ json: { key: { id: 'selected-key', address, publicKey: '0x02', keyIndex: 0, label: 'Selected', keyType: 'MANAGED', createdAt: '2026-01-01T00:00:00Z' } } }));
+  await page.route('**/api/keys/**', async (route) => {
+    if (keyDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, keyDelayMs));
+    await route.fulfill({ json: { key: { id: 'selected-key', address, publicKey: '0x02', keyIndex: 0, label: 'Selected', keyType: 'MANAGED', createdAt: '2026-01-01T00:00:00Z' } } });
+  });
   await page.route('**/api/auth/get-session**', (route) => route.fulfill({ json: { session: { id: 'test-session' }, user: { id: 'test-user' } } }));
   await page.route('**/api/delegate/authorize-sign-prepare', (route) => route.fulfill({ json: { authorizationContextToken: 'context-token' } }));
   await page.goto('/__parity_harness');
@@ -89,6 +92,19 @@ test('a v1 review behind an animating frame: Approve is enabled only once the fr
   // While it was moving it was not enabled: every enabled sample is at the final position.
   const finalTop = tops.at(-1)!;
   expect(log.filter((s) => s.enabled === true && Math.abs(s.top - finalTop) > 0.5)).toEqual([]);
+});
+
+test('a v1 review that renders later than the ceiling (slow key read) still waits for the frame, and then does not move', async ({ page }) => {
+  await openEmbed(page, 'sdk-modal', 1, 2200);
+  await reviewShown(page);
+  await expect.poll(async () => enabledAt(await samples(page)), { timeout: 10_000 }).toBeDefined();
+  await page.waitForTimeout(500);
+  const log = await samples(page);
+  const firstEnabled = log.findIndex((s) => s.enabled === true);
+  const tops = log.slice(firstEnabled).filter((s) => !Number.isNaN(s.top)).map((s) => s.top);
+  expect(Math.max(...tops) - Math.min(...tops)).toBeLessThanOrEqual(0.5);
+  // The clock started when the review rendered, not when the page loaded: it was not enabled at first display.
+  expect(log.find((s) => s.enabled !== null)!.enabled).toBe(false);
 });
 
 test('a v1 parent that never resizes the frame: Approve is enabled within the ceiling', async ({ page }) => {

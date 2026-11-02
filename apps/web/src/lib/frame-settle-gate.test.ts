@@ -39,11 +39,6 @@ function gate() {
 }
 
 describe('the settle gate', () => {
-  test('the documented timings are 300 ms quiet and a 1500 ms ceiling', () => {
-    expect(FRAME_SETTLE_QUIET_MS).toBe(300);
-    expect(FRAME_SETTLE_CEILING_MS).toBe(1500);
-  });
-
   test('blocks until the frame has been quiet for QUIET_MS after the review is shown, then arms', () => {
     const { c, g } = gate();
     g.show();

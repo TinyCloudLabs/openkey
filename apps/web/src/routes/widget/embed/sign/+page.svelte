@@ -67,6 +67,8 @@
   // v1 has no layout-ready handshake with the host: Approve waits until this frame's own size has been quiet (TC-2320).
   let frameSettled = $state(false);
   let frameSettle: FrameSettleGate | null = null;
+  // A content change that does not change the posted height does not move the frame, so it does not re-block Approve.
+  let lastPostedHeight = -1;
   let pendingLayoutAck: { height: number; layoutId: number } | null = null;
   let keyReadGeneration = 0;
   let keyOwnerToken: string | null = null;
@@ -117,6 +119,7 @@
 
   const origin = $page.url.searchParams.get('origin') || '*';
   const v2 = $page.url.searchParams.get('protocolVersion') === '2';
+  const frameResized = () => frameSettle?.resized();
   if (!v2 && typeof window !== 'undefined') {
     frameSettle = createFrameSettleGate({
       schedule: (run, ms) => {
@@ -126,10 +129,13 @@
       onChange: (settled) => { frameSettled = settled; },
     });
     // The frame's own size is what the SDK modal animates; each change restarts the quiet period.
-    window.addEventListener('resize', () => frameSettle?.resized());
+    window.addEventListener('resize', frameResized);
   }
-  // Start waiting once the review is on screen (the first call only).
-  $effect(() => { if (!v2 && reviewModel) frameSettle?.show(); });
+  // Start waiting once the review is actually rendered (the template's own conditions: not while signing in, loading or
+  // reading the key), so the clock cannot run out behind a sign-in screen (the first call only).
+  $effect(() => {
+    if (!v2 && reviewModel && !siweRefusal && replyFailureStatus === null && isAuthenticated && !loading && key) frameSettle?.show();
+  });
   const phaseRequestId = v2 ? $page.url.searchParams.get('requestId') : null;
   const phaseKeyId = v2 ? $page.url.searchParams.get('keyId') : null;
   const passkeysSupported = passkeysSupportedFromParams($page.url.searchParams);
@@ -211,6 +217,7 @@
       transport?.destroy();
       window.removeEventListener('message', handleMessage);
       window.removeEventListener('resize', applyPendingLayout);
+      window.removeEventListener('resize', frameResized);
       window.visualViewport?.removeEventListener('resize', applyPendingLayout);
       layoutGate?.destroy();
       frameSettle?.destroy();
@@ -329,7 +336,10 @@
         return;
       }
       // The host animates the frame to this height: Approve is blocked again until it is quiet (v1 only).
-      frameSettle?.posted();
+      if (height !== lastPostedHeight) {
+        lastPostedHeight = height;
+        frameSettle?.posted();
+      }
       if (currentRequestId && messageProtocolVersion !== null) {
         if (transport) {
           transport.emitResize(height);
