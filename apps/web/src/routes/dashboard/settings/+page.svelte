@@ -7,6 +7,7 @@
   import ConnectedMcpApps from './ConnectedMcpApps.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
+  import LinkedAccounts from '$lib/components/auth/linked-accounts.svelte';
 
   const session = authClient.useSession();
 
@@ -515,6 +516,8 @@
       {/if}
     {/if}
   </Card>
+
+  <LinkedAccounts />
 
   <Card class="mt-6">
     <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
