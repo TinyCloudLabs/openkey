@@ -37,12 +37,33 @@ class ScoreboardExclusionsTest(unittest.TestCase):
             + "email_domain,DISPOSABLE.EXAMPLE,synthetic\n",
             [
                 {"kind": "evm_address", "value": "0xabcdef0000000000000000000000000000000001"},
-                {"kind": "did", "value": "did:pkh:eip155:1:0xabcdef0000000000000000000000000000000001"},
                 {"kind": "email", "value": "person@example.invalid"},
                 {"kind": "did", "value": "did:key:zSyntheticAgent"},
                 {"kind": "email_domain", "value": "disposable.example"},
             ],
         )
+
+    def test_address_and_pkh_rows_collapse_without_changing_account_exclusion(self):
+        address = "0xabcdef0000000000000000000000000000000001"
+        rows = [f"address,{address.upper()},synthetic\n", f"did_pkh,did:pkh:eip155:1:{address},synthetic\n"]
+        for ordered in (rows, list(reversed(rows))):
+            result = self.export(HEADER + "".join(ordered))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout), [{"kind": "evm_address", "value": address}])
+            check = subprocess.run(
+                ["bun", "-e", """
+import assert from 'node:assert/strict';
+import {parseExclusions, classifyExcludedAccounts} from './apps/api/src/services/scoreboard-exclusions';
+const raw = await Bun.stdin.text();
+const address = '0xabcdef0000000000000000000000000000000001';
+const accounts = [{id:'synthetic',email:'person@example.invalid',ethereumKeys:[{address:address.toUpperCase()}]}];
+const original = [{kind:'evm_address',value:address},{kind:'did',value:`did:pkh:eip155:1:${address}`}];
+assert.deepEqual(classifyExcludedAccounts(accounts,parseExclusions(raw)),classifyExcludedAccounts(accounts,parseExclusions(JSON.stringify(original))));
+assert.equal(classifyExcludedAccounts(accounts,parseExclusions(raw)).userIds.size,1);
+"""],
+                cwd=SCRIPT.parent.parent, input=result.stdout, capture_output=True, text=True,
+            )
+            self.assertEqual(check.returncode, 0, check.stderr)
 
     def test_evidence_never_filters_list_rows(self):
         self.assert_export(

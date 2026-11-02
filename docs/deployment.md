@@ -154,6 +154,10 @@ inspection scripts. `bun install` alone does not generate the gitignored client.
 
 Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 
+The release owner sets `SCOREBOARD_EXCLUSIONS` in the sealed API environment through the
+existing complete-env procedure. `deploy-api.yml` is unchanged. Keep the legacy exclusion
+env alongside it for rollback. Details: TC-1480
+
 | Variable | Description |
 |----------|-------------|
 | `DATABASE_URL` | PostgreSQL connection string |
@@ -187,6 +191,10 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `CLOUDFLARE_API_TOKEN` | For SSL certificate management |
 | `DSTACK_GATEWAY_DOMAIN` | Phala gateway base domain (e.g. `dstack-pha-prod5.phala.network`); the ingress CNAMEs `api.openkey.so` to `gateway.<base>` (never `_.<base>`, which Android cannot resolve) |
 | `CERTBOT_EMAIL` | Email for Let's Encrypt |
+
+The exporter normalizes `did_pkh` rows to their lowercase EVM address, merges them with
+`address` rows, and emits each normalized identity once as compact JSON with only `kind`
+and `value`. Evidence is never exported. Details: TC-1480
 
 Scoreboard exclusions are evaluated inside OpenKey for account, protocol and app-user counts.
 Exact emails, EVM addresses and listed email domains match case-insensitively. Domain

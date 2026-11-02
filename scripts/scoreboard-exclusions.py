@@ -10,7 +10,7 @@ import sys
 
 
 HEADERS = ("kind", "value", "evidence")
-KINDS = {"address": "evm_address", "did_pkh": "did", "email": "email", "did_key": "did", "email_domain": "email_domain"}
+KINDS = {"address": "evm_address", "did_pkh": "evm_address", "email": "email", "did_key": "did", "email_domain": "email_domain"}
 PATTERNS = {
     "address": re.compile(r"0x[0-9a-f]{40}", re.IGNORECASE),
     "did_pkh": re.compile(r"did:pkh:eip155:\d+:0x[0-9a-f]{40}", re.IGNORECASE),
@@ -31,6 +31,8 @@ def exclusion_from_row(row):
         raise ValueError("Invalid identifier format")
     if kind != "did_key":
         value = value.lower()
+    if kind == "did_pkh":
+        value = value.rsplit(":", 1)[1]
     # Every list.csv row applies; evidence is not an exclusion gate.
     return {"kind": KINDS[kind], "value": value}
 
@@ -41,7 +43,15 @@ def exclusions_from_csv(source):
         raise ValueError("Invalid CSV header")
     if tuple(reader.fieldnames) != HEADERS:
         raise ValueError("Invalid CSV header")
-    return [exclusion_from_row(row) for row in reader]
+    exclusions = []
+    seen = set()
+    for row in reader:
+        entry = exclusion_from_row(row)
+        identity = (entry["kind"], entry["value"])
+        if identity not in seen:
+            seen.add(identity)
+            exclusions.append(entry)
+    return exclusions
 
 
 def main():
