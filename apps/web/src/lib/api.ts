@@ -1,16 +1,21 @@
 // API client for key management
-import { getSessionToken } from '$lib/embed-passkey';
+import { getSessionToken } from './embed-passkey';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
-async function fetchAPI<T>(path: string, options: RequestInit = {}): Promise<T> {
+/**
+ * `cookieOnly`: the request is sent with the cookie session and never with a stored token. The API refuses any
+ * request carrying an Authorization header when it changes a TinyCloud signing control (it must stay cookie-session
+ * only), and a tab can hold a leftover embedded-widget token that would otherwise be preferred over the cookie.
+ */
+async function fetchAPI<T>(path: string, options: RequestInit = {}, cookieOnly = false): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(options.headers as Record<string, string>),
   };
 
   // In embed context, use bearer token instead of cookies
-  const sessionToken = getSessionToken();
+  const sessionToken = cookieOnly ? null : getSessionToken();
   if (sessionToken) {
     headers['Authorization'] = `Bearer ${sessionToken}`;
   }
@@ -215,7 +220,7 @@ export const api = {
   async setPrimaryKey(keyId: string): Promise<{ changed: boolean; key: EthereumKey }> {
     return fetchAPI(`/api/keys/${encodeURIComponent(keyId)}/primary`, {
       method: 'POST',
-    });
+    }, true);
   },
 
   async updateKey(keyId: string, label: string): Promise<{ success: boolean }> {
@@ -277,7 +282,7 @@ export const api = {
     return fetchAPI('/api/account/auto-sign', {
       method: 'PATCH',
       body: JSON.stringify({ autoSignEnabled }),
-    });
+    }, true);
   },
 
   async getTinyCloudManageKeyPreference(): Promise<TinyCloudManageKeyPreference> {
@@ -288,7 +293,7 @@ export const api = {
     return fetchAPI('/api/account/tinycloud-manage-key', {
       method: 'PATCH',
       body: JSON.stringify({ mode, expectedEpoch: policyEpoch, confirmation }),
-    });
+    }, true);
   },
 
   async listTinyCloudManageKeyApps(): Promise<TinyCloudManageKeyAppsResponse> {
@@ -301,19 +306,19 @@ export const api = {
     return fetchAPI(`/api/account/tinycloud-apps/${encodeURIComponent(clientId)}`, {
       method: 'PATCH',
       body: JSON.stringify({ enabled, expectedEpoch: policyEpoch, confirmation }),
-    });
+    }, true);
   },
 
   async disconnectTinyCloudApp(clientId: string): Promise<{ clientId: string; disconnected: boolean }> {
     return fetchAPI(`/api/account/tinycloud-apps/${encodeURIComponent(clientId)}`, {
       method: 'DELETE', body: JSON.stringify({ confirmation: 'DISCONNECT' }),
-    });
+    }, true);
   },
 
   async disconnectMcpApp(consentId: string): Promise<{ consentId: string; disconnected: boolean }> {
     return fetchAPI(`/api/account/tinycloud-apps/mcp/${encodeURIComponent(consentId)}`, {
       method: 'DELETE', body: JSON.stringify({ confirmation: 'DISCONNECT' }),
-    });
+    }, true);
   },
 
   async getLinkChallenge(): Promise<{ message: string; nonce: string }> {
