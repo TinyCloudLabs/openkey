@@ -71,7 +71,7 @@
     void hostFactsKey;
     return watchHostPeer(untrack(() => hostFacts), import.meta.env.VITE_DELEGATE_NODE_ORIGINS, (next) => {
       peerRecognition = next;
-    });
+    }, untrack(() => transport.host));
   });
 
   function onEditingChange(next: boolean) {
