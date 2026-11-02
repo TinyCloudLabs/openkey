@@ -79,6 +79,7 @@ test('a widget-created account turns Auto-Sign off on openkey.so from the same t
   expect(api.patches).toEqual([{ authorization: undefined, cookie: true }]);
   expect(api.autoSign).toBe(false);
   // The page read the setting with the same identity it then wrote with: the cookie.
+  expect(api.reads.length).toBeGreaterThan(0);
   expect(api.reads.every((read) => read.authorization === undefined && read.cookie)).toBe(true);
 });
 
@@ -95,6 +96,7 @@ test('the settings page shows and changes the cookie account even if the tab hol
   await toggle.click();
   await expect(toggle).toHaveAttribute('aria-checked', 'false');
 
+  expect(api.reads.length).toBeGreaterThan(0);
   expect(api.reads.every((read) => read.authorization === undefined && read.cookie)).toBe(true);
   expect(api.patches).toEqual([{ authorization: undefined, cookie: true }]);
   expect(api.autoSign).toBe(false);
