@@ -508,12 +508,11 @@
     }, 2000);
   }
 
-  function handleApproveClick(event: MouseEvent) {
-    try {
-      if (window.self !== window.top && !event.isTrusted) return;
-    } catch {
-      if (!event.isTrusted) return;
-    }
+  // Approve is armed only when its button is enabled (settled layout, node checked, nothing blocking). A browser
+  // already ignores a click on a disabled button; this also refuses one that reaches the handler anyway, such as after
+  // a script clears the `disabled` attribute.
+  function handleApproveClick() {
+    if (approveButtonDisabled) return;
     onApprove();
   }
 
