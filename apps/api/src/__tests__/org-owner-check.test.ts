@@ -72,8 +72,9 @@ afterEach(() => setSystemTime());
 function router() {
   return createRouter({
     prisma: db,
-    fetch: async (url) => {
+    fetch: async (url, init) => {
       expect(url).toBe('https://issuer.credentials.org/.well-known/did.json');
+      expect(init?.redirect).toBe('error');
       didFetches += 1;
       return didResponse();
     },
@@ -172,6 +173,13 @@ describe('the answer', () => {
     expect(await answer(await ask(app, await sign(ownerCheckClaims(live.keyId, live.account))))).toEqual({ owner: true });
   });
 
+  test('an OWNER grant on a PERSONAL key answers false', async () => {
+    const { account, userId } = await seed();
+    const personal = await db.ethereumKey.findFirstOrThrow({ where: { userId, custody: 'PERSONAL' } });
+    await db.keyGrant.create({ data: { keyId: personal.id, role: 'OWNER', granteeUserId: userId, acceptedAt: new Date() } });
+    expect(await answer(await ask(router(), await sign(ownerCheckClaims(personal.id, account))))).toEqual({ owner: false });
+  });
+
   test('an archived ORG key answers false', async () => {
     const { keyId, account } = await seed({ orgKeyArchived: true });
     expect(await answer(await ask(router(), await sign(ownerCheckClaims(keyId, account))))).toEqual({ owner: false });
@@ -259,6 +267,8 @@ describe('authentication', () => {
     const { keyId, account } = await seed();
     const verify = createOrgRegistrationIntentVerifier(async () => didResponse());
     await expect(verify(await sign(ownerCheckClaims(keyId, account)))).rejects.toMatchObject({ status: 400, code: 'registration_intent_invalid' });
+    const intentClaimsUnderOwnerCheckTyp = await sign({ iss: issuer, aud: AUDIENCE, registrationId: randomUUID(), orgId: `o${'a'.repeat(26)}`, nonce: randomBytes(32).toString('base64url'), handle: 'fixture', displayName: 'Fixture', purpose: 'org-registration/v1', iat: NOW, exp: NOW + 600 });
+    await expect(verify(intentClaimsUnderOwnerCheckTyp)).rejects.toMatchObject({ status: 400, code: 'registration_intent_invalid' });
   });
 
   test('3. expired, exp-iat > 60 and iat > now + 5 are refused; the limits themselves pass', async () => {
@@ -272,6 +282,7 @@ describe('authentication', () => {
       { iat: NOW + 6, exp: NOW + 30 },
       { iat: NOW, exp: NOW },
       { iat: NOW + 1, exp: NOW },
+      { iat: NOW + 5, exp: NOW + 2 },
     ];
     for (const overrides of refused) await expectUnauthorized(await ask(app, await sign(ownerCheckClaims(keyId, account, overrides))));
     for (const overrides of [{ iat: NOW + 5, exp: NOW + 65 }, { iat: NOW - 59, exp: NOW + 1 }, { iat: NOW, exp: NOW + 60 }]) {
@@ -308,7 +319,9 @@ describe('authentication', () => {
     await expectUnauthorized(await ask(app, await sign(claims, { kid: issuer })));
     await expectUnauthorized(await ask(app, `${await sign(claims)}.extra`));
     const [header, payload, signature] = (await sign(claims)).split('.');
-    await expectUnauthorized(await ask(app, `${header}.${payload}.${signature!.slice(0, -2)}AA`));
+    const tampered = Buffer.from(signature!, 'base64url');
+    tampered[0]! ^= 1;
+    await expectUnauthorized(await ask(app, `${header}.${payload}.${tampered.toString('base64url')}`));
     await expectUnauthorized(await ask(app, `${header}.${payload}`));
     await expectUnauthorized(await ask(app, undefined));
     await expectUnauthorized(await ask(app, '', { headers: { authorization: '' } }));
@@ -316,6 +329,8 @@ describe('authentication', () => {
     await expectUnauthorized(await ask(app, undefined, { headers: { authorization: await sign(claims) } }));
     const hmac = await new CompactSign(new TextEncoder().encode(JSON.stringify(claims))).setProtectedHeader({ alg: 'HS256', kid, typ: 'org-owner-check+jwt' }).sign(randomBytes(32));
     await expectUnauthorized(await ask(app, hmac));
+    const none = `${Buffer.from(JSON.stringify({ alg: 'none', kid, typ: 'org-owner-check+jwt' })).toString('base64url')}.${payload}.`;
+    await expectUnauthorized(await ask(app, none));
   });
 
   test('9. an unknown kid is refused with at most one forced DID refresh per 10 s', async () => {
@@ -353,10 +368,21 @@ describe('authentication', () => {
     await expectUnauthorized(await ask(router(), await sign(ownerCheckClaims(keyId, account))));
   });
 
+  test('an asserted method with a foreign controller is refused', async () => {
+    const { keyId, account } = await seed();
+    const method = (didDocument.verificationMethod as Array<Record<string, unknown>>)[0]!;
+    didDocument = { ...didDocument, verificationMethod: [{ ...method, controller: 'did:web:other.example' }] };
+    await expectUnauthorized(await ask(router(), await sign(ownerCheckClaims(keyId, account))));
+  });
+
   test('an unavailable issuer DID answers 503, never an answer', async () => {
     const { keyId, account } = await seed();
     const token = await sign(ownerCheckClaims(keyId, account));
-    for (const unavailable of [() => new Response('nope', { status: 500 }), () => new Response('not json', { status: 200 })]) {
+    for (const unavailable of [
+      () => new Response('nope', { status: 500 }),
+      () => new Response('not json', { status: 200 }),
+      () => new Response(JSON.stringify({ ...didDocument, id: 'did:web:other.example' })),
+    ]) {
       didResponse = unavailable;
       const response = await ask(router(), token);
       expect(response.status).toBe(503);

@@ -48,6 +48,7 @@ if (process.env.OPENKEY_OWNER_CHECK_CORS_CHILD !== '1') {
   test('POST and its preflight carry no Access-Control-* header for any browser Origin', async () => {
     // Control: the same Origin on another path still gets the credentialed policy, so this test can fail.
     expect((await request('/api/org-keys', 'GET', 'http://localhost:5173')).headers.get('access-control-allow-origin')).toBe('http://localhost:5173');
+    expect((await request('/api/internal/metrics', 'GET', 'http://localhost:5173')).headers.get('access-control-allow-origin')).toBe('http://localhost:5173');
     for (const origin of ['http://localhost:5173', 'https://openkey.so', 'https://credentials.org', 'https://untrusted.example']) {
       const post = await request('/api/internal/org-owner-check', 'POST', origin);
       expect(post.status).toBe(401);
