@@ -223,7 +223,8 @@ async function finishManagedSpaceOnboarding(input: {
         host: setup.bootstrapHost,
         chainId: input.chainId,
         // Hosts only this space before responding; the other spaces and the seeding follow in the background run.
-        requestedSpace: { space: setup.space, alreadyHosted, report },
+        // This function runs only when the node's fresh activation listed the space as skipped, which a cached `complete` row must not override.
+        requestedSpace: { space: setup.space, alreadyHosted, nodeReportedUnhosted: true, report },
       });
     });
     switch (result.status) {

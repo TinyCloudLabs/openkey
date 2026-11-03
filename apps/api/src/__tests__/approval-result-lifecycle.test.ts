@@ -25,6 +25,7 @@ function fixture() {
       record.ackId = ackId; record.acknowledgedAt ??= now; record.encryptedResult = null;
       return record;
     },
+    async deny() { throw new Error('not used'); },
   };
   const origin = 'http://localhost:3001';
   const service = new ApprovalResultService(store, { apiOrigin: origin, retentionSeconds: 600, now: () => clock });
