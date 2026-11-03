@@ -260,6 +260,30 @@ if (process.env.OPENKEY_MCP_LIFETIME_TEST_CHILD !== '1') {
       expect((await userinfo(disconnected.tokens.access_token)).status).toBe(401);
     });
 
+    test('a withdrawn token is refused however the Authorization header is written, including with no Bearer scheme', async () => {
+      // The provider takes the whole header as the token when it has no "Bearer " prefix, so the guard must too.
+      const forms = (token: string) => [`Bearer ${token}`, `bearer ${token}`, `Bearer  ${token}`, token];
+      const revoked = await issue('openid email offline_access tinycloud:mcp', MCP_RESOURCES[0]);
+      // Before it is withdrawn the provider answers the two forms it understands.
+      for (const header of [`Bearer ${revoked.tokens.access_token}`, revoked.tokens.access_token]) {
+        expect((await call('/oauth2/userinfo', { headers: { authorization: header } })).status, header.slice(0, 12)).toBe(200);
+      }
+      const revoke = await call('/oauth2/revoke', {
+        method: 'POST', headers: form,
+        body: new URLSearchParams({ client_id: revoked.clientId, token: revoked.tokens.access_token, token_type_hint: 'access_token' }),
+      });
+      expect(revoke.status).toBe(200);
+      for (const header of forms(revoked.tokens.access_token)) {
+        expect((await call('/oauth2/userinfo', { headers: { authorization: header } })).status, header.slice(0, 12)).toBe(401);
+      }
+
+      const disconnected = await issue('openid email offline_access tinycloud:mcp', MCP_RESOURCES[1]);
+      await prisma.oauthConsent.deleteMany({ where: { clientId: disconnected.clientId } });
+      for (const header of forms(disconnected.tokens.access_token)) {
+        expect((await call('/oauth2/userinfo', { headers: { authorization: header } })).status, header.slice(0, 12)).toBe(401);
+      }
+    });
+
     test('a token for another audience is answered by the provider as before', async () => {
       const { tokens } = await issue('openid email', OPENKEY_AUDIENCE);
       const response = await userinfo(tokens.access_token);

@@ -24,8 +24,10 @@ const NO_STORE = { 'Cache-Control': 'no-store', Pragma: 'no-cache' } as const;
 
 export function createMcpUserinfoGuard(options: McpUserinfoGuardOptions): MiddlewareHandler {
   return async (c, next) => {
-    const header = c.req.header('authorization');
-    const token = header && /^bearer\s+/i.test(header) ? header.replace(/^bearer\s+/i, '').trim() : null;
+    // Read the header as the provider does: it strips a "Bearer " prefix when there is one and otherwise takes the
+    // whole value as the token, so a JWT sent with no scheme at all must be checked too.
+    const header = c.req.header('authorization')?.trim();
+    const token = header ? header.replace(/^bearer\s+/i, '').trim() : null;
     if (!token || token.length > MAX_TOKEN_LENGTH || !JWT_SHAPE.test(token)) return next();
     try {
       const payload = await options.verify(token, [...options.mcpAudiences]);
