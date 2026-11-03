@@ -15,6 +15,8 @@ export type FakeKey = {
   id: string;
   userId: string | null;
   address: string;
+  /** Absent means PERSONAL, the column default. */
+  custody?: 'PERSONAL' | 'ORG';
   keyType: 'MANAGED' | 'EXTERNAL';
   archivedAt: Date | null;
   sealedBlob: string | null;
@@ -90,7 +92,9 @@ function matchesWhere(row: Record<string, unknown>, where: Where, tables: Tables
     if (field === 'OR') return condition.some((part: Where) => matchesWhere(row, part, tables));
     if (field === 'user' || field === 'key') {
       const related = field === 'user' ? tables.users.get(String(row.userId)) : tables.keys.get(String(row.keyId));
-      return related !== undefined && matchesWhere(related, condition.is, tables);
+      // A key row without a custody is a PERSONAL key, as the column default makes it.
+      const subject = field === 'key' && related ? { custody: 'PERSONAL', ...related } : related;
+      return subject !== undefined && matchesWhere(subject, condition.is, tables);
     }
     return matchesField(row[field], condition);
   });

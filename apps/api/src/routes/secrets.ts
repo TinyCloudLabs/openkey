@@ -6,6 +6,7 @@ import { requireSession, type SessionContext } from '../middleware/session';
 import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
 import { tinyCloudService } from '../services/tinycloud-service';
 import { deriveKeyForRecord } from '../services/key-sealing';
+import { personalKeyWhere } from '../services/primary-key';
 
 const prisma = createPrismaClient();
 const tee = createTeeClient();
@@ -27,7 +28,7 @@ function validateName(name: string): string | null {
 
 async function getUserPrivateKey(userId: string): Promise<string | null> {
   const key = await prisma.ethereumKey.findFirst({
-    where: { userId, keyIndex: 0, keyType: 'MANAGED', archivedAt: null },
+    where: { ...personalKeyWhere(userId), keyIndex: 0, keyType: 'MANAGED', archivedAt: null },
   });
 
   if (!key || !key.sealedBlob) {

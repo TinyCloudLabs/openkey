@@ -29,7 +29,7 @@ import {
   oauthValidAudiences,
 } from './oauth-config';
 import { createSealingContext } from './services/key-sealing';
-import { primaryKeyWhere } from './services/primary-key';
+import { personalKeyWhere, primaryKeyWhere } from './services/primary-key';
 import {
   assertFreshPasskeyUserVerification,
   recordPasskeyFreshnessAfterHook,
@@ -91,7 +91,7 @@ export async function buildKeyClaims(
   if (!client) return [];
   const keys = await database.ethereumKey.findMany({
     where: {
-      userId: user.id,
+      ...personalKeyWhere(user.id),
       archivedAt: null,
       ...(scopes.includes(TINYCLOUD_SESSION_SCOPE)
         ? { keyType: 'MANAGED' as const }
@@ -356,7 +356,7 @@ export const auth = betterAuth({
         if (!client) return {};
         const keys = await prisma.ethereumKey.findMany({
           where: {
-            userId: user.id,
+            ...personalKeyWhere(user.id),
             archivedAt: null,
           },
           select: { address: true },
@@ -459,6 +459,7 @@ export const auth = betterAuth({
             await prisma.ethereumKey.create({
               data: {
                 userId: user.id,
+                custody: 'PERSONAL',
                 address,
                 publicKey: address,
                 sealedBlob,

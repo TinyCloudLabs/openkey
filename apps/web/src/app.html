@@ -3,6 +3,56 @@
   <head>
     <meta charset="utf-8" />
     <script>
+      // Registration intents never reach an HTTP request, login URL or hydrated URL.
+      {
+        const path = '/org-registration/consent';
+        const key = 'openkey.org-registration.intent.v1';
+        const here = location.pathname === path;
+        const fragment = here ? location.hash : '';
+        if (here) history.replaceState(history.state, '', path);
+        const state = value => { if (here) document.documentElement.dataset.orgRegistration = value; };
+        const expiry = intent => {
+          if (typeof intent !== 'string' || new TextEncoder().encode(intent).length > 8192
+            || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(intent)) throw new Error('Invalid intent');
+          const bytes = Uint8Array.from(atob(intent.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')), char => char.charCodeAt(0));
+          const exp = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)).exp;
+          if (!Number.isSafeInteger(exp)) throw new Error('Invalid expiry');
+          return exp * 1000; // Unverified time bounds storage only; the server verifies all authority.
+        };
+        try {
+          if (fragment) {
+            sessionStorage.removeItem(key);
+            const fields = [...new URLSearchParams(fragment.slice(1))];
+            if (fields.length !== 1 || fields[0][0] !== 'intent') throw new Error('Invalid fragment');
+            const intentJws = fields[0][1];
+            const capturedAt = Date.now();
+            const expiresAt = Math.min(expiry(intentJws), capturedAt + 600_000);
+            if (expiresAt <= capturedAt) throw new Error('Expired intent');
+            sessionStorage.setItem(key, JSON.stringify({ intentJws, capturedAt, expiresAt }));
+          }
+          const stored = sessionStorage.getItem(key);
+          if (!stored) state('missing');
+          else {
+            const pending = JSON.parse(stored);
+            if (!Number.isSafeInteger(pending.capturedAt) || !Number.isSafeInteger(pending.expiresAt)
+              || pending.capturedAt > Date.now()
+              || pending.expiresAt !== Math.min(expiry(pending.intentJws), pending.capturedAt + 600_000)) {
+              throw new Error('Invalid stored intent');
+            }
+            const clear = () => {
+              try { if (sessionStorage.getItem(key) === stored) sessionStorage.removeItem(key); }
+              catch { /* The consent page also fails closed on storage access. */ }
+            };
+            if (pending.expiresAt <= Date.now()) { clear(); state('expired'); }
+            else { setTimeout(clear, pending.expiresAt - Date.now()); state('ready'); }
+          }
+        } catch {
+          try { sessionStorage.removeItem(key); } catch { /* Storage can be disabled. */ }
+          state('unavailable');
+        }
+      }
+    </script>
+    <script>
       // Native sign-in sheets: paint dark from the first byte so no white frame shows before the client's branding loads.
       if (new URLSearchParams(location.search).has('tinycloud_request')) {
         document.documentElement.setAttribute('data-native-preload', '');

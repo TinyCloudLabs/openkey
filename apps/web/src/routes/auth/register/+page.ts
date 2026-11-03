@@ -12,6 +12,7 @@ export const load: PageLoad = ({ url }) => {
 
 function normalizeReturnTo(returnTo: string | null, origin: string) {
 	if (!returnTo) return null;
+	if (returnTo === '/org-registration/consent') return returnTo;
 
 	try {
 		const returnUrl = new URL(returnTo, origin);
