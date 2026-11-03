@@ -269,7 +269,11 @@ exact `signedMessage` before confirmation. Full selection signs the
 original bytes; narrowing changes only a permitted ReCap subset. There
 is no raw key mint or postapproval re-prepare.
 
-Signing atomically consumes the claim even if browser delivery fails.
+While the key signs, the handoff is in the `SIGNING` state: a second approval
+or a cancel answers `409 handoff_signing`. A signing that fails releases it
+back to pending, so the owner can approve again with the same preview or
+cancel. A signature that was produced atomically consumes the handoff even if
+browser delivery fails (`409 handoff_consumed`, "already signed").
 Only the successful signing response includes `deliveryState` and
 `selectedKeyId`. The page constructs
 `{transportVersion:2,state:deliveryState,selectedKeyId,result}`, where
