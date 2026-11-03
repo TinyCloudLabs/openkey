@@ -418,6 +418,39 @@ describe('exact share decrypt: create, prepare and signing (TC-1424)', () => {
     expect(activateSessionWithHost).not.toHaveBeenCalled();
   });
 
+  for (const [label, ownerAddress] of [
+    ['lowercase', wallet.address.toLowerCase()],
+    ['uppercase', `0x${wallet.address.slice(2).toUpperCase()}`],
+  ]) {
+    test(`create and prepare return 400 for ${label} named-resource owner bytes`, async () => {
+      for (const tail of ['default/share/', 'team-2/share/', 'default/share/x']) {
+        const path = `urn:tinycloud:encryption:did:pkh:eip155:1:${ownerAddress}:${tail}`;
+        for (const route of ['/', '/prepare']) {
+          const result = await post(route, {
+            keyId: managedKey.id, jwk, host,
+            permissions: [sharePermissions[0], { ...sharePermissions[1], path }],
+          });
+          expect(result.status, `${route}: ${path}`).toBe(400);
+          expect(result.body.code).toBe('invalid_permissions');
+        }
+      }
+      expect(activateSessionWithHost).not.toHaveBeenCalled();
+    });
+  }
+
+  test('create and prepare return 400 for a 65-character named-resource network', async () => {
+    const path = `urn:tinycloud:encryption:did:pkh:eip155:1:${wallet.address}:${'a'.repeat(65)}/share/`;
+    for (const route of ['/', '/prepare']) {
+      const result = await post(route, {
+        keyId: managedKey.id, jwk, host,
+        permissions: [sharePermissions[0], { ...sharePermissions[1], path }],
+      });
+      expect(result.status).toBe(400);
+      expect(result.body.code).toBe('invalid_permissions');
+    }
+    expect(activateSessionWithHost).not.toHaveBeenCalled();
+  });
+
   test('a signed leaf cannot complete under another forwarded leaf', async () => {
     const prepared = await post('/prepare', { keyId: externalKey.id, jwk, host, permissions: sharePermissions });
     expect(prepared.status).toBe(200);
@@ -425,6 +458,67 @@ describe('exact share decrypt: create, prepare and signing (TC-1424)', () => {
       sharePermissions[0]!, { ...sharePermissions[1]!, path: `${network}/share/other` },
     ]);
     expect(result.status).toBe(400);
+    expect(activateSessionWithHost).not.toHaveBeenCalled();
+  });
+});
+
+// TC-2349: the CLI's `builtin:share-publishing` request, entry for entry, through the routes the CLI's web page calls.
+describe('the CLI share-publishing request through the routes (TC-2349)', () => {
+  const defaultSpace = `tinycloud:pkh:eip155:1:${wallet.address}:default`;
+  const folder = `${network}/share/`;
+  const shareRequest = [
+    { service: 'tinycloud.capabilities', space: defaultSpace, path: '', actions: ['tinycloud.capabilities/read'] },
+    { service: 'tinycloud.kv', space: defaultSpace, path: 'xyz.tinycloud.share/shares/', actions: ['tinycloud.kv/get', 'tinycloud.kv/put'] },
+    { service: 'tinycloud.kv', space: defaultSpace, path: 'shares/', actions: ['tinycloud.kv/get', 'tinycloud.kv/metadata', 'tinycloud.kv/put', 'tinycloud.kv/list'] },
+    { service: 'tinycloud.kv', space: defaultSpace, path: 'artifacts/', actions: ['tinycloud.kv/get', 'tinycloud.kv/metadata', 'tinycloud.kv/put', 'tinycloud.kv/list'] },
+    { service: 'tinycloud.encryption', space: 'encryption', path: folder, actions: [DECRYPT] },
+  ];
+
+  test('/prepare answers 200 instead of refusing permissions[4] before consent', async () => {
+    const res = await post('/prepare', { keyId: managedKey.id, jwk, host, permissions: shareRequest });
+    expect(res.status).toBe(200);
+    expect(res.body.prepared.siwe).toContain(`'tinycloud.encryption': 'decrypt' for '${folder}'`);
+  });
+
+  test('a wallet key signs it and /complete relays exactly the folder, decrypt only', async () => {
+    const prepared = await post('/prepare', { keyId: externalKey.id, jwk, host, permissions: shareRequest });
+    expect(prepared.status).toBe(200);
+    const res = await walletComplete(prepared.body, shareRequest);
+    expect(res.status).toBe(200);
+    const encryption = res.body.permissions.filter((grant: { service: string }) => grant.service === 'encryption');
+    expect(encryption).toEqual([{ service: 'encryption', space: 'encryption', path: folder, actions: [DECRYPT] }]);
+  });
+
+  test('a managed key signs it through POST /', async () => {
+    const prepared = await post('/prepare', { keyId: managedKey.id, jwk, host, permissions: shareRequest });
+    const res = await post('/', {
+      keyId: managedKey.id, jwk, host, permissions: shareRequest,
+      prepared: prepared.body.prepared,
+      authorizationContextToken: prepared.body.authorizationContext.token,
+      selectedActionIds: prepared.body.selectedActionKeys,
+      protocolVersion: 1,
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.signedMessage).toContain(`'tinycloud.encryption': 'decrypt' for '${folder}'`);
+  });
+
+  test('/complete refuses a signed folder that the forwarded request did not include', async () => {
+    const prepared = await post('/prepare', { keyId: externalKey.id, jwk, host, permissions: shareRequest });
+    const res = await walletComplete(prepared.body, shareRequest.slice(0, 4));
+    expect(res.status).toBe(400);
+    expect(activateSessionWithHost).not.toHaveBeenCalled();
+  });
+
+  test('a traversal or per-share tail is refused before signing, on every route', async () => {
+    for (const tail of ['share/../', 'share/x/', 'share']) {
+      const bad = shareRequest.map((entry) => entry.service === 'tinycloud.encryption' ? { ...entry, path: `${network}/${tail}` } : entry);
+      const prepared = await post('/prepare', { keyId: managedKey.id, jwk, host, permissions: bad });
+      expect(prepared.status, tail).toBe(400);
+      expect(prepared.body.code, tail).toBe('invalid_permissions');
+      const legacy = await post('/', { keyId: managedKey.id, jwk, host, permissions: bad });
+      expect(legacy.status, tail).toBe(400);
+      expect(legacy.body.code, tail).toBe('invalid_permissions');
+    }
     expect(activateSessionWithHost).not.toHaveBeenCalled();
   });
 });

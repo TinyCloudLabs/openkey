@@ -77,13 +77,16 @@ approvalRequestRouter.post('/approval-requests/:id/result', async (c) => {
     // issuer-signed public header. No client-supplied DID or JWK is trusted.
     const header = validateLinkHeader(body.header, { mode: 'signed', audience: linksOrigin });
     const bytes = linkIssuerPublicKey(header.issuer);
-    if (!bytes || !verifyHeader(header, body.signature) || header.type !== 'openkey-approval-request' || header.bodyCid !== body.bodyCid || Date.parse(header.expiresAt) <= Date.now() || Date.parse(header.expiresAt) - Date.parse(header.issuedAt) > 86400_000) {
-      throw new ApprovalResultError('invalid_request', 'Signed approval request header is invalid or expired', 400);
+    if (!bytes || !verifyHeader(header, body.signature) || header.type !== 'openkey-approval-request' || header.bodyCid !== body.bodyCid || Date.parse(header.expiresAt) - Date.parse(header.issuedAt) > 86400_000) {
+      throw new ApprovalResultError('invalid_request', 'Signed approval request header is invalid', 400);
     }
     const x = Buffer.from(bytes).toString('base64url');
     const jkt = createHash('sha256').update(JSON.stringify({ crv: 'Ed25519', kty: 'OKP', x })).digest('base64url');
     if (!verifySessionProofClaims(proof, { sessionJwk: { x }, sessionJkt: jkt, htu: `${apiOrigin}/api/approval-requests/${id}/result`, clientId: 'openkey-approval-result-v1', credential: JSON.stringify(['discover', id, body.bodyCid, '', '']) })) {
       throw new ApprovalResultError('invalid_proof', 'Requester proof is invalid', 401);
+    }
+    if (Date.parse(header.expiresAt) <= Date.now()) {
+      throw new ApprovalResultError('expired_request', 'Approval request expired. Start a new request.', 410);
     }
     return c.json({ status: 'pending' }, 202);
   }

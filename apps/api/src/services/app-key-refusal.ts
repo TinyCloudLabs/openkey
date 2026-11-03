@@ -205,6 +205,40 @@ export function blockResourcesOutsideApps(siwe: string): Array<[string, string[]
   );
 }
 
+/** `decrypt` and `key.create` under any namespace, compared like `key.block`. */
+function isEncryptionGrantAbility(ability: string): boolean {
+  const name = ability.slice(ability.lastIndexOf('/') + 1).toLowerCase();
+  return name === 'decrypt' || name === 'key.create';
+}
+
+/**
+ * Refusal for a SIWE message whose ReCap names an encryption resource outside
+ * `apps/` with `decrypt` or `key.create`: a bare network (no path), a prefix or
+ * a key. A website's own sign-in may name these two only under
+ * `apps/<app id>/`, which `isAppsKeyResource` does not see for a bare network.
+ * A ReCap that cannot be read exactly is refused too, never passed. The
+ * prepared-handoff (command line) routes do not call this.
+ */
+export function encryptionOutsideAppsRefusal(siwe: string): AppKeyRefusal | null {
+  const resources = recapResources(siwe);
+  if (resources === null) return { reason: 'recap_unreadable' };
+  const outside = resources.some(
+    ([resource, abilities]) =>
+      resource.slice(0, KEY_RESOURCE_PREFIX.length).toLowerCase() === KEY_RESOURCE_PREFIX &&
+      !isAppsKeyResource(resource) &&
+      abilities.some(isEncryptionGrantAbility),
+  );
+  return outside ? { reason: 'apps_key' } : null;
+}
+
+/** Same check for a message as the signer will cover it: as written, and as UTF-8 when it is `0x` hex. */
+export function encryptionOutsideAppsRefusalForMessage(message: string): AppKeyRefusal | null {
+  const direct = encryptionOutsideAppsRefusal(message);
+  if (direct) return direct;
+  const decoded = decodeHexUtf8(message);
+  return decoded === null ? null : encryptionOutsideAppsRefusal(decoded);
+}
+
 /**
  * Look for `apps/` key resources and `key.delete` abilities in every
  * `urn:recap:` resource of one SIWE message, and for a ReCap that cannot be

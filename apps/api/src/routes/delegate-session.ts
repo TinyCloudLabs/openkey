@@ -409,13 +409,16 @@ export function validatePermissions(permissions: unknown): DelegationPermissionE
 const RAW_ENCRYPTION_NETWORK = /^urn:tinycloud:encryption:did:pkh:eip155:(\d+):(0x[0-9a-fA-F]{40}):([^:]*)$/;
 // The network-name rule of the TinyCloud SDK (`sdk-services` NETWORK_NAME_RE).
 const ENCRYPTION_NETWORK_NAME = /^[a-z0-9][a-z0-9-]*$/;
+// The one key folder a raw entry may name besides a bare network: the `share/` folder of the signer's own
+// network (the CLI's `builtin:share-publishing` manifest, TC-2349). Exactly this suffix, nothing after it.
+const SHARE_KEY_FOLDER_SUFFIX = '/share/';
 
 /**
  * A raw encryption entry carries no space (`space` absent or `encryption`),
  * grants only `tinycloud.encryption/decrypt`, and names a network the signer
- * owns, the `default/share/` prefix, or one exact key below it. Whole networks
- * keep their case-insensitive owner check; named resources require the
- * canonical owner DID and path bytes, matching the node's named-key parser.
+ * owns, that network's `share/` folder, or one exact `default/share/<id>` key.
+ * Bare networks retain their case-insensitive owner check. Named resources
+ * require canonical owner bytes and a network name of at most 64 characters.
  */
 function assertRawEncryptionPermission(
   entry: DelegationPermissionEntry,
@@ -473,25 +476,37 @@ function assertRawEncryptionPermission(
       }],
     );
   }
-  const key = network[3]!.includes('/') ? parseEncryptionResource(entry.path) : null;
-  const isShareKey = key !== null && key.network === 'default' &&
-    ((key.kind === 'prefix' && key.keyPath === 'share/') ||
-      (key.kind === 'key' && /^share\/[^/]+$/.test(key.keyPath))) &&
+  const tail = network[3]!;
+  const isShareFolder = tail.endsWith(SHARE_KEY_FOLDER_SUFFIX);
+  const networkName = isShareFolder ? tail.slice(0, -SHARE_KEY_FOLDER_SUFFIX.length) : tail;
+  const key = !isShareFolder && tail.includes('/') ? parseEncryptionResource(entry.path) : null;
+  const isShareLeaf = key !== null && key.kind === 'key' && key.network === 'default' &&
+    /^share\/[^/]+$/.test(key.keyPath) &&
     entry.path === `${RAW_ENCRYPTION_PREFIX}${key.ownerDid}:default/${key.keyPath}`;
-  if (isShareKey && key.ownerDid !== `did:pkh:eip155:${signer.chainId}:${getAddress(signer.address)}`) {
-    throw new DelegateRequestError(
-      'invalid_permissions',
-      `permissions[${index}].path must use the canonical owner DID for a share key`,
-      [{ path: `permissions[${index}].path`, message: 'Expected the canonical signing account DID', value: entry.path }],
-    );
+  if (isShareFolder || isShareLeaf) {
+    if (network[2] !== getAddress(signer.address)) {
+      throw new DelegateRequestError(
+        'invalid_permissions',
+        `permissions[${index}].path must use the canonical owner DID for a named encryption resource`,
+        [{ path: `permissions[${index}].path`, message: 'Expected the canonical signing account DID', value: entry.path }],
+      );
+    }
+    const namedNetwork = isShareLeaf ? key!.network : networkName;
+    if (namedNetwork.length > 64) {
+      throw new DelegateRequestError(
+        'invalid_permissions',
+        `permissions[${index}].path names an encryption network longer than 64 characters`,
+        [{ path: `permissions[${index}].path`, message: 'Named encryption networks have at most 64 characters', value: entry.path }],
+      );
+    }
   }
-  if (!ENCRYPTION_NETWORK_NAME.test(network[3]!) && !isShareKey) {
+  if (!ENCRYPTION_NETWORK_NAME.test(networkName) && !isShareLeaf) {
     throw new DelegateRequestError(
       'invalid_permissions',
-      `permissions[${index}].path must name an encryption network, default/share/, or an exact share key`,
+      `permissions[${index}].path names an invalid encryption network; the name must match ${ENCRYPTION_NETWORK_NAME.source}`,
       [{
         path: `permissions[${index}].path`,
-        message: 'Expected a valid network name, default/share/, or an exact default/share/<shareId> key',
+        message: `The network name must match ${ENCRYPTION_NETWORK_NAME.source}`,
         value: entry.path,
       }],
     );

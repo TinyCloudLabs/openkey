@@ -17,7 +17,7 @@ const address = privateKeyToAccount(privateKey).address;
 const user = { id: 'user_1', email: 'test@example.com' };
 const OWNER = `did:pkh:eip155:1:${address}`;
 const SPACE = `tinycloud:pkh:eip155:1:${address}:default`;
-const ORIGIN = 'https://listen.tinycloud.xyz';
+const ORIGIN = 'https://tinycloud.chat';
 const urn = (rest: string) => `urn:tinycloud:encryption:${OWNER}:default${rest}`;
 
 let calls: string[] = [];
@@ -83,7 +83,7 @@ function siweWith(rawAbilities: Record<string, string[]> = {}): string {
   return prepareSession({
     address,
     chainId: 1,
-    domain: 'listen.tinycloud.xyz',
+    domain: 'tinycloud.chat',
     issuedAt: now.toISOString(),
     expirationTime: new Date(now.getTime() + 3_600_000).toISOString(),
     spaceId: SPACE,
