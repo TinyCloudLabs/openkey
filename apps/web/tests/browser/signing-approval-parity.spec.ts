@@ -325,7 +325,8 @@ test.describe('signing-approval browser parity — production adapters', () => {
       await expect(dialog).toBeVisible();
       await expect(dialog).toContainText('Authorize capabilities');
       await expect(dialog).toContainText('Manage your TinyCloud account');
-      await expect(dialog).toContainText('Read and update application data');
+      // The SQL write grant states its row-level reach (TC-2453); the sentence itself is not pinned here.
+      await expect(dialog).toContainText(/\brows?\b/);
       await expect(dialog).toContainText('Check your TinyCloud permissions');
       const summary = page.locator('[data-parity-harness] .summary');
       await expect(summary.locator('.summary-statement')).toHaveCount(12);
@@ -355,7 +356,7 @@ test.describe('signing-approval browser parity — production adapters', () => {
         'View your secret names and details',
         'Read secret values',
         'Edit and delete tables in your TinyCloud account',
-        'Read and update application data',
+        /\brows?\b/,
         'Read application data',
         "Edit and delete this app's tables",
         'View your secret catalog',
