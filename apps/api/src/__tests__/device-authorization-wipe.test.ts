@@ -23,7 +23,7 @@ const codeVerifier = 'pkce-verifier-with-at-least-256-bits-of-entropy';
 
 let database: PGlite;
 let client: PrismaClient;
-let nowMs = Date.UTC(2026, 10, 3, 12, 0, 0);
+let nowMs = Date.now();
 let ip = 0;
 
 beforeAll(async () => {
@@ -40,7 +40,8 @@ afterAll(async () => {
 });
 beforeEach(async () => {
   await client.deviceAuthorization.deleteMany();
-  nowMs = Date.UTC(2026, 10, 3, 12, 0, 0);
+  // The Prisma store's approve checks the deadline against the real clock, so the test clock starts there.
+  nowMs = Date.now();
 });
 
 const service = () => new DeviceAuthorizationService(createPrismaDeviceAuthorizationStore(client), {
@@ -107,10 +108,14 @@ describe('an approved device result that is never acknowledged', () => {
     await expect(service().poll({ transactionId: early.id, deviceSecret, codeVerifier })).rejects.toMatchObject({ code: 'expired_token', status: 410 });
   });
 
-  test('a pending request is left alone by the sweep', async () => {
+  test('a pending request is left alone by the sweep, even past its deadline', async () => {
     const pending = await startFlow();
-    nowMs += 5 * MINUTE;
+    // A pending row never holds a result; give it one so the sweep's status filter is what keeps it.
+    await client.deviceAuthorization.update({ where: { id: pending.id }, data: { encryptedResult: 'stand-in' } });
+    nowMs += 15 * MINUTE;
     await startFlow();
-    expect((await client.deviceAuthorization.findUniqueOrThrow({ where: { id: pending.id } })).status).toBe('PENDING');
+    const row = await client.deviceAuthorization.findUniqueOrThrow({ where: { id: pending.id } });
+    expect(row.status).toBe('PENDING');
+    expect(row.encryptedResult).toBe('stand-in');
   });
 });

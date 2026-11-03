@@ -77,7 +77,8 @@ model DelegationCodeClaim {
 // OpenKey-owned, short-lived RFC 8628-style transaction state for CLI
 // authorization. Delegation results are encrypted before persistence and stay
 // retrievable until the client acknowledges them or their retention ends, then the
-// ciphertext is cleared; this table never stores a CLI private key.
+// ciphertext is cleared (on acknowledgement at once, otherwise no later than the next
+// device request); this table never stores a CLI private key.
 model DeviceAuthorization {
   id                      String    @id
   userCode                String    @unique
