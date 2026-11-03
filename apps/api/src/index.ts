@@ -13,7 +13,7 @@ import { nostrKeysRouter } from './routes/nostr-keys';
 import { accountRouter } from './routes/account';
 import { oauthAdminRouter } from './routes/oauth-admin';
 import { createResourceIntrospectRouter } from './routes/oauth-resource-introspect';
-import { oauthValidAudiences } from './oauth-config';
+import { MCP_AUDIENCES, oauthValidAudiences } from './oauth-config';
 import { createOauthBrandingRouter } from './routes/oauth-branding';
 import { passkeyProxyRouter } from './routes/passkey-proxy';
 import { secretsRouter } from './routes/secrets';
@@ -40,6 +40,7 @@ import { readinessHandler } from './readiness';
 import { createProviderInterceptors } from './services/native-delegation/interceptors';
 import { createRevokeDenylist } from './services/revoked-access-token';
 import { createAccessTokenVerifier } from './services/access-token-verifier';
+import { createMcpUserinfoGuard } from './services/mcp-userinfo-guard';
 import { providerTokenOptions } from './services/native-delegation/provider-tokens';
 import { handlePar } from './services/native-delegation/par';
 import { createNativeDelegationConsentRouter } from './routes/native-delegation-consent';
@@ -208,6 +209,13 @@ app.route('/api/oauth/resource/introspect', createResourceIntrospectRouter({
 }));
 // A JWT access token revoked at the provider's /oauth2/revoke is recorded, so the status check
 // above answers inactive for it. Outside the interceptors: it acts on the final answer.
+// An MCP access token lasts 12 hours; the provider's /oauth2/userinfo would answer for it after the owner revoked it,
+// disconnected the app or signed out, so it gets the status check's tests first (TC-1366).
+app.use('/api/auth/oauth2/userinfo', createMcpUserinfoGuard({
+  database: authPrisma,
+  verify: createAccessTokenVerifier({ issuer: oauthIssuer, getJwks: readSigningKeys }),
+  mcpAudiences: MCP_AUDIENCES,
+}));
 app.use('/api/auth/*', createRevokeDenylist({
   database: authPrisma,
   verify: createAccessTokenVerifier({ issuer: oauthIssuer, getJwks: readSigningKeys }),
