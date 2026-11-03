@@ -1,6 +1,7 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
   import { authClient } from '$lib/auth-client';
+  import { clearSessionToken } from '$lib/embed-passkey';
   import { api, type EthereumKey } from '$lib/api';
   import { copyText } from '$lib/clipboard';
   import Button from '$lib/components/ui/button.svelte';
@@ -52,6 +53,7 @@
   }
 
   async function signOut() {
+    clearSessionToken();
     await authClient.signOut();
     goto('/');
   }
