@@ -14,6 +14,11 @@ export const FIRST_PARTY_ENCRYPTION_ORIGINS: ReadonlySet<string> = new Set([
   // bare network), frontend/src/App.tsx:929 (added to the sign-in manifest),
   // packages/client/src/openkey.ts:51-58 (personal_sign -> openkey.signMessage).
   'https://tinycloud.chat',
+  // TinyCloud Home (TC-2387): the same tinychat frontend built with VITE_HOME_SITE=true and served at
+  // this origin, so it asks for the same sign-in as tinycloud.chat (the tinychat files above).
+  // tinychat: backend/src/cors-origins.ts:14 (HOME_WEB_ORIGIN), .github/workflows/deploy-production.yml:198.
+  // Its Pages project's own `*.pages.dev` hosts are deliberately not first-party.
+  'https://home.tinycloud.xyz',
   // tinychat desktop (Exo) on macOS and Linux. tinychat: backend/src/cors-origins.ts:2; the
   // SIWE origin guard special-cases it (services/siwe-origin.ts, APP_SHELL_ORIGINS).
   'tauri://localhost',
