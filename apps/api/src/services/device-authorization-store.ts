@@ -117,6 +117,8 @@ export function createPrismaDeviceAuthorizationStore(database: any): DeviceAutho
             approvedByUserId: input.userId,
             encryptedResult: input.encryptedResult,
             delegationExpiresAt: input.delegationExpiresAt,
+            // After approval the deadline is the result's retention, which may run past the transaction's.
+            transactionExpiresAt: new Date(Math.max(value.transactionExpiresAt.getTime(), input.resultExpiresAt.getTime())),
             permissions: encodeScope({ ...decodeScope(value), approvedPermissions: input.approvedPermissions }),
           },
         });
