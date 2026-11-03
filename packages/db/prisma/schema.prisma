@@ -62,9 +62,25 @@ model DelegationCode {
   @@map("delegation_code")
 }
 
+// A short code redeemed with a client-chosen claim secret. The public delegation
+// moves here from delegation_code and stays retrievable by that claim until the
+// client acknowledges it or retention ends; an ACK clears the delegation.
+model DelegationCodeClaim {
+  code           String    @id
+  claimHash      String
+  delegation     Json?
+  redeemedAt     DateTime
+  acknowledgedAt DateTime?
+
+  @@index([redeemedAt])
+  @@map("delegation_code_claim")
+}
+
 // OpenKey-owned, short-lived RFC 8628-style transaction state for CLI
-// authorization. Delegation results are encrypted before persistence and are
-// consumed exactly once; this table never stores a CLI private key.
+// authorization. Delegation results are encrypted before persistence and stay
+// retrievable until the client acknowledges them or their retention ends, then the
+// ciphertext is cleared (on acknowledgement at once, otherwise no later than the next
+// device request); this table never stores a CLI private key.
 model DeviceAuthorization {
   id                      String    @id
   userCode                String    @unique
@@ -112,6 +128,8 @@ model ApprovalRequest {
   resultExpiresAt       DateTime?
   ackId                 String?
   acknowledgedAt        DateTime?
+  // Set when the owner refuses the request. Terminal: a denied request is never approved.
+  deniedAt              DateTime?
 
   @@index([expiresAt])
   @@index([resultExpiresAt])

@@ -14,6 +14,8 @@ const SWEEP_TICK_MS = 60_000;
 const SWEEP_DELAYS_MS: readonly number[] = [5 * 60_000, 30 * 60_000, 2 * 3_600_000, 6 * 3_600_000];
 const SWEEP_BATCH = 10;
 const SWEEP_MAX_AGE_MS = 30 * 24 * 3_600_000;
+/** Written to a reaped row that had no code. Not in SWEEP_RETRYABLE_CODES: the sweep never re-runs it. */
+const LEASE_EXPIRED_CODE = 'tinycloud_bootstrap_lease_expired';
 
 interface SweepKey {
   id: string;
@@ -30,6 +32,8 @@ export interface TinyCloudBootstrapSweepSummary {
   healed: number;
   still_failed: number;
   skipped: number;
+  /** Abandoned leases marked failed this tick. Absent when the tick did not run (kill switch). */
+  reaped?: number;
 }
 
 export interface SweepOptions {
@@ -44,6 +48,60 @@ const defaultResolveKey = async (key: SweepKey): Promise<string> => {
   if (!key.sealedBlob) throw new Error('TinyCloud bootstrap sweep: managed key has no sealed key data');
   return unsealManagedKey(key, key.sealedBlob);
 };
+
+/**
+ * Marks abandoned setup leases failed. A row left `in_progress` whose lease has expired (or was
+ * never set) and whose code the sweep does not retry is written `failed`, with
+ * `tinycloud_bootstrap_lease_expired` when it had no code. This never unseals a key and never
+ * starts a run: the row keeps its `attemptId`, so only a fresh approval (or, for a retryable
+ * code, the existing sweep route below) can run it again. Each write is a compare-and-set on the
+ * state read, so an approval that claims the row first is never overwritten.
+ */
+async function reapAbandonedLeases(prisma: PrismaClient, now: Date, batch: number): Promise<number> {
+  const rows = await prisma.tinyCloudBootstrapState.findMany({
+    where: {
+      bootstrapVersion: TINYCLOUD_BOOTSTRAP_VERSION,
+      tinycloudHost: trustedTinyCloudBootstrapHost(),
+      chainId: 1,
+      checkedAt: { gte: new Date(now.getTime() - SWEEP_MAX_AGE_MS) },
+      status: 'in_progress',
+      AND: [
+        { OR: [{ lockExpiresAt: { lt: now } }, { lockExpiresAt: null }] },
+        // `notIn` never matches NULL, so a row with no code needs its own branch.
+        { OR: [{ failureCode: null }, { failureCode: { notIn: [...SWEEP_RETRYABLE_CODES] } }] },
+      ],
+    },
+    select: { id: true, attemptId: true, lockExpiresAt: true, checkedAt: true, failureCode: true },
+    orderBy: { checkedAt: 'asc' },
+    take: batch,
+  });
+
+  let reaped = 0;
+  for (const row of rows) {
+    if (process.env.TINYCLOUD_BOOTSTRAP_SWEEP === 'off') break;
+    const failureCode = row.failureCode ?? LEASE_EXPIRED_CODE;
+    const written = await prisma.tinyCloudBootstrapState.updateMany({
+      where: {
+        id: row.id,
+        status: 'in_progress',
+        attemptId: row.attemptId,
+        lockExpiresAt: row.lockExpiresAt,
+        checkedAt: row.checkedAt,
+        failureCode: row.failureCode,
+      },
+      data: {
+        status: 'failed',
+        failureCode,
+        failureReason: 'TinyCloud account setup was abandoned before it finished: its lease expired.',
+        lockExpiresAt: null,
+      },
+    });
+    if (written.count !== 1) continue;
+    reaped++;
+    withScheduledLogContext(() => logTinyCloudBootstrapSweep('tinycloud_bootstrap_sweep_reaped', { errorCode: failureCode }));
+  }
+  return reaped;
+}
 
 /**
  * Retries failed TinyCloud account setup in the background. Each candidate is claimed with a
@@ -96,6 +154,8 @@ export async function sweepTinyCloudBootstrapOnce(opts: SweepOptions = {}): Prom
   summary.candidates = rows.length;
 
   for (const row of rows) {
+    // Read per row, like per tick: a switch flipped during a long tick stops it at the next row.
+    if (process.env.TINYCLOUD_BOOTSTRAP_SWEEP === 'off') break;
     const status = row.status;
     if (status !== 'failed' && status !== 'in_progress') {
       summary.skipped++;
@@ -123,7 +183,14 @@ export async function sweepTinyCloudBootstrapOnce(opts: SweepOptions = {}): Prom
       });
     } catch (error) {
       withScheduledLogContext(() => logError('error', 'tinycloud_bootstrap_sweep_failed', error));
-      continue;
+      // A throw before the claim was won touched nothing. After it, the attempt was spent: count it
+      // and log it below, so the last attempt still ends in `exhausted`.
+      if (!claim.won) continue;
+      outcome = {
+        status: 'failed',
+        errorCode: 'tinycloud_bootstrap_failed',
+        errorMessage: error instanceof Error ? error.message : String(error),
+      };
     } finally {
       // The sealed key is only needed for the run; do not keep it in memory after the row is handled.
       row.key.sealedBlob = null;
@@ -149,7 +216,12 @@ export async function sweepTinyCloudBootstrapOnce(opts: SweepOptions = {}): Prom
     }
   }
 
-  if (summary.candidates > 0) {
+  // After the re-run loop: reaping never signs, so it does not compete with the loop for time or for rows.
+  if (process.env.TINYCLOUD_BOOTSTRAP_SWEEP !== 'off') {
+    summary.reaped = await reapAbandonedLeases(prisma, now, opts.batch ?? SWEEP_BATCH);
+  }
+
+  if (summary.candidates > 0 || summary.reaped) {
     withScheduledLogContext(() =>
       logTinyCloudBootstrapSweep('tinycloud_bootstrap_sweep_tick', {
         candidates: summary.candidates,
@@ -157,6 +229,7 @@ export async function sweepTinyCloudBootstrapOnce(opts: SweepOptions = {}): Prom
         healed: summary.healed,
         stillFailed: summary.still_failed,
         skipped: summary.skipped,
+        reaped: summary.reaped || undefined,
       }),
     );
   }

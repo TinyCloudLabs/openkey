@@ -155,3 +155,122 @@ describe('prepareDelegationSession — raw encryption grants (TC-598)', () => {
     expect(() => prepare(secretRequest({ space }))).toThrow('must be "encryption" or absent');
   });
 });
+
+// TC-2349: the CLI's `builtin:share-publishing` manifest asks to decrypt the owner's `share/` key folder. On this
+// route that is the ONE tail a raw encryption path may carry besides a bare network: `<network>/share/`, decrypt only,
+// owner-bound. Anything else after the network name stays refused.
+describe('prepareDelegationSession: the share/ folder of an owned encryption network (TC-2349)', () => {
+  const folder = `${network}/share/`;
+
+  test('signs decrypt on <network>/share/ as a raw ReCap resource and reports it back as the same urn', () => {
+    const result = prepare(secretRequest({ path: folder }));
+    expect(recapAtt(result.prepared.siwe)[folder]).toEqual({ [DECRYPT]: [{}] });
+    expect(parsePreparedRecap(result.prepared.siwe)).toContainEqual({
+      service: 'encryption',
+      space: 'encryption',
+      path: folder,
+      actions: [DECRYPT],
+    });
+  });
+
+  test('a named network keeps working with and without the folder', () => {
+    const named = `urn:tinycloud:encryption:${ownerDid}:team-2`;
+    expect(Object.keys(recapAtt(prepare(secretRequest({ path: `${named}/share/` })).prepared.siwe))).toContain(`${named}/share/`);
+    expect(Object.keys(recapAtt(prepare(secretRequest({ path: named })).prepared.siwe))).toContain(named);
+  });
+
+  test('unchecking it removes the folder from the signed SIWE', () => {
+    const baseline = prepare(secretRequest({ path: folder }));
+    const key = baseline.selectedActionKeys.find((candidate) => candidate.includes(folder));
+    expect(key).toBeDefined();
+    const narrowed = prepare(secretRequest({ path: folder }), baseline.selectedActionKeys.filter((candidate) => candidate !== key));
+    expect(narrowed.prepared.siwe).not.toContain('urn:tinycloud:encryption:');
+  });
+
+  function refusal(permissions: DelegationPermissionEntry[]): DelegateRequestError {
+    let error: unknown;
+    try {
+      prepare(permissions);
+    } catch (caught) {
+      error = caught;
+    }
+    if (!(error instanceof DelegateRequestError)) throw new Error(`expected a DelegateRequestError, got ${String(error)}`);
+    expect(error.code).toBe('invalid_permissions');
+    return error;
+  }
+
+  test('refuses every other tail after the network name', () => {
+    const tails = [
+      'share', // no trailing slash: an exact key, not the folder
+      'share//',
+      'share/x/',
+      'share/x',
+      'share/..',
+      'share/../',
+      'share/../other/',
+      'share/%2e%2e/',
+      'share/ /',
+      'share/\\',
+      'Share/',
+      'shares/',
+      'other/',
+      'a/b',
+      '/share/',
+      '//share/',
+      'share/0123456789abcdef0123456789abcdef/', // a per-share folder: not until something sends it
+      'share/share/',
+      '',
+    ];
+    for (const tail of tails) {
+      const error = refusal(secretRequest({ path: `${network}/${tail}` }));
+      expect(error.details?.[0]?.path, JSON.stringify(tail)).toBe('permissions[1].path');
+    }
+  });
+
+  test('refuses a folder on a network the signer does not own, on another chain, or with a bad network name', () => {
+    const foreign = [
+      `urn:tinycloud:encryption:did:pkh:eip155:1:0x0000000000000000000000000000000000000001:default/share/`,
+      `urn:tinycloud:encryption:did:pkh:eip155:10:${address}:default/share/`,
+      `urn:tinycloud:encryption:did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK:default/share/`,
+      `urn:tinycloud:encryption:${ownerDid}:Default/share/`,
+      `urn:tinycloud:encryption:${ownerDid}:-default/share/`,
+      `urn:tinycloud:encryption:${ownerDid}:/share/`,
+      `urn:tinycloud:encryption:${ownerDid}:a:b/share/`,
+    ];
+    for (const path of foreign) {
+      expect(refusal(secretRequest({ path })).details?.[0]?.path, path).toBe('permissions[1].path');
+    }
+  });
+
+  test('grants only decrypt on the folder', () => {
+    for (const actions of [['tinycloud.encryption/key.create'], [DECRYPT, 'tinycloud.encryption/key.create'], ['tinycloud.encryption/network.create'], ['tinycloud.kv/put'], []]) {
+      expect(refusal(secretRequest({ path: folder, actions })).details?.[0]?.path, actions.join()).toMatch(/^permissions\[1\]\.actions/);
+    }
+  });
+
+  test('a folder entry cannot carry another space', () => {
+    expect(() => prepare(secretRequest({ path: folder, space }))).toThrow('must be "encryption" or absent');
+  });
+});
+
+// The five entries `tinycloud auth login --manifest builtin:share-publishing` sends once the CLI has resolved them
+// (@tinycloud/cli 1.5.2-beta.0 `SHARE_PUBLISHING_MANIFEST` + `resolvePermissionSpaces`): the encryption entry is
+// permissions[4] and was refused before consent with "names an invalid encryption network".
+describe('the CLI share-publishing request (TC-2349)', () => {
+  const defaultSpace = `tinycloud:pkh:eip155:${chainId}:${address}:default`;
+  const cliRequest: DelegationPermissionEntry[] = [
+    { service: 'tinycloud.capabilities', space: defaultSpace, path: '', actions: ['tinycloud.capabilities/read'] },
+    { service: 'tinycloud.kv', space: defaultSpace, path: 'xyz.tinycloud.share/shares/', actions: ['tinycloud.kv/get', 'tinycloud.kv/put'] },
+    { service: 'tinycloud.kv', space: defaultSpace, path: 'shares/', actions: ['tinycloud.kv/get', 'tinycloud.kv/metadata', 'tinycloud.kv/put', 'tinycloud.kv/list'] },
+    { service: 'tinycloud.kv', space: defaultSpace, path: 'artifacts/', actions: ['tinycloud.kv/get', 'tinycloud.kv/metadata', 'tinycloud.kv/put', 'tinycloud.kv/list'] },
+    { service: 'tinycloud.encryption', space: 'encryption', path: `${network}/share/`, actions: [DECRYPT] },
+  ];
+
+  test('is prepared, and the signed ReCap carries the folder next to the four space resources', () => {
+    const result = prepare(cliRequest);
+    const att = recapAtt(result.prepared.siwe);
+    expect(att[`${network}/share/`]).toEqual({ [DECRYPT]: [{}] });
+    expect(Object.keys(att).filter((resource) => resource.startsWith('urn:tinycloud:encryption:'))).toEqual([`${network}/share/`]);
+    expect(result.spaceId).toBe(defaultSpace);
+  });
+});

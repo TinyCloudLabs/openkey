@@ -408,13 +408,16 @@ export function validatePermissions(permissions: unknown): DelegationPermissionE
 const RAW_ENCRYPTION_NETWORK = /^urn:tinycloud:encryption:did:pkh:eip155:(\d+):(0x[0-9a-fA-F]{40}):([^:]*)$/;
 // The network-name rule of the TinyCloud SDK (`sdk-services` NETWORK_NAME_RE).
 const ENCRYPTION_NETWORK_NAME = /^[a-z0-9][a-z0-9-]*$/;
+// The one key folder a raw entry may name besides a bare network: the `share/` folder of the signer's own
+// network (the CLI's `builtin:share-publishing` manifest, TC-2349). Exactly this suffix, nothing after it.
+const SHARE_KEY_FOLDER_SUFFIX = '/share/';
 
 /**
  * A raw encryption entry carries no space (`space` absent or `encryption`),
  * grants only `tinycloud.encryption/decrypt`, and names a network the signer
- * owns: the URN's owner DID must be the signer's
- * `did:pkh:eip155:<chainId>:<address>` (address case-insensitive) and the
- * network name must follow the SDK's naming rule.
+ * owns, or exactly that network's `share/` folder: the URN's owner DID must be
+ * the signer's `did:pkh:eip155:<chainId>:<address>` (address case-insensitive)
+ * and the network name must follow the SDK's naming rule.
  */
 function assertRawEncryptionPermission(
   entry: DelegationPermissionEntry,
@@ -472,7 +475,11 @@ function assertRawEncryptionPermission(
       }],
     );
   }
-  if (!ENCRYPTION_NETWORK_NAME.test(network[3]!)) {
+  // The name part: the whole tail, or the tail without the one allowed folder suffix. Anything else
+  // (`a/b`, `share`, `share/x/`, `..`, a per-share folder) stays a name that fails the rule below.
+  const tail = network[3]!;
+  const networkName = tail.endsWith(SHARE_KEY_FOLDER_SUFFIX) ? tail.slice(0, -SHARE_KEY_FOLDER_SUFFIX.length) : tail;
+  if (!ENCRYPTION_NETWORK_NAME.test(networkName)) {
     throw new DelegateRequestError(
       'invalid_permissions',
       `permissions[${index}].path names an invalid encryption network; the name must match ${ENCRYPTION_NETWORK_NAME.source}`,
