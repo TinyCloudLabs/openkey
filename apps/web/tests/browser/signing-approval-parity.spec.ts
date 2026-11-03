@@ -496,18 +496,19 @@ test.describe('signing-approval browser parity — production adapters', () => {
             tag: el.tagName.toLowerCase(),
             text: (el.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 40),
             type: el.getAttribute('type') ?? '',
+            testid: el.getAttribute('data-testid') ?? '',
           };
         });
         if (!info) break;
-        signature.push(`${info.tag}[type=${info.type}][text=${info.text}]`);
+        signature.push(`${info.tag}[type=${info.type}][testid=${info.testid}][text=${info.text}]`);
       }
-      // The Approve and Cancel buttons MUST both appear in the focus
+      // The Approve and dismiss buttons MUST both appear in the focus
       // sequence — proving the browser's tab manager reaches them.
       expect(signature.join(' | ')).toContain('button[type=');
       const hasApprove = signature.some((s) => s.includes('Approve'));
-      const hasCancel = signature.some((s) => s.includes('Cancel'));
+      const hasDismiss = signature.some((s) => s.includes('[testid=signing-dismiss]'));
       expect(hasApprove).toBe(true);
-      expect(hasCancel).toBe(true);
+      expect(hasDismiss).toBe(true);
     });
 
     test(`[${surface}] Enter on Approve routes to the ADAPTER approve wiring`, async ({ page }) => {
@@ -554,13 +555,13 @@ test.describe('signing-approval browser parity — production adapters', () => {
       }
     });
 
-    test(`[${surface}] Enter on Cancel routes to the ADAPTER cancel wiring`, async ({ page }) => {
+    test(`[${surface}] Enter on the dismiss control routes to the ADAPTER cancel wiring`, async ({ page }) => {
       await loadHarness(page, {
         surface,
         model: benignFixtureModel(),
         initialSelection: fixtureInitialSelection(benignFixtureModel()),
       });
-      const cancel = page.locator('[data-parity-harness] button', { hasText: 'Cancel' }).first();
+      const cancel = page.locator('[data-parity-harness] [data-testid="signing-dismiss"]').first();
       await cancel.focus();
       await page.keyboard.press('Enter');
       const calls = await readCalls(page);
