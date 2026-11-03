@@ -143,5 +143,11 @@ export function createPrismaDeviceAuthorizationStore(database: any): DeviceAutho
         return fromDatabase(value);
       });
     },
+    async wipeExpiredResults(now) {
+      await database.deviceAuthorization.updateMany({
+        where: { status: 'APPROVED', transactionExpiresAt: { lte: now }, NOT: { encryptedResult: null } },
+        data: { encryptedResult: null },
+      });
+    },
   };
 }

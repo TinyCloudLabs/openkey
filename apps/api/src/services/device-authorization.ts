@@ -125,6 +125,8 @@ export interface DeviceAuthorizationStore {
     resultExpiresAt: Date;
   }): Promise<boolean>;
   consumeApproved(id: string): Promise<DeviceAuthorizationRecord | null>;
+  /** Clears the ciphertext of approved results whose retention has passed without an acknowledgement. */
+  wipeExpiredResults(now: Date): Promise<void>;
 }
 
 export class MemoryDeviceAuthorizationStore implements DeviceAuthorizationStore {
@@ -182,6 +184,12 @@ export class MemoryDeviceAuthorizationStore implements DeviceAuthorizationStore 
     const consumed = { ...record };
     delete record.encryptedResult;
     return consumed;
+  }
+
+  async wipeExpiredResults(now: Date): Promise<void> {
+    for (const record of this.records.values()) {
+      if (record.status === 'approved' && record.transactionExpiresAt <= now) delete record.encryptedResult;
+    }
   }
 }
 
@@ -749,6 +757,8 @@ export class DeviceAuthorizationService {
       pollIntervalSeconds: DEVICE_AUTH_POLL_INTERVAL_SECONDS,
       status: 'pending',
     };
+    // The expiry sweep: approved results nobody acknowledged do not stay at rest past their retention.
+    await this.store.wipeExpiredResults(now);
     await this.store.create(record);
     const verificationUri = `${canonicalOrigin(this.options.verificationOrigin, 'verificationOrigin')}/device`;
     return {
