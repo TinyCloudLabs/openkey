@@ -262,7 +262,13 @@ if (process.env.OPENKEY_MCP_LIFETIME_TEST_CHILD !== '1') {
 
     test('a withdrawn token is refused however the Authorization header is written, including with no Bearer scheme', async () => {
       // The provider takes the whole header as the token when it has no "Bearer " prefix, so the guard must too.
-      const forms = (token: string) => [`Bearer ${token}`, `bearer ${token}`, `Bearer  ${token}`, token];
+      // The provider's JWS decoder also accepts `=` padding and skips spaces and tabs inside the signature, which does not
+      // change what the signature covers, so those spellings of the same token must be refused too.
+      const forms = (token: string) => [
+        `Bearer ${token}`, `bearer ${token}`, `Bearer  ${token}`, token,
+        `Bearer ${token}==`, `${token}==`, `Bearer ${token} ==`,
+        `Bearer ${token.slice(0, -4)} ${token.slice(-4)}`, `Bearer ${token.slice(0, -4)}\t${token.slice(-4)}`,
+      ];
       const revoked = await issue('openid email offline_access tinycloud:mcp', MCP_RESOURCES[0]);
       // Before it is withdrawn the provider answers the two forms it understands.
       for (const header of [`Bearer ${revoked.tokens.access_token}`, revoked.tokens.access_token]) {
