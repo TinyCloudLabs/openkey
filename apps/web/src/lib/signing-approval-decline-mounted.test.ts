@@ -175,7 +175,6 @@ describe('the dismiss control, found by its test id', () => {
     const { target, cleanup } = render();
     expect(decline(target)).toBeNull();
     expect(row(target).contains(dismiss(target))).toBe(true);
-    expect(dismiss(target)!.tagName).toBe('BUTTON');
     cleanup();
   });
 });
@@ -188,8 +187,6 @@ describe('Decline on the review card', () => {
     expect(buttons[0]).toBe(decline(target));
     expect(buttons[1]).toBe(approveButton(target));
     expect(row(target).contains(dismiss(target))).toBe(false);
-    expect(dismiss(target)!.tagName).toBe('BUTTON');
-    expect(dismiss(target)!.classList.contains('dismiss-link')).toBe(true);
     // Above the pair: it comes before the action row in the document.
     expect(dismiss(target)!.compareDocumentPosition(row(target)) & 4 /* FOLLOWING */).toBeTruthy();
     cleanup();

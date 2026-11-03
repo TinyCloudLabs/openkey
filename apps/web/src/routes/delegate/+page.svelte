@@ -858,12 +858,16 @@
       });
       if (response.ok) {
         sessionStorage.removeItem(`openkey.approval.${approvalRequestId}`);
+        approvalReference = '';
         declined = true;
         done = true;
       } else if (response.status === 409) {
         error = 'This request was already approved, so it cannot be declined.';
       } else if (response.status === 410) {
+        // Same end as /load answering expired: the request is gone, so the page shows the expired message alone.
         sessionStorage.removeItem(`openkey.approval.${approvalRequestId}`);
+        approvalReference = '';
+        approvalRequestLoaded = false;
         error = 'This approval request has expired. Return to the requesting app or command and create a new approval link.';
       } else {
         error = DECLINE_FAILED;
