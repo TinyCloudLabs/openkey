@@ -6,8 +6,8 @@
   //   1. Default view is small, deterministic, and derived from the actual
   //      SIWE/ReCap request PLUS explicitly provenance-labelled manifest
   //      data. It surfaces the requester, a short list of understandable
-  //      statements (from statements.ts), and a pinned sensitive callout
-  //      when any grant reaches secret data or decryption.
+  //      statements (from statements.ts), and a sensitive count when the
+  //      listed rows mix Sensitive badges with unbadged rows.
   //   2. A single top-level `<details>` labelled `Advanced details` contains:
   //      requester, verified browser origin, manifest name/appId/digest with
   //      HONEST trust/provenance label, reason (only when present), signing
@@ -54,13 +54,13 @@
     FAMILY_LABEL,
     appKeyNotGrantableStatements,
     buildRenderPlan,
-    buildStatements,
+    buildSummaryStatements,
     grantIsAppKeyDecrypt,
-    grantReachesSecretDataOrDecryption,
+    sensitiveSummaryCount,
     grantHeading,
     PROTOCOL_HEADLINE,
     PROTOCOL_HINT,
-    sensitiveCallout,
+    sensitiveRowsCallout,
     abbreviateDid,
     abbreviateSpaceId,
     readSpaceHostFacts,
@@ -206,56 +206,11 @@
     }),
   );
 
-  // Statements for the summary view. Group by primary text so repeated
-  // statements collapse into one visible row while preserving the strongest
-  // severity. Counts, services, resources, and requester provenance belong in
-  // Advanced details; the approval view stays understandable at a glance.
-  const summaryStatements = $derived.by(() => {
-    const severityRank: Record<CapabilityGrant["severity"], number> = {
-      standard: 0,
-      attention: 1,
-      sensitive: 2,
-    };
-
-    const grouped = new Map<
-      string,
-      {
-        key: string;
-        primaryText: string;
-        severity: CapabilityGrant["severity"];
-        unmapped: boolean;
-        codeSpans: boolean;
-      }
-    >();
-
-    for (const grant of selectedGrants) {
-      for (const statement of buildStatements(grant)) {
-        const existing = grouped.get(statement.primaryText);
-        const rowSeverity = statement.severity ?? grant.severity;
-        if (existing) {
-          if (severityRank[rowSeverity] > severityRank[existing.severity]) {
-            existing.severity = rowSeverity;
-          }
-        } else {
-          grouped.set(statement.primaryText, {
-            key: statement.primaryText,
-            primaryText: statement.primaryText,
-            severity: rowSeverity,
-            unmapped: statement.literalEscaped === true,
-            codeSpans: statement.codeSpans === true,
-          });
-        }
-      }
-    }
-
-    return [...grouped.values()].sort(
-      (left, right) => Number(left.unmapped) - Number(right.unmapped),
-    );
-  });
-
-  const sensitiveCount = $derived(
-    selectedGrants.filter(grantReachesSecretDataOrDecryption).length,
-  );
+  // Statements for the summary view. The rows, and the count in the Sensitive
+  // header, come from one function so the header always counts the rows marked
+  // Sensitive below it (capability-review `buildSummaryStatements`).
+  const summaryStatements = $derived(buildSummaryStatements(selectedGrants));
+  const sensitiveCount = $derived(sensitiveSummaryCount(summaryStatements));
 
   // App keys: the standing-access line follows the decrypt statements, and a
   // `key.delete` action is listed even though it is never selected.
@@ -589,12 +544,12 @@
   {/if}
 
   <!--
-    Sensitive callout pinned at the top. Exact copy from the contract.
-    Rendered only when at least one grant reaches secret data or decryption.
+    Count the badged rows only when mixed with unbadged rows. Not-granted
+    informational rows are also unbadged; the individual badges always remain.
   -->
-  {#if sensitiveCount > 0}
+  {#if sensitiveCount > 0 && sensitiveCount < summaryStatements.length + notGrantableStatements.length}
     <p class="sensitive-callout" role="status" aria-live="polite">
-      {sensitiveCallout(sensitiveCount)}
+      {sensitiveRowsCallout(sensitiveCount)}
     </p>
   {/if}
 
@@ -1307,11 +1262,12 @@
     border-radius: 14px;
     padding: 12px 14px;
     font-size: 13px;
+    display: block;
+  }
+  .advanced-details[open] {
     display: flex;
     flex-direction: column;
     gap: 10px;
-  }
-  .advanced-details[open] {
     background: #fbfdff;
     border-color: #cfd8e3;
   }
@@ -1323,8 +1279,11 @@
     cursor: pointer;
     font-weight: 700;
     color: #0f172a;
-    padding: 2px 0 6px;
+    padding: 2px 0;
     list-style: none;
+  }
+  .advanced-details[open] > .advanced-summary {
+    padding-bottom: 6px;
   }
   .advanced-summary::-webkit-details-marker {
     display: none;
@@ -1770,6 +1729,7 @@
   }
   @media (max-width: 520px) {
     .signing-approval {
+      width: calc(100% - 24px);
       padding: 14px;
       border-radius: 14px;
     }

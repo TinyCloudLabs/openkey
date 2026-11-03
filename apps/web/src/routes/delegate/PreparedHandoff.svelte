@@ -4,7 +4,7 @@
   import { authClient, authErrorMessage } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
   import { copyText } from '$lib/clipboard';
-  import { buildStatements, parseEncryptionResource, parseCapabilityReview, defaultSelection, renderLiteral, renderSiweLiteral, type CapabilityGrant, type CapabilityReviewModel } from '@openkey/capability-review';
+  import { buildStatements, parseEncryptionResource, parseCapabilityReview, defaultSelection, renderLiteral, renderSiweLiteral, splitStatementCode, type CapabilityGrant, type CapabilityReviewModel } from '@openkey/capability-review';
   import { validatePreviewSelection } from '$lib/preview-review';
   import { requestedActionIds } from '$lib/widget-selection';
   import { timeUntilExpiry } from '$lib/siwe-parser';
@@ -459,7 +459,7 @@
       {#each keyChoices[0].review.permissions as grant}
         <div class="rounded-lg border p-3 text-sm">
           {#if ownKeyFolder(grant)}<p class="font-semibold">Your own encryption keys in <code>{ownKeyFolder(grant)}</code></p>{/if}
-          {#each buildStatements(grant) as statement}<p>{statement.primaryText}</p>{/each}
+          {#each buildStatements(grant) as statement}<p>{#if statement.codeSpans}{#each splitStatementCode(statement.primaryText) as part}{#if part.code}<code class="font-mono">{part.text}</code>{:else}{part.text}{/if}{/each}{:else}{statement.primaryText}{/if}</p>{/each}
           <details><summary>Full grant</summary><pre class="whitespace-pre-wrap break-all">{renderLiteral(`${grant.service} · ${grant.space} · ${grant.path}: ${grant.actions.map(action => action.ability).join(', ')}`)}</pre></details>
         </div>
       {/each}
@@ -511,7 +511,7 @@
       {#each model.permissions as grant}
         <div class="rounded-lg border p-3 text-sm">
           {#if ownKeyFolder(grant)}<p class="font-semibold">Your own encryption keys in <code>{ownKeyFolder(grant)}</code></p>{/if}
-          {#each buildStatements(grant) as statement}<p>{statement.primaryText}</p>{/each}
+          {#each buildStatements(grant) as statement}<p>{#if statement.codeSpans}{#each splitStatementCode(statement.primaryText) as part}{#if part.code}<code class="font-mono">{part.text}</code>{:else}{part.text}{/if}{/each}{:else}{statement.primaryText}{/if}</p>{/each}
           {#each grant.actions as action}
             <label class="flex gap-2 py-1"><input type="checkbox" checked={selected.has(action.id)} disabled={phase !== 'review' || !action.editable} onchange={() => toggle(action.id)} /><span class="break-all">{renderLiteral(action.ability, 120)}</span></label>
           {/each}
