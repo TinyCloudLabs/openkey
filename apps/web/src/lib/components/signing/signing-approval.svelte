@@ -86,6 +86,8 @@
     /** Disable Approve while an embedding host is applying the review layout. */
     layoutBlocked?: boolean;
     stickyActions?: boolean;
+    /** The server refused in a way a retry cannot change: Approve stays disabled (Cancel still works). */
+    refused?: boolean;
     /** Disable only Approve while the route prepares the current preview. */
     previewPending?: boolean;
     approveText?: string;
@@ -131,6 +133,7 @@
     approveBlockedReason = null,
     layoutBlocked = false,
     stickyActions = false,
+    refused = false,
     previewPending = false,
     approveText = "Approve",
     cancelText = "Cancel",
@@ -474,14 +477,14 @@
   const nodeChecking = $derived(peerRecognition?.state === "checking");
   const approveDisabled = $derived(approving || isMalformedRecap);
   const approveButtonDisabled = $derived(
-    previewPending || layoutBlocked || approveDisabled || Boolean(approveBlockedReason) || nodeChecking,
+    previewPending || layoutBlocked || refused || approveDisabled || Boolean(approveBlockedReason) || nodeChecking,
   );
   const approveLabel = $derived(
     isMalformedRecap
       ? "Cannot approve"
       : approving
         ? "Signing…"
-        : previewPending && !onRetry
+        : previewPending && !onRetry && !refused
           ? "Getting ready..."
           : approveText,
   );
@@ -975,6 +978,9 @@
     </section>
   </details>
 
+  <!-- The message and the buttons travel together: with sticky actions the message is pinned just above them, so a
+       refusal is never left below the fold of a short frame while the buttons look unchanged. -->
+  <div class="action-region">
   {#if error}
     <p class="error" role="alert" aria-live="polite">{error}</p>
   {/if}
@@ -1005,6 +1011,7 @@
       {approveLabel}
     </button>
   </footer>
+  </div>
 </div>
 
 <style>
@@ -1091,6 +1098,7 @@
   .reason .reason-body {
     font-size: 13px;
     color: #0f172a;
+    overflow-wrap: anywhere;
   }
   .signer-line {
     display: flex;
@@ -1410,6 +1418,7 @@
   .metadata-reason,
   .reason-body,
   .reason-untrusted {
+    overflow-wrap: anywhere;
     margin: 4px 0 0;
     font-size: 12px;
     line-height: 1.45;
@@ -1689,10 +1698,16 @@
     display: flex;
     gap: 10px;
   }
-  .sticky-actions .actions {
+  .action-region {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .sticky-actions .action-region {
     position: sticky;
     bottom: 0;
     z-index: 1;
+    gap: 8px;
     padding: 10px 0;
     background: #fff;
     box-shadow: 0 -8px 16px rgb(255 255 255 / 90%);
