@@ -137,7 +137,7 @@ async function until(condition: () => boolean, what: string): Promise<void> {
   throw new Error(`timed out waiting for ${what}: ${document.body.textContent?.slice(0, 300)}`);
 }
 
-type Reply = { status: number; body?: unknown; text?: string } | 'network-failure';
+type Reply = { status: number; body?: unknown; text?: string; wait?: Promise<void> } | 'network-failure';
 const GOOD_SIGN = {
   protocolVersion: 1, address: ADDR, signature: '0xsigned', signedMessage: 'signed',
   selectedActionKeys: [] as string[], permissions: [] as unknown[], selectedKeyId: KEY.id, deliveryState: opaque('state'),
@@ -181,6 +181,7 @@ async function open(options: { signReplies?: Reply[]; serverDate?: () => string;
     if (name === 'authorize-sign') {
       const reply = signReplies.shift() ?? { status: 500, body: { error: 'unexpected' } };
       if (reply === 'network-failure') throw new TypeError('Failed to fetch');
+      if (reply.wait) await reply.wait;
       return answer(reply.status, reply.body, reply.text);
     }
     if (name === 'cancel-claimed') return answer(200, { cancelled: true });
@@ -255,6 +256,26 @@ describe('the prepared handoff page and the server clock', () => {
       flushSync();
       expect(page.button('Approve')).toBeUndefined();
       expect(page.alert()).toBe('Prepared sign-in request expired. Restart the CLI command.');
+      page.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('an expiry while a signing is in flight does not throw the handoff away: the signature that comes back is still delivered', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const signing = Promise.withResolvers<void>();
+      const page = await open({ signReplies: [{ status: 200, body: GOOD_SIGN, wait: signing.promise }], claimExpiresInMs: 80_000 });
+      page.button('Approve')!.click();
+      flushSync();
+      // The handoff's deadline passes while the server is still signing.
+      vi.advanceTimersByTime(81_000);
+      flushSync();
+      expect(page.alert()).toBeNull();
+      signing.resolve();
+      await until(() => page.target.textContent!.includes('Paste this response in your CLI'), 'the signed result');
+      expect(page.alert()).toBeNull();
       page.close();
     } finally {
       vi.useRealTimers();

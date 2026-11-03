@@ -3342,7 +3342,8 @@ delegateRouter.post('/authorize-sign', async (c) => {
   if (ticket) {
     const consumed = spendTokens();
     if (!consumed.ok) {
-      await activePreparedHandoffService.releaseSigning(ticket, user.id, body.authorizationContextToken, key.id);
+      // A signature now exists for this handoff, so it is not released: it stays SIGNING until it
+      // expires, and the signature is discarded. Only a failed signing releases (see releaseSigning).
       return c.json({ error: consumed.message, code: consumed.error }, 400);
     }
   }
