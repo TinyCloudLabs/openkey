@@ -26,6 +26,7 @@ import {
   LITERAL_TRUNCATE_CHARS,
   NAMED_KEY_STATEMENTS,
   OWN_KEY_PREFIX_STATEMENTS,
+  SHARE_KEY_PREFIX_CREATE_STATEMENT,
   appKeyStatementText,
   renderLiteral,
   renderNamedKeySentence,
@@ -630,6 +631,10 @@ function buildNamedKeyStatement(
     return fallbackStatement(grant);
   }
   if (grant.ownedBySelf !== true) return fallbackStatement(grant);
+  if (parsed.kind === "prefix" && parsed.network === "default" &&
+    parsed.keyPath === "share/" && verb === "create") {
+    return { primaryText: SHARE_KEY_PREFIX_CREATE_STATEMENT, service: grant.service, resource };
+  }
   if (parsed.kind === "key" && parsed.network === "default" &&
     /^share\/[^/]+$/.test(parsed.keyPath) && verb === "decrypt") {
     return { primaryText: "Open this shared file", service: grant.service, resource };

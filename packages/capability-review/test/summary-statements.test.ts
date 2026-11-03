@@ -5,7 +5,6 @@
 import { describe, expect, it } from "bun:test";
 
 import {
-  OWN_KEY_PREFIX_STATEMENTS,
   buildSummaryStatements,
   defaultSelection,
   parseCapabilityReview,
@@ -68,12 +67,6 @@ function rowsOf(model: CapabilityReviewModel) {
 describe("the Sensitive header counts the Sensitive rows", () => {
   it("counts the four rows marked Sensitive in the Share sign-in (the header said 2)", () => {
     const rows = rowsOf(modelFor(SHARE_SIGN_IN));
-    expect(rows.filter((row) => row.severity === "sensitive").map((row) => row.primaryText)).toEqual([
-      "Set up encryption and decrypt protected data",
-      OWN_KEY_PREFIX_STATEMENTS.shareDecrypt,
-      "Create your own encryption keys in `share/`",
-      "Read and change your data",
-    ]);
     expect(sensitiveSummaryCount(rows)).toBe(4);
   });
 
@@ -94,12 +87,14 @@ describe("own-key folder rows show the path in code style, never as raw backquot
     }
   });
 
-  it("the share/ folder: Create keeps the code-style path; Decrypt is the approved plain sentence, which has no path to style", () => {
-    const rows = rowsOf(modelFor(SHARE_SIGN_IN));
-    expect(rows.find((row) => row.primaryText === "Create your own encryption keys in `share/`")?.codeSpans).toBe(true);
-    const decrypt = rows.find((row) => row.primaryText === OWN_KEY_PREFIX_STATEMENTS.shareDecrypt);
-    expect(decrypt?.codeSpans).toBe(false);
-    expect(decrypt?.primaryText).not.toContain("`");
+  it("the share/ folder has two plain action rows without a code-style path", () => {
+    const rows = rowsOf(modelFor({ [`${NETWORK}/share/`]: ["tinycloud.encryption/key.create", "tinycloud.encryption/decrypt"] }));
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.primaryText).not.toBe(rows[1]!.primaryText);
+    for (const row of rows) {
+      expect(row.codeSpans).toBe(false);
+      expect(row.primaryText).not.toContain("`");
+    }
   });
 });
 

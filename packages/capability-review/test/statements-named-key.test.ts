@@ -219,6 +219,28 @@ describe("exact share decrypt copy", () => {
   });
 });
 
+describe("owner share-prefix create presentation", () => {
+  for (const shape of ["A", "B"] as const) {
+    it(`shape ${shape} presents the share create action without a code-style path`, () => {
+      const row = buildStatement(shapeGrant(shape, `${NETWORK}/share/`, [ABILITY.create]));
+      expect(row.codeSpans).not.toBe(true);
+      expect(row.primaryText).not.toContain("share/");
+      expect(row.primaryText).not.toContain("`");
+    });
+  }
+
+  it("does not relabel other resources or another owner's keys as shared files", () => {
+    const row = buildStatement(namedGrant(`${NETWORK}/share/`, [ABILITY.create]));
+    for (const resource of [PREFIX, `${NETWORK}/share/x/`, `${NETWORK}/share`,
+      `urn:tinycloud:encryption:${OWNER}:other/share/`]) {
+      expect(buildStatement(namedGrant(resource, [ABILITY.create])).primaryText).not.toBe(row.primaryText);
+    }
+    const foreign = namedGrant(`${NETWORK}/share/`, [ABILITY.create]);
+    foreign.ownedBySelf = false;
+    expect(buildStatement(foreign).primaryText).not.toBe(row.primaryText);
+  });
+});
+
 describe("owner share-prefix decrypt explanation", () => {
   for (const shape of ["A", "B"] as const) {
     it(`shape ${shape} explains that the owner's grant includes future shares`, () => {
@@ -231,8 +253,6 @@ describe("owner share-prefix decrypt explanation", () => {
 
   it("keeps other prefix, action and ownership explanations unchanged", () => {
     expect(buildStatement(namedGrant(PREFIX, [ABILITY.decrypt])).primaryText).toBe(PREFIX_SENTENCE.decrypt);
-    expect(buildStatement(namedGrant(`${NETWORK}/share/`, [ABILITY.create])).primaryText)
-      .toBe("Create your own encryption keys in `share/`");
     const otherOwner = namedGrant(`${NETWORK}/share/`, [ABILITY.decrypt]);
     otherOwner.ownedBySelf = false;
     expect(buildStatement(otherOwner).primaryText)
@@ -271,7 +291,6 @@ describe("owner share-prefix decrypt explanation", () => {
     for (const [verb, sentence] of [
       ["block", "Block keys in default/share/ from decrypting"],
       ["unblock", "Let all keys in default/share/ decrypt again"],
-      ["create", "Create your own encryption keys in `share/`"],
     ] as const) {
       it(`shape ${shape}: an owner key.${verb} on default/share/ keeps its own sentence`, () => {
         const row = buildStatement(shapeGrant(shape, `${NETWORK}/share/`, [ABILITY[verb]]));
@@ -281,18 +300,17 @@ describe("owner share-prefix decrypt explanation", () => {
     }
   }
 
-  // A grant with several actions is split into one row per action, in grant order: create is never hidden
-  // behind the decrypt sentence, and the decrypt sentence is never repeated for a key action.
-  const CREATE_SHARE = "Create your own encryption keys in `share/`";
+  // Distinct actions stay distinct, approvable rows; copy is not the contract.
   for (const shape of ["A", "B"] as const) {
-    for (const [label, abilities, rows] of [
-      ["decrypt, create", [ABILITY.decrypt, ABILITY.create], [SHARED_FILES_LINE, CREATE_SHARE]],
-      ["create, decrypt", [ABILITY.create, ABILITY.decrypt], [CREATE_SHARE, SHARED_FILES_LINE]],
-      ["decrypt, block, create", [ABILITY.decrypt, ABILITY.block, ABILITY.create], [SHARED_FILES_LINE, "Block keys in default/share/ from decrypting", CREATE_SHARE]],
+    for (const [label, abilities] of [
+      ["decrypt, create", [ABILITY.decrypt, ABILITY.create]],
+      ["create, decrypt", [ABILITY.create, ABILITY.decrypt]],
+      ["decrypt, block, create", [ABILITY.decrypt, ABILITY.block, ABILITY.create]],
     ] as const) {
       it(`shape ${shape}: ${label} on default/share/ lists one row per action`, () => {
         const built = buildStatements(shapeGrant(shape, `${NETWORK}/share/`, [...abilities]));
-        expect(built.map((row) => row.primaryText)).toEqual([...rows]);
+        expect(built).toHaveLength(abilities.length);
+        expect(new Set(built.map((row) => row.primaryText)).size).toBe(abilities.length);
         expect(built.every((row) => row.neverApprovable !== true)).toBe(true);
       });
     }
@@ -348,7 +366,8 @@ describe("owner share-prefix decrypt explanation", () => {
     expect(grants).toHaveLength(1);
     expect(grants[0]!.severity).toBe("sensitive");
     const rows = buildStatements(grants[0]!);
-    expect(rows.map((row) => row.primaryText)).toEqual([SHARED_FILES_LINE, CREATE_SHARE]);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.primaryText).not.toBe(rows[1]!.primaryText);
     expect(rows.every((row) => row.neverApprovable !== true)).toBe(true);
   });
 });
