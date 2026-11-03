@@ -528,7 +528,7 @@
       </div>
       <div class="flex shrink-0 items-center gap-3">
         <div class="min-w-16 text-right text-sm font-medium {autoSignEnabled ? 'text-surface-900' : 'text-surface-500'}">
-          {loadingAutoSign ? 'Loading' : savingAutoSign ? 'Saving' : autoSignEnabled ? 'Enabled' : 'Disabled'}
+          {loadingAutoSign ? 'Loading' : savingAutoSign ? 'Saving' : !autoSignKnown ? 'Unavailable' : autoSignEnabled ? 'Enabled' : 'Disabled'}
         </div>
         <button
           type="button"

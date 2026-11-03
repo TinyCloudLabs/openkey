@@ -31,6 +31,9 @@ test('Auto-Sign is neutral while loading, then shows loaded OFF', async ({ page 
   const toggle = page.getByRole('switch', { name: 'Toggle Auto-Sign' });
   await expect(toggle).not.toHaveAttribute('aria-checked', 'true');
   await expect(toggle).toBeDisabled();
+  // Neither status word is claimed while the value is unknown.
+  await expect(page.getByText('Enabled', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Disabled', { exact: true })).toHaveCount(0);
   release();
   await expect(toggle).toHaveAttribute('aria-checked', 'false');
   await expect(toggle).toBeEnabled();
@@ -48,6 +51,8 @@ test('failed Auto-Sign load stays neutral and can retry', async ({ page }) => {
   await expect(toggle).not.toHaveAttribute('aria-checked', 'true');
   await expect(toggle).toBeDisabled();
   await expect(page.getByText('load failed')).toBeVisible();
+  await expect(page.getByText('Enabled', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Disabled', { exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: 'Try again' }).click();
   await expect(toggle).toHaveAttribute('aria-checked', 'false');
   await expect(toggle).toBeEnabled();
