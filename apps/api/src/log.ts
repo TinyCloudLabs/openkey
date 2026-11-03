@@ -76,7 +76,7 @@ const ERROR_CODES: Record<string, true> = {
   P2002: true, P2025: true, P2010: true, P2034: true, tinycloud_bootstrap_failed: true,
   tinycloud_bootstrap_crashed: true, tinycloud_bootstrap_in_progress: true,
   tinycloud_bootstrap_node_timeout: true, tinycloud_bootstrap_space_not_hosted: true,
-  tinycloud_bootstrap_deadline: true, tinycloud_bootstrap_lease_expired: true,
+  tinycloud_bootstrap_deadline: true, tinycloud_bootstrap_lease_expired: true, tinycloud_bootstrap_reclaim_failed: true,
   tinycloud_bootstrap_expired_request: true, BETTER_AUTH_URL: true, signup_token_invalid: true,
   signup_account_exists: true, quote_report_data_mismatch: true, quote_key_custody_mismatch: true,
   quote_format_invalid: true,

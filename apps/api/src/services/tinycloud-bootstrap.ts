@@ -48,6 +48,8 @@ const BOOTSTRAP_RUN_DEADLINE_MS = 180 * 1000;
 const BOOTSTRAP_MAX_LOCK_LIFETIME_MS = BOOTSTRAP_RUN_DEADLINE_MS + 30 * 1000;
 /** Carries the current run's signal to nodeFetch without threading it through every call. */
 const bootstrapRunSignal = new AsyncLocalStorage<AbortSignal>();
+/** Recorded when a run that re-claimed a `complete` row fails. Not in SWEEP_RETRYABLE_CODES: the sweep never re-runs it. */
+const RECLAIM_FAILED_CODE = 'tinycloud_bootstrap_reclaim_failed';
 const BOOTSTRAP_WAIT_MS = 500;
 const MIN_USEFUL_SIWE_TTL_MS = 5_000;
 const BOOTSTRAP_DOMAIN = 'cli.tinycloud.xyz';
@@ -416,6 +418,9 @@ export async function ensureTinyCloudBootstrap(
     return { status: 'complete' };
   }
 
+  // A run that takes over a `complete` row (the node said the space is not hosted), or a row an earlier such run
+  // left failed, never becomes sweep-retryable: only a fresh approval runs it again.
+  const reclaimRun = state?.status === 'complete' || state?.failureCode === RECLAIM_FAILED_CODE;
   const attemptId = crypto.randomUUID();
   const locked = await acquireBootstrapLock(input.prisma, {
     state,
@@ -497,7 +502,8 @@ export async function ensureTinyCloudBootstrap(
       data: {
         status: 'failed',
         checkedAt: new Date(),
-        failureCode: errorCode,
+        // The code the sweep reads. A re-claim keeps a code the sweep does not retry; the error itself stays in the reason and the outcome.
+        failureCode: reclaimRun ? RECLAIM_FAILED_CODE : errorCode,
         failureReason: reason,
         lockExpiresAt: null,
       },

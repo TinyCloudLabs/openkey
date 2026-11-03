@@ -1301,3 +1301,107 @@ describe('TC-2380 a node that says "not hosted" beats a cached complete', () => 
     }
   });
 });
+
+describe('TC-2380 a failed re-claim of a complete row is never re-signed by the sweep', () => {
+  const RECLAIM_FAILED = 'tinycloud_bootstrap_reclaim_failed';
+
+  function reclaim(n: number, host: string, extra: { alreadyHosted?: boolean } = {}) {
+    return ensureTinyCloudBootstrap({
+      prisma: store.prisma,
+      userId: `user-${n}`,
+      key: { id: `key-${n}`, address: ADDRESS, keyType: 'MANAGED' },
+      privateKey: PRIVATE_KEY,
+      host,
+      chainId: 1,
+      requestedSpace: { space: 'default', nodeReportedUnhosted: true, report: () => {}, ...extra },
+    });
+  }
+
+  async function sweepLater(): Promise<{ summary: Awaited<ReturnType<typeof sweep>>; unseals: number }> {
+    let unseals = 0;
+    setSystemTime(at(7 * 24 * 60 * MIN));
+    const summary = await sweep({ resolveKey: async () => { unseals += 1; return PRIVATE_KEY; } });
+    return { summary, unseals };
+  }
+
+  test('a re-claimed complete row that fails on a node timeout ends failed(reclaim_failed) and the sweep leaves it alone', async () => {
+    const node = startFakeTinyCloudNode();
+    try {
+      process.env.TINYCLOUD_BOOTSTRAP_HOST = node.url;
+      seedRow(270, { status: 'complete', failureCode: null, tinycloudHost: node.url });
+      failWith('tinycloud_bootstrap_node_timeout');
+
+      const outcome = await reclaim(270, node.url);
+
+      expect(outcome).toMatchObject({ status: 'failed', errorCode: 'tinycloud_bootstrap_node_timeout' });
+      expect(rowOf(270)).toMatchObject({ status: 'failed', failureCode: RECLAIM_FAILED, failureReason: 'node call failed', lockExpiresAt: null });
+      expect(SWEEP_RETRYABLE_CODES).not.toContain(RECLAIM_FAILED);
+
+      const executionsBefore = executions;
+      const { summary, unseals } = await sweepLater();
+      expect(summary).toMatchObject({ candidates: 0, claimed: 0 });
+      expect(unseals).toBe(0);
+      expect(executions).toBe(executionsBefore);
+    } finally {
+      node.stop();
+    }
+  });
+
+  test('an in-process retry that also times out keeps reclaim_failed, and the sweep still leaves the row alone', async () => {
+    const node = startFakeTinyCloudNode();
+    try {
+      process.env.TINYCLOUD_BOOTSTRAP_HOST = node.url;
+      seedRow(271, { status: 'complete', failureCode: null, tinycloudHost: node.url });
+      failWith('tinycloud_bootstrap_node_timeout');
+      await reclaim(271, node.url);
+      expect(rowOf(271).failureCode).toBe(RECLAIM_FAILED);
+
+      await reclaim(271, node.url, { alreadyHosted: true });
+
+      expect(rowOf(271)).toMatchObject({ status: 'failed', failureCode: RECLAIM_FAILED });
+      const executionsBefore = executions;
+      const { summary, unseals } = await sweepLater();
+      expect(summary).toMatchObject({ candidates: 0, claimed: 0 });
+      expect(unseals).toBe(0);
+      expect(executions).toBe(executionsBefore);
+    } finally {
+      node.stop();
+    }
+  });
+
+  test('a later successful approval clears it to complete', async () => {
+    const node = startFakeTinyCloudNode();
+    try {
+      process.env.TINYCLOUD_BOOTSTRAP_HOST = node.url;
+      seedRow(272, { status: 'complete', failureCode: null, tinycloudHost: node.url });
+      failWith('tinycloud_bootstrap_node_timeout');
+      await reclaim(272, node.url);
+      succeed();
+
+      expect(await approve(272, node.url)).toEqual({ status: 'complete' });
+
+      expect(rowOf(272)).toMatchObject({ status: 'complete', failureCode: null, failureReason: null, lockExpiresAt: null });
+    } finally {
+      node.stop();
+    }
+  });
+
+  test('an ordinary failed row that is not a re-claim keeps its own code', async () => {
+    seedRow(273, { status: 'failed', failureCode: 'tinycloud_bootstrap_node_timeout' });
+    failWith('tinycloud_bootstrap_node_timeout');
+
+    await approve(273);
+
+    expect(rowOf(273)).toMatchObject({ status: 'failed', failureCode: 'tinycloud_bootstrap_node_timeout' });
+  });
+
+  test('an expired in-progress row carrying reclaim_failed is reaped and keeps that code', async () => {
+    seedAbandoned(274, { failureCode: RECLAIM_FAILED });
+
+    const summary = await sweep();
+
+    expect(summary.reaped).toBe(1);
+    expect(rowOf(274)).toMatchObject({ status: 'failed', failureCode: RECLAIM_FAILED, lockExpiresAt: null });
+    expect(executions).toBe(0);
+  });
+});
