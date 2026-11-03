@@ -943,16 +943,6 @@ export function buildStatements(input: CapabilityGrant): StatementEntry[] {
 }
 
 /**
- * Compute the deterministic statement for a grant. Match order:
- *   1. Encryption create + decrypt combined form (bundle across grants must
- *      be handled by the caller — here we only produce the single-grant
- *      "network + decrypt" phrasing when a grant carries both `network`
- *      create and a decrypt verb).
- *   2. Canonical TinyCloud account/application/public/default resources
- *   3. Secret reads and mutations
- *   4. Anything else → literal fallback
- */
-/**
  * `tinycloud.sql/write` reaches every row of the database it names (read, insert, update, delete) but not its tables
  * (`schema` is separate). The database is named by the app id, the first path segment. A grant with no app id in its
  * path (the whole applications space) reaches every app database, so it must not say "this app".
@@ -964,6 +954,16 @@ function sqlWriteStatementText(path: string): string {
     : "Read, change or delete rows in all app databases";
 }
 
+/**
+ * Compute the deterministic statement for a grant. Match order:
+ *   1. Encryption create + decrypt combined form (bundle across grants must
+ *      be handled by the caller — here we only produce the single-grant
+ *      "network + decrypt" phrasing when a grant carries both `network`
+ *      create and a decrypt verb).
+ *   2. Canonical TinyCloud account/application/public/default resources
+ *   3. Secret reads and mutations
+ *   4. Anything else → literal fallback
+ */
 export function buildStatement(input: CapabilityGrant): StatementEntry {
   const appKeyRows = appKeyStatements(input);
   if (appKeyRows) return appKeyRows[0]!;

@@ -543,7 +543,7 @@
             class="absolute left-1 top-1 h-5 w-5 rounded-full bg-white shadow-sm transition-transform {autoSignKnown && autoSignEnabled ? 'translate-x-5' : 'translate-x-0'}"
           ></span>
         </button>
-        {#if !loadingAutoSign && !autoSignKnown && error}
+        {#if !loadingAutoSign && !autoSignKnown}
           <button type="button" class="text-sm underline" onclick={loadAutoSignPreference}>Try again</button>
         {/if}
       </div>
