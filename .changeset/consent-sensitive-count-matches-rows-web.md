@@ -2,4 +2,4 @@
 "@openkey/web": patch
 ---
 
-The Sensitive header at the top of a consent counts exactly the rows marked Sensitive below it (it said "2 permissions" over four marked rows on the Share sign-in) and says what it counts. The own-key folder rows show the folder in code style instead of between raw backquotes.
+The Sensitive header counts exactly the badged summary rows and appears only when the list mixes badged and unbadged rows. Individual Sensitive badges remain visible when every row is Sensitive. The own-key folder rows render paths as code instead of raw backquotes. Collapsed Advanced details no longer reserves an empty flex gap, and consent cards have side gutters on phones.

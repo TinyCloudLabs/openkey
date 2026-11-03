@@ -288,3 +288,44 @@ describe('approval view for the Share sign-in', () => {
     cleanup();
   });
 });
+
+describe('Sensitive banner visibility', () => {
+  for (const actions of [[`${E}decrypt`], [`${E}key.create`, `${E}decrypt`]]) {
+    test(`omits the redundant banner when all ${actions.length} listed rows are Sensitive`, () => {
+      const { target, cleanup } = render(appKeyModel({ [urn('/share/')]: actions }));
+      try {
+        const rows = [...target.querySelectorAll('.summary > .summary-statements > .summary-statement')];
+        expect(rows.map((row) => row.getAttribute('data-severity'))).toEqual(actions.map(() => 'sensitive'));
+        expect(rows.every((row) => row.querySelector('.summary-sensitive-pill') !== null)).toBe(true);
+        expect(target.querySelectorAll('.sensitive-callout').length).toBe(0);
+      } finally {
+        cleanup();
+      }
+    });
+  }
+
+  test('omits the banner when no listed row is Sensitive', () => {
+    const space = `tinycloud:pkh:eip155:${FIXTURE_META.chainId}:${FIXTURE_META.address}:account`;
+    const { target, cleanup } = render(appKeyModel({ [`${space}/capabilities`]: ['tinycloud.capabilities/read'] }));
+    try {
+      expect(target.querySelector('.summary-statement')?.getAttribute('data-severity')).toBe('standard');
+      expect(target.querySelectorAll('.summary-sensitive-pill').length).toBe(0);
+      expect(target.querySelectorAll('.sensitive-callout').length).toBe(0);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test('keeps the banner when a listed not-granted row has no Sensitive badge', () => {
+    const { target, cleanup } = render(appKeyModel({
+      [urn('/apps/xyz.tinycloud.share/session')]: [`${E}decrypt`, `${E}key.delete`],
+    }));
+    try {
+      expect(target.querySelectorAll('.summary-not-granted .summary-statement').length).toBe(1);
+      expect(target.querySelectorAll('.summary-sensitive-pill').length).toBe(1);
+      expect(target.querySelectorAll('.sensitive-callout').length).toBe(1);
+    } finally {
+      cleanup();
+    }
+  });
+});

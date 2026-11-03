@@ -730,10 +730,9 @@ test.describe('signing-approval browser parity — production adapters', () => {
       const summary = page.locator('.summary');
       await expect(summary).toContainText('Set up encryption');
       await expect(summary).not.toContainText('decrypt protected data');
-      // TC-2242 (ruled): the header counts exactly the Sensitive rows of this summary, here one.
+      // TC-1424: keep the row's badge, but omit a redundant banner when every row is Sensitive.
       await expect(page.locator('.summary-statement .summary-sensitive-pill')).toHaveCount(1);
-      await expect(page.locator('.sensitive-callout')).toHaveCount(1);
-      await expect(page.locator('.sensitive-callout')).toContainText('1');
+      await expect(page.locator('.sensitive-callout')).toHaveCount(0);
       await expect(page.getByRole('button', { name: 'Approve exact bytes' })).toBeVisible();
     }
   });

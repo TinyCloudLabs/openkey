@@ -6,8 +6,8 @@
   //   1. Default view is small, deterministic, and derived from the actual
   //      SIWE/ReCap request PLUS explicitly provenance-labelled manifest
   //      data. It surfaces the requester, a short list of understandable
-  //      statements (from statements.ts), and a pinned sensitive callout
-  //      when any grant reaches secret data or decryption.
+  //      statements (from statements.ts), and a sensitive count when the
+  //      listed rows mix Sensitive badges with unbadged rows.
   //   2. A single top-level `<details>` labelled `Advanced details` contains:
   //      requester, verified browser origin, manifest name/appId/digest with
   //      HONEST trust/provenance label, reason (only when present), signing
@@ -544,10 +544,10 @@
   {/if}
 
   <!--
-    Sensitive callout pinned at the top. Its count is the number of summary rows
-    marked Sensitive below it (sensitiveSummaryCount); rendered only when there is at least one.
+    Count the badged rows only when mixed with unbadged rows. Not-granted
+    informational rows are also unbadged; the individual badges always remain.
   -->
-  {#if sensitiveCount > 0}
+  {#if sensitiveCount > 0 && sensitiveCount < summaryStatements.length + notGrantableStatements.length}
     <p class="sensitive-callout" role="status" aria-live="polite">
       {sensitiveRowsCallout(sensitiveCount)}
     </p>
@@ -1262,11 +1262,12 @@
     border-radius: 14px;
     padding: 12px 14px;
     font-size: 13px;
+    display: block;
+  }
+  .advanced-details[open] {
     display: flex;
     flex-direction: column;
     gap: 10px;
-  }
-  .advanced-details[open] {
     background: #fbfdff;
     border-color: #cfd8e3;
   }
@@ -1278,8 +1279,11 @@
     cursor: pointer;
     font-weight: 700;
     color: #0f172a;
-    padding: 2px 0 6px;
+    padding: 2px 0;
     list-style: none;
+  }
+  .advanced-details[open] > .advanced-summary {
+    padding-bottom: 6px;
   }
   .advanced-summary::-webkit-details-marker {
     display: none;
@@ -1725,6 +1729,7 @@
   }
   @media (max-width: 520px) {
     .signing-approval {
+      width: calc(100% - 24px);
       padding: 14px;
       border-radius: 14px;
     }
