@@ -34,7 +34,9 @@ const codeVerifier = 'pkce-verifier-with-at-least-256-bits-of-entropy';
 const credentials = { deviceSecret, codeVerifier };
 
 function fixture(makeStore: () => ConstructorParameters<typeof DeviceAuthorizationService>[0] = () => new MemoryDeviceAuthorizationStore()) {
-  let nowMs = Date.UTC(2026, 10, 3, 12, 0, 0);
+  // Starts at today's clock, not a fixed date: the Prisma store's approve query reads the wall clock, so a fixed start
+  // in the past makes the stored transaction look expired and the test fails from that day on.
+  let nowMs = Date.now();
   const service = new DeviceAuthorizationService(makeStore(), {
     verificationOrigin: 'https://openkey.so',
     encryptionSecret: 'test-device-authorization-secret-is-long-enough',
