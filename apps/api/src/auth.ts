@@ -191,11 +191,18 @@ function withNativeAuthorizeQuery<T extends ReturnType<typeof oauthProvider>>(pl
 // per-audience value. The request's own `resource` (the audience the token is issued for) is in the endpoint context
 // Better Auth already keeps per request, so read the lifetime from it when the provider asks. `scopeExpirations` and
 // `customAccessTokenClaims` cannot do this: the first can only shorten, the second cannot change `exp`.
+// `getCurrentAuthContextAsyncLocalStorage` is marked internal by Better Auth and its async sibling cannot serve a
+// synchronous getter; @better-auth/oauth-provider is pinned exactly and oauth-mcp-token-lifetime.test.ts (real provider,
+// interleaved requests) fails if an upgrade changes how the provider reads the option.
 const endpointContext = await getCurrentAuthContextAsyncLocalStorage();
+/** The `resource` the endpoint call in progress was made with, if any. */
+function currentRequestResource(): unknown {
+  return (endpointContext.getStore()?.body as { resource?: unknown } | undefined)?.resource;
+}
 function withMcpAccessTokenLifetime<T extends ReturnType<typeof oauthProvider>>(plugin: T): T {
   Object.defineProperty(plugin.options, 'accessTokenExpiresIn', {
     enumerable: true,
-    get: () => accessTokenExpiresInFor((endpointContext.getStore()?.body as { resource?: unknown } | undefined)?.resource),
+    get: () => accessTokenExpiresInFor(currentRequestResource()),
   });
   return plugin;
 }
@@ -331,6 +338,14 @@ export const auth = betterAuth({
           clientId = authorization?.startsWith('Basic ')
             ? Buffer.from(authorization.slice(6), 'base64').toString('utf8').split(':', 1)[0]
             : ctx.body?.client_id;
+        }
+        // A 12 hour token is for the hosted MCP only: asking for an MCP resource without the MCP scope is refused, so
+        // the long lifetime cannot be minted by a client that was never consented to MCP access.
+        if (accessTokenExpiresInFor(currentRequestResource()) > DEFAULT_ACCESS_TOKEN_EXPIRES_IN && !scopes.includes(TINYCLOUD_MCP_SCOPE)) {
+          throw new APIError('BAD_REQUEST', {
+            error: 'invalid_scope',
+            error_description: `${TINYCLOUD_MCP_SCOPE} is required for this resource`,
+          });
         }
         await oauthClientContext.set(clientId);
         return nativeFields;

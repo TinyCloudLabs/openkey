@@ -227,6 +227,48 @@ if (process.env.OPENKEY_MCP_LIFETIME_TEST_CHILD !== '1') {
     });
   });
 
+  describe('the long lifetime needs the MCP scope', () => {
+    test('a request that names an MCP resource without tinycloud:mcp consent is refused, so no long token exists for it', async () => {
+      for (const resource of MCP_RESOURCES) {
+        const { clientId, code } = await authorizeCode('openid email', undefined);
+        const response = await exchange(clientId, code, resource);
+        expect(response.status, resource).toBe(400);
+        expect(await response.json()).not.toHaveProperty('access_token');
+      }
+      // The same client without the resource is unaffected.
+      const { tokens } = await issue('openid email', undefined);
+      expect(tokens.expires_in).toBe(FIVE_MINUTES);
+    });
+  });
+
+  describe('/oauth2/userinfo for an MCP token', () => {
+    const userinfo = (token: string) => call('/oauth2/userinfo', { headers: { authorization: `Bearer ${token}` } });
+
+    test('answers while the connection stands, and stops the moment the owner revokes, disconnects or signs out', async () => {
+      const revoked = await issue('openid email offline_access tinycloud:mcp', MCP_RESOURCES[0]);
+      expect((await userinfo(revoked.tokens.access_token)).status).toBe(200);
+      const revoke = await call('/oauth2/revoke', {
+        method: 'POST', headers: form,
+        body: new URLSearchParams({ client_id: revoked.clientId, token: revoked.tokens.access_token, token_type_hint: 'access_token' }),
+      });
+      expect(revoke.status).toBe(200);
+      expect((await userinfo(revoked.tokens.access_token)).status).toBe(401);
+
+      const disconnected = await issue('openid email offline_access tinycloud:mcp', MCP_RESOURCES[1]);
+      expect((await userinfo(disconnected.tokens.access_token)).status).toBe(200);
+      await prisma.oauthConsent.deleteMany({ where: { clientId: disconnected.clientId } });
+      expect((await userinfo(disconnected.tokens.access_token)).status).toBe(401);
+    });
+
+    test('a token for another audience is answered by the provider as before', async () => {
+      const { tokens } = await issue('openid email', OPENKEY_AUDIENCE);
+      const response = await userinfo(tokens.access_token);
+      expect(response.status).toBe(200);
+      await prisma.oauthConsent.deleteMany();
+      expect((await userinfo(tokens.access_token)).status).toBe(200);
+    });
+  });
+
   describe('revoking a long-lived MCP token', () => {
     test('the revoke is recorded until the token\'s own, later, expiry', async () => {
       const { clientId, tokens } = await issue('openid email offline_access tinycloud:mcp', MCP_RESOURCES[0]);
@@ -235,7 +277,7 @@ if (process.env.OPENKEY_MCP_LIFETIME_TEST_CHILD !== '1') {
         body: new URLSearchParams({ client_id: clientId, token: tokens.access_token, token_type_hint: 'access_token' }),
       });
       expect(response.status, await response.clone().text()).toBe(200);
-      const rows = await prisma.revokedAccessToken.findMany();
+      const rows = await prisma.revokedAccessToken.findMany({ where: { clientId } });
       expect(rows.length).toBe(1);
       expect(rows[0]!.expiresAt.getTime() / 1000).toBe(decodeJwt(tokens.access_token).exp!);
     });

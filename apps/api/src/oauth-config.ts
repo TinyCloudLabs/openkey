@@ -30,14 +30,18 @@ export const TINYCLOUD_CANONICAL_IDENTITY_CLAIM =
   'https://tinycloud.xyz/canonical_identity';
 export const DEFAULT_TINYCLOUD_MCP_AUDIENCE = 'https://mcp.tinycloud.xyz/mcp';
 export const CHATGPT_TINYCLOUD_MCP_AUDIENCE = 'https://mcp.tinycloud.xyz/chatgpt/mcp';
+/** The hosted MCP resources. */
+export const MCP_AUDIENCES = [DEFAULT_TINYCLOUD_MCP_AUDIENCE, CHATGPT_TINYCLOUD_MCP_AUDIENCE] as const;
 
 /** An access token's lifetime for every audience except the hosted MCP's. */
 export const DEFAULT_ACCESS_TOKEN_EXPIRES_IN = 5 * 60;
 /**
  * TC-1366 (B): an access token issued for the hosted MCP resources lasts 12 hours. A client that cannot refresh
  * (or does not ask for offline_access) would otherwise make the owner sign in again every five minutes. Revoking
- * is unaffected: the MCP server asks /api/oauth/resource/introspect, which checks consent, session and the revoke
- * denylist on every check, so a token stops working when the owner withdraws it, whatever its remaining lifetime.
+ * is unaffected for the two places that accept these tokens: the MCP server asks /api/oauth/resource/introspect, and
+ * OpenKey's own /oauth2/userinfo is guarded the same way (services/mcp-userinfo-guard.ts); both check consent,
+ * session and the revoke denylist on every call, so a token stops working when the owner withdraws it, whatever its
+ * remaining lifetime. A request that names an MCP resource without the tinycloud:mcp scope is refused (auth.ts).
  */
 export const MCP_ACCESS_TOKEN_EXPIRES_IN = 12 * 60 * 60;
 
@@ -48,7 +52,7 @@ export const MCP_ACCESS_TOKEN_EXPIRES_IN = 12 * 60 * 60;
  */
 export function accessTokenExpiresInFor(resource: unknown): number {
   const only = Array.isArray(resource) && resource.length === 1 ? resource[0] : resource;
-  return only === DEFAULT_TINYCLOUD_MCP_AUDIENCE || only === CHATGPT_TINYCLOUD_MCP_AUDIENCE
+  return typeof only === 'string' && (MCP_AUDIENCES as readonly string[]).includes(only)
     ? MCP_ACCESS_TOKEN_EXPIRES_IN
     : DEFAULT_ACCESS_TOKEN_EXPIRES_IN;
 }
