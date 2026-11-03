@@ -124,6 +124,15 @@ test.describe('Decline on the approval-request review page', () => {
     await expect(page.getByText(DECLINED)).toHaveCount(0);
   });
 
+  test('a request that expired before the decline shows the expired message alone, with no card and no declined page', async ({ page }) => {
+    const calls = await openReview(page, { denyReplies: [{ status: 410, body: { code: 'expired_request' } }] });
+    await decline(page).click();
+    await expect(page.getByRole('alert')).toContainText('This approval request has expired.');
+    await expect(approve(page)).toHaveCount(0);
+    await expect(page.getByText(DECLINED)).toHaveCount(0);
+    expect(denies(calls)).toHaveLength(1);
+  });
+
   test('Back returns to key selection and sends no request', async ({ page }) => {
     const calls = await openReview(page);
     const before = calls.length;
