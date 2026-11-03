@@ -92,7 +92,7 @@ test(`${code}: tells the app once, disables Approve and shows the reason in view
   expect(state.error!.bottom).toBeLessThanOrEqual(state.approve!.top + 1);
 
   // Approve cannot be used again, and closing after the refusal does not send a second answer.
-  await page.frameLocator('#sign').locator('button.approve').click({ force: true, trial: false }).catch(() => undefined);
+  await page.frameLocator('#sign').locator('button.approve').click({ force: true });
   await page.waitForTimeout(300);
   expect(calls.prepares()).toBe(1);
   await page.frameLocator('#sign').locator('button.cancel').click();

@@ -37,6 +37,7 @@ for (const [width, height] of [[390, 844], [1280, 800]]) {
     expect(pillBox!.x + pillBox!.width).toBeGreaterThan(width / 2);
     expect(width - (pillBox!.x + pillBox!.width)).toBeLessThanOrEqual(24);
     expect(height - (pillBox!.y + pillBox!.height)).toBeLessThanOrEqual(24);
+    expect(textBoxes.length).toBeGreaterThan(0);
     for (const text of textBoxes) expect(pillBox!.x >= text.right || pillBox!.x + pillBox!.width <= text.x || pillBox!.y >= text.bottom || pillBox!.y + pillBox!.height <= text.y).toBe(true);
     await pill.click();
     await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeInViewport();
