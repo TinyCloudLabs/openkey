@@ -56,11 +56,11 @@
     buildRenderPlan,
     buildStatements,
     grantIsAppKeyDecrypt,
-    grantReachesSecretDataOrDecryption,
     grantHeading,
     PROTOCOL_HEADLINE,
     PROTOCOL_HINT,
     sensitiveCallout,
+    sensitiveRowCount,
     abbreviateDid,
     abbreviateSpaceId,
     readSpaceHostFacts,
@@ -254,7 +254,7 @@
   });
 
   const sensitiveCount = $derived(
-    selectedGrants.filter(grantReachesSecretDataOrDecryption).length,
+    sensitiveRowCount(selectedGrants),
   );
 
   // App keys: the standing-access line follows the decrypt statements, and a

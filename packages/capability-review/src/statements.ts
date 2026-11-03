@@ -25,6 +25,7 @@ import {
   LITERAL_TRUNCATE_CHARS,
   NAMED_KEY_STATEMENTS,
   OWN_KEY_PREFIX_STATEMENTS,
+  SHARE_KEY_PREFIX_CREATE_STATEMENT,
   appKeyStatementText,
   renderLiteral,
   renderNamedKeySentence,
@@ -629,6 +630,10 @@ function buildNamedKeyStatement(
     return fallbackStatement(grant);
   }
   if (grant.ownedBySelf !== true) return fallbackStatement(grant);
+  if (parsed.kind === "prefix" && parsed.network === "default" &&
+    parsed.keyPath === "share/" && verb === "create") {
+    return { primaryText: SHARE_KEY_PREFIX_CREATE_STATEMENT, service: grant.service, resource };
+  }
   const template = parsed.kind === "prefix" && parsed.network === "default" &&
     (verb === "create" || verb === "decrypt")
     ? OWN_KEY_PREFIX_STATEMENTS[verb]
@@ -1675,4 +1680,29 @@ export function sensitiveCallout(count: number): string {
   return count === 1
     ? "1 permission reaches secrets or decryption"
     : `${count} permissions reach secrets or decryption`;
+}
+
+/**
+ * The number the sensitive-grant callout shows. Each grant that reaches secret
+ * data or decryption (`grantReachesSecretDataOrDecryption`) adds the number of
+ * its distinct Sensitive rows, and at least one: a grant that reaches secrets
+ * but shows no Sensitive row (an unrecognized service on the secrets space is
+ * only "attention") is still counted, so this is never lower than the number of
+ * such grants. A grant with several actions is several rows, which is why
+ * counting grants put "2 permissions" above three Sensitive rows. A Sensitive
+ * row of a grant that reaches neither (a new space, say) is not about secrets or
+ * decryption and stays out of the count. Two grants that show the same row text
+ * each count: the count errs high, never low.
+ */
+export function sensitiveRowCount(grants: readonly CapabilityGrant[]): number {
+  let count = 0;
+  for (const grant of grants) {
+    if (!grantReachesSecretDataOrDecryption(grant)) continue;
+    const sensitiveRows = new Set<string>();
+    for (const row of buildStatements(grant)) {
+      if ((row.severity ?? grant.severity) === "sensitive") sensitiveRows.add(row.primaryText);
+    }
+    count += Math.max(sensitiveRows.size, 1);
+  }
+  return count;
 }

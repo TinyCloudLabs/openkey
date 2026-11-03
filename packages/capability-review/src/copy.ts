@@ -96,9 +96,15 @@ export const NAMED_KEY_STATEMENTS: Record<
 };
 
 export const OWN_KEY_PREFIX_STATEMENTS = {
-  create: "Create your own encryption keys in `{path}`",
-  decrypt: "Decrypt data locked with your keys in `{path}`",
+  create: "Create your own encryption keys in {path}",
+  decrypt: "Decrypt data locked with your keys in {path}",
 } as const;
+
+/**
+ * The owner's default-network `share/` prefix holds the keys for files the
+ * owner shares, so its create row says that instead of naming the path.
+ */
+export const SHARE_KEY_PREFIX_CREATE_STATEMENT = "Create keys for files you share";
 
 /**
  * Escape controls, markup and non-ASCII characters as `\uXXXX`, so
