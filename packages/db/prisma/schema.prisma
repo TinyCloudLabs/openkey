@@ -126,6 +126,8 @@ model ApprovalRequest {
   resultExpiresAt       DateTime?
   ackId                 String?
   acknowledgedAt        DateTime?
+  // Set when the owner refuses the request. Terminal: a denied request is never approved.
+  deniedAt              DateTime?
 
   @@index([expiresAt])
   @@index([resultExpiresAt])
