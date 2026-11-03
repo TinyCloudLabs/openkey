@@ -71,7 +71,21 @@ export function createPrismaPreparedHandoffStore(database: PrismaClient): Prepar
     async reserve(ticketHash, ownerId, contextTokenHash, selectedKeyId, now) {
       const result = await database.preparedHandoff.updateMany({
         where: { ticketHash, ownerId, contextTokenHash, selectedKeyId, status: 'PENDING', expiresAt: { gt: now } },
+        data: { status: 'SIGNING' },
+      });
+      return result.count === 1;
+    },
+    async complete(ticketHash, ownerId, contextTokenHash, selectedKeyId) {
+      const result = await database.preparedHandoff.updateMany({
+        where: { ticketHash, ownerId, contextTokenHash, selectedKeyId, status: 'SIGNING' },
         data: { status: 'CONSUMED' },
+      });
+      return result.count === 1;
+    },
+    async release(ticketHash, ownerId, contextTokenHash, selectedKeyId) {
+      const result = await database.preparedHandoff.updateMany({
+        where: { ticketHash, ownerId, contextTokenHash, selectedKeyId, status: 'SIGNING' },
+        data: { status: 'PENDING' },
       });
       return result.count === 1;
     },
