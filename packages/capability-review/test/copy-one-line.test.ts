@@ -48,7 +48,7 @@ const TWO_LINE_EXCEPTIONS: Record<string, string> = {
   "Open all your shared files, including ones you share later.":
     "Sam approved this exact future-share explanation on 2026-10-31 (ask/openkey-388-share-approval).",
   "Read, change or delete any row in the ${} database":
-    "whole-database authority; Sam approved the wording 2026-11-03, wraps to two lines on a phone",
+    "states whole-database authority; Sam approved the wording 2026-11-03 15:04Z",
 };
 
 const COPY_SOURCES = ["copy.ts", "statements.ts", "core-operations.ts", "classify.ts", "plain-words.ts"];
