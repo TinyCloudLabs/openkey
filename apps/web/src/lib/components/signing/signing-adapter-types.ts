@@ -132,6 +132,8 @@ export interface WidgetSigningTransport {
 
   /** Latest error string, or null. */
   error: string | null;
+  /** True once the server refused in a way a retry cannot change: Approve stays disabled. */
+  refused?: boolean;
 
   /**
    * The "Approval expires" choice (TC-2272). Set only when the signing path

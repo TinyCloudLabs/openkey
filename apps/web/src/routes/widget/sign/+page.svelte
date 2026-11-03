@@ -20,7 +20,7 @@
   } from '@openkey/capability-review';
   import SiweOriginRefusal from '$lib/components/signing/siwe-origin-refusal.svelte';
   import ServerReplyRefusal from '$lib/components/signing/server-reply-refusal.svelte';
-  import { hasSignResult, hasText, readReply, ServerReplyError, SERVER_REPLY_ERROR } from '$lib/server-reply';
+  import { hasSignResult, hasText, readReply, ServerReplyError, SERVER_REPLY_ERROR, terminalRefusal } from '$lib/server-reply';
   import {
     createWidgetTransport,
     type WidgetRequest,
@@ -570,6 +570,7 @@
   // sign for the current selection. The user must approve the preview
   // before /authorize-sign consumes the token.
   async function requestPreview(): Promise<void> {
+    if (refused) return;
     if (!key || !message) return;
     if (siweRefusal) return;
     if (!canUseAuthorizeSignFn()) return;
@@ -739,7 +740,7 @@
       previewApprovalToken = previewResult.previewApprovalToken;
     } catch (e: any) {
       if (e instanceof ServerReplyError) unreadableReply(e.status);
-      else error = e.message || 'Preview failed';
+      else if (!refuse(e)) error = e.message || 'Preview failed';
       // On failure, invalidate any stored token so the next attempt gets
       // a fresh one — the server may have expired the token or rejected
       // the immutable-fields digest.
@@ -756,6 +757,7 @@
   // authorities. This is the ONLY function that calls /authorize-sign
   // and consumes the token.
   async function approveAndSign() {
+    if (refused) return;
     if (!key || !message) return;
     if (siweRefusal) {
       error = siweRefusal.message;
@@ -860,7 +862,7 @@
       sendClose();
     } catch (e: any) {
       if (e instanceof ServerReplyError) unreadableReply(e.status);
-      else error = e.message || 'Signing failed';
+      else if (!refuse(e)) error = e.message || 'Signing failed';
     } finally {
       signing = false;
     }
@@ -909,16 +911,38 @@
     sendResponse({ type: 'openkey:sign:response', success: false, error: SERVER_REPLY_ERROR });
   }
 
+  // TC-2457: a refusal the server decides from the request itself cannot change on retry. Show the reason, keep
+  // Approve disabled, and tell the host once so the app that asked does not wait for ever. Nothing else is sent: the
+  // identifier carries no server text.
+  let refused = $state(false);
+  let refusalSent = false;
+  function refuse(failure: unknown): boolean {
+    const terminal = terminalRefusal(failure);
+    if (!terminal) return false;
+    refused = true;
+    error = terminal.text;
+    previewToken = null;
+    previewSignedMessage = null;
+    previewApprovalToken = null;
+    if (!refusalSent) {
+      refusalSent = true;
+      sendResponse({ type: 'openkey:sign:response', success: false, error: { code: 'UNKNOWN', message: terminal.hostMessage } });
+    }
+    return true;
+  }
+
   function closeRefused() {
     sendClose();
   }
 
   function cancel() {
-    sendResponse({
-      type: 'openkey:sign:response',
-      success: false,
-      error: { code: 'USER_CANCELLED', message: 'User cancelled' },
-    });
+    if (!refusalSent) {
+      sendResponse({
+        type: 'openkey:sign:response',
+        success: false,
+        error: { code: 'USER_CANCELLED', message: 'User cancelled' },
+      });
+    }
     sendClose();
   }
 
@@ -1054,6 +1078,7 @@
         approving: signing || previewing,
         host: messageHost,
         error,
+        refused,
         canUseAuthorizeSign: canUseAuthorizeSignFn(),
         previewReady: Boolean(previewToken && previewSignedMessage && previewApprovalToken),
         requestPreview,
