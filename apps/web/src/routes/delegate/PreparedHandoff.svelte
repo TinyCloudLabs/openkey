@@ -10,6 +10,7 @@
   import { timeUntilExpiry } from '$lib/siwe-parser';
   import { SERVER_REPLY_BODY, SERVER_REPLY_TITLE, ServerReplyError, hasSignResult, hasText } from '$lib/server-reply';
   import { fitsPreparedLinkBudget } from '$lib/prepared-link';
+  import { remainingFromServerClock } from '$lib/delegate-code-countdown';
   import { EXPIRY_PRESETS, LONG_EXPIRY_MS, LONG_EXPIRY_WARNING, expiryAtCapped, expiryLimitNote, formatExpiry, parseExpiry, requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
 
   let { encoded, onClear }: { encoded: string; onClear: () => void } = $props();
@@ -48,6 +49,9 @@
   let ticket = $state('');
   let initialized = $state(false);
   let pendingTimeout: ReturnType<typeof setTimeout> | undefined;
+  let handoffTimeout: ReturnType<typeof setTimeout> | undefined;
+  // The `Date` header of the latest server reply: the server's clock, read at receipt.
+  let serverDate: string | null = null;
   let routerReady = false;
   let markerNeeded = false;
   afterNavigate(() => {
@@ -155,13 +159,27 @@
     } finally {
       initialized = true;
     }
-    return () => { if (pendingTimeout !== undefined) clearTimeout(pendingTimeout); };
+    return () => {
+      if (pendingTimeout !== undefined) clearTimeout(pendingTimeout);
+      if (handoffTimeout !== undefined) clearTimeout(handoffTimeout);
+    };
   });
 
   function cancelPending(): void {
     pending = null;
     clearPending();
     error = 'Approval cancelled. Restart the CLI command for a new sign-in.';
+  }
+
+  function expireHandoff(): void {
+    // A signing in flight, or one that finished, decides its own outcome.
+    if (!handoff || submitted || phase === 'done') return;
+    handoff = null;
+    contextToken = '';
+    previewToken = '';
+    previewMessage = '';
+    phase = 'review';
+    error = 'Prepared sign-in request expired. Restart the CLI command.';
   }
 
   // `needs` names the fields a successful answer must carry as text. With it, a
@@ -171,6 +189,7 @@
     const response = await fetch(`${apiUrl}/api/delegate/${path}`, {
       method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     });
+    serverDate = response.headers?.get('date') ?? null;
     if (needs !== undefined && response.ok) {
       let parsed: unknown;
       try { parsed = await response.json(); } catch { throw new ServerReplyError(response.status); }
@@ -231,6 +250,9 @@
         throw new Error('Invalid approval claim response. Restart the CLI command.');
       }
       ticket = input.delivery.handoffId;
+      // Counted on the server's clock: the claim's expiry minus the server's own Date header, never the device clock.
+      const remainingMs = remainingFromServerClock(claimed.expiresAt, serverDate);
+      if (remainingMs !== null) handoffTimeout = setTimeout(expireHandoff, remainingMs);
       const resolved: Handoff = {
         request: input.request,
         delivery: input.delivery.callback ? { callback: input.delivery.callback } : {},
@@ -342,7 +364,15 @@
         body.externalSignature = signature;
       }
       submitted = true;
-      const signed = await post('authorize-sign', body, ['signature', 'address', 'signedMessage', 'deliveryState'], hasSignResult);
+      let signed: Record<string, unknown>;
+      try {
+        signed = await post('authorize-sign', body, ['signature', 'address', 'signedMessage', 'deliveryState'], hasSignResult);
+      } catch (cause) {
+        // A refusal or failure comes back with nothing signed, and the server releases the handoff,
+        // so the owner may approve again or cancel. Only a 2xx reply that cannot be read may have been signed.
+        if (!(cause instanceof ServerReplyError)) submitted = false;
+        throw cause;
+      }
       if (signed.protocolVersion !== 1 || typeof signed.signature !== 'string' || typeof signed.address !== 'string' ||
           !Array.isArray(signed.selectedActionKeys) || !signed.selectedActionKeys.every(value => typeof value === 'string') ||
           !Array.isArray(signed.permissions) ||
