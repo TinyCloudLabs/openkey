@@ -1232,6 +1232,28 @@ describe('TC-2380 each run is bounded', () => {
     expect(rowOf(254)).toMatchObject({ status: 'in_progress', attemptId: 'new-holder' });
   });
 
+  test('a run whose row was reaped while it was in flight is aborted by its next heartbeat and leaves the reaped row as it is', async () => {
+    setTinyCloudBootstrapExecutorForTests();
+    seedKey(256);
+    const node = slowNode(50 * SEC);
+    const result = approve(256);
+    await flush();
+    await advance(10 * SEC);
+    // The holder looks dead to the reaper: its lease is in the past when a tick reads it.
+    rowOf(256).lockExpiresAt = new Date(Date.now() - SEC);
+    expect((await sweep()).reaped).toBe(1);
+    const reaped = structuredClone(rowOf(256));
+    expect(reaped).toMatchObject({ status: 'failed', failureCode: LEASE_EXPIRED, lockExpiresAt: null });
+    const callsBefore = node.signals.length;
+
+    await advance(25 * SEC);
+
+    expect(await result).toMatchObject({ status: 'failed' });
+    expect(rowOf(256)).toEqual(reaped);
+    expect(node.signals.length).toBe(callsBefore);
+    expect(node.signals.every((signal) => signal.aborted)).toBe(true);
+  });
+
   test('a run that finishes in time clears its deadline and leaves no timers behind', async () => {
     seedKey(255);
 

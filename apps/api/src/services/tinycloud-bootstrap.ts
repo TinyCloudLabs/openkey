@@ -498,7 +498,8 @@ export async function ensureTinyCloudBootstrap(
     const reason = error instanceof Error ? error.message : String(error);
     const errorCode = bootstrapFailureCode(error);
     await input.prisma.tinyCloudBootstrapState.updateMany({
-      where: { ...cacheKey, attemptId },
+      // Only a row still held: a run whose row was reaped must not overwrite the reaped code with its own.
+      where: { ...cacheKey, attemptId, status: 'in_progress' },
       data: {
         status: 'failed',
         checkedAt: new Date(),
@@ -719,7 +720,8 @@ async function refreshBootstrapLock(
   lastLockExpiresAt: number,
 ): Promise<void> {
   const refreshed = await prisma.tinyCloudBootstrapState.updateMany({
-    where: { ...cacheKey, attemptId },
+    // Only a row still held: a reaped row keeps its attempt id, and its holder must lose the lease, not refresh it.
+    where: { ...cacheKey, attemptId, status: 'in_progress' },
     data: {
       lockExpiresAt: new Date(Math.min(Date.now() + BOOTSTRAP_LOCK_TTL_MS, lastLockExpiresAt)),
       checkedAt: new Date(),
