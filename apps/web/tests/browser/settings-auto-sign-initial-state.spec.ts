@@ -66,3 +66,22 @@ test('loaded Auto-Sign can still toggle with mocked PATCH', async ({ page }) => 
   await toggle.click();
   await expect(toggle).toHaveAttribute('aria-checked', 'false');
 });
+
+test('a failed Auto-Sign load can still be retried after the page error is dismissed', async ({ page }) => {
+  await setup(page);
+  let attempts = 0;
+  await page.route('**/api/account/auto-sign', (route) => {
+    if (route.request().method() === 'GET') return json(route, ++attempts === 1 ? { error: 'load failed' } : { autoSignEnabled: true }, attempts === 1 ? 500 : 200);
+    return json(route, {});
+  });
+  await page.goto('/dashboard/settings');
+  const toggle = page.getByRole('switch', { name: 'Toggle Auto-Sign' });
+  await expect(page.getByText('load failed')).toBeVisible();
+  // Dismissing the shared page message (or any other action that clears it) must not strand the switch.
+  await page.getByText('load failed').locator('button').click();
+  await expect(page.getByText('load failed')).toHaveCount(0);
+  await expect(toggle).toBeDisabled();
+  await page.getByRole('button', { name: 'Try again' }).click();
+  await expect(toggle).toHaveAttribute('aria-checked', 'true');
+  await expect(toggle).toBeEnabled();
+});
