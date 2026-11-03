@@ -476,8 +476,9 @@
     }, 2000);
   }
 
-  // Approve is armed only when its button is enabled (settled layout, node checked, nothing blocking). A click that
-  // reaches the handler while it is not, from the browser or from a script, does not approve.
+  // Approve is armed only when its button is enabled (settled layout, node checked, nothing blocking). A browser
+  // already ignores a click on a disabled button; this also refuses one that reaches the handler anyway, such as after
+  // a script clears the `disabled` attribute.
   function handleApproveClick() {
     if (approveButtonDisabled) return;
     onApprove();
