@@ -722,6 +722,63 @@ describe('TinyCloud bootstrap background sweep', () => {
     }
   });
 
+  test.each(['claim', 'candidate selection'] as const)('13e. the sweep %s requires both PERSONAL custody and a sealed blob (PGlite)', async (path) => {
+    const pg = await pgliteStore();
+    try {
+      await seedOrgKeyRow(pg.prisma, 98);
+      await seedPgliteRow(pg.prisma, 99);
+      const noBlobAddress = privateKeyToAccount(`0x${'33'.repeat(32)}`).address;
+      await pg.prisma.ethereumKey.update({ where: { id: 'key-99' }, data: { address: noBlobAddress, sealedBlob: null } });
+      await pg.prisma.tinyCloudBootstrapState.update({ where: { id: 'state-99' }, data: { address: noBlobAddress } });
+      await seedPgliteRow(pg.prisma, 100);
+      await pg.prisma.user.updateMany({ data: { autoSignEnabled: true } });
+      const orgBefore = await pgliteStateOf(pg.prisma, 98);
+      const unsealedBefore = await pgliteStateOf(pg.prisma, 99);
+      const claimed: string[] = [];
+      const resolved: string[] = [];
+      setTinyCloudBootstrapExecutorForTests(async () => { executions += 1; });
+      setSystemTime(at(5 * MIN));
+
+      if (path === 'claim') {
+        // Bypass candidate selection to exercise the real claim's own restrictions.
+        for (const n of [98, 99, 100]) {
+          const before = await pgliteStateOf(pg.prisma, n);
+          let won = false;
+          await ensureTinyCloudBootstrap({
+            prisma: pg.prisma,
+            userId: `user-${n}`,
+            key: { id: `key-${n}`, address: before!.address, keyType: 'MANAGED' },
+            privateKey: async () => { resolved.push(`key-${n}`); return PRIVATE_KEY; },
+            host: HOST,
+            chainId: 1,
+            sweepClaim: {
+              observed: { status: 'failed', sweepAttempts: 2, checkedAt: before!.checkedAt, attemptId: null },
+              onClaimed: () => { won = true; claimed.push(`key-${n}`); },
+            },
+          });
+          expect(won).toBe(n === 100);
+        }
+        expect(claimed).toEqual(['key-100']);
+      } else {
+        const summary = await sweepTinyCloudBootstrapOnce({
+          prisma: pg.prisma,
+          resolveKey: async (key) => { resolved.push(key.id); return PRIVATE_KEY; },
+        });
+        expect(summary.candidates).toBe(1);
+        expect(summary.claimed).toBe(1);
+        expect(summary.healed).toBe(1);
+      }
+
+      expect(resolved).toEqual(['key-100']);
+      expect(executions).toBe(1);
+      expect(await pgliteStateOf(pg.prisma, 98)).toEqual(orgBefore);
+      expect(await pgliteStateOf(pg.prisma, 99)).toEqual(unsealedBefore);
+      expect(await pgliteStateOf(pg.prisma, 100)).toMatchObject({ status: 'complete', attemptId: null, sweepAttempts: 3 });
+    } finally {
+      await pg.close();
+    }
+  });
+
   test('14. a stale in-progress lock with a retryable code is swept; a null code is not; the reaper only marks it failed', async () => {
     seedRow(100, { status: 'in_progress', lockExpiresAt: at(-MIN), attemptId: 'dead', checkedAt: at(-60 * MIN) });
     seedRow(101, { status: 'in_progress', lockExpiresAt: at(-MIN), attemptId: 'dead', failureCode: null, checkedAt: at(-60 * MIN) });
