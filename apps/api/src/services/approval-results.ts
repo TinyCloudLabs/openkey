@@ -20,6 +20,7 @@ export interface ApprovalRequestRecord {
   resultExpiresAt: Date | null;
   ackId?: string | null;
   acknowledgedAt?: Date | null;
+  deniedAt?: Date | null;
 }
 
 export interface ApprovalRequestStore {
@@ -28,12 +29,29 @@ export interface ApprovalRequestStore {
   findByResultRef(ref: string): Promise<ApprovalRequestRecord | null>;
   approve(id: string, result: { resultRef: string; approvedByUserId: string; ownerDid: string; encryptedResult: string; delegationExpiresAt: Date; resultExpiresAt: Date }, now: Date): Promise<boolean>;
   acknowledge(ref: string, ackId: string, now: Date): Promise<ApprovalRequestRecord | null>;
+  /** Marks a pending, unexpired request denied. False when it is approved, denied, expired or unknown. */
+  deny(id: string, now: Date): Promise<boolean>;
 }
 
 export class ApprovalResultError extends Error {
-  constructor(readonly code: string, message: string, readonly status: 400 | 401 | 404 | 409 | 410 | 503) {
+  /** `extra` is merged into the JSON error body next to `error` and `code`. */
+  constructor(readonly code: string, message: string, readonly status: 400 | 401 | 403 | 404 | 409 | 410 | 503, readonly extra?: Record<string, unknown>) {
     super(message);
   }
+}
+
+/**
+ * A denied request answers like an expired one: HTTP 410 with the existing `expired_request` code, which
+ * every released client already treats as terminal. `status: "denied"` and `deniedAt` tell the clients that
+ * know about denial why (TC-2377).
+ */
+function deniedError(deniedAt: Date): ApprovalResultError {
+  return new ApprovalResultError('expired_request', 'Approval request was denied', 410, { status: 'denied', deniedAt: deniedAt.toISOString() });
+}
+
+/** Declining needs the complete approval link. The same answer for every way of not having it, and it never names the link. */
+export function linkRequiredError(): ApprovalResultError {
+  return new ApprovalResultError('link_required', 'Declining needs the complete approval link', 403);
 }
 
 /** Plain JSON canonicalization is only for comparison; never a replacement for the sealed-byte CID. */
@@ -60,6 +78,7 @@ export class ApprovalResultService {
   async assertDelegationWindow(id: unknown, input: { jwk: unknown; host: unknown; permissions: unknown; expiryMs?: number; signedSiwe?: string }): Promise<ApprovalRequestRecord> {
     const record = typeof id === 'string' ? await this.store.findById(id) : null;
     const now = this.options.now?.() ?? new Date();
+    if (record?.deniedAt) throw deniedError(record.deniedAt);
     if (!record || record.expiresAt <= now || record.resultRef) throw new ApprovalResultError('expired_request', 'Approval request is no longer pending', 410);
     const request = record.request;
     const jwk = input.jwk as JsonWebKey | null;
@@ -137,12 +156,35 @@ export class ApprovalResultService {
     if (!record) throw new ApprovalResultError('not_found', 'Approval request not found', 404);
     if (record.bodyCid !== body.bodyCid) throw new ApprovalResultError('request_binding', 'Request binding is invalid', 400);
     this.authenticate(record, 'discover', proof);
+    if (record.deniedAt) throw deniedError(record.deniedAt);
     if (record.resultRef) {
       if (record.resultExpiresAt! <= (this.options.now?.() ?? new Date())) throw new ApprovalResultError('expired_result', 'Result retention expired', 410);
       return { status: 'approved', resultRef: record.resultRef, expiresAt: record.resultExpiresAt!.toISOString() };
     }
     if (record.expiresAt <= (this.options.now?.() ?? new Date())) throw new ApprovalResultError('expired_request', 'Approval request expired', 410);
     return { status: 'pending' };
+  }
+
+  /**
+   * Declining refuses this request. Terminal and idempotent; an approved request cannot be declined.
+   * Requests carry no owner account, so the capability is the link, as for approving: `link` is the signed
+   * header of the link the caller opened (the route re-resolves the full link with its key) and must be
+   * this request's, or the caller is refused and the request stays open.
+   */
+  async deny(id: string, link: { bodyCid: string; issuer: string }): Promise<{ status: 'denied' }> {
+    const now = this.options.now?.() ?? new Date();
+    const found = await this.store.findById(id);
+    if (!found) throw new ApprovalResultError('not_found', 'Approval request not found', 404);
+    if (found.bodyCid !== link.bodyCid || found.issuer !== link.issuer) throw linkRequiredError();
+    const settled = async (): Promise<{ status: 'denied' }> => {
+      const record = await this.store.findById(id);
+      if (!record) throw new ApprovalResultError('not_found', 'Approval request not found', 404);
+      if (record.deniedAt) return { status: 'denied' };
+      if (record.resultRef) throw new ApprovalResultError('already_approved', 'Approval request was already approved', 409);
+      throw new ApprovalResultError('expired_request', 'Approval request expired', 410);
+    };
+    if (!await this.store.deny(id, now)) return settled();
+    return { status: 'denied' };
   }
 
   private async result(ref: string, body: { requestId: string; bodyCid: string }, action: 'fetch' | 'ack', proof: string | undefined, ackId = ''): Promise<ApprovalRequestRecord> {
