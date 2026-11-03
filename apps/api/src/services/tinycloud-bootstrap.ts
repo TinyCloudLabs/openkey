@@ -27,6 +27,7 @@ import {
   siweToDelegationHeaders,
   vault_sha256,
 } from '@tinycloud/node-sdk-wasm';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { PrismaClient } from '@openkey/db';
 import { DEFAULT_TINYCLOUD_BOOTSTRAP_HOST, TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS } from './tinycloud-hosts';
 import { tinyCloudBootstrapNodeCallTimeoutMs, tinyCloudBootstrapNodeInvokeTimeoutMs } from './tinycloud-node-timeouts';
@@ -41,6 +42,14 @@ export const TINYCLOUD_BOOTSTRAP_VERSION = `@tinycloud/bootstrap:${canonicalHash
 const SUPPORTED_TINYCLOUD_CHAIN_IDS = new Set([1]);
 const BOOTSTRAP_LOCK_TTL_MS = 2 * 60 * 1000;
 const BOOTSTRAP_LOCK_REFRESH_MS = 30 * 1000;
+/** One run's hard limit. A lease that has expired therefore means its holder is dead or past this. */
+const BOOTSTRAP_RUN_DEADLINE_MS = 180 * 1000;
+/** The longest a lease can be held from its claim: the deadline plus time to write the result. */
+const BOOTSTRAP_MAX_LOCK_LIFETIME_MS = BOOTSTRAP_RUN_DEADLINE_MS + 30 * 1000;
+/** Carries the current run's signal to nodeFetch without threading it through every call. */
+const bootstrapRunSignal = new AsyncLocalStorage<AbortSignal>();
+/** Recorded when a run that re-claimed a `complete` row fails. Not in SWEEP_RETRYABLE_CODES: the sweep never re-runs it. */
+const RECLAIM_FAILED_CODE = 'tinycloud_bootstrap_reclaim_failed';
 const BOOTSTRAP_WAIT_MS = 500;
 const MIN_USEFUL_SIWE_TTL_MS = 5_000;
 const BOOTSTRAP_DOMAIN = 'cli.tinycloud.xyz';
@@ -153,6 +162,11 @@ export interface TinyCloudBootstrapRequestedSpace {
   space: BootstrapSpaceName;
   /** An earlier attempt of this approval already had the node confirm the space: do not host it again. */
   alreadyHosted?: boolean;
+  /**
+   * The node, answering this approval's fresh activation, listed the space as not hosted. A row
+   * that is already `complete` does not answer for the node: the run is claimed and hosts the space.
+   */
+  nodeReportedUnhosted?: boolean;
   /** Called once per attempt that hosts the space: the node confirmed it, or hosting it failed. */
   report: (report: TinyCloudBootstrapRequestedSpaceReport) => void;
 }
@@ -399,10 +413,14 @@ export async function ensureTinyCloudBootstrap(
   const state = await input.prisma.tinyCloudBootstrapState.findUnique({
     where: { keyId_chainId_tinycloudHost_bootstrapVersion: cacheKey },
   });
-  if (state?.status === 'complete') {
+  // An approval for which the node just listed the space as skipped is fresher than a cached `complete`.
+  if (state?.status === 'complete' && !input.requestedSpace?.nodeReportedUnhosted) {
     return { status: 'complete' };
   }
 
+  // A run that takes over a `complete` row (the node said the space is not hosted), or a row an earlier such run
+  // left failed, never becomes sweep-retryable: only a fresh approval runs it again.
+  const reclaimRun = state?.status === 'complete' || state?.failureCode === RECLAIM_FAILED_CODE;
   const attemptId = crypto.randomUUID();
   const locked = await acquireBootstrapLock(input.prisma, {
     state,
@@ -480,11 +498,13 @@ export async function ensureTinyCloudBootstrap(
     const reason = error instanceof Error ? error.message : String(error);
     const errorCode = bootstrapFailureCode(error);
     await input.prisma.tinyCloudBootstrapState.updateMany({
-      where: { ...cacheKey, attemptId },
+      // Only a row still held: a run whose row was reaped must not overwrite the reaped code with its own.
+      where: { ...cacheKey, attemptId, status: 'in_progress' },
       data: {
         status: 'failed',
         checkedAt: new Date(),
-        failureCode: errorCode,
+        // The code the sweep reads. A re-claim keeps a code the sweep does not retry; the error itself stays in the reason and the outcome.
+        failureCode: reclaimRun ? RECLAIM_FAILED_CODE : errorCode,
         failureReason: reason,
         lockExpiresAt: null,
       },
@@ -531,7 +551,7 @@ async function acquireBootstrapLock(
         failureCode: { in: [...SWEEP_RETRYABLE_CODES] },
         ...(observed.status === 'in_progress' ? { lockExpiresAt: { lt: now } } : {}),
         user: { is: { autoSignEnabled: true } },
-        key: { is: { keyType: 'MANAGED', archivedAt: null } },
+        key: { is: { keyType: 'MANAGED', archivedAt: null, sealedBlob: { not: null } } },
       },
       data: {
         status: 'in_progress',
@@ -613,6 +633,35 @@ async function resolvePrivateKey(privateKey: string | (() => Promise<string>)): 
   }
 }
 
+class BootstrapLockLostError extends Error {
+  constructor() {
+    super('TinyCloud bootstrap lock was lost');
+  }
+}
+
+/**
+ * Runs `work` with `signal` as the ambient run signal, and settles as soon as the signal aborts:
+ * with its reason, even if `work` is stuck on something that takes no signal. What `work` was
+ * still doing is left to end on its own and its late result is dropped.
+ */
+function runUnderSignal<T>(signal: AbortSignal, work: () => Promise<T>): Promise<T> {
+  return bootstrapRunSignal.run(signal, () => new Promise<T>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
+    work().then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+  }));
+}
+
+/**
+ * Holds the lease while `work` runs and bounds the run. One signal covers the whole run: it aborts
+ * at BOOTSTRAP_RUN_DEADLINE_MS, or when a heartbeat finds the lease taken by someone else, and
+ * every node call under it stops with it. The lease is never extended past
+ * BOOTSTRAP_MAX_LOCK_LIFETIME_MS from the claim.
+ */
 async function withBootstrapLockHeartbeat<T>(
   prisma: PrismaLike,
   cacheKey: {
@@ -622,23 +671,39 @@ async function withBootstrapLockHeartbeat<T>(
     bootstrapVersion: string;
   },
   attemptId: string,
-  run: () => Promise<T>,
+  work: () => Promise<T>,
 ): Promise<T> {
-  const refresh = () => refreshBootstrapLock(prisma, cacheKey, attemptId);
+  const claimedAt = Date.now();
+  const lastLockExpiresAt = claimedAt + BOOTSTRAP_MAX_LOCK_LIFETIME_MS;
+  const abort = new AbortController();
+  const deadline = setTimeout(() => {
+    abort.abort(new TinyCloudBootstrapError(
+      `TinyCloud bootstrap run exceeded its ${BOOTSTRAP_RUN_DEADLINE_MS} ms limit.`,
+      'tinycloud_bootstrap_deadline',
+    ));
+  }, BOOTSTRAP_RUN_DEADLINE_MS);
+  const refresh = () => refreshBootstrapLock(prisma, cacheKey, attemptId, lastLockExpiresAt);
   let heartbeatError: Error | null = null;
   const interval = setInterval(() => {
+    if (Date.now() >= lastLockExpiresAt) {
+      clearInterval(interval);
+      return;
+    }
     void refresh().catch((error) => {
       heartbeatError = error instanceof Error ? error : new Error(String(error));
+      // The lease is someone else's now: stop this run's node calls instead of finishing unnoticed.
+      if (error instanceof BootstrapLockLostError) abort.abort(error);
     });
   }, BOOTSTRAP_LOCK_REFRESH_MS);
   try {
     await refresh();
-    const result = await run();
+    const result = await runUnderSignal(abort.signal, work);
     if (heartbeatError) {
       throw heartbeatError;
     }
     return result;
   } finally {
+    clearTimeout(deadline);
     clearInterval(interval);
   }
 }
@@ -652,16 +717,18 @@ async function refreshBootstrapLock(
     bootstrapVersion: string;
   },
   attemptId: string,
+  lastLockExpiresAt: number,
 ): Promise<void> {
   const refreshed = await prisma.tinyCloudBootstrapState.updateMany({
-    where: { ...cacheKey, attemptId },
+    // Only a row still held: a reaped row keeps its attempt id, and its holder must lose the lease, not refresh it.
+    where: { ...cacheKey, attemptId, status: 'in_progress' },
     data: {
-      lockExpiresAt: new Date(Date.now() + BOOTSTRAP_LOCK_TTL_MS),
+      lockExpiresAt: new Date(Math.min(Date.now() + BOOTSTRAP_LOCK_TTL_MS, lastLockExpiresAt)),
       checkedAt: new Date(),
     },
   });
   if (refreshed.count !== 1) {
-    throw new Error('TinyCloud bootstrap lock was lost');
+    throw new BootstrapLockLostError();
   }
 }
 
@@ -913,11 +980,15 @@ async function nodeActivateSession(host: string, delegationHeader: Record<string
 }
 
 async function nodeFetch(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
-  const signal = AbortSignal.timeout(timeoutMs);
+  // The run's signal is ambient (see runUnderSignal), so no call can forget to pass it on.
+  const runSignal = bootstrapRunSignal.getStore();
+  const callSignal = AbortSignal.timeout(timeoutMs);
+  const signal = runSignal ? AbortSignal.any([callSignal, runSignal]) : callSignal;
   try {
     return await fetch(url, { ...init, signal });
   } catch (error) {
-    if (signal.aborted) {
+    if (runSignal?.aborted) throw runSignal.reason;
+    if (callSignal.aborted) {
       throw new TinyCloudBootstrapError(
         `TinyCloud node request timed out after ${timeoutMs} ms.`,
         'tinycloud_bootstrap_node_timeout',
