@@ -147,7 +147,7 @@ describe('prepared handoff signing that fails', () => {
     expect((await handoff.sign()).status).toBeGreaterThanOrEqual(400);
   });
 
-  test('the context and preview tokens are spent exactly once: gone after a successful sign, still there after a failed one', async () => {
+  test('the authorization context token is spent exactly once: gone after a successful sign, still there after a failed one', async () => {
     const handoff = await approvedHandoff();
     unseal = async () => { throw new Error('TEE unavailable'); };
     expect((await handoff.sign()).status).toBe(500);

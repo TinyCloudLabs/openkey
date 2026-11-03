@@ -368,8 +368,9 @@
       try {
         signed = await post('authorize-sign', body, ['signature', 'address', 'signedMessage', 'deliveryState'], hasSignResult);
       } catch (cause) {
-        // A refusal or failure comes back with nothing signed, and the server releases the handoff,
-        // so the owner may approve again or cancel. Only a 2xx reply that cannot be read may have been signed.
+        // A refusal or failure comes back with no signature. The server releases the handoff when the key failed to
+        // sign, so the owner may approve again or cancel; if the key signed but the tokens could not be spent it stays
+        // signing until it expires and a retry is refused. Only a 2xx reply that cannot be read may have been signed.
         if (!(cause instanceof ServerReplyError)) submitted = false;
         throw cause;
       }
