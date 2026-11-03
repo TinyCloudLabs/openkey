@@ -8,6 +8,8 @@ import { verifyMessage } from 'ethers';
 import { mockModules, replaceModules } from './mock-module';
 import { PreparedHandoffService, MemoryPreparedHandoffStore } from '../services/prepared-handoff';
 import type { setPreparedHandoffServiceForTests } from '../routes/delegate';
+// The route reads the shared module, not a query-suffixed copy, so its token store is the one reset and peeked here.
+import { _resetAuthorizationContextStoreForTests as resetContexts, peekAuthorizationContext as peekContext } from '../services/authorization-signing';
 
 const privateKey = '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 const account = privateKeyToAccount(privateKey);
@@ -57,11 +59,9 @@ await mockModules({
 });
 
 let router: typeof import('../routes/delegate')['delegateRouter'];
-let resetContexts: typeof import('../services/authorization-signing')['_resetAuthorizationContextStoreForTests'];
 let setHandoffService: typeof setPreparedHandoffServiceForTests;
 beforeAll(async () => {
   ({ delegateRouter: router, setPreparedHandoffServiceForTests: setHandoffService } = await import('../routes/delegate?authorize-sign-failure-isolated' as string));
-  ({ _resetAuthorizationContextStoreForTests: resetContexts } = await import('../services/authorization-signing?authorize-sign-failure-isolated' as string));
 });
 beforeEach(() => {
   resetContexts();
@@ -99,7 +99,7 @@ async function approvedHandoff() {
   const preview = await (await post(router, '/authorize-sign-preview', { ticket, authorizationContextToken: prepared.authorizationContextToken, selectedActionIds })).json() as { signedMessage: string; previewApprovalToken: string };
   const signBody = { ticket, authorizationContextToken: prepared.authorizationContextToken, previewApprovalToken: preview.previewApprovalToken, selectedActionIds, protocolVersion: 1 };
   return {
-    ticket, handoffs, signedMessage: preview.signedMessage,
+    ticket, handoffs, signedMessage: preview.signedMessage, contextToken: prepared.authorizationContextToken,
     sign: () => post(router, '/authorize-sign', signBody),
     cancelAsOwner: () => post(handoffs, '/cancel-claimed', { ticket }),
     cancelAsCli: () => post(handoffs, '/cancel', { ticket, cancelSecret }),
@@ -146,6 +146,16 @@ describe('prepared handoff signing that fails', () => {
     expect(await cancelled.json()).toMatchObject({ code: 'handoff_consumed' });
     expect((await handoff.sign()).status).toBeGreaterThanOrEqual(400);
   });
+
+  test('the context and preview tokens are spent exactly once: gone after a successful sign, still there after a failed one', async () => {
+    const handoff = await approvedHandoff();
+    unseal = async () => { throw new Error('TEE unavailable'); };
+    expect((await handoff.sign()).status).toBe(500);
+    expect(peekContext(handoff.contextToken).ok).toBe(true);
+    unseal = async () => privateKey;
+    expect((await handoff.sign()).status).toBe(200);
+    expect(peekContext(handoff.contextToken).ok).toBe(false);
+  });
 });
 
 describe('prepared handoff signing in progress', () => {
@@ -169,5 +179,29 @@ describe('prepared handoff signing in progress', () => {
     const delivered = await first;
     expect(delivered.status).toBe(200);
     expect(await delivered.json()).toMatchObject({ deliveryState: state });
+  });
+
+  test('when the tokens cannot be spent after the key has signed, the handoff stays SIGNING and no signature is delivered (fails closed)', async () => {
+    const handoff = await approvedHandoff();
+    const reachedTee = Promise.withResolvers<void>();
+    const teeAnswer = Promise.withResolvers<string>();
+    unseal = () => { reachedTee.resolve(); return teeAnswer.promise; };
+    const first = handoff.sign();
+    await reachedTee.promise;
+    // The context is gone while the key is signing (expired or evicted), so the tokens cannot be spent.
+    resetContexts();
+    teeAnswer.resolve(privateKey);
+    const refused = await first;
+    expect(refused.status).toBe(400);
+    const body = JSON.stringify(await refused.json());
+    expect(body).not.toContain(state);
+    expect(body).not.toContain('signature');
+    // A signature exists for this handoff, so it is not released: it stays SIGNING until it expires.
+    const cancelled = await handoff.cancelAsOwner();
+    expect(cancelled.status).toBe(409);
+    expect(await cancelled.json()).toMatchObject({ code: 'handoff_signing' });
+    const cliCancel = await handoff.cancelAsCli();
+    expect(cliCancel.status).toBe(409);
+    expect(await cliCancel.json()).toMatchObject({ code: 'handoff_signing' });
   });
 });
