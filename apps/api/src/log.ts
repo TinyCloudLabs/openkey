@@ -62,6 +62,7 @@ const EVENTS = {
   tinycloud_bootstrap_background_failed: true, tinycloud_bootstrap_background_completed: true,
   tinycloud_bootstrap_sweep_tick: true, tinycloud_bootstrap_sweep_healed: true,
   tinycloud_bootstrap_sweep_still_failed: true, tinycloud_bootstrap_sweep_exhausted: true,
+  tinycloud_bootstrap_sweep_reaped: true,
   tinycloud_bootstrap_sweep_failed: true,
   tinycloud_bootstrap_space_registry_completed: true, native_par_valid_request_volume_threshold_reached: true,
   native_par_request_cleanup_failed: true, native_session_proof_cleanup_failed: true,
@@ -75,6 +76,7 @@ const ERROR_CODES: Record<string, true> = {
   P2002: true, P2025: true, P2010: true, P2034: true, tinycloud_bootstrap_failed: true,
   tinycloud_bootstrap_crashed: true, tinycloud_bootstrap_in_progress: true,
   tinycloud_bootstrap_node_timeout: true, tinycloud_bootstrap_space_not_hosted: true,
+  tinycloud_bootstrap_deadline: true, tinycloud_bootstrap_lease_expired: true,
   tinycloud_bootstrap_expired_request: true, BETTER_AUTH_URL: true, signup_token_invalid: true,
   signup_account_exists: true, quote_report_data_mismatch: true, quote_key_custody_mismatch: true,
   quote_format_invalid: true,
@@ -183,7 +185,8 @@ export type TinyCloudBootstrapSweepEvent =
   | 'tinycloud_bootstrap_sweep_tick'
   | 'tinycloud_bootstrap_sweep_healed'
   | 'tinycloud_bootstrap_sweep_still_failed'
-  | 'tinycloud_bootstrap_sweep_exhausted';
+  | 'tinycloud_bootstrap_sweep_exhausted'
+  | 'tinycloud_bootstrap_sweep_reaped';
 
 /**
  * Background sweep outcome: counts, attempt numbers, durations and allow-listed codes only. Never a
@@ -200,6 +203,7 @@ export function logTinyCloudBootstrapSweep(
     healed?: number;
     stillFailed?: number;
     skipped?: number;
+    reaped?: number;
   },
 ): void {
   const level: LogLevel =
@@ -215,6 +219,7 @@ export function logTinyCloudBootstrapSweep(
     healed: fields.healed,
     still_failed: fields.stillFailed,
     skipped: fields.skipped,
+    reaped: fields.reaped,
   });
 }
 

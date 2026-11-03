@@ -63,6 +63,10 @@ function matchesField(actual: unknown, condition: unknown): boolean {
   if (typeof condition !== 'object') return actual === condition;
   return Object.entries(condition).every(([operator, argument]) => {
     if (operator === 'in') return Array.isArray(argument) && argument.some((value) => actual === value);
+    // SQL `NOT IN`: a NULL column never matches, so a caller that wants NULL rows adds an explicit `null` branch.
+    if (operator === 'notIn') {
+      return Array.isArray(argument) && actual !== null && actual !== undefined && !argument.includes(actual);
+    }
     if (operator === 'not') {
       return argument === null ? actual !== null && actual !== undefined : actual !== argument;
     }
