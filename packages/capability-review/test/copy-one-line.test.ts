@@ -46,7 +46,7 @@ const PLACEHOLDER_CHARS = 8;
  */
 const TWO_LINE_EXCEPTIONS: Record<string, string> = {
   "Read, change or delete any row in the ${} database":
-    "whole-database authority; Sam approved the wording 2026-11-03, wraps to two lines on a phone",
+    "states whole-database authority; Sam approved the wording 2026-11-03 15:04Z",
 };
 
 const COPY_SOURCES = ["copy.ts", "statements.ts", "core-operations.ts", "classify.ts", "plain-words.ts"];
