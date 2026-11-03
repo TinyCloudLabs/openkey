@@ -3,7 +3,7 @@
 import { betterAuth, type BetterAuthPlugin } from 'better-auth';
 import { APIError } from 'better-auth/api';
 import type { AuthMiddleware } from '@better-auth/core/api';
-import { defineRequestState, getCurrentAuthContext } from '@better-auth/core/context';
+import { defineRequestState, getCurrentAuthContext, getCurrentAuthContextAsyncLocalStorage } from '@better-auth/core/context';
 import { prismaAdapter } from 'better-auth/adapters/prisma';
 import { passkey } from '@better-auth/passkey';
 import { bearer, emailOTP, jwt } from 'better-auth/plugins';
@@ -23,6 +23,8 @@ import {
   TINYCLOUD_MCP_SCOPE,
   TINYCLOUD_OWNER_DIDS_CLAIM,
   TINYCLOUD_SESSION_SCOPE,
+  DEFAULT_ACCESS_TOKEN_EXPIRES_IN,
+  accessTokenExpiresInFor,
   dynamicClientRegistrationEnabled,
   oauthValidAudiences,
 } from './oauth-config';
@@ -185,6 +187,18 @@ function withNativeAuthorizeQuery<T extends ReturnType<typeof oauthProvider>>(pl
   return plugin;
 }
 
+// The provider reads `accessTokenExpiresIn` from one options object for every token request, and has no hook for a
+// per-audience value. The request's own `resource` (the audience the token is issued for) is in the endpoint context
+// Better Auth already keeps per request, so read the lifetime from it when the provider asks. `scopeExpirations` and
+// `customAccessTokenClaims` cannot do this: the first can only shorten, the second cannot change `exp`.
+const endpointContext = await getCurrentAuthContextAsyncLocalStorage();
+function withMcpAccessTokenLifetime<T extends ReturnType<typeof oauthProvider>>(plugin: T): T {
+  Object.defineProperty(plugin.options, 'accessTokenExpiresIn', {
+    enumerable: true,
+    get: () => accessTokenExpiresInFor((endpointContext.getStore()?.body as { resource?: unknown } | undefined)?.resource),
+  });
+  return plugin;
+}
 
 export const auth = betterAuth({
   baseURL,
@@ -277,7 +291,7 @@ export const auth = betterAuth({
 
     // OAuth 2.1 Provider - enables third-party apps to authenticate users
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    withNativeAuthorizeQuery(oauthProvider({
+    withMcpAccessTokenLifetime(withNativeAuthorizeQuery(oauthProvider({
       requestUriResolver: ({ requestUri, clientId }) => resolveRequestUri(prisma, requestUri, clientId),
       loginPage: `${origin}/auth/login`,
       consentPage: `${origin}/oauth/consent`,
@@ -287,7 +301,7 @@ export const auth = betterAuth({
       scopes: [...OAUTH_SCOPES],
       clientRegistrationDefaultScopes: [...DEFAULT_OAUTH_SCOPES],
       clientRegistrationAllowedScopes: [...DYNAMIC_CLIENT_REGISTRATION_ALLOWED_SCOPES],
-      accessTokenExpiresIn: 300,
+      accessTokenExpiresIn: DEFAULT_ACCESS_TOKEN_EXPIRES_IN, // replaced per request by withMcpAccessTokenLifetime
       refreshTokenExpiresIn: 60 * 60 * 24 * 7, // 7 days in seconds
       idTokenExpiresIn: 60 * 60, // 1 hour in seconds
       storeClientSecret: 'hashed',
@@ -374,7 +388,7 @@ export const auth = betterAuth({
         if (canonicalIdentity) claims[TINYCLOUD_CANONICAL_IDENTITY_CLAIM] = canonicalIdentity;
         return claims;
       },
-    })) as any,
+    }))) as any,
   ],
 
   // Provider entries are present only when every required secret is configured.

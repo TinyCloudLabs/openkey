@@ -29,6 +29,29 @@ export const TINYCLOUD_OWNER_DIDS_CLAIM = 'https://tinycloud.xyz/owner_dids';
 export const TINYCLOUD_CANONICAL_IDENTITY_CLAIM =
   'https://tinycloud.xyz/canonical_identity';
 export const DEFAULT_TINYCLOUD_MCP_AUDIENCE = 'https://mcp.tinycloud.xyz/mcp';
+export const CHATGPT_TINYCLOUD_MCP_AUDIENCE = 'https://mcp.tinycloud.xyz/chatgpt/mcp';
+
+/** An access token's lifetime for every audience except the hosted MCP's. */
+export const DEFAULT_ACCESS_TOKEN_EXPIRES_IN = 5 * 60;
+/**
+ * TC-1366 (B): an access token issued for the hosted MCP resources lasts 12 hours. A client that cannot refresh
+ * (or does not ask for offline_access) would otherwise make the owner sign in again every five minutes. Revoking
+ * is unaffected: the MCP server asks /api/oauth/resource/introspect, which checks consent, session and the revoke
+ * denylist on every check, so a token stops working when the owner withdraws it, whatever its remaining lifetime.
+ */
+export const MCP_ACCESS_TOKEN_EXPIRES_IN = 12 * 60 * 60;
+
+/**
+ * The lifetime for a token request that names `resource` (the request body's `resource`, a string or a list).
+ * Only a request for exactly one of the hosted MCP resources gets the long lifetime; no resource, any other
+ * resource, or several resources keep the default.
+ */
+export function accessTokenExpiresInFor(resource: unknown): number {
+  const only = Array.isArray(resource) && resource.length === 1 ? resource[0] : resource;
+  return only === DEFAULT_TINYCLOUD_MCP_AUDIENCE || only === CHATGPT_TINYCLOUD_MCP_AUDIENCE
+    ? MCP_ACCESS_TOKEN_EXPIRES_IN
+    : DEFAULT_ACCESS_TOKEN_EXPIRES_IN;
+}
 
 // MCP clients may omit scope during registration, then request it at authorize.
 // This allowlist does not replace user consent or grant TinyCloud signing access.
@@ -53,7 +76,7 @@ export function oauthValidAudiences(baseURL: string, configured = process.env.OA
   return Array.from(new Set([
     baseURL,
     DEFAULT_TINYCLOUD_MCP_AUDIENCE,
-    'https://mcp.tinycloud.xyz/chatgpt/mcp',
+    CHATGPT_TINYCLOUD_MCP_AUDIENCE,
     ...values,
   ]));
 }
