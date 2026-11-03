@@ -25,6 +25,8 @@ import { internalMetricsRouter } from './routes/internal-metrics';
 import { scoreboardMetricsRouter } from './routes/scoreboard-metrics';
 import { organizationsRouter } from './routes/organizations';
 import { createOrgKeysRouter } from './routes/org-keys';
+import { createOrgOwnerCheckRouter } from './routes/org-owner-check';
+import { ORG_OWNER_CHECK_PATH } from './services/org-owner-check';
 import { tenantConsoleRouter } from './routes/tenant-console';
 import { deviceAuthorizationRouter } from './routes/device-authorization';
 import { approvalRequestRouter } from './routes/approval-requests';
@@ -90,7 +92,9 @@ const registrationCors = cors({
   credentials: true,
   exposeHeaders: API_EXPOSED_HEADERS,
 });
+// The OpenCredentials owner check is server-to-server: no browser origin is ever allowed, so it gets no CORS headers.
 app.use('*', (c, next) => {
+  if (c.req.path === ORG_OWNER_CHECK_PATH || c.req.path === `${ORG_OWNER_CHECK_PATH}/`) return next();
   const registration = (c.req.path === '/api/org-keys' || c.req.path === '/api/org-keys/')
     && (c.req.method === 'POST' || (c.req.method === 'OPTIONS' && c.req.header('access-control-request-method')?.toUpperCase() === 'POST'));
   return registration ? registrationCors(c, next) : credentialedCors(c, next);
@@ -276,6 +280,9 @@ app.route('/api/org-keys', createOrgKeysRouter({
   tee: createTeeClient(),
   sessionMiddleware: requireSession,
 }));
+
+// OpenCredentials asks whether an account owns an org key (TC-128). Authenticated by its issuer-signed JWS only.
+app.route(ORG_OWNER_CHECK_PATH, createOrgOwnerCheckRouter({ prisma: authPrisma }));
 
 // 404 handler
 app.notFound((c) => c.json({ error: 'Not found' }, 404));

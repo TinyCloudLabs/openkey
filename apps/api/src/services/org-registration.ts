@@ -4,17 +4,16 @@ import { verifyAuthenticationResponse, type AuthenticationResponseJSON } from '@
 import type { Prisma, PrismaClient } from '@openkey/db';
 import { generatePrivateKey, getAddressFromPrivateKey, seal, type TeeClient } from '@openkey/tee';
 import { canonicalSignatureHash, controllerDidForAddress, OrgKeyRefusal } from './org-keys';
+import { canonicalBytes, createIssuerMethodResolver, decodeObject, exactFields, IssuerDidUnavailable, issuerEd25519Jwk, ISSUER_DID, object, strictJson } from './issuer-jws';
 import { createSealingContext, deriveKeyForRecord } from './key-sealing';
 
-const INTENT_ISSUER = 'did:web:issuer.credentials.org';
+const INTENT_ISSUER = ISSUER_DID;
 const INTENT_AUDIENCE = 'https://api.openkey.so';
-const INTENT_DID_URL = 'https://issuer.credentials.org/.well-known/did.json';
 const PROOF_ISSUER = 'https://api.openkey.so/api/auth';
 const PROOF_AUDIENCE = 'https://witness.credentials.org';
 const PURPOSE = 'org-registration/v1';
 const CHALLENGE_DOMAIN = 'tinycloud:org-key:org-registration:v1';
 const WINDOW_MS = 5 * 60 * 1000;
-const FORCED_REFRESH_INTERVAL_MS = 10_000;
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const ORG_ID = /^o[a-z2-7]{26}$/;
 const RESERVED_HANDLES = new Set([
@@ -25,7 +24,6 @@ const RESERVED_HANDLES = new Set([
 ]);
 const INTENT_FIELDS = ['iss', 'aud', 'registrationId', 'orgId', 'nonce', 'handle', 'displayName', 'purpose', 'iat', 'exp'];
 const REQUEST_FIELDS = ['intentJws', 'registrationId', 'orgId', 'nonce', 'handle', 'orgName', 'challengeNonce', 'assertion'];
-const utf8 = new TextDecoder('utf-8', { fatal: true });
 
 export interface OrgRegistrationIntent {
   iss: string;
@@ -96,65 +94,8 @@ export type OrgRegistrationResponse =
 function refuse(status: 400 | 403 | 409 | 410 | 503, code: string, message: string): never {
   throw new OrgKeyRefusal(status, code, message);
 }
-function object(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-function exactFields(value: Record<string, unknown>, names: string[]): boolean {
-  const keys = Object.keys(value);
-  return keys.length === names.length && keys.every((key) => names.includes(key));
-}
 function digest(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
-}
-function canonicalBytes(value: unknown, length: number): value is string {
-  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]+$/.test(value)) return false;
-  const bytes = Buffer.from(value, 'base64url');
-  return bytes.length === length && bytes.toString('base64url') === value;
-}
-
-/** Same duplicate-member detection pattern as app-key-refusal.ts; never accept JSON.parse's last-wins ambiguity. */
-function strictJson(text: string): Record<string, unknown> {
-  const parsed: unknown = JSON.parse(text);
-  if (!object(parsed)) throw new Error('Expected a JSON object');
-  const objects: Array<Set<string> | null> = [];
-  let expectKey = false;
-  let i = 0;
-  while (i < text.length) {
-    const ch = text[i]!;
-    if (ch === '"') {
-      let end = i + 1;
-      while (text[end] !== '"') end += text[end] === '\\' ? 2 : 1;
-      const keys = objects[objects.length - 1];
-      if (keys && expectKey) {
-        const key = JSON.parse(text.slice(i, end + 1)) as string;
-        if (keys.has(key)) throw new Error('Repeated JSON member');
-        keys.add(key);
-        expectKey = false;
-      }
-      i = end + 1;
-      continue;
-    }
-    if (ch === '{') {
-      objects.push(new Set());
-      expectKey = true;
-    } else if (ch === '[') {
-      objects.push(null);
-      expectKey = false;
-    } else if (ch === '}' || ch === ']') {
-      objects.pop();
-      expectKey = false;
-    } else if (ch === ',') {
-      expectKey = objects[objects.length - 1] instanceof Set;
-    }
-    i += 1;
-  }
-  return parsed;
-}
-function decodeObject(segment: string): Record<string, unknown> {
-  if (!/^[A-Za-z0-9_-]+$/.test(segment)) throw new Error('Noncanonical JWS encoding');
-  const bytes = Buffer.from(segment, 'base64url');
-  if (bytes.toString('base64url') !== segment) throw new Error('Noncanonical JWS encoding');
-  return strictJson(utf8.decode(bytes));
 }
 function validHandle(value: unknown): value is string {
   return typeof value === 'string' && /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(value)
@@ -195,40 +136,7 @@ function readIntent(value: Record<string, unknown>): OrgRegistrationIntent {
 
 /** Only the pinned issuer DID can supply keys; kid never selects an outbound URL. */
 export function createOrgRegistrationIntentVerifier(fetcher: OrgRegistrationFetch = fetch) {
-  let document: Record<string, unknown> | undefined;
-  let expiresAt = 0;
-  let inFlight: Promise<void> | undefined;
-  let lastForcedRefresh = Number.NEGATIVE_INFINITY;
-  async function refresh(forced: boolean): Promise<void> {
-    if (inFlight) return inFlight;
-    const now = Date.now();
-    if (forced && now - lastForcedRefresh < FORCED_REFRESH_INTERVAL_MS) return;
-    if (forced) lastForcedRefresh = now;
-    inFlight = (async () => {
-      try {
-        const response = await fetcher(INTENT_DID_URL, { redirect: 'error', cache: forced ? 'no-store' : 'default', signal: AbortSignal.timeout(10_000) });
-        if (!response.ok || response.status >= 300) throw new Error('Issuer DID unavailable');
-        const text = await response.text();
-        const parsed = strictJson(text);
-        if (parsed.id !== INTENT_ISSUER || !Array.isArray(parsed.verificationMethod) || !Array.isArray(parsed.assertionMethod)) {
-          throw new Error('Issuer DID is malformed');
-        }
-        document = parsed;
-        expiresAt = Date.now() + WINDOW_MS;
-      } catch {
-        refuse(503, 'registration_issuer_unavailable', 'Registration issuer verification is unavailable');
-      }
-    })();
-    try { await inFlight; } finally { inFlight = undefined; }
-  }
-  function methodFor(keyId: string): Record<string, unknown> | undefined {
-    if (!document) return undefined;
-    const assertions = document.assertionMethod as unknown[];
-    const asserted = assertions.some((method) => method === keyId || (object(method) && method.id === keyId));
-    if (!asserted) return undefined;
-    const methods = (document.verificationMethod as unknown[]).filter((method) => object(method) && method.id === keyId);
-    return methods.length === 1 ? methods[0] as Record<string, unknown> : undefined;
-  }
+  const resolveMethod = createIssuerMethodResolver(fetcher);
   return async (intentJws: string): Promise<OrgRegistrationIntent> => {
     let header: Record<string, unknown>;
     let claims: OrgRegistrationIntent;
@@ -243,17 +151,20 @@ export function createOrgRegistrationIntentVerifier(fetcher: OrgRegistrationFetc
       if (error instanceof OrgKeyRefusal) throw error;
       return refuse(400, 'registration_intent_invalid', 'Registration intent is malformed');
     }
-    if (!document || expiresAt <= Date.now()) await refresh(false);
-    let method = methodFor(header.kid as string);
-    if (!method) { await refresh(true); method = methodFor(header.kid as string); }
-    if (!method || method.controller !== INTENT_ISSUER || !object(method.publicKeyJwk)) {
-      return refuse(403, 'registration_intent_signature_invalid', 'Registration intent signing key is not asserted by its issuer');
+    let method: Record<string, unknown> | undefined;
+    try {
+      method = await resolveMethod(header.kid as string);
+    } catch (error) {
+      if (error instanceof IssuerDidUnavailable) return refuse(503, 'registration_issuer_unavailable', 'Registration issuer verification is unavailable');
+      throw error;
     }
-    const jwk = method.publicKeyJwk;
-    if (jwk.kty !== 'OKP' || jwk.crv !== 'Ed25519' || !canonicalBytes(jwk.x, 32) || 'd' in jwk
-      || (jwk.alg !== undefined && jwk.alg !== 'EdDSA')) {
-      return refuse(403, 'registration_intent_signature_invalid', 'Registration intent verification key is invalid');
+    const issuerKey = issuerEd25519Jwk(method);
+    if ('refusal' in issuerKey) {
+      return issuerKey.refusal === 'not_asserted'
+        ? refuse(403, 'registration_intent_signature_invalid', 'Registration intent signing key is not asserted by its issuer')
+        : refuse(403, 'registration_intent_signature_invalid', 'Registration intent verification key is invalid');
     }
+    const jwk = issuerKey.jwk;
     try {
       const key = await importJWK(jwk as JWK, 'EdDSA');
       await compactVerify(intentJws, key, { algorithms: ['EdDSA'] });

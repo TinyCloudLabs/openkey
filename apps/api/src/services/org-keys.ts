@@ -108,6 +108,36 @@ export async function findActiveOrgGrant(
   return grant ? { grantId: grant.id, role: grant.role } : null;
 }
 
+// TC-128 O1: is `account` (0x + 40 lowercase hex) a MANAGED, non-archived personal key of the user who holds
+// the accepted, unrevoked OWNER grant on this non-archived ORG key? EXTERNAL keys never count (D-2: an external
+// key signs Billing without OpenKey, so it is not OpenKey authority). The grantee must be non-null: a null
+// grantee must never match personal keys orphaned by a deleted user (userId SET NULL).
+export async function isOrgKeyOwnerAccount(prisma: PrismaClient, keyId: string, account: string): Promise<boolean> {
+  const grant = await prisma.keyGrant.findFirst({
+    where: {
+      keyId,
+      role: 'OWNER',
+      revokedAt: null,
+      acceptedAt: { not: null },
+      granteeUserId: { not: null },
+      key: { custody: 'ORG', archivedAt: null, orgKey: { isNot: null } },
+    },
+    select: { granteeUserId: true },
+  });
+  if (!grant?.granteeUserId) return false;
+  const key = await prisma.ethereumKey.findFirst({
+    where: {
+      userId: grant.granteeUserId,
+      custody: 'PERSONAL',
+      keyType: 'MANAGED',
+      archivedAt: null,
+      address: { equals: account, mode: 'insensitive' },
+    },
+    select: { id: true },
+  });
+  return key !== null;
+}
+
 export class OrgKeyRefusal extends Error {
   constructor(
     readonly status: 400 | 403 | 404 | 409 | 410 | 503,
