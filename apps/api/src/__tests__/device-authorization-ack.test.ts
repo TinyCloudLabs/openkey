@@ -33,8 +33,10 @@ const deviceSecret = 'device-secret-with-at-least-256-bits-of-entropy';
 const codeVerifier = 'pkce-verifier-with-at-least-256-bits-of-entropy';
 const credentials = { deviceSecret, codeVerifier };
 
-function fixture(makeStore: () => ConstructorParameters<typeof DeviceAuthorizationService>[0] = () => new MemoryDeviceAuthorizationStore()) {
-  let nowMs = Date.UTC(2026, 10, 3, 12, 0, 0);
+// `startMs` is the injected clock's first reading. The Prisma store compares deadlines with the wall clock, not the
+// injected one, so a test that goes through it starts the clock at the wall clock; a fixed date would expire its rows.
+function fixture(makeStore: () => ConstructorParameters<typeof DeviceAuthorizationService>[0] = () => new MemoryDeviceAuthorizationStore(), startMs = Date.UTC(2026, 10, 3, 12, 0, 0)) {
+  let nowMs = startMs;
   const service = new DeviceAuthorizationService(makeStore(), {
     verificationOrigin: 'https://openkey.so',
     encryptionSecret: 'test-device-authorization-secret-is-long-enough',
@@ -165,7 +167,7 @@ describe('device authorization results are spent by acknowledgement', () => {
       },
     };
     const database = { deviceAuthorization: table, $transaction: async <T>(run: (tx: { deviceAuthorization: typeof table }) => Promise<T>) => run({ deviceAuthorization: table }) };
-    const input = fixture(() => createPrismaDeviceAuthorizationStore(database));
+    const input = fixture(() => createPrismaDeviceAuthorizationStore(database), Date.now());
     const flow = await approved(input, DEVICE_AUTH_TRANSACTION_TTL_MS - MINUTE);
     flow.advance(5 * MINUTE);
     expect(await flow.poll()).toMatchObject({ status: 'approved' });
