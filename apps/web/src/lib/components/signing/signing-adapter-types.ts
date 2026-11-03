@@ -27,8 +27,17 @@ export interface CliSigningTransport {
    */
   approveDelegate: () => void | Promise<void>;
 
-  /** Cancel: the CLI's "go back to key selection" navigation. */
+  /** Back (the review's dismiss control): the CLI's "go back to key selection" navigation. It sends nothing. */
   goBack: () => void;
+
+  /**
+   * Decline the approval request (TC-2459). Set only on an approval-request review; the card then offers a Decline
+   * button left of Approve. Unset on every other `/delegate` review.
+   */
+  decline?: () => void | Promise<void>;
+
+  /** True while a decline is being sent. */
+  declining?: boolean;
 
   /**
    * Called whenever the user narrows the selection. The route is

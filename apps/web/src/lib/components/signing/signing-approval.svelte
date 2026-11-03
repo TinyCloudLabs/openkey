@@ -91,6 +91,14 @@
     finalPreview?: boolean;
     approveText?: string;
     cancelText?: string;
+    /**
+     * Offered only on the approval-request review (TC-2459): a Decline button left of Approve, and the dismiss
+     * control becomes a text link above the pair. Widget surfaces leave it unset and keep their Cancel button.
+     */
+    onDecline?: () => void;
+    declineText?: string;
+    /** A decline is being sent: Decline, Approve and the dismiss control are off, so it cannot go twice. */
+    declining?: boolean;
     /** Surface-specific context rendered in a fixed slot under the header. */
     context?: Snippet;
     /** Show which key signs; for users who chose one of several keys. */
@@ -135,6 +143,9 @@
     finalPreview = false,
     approveText = "Approve",
     cancelText = "Cancel",
+    onDecline,
+    declineText = "Decline",
+    declining = false,
     context,
     showSigner = false,
     peerRecognition = null,
@@ -523,7 +534,7 @@
   const nodeChecking = $derived(peerRecognition?.state === "checking");
   const approveDisabled = $derived(approving || isMalformedRecap);
   const approveButtonDisabled = $derived(
-    layoutBlocked || refused || approveDisabled || Boolean(approveBlockedReason) || nodeChecking,
+    layoutBlocked || refused || approveDisabled || Boolean(approveBlockedReason) || nodeChecking || declining,
   );
   const approveLabel = $derived(
     isMalformedRecap
@@ -1034,15 +1045,40 @@
     <p class="approve-blocked" role="status" aria-live="polite">{approveBlockedReason}</p>
   {/if}
 
-  <footer class="actions">
+  {#if onDecline}
+    <!-- With Decline offered, going back is a quiet link above the Decline / Approve pair. -->
     <button
       type="button"
-      class="cancel"
+      class="dismiss-link"
+      data-testid="signing-dismiss"
       onclick={onCancel}
-      disabled={approving}
+      disabled={approving || declining}
     >
       {cancelText}
     </button>
+  {/if}
+  <footer class="actions">
+    {#if onDecline}
+      <button
+        type="button"
+        class="cancel decline"
+        data-testid="signing-decline"
+        onclick={onDecline}
+        disabled={approving || declining}
+      >
+        {declineText}
+      </button>
+    {:else}
+      <button
+        type="button"
+        class="cancel"
+        data-testid="signing-dismiss"
+        onclick={onCancel}
+        disabled={approving}
+      >
+        {cancelText}
+      </button>
+    {/if}
     <button
       type="button"
       class="approve"
@@ -1774,6 +1810,24 @@
   }
   .cancel:hover {
     background: #f8fafc;
+  }
+  .dismiss-link {
+    align-self: flex-start;
+    padding: 4px 2px;
+    background: none;
+    border: 0;
+    color: #475569;
+    font-size: 13px;
+    font-weight: 600;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  .dismiss-link:hover {
+    color: #0f172a;
+  }
+  .dismiss-link:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
   }
   .approve:hover {
     background: #111827;
