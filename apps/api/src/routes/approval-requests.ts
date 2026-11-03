@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { parseLink, resolveLink, parseApprovalRequest, validateLinkHeader, verifyHeader, linkIssuerPublicKey } from '@tinycloud/share-envelope/links';
-import { ApprovalResultError, ApprovalResultService } from '../services/approval-results';
+import { ApprovalResultError, ApprovalResultService, linkRequiredError } from '../services/approval-results';
 import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
 import { requireSession } from '../middleware/session';
 import { createPrismaApprovalRequestStore } from '../services/approval-request-store';
@@ -99,8 +99,34 @@ approvalRequestRouter.post('/approval-requests/:id/result', async (c) => {
 approvalRequestRouter.post('/approval-results/:ref/fetch', async (c) => c.json(await approvalResultService().fetch(c.req.param('ref'), await c.req.json(), c.req.header('OpenKey-Session-Proof'))));
 approvalRequestRouter.post('/approval-results/:ref/ack', async (c) => c.json(await approvalResultService().acknowledge(c.req.param('ref'), await c.req.json(), c.req.header('OpenKey-Session-Proof'))));
 
-// The owner refuses the request. Signed-in owners only, like approving; no body is read.
-approvalRequestRouter.post('/approval-requests/:id/deny', requireOpenKeyOriginForBearer, requireSession, async (c) => c.json(await approvalResultService().deny(c.req.param('id'))));
+/**
+ * Declining. Requests carry no owner account, so the capability is the same as for approving: the complete
+ * approval link. The body must hold the `reference` that /load takes (path and key fragment); it is
+ * re-resolved here with its key, so a signed-in caller who only knows the request id is refused (403
+ * `link_required`) and the request stays open. The reference is never logged or echoed.
+ */
+approvalRequestRouter.post('/approval-requests/:id/deny', requireOpenKeyOriginForBearer, requireSession, async (c) => {
+  const id = c.req.param('id');
+  const service = approvalResultService();
+  const body: unknown = await c.req.json().catch(() => null);
+  const reference = body && typeof body === 'object' && 'reference' in body ? body.reference : undefined;
+  if (typeof reference !== 'string') throw linkRequiredError();
+  let header: { bodyCid: string; issuer: string };
+  try {
+    const link = viewerOrigin + reference;
+    const parsed = parseLink(link, { trustedOrigins: [viewerOrigin] });
+    if (parsed.form !== 'short' || parsed.pathType !== 'openkey-approval-request' || parsed.id !== id) throw linkRequiredError();
+    const opened = await resolveLink(link, { trustedOrigins: [viewerOrigin], apiOrigin: linksOrigin, fetch: Object.assign(fetchLink, { preconnect: fetch.preconnect }) });
+    if (opened.type !== 'openkey-approval-request') throw linkRequiredError();
+    header = opened.header;
+  } catch (error) {
+    // A link that does not parse or open is not a link the caller holds. An outage of the links service is not a refusal.
+    if (error instanceof ApprovalResultError) throw error;
+    if (error && typeof error === 'object' && 'code' in error) throw linkRequiredError();
+    throw error;
+  }
+  return c.json(await service.deny(id, header));
+});
 
 /** Rechecked immediately before signing, not only when the browser loads. */
 export async function checkApprovalDelegation(body: { approvalRequestId?: unknown; jwk: unknown; host: unknown; permissions?: unknown }, input: { expiryMs?: number; signedSiwe?: string }): Promise<void> {

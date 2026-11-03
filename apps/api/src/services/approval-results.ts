@@ -35,7 +35,7 @@ export interface ApprovalRequestStore {
 
 export class ApprovalResultError extends Error {
   /** `extra` is merged into the JSON error body next to `error` and `code`. */
-  constructor(readonly code: string, message: string, readonly status: 400 | 401 | 404 | 409 | 410 | 503, readonly extra?: Record<string, unknown>) {
+  constructor(readonly code: string, message: string, readonly status: 400 | 401 | 403 | 404 | 409 | 410 | 503, readonly extra?: Record<string, unknown>) {
     super(message);
   }
 }
@@ -47,6 +47,11 @@ export class ApprovalResultError extends Error {
  */
 function deniedError(deniedAt: Date): ApprovalResultError {
   return new ApprovalResultError('expired_request', 'Approval request was denied', 410, { status: 'denied', deniedAt: deniedAt.toISOString() });
+}
+
+/** Declining needs the complete approval link. The same answer for every way of not having it, and it never names the link. */
+export function linkRequiredError(): ApprovalResultError {
+  return new ApprovalResultError('link_required', 'Declining needs the complete approval link', 403);
 }
 
 /** Plain JSON canonicalization is only for comparison; never a replacement for the sealed-byte CID. */
@@ -161,11 +166,16 @@ export class ApprovalResultService {
   }
 
   /**
-   * The owner refuses this request. Terminal and idempotent; an approved request cannot be denied. Any
-   * signed-in owner holding the link may, as with approving.
+   * Declining refuses this request. Terminal and idempotent; an approved request cannot be declined.
+   * Requests carry no owner account, so the capability is the link, as for approving: `link` is the signed
+   * header of the link the caller opened (the route re-resolves the full link with its key) and must be
+   * this request's, or the caller is refused and the request stays open.
    */
-  async deny(id: string): Promise<{ status: 'denied' }> {
+  async deny(id: string, link: { bodyCid: string; issuer: string }): Promise<{ status: 'denied' }> {
     const now = this.options.now?.() ?? new Date();
+    const found = await this.store.findById(id);
+    if (!found) throw new ApprovalResultError('not_found', 'Approval request not found', 404);
+    if (found.bodyCid !== link.bodyCid || found.issuer !== link.issuer) throw linkRequiredError();
     const settled = async (): Promise<{ status: 'denied' }> => {
       const record = await this.store.findById(id);
       if (!record) throw new ApprovalResultError('not_found', 'Approval request not found', 404);

@@ -22,6 +22,9 @@ const jwk = pair.publicKey.export({ format: 'jwk' });
 const jkt = createHash('sha256').update(JSON.stringify({ crv: 'Ed25519', kty: 'OKP', x: jwk.x })).digest('base64url');
 const ID = 'abcdefghijklmnopqrstuvwxyz';
 const BODY_CID = 'sealed-body-cid';
+const LINK = { bodyCid: BODY_CID, issuer: 'synthetic-requester' };
+const LINK_KEY = 'A'.repeat(43);
+const REFERENCE = `/a/${ID}#v=4&k=${LINK_KEY}&c=bafkrei${'a'.repeat(52)}`;
 const RESULT_PATH = `/api/approval-requests/${ID}/result`;
 
 let database: PGlite;
@@ -38,7 +41,12 @@ replaceModules({
     }),
   }),
 });
-await mockModules({ '@openkey/db': () => ({ createPrismaClient: () => client }) });
+// The links service is the network; its answer is set per test. parseLink stays real.
+let resolveLinkImpl: (link: string) => Promise<unknown> = async () => ({});
+await mockModules({
+  '@openkey/db': () => ({ createPrismaClient: () => client }),
+  '@tinycloud/share-envelope/links': () => ({ resolveLink: (link: string) => resolveLinkImpl(link) }),
+});
 
 beforeAll(async () => {
   database = new PGlite();
@@ -89,7 +97,7 @@ describe('denying an approval request', () => {
   test('the requester then reads a terminal answer: 410 expired_request, status denied, and when', async () => {
     await registered();
     expect(await discover()).toEqual({ status: 'pending' });
-    await service().deny(ID);
+    await service().deny(ID, LINK);
     await expect(discover()).rejects.toMatchObject({
       code: 'expired_request', status: 410, extra: { status: 'denied', deniedAt: clock.toISOString() },
     });
@@ -97,38 +105,45 @@ describe('denying an approval request', () => {
 
   test('the answer does not change when the request would have expired anyway', async () => {
     await registered(5 * MINUTE);
-    await service().deny(ID);
+    await service().deny(ID, LINK);
     clock = new Date(clock.getTime() + 10 * MINUTE);
     await expect(discover()).rejects.toMatchObject({ code: 'expired_request', extra: { status: 'denied' } });
   });
 
   test('a caller without the requester key learns nothing about the denial', async () => {
     await registered();
-    await service().deny(ID);
+    await service().deny(ID, LINK);
     await expect(discover(generateKeyPairSync('ed25519').privateKey)).rejects.toMatchObject({ code: 'invalid_proof', status: 401 });
   });
 
   test('denying twice is fine and keeps the first time', async () => {
     await registered();
-    await service().deny(ID);
+    await service().deny(ID, LINK);
     const first = (await client.approvalRequest.findUniqueOrThrow({ where: { id: ID } })).deniedAt;
     clock = new Date(clock.getTime() + MINUTE);
-    await expect(service().deny(ID)).resolves.toEqual({ status: 'denied' });
+    await expect(service().deny(ID, LINK)).resolves.toEqual({ status: 'denied' });
     expect((await client.approvalRequest.findUniqueOrThrow({ where: { id: ID } })).deniedAt).toEqual(first);
   });
 
   test('an approved request cannot be denied, and its result stays retrievable', async () => {
     await registered();
     expect(await approve()).toBe(true);
-    await expect(service().deny(ID)).rejects.toMatchObject({ code: 'already_approved', status: 409 });
+    await expect(service().deny(ID, LINK)).rejects.toMatchObject({ code: 'already_approved', status: 409 });
     expect(await discover()).toMatchObject({ status: 'approved', resultRef: 'synthetic-result-reference' });
   });
 
+  test('a link for a different request body or issuer cannot deny this one', async () => {
+    await registered();
+    await expect(service().deny(ID, { bodyCid: 'another-body-cid', issuer: LINK.issuer })).rejects.toMatchObject({ code: 'link_required', status: 403 });
+    await expect(service().deny(ID, { bodyCid: BODY_CID, issuer: 'someone-else' })).rejects.toMatchObject({ code: 'link_required', status: 403 });
+    expect(await discover()).toEqual({ status: 'pending' });
+  });
+
   test('an unknown request is not found, and an expired one is reported expired, not denied', async () => {
-    await expect(service().deny(ID)).rejects.toMatchObject({ code: 'not_found', status: 404 });
+    await expect(service().deny(ID, LINK)).rejects.toMatchObject({ code: 'not_found', status: 404 });
     await registered(MINUTE);
     clock = new Date(clock.getTime() + 2 * MINUTE);
-    await expect(service().deny(ID)).rejects.toMatchObject({ code: 'expired_request', status: 410 });
+    await expect(service().deny(ID, LINK)).rejects.toMatchObject({ code: 'expired_request', status: 410 });
     expect((await client.approvalRequest.findUniqueOrThrow({ where: { id: ID } })).deniedAt).toBeNull();
   });
 });
@@ -136,14 +151,14 @@ describe('denying an approval request', () => {
 describe('a denied request is never approved', () => {
   test('the store refuses to approve it', async () => {
     await registered();
-    await service().deny(ID);
+    await service().deny(ID, LINK);
     expect(await approve()).toBe(false);
     expect((await client.approvalRequest.findUniqueOrThrow({ where: { id: ID } })).resultRef).toBeNull();
   });
 
   test('the signing path refuses it before anything is signed', async () => {
     await registered();
-    await service().deny(ID);
+    await service().deny(ID, LINK);
     const request = { jwk: { kty: 'OKP', crv: 'Ed25519', x: jwk.x }, host: undefined, permissions: undefined };
     await expect(service().assertDelegationWindow(ID, request)).rejects.toMatchObject({ code: 'expired_request', status: 410, extra: { status: 'denied' } });
   });
@@ -167,25 +182,27 @@ describe('a denied request is never approved', () => {
 });
 
 describe('POST /api/approval-requests/:id/deny', () => {
-  const deny = (headers: Record<string, string> = {}) =>
-    route.request(`/approval-requests/${ID}/deny`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: '{}' });
+  const SIGNED_IN = { 'x-test-session': 'owner' };
+  const deny = (headers: Record<string, string> = {}, body: unknown = { reference: REFERENCE }) =>
+    route.request(`/approval-requests/${ID}/deny`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
+  const poll = () => route.request(RESULT_PATH.replace('/api', ''), {
+    method: 'POST', headers: { 'content-type': 'application/json', 'OpenKey-Session-Proof': proof() }, body: JSON.stringify({ bodyCid: BODY_CID }),
+  });
   // The route reads the real clock, so its proofs and deadlines are made on it.
-  beforeEach(() => { clock = new Date(); });
+  beforeEach(() => { clock = new Date(); resolveLinkImpl = async () => ({ type: 'openkey-approval-request', header: LINK }); });
 
-  test('needs a signed-in owner', async () => {
+  test('needs a signed-in user', async () => {
     await registered();
-    expect((await deny()).status).toBe(401);
+    expect((await deny({})).status).toBe(401);
     expect((await client.approvalRequest.findUniqueOrThrow({ where: { id: ID } })).deniedAt).toBeNull();
   });
 
-  test('an owner denies, and the requester\'s next poll over HTTP carries the typed answer', async () => {
+  test('a signed-in user who holds the complete link denies, and the requester\'s next poll carries the typed answer', async () => {
     await registered();
-    const denied = await deny({ 'x-test-session': 'owner' });
+    const denied = await deny(SIGNED_IN);
     expect(denied.status).toBe(200);
     expect(await denied.json()).toEqual({ status: 'denied' });
-    const polled = await route.request(RESULT_PATH.replace('/api', ''), {
-      method: 'POST', headers: { 'content-type': 'application/json', 'OpenKey-Session-Proof': proof() }, body: JSON.stringify({ bodyCid: BODY_CID }),
-    });
+    const polled = await poll();
     expect(polled.status).toBe(410);
     expect(polled.headers.get('cache-control')).toBe('no-store');
     const body: Record<string, unknown> = await polled.json();
@@ -193,10 +210,48 @@ describe('POST /api/approval-requests/:id/deny', () => {
     expect(Math.abs(Date.parse(String(body.deniedAt)) - Date.now())).toBeLessThan(10_000);
   });
 
+  test('denying again with the link is idempotent', async () => {
+    await registered();
+    expect((await deny(SIGNED_IN)).status).toBe(200);
+    const again = await deny(SIGNED_IN);
+    expect(again.status).toBe(200);
+    expect(await again.json()).toEqual({ status: 'denied' });
+  });
+
+  describe('a signed-in user without the link is refused and the request stays open', () => {
+    const refusals: Array<[string, () => Response | Promise<Response>]> = [
+      ['no reference at all', () => deny(SIGNED_IN, {})],
+      ['a body that is not JSON', () => route.request(`/approval-requests/${ID}/deny`, { method: 'POST', headers: { 'content-type': 'application/json', ...SIGNED_IN }, body: 'nope' })],
+      ['the id alone, without the key fragment', () => deny(SIGNED_IN, { reference: `/a/${ID}` })],
+      ['a link for another request', () => deny(SIGNED_IN, { reference: REFERENCE.replace(ID, 'zyxwvutsrqponmlkjihgfedcba') })],
+      ['a link the links service cannot open (wrong key)', () => { resolveLinkImpl = async () => { throw Object.assign(new Error('x'), { code: 'decryption_failed' }); }; return deny(SIGNED_IN); }],
+      ['a link that opens to a different request body', () => { resolveLinkImpl = async () => ({ type: 'openkey-approval-request', header: { ...LINK, bodyCid: 'another-body-cid' } }); return deny(SIGNED_IN); }],
+      ['a link that opens to a different issuer', () => { resolveLinkImpl = async () => ({ type: 'openkey-approval-request', header: { ...LINK, issuer: 'someone-else' } }); return deny(SIGNED_IN); }],
+      ['a link that opens to another kind of link', () => { resolveLinkImpl = async () => ({ type: 'tinycloud-share', header: LINK }); return deny(SIGNED_IN); }],
+    ];
+    test.each(refusals)('%s', async (_name, attempt) => {
+      await registered();
+      const refused = await attempt();
+      expect(refused.status).toBe(403);
+      expect(await refused.json()).toMatchObject({ code: 'link_required' });
+      expect((await client.approvalRequest.findUniqueOrThrow({ where: { id: ID } })).deniedAt).toBeNull();
+      expect(await (await poll()).json()).toEqual({ status: 'pending' });
+    });
+
+    test('the refusal never echoes the link or its key', async () => {
+      await registered();
+      resolveLinkImpl = async () => { throw Object.assign(new Error('x'), { code: 'decryption_failed' }); };
+      const refused = await deny(SIGNED_IN);
+      const text = await refused.text();
+      expect(text).not.toContain(LINK_KEY);
+      expect(text).not.toContain(REFERENCE);
+    });
+  });
+
   test('an approved request answers 409 already_approved', async () => {
     await registered();
     await approve();
-    const refused = await deny({ 'x-test-session': 'owner' });
+    const refused = await deny(SIGNED_IN);
     expect(refused.status).toBe(409);
     expect(await refused.json()).toMatchObject({ code: 'already_approved' });
   });
