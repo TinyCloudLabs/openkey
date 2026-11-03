@@ -45,6 +45,21 @@ export function createDeviceAuthorizationRouter(input: {
     }
   });
 
+  // The client's durable save of a result it polled. Authenticated like the poll: by the device secret
+  // and PKCE verifier, with no session.
+  router.post('/:transactionId/ack', async (c) => {
+    try {
+      const body = await c.req.json();
+      return c.json(await input.service.acknowledge({
+        transactionId: c.req.param('transactionId'),
+        deviceSecret: body?.deviceSecret,
+        codeVerifier: body?.codeVerifier,
+      }));
+    } catch (error) {
+      return routeError(c, error);
+    }
+  });
+
   router.get('/lookup', async (c) => {
     const value = await input.service.lookup(c.req.query('user_code') ?? '');
     if (!value) return c.json({ error: 'not_found' }, 404);

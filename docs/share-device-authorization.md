@@ -103,8 +103,14 @@ The ordinary manual handoff is separate from device authorization. After the
 delegation is signed, the authenticated page posts the public delegation to
 `POST /api/delegation-codes`; the response contains eight random base32
 characters formatted `xxxx-xxxx`. `GET /api/delegation-codes/:code` is public
-and returns that delegation for ten minutes (including repeat lookups), then
-404. Expired rows are removed on subsequent publishes. Publishing requires a
+and valid for five minutes. Without a claim, the first lookup returns the
+delegation and spends the code. A client that sends a 128-bit-minimum
+`OpenKey-Delegation-Claim` header (base64url, chosen by the client) binds the
+code to that claim instead: the same claim can fetch again, after a lost
+response, until it acknowledges with `POST /api/delegation-codes/:code/ack`
+and the same header (repeatable, clears the delegation) or five minutes after
+redeeming; any other claim, or none, gets the same 404 as an unknown code.
+Expired rows are removed on subsequent publishes. Publishing requires a
 session and accepts only expected delegation fields and public JWK parameters;
 it does not store the CLI signing key. A broker failure leaves the full paste
 code available on the page. This endpoint is not the
@@ -430,9 +436,11 @@ the new API, above), and roll both back together:
 - Creation and polling are rate-limited. Transactions expire after ten minutes.
 - The browser derives an ECDH/HKDF key from the CLI relay public key and
   encrypts the approved delegation with AES-256-GCM before sending it to the
-  device API. The relay stores only that opaque envelope and consumes it once
-  with an atomic status transition; neither the relay nor its rows receive a
-  plaintext delegation or CLI private key.
+  device API. The relay stores only that opaque envelope. Polling returns it
+  again until the CLI acknowledges with `POST /api/device-authorizations/:id/ack`
+  (device secret and PKCE verifier, repeatable; an atomic status transition
+  that clears the envelope) or ten minutes after approval. Neither the relay
+  nor its rows receive a plaintext delegation or CLI private key.
 - Share object retention remains seven days.
 
 The production database change is

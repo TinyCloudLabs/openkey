@@ -25,6 +25,9 @@ function fixture() {
       return true;
     },
     async consume(code) { lookups.push(code); const record = records.get(code); records.delete(code); return record ?? null; },
+    // These tests send no claim, so the claim path is never reached.
+    async claim() { throw new Error('not used'); },
+    async acknowledge() { throw new Error('not used'); },
     async deleteExpired(before) {
       for (const [code, record] of records) if (record.expiresAt <= before) records.delete(code);
     },
