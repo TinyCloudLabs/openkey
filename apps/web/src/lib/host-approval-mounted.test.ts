@@ -261,6 +261,9 @@ describe('host approval rows', () => {
     for (const extra of [{ layoutBlocked: true }, { peerRecognition: { state: 'checking' } }]) {
       mounted = render(hostModel(), extra);
       expect(mounted.approve.disabled).toBe(true);
+      // The browser ignores a click on a disabled button; a script that clears the attribute first reaches the handler,
+      // which still refuses because Approve is not armed.
+      mounted.approve.removeAttribute('disabled');
       mounted.approve.dispatchEvent(new win.MouseEvent('click', { bubbles: true, cancelable: true }) as unknown as Event);
       trustedClick(mounted.approve);
       mounted.approve.click();
