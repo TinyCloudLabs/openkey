@@ -2,6 +2,8 @@ import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { parseLink, resolveLink, parseApprovalRequest, validateLinkHeader, verifyHeader, linkIssuerPublicKey } from '@tinycloud/share-envelope/links';
 import { ApprovalResultError, ApprovalResultService } from '../services/approval-results';
+import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
+import { requireSession } from '../middleware/session';
 import { createPrismaApprovalRequestStore } from '../services/approval-request-store';
 import { verifySessionProofClaims } from '../services/native-delegation/session-proof';
 import { createHash } from 'node:crypto';
@@ -41,7 +43,7 @@ async function fetchLink(input: Parameters<typeof fetch>[0], init?: Parameters<t
 export const approvalRequestRouter = new Hono();
 approvalRequestRouter.use('*', async (c, next) => { c.header('Cache-Control', 'no-store'); await next(); });
 approvalRequestRouter.onError((error, c) => {
-  if (error instanceof ApprovalResultError) return c.json({ error: error.message, code: error.code }, error.status);
+  if (error instanceof ApprovalResultError) return c.json({ error: error.message, code: error.code, ...error.extra }, error.status);
   // Decoder failures deliberately do not reflect a URL/key/plaintext in logs.
   if (error && 'code' in error) return c.json({ error: 'Approval request could not be verified', code: String(error.code) }, 400);
   throw error;
@@ -96,6 +98,9 @@ approvalRequestRouter.post('/approval-requests/:id/result', async (c) => {
 
 approvalRequestRouter.post('/approval-results/:ref/fetch', async (c) => c.json(await approvalResultService().fetch(c.req.param('ref'), await c.req.json(), c.req.header('OpenKey-Session-Proof'))));
 approvalRequestRouter.post('/approval-results/:ref/ack', async (c) => c.json(await approvalResultService().acknowledge(c.req.param('ref'), await c.req.json(), c.req.header('OpenKey-Session-Proof'))));
+
+// The owner refuses the request. Signed-in owners only, like approving; no body is read.
+approvalRequestRouter.post('/approval-requests/:id/deny', requireOpenKeyOriginForBearer, requireSession, async (c) => c.json(await approvalResultService().deny(c.req.param('id'))));
 
 /** Rechecked immediately before signing, not only when the browser loads. */
 export async function checkApprovalDelegation(body: { approvalRequestId?: unknown; jwk: unknown; host: unknown; permissions?: unknown }, input: { expiryMs?: number; signedSiwe?: string }): Promise<void> {
