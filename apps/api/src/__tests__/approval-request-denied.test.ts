@@ -248,6 +248,27 @@ describe('POST /api/approval-requests/:id/deny', () => {
     });
   });
 
+  describe('when the links service cannot answer or the link is over, the answer says so and the request stays open', () => {
+    const linkError = (code: string, status?: number) => Object.assign(new Error('x'), { code, ...(status === undefined ? {} : { status }) });
+    const cases: Array<[string, Error, number, string]> = [
+      ['the links service is unreachable', linkError('service_unavailable'), 503, 'service_unavailable'],
+      ['the links service answers 5xx', linkError('service_refused', 502), 503, 'service_unavailable'],
+      ['the link has expired', linkError('expired'), 410, 'expired_request'],
+      ['the links service no longer has the link', linkError('gone', 404), 410, 'expired_request'],
+      // A 4xx from the links service is a refusal of this caller's link, not an outage.
+      ['the links service refuses with a 4xx', linkError('service_refused', 403), 403, 'link_required'],
+    ];
+    test.each(cases)('%s', async (_name, failure, status, code) => {
+      await registered();
+      resolveLinkImpl = async () => { throw failure; };
+      const answer = await deny(SIGNED_IN);
+      expect(answer.status).toBe(status);
+      expect(await answer.json()).toMatchObject({ code });
+      expect((await client.approvalRequest.findUniqueOrThrow({ where: { id: ID } })).deniedAt).toBeNull();
+      expect(await (await poll()).json()).toEqual({ status: 'pending' });
+    });
+  });
+
   test('an approved request answers 409 already_approved', async () => {
     await registered();
     await approve();

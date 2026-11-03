@@ -120,9 +120,17 @@ approvalRequestRouter.post('/approval-requests/:id/deny', requireOpenKeyOriginFo
     if (opened.type !== 'openkey-approval-request') throw linkRequiredError();
     header = opened.header;
   } catch (error) {
-    // A link that does not parse or open is not a link the caller holds. An outage of the links service is not a refusal.
+    // A link that does not parse or open is not a link the caller holds, except where the links service
+    // is the problem (503, nothing was refused) or the link is over (410, as for an expired request).
     if (error instanceof ApprovalResultError) throw error;
-    if (error && typeof error === 'object' && 'code' in error) throw linkRequiredError();
+    if (error && typeof error === 'object' && 'code' in error) {
+      const status = 'status' in error && typeof error.status === 'number' ? error.status : 0;
+      if (error.code === 'service_unavailable' || (error.code === 'service_refused' && status >= 500)) {
+        throw new ApprovalResultError('service_unavailable', 'The approval link service is unavailable. Try again.', 503);
+      }
+      if (error.code === 'expired' || error.code === 'gone') throw new ApprovalResultError('expired_request', 'Approval request expired', 410);
+      throw linkRequiredError();
+    }
     throw error;
   }
   return c.json(await service.deny(id, header));
