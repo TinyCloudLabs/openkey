@@ -114,17 +114,16 @@ export function deviceRequestReason(record: DeviceRequestRecord): string {
 
 /**
  * The lifetime the CLI requested. APIs older than TC-539 report only the
- * padded deadline (transaction deadline + TTL, up to 90 days), so derive the
- * TTL from the two deadlines and clamp it to 60 seconds..30 days. Time
- * remaining until the padded deadline would overshoot it once signing
- * starts after lookup.
+ * padded deadline (transaction deadline + TTL), so derive the TTL from the
+ * two deadlines, at least 60 seconds. Time remaining until the padded
+ * deadline would overshoot it once signing starts after lookup.
  */
 export function deviceRequestTtlSeconds(record: DeviceRequestRecord): number {
   if (typeof record.delegationTtlSeconds === 'number' && Number.isFinite(record.delegationTtlSeconds)) {
     return record.delegationTtlSeconds;
   }
   const derived = Math.floor((Date.parse(record.delegationExpiresAt) - Date.parse(record.transactionExpiresAt)) / 1000);
-  return Math.min(2_592_000, Math.max(60, Number.isFinite(derived) ? derived : 60));
+  return Math.max(60, Number.isFinite(derived) ? derived : 60);
 }
 
 /**

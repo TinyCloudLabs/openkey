@@ -212,9 +212,14 @@ describe('device request lifetime', () => {
     expect(deviceRequestTtlSeconds(record({ delegationTtlSeconds: 60 }))).toBe(60);
     // Older API: no delegationTtlSeconds; deadline = transaction deadline + TTL.
     expect(deviceRequestTtlSeconds(record())).toBe(7 * day);
-    expect(deviceRequestTtlSeconds(record({
-      delegationExpiresAt: new Date(Date.parse('2026-10-02T12:10:00.000Z') + 90 * day * 1000).toISOString(),
-    }))).toBe(30 * day);
+    // TC-2276: a derived lifetime is used as it is (no 30-day ceiling); the one-minute floor stays.
+    for (const days of [30, 90, 365]) {
+      expect(deviceRequestTtlSeconds(record({
+        delegationExpiresAt: new Date(Date.parse('2026-10-02T12:10:00.000Z') + days * day * 1000).toISOString(),
+      })), `${days} d`).toBe(days * day);
+    }
+    expect(deviceRequestTtlSeconds(record({ delegationExpiresAt: '2026-10-02T12:10:20.000Z' }))).toBe(60);
+    expect(deviceRequestTtlSeconds(record({ delegationExpiresAt: 'not a date' }))).toBe(60);
   });
 
   test('never offers more than the requested lifetime', () => {

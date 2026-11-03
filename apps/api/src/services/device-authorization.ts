@@ -13,7 +13,6 @@ export const DEVICE_AUTH_TRANSACTION_TTL_MS = 10 * 60 * 1000;
 /** How long an approved result stays retrievable, from approval, until the client acknowledges it. */
 export const DEVICE_AUTH_RESULT_RETENTION_MS = 10 * 60 * 1000;
 export const DEVICE_AUTH_DEFAULT_DELEGATION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-export const DEVICE_AUTH_MAX_DELEGATION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const DEVICE_AUTH_POLL_INTERVAL_SECONDS = 2;
 export const DEVICE_AUTH_START_LIMIT = 5;
 export const DEVICE_AUTH_START_WINDOW_MS = 10 * 60 * 1000;

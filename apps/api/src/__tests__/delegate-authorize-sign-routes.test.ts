@@ -1219,3 +1219,77 @@ describe('prepared handoff expiry ceiling (TC-2274)', () => {
     expect((await preview(asked)).status).toBe(200);
   });
 });
+
+// TC-2276 item 2: a handoff that opts in (`request.expiryChangeable: true`) lets the owner choose LONGER than the CLI
+// asked for; one that does not keeps the shorter-only ceiling. The flag lives on the stored handoff.
+describe('prepared handoff that opts in to a longer expiry (TC-2276)', () => {
+  async function handoff(optIn: Record<string, unknown>, seed: number) {
+    const service = new PreparedHandoffService(new MemoryPreparedHandoffStore());
+    setHandoffService(service);
+    const siwe = makePreparedSiwe();
+    const asked = Date.parse(/^Expiration Time: (.+)$/m.exec(siwe)![1]!);
+    const { createPreparedHandoffRouter } = await import('../routes/prepared-handoffs?authorize-sign-routes-isolated' as string);
+    const handoffs = createPreparedHandoffRouter(service);
+    const ticket = Buffer.alloc(32, seed).toString('base64url');
+    const claim = await handoffs.request('/claim', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        transportVersion: 2,
+        request: { protocolVersion: 1, siwe, jwk, host: 'https://node.tinycloud.xyz', keyId: keyRecord.id, sessionDid: 'display-only', ...optIn },
+        delivery: { handoffId: ticket, callback: 'http://127.0.0.1:42317/callback/AAAAAAAAAAAAAAAAAAAAAA', state: Buffer.alloc(32, seed + 1).toString('base64url'), cancelSecret: Buffer.alloc(32, seed + 2).toString('base64url') },
+      }),
+    });
+    expect(claim.status).toBe(201);
+    const prepareRes = await router.request('/authorize-sign-prepare', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ticket, keyId: keyRecord.id, siwe, jwk, host: 'https://node.tinycloud.xyz', requestOrigin: 'https://openkey.so' }),
+    });
+    expect(prepareRes.status).toBe(200);
+    const prepared = await prepareRes.json() as { authorizationContextToken: string; allowedActionIds: string[] };
+    const preview = async (expirationTime: number, extra: Record<string, unknown> = {}) => {
+      const res = await router.request('/authorize-sign-preview', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          ticket, authorizationContextToken: prepared.authorizationContextToken, selectedActionIds: prepared.allowedActionIds,
+          expirationTime: new Date(expirationTime).toISOString(), ...extra,
+        }),
+      });
+      return { status: res.status, body: await res.json() as Record<string, unknown> };
+    };
+    return { asked, preview };
+  }
+  const expiryOf = (body: Record<string, unknown>) => /^Expiration Time: (.+)$/m.exec(body.signedMessage as string)?.[1];
+
+  test('an opted-in handoff previews an expiry later than the CLI asked for, and the sealed message carries it', async () => {
+    const { asked, preview } = await handoff({ expiryChangeable: true }, 41);
+    for (const later of [asked + 1, asked + 365 * 86_400_000, Date.UTC(2100, 0, 1)]) {
+      const result = await preview(later);
+      expect(result.status, new Date(later).toISOString()).toBe(200);
+      expect(expiryOf(result.body)).toBe(new Date(later).toISOString());
+    }
+  });
+
+  test('an opted-in handoff still previews shorter times and the asked time', async () => {
+    const { asked, preview } = await handoff({ expiryChangeable: true }, 44);
+    expect(expiryOf((await preview(asked)).body)).toBe(new Date(asked).toISOString());
+    expect(expiryOf((await preview(asked - 10 * 60_000)).body)).toBe(new Date(asked - 10 * 60_000).toISOString());
+  });
+
+  test('a handoff without the flag still refuses a later time (the flag is not read from the preview body)', async () => {
+    const { asked, preview } = await handoff({}, 47);
+    for (const extra of [{}, { expiryChangeable: true }, { expiryChangeable: 'true' }]) {
+      const result = await preview(asked + 1, extra);
+      expect(result.status, JSON.stringify(extra)).toBe(400);
+      expect(result.body.code).toBe('expiry_exceeds_handoff');
+    }
+  });
+
+  test('the flag lifts only the later-than-asked ceiling: past year 9999 and in the past are still refused', async () => {
+    const { preview } = await handoff({ expiryChangeable: true }, 50);
+    const farFuture = await preview(Date.UTC(9999, 11, 31, 23, 59, 59) + 86_400_000);
+    expect(farFuture.status).toBe(400);
+    const past = await preview(Date.now() - 60_000);
+    expect(past.status).toBe(400);
+    expect(past.body.code).toBe('invalid_expiration_time');
+  });
+});

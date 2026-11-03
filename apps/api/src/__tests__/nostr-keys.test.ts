@@ -395,3 +395,46 @@ describe('sign-event grant enforcement', () => {
     }
   });
 });
+
+// TC-2276 item 9: a Nostr signing grant is silent signing, so its lifetime stays at most 24 h; a longer ask is
+// REFUSED with the limit named, not silently shortened. Nothing is created when it is refused.
+describe('POST /api/keys/nostr/:keyId/grants - lifetime', () => {
+  const origin = { clientOrigin: 'http://localhost:3000', kinds: [9] };
+
+  test('a lifetime above 24 h is refused with a clear error and creates no grant', async () => {
+    const key = await createKey();
+    const r = await router();
+    const before = grantRows.length;
+    for (const ttlSeconds of [86_401, 7 * 86_400, 30 * 86_400, 10 ** 9]) {
+      const res = await grant(r, key.id, { ...origin, ttlSeconds });
+      expect(res.status, String(ttlSeconds)).toBe(400);
+      const body = await res.json();
+      expect(body.error, String(ttlSeconds)).toMatch(/24 hours/);
+      expect(body.maxTtlSeconds).toBe(86_400);
+    }
+    expect(grantRows.length).toBe(before);
+  });
+
+  test('exactly 24 h, 1 s and the 12 h default are granted for exactly that long', async () => {
+    const key = await createKey();
+    const r = await router();
+    for (const [ttlSeconds, expected] of [[86_400, 86_400], [1, 1], [undefined, 43_200]] as const) {
+      const res = await grant(r, key.id, { ...origin, ...(ttlSeconds === undefined ? {} : { ttlSeconds }) });
+      expect(res.status, String(ttlSeconds)).toBe(201);
+      const { grant: created } = await res.json();
+      const seconds = (Date.parse(created.expiresAt) - Date.now()) / 1000;
+      expect(Math.abs(seconds - expected), String(ttlSeconds)).toBeLessThan(5);
+    }
+  });
+
+  test('a lifetime that is not a whole number of seconds of at least 1 is refused, not rounded up', async () => {
+    const key = await createKey();
+    const r = await router();
+    const before = grantRows.length;
+    for (const ttlSeconds of [0, -5, 1.5, '3600', null, Number.NaN]) {
+      const res = await grant(r, key.id, { ...origin, ttlSeconds });
+      expect(res.status, String(ttlSeconds)).toBe(400);
+    }
+    expect(grantRows.length).toBe(before);
+  });
+});
