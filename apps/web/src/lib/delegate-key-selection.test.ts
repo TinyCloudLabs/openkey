@@ -64,3 +64,29 @@ describe('keyPickerLayout (TC-703)', () => {
     expect(keyPickerLayout([a, b, external], null)).toEqual({ kind: 'list', keys: [a, b, external] });
   });
 });
+
+describe('active signing keys (TC-1496)', () => {
+  const archived = { ...a, archivedAt: '2026-11-01T00:00:00Z', isPrimary: true };
+  const activePrimary = { ...primary, keyIndex: 7 };
+
+  test('an archived first key does not hide the sole active nonzero primary', () => {
+    expect(autoSelectKey([archived, activePrimary], null)).toBe(activePrimary);
+  });
+
+  test('an archived requested owner never falls back to another owner', () => {
+    expect(autoSelectKey([archived, activePrimary], archived.address.toLowerCase())).toBeNull();
+  });
+
+  test('the requested active owner takes precedence over the primary key', () => {
+    expect(autoSelectKey([archived, activePrimary, b], b.address.toLowerCase())).toBe(b);
+  });
+
+  test('an archived primary is neither suggested nor offered in the picker', () => {
+    expect(primaryKey([archived, b])).toBeNull();
+    expect(keyPickerLayout([archived, b], null)).toEqual({ kind: 'list', keys: [b] });
+  });
+
+  test('a missing requested owner does not choose the only remaining active key', () => {
+    expect(autoSelectKey([archived, activePrimary], b.address.toLowerCase())).toBeNull();
+  });
+});

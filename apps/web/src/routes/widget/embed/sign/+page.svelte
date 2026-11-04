@@ -3,6 +3,7 @@
   import { tick, untrack } from 'svelte';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
+  import { ARCHIVED_KEY_MESSAGE } from '$lib/delegate-key-selection';
   import { getSessionToken, isEmbedContext, withSessionCredential } from '$lib/embed-passkey';
   import EmbeddedSignIn from '$lib/components/auth/embedded-sign-in.svelte';
   import { passkeysSupportedFromParams } from '$lib/passkey-support';
@@ -426,6 +427,11 @@
         found.id !== selectedId
       ) {
         keyError = 'Selected key could not be loaded for this session.';
+        return;
+      }
+      if (found.archivedAt) {
+        key = null;
+        keyError = ARCHIVED_KEY_MESSAGE;
         return;
       }
       // Detail endpoint is owner-scoped and selects only public columns.
@@ -1075,7 +1081,9 @@
       sendResponse({
         type: 'openkey:sign:response',
         success: false,
-        error: { code: 'USER_CANCELLED', message: 'User cancelled' },
+        error: keyError === ARCHIVED_KEY_MESSAGE
+          ? { code: 'NO_KEY', message: ARCHIVED_KEY_MESSAGE }
+          : { code: 'USER_CANCELLED', message: 'User cancelled' },
       });
     }
     sendClose();

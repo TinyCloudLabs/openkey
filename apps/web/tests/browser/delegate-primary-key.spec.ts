@@ -157,4 +157,23 @@ test.describe('TC-703 primary key picker', () => {
     expect(delivered).not.toBeNull();
     expect(delivered!.primary).toBe(false);
   });
+
+  test('archiving key zero leaves the sole nonzero primary as the signer', async ({ page }) => {
+    const active = { ...second, keyIndex: 7, isPrimary: true };
+    const prepared = await mock(page, [{ ...primary, archivedAt: '2026-11-01T00:00:00Z' }, active]);
+    await page.goto(noOwner);
+    await expect(approve(page)).toBeEnabled();
+    expect(prepared).toEqual([active.id]);
+    await expect(keyButton(page, /Key 0/)).toHaveCount(0);
+  });
+
+  test('an archived requested owner is not replaced by the active primary', async ({ page }) => {
+    const prepared = await mock(page, [{ ...primary, archivedAt: '2026-11-01T00:00:00Z' }, { ...second, isPrimary: true }]);
+    const space = `tinycloud:pkh:eip155:1:${primary.address}:default`;
+    const permissions = [{ service: 'tinycloud.kv', space, path: 'notes/', actions: [KV_GET] }];
+    await page.goto(`${noOwner}&permissions=${encodeBase64UrlJson({ permissions })}`);
+    await expect(keyButton(page, /Key 1/)).toBeDisabled();
+    await expect(approve(page)).toHaveCount(0);
+    expect(prepared).toEqual([]);
+  });
 });

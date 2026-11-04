@@ -3,6 +3,7 @@
   import { untrack } from 'svelte';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
+  import { ARCHIVED_KEY_MESSAGE } from '$lib/delegate-key-selection';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import { passkeysSupportedFromParams, withPasskeysFlag } from '$lib/passkey-support';
@@ -268,9 +269,14 @@
     if ($session.data && keyId && !keyFetched && !key) {
       keyFetched = true;
       api.getKey(keyId).then(result => {
+        if (result.key.archivedAt) {
+          error = ARCHIVED_KEY_MESSAGE;
+          key = null;
+          return;
+        }
         key = result.key;
       }).catch(() => {
-        // Key not found
+        error = 'Selected key could not be loaded. Reconnect to choose a key.';
       });
     }
   });
@@ -332,16 +338,6 @@
       keyFetched = false; // Reset so effect can run
       requestSealed = true;
 
-      // Try immediately if session is already available
-      if (keyId && $session.data) {
-        try {
-          const result = await api.getKey(keyId);
-          key = result.key;
-          keyFetched = true;
-        } catch {
-          // Key not found, will prompt user to select
-        }
-      }
       // The reviewModel is built by a $effect below that reacts to
       // `message` AND `key` — this fixes the Sol MAJOR-8 bug where the
       // model was created with a placeholder zero-address before the key
@@ -979,7 +975,9 @@
       sendResponse({
         type: 'openkey:sign:response',
         success: false,
-        error: { code: 'USER_CANCELLED', message: 'User cancelled' },
+        error: error === ARCHIVED_KEY_MESSAGE
+          ? { code: 'NO_KEY', message: ARCHIVED_KEY_MESSAGE }
+          : { code: 'USER_CANCELLED', message: 'User cancelled' },
       });
     }
     sendClose();
@@ -1094,7 +1092,8 @@
     </div>
   {:else if !key}
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
-      <p>Please connect first to sign messages.</p>
+      <p role={error ? 'alert' : undefined}>{error || 'Please connect first to sign messages.'}</p>
+      <Button variant="secondary" class="mt-4" onclick={cancel}>Cancel</Button>
     </div>
   {:else if reviewModel}
     <!--
