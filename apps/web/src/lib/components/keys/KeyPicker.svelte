@@ -49,7 +49,7 @@
   {@const isSelected = selectedId === key.id}
   {@const name = key.label || `Key ending ${key.address.slice(-4)}`}
   <div
-    class="overflow-hidden rounded-xl border bg-white transition-colors"
+    class="relative flex items-stretch overflow-hidden rounded-xl border bg-white transition-colors focus-within:border-surface-900"
     role="group"
     aria-label={name}
     class:border-surface-900={isExpected || isSelected}
@@ -60,7 +60,7 @@
   >
     <button
       type="button"
-      class="flex min-h-16 w-full items-center justify-between gap-3 p-4 text-left text-surface-900 transition-colors hover:bg-surface-50 active:bg-surface-100 focus-visible:outline-2 focus-visible:outline-surface-900 disabled:cursor-not-allowed"
+      class="flex min-h-16 min-w-0 flex-1 items-center p-4 pr-2 text-left text-surface-900 transition-colors hover:bg-surface-50 active:bg-surface-100 focus-visible:outline-2 focus-visible:outline-surface-900 disabled:cursor-not-allowed"
       aria-pressed={isSelected}
       title={key.address}
       disabled={isMismatch && !overrideMismatch}
@@ -78,25 +78,25 @@
           <span class="rounded-md bg-emerald-100 px-1.5 py-0.5 text-xs font-medium text-emerald-700">Requested</span>
         {/if}
       </span>
-      <svg class="h-5 w-5 shrink-0 text-surface-700" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
-        <path stroke-linecap="round" stroke-linejoin="round" d={isSelected ? 'M5 12l4 4L19 6' : 'M9 5l7 7-7 7'} />
-      </svg>
+      <span class="absolute inset-y-0 right-0 flex w-11 items-center justify-center">
+        <svg class="h-5 w-5 text-surface-700" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round" d={isSelected ? 'M5 12l4 4L19 6' : 'M9 5l7 7-7 7'} />
+        </svg>
+      </span>
     </button>
-    <div class="flex justify-end px-3 pb-2">
-      <button
-        type="button"
-        class="min-h-11 rounded-lg px-3 text-sm text-surface-600 underline decoration-surface-300 underline-offset-4 hover:bg-surface-50 hover:text-surface-900 focus-visible:outline-2 focus-visible:outline-surface-900"
-        title={key.address}
-        aria-label="Copy address"
-        onclick={async () => {
-          const copied = await copyText(key.address);
-          copiedId = copied ? key.id : null;
-          copyStatus = copied ? 'Address copied.' : 'Could not copy the address.';
-        }}
-      >
-        {copiedId === key.id ? 'Copied' : 'Copy address'}
-      </button>
-    </div>
+    <button
+      type="button"
+      class="mr-11 min-h-11 w-14 shrink-0 self-center rounded-lg border border-surface-200 bg-white px-2 text-xs font-medium text-surface-600 hover:bg-surface-50 hover:text-surface-900 focus-visible:outline-2 focus-visible:outline-surface-900"
+      title={key.address}
+      aria-label="Copy address"
+      onclick={async () => {
+        const copied = await copyText(key.address);
+        copiedId = copied ? key.id : null;
+        copyStatus = copied ? 'Address copied.' : 'Could not copy the address.';
+      }}
+    >
+      {copiedId === key.id ? 'Copied' : 'Copy'}
+    </button>
   </div>
 {/snippet}
 

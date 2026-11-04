@@ -108,7 +108,6 @@ for (const surface of ['sign-typed-data', 'embed/sign-typed-data']) {
 
   test(`${surface}: archived explicit pin refuses without falling back to available keys`, async ({ page }) => {
     const { frame, signed, listRequests } = await setup(page, surface, [primary, other], archived.id);
-    await expect(frame.getByText(archivedMessage, { exact: true })).toBeVisible();
     await expect(frame.getByRole('button', { name: /Key 2|Key 4|Sign Data/ })).toHaveCount(0);
     await expectBackToApp(page, frame, archivedMessage);
     expect(listRequests()).toBe(0);
@@ -125,7 +124,6 @@ async function swapEmbeddedToken(page: Page) {
 }
 
 async function expectSessionRefusal(page: Page, context: Awaited<ReturnType<typeof setup>>) {
-  await expect(context.frame.getByText(sessionChangedMessage, { exact: true })).toBeVisible();
   await expect(context.frame.getByRole('button', { name: /Key 2|Key 4|Sign Data/ })).toHaveCount(0);
   expect(context.signed).toEqual([]);
   await expectBackToApp(page, context.frame, sessionChangedMessage);

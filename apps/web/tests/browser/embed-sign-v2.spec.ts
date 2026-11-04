@@ -182,8 +182,15 @@ for (const surface of ['sign', 'embed/sign']) {
       const iframe = document.createElement('iframe');
       iframe.id = 'bound-owner';
       iframe.src = `/widget/${surface}?origin=${encodeURIComponent(location.origin)}`;
+      const host = window as Window & { boundRefusals?: unknown[] };
+      host.boundRefusals = [];
       window.addEventListener('message', (event) => {
-        if (event.source === iframe.contentWindow && event.data?.type === 'openkey:ready') {
+        if (event.source !== iframe.contentWindow || event.origin !== location.origin) return;
+        if (event.data?.type === 'openkey:sign:response' || event.data?.type === 'openkey:close') {
+          host.boundRefusals?.push(event.data);
+          return;
+        }
+        if (event.data?.type === 'openkey:ready') {
           iframe.contentWindow?.postMessage({
             type: 'openkey:sign:request', requestId: 'qa-bound', protocolVersion: 1, message,
           }, location.origin);
@@ -192,8 +199,14 @@ for (const surface of ['sign', 'embed/sign']) {
       document.body.append(iframe);
     }, { surface, message });
     const frame = page.frameLocator('#bound-owner');
-    await expect(frame.getByText(/Requested signing key is not available.*Reconnect/)).toBeVisible();
     await expect(frame.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
+    await frame.getByRole('button', { name: 'Back to app', exact: true }).click();
+    await expect.poll(() => page.evaluate(() =>
+      (window as Window & { boundRefusals?: unknown[] }).boundRefusals,
+    )).toMatchObject([
+      { type: 'openkey:sign:response', success: false, error: { code: 'NO_KEY' } },
+      { type: 'openkey:close' },
+    ]);
     expect(signs).toBe(0);
   });
 }
