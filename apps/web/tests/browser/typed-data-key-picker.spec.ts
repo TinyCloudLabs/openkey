@@ -1,5 +1,6 @@
 // QA-only fixtures and mocked APIs; typed-data owner choice never reaches a live account.
 import { test, expect, type Page } from '@playwright/test';
+import { HOST } from './e2e-port';
 
 const key = (id: string, keyIndex: number, isPrimary = false, keyType = 'MANAGED') => ({
   id, keyIndex, isPrimary, keyType, label: null,
@@ -12,6 +13,18 @@ const external = key('qa-external', 5, false, 'EXTERNAL');
 const archivedMessage = 'This key was archived. Reconnect to choose a key.';
 type Response = { type: string; success?: boolean; error?: { code: string; message: string } };
 type Recording = Window & { received?: Response[] };
+const reconnectHint = `Go back to ${HOST} and connect again to choose a key.`;
+
+async function expectBackToApp(page: Page, frame: ReturnType<Page['frameLocator']>, message: string) {
+  await expect(frame.getByText(reconnectHint, { exact: true })).toBeVisible();
+  await frame.getByRole('button', { name: 'Back to app', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as Recording).received?.filter(
+    message => message.type === 'openkey:signTypedData:response' || message.type === 'openkey:close',
+  ))).toEqual([
+    { type: 'openkey:signTypedData:response', success: false, error: { code: 'NO_KEY', message: `${message} ${reconnectHint}` } },
+    { type: 'openkey:close' },
+  ]);
+}
 
 async function setup(
   page: Page, surface: string, keys: unknown[], keyId?: string,
@@ -86,14 +99,11 @@ for (const surface of ['sign-typed-data', 'embed/sign-typed-data']) {
     await expect.poll(() => signed).toEqual([primary.id]);
   });
 
-  test(`${surface}: no usable managed keys leaves a clear cancellable state`, async ({ page }) => {
+  test(`${surface}: no usable managed keys offers a return to the app`, async ({ page }) => {
     const { frame, signed } = await setup(page, surface, [archived, external]);
     await expect(frame.getByText('No active managed keys are available to sign this data.')).toBeVisible();
     await expect(frame.getByRole('button', { name: 'Sign Data', exact: true })).toHaveCount(0);
-    await frame.getByRole('button', { name: 'Cancel', exact: true }).click();
-    await expect.poll(() => page.evaluate(() => (window as Recording).received?.find(
-      message => message.type === 'openkey:signTypedData:response',
-    ))).toMatchObject({ success: false, error: { code: 'USER_CANCELLED' } });
+    await expectBackToApp(page, frame, 'No active managed keys are available to sign this data.');
     expect(signed).toEqual([]);
   });
 
@@ -101,10 +111,7 @@ for (const surface of ['sign-typed-data', 'embed/sign-typed-data']) {
     const { frame, signed, listRequests } = await setup(page, surface, [primary, other], archived.id);
     await expect(frame.getByText(archivedMessage, { exact: true })).toBeVisible();
     await expect(frame.getByRole('button', { name: /Key 2|Key 4|Sign Data/ })).toHaveCount(0);
-    await frame.getByRole('button', { name: 'Cancel', exact: true }).click();
-    await expect.poll(() => page.evaluate(() => (window as Recording).received?.find(
-      message => message.type === 'openkey:signTypedData:response',
-    ))).toMatchObject({ success: false, error: { code: 'NO_KEY', message: archivedMessage } });
+    await expectBackToApp(page, frame, archivedMessage);
     expect(listRequests()).toBe(0);
     expect(signed).toEqual([]);
   });
@@ -122,10 +129,8 @@ async function expectSessionRefusal(page: Page, context: Awaited<ReturnType<type
   await expect(context.frame.getByText(sessionChangedMessage, { exact: true })).toBeVisible();
   await expect(context.frame.getByRole('button', { name: /Key 2|Key 4|Sign Data/ })).toHaveCount(0);
   expect(context.signed).toEqual([]);
-  await context.frame.getByRole('button', { name: 'Cancel', exact: true }).click();
-  await expect.poll(() => page.evaluate(() => (window as Recording).received?.find(
-    message => message.type === 'openkey:signTypedData:response',
-  ))).toMatchObject({ success: false });
+  await expectBackToApp(page, context.frame, sessionChangedMessage);
+  expect(context.signed).toEqual([]);
 }
 
 for (const read of ['list', 'detail']) {
@@ -158,4 +163,19 @@ for (const step of ['selection', 'sign']) {
     }
     await expectSessionRefusal(page, context);
   });
+}
+
+for (const surface of ['sign-typed-data', 'embed/sign-typed-data']) {
+  for (const step of ['picker', 'review']) {
+    test(`${surface}: ordinary Cancel in ${step} keeps USER_CANCELLED`, async ({ page }) => {
+      const { frame, signed } = await setup(page, surface, step === 'picker' ? [primary, other] : [primary]);
+      if (step === 'picker') await expect(frame.getByRole('button', { name: /Key 2/ })).toBeVisible();
+      else await expect(frame.getByRole('button', { name: 'Sign Data', exact: true })).toBeVisible();
+      await frame.getByRole('button', { name: 'Cancel', exact: true }).click();
+      await expect.poll(() => page.evaluate(() => (window as Recording).received?.find(
+        message => message.type === 'openkey:signTypedData:response',
+      ))).toMatchObject({ success: false, error: { code: 'USER_CANCELLED', message: 'User cancelled' } });
+      expect(signed).toEqual([]);
+    });
+  }
 }
