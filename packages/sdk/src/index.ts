@@ -1902,7 +1902,7 @@ export class OpenKey {
           // Consent is gated in the widget; do not discard an authorized
           // result merely because its "Signing…" state invalidated geometry.
           if (action === 'sign' && modal?.isVersionedPhase() &&
-              !modal.hasDisplayedCurrentPhase() && this.isResponseForAction(action, data)) return;
+              !modal.hasDisplayedCurrentPhase() && this.isResponseForAction(action, data) && data.success === true) return;
           if (this.isResponseForAction(action, data)) {
             settle(() => {
               cleanup();
