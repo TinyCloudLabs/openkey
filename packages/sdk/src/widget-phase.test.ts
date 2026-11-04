@@ -131,6 +131,96 @@ describe('embedded Connect and Sign phases', () => {
     } finally { h.restore(); }
   });
 
+  test('invalidates an archived cached connection on NO_KEY and requires explicit reconnect to select another key', async () => {
+    const h = harness();
+    const archived = { code: 'NO_KEY', message: 'This key was archived. Reconnect to choose a key.' };
+    const connect = async (keyId: string) => {
+      const pending = h.client.connect();
+      const frame = h.frames.at(-1)!;
+      const phase = h.correlation(frame);
+      h.send(frame, { type: 'openkey:ready', ...phase });
+      h.send(frame, { type: 'openkey:auth:response', success: true, address: '0xfirst', keyId, ...phase });
+      await pending;
+    };
+    const ready = (frame: FakeElement) => {
+      const phase = h.correlation(frame);
+      h.send(frame, { type: 'openkey:ready', ...phase });
+      h.send(frame, { type: 'openkey:resize', height: 600, layoutId: 1, ...phase });
+      h.send(frame, { type: 'openkey:layout-ready', layoutId: 1, ...phase });
+      return phase;
+    };
+    try {
+      for (const operation of ['sign', 'authorize'] as const) {
+        await connect('key-archived');
+        const pending = operation === 'sign'
+          ? h.client.signMessage({ message: 'exact bytes' })
+          : h.client.authorizeTinyCloud({ protocolVersion: 1, siwe: 'exact bytes', jwk: { kty: 'EC' } });
+        await Promise.resolve();
+        const frame = h.frames.at(-1)!;
+        const phase = ready(frame);
+        expect(frame.posts[0]).toMatchObject({ keyId: 'key-archived', message: 'exact bytes' });
+        // Only an authenticated, correlated failure may invalidate the connection.
+        h.send(frame, { type: 'openkey:sign:response', success: false, error: archived, ...phase }, 'https://attacker.test');
+        h.send(frame, { type: 'openkey:sign:response', success: false, error: archived, ...phase }, 'https://openkey.test', {});
+        h.send(frame, { type: 'openkey:sign:response', success: false, error: archived, ...phase, requestId: 'stale' });
+        const stillPinned = h.client.signMessage({ message: 'check cached selection' });
+        const pinnedFrame = h.frames.at(-1)!;
+        const pinnedPhase = ready(pinnedFrame);
+        expect(pinnedFrame.posts[0]).toMatchObject({ keyId: 'key-archived' });
+        h.send(pinnedFrame, { type: 'openkey:sign:response', success: true, signature: 'ok', address: '0xfirst', ...pinnedPhase });
+        await stillPinned;
+
+        const frameCount = h.frames.length;
+        h.send(frame, { type: 'openkey:sign:response', success: false, error: archived, ...phase });
+        await expect(pending).rejects.toEqual(archived);
+        expect(h.frames).toHaveLength(frameCount); // no automatic retry or reconnect
+
+        const unpinned = h.client.signMessage({ message: 'check invalidated selection' });
+        const unpinnedFrame = h.frames.at(-1)!;
+        expect(new URL(unpinnedFrame.src).searchParams.has('keyId')).toBe(false);
+        h.send(unpinnedFrame, { type: 'openkey:ready' });
+        expect(unpinnedFrame.posts[0]).toMatchObject({ keyId: undefined });
+        h.send(unpinnedFrame, { type: 'openkey:sign:response', success: false, error: archived });
+        await expect(unpinned).rejects.toEqual(archived);
+
+        await connect('key-replacement');
+        const reconnected = h.client.signMessage({ message: 'after reconnect' });
+        const reconnectedFrame = h.frames.at(-1)!;
+        const reconnectedPhase = ready(reconnectedFrame);
+        expect(reconnectedFrame.posts[0]).toMatchObject({ keyId: 'key-replacement' });
+        h.send(reconnectedFrame, { type: 'openkey:sign:response', success: true, signature: 'new', address: '0xfirst', ...reconnectedPhase });
+        expect((await reconnected).signature).toBe('new');
+      }
+    } finally { h.restore(); }
+  });
+
+  test('surfaces a bound authorization owner mismatch without rewriting SIWE or changing the explicit key', async () => {
+    const h = harness();
+    try {
+      const connecting = h.client.connect();
+      const connectFrame = h.frames[0]!;
+      const connectPhase = h.correlation(connectFrame);
+      h.send(connectFrame, { type: 'openkey:ready', ...connectPhase });
+      h.send(connectFrame, { type: 'openkey:auth:response', success: true, address: '0x2222222222222222222222222222222222222222', keyId: 'key-other-owner', ...connectPhase });
+      await connecting;
+      const siwe = 'app.test wants you to sign in with your Ethereum account:\n0x1111111111111111111111111111111111111111\n\nAuthorize TinyCloud\n\nURI: https://app.test\nVersion: 1\nChain ID: 1\nNonce: bound123\nIssued At: 2026-11-04T00:00:00.000Z';
+      const request = { protocolVersion: 1 as const, siwe, keyId: 'key-other-owner', jwk: { kty: 'EC' } };
+      const authorizing = h.client.authorizeTinyCloud(request);
+      await Promise.resolve();
+      const frame = h.frames[1]!;
+      const phase = h.correlation(frame);
+      h.send(frame, { type: 'openkey:ready', ...phase });
+      expect(frame.posts[0]).toMatchObject({ message: siwe, keyId: 'key-other-owner', authorizationProtocolVersion: 1 });
+      h.send(frame, { type: 'openkey:resize', height: 600, layoutId: 1, ...phase });
+      h.send(frame, { type: 'openkey:layout-ready', layoutId: 1, ...phase });
+      const mismatch = { code: 'UNAUTHORIZED', message: 'The selected key does not match the authorization owner.' };
+      h.send(frame, { type: 'openkey:sign:response', success: false, error: mismatch, ...phase });
+      await expect(authorizing).rejects.toEqual(mismatch);
+      expect(request.siwe).toBe(siwe);
+      expect(h.frames).toHaveLength(2); // refusal is final; no rewritten retry
+    } finally { h.restore(); }
+  });
+
   test('preserves unselected-key sign flow for older widgets', async () => {
     const h = harness();
     try {
