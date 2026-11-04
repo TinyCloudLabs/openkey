@@ -157,7 +157,9 @@ describe('embedded Connect and Sign phases', () => {
           : h.client.authorizeTinyCloud({ protocolVersion: 1, siwe: 'exact bytes', jwk: { kty: 'EC' } });
         await Promise.resolve();
         const frame = h.frames.at(-1)!;
-        const phase = ready(frame);
+        const phase = h.correlation(frame);
+        h.send(frame, { type: 'openkey:ready', ...phase });
+        // Reconnect-required failures can precede review layout acknowledgement.
         expect(frame.posts[0]).toMatchObject({ keyId: 'key-archived', message: 'exact bytes' });
         // Only an authenticated, correlated failure may invalidate the connection.
         h.send(frame, { type: 'openkey:sign:response', success: false, error: archived, ...phase }, 'https://attacker.test');
@@ -172,6 +174,7 @@ describe('embedded Connect and Sign phases', () => {
 
         const frameCount = h.frames.length;
         h.send(frame, { type: 'openkey:sign:response', success: false, error: archived, ...phase });
+        h.send(frame, { type: 'openkey:close', ...phase });
         await expect(pending).rejects.toEqual(archived);
         expect(h.frames).toHaveLength(frameCount); // no automatic retry or reconnect
 
