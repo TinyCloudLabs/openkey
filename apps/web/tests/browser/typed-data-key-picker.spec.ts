@@ -77,12 +77,12 @@ async function setup(
 for (const surface of ['sign-typed-data', 'embed/sign-typed-data']) {
   test(`${surface}: owner chooses another active managed key and signs with it`, async ({ page }) => {
     const { frame, signed } = await setup(page, surface, [archived, primary, other, external]);
-    await expect(frame.getByRole('button', { name: /Key 2/ })).toContainText('Primary');
+    await expect(frame.getByRole('button', { name: 'Key 2', exact: true })).toContainText('Primary');
     await expect(frame.getByRole('button', { name: /Key 4/ })).toHaveCount(0);
     expect(signed).toEqual([]);
     await frame.getByRole('button', { name: 'Use a different key' }).click();
     await expect(frame.getByRole('button', { name: /Key 0|Key 5/ })).toHaveCount(0);
-    await frame.getByRole('button', { name: /Key 4/ }).click();
+    await frame.getByRole('button', { name: 'Key 4', exact: true }).click();
     await expect(frame.getByText('Key 4', { exact: true })).toBeVisible();
     expect(signed).toEqual([]);
     await frame.getByRole('button', { name: 'Sign Data', exact: true }).click();
@@ -150,9 +150,9 @@ for (const step of ['selection', 'sign']) {
   test(`embed session binding: token swap before ${step} never submits a stale key`, async ({ page }) => {
     const context = await setup(page, 'embed/sign-typed-data', step === 'selection' ? [primary, other] : [primary]);
     if (step === 'selection') {
-      await expect(context.frame.getByRole('button', { name: /Key 2/ })).toBeVisible();
+      await expect(context.frame.getByRole('button', { name: 'Key 2', exact: true })).toBeVisible();
       await swapEmbeddedToken(page);
-      await context.frame.getByRole('button', { name: /Key 2/ }).click();
+      await context.frame.getByRole('button', { name: 'Key 2', exact: true }).click();
     } else {
       await expect(context.frame.getByRole('button', { name: 'Sign Data', exact: true })).toBeVisible();
       await swapEmbeddedToken(page);
@@ -166,7 +166,7 @@ for (const surface of ['sign-typed-data', 'embed/sign-typed-data']) {
   for (const step of ['picker', 'review']) {
     test(`${surface}: ordinary Cancel in ${step} keeps USER_CANCELLED`, async ({ page }) => {
       const { frame, signed } = await setup(page, surface, step === 'picker' ? [primary, other] : [primary]);
-      if (step === 'picker') await expect(frame.getByRole('button', { name: /Key 2/ })).toBeVisible();
+      if (step === 'picker') await expect(frame.getByRole('button', { name: 'Key 2', exact: true })).toBeVisible();
       else await expect(frame.getByRole('button', { name: 'Sign Data', exact: true })).toBeVisible();
       await frame.getByRole('button', { name: 'Cancel', exact: true }).click();
       await expect.poll(() => page.evaluate(() => (window as Recording).received?.find(

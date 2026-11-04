@@ -154,11 +154,11 @@ for (const surface of ['sign', 'embed/sign']) {
       document.body.append(iframe);
     }, surface);
     const frame = page.frameLocator('#choose-signing-key');
-    await expect(frame.getByRole('button', { name: /Primary QA/ })).toBeVisible();
+    await expect(frame.getByRole('button', { name: 'Primary QA', exact: true })).toBeVisible();
     await expect(frame.getByRole('button', { name: /Archived QA/ })).toHaveCount(0);
     await expect(frame.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
     await frame.getByRole('button', { name: 'Use a different key' }).click();
-    await frame.getByRole('button', { name: /Other QA/ }).click();
+    await frame.getByRole('button', { name: 'Other QA', exact: true }).click();
     await frame.getByRole('button', { name: 'Approve', exact: true }).click();
     await expect.poll(() => signed).toEqual([{ keyId: other.id, message: 'Choose an account for this QA message' }]);
   });
