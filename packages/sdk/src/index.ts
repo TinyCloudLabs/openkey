@@ -1931,7 +1931,7 @@ export class OpenKey {
                   } as T);
                 }
               } else {
-                reject(data.error);
+                reject(this.handleWidgetError(data.error));
               }
             });
           }
@@ -2250,7 +2250,7 @@ export class OpenKey {
             } as T);
           }
           } else {
-            reject(data.error);
+            reject(this.handleWidgetError(data.error));
           }
         });
       }
@@ -2264,6 +2264,13 @@ export class OpenKey {
       });
     };
     this.activeFlowCancellations.add(cancel);
+  }
+
+  private handleWidgetError(error: OpenKeyError): OpenKeyError {
+    // A validated widget response can report that the cached key no longer
+    // exists. Drop the selection; only an explicit connect chooses a new key.
+    if (error?.code === 'NO_KEY') this.lastAuth = null;
+    return error;
   }
 
   private cancelActiveFlows() {
