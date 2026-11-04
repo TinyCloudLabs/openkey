@@ -30,17 +30,17 @@ async function mockApi(page: Page, list: unknown[]) {
     route.fulfill({ json: { session: { id: 's', userId: 'u', expiresAt: new Date(Date.now() + 3_600_000).toISOString() }, user: { id: 'u', email: 'sam@example.test', name: 'Sam' } } }));
 }
 
-async function expectPrimaryFirst(root: Page | FrameLocator, pick: (root: Page | FrameLocator, name: RegExp) => Locator) {
+async function expectPrimaryFirst(root: Page | FrameLocator, pick: (root: Page | FrameLocator, name: string) => Locator) {
   await expect(root.getByText('Connect with your primary key:')).toBeVisible();
-  await expect(pick(root, /Key 0/)).toContainText('Primary');
-  await expect(pick(root, /Key 1/)).toHaveCount(0);
+  await expect(pick(root, 'Key 0')).toContainText('Primary');
+  await expect(pick(root, 'Key 1')).toHaveCount(0);
   await root.getByRole('button', { name: 'Use a different key' }).click();
-  await expect(pick(root, /Key 1/)).toBeVisible();
-  await expect(pick(root, /Key 2/)).toContainText('(External)');
+  await expect(pick(root, 'Key 1')).toBeVisible();
+  await expect(pick(root, 'Key 2')).toContainText('(External)');
   await expect(root.getByText('Primary', { exact: true })).toHaveCount(1);
 }
 
-const button = (root: Page | FrameLocator, name: RegExp) => root.getByRole('button', { name });
+const button = (root: Page | FrameLocator, name: string) => root.getByRole('button', { name, exact: true });
 
 test.describe('TC-1496 connect widgets use the shared key picker', () => {
   test('popup widget: primary-first, and a non-primary pick returns that keyId', async ({ page }) => {
@@ -57,7 +57,7 @@ test.describe('TC-1496 connect widgets use the shared key picker', () => {
     // Nothing is returned until the user picks.
     expect(await responses(page)).toEqual([]);
 
-    await button(page, /Key 1/).click();
+    await button(page, 'Key 1').click();
     const sent = await responses(page);
     expect(sent).toEqual([{ type: 'openkey:auth:response', success: true, address: keys[1]!.address, keyId: 'key_1', keyType: 'MANAGED' }]);
   });
@@ -71,7 +71,7 @@ test.describe('TC-1496 connect widgets use the shared key picker', () => {
       Object.defineProperty(window, 'opener', { value: { postMessage: (data: Message) => received.push(data), closed: false }, configurable: true });
     });
     await page.goto(`/widget/connect?origin=${encodeURIComponent(origin)}`);
-    await button(page, /Key 0/).click();
+    await button(page, 'Key 0').click();
     const sent = await responses(page);
     expect(sent.map((m) => m.keyId)).toEqual(['key_0']);
   });
@@ -96,7 +96,7 @@ test.describe('TC-1496 connect widgets use the shared key picker', () => {
     await expectPrimaryFirst(frame, button);
     expect(await responses(page)).toEqual([]);
 
-    await button(frame, /Key 2/).click();
+    await button(frame, 'Key 2').click();
     await expect.poll(() => responses(page).then((list) => list.map((m) => m.keyId))).toEqual(['key_2']);
   });
 
@@ -113,7 +113,7 @@ test.describe('TC-1496 connect widgets use the shared key picker', () => {
     await mockApi(page, keys.map((k) => ({ ...k, isPrimary: false })));
     await page.goto(`/widget/connect?origin=${encodeURIComponent(origin)}`);
     await expect(page.getByText('Select a key to connect:')).toBeVisible();
-    for (const name of [/Key 0/, /Key 1/, /Key 2/]) await expect(button(page, name)).toBeVisible();
+    for (const name of ['Key 0', 'Key 1', 'Key 2']) await expect(button(page, name)).toBeVisible();
     await expect(page.getByText('Primary', { exact: true })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Use a different key' })).toHaveCount(0);
   });
@@ -142,7 +142,7 @@ test.describe('TC-1496 connect widgets use the shared key picker', () => {
     });
     await page.goto(`/widget/connect?origin=${encodeURIComponent(origin)}`);
     await expect.poll(() => responses(page).then((list) => list.map((m) => m.keyId))).toEqual([active.id]);
-    await expect(button(page, /Key 0/)).toHaveCount(0);
+    await expect(button(page, 'Key 0')).toHaveCount(0);
   });
 
   test('copying a named key address does not select the account', async ({ page, context }) => {
@@ -156,12 +156,12 @@ test.describe('TC-1496 connect widgets use the shared key picker', () => {
       });
     });
     await page.goto(`/widget/connect?origin=${encodeURIComponent(origin)}`);
-    const copy = page.getByRole('group', { name: 'Primary QA', exact: true }).getByRole('button', { name: 'Copy address', exact: true });
+    const copy = page.getByRole('group', { name: 'Primary QA', exact: true }).getByRole('button', { name: 'Copy address of Primary QA', exact: true });
     await expect(copy).toHaveAttribute('title', keys[0]!.address);
     await copy.click();
     await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(keys[0]!.address);
     expect(await responses(page)).toEqual([]);
-    await page.getByRole('button', { name: /^Primary QA/ }).click();
+    await page.getByRole('button', { name: 'Primary QA', exact: true }).click();
     await expect.poll(() => responses(page).then((list) => list.map((m) => m.keyId))).toEqual([keys[0]!.id]);
   });
 
@@ -169,7 +169,7 @@ test.describe('TC-1496 connect widgets use the shared key picker', () => {
     await page.setViewportSize({ width: 390, height: 844 });
     await mockApi(page, [{ ...keys[0], label: 'Primary QA' }, { ...keys[1], label: 'Research QA' }]);
     await page.goto(`/widget/connect?origin=${encodeURIComponent(origin)}`);
-    const select = page.getByRole('button', { name: /^Primary QA/ });
+    const select = page.getByRole('button', { name: 'Primary QA', exact: true });
     const other = page.getByRole('button', { name: 'Use a different key', exact: true });
     await expect(select).toBeVisible();
     expect((await select.boundingBox())!.height).toBeGreaterThanOrEqual(44);

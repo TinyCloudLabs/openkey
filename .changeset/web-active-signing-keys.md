@@ -8,4 +8,6 @@ The shared key picker also serves message and typed-data signing requests that d
 
 Key cards show their label, or a short key-ending identifier, with the full address available on hover and an independent copy control on the same row. Signature requests use a signing-neutral account warning. Key selection and alternate-key actions have touch-sized targets. Archived and session-changed signing screens show the reason and one instruction naming where to reconnect, then return a reconnect-required result through a Back to app action. The prepared signing-key identity omits raw chain-number jargon.
 
+Selection buttons have the key's display name as their accessible name. Each independent copy button names the key whose address it copies, so assistive technology can distinguish selection from copying.
+
 Details: TC-1496

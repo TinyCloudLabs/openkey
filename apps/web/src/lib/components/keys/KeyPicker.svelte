@@ -62,6 +62,7 @@
       type="button"
       class="flex min-h-16 min-w-0 flex-1 items-center p-4 pr-2 text-left text-surface-900 transition-colors hover:bg-surface-50 active:bg-surface-100 focus-visible:outline-2 focus-visible:outline-surface-900 disabled:cursor-not-allowed"
       aria-pressed={isSelected}
+      aria-label={name}
       title={key.address}
       disabled={isMismatch && !overrideMismatch}
       onclick={() => onselect(key)}
@@ -88,7 +89,7 @@
       type="button"
       class="mr-11 min-h-11 w-14 shrink-0 self-center rounded-lg border border-surface-200 bg-white px-2 text-xs font-medium text-surface-600 hover:bg-surface-50 hover:text-surface-900 focus-visible:outline-2 focus-visible:outline-surface-900"
       title={key.address}
-      aria-label="Copy address"
+      aria-label={`Copy address of ${name}`}
       onclick={async () => {
         const copied = await copyText(key.address);
         copiedId = copied ? key.id : null;
