@@ -9,6 +9,8 @@
   import { passkeysSupportedFromParams } from '$lib/passkey-support';
   import Button from '$lib/components/ui/button.svelte';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
+  import SigningKeyRefusal from '$lib/components/signing/signing-key-refusal.svelte';
+  import { originAuthority } from '$lib/requester-display';
 
   type KeyCredential = { token: string | null; sessionId: string | null | undefined };
   let keyReadCredential: KeyCredential | null = null;
@@ -40,6 +42,10 @@
   // Exact embedding origin; never '*' (TC-690).
   const origin = resolveWidgetOrigin($page.url.searchParams.get('origin'));
   const passkeysSupported = passkeysSupportedFromParams($page.url.searchParams);
+  const requester = originAuthority(origin ?? '');
+  const reconnectHint = `Go back to ${requester || 'the requesting app'} and connect again to choose a key.`;
+  const refusalMessage = $derived(archivedKey ? ARCHIVED_KEY_MESSAGE :
+    error || (keyId ? 'Selected key could not be loaded.' : 'No active managed keys are available to sign this data.'));
 
   $effect(() => {
     if (typeof window !== 'undefined' && !initialized) {
@@ -185,6 +191,15 @@
     }
   }
 
+  function reconnect() {
+    sendResponse({
+      type: 'openkey:signTypedData:response',
+      success: false,
+      error: { code: 'NO_KEY', message: `${refusalMessage} ${reconnectHint}` },
+    });
+    sendClose();
+  }
+
   function cancel() {
     sendResponse({
       type: 'openkey:signTypedData:response',
@@ -238,10 +253,7 @@
         <span class="text-sm text-surface-500">Loading...</span>
       </div>
     {:else if archivedKey}
-      <div class="flex flex-col items-center justify-center text-center text-surface-500 py-4 gap-4">
-        <p class="text-sm">{ARCHIVED_KEY_MESSAGE}</p>
-        <Button variant="secondary" size="sm" onclick={cancel}>Cancel</Button>
-      </div>
+      <SigningKeyRefusal message={refusalMessage} {requester} onreconnect={reconnect} />
     {:else if !key && !keyId && keys.length > 1}
       <div class="flex flex-col gap-4">
         <KeyPicker
@@ -254,10 +266,7 @@
         <Button variant="secondary" onclick={cancel}>Cancel</Button>
       </div>
     {:else if !key}
-      <div class="flex flex-col items-center justify-center text-center text-surface-500 py-4 gap-4">
-        <p class="text-sm">{error || (keyId ? 'Selected key could not be loaded.' : 'No active managed keys are available to sign this data.')}</p>
-        <Button variant="secondary" size="sm" onclick={cancel}>Cancel</Button>
-      </div>
+      <SigningKeyRefusal message={refusalMessage} {requester} onreconnect={reconnect} />
     {:else if !typedData}
       <div class="flex flex-col items-center justify-center text-center text-surface-500 py-4">
         <p class="text-sm">No data to sign.</p>

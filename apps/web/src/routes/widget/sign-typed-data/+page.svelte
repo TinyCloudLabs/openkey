@@ -5,6 +5,8 @@
   import { activeKeys, ARCHIVED_KEY_MESSAGE } from '$lib/delegate-key-selection';
   import Button from '$lib/components/ui/button.svelte';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
+  import SigningKeyRefusal from '$lib/components/signing/signing-key-refusal.svelte';
+  import { originAuthority } from '$lib/requester-display';
   import Card from '$lib/components/ui/card.svelte';
   import { passkeysSupportedFromParams, withPasskeysFlag } from '$lib/passkey-support';
   import { isFromWidgetCounterparty, resolveWidgetOrigin } from '$lib/widget-transport';
@@ -29,6 +31,11 @@
   // Exact requesting origin; never '*' (TC-690).
   const origin = resolveWidgetOrigin($page.url.searchParams.get('origin'));
   const passkeysSupported = passkeysSupportedFromParams($page.url.searchParams);
+  const requester = originAuthority(origin ?? '');
+  const reconnectHint = `Go back to ${requester || 'the requesting app'} and connect again to choose a key.`;
+  const refusalMessage = $derived(archivedKey ? ARCHIVED_KEY_MESSAGE :
+    error || (keyId ? 'Selected key could not be loaded.' : 'No active managed keys are available to sign this data.'));
+
   // The window that opened this widget: the opener for a popup, otherwise
   // the parent frame.
   const counterparty: Window | null = typeof window === 'undefined'
@@ -136,6 +143,15 @@
     }
   }
 
+  function reconnect() {
+    sendResponse({
+      type: 'openkey:signTypedData:response',
+      success: false,
+      error: { code: 'NO_KEY', message: `${refusalMessage} ${reconnectHint}` },
+    });
+    sendClose();
+  }
+
   function cancel() {
     sendResponse({
       type: 'openkey:signTypedData:response',
@@ -163,9 +179,9 @@
 
 <div class="flex-1 flex flex-col">
   <header class="flex justify-between items-center mb-6">
-    <h1 class="text-xl font-semibold text-surface-50">Sign Typed Data</h1>
+    <h1 class="text-xl font-semibold text-surface-900">Sign Typed Data</h1>
     <button
-      class="bg-transparent border-none text-surface-400 text-2xl cursor-pointer p-0 leading-none hover:text-surface-50 transition-colors"
+      class="bg-transparent border-none text-surface-600 text-2xl cursor-pointer p-0 leading-none hover:text-surface-900 transition-colors"
       onclick={cancel}
     >
       &times;
@@ -182,10 +198,7 @@
       Loading...
     </div>
   {:else if archivedKey}
-    <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400 gap-4">
-      <p>{ARCHIVED_KEY_MESSAGE}</p>
-      <Button variant="secondary" onclick={cancel}>Cancel</Button>
-    </div>
+    <SigningKeyRefusal message={refusalMessage} {requester} onreconnect={reconnect} />
   {:else if !key && !keyId && keys.length > 1}
     <div class="flex flex-col gap-4">
       <KeyPicker
@@ -198,10 +211,7 @@
       <Button variant="secondary" onclick={cancel}>Cancel</Button>
     </div>
   {:else if !key}
-    <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400 gap-4">
-      <p>{error || (keyId ? 'Selected key could not be loaded.' : 'No active managed keys are available to sign this data.')}</p>
-      <Button variant="secondary" onclick={cancel}>Cancel</Button>
-    </div>
+    <SigningKeyRefusal message={refusalMessage} {requester} onreconnect={reconnect} />
   {:else if !typedData}
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
       <p>No data to sign.</p>
