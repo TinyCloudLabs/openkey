@@ -66,7 +66,6 @@
   });
   let key = $state<EthereumKey | null>(null);
   let keyChoices = $state<KeyChoice[]>([]);
-  let signingChain = $state('');
   let model = $state<CapabilityReviewModel | null>(null);
   // TC-2272: how long from approval the user chose; null keeps the app's own expiry.
   let expiryChoiceMs = $state<number | null>(null);
@@ -242,7 +241,6 @@
       const match = /(?:^|\n)([^\n]+) wants you to sign in with your Ethereum account:\n(0x[0-9a-fA-F]{40})(?:\n|$)/.exec(resolved.request.siwe);
       const chain = /^Chain ID: ([1-9][0-9]*)$/m.exec(resolved.request.siwe);
       if (!match || !chain) throw new Error('The prepared SIWE does not name a valid signer and chain.');
-      signingChain = chain[1]!;
       const { keys } = await api.listKeys();
       const candidates = keys.filter(item => item.address.toLowerCase() === match[2]!.toLowerCase() && (!resolved.request.keyId || item.id === resolved.request.keyId));
       if (!candidates.length) throw new Error('Requested signing key is not available for this SIWE account and chain.');
@@ -485,7 +483,6 @@
           <dt class="font-semibold">Signing key</dt>
           <dd class="flex flex-wrap items-center gap-2">
             <span class="font-medium" title={key.address}>{key.label || `Key ending ${key.address.slice(-4)}`}</span>
-            <span class="text-surface-500">(chain {signingChain})</span>
             <button type="button" class="min-h-11 rounded-lg px-3 text-sm underline underline-offset-4 hover:bg-surface-50" title={key.address} onclick={() => { if (key) void copyText(key.address); }}>Copy address</button>
           </dd>
         </div>

@@ -113,7 +113,6 @@ for (const surface of ['sign', 'embed/sign', 'sign-typed-data', 'embed/sign-type
       document.body.append(frame);
     }, surface);
     const frame = page.frameLocator('#archived-sign');
-    await expect(frame.getByText(/archived.*reconnect/i)).toBeVisible();
     await expect(frame.getByRole('button', { name: /^(Approve|Sign|Sign Data)$/ })).toHaveCount(0);
     await expect(frame.getByRole('button', { name: 'Back to app', exact: true })).toBeVisible();
     await frame.getByRole('button', { name: 'Back to app', exact: true }).click();

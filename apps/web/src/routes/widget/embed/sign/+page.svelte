@@ -1253,7 +1253,7 @@
         listHeading="Select a key to sign:"
         primaryHeading="Sign with your primary key:"
       />
-      <Button variant="secondary" size="sm" class="mt-4 rounded-xl" onclick={cancel}>Cancel</Button>
+      <Button variant="secondary" class="mt-4 w-full" onclick={cancel}>Cancel</Button>
     {:else if !key && keyError}
       <SigningKeyRefusal message={keyError} {requester} onreconnect={reconnect} />
     {:else if !key}
