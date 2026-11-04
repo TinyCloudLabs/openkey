@@ -2,12 +2,13 @@
   import { page } from '$app/stores';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
-  import { ARCHIVED_KEY_MESSAGE } from '$lib/delegate-key-selection';
+  import { activeKeys, ARCHIVED_KEY_MESSAGE } from '$lib/delegate-key-selection';
   import { getSessionToken, isEmbedContext } from '$lib/embed-passkey';
   import { isFromWidgetCounterparty, resolveWidgetOrigin } from '$lib/widget-transport';
   import EmbeddedSignIn from '$lib/components/auth/embedded-sign-in.svelte';
   import { passkeysSupportedFromParams } from '$lib/passkey-support';
   import Button from '$lib/components/ui/button.svelte';
+  import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
 
   const session = authClient.useSession();
   const inIframe = typeof window !== 'undefined' && isEmbedContext();
@@ -20,6 +21,7 @@
   } | null>(null);
   let keyId = $state<string | null>(null);
   let key = $state<EthereumKey | null>(null);
+  let keys = $state<EthereumKey[]>([]);
   let loading = $state(true);
   let signing = $state(false);
   let error = $state('');
@@ -61,25 +63,44 @@
     const requestedKeyId = keyId;
     const version = requestVersion;
     if (!isAuthenticated) return;
-    if (!requestedKeyId) {
+    if (!version) {
       loading = false;
       return;
     }
 
     let active = true;
     loading = true;
-    api.getKey(requestedKeyId).then(result => {
-      if (!active || version !== requestVersion) return;
-      if (result.key.archivedAt != null) {
-        archivedKey = true;
-        return;
+    key = null;
+    keys = [];
+    archivedKey = false;
+    error = '';
+    void (async () => {
+      try {
+        if (requestedKeyId) {
+          const result = await api.getKey(requestedKeyId);
+          if (!active || version !== requestVersion) return;
+          if (result.key.archivedAt != null) {
+            archivedKey = true;
+          } else if (result.key.keyType !== 'MANAGED') {
+            error = 'This key cannot sign typed data here. Reconnect to choose a managed key.';
+          } else {
+            key = result.key;
+          }
+        } else {
+          const result = await api.listKeys();
+          if (!active || version !== requestVersion) return;
+          // External-wallet typed-data signing is handled separately by the SDK.
+          const usableKeys = activeKeys(result.keys).filter(candidate => candidate.keyType === 'MANAGED');
+          keys = usableKeys;
+          if (usableKeys.length === 1) key = usableKeys[0]!;
+        }
+      } catch {
+        if (!active || version !== requestVersion) return;
+        error = requestedKeyId ? 'Selected key could not be loaded.' : 'Keys could not be loaded. Reconnect to try again.';
+      } finally {
+        if (active && version === requestVersion) loading = false;
       }
-      key = result.key;
-    }).catch(() => {
-      // Key not found
-    }).finally(() => {
-      if (active && version === requestVersion) loading = false;
-    });
+    })();
     return () => { active = false; };
   });
 
@@ -88,6 +109,7 @@
     if (event.data?.type === 'openkey:signTypedData:request') {
       requestVersion += 1;
       key = null;
+      keys = [];
       archivedKey = false;
       error = '';
       signing = false;
@@ -100,7 +122,7 @@
   }
 
   async function signTypedData() {
-    if (!key || key.archivedAt != null || archivedKey || !typedData) return;
+    if (!key || key.keyType !== 'MANAGED' || key.archivedAt != null || archivedKey || !typedData || signing) return;
 
     const version = requestVersion;
 
@@ -181,9 +203,21 @@
         <p class="text-sm">{ARCHIVED_KEY_MESSAGE}</p>
         <Button variant="secondary" size="sm" onclick={cancel}>Cancel</Button>
       </div>
+    {:else if !key && !keyId && keys.length > 1}
+      <div class="flex flex-col gap-4">
+        <KeyPicker
+          {keys}
+          onselect={selected => { key = selected; }}
+          listHeading="Select a key to sign this data:"
+          primaryHeading="Sign with your primary key:"
+          compact={true}
+        />
+        <Button variant="secondary" onclick={cancel}>Cancel</Button>
+      </div>
     {:else if !key}
-      <div class="flex flex-col items-center justify-center text-center text-surface-500 py-4">
-        <p class="text-sm">Please connect first to sign data.</p>
+      <div class="flex flex-col items-center justify-center text-center text-surface-500 py-4 gap-4">
+        <p class="text-sm">{error || (keyId ? 'Selected key could not be loaded.' : 'No active managed keys are available to sign this data.')}</p>
+        <Button variant="secondary" size="sm" onclick={cancel}>Cancel</Button>
       </div>
     {:else if !typedData}
       <div class="flex flex-col items-center justify-center text-center text-surface-500 py-4">
