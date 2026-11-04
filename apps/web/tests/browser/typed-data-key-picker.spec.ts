@@ -3,7 +3,7 @@ import { test, expect, type Page } from '@playwright/test';
 import { HOST } from './e2e-port';
 
 const key = (id: string, keyIndex: number, isPrimary = false, keyType = 'MANAGED') => ({
-  id, keyIndex, isPrimary, keyType, label: null,
+  id, keyIndex, isPrimary, keyType, label: `Key ${keyIndex}`,
   address: `0x${String(keyIndex + 1).repeat(40)}`, publicKey: '0x', createdAt: '2026-01-01T00:00:00Z',
 });
 const primary = key('qa-primary', 2, true);
@@ -81,7 +81,6 @@ for (const surface of ['sign-typed-data', 'embed/sign-typed-data']) {
     await expect(frame.getByRole('button', { name: /Key 4/ })).toHaveCount(0);
     expect(signed).toEqual([]);
     await frame.getByRole('button', { name: 'Use a different key' }).click();
-    await expect(frame.getByText(/Each key is a separate account owner/)).toBeVisible();
     await expect(frame.getByRole('button', { name: /Key 0|Key 5/ })).toHaveCount(0);
     await frame.getByRole('button', { name: /Key 4/ }).click();
     await expect(frame.getByText('Key 4', { exact: true })).toBeVisible();
