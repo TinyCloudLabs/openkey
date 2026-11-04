@@ -10,6 +10,10 @@
   import Button from '$lib/components/ui/button.svelte';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
 
+  type KeyCredential = { token: string | null; sessionId: string | null | undefined };
+  let keyReadCredential: KeyCredential | null = null;
+  let keyOwnerCredential: KeyCredential | null = null;
+
   const session = authClient.useSession();
   const inIframe = typeof window !== 'undefined' && isEmbedContext();
 
@@ -74,28 +78,38 @@
     keys = [];
     archivedKey = false;
     error = '';
+    const credential = {
+      token: getSessionToken(),
+      sessionId: inIframe ? null : $session.data?.session?.id,
+    };
+    keyReadCredential = credential;
+    keyOwnerCredential = null;
     void (async () => {
       try {
         if (requestedKeyId) {
           const result = await api.getKey(requestedKeyId);
           if (!active || version !== requestVersion) return;
+          if (!checkKeyCredential(credential)) return;
           if (result.key.archivedAt != null) {
             archivedKey = true;
           } else if (result.key.keyType !== 'MANAGED') {
             error = 'This key cannot sign typed data here. Reconnect to choose a managed key.';
           } else {
             key = result.key;
+            keyOwnerCredential = credential;
           }
         } else {
           const result = await api.listKeys();
           if (!active || version !== requestVersion) return;
+          if (!checkKeyCredential(credential)) return;
           // External-wallet typed-data signing is handled separately by the SDK.
           const usableKeys = activeKeys(result.keys).filter(candidate => candidate.keyType === 'MANAGED');
           keys = usableKeys;
-          if (usableKeys.length === 1) key = usableKeys[0]!;
+          if (usableKeys.length === 1) chooseSigningKey(usableKeys[0]!);
         }
       } catch {
         if (!active || version !== requestVersion) return;
+        if (!checkKeyCredential(credential)) return;
         error = requestedKeyId ? 'Selected key could not be loaded.' : 'Keys could not be loaded. Reconnect to try again.';
       } finally {
         if (active && version === requestVersion) loading = false;
@@ -110,6 +124,8 @@
       requestVersion += 1;
       key = null;
       keys = [];
+      keyReadCredential = null;
+      keyOwnerCredential = null;
       archivedKey = false;
       error = '';
       signing = false;
@@ -121,9 +137,31 @@
     }
   }
 
+  function checkKeyCredential(credential: KeyCredential | null): boolean {
+    if (credential && isAuthenticated && getSessionToken() === credential.token &&
+        (inIframe ? null : $session.data?.session?.id) === credential.sessionId) return true;
+    key = null;
+    keys = [];
+    keyReadCredential = null;
+    keyOwnerCredential = null;
+    archivedKey = false;
+    error = 'Signing session changed. Reconnect to choose a key.';
+    return false;
+  }
+
+  function chooseSigningKey(selected: EthereumKey) {
+    if (!checkKeyCredential(keyReadCredential)) return;
+    const choice = keys.find(candidate => candidate.id === selected.id);
+    if (!choice) return;
+    key = choice;
+    keyOwnerCredential = keyReadCredential;
+  }
+
   async function signTypedData() {
     if (!key || key.keyType !== 'MANAGED' || key.archivedAt != null || archivedKey || !typedData || signing) return;
 
+    const credential = keyOwnerCredential;
+    if (!checkKeyCredential(credential)) return;
     const version = requestVersion;
 
     signing = true;
@@ -132,6 +170,7 @@
     try {
       const result = await api.signTypedData(key.id, typedData);
       if (version !== requestVersion) return;
+      if (!checkKeyCredential(credential)) return;
       sendResponse({
         type: 'openkey:signTypedData:response',
         success: true,
@@ -140,7 +179,7 @@
       });
       sendClose();
     } catch (e: any) {
-      if (version === requestVersion) error = e.message || 'Signing failed';
+      if (version === requestVersion && checkKeyCredential(credential)) error = e.message || 'Signing failed';
     } finally {
       if (version === requestVersion) signing = false;
     }
@@ -207,7 +246,7 @@
       <div class="flex flex-col gap-4">
         <KeyPicker
           {keys}
-          onselect={selected => { key = selected; }}
+          onselect={chooseSigningKey}
           listHeading="Select a key to sign this data:"
           primaryHeading="Sign with your primary key:"
           compact={true}
