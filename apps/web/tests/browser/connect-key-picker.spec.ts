@@ -130,4 +130,19 @@ test.describe('TC-1496 connect widgets use the shared key picker', () => {
     await page.goto(`/widget/connect?origin=${encodeURIComponent(origin)}`);
     await expect.poll(() => responses(page).then((list) => list.map((m) => m.keyId))).toEqual(['key_0']);
   });
+
+  test('popup widget returns the sole active nonzero primary, never an archived first key', async ({ page }) => {
+    const active = { ...keys[1]!, keyIndex: 7, isPrimary: true };
+    await mockApi(page, [{ ...keys[0], archivedAt: '2026-11-01T00:00:00Z' }, active]);
+    await page.addInitScript(() => {
+      const received: Message[] = [];
+      (window as Recording).received = received;
+      Object.defineProperty(window, 'opener', {
+        value: { postMessage: (data: Message) => received.push(data), closed: false }, configurable: true,
+      });
+    });
+    await page.goto(`/widget/connect?origin=${encodeURIComponent(origin)}`);
+    await expect.poll(() => responses(page).then((list) => list.map((m) => m.keyId))).toEqual([active.id]);
+    await expect(button(page, /Key 0/)).toHaveCount(0);
+  });
 });

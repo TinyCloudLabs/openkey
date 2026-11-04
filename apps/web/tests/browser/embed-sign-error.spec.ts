@@ -70,3 +70,46 @@ test('v2 sign-in form can be measured and revealed when the embedded session is 
   }, resize);
   await expect(page.frameLocator('#sign-v2').getByText('Sign in to review and sign this message')).toBeVisible();
 });
+
+for (const surface of ['sign', 'embed/sign', 'sign-typed-data', 'embed/sign-typed-data']) {
+  test(`${surface} refuses an archived pinned key before signing`, async ({ page }) => {
+    let signingRequests = 0;
+    await page.addInitScript(() => sessionStorage.setItem('openkey_session_token', 'test-session'));
+    await page.route('**/api/auth/get-session**', (route) => route.fulfill({
+      json: { session: { id: 's', userId: 'u' }, user: { id: 'u' } },
+    }));
+    await page.route('**/api/keys/**', (route) => {
+      if (route.request().method() !== 'GET') {
+        signingRequests++;
+        return route.fulfill({ status: 500, json: { error: 'Archived key must not be submitted' } });
+      }
+      return route.fulfill({ json: { key: {
+        id: 'archived-key', address, publicKey: '0x', keyIndex: 0,
+        label: 'Archived account', keyType: 'MANAGED', isPrimary: false,
+        archivedAt: '2026-11-01T00:00:00Z', createdAt: '2026-01-01T00:00:00Z',
+      } } });
+    });
+    await page.goto('/__parity_harness');
+    await page.evaluate((surface) => {
+      const frame = document.createElement('iframe');
+      frame.id = 'archived-sign';
+      frame.src = `/widget/${surface}?origin=${encodeURIComponent(location.origin)}`;
+      window.addEventListener('message', (event) => {
+        if (event.source !== frame.contentWindow || event.origin !== location.origin || event.data?.type !== 'openkey:ready') return;
+        frame.contentWindow?.postMessage(surface.endsWith('sign-typed-data')
+          ? { type: 'openkey:signTypedData:request', data: {
+              keyId: 'archived-key', domain: { name: 'QA' }, types: { Note: [{ name: 'text', type: 'string' }] },
+              primaryType: 'Note', message: { text: 'Review this request' },
+            } }
+          : { type: 'openkey:sign:request', keyId: 'archived-key', message: 'Review this request' },
+          location.origin);
+      });
+      document.body.append(frame);
+    }, surface);
+    const frame = page.frameLocator('#archived-sign');
+    await expect(frame.getByText(/archived.*reconnect/i)).toBeVisible();
+    await expect(frame.getByRole('button', { name: /^(Approve|Sign|Sign Data)$/ })).toHaveCount(0);
+    await expect(frame.getByRole('button', { name: 'Cancel', exact: true })).toBeVisible();
+    expect(signingRequests).toBe(0);
+  });
+}

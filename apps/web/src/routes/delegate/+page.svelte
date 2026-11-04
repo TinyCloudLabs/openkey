@@ -26,7 +26,7 @@
   } from '$lib/delegate-link-policy';
   import { preparedMatchesSelection, reviewSelectionToActionKeys } from '$lib/delegate-review-selection';
   import { expectedSigner } from '$lib/delegate-expected-signer';
-  import { autoSelectKey } from '$lib/delegate-key-selection';
+  import { activeKeys, autoSelectKey } from '$lib/delegate-key-selection';
   import DelegateSigningHint from '$lib/components/signing/delegate-signing-hint.svelte';
   import { shouldShowLoopbackHint } from '$lib/delegate-signing-hint';
   import { startCodeCountdown, remainingFromServerClock, type CodeCountdownSnapshot } from '$lib/delegate-code-countdown';
@@ -619,7 +619,7 @@
     loading = true;
     try {
       const result = await api.listKeys();
-      keys = result.keys;
+      keys = activeKeys(result.keys);
     } catch (e: any) {
       error = e.message;
     } finally {
@@ -627,9 +627,9 @@
     }
   }
 
-  // Auto-select the CLI-requested wallet, else the primary key, else the
-  // user's only key, once keys are loaded. Only runs on the initial
-  // 'select-key' step so revisiting the picker (Back, link-wallet round-trip)
+  // Auto-select the CLI-requested wallet, otherwise the user's only active
+  // key. With several keys the owner chooses, with the primary offered first.
+  // Only runs on the initial 'select-key' step so revisiting the picker
   // doesn't trap the user in an auto-advance loop.
   $effect(() => {
     if (!dispatchReady || (approvalRequestMode && !approvalRequestLoaded) || incompleteLegacyRequest || done || preparedMode || preparedTransport || preparedStorageError || loading || preselectAttempted) return;
