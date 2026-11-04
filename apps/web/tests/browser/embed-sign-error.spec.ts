@@ -29,9 +29,9 @@ test('failed selected-key read shows a stable cancellable error in the v2 iframe
       message: `${host} wants you to sign in with your Ethereum account:\n${address}\n\nSign in\n\nURI: ${origin}\nVersion: 1\nChain ID: 1\nNonce: 12345678\nIssued At: 2026-10-15T00:00:00.000Z`,
     }, location.origin);
   }, [address, HOST, ORIGIN]);
-  await expect(frame.getByRole('button', { name: 'Cancel' })).toBeVisible();
+  await expect(frame.getByRole('button', { name: 'Back to app' })).toBeVisible();
   await expect.poll(() => page.evaluate(() => (window as unknown as Window & { received: Array<{ type: string }> }).received.some(m => m.type === 'openkey:resize'))).toBe(true);
-  await frame.getByRole('button', { name: 'Cancel' }).click();
+  await frame.getByRole('button', { name: 'Back to app' }).click();
   await expect.poll(() => page.evaluate(() => (window as unknown as Window & { received: Array<{ type: string; success?: boolean }> }).received.some(m => m.type === 'openkey:sign:response' && m.success === false))).toBe(true);
 });
 
@@ -94,8 +94,14 @@ for (const surface of ['sign', 'embed/sign', 'sign-typed-data', 'embed/sign-type
       const frame = document.createElement('iframe');
       frame.id = 'archived-sign';
       frame.src = `/widget/${surface}?origin=${encodeURIComponent(location.origin)}`;
+      (window as Window & { keyRefusals?: unknown[] }).keyRefusals = [];
       window.addEventListener('message', (event) => {
-        if (event.source !== frame.contentWindow || event.origin !== location.origin || event.data?.type !== 'openkey:ready') return;
+        if (event.source !== frame.contentWindow || event.origin !== location.origin) return;
+        if (event.data?.success === false) {
+          (window as Window & { keyRefusals?: unknown[] }).keyRefusals?.push(event.data);
+          return;
+        }
+        if (event.data?.type !== 'openkey:ready') return;
         frame.contentWindow?.postMessage(surface.endsWith('sign-typed-data')
           ? { type: 'openkey:signTypedData:request', data: {
               keyId: 'archived-key', domain: { name: 'QA' }, types: { Note: [{ name: 'text', type: 'string' }] },
@@ -109,7 +115,11 @@ for (const surface of ['sign', 'embed/sign', 'sign-typed-data', 'embed/sign-type
     const frame = page.frameLocator('#archived-sign');
     await expect(frame.getByText(/archived.*reconnect/i)).toBeVisible();
     await expect(frame.getByRole('button', { name: /^(Approve|Sign|Sign Data)$/ })).toHaveCount(0);
-    await expect(frame.getByRole('button', { name: 'Cancel', exact: true })).toBeVisible();
+    await expect(frame.getByRole('button', { name: 'Back to app', exact: true })).toBeVisible();
+    await frame.getByRole('button', { name: 'Back to app', exact: true }).click();
+    await expect.poll(() => page.evaluate(() =>
+      (window as Window & { keyRefusals?: Array<{ error?: { code?: string; message?: string } }> }).keyRefusals?.at(-1)?.error,
+    )).toMatchObject({ code: 'NO_KEY', message: expect.stringMatching(/archived.*connect/i) });
     expect(signingRequests).toBe(0);
   });
 }

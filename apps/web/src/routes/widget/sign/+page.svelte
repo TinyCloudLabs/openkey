@@ -6,6 +6,7 @@
   import { ARCHIVED_KEY_MESSAGE, autoSelectKey, signingKeyChoices } from '$lib/delegate-key-selection';
   import { parseSIWE } from '$lib/siwe-parser';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
+  import SigningKeyRefusal from '$lib/components/signing/signing-key-refusal.svelte';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import { passkeysSupportedFromParams, withPasskeysFlag } from '$lib/passkey-support';
@@ -129,6 +130,8 @@
   // path (Sol MAJOR-4). Versioned callers (protocolVersion >= 1) MUST use
   // a real origin — '*' is refused for editing/rewriting flows.
   const origin = $page.url.searchParams.get('origin') || '*';
+  const requester = originAuthority(origin);
+  const reconnectHint = `Go back to ${requester || 'the requesting app'} and connect again to choose a key.`;
   const passkeysSupported = passkeysSupportedFromParams($page.url.searchParams);
 
   // Use $effect instead of onMount for Svelte 5 compatibility with SSR disabled
@@ -1012,6 +1015,17 @@
     sendClose();
   }
 
+  function reconnect() {
+    if (!refusalSent) {
+      sendResponse({
+        type: 'openkey:sign:response',
+        success: false,
+        error: { code: 'NO_KEY', message: `${error} ${reconnectHint}` },
+      });
+    }
+    sendClose();
+  }
+
   function cancel() {
     if (!refusalSent) {
       sendResponse({
@@ -1110,9 +1124,9 @@
 
 <div class="flex-1 flex flex-col">
   <header class="flex justify-between items-center mb-6">
-    <h1 class="text-xl font-semibold text-surface-50">Sign Message</h1>
+    <h1 class="text-xl font-semibold text-surface-900">Sign Message</h1>
     <button
-      class="bg-transparent border-none text-surface-400 text-2xl cursor-pointer p-0 leading-none hover:text-surface-50 transition-colors"
+      class="bg-transparent border-none text-surface-600 text-2xl cursor-pointer p-0 leading-none hover:text-surface-900 transition-colors"
       onclick={cancel}
     >
       &times;
@@ -1141,6 +1155,8 @@
       primaryHeading="Sign with your primary key:"
     />
     <Button variant="secondary" class="mt-4" onclick={cancel}>Cancel</Button>
+  {:else if !key && error}
+    <SigningKeyRefusal message={error} {requester} onreconnect={reconnect} />
   {:else if !key}
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
       <p role={error ? 'alert' : undefined}>{error || 'Please connect first to sign messages.'}</p>

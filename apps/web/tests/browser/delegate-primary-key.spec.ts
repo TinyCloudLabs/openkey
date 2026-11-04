@@ -11,7 +11,7 @@ const CAPS_READ = 'tinycloud.capabilities/read';
 const KV_GET = 'tinycloud.kv/get';
 const json = (route: Route, status: number, body: unknown) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 const key = (id: string, keyIndex: number, address: string, isPrimary: boolean, keyType = 'MANAGED') =>
-  ({ id, address, publicKey: '0x', keyIndex, label: null, keyType, isPrimary, createdAt: new Date().toISOString() });
+  ({ id, address, publicKey: '0x', keyIndex, label: `Key ${keyIndex}`, keyType, isPrimary, createdAt: new Date().toISOString() });
 
 const primary = key('key_0', 0, '0xd559ccd9eb87c530a9a349262669386de93cf412', true);
 const second = key('key_1', 1, '0x2222222222222222222222222222222222222222', false);
@@ -80,10 +80,8 @@ test.describe('TC-703 primary key picker', () => {
     await expect(keyButton(page, /Key 1/)).toHaveCount(0);
     await expect(keyButton(page, /Key 2/)).toHaveCount(0);
     await expect(page.getByRole('button', { name: /Generate/ })).toHaveCount(0);
-    await expect(page.getByText(/separate account owner/)).toHaveCount(0);
 
     await page.getByRole('button', { name: 'Use a different key' }).click();
-    await expect(page.getByText(/Each key is a separate account owner, with its own data and spaces/)).toBeVisible();
     await expect(keyButton(page, /Key 1/)).toBeVisible();
     await expect(keyButton(page, /Key 2/)).toContainText('(External)');
     await expect(keyButton(page, /Key 1/)).not.toContainText('Primary');

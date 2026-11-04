@@ -460,7 +460,7 @@
           const choice = keyChoices.find((choice) => choice.key.id === selected.id);
           if (choice) chooseKey(choice);
         }}
-        listHeading="Select a key for this signing account:"
+        listHeading="Choose which key signs this:"
         primaryHeading="Sign with your primary key:"
       />
       <h2 class="font-semibold">Requested abilities and spaces</h2>
@@ -481,7 +481,14 @@
         <div><dt class="font-semibold">Session DID (display only)</dt><dd>{handoff.request.sessionDid}</dd></div>
         <div><dt class="font-semibold">Node host</dt><dd>{handoff.request.host}</dd></div>
         <div><dt class="font-semibold">Approval request expires</dt><dd>{new Date(handoff.expiresAt).toLocaleString()}</dd></div>
-        <div><dt class="font-semibold">Signing key</dt><dd>{key.address} (chain {signingChain})</dd></div>
+        <div data-testid="prepared-signing-key">
+          <dt class="font-semibold">Signing key</dt>
+          <dd class="flex flex-wrap items-center gap-2">
+            <span class="font-medium" title={key.address}>{key.label || `Key ending ${key.address.slice(-4)}`}</span>
+            <span class="text-surface-500">(chain {signingChain})</span>
+            <button type="button" class="min-h-11 rounded-lg px-3 text-sm underline underline-offset-4 hover:bg-surface-50" title={key.address} onclick={() => { if (key) void copyText(key.address); }}>Copy address</button>
+          </dd>
+        </div>
       </dl>
       {#if signedExpiry}
         <div class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm"><dt class="font-semibold">Access granted until</dt><dd>{signedExpiry.local} ({signedExpiry.relative})</dd></div>
