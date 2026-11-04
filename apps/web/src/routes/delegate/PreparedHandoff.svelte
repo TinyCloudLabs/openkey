@@ -3,6 +3,7 @@
   import { afterNavigate, replaceState } from '$app/navigation';
   import { authClient, authErrorMessage } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
+  import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
   import { copyText } from '$lib/clipboard';
   import { buildStatements, parseEncryptionResource, parseCapabilityReview, defaultSelection, renderLiteral, renderSiweLiteral, type CapabilityGrant, type CapabilityReviewModel } from '@openkey/capability-review';
   import { validatePreviewSelection } from '$lib/preview-review';
@@ -452,9 +453,16 @@
         <p role="alert" class="rounded-lg border border-red-300 bg-red-50 p-3 text-sm">No expiry set</p>
       {/if}
       <h2 class="font-semibold">Choose an OpenKey signing key</h2>
-      {#each keyChoices as choice (choice.key.id)}
-        <button class="block w-full rounded-lg border p-3 text-left text-sm break-all" onclick={() => chooseKey(choice)}>{choice.key.label ?? `Key ${choice.key.keyIndex}`} · {choice.key.id} · {choice.key.address} (chain {signingChain})</button>
-      {/each}
+      <KeyPicker
+        keys={keyChoices.map((choice) => choice.key)}
+        expectedAddress={keyChoices[0].key.address.toLowerCase()}
+        onselect={(selected) => {
+          const choice = keyChoices.find((choice) => choice.key.id === selected.id);
+          if (choice) chooseKey(choice);
+        }}
+        listHeading="Select a key for this signing account:"
+        primaryHeading="Sign with your primary key:"
+      />
       <h2 class="font-semibold">Requested abilities and spaces</h2>
       {#each keyChoices[0].review.permissions as grant}
         <div class="rounded-lg border p-3 text-sm">

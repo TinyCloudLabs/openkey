@@ -6,6 +6,18 @@ export function activeKeys(keys: EthereumKey[]): EthereumKey[] {
   return keys.filter((key) => !key.archivedAt);
 }
 
+/** Keys that can sign this request without changing its named owner. */
+export function signingKeyChoices(
+  keys: EthereumKey[],
+  expectedAddress: string | null,
+  keyType: EthereumKey['keyType'],
+): EthereumKey[] {
+  return keys.filter((key) =>
+    !key.archivedAt && key.keyType === keyType &&
+    (!expectedAddress || key.address.toLowerCase() === expectedAddress),
+  );
+}
+
 /** The user's primary key, when `keys` holds one. */
 export function primaryKey(keys: EthereumKey[]): EthereumKey | null {
   return keys.find((key) => !key.archivedAt && key.isPrimary === true) ?? null;

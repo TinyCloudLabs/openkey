@@ -1,7 +1,7 @@
 // @ts-expect-error bun:test is a runtime-only module; tsc doesn't ship types
 import { describe, expect, test } from 'bun:test';
 import type { EthereumKey } from './api';
-import { autoSelectKey, keyPickerLayout, primaryKey } from './delegate-key-selection';
+import { autoSelectKey, keyPickerLayout, primaryKey, signingKeyChoices } from './delegate-key-selection';
 
 const key = (id: string, address: string, extra: Partial<EthereumKey> = {}): EthereumKey => ({
   id, address, publicKey: '0x', keyIndex: 0, label: null, keyType: 'MANAGED', createdAt: '', ...extra,
@@ -88,5 +88,10 @@ describe('active signing keys (TC-1496)', () => {
 
   test('a missing requested owner does not choose the only remaining active key', () => {
     expect(autoSelectKey([archived, activePrimary], b.address.toLowerCase())).toBeNull();
+  });
+
+  test('a signing choice is limited to active keys for the bound address and signing type', () => {
+    expect(signingKeyChoices([archived, activePrimary, b, external], b.address.toLowerCase(), 'MANAGED')).toEqual([b]);
+    expect(signingKeyChoices([archived, activePrimary, b, external], null, 'EXTERNAL')).toEqual([external]);
   });
 });

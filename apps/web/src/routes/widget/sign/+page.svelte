@@ -2,7 +2,9 @@
   import { page } from '$app/stores';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
-  import { ARCHIVED_KEY_MESSAGE } from '$lib/delegate-key-selection';
+  import { ARCHIVED_KEY_MESSAGE, autoSelectKey, signingKeyChoices } from '$lib/delegate-key-selection';
+  import { parseSIWE } from '$lib/siwe-parser';
+  import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import { passkeysSupportedFromParams, withPasskeysFlag } from '$lib/passkey-support';
@@ -42,6 +44,10 @@
   let messageHost = $state<string>('');
   let keyId = $state<string | null>(null);
   let key = $state<EthereumKey | null>(null);
+  let keyChoices = $state<EthereumKey[]>([]);
+  let keyChoicesLoaded = false;
+  let keyChoicesSessionId: string | undefined;
+  const expectedAddress = $derived(parseSIWE(message)?.message.address.toLowerCase() ?? null);
   let loading = $state(true);
   let signing = $state(false);
   let error = $state('');
@@ -284,6 +290,42 @@
         error = 'Selected key could not be loaded. Reconnect to choose a key.';
       });
     }
+  });
+
+  function chooseSigningKey(selected: EthereumKey) {
+    if ($session.data?.session?.id !== keyChoicesSessionId) {
+      error = 'Signing session changed. Reconnect to choose a key.';
+      keyChoices = [];
+      return;
+    }
+    keyFetched = true;
+    keyId = selected.id;
+    key = selected;
+  }
+
+  $effect(() => {
+    if (!$session.data || !requestSealed || keyId || keyChoicesLoaded) return;
+    keyChoicesLoaded = true;
+    loading = true;
+    const sessionId = $session.data.session?.id;
+    const address = expectedAddress;
+    const keyType = externalSignMode ? 'EXTERNAL' : 'MANAGED';
+    api.listKeys().then(({ keys }) => {
+      if ($session.data?.session?.id !== sessionId) {
+        error = 'Signing session changed. Reconnect to choose a key.';
+        return;
+      }
+      keyChoicesSessionId = sessionId;
+      keyChoices = signingKeyChoices(keys, address, keyType);
+      if (!keyChoices.length) {
+        error = 'Requested signing key is not available. Reconnect to choose a key.';
+        return;
+      }
+      const selected = autoSelectKey(keyChoices, address);
+      if (selected) chooseSigningKey(selected);
+    }).catch(() => {
+      error = 'Signing keys could not be loaded. Reconnect to choose a key.';
+    }).finally(() => { loading = false; });
   });
 
   async function handleMessage(event: MessageEvent) {
@@ -936,8 +978,8 @@
       sendResponse({
         type: 'openkey:sign:response',
         success: false,
-        error: error === ARCHIVED_KEY_MESSAGE
-          ? { code: 'NO_KEY', message: ARCHIVED_KEY_MESSAGE }
+        error: !key && error
+          ? { code: 'NO_KEY', message: error }
           : { code: 'USER_CANCELLED', message: 'User cancelled' },
       });
     }
@@ -1049,6 +1091,15 @@
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
       Loading...
     </div>
+  {:else if !key && keyChoices.length > 1}
+    <KeyPicker
+      keys={keyChoices}
+      {expectedAddress}
+      onselect={chooseSigningKey}
+      listHeading="Select a key to sign:"
+      primaryHeading="Sign with your primary key:"
+    />
+    <Button variant="secondary" class="mt-4" onclick={cancel}>Cancel</Button>
   {:else if !key}
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
       <p role={error ? 'alert' : undefined}>{error || 'Please connect first to sign messages.'}</p>
