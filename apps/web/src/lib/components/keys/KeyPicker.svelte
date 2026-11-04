@@ -48,7 +48,7 @@
   {@const isMismatch = !!expectedAddress && !isExpected}
   {@const isSelected = selectedId === key.id}
   <button
-    class="flex justify-between items-center bg-white border rounded-xl cursor-pointer transition-all group {compact ? 'p-3.5' : 'p-4'}"
+    class="flex flex-wrap justify-between items-center gap-2 bg-white border rounded-xl cursor-pointer transition-all group {compact ? 'p-3.5' : 'p-4'}"
     class:border-surface-900={isExpected || isSelected}
     class:bg-surface-50={isExpected || isSelected}
     class:border-surface-200={!isExpected && !isSelected}
@@ -58,7 +58,7 @@
     disabled={isMismatch && !overrideMismatch}
     onclick={() => onselect(key)}
   >
-    <span class="font-medium flex items-center gap-2" class:text-sm={compact}>
+    <span class="min-w-0 font-medium flex flex-wrap items-center gap-2 text-left" class:text-sm={compact}>
       {key.label || `Key ${key.keyIndex}`}
       {#if key.keyType === 'EXTERNAL'}
         <span class="text-xs font-medium px-1.5 py-0.5 rounded-md bg-surface-100 text-surface-500">(External)</span>
@@ -70,7 +70,7 @@
         <span class="text-xs font-medium px-1.5 py-0.5 rounded-md bg-emerald-100 text-emerald-700">Requested</span>
       {/if}
     </span>
-    <span class="flex items-center gap-2">
+    <span class="flex shrink-0 items-center gap-2">
       <code class="font-mono text-surface-400" class:text-sm={!compact} class:text-xs={compact}>{formatAddress(key.address)}</code>
       {#if isSelected}
         <svg class="w-4 h-4 text-surface-900" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
