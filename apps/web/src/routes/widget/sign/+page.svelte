@@ -2,6 +2,10 @@
   import { page } from '$app/stores';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
+  import { ARCHIVED_KEY_MESSAGE, autoSelectKey, signingKeyChoices } from '$lib/delegate-key-selection';
+  import { parseSIWE } from '$lib/siwe-parser';
+  import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
+  import SigningKeyRefusal from '$lib/components/signing/signing-key-refusal.svelte';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import { passkeysSupportedFromParams, withPasskeysFlag } from '$lib/passkey-support';
@@ -20,7 +24,7 @@
   } from '@openkey/capability-review';
   import SiweOriginRefusal from '$lib/components/signing/siwe-origin-refusal.svelte';
   import ServerReplyRefusal from '$lib/components/signing/server-reply-refusal.svelte';
-  import { hasSignResult, hasText, readReply, ServerReplyError, SERVER_REPLY_ERROR } from '$lib/server-reply';
+  import { hasSignResult, hasText, readReply, ServerReplyError, SERVER_REPLY_ERROR, terminalRefusal } from '$lib/server-reply';
   import {
     createWidgetTransport,
     type WidgetRequest,
@@ -41,6 +45,10 @@
   let messageHost = $state<string>('');
   let keyId = $state<string | null>(null);
   let key = $state<EthereumKey | null>(null);
+  let keyChoices = $state<EthereumKey[]>([]);
+  let keyChoicesLoaded = false;
+  let keyChoicesSessionId: string | undefined;
+  const expectedAddress = $derived(parseSIWE(message)?.message.address.toLowerCase() ?? null);
   let loading = $state(true);
   let signing = $state(false);
   let error = $state('');
@@ -126,6 +134,8 @@
   // path (Sol MAJOR-4). Versioned callers (protocolVersion >= 1) MUST use
   // a real origin — '*' is refused for editing/rewriting flows.
   const origin = $page.url.searchParams.get('origin') || '*';
+  const requester = originAuthority(origin);
+  const reconnectHint = `Go back to ${requester || 'the requesting app'} and connect again to choose a key.`;
   const passkeysSupported = passkeysSupportedFromParams($page.url.searchParams);
 
   // Use $effect instead of onMount for Svelte 5 compatibility with SSR disabled
@@ -273,11 +283,52 @@
     if ($session.data && keyId && !keyFetched && !key) {
       keyFetched = true;
       api.getKey(keyId).then(result => {
+        if (result.key.archivedAt) {
+          error = ARCHIVED_KEY_MESSAGE;
+          key = null;
+          return;
+        }
         key = result.key;
       }).catch(() => {
-        // Key not found
+        error = 'Selected key could not be loaded. Reconnect to choose a key.';
       });
     }
+  });
+
+  function chooseSigningKey(selected: EthereumKey) {
+    if ($session.data?.session?.id !== keyChoicesSessionId) {
+      error = 'Signing session changed. Reconnect to choose a key.';
+      keyChoices = [];
+      return;
+    }
+    keyFetched = true;
+    keyId = selected.id;
+    key = selected;
+  }
+
+  $effect(() => {
+    if (!$session.data || !requestSealed || keyId || keyChoicesLoaded) return;
+    keyChoicesLoaded = true;
+    loading = true;
+    const sessionId = $session.data.session?.id;
+    const address = expectedAddress;
+    const keyType = externalSignMode ? 'EXTERNAL' : 'MANAGED';
+    api.listKeys().then(({ keys }) => {
+      if ($session.data?.session?.id !== sessionId) {
+        error = 'Signing session changed. Reconnect to choose a key.';
+        return;
+      }
+      keyChoicesSessionId = sessionId;
+      keyChoices = signingKeyChoices(keys, address, keyType);
+      if (!keyChoices.length) {
+        error = 'Requested signing key is not available. Reconnect to choose a key.';
+        return;
+      }
+      const selected = autoSelectKey(keyChoices, address);
+      if (selected) chooseSigningKey(selected);
+    }).catch(() => {
+      error = 'Signing keys could not be loaded. Reconnect to choose a key.';
+    }).finally(() => { loading = false; });
   });
 
   async function handleMessage(event: MessageEvent) {
@@ -337,16 +388,6 @@
       keyFetched = false; // Reset so effect can run
       requestSealed = true;
 
-      // Try immediately if session is already available
-      if (keyId && $session.data) {
-        try {
-          const result = await api.getKey(keyId);
-          key = result.key;
-          keyFetched = true;
-        } catch {
-          // Key not found, will prompt user to select
-        }
-      }
       // The reviewModel is built by a $effect below that reacts to
       // `message` AND `key` — this fixes the Sol MAJOR-8 bug where the
       // model was created with a placeholder zero-address before the key
@@ -570,6 +611,7 @@
   // sign for the current selection. The user must approve the preview
   // before /authorize-sign consumes the token.
   async function requestPreview(): Promise<void> {
+    if (refused) return;
     if (!key || !message) return;
     if (siweRefusal) return;
     if (!canUseAuthorizeSignFn()) return;
@@ -739,7 +781,7 @@
       previewApprovalToken = previewResult.previewApprovalToken;
     } catch (e: any) {
       if (e instanceof ServerReplyError) unreadableReply(e.status);
-      else error = e.message || 'Preview failed';
+      else if (!refuse(e)) error = e.message || 'Preview failed';
       // On failure, invalidate any stored token so the next attempt gets
       // a fresh one — the server may have expired the token or rejected
       // the immutable-fields digest.
@@ -756,6 +798,7 @@
   // authorities. This is the ONLY function that calls /authorize-sign
   // and consumes the token.
   async function approveAndSign() {
+    if (refused) return;
     if (!key || !message) return;
     if (siweRefusal) {
       error = siweRefusal.message;
@@ -860,7 +903,7 @@
       sendClose();
     } catch (e: any) {
       if (e instanceof ServerReplyError) unreadableReply(e.status);
-      else error = e.message || 'Signing failed';
+      else if (!refuse(e)) error = e.message || 'Signing failed';
     } finally {
       signing = false;
     }
@@ -909,16 +952,51 @@
     sendResponse({ type: 'openkey:sign:response', success: false, error: SERVER_REPLY_ERROR });
   }
 
+  // TC-2457: a refusal the server decides from the request itself cannot change on retry. Show the reason, keep
+  // Approve disabled, and tell the host once so the app that asked does not wait for ever. Nothing else is sent: the
+  // identifier carries no server text.
+  let refused = $state(false);
+  let refusalSent = false;
+  function refuse(failure: unknown): boolean {
+    const terminal = terminalRefusal(failure);
+    if (!terminal) return false;
+    refused = true;
+    error = terminal.text;
+    previewToken = null;
+    previewSignedMessage = null;
+    previewApprovalToken = null;
+    if (!refusalSent) {
+      refusalSent = true;
+      sendResponse({ type: 'openkey:sign:response', success: false, error: { code: 'UNKNOWN', message: terminal.hostMessage } });
+    }
+    return true;
+  }
+
   function closeRefused() {
     sendClose();
   }
 
+  function reconnect() {
+    if (!refusalSent) {
+      sendResponse({
+        type: 'openkey:sign:response',
+        success: false,
+        error: { code: 'NO_KEY', message: `${error} ${reconnectHint}` },
+      });
+    }
+    sendClose();
+  }
+
   function cancel() {
-    sendResponse({
-      type: 'openkey:sign:response',
-      success: false,
-      error: { code: 'USER_CANCELLED', message: 'User cancelled' },
-    });
+    if (!refusalSent) {
+      sendResponse({
+        type: 'openkey:sign:response',
+        success: false,
+        error: !key && error
+          ? { code: 'NO_KEY', message: error }
+          : { code: 'USER_CANCELLED', message: 'User cancelled' },
+      });
+    }
     sendClose();
   }
 
@@ -1005,9 +1083,9 @@
 
 <div class="flex-1 flex flex-col">
   <header class="flex justify-between items-center mb-6">
-    <h1 class="text-xl font-semibold text-surface-50">Sign Message</h1>
+    <h1 class="text-xl font-semibold text-surface-900">Sign Message</h1>
     <button
-      class="bg-transparent border-none text-surface-400 text-2xl cursor-pointer p-0 leading-none hover:text-surface-50 transition-colors"
+      class="bg-transparent border-none text-surface-600 text-2xl cursor-pointer p-0 leading-none hover:text-surface-900 transition-colors"
       onclick={cancel}
     >
       &times;
@@ -1027,9 +1105,21 @@
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
       Loading...
     </div>
+  {:else if !key && keyChoices.length > 1}
+    <KeyPicker
+      keys={keyChoices}
+      {expectedAddress}
+      onselect={chooseSigningKey}
+      listHeading="Select a key to sign:"
+      primaryHeading="Sign with your primary key:"
+    />
+    <Button variant="secondary" class="mt-4" onclick={cancel}>Cancel</Button>
+  {:else if !key && error}
+    <SigningKeyRefusal message={error} {requester} onreconnect={reconnect} />
   {:else if !key}
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
-      <p>Please connect first to sign messages.</p>
+      <p role={error ? 'alert' : undefined}>{error || 'Please connect first to sign messages.'}</p>
+      <Button variant="secondary" class="mt-4" onclick={cancel}>Cancel</Button>
     </div>
   {:else if reviewModel}
     <!--
@@ -1054,6 +1144,7 @@
         approving: signing || previewing,
         host: messageHost,
         error,
+        refused,
         canUseAuthorizeSign: canUseAuthorizeSignFn(),
         previewReady: Boolean(previewToken && previewSignedMessage && previewApprovalToken),
         requestPreview,

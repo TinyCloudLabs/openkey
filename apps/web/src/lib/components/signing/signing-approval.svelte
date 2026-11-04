@@ -86,9 +86,19 @@
     /** Disable Approve while an embedding host is applying the review layout. */
     layoutBlocked?: boolean;
     stickyActions?: boolean;
+    /** The server refused in a way a retry cannot change: Approve stays disabled (Cancel still works). */
+    refused?: boolean;
     finalPreview?: boolean;
     approveText?: string;
     cancelText?: string;
+    /**
+     * Offered only on the approval-request review (TC-2459): a Decline button left of Approve, and the dismiss
+     * control becomes a text link above the pair. Widget surfaces leave it unset and keep their Cancel button.
+     */
+    onDecline?: () => void;
+    declineText?: string;
+    /** A decline is being sent: Decline, Approve and the dismiss control are off, so it cannot go twice. */
+    declining?: boolean;
     /** Surface-specific context rendered in a fixed slot under the header. */
     context?: Snippet;
     /** Show which key signs; for users who chose one of several keys. */
@@ -129,9 +139,13 @@
     approveBlockedReason = null,
     layoutBlocked = false,
     stickyActions = false,
+    refused = false,
     finalPreview = false,
     approveText = "Approve",
     cancelText = "Cancel",
+    onDecline,
+    declineText = "Decline",
+    declining = false,
     context,
     showSigner = false,
     peerRecognition = null,
@@ -520,7 +534,7 @@
   const nodeChecking = $derived(peerRecognition?.state === "checking");
   const approveDisabled = $derived(approving || isMalformedRecap);
   const approveButtonDisabled = $derived(
-    layoutBlocked || approveDisabled || Boolean(approveBlockedReason) || nodeChecking,
+    layoutBlocked || refused || approveDisabled || Boolean(approveBlockedReason) || nodeChecking || declining,
   );
   const approveLabel = $derived(
     isMalformedRecap
@@ -1021,6 +1035,9 @@
     </section>
   </details>
 
+  <!-- The message and the buttons travel together: with sticky actions the message is pinned just above them, so a
+       refusal is never left below the fold of a short frame while the buttons look unchanged. -->
+  <div class="action-region">
   {#if error}
     <p class="error" role="alert" aria-live="polite">{error}</p>
   {/if}
@@ -1028,15 +1045,40 @@
     <p class="approve-blocked" role="status" aria-live="polite">{approveBlockedReason}</p>
   {/if}
 
-  <footer class="actions">
+  {#if onDecline}
+    <!-- With Decline offered, going back is a quiet link above the Decline / Approve pair. -->
     <button
       type="button"
-      class="cancel"
+      class="dismiss-link"
+      data-testid="signing-dismiss"
       onclick={onCancel}
-      disabled={approving}
+      disabled={approving || declining}
     >
       {cancelText}
     </button>
+  {/if}
+  <footer class="actions">
+    {#if onDecline}
+      <button
+        type="button"
+        class="cancel decline"
+        data-testid="signing-decline"
+        onclick={onDecline}
+        disabled={approving || declining}
+      >
+        {declineText}
+      </button>
+    {:else}
+      <button
+        type="button"
+        class="cancel"
+        data-testid="signing-dismiss"
+        onclick={onCancel}
+        disabled={approving}
+      >
+        {cancelText}
+      </button>
+    {/if}
     <button
       type="button"
       class="approve"
@@ -1048,6 +1090,7 @@
       {approveLabel}
     </button>
   </footer>
+  </div>
 </div>
 
 <style>
@@ -1134,6 +1177,7 @@
   .reason .reason-body {
     font-size: 13px;
     color: #0f172a;
+    overflow-wrap: anywhere;
   }
   .signer-line {
     display: flex;
@@ -1449,6 +1493,7 @@
   .metadata-reason,
   .reason-body,
   .reason-untrusted {
+    overflow-wrap: anywhere;
     margin: 4px 0 0;
     font-size: 12px;
     line-height: 1.45;
@@ -1728,10 +1773,16 @@
     display: flex;
     gap: 10px;
   }
-  .sticky-actions .actions {
+  .action-region {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .sticky-actions .action-region {
     position: sticky;
     bottom: 0;
     z-index: 1;
+    gap: 8px;
     padding: 10px 0;
     background: #fff;
     box-shadow: 0 -8px 16px rgb(255 255 255 / 90%);
@@ -1759,6 +1810,24 @@
   }
   .cancel:hover {
     background: #f8fafc;
+  }
+  .dismiss-link {
+    align-self: flex-start;
+    padding: 4px 2px;
+    background: none;
+    border: 0;
+    color: #475569;
+    font-size: 13px;
+    font-weight: 600;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  .dismiss-link:hover {
+    color: #0f172a;
+  }
+  .dismiss-link:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
   }
   .approve:hover {
     background: #111827;

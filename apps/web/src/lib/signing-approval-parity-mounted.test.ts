@@ -1117,16 +1117,13 @@ describe('signing-approval mounted parity across production surface adapters (So
     }
   });
 
-  test('keyboard: Enter on Cancel routes to the ADAPTER cancel wiring on every surface', async () => {
+  test('keyboard: Enter on the dismiss control routes to the ADAPTER cancel wiring on every surface', async () => {
     for (const binding of surfaceBindings) {
       const model = benignFixtureModel();
       const selection = fixtureSelection(model);
       const built = propsForSurface(binding, model, selection);
       const handle = await mountSurface(binding, built.props);
-      const buttons = Array.from(handle.container.querySelectorAll('button')) as any[];
-      const cancel =
-        buttons.find((b) => b.classList?.contains?.('cancel')) ??
-        buttons.find((b) => (b.textContent ?? '').trim() === 'Cancel');
+      const cancel = handle.container.querySelector('[data-testid="signing-dismiss"]');
       expect(cancel).toBeTruthy();
       pressKeyOnButton(cancel, 'Enter');
       if (binding.kind === 'cli') {

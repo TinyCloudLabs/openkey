@@ -76,7 +76,8 @@ test.describe('TC-659 CLI /delegate consent parity', () => {
   test('a user with several keys picks one and sees it as a static line', async ({ page }) => {
     await mock(page, [key('key_1', 0, address), key('key_2', 1, '0x2222222222222222222222222222222222222222')]);
     await page.goto(`/delegate?did=did:key:z6Mk&jwk=${jwk}`);
-    await page.getByRole('button', { name: /Key 0/ }).click();
+    // Unnamed keys use their address ending, not a generated index label.
+    await page.getByRole('button', { name: 'Key ending f412', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
     await expect(page.getByLabel('Signing key')).toContainText('Key 0');
     await expect(page.getByLabel('Signing key')).toContainText('0xd559...f412');

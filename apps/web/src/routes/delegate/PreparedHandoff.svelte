@@ -3,6 +3,7 @@
   import { afterNavigate, replaceState } from '$app/navigation';
   import { authClient, authErrorMessage } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
+  import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
   import { copyText } from '$lib/clipboard';
   import { buildStatements, parseEncryptionResource, parseCapabilityReview, defaultSelection, renderLiteral, renderSiweLiteral, type CapabilityGrant, type CapabilityReviewModel } from '@openkey/capability-review';
   import { validatePreviewSelection } from '$lib/preview-review';
@@ -65,7 +66,6 @@
   });
   let key = $state<EthereumKey | null>(null);
   let keyChoices = $state<KeyChoice[]>([]);
-  let signingChain = $state('');
   let model = $state<CapabilityReviewModel | null>(null);
   // TC-2272: how long from approval the user chose; null keeps the app's own expiry.
   let expiryChoiceMs = $state<number | null>(null);
@@ -241,7 +241,6 @@
       const match = /(?:^|\n)([^\n]+) wants you to sign in with your Ethereum account:\n(0x[0-9a-fA-F]{40})(?:\n|$)/.exec(resolved.request.siwe);
       const chain = /^Chain ID: ([1-9][0-9]*)$/m.exec(resolved.request.siwe);
       if (!match || !chain) throw new Error('The prepared SIWE does not name a valid signer and chain.');
-      signingChain = chain[1]!;
       const { keys } = await api.listKeys();
       const candidates = keys.filter(item => item.address.toLowerCase() === match[2]!.toLowerCase() && (!resolved.request.keyId || item.id === resolved.request.keyId));
       if (!candidates.length) throw new Error('Requested signing key is not available for this SIWE account and chain.');
@@ -452,9 +451,16 @@
         <p role="alert" class="rounded-lg border border-red-300 bg-red-50 p-3 text-sm">No expiry set</p>
       {/if}
       <h2 class="font-semibold">Choose an OpenKey signing key</h2>
-      {#each keyChoices as choice (choice.key.id)}
-        <button class="block w-full rounded-lg border p-3 text-left text-sm break-all" onclick={() => chooseKey(choice)}>{choice.key.label ?? `Key ${choice.key.keyIndex}`} · {choice.key.id} · {choice.key.address} (chain {signingChain})</button>
-      {/each}
+      <KeyPicker
+        keys={keyChoices.map((choice) => choice.key)}
+        expectedAddress={keyChoices[0].key.address.toLowerCase()}
+        onselect={(selected) => {
+          const choice = keyChoices.find((choice) => choice.key.id === selected.id);
+          if (choice) chooseKey(choice);
+        }}
+        listHeading="Choose which key signs this:"
+        primaryHeading="Sign with your primary key:"
+      />
       <h2 class="font-semibold">Requested abilities and spaces</h2>
       {#each keyChoices[0].review.permissions as grant}
         <div class="rounded-lg border p-3 text-sm">
@@ -473,7 +479,13 @@
         <div><dt class="font-semibold">Session DID (display only)</dt><dd>{handoff.request.sessionDid}</dd></div>
         <div><dt class="font-semibold">Node host</dt><dd>{handoff.request.host}</dd></div>
         <div><dt class="font-semibold">Approval request expires</dt><dd>{new Date(handoff.expiresAt).toLocaleString()}</dd></div>
-        <div><dt class="font-semibold">Signing key</dt><dd>{key.address} (chain {signingChain})</dd></div>
+        <div data-testid="prepared-signing-key">
+          <dt class="font-semibold">Signing key</dt>
+          <dd class="flex flex-wrap items-center gap-2">
+            <span class="font-medium" title={key.address}>{key.label || `Key ending ${key.address.slice(-4)}`}</span>
+            <button type="button" class="min-h-11 rounded-lg px-3 text-sm underline underline-offset-4 hover:bg-surface-50" title={key.address} onclick={() => { if (key) void copyText(key.address); }}>Copy address</button>
+          </dd>
+        </div>
       </dl>
       {#if signedExpiry}
         <div class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm"><dt class="font-semibold">Access granted until</dt><dd>{signedExpiry.local} ({signedExpiry.relative})</dd></div>

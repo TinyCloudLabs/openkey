@@ -100,6 +100,7 @@
   {editing}
   approving={transport.approving}
   error={transport.error}
+  refused={transport.refused ?? false}
   finalPreview={transport.previewReady}
   {peerRecognition}
   expiryMs={transport.expiry?.chosenMs ?? null}
