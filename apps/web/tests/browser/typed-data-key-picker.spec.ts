@@ -13,24 +13,29 @@ const archivedMessage = 'This key was archived. Reconnect to choose a key.';
 type Response = { type: string; success?: boolean; error?: { code: string; message: string } };
 type Recording = Window & { received?: Response[] };
 
-async function setup(page: Page, surface: string, keys: unknown[], keyId?: string) {
+async function setup(
+  page: Page, surface: string, keys: unknown[], keyId?: string,
+  options: { readGate?: Promise<void>; detailKey?: unknown } = {},
+) {
   const signed: string[] = [];
   let listRequests = 0;
   await page.addInitScript(() => sessionStorage.setItem('openkey_session_token', 'qa-session'));
   await page.route('**/api/auth/get-session**', route => route.fulfill({
     json: { session: { id: 'qa-session', userId: 'qa-user' }, user: { id: 'qa-user' } },
   }));
-  await page.route('**/api/keys', route => {
+  await page.route('**/api/keys', async route => {
     listRequests++;
+    await options.readGate;
     return route.fulfill({ json: { keys } });
   });
-  await page.route('**/api/keys/**', route => {
+  await page.route('**/api/keys/**', async route => {
     const path = new URL(route.request().url()).pathname;
     if (route.request().method() === 'POST' && path.endsWith('/sign-typed-data')) {
       signed.push(path.split('/')[3]!);
       return route.fulfill({ json: { signature: '0x1234', address: other.address } });
     }
-    return route.fulfill({ json: { key: archived } });
+    await options.readGate;
+    return route.fulfill({ json: { key: options.detailKey ?? archived } });
   });
   await page.goto('/__parity_harness');
   await page.evaluate(({ surface, keyId }) => {
@@ -102,5 +107,55 @@ for (const surface of ['sign-typed-data', 'embed/sign-typed-data']) {
     ))).toMatchObject({ success: false, error: { code: 'NO_KEY', message: archivedMessage } });
     expect(listRequests()).toBe(0);
     expect(signed).toEqual([]);
+  });
+}
+
+const sessionChangedMessage = 'Signing session changed. Reconnect to choose a key.';
+
+async function swapEmbeddedToken(page: Page) {
+  await page.locator('#typed-data').evaluate(element => {
+    (element as HTMLIFrameElement).contentWindow!.sessionStorage.setItem('openkey_session_token', 'qa-session-b');
+  });
+}
+
+async function expectSessionRefusal(page: Page, context: Awaited<ReturnType<typeof setup>>) {
+  await expect(context.frame.getByText(sessionChangedMessage, { exact: true })).toBeVisible();
+  await expect(context.frame.getByRole('button', { name: /Key 2|Key 4|Sign Data/ })).toHaveCount(0);
+  expect(context.signed).toEqual([]);
+  await context.frame.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as Recording).received?.find(
+    message => message.type === 'openkey:signTypedData:response',
+  ))).toMatchObject({ success: false });
+}
+
+for (const read of ['list', 'detail']) {
+  test(`embed session binding: token swap during pending ${read} refuses stale metadata`, async ({ page }) => {
+    let release!: () => void;
+    const readGate = new Promise<void>(resolve => { release = resolve; });
+    const pendingRead = page.waitForRequest(request => request.method() === 'GET' &&
+      new URL(request.url()).pathname === (read === 'list' ? '/api/keys' : `/api/keys/${primary.id}`));
+    const context = await setup(page, 'embed/sign-typed-data', [primary, other],
+      read === 'detail' ? primary.id : undefined, { readGate, detailKey: primary });
+    const request = await pendingRead;
+    expect(request.headers()['authorization']).toBe('Bearer qa-session');
+    await swapEmbeddedToken(page);
+    release();
+    await expectSessionRefusal(page, context);
+  });
+}
+
+for (const step of ['selection', 'sign']) {
+  test(`embed session binding: token swap before ${step} never submits a stale key`, async ({ page }) => {
+    const context = await setup(page, 'embed/sign-typed-data', step === 'selection' ? [primary, other] : [primary]);
+    if (step === 'selection') {
+      await expect(context.frame.getByRole('button', { name: /Key 2/ })).toBeVisible();
+      await swapEmbeddedToken(page);
+      await context.frame.getByRole('button', { name: /Key 2/ }).click();
+    } else {
+      await expect(context.frame.getByRole('button', { name: 'Sign Data', exact: true })).toBeVisible();
+      await swapEmbeddedToken(page);
+      await context.frame.getByRole('button', { name: 'Sign Data', exact: true }).click();
+    }
+    await expectSessionRefusal(page, context);
   });
 }
