@@ -2,6 +2,7 @@
   import { page } from '$app/stores';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
+  import { ARCHIVED_KEY_MESSAGE } from '$lib/delegate-key-selection';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import { passkeysSupportedFromParams, withPasskeysFlag } from '$lib/passkey-support';
@@ -20,6 +21,8 @@
   let loading = $state(true);
   let signing = $state(false);
   let error = $state('');
+  let archivedKey = $state(false);
+  let requestVersion = $state(0);
 
   // Exact requesting origin; never '*' (TC-690).
   const origin = resolveWidgetOrigin($page.url.searchParams.get('origin'));
@@ -29,8 +32,6 @@
   const counterparty: Window | null = typeof window === 'undefined'
     ? null
     : window.opener ?? (window.parent !== window ? window.parent : null);
-  let sessionChecked = $state(false);
-  let keyFetched = $state(false);
   let initialized = $state(false);
 
   // Use $effect instead of onMount for Svelte 5 compatibility with SSR disabled
@@ -47,54 +48,58 @@
     }
   });
 
-  // Reactively update loading state when session becomes available
+  // Load public metadata before allowing this request to reach signing review.
   $effect(() => {
-    if ($session.data && !sessionChecked) {
-      sessionChecked = true;
+    const requestedKeyId = keyId;
+    const version = requestVersion;
+    if (!$session.data) return;
+    if (!requestedKeyId) {
       loading = false;
+      return;
     }
+
+    let active = true;
+    loading = true;
+    api.getKey(requestedKeyId).then(result => {
+      if (!active || version !== requestVersion) return;
+      if (result.key.archivedAt != null) {
+        archivedKey = true;
+        return;
+      }
+      key = result.key;
+    }).catch(() => {
+      // Key not found
+    }).finally(() => {
+      if (active && version === requestVersion) loading = false;
+    });
+    return () => { active = false; };
   });
 
-  // Reactively fetch key when session becomes available and we have a keyId
-  $effect(() => {
-    if ($session.data && keyId && !keyFetched && !key) {
-      keyFetched = true;
-      api.getKey(keyId).then(result => {
-        key = result.key;
-      }).catch(() => {
-        // Key not found
-      });
-    }
-  });
-
-  async function handleMessage(event: MessageEvent) {
+  function handleMessage(event: MessageEvent) {
     if (!isFromWidgetCounterparty(event, origin, counterparty)) return;
     if (event.data?.type === 'openkey:signTypedData:request') {
+      requestVersion += 1;
+      key = null;
+      archivedKey = false;
+      error = '';
+      signing = false;
+      loading = true;
       typedData = event.data.data;
       keyId = event.data.data?.keyId || null;
-      keyFetched = false; // Reset so effect can run
-
-      // Try immediately if session is already available
-      if (keyId && $session.data) {
-        try {
-          const result = await api.getKey(keyId);
-          key = result.key;
-          keyFetched = true;
-        } catch {
-          // Key not found
-        }
-      }
     }
   }
 
   async function signTypedData() {
-    if (!key || !typedData) return;
+    if (!key || key.archivedAt != null || archivedKey || !typedData) return;
+
+    const version = requestVersion;
 
     signing = true;
     error = '';
 
     try {
       const result = await api.signTypedData(key.id, typedData);
+      if (version !== requestVersion) return;
       sendResponse({
         type: 'openkey:signTypedData:response',
         success: true,
@@ -103,9 +108,9 @@
       });
       sendClose();
     } catch (e: any) {
-      error = e.message || 'Signing failed';
+      if (version === requestVersion) error = e.message || 'Signing failed';
     } finally {
-      signing = false;
+      if (version === requestVersion) signing = false;
     }
   }
 
@@ -113,7 +118,9 @@
     sendResponse({
       type: 'openkey:signTypedData:response',
       success: false,
-      error: { code: 'USER_CANCELLED', message: 'User cancelled' },
+      error: archivedKey
+        ? { code: 'NO_KEY', message: ARCHIVED_KEY_MESSAGE }
+        : { code: 'USER_CANCELLED', message: 'User cancelled' },
     });
     sendClose();
   }
@@ -151,6 +158,11 @@
   {:else if loading}
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
       Loading...
+    </div>
+  {:else if archivedKey}
+    <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400 gap-4">
+      <p>{ARCHIVED_KEY_MESSAGE}</p>
+      <Button variant="secondary" onclick={cancel}>Cancel</Button>
     </div>
   {:else if !key}
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
