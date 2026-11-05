@@ -19,19 +19,20 @@ import {
   shortServiceName,
 } from './delegate-validation';
 import { logPermissionEntryUnknownFields } from '../log';
+import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
 
 export type DelegationJwk = { kty: string; crv: string; x: string };
 export type AbilitiesMap = Record<string, Record<string, string[]>>;
+export type SpaceAbilitiesMap = Record<string, AbilitiesMap>;
 /** Top-level ReCap resources (not under the session space): `resource → actions[]`. */
 export type RawAbilitiesMap = Record<string, string[]>;
 
 /**
- * The two ability maps `prepareSession` signs: `abilities` nests under the
- * session space, `rawAbilities` are top-level ReCap resources (raw
- * encryption networks, `urn:tinycloud:encryption:<ownerDid>:<name>`).
+ * Space-scoped ReCap resources and top-level raw encryption resources.
+ * The primary routing space is not an authority boundary.
  */
 export interface SessionAbilities {
-  abilities: AbilitiesMap;
+  spaceAbilities: SpaceAbilitiesMap;
   rawAbilities: RawAbilitiesMap;
 }
 
@@ -46,6 +47,18 @@ export interface RecapEntry {
   space: string;
   path: string;
   actions: string[];
+}
+
+export interface RequestedDelegationSpace {
+  space: string;
+  spaceId: string;
+}
+
+/** Enumerate the full request baseline, including spaces the owner later deselects. */
+export function delegationSpaces(entries: RecapEntry[], baseline?: SessionAbilities): RequestedDelegationSpace[] {
+  const signedSpaces = new Set(entries.filter(entry => !isRawRecapEntry(entry)).map(entry => entry.space));
+  const ordered = baseline ? Object.keys(baseline.spaceAbilities) : [...signedSpaces];
+  return ordered.map(spaceId => ({ space: spaceId.slice(spaceId.lastIndexOf(':') + 1), spaceId }));
 }
 
 export interface PermissionActionOption {
@@ -97,10 +110,9 @@ export const DEFAULT_ABILITIES: AbilitiesMap = {
   },
 };
 
-export const DEFAULT_SESSION_ABILITIES: SessionAbilities = {
-  abilities: DEFAULT_ABILITIES,
-  rawAbilities: Object.create(null),
-};
+export function defaultSessionAbilities(spaceId: string): SessionAbilities {
+  return { spaceAbilities: { [spaceId]: DEFAULT_ABILITIES }, rawAbilities: Object.create(null) };
+}
 
 const SERVICE_LABELS: Record<string, string> = {
   kv: 'Key-Value Storage',
@@ -191,27 +203,27 @@ export function isRawRecapEntry(entry: RecapEntry): boolean {
 }
 
 export function entriesToSessionAbilities(entries: RecapEntry[]): SessionAbilities {
-  const abilities: AbilitiesMap = Object.create(null);
+  const spaceAbilities: SpaceAbilitiesMap = Object.create(null);
   const rawAbilities: RawAbilitiesMap = Object.create(null);
 
   for (const entry of entries) {
     if (isRawRecapEntry(entry)) {
-      rawAbilities[entry.path] = entry.actions;
+      addActions(rawAbilities, entry.path, entry.actions);
       continue;
     }
-    if (!Object.hasOwn(abilities, entry.service)) abilities[entry.service] = Object.create(null);
-    abilities[entry.service]![entry.path] = entry.actions;
+    if (!Object.hasOwn(spaceAbilities, entry.space)) spaceAbilities[entry.space] = Object.create(null);
+    const abilities = spaceAbilities[entry.space]!;
+    const service = shortServiceName(entry.service);
+    if (!Object.hasOwn(abilities, service)) abilities[service] = Object.create(null);
+    addActions(abilities[service]!, entry.path, entry.actions);
   }
 
-  return { abilities, rawAbilities };
+  return { spaceAbilities, rawAbilities };
 }
 
-/** `prepareSession` config fields; `rawAbilities` only when there are any. */
-export function sessionAbilitiesConfig({ abilities, rawAbilities }: SessionAbilities): {
-  abilities: AbilitiesMap;
-  rawAbilities?: RawAbilitiesMap;
-} {
-  return Object.keys(rawAbilities).length > 0 ? { abilities, rawAbilities } : { abilities };
+/** The WASM per-space builder, including raw resources when present. */
+export function sessionAbilitiesConfig({ spaceAbilities, rawAbilities }: SessionAbilities) {
+  return { abilities: {}, spaceAbilities, ...(Object.keys(rawAbilities).length > 0 ? { rawAbilities } : {}) };
 }
 
 /**
@@ -230,7 +242,9 @@ export function assertBaselineSubset(entries: RecapEntry[], baseline: SessionAbi
     if (isRawRecapEntry(entry)) {
       allowedActions = Object.hasOwn(baseline.rawAbilities, entry.path) ? baseline.rawAbilities[entry.path] : undefined;
     } else {
-      const serviceAbilities = Object.hasOwn(baseline.abilities, entry.service) ? baseline.abilities[entry.service] : undefined;
+      const abilities = Object.hasOwn(baseline.spaceAbilities, entry.space) ? baseline.spaceAbilities[entry.space] : undefined;
+      const service = shortServiceName(entry.service);
+      const serviceAbilities = abilities && Object.hasOwn(abilities, service) ? abilities[service] : undefined;
       allowedActions = serviceAbilities && Object.hasOwn(serviceAbilities, entry.path) ? serviceAbilities[entry.path] : undefined;
     }
 
@@ -246,9 +260,6 @@ export function assertBaselineSubset(entries: RecapEntry[], baseline: SessionAbi
   }
 }
 
-export function assertDefaultSubset(entries: RecapEntry[]) {
-  assertBaselineSubset(entries, DEFAULT_SESSION_ABILITIES);
-}
 
 /**
  * capabilities/read is required only when the request baseline grants it:
@@ -259,21 +270,18 @@ export function assertDefaultSubset(entries: RecapEntry[]) {
  * session.
  */
 export function assertRequiredActions(entries: RecapEntry[], baseline: SessionAbilities) {
-  const baselineCapabilities = Object.hasOwn(baseline.abilities, 'capabilities')
-    ? baseline.abilities.capabilities!
-    : undefined;
-  const baselineGrantsCapabilitiesRead = baselineCapabilities !== undefined &&
-    Object.values(baselineCapabilities).some((actions) => actions.includes(CAPABILITIES.READ));
-  if (!baselineGrantsCapabilitiesRead) return;
-
-  const hasRequiredCapabilitiesRead = entries.some(
-    (entry) =>
-      entry.service === 'capabilities' &&
-      entry.actions.includes(CAPABILITIES.READ),
-  );
-
-  if (!hasRequiredCapabilitiesRead) {
-    throw new Error('capabilities/read is required for this delegation');
+  for (const [space, abilities] of Object.entries(baseline.spaceAbilities)) {
+    const capabilities = Object.hasOwn(abilities, 'capabilities') ? abilities.capabilities : undefined;
+    for (const [path, actions] of Object.entries(capabilities ?? {})) {
+      if (!actions.includes(CAPABILITIES.READ)) continue;
+      const retained = entries.some(entry =>
+        entry.space === space &&
+        shortServiceName(entry.service) === 'capabilities' &&
+        entry.path === path &&
+        entry.actions.includes(CAPABILITIES.READ),
+      );
+      if (!retained) throw new Error('capabilities/read is required for this delegation');
+    }
   }
 }
 
@@ -537,7 +545,7 @@ export function sessionAbilitiesFromPermissions(
   signer: { address: string; chainId: number },
   options: { deviceTransaction?: boolean } = {},
 ): SessionAbilities {
-  const abilities: AbilitiesMap = Object.create(null);
+  const entries: RecapEntry[] = [];
   const rawAbilities: RawAbilitiesMap = Object.create(null);
   let deviceDefaultSeen = false;
   permissions.forEach((entry, index) => {
@@ -560,45 +568,26 @@ export function sessionAbilitiesFromPermissions(
     }
     const short = shortServiceName(entry.service);
     if (!short) return;
-    if (!Object.hasOwn(abilities, short)) abilities[short] = Object.create(null);
-    addActions(abilities[short]!, entry.path, entry.actions);
+    entries.push({ service: short, space: resolvePermissionSpace(entry.space!, signer), path: entry.path, actions: entry.actions });
   });
-  return { abilities, rawAbilities };
+  const scoped = entriesToSessionAbilities(entries);
+  return { spaceAbilities: scoped.spaceAbilities, rawAbilities };
 }
 
-/**
- * Pull the space short-name out of the requested permissions. The CLI groups
- * its requests by space before calling /delegate, so a single delegation only
- * ever covers one space. We refuse mixed-space requests rather than silently
- * dropping caps.
- */
-export function spacePrefixFromPermissions(
-  permissions: DelegationPermissionEntry[],
-): string {
-  // Ethereum addresses in `tinycloud:pkh` URIs are case-insensitive; chain
-  // and space name stay exact (same rule as device authorization).
-  const spaces = new Set<string>();
-  for (const permission of permissions) {
-    if (isRawEncryptionPermission(permission)) continue;
-    if (!permission.space) {
-      throw new Error('non-raw permissions must include a space');
-    }
-    const pkh = /^tinycloud:pkh:eip155:([^:]+):(0x[0-9a-fA-F]{40}):(.+)$/.exec(permission.space);
-    spaces.add(pkh ? `tinycloud:pkh:eip155:${pkh[1]}:${pkh[2]!.toLowerCase()}:${pkh[3]}` : permission.space);
+/** Logical names resolve only to the selected signing account; qualified names must already name it. */
+export function resolvePermissionSpace(space: string, signer: { address: string; chainId: number }): string {
+  if (!space) throw new Error('non-raw permissions must include a space');
+  if (!space.startsWith('tinycloud:')) return makeSpaceId(signer.address, signer.chainId, space);
+  const pkh = /^tinycloud:pkh:eip155:([1-9][0-9]*):(0x[0-9a-fA-F]{40}):([^:/]+)$/.exec(space);
+  if (!pkh || pkh[1] !== String(signer.chainId) || pkh[2]!.toLowerCase() !== signer.address.toLowerCase()) {
+    throw new DelegateRequestError('invalid_permissions', 'Requested spaces must belong to the signing account');
   }
-  if (spaces.size !== 1) {
-    throw new DelegateRequestError(
-      'invalid_permissions',
-      'permissions must belong to a single space',
-      permissions.map((_permission, index) => ({
-        path: `permissions[${index}].space`,
-        message: 'All permissions must use the same space',
-      })),
-    );
-  }
-  const space = [...spaces][0]!;
-  if (!space.startsWith('tinycloud:')) return space;
-  return space.slice(space.lastIndexOf(':') + 1);
+  return makeSpaceId(signer.address, signer.chainId, pkh[3]!);
+}
+
+/** Prefer applications for routing; otherwise preserve the request's first resolved space. */
+export function primaryRoutingSpace(spaceIds: string[], fallback: string): string {
+  return spaceIds.find(space => space.endsWith(':applications')) ?? spaceIds[0] ?? fallback;
 }
 
 export interface PrepareDelegationSessionInput {
@@ -609,13 +598,10 @@ export interface PrepareDelegationSessionInput {
   actionKeys?: string[];
   permissionKeys?: string[];
   /**
-   * CLI-driven explicit capability request. When set, the prefix is derived
-   * from the entries' space URI and abilities are built directly from the
-   * entries rather than the DEFAULT_ABILITIES baseline; raw encryption
-   * entries are signed as top-level ReCap resources. The CLI-supplied
-   * permissions become the *baseline* for the same actionKeys/permissionKeys
-   * narrowing the standard consent UI uses, so users can still trim a CLI
-   * request before signing.
+   * CLI-driven explicit capability request. Every logical space resolves to
+   * the signing account and becomes a separate per-space ability baseline.
+   * Raw encryption entries remain top-level ReCap resources. Users can trim
+   * the baseline through the same actionKeys/permissionKeys consent controls.
    */
   permissions?: DelegationPermissionEntry[];
   /**
@@ -638,6 +624,7 @@ export interface PrepareDelegationSessionResult {
   /** The request baseline the session was prepared from (before narrowing). */
   baselineAbilities: SessionAbilities;
   spaceId: string;
+  requestedSpaces: RequestedDelegationSpace[];
 }
 
 export function prepareDelegationSession({
@@ -655,10 +642,11 @@ export function prepareDelegationSession({
   issuedAt,
 }: PrepareDelegationSessionInput): PrepareDelegationSessionResult {
   const isCliBaseline = permissions !== undefined;
-  const effectivePrefix = isCliBaseline
-    ? spacePrefixFromPermissions(permissions!)
-    : prefix;
-  const spaceId = makeSpaceId(address, chainId, effectivePrefix);
+  const fallbackSpaceId = makeSpaceId(address, chainId, prefix);
+  const baselineAbilities = isCliBaseline
+    ? sessionAbilitiesFromPermissions(permissions!, { address, chainId }, { deviceTransaction })
+    : defaultSessionAbilities(fallbackSpaceId);
+  const spaceId = primaryRoutingSpace(Object.keys(baselineAbilities.spaceAbilities), fallbackSpaceId);
 
   const now = issuedAt ?? new Date();
   const expirationTime = new Date(now.getTime() + expiryMs);
@@ -673,9 +661,6 @@ export function prepareDelegationSession({
     jwk,
   };
 
-  const baselineAbilities = isCliBaseline
-    ? sessionAbilitiesFromPermissions(permissions!, { address, chainId }, { deviceTransaction })
-    : DEFAULT_SESSION_ABILITIES;
 
   const baselinePrepared = prepareSession({
     ...baseConfig,
@@ -727,12 +712,16 @@ export function prepareDelegationSession({
     0,
   );
   const edited = selectedActionCount < baselineActionKeys.size;
-  const prepared = edited
-    ? prepareSession({
-        ...baseConfig,
-        ...sessionAbilitiesConfig(entriesToSessionAbilities(selectedEntries)),
-      })
-    : baselinePrepared;
+  let prepared = baselinePrepared;
+  if (edited) {
+    const narrowed = narrowSiwePreservingImmutable({
+      originalSiwe: baselinePrepared.siwe,
+      narrowedEntries: selectedEntries,
+      ...baseConfig,
+    });
+    if (!narrowed.ok) throw new Error(narrowed.message);
+    prepared = { ...baselinePrepared, siwe: narrowed.siwe };
+  }
 
   return {
     prepared,
@@ -743,5 +732,6 @@ export function prepareDelegationSession({
     edited,
     spaceId,
     baselineAbilities,
+    requestedSpaces: delegationSpaces(selectedEntries, baselineAbilities),
   };
 }

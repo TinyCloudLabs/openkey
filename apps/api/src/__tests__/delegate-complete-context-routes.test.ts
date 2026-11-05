@@ -19,6 +19,7 @@ import {
 import type { delegateRouter, setDelegateSignerAuthMiddlewareForTests } from '../routes/delegate';
 import type { _resetAuthorizationContextStoreForTests } from '../services/authorization-signing';
 import { mockModules, replaceModules } from './mock-module';
+import { recapOf } from './fake-tinycloud-node';
 
 const privateKey = '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 const account = privateKeyToAccount(privateKey);
@@ -54,10 +55,12 @@ const prisma = {
   tinyCloudBootstrapState: {},
 };
 
-const activateSessionWithHost = mock(async (_host: string, _header: { Authorization: string }): Promise<SpaceHostResult> => ({
-  success: true,
-  status: 200,
-}));
+async function activatedReceipt(_host: string, header: { Authorization: string }): Promise<SpaceHostResult> {
+  const activated = [...new Set(Object.keys(recapOf(header.Authorization))
+    .filter(resource => resource.startsWith('tinycloud:')).map(resource => resource.split('/')[0]!))];
+  return { success: true, status: 200, activated, skipped: [] };
+}
+const activateSessionWithHost = mock(activatedReceipt);
 let realActivateSessionWithHost: typeof ActivateSessionWithHost;
 const ensureTinyCloudBootstrap = mock(async () => ({ status: 'complete' as const }));
 const isTinyCloudBootstrapComplete = mock(async () => bootstrapComplete);
@@ -138,7 +141,7 @@ beforeEach(() => {
   autoSignEnabled = true;
   bootstrapComplete = false;
   activateSessionWithHost.mockClear();
-  activateSessionWithHost.mockImplementation(async () => ({ success: true, status: 200 }));
+  activateSessionWithHost.mockImplementation(activatedReceipt);
   ensureTinyCloudBootstrap.mockClear();
   isTinyCloudBootstrapComplete.mockClear();
   prisma.user.findUnique.mockClear();
@@ -1026,7 +1029,7 @@ describe('TC-1608 requested space', () => {
   for (const [name, approve] of [['versioned', managedApproval], ['legacy', legacyApproval]] as const) {
     test(`${name} approval answers ready once the node confirms the space, while the setup runs on`, async () => {
       ensureTinyCloudBootstrap.mockImplementationOnce((async (input: any) => {
-        input.requestedSpace.report({ status: 'hosted' });
+        input.requestedSpaces.report({ status: 'hosted' });
         return wholeSetup();
       }) as any);
       const result = await approve(host);
@@ -1036,13 +1039,13 @@ describe('TC-1608 requested space', () => {
       expect(ensureTinyCloudBootstrap).toHaveBeenCalledTimes(1);
       const [setup] = ensureTinyCloudBootstrap.mock.calls[0] as unknown as [Record<string, any>];
       // The space this approval is for, not yet confirmed by an earlier attempt.
-      expect(setup.requestedSpace).toMatchObject({ space: 'agents', alreadyHosted: false });
+      expect(setup.requestedSpaces).toMatchObject({ spaces: ['agents'], alreadyHosted: false });
     });
   }
 
   test('a space the node did not confirm reports the failure with its code', async () => {
     ensureTinyCloudBootstrap.mockImplementationOnce((async (input: any) => {
-      input.requestedSpace.report({
+      input.requestedSpaces.report({
         status: 'failed',
         errorCode: 'tinycloud_bootstrap_space_not_hosted',
         errorMessage: 'TinyCloud node did not host agents after its host delegation: space was skipped',
@@ -1056,7 +1059,9 @@ describe('TC-1608 requested space', () => {
   });
 
   test('an approval for an already hosted space never starts the setup', async () => {
-    activateSessionWithHost.mockImplementation(async () => ({ success: true, skipped: [] }) as any);
+    activateSessionWithHost.mockImplementation(async () => ({
+      success: true, status: 200, skipped: [], activated: [`tinycloud:pkh:eip155:1:${account.address}:agents`],
+    }));
     const result = await managedApproval(host);
     expect(result.body.spaceReady).toBe(true);
     expect(ensureTinyCloudBootstrap).not.toHaveBeenCalled();
