@@ -20,6 +20,8 @@ const permissions = request.map(entry => {
     actions: entry.actions.map(ability => ({ key: `${key}\0${ability}`, ability, action: ability.split('/')[1], required: service === 'capabilities' })) };
 });
 const fullKeys = permissions.flatMap(entry => entry.actions.map(action => action.key));
+const issuedAt = new Date();
+const expirationTime = new Date(issuedAt.getTime() + 86_400_000);
 function message(keys: string[]) {
   const att: Record<string, Record<string, object[]>> = {};
   permissions.forEach((permission, index) => {
@@ -31,7 +33,7 @@ function message(keys: string[]) {
     'cli.tinycloud.xyz wants you to sign in with your Ethereum account:', address, '',
     'URI: did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK',
     'Version: 1', 'Chain ID: 1', 'Nonce: abcdef123456',
-    'Issued At: 2026-11-05T00:00:00.000Z', 'Expiration Time: 2026-11-06T00:00:00.000Z',
+    `Issued At: ${issuedAt.toISOString()}`, `Expiration Time: ${expirationTime.toISOString()}`,
     'Resources:', `- ${makeRecapResource(att)}`,
   ].join('\n');
 }
