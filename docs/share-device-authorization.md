@@ -178,8 +178,8 @@ requestedSpaces: Array<{
 
 The list preserves the full request baseline in request order, even if the
 owner removes all grants in a space. Preparation reports `null` readiness.
-Completion reports an entirely deselected space as `false` and does not host
-it for this request. For granted spaces, `true` requires a positive node
+Completion reports an entirely deselected space as `false`, without a signed
+grant for that space. For granted spaces, `true` requires a positive node
 activation result or managed hosting confirmation; `false` denotes an
 explicit skipped/unavailable space, and `null` denotes unconfirmed readiness.
 An already-known delegation's empty activation receipt is not hosting proof.
@@ -190,13 +190,14 @@ Singular `spaceId` remains a routing default, not the full permission scope:
 `applications` when requested, otherwise the first requested space. The
 `spaceSetup` preparation notice still describes only that primary space and
 does not assert readiness of any space. Managed automatic setup confirms all
-granted requested spaces before reporting them ready; remaining account
-seeding continues under the existing bootstrap lock and bounded retry.
+granted requested spaces before reporting them ready. Existing account-wide
+bootstrap still hosts all six canonical managed-account spaces in the
+background, independent of the CLI grant; hosting gives the CLI no permission.
+Remaining account seeding continues under the bootstrap lock and bounded retry.
 
 The authorization context binds the complete per-space baseline, exact
 selection, session key, signing owner, host and lifetime. Response metadata
 never substitutes for verification of the signed SIWE and its permissions.
-
 
 For the widget's `/api/delegate/authorize-sign-prepare` →
 `/api/delegate/authorize-sign-preview` → `/api/delegate/authorize-sign`

@@ -2126,12 +2126,15 @@ delegateRouter.post('/complete', async (c) => {
   let baseline: SessionAbilities;
   try {
     const entries = parsePreparedRecap(body.prepared.siwe);
+    const preview = typeof body.authorizationContextToken === 'string'
+      ? peekAuthorizationContext(body.authorizationContextToken) : undefined;
+    const defaultSpaceId = preview?.ok ? preview.value.spaceId : preparedSpaceId;
     baseline = baselinePermissions
       ? sessionAbilitiesFromPermissions(baselinePermissions, {
           address: signedFields.address,
           chainId: signedFields.chainId,
         }, { deviceTransaction: body.deviceTransactionId !== undefined })
-      : defaultSessionAbilities(preparedSpaceId);
+      : defaultSessionAbilities(defaultSpaceId);
     assertBaselineSubset(entries, baseline);
     assertRequiredActions(entries, baseline);
   } catch (e) {

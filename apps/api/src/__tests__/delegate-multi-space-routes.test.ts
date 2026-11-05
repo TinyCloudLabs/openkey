@@ -174,9 +174,8 @@ test('a changed per-space permission baseline is refused without spending the or
   expect((await post('/', request)).status).toBe(200);
 });
 
-test('a fully deselected space stays in the requested set and is not hosted or reported ready', async () => {
+test('a fully deselected space stays in the requested set without a signed grant or readiness', async () => {
   const baseline = permissions.filter(entry => entry.service !== 'tinycloud.capabilities');
-  node.hosted.add(spaces[0]!.spaceId);
   const initial = await post('/prepare', { keyId: key.id, jwk, host: node.url, permissions: baseline });
   const selection = initial.body.selectedActionKeys.filter(key => key.split('\0')[1] === spaces[0]!.spaceId);
   const narrowed = await post('/prepare', { keyId: key.id, jwk, host: node.url, permissions: baseline, actionKeys: selection });
@@ -188,5 +187,5 @@ test('a fully deselected space stays in the requested set and is not hosted or r
     { ...spaces[0]!, spaceReady: true }, { ...spaces[1]!, spaceReady: false },
   ]);
   expect(completed.body.spaceReady).toBe(false);
-  expect(node.hostPosts.some(post => post.spaceId === spaces[1]!.spaceId)).toBe(false);
+  expect(parsePreparedRecap(completed.body.siwe).every(entry => entry.space === spaces[0]!.spaceId)).toBe(true);
 });
