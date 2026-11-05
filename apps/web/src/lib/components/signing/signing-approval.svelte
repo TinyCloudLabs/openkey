@@ -1134,6 +1134,7 @@
   .reason .reason-body {
     font-size: 13px;
     color: #0f172a;
+    overflow-wrap: anywhere;
   }
   .signer-line {
     display: flex;
@@ -1453,6 +1454,7 @@
     font-size: 12px;
     line-height: 1.45;
     color: #475569;
+    overflow-wrap: anywhere;
   }
   .reason-untrusted {
     color: #9a3412;
