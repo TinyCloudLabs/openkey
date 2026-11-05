@@ -40,8 +40,8 @@ const json = (route: Route, body: unknown, status = 200) => route.fulfill({ stat
 test.use({ viewport: { width: 390, height: 844 } });
 
 test('one consent retains account discovery and Home/feed space identity through edits and approval', async ({ page }) => {
-  const prepares: Record<string, any>[] = [];
-  const approvals: Record<string, any>[] = [];
+  const prepares: Array<{ permissions: unknown; actionKeys?: string[] }> = [];
+  const approvals: Record<string, unknown>[] = [];
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.route('**/api/**', route => {
@@ -71,7 +71,7 @@ test('one consent retains account discovery and Home/feed space identity through
   const approve = page.getByRole('button', { name: 'Approve', exact: true });
   await expect(approve).toBeEnabled();
   expect(prepares).toHaveLength(1);
-  expect(prepares[0].permissions).toEqual(request);
+  expect(prepares[0]!.permissions).toEqual(request);
   const details = page.locator('details.advanced-details');
   await details.locator(':scope > summary').click();
   await details.getByRole('button', { name: 'Edit', exact: true }).click();
