@@ -1060,8 +1060,8 @@ describe('TC-1608 requested space', () => {
 
   test('an approval for an already hosted space never starts the setup', async () => {
     activateSessionWithHost.mockImplementation(async () => ({
-      success: true, skipped: [], activated: [`tinycloud:pkh:eip155:1:${account.address}:agents`],
-    }) as SpaceHostResult);
+      success: true, status: 200, skipped: [], activated: [`tinycloud:pkh:eip155:1:${account.address}:agents`],
+    }));
     const result = await managedApproval(host);
     expect(result.body.spaceReady).toBe(true);
     expect(ensureTinyCloudBootstrap).not.toHaveBeenCalled();

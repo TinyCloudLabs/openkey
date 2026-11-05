@@ -189,3 +189,13 @@ test('a fully deselected space stays in the requested set without a signed grant
   expect(completed.body.spaceReady).toBe(false);
   expect(parsePreparedRecap(completed.body.siwe).every(entry => entry.space === spaces[0]!.spaceId)).toBe(true);
 });
+
+test('prepared signing chooses applications for routing even when the first ReCap entry is account', async () => {
+  const prepared = await prepare();
+  expect(parsePreparedRecap(prepared.prepared.siwe)[0]?.space).toBe(spaces[0]!.spaceId);
+  const review = await post('/authorize-sign-prepare', {
+    keyId: key.id, siwe: prepared.prepared.siwe, jwk, host: node.url, requestOrigin: 'https://cli.tinycloud.xyz',
+  });
+  expect(review.status).toBe(200);
+  expect(review.body.spaceId).toBe(spaces[1]!.spaceId);
+});
