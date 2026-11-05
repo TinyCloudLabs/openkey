@@ -126,37 +126,91 @@ describe('durable approval codes use the saved request before claiming delivery'
     return { ...f, signProof: f.proof, codeStore, body, proof };
   }
 
+  async function pendingApproval(codeStore: ApprovalCodeStore, lifetime = 3600) {
+    const f = fixture(codeStore);
+    const now = new Date('2026-10-28T20:00:00Z');
+    const relay = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+    const relayJwk = await crypto.subtle.exportKey('jwk', relay.publicKey);
+    const jwk = f.record.request.targetPublicJwk;
+    const did = strictSessionDid(jwk);
+    const owner = Wallet.createRandom();
+    f.record.resultRef = null;
+    f.record.encryptedResult = null;
+    f.record.request = { ...f.record.request, issuer: did, requestVersion: 1, targetDid: did, nodeOrigin: 'https://node.example.test',
+      permissions: [{ service: 'tinycloud.kv', space: 'qa', path: '', actions: ['tinycloud.kv/get'] }],
+      grantLifetimeSeconds: lifetime, resultEncryptionPublicJwk: { kty: 'EC', crv: 'P-256', x: relayJwk.x!, y: relayJwk.y! } };
+    const siwe = new SiweMessage({ domain: 'openkey.example.test', address: owner.address, uri: did, version: '1', chainId: 1,
+      nonce: 'qa123456', issuedAt: now.toISOString(), expirationTime: new Date(now.getTime() + lifetime * 1000).toISOString() }).prepareMessage();
+    const body = { jwk, host: f.record.request.nodeOrigin, permissions: f.record.request.permissions };
+    const delegation = {
+      siwe, signature: await owner.signMessage(siwe), jwk, verificationMethod: did, ownerDid: `did:pkh:eip155:1:${owner.address}`,
+    };
+    return { ...f, now, body, delegation };
+  }
+
   for (const lifetime of [90, 3600]) {
     test(`a real signed approval issues a code bounded by its ${lifetime}-second delegation and five minutes`, async () => {
-      const f = fixture(createPrismaDelegationCodeStore(client));
-      const now = new Date('2026-10-28T20:00:00Z');
-      const relay = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
-      const jwk = f.record.request.targetPublicJwk;
-      const did = strictSessionDid(jwk);
-      const owner = Wallet.createRandom();
-      f.record.resultRef = null;
-      f.record.encryptedResult = null;
-      f.record.request = { ...f.record.request, issuer: did, requestVersion: 1, targetDid: did, nodeOrigin: 'https://node.example.test',
-        permissions: [{ service: 'tinycloud.kv', space: 'qa', path: '', actions: ['tinycloud.kv/get'] }],
-        grantLifetimeSeconds: lifetime, resultEncryptionPublicJwk: await crypto.subtle.exportKey('jwk', relay.publicKey) as never };
-      const siwe = new SiweMessage({ domain: 'openkey.example.test', address: owner.address, uri: did, version: '1', chainId: 1,
-        nonce: 'qa123456', issuedAt: now.toISOString(), expirationTime: new Date(now.getTime() + lifetime * 1000).toISOString() }).prepareMessage();
-      const body = { jwk, host: f.record.request.nodeOrigin, permissions: f.record.request.permissions };
-      const delegation = {
-        siwe, signature: await owner.signMessage(siwe), jwk, verificationMethod: did, ownerDid: `did:pkh:eip155:1:${owner.address}`,
-      };
-      const approvalCode = await f.service.approve(f.record.id, 'qa-owner', body, delegation);
+      const f = await pendingApproval(createPrismaDelegationCodeStore(client), lifetime);
+      const approvalCode = await f.service.approve(f.record.id, 'qa-owner', f.body, f.delegation);
       expect(approvalCode?.code).toMatch(/^[A-Z2-7]{4}-[A-Z2-7]{4}$/);
-      const expiresAt = new Date(now.getTime() + Math.min(lifetime, 300) * 1000).toISOString();
+      const expiresAt = new Date(f.now.getTime() + Math.min(lifetime, 300) * 1000).toISOString();
       expect(approvalCode?.expiresAt).toBe(expiresAt);
       const stored = await client.delegationCode.findUniqueOrThrow({ where: { code: approvalCode!.code.toLowerCase() } });
       expect(stored.delegation).toEqual({ kind: 'approval-result', requestId: f.record.id, bodyCid: f.record.bodyCid,
         resultRef: f.record.resultRef, expiresAt });
       expect(f.record.encryptedResult).not.toBeNull();
-      await expect(f.service.approve(f.record.id, 'qa-owner', body, delegation)).rejects.toMatchObject({ code: 'expired_request' });
+      await expect(f.service.approve(f.record.id, 'qa-owner', f.body, f.delegation)).rejects.toMatchObject({ code: 'expired_request' });
       expect(await client.delegationCode.count()).toBe(1);
     });
   }
+
+  test('ACK winning during code allocation suppresses the new code and removes its delivery', async () => {
+    const real = createPrismaDelegationCodeStore(client);
+    let resume!: () => void;
+    let reached!: () => void;
+    const paused = new Promise<void>(resolve => { reached = resolve; });
+    const released = new Promise<void>(resolve => { resume = resolve; });
+    const f = await pendingApproval({
+      ...real,
+      async create(...args) {
+        reached();
+        await released;
+        return real.create(...args);
+      },
+    });
+    const approving = f.service.approve(f.record.id, 'qa-owner', f.body, f.delegation);
+    await paused;
+    try {
+      const path = `/api/approval-results/${f.record.resultRef}/ack`;
+      const ackId = 'durable-polling-client-ack-0001';
+      await f.service.acknowledge(f.record.resultRef!, { requestId: f.record.id, bodyCid: f.record.bodyCid, ackId }, f.proof('ack', path, ackId));
+    } finally {
+      resume();
+    }
+    expect(await approving).toBeNull();
+    expect(await client.delegationCode.count()).toBe(0);
+    expect(await client.delegationCodeClaim.count()).toBe(0);
+  });
+
+  test('an unavailable optional code broker does not prevent ordinary result fetch and durable ACK', async () => {
+    const real = createPrismaDelegationCodeStore(client);
+    const f = await pendingApproval({
+      ...real,
+      async create() { throw new Error('synthetic broker unavailable'); },
+      async invalidateApproval() { throw new Error('synthetic broker unavailable'); },
+    });
+    expect(await f.service.approve(f.record.id, 'qa-owner', f.body, f.delegation)).toBeNull();
+    const binding = { requestId: f.record.id, bodyCid: f.record.bodyCid };
+    const fetchPath = `/api/approval-results/${f.record.resultRef}/fetch`;
+    expect((await f.service.fetch(f.record.resultRef!, binding, f.proof('fetch', fetchPath))).resultRef).toBe(f.record.resultRef!);
+    const ackPath = `/api/approval-results/${f.record.resultRef}/ack`;
+    const ackId = 'durable-no-code-client-ack-0001';
+    const body = { ...binding, ackId };
+    expect(await f.service.acknowledge(f.record.resultRef!, body, f.proof('ack', ackPath, ackId))).toEqual({ status: 'acknowledged', ackId });
+    expect(await f.service.acknowledge(f.record.resultRef!, body, f.proof('ack', ackPath, ackId))).toEqual({ status: 'acknowledged', ackId });
+    expect(f.record.encryptedResult).toBeNull();
+    await expect(f.service.fetch(f.record.resultRef!, binding, f.proof('fetch', fetchPath))).rejects.toMatchObject({ code: 'acknowledged' });
+  });
 
   test('concurrent first code claims have one winner', async () => {
     const f = await ready();

@@ -148,7 +148,14 @@ export class ApprovalResultService {
     const codeExpiresAt = new Date(Math.min(resultExpiresAt.getTime(), now.getTime() + 5 * 60_000));
     const delivery: ApprovalCodeDelivery = { kind: 'approval-result', requestId: record.id, bodyCid: record.bodyCid, resultRef, expiresAt: codeExpiresAt.toISOString() };
     try {
-      return await allocateDelegationCode(this.options.codeStore, delivery, codeExpiresAt, now);
+      const code = await allocateDelegationCode(this.options.codeStore, delivery, codeExpiresAt, now);
+      if (!code) return null;
+      const latest = await this.store.findById(id);
+      if (!latest || latest.ackId || !latest.encryptedResult) {
+        await this.options.codeStore.invalidateApproval(resultRef);
+        return null;
+      }
+      return code;
     } catch {
       return null;
     }
@@ -231,7 +238,12 @@ export class ApprovalResultService {
     await this.result(ref, body, 'ack', proof, body.ackId);
     const record = await this.store.acknowledge(ref, body.ackId, this.options.now?.() ?? new Date());
     if (!record) throw new ApprovalResultError('ack_conflict', 'Result ACK intent conflicts with the saved ACK', 409);
-    await this.options.codeStore?.invalidateApproval(ref);
+    try {
+      await this.options.codeStore?.invalidateApproval(ref);
+    } catch {
+      // The durable ACK is authoritative for every collection path. Code expiry
+      // bounds optional broker cleanup even when that storage is unavailable.
+    }
     return { ackId: record.ackId!, status: 'acknowledged' as const };
   }
 }

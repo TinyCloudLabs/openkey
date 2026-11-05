@@ -104,8 +104,9 @@ claiming the code atomically. The same claim may retry until the original code
 expiry; a different claim cannot redeem it again. A successful response carries
 the normal `status`, `resultRef` and `expiresAt`. Save that reference, then use
 the existing encrypted-result fetch, full verification, durable commit and
-result ACK. The ACK invalidates associated codes and clears retained delivery
-records. No code is needed when resuming from an already-saved result reference.
+result ACK. Saving the ACK immediately invalidates associated codes; retained
+delivery records use the broker's existing cleanup and expiry rules. No code is
+needed when resuming from an already-saved result reference.
 
 This protocol applies to durable approval links. Device transactions, prepared
 handoffs and ordinary plain-delegation paste codes keep their own transports.
