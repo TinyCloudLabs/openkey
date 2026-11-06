@@ -5,6 +5,7 @@ import type { OpenKeyApprovalRequestV1 } from '@tinycloud/share-envelope/links';
 import { strictSessionDid, type DeviceRelayEnvelope } from './device-authorization';
 import { verifySessionProofClaims } from './native-delegation/session-proof';
 import { allocateDelegationCode, delegationClaimHash, type ApprovalCode, type ApprovalCodeDelivery, type ApprovalCodeStore } from '../routes/delegation-codes';
+import { logApprovalCodeAllocationFailure } from '../log';
 
 export interface ApprovalRequestRecord {
   id: string;
@@ -156,7 +157,8 @@ export class ApprovalResultService {
         return null;
       }
       return code;
-    } catch {
+    } catch (error) {
+      logApprovalCodeAllocationFailure(record.id, error);
       return null;
     }
   }

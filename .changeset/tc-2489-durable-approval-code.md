@@ -7,4 +7,6 @@ Durable approval links show a short, one-time confirmation code after approval, 
 
 On screens up to 480px wide, durable approval confirmations align near the top with reduced padding instead of full-height vertical centring. Desktop layout is unchanged.
 
+Code-allocation failures emit a structured warning containing request identifiers and a sanitized error class, without logging the approval code or error details. Saved approvals remain collectable without a code.
+
 Details: TC-2489.

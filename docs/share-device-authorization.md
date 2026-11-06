@@ -87,6 +87,11 @@ to "Tell your agent you've approved." If no code is available, the page says:
 
 > Tell your agent to check your request.
 
+Code-allocation failures leave the saved approval available through ordinary
+requester-signed discovery. The API emits `approval_code_allocation_failed` with
+request identifiers and a sanitized error class only, never the code, error
+message or stack.
+
 At viewport widths of 480px or less, the confirmation uses reduced top padding
 and top alignment instead of full-height vertical centring. Wider layouts are
 unchanged.

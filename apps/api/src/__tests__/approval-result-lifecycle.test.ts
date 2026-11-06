@@ -192,6 +192,46 @@ describe('durable approval codes use the saved request before claiming delivery'
     expect(await client.delegationCodeClaim.count()).toBe(0);
   });
 
+  for (const failure of ['error', 'non-error'] as const) {
+    test(`allocation ${failure} logs only request identifiers and error class while returning no code`, async () => {
+      let allocatedCode = '';
+      const f = await pendingApproval({
+        ...createPrismaDelegationCodeStore(client),
+        async create(code) {
+          allocatedCode = code;
+          if (failure === 'non-error') throw code;
+          throw Object.assign(new TypeError(`allocation-message-canary ${code}`), {
+            name: code, code: 'P2010', stack: `allocation-stack-canary ${code}`,
+          });
+        },
+      });
+      const emitted: string[] = [];
+      const stdoutWrite = process.stdout.write;
+      let approvalCode: unknown;
+      try {
+        process.stdout.write = ((chunk: string | Uint8Array) => {
+          emitted.push(String(chunk));
+          return true;
+        }) as typeof process.stdout.write;
+        approvalCode = await f.service.approve(f.record.id, 'qa-owner', f.body, f.delegation);
+      } finally {
+        process.stdout.write = stdoutWrite;
+      }
+      expect(approvalCode).toBeNull();
+      expect(emitted.map(line => JSON.parse(line) as Record<string, unknown>)).toEqual([{
+        ts: expect.any(String),
+        level: 'warn',
+        event: 'approval_code_allocation_failed',
+        request_id: expect.any(String),
+        approval_request_id: f.record.id,
+        error_name: failure === 'error' ? 'TypeError' : 'Unknown',
+      }]);
+      expect(emitted.join('')).not.toContain(allocatedCode);
+      expect(emitted.join('')).not.toContain('allocation-message-canary');
+      expect(emitted.join('')).not.toContain('allocation-stack-canary');
+    });
+  }
+
   test('an unavailable optional code broker does not prevent ordinary result fetch and durable ACK', async () => {
     const real = createPrismaDelegationCodeStore(client);
     const f = await pendingApproval({
