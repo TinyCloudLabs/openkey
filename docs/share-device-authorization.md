@@ -230,7 +230,14 @@ prompt; the old signature is not reused. If the request has expired, prepare is
 refused, the fresh context fails again, or the owner declines that second
 signature, the page stops approving and shows:
 
-> This request expired. Ask your agent for a new link.
+> **Request expired**
+>
+> Ask your agent for a new link.
+
+When consent already identified the requester, its name is kept in the heading
+(for example, “TinyCloud CLI's request expired”). The terminal screen reuses the
+confirmation card and key icon, sits near the top on narrow screens, and does
+not add viewport-height scrolling when its content fits.
 
 This recovery does not change embedded signing or prepared-SIWE handoff flows.
 

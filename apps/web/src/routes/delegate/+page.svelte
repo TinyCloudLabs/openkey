@@ -150,6 +150,7 @@
   // disappear from the review UI. `reviewSelection` is the effective
   // subset the user picked; only that changes when the user narrows.
   let reviewModel = $state<CapabilityReviewModel | null>(null);
+  const expiredRequesterName = $derived(reviewModel?.requester.displayName?.trim() || '');
   let baselineSiweForReview = $state<string | null>(null);
   let reviewSelection = $state(new Set<string>());
   let reviewEditing = $state(false);
@@ -1540,9 +1541,21 @@
 </script>
 
 {#if requestExpired}
-  <div role="alert" class="min-h-screen flex items-center justify-center px-4 text-center">
-    This request expired. Ask your agent for a new link.
-  </div>
+  <section role="alert" class="expired-request bg-[#fafafa] flex flex-col items-center px-4 py-8">
+    <div class="w-full max-w-sm flex flex-col items-center gap-6">
+      <div aria-hidden="true" class="w-12 h-12 rounded-xl bg-gradient-to-br from-surface-800 to-surface-900 flex items-center justify-center shadow-sm">
+        <svg class="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z" />
+        </svg>
+      </div>
+      <Card class="w-full p-6">
+        <div class="text-center py-4">
+          <h1 class="text-[17px] font-semibold text-surface-900 mb-2">{expiredRequesterName ? `${expiredRequesterName}'s request expired` : 'Request expired'}</h1>
+          <p class="text-[15px] leading-6 text-[#71717a]">Ask your agent for a new link.</p>
+        </div>
+      </Card>
+    </div>
+  </section>
 {:else if approvalRequestMode && !approvalRequestLoaded}
   <div role={error ? 'alert' : 'status'} class="min-h-screen flex items-center justify-center px-4 text-center">
     {error || (approvalRequestLoading ? 'Checking request…' : 'This approval link is unavailable.')}
@@ -2049,3 +2062,11 @@
   </div>
 </div>
 {/if}
+
+<style>
+  @media (max-width: 480px) {
+    .expired-request {
+      padding-top: 1rem;
+    }
+  }
+</style>
