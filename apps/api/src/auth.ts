@@ -448,6 +448,14 @@ export const auth = betterAuth({
     },
     user: {
       create: {
+        before: async () => {
+          if (process.env.OPENKEY_PAUSE_NEW_CUSTODY === 'true') {
+            throw new APIError('SERVICE_UNAVAILABLE', {
+              code: 'NEW_CUSTODY_PAUSED',
+              message: 'New accounts and managed-key creation are temporarily paused.',
+            });
+          }
+        },
         after: async (user) => {
           try {
             const privateKey = generatePrivateKey();

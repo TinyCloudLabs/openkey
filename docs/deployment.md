@@ -152,6 +152,63 @@ inspection scripts. `bun install` alone does not generate the gitignored client.
 
 #### Required Phala Environment Variables
 
+##### Pause new custody (incident containment)
+
+`OPENKEY_PAUSE_NEW_CUSTODY=true` rejects new account insertion and new
+managed Ethereum/Nostr keys. Unset or `false` keeps creation enabled. Existing
+sign-in, keys, signing and approvals remain available; the Nostr get-or-create
+route still returns an existing identity. This is not key rotation or revocation.
+The flag is passed through production compose, just like the other encrypted
+environment settings, with an explicit `false` default. It is not a GitHub
+Actions variable and does not belong in the Docker build.
+
+After Sam separately approves the merge and deployment:
+
+1. In Phala Cloud, select CVM **openkey-api > Encrypted Env**. Preserve the
+   complete existing environment and add `OPENKEY_PAUSE_NEW_CUSTODY=true`.
+   Save the encrypted environment before deploying. Do not replace the
+   environment with a one-variable file: that would remove required secrets.
+2. With the reviewed change merged to `main`, run:
+   ```bash
+   gh workflow run deploy-api.yml --repo TinyCloudLabs/openkey --ref main
+   ```
+   The workflow is main-only and manual. It builds `skgbafa/openkey-api:<main
+   commit SHA>` and deploys the tracked compose to `openkey-api`, using its
+   encrypted environment. Setting a shell/GitHub variable alone does not set
+   the CVM's encrypted environment.
+3. Record the deployment's exact commit/image tag from its job summary.
+   Verify `/health`, an existing account's sign-in/signing/approval, and
+   `POST /api/keys/generate` returning HTTP 503 with
+   `code: NEW_CUSTODY_PAUSED`. Confirm that a refused signup creates no user/key.
+
+Rollback is a flag rollback, not an old-code rollback. With separate operator
+approval, change only `OPENKEY_PAUSE_NEW_CUSTODY=false` in that same complete
+encrypted environment, then redeploy the **same incident image**. From a
+checkout of the deployed incident commit, prepare the compose with its immutable
+image tag (replace `DEPLOYED_COMMIT_SHA` with the recorded full SHA):
+
+```bash
+INCIDENT_SHA=DEPLOYED_COMMIT_SHA
+ROLLBACK_COMPOSE="$(mktemp)"
+sed "s|\${DOCKER_IMAGE}|skgbafa/openkey-api:${INCIDENT_SHA}|g" \
+  docker-compose.prod.yml > "$ROLLBACK_COMPOSE"
+phala deploy --cvm-id openkey-api --compose "$ROLLBACK_COMPOSE" \
+  --no-public-logs --no-public-sysinfo --no-dev-os --image dstack-0.5.12 --wait
+rm "$ROLLBACK_COMPOSE"
+```
+
+Use the authorized Phala CLI profile/API token. Preserve the production OS pin;
+do not rebuild, use `latest`, or dispatch against a newer `main` for this
+same-image rollback. Verify creation resumes and existing operations still work.
+
+Email confirmation and key-generation APIs expose HTTP 503 with
+`NEW_CUSTODY_PAUSED`. The social user-create adapter throws the same APIError,
+but Better Auth wraps social signup failures: Google/Apple browser callbacks
+show a generic error, not the pause-specific UI message (the ID-token endpoint
+returns `OAUTH_LINK_ERROR`). No user/account/key is inserted. Existing social
+sign-in is not paused.
+
+
 Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 
 | Variable | Description |
@@ -160,6 +217,7 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `BETTER_AUTH_SECRET` | 32+ character random secret for session encryption |
 | `BETTER_AUTH_URL` | `https://api.openkey.so` |
 | `APPROVAL_RESULT_RETENTION_SECONDS` | `600` (10 min, Sam 2026-10-29), fixed in production compose for collecting approved CLI results. The result deadline is capped by the signed grant expiry. |
+| `OPENKEY_PAUSE_NEW_CUSTODY` | Literal `true` pauses new accounts and managed Ethereum/Nostr key creation; unset/`false` leaves creation enabled. See incident procedure above. |
 | `OAUTH_DYNAMIC_CLIENT_REGISTRATION` | Keep `true` for MCP clients that register automatically; set `false` only as an emergency disable |
 | `OAUTH_VALID_AUDIENCES` | Comma-separated additional OAuth resource URLs; code includes the exact broad `https://mcp.tinycloud.xyz/mcp` and public `https://mcp.tinycloud.xyz/chatgpt/mcp` audiences. Preserve any additional configured resources. |
 | `WEBAUTHN_RP_ID` | `openkey.so` |

@@ -22,6 +22,7 @@ if (!process.env.TC2212_APPROVAL_API_CHILD) {
           BETTER_AUTH_URL: 'http://localhost:3324', BETTER_AUTH_SECRET: randomBytes(48).toString('base64url'),
           WEBAUTHN_ORIGIN: 'http://localhost:5178', WEBAUTHN_RP_ID: 'localhost', CORS_ORIGIN: 'http://localhost:5178',
           APPROVAL_RESULT_RETENTION_SECONDS: '600', TINYCLOUD_BOOTSTRAP_ON_SIGN: 'off',
+          OPENKEY_PAUSE_NEW_CUSTODY: 'true',
           RESEND_API_KEY: '', GOOGLE_CLIENT_ID: '', GOOGLE_CLIENT_SECRET: '',
           DATABASE_URL: `pglite:${join(directory, 'db')}` },
         stdout: 'pipe', stderr: 'pipe',

@@ -191,6 +191,13 @@ keysRouter.get('/', async (c) => {
 
 // Generate a new key
 keysRouter.post('/generate', async (c) => {
+  if (process.env.OPENKEY_PAUSE_NEW_CUSTODY === 'true') {
+    return c.json({
+      error: 'New accounts and managed-key creation are temporarily paused.',
+      code: 'NEW_CUSTODY_PAUSED',
+    }, 503);
+  }
+
   const user = c.get('user');
   const body = await c.req.json<{ label?: string }>();
 
