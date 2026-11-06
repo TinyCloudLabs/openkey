@@ -82,9 +82,10 @@ The code is optional: requester-signed result discovery continues to work
 without it. It identifies the result for the same saved request, not a new
 approval. The code expires after at most five minutes and never outlives the
 approved result. The page shows its remaining lifetime and disables copying
-after expiry. If no code is available, the page says:
+after expiry. An expired code keeps its expiry notice and changes the instruction
+to "Tell your agent you've approved." If no code is available, the page says:
 
-> Approved. Tell your agent to check your request.
+> Tell your agent to check your request.
 
 A requester collects a code through its existing result-discovery endpoint:
 

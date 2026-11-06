@@ -1544,7 +1544,7 @@
           {#if approvalRequestMode}
             <h2 class="text-lg font-semibold text-surface-900 mb-2">Approved</h2>
             {#if shortCode && codeCountdown}
-              <p class="text-surface-500 text-sm mb-4">Tell your agent you've approved, or paste this code into your chat.</p>
+              <p class="text-surface-500 text-sm mb-4">{codeCountdown.expired ? "Tell your agent you've approved." : "Tell your agent you've approved, or paste this code into your chat."}</p>
               <div class="w-full rounded-xl bg-surface-50 border border-surface-200 px-3 py-4">
                 <div class="font-mono text-2xl font-semibold tracking-widest select-all {codeCountdown.expired ? 'text-surface-400 line-through' : 'text-surface-900'}">{shortCode}</div>
                 <p role="timer" aria-live="off" class="text-sm mt-2 {codeCountdown.expired ? 'font-medium text-amber-900' : 'text-surface-600'}">
@@ -1567,7 +1567,7 @@
                 <p class="text-surface-600 text-sm mt-3" role="alert">{error}</p>
               {/if}
             {:else}
-              <p class="text-surface-500 text-sm">Approved. Tell your agent to check your request.</p>
+              <p class="text-surface-500 text-sm">Tell your agent to check your request.</p>
             {/if}
           {:else if pasteCode}
             <h2 class="text-lg font-semibold text-surface-900 mb-2">Delegation Created</h2>
