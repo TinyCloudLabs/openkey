@@ -24,7 +24,7 @@
     isCanonicalHttpsOrigin,
     withConfiguredEntries,
   } from '$lib/delegate-link-policy';
-  import { preparedMatchesSelection, reviewSelectionToActionKeys } from '$lib/delegate-review-selection';
+  import { preparedMatchesSelection, reviewSelectionToActionKeys, selectedServerActionIds } from '$lib/delegate-review-selection';
   import { expectedSigner } from '$lib/delegate-expected-signer';
   import { autoSelectKey } from '$lib/delegate-key-selection';
   import DelegateSigningHint from '$lib/components/signing/delegate-signing-hint.svelte';
@@ -1056,12 +1056,31 @@
 
   async function refreshAuthorizationContext(key: EthereumKey, actions: string[]) {
     const data = await prepareDelegation(key, actions);
-    if (!Array.isArray(data.selectedActionKeys) ||
-      data.selectedActionKeys.length !== actions.length ||
-      !data.selectedActionKeys.every((action: unknown) => typeof action === 'string' && actions.includes(action)) ||
+    const expected = new Set(actions);
+    if (!reviewModel || !Array.isArray(data.selectedActionKeys) ||
+      data.selectedActionKeys.length !== expected.size ||
+      new Set(data.selectedActionKeys).size !== expected.size ||
+      !data.selectedActionKeys.every((action: unknown) => typeof action === 'string' && expected.has(action)) ||
       typeof data.authorizationContext?.token !== 'string' || !data.authorizationContext.token ||
-      typeof data.prepared?.siwe !== 'string') {
+      typeof data.prepared?.siwe !== 'string' || !data.prepared.siwe.trim() ||
+      !Array.isArray(data.permissions) ||
+      !preparedMatchesSelection(reviewModel, data.permissions, reviewSelection, data.selectedActionKeys)) {
       throw new Error('The request could not be prepared with the approved selection.');
+    }
+    const refreshed = parseCapabilityReview({
+      message: data.prepared.siwe,
+      signer: reviewModel.signer,
+      requester: reviewModel.requester,
+      reason: reviewModel.reason,
+      metadataTrust: reviewModel.metadataTrust,
+      editable: true,
+    });
+    const signedActions = selectedServerActionIds(refreshed,
+      new Set(refreshed.permissions.flatMap(grant => grant.actions.map(action => action.id))));
+    if (refreshed.protocol !== 'tinycloud-siwe-recap' || !refreshed.immutable ||
+      refreshed.immutable.address.toLowerCase() !== key.address.toLowerCase() ||
+      signedActions.length !== expected.size || !signedActions.every(action => expected.has(action))) {
+      throw new Error('The refreshed message does not match the approved selection.');
     }
     applyPreparedDelegation(data);
   }
@@ -1142,8 +1161,10 @@
       }
       await finishDelegate(data);
     } catch (cause) {
-      if (cause instanceof DelegateResponseError && cause.contextUnavailable) {
-        if (refreshAttempted || !key) {
+      if (refreshAttempted) {
+        requestExpired = true;
+      } else if (cause instanceof DelegateResponseError && cause.contextUnavailable) {
+        if (!key) {
           requestExpired = true;
           return;
         }
@@ -1291,8 +1312,10 @@
       }
       await finishDelegate(data);
     } catch (cause) {
-      if (cause instanceof DelegateResponseError && cause.contextUnavailable) {
-        if (refreshAttempted || !key) {
+      if (refreshAttempted) {
+        requestExpired = true;
+      } else if (cause instanceof DelegateResponseError && cause.contextUnavailable) {
+        if (!key) {
           requestExpired = true;
           return;
         }
@@ -1307,8 +1330,7 @@
       } else if (cause instanceof DelegateResponseError && cause.requestExpired) {
         requestExpired = true;
       } else if (cause && typeof cause === 'object' && 'code' in cause && cause.code === 4001) {
-        if (refreshAttempted) requestExpired = true;
-        else error = 'Signature was rejected by wallet.';
+        error = 'Signature was rejected by wallet.';
       } else {
         error = cause instanceof Error ? cause.message : 'Delegation failed';
       }
