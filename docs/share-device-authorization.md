@@ -87,6 +87,10 @@ to "Tell your agent you've approved." If no code is available, the page says:
 
 > Tell your agent to check your request.
 
+At viewport widths of 480px or less, the confirmation uses reduced top padding
+and top alignment instead of full-height vertical centring. Wider layouts are
+unchanged.
+
 A requester collects a code through its existing result-discovery endpoint:
 
 ```http

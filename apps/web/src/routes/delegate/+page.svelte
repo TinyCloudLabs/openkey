@@ -1512,7 +1512,7 @@
     </div>
   </div>
 {:else}
-<div class="min-h-screen bg-[#fafafa] flex flex-col items-center justify-center px-4 py-8">
+<div class="min-h-screen bg-[#fafafa] flex flex-col items-center justify-center px-4 py-8" class:approval-confirmation={approvalRequestMode && step === 'done'}>
   <div class="w-full max-w-sm flex flex-col items-center gap-6">
     <!-- Logo mark -->
     <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-surface-800 to-surface-900 flex items-center justify-center shadow-sm">
@@ -2017,3 +2017,13 @@
   </div>
 </div>
 {/if}
+
+<style>
+  @media (max-width: 480px) {
+    .approval-confirmation {
+      min-height: 0;
+      justify-content: flex-start;
+      padding-top: 1rem;
+    }
+  }
+</style>
