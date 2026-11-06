@@ -186,6 +186,27 @@ spending the owner's context. Previously, unrelated keys yielded
 `400 user-mismatch` and spent the owner's context. A caller with no keys
 still receives `404 key_not_found`.
 
+### Refreshing a standard approval context
+
+The standard `/delegate` and `/a/<id>` pages automatically call
+`/api/delegate/prepare` once when approval returns `context-expired` or
+`context-not-found`. This is the ordinary authenticated prepare endpoint: the
+selected owner key, request identifier, session key, node, requested permissions
+and chosen grant lifetime are submitted again and validated normally. The
+owner's selected actions must be unchanged in the fresh response before
+approval continues. The authorization context lifetime remains five minutes.
+
+Managed-key approval continues without another owner action. External wallets
+must sign the freshly prepared message in one additional ordinary wallet
+prompt; the old signature is not reused. If the request has expired, prepare is
+refused, the fresh context fails again, or the owner declines that second
+signature, the page stops approving and shows:
+
+> This request expired. Ask your agent for a new link.
+
+This recovery does not change embedded signing or prepared-SIWE handoff flows.
+
+
 ## Prepared-SIWE CLI handoff (transport v2)
 
 Replica-enabled OpenKey sign-in uses
