@@ -71,6 +71,57 @@ do not support device transactions: any request to them that carries
 
 The default and maximum lifetime is 30 days, counted from approval.
 
+## Durable approval-link confirmation codes
+
+After an owner approves a durable `/a/<id>` request, OpenKey shows **Approved**,
+a short `XXXX-XXXX` code, and:
+
+> Tell your agent you've approved, or paste this code into your chat.
+
+The code is optional: requester-signed result discovery continues to work
+without it. It identifies the result for the same saved request, not a new
+approval. The code expires after at most five minutes and never outlives the
+approved result. The page shows its remaining lifetime and disables copying
+after expiry. An expired code keeps its expiry notice and changes the instruction
+to "Tell your agent you've approved." If no code is available, the page says:
+
+> Tell your agent to check your request.
+
+Code-allocation failures leave the saved approval available through ordinary
+requester-signed discovery. The API emits `approval_code_allocation_failed` with
+request identifiers and a sanitized error class only, never the code, error
+message or stack.
+
+At viewport widths of 480px or less, the confirmation uses reduced top padding
+and top alignment instead of full-height vertical centring. Wider layouts are
+unchanged.
+
+A requester collects a code through its existing result-discovery endpoint:
+
+```http
+POST /api/approval-requests/<saved-request-id>/result
+OpenKey-Session-Proof: <existing discovery proof>
+OpenKey-Delegation-Claim: <saved random base64url claim intent>
+Content-Type: application/json
+
+{"bodyCid":"<saved-request-body-cid>","approvalCode":"XXXX-XXXX"}
+```
+
+The requester must save its claim intent before sending it: use 16 or more
+random bytes encoded as unpadded base64url (22–128 characters). OpenKey verifies
+the saved request's key proof, request ID, body CID and result binding before
+claiming the code atomically. The same claim may retry until the original code
+expiry; a different claim cannot redeem it again. A successful response carries
+the normal `status`, `resultRef` and `expiresAt`. Save that reference, then use
+the existing encrypted-result fetch, full verification, durable commit and
+result ACK. Saving the ACK immediately invalidates associated codes; retained
+delivery records use the broker's existing cleanup and expiry rules. No code is
+needed when resuming from an already-saved result reference.
+
+This protocol applies to durable approval links. Device transactions, prepared
+handoffs and ordinary plain-delegation paste codes keep their own transports.
+Details: TC-2489.
+
 ## Ordinary `/delegate` links
 
 A `/delegate` link without `deviceTransactionId` can be made by anyone, so

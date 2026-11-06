@@ -4,6 +4,8 @@ import { verifyMessage } from 'ethers';
 import type { OpenKeyApprovalRequestV1 } from '@tinycloud/share-envelope/links';
 import { strictSessionDid, type DeviceRelayEnvelope } from './device-authorization';
 import { verifySessionProofClaims } from './native-delegation/session-proof';
+import { allocateDelegationCode, delegationClaimHash, type ApprovalCode, type ApprovalCodeDelivery, type ApprovalCodeStore } from '../routes/delegation-codes';
+import { logApprovalCodeAllocationFailure } from '../log';
 
 export interface ApprovalRequestRecord {
   id: string;
@@ -68,6 +70,7 @@ export class ApprovalResultService {
     apiOrigin: string;
     retentionSeconds: number;
     now?: () => Date;
+    codeStore?: ApprovalCodeStore;
   }) {
     if (!Number.isSafeInteger(options.retentionSeconds) || options.retentionSeconds <= 0) {
       throw new Error('Approval result retention must be an explicit positive number of seconds');
@@ -103,7 +106,7 @@ export class ApprovalResultService {
   }
 
   /** Called only by the existing authenticated delegate completion handlers. */
-  async approve(id: string, userId: string, body: { jwk: unknown; host: unknown; permissions: unknown }, delegation: Record<string, unknown>): Promise<void> {
+  async approve(id: string, userId: string, body: { jwk: unknown; host: unknown; permissions: unknown }, delegation: Record<string, unknown>): Promise<ApprovalCode | null> {
     const signedSiwe = delegation.siwe ?? delegation.signedMessage;
     if (typeof signedSiwe !== 'string' || typeof delegation.signature !== 'string') throw new ApprovalResultError('invalid_delegation', 'Signed delegation proof is required', 400);
     const record = await this.assertDelegationWindow(id, { ...body, signedSiwe });
@@ -137,8 +140,26 @@ export class ApprovalResultService {
     const nonce = crypto.getRandomValues(new Uint8Array(12));
     const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce, additionalData: context }, key, new TextEncoder().encode(JSON.stringify(payload)));
     const envelope: DeviceRelayEnvelope = { version: 1, algorithm: 'ECDH-P256-A256GCM', ephemeralPublicJwk: await crypto.subtle.exportKey('jwk', ephemeral.publicKey) as DeviceRelayEnvelope['ephemeralPublicJwk'], nonce: Buffer.from(nonce).toString('base64url'), ciphertext: Buffer.from(ciphertext).toString('base64url') };
-    if (!await this.store.approve(id, { resultRef: randomBytes(24).toString('base64url'), approvedByUserId: userId, ownerDid, encryptedResult: JSON.stringify(envelope), delegationExpiresAt, resultExpiresAt }, this.options.now?.() ?? new Date())) {
+    const resultRef = randomBytes(24).toString('base64url');
+    if (!await this.store.approve(id, { resultRef, approvedByUserId: userId, ownerDid, encryptedResult: JSON.stringify(envelope), delegationExpiresAt, resultExpiresAt }, this.options.now?.() ?? new Date())) {
       throw new ApprovalResultError('expired_request', 'Approval request expired or was already approved', 410);
+    }
+    // Approval is already saved. A delivery failure must not ask the owner to approve twice.
+    if (!this.options.codeStore) return null;
+    const codeExpiresAt = new Date(Math.min(resultExpiresAt.getTime(), now.getTime() + 5 * 60_000));
+    const delivery: ApprovalCodeDelivery = { kind: 'approval-result', requestId: record.id, bodyCid: record.bodyCid, resultRef, expiresAt: codeExpiresAt.toISOString() };
+    try {
+      const code = await allocateDelegationCode(this.options.codeStore, delivery, codeExpiresAt, now);
+      if (!code) return null;
+      const latest = await this.store.findById(id);
+      if (!latest || latest.ackId || !latest.encryptedResult) {
+        await this.options.codeStore.invalidateApproval(resultRef);
+        return null;
+      }
+      return code;
+    } catch (error) {
+      logApprovalCodeAllocationFailure(record.id, error);
+      return null;
     }
   }
 
@@ -151,12 +172,24 @@ export class ApprovalResultService {
     }
   }
 
-  async discover(id: string, body: { bodyCid: string }, proof: string | undefined): Promise<{ status: 'pending' } | { status: 'approved'; resultRef: string; expiresAt: string }> {
+  async discover(id: string, body: { bodyCid: string; approvalCode?: unknown }, proof: string | undefined, claim?: string): Promise<{ status: 'pending' } | { status: 'approved'; resultRef: string; expiresAt: string }> {
     const record = await this.store.findById(id);
     if (!record) throw new ApprovalResultError('not_found', 'Approval request not found', 404);
     if (record.bodyCid !== body.bodyCid) throw new ApprovalResultError('request_binding', 'Request binding is invalid', 400);
     this.authenticate(record, 'discover', proof);
     if (record.deniedAt) throw deniedError(record.deniedAt);
+    if (body.approvalCode !== undefined) {
+      const claimHash = delegationClaimHash(claim);
+      if (!claimHash) throw new ApprovalResultError('invalid_claim', 'A saved code claim intent is required', 400);
+      const code = typeof body.approvalCode === 'string' ? body.approvalCode.trim().toLowerCase() : '';
+      const now = this.options.now?.() ?? new Date();
+      if (record.ackId) throw new ApprovalResultError('acknowledged', 'Approval result was acknowledged', 409);
+      if (record.resultRef && record.resultExpiresAt! <= now) throw new ApprovalResultError('expired_result', 'Result retention expired', 410);
+      if (!/^[a-z2-7]{4}-[a-z2-7]{4}$/.test(code) || !record.resultRef || !this.options.codeStore ||
+        !await this.options.codeStore.claim(code, claimHash, now, { requestId: record.id, bodyCid: record.bodyCid, resultRef: record.resultRef })) {
+        throw new ApprovalResultError('approval_code_unavailable', 'Approval code is unavailable for this saved request', 404);
+      }
+    }
     if (record.resultRef) {
       if (record.resultExpiresAt! <= (this.options.now?.() ?? new Date())) throw new ApprovalResultError('expired_result', 'Result retention expired', 410);
       return { status: 'approved', resultRef: record.resultRef, expiresAt: record.resultExpiresAt!.toISOString() };
@@ -207,6 +240,12 @@ export class ApprovalResultService {
     await this.result(ref, body, 'ack', proof, body.ackId);
     const record = await this.store.acknowledge(ref, body.ackId, this.options.now?.() ?? new Date());
     if (!record) throw new ApprovalResultError('ack_conflict', 'Result ACK intent conflicts with the saved ACK', 409);
+    try {
+      await this.options.codeStore?.invalidateApproval(ref);
+    } catch {
+      // The durable ACK is authoritative for every collection path. Code expiry
+      // bounds optional broker cleanup even when that storage is unavailable.
+    }
     return { ackId: record.ackId!, status: 'acknowledged' as const };
   }
 }
