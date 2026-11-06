@@ -13,7 +13,7 @@ const keyFor = (ability: string) => `${ability === capabilities ? 'tinycloud.cap
 const allKeys = [capabilities, read, write].map(keyFor);
 const narrowed = [capabilities, read].map(keyFor);
 
-type Scenario = 'success' | 'expired-link' | 'direct-expired' | 'expired-token' | 'refused' | 'twice' | 'second-refused' | 'reject-signature' | 'changed-selection' | 'duplicate-selection' | 'missing-selection' | 'empty-siwe' | 'malformed-siwe' | 'changed-message';
+type Scenario = 'success' | 'expired-link' | 'direct-expired' | 'expired-token' | 'refused' | 'twice' | 'second-refused' | 'reject-signature' | 'changed-selection' | 'duplicate-selection' | 'missing-selection' | 'empty-siwe' | 'malformed-siwe' | 'changed-message' | 'mixed-recap' | 'malformed-caveat';
 type Call = { path: string; body: Record<string, unknown> };
 
 async function open(page: Page, keyType: 'MANAGED' | 'EXTERNAL', scenario: Scenario, code = 'context-expired') {
@@ -74,6 +74,11 @@ async function open(page: Page, keyType: 'MANAGED' | 'EXTERNAL', scenario: Scena
         `Expiration Time: ${new Date(Date.now() + 3600000).toISOString()}`, 'Resources:', `- ${makeRecapResource(att)}`].join('\n');
       if (prepares >= 3 && scenario === 'empty-siwe') siwe = '';
       if (prepares >= 3 && scenario === 'malformed-siwe') siwe = 'Not a SIWE message';
+      if (prepares >= 3 && scenario === 'mixed-recap') siwe += '\n- urn:recap:!!!';
+      if (prepares >= 3 && scenario === 'malformed-caveat') {
+        const invalid = { att: { [`${space}/kv/notes/`]: { [read]: { invalid: true } } } };
+        siwe += `\n- urn:recap:${Buffer.from(JSON.stringify(invalid)).toString('base64url')}`;
+      }
       const permissions = [[capabilities], [read, write]].map(abilities => {
         const ability = abilities[0];
         const service = ability === capabilities ? 'capabilities' : 'kv';
@@ -130,14 +135,14 @@ for (const keyType of ['MANAGED', 'EXTERNAL'] as const) {
       }
     });
   }
-  for (const scenario of ['expired-link', 'direct-expired', 'expired-token', 'refused', 'twice', 'second-refused', 'changed-selection', 'duplicate-selection', 'missing-selection', 'empty-siwe', 'malformed-siwe', 'changed-message', ...(keyType === 'EXTERNAL' ? ['reject-signature' as const] : [])] as const) {
+  for (const scenario of ['expired-link', 'direct-expired', 'expired-token', 'refused', 'twice', 'second-refused', 'changed-selection', 'duplicate-selection', 'missing-selection', 'empty-siwe', 'malformed-siwe', 'changed-message', 'mixed-recap', 'malformed-caveat', ...(keyType === 'EXTERNAL' ? ['reject-signature' as const] : [])] as const) {
     test(`${keyType} ${scenario} ends recovery without another retry`, async ({ page }) => {
       const flow = await open(page, keyType, scenario);
       await page.getByRole('button', { name: 'Approve', exact: true }).click();
       await expect(page.getByRole('alert')).toBeVisible();
       await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
       expect(flow.counts()).toEqual({ prepares: scenario === 'direct-expired' || scenario === 'expired-token' ? 2 : 3, approvals: scenario === 'twice' || scenario === 'second-refused' ? 2 : 1 });
-      if (keyType === 'EXTERNAL' && ['duplicate-selection', 'missing-selection', 'empty-siwe', 'malformed-siwe', 'changed-message'].includes(scenario)) {
+      if (keyType === 'EXTERNAL' && ['duplicate-selection', 'missing-selection', 'empty-siwe', 'malformed-siwe', 'changed-message', 'mixed-recap', 'malformed-caveat'].includes(scenario)) {
         const signatures = await page.evaluate(() => {
           const messages: unknown = Reflect.get(window, 'qaSignedMessages');
           if (!Array.isArray(messages)) throw new Error('Missing signing fixture');

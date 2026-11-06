@@ -1078,6 +1078,7 @@
     const signedActions = selectedServerActionIds(refreshed,
       new Set(refreshed.permissions.flatMap(grant => grant.actions.map(action => action.id))));
     if (refreshed.protocol !== 'tinycloud-siwe-recap' || !refreshed.immutable ||
+      refreshed.parseWarnings.some(warning => warning.code !== 'unknown-service') ||
       refreshed.immutable.address.toLowerCase() !== key.address.toLowerCase() ||
       signedActions.length !== expected.size || !signedActions.every(action => expected.has(action))) {
       throw new Error('The refreshed message does not match the approved selection.');
