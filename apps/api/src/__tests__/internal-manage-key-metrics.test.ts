@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test';
 import { mockModules } from './mock-module';
+import { SCOREBOARD_EXCLUSION_CRITERIA } from '../services/scoreboard-exclusions';
 
 await mockModules({
   '@openkey/db': () => ({ createPrismaClient: () => ({}) }),
@@ -21,9 +22,10 @@ test('internal metrics expose aggregate manage-key health without identity mater
     database as unknown as Parameters<typeof collectInternalMetrics>[0],
     new Date('2026-08-05T21:00:00.000Z'),
   );
+  expect(result.accounts).toMatchObject({ real: 10, excluded: 0 });
   expect(result).toEqual({
     generatedAt: '2026-08-05T21:00:00.000Z',
-    accounts: { total: 10, new24h: 2 },
+    accounts: { total: 10, new24h: 2, real: 10, excluded: 0, excludedDomainOnly: 0, exclusionCriteria: SCOREBOARD_EXCLUSION_CRITERIA },
     keys: { total: 12, active: 10, new24h: 3 },
     tinyCloudManageKey: {
       canonicalResolution: { eligibleUsers: 8, canonicalKeys: 8, missingCanonicalUsers: 1 },
