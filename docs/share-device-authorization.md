@@ -219,8 +219,10 @@ The standard `/delegate` and `/a/<id>` pages automatically call
 `context-not-found`. This is the ordinary authenticated prepare endpoint: the
 selected owner key, request identifier, session key, node, requested permissions
 and chosen grant lifetime are submitted again and validated normally. The
-owner's selected actions must be unchanged in the fresh response before
-approval continues. The authorization context lifetime remains five minutes.
+owner's selected action set must be unchanged, without duplicate or missing
+actions, and the fresh message must be a usable SIWE capability request with
+those same grants before approval continues. The authorization context lifetime
+remains five minutes.
 
 Managed-key approval continues without another owner action. External wallets
 must sign the freshly prepared message in one additional ordinary wallet
