@@ -44,7 +44,10 @@ const PLACEHOLDER_CHARS = 8;
  * Descriptors allowed a second line: exact source text (placeholders as in
  * the source) to a one-line reason. Keep this list short.
  */
-const TWO_LINE_EXCEPTIONS: Record<string, string> = {};
+const TWO_LINE_EXCEPTIONS: Record<string, string> = {
+  "Open all your shared files, including ones you share later.":
+    "Sam approved this exact future-share explanation on 2026-10-31 (ask/openkey-388-share-approval).",
+};
 
 const COPY_SOURCES = ["copy.ts", "statements.ts", "core-operations.ts", "classify.ts", "plain-words.ts"];
 

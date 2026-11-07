@@ -1041,7 +1041,10 @@ describe('signing-approval mounted parity across production surface adapters (So
       const summary = handle.container.querySelector('.summary');
       expect(summary?.textContent).toContain('Set up encryption');
       expect(summary?.textContent).not.toContain('decrypt protected data');
-      expect(handle.container.querySelector('.sensitive-callout')).toBeNull();
+      // TC-1424: the selected row still carries its badge, but an all-Sensitive summary needs no banner.
+      const pills = handle.container.querySelectorAll('.summary-statement .summary-sensitive-pill').length;
+      expect(pills).toBe(1);
+      expect(handle.container.querySelectorAll('.sensitive-callout').length).toBe(0);
 
       // Advanced details retains the removed baseline action so the user can
       // re-add it, but it no longer contaminates the top-level final copy.
