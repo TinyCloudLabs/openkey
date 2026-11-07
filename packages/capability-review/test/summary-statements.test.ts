@@ -65,14 +65,27 @@ function rowsOf(model: CapabilityReviewModel) {
 }
 
 describe("the Sensitive header counts the Sensitive rows", () => {
-  it("counts the four rows marked Sensitive in the Share sign-in (the header said 2)", () => {
-    const rows = rowsOf(modelFor(SHARE_SIGN_IN));
-    expect(sensitiveSummaryCount(rows)).toBe(4);
+  it("counts three Sensitive rows in the Share sign-in", () => {
+    const model = modelFor(SHARE_SIGN_IN);
+    const rows = rowsOf(model);
+    expect(sensitiveSummaryCount(rows)).toBe(3);
   });
 
   it("is 0 when nothing selected is marked Sensitive", () => {
     expect(sensitiveSummaryCount(rowsOf(modelFor({ [`${SPACE}/capabilities`]: ["tinycloud.capabilities/read"] })))).toBe(0);
   });
+
+  for (const resource of [`${NETWORK}/share/`, `${NETWORK}/qa/`, `${NETWORK}/share/item`]) {
+    it(`keeps create unbadged and decrypt Sensitive on ${resource}`, () => {
+      const create = rowsOf(modelFor({ [resource]: ["tinycloud.encryption/key.create"] }));
+      const decrypt = rowsOf(modelFor({ [resource]: ["tinycloud.encryption/decrypt"] }));
+      const combined = rowsOf(modelFor({ [resource]: ["tinycloud.encryption/key.create", "tinycloud.encryption/decrypt"] }));
+      expect(create.map(row => row.severity)).toEqual(["attention"]);
+      expect(decrypt.map(row => row.severity)).toEqual(["sensitive"]);
+      expect(combined.find(row => row.key === create[0]!.key)?.severity).toBe("attention");
+      expect(combined.find(row => row.key === decrypt[0]!.key)?.severity).toBe("sensitive");
+    });
+  }
 });
 
 describe("own-key folder rows show the path in code style, never as raw backquotes", () => {

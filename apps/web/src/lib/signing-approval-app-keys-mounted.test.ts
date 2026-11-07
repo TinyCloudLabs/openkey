@@ -13,7 +13,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { createRequire } from 'node:module';
 import { Window } from 'happy-dom';
 import { compile } from 'svelte/compiler';
-import { OWN_KEY_PREFIX_STATEMENTS, parseCapabilityReview } from '../../../../packages/capability-review/src/index';
+import { OWN_KEY_PREFIX_STATEMENTS, SHARE_KEY_PREFIX_CREATE_STATEMENT, parseCapabilityReview } from '../../../../packages/capability-review/src/index';
 import type { CapabilityReviewModel } from '../../../../packages/capability-review/src/index';
 import {
   FIXTURE_META,
@@ -259,8 +259,7 @@ describe('approval view for app keys', () => {
   });
 });
 
-// TC-2242: the Share sign-in consent. The header counted grants (2) while four rows carried the Sensitive pill, and
-// the own-key folder rows showed their path between raw backquotes.
+// TC-1424: the Share sign-in keeps key creation visible without a Sensitive badge.
 describe('approval view for the Share sign-in', () => {
   const SHARE_SPACE = `tinycloud:pkh:eip155:${FIXTURE_META.chainId}:${FIXTURE_META.address}:default`;
   const shareModel = () =>
@@ -271,13 +270,20 @@ describe('approval view for the Share sign-in', () => {
       [`${SHARE_SPACE}/capabilities`]: ['tinycloud.capabilities/read'],
     });
 
-  test('the header counts exactly the rows marked Sensitive', () => {
+  test('the header counts three Sensitive rows without marking key creation', () => {
     const { target, cleanup } = render(shareModel());
-    const marked = target.querySelectorAll('.summary-statement .summary-sensitive-pill').length;
-    expect(marked).toBeGreaterThanOrEqual(4);
-    expect(target.querySelectorAll('.sensitive-callout')).toHaveLength(1);
-    expect(target.querySelector('.sensitive-callout')!.textContent).toMatch(new RegExp(`^\\s*${marked}\\b`));
-    cleanup();
+    try {
+      const rows = [...target.querySelectorAll('.summary-statement')];
+      const create = rows.find(row => row.textContent?.includes(SHARE_KEY_PREFIX_CREATE_STATEMENT))!;
+      expect(create.querySelectorAll('.summary-sensitive-pill').length).toBe(0);
+      expect(create.getAttribute('data-severity')).toBe('attention');
+      const marked = target.querySelectorAll('.summary-statement .summary-sensitive-pill').length;
+      expect(marked).toBe(3);
+      expect(target.querySelectorAll('.sensitive-callout')).toHaveLength(1);
+      expect(target.querySelector('.sensitive-callout')!.textContent).toMatch(new RegExp(`^\\s*${marked}\\b`));
+    } finally {
+      cleanup();
+    }
   });
 
   test('share action rows are plain words with no raw backquote or code-style path', () => {
@@ -290,19 +296,25 @@ describe('approval view for the Share sign-in', () => {
 });
 
 describe('Sensitive banner visibility', () => {
-  for (const actions of [[`${E}decrypt`], [`${E}key.create`, `${E}decrypt`]]) {
-    test(`omits the redundant banner when all ${actions.length} listed rows are Sensitive`, () => {
-      const { target, cleanup } = render(appKeyModel({ [urn('/share/')]: actions }));
-      try {
-        const rows = [...target.querySelectorAll('.summary > .summary-statements > .summary-statement')];
-        expect(rows.map((row) => row.getAttribute('data-severity'))).toEqual(actions.map(() => 'sensitive'));
-        expect(rows.every((row) => row.querySelector('.summary-sensitive-pill') !== null)).toBe(true);
-        expect(target.querySelectorAll('.sensitive-callout').length).toBe(0);
-      } finally {
-        cleanup();
-      }
-    });
-  }
+  test('omits the redundant banner when the only listed row is decrypt', () => {
+    const { target, cleanup } = render(appKeyModel({ [urn('/share/')]: [`${E}decrypt`] }));
+    try {
+      expect(target.querySelectorAll('.summary-statement .summary-sensitive-pill').length).toBe(1);
+      expect(target.querySelectorAll('.sensitive-callout').length).toBe(0);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test('shows one Sensitive row when decrypt is mixed with key creation', () => {
+    const { target, cleanup } = render(appKeyModel({ [urn('/share/')]: [`${E}key.create`, `${E}decrypt`] }));
+    try {
+      expect(target.querySelectorAll('.summary-statement .summary-sensitive-pill').length).toBe(1);
+      expect(target.querySelector('.sensitive-callout')!.textContent).toMatch(/^\s*1\b/);
+    } finally {
+      cleanup();
+    }
+  });
 
   test('omits the banner when no listed row is Sensitive', () => {
     const space = `tinycloud:pkh:eip155:${FIXTURE_META.chainId}:${FIXTURE_META.address}:account`;

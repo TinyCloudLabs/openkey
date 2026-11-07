@@ -633,7 +633,7 @@ function buildNamedKeyStatement(
   if (grant.ownedBySelf !== true) return fallbackStatement(grant);
   if (parsed.kind === "prefix" && parsed.network === "default" &&
     parsed.keyPath === "share/" && verb === "create") {
-    return { primaryText: SHARE_KEY_PREFIX_CREATE_STATEMENT, service: grant.service, resource };
+    return { primaryText: SHARE_KEY_PREFIX_CREATE_STATEMENT, service: grant.service, resource, severity: "attention" };
   }
   if (parsed.kind === "key" && parsed.network === "default" &&
     /^share\/[^/]+$/.test(parsed.keyPath) && verb === "decrypt") {
@@ -656,6 +656,8 @@ function buildNamedKeyStatement(
     ),
     service: grant.service,
     resource,
+    // Creating a key does not read protected data; mixed decrypt grants keep their grant-level severity.
+    severity: verb === "create" ? "attention" : grant.severity,
     // The own-key folder sentences set the path off in backquotes; the display shows them as monospace.
     ...(template === OWN_KEY_PREFIX_STATEMENTS.create || template === OWN_KEY_PREFIX_STATEMENTS.decrypt
       ? { codeSpans: true as const }

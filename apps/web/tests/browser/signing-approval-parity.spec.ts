@@ -28,7 +28,7 @@
 
 import { test, expect, type Page } from '@playwright/test';
 import { parseCapabilityReview } from '../../../../packages/capability-review/src/index';
-import { EXPLORER_PERMISSION_POPUP_REQUEST } from '../../../../packages/capability-review/test/fixtures/index';
+import { EXPLORER_PERMISSION_POPUP_REQUEST, makeRecapResource, siweWithResources } from '../../../../packages/capability-review/test/fixtures/index';
 
 type Surface = 'cli' | 'popup' | 'iframe';
 
@@ -154,6 +154,28 @@ function encryptionFixtureModel() {
     },
   ];
   return model;
+}
+
+function shareKeyFixtureModel() {
+  const base = benignFixtureModel();
+  const network = `urn:tinycloud:encryption:did:pkh:eip155:1:${base.signer.address}:default`;
+  const space = `tinycloud:pkh:eip155:1:${base.signer.address}`;
+  const grants = {
+    [network]: ['tinycloud.encryption/network.create', 'tinycloud.encryption/decrypt'],
+    [`${network}/share/`]: ['tinycloud.encryption/key.create', 'tinycloud.encryption/decrypt'],
+    [`${space}:files/kv/files-for-you/v1/`]: ['tinycloud.kv/get', 'tinycloud.kv/list', 'tinycloud.kv/put'],
+    [`${space}:default/capabilities`]: ['tinycloud.capabilities/read'],
+  };
+  return parseCapabilityReview({
+    message: siweWithResources([makeRecapResource(Object.fromEntries(
+      Object.entries(grants).map(([resource, abilities]) => [resource, Object.fromEntries(abilities.map(ability => [ability, [{}]]))]),
+    ))]),
+    signer: base.signer,
+    requester: base.requester,
+    reason: base.reason,
+    metadataTrust: base.metadataTrust,
+    editable: true,
+  });
 }
 
 function sqlSchemaFixtureModel() {
@@ -289,6 +311,17 @@ test.describe('signing-approval browser parity — production adapters', () => {
       const dialog = page.locator('[data-parity-harness] [role="dialog"]');
       await expect(dialog).toBeVisible();
       await expect(dialog).toHaveAttribute('aria-modal', 'true');
+    });
+
+    test(`[${surface}] Share keeps key creation unbadged and three Sensitive rows`, async ({ page }) => {
+      const model = shareKeyFixtureModel();
+      await loadHarness(page, { surface, model, initialSelection: fixtureInitialSelection(model) });
+      const summary = page.locator('.summary');
+      const create = summary.locator('.summary-statement').filter({ hasText: 'Create keys for files you share' });
+      await expect(create.locator('.summary-sensitive-pill')).toHaveCount(0);
+      await expect(create).toHaveAttribute('data-severity', 'attention');
+      await expect(summary.locator('.summary-sensitive-pill')).toHaveCount(3);
+      await expect(page.locator('.sensitive-callout')).toHaveText(/^\s*3\b/);
     });
 
     test(`[${surface}] mixed SQL read+schema grant renders schema in its own row`, async ({ page }) => {
