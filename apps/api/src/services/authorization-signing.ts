@@ -176,18 +176,23 @@ const PUBLIC_JWK_MEMBERS: Record<string, readonly string[]> = {
 };
 
 /**
- * A copy of a session JWK with only the public members of its key type. Any
- * other member, private or unknown, is dropped; an unknown `kty` keeps only
- * `kty` and `kid`. A non-object is returned as is for the caller to refuse.
+ * A copy of a session JWK with only the public members of its key type, each
+ * a string. Any other member, private or unknown, is dropped. Returns null,
+ * to be treated as a missing key, for anything else: a non-object, an array,
+ * a non-plain object, an unknown `kty`, or a kept member that is not a string.
  */
-export function publicJwk(jwk: unknown): unknown {
-  if (!jwk || typeof jwk !== "object" || Array.isArray(jwk)) return jwk;
+export function publicJwk(jwk: unknown): Record<string, string> | null {
+  if (!jwk || typeof jwk !== "object" || Array.isArray(jwk)) return null;
+  const prototype = Object.getPrototypeOf(jwk);
+  if (prototype !== Object.prototype && prototype !== null) return null;
   const source = jwk as Record<string, unknown>;
-  const kty = typeof source.kty === "string" && Object.hasOwn(PUBLIC_JWK_MEMBERS, source.kty) ? source.kty : "";
-  const members = PUBLIC_JWK_MEMBERS[kty] ?? ["kty", "kid"];
-  const result: Record<string, unknown> = {};
-  for (const member of members) {
-    if (Object.hasOwn(source, member)) result[member] = source[member];
+  if (typeof source.kty !== "string" || !Object.hasOwn(PUBLIC_JWK_MEMBERS, source.kty)) return null;
+  const result: Record<string, string> = {};
+  for (const member of PUBLIC_JWK_MEMBERS[source.kty]!) {
+    if (!Object.hasOwn(source, member)) continue;
+    const value = source[member];
+    if (typeof value !== "string") return null;
+    result[member] = value;
   }
   return result;
 }
@@ -353,6 +358,7 @@ export function issueAuthorizationContext(
 
   const token = `oks_${randomUUID().replace(/-/g, "")}${randomUUID().replace(/-/g, "")}`;
   const jwk = publicJwk(input.jwk);
+  if (!jwk) throw new Error("Session JWK must be a public key");
   const jwkDigest = digestJwk(jwk);
 
   const metadataTrust = input.metadataTrust ?? {

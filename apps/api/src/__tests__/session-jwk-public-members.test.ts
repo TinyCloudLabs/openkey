@@ -8,7 +8,8 @@ import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
 import { prepareSession } from '@tinycloud/node-sdk-wasm';
 import { mockModules, replaceModules } from './mock-module';
-import type { delegateRouter } from '../routes/delegate';
+import type { delegateRouter, setPreparedHandoffServiceForTests } from '../routes/delegate';
+import type { createPreparedHandoffRouter } from '../routes/prepared-handoffs';
 import type * as AuthorizationSigning from '../services/authorization-signing';
 import { MemoryPreparedHandoffStore, PreparedHandoffService } from '../services/prepared-handoff';
 
@@ -74,12 +75,17 @@ await mockModules({
 });
 
 let router: typeof delegateRouter;
+let setHandoffService: typeof setPreparedHandoffServiceForTests;
+let handoffRouter: typeof createPreparedHandoffRouter;
 let auth: typeof AuthorizationSigning;
 
 beforeAll(async () => {
-  // Loaded after the module mocks, the route under a file-specific query, per
+  // Loaded after the module mocks, the routes under a file-specific query, per
   // the API test convention; the context store is the instance the route uses.
-  ({ delegateRouter: router } = await import('../routes/delegate?session-jwk-public-members' as string));
+  ({ delegateRouter: router, setPreparedHandoffServiceForTests: setHandoffService } = await import(
+    '../routes/delegate?session-jwk-public-members' as string
+  ));
+  ({ createPreparedHandoffRouter: handoffRouter } = await import('../routes/prepared-handoffs?session-jwk-public-members' as string));
   auth = await import('../services/authorization-signing');
 });
 
@@ -116,42 +122,138 @@ function widgetSiwe(): string {
   } as never).siwe;
 }
 
-describe('a session JWK sent with private members', () => {
+// Accepted keys and the public members kept from each.
+const accepted = [
+  ['private members', sentJwk, publicMembers],
+  ['private members nested in an unknown member', { ...publicMembers, extra: { d: exported.d, list: [{ d: exported.d }] } }, publicMembers],
+  ['extra junk and a string kid', { ...publicMembers, kid: 'session-1', use: 'sig', alg: 7, junk: [null, { k: 'x' }] }, { ...publicMembers, kid: 'session-1' }],
+] as const;
+
+describe.each(accepted)('a session JWK with %s', (_name, sent, kept) => {
   test('/authorize-sign-prepare accepts it and stores only the public members', async () => {
     const res = await post('/authorize-sign-prepare', {
-      keyId: keyRecord.id, siwe: widgetSiwe(), jwk: sentJwk, host, requestOrigin: ORIGIN, reportedOrigin: ORIGIN,
+      keyId: keyRecord.id, siwe: widgetSiwe(), jwk: sent, host, requestOrigin: ORIGIN, reportedOrigin: ORIGIN,
     });
     expect(res.status, res.text).toBe(200);
-    expect(storedJwk(res.body.authorizationContextToken)).toEqual(publicMembers);
+    expect(storedJwk(res.body.authorizationContextToken)).toEqual(kept);
     expect(res.text).not.toContain(exported.d);
   });
 
   test('/prepare and /complete accept it, and store and return only the public members', async () => {
-    const prepared = await post('/prepare', { keyId: keyRecord.id, jwk: sentJwk, host });
+    const prepared = await post('/prepare', { keyId: keyRecord.id, jwk: sent, host });
     expect(prepared.status, prepared.text).toBe(200);
     expect(prepared.text).not.toContain(exported.d);
-    expect(prepared.body.jwk).toEqual(publicMembers);
-    expect(prepared.body.prepared.jwk).toEqual(publicMembers);
-    expect(storedJwk(prepared.body.authorizationContext.token)).toEqual(publicMembers);
+    expect(prepared.body.jwk).toEqual(kept);
+    expect(prepared.body.prepared.jwk).toEqual(kept);
+    expect(storedJwk(prepared.body.authorizationContext.token)).toEqual(kept);
 
     const completed = await post('/complete', {
       prepared: prepared.body.prepared,
       signature: await wallet.signMessage({ message: prepared.body.prepared.siwe }),
       host,
-      jwk: sentJwk,
+      jwk: sent,
       authorizationContextToken: prepared.body.authorizationContext.token,
       selectedActionIds: prepared.body.selectedActionKeys,
     });
     expect(completed.status, completed.text).toBe(200);
     expect(completed.text).not.toContain(exported.d);
-    expect(completed.body.jwk).toEqual(publicMembers);
+    expect(completed.body.jwk).toEqual(kept);
   });
 
   test('managed POST / accepts it and returns only the public members', async () => {
-    const res = await post('/', { keyId: keyRecord.id, jwk: sentJwk, host });
+    const res = await post('/', { keyId: keyRecord.id, jwk: sent, host });
     expect(res.status, res.text).toBe(200);
     expect(res.text).not.toContain(exported.d);
-    expect(res.body.jwk).toEqual(publicMembers);
+    expect(res.body.jwk).toEqual(kept);
+  });
+});
+
+describe('a malformed session JWK counts as missing', () => {
+  const malformed = [
+    ['an array', [sentJwk]],
+    ['an object-valued kid', { ...publicMembers, kid: { d: exported.d } }],
+    ['private members nested in a kept member', { ...publicMembers, x: { x: exported.x, d: exported.d } }],
+    ['an unknown kty', { kty: 'oct', k: exported.d }],
+  ] as const;
+  const missing = {
+    '/': { error: 'keyId, jwk, and host are required' },
+    '/prepare': { error: 'keyId, jwk, and host are required' },
+    '/complete': { error: 'prepared, signature, host, and jwk are required' },
+    '/authorize-sign-prepare': { error: 'keyId, siwe, and jwk are required', code: 'missing_authorize_sign_prepare_fields' },
+  };
+  test.each(Object.keys(missing).flatMap((route) => malformed.map(([name, jwk]) => [route, name, jwk] as const)))(
+    '%s refuses %s with its missing-key error',
+    async (route, _name, jwk) => {
+      const res = await post(route, {
+        keyId: keyRecord.id, siwe: widgetSiwe(), jwk, host, requestOrigin: ORIGIN, prepared: { siwe: 'x' }, signature: '0x',
+      });
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual(missing[route as keyof typeof missing]);
+      expect(res.text).not.toContain(exported.d);
+    },
+  );
+});
+
+describe('an empty or false approvalRequestId', () => {
+  test.each([null, false, ''])('%p is refused on managed POST / and never returns the key', async (approvalRequestId) => {
+    const res = await post('/', { keyId: keyRecord.id, jwk: sentJwk, host, approvalRequestId });
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: 'Approval requests require the consent preview context' });
+    expect(res.text).not.toContain(exported.d);
+  });
+
+  // "" is a string id, so /prepare looks it up in the approval store; null and
+  // false are refused without one.
+  test.each([null, false])('%p is refused on /prepare and never returns the key', async (approvalRequestId) => {
+    const prepared = await post('/prepare', { keyId: keyRecord.id, jwk: sentJwk, host, approvalRequestId });
+    expect(prepared.status).toBe(410);
+    expect(prepared.body.code).toBe('expired_request');
+    expect(prepared.text).not.toContain(exported.d);
+  });
+
+  test.each([null, false, ''])('%p is refused on /complete and never returns the key', async (approvalRequestId) => {
+    const ordinary = await post('/prepare', { keyId: keyRecord.id, jwk: publicMembers, host });
+    expect(ordinary.status, ordinary.text).toBe(200);
+    const completed = await post('/complete', {
+      prepared: ordinary.body.prepared,
+      signature: await wallet.signMessage({ message: ordinary.body.prepared.siwe }),
+      host,
+      jwk: sentJwk,
+      approvalRequestId,
+    });
+    expect(completed.status).toBe(400);
+    expect(completed.body).toEqual({ error: 'Approval requests require the consent preview context' });
+    expect(completed.text).not.toContain(exported.d);
+  });
+});
+
+describe('CLI prepared hand-off on /authorize-sign-prepare', () => {
+  test('refuses a different key or host, accepts the same key with d and stores it public-only, and refuses a repeat', async () => {
+    const service = new PreparedHandoffService(new MemoryPreparedHandoffStore());
+    setHandoffService(service);
+    const siwe = widgetSiwe();
+    const ticket = Buffer.alloc(32, 60).toString('base64url');
+    const claim = await handoffRouter(service).request('/claim', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        transportVersion: 2,
+        request: { protocolVersion: 1, siwe, jwk: publicMembers, host, keyId: keyRecord.id, sessionDid: 'did:key:cli-session' },
+        delivery: { handoffId: ticket, state: Buffer.alloc(32, 61).toString('base64url'), cancelSecret: Buffer.alloc(32, 62).toString('base64url') },
+      }),
+    });
+    expect(claim.status, await claim.clone().text()).toBe(201);
+    const prepare = (jwk: unknown, sentHost = host) => post('/authorize-sign-prepare', { ticket, keyId: keyRecord.id, siwe, jwk, host: sentHost });
+
+    const otherX = generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' }).x;
+    expect((await prepare({ ...publicMembers, x: otherX })).status).toBe(403);
+    expect((await prepare(sentJwk, 'https://other-node.tinycloud.xyz')).status).toBe(403);
+
+    const accepted = await prepare(sentJwk);
+    expect(accepted.status, accepted.text).toBe(200);
+    expect(storedJwk(accepted.body.authorizationContextToken)).toEqual(publicMembers);
+
+    expect((await prepare(sentJwk)).status).toBe(409);
   });
 });
 
