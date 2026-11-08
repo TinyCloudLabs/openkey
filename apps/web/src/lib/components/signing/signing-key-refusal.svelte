@@ -19,7 +19,13 @@
 <section class="flex flex-col gap-4 rounded-2xl border border-surface-200 bg-white p-5 text-surface-900 shadow-sm" role="alert" data-testid="signing-key-refusal">
   <p class="font-medium">{reason}</p>
   <p class="text-sm leading-relaxed text-surface-600">
-    Go back to <strong>{requester || 'the requesting app'}</strong> and connect again to choose a key.
+    {#if onsignout}
+      You may be signed in to a different account. Sign out to switch, or go back to <strong>{requester || 'the requesting app'}</strong>.
+    {:else if onretry}
+      Try again, or go back to <strong>{requester || 'the requesting app'}</strong>.
+    {:else}
+      Go back to <strong>{requester || 'the requesting app'}</strong> and connect again to choose a key.
+    {/if}
   </p>
   {#if onsignout}
     <Button class="min-h-11 w-full rounded-xl" data-testid="signing-key-sign-out" onclick={onsignout}>Sign out</Button>
