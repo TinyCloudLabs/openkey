@@ -84,7 +84,6 @@
   {layoutBlocked}
   stickyActions
   previewPending={transport.canUseAuthorizeSign && !transport.previewReady}
-  finalPreview={transport.previewReady}
   {peerRecognition}
   expiryMs={transport.expiry?.chosenMs ?? null}
   onExpiryChange={transport.expiry?.onChange}

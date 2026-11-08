@@ -177,6 +177,11 @@ One Approve action submits the captured preview token and its selection.
 The raw candidate remains in Advanced details. External wallets receive
 the same preview payload through the existing SDK handoff.
 
+The ordinary request-type introduction stays the same while the preview is
+loading and after it is ready. TinyCloud capability requests retain
+`Review the access this app is asking for.`; the introduction does not add
+a technical preview message or change height when the preview arrives.
+
 These page changes retain the three API endpoints, both single-use tokens,
 and the server's selection and exact-byte checks. Details: TC-2198.
 
