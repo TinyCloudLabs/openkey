@@ -1321,16 +1321,20 @@ delegateRouter.post('/', async (c) => {
     protocolVersion?: number;
   }>();
   logSessionJwk('/api/delegate', hasPrivateJwkMember(body.jwk));
-  // Only the session key's public members are used, stored, or returned. A
-  // device or approval request keeps its own exact check of the key as sent.
-  if (body.deviceTransactionId === undefined && body.approvalRequestId === undefined) {
-    body.jwk = publicJwk(body.jwk) as DelegationJwk;
+  // Only the session key's public members are used, stored, or returned; a
+  // malformed key counts as missing. A request naming a device transaction
+  // keeps that flow's exact check of the key as sent, and one naming an
+  // approval request of a well-formed key as sent; an empty or false id names
+  // neither and is stripped like any other.
+  const sessionJwk = publicJwk(body.jwk);
+  if (!body.deviceTransactionId && (!sessionJwk || !body.approvalRequestId)) {
+    body.jwk = sessionJwk as DelegationJwk;
   }
 
   if (!body.keyId || !body.jwk || !body.host) {
     return c.json({ error: 'keyId, jwk, and host are required' }, 400);
   }
-  if (body.approvalRequestId && (body.protocolVersion !== 1 || !body.authorizationContextToken)) {
+  if (body.approvalRequestId !== undefined && (body.protocolVersion !== 1 || !body.authorizationContextToken)) {
     return c.json({ error: 'Approval requests require the consent preview context' }, 400);
   }
 
@@ -1819,10 +1823,14 @@ delegateRouter.post('/prepare', async (c) => {
     approvalRequestId?: string;
   }>();
   logSessionJwk('/api/delegate/prepare', hasPrivateJwkMember(body.jwk));
-  // Only the session key's public members are used, stored, or returned. A
-  // device or approval request keeps its own exact check of the key as sent.
-  if (body.deviceTransactionId === undefined && body.approvalRequestId === undefined) {
-    body.jwk = publicJwk(body.jwk) as DelegationJwk;
+  // Only the session key's public members are used, stored, or returned; a
+  // malformed key counts as missing. A request naming a device transaction
+  // keeps that flow's exact check of the key as sent, and one naming an
+  // approval request of a well-formed key as sent; an empty or false id names
+  // neither and is stripped like any other.
+  const sessionJwk = publicJwk(body.jwk);
+  if (!body.deviceTransactionId && (!sessionJwk || !body.approvalRequestId)) {
+    body.jwk = sessionJwk as DelegationJwk;
   }
 
   if (!body.keyId || !body.jwk || !body.host) {
@@ -2041,10 +2049,14 @@ delegateRouter.post('/complete', async (c) => {
     selectedActionIds?: unknown;
   }>();
   logSessionJwk('/api/delegate/complete', hasPrivateJwkMember(body.jwk));
-  // Only the session key's public members are used, stored, or returned. A
-  // device or approval request keeps its own exact check of the key as sent.
-  if (body.deviceTransactionId === undefined && body.approvalRequestId === undefined) {
-    body.jwk = publicJwk(body.jwk) as DelegationJwk;
+  // Only the session key's public members are used, stored, or returned; a
+  // malformed key counts as missing. A request naming a device transaction
+  // keeps that flow's exact check of the key as sent, and one naming an
+  // approval request of a well-formed key as sent; an empty or false id names
+  // neither and is stripped like any other.
+  const sessionJwk = publicJwk(body.jwk);
+  if (!body.deviceTransactionId && (!sessionJwk || !body.approvalRequestId)) {
+    body.jwk = sessionJwk as DelegationJwk;
   }
 
   if (!body.prepared || !body.signature || !body.host || !body.jwk) {
@@ -2281,7 +2293,7 @@ delegateRouter.post('/complete', async (c) => {
     signedSiwe: String(body.prepared?.siwe ?? ''),
   });
   if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
-  if (body.approvalRequestId && !body.authorizationContextToken) {
+  if (body.approvalRequestId !== undefined && !body.authorizationContextToken) {
     return c.json({ error: 'Approval requests require the consent preview context' }, 400);
   }
   await checkApprovalDelegation(body, { signedSiwe: body.prepared.siwe });
@@ -2457,7 +2469,8 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     delivery?: unknown;
   }>();
   logSessionJwk('/api/delegate/authorize-sign-prepare', hasPrivateJwkMember(body.jwk));
-  // Only the session key's public members are used or stored.
+  // Only the session key's public members are used or stored; a malformed
+  // key counts as missing.
   body.jwk = publicJwk(body.jwk) as DelegationJwk;
   const deviceUnsupported = deviceTransactionUnsupportedError(body);
   if (deviceUnsupported) return c.json(deviceUnsupported, 400);
