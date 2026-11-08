@@ -1930,6 +1930,9 @@ delegateRouter.post('/prepare', async (c) => {
   } catch (e) {
     return c.json(delegateErrorResponse(e, 'Failed to prepare delegation', 'delegation_prepare_failed'), 400);
   }
+  // Device approvals: the bytes handed to the wallet are a subset of what the device requested.
+  const deviceSubset = await deviceDelegationWindowError(body, { host, signedSiwe: preparedResult.prepared.siwe });
+  if (deviceSubset) return c.json(deviceSubset.body, deviceSubset.status);
 
   const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
 
