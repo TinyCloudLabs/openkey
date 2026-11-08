@@ -13,7 +13,7 @@ export type SigningKeyResolution =
 /** Code of the error a sign request is answered with when no key of the account can sign it. */
 export const NO_KEY_ERROR = {
   code: 'NO_KEY',
-  message: 'No key of the signed-in OpenKey account can sign this request.',
+  message: 'No key in the signed-in OpenKey account can sign this request.',
 } as const;
 
 const SIWE_HEADER = / wants you to sign in with your Ethereum account:$/;

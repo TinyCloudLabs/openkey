@@ -31,6 +31,8 @@ interface Account {
   keys: Key[];
   /** Key ids `GET /api/keys/:id` refuses (404), as for a key of another account. */
   unreadable: Set<string>;
+  /** `GET /api/keys` fails (500) while set. */
+  listFails: boolean;
   signed: Array<{ keyId: string; message: string }>;
 }
 
@@ -46,6 +48,10 @@ async function mockApi(page: Page, account: Account) {
         : null);
     }
     if (path === '/api/auth/providers') return json(route, 200, { providers: [] });
+    if (path === '/api/auth/sign-out') {
+      account.signedIn = false;
+      return json(route, 200, { success: true });
+    }
     if (path === '/api/auth/email-otp/send-verification-otp') return json(route, 200, { success: true });
     if (path === '/api/auth/sign-in/email-otp') {
       account.signedIn = true;
@@ -53,6 +59,7 @@ async function mockApi(page: Page, account: Account) {
     }
     if (path === '/api/keys') {
       if (!account.signedIn) return json(route, 401, { error: 'Unauthorized' });
+      if (account.listFails) return json(route, 500, { error: 'Internal error' });
       return json(route, 200, { keys: account.keys.filter((k) => !k.archivedAt) });
     }
     const sign = path.match(/^\/api\/keys\/([^/]+)\/sign$/);
@@ -73,7 +80,7 @@ async function mockApi(page: Page, account: Account) {
 }
 
 function newAccount(keys: Key[], signedIn = true): Account {
-  return { signedIn, keys, unreadable: new Set(), signed: [] };
+  return { signedIn, keys, unreadable: new Set(), listFails: false, signed: [] };
 }
 
 type Reply = Record<string, unknown> & { type?: string };
@@ -210,32 +217,40 @@ test.describe('iframe: a sign request that names no key', () => {
     await expect.poll(() => resolved.signed).toEqual([{ keyId: 'key_b', message: siwe }]);
   });
 
-  test('no key of the signed-in account fits (SIWE names another address; archived and wallet keys never sign): a clear error with Try again and Sign out; Cancel rejects NO_KEY', async ({ page }) => {
+  test("no key of the signed-in account fits (SIWE names another address; archived and wallet keys never sign): it says so, offers Sign out, nothing to approve", async ({ page }) => {
     const account = newAccount([
       key('key_archived', ADDRESS_ELSEWHERE, 2, { archivedAt: '2026-02-01T00:00:00Z' }),
       key('key_wallet', ADDRESS_ELSEWHERE.replace('2', '3'), 3, { keyType: 'EXTERNAL' }),
       KEY_A,
     ]);
     const frame = await openEmbed(page, account, siweFor(ADDRESS_ELSEWHERE));
-    await expect(frame.getByRole('alert')).toBeVisible({ timeout: 30_000 });
+    await expect(frame.getByRole('alert')).toHaveText("This app asked for a key this account doesn't have. You may be signed in to a different account.", { timeout: 30_000 });
     await expect(frame.getByText('Please connect first to sign messages.')).toHaveCount(0);
-    await expect(frame.getByRole('button', { name: 'Try again' })).toBeVisible();
     await expect(frame.getByRole('button', { name: 'Sign out' })).toBeVisible();
+    await expect(frame.getByRole('button', { name: 'Cancel' })).toBeVisible();
     await expect(frame.locator('button.approve')).toHaveCount(0);
-
-    // Retry after the key is added to this account: the review appears.
-    account.keys.push(key('key_elsewhere', ADDRESS_ELSEWHERE, 4));
-    await frame.getByRole('button', { name: 'Try again' }).click();
-    await expect(frame.locator('button.approve')).toBeVisible({ timeout: 15_000 });
     expect(account.signed).toEqual([]);
   });
 
   test('no key fits: Cancel tells the app NO_KEY', async ({ page }) => {
     const account = newAccount([KEY_A]);
     const frame = await openEmbed(page, account, siweFor(ADDRESS_ELSEWHERE));
-    await expect(frame.getByRole('button', { name: 'Try again' })).toBeVisible({ timeout: 30_000 });
+    await expect(frame.getByRole('button', { name: 'Sign out' })).toBeVisible({ timeout: 30_000 });
     await frame.getByRole('button', { name: 'Cancel' }).click();
-    await expect.poll(async () => (await signResponses(page))[0]).toMatchObject({ success: false, error: { code: 'NO_KEY' } });
+    await expect.poll(async () => (await signResponses(page))[0]).toMatchObject({
+      success: false, error: { code: 'NO_KEY', message: 'No key in the signed-in OpenKey account can sign this request.' },
+    });
+    expect(account.signed).toEqual([]);
+  });
+
+  test("the account's keys cannot be read: a clear error; Try again resolves the key and shows the review", async ({ page }) => {
+    const account = newAccount([KEY_A]);
+    account.listFails = true;
+    const frame = await openEmbed(page, account, PLAIN);
+    await expect(frame.getByRole('alert')).toHaveText("Couldn't load your keys.", { timeout: 30_000 });
+    account.listFails = false;
+    await frame.getByRole('button', { name: 'Try again' }).click();
+    await expectReview(frame, PLAIN);
     expect(account.signed).toEqual([]);
   });
 
@@ -258,7 +273,7 @@ test.describe('iframe: a named key that cannot be loaded (keyId of another accou
     const account = newAccount([KEY_A]);
     account.unreadable.add('key_a');
     const frame = await openEmbed(page, account, PLAIN, 'key_a');
-    await expect(frame.getByText('Selected key could not be loaded.')).toBeVisible({ timeout: 30_000 });
+    await expect(frame.getByText("Couldn't load the selected key.")).toBeVisible({ timeout: 30_000 });
     await expect(frame.getByRole('button', { name: 'Try again' })).toBeVisible();
     await expect(frame.getByRole('button', { name: 'Sign out' })).toBeVisible();
     account.unreadable.clear();
@@ -294,7 +309,7 @@ test.describe('popup: a sign request that names no key', () => {
     const account = newAccount([KEY_A]);
     account.unreadable.add('key_a');
     const popup = await openPopup(page, account, PLAIN, 'key_a');
-    await expect(popup.getByText('Selected key could not be loaded.')).toBeVisible({ timeout: 30_000 });
+    await expect(popup.getByText("Couldn't load the selected key.")).toBeVisible({ timeout: 30_000 });
     await expect(popup.getByRole('button', { name: 'Try again' })).toBeVisible();
     await expect(popup.getByText('Please connect first to sign messages.')).toHaveCount(0);
     const response = page.waitForFunction(() => (window as unknown as { replies: Reply[] }).replies.some((r) => r.type === 'openkey:sign:response'));
@@ -303,14 +318,13 @@ test.describe('popup: a sign request that names no key', () => {
     expect((await signResponses(page))[0]).toMatchObject({ success: false, error: { code: 'NO_KEY' } });
   });
 
-  test('no key of the account fits (SIWE names another address): a clear error; Try again finds the key once added', async ({ page }) => {
+  test('no key of the account fits (SIWE names another address): it says so; Sign out leads back to sign-in for the same request', async ({ page }) => {
     const account = newAccount([KEY_A, KEY_B]);
     const popup = await openPopup(page, account, siweFor(ADDRESS_ELSEWHERE));
-    await expect(popup.getByRole('alert')).toBeVisible({ timeout: 30_000 });
+    await expect(popup.getByRole('alert')).toHaveText("This app asked for a key this account doesn't have. You may be signed in to a different account.", { timeout: 30_000 });
     await expect(popup.locator('button.approve')).toHaveCount(0);
-    account.keys.push(key('key_elsewhere', ADDRESS_ELSEWHERE, 4));
-    await popup.getByRole('button', { name: 'Try again' }).click();
-    await expectReview(popup, siweFor(ADDRESS_ELSEWHERE));
+    await popup.getByRole('button', { name: 'Sign out' }).click();
+    await expect(popup.getByRole('link', { name: 'Sign In' })).toBeVisible();
     expect(account.signed).toEqual([]);
   });
 });

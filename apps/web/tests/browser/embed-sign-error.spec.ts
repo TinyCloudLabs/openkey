@@ -22,7 +22,7 @@ test('failed selected-key read shows a stable cancellable error in the v2 iframe
   });
   await expect.poll(() => page.evaluate(() => (window as unknown as Window & { received: Array<{ type: string; requestId?: string }> }).received.some(m => m.type === 'openkey:ready' && m.requestId === 'phase-1'))).toBe(true);
   const frame = page.frameLocator('#sign-v2');
-  await expect(frame.getByText('Selected key could not be loaded.')).toBeVisible();
+  await expect(frame.getByText("Couldn't load the selected key.")).toBeVisible();
   await page.evaluate(([address, host, origin]) => {
     document.querySelector<HTMLIFrameElement>('#sign-v2')?.contentWindow?.postMessage({
       type: 'openkey:sign:request', requestId: 'phase-1', protocolVersion: 2, keyId: 'selected-key',

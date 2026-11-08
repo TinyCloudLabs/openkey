@@ -105,7 +105,7 @@ const { signature, address } = await openkey.signMessage({
 
 Pass the `keyId` from `connect()`. Without one (and without an earlier `connect()`), OpenKey asks the owner to sign in if needed, then uses the account's only key that can sign the message, or lets the owner choose among several. A SIWE message is signed only by the key whose address it names. Either way the owner reviews and approves the exact message.
 
-Errors reject with an `OpenKeyError` (`{ code, message }`). `USER_CANCELLED`: the owner cancelled. `NO_KEY`: the owner cancelled because no key of the signed-in account can sign the message (for example, the SIWE names another account's address); call `connect()` and sign again with the returned `keyId`.
+Errors reject with an `OpenKeyError` (`{ code, message }`). `USER_CANCELLED`: the owner cancelled. `NO_KEY`: the owner cancelled because no key in the signed-in account can sign the message (for example, the SIWE names another account's address), or the key could not be loaded; call `connect()` and sign again with the returned `keyId`.
 
 ### `openkey.signTypedData(request, opts?)`
 

@@ -49,6 +49,9 @@
   let keysListed = $state(false);
   let keyChoices = $state<EthereumKey[] | null>(null);
   let keyError = $state('');
+  // Why no key could be used: 'missing' = no key of this account fits (Sign out is the way on), 'unreadable' = the
+  // key or key list could not be read (Try again). Either way Cancel answers NO_KEY.
+  let keyProblem = $state<'missing' | 'unreadable' | null>(null);
   let keyReadGeneration = 0;
   let key = $state<EthereumKey | null>(null);
   let loading = $state(true);
@@ -281,7 +284,9 @@
       api.getKey(selectedId).then(result => {
         if (generation === keyReadGeneration && keyId === selectedId) key = result.key;
       }).catch(() => {
-        if (generation === keyReadGeneration && keyId === selectedId && !key) keyError = 'Selected key could not be loaded.';
+        if (generation !== keyReadGeneration || keyId !== selectedId || key) return;
+        keyError = "Couldn't load the selected key.";
+        keyProblem = 'unreadable';
       });
     }
   });
@@ -299,9 +304,14 @@
       const resolution = resolveSigningKey(keys, requestMessage);
       if (resolution.kind === 'resolved') chooseKey(resolution.key);
       else if (resolution.kind === 'choose') keyChoices = resolution.keys;
-      else keyError = 'This account has no key that can sign this message.';
+      else {
+        keyError = "This app asked for a key this account doesn't have. You may be signed in to a different account.";
+        keyProblem = 'missing';
+      }
     }).catch(() => {
-      if (generation === keyReadGeneration) keyError = 'Your keys could not be loaded.';
+      if (generation !== keyReadGeneration) return;
+      keyError = "Couldn't load your keys.";
+      keyProblem = 'unreadable';
     });
   });
 
@@ -316,10 +326,17 @@
     keyReadGeneration++;
     key = null;
     keyError = '';
+    keyProblem = null;
     keyChoices = null;
     keyId = requestedKeyId;
     keyFetched = false;
     keysListed = false;
+  }
+
+  // Same as the connect widget's Sign out; Sign In then returns to this page, and the SDK sends the request again.
+  function signOutForKey() {
+    authClient.signOut();
+    retryKey();
   }
 
   async function handleMessage(event: MessageEvent) {
@@ -1005,7 +1022,7 @@
       type: 'openkey:sign:response',
       success: false,
       // Cancelled because no key of this account could sign: the app can tell that apart and recover.
-      error: !key && keyError ? NO_KEY_ERROR : { code: 'USER_CANCELLED', message: 'User cancelled' },
+      error: !key && keyProblem ? NO_KEY_ERROR : { code: 'USER_CANCELLED', message: 'User cancelled' },
     });
     sendClose();
   }
@@ -1119,22 +1136,34 @@
     </div>
   {:else if !key}
     {#if keyError}
-      <div class="flex flex-col gap-4 flex-1">
+      <div class="flex flex-col gap-4">
         <Card class="bg-red-500/10 border-red-500 text-red-500 p-4" role="alert">{keyError}</Card>
-        <div class="flex gap-3 mt-auto">
+        <div class="flex gap-3">
           <Button variant="secondary" class="flex-1" onclick={cancel}>Cancel</Button>
-          <Button class="flex-1" onclick={retryKey}>Try again</Button>
+          {#if keyProblem === 'missing'}
+            <Button class="flex-1" onclick={signOutForKey}>Sign out</Button>
+          {:else}
+            <Button class="flex-1" onclick={retryKey}>Try again</Button>
+          {/if}
         </div>
+        {#if keyProblem !== 'missing'}
+          <button
+            onclick={signOutForKey}
+            class="text-xs text-surface-400 hover:text-surface-50 transition-colors bg-transparent border-none cursor-pointer mx-auto block"
+          >
+            Sign out
+          </button>
+        {/if}
       </div>
     {:else if keyChoices}
-      <div class="flex flex-col gap-4 flex-1">
+      <div class="flex flex-col gap-4">
         <KeyPicker
           keys={keyChoices}
           onselect={chooseKey}
           primaryHeading="Sign with your primary key:"
           listHeading="Select the key to sign with:"
         />
-        <div class="flex gap-3 mt-auto">
+        <div class="flex gap-3">
           <Button variant="secondary" class="flex-1" onclick={cancel}>Cancel</Button>
         </div>
       </div>

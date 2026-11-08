@@ -60,6 +60,9 @@
   let initialized = $state(false);
   let keyFetched = $state(false);
   let keyError = $state('');
+  // Why no key could be used: 'missing' = no key of this account fits (Sign out is the way on), 'unreadable' = the
+  // key or key list could not be read (Try again). Either way Cancel answers NO_KEY.
+  let keyProblem = $state<'missing' | 'unreadable' | null>(null);
   let contentEl = $state<HTMLDivElement | undefined>(undefined);
   let embedAuthenticated = $state(typeof window !== 'undefined' && !!getSessionToken());
   let reviewModel = $state<CapabilityReviewModel | null>(null);
@@ -433,6 +436,7 @@
         found.id !== selectedId
       ) {
         keyError = 'Selected key could not be loaded for this session.';
+        keyProblem = 'unreadable';
         return;
       }
       // Detail endpoint is owner-scoped and selects only public columns.
@@ -444,7 +448,9 @@
       keyOwnerToken = token;
       keyOwnerSessionId = sessionId ?? undefined;
     }).catch(() => {
-      if (generation === keyReadGeneration && getSessionToken() === token) keyError = 'Selected key could not be loaded.';
+      if (generation !== keyReadGeneration || getSessionToken() !== token) return;
+      keyError = "Couldn't load the selected key.";
+      keyProblem = 'unreadable';
     });
   });
 
@@ -464,9 +470,14 @@
       const resolution = resolveSigningKey(keys, requestMessage);
       if (resolution.kind === 'resolved') chooseKey(resolution.key);
       else if (resolution.kind === 'choose') keyChoices = resolution.keys;
-      else keyError = 'This account has no key that can sign this message.';
+      else {
+        keyError = "This app asked for a key this account doesn't have. You may be signed in to a different account.";
+        keyProblem = 'missing';
+      }
     }).catch(() => {
-      if (generation === keyReadGeneration && getSessionToken() === token) keyError = 'Your keys could not be loaded.';
+      if (generation !== keyReadGeneration || getSessionToken() !== token) return;
+      keyError = "Couldn't load your keys.";
+      keyProblem = 'unreadable';
     });
   });
 
@@ -483,6 +494,7 @@
     keyOwnerToken = null;
     keyOwnerSessionId = undefined;
     keyError = '';
+    keyProblem = null;
     keyChoices = null;
     keyId = requestedKeyId;
     keyFetched = false;
@@ -1113,7 +1125,7 @@
       type: 'openkey:sign:response',
       success: false,
       // Cancelled because no key of this account could sign: the app can tell that apart and recover.
-      error: !key && keyError ? NO_KEY_ERROR : { code: 'USER_CANCELLED', message: 'User cancelled' },
+      error: !key && keyProblem ? NO_KEY_ERROR : { code: 'USER_CANCELLED', message: 'User cancelled' },
     });
     sendClose();
   }
@@ -1217,14 +1229,20 @@
           <div class="bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl text-sm" role="alert">{keyError}</div>
           <div class="flex gap-2 mt-1">
             <Button variant="secondary" size="sm" class="flex-1 rounded-xl" onclick={cancel}>Cancel</Button>
-            <Button size="sm" class="flex-1 rounded-xl" onclick={retryKey}>Try again</Button>
+            {#if keyProblem === 'missing'}
+              <Button size="sm" class="flex-1 rounded-xl" onclick={signOutForKey}>Sign out</Button>
+            {:else}
+              <Button size="sm" class="flex-1 rounded-xl" onclick={retryKey}>Try again</Button>
+            {/if}
           </div>
-          <button
-            onclick={signOutForKey}
-            class="text-xs text-surface-400 hover:text-surface-600 transition-colors bg-transparent border-none cursor-pointer mx-auto block"
-          >
-            Sign out
-          </button>
+          {#if keyProblem !== 'missing'}
+            <button
+              onclick={signOutForKey}
+              class="text-xs text-surface-400 hover:text-surface-600 transition-colors bg-transparent border-none cursor-pointer mx-auto block"
+            >
+              Sign out
+            </button>
+          {/if}
         </div>
       {:else if keyChoices}
         <div class="flex flex-col gap-3">
