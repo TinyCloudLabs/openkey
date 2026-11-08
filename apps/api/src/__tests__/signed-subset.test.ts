@@ -99,6 +99,19 @@ describe('strict SIWE parser', () => {
     });
   });
 
+  test('the ReCap sentence matches the WASM for mixed namespaces and byte-ordered resources', () => {
+    // One resource with abilities in three namespaces; paths whose byte order
+    // differs from locale order (upper before lower case, '-' before '/').
+    const message = request({
+      abilities: { kv: { a: ['tinycloud.kv/get'], B: ['tinycloud.kv/get'], 'Z/x': ['tinycloud.kv/put'], 'a-b': ['tinycloud.kv/get'], 'a/b': ['tinycloud.kv/get'] } },
+      rawAbilities: { [network]: ['tinycloud.encryption/decrypt', 'b.ns/z', 'a.ns/y', 'a.ns/a'] },
+    });
+    const parsed = parseStrictSiwe(message);
+    if (!parsed.ok || !parsed.siwe.recap) throw new Error('fixture did not parse');
+    expect(recapStatement(parsed.siwe.recap.att)).toBe(parsed.siwe.statement!);
+    expect(parsed.siwe.statement).toContain(`'a.ns': 'a', 'y' for '${network}'.`);
+  });
+
   const refused: Array<[string, (siwe: string) => string]> = [
     ['a repeated field', (s) => s.replace(/^(Nonce: .+)$/m, '$1\n$1')],
     ['fields out of order', (s) => s.replace(/^(Version: 1)\n(Chain ID: 1)$/m, '$2\n$1')],
