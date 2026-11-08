@@ -996,8 +996,10 @@ describe('TC-945 bootstrap budget', () => {
       work.reject(new Error('background database failure'));
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(unhandled).not.toHaveBeenCalled();
-      expect(output).toHaveLength(1);
-      const line = JSON.parse(output[0]!);
+      // Apart from the request's own delegate_session_jwk line.
+      const lines = output.map((chunk) => JSON.parse(chunk)).filter((entry) => entry.event !== 'delegate_session_jwk');
+      expect(lines).toHaveLength(1);
+      const line = lines[0];
       expect(line).toMatchObject({
         level: 'error',
         event: 'tinycloud_bootstrap_background_failed',

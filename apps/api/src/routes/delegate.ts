@@ -50,7 +50,7 @@ import {
   type RecapEntry,
   type SessionAbilities,
 } from './delegate-session';
-import { log, logError } from '../log';
+import { log, logError, logSessionJwk } from '../log';
 
 // Re-export the pure delegation helpers so existing external test files
 // (e.g. delegate-oauth-route.test.ts) that import them from this module
@@ -77,6 +77,7 @@ import {
   issuePreviewApproval,
   peekAuthorizationContext,
   peekPreviewApprovalExpiry,
+  hasPrivateJwkMember,
   publicJwk,
   type AuthorizationContextToken,
   type AuthorizationContextClaim,
@@ -1321,6 +1322,7 @@ delegateRouter.post('/', async (c) => {
     selectedActionIds?: unknown;
     protocolVersion?: number;
   }>();
+  logSessionJwk('/api/delegate', hasPrivateJwkMember(body.jwk));
   // Only the session key's public members are used, stored, or returned. A
   // device or approval request keeps its own exact check of the key as sent.
   if (body.deviceTransactionId === undefined && body.approvalRequestId === undefined) {
@@ -1818,6 +1820,7 @@ delegateRouter.post('/prepare', async (c) => {
     deviceTransactionId?: unknown;
     approvalRequestId?: string;
   }>();
+  logSessionJwk('/api/delegate/prepare', hasPrivateJwkMember(body.jwk));
   // Only the session key's public members are used, stored, or returned. A
   // device or approval request keeps its own exact check of the key as sent.
   if (body.deviceTransactionId === undefined && body.approvalRequestId === undefined) {
@@ -2039,6 +2042,7 @@ delegateRouter.post('/complete', async (c) => {
      */
     selectedActionIds?: unknown;
   }>();
+  logSessionJwk('/api/delegate/complete', hasPrivateJwkMember(body.jwk));
   // Only the session key's public members are used, stored, or returned. A
   // device or approval request keeps its own exact check of the key as sent.
   if (body.deviceTransactionId === undefined && body.approvalRequestId === undefined) {
@@ -2454,6 +2458,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     callback?: unknown;
     delivery?: unknown;
   }>();
+  logSessionJwk('/api/delegate/authorize-sign-prepare', hasPrivateJwkMember(body.jwk));
   // Only the session key's public members are used or stored.
   body.jwk = publicJwk(body.jwk) as DelegationJwk;
   const deviceUnsupported = deviceTransactionUnsupportedError(body);
