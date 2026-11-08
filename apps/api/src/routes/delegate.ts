@@ -87,7 +87,7 @@ import {
 } from '../services/authorization-signing';
 import { MIN_EXPIRATION_LEAD_MS, validateExpirationOverride, withExpirationTime } from '../services/approval-expiry';
 import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
-import { checkSignedSubset } from '../services/signed-subset';
+import { checkSignedSubset, parseStrictSiwe, SIGNED_SUBSET_REFUSAL_CODE } from '../services/signed-subset';
 import { checkSiweOrigin } from '../services/siwe-origin';
 import {
   APP_KEY_GROUP_PARTIAL_CODE,
@@ -2876,6 +2876,16 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     const notAdmitted = appKeyRefusalForSiwe(body.siwe, originalEntries, admission.admitted);
     if (notAdmitted) return c.json(appKeyRefusalBody(notAdmitted, 'browser'), appKeyRefusalStatus(notAdmitted));
     admittedAppKeys = admission.admitted;
+  }
+
+  // A request the pre-sign rule cannot read can never be signed; refuse it
+  // before issuing a context and a review screen for it.
+  const readable = parseStrictSiwe(body.siwe);
+  if (!readable.ok) {
+    return c.json(
+      { error: `The requested SIWE is not well formed: ${readable.message}`, code: SIGNED_SUBSET_REFUSAL_CODE, reason: 'request_unparsable' },
+      400,
+    );
   }
 
   let issued: AuthorizationContextToken;

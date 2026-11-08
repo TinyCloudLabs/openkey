@@ -350,4 +350,18 @@ describe('the signed bytes are a subset of the request (pre-sign rule)', () => {
       expect(signed.body.signedMessage).toBe(previewed.body.signedMessage);
     });
   }
+
+  test('a request the strict reader refuses gets no context at prepare', async () => {
+    // Both shapes are accepted by the WASM ReCap parser but are outside EIP-4361.
+    const shapes = [
+      originalSiwe().replace(/^Nonce: .+$/m, 'Nonce: abcd-efgh-ijkl'),
+      originalSiwe().replace(/^Issued At: (.+)T(.+)Z$/m, 'Issued At: $1t$2z'),
+    ];
+    for (const siwe of shapes) {
+      const refused = await post('/authorize-sign-prepare', { keyId: currentKey.id, siwe, jwk, host, requestOrigin: 'https://openkey.so' });
+      expect(refused.status).toBe(400);
+      expect(refused.body).toMatchObject({ code: 'signed_exceeds_request', reason: 'request_unparsable' });
+      expect(refused.body.authorizationContextToken).toBeUndefined();
+    }
+  });
 });
