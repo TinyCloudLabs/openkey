@@ -186,8 +186,8 @@ preview only when the owner chooses it; it does not sign or repeat on a
 timer. Existing unreadable-reply refusals still end the caller's request.
 Ordinary held-preview expiry refreshes automatically. If a newly returned
 preview is already too old to use, including a context that expires while
-the response is in flight, the page shows the request-expired message and
-leaves approval disabled.
+the response is in flight, the page shows `OpenKey's check timed out.
+Try again.` and leaves approval disabled until an owner-initiated retry.
 
 An expired authorization context returns `context-expired` on
 `/authorize-sign`, `/authorize-sign-preview`, the managed approval, and
