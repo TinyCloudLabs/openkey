@@ -12,8 +12,8 @@
 // adapter component with a fixture model and a spy transport, then
 // dispatch real DOM keyboard events. A route-specific wiring bug —
 // dropping `invalidatePreview` from the widget adapter's selection
-// handler, mis-mapping the CLI selection, forgetting to call the preview
-// path when supported — surfaces as a missing spy call in that test.
+// handler, mis-mapping the CLI selection, signing before a preview
+// is ready — surfaces as an unexpected spy call in that test.
 //
 // The routes themselves are responsible for authentication and other
 // non-authorization concerns; those never enter the adapter and never
@@ -85,28 +85,14 @@ export interface WidgetSigningTransport {
    */
   canUseAuthorizeSign: boolean;
 
-  /**
-   * True after the server has prepared exact bytes and sealed them to the
-   * current selection. The adapter keeps rendering the shared approval
-   * content, but the next approval now consumes that preview instead of
-   * requesting another one.
-   */
+  /** True while a current, unexpired token sealed to the visible selection is held. */
   previewReady: boolean;
 
-  /**
-   * Server-authoritative narrowing path: fetch a preview of the exact
-   * bytes the server would sign for the current selection. The route puts
-   * those bytes back into the shared review model; the adapter fires this
-   * only when `canUseAuthorizeSign` is true and no preview is ready.
-   */
-  requestPreview: () => void | Promise<void>;
-
-  /**
-   * Exact-byte fall-through: the legacy widget path signs the caller's
-   * original bytes verbatim. The adapter fires this when
-   * `canUseAuthorizeSign` is false.
-   */
+  /** Sign the ready sealed preview, or the original bytes on the legacy path. */
   approveAndSign: () => void | Promise<void>;
+
+  /** Owner-initiated retry after a recoverable preview/sign failure; absent while busy. */
+  retryPreview?: () => void;
 
   /** Cancel: send the widget cancel response and close the surface. */
   cancel: () => void;
@@ -127,7 +113,7 @@ export interface WidgetSigningTransport {
    */
   invalidatePreview: () => void;
 
-  /** True while the widget is previewing or signing. */
+  /** True only while the widget is signing. */
   approving: boolean;
 
   /** Latest error string, or null. */

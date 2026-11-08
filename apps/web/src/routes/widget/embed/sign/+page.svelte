@@ -1,6 +1,6 @@
 <script lang="ts">
   import { page } from '$app/stores';
-  import { tick } from 'svelte';
+  import { tick, untrack } from 'svelte';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
   import { getSessionToken, isEmbedContext, withSessionCredential } from '$lib/embed-passkey';
@@ -11,6 +11,7 @@
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
   import { requestedActionIds, selectionFromPreview } from '$lib/widget-selection';
   import { expiryAt, siweExpiration } from '$lib/approval-expiry';
+  import { PREVIEW_EXPIRED_MESSAGE, signingPreviewDeadline, type SigningPreview } from '$lib/signing-preview';
   import {
     parseCapabilityReview,
     parseSiweChainId,
@@ -100,17 +101,16 @@
   // must NOT overwrite an in-flight one — the response would escape to
   // the wrong parent.
   let requestSealed = $state(false);
-  // Sol CRITICAL-1 (distinct final approval): the iframe MUST call
-  // /authorize-sign-preview so the user sees the EXACT bytes the server
-  // would sign, then approves again before /authorize-sign consumes
-  // the token.
-  let previewSignedMessage = $state<string | null>(null);
+  // Background previews seal the current selection and exact bytes before Approve is enabled.
+  let heldPreview = $state<SigningPreview | null>(null);
+  const previewSignedMessage = $derived(heldPreview?.signedMessage ?? null);
   let previewToken = $state<string | null>(null);
-  let previewApprovalToken = $state<string | null>(null);
+  let contextDeadline = 0;
+  let previewRevision = $state(0);
+  let previewStopped = false;
   let previewing = $state(false);
   // TC-2272: how long from approval the user chose; null keeps the app's own expiry.
   let expiryChoiceMs = $state<number | null>(null);
-  let previewApproved = $state(false);
   // Sol MAJOR-3 (continuation): external-key review mode. See widget/sign.
   let externalSignMode = $state(false);
   let expiryChangeable = $state(false);
@@ -214,6 +214,7 @@
   // Cleanup transport when the component unmounts.
   $effect(() => {
     return () => {
+      previewStopped = true;
       transport?.destroy();
       window.removeEventListener('message', handleMessage);
       window.removeEventListener('resize', applyPendingLayout);
@@ -303,10 +304,10 @@
     // A sessionToken in the request is ignored: the session comes only from
     // OpenKey-origin storage or cookies (TC-688).
     // Reset preview state on a fresh request.
-    previewSignedMessage = null;
+    heldPreview = null;
     previewToken = null;
-    previewApprovalToken = null;
-    previewApproved = false;
+    contextDeadline = 0;
+    previewRevision++;
     requestSealed = true;
   }
 
@@ -664,6 +665,35 @@
     return requestedActionIds(reviewModel, reviewSelection);
   }
 
+  const previewInput = $derived.by(() =>
+    key && canUseAuthorizeSignFn() && !siweRefusal
+      ? JSON.stringify([currentRequestId, key.id, message,
+          [...currentSelectedActionIds()].sort(), expiryChoiceMs])
+      : null,
+  );
+
+  $effect(() => {
+    const input = previewInput;
+    const revision = previewRevision;
+    if (input !== null) untrack(() => { void requestPreview(input, revision); });
+  });
+
+  $effect(() => {
+    const preview = heldPreview;
+    if (!preview) return;
+    const timer = setTimeout(() => {
+      if (heldPreview === preview && !signing && !previewStopped) invalidatePreviewForSelectionEdit();
+    }, Math.max(0, preview.deadline - performance.now()));
+    return () => clearTimeout(timer);
+  });
+
+  function currentPreview(): SigningPreview | null {
+    const preview = heldPreview;
+    return !previewStopped && !signing && !previewing && preview &&
+      preview.input === previewInput && preview.revision === previewRevision &&
+      performance.now() < preview.deadline ? preview : null;
+  }
+
   function currentKeyBelongsToSession(): boolean {
     if (
       isAuthenticated &&
@@ -679,21 +709,24 @@
     return false;
   }
 
-  // Sol CRITICAL-1: preview step for iframe.
-  async function requestPreview(): Promise<void> {
+  // Previewing does not need a layout ACK; only the final approval can sign.
+  async function requestPreview(input: string, revision: number): Promise<void> {
     if (!key || !message) return;
     if (siweRefusal) return;
     if (!canUseAuthorizeSignFn()) return;
-    if (v2 && !layoutGate?.canApprove()) return;
     if (!currentKeyBelongsToSession()) return;
+    if (signing || previewStopped) return;
+    const isCurrent = () => !previewStopped && revision === previewRevision && input === previewInput;
+    const selectedIds = currentSelectedActionIds();
+    const requestedExpiry = expiryChoiceMs === null ? null : expiryAt(expiryChoiceMs);
     previewing = true;
     error = '';
-    previewApproved = false;
     try {
-      let token = previewToken;
+      let token = performance.now() < contextDeadline ? previewToken : null;
       if (!token) {
         const reportedOriginForPrepare =
           origin && origin !== '*' && origin.startsWith('https://') ? origin : undefined;
+        const prepareStarted = performance.now();
         const prepareRes = await fetch(
           `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign-prepare`,
           withSessionCredential({
@@ -717,6 +750,8 @@
           (body) => hasText(body, 'authorizationContextToken'),
           'authorize-sign-prepare failed',
         );
+        if (!isCurrent()) return;
+        contextDeadline = signingPreviewDeadline(prepareResult.expiresAt, prepareRes.headers.get('Date'), prepareStarted);
         token = typeof prepareResult.authorizationContextToken === 'string'
           ? prepareResult.authorizationContextToken
           : null;
@@ -802,7 +837,8 @@
           };
         }
       }
-      const selectedIds = currentSelectedActionIds();
+      if (!isCurrent()) return;
+      const previewStarted = performance.now();
       const previewRes = await fetch(
         `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign-preview`,
         withSessionCredential({
@@ -812,7 +848,7 @@
             authorizationContextToken: token,
             selectedActionIds: selectedIds,
             // TC-2272: only when the user changed it; the app's own expiry stays the default.
-            ...(expiryChoiceMs === null ? {} : { expirationTime: expiryAt(expiryChoiceMs) }),
+            ...(requestedExpiry === null ? {} : { expirationTime: requestedExpiry }),
           }),
         }),
       );
@@ -821,6 +857,7 @@
         (body) => hasText(body, 'signedMessage', 'previewApprovalToken'),
         'authorize-sign-preview failed',
       );
+      if (!isCurrent()) return;
       if (typeof previewResult.signedMessage !== 'string' || !previewResult.signedMessage) {
         throw new Error('authorize-sign-preview did not return signedMessage');
       }
@@ -830,22 +867,30 @@
       if (typeof previewResult.previewApprovalToken !== 'string' || !previewResult.previewApprovalToken) {
         throw new Error('authorize-sign-preview did not return a previewApprovalToken — server is out of date');
       }
-      reviewSelection = selectionFromPreview(previewResult, selectedIds);
-      previewSignedMessage = previewResult.signedMessage;
-      previewApprovalToken = previewResult.previewApprovalToken;
+      selectionFromPreview(previewResult, selectedIds);
+      const deadline = Math.min(contextDeadline,
+        signingPreviewDeadline(previewResult.previewApprovalExpiresAt, previewRes.headers.get('Date'), previewStarted));
+      if (deadline <= performance.now()) throw new Error(PREVIEW_EXPIRED_MESSAGE);
+      heldPreview = {
+        input, revision, authorizationContextToken: token,
+        previewApprovalToken: previewResult.previewApprovalToken,
+        signedMessage: previewResult.signedMessage, selectedActionIds: selectedIds, deadline,
+      };
     } catch (e: any) {
+      if (!isCurrent()) return;
       if (e instanceof ServerReplyError) unreadableReply(e.status);
       else error = e.message || 'Preview failed';
       previewToken = null;
-      previewSignedMessage = null;
-      previewApprovalToken = null;
+      heldPreview = null;
+      contextDeadline = 0;
     } finally {
-      previewing = false;
+      if (isCurrent()) previewing = false;
     }
   }
 
   async function approveAndSign() {
     if (!key || !message) return;
+    if (signing || previewStopped) return;
     if (siweRefusal) {
       error = siweRefusal.message;
       return;
@@ -860,14 +905,17 @@
         'Refusing to sign: this SIWE carries a capability payload that could not be decoded.';
       return;
     }
+    const approved = canUseAuthorizeSignFn() ? currentPreview() : null;
+    if (canUseAuthorizeSignFn() && !approved) {
+      if (!previewing) invalidatePreviewForSelectionEdit();
+      return;
+    }
     signing = true;
     error = '';
     try {
-      if (canUseAuthorizeSignFn()) {
-        if (!previewToken || !previewSignedMessage || !previewApprovalToken) {
-          throw new Error('Preview required before approval — call requestPreview() first');
-        }
-        const selectedActionIds = currentSelectedActionIds();
+      if (approved) {
+        const { authorizationContextToken, previewApprovalToken, signedMessage } = approved;
+        const selectedActionIds = [...approved.selectedActionIds];
         // Sol MAJOR-3 (continuation): external-key mode. Hand the preview
         // payload back to the SDK; the SDK invokes the user's wallet and
         // completes /authorize-sign with the resulting signature.
@@ -875,9 +923,9 @@
           sendResponse({
             type: 'openkey:externalSign:approve',
             success: true,
-            authorizationContextToken: previewToken,
+            authorizationContextToken,
             previewApprovalToken,
-            signedMessage: previewSignedMessage,
+            signedMessage,
             selectedActionIds,
             address: key.address,
           });
@@ -890,7 +938,7 @@
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              authorizationContextToken: previewToken,
+              authorizationContextToken,
               // Sol CRITICAL-1: /authorize-sign requires the preview
               // approval token so it cannot independently accept a
               // different selection or sign different bytes.
@@ -905,7 +953,7 @@
           hasSignResult,
           'authorize-sign failed',
         );
-        if (authorizeResult.signedMessage !== previewSignedMessage) {
+        if (authorizeResult.signedMessage !== signedMessage) {
           throw new Error('Server signed bytes differ from the previewed bytes — refusing to accept');
         }
         sendResponse({
@@ -949,12 +997,22 @@
       else error = e.message || 'Signing failed';
     } finally {
       signing = false;
+      if (approved && !previewStopped) {
+        previewToken = null;
+        contextDeadline = 0;
+        heldPreview = null;
+      }
     }
   }
 
   function invalidatePreviewForSelectionEdit() {
-    previewSignedMessage = null;
-    previewApproved = false;
+    heldPreview = null;
+    previewRevision++;
+  }
+
+  function retryPreview() {
+    if (!canUseAuthorizeSignFn() || signing || previewing || heldPreview || previewStopped || !error) return;
+    invalidatePreviewForSelectionEdit();
   }
 
   // TC-1486: a SIWE-shaped message that does not name the verified requesting
@@ -1047,6 +1105,8 @@
   }
 
   function sendClose() {
+    previewStopped = true;
+    heldPreview = null;
     // Sol MAJOR-4 (continuation): correlate close messages to the active
     // request.
     const closeMsg: Record<string, unknown> = { type: 'openkey:close' };
@@ -1110,12 +1170,12 @@
         initialSelection={reviewSelection}
         layoutBlocked={v2 ? !layoutReady : !frameSettled}
         transport={{
-          approving: signing || previewing,
+          approving: signing,
           host: messageHost,
           error: error || layoutError,
           canUseAuthorizeSign: canUseAuthorizeSignFn(),
-          previewReady: Boolean(previewToken && previewSignedMessage && previewApprovalToken),
-          requestPreview,
+          previewReady: currentPreview() !== null,
+          retryPreview: canUseAuthorizeSignFn() && error && !signing && !previewing && !heldPreview ? retryPreview : undefined,
           approveAndSign,
           cancel,
           onSelectionEdited: (next) => {

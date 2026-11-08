@@ -19,7 +19,20 @@ async function openEmbed(page: Page, parent: Parent, version: 1 | 2 = 1, keyDela
     await route.fulfill({ json: { key: { id: 'selected-key', address, publicKey: '0x02', keyIndex: 0, label: 'Selected', keyType: 'MANAGED', createdAt: '2026-01-01T00:00:00Z' } } });
   });
   await page.route('**/api/auth/get-session**', (route) => route.fulfill({ json: { session: { id: 'test-session' }, user: { id: 'test-user' } } }));
-  await page.route('**/api/delegate/authorize-sign-prepare', (route) => route.fulfill({ json: { authorizationContextToken: 'context-token' } }));
+  await page.route('**/api/delegate/authorize-sign-prepare', (route) => route.fulfill({ json: {
+    authorizationContextToken: 'context-token', expiresAt: new Date(Date.now() + 300_000).toISOString(),
+  } }));
+  await page.route('**/api/delegate/authorize-sign-preview', (route) => {
+    const ids = route.request().postDataJSON().selectedActionIds as string[];
+    return route.fulfill({ json: {
+      authorizationContextToken: 'context-token', previewApprovalToken: 'preview-token',
+      previewApprovalExpiresAt: new Date(Date.now() + 60_000).toISOString(), signedMessage: siwe,
+      selectedActionKeys: ids, permissions: ids.map(id => {
+        const [service, space, path, ability] = id.split('\0');
+        return { service, space, path, actions: [ability] };
+      }),
+    } });
+  });
   await page.goto('/__parity_harness');
   await page.evaluate(([mode, protocol, message]) => {
     const w = window as unknown as Window & { frameLog: Array<{ t: number; top: number; enabled: boolean | null }>; resizeCount: number; sampleTimer: number };

@@ -62,7 +62,6 @@ type Shared = { sent: Sent[]; adapter: Adapter | null; options: TransportOptions
 type Adapter = {
   canUseAuthorizeSign: boolean;
   previewReady: boolean;
-  requestPreview: () => Promise<void>;
   approveAndSign: () => Promise<void>;
 };
 type TransportOptions = { onRequest: (request: unknown) => void };
@@ -215,17 +214,17 @@ async function run(pageName: 'popup' | 'embed', sign: Reply) {
     const name = String(input).split('/').pop() ?? '';
     called.push(name);
     let answer: Reply = { status: 500, text: '{"error":"unexpected"}' };
-    if (name === 'authorize-sign-prepare') answer = reply({ authorizationContextToken: 'context-token' });
+    if (name === 'authorize-sign-prepare') answer = reply({ authorizationContextToken: 'context-token', expiresAt: new Date(Date.now() + 300_000).toISOString() });
     if (name === 'authorize-sign-preview') {
       const ids = (JSON.parse(String(init?.body)) as { selectedActionIds: string[] }).selectedActionIds;
       const permissions = ids.map((id) => {
         const [service, space, path, ability] = id.split('\0');
         return { service, space, path, actions: [ability] };
       });
-      answer = reply({ signedMessage: 'signed', previewApprovalToken: 'approval', selectedActionKeys: ids, permissions });
+      answer = reply({ signedMessage: 'signed', previewApprovalToken: 'approval', previewApprovalExpiresAt: new Date(Date.now() + 60_000).toISOString(), authorizationContextToken: 'context-token', selectedActionKeys: ids, permissions });
     }
     if (name === 'authorize-sign') answer = sign;
-    return { ok: answer.status >= 200 && answer.status < 300, status: answer.status, json: async () => JSON.parse(answer.text) };
+    return { ok: answer.status >= 200 && answer.status < 300, status: answer.status, headers: new Headers({ Date: new Date().toUTCString() }), json: async () => JSON.parse(answer.text) };
   }) as unknown as typeof fetch;
   const target = document.createElement('div');
   document.body.appendChild(target);
@@ -238,7 +237,6 @@ async function run(pageName: 'popup' | 'embed', sign: Reply) {
       data: { message: siwe(), keyId: KEY.id, jwk: { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' }, host: 'https://node.tinycloud.xyz' },
     });
     await until(() => shared().adapter?.canUseAuthorizeSign === true, 'the review');
-    await shared().adapter!.requestPreview();
     await until(() => shared().adapter?.previewReady === true, 'the preview');
     await shared().adapter!.approveAndSign();
     flushSync();

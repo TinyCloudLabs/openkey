@@ -87,6 +87,8 @@
     layoutBlocked?: boolean;
     stickyActions?: boolean;
     finalPreview?: boolean;
+    /** Disable only Approve while the route prepares the current preview. */
+    previewPending?: boolean;
     approveText?: string;
     cancelText?: string;
     /** Surface-specific context rendered in a fixed slot under the header. */
@@ -116,6 +118,7 @@
     expiryMaxMs?: number | null;
     onApprove: () => void;
     onCancel: () => void;
+    onRetry?: () => void;
     onSelectionChange: (next: Set<string>) => void;
     onEditingChange: (next: boolean) => void;
   }
@@ -130,6 +133,7 @@
     layoutBlocked = false,
     stickyActions = false,
     finalPreview = false,
+    previewPending = false,
     approveText = "Approve",
     cancelText = "Cancel",
     context,
@@ -141,6 +145,7 @@
     expiryMaxMs = null,
     onApprove,
     onCancel,
+    onRetry,
     onSelectionChange,
     onEditingChange,
   }: Props = $props();
@@ -475,15 +480,15 @@
   const nodeChecking = $derived(peerRecognition?.state === "checking");
   const approveDisabled = $derived(approving || isMalformedRecap);
   const approveButtonDisabled = $derived(
-    layoutBlocked || approveDisabled || Boolean(approveBlockedReason) || nodeChecking,
+    previewPending || layoutBlocked || approveDisabled || Boolean(approveBlockedReason) || nodeChecking,
   );
   const approveLabel = $derived(
     isMalformedRecap
       ? "Cannot approve"
       : approving
         ? "Signing…"
-        : finalPreview
-          ? "Approve exact bytes"
+        : previewPending && !onRetry
+          ? "Getting ready..."
           : approveText,
   );
 </script>
@@ -992,6 +997,9 @@
     >
       {cancelText}
     </button>
+    {#if onRetry}
+      <button type="button" class="cancel" onclick={onRetry} disabled={approving}>Try again</button>
+    {/if}
     <button
       type="button"
       class="approve"

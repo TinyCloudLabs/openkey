@@ -1,5 +1,6 @@
 <script lang="ts">
   import { page } from '$app/stores';
+  import { untrack } from 'svelte';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
   import Button from '$lib/components/ui/button.svelte';
@@ -9,6 +10,7 @@
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
   import { requestedActionIds, selectionFromPreview } from '$lib/widget-selection';
   import { expiryAt, siweExpiration } from '$lib/approval-expiry';
+  import { PREVIEW_EXPIRED_MESSAGE, signingPreviewDeadline, type SigningPreview } from '$lib/signing-preview';
   import {
     parseCapabilityReview,
     parseSiweChainId,
@@ -59,22 +61,16 @@
   // requests are refused server-side by our own state machine so the
   // response cannot escape to the wrong parent.
   let requestSealed = $state(false);
-  // Sol CRITICAL-1 (distinct final approval): the popup MUST call
-  // /authorize-sign-preview so the user sees the EXACT bytes the server
-  // would sign, then approves again before /authorize-sign consumes the
-  // token. `previewSignedMessage` holds the server-returned candidate;
-  // `previewToken` is the opaque authorization-context token bound at
-  // /authorize-sign-prepare time. Both are cleared when the user edits
-  // the selection so the flow returns to preview+approve.
-  let previewSignedMessage = $state<string | null>(null);
+  // Background previews seal the current selection and exact bytes before Approve is enabled.
+  let heldPreview = $state<SigningPreview | null>(null);
+  const previewSignedMessage = $derived(heldPreview?.signedMessage ?? null);
   let previewToken = $state<string | null>(null);
-  // Sol CRITICAL-1: preview-approval token that seals the exact
-  // (selection, signedMessage) pair. /authorize-sign requires this token.
-  let previewApprovalToken = $state<string | null>(null);
+  let contextDeadline = 0;
+  let previewRevision = $state(0);
+  let previewStopped = false;
   let previewing = $state(false);
   // TC-2272: how long from approval the user chose; null keeps the app's own expiry.
   let expiryChoiceMs = $state<number | null>(null);
-  let previewApproved = $state(false);
   // Sol MAJOR-3 (continuation): when the SDK passes `externalSign: true`
   // on the sign request, the widget MUST NOT call /authorize-sign at
   // approval time. Instead it emits an `openkey:externalSign:approve`
@@ -180,6 +176,7 @@
   // Cleanup transport when the component unmounts.
   $effect(() => {
     return () => {
+      previewStopped = true;
       transport?.destroy();
       transport = null;
     };
@@ -245,12 +242,10 @@
     reviewSourceMessage = null;
     reviewSelection = new Set();
     keyFetched = false;
-    // Reset preview state — a new request always starts with no bound
-    // preview. Editing selection also clears these fields.
-    previewSignedMessage = null;
+    heldPreview = null;
     previewToken = null;
-    previewApprovalToken = null;
-    previewApproved = false;
+    contextDeadline = 0;
+    previewRevision++;
     requestSealed = true;
   }
 
@@ -564,24 +559,53 @@
     return requestedActionIds(reviewModel, reviewSelection);
   }
 
-  // Sol CRITICAL-1: preview step. Issues (or re-uses) an authorization
-  // context via /authorize-sign-prepare, then calls
-  // /authorize-sign-preview to obtain the EXACT bytes the server would
-  // sign for the current selection. The user must approve the preview
-  // before /authorize-sign consumes the token.
-  async function requestPreview(): Promise<void> {
+  // A stable value avoids refetching when display-only metadata rebuilds the review model.
+  const previewInput = $derived.by(() =>
+    key && canUseAuthorizeSignFn() && !siweRefusal
+      ? JSON.stringify([currentRequestId, key.id, message,
+          [...currentSelectedActionIds()].sort(), expiryChoiceMs])
+      : null,
+  );
+
+  $effect(() => {
+    const input = previewInput;
+    const revision = previewRevision;
+    if (input !== null) untrack(() => { void requestPreview(input, revision); });
+  });
+
+  $effect(() => {
+    const preview = heldPreview;
+    if (!preview) return;
+    const timer = setTimeout(() => {
+      if (heldPreview === preview && !signing && !previewStopped) invalidatePreviewForSelectionEdit();
+    }, Math.max(0, preview.deadline - performance.now()));
+    return () => clearTimeout(timer);
+  });
+
+  function currentPreview(): SigningPreview | null {
+    const preview = heldPreview;
+    return !previewStopped && !signing && !previewing && preview &&
+      preview.input === previewInput && preview.revision === previewRevision &&
+      performance.now() < preview.deadline ? preview : null;
+  }
+
+  // Prepare the current selection in the background; only Approve consumes its sealed token.
+  async function requestPreview(input: string, revision: number): Promise<void> {
     if (!key || !message) return;
     if (siweRefusal) return;
     if (!canUseAuthorizeSignFn()) return;
+    if (signing || previewStopped) return;
+    const isCurrent = () => !previewStopped && revision === previewRevision && input === previewInput;
+    const selectedIds = currentSelectedActionIds();
+    const requestedExpiry = expiryChoiceMs === null ? null : expiryAt(expiryChoiceMs);
     previewing = true;
     error = '';
-    previewApproved = false;
     try {
       // Issue a bound context if we don't have one yet. We keep the same
       // token across selection edits until the user approves — token TTL
       // is 5 minutes, so a fresh /authorize-sign-prepare per selection
       // change would burn tokens without benefit.
-      let token = previewToken;
+      let token = performance.now() < contextDeadline ? previewToken : null;
       if (!token) {
         // Envelope + reported-origin forwarding. `origin` is the widget's
         // configured parent origin — the server treats it as advisory
@@ -590,6 +614,7 @@
         // wildcard origin skips the origin-bind attempt server-side.
         const reportedOriginForPrepare =
           origin && origin !== '*' && origin.startsWith('https://') ? origin : undefined;
+        const prepareStarted = performance.now();
         const prepareRes = await fetch(
           `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign-prepare`,
           {
@@ -614,6 +639,8 @@
           (body) => hasText(body, 'authorizationContextToken'),
           'authorize-sign-prepare failed',
         );
+        if (!isCurrent()) return;
+        contextDeadline = signingPreviewDeadline(prepareResult.expiresAt, prepareRes.headers.get('Date'), prepareStarted);
         token = typeof prepareResult.authorizationContextToken === 'string'
           ? prepareResult.authorizationContextToken
           : null;
@@ -706,7 +733,8 @@
           };
         }
       }
-      const selectedIds = currentSelectedActionIds();
+      if (!isCurrent()) return;
+      const previewStarted = performance.now();
       const previewRes = await fetch(
         `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign-preview`,
         {
@@ -717,7 +745,7 @@
             authorizationContextToken: token,
             selectedActionIds: selectedIds,
             // TC-2272: only when the user changed it; the app's own expiry stays the default.
-            ...(expiryChoiceMs === null ? {} : { expirationTime: expiryAt(expiryChoiceMs) }),
+            ...(requestedExpiry === null ? {} : { expirationTime: requestedExpiry }),
           }),
         },
       );
@@ -726,6 +754,7 @@
         (body) => hasText(body, 'signedMessage', 'previewApprovalToken'),
         'authorize-sign-preview failed',
       );
+      if (!isCurrent()) return;
       if (typeof previewResult.signedMessage !== 'string' || !previewResult.signedMessage) {
         throw new Error('authorize-sign-preview did not return signedMessage');
       }
@@ -734,29 +763,34 @@
       if (typeof previewResult.previewApprovalToken !== 'string' || !previewResult.previewApprovalToken) {
         throw new Error('authorize-sign-preview did not return a previewApprovalToken — server is out of date');
       }
-      reviewSelection = selectionFromPreview(previewResult, selectedIds);
-      previewSignedMessage = previewResult.signedMessage;
-      previewApprovalToken = previewResult.previewApprovalToken;
+      selectionFromPreview(previewResult, selectedIds);
+      const deadline = Math.min(contextDeadline,
+        signingPreviewDeadline(previewResult.previewApprovalExpiresAt, previewRes.headers.get('Date'), previewStarted));
+      if (deadline <= performance.now()) throw new Error(PREVIEW_EXPIRED_MESSAGE);
+      heldPreview = {
+        input, revision, authorizationContextToken: token,
+        previewApprovalToken: previewResult.previewApprovalToken,
+        signedMessage: previewResult.signedMessage, selectedActionIds: selectedIds, deadline,
+      };
     } catch (e: any) {
+      if (!isCurrent()) return;
       if (e instanceof ServerReplyError) unreadableReply(e.status);
       else error = e.message || 'Preview failed';
       // On failure, invalidate any stored token so the next attempt gets
       // a fresh one — the server may have expired the token or rejected
       // the immutable-fields digest.
       previewToken = null;
-      previewSignedMessage = null;
-      previewApprovalToken = null;
+      heldPreview = null;
+      contextDeadline = 0;
     } finally {
-      previewing = false;
+      if (isCurrent()) previewing = false;
     }
   }
 
-  // Sol CRITICAL-1: distinct final approval. The preview bytes are what
-  // gets signed; the token binding + preview digest are the sole
-  // authorities. This is the ONLY function that calls /authorize-sign
-  // and consumes the token.
+  // The click captures one current preview; later state changes cannot replace its bytes or token.
   async function approveAndSign() {
     if (!key || !message) return;
+    if (signing || previewStopped) return;
     if (siweRefusal) {
       error = siweRefusal.message;
       return;
@@ -767,14 +801,17 @@
         'Refusing to sign: this SIWE carries a capability payload that could not be decoded. The signer would otherwise silently drop the caller’s ReCap.';
       return;
     }
+    const approved = canUseAuthorizeSignFn() ? currentPreview() : null;
+    if (canUseAuthorizeSignFn() && !approved) {
+      if (!previewing) invalidatePreviewForSelectionEdit();
+      return;
+    }
     signing = true;
     error = '';
     try {
-      if (canUseAuthorizeSignFn()) {
-        if (!previewToken || !previewSignedMessage || !previewApprovalToken) {
-          throw new Error('Preview required before approval — call requestPreview() first');
-        }
-        const selectedActionIds = currentSelectedActionIds();
+      if (approved) {
+        const { authorizationContextToken, previewApprovalToken, signedMessage } = approved;
+        const selectedActionIds = [...approved.selectedActionIds];
         // Sol MAJOR-3 (continuation): external-key mode. The wallet lives
         // in the parent frame, not here. Hand back the preview payload
         // and let the SDK invoke the wallet + call /authorize-sign.
@@ -782,9 +819,9 @@
           sendResponse({
             type: 'openkey:externalSign:approve',
             success: true,
-            authorizationContextToken: previewToken,
+            authorizationContextToken,
             previewApprovalToken,
-            signedMessage: previewSignedMessage,
+            signedMessage,
             selectedActionIds,
             address: key.address,
           });
@@ -798,7 +835,7 @@
             credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              authorizationContextToken: previewToken,
+              authorizationContextToken,
               // Sol CRITICAL-1: the sealed preview-approval token is
               // required so /authorize-sign cannot independently accept
               // a different selection or sign different bytes.
@@ -816,7 +853,7 @@
         // Defence in depth: the server must have signed the exact bytes
         // the user approved. If /authorize-sign returned different bytes
         // than the preview showed, refuse.
-        if (authorizeResult.signedMessage !== previewSignedMessage) {
+        if (authorizeResult.signedMessage !== signedMessage) {
           throw new Error(
             'Server signed bytes differ from the previewed bytes — refusing to accept',
           );
@@ -863,20 +900,22 @@
       else error = e.message || 'Signing failed';
     } finally {
       signing = false;
+      if (approved && !previewStopped) {
+        previewToken = null;
+        contextDeadline = 0;
+        heldPreview = null;
+      }
     }
   }
 
-  // Called by SigningApproval when the selection changes. Clears any
-  // approved preview so the user must review + approve the new bytes.
   function invalidatePreviewForSelectionEdit() {
-    previewSignedMessage = null;
-    // Also invalidate the preview-approval token: it was bound to the
-    // old (selection, bytes) pair. A new preview call must issue a
-    // fresh one for the new selection.
-    previewApprovalToken = null;
-    // Keep the context token: the /authorize-sign-preview call handles a
-    // stale selection safely (it re-derives the SIWE without consuming).
-    previewApproved = false;
+    heldPreview = null;
+    previewRevision++;
+  }
+
+  function retryPreview() {
+    if (!canUseAuthorizeSignFn() || signing || previewing || heldPreview || previewStopped || !error) return;
+    invalidatePreviewForSelectionEdit();
   }
 
   // TC-1486: a SIWE-shaped message that does not name the verified requesting
@@ -985,6 +1024,8 @@
   }
 
   function sendClose() {
+    previewStopped = true;
+    heldPreview = null;
     // Sol MAJOR-4 (continuation): correlate close messages to the active
     // request so the SDK doesn't tear down a subsequent request when a
     // stale close arrives late.
@@ -1051,12 +1092,12 @@
       model={reviewModel}
       initialSelection={reviewSelection}
       transport={{
-        approving: signing || previewing,
+        approving: signing,
         host: messageHost,
         error,
         canUseAuthorizeSign: canUseAuthorizeSignFn(),
-        previewReady: Boolean(previewToken && previewSignedMessage && previewApprovalToken),
-        requestPreview,
+        previewReady: currentPreview() !== null,
+        retryPreview: canUseAuthorizeSignFn() && error && !signing && !previewing && !heldPreview ? retryPreview : undefined,
         approveAndSign,
         cancel,
         onSelectionEdited: (next) => {

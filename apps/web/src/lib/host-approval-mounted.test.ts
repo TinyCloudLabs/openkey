@@ -338,7 +338,6 @@ describe('popup adapter looks the node up', () => {
     previewReady: false,
     approving: false,
     error: null,
-    requestPreview: async () => {},
     approveAndSign: async () => {},
     cancel: () => {},
     onSelectionEdited: () => {},
@@ -427,7 +426,7 @@ describe.each([['popup', PopupAdapter], ['iframe', IframeAdapter]])('%s adapter:
   });
   const baseTransport = {
     canUseAuthorizeSign: false, previewReady: false, approving: false, error: null,
-    requestPreview: async () => {}, approveAndSign: async () => {}, cancel: () => {}, onSelectionEdited: () => {}, invalidatePreview: () => {},
+    approveAndSign: async () => {}, cancel: () => {}, onSelectionEdited: () => {}, invalidatePreview: () => {},
   };
   const settle = async () => {
     for (let turn = 0; turn < 30; turn += 1) await Promise.resolve();
