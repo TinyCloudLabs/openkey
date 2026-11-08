@@ -155,6 +155,40 @@ describe('a session JWK sent with private members', () => {
   });
 });
 
+describe('session JWK adoption log line', () => {
+  const routes = [
+    ['/', '/api/delegate'],
+    ['/prepare', '/api/delegate/prepare'],
+    ['/complete', '/api/delegate/complete'],
+    ['/authorize-sign-prepare', '/api/delegate/authorize-sign-prepare'],
+  ] as const;
+  test.each(routes.flatMap(([path, route]) => [[path, route, true], [path, route, false]] as const))(
+    '%s logs route %s and private_members=%s, and nothing about the key, user or request',
+    async (path, route, withPrivate) => {
+      const written: string[] = [];
+      const write = process.stdout.write;
+      process.stdout.write = ((chunk: string | Uint8Array) => {
+        written.push(String(chunk));
+        return true;
+      }) as typeof process.stdout.write;
+      await post(path, {
+        keyId: keyRecord.id, siwe: widgetSiwe(), jwk: withPrivate ? sentJwk : publicMembers, host, requestOrigin: ORIGIN,
+      }).finally(() => {
+        process.stdout.write = write;
+      });
+      const output = written.join('');
+      const lines = output.split('\n').filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(lines.filter((line) => line.event === 'delegate_session_jwk')).toEqual([{
+        ts: expect.any(String), level: 'info', event: 'delegate_session_jwk', request_id: expect.any(String),
+        route, private_members: withPrivate,
+      }]);
+      for (const value of [exported.d, exported.x, user.id, user.email, keyRecord.id, address, host]) {
+        expect(output).not.toContain(value);
+      }
+    },
+  );
+});
+
 describe('prepared handoff record', () => {
   function claimBody(jwk: Record<string, unknown>) {
     const now = new Date();

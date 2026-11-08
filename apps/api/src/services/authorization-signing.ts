@@ -192,6 +192,14 @@ export function publicJwk(jwk: unknown): unknown {
   return result;
 }
 
+/** The private members of any JWK key type (RFC 7518 section 6, RFC 8037). */
+const PRIVATE_JWK_MEMBERS = ["d", "p", "q", "dp", "dq", "qi", "k", "oth"];
+
+/** Whether a JWK carries any private member, whatever its value. */
+export function hasPrivateJwkMember(jwk: unknown): boolean {
+  return !!jwk && typeof jwk === "object" && PRIVATE_JWK_MEMBERS.some((member) => Object.hasOwn(jwk, member));
+}
+
 export function digestAbilities(abilities: unknown): string {
   return sha256Hex(stableStringify(abilities));
 }
