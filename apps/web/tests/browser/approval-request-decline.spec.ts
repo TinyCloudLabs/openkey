@@ -34,7 +34,12 @@ function prepared() {
   };
 }
 
-type Options = { denied?: boolean; denyReplies?: Array<{ status: number; body: unknown } | 'network-failure'> };
+type Options = {
+  denied?: boolean;
+  /** Answer the load exactly as the production API before TC-2459 does: no `denied` key at all. */
+  withoutDenied?: boolean;
+  denyReplies?: Array<{ status: number; body: unknown } | 'network-failure'>;
+};
 
 /** Answers the page's calls and records them. `denyReplies` answers each press of Decline in order. */
 async function serve(page: Page, options: Options = {}) {
@@ -51,12 +56,17 @@ async function serve(page: Page, options: Options = {}) {
       return json(route, 200, { keys: [{ id: 'key_0', address, publicKey: '0x', keyIndex: 0, label: null, keyType: 'MANAGED', isPrimary: true, createdAt: new Date().toISOString() }] });
     }
     if (url.pathname === `/api/approval-requests/${id}/load`) {
-      return json(route, 200, {
-        requestId: id, expiresAt: new Date(Date.now() + 3600_000).toISOString(), approved: false, denied: options.denied ?? false,
-        request: { targetDid: 'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK', targetPublicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'A'.repeat(43) },
-          nodeOrigin: 'https://node.tinycloud.xyz', permissions: [{ service: 'tinycloud.kv', space, path: 'notes/', actions: [KV_GET] }],
-          grantLifetimeSeconds: 7200, reason: 'Read notes for two hours' },
-      });
+      const request = { targetDid: 'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK', targetPublicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'A'.repeat(43) },
+        nodeOrigin: 'https://node.tinycloud.xyz', permissions: [{ service: 'tinycloud.kv', space, path: 'notes/', actions: [KV_GET] }],
+        grantLifetimeSeconds: 7200, reason: 'Read notes for two hours' };
+      const expiresAt = new Date(Date.now() + 3600_000).toISOString();
+      // The production reply (apps/api/src/routes/approval-requests.ts at 79be982b): these five keys, nothing else.
+      return json(route, 200, options.withoutDenied
+        ? { request, requestId: id, bodyCid: `bafkreia${'a'.repeat(52)}`, expiresAt, approved: false }
+        : { requestId: id, expiresAt, approved: false, denied: options.denied ?? false, request });
+    }
+    if (url.pathname === '/api/delegate' && request.method() === 'POST') {
+      return json(route, 200, { hostActivated: true, delegationHeader: { Authorization: 'x' }, delegationCid: 'bafy-delegation' });
     }
     if (url.pathname === '/api/delegate/prepare') return json(route, 200, prepared());
     if (url.pathname === `/api/approval-requests/${id}/deny`) {
@@ -89,6 +99,19 @@ test.describe('Decline on the approval-request review page', () => {
     const [declineBox, approveBox, backBox] = [await decline(page).boundingBox(), await approve(page).boundingBox(), await dismiss(page).boundingBox()];
     expect(declineBox!.x).toBeLessThan(approveBox!.x);
     expect(backBox!.y + backBox!.height).toBeLessThanOrEqual(declineBox!.y + 1);
+  });
+
+  test("today's production load reply (no `denied` key) opens the ordinary review, and Approve completes the request", async ({ page }) => {
+    const calls = await openReview(page, { withoutDenied: true });
+    await expect(decline(page)).toBeEnabled();
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    await approve(page).click();
+    await expect(approve(page)).toHaveCount(0);
+    const delegated = calls.filter((call) => call.path === '/api/delegate');
+    expect(delegated).toHaveLength(1);
+    expect(delegated[0]!.body).toMatchObject({ approvalRequestId: id });
+    expect(denies(calls)).toEqual([]);
+    await expect(page.getByRole('alert')).toHaveCount(0);
   });
 
   test('one press makes exactly one /deny call with the link in the body only, then the page is declined', async ({ page }) => {
