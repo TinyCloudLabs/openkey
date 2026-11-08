@@ -168,6 +168,30 @@ export function digestJwk(jwk: unknown): string {
   return sha256Hex(stableStringify(jwk));
 }
 
+/** The public members of each JWK key type (RFC 7517/7518/8037), plus `kid`. */
+const PUBLIC_JWK_MEMBERS: Record<string, readonly string[]> = {
+  OKP: ["kty", "crv", "x", "kid"],
+  EC: ["kty", "crv", "x", "y", "kid"],
+  RSA: ["kty", "n", "e", "kid"],
+};
+
+/**
+ * A copy of a session JWK with only the public members of its key type. Any
+ * other member, private or unknown, is dropped; an unknown `kty` keeps only
+ * `kty` and `kid`. A non-object is returned as is for the caller to refuse.
+ */
+export function publicJwk(jwk: unknown): unknown {
+  if (!jwk || typeof jwk !== "object" || Array.isArray(jwk)) return jwk;
+  const source = jwk as Record<string, unknown>;
+  const kty = typeof source.kty === "string" && Object.hasOwn(PUBLIC_JWK_MEMBERS, source.kty) ? source.kty : "";
+  const members = PUBLIC_JWK_MEMBERS[kty] ?? ["kty", "kid"];
+  const result: Record<string, unknown> = {};
+  for (const member of members) {
+    if (Object.hasOwn(source, member)) result[member] = source[member];
+  }
+  return result;
+}
+
 export function digestAbilities(abilities: unknown): string {
   return sha256Hex(stableStringify(abilities));
 }
@@ -320,7 +344,8 @@ export function issueAuthorizationContext(
   pruneExpired(now);
 
   const token = `oks_${randomUUID().replace(/-/g, "")}${randomUUID().replace(/-/g, "")}`;
-  const jwkDigest = digestJwk(input.jwk);
+  const jwk = publicJwk(input.jwk);
+  const jwkDigest = digestJwk(jwk);
 
   const metadataTrust = input.metadataTrust ?? {
     status: "unsigned" as const,
@@ -335,7 +360,7 @@ export function issueAuthorizationContext(
     keyId: input.keyId,
     keyAddress: input.keyAddress.toLowerCase(),
     jwkDigest,
-    jwk: input.jwk,
+    jwk,
     host: input.host,
     spaceId: input.spaceId,
     baselineAbilitiesDigest: input.baselineAbilitiesDigest,
@@ -674,7 +699,7 @@ function evaluateContext(
   if (stored.keyAddress !== input.keyAddress.toLowerCase()) {
     return { ok: false, error: "key-mismatch", message: "Authorization context bound to a different key address." };
   }
-  const candidateJwkDigest = digestJwk(input.jwk);
+  const candidateJwkDigest = digestJwk(publicJwk(input.jwk));
   if (!constantTimeEqual(stored.jwkDigest, candidateJwkDigest)) {
     return { ok: false, error: "jwk-mismatch", message: "Session JWK does not match the prepared context." };
   }

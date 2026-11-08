@@ -77,6 +77,7 @@ import {
   issuePreviewApproval,
   peekAuthorizationContext,
   peekPreviewApprovalExpiry,
+  publicJwk,
   type AuthorizationContextToken,
   type AuthorizationContextClaim,
 } from '../services/authorization-signing';
@@ -1320,6 +1321,11 @@ delegateRouter.post('/', async (c) => {
     selectedActionIds?: unknown;
     protocolVersion?: number;
   }>();
+  // Only the session key's public members are used, stored, or returned. A
+  // device or approval request keeps its own exact check of the key as sent.
+  if (body.deviceTransactionId === undefined && body.approvalRequestId === undefined) {
+    body.jwk = publicJwk(body.jwk) as DelegationJwk;
+  }
 
   if (!body.keyId || !body.jwk || !body.host) {
     return c.json({ error: 'keyId, jwk, and host are required' }, 400);
@@ -1812,6 +1818,11 @@ delegateRouter.post('/prepare', async (c) => {
     deviceTransactionId?: unknown;
     approvalRequestId?: string;
   }>();
+  // Only the session key's public members are used, stored, or returned. A
+  // device or approval request keeps its own exact check of the key as sent.
+  if (body.deviceTransactionId === undefined && body.approvalRequestId === undefined) {
+    body.jwk = publicJwk(body.jwk) as DelegationJwk;
+  }
 
   if (!body.keyId || !body.jwk || !body.host) {
     return c.json({ error: 'keyId, jwk, and host are required' }, 400);
@@ -2028,6 +2039,11 @@ delegateRouter.post('/complete', async (c) => {
      */
     selectedActionIds?: unknown;
   }>();
+  // Only the session key's public members are used, stored, or returned. A
+  // device or approval request keeps its own exact check of the key as sent.
+  if (body.deviceTransactionId === undefined && body.approvalRequestId === undefined) {
+    body.jwk = publicJwk(body.jwk) as DelegationJwk;
+  }
 
   if (!body.prepared || !body.signature || !body.host || !body.jwk) {
     return c.json({ error: 'prepared, signature, host, and jwk are required' }, 400);
@@ -2438,6 +2454,8 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     callback?: unknown;
     delivery?: unknown;
   }>();
+  // Only the session key's public members are used or stored.
+  body.jwk = publicJwk(body.jwk) as DelegationJwk;
   const deviceUnsupported = deviceTransactionUnsupportedError(body);
   if (deviceUnsupported) return c.json(deviceUnsupported, 400);
 
