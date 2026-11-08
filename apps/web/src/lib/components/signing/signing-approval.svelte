@@ -87,6 +87,8 @@
     layoutBlocked?: boolean;
     stickyActions?: boolean;
     finalPreview?: boolean;
+    /** Disable only Approve while the route prepares the current preview. */
+    previewPending?: boolean;
     approveText?: string;
     cancelText?: string;
     /** Surface-specific context rendered in a fixed slot under the header. */
@@ -130,6 +132,7 @@
     layoutBlocked = false,
     stickyActions = false,
     finalPreview = false,
+    previewPending = false,
     approveText = "Approve",
     cancelText = "Cancel",
     context,
@@ -475,16 +478,14 @@
   const nodeChecking = $derived(peerRecognition?.state === "checking");
   const approveDisabled = $derived(approving || isMalformedRecap);
   const approveButtonDisabled = $derived(
-    layoutBlocked || approveDisabled || Boolean(approveBlockedReason) || nodeChecking,
+    previewPending || layoutBlocked || approveDisabled || Boolean(approveBlockedReason) || nodeChecking,
   );
   const approveLabel = $derived(
     isMalformedRecap
       ? "Cannot approve"
       : approving
         ? "Signing…"
-        : finalPreview
-          ? "Approve exact bytes"
-          : approveText,
+        : approveText,
   );
 </script>
 

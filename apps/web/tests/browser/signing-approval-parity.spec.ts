@@ -275,7 +275,7 @@ async function loadHarness(page: Page, cfg: HarnessConfig) {
       model: cfg.model,
       initialSelection: cfg.initialSelection,
       canUseAuthorizeSign: cfg.canUseAuthorizeSign ?? true,
-      previewReady: cfg.previewReady ?? false,
+      previewReady: cfg.previewReady ?? true,
       approving: cfg.approving ?? false,
       error: cfg.error ?? null,
       calls: [],
@@ -529,7 +529,7 @@ test.describe('signing-approval browser parity — production adapters', () => {
       if (surface === 'cli') {
         expect(names).toEqual(['approveDelegate']);
       } else {
-        expect(names).toEqual(['requestPreview']);
+        expect(names).toEqual(['approveAndSign']);
       }
     });
 
@@ -550,7 +550,7 @@ test.describe('signing-approval browser parity — production adapters', () => {
       if (surface === 'cli') {
         expect(names).toContain('approveDelegate');
       } else {
-        expect(names).toContain('requestPreview');
+        expect(names).toContain('approveAndSign');
       }
     });
 
@@ -706,6 +706,34 @@ test.describe('signing-approval browser parity — production adapters', () => {
     await expect(page.getByRole('button', { name: 'Copy text' })).toHaveText('Copied');
   });
 
+  test('pending widget previews disable approval while permissions stay editable', async ({ page }) => {
+    for (const surface of ['popup', 'iframe'] as const) {
+      const model = benignFixtureModel();
+      await loadHarness(page, {
+        surface,
+        model,
+        initialSelection: fixtureInitialSelection(model),
+        canUseAuthorizeSign: true,
+        previewReady: false,
+      });
+      await expect(page.locator('button.approve')).toBeDisabled();
+      await page.locator('details.advanced-details > summary').click();
+      await page.getByRole('button', { name: 'Edit', exact: true }).click();
+      await page.locator('details.severity-bucket:not([open]) > summary').first().click();
+      const checkbox = page.locator('input[type="checkbox"]:not(:disabled)').first();
+      await expect(checkbox).toBeChecked();
+      await checkbox.focus();
+      await page.keyboard.press('Space');
+      await expect(checkbox).not.toBeChecked();
+      await expect(page.locator('button.approve')).toBeDisabled();
+      expect((await readCalls(page)).map((call) => call.name))
+        .toEqual(['onSelectionEdited', 'invalidatePreview']);
+      await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+      expect((await readCalls(page)).map((call) => call.name))
+        .toEqual(['onSelectionEdited', 'invalidatePreview', 'cancel']);
+    }
+  });
+
   test('widget approve routes to exact-byte path when canUseAuthorizeSign=false', async ({ page }) => {
     for (const surface of ['popup', 'iframe'] as const) {
       await loadHarness(page, {
@@ -741,7 +769,7 @@ test.describe('signing-approval browser parity — production adapters', () => {
       await expect(page.getByRole('button', { name: 'Copy text' })).toBeVisible();
       await expect(page.getByText('server-prepared-exact-bytes')).toBeVisible();
 
-      const approve = page.getByRole('button', { name: 'Approve exact bytes' });
+      const approve = page.getByRole('button', { name: 'Approve', exact: true });
       await approve.focus();
       await page.keyboard.press('Enter');
       const names = (await readCalls(page)).map((call) => call.name);
@@ -766,7 +794,6 @@ test.describe('signing-approval browser parity — production adapters', () => {
       // TC-1424: keep the row's badge, but omit a redundant banner when every row is Sensitive.
       await expect(page.locator('.summary-statement .summary-sensitive-pill')).toHaveCount(1);
       await expect(page.locator('.sensitive-callout')).toHaveCount(0);
-      await expect(page.getByRole('button', { name: 'Approve exact bytes' })).toBeVisible();
     }
   });
 
