@@ -40,12 +40,14 @@ export async function deviceDelegationWindowError(
 /**
  * The signed message is a subset of what the device requested. The record
  * holds the request as a permission list (validated at start), so the
- * reference is the message the server prepares for the whole request with
- * the signed message's own header and the device's session key; the signed
- * bytes must then pass the same check as the authorize-sign routes, with
- * every requested capability selectable. Widened or re-spaced capabilities,
- * another session key, and any header field the server would not write are
- * refused. The lifetime is the window check's (above).
+ * reference is the message the server prepares for the whole request: the
+ * requester and chain the device routes write (`SIWE_DOMAIN`, chain 1), the
+ * device's session key, and the signed message's own signer, nonce and times;
+ * the signed bytes must then pass the same check as the authorize-sign
+ * routes, with every requested capability selectable. Widened or re-spaced
+ * capabilities, another requester or chain, another session key, and any
+ * header field the server would not write are refused. The lifetime is the
+ * window check's (above).
  */
 function deviceSignedSubsetRefusal(record: DeviceAuthorizationRecord, signedSiwe: string): DelegationWindowRefusal | null {
   const refuse = (reason: string, error: string): DelegationWindowRefusal =>
@@ -56,15 +58,18 @@ function deviceSignedSubsetRefusal(record: DeviceAuthorizationRecord, signedSiwe
   let reference: string;
   try {
     reference = prepareDelegationSession({
+      // The signer is bound by signing (managed key) or signature recovery (/complete).
       address: signed.address,
-      chainId: Number(signed.chainId),
+      // /api/delegate and /prepare sign on chain 1 with the default domain; a
+      // wallet-signed /complete may not pick another requester or re-root the
+      // device's spaces on another chain.
+      chainId: 1,
       prefix: '',
       // publicSessionJwk() validated this at start: exactly { kty: 'OKP', crv: 'Ed25519', x }.
       jwk: record.publicJwk as unknown as DelegationJwk,
       permissions: record.permissions,
       deviceTransaction: true,
       expiryMs: Date.parse(signed.expirationTime ?? '') - Date.parse(signed.issuedAt),
-      domain: signed.domain,
       nonce: signed.nonce,
       issuedAt: new Date(signed.issuedAt),
     }).prepared.siwe;

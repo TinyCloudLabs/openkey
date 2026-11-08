@@ -14,6 +14,7 @@ import {
 import type { delegateRouter } from '../routes/delegate';
 import type { _resetAuthorizationContextStoreForTests } from '../services/authorization-signing';
 import { mockModules, replaceModules } from './mock-module';
+import { prepareDelegationSession } from '../routes/delegate-session';
 
 const privateKey = '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 const account = privateKeyToAccount(privateKey);
@@ -253,6 +254,29 @@ describe('device delegation window on /api/delegate', () => {
       expect(completed.body.error).toBeUndefined();
       expect(completed.status).toBe(200);
       expect(activateSessionWithHost).toHaveBeenCalledTimes(2);
+    });
+
+    test('wallet-signed /complete bytes naming another chain or requester are refused', async () => {
+      // Bytes a wallet holder builds and signs: the device's exact permissions, but on chain 137
+      // (every short-named space re-rooted there) or for another domain. The control is the same
+      // construction with the values the device routes write, which completes.
+      const build = (chainId: number, domain?: string) => prepareDelegationSession({
+        address: account.address, chainId, prefix: '', jwk, permissions: requested, deviceTransaction: true,
+        expiryMs: 3_600_000, ...(domain ? { domain } : {}),
+      }).prepared;
+      const complete = async (prepared: ReturnType<typeof build>) => post('/complete', {
+        prepared: { ...prepared, jwk }, signature: await account.signMessage({ message: prepared.siwe }),
+        host, jwk, permissions: requested, deviceTransactionId: id,
+      });
+      for (const [prepared, reason] of [[build(137), 'chain_id'], [build(1, 'evil.example.com'), 'requester']] as const) {
+        const refused = await complete(prepared);
+        expect(refused.status).toBe(400);
+        expect(refused.body).toMatchObject({ code: 'signed_exceeds_request', reason });
+      }
+      expect(activateSessionWithHost).not.toHaveBeenCalled();
+      const control = await complete(build(1));
+      expect(control.body.error).toBeUndefined();
+      expect(control.status).toBe(200);
     });
   });
 
