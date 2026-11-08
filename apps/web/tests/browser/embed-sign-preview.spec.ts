@@ -184,8 +184,13 @@ for (const surface of ['popup', 'iframe'] as const) {
     const h = await openSigning(page, surface);
     await expect(h.approve).toBeDisabled();
     expect(h.signs).toHaveLength(0);
+    const intro = h.view.locator('#signing-approval-hint');
+    const initialIntro = await intro.textContent();
+    const initialIntroHeight = (await intro.boundingBox())!.height;
     await h.release(0);
     await h.ready();
+    expect(await intro.textContent()).toBe(initialIntro);
+    expect((await intro.boundingBox())!.height).toBe(initialIntroHeight);
     await h.approve.click();
     await expect.poll(() => h.signs.length).toBe(1);
     expect(h.signs[0]!.previewApprovalToken).toBe(h.previews[0]!.token);
@@ -248,10 +253,11 @@ for (const surface of ['popup', 'iframe'] as const) {
   for (const contextExpires of [false, true]) {
     test(`${surface}: expired preview refetches${contextExpires ? ' with a fresh context' : ' using the live context'} before approval`, async ({ page }) => {
       await page.clock.install();
-      const h = await openSigning(page, surface, { previewTtl: 5000, contextTtl: contextExpires ? 5000 : 300_000 });
+      // Keep context expiry clearly earlier than preview expiry despite HTTP Date rounding.
+      const h = await openSigning(page, surface, { previewTtl: contextExpires ? 10_000 : 5000, contextTtl: contextExpires ? 7000 : 300_000 });
       await h.release(0);
       await h.ready();
-      await h.signingPage.clock.runFor(6000);
+      await h.signingPage.clock.runFor(contextExpires ? 8000 : 6000);
       await expect.poll(() => h.previews.length).toBe(2);
       expect(h.prepares()).toBe(contextExpires ? 2 : 1);
       expect(h.previews[1]!.context === h.previews[0]!.context).toBe(!contextExpires);

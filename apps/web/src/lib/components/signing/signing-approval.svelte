@@ -86,7 +86,6 @@
     /** Disable Approve while an embedding host is applying the review layout. */
     layoutBlocked?: boolean;
     stickyActions?: boolean;
-    finalPreview?: boolean;
     /** Disable only Approve while the route prepares the current preview. */
     previewPending?: boolean;
     approveText?: string;
@@ -132,7 +131,6 @@
     approveBlockedReason = null,
     layoutBlocked = false,
     stickyActions = false,
-    finalPreview = false,
     previewPending = false,
     approveText = "Approve",
     cancelText = "Cancel",
@@ -194,11 +192,7 @@
   );
   const isMalformedRecap = $derived(model.protocol === "malformed-recap");
   const headline = $derived(PROTOCOL_HEADLINE[model.protocol]);
-  const hint = $derived(
-    finalPreview && model.protocol === "tinycloud-siwe-recap"
-      ? "Review the server-prepared request. Approving signs the exact bytes shown in Advanced details."
-      : PROTOCOL_HINT[model.protocol],
-  );
+  const hint = $derived(PROTOCOL_HINT[model.protocol]);
 
   // Summary copy and the sensitive count describe only actions the user is
   // currently approving. Advanced details deliberately retains the baseline
