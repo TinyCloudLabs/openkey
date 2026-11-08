@@ -1,7 +1,7 @@
 // TC-2457 / TC-2456: what the framed sign card does when the server refuses.
 // A refusal that cannot change on retry (app_key_grant_refused and its siblings) must tell the app once, leave Approve
-// unusable and show the reason where the owner is looking. A temporary failure must tell the app nothing, keep Approve
-// usable and still show its message in view. The harness parent embeds the REAL /widget/embed/sign page in a 400 px
+// unusable, offer no Try again and show the reason where the owner is looking. A temporary failure must tell the app nothing,
+// offer Try again and still show its message in view. The harness parent embeds the REAL /widget/embed/sign page in a 400 px
 // frame, like the SDK modal, and records every message the frame posts to it.
 import { test, expect, type Page } from '@playwright/test';
 import { EXPLORER_PERMISSION_POPUP_REQUEST } from '../../../../packages/capability-review/test/fixtures/index';
@@ -43,12 +43,8 @@ async function openFramed(page: Page, prepare: { status: number; body: unknown }
       w.posted.push(event.data);
     });
   }, siwe);
-  const armed = () => page.evaluate(() => {
-    const d = (document.querySelector('iframe#sign') as HTMLIFrameElement | null)?.contentDocument;
-    const button = d?.querySelector('button.approve') as HTMLButtonElement | null;
-    return button ? !button.disabled : false;
-  });
-  await expect.poll(armed, { timeout: 45_000 }).toBe(true);
+  // The preview is prepared in the background once the request arrives: the server answers without an Approve click.
+  await expect.poll(() => prepares, { timeout: 45_000 }).toBeGreaterThan(0);
   await page.waitForTimeout(400);
   return { prepares: () => prepares };
 }
@@ -68,12 +64,11 @@ const frameState = (page: Page) => page.evaluate(() => {
   };
 });
 const posted = (page: Page) => page.evaluate(() => (window as unknown as HostWindow).posted.filter((m) => m.type === 'openkey:sign:response'));
-const clickApprove = (page: Page) => page.frameLocator('#sign').locator('button.approve').click();
+const retryButton = (page: Page) => page.frameLocator('#sign').getByRole('button', { name: 'Try again', exact: true });
 
 for (const [code, status] of [['app_key_grant_refused', 403], ['key_delete_not_grantable', 403], ['invalid_siwe_recap', 400]] as const) {
 test(`${code}: tells the app once, disables Approve and shows the reason in view`, async ({ page }) => {
   const calls = await openFramed(page, { status, body: { error: REFUSAL_TEXT, code } });
-  await clickApprove(page);
   await expect.poll(() => posted(page)).toHaveLength(1);
   const [response] = await posted(page);
   expect(response!.success).toBe(false);
@@ -91,7 +86,8 @@ test(`${code}: tells the app once, disables Approve and shows the reason in view
   expect(state.error!.bottom).toBeLessThanOrEqual(state.viewport);
   expect(state.error!.bottom).toBeLessThanOrEqual(state.approve!.top + 1);
 
-  // Approve cannot be used again, and closing after the refusal does not send a second answer.
+  // Neither Approve nor a retry can be used again, and closing after the refusal does not send a second answer.
+  await expect(retryButton(page)).toHaveCount(0);
   await page.frameLocator('#sign').locator('button.approve').click({ force: true });
   await page.waitForTimeout(300);
   expect(calls.prepares()).toBe(1);
@@ -101,17 +97,15 @@ test(`${code}: tells the app once, disables Approve and shows the reason in view
 });
 }
 
-test('a temporary failure tells the app nothing, keeps Approve usable and shows the message in view', async ({ page }) => {
+test('a temporary failure tells the app nothing, offers Try again and shows the message in view', async ({ page }) => {
   const calls = await openFramed(page, { status: 500, body: { error: 'Something went wrong on our side.' } });
-  await clickApprove(page);
   await expect.poll(async () => (await frameState(page)).errorText).toBe('Something went wrong on our side.');
-  // A new message resizes the frame, so the layout settle gate holds Approve briefly; it must then come back.
-  await expect.poll(async () => (await frameState(page)).approveDisabled, { timeout: 8000 }).toBe(false);
+  await expect(retryButton(page)).toBeEnabled();
   const state = await frameState(page);
   expect(state.error!.top).toBeGreaterThanOrEqual(0);
   expect(state.error!.bottom).toBeLessThanOrEqual(state.viewport);
   expect(state.error!.bottom).toBeLessThanOrEqual(state.approve!.top + 1);
   expect(await posted(page)).toHaveLength(0);
-  await clickApprove(page);
+  await retryButton(page).click();
   await expect.poll(() => calls.prepares()).toBe(2);
 });
