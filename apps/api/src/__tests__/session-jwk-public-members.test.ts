@@ -1,5 +1,5 @@
 // The session JWK a caller sends is used, stored, and returned with only its
-// public members, whatever else the caller includes.
+// public members. A JWK with any private member is refused.
 
 import './tc1777-test-env';
 import { beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
@@ -122,9 +122,39 @@ function widgetSiwe(): string {
   } as never).siwe;
 }
 
+const PRIVATE_JWK_REFUSED = { error: 'jwk must contain only public key members', code: 'private_jwk_refused' };
+
+describe('a session JWK with a private member', () => {
+  const routes = ['/', '/prepare', '/complete', '/authorize-sign-prepare'];
+  const members = ['d', 'p', 'q', 'dp', 'dq', 'qi', 'k', 'oth'];
+  test.each(routes.flatMap((route) => members.map((member) => [route, member])))(
+    '%s refuses one with `%s`, without repeating, logging, or storing it',
+    async (route, member) => {
+      const secret = `private-${member}-${exported.d}`;
+      const written: string[] = [];
+      const write = process.stdout.write;
+      process.stdout.write = ((chunk: string | Uint8Array) => {
+        written.push(String(chunk));
+        return true;
+      }) as typeof process.stdout.write;
+      prisma.ethereumKey.findFirst.mockClear();
+      const res = await post(route!, {
+        keyId: keyRecord.id, siwe: widgetSiwe(), jwk: { ...publicMembers, [member!]: secret }, host,
+        prepared: { siwe: 'x' }, signature: '0x', requestOrigin: ORIGIN,
+      }).finally(() => {
+        process.stdout.write = write;
+      });
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual(PRIVATE_JWK_REFUSED);
+      expect(written.join('')).not.toContain(secret);
+      expect(prisma.ethereumKey.findFirst).not.toHaveBeenCalled();
+    },
+  );
+});
+
 // Accepted keys and the public members kept from each.
 const accepted = [
-  ['private members', sentJwk, publicMembers],
+  ['WebCrypto export members', { ...publicMembers, ext: true, key_ops: ['verify'] }, publicMembers],
   ['private members nested in an unknown member', { ...publicMembers, extra: { d: exported.d, list: [{ d: exported.d }] } }, publicMembers],
   ['extra junk and a string kid', { ...publicMembers, kid: 'session-1', use: 'sig', alg: 7, junk: [null, { k: 'x' }] }, { ...publicMembers, kid: 'session-1' }],
 ] as const;
@@ -173,7 +203,7 @@ describe('a malformed session JWK counts as missing', () => {
     ['an array', [sentJwk]],
     ['an object-valued kid', { ...publicMembers, kid: { d: exported.d } }],
     ['private members nested in a kept member', { ...publicMembers, x: { x: exported.x, d: exported.d } }],
-    ['an unknown kty', { kty: 'oct', k: exported.d }],
+    ['an unknown kty', { kty: 'oct', alg: 'HS256' }],
   ] as const;
   const missing = {
     '/': { error: 'keyId, jwk, and host are required' },
@@ -198,16 +228,14 @@ describe('an empty or false approvalRequestId', () => {
   test.each([null, false, ''])('%p is refused on managed POST / and never returns the key', async (approvalRequestId) => {
     const res = await post('/', { keyId: keyRecord.id, jwk: sentJwk, host, approvalRequestId });
     expect(res.status).toBe(400);
-    expect(res.body).toEqual({ error: 'Approval requests require the consent preview context' });
+    expect(res.body).toEqual(PRIVATE_JWK_REFUSED);
     expect(res.text).not.toContain(exported.d);
   });
 
-  // "" is a string id, so /prepare looks it up in the approval store; null and
-  // false are refused without one.
-  test.each([null, false])('%p is refused on /prepare and never returns the key', async (approvalRequestId) => {
+  test.each([null, false, ''])('%p is refused on /prepare and never returns the key', async (approvalRequestId) => {
     const prepared = await post('/prepare', { keyId: keyRecord.id, jwk: sentJwk, host, approvalRequestId });
-    expect(prepared.status).toBe(410);
-    expect(prepared.body.code).toBe('expired_request');
+    expect(prepared.status).toBe(400);
+    expect(prepared.body).toEqual(PRIVATE_JWK_REFUSED);
     expect(prepared.text).not.toContain(exported.d);
   });
 
@@ -222,13 +250,13 @@ describe('an empty or false approvalRequestId', () => {
       approvalRequestId,
     });
     expect(completed.status).toBe(400);
-    expect(completed.body).toEqual({ error: 'Approval requests require the consent preview context' });
+    expect(completed.body).toEqual(PRIVATE_JWK_REFUSED);
     expect(completed.text).not.toContain(exported.d);
   });
 });
 
 describe('CLI prepared hand-off on /authorize-sign-prepare', () => {
-  test('refuses a different key or host, accepts the same key with d and stores it public-only, and refuses a repeat', async () => {
+  test('refuses a different key or host and a key with d, accepts the public key, and refuses a repeat', async () => {
     const service = new PreparedHandoffService(new MemoryPreparedHandoffStore());
     setHandoffService(service);
     const siwe = widgetSiwe();
@@ -247,13 +275,16 @@ describe('CLI prepared hand-off on /authorize-sign-prepare', () => {
 
     const otherX = generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' }).x;
     expect((await prepare({ ...publicMembers, x: otherX })).status).toBe(403);
-    expect((await prepare(sentJwk, 'https://other-node.tinycloud.xyz')).status).toBe(403);
+    expect((await prepare(publicMembers, 'https://other-node.tinycloud.xyz')).status).toBe(403);
+    const withPrivate = await prepare(sentJwk);
+    expect(withPrivate.status).toBe(400);
+    expect(withPrivate.body).toEqual(PRIVATE_JWK_REFUSED);
 
-    const accepted = await prepare(sentJwk);
+    const accepted = await prepare(publicMembers);
     expect(accepted.status, accepted.text).toBe(200);
     expect(storedJwk(accepted.body.authorizationContextToken)).toEqual(publicMembers);
 
-    expect((await prepare(sentJwk)).status).toBe(409);
+    expect((await prepare(publicMembers)).status).toBe(409);
   });
 });
 
