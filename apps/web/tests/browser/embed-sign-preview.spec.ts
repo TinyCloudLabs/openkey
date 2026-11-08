@@ -1,9 +1,12 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { HOST } from './e2e-port';
-import { EXPLORER_PERMISSION_POPUP_REQUEST } from '../../../../packages/capability-review/test/fixtures/index';
+import { EXPLORER_PERMISSION_POPUP_REQUEST, makeRecapResource, siweWithResources } from '../../../../packages/capability-review/test/fixtures/index';
 
 const address = '0xd559CCd9EB87c530A9a349262669386dE93cf412';
 const siwe = EXPLORER_PERMISSION_POPUP_REQUEST.replace(/^explorer\.tinycloud\.xyz/, HOST);
+const requiredSiwe = siweWithResources([makeRecapResource({
+  [`tinycloud:pkh:eip155:1:${address}:default/capabilities`]: { 'tinycloud.capabilities/read': [{}] },
+})], { domain: HOST, uri: `http://${HOST}` });
 
 type Body = Record<string, unknown>;
 type HostWindow = Window & { received: Body[]; signWindow: Window };
@@ -13,10 +16,12 @@ type Preview = { route: Route; ids: string[]; context: string; token: string; by
 // exercises the route's generation, expiry and click guards.
 async function openSigning(page: Page, surface: 'popup' | 'iframe', options: {
   external?: boolean; mismatch?: boolean; previewTtl?: number; contextTtl?: number;
+  previewFailsOnce?: boolean; signFailsOnce?: boolean; onlyRequired?: boolean;
 } = {}) {
   const previews: Preview[] = [];
   const signs: Body[] = [];
   let prepares = 0;
+  const message = options.onlyRequired ? requiredSiwe : siwe;
   await page.context().addInitScript(() => sessionStorage.setItem('openkey_session_token', 'test-session'));
   await page.context().route('**/api/keys/**', route => route.fulfill({ json: { key: {
     id: 'selected-key', address, publicKey: '0x02', keyIndex: 0,
@@ -39,11 +44,15 @@ async function openSigning(page: Page, surface: 'popup' | 'iframe', options: {
     const body = route.request().postDataJSON();
     expect(Array.isArray(body.selectedActionIds)).toBe(true);
     previews.push({ route, ids: body.selectedActionIds, context: body.authorizationContextToken,
-      token: `preview-${previews.length + 1}`, bytes: `${siwe}\nPreview marker: ${previews.length + 1}` });
+      token: `preview-${previews.length + 1}`, bytes: `${message}\nPreview marker: ${previews.length + 1}` });
   });
   await page.context().route('**/api/delegate/authorize-sign', async route => {
     const body = route.request().postDataJSON();
     signs.push(body);
+    if (options.signFailsOnce && signs.length === 1) {
+      await route.fulfill({ status: 503, json: { error: 'Temporary signing failure' } });
+      return;
+    }
     const preview = previews.find(p => p.token === body.previewApprovalToken)!;
     expect(preview).toBeTruthy();
     expect(body.authorizationContextToken).toBe(preview.context);
@@ -84,12 +93,16 @@ async function openSigning(page: Page, surface: 'popup' | 'iframe', options: {
       type: 'openkey:sign:request', requestId: 'background', protocolVersion: version,
       authorizationProtocolVersion: 1, keyId: 'selected-key', jwk: { kty: 'EC' }, message, externalSign: external,
     }, location.origin);
-  }, { message: siwe, external: options.external ?? false, version: surface === 'iframe' ? 2 : 1 });
+  }, { message, external: options.external ?? false, version: surface === 'iframe' ? 2 : 1 });
   const view = surface === 'popup' ? signingPage : page.frameLocator('#sign');
-  const approve = view.getByRole('button', { name: 'Approve', exact: true });
+  const approve = view.locator('button.approve');
   await expect.poll(() => previews.length).toBe(1);
   async function release(index: number) {
     const preview = previews[index]!;
+    if (options.previewFailsOnce && index === 0) {
+      await preview.route.fulfill({ status: 503, json: { error: 'Temporary preview failure' } });
+      return;
+    }
     const time = await now();
     await preview.route.fulfill({ headers: { Date: new Date(time).toUTCString() }, json: {
       authorizationContextToken: preview.context, previewApprovalToken: preview.token,
@@ -132,6 +145,41 @@ function permissions(ids: string[]) {
 }
 
 for (const surface of ['popup', 'iframe'] as const) {
+  for (const failure of ['preview', 'sign'] as const) {
+    test(`${surface}: owner retries a failed ${failure} without editing or an automatic loop`, async ({ page }) => {
+      const h = await openSigning(page, surface, {
+        onlyRequired: true, previewFailsOnce: failure === 'preview', signFailsOnce: failure === 'sign',
+      });
+      await h.release(0);
+      if (failure === 'sign') {
+        await h.ready();
+        await h.approve.click();
+        await expect.poll(() => h.signs.length).toBe(1);
+      }
+      const retry = h.view.getByRole('button', { name: 'Try again', exact: true });
+      await expect(retry).toBeVisible();
+      await h.view.getByText('Advanced details', { exact: true }).click();
+      await expect(h.view.getByRole('button', { name: 'Edit', exact: true })).toHaveCount(0);
+      await expect(h.approve).toBeDisabled();
+      await h.signingPage.evaluate(() => {
+        const { promise, resolve } = Promise.withResolvers<void>();
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        return promise;
+      });
+      expect(h.previews).toHaveLength(1);
+      await retry.click();
+      await expect.poll(() => h.previews.length).toBe(2);
+      await expect(retry).toHaveCount(0);
+      await expect(h.approve).toBeDisabled();
+      await h.release(1);
+      await h.ready();
+      await h.approve.click();
+      await expect.poll(() => h.signs.length).toBe(failure === 'sign' ? 2 : 1);
+      expect(h.signs.at(-1)!.previewApprovalToken).toBe(h.previews[1]!.token);
+      await expect.poll(async () => (await h.messages()).filter(m => m.type === 'openkey:sign:response' && m.success === true).length).toBe(1);
+    });
+  }
+
   test(`${surface}: background preview needs only one Approve to sign`, async ({ page }) => {
     const h = await openSigning(page, surface);
     await expect(h.approve).toBeDisabled();

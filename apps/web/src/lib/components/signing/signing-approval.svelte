@@ -118,6 +118,7 @@
     expiryMaxMs?: number | null;
     onApprove: () => void;
     onCancel: () => void;
+    onRetry?: () => void;
     onSelectionChange: (next: Set<string>) => void;
     onEditingChange: (next: boolean) => void;
   }
@@ -144,6 +145,7 @@
     expiryMaxMs = null,
     onApprove,
     onCancel,
+    onRetry,
     onSelectionChange,
     onEditingChange,
   }: Props = $props();
@@ -485,7 +487,9 @@
       ? "Cannot approve"
       : approving
         ? "Signing…"
-        : approveText,
+        : previewPending && !onRetry
+          ? "Getting ready..."
+          : approveText,
   );
 </script>
 
@@ -993,6 +997,9 @@
     >
       {cancelText}
     </button>
+    {#if onRetry}
+      <button type="button" class="cancel" onclick={onRetry} disabled={approving}>Try again</button>
+    {/if}
     <button
       type="button"
       class="approve"

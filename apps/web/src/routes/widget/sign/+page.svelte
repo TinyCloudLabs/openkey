@@ -10,7 +10,7 @@
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
   import { requestedActionIds, selectionFromPreview } from '$lib/widget-selection';
   import { expiryAt, siweExpiration } from '$lib/approval-expiry';
-  import { signingPreviewDeadline, type SigningPreview } from '$lib/signing-preview';
+  import { PREVIEW_EXPIRED_MESSAGE, signingPreviewDeadline, type SigningPreview } from '$lib/signing-preview';
   import {
     parseCapabilityReview,
     parseSiweChainId,
@@ -766,7 +766,7 @@
       selectionFromPreview(previewResult, selectedIds);
       const deadline = Math.min(contextDeadline,
         signingPreviewDeadline(previewResult.previewApprovalExpiresAt, previewRes.headers.get('Date'), previewStarted));
-      if (deadline <= performance.now()) throw new Error('Approval preview expired.');
+      if (deadline <= performance.now()) throw new Error(PREVIEW_EXPIRED_MESSAGE);
       heldPreview = {
         input, revision, authorizationContextToken: token,
         previewApprovalToken: previewResult.previewApprovalToken,
@@ -911,6 +911,11 @@
   function invalidatePreviewForSelectionEdit() {
     heldPreview = null;
     previewRevision++;
+  }
+
+  function retryPreview() {
+    if (!canUseAuthorizeSignFn() || signing || previewing || heldPreview || previewStopped || !error) return;
+    invalidatePreviewForSelectionEdit();
   }
 
   // TC-1486: a SIWE-shaped message that does not name the verified requesting
@@ -1092,6 +1097,7 @@
         error,
         canUseAuthorizeSign: canUseAuthorizeSignFn(),
         previewReady: currentPreview() !== null,
+        retryPreview: canUseAuthorizeSignFn() && error && !signing && !previewing && !heldPreview ? retryPreview : undefined,
         approveAndSign,
         cancel,
         onSelectionEdited: (next) => {

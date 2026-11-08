@@ -91,6 +91,9 @@ export interface WidgetSigningTransport {
   /** Sign the ready sealed preview, or the original bytes on the legacy path. */
   approveAndSign: () => void | Promise<void>;
 
+  /** Owner-initiated retry after a recoverable preview/sign failure; absent while busy. */
+  retryPreview?: () => void;
+
   /** Cancel: send the widget cancel response and close the surface. */
   cancel: () => void;
 

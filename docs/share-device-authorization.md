@@ -180,6 +180,15 @@ the same preview payload through the existing SDK handoff.
 These page changes retain the three API endpoints, both single-use tokens,
 and the server's selection and exact-byte checks. Details: TC-2198.
 
+While a preview is loading, the disabled action reads `Getting ready...`.
+After a recoverable preview or signing error, `Try again` requests a fresh
+preview only when the owner chooses it; it does not sign or repeat on a
+timer. Existing unreadable-reply refusals still end the caller's request.
+Ordinary held-preview expiry refreshes automatically. If a newly returned
+preview is already too old to use, including a context that expires while
+the response is in flight, the page shows the request-expired message and
+leaves approval disabled.
+
 An expired authorization context returns `context-expired` on
 `/authorize-sign`, `/authorize-sign-preview`, the managed approval, and
 versioned `/complete` only while its record remains stored. Issuing a new

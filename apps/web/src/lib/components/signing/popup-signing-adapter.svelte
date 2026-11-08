@@ -102,6 +102,7 @@
   onExpiryChange={transport.expiry?.onChange}
   {onApprove}
   {onCancel}
+  onRetry={transport.retryPreview}
   {onSelectionChange}
   {onEditingChange}
 />
