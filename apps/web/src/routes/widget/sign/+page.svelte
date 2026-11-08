@@ -3,6 +3,8 @@
   import { untrack } from 'svelte';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
+  import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
+  import { NO_KEY_ERROR, resolveSigningKey } from '$lib/sign-key-resolution';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import { passkeysSupportedFromParams, withPasskeysFlag } from '$lib/passkey-support';
@@ -42,6 +44,12 @@
   // and /authorize-sign cannot swap hosts.
   let messageHost = $state<string>('');
   let keyId = $state<string | null>(null);
+  // The key the request named; null when the app named none and the account's keys decide (sign-key-resolution).
+  let requestedKeyId: string | null = null;
+  let keysListed = $state(false);
+  let keyChoices = $state<EthereumKey[] | null>(null);
+  let keyError = $state('');
+  let keyReadGeneration = 0;
   let key = $state<EthereumKey | null>(null);
   let loading = $state(true);
   let signing = $state(false);
@@ -217,6 +225,7 @@
     messageJwk = (data.jwk as Record<string, unknown>) ?? null;
     messageHost = typeof data.host === 'string' ? data.host : '';
     keyId = typeof data.keyId === 'string' ? data.keyId : null;
+    requestedKeyId = keyId;
     // Sol MAJOR-3 (continuation): capture the externalSign flag from the
     // sign request. The widget renders the SAME SigningApproval UI in
     // both modes; only the "approve" behaviour differs.
@@ -267,13 +276,51 @@
   $effect(() => {
     if ($session.data && keyId && !keyFetched && !key) {
       keyFetched = true;
-      api.getKey(keyId).then(result => {
-        key = result.key;
+      const selectedId = keyId;
+      const generation = ++keyReadGeneration;
+      api.getKey(selectedId).then(result => {
+        if (generation === keyReadGeneration && keyId === selectedId) key = result.key;
       }).catch(() => {
-        // Key not found
+        if (generation === keyReadGeneration && keyId === selectedId && !key) keyError = 'Selected key could not be loaded.';
       });
     }
   });
+
+  // A request that names no key: the signed-in account's own keys decide. Only a single fitting key is used; several
+  // are offered to choose from, none is an error (sign-key-resolution). Either way the review below is unchanged.
+  $effect(() => {
+    if (!$session.data || !requestSealed || keyId || keysListed) return;
+    keysListed = true;
+    const requestMessage = message;
+    const sessionId = $session.data.session?.id;
+    const generation = ++keyReadGeneration;
+    api.listKeys().then(({ keys }) => {
+      if (generation !== keyReadGeneration || $session.data?.session?.id !== sessionId) return;
+      const resolution = resolveSigningKey(keys, requestMessage);
+      if (resolution.kind === 'resolved') chooseKey(resolution.key);
+      else if (resolution.kind === 'choose') keyChoices = resolution.keys;
+      else keyError = 'This account has no key that can sign this message.';
+    }).catch(() => {
+      if (generation === keyReadGeneration) keyError = 'Your keys could not be loaded.';
+    });
+  });
+
+  /** Selects a key of the account; the key loader above then reads it, as for a named key. */
+  function chooseKey(chosen: EthereumKey) {
+    keyChoices = null;
+    keyId = chosen.id;
+    keyFetched = false;
+  }
+
+  function retryKey() {
+    keyReadGeneration++;
+    key = null;
+    keyError = '';
+    keyChoices = null;
+    keyId = requestedKeyId;
+    keyFetched = false;
+    keysListed = false;
+  }
 
   async function handleMessage(event: MessageEvent) {
     // Sol continuation contract: versioned messages are handled by the
@@ -319,6 +366,7 @@
       messageJwk = event.data.jwk ?? null;
       messageHost = typeof event.data.host === 'string' ? event.data.host : '';
       keyId = event.data.keyId || null;
+      requestedKeyId = keyId;
       // Legacy path: envelope forwarding. The legacy path has weaker
       // origin/version guarantees, so we only accept `presentation` as
       // display-only and never upgrade trust off of it — the server
@@ -354,8 +402,8 @@
   // reflects the real key rather than a zero-address placeholder.
   $effect(() => {
     if (!message || !key) {
-      // Do not construct a model with a placeholder key. Legacy fallback
-      // rendering will show a spinner or "Please connect" until the key
+      // Do not construct a model with a placeholder key. The no-key
+      // branch shows loading, a key choice, or a key error until the key
       // loads and this effect fires again.
       reviewModel = null;
       return;
@@ -956,7 +1004,8 @@
     sendResponse({
       type: 'openkey:sign:response',
       success: false,
-      error: { code: 'USER_CANCELLED', message: 'User cancelled' },
+      // Cancelled because no key of this account could sign: the app can tell that apart and recover.
+      error: !key && keyError ? NO_KEY_ERROR : { code: 'USER_CANCELLED', message: 'User cancelled' },
     });
     sendClose();
   }
@@ -1069,9 +1118,32 @@
       Loading...
     </div>
   {:else if !key}
-    <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
-      <p>Please connect first to sign messages.</p>
-    </div>
+    {#if keyError}
+      <div class="flex flex-col gap-4 flex-1">
+        <Card class="bg-red-500/10 border-red-500 text-red-500 p-4" role="alert">{keyError}</Card>
+        <div class="flex gap-3 mt-auto">
+          <Button variant="secondary" class="flex-1" onclick={cancel}>Cancel</Button>
+          <Button class="flex-1" onclick={retryKey}>Try again</Button>
+        </div>
+      </div>
+    {:else if keyChoices}
+      <div class="flex flex-col gap-4 flex-1">
+        <KeyPicker
+          keys={keyChoices}
+          onselect={chooseKey}
+          primaryHeading="Sign with your primary key:"
+          listHeading="Select the key to sign with:"
+        />
+        <div class="flex gap-3 mt-auto">
+          <Button variant="secondary" class="flex-1" onclick={cancel}>Cancel</Button>
+        </div>
+      </div>
+    {:else}
+      <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400 gap-4">
+        <p>{keyId ? 'Loading selected key...' : 'Loading your keys...'}</p>
+        <Button variant="secondary" onclick={cancel}>Cancel</Button>
+      </div>
+    {/if}
   {:else if reviewModel}
     <!--
       Every parsed protocol renders through the shared approval content.

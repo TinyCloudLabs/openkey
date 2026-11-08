@@ -3,8 +3,10 @@
   import { tick, untrack } from 'svelte';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
-  import { getSessionToken, isEmbedContext, withSessionCredential } from '$lib/embed-passkey';
+  import { clearSessionToken, getSessionToken, isEmbedContext, withSessionCredential } from '$lib/embed-passkey';
   import EmbeddedSignIn from '$lib/components/auth/embedded-sign-in.svelte';
+  import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
+  import { NO_KEY_ERROR, resolveSigningKey } from '$lib/sign-key-resolution';
   import { passkeysSupportedFromParams } from '$lib/passkey-support';
   import Button from '$lib/components/ui/button.svelte';
   import IframeSigningAdapter from '$lib/components/signing/iframe-signing-adapter.svelte';
@@ -44,6 +46,10 @@
   // so /authorize-sign cannot swap hosts.
   let messageHost = $state<string>('');
   let keyId = $state<string | null>(null);
+  // The key the request named; null when the app named none and the account's keys decide (sign-key-resolution).
+  let requestedKeyId: string | null = null;
+  let keysListed = $state(false);
+  let keyChoices = $state<EthereumKey[] | null>(null);
   let key = $state<EthereumKey | null>(null);
   let loading = $state(true);
   let signing = $state(false);
@@ -283,6 +289,7 @@
     messageJwk = (data.jwk as Record<string, unknown>) ?? null;
     messageHost = typeof data.host === 'string' ? data.host : '';
     keyId = typeof data.keyId === 'string' ? data.keyId : null;
+    requestedKeyId = keyId;
     // Sol MAJOR-3 (continuation): capture the externalSign flag.
     externalSignMode = data.externalSign === true;
     // TC-2272: only an SDK that accepts a different signed expiry sends this; without it the
@@ -441,6 +448,58 @@
     });
   });
 
+  // A request that names no key: the signed-in account's own keys decide. Only a single fitting key is used; several
+  // are offered to choose from, none is an error (sign-key-resolution). Either way the review below is unchanged.
+  $effect(() => {
+    if (!isAuthenticated || !requestSealed || keyId || phaseKeyId || keysListed) return;
+    keysListed = true;
+    const requestId = currentRequestId;
+    const requestMessage = message;
+    const token = getSessionToken();
+    const sessionId = inIframe ? null : $session.data?.session?.id;
+    const generation = ++keyReadGeneration;
+    api.listKeys().then(({ keys }) => {
+      if (generation !== keyReadGeneration || currentRequestId !== requestId || getSessionToken() !== token ||
+          (inIframe ? null : $session.data?.session?.id) !== sessionId) return;
+      const resolution = resolveSigningKey(keys, requestMessage);
+      if (resolution.kind === 'resolved') chooseKey(resolution.key);
+      else if (resolution.kind === 'choose') keyChoices = resolution.keys;
+      else keyError = 'This account has no key that can sign this message.';
+    }).catch(() => {
+      if (generation === keyReadGeneration && getSessionToken() === token) keyError = 'Your keys could not be loaded.';
+    });
+  });
+
+  /** Selects a key of the account; the key loader above then reads it for this session, as for a named key. */
+  function chooseKey(chosen: EthereumKey) {
+    keyChoices = null;
+    keyId = chosen.id;
+    keyFetched = false;
+  }
+
+  function retryKey() {
+    keyReadGeneration++;
+    key = null;
+    keyOwnerToken = null;
+    keyOwnerSessionId = undefined;
+    keyError = '';
+    keyChoices = null;
+    keyId = requestedKeyId;
+    keyFetched = false;
+    keysListed = false;
+  }
+
+  // Same as the connect widget's Sign out: the frame forgets its session and shows sign-in for this same request.
+  function signOutForKey() {
+    if (inIframe) {
+      clearSessionToken();
+      embedAuthenticated = false;
+    } else {
+      authClient.signOut();
+    }
+    retryKey();
+  }
+
   function handleMessage(event: MessageEvent) {
     if (v2) return;
     // Sol continuation contract: versioned messages are handled by the
@@ -482,6 +541,7 @@
       messageJwk = event.data.jwk ?? null;
       messageHost = typeof event.data.host === 'string' ? event.data.host : '';
       keyId = event.data.keyId || null;
+      requestedKeyId = keyId;
       requestPresentation =
         event.data.presentation && typeof event.data.presentation === 'object'
           ? event.data.presentation
@@ -1052,7 +1112,8 @@
     sendResponse({
       type: 'openkey:sign:response',
       success: false,
-      error: { code: 'USER_CANCELLED', message: 'User cancelled' },
+      // Cancelled because no key of this account could sign: the app can tell that apart and recover.
+      error: !key && keyError ? NO_KEY_ERROR : { code: 'USER_CANCELLED', message: 'User cancelled' },
     });
     sendClose();
   }
@@ -1151,10 +1212,41 @@
         <span class="text-sm text-surface-500">Loading...</span>
       </div>
     {:else if !key}
-      <div class="flex flex-col items-center justify-center text-center text-surface-500 py-4">
-        <p class="text-sm">{keyError || (requestSealed && keyFetched ? 'Loading selected key...' : 'Please connect first to sign messages.')}</p>
-        <Button variant="secondary" size="sm" class="rounded-xl" onclick={cancel}>Cancel</Button>
-      </div>
+      {#if keyError}
+        <div class="flex flex-col gap-3">
+          <div class="bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl text-sm" role="alert">{keyError}</div>
+          <div class="flex gap-2 mt-1">
+            <Button variant="secondary" size="sm" class="flex-1 rounded-xl" onclick={cancel}>Cancel</Button>
+            <Button size="sm" class="flex-1 rounded-xl" onclick={retryKey}>Try again</Button>
+          </div>
+          <button
+            onclick={signOutForKey}
+            class="text-xs text-surface-400 hover:text-surface-600 transition-colors bg-transparent border-none cursor-pointer mx-auto block"
+          >
+            Sign out
+          </button>
+        </div>
+      {:else if keyChoices}
+        <div class="flex flex-col gap-3">
+          <KeyPicker
+            keys={keyChoices}
+            compact
+            onselect={chooseKey}
+            primaryHeading="Sign with your primary key:"
+            listHeading="Select the key to sign with:"
+          />
+          <Button variant="secondary" size="sm" class="rounded-xl" onclick={cancel}>Cancel</Button>
+        </div>
+      {:else}
+        <div class="flex flex-col items-center justify-center text-center text-surface-400 py-4">
+          <svg class="w-6 h-6 animate-spin text-surface-400 mb-3" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+          </svg>
+          <p class="text-sm text-surface-500 mb-3">{keyId ? 'Loading selected key...' : 'Loading your keys...'}</p>
+          <Button variant="secondary" size="sm" class="rounded-xl" onclick={cancel}>Cancel</Button>
+        </div>
+      {/if}
     {:else if reviewModel}
       <!--
         Every parsed protocol renders via the shared approval content. Only
