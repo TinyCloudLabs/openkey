@@ -56,7 +56,7 @@ async function openSigning(page: Page, surface: 'popup' | 'iframe', options: {
   });
   await page.goto('/__parity_harness');
   await page.evaluate(() => {
-    const host = window as HostWindow;
+    const host = window as unknown as HostWindow;
     host.received = [];
     window.addEventListener('message', event => {
       if (event.origin === location.origin && event.source === host.signWindow) host.received.push(event.data);
@@ -65,7 +65,7 @@ async function openSigning(page: Page, surface: 'popup' | 'iframe', options: {
   if (surface === 'popup') {
     const popup = page.waitForEvent('popup');
     await page.evaluate(() => {
-      (window as HostWindow).signWindow = window.open(`/widget/sign?origin=${encodeURIComponent(location.origin)}`)!;
+      (window as unknown as HostWindow).signWindow = window.open(`/widget/sign?origin=${encodeURIComponent(location.origin)}`)!;
     });
     signingPage = await popup;
   } else {
@@ -75,12 +75,12 @@ async function openSigning(page: Page, surface: 'popup' | 'iframe', options: {
       iframe.src = `/widget/embed/sign?origin=${encodeURIComponent(location.origin)}&requestId=background&protocolVersion=2&keyId=selected-key`;
       iframe.style.width = '700px';
       document.body.append(iframe);
-      (window as HostWindow).signWindow = iframe.contentWindow!;
+      (window as unknown as HostWindow).signWindow = iframe.contentWindow!;
     });
   }
-  await expect.poll(() => page.evaluate(() => (window as HostWindow).received.some(m => m.type === 'openkey:ready'))).toBe(true);
+  await expect.poll(() => page.evaluate(() => (window as unknown as HostWindow).received.some(m => m.type === 'openkey:ready'))).toBe(true);
   await page.evaluate(({ message, external, version }) => {
-    (window as HostWindow).signWindow.postMessage({
+    (window as unknown as HostWindow).signWindow.postMessage({
       type: 'openkey:sign:request', requestId: 'background', protocolVersion: version,
       authorizationProtocolVersion: 1, keyId: 'selected-key', jwk: { kty: 'EC' }, message, externalSign: external,
     }, location.origin);
@@ -100,7 +100,7 @@ async function openSigning(page: Page, surface: 'popup' | 'iframe', options: {
   async function ack() {
     if (surface === 'popup') return;
     await page.evaluate(() => {
-      const host = window as HostWindow;
+      const host = window as unknown as HostWindow;
       const resize = host.received.filter(m => m.type === 'openkey:resize').at(-1);
       if (!resize) return;
       const height = Math.min(Number(resize.height), Math.floor(innerHeight * 0.85));
@@ -120,7 +120,7 @@ async function openSigning(page: Page, surface: 'popup' | 'iframe', options: {
     await view.getByRole('button', { name: 'Edit', exact: true }).click();
     return view.getByRole('checkbox').first();
   }
-  const messages = () => page.evaluate(() => (window as HostWindow).received);
+  const messages = () => page.evaluate(() => (window as unknown as HostWindow).received);
   return { view, approve, previews, signs, release, ack, ready, edit, messages, signingPage, prepares: () => prepares };
 }
 

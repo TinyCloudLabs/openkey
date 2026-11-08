@@ -168,6 +168,18 @@ external signature), the route atomically compares and consumes both
 tokens: a concurrent loser and a replay cannot sign. A managed signing
 failure after consumption still requires a fresh approval.
 
+The popup and embedded sign pages obtain the preview automatically when the
+current permission selection or chosen expiry changes. Approve is enabled
+only with a current, unexpired preview; selection remains editable while
+the preview is being fetched. An edit discards the held preview, and an
+expired preview is fetched again (with a fresh context when necessary).
+One Approve action submits the captured preview token and its selection.
+The raw candidate remains in Advanced details. External wallets receive
+the same preview payload through the existing SDK handoff.
+
+These page changes retain the three API endpoints, both single-use tokens,
+and the server's selection and exact-byte checks. Details: TC-2198.
+
 An expired authorization context returns `context-expired` on
 `/authorize-sign`, `/authorize-sign-preview`, the managed approval, and
 versioned `/complete` only while its record remains stored. Issuing a new
