@@ -1225,18 +1225,19 @@
       </div>
     {:else if !key}
       {#if keyError}
-        <div class="flex flex-col gap-3">
+        <div class="flex flex-col gap-3" data-testid="sign-key-error" data-key-problem={keyProblem}>
           <div class="bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl text-sm" role="alert">{keyError}</div>
           <div class="flex gap-2 mt-1">
-            <Button variant="secondary" size="sm" class="flex-1 rounded-xl" onclick={cancel}>Cancel</Button>
+            <Button variant="secondary" size="sm" class="flex-1 rounded-xl" data-testid="sign-key-cancel" onclick={cancel}>Cancel</Button>
             {#if keyProblem === 'missing'}
-              <Button size="sm" class="flex-1 rounded-xl" onclick={signOutForKey}>Sign out</Button>
+              <Button size="sm" class="flex-1 rounded-xl" data-testid="sign-key-sign-out" onclick={signOutForKey}>Sign out</Button>
             {:else}
-              <Button size="sm" class="flex-1 rounded-xl" onclick={retryKey}>Try again</Button>
+              <Button size="sm" class="flex-1 rounded-xl" data-testid="sign-key-retry" onclick={retryKey}>Try again</Button>
             {/if}
           </div>
           {#if keyProblem !== 'missing'}
             <button
+              data-testid="sign-key-sign-out"
               onclick={signOutForKey}
               class="text-xs text-surface-400 hover:text-surface-600 transition-colors bg-transparent border-none cursor-pointer mx-auto block"
             >
@@ -1245,7 +1246,7 @@
           {/if}
         </div>
       {:else if keyChoices}
-        <div class="flex flex-col gap-3">
+        <div class="flex flex-col gap-3" data-testid="sign-key-choice">
           <KeyPicker
             keys={keyChoices}
             compact

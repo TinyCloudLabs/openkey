@@ -1136,18 +1136,19 @@
     </div>
   {:else if !key}
     {#if keyError}
-      <div class="flex flex-col gap-4">
+      <div class="flex flex-col gap-4" data-testid="sign-key-error" data-key-problem={keyProblem}>
         <Card class="bg-red-500/10 border-red-500 text-red-500 p-4" role="alert">{keyError}</Card>
         <div class="flex gap-3">
-          <Button variant="secondary" class="flex-1" onclick={cancel}>Cancel</Button>
+          <Button variant="secondary" class="flex-1" data-testid="sign-key-cancel" onclick={cancel}>Cancel</Button>
           {#if keyProblem === 'missing'}
-            <Button class="flex-1" onclick={signOutForKey}>Sign out</Button>
+            <Button class="flex-1" data-testid="sign-key-sign-out" onclick={signOutForKey}>Sign out</Button>
           {:else}
-            <Button class="flex-1" onclick={retryKey}>Try again</Button>
+            <Button class="flex-1" data-testid="sign-key-retry" onclick={retryKey}>Try again</Button>
           {/if}
         </div>
         {#if keyProblem !== 'missing'}
           <button
+            data-testid="sign-key-sign-out"
             onclick={signOutForKey}
             class="text-xs text-surface-400 hover:text-surface-50 transition-colors bg-transparent border-none cursor-pointer mx-auto block"
           >
@@ -1156,7 +1157,7 @@
         {/if}
       </div>
     {:else if keyChoices}
-      <div class="flex flex-col gap-4">
+      <div class="flex flex-col gap-4" data-testid="sign-key-choice">
         <KeyPicker
           keys={keyChoices}
           onselect={chooseKey}
