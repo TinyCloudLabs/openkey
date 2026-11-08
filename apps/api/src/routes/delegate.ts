@@ -87,6 +87,7 @@ import {
 } from '../services/authorization-signing';
 import { MIN_EXPIRATION_LEAD_MS, validateExpirationOverride, withExpirationTime } from '../services/approval-expiry';
 import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
+import { checkSignedSubset } from '../services/signed-subset';
 import { checkSiweOrigin } from '../services/siwe-origin';
 import {
   APP_KEY_GROUP_PARTIAL_CODE,
@@ -3315,6 +3316,19 @@ delegateRouter.post('/authorize-sign', async (c) => {
     signedMessage = withExpiry;
   }
 
+  // The pre-sign rule on the exact bytes about to be signed:
+  // signed ⊆ requested ⊆ the owner's selection.
+  const signSubset = checkSignedSubset({
+    requested: bound.originalSiwe,
+    signed: signedMessage,
+    selectedActionIds,
+    ownerPickedExpiration: sealedExpiry !== immutable.expirationTime ? sealedExpiry : undefined,
+    longerExpiryAllowed: bound.expiryChangeable === true && !bound.handoffTicketHash,
+  });
+  if (!signSubset.ok) {
+    return c.json({ error: signSubset.message, code: signSubset.code, reason: signSubset.reason }, 400);
+  }
+
   // Validate the single-use preview approval without consuming it. The
   // final selection and bytes must match exactly what the user previewed.
   const previewCheck = checkPreviewApproval({
@@ -3650,6 +3664,19 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
       return c.json({ error: 'Bound SIWE has no single Expiration Time line', code: 'bound_siwe_parse_failed' }, 400);
     }
     preparedSignedMessage = withExpiry;
+  }
+
+  // The pre-sign rule on the exact bytes about to reach the owner's wallet:
+  // signed ⊆ requested ⊆ the owner's selection.
+  const previewSubset = checkSignedSubset({
+    requested: bound.originalSiwe,
+    signed: preparedSignedMessage,
+    selectedActionIds,
+    ownerPickedExpiration: expirationOverride,
+    longerExpiryAllowed: bound.expiryChangeable === true && !bound.handoffTicketHash,
+  });
+  if (!previewSubset.ok) {
+    return c.json({ error: previewSubset.message, code: previewSubset.code, reason: previewSubset.reason }, 400);
   }
 
   // Preview grants + selection. `service` is canonicalized to the
