@@ -174,7 +174,7 @@
     error = '';
 
     try {
-      const result = await api.signTypedData(key.id, typedData);
+      const result = await api.signTypedData(key.id, typedData, origin === '*' ? undefined : (origin ?? undefined));
       if (version !== requestVersion) return;
       if (!checkKeyCredential(credential)) return;
       sendResponse({

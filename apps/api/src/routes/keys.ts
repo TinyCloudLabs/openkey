@@ -22,7 +22,7 @@ import {
   encryptionOutsideAppsRefusalForMessage,
 } from '../services/app-key-refusal';
 import { isFirstPartyEncryptionOrigin } from '../services/first-party-origins';
-import { rejectNonBrowserControlRequest } from '../middleware/browser-control';
+import { rejectNonBrowserControlRequest, rejectNonOpenKeySignRequest } from '../middleware/browser-control';
 
 import { log, logError } from '../log';
 const prisma = createPrismaClient();
@@ -284,6 +284,8 @@ keysRouter.patch('/:keyId', async (c) => {
 // Sign a message (internal - will be called by SDK widget)
 // Supports both raw signing and EIP-191 (personal_sign) format
 keysRouter.post('/:keyId/sign', async (c) => {
+  const originRefusal = rejectNonOpenKeySignRequest(c);
+  if (originRefusal) return originRefusal;
   const user = c.get('user');
   const keyId = c.req.param('keyId');
   const body = await c.req.json<{
@@ -369,7 +371,12 @@ keysRouter.post('/:keyId/sign', async (c) => {
 });
 
 // Sign typed data (EIP-712)
+// The same origin gate applies: a cookie session signs only for an OpenKey
+// browser origin; the widget's bearer carries the verified embedder origin in
+// `requestOrigin`, matching /sign.
 keysRouter.post('/:keyId/sign-typed-data', async (c) => {
+  const originRefusal = rejectNonOpenKeySignRequest(c);
+  if (originRefusal) return originRefusal;
   const user = c.get('user');
   const keyId = c.req.param('keyId');
   const body = await c.req.json<{
@@ -377,6 +384,8 @@ keysRouter.post('/:keyId/sign-typed-data', async (c) => {
     types: any;
     primaryType: string;
     message: any;
+    /** Verified origin of the requesting site, as on /sign. */
+    requestOrigin?: string;
   }>();
 
   const key = await prisma.ethereumKey.findFirst({
