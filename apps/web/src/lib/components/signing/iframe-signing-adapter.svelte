@@ -81,6 +81,7 @@
   {editing}
   approving={transport.approving}
   error={transport.error}
+  refused={transport.refused ?? false}
   {layoutBlocked}
   stickyActions
   previewPending={transport.canUseAuthorizeSign && !transport.previewReady}

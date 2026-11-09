@@ -943,6 +943,18 @@ export function buildStatements(input: CapabilityGrant): StatementEntry[] {
 }
 
 /**
+ * `tinycloud.sql/write` reaches every row of the database it names (read, insert, update, delete) but not its tables
+ * (`schema` is separate). The database is named by the app id, the first path segment. A grant with no app id in its
+ * path (the whole applications space) reaches every app database, so it must not say "this app".
+ */
+function sqlWriteStatementText(path: string): string {
+  const appId = path.split("/")[0] ?? "";
+  return /^[a-z0-9][a-z0-9.-]*$/i.test(appId)
+    ? `Read, change or delete any row in the ${appId} database`
+    : "Read, change or delete rows in all app databases";
+}
+
+/**
  * Compute the deterministic statement for a grant. Match order:
  *   1. Encryption create + decrypt combined form (bundle across grants must
  *      be handled by the caller — here we only produce the single-grant
@@ -1367,6 +1379,9 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
     grant.family === "own-app-data" &&
     (KV_SERVICES.has(service) || SQL_SERVICES.has(service))
   ) {
+    if (SQL_SERVICES.has(service) && verbs.hasWrite) {
+      return { primaryText: sqlWriteStatementText(grant.path), service, resource };
+    }
     if (verbs.hasRead && verbs.hasWrite) {
       return {
         primaryText: "Read and update application data",
@@ -1444,6 +1459,9 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
       return fallbackStatement(grant);
     }
     const noun = "application data";
+    if (SQL_SERVICES.has(service) && verbs.hasWrite) {
+      return { primaryText: sqlWriteStatementText(grant.path), service, resource };
+    }
     let primaryText: string;
     if (verbs.hasRead && verbs.hasWrite) {
       primaryText = `Read and update ${noun}`;

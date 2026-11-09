@@ -23,7 +23,7 @@
   } from '@openkey/capability-review';
   import SiweOriginRefusal from '$lib/components/signing/siwe-origin-refusal.svelte';
   import ServerReplyRefusal from '$lib/components/signing/server-reply-refusal.svelte';
-  import { hasSignResult, hasText, readReply, ServerReplyError, SERVER_REPLY_ERROR } from '$lib/server-reply';
+  import { hasSignResult, hasText, readReply, ServerReplyError, SERVER_REPLY_ERROR, terminalRefusal } from '$lib/server-reply';
   import { createFrameSettleGate, type FrameSettleGate } from '$lib/frame-settle-gate';
   import {
     createIframeLayoutGate,
@@ -711,6 +711,7 @@
 
   // Previewing does not need a layout ACK; only the final approval can sign.
   async function requestPreview(input: string, revision: number): Promise<void> {
+    if (refused) return;
     if (!key || !message) return;
     if (siweRefusal) return;
     if (!canUseAuthorizeSignFn()) return;
@@ -879,7 +880,7 @@
     } catch (e: any) {
       if (!isCurrent()) return;
       if (e instanceof ServerReplyError) unreadableReply(e.status);
-      else error = e.message || 'Preview failed';
+      else if (!refuse(e)) error = e.message || 'Preview failed';
       previewToken = null;
       heldPreview = null;
       contextDeadline = 0;
@@ -889,6 +890,7 @@
   }
 
   async function approveAndSign() {
+    if (refused) return;
     if (!key || !message) return;
     if (signing || previewStopped) return;
     if (siweRefusal) {
@@ -994,7 +996,7 @@
       sendClose();
     } catch (e: any) {
       if (e instanceof ServerReplyError) unreadableReply(e.status);
-      else error = e.message || 'Signing failed';
+      else if (!refuse(e)) error = e.message || 'Signing failed';
     } finally {
       signing = false;
       if (approved && !previewStopped) {
@@ -1043,17 +1045,39 @@
     sendResponse({ type: 'openkey:sign:response', success: false, error: SERVER_REPLY_ERROR });
   }
 
+  // TC-2457: a refusal the server decides from the request itself cannot change on retry. Show the reason, keep
+  // Approve disabled, and tell the host once so the app that asked does not wait for ever. Nothing else is sent: the
+  // identifier carries no server text.
+  let refused = $state(false);
+  let refusalSent = false;
+  function refuse(failure: unknown): boolean {
+    const terminal = terminalRefusal(failure);
+    if (!terminal) return false;
+    refused = true;
+    error = terminal.text;
+    previewToken = null;
+    heldPreview = null;
+    contextDeadline = 0;
+    if (!refusalSent) {
+      refusalSent = true;
+      sendResponse({ type: 'openkey:sign:response', success: false, error: { code: 'UNKNOWN', message: terminal.hostMessage } });
+    }
+    return true;
+  }
+
   function closeRefused() {
     sendClose();
   }
 
   function cancel() {
     keyReadGeneration++;
-    sendResponse({
-      type: 'openkey:sign:response',
-      success: false,
-      error: { code: 'USER_CANCELLED', message: 'User cancelled' },
-    });
+    if (!refusalSent) {
+      sendResponse({
+        type: 'openkey:sign:response',
+        success: false,
+        error: { code: 'USER_CANCELLED', message: 'User cancelled' },
+      });
+    }
     sendClose();
   }
 
@@ -1173,9 +1197,10 @@
           approving: signing,
           host: messageHost,
           error: error || layoutError,
+          refused,
           canUseAuthorizeSign: canUseAuthorizeSignFn(),
           previewReady: currentPreview() !== null,
-          retryPreview: canUseAuthorizeSignFn() && error && !signing && !previewing && !heldPreview ? retryPreview : undefined,
+          retryPreview: canUseAuthorizeSignFn() && error && !refused && !signing && !previewing && !heldPreview ? retryPreview : undefined,
           approveAndSign,
           cancel,
           onSelectionEdited: (next) => {

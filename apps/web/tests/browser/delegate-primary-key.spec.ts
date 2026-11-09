@@ -95,7 +95,7 @@ test.describe('TC-703 primary key picker', () => {
     expect(prepared).toEqual(['key_1']);
 
     // Back returns to the picker without auto-advancing.
-    await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await page.getByTestId('signing-dismiss').click();
     await expect(page.getByText('Sign in with your primary key')).toBeVisible();
     expect(prepared).toEqual(['key_1']);
   });
@@ -111,7 +111,7 @@ test.describe('TC-703 primary key picker', () => {
     await expect(approve(page)).toBeEnabled();
     expect(prepared).toEqual(['key_1']);
 
-    await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await page.getByTestId('signing-dismiss').click();
     await expect(page.getByText('Select a key to authorize:')).toBeVisible();
     await expect(keyButton(page, /Key 1/)).toContainText('Requested');
     await expect(keyButton(page, /Key 0/)).toContainText('Primary');

@@ -152,6 +152,11 @@
   // Parse query params
   let approvalRequestLoading = $state(approvalRequestMode);
   let approvalRequestLoaded = $state(false);
+  // The owner declined this request (TC-2459): from the Decline button, or the link was declined before.
+  let declined = $state(false);
+  let declining = $state(false);
+  // The complete link, in memory only (the page scrubs it from the URL); Decline sends it in the body, never a URL.
+  let approvalReference = '';
   const preparedTransport = !approvalRequestMode && $page.url.searchParams.has('transportVersion');
   let preparedStorageError = $state(!approvalRequestMode && $page.url.searchParams.get('transportVersion') === 'storage-error');
   let dispatchReady = $state(false);
@@ -487,6 +492,7 @@
         throw new Error('This approval link is incomplete or belongs to another browser tab. Reopen the original complete link from the message, including everything after #. If it was cut off, ask for a new link sent on its own line.');
       }
       const reference = location.pathname + fragment;
+      approvalReference = reference;
       const response = await fetch(`${import.meta.env.VITE_API_URL || ''}/api/approval-requests/${approvalRequestId}/load`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -513,6 +519,12 @@
       if (result.approved) {
         done = true;
         step = 'done';
+      }
+      if (result.denied === true) {
+        // Older API responses carry no `denied`; they read as an open request, as before.
+        declined = true;
+        done = true;
+        sessionStorage.removeItem(storageKey);
       }
       const request = result.request;
       did = request.targetDid;
@@ -597,7 +609,7 @@
 
   // Reactively load keys when session becomes available
   $effect(() => {
-    if (dispatchReady && (!approvalRequestMode || approvalRequestLoaded) && !incompleteLegacyRequest && !preparedMode && !preparedTransport && !preparedStorageError && $session.data && !keysLoaded) {
+    if (dispatchReady && (!approvalRequestMode || approvalRequestLoaded) && !declined && !incompleteLegacyRequest && !preparedMode && !preparedTransport && !preparedStorageError && $session.data && !keysLoaded) {
       keysLoaded = true;
       loadKeys();
     }
@@ -827,6 +839,44 @@
     step = 'select-key';
     error = '';
     resetDelegationState();
+  }
+
+  const DECLINE_FAILED = 'Could not decline right now. Nothing was changed. Try again.';
+  async function declineRequest() {
+    if (declining || declined || !approvalRequestMode || !approvalReference) return;
+    declining = true;
+    error = '';
+    try {
+      const response = await fetch(`${import.meta.env.VITE_API_URL || ''}/api/approval-requests/${approvalRequestId}/deny`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        redirect: 'error',
+        cache: 'no-store',
+        referrerPolicy: 'no-referrer',
+        body: JSON.stringify({ reference: approvalReference }),
+      });
+      if (response.ok) {
+        sessionStorage.removeItem(`openkey.approval.${approvalRequestId}`);
+        approvalReference = '';
+        declined = true;
+        done = true;
+      } else if (response.status === 409) {
+        error = 'This request was already approved, so it cannot be declined.';
+      } else if (response.status === 410) {
+        // Same end as /load answering expired: the request is gone, so the page shows the expired message alone.
+        sessionStorage.removeItem(`openkey.approval.${approvalRequestId}`);
+        approvalReference = '';
+        approvalRequestLoaded = false;
+        error = 'This approval request has expired. Return to the requesting app or command and create a new approval link.';
+      } else {
+        error = DECLINE_FAILED;
+      }
+    } catch {
+      error = DECLINE_FAILED;
+    } finally {
+      declining = false;
+    }
   }
 
   function selectWallet(wallet: EIP6963ProviderDetail) {
@@ -1404,6 +1454,10 @@
   <div role={error ? 'alert' : 'status'} class="min-h-screen flex items-center justify-center px-4 text-center">
     {error || (approvalRequestLoading ? 'Checking request…' : 'This approval link is unavailable.')}
   </div>
+{:else if declined}
+  <div role="status" class="min-h-screen flex items-center justify-center px-4 text-center">
+    Declined. You can close this page.
+  </div>
 {:else if !dispatchReady && !preparedTransport}
   <div role="status" class="min-h-screen flex items-center justify-center">Loading delegation request…</div>
 {:else if preparedStorageError}
@@ -1710,6 +1764,7 @@
                 approveBlockedReason,
                 approveDelegate,
                 goBack,
+                ...(approvalRequestMode ? { decline: declineRequest, declining } : {}),
                 updateSelection: (next) => {
                   reviewSelection = next;
                   const nextServerKeys = mapReviewSelectionToActionKeys(next);
@@ -1799,8 +1854,10 @@
         {#if showScrollToApprove}
           <button
             type="button"
+            data-testid="scroll-to-approve"
+            aria-label="Scroll to approve"
             onclick={scrollToApprove}
-            class="fixed bottom-5 left-1/2 z-40 inline-flex -translate-x-1/2 items-center gap-2 rounded-full bg-surface-900 px-4 py-2.5 text-sm font-medium text-white shadow-lg shadow-surface-900/15 transition-all hover:bg-surface-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-surface-400 focus-visible:ring-offset-2 focus-visible:ring-offset-white"
+            class="fixed bottom-[max(1rem,env(safe-area-inset-bottom))] right-[max(1rem,env(safe-area-inset-right))] z-40 inline-flex items-center gap-1.5 rounded-full bg-surface-900 px-3 py-2 text-xs font-medium text-white shadow-lg shadow-surface-900/15 transition-all hover:bg-surface-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-surface-400 focus-visible:ring-offset-2 focus-visible:ring-offset-white"
           >
             <span>Scroll to approve</span>
             <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
