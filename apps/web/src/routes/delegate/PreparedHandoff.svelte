@@ -48,8 +48,9 @@
   let pending = $state<Claim | null>(null);
   let ticket = $state('');
   let initialized = $state(false);
-  let pendingTimeout: ReturnType<typeof setTimeout> | undefined;
   let handoffTimeout: ReturnType<typeof setTimeout> | undefined;
+  // When the CLI's prepared request stops being claimable: its issued-at plus five minutes.
+  let preparedExpiryMs = NaN;
   // The `Date` header of the latest server reply: the server's clock, read at receipt.
   let serverDate: string | null = null;
   let routerReady = false;
@@ -119,7 +120,6 @@
     return port >= 1024 && port <= 65535;
   }
   function clearPending(): void {
-    if (pendingTimeout !== undefined) clearTimeout(pendingTimeout);
     try { sessionStorage.removeItem(pendingKey); } catch { /* No persistent fallback for approval material. */ }
     onClear();
     if (routerReady) replaceState(`${location.pathname}?transportVersion=2`, {});
@@ -144,15 +144,11 @@
         throw new Error('Invalid prepared sign-in request. Restart the CLI command.');
       }
       if (!isClaim(value)) throw new Error('Invalid prepared sign-in request. Restart the CLI command.');
+      // Freshness is decided on the server's clock once the first reply arrives (see `load`), never the device clock.
       const issuedAt = /^Issued At:[ \t]*(.+)$/m.exec(value.request.siwe)?.[1]?.trim();
-      const remaining = Date.parse(issuedAt ?? '') + 300_000 - Date.now();
-      if (!Number.isFinite(remaining) || remaining <= 0) throw new Error('Prepared sign-in request expired. Restart the CLI command.');
+      preparedExpiryMs = Date.parse(issuedAt ?? '') + 300_000;
+      if (!Number.isFinite(preparedExpiryMs)) throw new Error('Prepared sign-in request expired. Restart the CLI command.');
       pending = value;
-      pendingTimeout = setTimeout(() => {
-        pending = null;
-        clearPending();
-        error = 'Prepared sign-in request expired. Restart the CLI command.';
-      }, remaining);
     } catch (cause) {
       clearPending();
       error = cause instanceof Error ? cause.message : 'Invalid prepared sign-in request. Restart the CLI command.';
@@ -160,7 +156,6 @@
       initialized = true;
     }
     return () => {
-      if (pendingTimeout !== undefined) clearTimeout(pendingTimeout);
       if (handoffTimeout !== undefined) clearTimeout(handoffTimeout);
     };
   });
@@ -241,6 +236,13 @@
       if (!availability.ok || !feature || typeof feature !== 'object' ||
         !('transportVersion' in feature) || feature.transportVersion !== 2) {
         throw new Error('Could not verify prepared CLI sign-in availability. Restart the CLI command.');
+      }
+      // The availability reply carries the first server `Date`: the request is fresh or expired on that clock.
+      const availableDate = availability.headers?.get('date') ?? null;
+      const serverNowMs = availableDate === null ? NaN : Date.parse(availableDate);
+      if (Number.isFinite(serverNowMs)) {
+        const remaining = preparedExpiryMs - serverNowMs;
+        if (remaining <= 0) throw new Error('Prepared sign-in request expired. Restart the CLI command.');
       }
       if (pending !== input) throw new Error('Prepared sign-in request expired. Restart the CLI command.');
       const claimed = await post('handoffs/claim', input, ['ticket', 'expiresAt']);
