@@ -88,6 +88,7 @@ import {
 } from '../services/authorization-signing';
 import { MIN_EXPIRATION_LEAD_MS, validateExpirationOverride, withExpirationTime } from '../services/approval-expiry';
 import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
+import { checkSignedSubset, parseStrictSiwe, SIGNED_SUBSET_REFUSAL_CODE } from '../services/signed-subset';
 import { checkSiweOrigin } from '../services/siwe-origin';
 import {
   APP_KEY_GROUP_PARTIAL_CODE,
@@ -131,7 +132,7 @@ import { PreparedHandoffError } from '../services/prepared-handoff';
 import { preparedHandoffService } from './prepared-handoffs';
 import { normalizeAppOrigin, recordAppSignIn } from '../services/app-sign-in';
 import type { PreparedHandoffService } from '../services/prepared-handoff';
-import { checkApprovalDelegation, saveApprovalDelegation } from './approval-requests';
+import { admitApprovalDelegation, checkApprovalDelegation, releaseApprovalDelegation, saveApprovalDelegation } from './approval-requests';
 import { ApprovalResultError } from '../services/approval-results';
 let activePreparedHandoffService: PreparedHandoffService = preparedHandoffService;
 export function setPreparedHandoffServiceForTests(service: PreparedHandoffService): void {
@@ -1641,6 +1642,10 @@ delegateRouter.post('/', async (c) => {
       return c.json({ error: consumed.message, code: consumed.error }, 400);
     }
 
+    await admitApprovalDelegation(body);
+    // An attempt that fails after admission gives the admission back (the body is not re-indented to keep the diff small).
+    try {
+
     // Sign the STORED originalSiwe verbatim. This is the entire point of
     // Blocker 1: never regenerate the SIWE at approval time.
     const signature = await signManagedKey(key, key.sealedBlob, bound.originalSiwe);
@@ -1723,6 +1728,10 @@ delegateRouter.post('/', async (c) => {
       signedMessage: bound.originalSiwe,
       permissions: effectiveGrants,
     }));
+    } catch (error) {
+      await releaseApprovalDelegation(body);
+      throw error;
+    }
   }
 
   // Legacy token-less path — unchanged behavior. The CLI and any older
@@ -1927,6 +1936,9 @@ delegateRouter.post('/prepare', async (c) => {
   } catch (e) {
     return c.json(delegateErrorResponse(e, 'Failed to prepare delegation', 'delegation_prepare_failed'), 400);
   }
+  // Device approvals: the bytes handed to the wallet are a subset of what the device requested.
+  const deviceSubset = await deviceDelegationWindowError(body, { host, signedSiwe: preparedResult.prepared.siwe });
+  if (deviceSubset) return c.json(deviceSubset.body, deviceSubset.status);
 
   const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
 
@@ -2363,6 +2375,10 @@ delegateRouter.post('/complete', async (c) => {
     }
   }
 
+  await admitApprovalDelegation(body);
+  // An attempt that fails after admission gives the admission back (not re-indented, to keep the diff small).
+  try {
+
   const address = preparedAddress;
   const chainId = signedFields.chainId;
   const spaceId = preparedSpaceId;
@@ -2432,6 +2448,10 @@ delegateRouter.post('/complete', async (c) => {
     signedMessage: body.prepared.siwe,
     permissions: effectiveGrants,
   }));
+  } catch (error) {
+    await releaseApprovalDelegation(body);
+    throw error;
+  }
 });
 
 /**
@@ -2875,6 +2895,16 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     admittedAppKeys = admission.admitted;
   }
 
+  // A request the pre-sign rule cannot read can never be signed; refuse it
+  // before issuing a context and a review screen for it.
+  const readable = parseStrictSiwe(body.siwe);
+  if (!readable.ok) {
+    return c.json(
+      { error: `The requested SIWE is not well formed: ${readable.message}`, code: SIGNED_SUBSET_REFUSAL_CODE, reason: 'request_unparsable' },
+      400,
+    );
+  }
+
   let issued: AuthorizationContextToken;
   try {
     issued = issueAuthorizationContext({
@@ -3313,6 +3343,19 @@ delegateRouter.post('/authorize-sign', async (c) => {
     signedMessage = withExpiry;
   }
 
+  // The pre-sign rule on the exact bytes about to be signed:
+  // signed ⊆ requested ⊆ the owner's selection.
+  const signSubset = checkSignedSubset({
+    requested: bound.originalSiwe,
+    signed: signedMessage,
+    selectedActionIds,
+    ownerPickedExpiration: sealedExpiry !== immutable.expirationTime ? sealedExpiry : undefined,
+    longerExpiryAllowed: bound.expiryChangeable === true && !bound.handoffTicketHash,
+  });
+  if (!signSubset.ok) {
+    return c.json({ error: signSubset.message, code: signSubset.code, reason: signSubset.reason }, 400);
+  }
+
   // Validate the single-use preview approval without consuming it. The
   // final selection and bytes must match exactly what the user previewed.
   const previewCheck = checkPreviewApproval({
@@ -3648,6 +3691,19 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
       return c.json({ error: 'Bound SIWE has no single Expiration Time line', code: 'bound_siwe_parse_failed' }, 400);
     }
     preparedSignedMessage = withExpiry;
+  }
+
+  // The pre-sign rule on the exact bytes about to reach the owner's wallet:
+  // signed ⊆ requested ⊆ the owner's selection.
+  const previewSubset = checkSignedSubset({
+    requested: bound.originalSiwe,
+    signed: preparedSignedMessage,
+    selectedActionIds,
+    ownerPickedExpiration: expirationOverride,
+    longerExpiryAllowed: bound.expiryChangeable === true && !bound.handoffTicketHash,
+  });
+  if (!previewSubset.ok) {
+    return c.json({ error: previewSubset.message, code: previewSubset.code, reason: previewSubset.reason }, 400);
   }
 
   // Preview grants + selection. `service` is canonicalized to the

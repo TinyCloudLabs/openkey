@@ -14,6 +14,7 @@ import {
 import type { delegateRouter } from '../routes/delegate';
 import type { _resetAuthorizationContextStoreForTests } from '../services/authorization-signing';
 import { mockModules, replaceModules } from './mock-module';
+import { prepareDelegationSession } from '../routes/delegate-session';
 
 const privateKey = '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 const account = privateKeyToAccount(privateKey);
@@ -78,6 +79,7 @@ await mockModules({
 let router: typeof delegateRouter;
 let resetContexts: typeof _resetAuthorizationContextStoreForTests;
 let transactionId = '';
+const devicePermissions = [{ service: 'tinycloud.capabilities', space: 'applications', path: '', actions: ['tinycloud.capabilities/read'] }];
 
 beforeAll(async () => {
   // Imported after mock.module (and with an isolating query) so the route
@@ -99,7 +101,7 @@ beforeEach(async () => {
     sessionDid: sessionDidForPublicJwk(jwk),
     publicJwk: jwk,
     relayPublicJwk: generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).publicKey.export({ format: 'jwk' }) as Record<string, unknown>,
-    permissions: [{ service: 'tinycloud.capabilities', space: 'applications', path: '', actions: ['tinycloud.capabilities/read'] }],
+    permissions: devicePermissions,
     nodeOrigin: host,
     shareOrigin: 'https://share.tinycloud.xyz',
     delegationTtlSeconds: 60,
@@ -116,8 +118,9 @@ async function post(path: string, body: Record<string, unknown>) {
   return { status: res.status, body: (await res.json()) as Record<string, any> };
 }
 
+// The device page sends the transaction's own permissions; without them /prepare builds the default set.
 async function prepare(expiry: string, device: boolean) {
-  return post('/prepare', { keyId: keyRecord.id, jwk, host, expiry, ...(device ? { deviceTransactionId: transactionId } : {}) });
+  return post('/prepare', { keyId: keyRecord.id, jwk, host, expiry, ...(device ? { deviceTransactionId: transactionId, permissions: devicePermissions } : {}) });
 }
 
 describe('device delegation window on /api/delegate', () => {
@@ -177,10 +180,104 @@ describe('device delegation window on /api/delegate', () => {
       selectedActionIds: prepared.body.selectedActionKeys,
       protocolVersion: 1,
       deviceTransactionId: transactionId,
+      permissions: devicePermissions,
     });
     expect(res.status).toBe(200);
     expect(res.body.delegationHeader).toBeDefined();
     expect(activateSessionWithHost).toHaveBeenCalledTimes(1);
+  });
+
+  describe('the signed message is a subset of the device request', () => {
+    // A device that asked for read and list on one KV path, and capabilities read.
+    const requested = [
+      { service: 'tinycloud.kv', space: 'default', path: 'notes/', actions: ['tinycloud.kv/get', 'tinycloud.kv/list'] },
+      { service: 'tinycloud.capabilities', space: 'default', path: '', actions: ['tinycloud.capabilities/read'] },
+    ];
+    let id = '';
+    beforeEach(async () => {
+      const digest = (value: string) => createHash('sha256').update(value).digest('base64url');
+      ({ transactionId: id } = await deviceService.start({
+        deviceSecretHash: digest(`secret-${Math.random()}`),
+        codeChallenge: digest(`verifier-${Math.random()}`),
+        sessionDid: sessionDidForPublicJwk(jwk),
+        publicJwk: jwk,
+        relayPublicJwk: generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).publicKey.export({ format: 'jwk' }) as Record<string, unknown>,
+        permissions: requested,
+        nodeOrigin: host,
+        shareOrigin: 'https://share.tinycloud.xyz',
+        delegationTtlSeconds: 3600,
+      }, `198.51.100.${Math.floor(Math.random() * 250)}`));
+    });
+
+    const widened: Array<[string, typeof requested]> = [
+      ['an added action', [{ ...requested[0]!, actions: [...requested[0]!.actions, 'tinycloud.kv/put'] }, requested[1]!]],
+      ['another path', [{ ...requested[0]!, path: 'private/' }, requested[1]!]],
+      ['another space', requested.map((p) => ({ ...p, space: 'other' }))],
+      ['an added grant', [...requested, { service: 'tinycloud.kv', space: 'default', path: 'more/', actions: ['tinycloud.kv/get'] }]],
+    ];
+    for (const [name, permissions] of widened) {
+      test(`${name} is refused at /prepare, managed signing and /complete, and nothing is signed or activated`, async () => {
+        const page = { keyId: keyRecord.id, jwk, host, permissions, expiry: '3600s', deviceTransactionId: id };
+        const prepared = await post('/prepare', page);
+        expect(prepared.status).toBe(400);
+        expect(prepared.body).toMatchObject({ code: 'signed_exceeds_request' });
+        const legacy = await post('/', page);
+        expect(legacy.status).toBe(400);
+        expect(legacy.body).toMatchObject({ code: 'signed_exceeds_request' });
+        expect(legacy.body.delegationHeader).toBeUndefined();
+
+        // A wallet that signs the widened bytes (prepared without the device id) is refused at /complete.
+        const unnamed = await post('/prepare', { ...page, deviceTransactionId: undefined });
+        expect(unnamed.status).toBe(200);
+        const signature = await account.signMessage({ message: unnamed.body.prepared.siwe });
+        const completed = await post('/complete', { prepared: unnamed.body.prepared, signature, host, jwk, permissions, deviceTransactionId: id });
+        expect(completed.status).toBe(400);
+        expect(completed.body).toMatchObject({ code: 'signed_exceeds_request' });
+        expect(activateSessionWithHost).not.toHaveBeenCalled();
+      });
+    }
+
+    test('the exact request and a narrowed selection are signed', async () => {
+      const page = { keyId: keyRecord.id, jwk, host, permissions: requested, expiry: '3600s', deviceTransactionId: id };
+      const exact = await post('/', page);
+      expect(exact.status).toBe(200);
+      expect(exact.body.delegationHeader).toBeDefined();
+
+      const prepared = await post('/prepare', page);
+      expect(prepared.status).toBe(200);
+      const narrowed = (prepared.body.selectedActionKeys as string[]).filter((key) => !key.endsWith('tinycloud.kv/list'));
+      const narrowedPrepare = await post('/prepare', { ...page, actionKeys: narrowed });
+      expect(narrowedPrepare.status).toBe(200);
+      expect(narrowedPrepare.body.prepared.siwe).not.toContain("'list'");
+      const signature = await account.signMessage({ message: narrowedPrepare.body.prepared.siwe });
+      const completed = await post('/complete', { prepared: narrowedPrepare.body.prepared, signature, host, jwk, permissions: requested, deviceTransactionId: id });
+      expect(completed.body.error).toBeUndefined();
+      expect(completed.status).toBe(200);
+      expect(activateSessionWithHost).toHaveBeenCalledTimes(2);
+    });
+
+    test('wallet-signed /complete bytes naming another chain or requester are refused', async () => {
+      // Bytes a wallet holder builds and signs: the device's exact permissions, but on chain 137
+      // (every short-named space re-rooted there) or for another domain. The control is the same
+      // construction with the values the device routes write, which completes.
+      const build = (chainId: number, domain?: string) => prepareDelegationSession({
+        address: account.address, chainId, prefix: 'default', jwk, permissions: requested, deviceTransaction: true,
+        expiryMs: 3_600_000, ...(domain ? { domain } : {}),
+      }).prepared;
+      const complete = async (prepared: ReturnType<typeof build>) => post('/complete', {
+        prepared: { ...prepared, jwk }, signature: await account.signMessage({ message: prepared.siwe }),
+        host, jwk, permissions: requested, deviceTransactionId: id,
+      });
+      for (const [prepared, reason] of [[build(137), 'chain_id'], [build(1, 'evil.example.com'), 'requester']] as const) {
+        const refused = await complete(prepared);
+        expect(refused.status).toBe(400);
+        expect(refused.body).toMatchObject({ code: 'signed_exceeds_request', reason });
+      }
+      expect(activateSessionWithHost).not.toHaveBeenCalled();
+      const control = await complete(build(1));
+      expect(control.body.error).toBeUndefined();
+      expect(control.status).toBe(200);
+    });
   });
 
   test('the /delegate page device approval reaches the CLI poll', async () => {
