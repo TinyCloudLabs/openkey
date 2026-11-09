@@ -140,7 +140,15 @@ for (const keyType of ['MANAGED', 'EXTERNAL'] as const) {
       const flow = await open(page, keyType, scenario);
       await page.getByRole('button', { name: 'Approve', exact: true }).click();
       await expect(page.getByRole('alert')).toBeVisible();
-      await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
+      if (scenario === 'direct-expired' || scenario === 'expired-link') {
+        // A 410 at the sign sites shows the ended wording, not the panel (the
+        // server's expired_request also covers answered/unknown requests).
+        await expect(page.getByRole('alert')).toHaveText('This request has already been answered or has ended.');
+        await expect(page.getByText('Link expired')).toHaveCount(0);
+        await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(1);
+      } else {
+        await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
+      }
       expect(flow.counts()).toEqual({ prepares: scenario === 'direct-expired' || scenario === 'expired-token' ? 2 : 3, approvals: scenario === 'twice' || scenario === 'second-refused' ? 2 : 1 });
       if (keyType === 'EXTERNAL' && ['duplicate-selection', 'missing-selection', 'empty-siwe', 'malformed-siwe', 'changed-message', 'mixed-recap', 'malformed-caveat'].includes(scenario)) {
         const signatures = await page.evaluate(() => {

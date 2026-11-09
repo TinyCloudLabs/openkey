@@ -83,7 +83,8 @@
       return this.code === 'context-expired' || this.code === 'context-not-found';
     }
     get requestExpired() {
-      return this.status === 410 || this.code === 'expired_request' || this.code === 'expired_token' || this.code === 'expired';
+      // Sign-site 410s are routed by the caller to the busy/ended wording, not this panel.
+      return this.status !== 410 && (this.code === 'expired_request' || this.code === 'expired_token' || this.code === 'expired');
     }
   }
 
@@ -1214,7 +1215,10 @@
       }
       await finishDelegate(data);
     } catch (cause) {
-      if (refreshAttempted) {
+      if (cause instanceof DelegateResponseError && cause.status === 410) {
+        // A 410 carries the busy/ended wording, whichever code or attempt produced it.
+        error = cause.message;
+      } else if (refreshAttempted) {
         requestExpired = true;
       } else if (cause instanceof DelegateResponseError && cause.contextUnavailable) {
         if (!key) {
@@ -1223,8 +1227,9 @@
         }
         try {
           await refreshAuthorizationContext(key, actions);
-        } catch {
-          requestExpired = true;
+        } catch (cause) {
+          if (cause instanceof DelegateResponseError && cause.status === 410) error = cause.message;
+          else requestExpired = true;
           return;
         }
         await doManagedDelegate(true);
@@ -1365,7 +1370,10 @@
       }
       await finishDelegate(data);
     } catch (cause) {
-      if (refreshAttempted) {
+      if (cause instanceof DelegateResponseError && cause.status === 410) {
+        // A 410 carries the busy/ended wording, whichever code or attempt produced it.
+        error = cause.message;
+      } else if (refreshAttempted) {
         requestExpired = true;
       } else if (cause instanceof DelegateResponseError && cause.contextUnavailable) {
         if (!key) {
@@ -1374,8 +1382,9 @@
         }
         try {
           await refreshAuthorizationContext(key, selectedActionIds);
-        } catch {
-          requestExpired = true;
+        } catch (cause) {
+          if (cause instanceof DelegateResponseError && cause.status === 410) error = cause.message;
+          else requestExpired = true;
           return;
         }
         // A fresh prepare changes the signed bytes; obtain a fresh wallet signature.
