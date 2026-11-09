@@ -101,3 +101,22 @@ test('screenshot at 390: the busy wording after Approve', async ({ page }) => {
   const shots = process.env.SHOT_DIR;
   if (shots) await page.screenshot({ path: `${shots}/handoff-busy-390.png`, fullPage: false });
 });
+
+test('the owner revocation page shows the busy wording on a 409', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.route('**/api/**', (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/auth/get-session') return json(route, 200, { session: { id: 's', userId: 'u', expiresAt: new Date(Date.now() + 3_600_000).toISOString() }, user: { id: 'u', email: 'owner@example.test' } });
+    if (path === '/api/keys') return json(route, 200, { keys: [{ id: 'key-owner', address, publicKey: '0x', keyIndex: 0, label: 'Owner key', keyType: 'MANAGED', createdAt: '2026-10-16T17:00:00.000Z' }] });
+    if (path === '/api/delegate/handoffs/available') return json(route, 200, { transportVersion: 2 });
+    if (path === '/api/delegate/handoffs/claim') return json(route, 201, { transportVersion: 2, ticket: handoffId, expiresAt: new Date(Date.now() + 300_000).toISOString() });
+    if (path === '/api/delegate/owner-revocation/prepare') return json(route, 409, { code: 'handoff_signing', error: 'Handoff is being signed' });
+    return json(route, 404, { error: `unexpected ${path}` });
+  });
+  const request = { kind: 'owner-revocation', ownerDid: `did:pkh:eip155:1:${address}`, cid: 'bafyreib2rxk3rybk3aobmv5cjuql3bm2twh4jo5uxgf5kpqcsgzz7nazxe', nonce: '0123456789abcdef0123456789abcdef', expiresAt: new Date(Date.now() + 590_000).toISOString() };
+  await page.goto(`/delegate#tv2=${Buffer.from(JSON.stringify({ transportVersion: 2, request, delivery: { handoffId, state, cancelSecret } })).toString('base64url')}`);
+  await expect(page.getByRole('alert')).toHaveText(BUSY);
+  await expect(page.getByText('Handoff is being signed')).toHaveCount(0);
+  const shots = process.env.SHOT_DIR;
+  if (shots) await page.screenshot({ path: `${shots}/revoke-busy-390.png`, fullPage: false });
+});
