@@ -125,6 +125,13 @@ export function createPrismaDeviceAuthorizationStore(database: any): DeviceAutho
         return result.count === 1;
       });
     },
+    async deny(id, now) {
+      const result = await database.deviceAuthorization.updateMany({
+        where: { id, status: 'PENDING', transactionExpiresAt: { gt: now } },
+        data: { status: 'DENIED' },
+      });
+      return result.count === 1;
+    },
     async consumeApproved(id) {
       return database.$transaction(async (tx: any) => {
         const value = await tx.deviceAuthorization.findFirst({

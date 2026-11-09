@@ -124,6 +124,8 @@ export interface DeviceAuthorizationStore {
     approvedPermissions: DevicePermission[];
     resultExpiresAt: Date;
   }): Promise<boolean>;
+  /** Marks a pending, unexpired authorization denied. False when it is approved, denied, expired or unknown. */
+  deny(id: string, now: Date): Promise<boolean>;
   consumeApproved(id: string): Promise<DeviceAuthorizationRecord | null>;
   /** Clears the ciphertext of approved results whose retention has passed without an acknowledgement. */
   wipeExpiredResults(now: Date): Promise<void>;
@@ -173,6 +175,13 @@ export class MemoryDeviceAuthorizationStore implements DeviceAuthorizationStore 
       // After approval the deadline is the result's retention, which may run past the transaction's.
       transactionExpiresAt: new Date(Math.max(record.transactionExpiresAt.getTime(), input.resultExpiresAt.getTime())),
     });
+    return true;
+  }
+
+  async deny(id: string, now: Date): Promise<boolean> {
+    const record = this.records.get(id);
+    if (!record || record.status !== 'pending' || record.transactionExpiresAt <= now) return false;
+    record.status = 'denied';
     return true;
   }
 
@@ -844,6 +853,22 @@ export class DeviceAuthorizationService {
     if (!approved) throw new DeviceAuthorizationError('expired_token', 'device authorization is no longer pending', 410);
   }
 
+  /** Declining refuses this authorization. Terminal and idempotent; an approved one cannot be declined. */
+  async deny(transactionId: string): Promise<{ status: 'denied' }> {
+    const record = typeof transactionId === 'string' ? await this.store.findById(transactionId) : null;
+    if (record?.status === 'denied') return { status: 'denied' };
+    if (!record || record.transactionExpiresAt <= this.now()) {
+      throw new DeviceAuthorizationError('expired_token', 'device authorization is no longer pending', 410);
+    }
+    if (record.status !== 'pending') throw new DeviceAuthorizationError('already_approved', 'device authorization was already approved', 409);
+    if (!await this.store.deny(record.id, this.now())) {
+      const current = await this.store.findById(record.id);
+      if (current?.status === 'denied') return { status: 'denied' };
+      throw new DeviceAuthorizationError('already_approved', 'device authorization was already approved', 409);
+    }
+    return { status: 'denied' };
+  }
+
   async poll(input: { transactionId: string; deviceSecret: string; codeVerifier: string }): Promise<
     | { status: 'pending'; interval: number }
     | {
@@ -861,6 +886,12 @@ export class DeviceAuthorizationService {
   > {
     if (!input || typeof input !== 'object' || Array.isArray(input)) {
       throw new DeviceAuthorizationError('invalid_request', 'device token request must be an object', 400);
+    }
+    // A denial is terminal and stays readable after the transaction window, to the holder of the device credentials.
+    const found = typeof input.transactionId === 'string' ? await this.store.findById(input.transactionId) : null;
+    if (found?.status === 'denied') {
+      this.assertDeviceCredentials(found, input);
+      throw new DeviceAuthorizationError('access_denied', 'the device authorization was denied', 400);
     }
     const record = await this.findLive(input.transactionId);
     this.assertDeviceCredentials(record, input);
