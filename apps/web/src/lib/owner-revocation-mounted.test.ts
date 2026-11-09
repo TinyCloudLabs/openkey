@@ -150,3 +150,26 @@ test('owner review exposes the entire copyable permission ID for CLI comparison'
     globalThis.fetch = originalFetch;
   }
 });
+
+test('owner review shows the busy wording when the request is already being approved', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const path = String(input);
+    if (path.endsWith('/available')) return Response.json({ transportVersion: 2 });
+    if (path.endsWith('/claim')) return Response.json({ ticket: delivery.handoffId, expiresAt: new Date(Date.now() + 300_000).toISOString() });
+    if (path.endsWith('/prepare')) return Response.json({ code: 'handoff_signing', error: 'Handoff is being signed' }, { status: 409 });
+    throw new Error(`Unexpected request ${path}`);
+  }) as typeof fetch;
+  const target = document.createElement('div');
+  document.body.append(target);
+  const app = mount(Subject, { target, props: { encoded, onClear: () => {} } });
+  try {
+    await until(() => !!target.querySelector('[role="alert"]'), 'busy wording');
+    expect(target.querySelector('[role="alert"]')?.textContent).toBe('This request is already being approved. Wait a moment.');
+    expect(target.textContent).not.toContain('Handoff is being signed');
+  } finally {
+    unmount(app);
+    target.remove();
+    globalThis.fetch = originalFetch;
+  }
+});
