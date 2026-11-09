@@ -49,7 +49,7 @@ const BOOTSTRAP_MAX_LOCK_LIFETIME_MS = BOOTSTRAP_RUN_DEADLINE_MS + 30 * 1000;
 /** Carries the current run's signal to nodeFetch without threading it through every call. */
 const bootstrapRunSignal = new AsyncLocalStorage<AbortSignal>();
 /** Recorded when a run that re-claimed a `complete` row fails. Not in SWEEP_RETRYABLE_CODES: the sweep never re-runs it. */
-const RECLAIM_FAILED_CODE = 'tinycloud_bootstrap_reclaim_failed';
+export const RECLAIM_FAILED_CODE = 'tinycloud_bootstrap_reclaim_failed';
 const BOOTSTRAP_WAIT_MS = 500;
 const MIN_USEFUL_SIWE_TTL_MS = 5_000;
 const BOOTSTRAP_DOMAIN = 'cli.tinycloud.xyz';

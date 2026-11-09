@@ -773,22 +773,83 @@ if (!backend) {
       const prepared = await nativeConsent(second.id, 'prepare');
       expect(prepared.status).toBe(200);
       const existing = await prepared.json() as typeof preview;
-      // A cached complete row still plans hosting; the node's activation decides at approval.
-      expect(existing.hostPlan.spaceId).toBe(space);
-      expect(peerCalls).toBe(2);
+      expect(existing.hostPlan).toBeNull();
+      expect(peerCalls).toBe(1);
       await prisma.oauthClient.update({ where: { clientId: nativeClient }, data: { tinycloudNativeDelegation: { ...ceiling, tinycloudHost: 'http://127.0.0.1:18081' } } });
-      const movedExisting = await nativeConsent(second.id, 'approve', { revision: existing.revision, digest: existing.digest, sessionSiwe: existing.sessionSiwe, hostSiwe: existing.hostPlan.hostSiwe });
+      const movedExisting = await nativeConsent(second.id, 'approve', { revision: existing.revision, digest: existing.digest, sessionSiwe: existing.sessionSiwe });
       expect(movedExisting.status).toBe(409);
       expect((await movedExisting.json() as { error: string }).error).toBe('preparation_superseded');
       await prisma.oauthClient.update({ where: { clientId: nativeClient }, data: { tinycloudNativeDelegation: ceiling } });
-      const approvedExisting = await nativeConsent(second.id, 'approve', { revision: existing.revision, digest: existing.digest, sessionSiwe: existing.sessionSiwe, hostSiwe: existing.hostPlan.hostSiwe });
+      const approvedExisting = await nativeConsent(second.id, 'approve', { revision: existing.revision, digest: existing.digest, sessionSiwe: existing.sessionSiwe });
       expect(approvedExisting.status).toBe(200);
       expect((await approvedExisting.json() as { hosting: string }).hosting).toBe('existing');
       expect((await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id: second.id } })).hostSignedAt).toBeNull();
     } finally { globalThis.fetch = originalFetch; }
   }, 120_000);
 
-  test(`a cached complete bootstrap row with an unhosted space still plans and signs hosting (${backend})`, async () => {
+  test(`a stale cached complete row restarts consent once, then plans and signs hosting (${backend})`, async () => {
+    const key = await ensureNativeKey();
+    const originalFetch = globalThis.fetch;
+    const space = `tinycloud:pkh:eip155:1:${key.address}:applications`;
+    let peerCalls = 0;
+    let delegateCalls = 0;
+    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith('https://tee.node.tinycloud.xyz/peer/generate/')) {
+        peerCalls++;
+        return Promise.resolve(new Response('did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK'));
+      }
+      if (url === 'https://tee.node.tinycloud.xyz/delegate') {
+        delegateCalls++;
+        // 1: stale-cache approval, space unhosted. 2: approval after the restart, unhosted. 3: host delegation. 4: re-activation.
+        return Promise.resolve(Response.json(delegateCalls <= 2 ? { skipped: [space] }
+          : delegateCalls === 4 ? { activated: [], skipped: [] } : { activated: [space] }));
+      }
+      return originalFetch(input, init);
+    }) as typeof fetch;
+    try {
+      await prisma.tinyCloudBootstrapState.deleteMany({ where: { keyId: key.id } });
+      await prisma.tinyCloudBootstrapState.create({ data: { userId: alice, keyId: key.id, address: key.address, chainId: 1,
+        tinycloudHost: 'https://tee.node.tinycloud.xyz', bootstrapVersion: 'test', status: 'complete', checkedAt: new Date(), completedAt: new Date() } });
+      const { id } = await nativePar();
+      const prepare = await nativeConsent(id, 'prepare');
+      expect(prepare.status, await prepare.clone().text()).toBe(200);
+      const first = await prepare.json() as { revision: number; digest: string; sessionSiwe: string; hostPlan: unknown };
+      // A cached complete row costs no peer lookup and shows no hosting plan.
+      expect(first.hostPlan).toBeNull();
+      expect(peerCalls).toBe(0);
+
+      const refused = await nativeConsent(id, 'approve', { revision: first.revision, digest: first.digest, sessionSiwe: first.sessionSiwe });
+      expect(refused.status).toBe(409);
+      expect((await refused.json() as { error: string }).error).toBe('preparation_superseded');
+      const reopened = await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id } });
+      expect(reopened.status).toBe('RESOLVED');
+      expect(reopened.delegation).toBeNull();
+      expect(reopened.hostSignedAt).toBeNull();
+      expect((await prisma.tinyCloudBootstrapState.findFirstOrThrow({ where: { keyId: key.id } })).status).not.toBe('complete');
+
+      // A replayed approval of the refused revision is superseded; it neither reverts nor approves again.
+      const replay = await nativeConsent(id, 'approve', { revision: first.revision, digest: first.digest, sessionSiwe: first.sessionSiwe });
+      expect(replay.status).toBe(409);
+      expect((await replay.json() as { error: string }).error).toBe('preparation_superseded');
+      expect(delegateCalls).toBe(1);
+
+      const again = await nativeConsent(id, 'prepare');
+      expect(again.status, await again.clone().text()).toBe(200);
+      const planned = await again.json() as { revision: number; digest: string; sessionSiwe: string; hostPlan: { spaceId: string; hostSiwe: string } | null };
+      expect(planned.hostPlan?.spaceId).toBe(space);
+      expect(peerCalls).toBe(1);
+
+      // The retry is not refused again: the plan was shown, so hosting is signed.
+      const approved = await nativeConsent(id, 'approve', { revision: planned.revision, digest: planned.digest, sessionSiwe: planned.sessionSiwe, hostSiwe: planned.hostPlan!.hostSiwe });
+      expect(approved.status, await approved.clone().text()).toBe(200);
+      expect((await approved.json() as { hosting: string }).hosting).toBe('created');
+      expect(delegateCalls).toBe(4);
+      expect((await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id } })).hostSignedAt).not.toBeNull();
+    } finally { globalThis.fetch = originalFetch; }
+  }, 120_000);
+
+  test(`after a restart, an activation that still reports skipped fails plainly once (${backend})`, async () => {
     const key = await ensureNativeKey();
     const originalFetch = globalThis.fetch;
     const space = `tinycloud:pkh:eip155:1:${key.address}:applications`;
@@ -800,8 +861,8 @@ if (!backend) {
       }
       if (url === 'https://tee.node.tinycloud.xyz/delegate') {
         delegateCalls++;
-        return Promise.resolve(Response.json(delegateCalls === 1 ? { skipped: [space] }
-          : delegateCalls === 3 ? { activated: [], skipped: [] } : { activated: [space] }));
+        // The node never hosts the space: every activation is skipped and the host delegation is rejected.
+        return Promise.resolve(delegateCalls === 3 ? new Response('rejected', { status: 400 }) : Response.json({ skipped: [space] }));
       }
       return originalFetch(input, init);
     }) as typeof fetch;
@@ -810,14 +871,15 @@ if (!backend) {
       await prisma.tinyCloudBootstrapState.create({ data: { userId: alice, keyId: key.id, address: key.address, chainId: 1,
         tinycloudHost: 'https://tee.node.tinycloud.xyz', bootstrapVersion: 'test', status: 'complete', checkedAt: new Date(), completedAt: new Date() } });
       const { id } = await nativePar();
-      const prepare = await nativeConsent(id, 'prepare');
-      expect(prepare.status, await prepare.clone().text()).toBe(200);
-      const preview = await prepare.json() as { revision: number; digest: string; sessionSiwe: string; hostPlan: { spaceId: string; hostSiwe: string } | null };
-      expect(preview.hostPlan?.spaceId).toBe(space);
-      const approved = await nativeConsent(id, 'approve', { revision: preview.revision, digest: preview.digest, sessionSiwe: preview.sessionSiwe, hostSiwe: preview.hostPlan!.hostSiwe });
+      const first = await (await nativeConsent(id, 'prepare')).json() as { revision: number; digest: string; sessionSiwe: string };
+      const refused = await nativeConsent(id, 'approve', { revision: first.revision, digest: first.digest, sessionSiwe: first.sessionSiwe });
+      expect(refused.status).toBe(409);
+      const planned = await (await nativeConsent(id, 'prepare')).json() as { revision: number; digest: string; sessionSiwe: string; hostPlan: { hostSiwe: string } };
+      const approved = await nativeConsent(id, 'approve', { revision: planned.revision, digest: planned.digest, sessionSiwe: planned.sessionSiwe, hostSiwe: planned.hostPlan.hostSiwe });
       expect(approved.status, await approved.clone().text()).toBe(200);
-      expect((await approved.json() as { hosting: string }).hosting).toBe('created');
-      expect((await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id } })).hostSignedAt).not.toBeNull();
+      expect((await approved.json() as { hosting: string }).hosting).toBe('failed');
+      expect((await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id } })).status).toBe('APPROVED');
+      expect(delegateCalls).toBe(3);
     } finally { globalThis.fetch = originalFetch; }
   }, 120_000);
 

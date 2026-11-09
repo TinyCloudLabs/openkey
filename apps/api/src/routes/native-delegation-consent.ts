@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
-import type { PrismaClient } from '@openkey/db';
+import { Prisma, type PrismaClient } from '@openkey/db';
 import { ensureEip55, generateHostSIWEMessage, completeSessionSetup, siweToDelegationHeaders } from '@tinycloud/node-sdk-wasm';
 import { activateSessionWithHost, submitHostDelegation } from '@tinycloud/sdk-core';
 import { createWalletFromPrivateKey } from '@openkey/tee';
@@ -13,6 +13,7 @@ import { nativeDelegationLockResponse } from '../services/native-delegation/erro
 import { enabledNativeDelegation } from '../services/native-delegation/policy';
 import { nativeUserRetryAfter, type NativeUserAction } from '../services/native-delegation/user-rate-limit';
 import { ParError, validatePermissions, type NativePermission } from '../services/native-delegation/par';
+import { RECLAIM_FAILED_CODE } from '../services/tinycloud-bootstrap';
 import { prepareDelegationSession, actionKey } from './delegate-session';
 
 import { log, logError } from '../log';
@@ -138,16 +139,17 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
     const preClient = await db.oauthClient.findUniqueOrThrow({ where: { clientId: pending.clientId } });
     const preCeiling = enabledNativeDelegation(preClient);
     if (!preCeiling) fail(409, 'preparation_superseded');
+    const preExisting = await db.tinyCloudBootstrapState.findFirst({ where: { keyId: preKey.id, chainId: 1, tinycloudHost: preCeiling.tinycloudHost, status: 'complete' } });
     const preSpace = prepareSiwe(pending, permitted(pending.requestedPermissions, preCeiling), preKey, preCeiling,
       pending.siweNonce ?? 'AAAAAAAAAAAA', Math.min(pending.ttlSeconds, preCeiling.maxDelegationTtlSeconds, preCeiling.grantLifetimeSeconds), new Date()).spaceId;
-    // A cached bootstrap row is not evidence the node hosts the space: always plan hosting. Approval signs it
-    // only when the node's fresh activation lists the space as skipped, the same evidence /delegate uses.
-    let peerId: string;
-    try { peerId = await withinTimeout(hostOps.fetchPeerId(preCeiling.tinycloudHost, preSpace), 5_000); }
-    catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      logError('error', 'native_consent_peer_lookup_failed', error);
-      throw new NativeConsentError(503, 'temporarily_unavailable', `TinyCloud node peer lookup failed: ${reason.slice(0, 200)}`);
+    let peerId: string | null = null;
+    if (!preExisting) {
+      try { peerId = await withinTimeout(hostOps.fetchPeerId(preCeiling.tinycloudHost, preSpace), 5_000); }
+      catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        logError('error', 'native_consent_peer_lookup_failed', error);
+        throw new NativeConsentError(503, 'temporarily_unavailable', `TinyCloud node peer lookup failed: ${reason.slice(0, 200)}`);
+      }
     }
     const result = await db.$transaction(async tx => {
       const { row } = await lockRequest(tx, c.req.param('id'), userId);
@@ -163,13 +165,17 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
       const base = prepareSiwe(row, requested, key, ceiling, nonce, ttlSeconds, new Date());
       const permissions = selectedPermissions(requested, body.actionKeys, base.spaceId);
       const prepared = prepareSiwe(row, permissions, key, ceiling, nonce, ttlSeconds, new Date());
-      if (prepared.spaceId !== preSpace) fail(409, 'preparation_superseded');
-      const hostPlan = { host: ceiling.tinycloudHost, spaceId: prepared.spaceId, peerId,
-        hostSiwe: generateHostSIWEMessage({ address, chainId: 1, domain: ceiling.siweDomain ?? 'openkey.so', issuedAt: new Date().toISOString(), spaceId: prepared.spaceId, peerId }) };
+      const existing = await tx.tinyCloudBootstrapState.findFirst({ where: { keyId: key.id, chainId: 1, tinycloudHost: ceiling.tinycloudHost, status: 'complete' } });
+      let hostPlan: { host: string; spaceId: string; peerId: string; hostSiwe: string } | null = null;
+      if (!existing) {
+        if (!peerId || prepared.spaceId !== preSpace) fail(409, 'preparation_superseded');
+        hostPlan = { host: ceiling.tinycloudHost, spaceId: prepared.spaceId, peerId,
+          hostSiwe: generateHostSIWEMessage({ address, chainId: 1, domain: ceiling.siweDomain ?? 'openkey.so', issuedAt: new Date().toISOString(), spaceId: prepared.spaceId, peerId }) };
+      }
       const revision = row.currentRevision + 1;
       const preview = { requestId: row.id, revision, userId, keyId: key.id, address, sessionSiwe: prepared.prepared.siwe, permissions, hostPlan };
       const digest = preparationDigest(preview);
-      await tx.tinyCloudNativePreparation.create({ data: { id: randomUUID(), requestId: row.id, revision, userId, keyId: key.id, address, tinycloudHost: ceiling.tinycloudHost, sessionSiwe: preview.sessionSiwe, permissions, hostPlan, digest } });
+      await tx.tinyCloudNativePreparation.create({ data: { id: randomUUID(), requestId: row.id, revision, userId, keyId: key.id, address, tinycloudHost: ceiling.tinycloudHost, sessionSiwe: preview.sessionSiwe, permissions, hostPlan: hostPlan ?? undefined, digest } });
       await tx.tinyCloudNativeRequest.update({ where: { id: row.id }, data: { userId, siweNonce: nonce, currentRevision: revision } });
       return { ...preview, digest, client: { clientId: client.clientId, name: client.name, icon: client.icon, organization: client.organization?.name }, redirectScheme: new URL(row.redirectUri).protocol.slice(0, -1), sessionDid: row.sessionDid, tinycloudHost: ceiling.tinycloudHost, ttlSeconds, grantLifetimeSeconds: ceiling.grantLifetimeSeconds, permissionOptions: prepared.permissions, selectedActionKeys: prepared.selectedActionKeys };
     }, { timeout: 15_000 });
@@ -243,6 +249,7 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
     }, { timeout: 15_000 });
     if (result.alreadyApproved) return c.json({ status: 'APPROVED', revision: result.revision, hosting: result.hosting });
     let hosting: 'existing' | 'created' | 'failed' = 'failed';
+    let restart = false;
     try {
       const activated = await hostOps.activateSessionWithHost(result.artifact.tinycloudHost, result.artifact.delegationHeader);
       if (activated.success && activated.activated?.includes(result.artifact.spaceId)) hosting = 'existing';
@@ -263,10 +270,30 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
           else log('warn', 'native_consent_host_delegation_rejected');
         }
       }
+      else if (!result.hostPlan && activated.skipped?.includes(result.artifact.spaceId)) {
+        // The cached `complete` row was stale, so no hosting plan was shown or signed. Drop the cached bit and
+        // reopen the request on a new revision, so a replay of this approval is superseded: the next prepare plans hosting and shows it. The row is no longer `complete`, so
+        // that prepare always carries a plan and this branch cannot run for it again.
+        restart = await db.$transaction(async tx => {
+          const stale = await tx.tinyCloudBootstrapState.updateMany({
+            where: { keyId: result.key.id, chainId: 1, tinycloudHost: result.artifact.tinycloudHost, status: 'complete' },
+            data: { status: 'failed', failureCode: RECLAIM_FAILED_CODE, failureReason: 'TinyCloud node does not host the applications space.', attemptId: null, lockExpiresAt: null },
+          });
+          if (stale.count === 0) return false;
+          const reopened = await tx.tinyCloudNativeRequest.updateMany({
+            where: { id: result.rowId, status: 'APPROVED', approvedRevision: result.revision, currentRevision: result.revision, hostSignedAt: null },
+            data: { status: 'RESOLVED', currentRevision: { increment: 1 }, approvedRevision: null, consentGeneration: null, signature: null, delegation: Prisma.DbNull, hosting: null },
+          });
+          if (reopened.count !== 1) throw new Error('native request could not be reopened');
+          return true;
+        });
+        if (!restart) log('warn', 'native_consent_activation_did_not_host_space');
+      }
       else log('warn', 'native_consent_activation_did_not_host_space');
     } catch (error) {
       logError('warn', 'native_consent_host_activation_failed', error);
     }
+    if (restart) fail(409, 'preparation_superseded');
     await db.tinyCloudNativeRequest.update({ where: { id: result.rowId }, data: { hosting } });
     return c.json({ status: 'APPROVED', revision: result.revision, hosting });
   });

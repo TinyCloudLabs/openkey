@@ -467,7 +467,7 @@ older revision is never changed.
   "tinycloudHost": "https://tee.node.tinycloud.xyz",
   "ttlSeconds": 3600,
   "grantLifetimeSeconds": 2592000,
-  "hostPlan": { "host": "https://tee.node.tinycloud.xyz", "spaceId": "…", "peerId": "did:key:…", "hostSiwe": "<exact SIWE bytes>" }
+  "hostPlan": null
 }
 ```
 
@@ -573,9 +573,8 @@ SIWE, and it is limited as follows:
 - **Host:** always the ceiling's `tinycloudHost`, which must be in
   `TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS`. Neither the app nor the request can
   name a host.
-- **When planned:** at prepare, on every prepare. A cached `TinyCloudBootstrapState`
-  `complete` row does not skip it; the node's activation at approval decides
-  whether the space is hosted, as it does for `/delegate`.
+- **When planned:** at prepare, unless `TinyCloudBootstrapState` already
+  records completion for this key and host.
 - **Contents:** `{host, spaceId, peerId, hostSiwe}`, where
   `peerId = fetchPeerId(host, spaceId)` and `hostSiwe` comes from
   `generateHostSIWEMessage`. The plan is included in the preparation digest,
@@ -590,6 +589,13 @@ SIWE, and it is limited as follows:
   - If activation is `skipped`, sign the approved `hostSiwe` bytes exactly
     once (recording `hostSignedAt`), submit the hosting delegation, and
     activate again. `hosting` is then `created`, or `failed` if that fails.
+- **Stale cache:** a cached `complete` row means prepare plans no hosting. If
+  the approval's activation then lists the space as `skipped` and no plan was
+  shown, the host SIWE is never signed. Approve marks the bootstrap row
+  not-complete, returns the request to `RESOLVED` and answers 409
+  `preparation_superseded`; the consent page prepares again, and that prepare
+  carries a hosting plan. Because the row is no longer `complete`, the second
+  approval is never refused this way.
 - **Freshness:** if the node's staged `peerId` can expire before approval,
   prepare refreshes a plan older than the observed lifetime, and approve
   returns 409 `preparation_superseded`.
