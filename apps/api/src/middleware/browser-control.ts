@@ -16,17 +16,29 @@ export function rejectNonBrowserControlRequest(c: Context) {
 }
 
 /**
- * The managed-key signing routes accept a cookie session only from an OpenKey
- * web origin: the session cookie is scoped to the whole site, so any sibling
- * page could otherwise send a signed-in user's browser here, and the caller
- * could then claim any requestOrigin it likes in the body. A bearer credential
- * is already bound to an OpenKey origin by requireOpenKeyOriginForBearer, so
- * it skips this check. Returns a 403 response to send, or null to continue.
+ * Managed-key signing routes accept a session only from an OpenKey web
+ * origin: the session cookie is scoped to the whole site, so any sibling page
+ * could otherwise send a signed-in user's browser here, and the caller could
+ * then claim any requestOrigin it likes in the body. Bearer credentials get
+ * the same answer — requireOpenKeyOriginForBearer already demands the same
+ * origins, so this check is unconditional and does not depend on how the
+ * router is mounted. Returns a 403 response to send, or null to continue.
  */
 export function rejectNonOpenKeySignRequest(c: Context) {
-  if (c.req.header('authorization')) return null;
   const origin = c.req.header('origin');
   const allowed = resolveOriginPolicy('http://localhost:5173,http://localhost:3000');
   if (!origin || !allowed.includes(origin)) return c.json({ error: 'Managed-key signing requires an OpenKey browser origin' }, 403);
   return null;
+}
+
+/**
+ * /api/delegate/sign serves two credential kinds: an OAuth bearer, which any
+ * third-party origin may send, and a cookie session, which needs the same
+ * boundary as rejectNonOpenKeySignRequest. Use this on that route: a request
+ * carrying an Authorization header is left to the OAuth path, while a
+ * cookie-session request must arrive from an OpenKey origin.
+ */
+export function rejectCookieRequestOutsideOpenKey(c: Context) {
+  if (c.req.header('authorization')) return null;
+  return rejectNonOpenKeySignRequest(c);
 }

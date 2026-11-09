@@ -5,6 +5,7 @@ import { createPrismaClient } from '@openkey/db';
 import { createTeeClient } from '@openkey/tee';
 import { bearerFromOpenKeyOriginError } from '../middleware/bearer-origin';
 import { requireSession } from '../middleware/session';
+import { rejectCookieRequestOutsideOpenKey } from '../middleware/browser-control';
 import {
   createDelegateSignerAuth,
   type DelegateSignerContext,
@@ -310,6 +311,10 @@ async function assertHandoffContext(ticket: string | null, userId: string, token
 // and accepts a bearer session token only from an OpenKey web origin (TC-688).
 delegateRouter.use('*', async (c, next) => {
   if (c.req.path.endsWith('/sign')) {
+    // A cookie session signs only from an OpenKey web origin; OAuth bearers
+    // are checked by the signer middleware itself and stay open to any site.
+    const cookieRefusal = rejectCookieRequestOutsideOpenKey(c);
+    if (cookieRefusal) return cookieRefusal;
     return activeDelegateSignerAuth(c, next);
   }
   // The refusals are returned, not awaited: this router has its own onError, so

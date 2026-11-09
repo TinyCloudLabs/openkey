@@ -258,12 +258,11 @@ export const api = {
 
   async signTypedData(
     keyId: string,
-    data: { domain: any; types: any; primaryType: string; message: any },
-    requestOrigin?: string,
+    data: { domain: any; types: any; primaryType: string; message: any }
   ): Promise<{ signature: string; address: string }> {
     return fetchAPI(`/api/keys/${keyId}/sign-typed-data`, {
       method: 'POST',
-      body: JSON.stringify({ ...data, requestOrigin }),
+      body: JSON.stringify(data),
     });
   },
 

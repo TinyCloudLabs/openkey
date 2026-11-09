@@ -156,10 +156,58 @@ if (!process.env.TC_SIGN_ORIGIN_CHILD) {
     const typedPanel = await signTyped(typedData, { cookie, origin: OPENKEY });
     expect(typedPanel.status).toBe(200);
     const typedBearer = await signTyped(
-      { ...typedData, requestOrigin: EMBEDDER },
+      typedData,
       { authorization: `Bearer ${token}`, origin: OPENKEY },
     );
     expect(typedBearer.status).toBe(200);
+
+    const GATE_ERROR = 'Managed-key signing requires an OpenKey browser origin';
+
+    // The gate does not depend on how the router is mounted: any credential
+    // presented from outside the OpenKey origins is refused before auth runs.
+    const cookiePlusJunkBearer = await sign(
+      { message: 'hello' },
+      { cookie, authorization: 'Bearer junk', origin: SIBLING },
+    );
+    expect(cookiePlusJunkBearer.status).toBe(403);
+    // The bearer middleware already refuses junk credentials; this pins the
+    // status, not which layer answered.
+
+    // The sibling routes get the same boundary. Unknown ids reach the handler
+    // (404 past the gate); sibling, missing, and foreign Origins do not.
+    const nostrGrant = (headers: Record<string, string>) =>
+      post('/api/keys/nostr/key_missing/grants', { clientOrigin: 'https://client.example', kinds: [9] }, headers);
+    const nostrSign = (headers: Record<string, string>) =>
+      post('/api/keys/nostr/key_missing/sign-event', { clientOrigin: 'https://client.example', event: {} }, headers);
+    expect((await nostrGrant({ cookie, origin: SIBLING })).status).toBe(403);
+    expect((await nostrGrant({ cookie })).status).toBe(403);
+    expect((await nostrSign({ cookie, origin: SIBLING })).status).toBe(403);
+    expect((await nostrSign({ cookie })).status).toBe(403);
+    expect((await nostrGrant({ cookie, origin: OPENKEY })).status).toBe(404);
+    expect((await nostrSign({ cookie, origin: OPENKEY })).status).toBe(404);
+
+    // /api/delegate/sign: the cookie-session signer path gets the gate; the
+    // OAuth bearer path stays open to any origin.
+    const delegateSign = (body: unknown, headers: Record<string, string>) =>
+      post('/api/delegate/sign', body, headers);
+    const minimal = { address, chainId: 1, message: 'hello', type: 'message' };
+    for (const headers of [{ cookie, origin: SIBLING }, { cookie }] as Array<Record<string, string>>) {
+      const refused = await delegateSign(minimal, headers);
+      expect(refused.status).toBe(403);
+      expect(await refused.json()).toMatchObject({ error: GATE_ERROR });
+    }
+    const delegateCookieOk = await delegateSign(minimal, { cookie, origin: OPENKEY });
+    expect(await delegateCookieOk.json()).not.toMatchObject({ error: GATE_ERROR });
+    const delegateOauth = await delegateSign(minimal, { authorization: 'Bearer unknown-oauth', origin: FOREIGN });
+    expect(await delegateOauth.json()).not.toMatchObject({ error: GATE_ERROR });
+
+    // Device-authorization approve: same cookie-session boundary.
+    const approve = (headers: Record<string, string>) =>
+      post('/api/device-authorizations/tx_missing/approve', {}, headers);
+    expect((await approve({ cookie, origin: SIBLING })).status).toBe(403);
+    expect((await approve({ cookie })).status).toBe(403);
+    const approveOk = await approve({ cookie, origin: OPENKEY });
+    expect(await approveOk.json()).not.toMatchObject({ error: GATE_ERROR });
 
     await prisma.$disconnect();
   }, 110_000);

@@ -409,7 +409,9 @@ function sign(
     method: 'POST',
     headers: {
       ...(authorization === null ? {} : { authorization }),
-      origin: configuredOrigin,
+      // A cookie-session call (no Authorization) models the OpenKey web page;
+      // the OAuth bearer path stays open to the client's own origin.
+      origin: authorization === null ? 'http://localhost:5173' : configuredOrigin,
       'content-type': 'application/json',
       ...headers,
     },

@@ -127,7 +127,7 @@
     error = '';
 
     try {
-      const result = await api.signTypedData(key.id, typedData, origin ?? undefined);
+      const result = await api.signTypedData(key.id, typedData);
       if (version !== requestVersion) return;
       sendResponse({
         type: 'openkey:signTypedData:response',

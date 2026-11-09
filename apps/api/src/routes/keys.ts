@@ -370,10 +370,7 @@ keysRouter.post('/:keyId/sign', async (c) => {
   });
 });
 
-// Sign typed data (EIP-712)
-// The same origin gate applies: a cookie session signs only for an OpenKey
-// browser origin; the widget's bearer carries the verified embedder origin in
-// `requestOrigin`, matching /sign.
+// Sign typed data (EIP-712), behind the same origin gate as /sign.
 keysRouter.post('/:keyId/sign-typed-data', async (c) => {
   const originRefusal = rejectNonOpenKeySignRequest(c);
   if (originRefusal) return originRefusal;
@@ -384,8 +381,6 @@ keysRouter.post('/:keyId/sign-typed-data', async (c) => {
     types: any;
     primaryType: string;
     message: any;
-    /** Verified origin of the requesting site, as on /sign. */
-    requestOrigin?: string;
   }>();
 
   const key = await prisma.ethereumKey.findFirst({
