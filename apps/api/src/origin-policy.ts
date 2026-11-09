@@ -44,18 +44,51 @@ export function corsOriginPolicy(
 }
 
 /**
- * Managed-key signing accepts only the account-facing web origins. The
- * console host keeps credentialed CORS and Better Auth for its own routes,
- * but its pages never call a signing route, so it drops out of this policy
- * no matter which source (CORS_ORIGIN, CONSOLE_ORIGIN, or the production
- * default) contributed it.
+ * Managed-key signing excludes the configured console origin unless it is
+ * also an account/default origin. CORS and Better Auth keep using the broader
+ * shared policy.
  */
 export function resolveSigningOriginPolicy(
   defaultOrigin: string,
   env: OriginPolicyEnvironment = process.env,
 ): string[] {
-  const consoleOrigin = resolveConsoleOrigin(env)?.toLowerCase().replace(/\/+$/, '');
-  return resolveOriginPolicy(defaultOrigin, env).filter(
-    (origin) => origin.toLowerCase().replace(/\/+$/, '') !== consoleOrigin,
+  const consoleOrigin = resolveConsoleOrigin(env);
+  let normalizedConsoleOrigin: string | undefined;
+
+  if (consoleOrigin) {
+    try {
+      normalizedConsoleOrigin = new URL(consoleOrigin.trim()).origin;
+      if (normalizedConsoleOrigin === 'null') throw new Error();
+    } catch {
+      throw new TypeError('CONSOLE_ORIGIN must be a valid absolute URL');
+    }
+  }
+
+  const accountOrigins = new Set(
+    defaultOrigin.split(',').map((origin) => {
+      try {
+        return new URL(origin.trim()).origin;
+      } catch {
+        return undefined;
+      }
+    }).filter((origin): origin is string => origin !== undefined),
   );
+  const origins = resolveOriginPolicy(defaultOrigin, env);
+  const filtered = origins.flatMap((origin) => {
+    try {
+      const normalizedOrigin = new URL(origin.trim()).origin;
+      if (normalizedOrigin === 'null') return [origin];
+      if (
+        normalizedOrigin === normalizedConsoleOrigin
+        && !accountOrigins.has(normalizedOrigin)
+      ) return [];
+      return [normalizedOrigin];
+    } catch {
+      return [origin];
+    }
+  });
+
+  // If the console was the only configured origin, keep it rather than
+  // accidentally denying every signing request.
+  return filtered.length > 0 || origins.length === 0 ? filtered : [origins[0]!];
 }

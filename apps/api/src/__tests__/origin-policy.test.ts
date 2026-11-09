@@ -138,4 +138,51 @@ describe('signing origin policy', () => {
       'http://localhost:3000',
     ]);
   });
+
+  test('keeps the shared account origin when it is also the console origin', () => {
+    expect(resolveSigningOriginPolicy('https://openkey.so', {
+      CORS_ORIGIN: 'https://openkey.so',
+      CONSOLE_ORIGIN: 'https://openkey.so',
+    })).toEqual(['https://openkey.so']);
+  });
+
+  test('removes a canonical console entry despite a noncanonical CONSOLE_ORIGIN', () => {
+    for (const CONSOLE_ORIGIN of [
+      'https://console.openkey.so:443',
+      'https://console.openkey.so/admin',
+      '  https://console.openkey.so  ',
+    ]) {
+      expect(resolveSigningOriginPolicy('https://openkey.so', {
+        CORS_ORIGIN: 'https://openkey.so,https://console.openkey.so',
+        CONSOLE_ORIGIN,
+      })).toEqual(['https://openkey.so']);
+    }
+  });
+
+  test('keeps a local origin shared by the account and console surfaces', () => {
+    expect(resolveSigningOriginPolicy('http://localhost:5173', {
+      CORS_ORIGIN: 'http://localhost:5173',
+      CONSOLE_ORIGIN: 'http://localhost:5173',
+    })).toEqual(['http://localhost:5173']);
+  });
+
+  test('keeps an explicitly listed console origin when non-production has no configured console', () => {
+    expect(resolveSigningOriginPolicy('https://openkey.so', {
+      CORS_ORIGIN: 'https://openkey.so,https://console.openkey.so',
+      NODE_ENV: 'development',
+    })).toEqual(['https://openkey.so', 'https://console.openkey.so']);
+  });
+
+  test('rejects an unparseable configured console origin', () => {
+    expect(() => resolveSigningOriginPolicy('https://openkey.so', {
+      CONSOLE_ORIGIN: 'not a URL',
+    })).toThrow('CONSOLE_ORIGIN must be a valid absolute URL');
+  });
+
+  test('keeps unparseable allowlist entries without throwing', () => {
+    expect(resolveSigningOriginPolicy('https://openkey.so', {
+      CORS_ORIGIN: 'https://openkey.so,not a URL',
+      CONSOLE_ORIGIN: 'https://console.openkey.so',
+    })).toEqual(['https://openkey.so', 'not a URL']);
+  });
 });

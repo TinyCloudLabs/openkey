@@ -55,7 +55,7 @@ if (!process.env.TC_SIGN_ORIGIN_CHILD) {
     const authContext = await auth.$context;
     const cookie = (await serializeSignedCookie(authContext.authCookies.sessionToken.name, token, authContext.secret)).split(';')[0]!;
 
-    // CORS_ORIGIN is the sole allowed origin in this child env.
+    // The account and console origins are on the credentialed CORS allowlist.
     const OPENKEY = 'https://openkey.example';
     const SIBLING = 'https://sibling.openkey.so';
     const EMBEDDER = 'https://embedding-app.example';
@@ -147,6 +147,22 @@ if (!process.env.TC_SIGN_ORIGIN_CHILD) {
     expect(consoleSign.status).toBe(403);
     const consoleTyped = await signTyped(typedData, { cookie, origin: CONSOLE });
     expect(consoleTyped.status).toBe(403);
+
+    // When account and console configuration identify the same host, keep
+    // that shared origin usable for account signing.
+    const previousCorsOrigin = process.env.CORS_ORIGIN;
+    const previousConsoleOrigin = process.env.CONSOLE_ORIGIN;
+    process.env.CORS_ORIGIN = OPENKEY;
+    process.env.CONSOLE_ORIGIN = OPENKEY;
+    const sharedOriginSign = await sign(
+      { message: 'hello' },
+      { cookie, origin: OPENKEY },
+    );
+    expect(sharedOriginSign.status).toBe(200);
+    if (previousCorsOrigin === undefined) delete process.env.CORS_ORIGIN;
+    else process.env.CORS_ORIGIN = previousCorsOrigin;
+    if (previousConsoleOrigin === undefined) delete process.env.CONSOLE_ORIGIN;
+    else process.env.CONSOLE_ORIGIN = previousConsoleOrigin;
 
     // (d) First-party flows still sign.
     const panelSign = await sign({ message: 'hello' }, { cookie, origin: OPENKEY });
