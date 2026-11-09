@@ -64,7 +64,8 @@ approvalRequestRouter.post('/approval-requests/:id/load', async (c) => {
   if (opened.type !== 'openkey-approval-request') throw new ApprovalResultError('invalid_request', 'Not an approval request', 400);
   const request = parseApprovalRequest(opened.value, { issuer: opened.header.issuer });
   const record = await store.register({ id, bodyCid: opened.header.bodyCid, issuer: opened.header.issuer, request, expiresAt: new Date(opened.header.expiresAt), createdAt: new Date(), resultRef: null, encryptedResult: null, resultExpiresAt: null });
-  return c.json({ request: record.request, requestId: id, bodyCid: record.bodyCid, expiresAt: record.expiresAt.toISOString(), approved: !!record.resultRef });
+  // `denied` is additive (TC-2459): a reopened declined link can say so. `approved` keeps its meaning.
+  return c.json({ request: record.request, requestId: id, bodyCid: record.bodyCid, expiresAt: record.expiresAt.toISOString(), approved: !!record.resultRef, denied: !!record.deniedAt });
 });
 
 approvalRequestRouter.post('/approval-requests/:id/result', async (c) => {

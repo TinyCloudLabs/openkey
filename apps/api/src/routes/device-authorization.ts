@@ -6,6 +6,7 @@ import {
   DeviceAuthorizationError,
   DeviceAuthorizationService,
 } from '../services/device-authorization';
+import { rejectNonOpenKeySignRequest } from '../middleware/browser-control';
 import { createPrismaDeviceAuthorizationStore } from '../services/device-authorization-store';
 
 type DeviceAuthorizationVariables = {
@@ -75,6 +76,8 @@ export function createDeviceAuthorizationRouter(input: {
   // Approval is a signed-in user action from the OpenKey /delegate page. A
   // bearer session token is accepted only from an OpenKey web origin (TC-688).
   router.post('/:transactionId/approve', requireOpenKeyOriginForBearer as any, input.sessionMiddleware ?? requireSession as any, async (c) => {
+    const originRefusal = rejectNonOpenKeySignRequest(c);
+    if (originRefusal) return originRefusal;
     try {
       const user = c.get('user');
       await input.service.approve(c.req.param('transactionId'), user.id, await c.req.json());

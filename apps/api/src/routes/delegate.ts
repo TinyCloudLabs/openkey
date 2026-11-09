@@ -310,6 +310,8 @@ async function assertHandoffContext(ticket: string | null, userId: string, token
 // and accepts a bearer session token only from an OpenKey web origin (TC-688).
 delegateRouter.use('*', async (c, next) => {
   if (c.req.path.endsWith('/sign')) {
+    // The cookie-session origin check runs inside the signer middleware once
+    // a session resolves; OAuth bearers stay open to any origin.
     return activeDelegateSignerAuth(c, next);
   }
   // The refusals are returned, not awaited: this router has its own onError, so
