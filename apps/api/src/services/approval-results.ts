@@ -175,7 +175,7 @@ export class ApprovalResultService {
     const record = await this.store.findById(id);
     if (record?.deniedAt) throw deniedError(record.deniedAt);
     if (record && !record.resultRef && record.expiresAt > now && isApproving(record, now)) {
-      throw new ApprovalResultError('approval_in_progress', 'Approval request is already being approved', 409);
+      throw new ApprovalResultError('approval_in_progress', 'Approval request is already being approved.', 409);
     }
     throw new ApprovalResultError('expired_request', 'Approval request is no longer pending', 410);
   }
@@ -224,7 +224,7 @@ export class ApprovalResultService {
       if (!record) throw new ApprovalResultError('not_found', 'Approval request not found', 404);
       if (record.deniedAt) return { status: 'denied' };
       if (record.resultRef) throw new ApprovalResultError('already_approved', 'Approval request was already approved', 409);
-      if (record.expiresAt > now && isApproving(record, now)) throw new ApprovalResultError('approval_in_progress', 'Approval request is being approved', 409);
+      if (record.expiresAt > now && isApproving(record, now)) throw new ApprovalResultError('approval_in_progress', 'Approval request is already being approved.', 409);
       throw new ApprovalResultError('expired_request', 'Approval request expired', 410);
     };
     if (!await this.store.deny(id, now)) return settled();
