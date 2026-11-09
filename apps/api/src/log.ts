@@ -53,7 +53,7 @@ const EVENTS = {
   analytics_authorization_failed: true, analytics_authorization_tracking_failed: true, oauth_client_scopes_updated: true,
   oauth_client_scopes_update_failed: true, api_starting: true, request: true, api_error: true,
   delegate_session_activation_warning: true, delegate_session_activation_failed: true,
-  delegate_authorization_context_issue_failed: true, delegate_space_setup_notice_failed: true,
+  delegate_authorization_context_issue_failed: true, delegate_space_setup_notice_failed: true, delegate_session_jwk: true,
   delegate_origin_bind_failed: true, tinycloud_bootstrap_failed: true, primary_key_changed: true, key_quote_failed: true,
   native_consent_peer_lookup_failed: true, native_consent_key_unseal_failed: true,
   native_consent_activation_after_host_setup_failed: true, native_consent_host_delegation_rejected: true,
@@ -141,6 +141,21 @@ export function logMetric(
 /** One line on a refused managed-key signing request: route template and why, never the origin value. */
 export function logSignOriginRefused(route: string | undefined, reason: 'missing' | 'foreign'): void {
   emit('warn', 'sign_origin_refused', { route: routeTemplate(route), reason });
+}
+
+export type SessionJwkRoute =
+  | '/api/delegate'
+  | '/api/delegate/prepare'
+  | '/api/delegate/complete'
+  | '/api/delegate/authorize-sign-prepare';
+
+/**
+ * One line per delegate request that carries a session JWK: the route and
+ * whether the JWK had a private member. Read to decide when private members
+ * can be refused. Never the key, user, IP or any other request field.
+ */
+export function logSessionJwk(route: SessionJwkRoute, privateMembers: boolean): void {
+  emit('info', 'delegate_session_jwk', { route, private_members: privateMembers === true });
 }
 
 const PERMISSION_FIELD_NAME = /^[A-Za-z0-9_.-]{1,64}$/;
