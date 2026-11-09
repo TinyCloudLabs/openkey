@@ -201,6 +201,12 @@ if (!process.env.TC_SIGN_ORIGIN_CHILD) {
     const delegateOauth = await delegateSign(minimal, { authorization: 'Bearer unknown-oauth', origin: FOREIGN });
     expect(await delegateOauth.json()).not.toMatchObject({ error: GATE_ERROR });
 
+    // With no credentials at all the gate must not pre-empt the audited
+    // missing_authorization denial, whatever the origin.
+    const anonForeign = await delegateSign(minimal, { origin: FOREIGN });
+    expect(anonForeign.status).toBe(401);
+    expect(await anonForeign.json()).toMatchObject({ code: 'missing_authorization' });
+
     // Device-authorization approve: same cookie-session boundary.
     const approve = (headers: Record<string, string>) =>
       post('/api/device-authorizations/tx_missing/approve', {}, headers);

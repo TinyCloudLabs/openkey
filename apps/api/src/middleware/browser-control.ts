@@ -31,14 +31,3 @@ export function rejectNonOpenKeySignRequest(c: Context) {
   return null;
 }
 
-/**
- * /api/delegate/sign serves two credential kinds: an OAuth bearer, which any
- * third-party origin may send, and a cookie session, which needs the same
- * boundary as rejectNonOpenKeySignRequest. Use this on that route: a request
- * carrying an Authorization header is left to the OAuth path, while a
- * cookie-session request must arrive from an OpenKey origin.
- */
-export function rejectCookieRequestOutsideOpenKey(c: Context) {
-  if (c.req.header('authorization')) return null;
-  return rejectNonOpenKeySignRequest(c);
-}
