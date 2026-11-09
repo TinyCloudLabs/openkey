@@ -42,3 +42,20 @@ export function corsOriginPolicy(
   const origins = resolveOriginPolicy(defaultOrigin, env);
   return origins.length === 1 ? origins[0]! : origins;
 }
+
+/**
+ * Managed-key signing accepts only the account-facing web origins. The
+ * console host keeps credentialed CORS and Better Auth for its own routes,
+ * but its pages never call a signing route, so it drops out of this policy
+ * no matter which source (CORS_ORIGIN, CONSOLE_ORIGIN, or the production
+ * default) contributed it.
+ */
+export function resolveSigningOriginPolicy(
+  defaultOrigin: string,
+  env: OriginPolicyEnvironment = process.env,
+): string[] {
+  const consoleOrigin = resolveConsoleOrigin(env)?.toLowerCase().replace(/\/+$/, '');
+  return resolveOriginPolicy(defaultOrigin, env).filter(
+    (origin) => origin.toLowerCase().replace(/\/+$/, '') !== consoleOrigin,
+  );
+}

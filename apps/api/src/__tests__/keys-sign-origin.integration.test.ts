@@ -16,7 +16,7 @@ if (!process.env.TC_SIGN_ORIGIN_CHILD) {
         env: { ...process.env, TC_SIGN_ORIGIN_CHILD: directory, HOME: directory, TMPDIR: directory,
           BUN_INSTALL_CACHE_DIR: join(directory, 'bun-cache'), NODE_ENV: 'test', TEE_MODE: 'development',
           BETTER_AUTH_URL: 'http://localhost:3324', BETTER_AUTH_SECRET: randomBytes(48).toString('base64url'),
-          WEBAUTHN_ORIGIN: 'https://openkey.example', WEBAUTHN_RP_ID: 'localhost', CORS_ORIGIN: 'https://openkey.example',
+          WEBAUTHN_ORIGIN: 'https://openkey.example', WEBAUTHN_RP_ID: 'localhost', CORS_ORIGIN: 'https://openkey.example,https://console.openkey.example', CONSOLE_ORIGIN: 'https://console.openkey.example',
           TINYCLOUD_BOOTSTRAP_ON_SIGN: 'off',
           RESEND_API_KEY: '', GOOGLE_CLIENT_ID: '', GOOGLE_CLIENT_SECRET: '',
           DATABASE_URL: `pglite:${join(directory, 'db')}` },
@@ -61,6 +61,10 @@ if (!process.env.TC_SIGN_ORIGIN_CHILD) {
     const EMBEDDER = 'https://embedding-app.example';
     const FOREIGN = 'https://attacker-site.example';
     const apiOrigin = process.env.BETTER_AUTH_URL!;
+    // The console origin is on the credentialed allowlist (CORS_ORIGIN above)
+    // but must not reach a signing route.
+    const CONSOLE = 'https://console.openkey.example';
+
 
     function siweFor(origin: string): string {
       const { host } = new URL(origin);
@@ -133,6 +137,16 @@ if (!process.env.TC_SIGN_ORIGIN_CHILD) {
     expect(typedForeign.status).toBe(403);
     const typedNoOrigin = await signTyped(typedData, { cookie });
     expect(typedNoOrigin.status).toBe(403);
+
+    // The console origin is allowlisted for CORS and auth (it is in
+    // CORS_ORIGIN and CONSOLE_ORIGIN above) but must not sign.
+    const consoleSign = await sign(
+      { message: siweFor(CONSOLE), requestOrigin: CONSOLE },
+      { cookie, origin: CONSOLE },
+    );
+    expect(consoleSign.status).toBe(403);
+    const consoleTyped = await signTyped(typedData, { cookie, origin: CONSOLE });
+    expect(consoleTyped.status).toBe(403);
 
     // (d) First-party flows still sign.
     const panelSign = await sign({ message: 'hello' }, { cookie, origin: OPENKEY });
