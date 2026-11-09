@@ -1,7 +1,7 @@
 import { timingSafeEqual } from 'crypto';
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
-import { resolveScoreboardExclusions, SCOREBOARD_EXCLUSION_CRITERIA, type ExclusionDatabase } from '../services/scoreboard-exclusions';
+import { InvalidScoreboardExclusionsError, resolveScoreboardExclusions, SCOREBOARD_EXCLUSION_CRITERIA, type ExclusionDatabase } from '../services/scoreboard-exclusions';
 
 const prisma = createPrismaClient();
 
@@ -28,7 +28,11 @@ function authorized(authHeader: string | undefined): boolean {
 }
 
 export async function collectInternalMetrics(database: MetricsDatabase, now = new Date()) {
-  const exclusions = await resolveScoreboardExclusions(database);
+  // An invalid exclusion list must not hide the totals the Worker stores: report them without the exclusion fields.
+  const exclusions = await resolveScoreboardExclusions(database).catch((error: unknown) => {
+    if (error instanceof InvalidScoreboardExclusionsError) return null;
+    throw error;
+  });
   const since = new Date(now.getTime() - 24 * 60 * 60 * 1000);
   const [
     totalAccounts, newAccounts24h, totalKeys, activeKeys, newKeys24h,
@@ -58,9 +62,9 @@ export async function collectInternalMetrics(database: MetricsDatabase, now = ne
     generatedAt: now.toISOString(),
     accounts: {
       total: totalAccounts, new24h: newAccounts24h,
-      real: totalAccounts - exclusions.userIds.size,
-      excluded: exclusions.userIds.size,
-      excludedDomainOnly: exclusions.domainOnly,
+      real: exclusions ? totalAccounts - exclusions.userIds.size : null,
+      excluded: exclusions ? exclusions.userIds.size : null,
+      excludedDomainOnly: exclusions ? exclusions.domainOnly : null,
       exclusionCriteria: SCOREBOARD_EXCLUSION_CRITERIA,
     },
     keys: { total: totalKeys, active: activeKeys, new24h: newKeys24h },

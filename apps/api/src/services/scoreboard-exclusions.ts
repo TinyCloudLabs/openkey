@@ -15,6 +15,10 @@ export type ExclusionDatabase = {
   $queryRaw<T>(query: TemplateStringsArray, ...values: unknown[]): Promise<T>;
 };
 
+export class InvalidScoreboardExclusionsError extends Error {
+  constructor() { super('Invalid scoreboard exclusions'); }
+}
+
 export function parseExclusions(raw: string | undefined): Rules {
   const rules: Rules = { userIds: new Set(), emails: new Set(), domains: new Set(), addresses: new Set(), keyDids: new Set() };
   try {
@@ -51,7 +55,7 @@ export function parseExclusions(raw: string | undefined): Rules {
       }
     }
   } catch {
-    throw new Error('Invalid scoreboard exclusions');
+    throw new InvalidScoreboardExclusionsError();
   }
   return rules;
 }
